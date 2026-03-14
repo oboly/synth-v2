@@ -1,0 +1,7 @@
+pymysql
+pandas
+numpy
+pyarrow
+PyYAML
+
+

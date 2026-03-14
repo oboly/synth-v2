@@ -1,0 +1,15 @@
+db:
+  host: "ODROID_IP"
+  port: 3306
+  user: "synth"
+  password: "CHANGE_ME"
+  database: "synth"
+
+cache:
+  root_dir: "./dataset_cache"
+
+worker:
+  worker_name: "gamepc_worker"
+  poll_seconds: 2
+
+
