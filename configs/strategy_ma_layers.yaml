@@ -1,0 +1,23 @@
+# =============================================================================
+# File: strategy_ma_layers.yaml
+# Purpose: Config for 1D regime + 4H signals
+# =============================================================================
+
+daily_regime:
+  ma200_len: 200
+  slope_lookback: 20
+  min_bars: 260
+  use_ma50: false
+  ma50_len: 50
+
+signals_4h:
+  ema_fast: 20
+  ema_mid: 50
+  ema_slow: 200
+  vol_sma_len: 20
+  vol_mult_trend: 1.2
+  vol_mult_reclaim: 1.5
+  atr_len: 14
+  atr_mult_stop: 1.0
+  vol_min_mult: 0.5
+  min_bars: 300
