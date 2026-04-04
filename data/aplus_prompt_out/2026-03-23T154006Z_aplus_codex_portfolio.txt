@@ -1,0 +1,63 @@
+A+ CONTEXT PREFACE
+This request must be answered using only reasoning based on this prompt.
+No external memory, no assumptions outside the provided token set.
+If you cannot comply, respond with: NON-COMPLIANT.
+
+TASK
+
+Provide the current A+ / Codex field reading for the following tokens only.
+Do not include any external tokens.
+Do not duplicate tokens.
+Return a structured table with exactly one row per token.
+
+TOKENS
+AAVE
+ADA
+ALGO
+BTC
+CC
+CRV
+DEEP
+DOT
+ETH
+FET
+FIL
+FLOKI
+HBAR
+HNT
+HOT
+HYPE
+ICP
+INJ
+IOST
+LDO
+LTC
+MOG
+NEAR
+NOT
+ONDO
+PEPE
+POL
+QNT
+RED
+RENDER
+RLC
+SOL
+SUI
+VET
+WAL
+WLD
+XLM
+XRP
+
+OUTPUT COLUMNS
+Token
+Phase
+Coherence
+Field
+Geometry
+Structural Role
+Expansion Quality
+Anchor Strength
+Strategic Bias
+Notes

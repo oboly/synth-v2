@@ -1,0 +1,1183 @@
+======================================================================
+FILE: database/schema/schema_patch2_notes.sql
+======================================================================
+-- Optional native comments / small patch notes only.
+-- No required SQL changes for Patch 2 if Patch 1 schema already exists.
+--
+-- Recommended future addition if desired:
+-- CREATE TABLE state_transition_log (...) for raw event history.
+--
+-- Patch 2 below uses existing:
+--   strategy_version
+--   portfolio_target
+--   position_lot
+--   trade_lot
+--   position_snapshot
+--   strategy_metrics_daily
+--   state_transition_daily
+
+======================================================================
+FILE: src/synth_sleeves/version_repo.py
+======================================================================
+"""
+SYNTH v2
+Module: synth_sleeves.version_repo
+Purpose:
+    Auto-upsert active strategy versions from config payloads.
+Boundary:
+    - DB only
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+import pymysql
+from pymysql.cursors import DictCursor
+
+from src.synth_sleeves.strategy_versioning import (
+    make_strategy_version_hash,
+    make_strategy_version_label,
+)
+
+
+class StrategyVersionRepository:
+    def __init__(self, connection_params: dict[str, Any]) -> None:
+        self._connection_params = connection_params
+
+    def _connect(self) -> pymysql.connections.Connection:
+        return pymysql.connect(
+            cursorclass=DictCursor,
+            autocommit=False,
+            charset="utf8mb4",
+            **self._connection_params,
+        )
+
+    def upsert_active_version(
+        self,
+        *,
+        strategy_name: str,
+        sleeve_code: str,
+        config_payload: dict[str, Any],
+        notes: str | None = None,
+    ) -> int:
+        version_hash = make_strategy_version_hash(strategy_name, config_payload)
+        version_label = make_strategy_version_label(strategy_name, version_hash)
+        now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        select_sql = """
+        SELECT strategy_version_id
+        FROM strategy_version
+        WHERE strategy_name = %s
+          AND version_hash = %s
+        LIMIT 1
+        """
+
+        insert_sql = """
+        INSERT INTO strategy_version (
+            strategy_name,
+            sleeve_code,
+            version_label,
+            version_hash,
+            config_json,
+            notes,
+            activated_ts_utc
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s
+        )
+        """
+
+        import json
+        config_json = json.dumps(config_payload, sort_keys=True, separators=(",", ":"))
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(select_sql, (strategy_name, version_hash))
+                row = cur.fetchone()
+                if row:
+                    conn.commit()
+                    return int(row["strategy_version_id"])
+
+                cur.execute(
+                    insert_sql,
+                    (
+                        strategy_name,
+                        sleeve_code,
+                        version_label,
+                        version_hash,
+                        config_json,
+                        notes,
+                        now_utc,
+                    ),
+                )
+                strategy_version_id = int(cur.lastrowid)
+            conn.commit()
+            return strategy_version_id
+
+    def build_lookup_from_sleeve_config(
+        self,
+        *,
+        sleeve_config_raw: dict[str, Any],
+    ) -> dict[str, int]:
+        lookup: dict[str, int] = {}
+
+        sleeves = sleeve_config_raw.get("sleeves", {})
+        for sleeve_code, sleeve_cfg in sleeves.items():
+            for strategy_name in sleeve_cfg.get("agent_names", []):
+                strategy_payload = {
+                    "sleeve_code": sleeve_code,
+                    "wallet_share": sleeve_cfg.get("wallet_share"),
+                    "max_positions": sleeve_cfg.get("max_positions"),
+                    "per_position_cap": sleeve_cfg.get("per_position_cap"),
+                    "allowed_actions": sleeve_cfg.get("allowed_actions"),
+                    "prepare": sleeve_cfg.get("prepare"),
+                }
+                lookup[strategy_name] = self.upsert_active_version(
+                    strategy_name=strategy_name,
+                    sleeve_code=sleeve_code,
+                    config_payload=strategy_payload,
+                    notes="Auto-upsert from portfolio_sleeves.yaml",
+                )
+
+        return lookup
+
+======================================================================
+FILE: src/synth_sleeves/transition_logger.py
+======================================================================
+"""
+SYNTH v2
+Module: synth_sleeves.transition_logger
+Purpose:
+    Derive and persist daily transition counts from current targets vs open lots.
+Boundary:
+    - Stateless derivation
+    - Aggregated daily upsert only
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Iterable
+
+from src.synth_sleeves.models import ApprovedTarget, DecisionAction, OpenLot, SleeveCode
+
+
+def _target_state_name(action: DecisionAction) -> str:
+    if action == DecisionAction.PREPARE:
+        return "PREPARE"
+    if action == DecisionAction.ENTER_LONG:
+        return "ENTER_LONG"
+    if action == DecisionAction.SCALP_ONLY:
+        return "SCALP_ONLY"
+    if action == DecisionAction.WATCH:
+        return "WATCH"
+    if action in {DecisionAction.AVOID, DecisionAction.BLOCK}:
+        return "BLOCK"
+    if action == DecisionAction.EXIT:
+        return "EXIT"
+    if action == DecisionAction.REDUCE:
+        return "REDUCE"
+    if action == DecisionAction.HOLD:
+        return "HOLD"
+    return action.value
+
+
+def build_transition_rows(
+    *,
+    run_ts_utc: datetime,
+    targets: list[ApprovedTarget],
+    open_lots: Iterable[OpenLot],
+) -> list[dict]:
+    metric_date_utc = run_ts_utc.date()
+
+    current_state_by_key: dict[tuple[int, SleeveCode], str] = {}
+    current_strategy_by_key: dict[tuple[int, SleeveCode], str] = {}
+
+    for lot in open_lots:
+        key = (lot.asset_id, lot.sleeve_code)
+        # strongest current state wins
+        current_state_by_key[key] = str(lot.entry_state)
+        current_strategy_by_key[key] = lot.strategy_name
+
+    grouped: dict[tuple[str, str, str, str], int] = defaultdict(int)
+
+    for target in targets:
+        key = (target.asset_id, target.sleeve_code)
+        from_state = current_state_by_key.get(key, "WATCH")
+        to_state = _target_state_name(target.desired_action)
+        if from_state == to_state:
+            continue
+
+        grouped[(target.sleeve_code.value, target.strategy_name, from_state, to_state)] += 1
+
+    rows: list[dict] = []
+    for (sleeve_code, strategy_name, from_state, to_state), transition_count in grouped.items():
+        rows.append(
+            {
+                "metric_date_utc": metric_date_utc,
+                "sleeve_code": sleeve_code,
+                "strategy_name": strategy_name,
+                "from_state": from_state,
+                "to_state": to_state,
+                "transition_count": transition_count,
+                "avg_forward_return_24h_pct": Decimal("0"),
+                "avg_forward_return_72h_pct": Decimal("0"),
+            }
+        )
+
+    return rows
+
+======================================================================
+FILE: src/synth_sleeves/equity.py
+======================================================================
+"""
+SYNTH v2
+Module: synth_sleeves.equity
+Purpose:
+    Compute paper wallet equity from cash + market value of open lots.
+Boundary:
+    - Pure helpers
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Iterable
+
+from src.synth_sleeves.models import OpenLot
+
+
+DECIMAL_ZERO = Decimal("0")
+
+
+def compute_open_market_value_eur(open_lots: Iterable[OpenLot]) -> Decimal:
+    total = DECIMAL_ZERO
+    for lot in open_lots:
+        total += lot.quantity_units * lot.latest_price_eur
+    return total
+
+
+def compute_wallet_equity_eur(*, paper_cash_eur: Decimal, open_lots: Iterable[OpenLot]) -> Decimal:
+    return paper_cash_eur + compute_open_market_value_eur(open_lots)
+
+======================================================================
+FILE: src/synth_sleeves/paper_execution.py
+======================================================================
+"""
+SYNTH v2
+Module: synth_sleeves.paper_execution
+Purpose:
+    Apply OPEN / ADD / REDUCE / CLOSE intents to position_lot and trade_lot tables.
+Policy:
+    - OPEN creates a new lot
+    - ADD creates a new lot
+    - REDUCE reduces oldest open lots first (FIFO)
+    - CLOSE closes all open lots for sleeve/asset pair
+Boundary:
+    - DB orchestration allowed through repository hooks
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime
+from decimal import Decimal
+from typing import Iterable
+
+from src.synth_sleeves.models import (
+    ApprovedTarget,
+    DecisionAction,
+    EntryState,
+    OpenLot,
+    PaperFillIntent,
+    SleeveCode,
+)
+from src.synth_sleeves.paper_pnl import (
+    build_fill_intents,
+    mark_to_market,
+    open_new_lot,
+    reduce_lot_fraction,
+    target_to_entry_state,
+)
+
+
+DECIMAL_ZERO = Decimal("0")
+
+
+class PaperExecutionApplier:
+    def __init__(self, repository) -> None:
+        self.repository = repository
+
+    def apply(
+        self,
+        *,
+        run_ts_utc: datetime,
+        targets: list[ApprovedTarget],
+        open_lots: list[OpenLot],
+        wallet_equity_eur: Decimal,
+        min_trade_fraction: Decimal,
+        snapshot_every_loop: bool = True,
+    ) -> dict[str, int]:
+        intents = build_fill_intents(
+            targets=targets,
+            open_lots=open_lots,
+            min_trade_fraction=min_trade_fraction,
+        )
+
+        latest_target_by_key: dict[tuple[int, SleeveCode], ApprovedTarget] = {
+            (t.asset_id, t.sleeve_code): t for t in targets
+        }
+
+        open_lots_by_key: dict[tuple[int, SleeveCode], list[OpenLot]] = defaultdict(list)
+        for lot in sorted(open_lots, key=lambda x: (x.open_ts_utc, x.position_lot_id)):
+            open_lots_by_key[(lot.asset_id, lot.sleeve_code)].append(lot)
+
+        created = 0
+        reduced = 0
+        closed = 0
+        snapped = 0
+
+        for intent in intents:
+            key = (intent.asset_id, intent.sleeve_code)
+            target = latest_target_by_key.get(key)
+
+            if intent.action in {"OPEN", "ADD"}:
+                if target is None:
+                    continue
+
+                next_id = self.repository.get_next_position_lot_id()
+                new_lot = open_new_lot(
+                    next_position_lot_id=next_id,
+                    run_ts_utc=run_ts_utc,
+                    asset_id=intent.asset_id,
+                    sleeve_code=intent.sleeve_code,
+                    strategy_name=intent.strategy_name,
+                    entry_state=target_to_entry_state(target.desired_action),
+                    price_eur=intent.price_eur,
+                    target_fraction=abs(intent.delta_fraction),
+                    wallet_equity_eur=wallet_equity_eur,
+                    entry_reason=intent.reasoning,
+                )
+                self.repository.upsert_open_lot(new_lot)
+                open_lots_by_key[key].append(new_lot)
+                created += 1
+                continue
+
+            if intent.action in {"REDUCE", "CLOSE"}:
+                remaining_to_reduce = abs(intent.delta_fraction)
+
+                lots = open_lots_by_key.get(key, [])
+                new_open_list: list[OpenLot] = []
+
+                for lot in lots:
+                    if remaining_to_reduce <= DECIMAL_ZERO:
+                        new_open_list.append(lot)
+                        continue
+
+                    current_lot = mark_to_market(lot, intent.price_eur, wallet_equity_eur)
+
+                    if current_lot.current_fraction <= DECIMAL_ZERO:
+                        continue
+
+                    slice_reduce = min(current_lot.current_fraction, remaining_to_reduce)
+                    updated_lot, realized = reduce_lot_fraction(current_lot, slice_reduce, intent.price_eur)
+                    remaining_to_reduce -= slice_reduce
+                    reduced += 1
+
+                    if updated_lot.current_fraction <= DECIMAL_ZERO:
+                        updated_lot.last_transition_state = "EXIT" if intent.action == "CLOSE" else "REDUCE"
+                        self.repository.upsert_open_lot(updated_lot)
+                        self.repository.close_lot(
+                            updated_lot,
+                            close_ts_utc=run_ts_utc,
+                            exit_price_eur=intent.price_eur,
+                            exit_reason=intent.reasoning,
+                            exit_state=updated_lot.last_transition_state or "EXIT",
+                        )
+                        closed += 1
+                    else:
+                        updated_lot.last_transition_state = "REDUCE"
+                        self.repository.upsert_open_lot(updated_lot)
+                        new_open_list.append(updated_lot)
+
+                open_lots_by_key[key] = new_open_list
+
+        if snapshot_every_loop:
+            for lots in open_lots_by_key.values():
+                for lot in lots:
+                    target = latest_target_by_key.get((lot.asset_id, lot.sleeve_code))
+                    latest_price = target.latest_price_eur if target is not None else lot.latest_price_eur
+                    marked = mark_to_market(lot, latest_price, wallet_equity_eur)
+                    self.repository.upsert_open_lot(marked)
+                    self.repository.insert_snapshot(run_ts_utc, marked)
+                    snapped += 1
+
+        return {
+            "fill_intents": len(intents),
+            "lots_created": created,
+            "lots_reduced": reduced,
+            "lots_closed": closed,
+            "snapshots_written": snapped,
+        }
+
+======================================================================
+FILE: src/synth_sleeves/db_repository.py
+======================================================================
+"""
+SYNTH v2
+Module: synth_sleeves.db_repository
+Purpose:
+    MariaDB repository for sleeve targets, lots, trades, snapshots, metrics.
+Boundary:
+    - DB only
+    - No strategy logic
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+from typing import Any
+
+import pymysql
+from pymysql.cursors import DictCursor
+
+from src.synth_sleeves.models import ApprovedTarget, OpenLot, SleeveCode
+
+
+class SleeveRepository:
+    def __init__(self, connection_params: dict[str, Any]) -> None:
+        self._connection_params = connection_params
+
+    def _connect(self) -> pymysql.connections.Connection:
+        return pymysql.connect(
+            cursorclass=DictCursor,
+            autocommit=False,
+            charset="utf8mb4",
+            **self._connection_params,
+        )
+
+    def get_next_position_lot_id(self) -> int:
+        sql = "SELECT COALESCE(MAX(position_lot_id), 0) + 1 AS next_id FROM position_lot"
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                row = cur.fetchone()
+            conn.commit()
+        return int(row["next_id"])
+
+    def fetch_open_lots(self) -> list[OpenLot]:
+        sql = """
+        SELECT
+            position_lot_id,
+            asset_id,
+            sleeve_code,
+            strategy_name,
+            entry_state,
+            open_ts_utc,
+            entry_price_eur,
+            COALESCE(latest_price_eur, entry_price_eur) AS latest_price_eur,
+            current_fraction,
+            entry_notional_eur,
+            current_notional_eur,
+            quantity_units,
+            realized_pnl_eur,
+            unrealized_pnl_eur,
+            COALESCE(entry_reason, '') AS entry_reason,
+            last_transition_state
+        FROM position_lot
+        WHERE status = 'OPEN'
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                rows = cur.fetchall()
+
+        result: list[OpenLot] = []
+        for row in rows:
+            result.append(
+                OpenLot(
+                    position_lot_id=int(row["position_lot_id"]),
+                    asset_id=int(row["asset_id"]),
+                    sleeve_code=SleeveCode(row["sleeve_code"]),
+                    strategy_name=str(row["strategy_name"]),
+                    entry_state=row["entry_state"],
+                    open_ts_utc=row["open_ts_utc"],
+                    entry_price_eur=Decimal(str(row["entry_price_eur"])),
+                    latest_price_eur=Decimal(str(row["latest_price_eur"])),
+                    current_fraction=Decimal(str(row["current_fraction"])),
+                    entry_notional_eur=Decimal(str(row["entry_notional_eur"])),
+                    current_notional_eur=Decimal(str(row["current_notional_eur"])),
+                    quantity_units=Decimal(str(row["quantity_units"])),
+                    realized_pnl_eur=Decimal(str(row["realized_pnl_eur"])),
+                    unrealized_pnl_eur=Decimal(str(row["unrealized_pnl_eur"])),
+                    entry_reason=str(row["entry_reason"]),
+                    last_transition_state=row["last_transition_state"],
+                )
+            )
+        return result
+
+    def insert_portfolio_targets(self, targets: list[ApprovedTarget], strategy_version_lookup: dict[str, int]) -> None:
+        if not targets:
+            return
+
+        sql = """
+        INSERT INTO portfolio_target (
+            run_ts_utc,
+            asset_id,
+            sleeve_code,
+            strategy_name,
+            strategy_version_id,
+            desired_action,
+            target_fraction,
+            decision_strength,
+            reasoning,
+            source_state,
+            current_price_eur
+        ) VALUES (
+            %(run_ts_utc)s,
+            %(asset_id)s,
+            %(sleeve_code)s,
+            %(strategy_name)s,
+            %(strategy_version_id)s,
+            %(desired_action)s,
+            %(target_fraction)s,
+            %(decision_strength)s,
+            %(reasoning)s,
+            %(source_state)s,
+            %(current_price_eur)s
+        )
+        ON DUPLICATE KEY UPDATE
+            strategy_name = VALUES(strategy_name),
+            strategy_version_id = VALUES(strategy_version_id),
+            desired_action = VALUES(desired_action),
+            target_fraction = VALUES(target_fraction),
+            decision_strength = VALUES(decision_strength),
+            reasoning = VALUES(reasoning),
+            source_state = VALUES(source_state),
+            current_price_eur = VALUES(current_price_eur)
+        """
+        payload = []
+        for item in targets:
+            payload.append(
+                {
+                    "run_ts_utc": item.run_ts_utc,
+                    "asset_id": item.asset_id,
+                    "sleeve_code": item.sleeve_code.value,
+                    "strategy_name": item.strategy_name,
+                    "strategy_version_id": strategy_version_lookup.get(item.strategy_name),
+                    "desired_action": item.desired_action.value,
+                    "target_fraction": str(item.target_fraction),
+                    "decision_strength": item.decision_strength,
+                    "reasoning": item.reasoning,
+                    "source_state": item.source_state,
+                    "current_price_eur": str(item.latest_price_eur),
+                }
+            )
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(sql, payload)
+            conn.commit()
+
+    def upsert_open_lot(self, lot: OpenLot) -> None:
+        sql = """
+        INSERT INTO position_lot (
+            position_lot_id,
+            asset_id,
+            sleeve_code,
+            strategy_name,
+            entry_state,
+            status,
+            open_ts_utc,
+            entry_price_eur,
+            latest_price_eur,
+            target_fraction_at_open,
+            current_fraction,
+            entry_notional_eur,
+            current_notional_eur,
+            realized_pnl_eur,
+            unrealized_pnl_eur,
+            quantity_units,
+            entry_reason,
+            last_transition_state,
+            last_update_ts_utc
+        ) VALUES (
+            %(position_lot_id)s,
+            %(asset_id)s,
+            %(sleeve_code)s,
+            %(strategy_name)s,
+            %(entry_state)s,
+            'OPEN',
+            %(open_ts_utc)s,
+            %(entry_price_eur)s,
+            %(latest_price_eur)s,
+            %(current_fraction)s,
+            %(current_fraction)s,
+            %(entry_notional_eur)s,
+            %(current_notional_eur)s,
+            %(realized_pnl_eur)s,
+            %(unrealized_pnl_eur)s,
+            %(quantity_units)s,
+            %(entry_reason)s,
+            %(last_transition_state)s,
+            UTC_TIMESTAMP()
+        )
+        ON DUPLICATE KEY UPDATE
+            latest_price_eur = VALUES(latest_price_eur),
+            current_fraction = VALUES(current_fraction),
+            current_notional_eur = VALUES(current_notional_eur),
+            realized_pnl_eur = VALUES(realized_pnl_eur),
+            unrealized_pnl_eur = VALUES(unrealized_pnl_eur),
+            quantity_units = VALUES(quantity_units),
+            last_transition_state = VALUES(last_transition_state),
+            last_update_ts_utc = UTC_TIMESTAMP()
+        """
+        payload = {
+            "position_lot_id": lot.position_lot_id,
+            "asset_id": lot.asset_id,
+            "sleeve_code": lot.sleeve_code.value,
+            "strategy_name": lot.strategy_name,
+            "entry_state": str(lot.entry_state),
+            "open_ts_utc": lot.open_ts_utc,
+            "entry_price_eur": str(lot.entry_price_eur),
+            "latest_price_eur": str(lot.latest_price_eur),
+            "current_fraction": str(lot.current_fraction),
+            "entry_notional_eur": str(lot.entry_notional_eur),
+            "current_notional_eur": str(lot.current_notional_eur),
+            "realized_pnl_eur": str(lot.realized_pnl_eur),
+            "unrealized_pnl_eur": str(lot.unrealized_pnl_eur),
+            "quantity_units": str(lot.quantity_units),
+            "entry_reason": lot.entry_reason,
+            "last_transition_state": lot.last_transition_state,
+        }
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, payload)
+            conn.commit()
+
+    def close_lot(self, lot: OpenLot, close_ts_utc: datetime, exit_price_eur: Decimal, exit_reason: str, exit_state: str) -> None:
+        holding_minutes = int((close_ts_utc - lot.open_ts_utc).total_seconds() // 60)
+        realized_pct = Decimal("0")
+        if lot.entry_notional_eur != Decimal("0"):
+            realized_pct = (lot.realized_pnl_eur / lot.entry_notional_eur) * Decimal("100")
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE position_lot
+                    SET
+                        status = 'CLOSED',
+                        close_ts_utc = %(close_ts_utc)s,
+                        latest_price_eur = %(exit_price_eur)s,
+                        current_fraction = 0,
+                        current_notional_eur = 0,
+                        unrealized_pnl_eur = 0,
+                        exit_reason = %(exit_reason)s,
+                        last_transition_state = %(exit_state)s,
+                        last_update_ts_utc = UTC_TIMESTAMP()
+                    WHERE position_lot_id = %(position_lot_id)s
+                    """,
+                    {
+                        "close_ts_utc": close_ts_utc,
+                        "exit_price_eur": str(exit_price_eur),
+                        "exit_reason": exit_reason,
+                        "exit_state": exit_state,
+                        "position_lot_id": lot.position_lot_id,
+                    },
+                )
+                cur.execute(
+                    """
+                    INSERT INTO trade_lot (
+                        position_lot_id,
+                        asset_id,
+                        sleeve_code,
+                        strategy_name,
+                        entry_state,
+                        exit_state,
+                        open_ts_utc,
+                        close_ts_utc,
+                        entry_price_eur,
+                        exit_price_eur,
+                        entry_notional_eur,
+                        exit_notional_eur,
+                        quantity_units,
+                        realized_pnl_eur,
+                        realized_pnl_pct,
+                        holding_minutes,
+                        entry_reason,
+                        exit_reason
+                    ) VALUES (
+                        %(position_lot_id)s,
+                        %(asset_id)s,
+                        %(sleeve_code)s,
+                        %(strategy_name)s,
+                        %(entry_state)s,
+                        %(exit_state)s,
+                        %(open_ts_utc)s,
+                        %(close_ts_utc)s,
+                        %(entry_price_eur)s,
+                        %(exit_price_eur)s,
+                        %(entry_notional_eur)s,
+                        %(exit_notional_eur)s,
+                        %(quantity_units)s,
+                        %(realized_pnl_eur)s,
+                        %(realized_pnl_pct)s,
+                        %(holding_minutes)s,
+                        %(entry_reason)s,
+                        %(exit_reason)s
+                    )
+                    """,
+                    {
+                        "position_lot_id": lot.position_lot_id,
+                        "asset_id": lot.asset_id,
+                        "sleeve_code": lot.sleeve_code.value,
+                        "strategy_name": lot.strategy_name,
+                        "entry_state": str(lot.entry_state),
+                        "exit_state": exit_state,
+                        "open_ts_utc": lot.open_ts_utc,
+                        "close_ts_utc": close_ts_utc,
+                        "entry_price_eur": str(lot.entry_price_eur),
+                        "exit_price_eur": str(exit_price_eur),
+                        "entry_notional_eur": str(lot.entry_notional_eur),
+                        "exit_notional_eur": str(lot.quantity_units * exit_price_eur),
+                        "quantity_units": str(lot.quantity_units),
+                        "realized_pnl_eur": str(lot.realized_pnl_eur),
+                        "realized_pnl_pct": str(realized_pct),
+                        "holding_minutes": holding_minutes,
+                        "entry_reason": lot.entry_reason,
+                        "exit_reason": exit_reason,
+                    },
+                )
+            conn.commit()
+
+    def insert_snapshot(self, snapshot_ts_utc: datetime, lot: OpenLot) -> None:
+        sql = """
+        INSERT INTO position_snapshot (
+            snapshot_ts_utc,
+            position_lot_id,
+            asset_id,
+            sleeve_code,
+            strategy_name,
+            entry_state,
+            status,
+            latest_price_eur,
+            current_fraction,
+            current_notional_eur,
+            realized_pnl_eur,
+            unrealized_pnl_eur
+        ) VALUES (
+            %(snapshot_ts_utc)s,
+            %(position_lot_id)s,
+            %(asset_id)s,
+            %(sleeve_code)s,
+            %(strategy_name)s,
+            %(entry_state)s,
+            'OPEN',
+            %(latest_price_eur)s,
+            %(current_fraction)s,
+            %(current_notional_eur)s,
+            %(realized_pnl_eur)s,
+            %(unrealized_pnl_eur)s
+        )
+        ON DUPLICATE KEY UPDATE
+            latest_price_eur = VALUES(latest_price_eur),
+            current_fraction = VALUES(current_fraction),
+            current_notional_eur = VALUES(current_notional_eur),
+            realized_pnl_eur = VALUES(realized_pnl_eur),
+            unrealized_pnl_eur = VALUES(unrealized_pnl_eur)
+        """
+        payload = {
+            "snapshot_ts_utc": snapshot_ts_utc,
+            "position_lot_id": lot.position_lot_id,
+            "asset_id": lot.asset_id,
+            "sleeve_code": lot.sleeve_code.value,
+            "strategy_name": lot.strategy_name,
+            "entry_state": str(lot.entry_state),
+            "latest_price_eur": str(lot.latest_price_eur),
+            "current_fraction": str(lot.current_fraction),
+            "current_notional_eur": str(lot.current_notional_eur),
+            "realized_pnl_eur": str(lot.realized_pnl_eur),
+            "unrealized_pnl_eur": str(lot.unrealized_pnl_eur),
+        }
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, payload)
+            conn.commit()
+
+    def insert_or_update_strategy_metrics_daily(self, row: dict[str, Any]) -> None:
+        sql = """
+        INSERT INTO strategy_metrics_daily (
+            metric_date_utc,
+            sleeve_code,
+            strategy_name,
+            strategy_version_id,
+            trades_closed,
+            wins,
+            losses,
+            win_rate,
+            avg_realized_pnl_pct,
+            avg_realized_pnl_eur,
+            gross_profit_eur,
+            gross_loss_eur,
+            profit_factor,
+            avg_holding_minutes,
+            prepare_to_enter_count,
+            prepare_fail_count
+        ) VALUES (
+            %(metric_date_utc)s,
+            %(sleeve_code)s,
+            %(strategy_name)s,
+            %(strategy_version_id)s,
+            %(trades_closed)s,
+            %(wins)s,
+            %(losses)s,
+            %(win_rate)s,
+            %(avg_realized_pnl_pct)s,
+            %(avg_realized_pnl_eur)s,
+            %(gross_profit_eur)s,
+            %(gross_loss_eur)s,
+            %(profit_factor)s,
+            %(avg_holding_minutes)s,
+            %(prepare_to_enter_count)s,
+            %(prepare_fail_count)s
+        )
+        ON DUPLICATE KEY UPDATE
+            trades_closed = VALUES(trades_closed),
+            wins = VALUES(wins),
+            losses = VALUES(losses),
+            win_rate = VALUES(win_rate),
+            avg_realized_pnl_pct = VALUES(avg_realized_pnl_pct),
+            avg_realized_pnl_eur = VALUES(avg_realized_pnl_eur),
+            gross_profit_eur = VALUES(gross_profit_eur),
+            gross_loss_eur = VALUES(gross_loss_eur),
+            profit_factor = VALUES(profit_factor),
+            avg_holding_minutes = VALUES(avg_holding_minutes),
+            prepare_to_enter_count = VALUES(prepare_to_enter_count),
+            prepare_fail_count = VALUES(prepare_fail_count)
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, row)
+            conn.commit()
+
+    def insert_or_update_state_transition_daily(self, row: dict[str, Any]) -> None:
+        sql = """
+        INSERT INTO state_transition_daily (
+            metric_date_utc,
+            sleeve_code,
+            strategy_name,
+            from_state,
+            to_state,
+            transition_count,
+            avg_forward_return_24h_pct,
+            avg_forward_return_72h_pct
+        ) VALUES (
+            %(metric_date_utc)s,
+            %(sleeve_code)s,
+            %(strategy_name)s,
+            %(from_state)s,
+            %(to_state)s,
+            %(transition_count)s,
+            %(avg_forward_return_24h_pct)s,
+            %(avg_forward_return_72h_pct)s
+        )
+        ON DUPLICATE KEY UPDATE
+            transition_count = state_transition_daily.transition_count + VALUES(transition_count),
+            avg_forward_return_24h_pct = VALUES(avg_forward_return_24h_pct),
+            avg_forward_return_72h_pct = VALUES(avg_forward_return_72h_pct)
+        """
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, row)
+            conn.commit()
+
+======================================================================
+FILE: src/synth_sleeves/config_loader.py
+======================================================================
+"""
+SYNTH v2
+Module: synth_sleeves.config_loader
+Purpose:
+    Load sleeve configuration from YAML into typed config objects.
+Boundary:
+    - File I/O allowed
+    - No DB I/O
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from src.synth_sleeves.models import DecisionAction, SleeveCode, SleeveConfig
+
+
+def _to_decimal(value: object) -> Decimal:
+    return Decimal(str(value))
+
+
+def load_sleeve_config(config_path: str | Path) -> dict[SleeveCode, SleeveConfig]:
+    path = Path(config_path)
+    with path.open("r", encoding="utf-8") as handle:
+        raw = yaml.safe_load(handle)
+
+    result: dict[SleeveCode, SleeveConfig] = {}
+    for sleeve_name, sleeve_raw in raw["sleeves"].items():
+        sleeve_code = SleeveCode(sleeve_name)
+        result[sleeve_code] = SleeveConfig(
+            sleeve_code=sleeve_code,
+            wallet_share=_to_decimal(sleeve_raw["wallet_share"]),
+            max_positions=int(sleeve_raw["max_positions"]),
+            per_position_cap=_to_decimal(sleeve_raw["per_position_cap"]),
+            allowed_actions={DecisionAction(x) for x in sleeve_raw["allowed_actions"]},
+            agent_names=list(sleeve_raw["agent_names"]),
+            prepare_enabled=bool(sleeve_raw["prepare"]["enabled"]),
+            prepare_cap=_to_decimal(sleeve_raw["prepare"]["cap"]),
+            prepare_max_positions=int(sleeve_raw["prepare"]["max_positions"]),
+        )
+
+    wallet_total = sum((cfg.wallet_share for cfg in result.values()), start=Decimal("0"))
+    if wallet_total != Decimal("1.00"):
+        raise ValueError(f"Expected total wallet_share == 1.00, got {wallet_total}")
+
+    return result
+
+
+def load_sleeve_config_raw(config_path: str | Path) -> dict[str, Any]:
+    path = Path(config_path)
+    with path.open("r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+======================================================================
+FILE: src/synth_sleeves/pipeline.py
+======================================================================
+"""
+SYNTH v2
+Module: synth_sleeves.pipeline
+Purpose:
+    End-to-end sleeve + PREPARE + paper PnL loop with Patch 2 execution.
+Boundary:
+    - Orchestrates upstream selection output
+    - Does not fetch market data itself
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from decimal import Decimal
+
+from src.synth_sleeves.agents import AGENT_REGISTRY
+from src.synth_sleeves.allocator import allocate_targets
+from src.synth_sleeves.config_loader import load_sleeve_config, load_sleeve_config_raw
+from src.synth_sleeves.db_repository import SleeveRepository
+from src.synth_sleeves.equity import compute_wallet_equity_eur
+from src.synth_sleeves.models import AgentSignalRow
+from src.synth_sleeves.paper_execution import PaperExecutionApplier
+from src.synth_sleeves.risk_policy import apply_risk_policy
+from src.synth_sleeves.transition_logger import build_transition_rows
+from src.synth_sleeves.version_repo import StrategyVersionRepository
+
+
+def run_sleeve_pipeline_once(
+    *,
+    selection_rows: list[AgentSignalRow],
+    paper_cash_eur: Decimal,
+    config_path: str,
+    repository: SleeveRepository,
+    min_trade_fraction: Decimal = Decimal("0.0050"),
+    snapshot_every_loop: bool = True,
+) -> dict[str, int | str]:
+    run_ts_utc = datetime.now(timezone.utc)
+
+    sleeve_cfg = load_sleeve_config(config_path)
+    sleeve_cfg_raw = load_sleeve_config_raw(config_path)
+
+    version_repo = StrategyVersionRepository(repository._connection_params)
+    strategy_version_lookup = version_repo.build_lookup_from_sleeve_config(
+        sleeve_config_raw=sleeve_cfg_raw
+    )
+
+    open_lots_before = repository.fetch_open_lots()
+    wallet_equity_eur = compute_wallet_equity_eur(
+        paper_cash_eur=paper_cash_eur,
+        open_lots=open_lots_before,
+    )
+
+    proposals = []
+    for row in selection_rows:
+        for cfg in sleeve_cfg.values():
+            for agent_name in cfg.agent_names:
+                agent_fn = AGENT_REGISTRY[agent_name]
+                proposal = agent_fn(run_ts_utc, row)
+                if proposal is not None:
+                    proposals.append(proposal)
+
+    targets = allocate_targets(proposals, sleeve_cfg)
+    risked_targets = apply_risk_policy(targets, sleeve_cfg)
+    repository.insert_portfolio_targets(risked_targets, strategy_version_lookup)
+
+    transition_rows = build_transition_rows(
+        run_ts_utc=run_ts_utc,
+        targets=risked_targets,
+        open_lots=open_lots_before,
+    )
+    for row in transition_rows:
+        repository.insert_or_update_state_transition_daily(row)
+
+    applier = PaperExecutionApplier(repository)
+    execution_summary = applier.apply(
+        run_ts_utc=run_ts_utc,
+        targets=risked_targets,
+        open_lots=open_lots_before,
+        wallet_equity_eur=wallet_equity_eur,
+        min_trade_fraction=min_trade_fraction,
+        snapshot_every_loop=snapshot_every_loop,
+    )
+
+    return {
+        "run_ts_utc": run_ts_utc.isoformat(),
+        "selection_rows": len(selection_rows),
+        "proposals": len(proposals),
+        "targets": len(risked_targets),
+        "transitions": len(transition_rows),
+        **execution_summary,
+    }
+
+======================================================================
+FILE: scripts/run_sleeve_loop_once.py
+======================================================================
+"""
+SYNTH v2
+Script: run_sleeve_loop_once
+Purpose:
+    Manual one-shot Patch 2 pipeline runner.
+Usage:
+    python -m scripts.run_sleeve_loop_once
+Notes:
+    - Replace example selection_rows adapter with your real selection output adapter.
+"""
+
+from __future__ import annotations
+
+import os
+from decimal import Decimal
+from typing import Any
+
+from src.synth_sleeves.db_repository import SleeveRepository
+from src.synth_sleeves.models import AgentSignalRow
+from src.synth_sleeves.pipeline import run_sleeve_pipeline_once
+
+
+def make_conn_params() -> dict[str, Any]:
+    return {
+        "host": os.environ["DB_HOST"],
+        "port": int(os.environ.get("DB_PORT", "3306")),
+        "user": os.environ["DB_USER"],
+        "password": os.environ["DB_PASSWORD"],
+        "database": os.environ["DB_NAME"],
+    }
+
+
+def load_selection_rows_example() -> list[AgentSignalRow]:
+    # Replace this with your real adapter from current selection outputs.
+    return [
+        AgentSignalRow(
+            asset_id=1,
+            symbol="BTC-EUR",
+            selection_state="PRE_ALIGNMENT",
+            selection_score=Decimal("0.62"),
+            selection_bias="WATCH",
+            regime_ok=True,
+            htf_reject=False,
+            liquidity_ok=True,
+            latest_price_eur=Decimal("61500"),
+        ),
+        AgentSignalRow(
+            asset_id=2,
+            symbol="PEPE-EUR",
+            selection_state="TACTICAL",
+            selection_score=Decimal("0.71"),
+            selection_bias="TACTICAL",
+            regime_ok=True,
+            htf_reject=False,
+            liquidity_ok=True,
+            latest_price_eur=Decimal("0.00001234"),
+        ),
+        AgentSignalRow(
+            asset_id=3,
+            symbol="LDO-EUR",
+            selection_state="LONG_READY",
+            selection_score=Decimal("0.67"),
+            selection_bias="LONG",
+            regime_ok=True,
+            htf_reject=False,
+            liquidity_ok=True,
+            latest_price_eur=Decimal("2.3500"),
+        ),
+    ]
+
+
+def main() -> int:
+    repo = SleeveRepository(make_conn_params())
+    selection_rows = load_selection_rows_example()
+
+    summary = run_sleeve_pipeline_once(
+        selection_rows=selection_rows,
+        paper_cash_eur=Decimal("10000"),
+        config_path="configs/portfolio_sleeves.yaml",
+        repository=repo,
+        min_trade_fraction=Decimal("0.0050"),
+        snapshot_every_loop=True,
+    )
+    print(summary)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+======================================================================
+FILE: docs/patch2_notes.md
+======================================================================
+# Patch 2 Notes
+
+## Added
+- paper execution applier
+- FIFO lot reduction
+- close all lots on CLOSE target
+- transition logging to `state_transition_daily`
+- automatic strategy version upsert from config
+- wallet equity calculation from:
+  - paper cash
+  - open lot market value
+
+## Execution policy
+- OPEN => create new lot
+- ADD => create new lot
+- REDUCE => reduce oldest lots first
+- CLOSE => close all open lots in sleeve/asset pair
+
+## Important limitation
+`state_transition_daily` is aggregate-only.
+It is enough for now, but not a raw event log.
+
+If later you want detailed event history, add:
+- `state_transition_log`
+
+## Practical result
+You now have:
+- target generation
+- target persistence
+- paper lot execution
+- snapshots
+- trade closure ledger
+- strategy version linkage
+- aggregated state transitions

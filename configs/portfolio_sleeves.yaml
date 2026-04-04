@@ -1,0 +1,63 @@
+version: 1
+
+portfolio:
+  currency: EUR
+  wallet_equity_source: PAPER
+  market_loop_seconds: 60
+
+sleeves:
+  CORE:
+    wallet_share: 0.30
+    max_positions: 3
+    per_position_cap: 0.15
+    allowed_actions: [PREPARE, ENTER_LONG, HOLD, REDUCE, EXIT]
+    agent_names: [core_trend]
+    prepare:
+      enabled: true
+      cap: 0.20
+      max_positions: 2
+
+  SWING:
+    wallet_share: 0.35
+    max_positions: 6
+    per_position_cap: 0.05
+    allowed_actions: [PREPARE, ENTER_LONG, HOLD, REDUCE, EXIT]
+    agent_names: [swing_rotation]
+    prepare:
+      enabled: true
+      cap: 0.20
+      max_positions: 3
+
+  TACTICAL:
+    wallet_share: 0.25
+    max_positions: 3
+    per_position_cap: 0.08
+    allowed_actions: [SCALP_ONLY, HOLD, EXIT]
+    agent_names: [tactical_momentum]
+    prepare:
+      enabled: false
+      cap: 0.00
+      max_positions: 0
+
+  EXPERIMENTAL:
+    wallet_share: 0.10
+    max_positions: 2
+    per_position_cap: 0.05
+    allowed_actions: [PREPARE, SCALP_ONLY, ENTER_LONG, HOLD, EXIT]
+    agent_names: [experimental_misc]
+    prepare:
+      enabled: true
+      cap: 0.10
+      max_positions: 1
+
+strategy_review:
+  metrics_rollup_days:
+    tactical: 7
+    swing: 14
+    core: 30
+    experimental: 14
+
+paper_execution:
+  min_trade_fraction: 0.0050
+  snapshot_every_loop: true
+  close_when_target_fraction_below: 0.0001

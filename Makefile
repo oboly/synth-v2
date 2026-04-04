@@ -1,7 +1,14 @@
-.PHONY: run migrate
+include .env
+export
 
-run:
-	PYTHONPATH=./src python ./src/main.py
-
-migrate:
-	PYTHONPATH=./src python ./src/synth/db/migrate.py
+schema-snapshot:
+	mysqldump \
+	-h $(DB_HOST) \
+	-P $(DB_PORT) \
+	-u $(DB_USER) \
+	-p \
+	--no-data \
+	--routines \
+	--triggers \
+	$(DB_NAME) \
+	> docs/database/schema_snapshot.sql

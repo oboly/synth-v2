@@ -1,0 +1,247 @@
+SYNTH TODO BUNDLE — PRE-IMPULSE / ACTIVATION STATE MODEL
+
+STATUS
+- DESIGN LOCKED
+- IMPLEMENTATION NEXT PHASE
+- DO NOT BUILD BEFORE:
+  1. selection_state is stable
+  2. live cycle runner exists
+  3. historical signal/advice/selection backfill is available
+
+PURPOSE
+Add a timing bridge between structural bullishness and actual market activation.
+
+Problem solved:
+- Codex / breathline / structure can be bullish
+- while price action is still weak, flat, or drifting down
+- therefore:
+  EXPANSION != IMMEDIATE BUY TRIGGER
+
+NEW STATE MACHINE
+- PRE_IMPULSE_ACCUMULATION
+- IMPULSE_ACTIVATION
+- FAILED_PRE_IMPULSE
+
+CORE IDEA
+Separate:
+1. structure quality
+2. activation timing
+
+INTERPRETATION
+- PRE_IMPULSE_ACCUMULATION
+  = strong structure, low distortion, no real release yet
+  = watch / optional small starter
+- IMPULSE_ACTIVATION
+  = previously strong structure now gets price/volume confirmation
+  = arm / buy / add
+- FAILED_PRE_IMPULSE
+  = setup looked good but failed to ignite or weakened
+  = avoid / reduce / no trade
+
+PIPELINE POSITION
+obs_market_candle
+→ feat_candle
+→ aplus_parsed
+→ breathline_feat
+→ pre_impulse_signal
+→ advice_state
+→ selection_state
+→ decision_log
+
+IMPORTANT
+- pre_impulse_signal is NOT a replacement for breathline
+- it is the timing bridge between structure and entry
+
+STRUCTURE GATE
+Only allow pre-impulse logic when STRUCTURE_OK is true.
+
+Suggested V1 structure gate:
+- coherence_score >= 0.70
+- anchor_strength >= 0.60
+- distortion_score <= 0.35
+- fragmentation_score <= 0.40
+
+If STRUCTURE_OK = false:
+- do not assign PRE_IMPULSE_ACCUMULATION
+- do not assign IMPULSE_ACTIVATION
+- route to weak / volatility / no-trade logic
+
+PRE_IMPULSE_ACCUMULATION RULE
+Label PRE_IMPULSE_ACCUMULATION when:
+- STRUCTURE_OK = true
+- emotional_load <= 0.35
+- pulse_intensity <= 0.45
+- breakout_score low or neutral
+- volume_ratio_20 not strongly elevated
+- short_trend_state != confirmed_uptrend
+
+Meaning:
+- structure good
+- energy not yet released
+- market not yet confirming
+
+IMPULSE_ACTIVATION RULE
+Label IMPULSE_ACTIVATION when:
+- previous state = PRE_IMPULSE_ACCUMULATION
+- STRUCTURE_OK = true
+- emotional_load rising OR pulse_intensity rising
+- breakout_score >= threshold
+- volume_ratio_20 elevated
+- close_to_high_24h high
+- short_trend_state = breakout_or_early_uptrend
+
+Meaning:
+- move is beginning
+- release is now confirmed
+- better entry/add timing
+
+FAILED_PRE_IMPULSE RULE
+Label FAILED_PRE_IMPULSE when:
+- previous state = PRE_IMPULSE_ACCUMULATION
+AND one or more:
+- coherence_score drops materially
+- distortion_score rises above threshold
+- anchor_strength weakens
+- price breaks below support / local base
+- downside volume confirms weakness
+- state remains too long without ignition
+
+OPTIONAL LATER
+- STALE_PREP
+Meaning:
+- structure not broken
+- setup losing freshness
+- activation still absent
+
+ACTION MAPPING
+- PRE_IMPULSE_ACCUMULATION
+  → WATCH
+  → optional STARTER_BUY_SMALL
+  → medium confidence
+  → small size
+- IMPULSE_ACTIVATION
+  → ARM_LONG / BUY / ADD
+  → medium-high to high confidence
+  → normal size
+- FAILED_PRE_IMPULSE
+  → EXIT_WATCH / REDUCE / NO_TRADE
+  → low confidence
+  → zero or reduced size
+
+POSITION SIZING IDEA
+- PRE_IMPULSE_ACCUMULATION
+  → 0.25x to 0.40x starter
+- IMPULSE_ACTIVATION
+  → add remaining 0.60x to 0.75x
+- FAILED_PRE_IMPULSE
+  → no add
+  → close starter on invalidation
+
+AAVE EXAMPLE
+AAVE is the model example for:
+- strong structure
+- low distortion
+- low emotional load
+- stabilizing field
+- not yet fully activated
+
+Interpretation:
+- PRE_IMPULSE_ACCUMULATION
+- not bearish
+- not full-send bullish
+- strong potential, not confirmed timing
+
+MEME CONTRAST
+PEPE / FLOKI / MOG often represent:
+- weaker structure
+- higher distortion
+- higher emotional load
+- activation already present
+
+Meaning:
+- not PRE_IMPULSE_ACCUMULATION
+- more like MEME_ACTIVE / MOMENTUM_REACTIVE
+
+KEY DISTINCTION
+- AAVE = structure first, emotion later
+- PEPE/FLOKI/MOG = emotion first, structure questionable
+
+RECOMMENDED DATA MODEL
+Preferred separate table:
+pre_impulse_signal
+Fields:
+- asset_id
+- interval_code
+- asof_ts_utc
+- structure_ok
+- pre_impulse_state
+- activation_score
+- failure_score
+- state_confidence
+- action_hint
+- created_ts_utc
+
+Enum pre_impulse_state:
+- NONE
+- PRE_IMPULSE_ACCUMULATION
+- IMPULSE_ACTIVATION
+- FAILED_PRE_IMPULSE
+
+OPTIONAL SCORES
+activation_score =
+  0.25 * normalized_volume_ratio
++ 0.20 * normalized_breakout_score
++ 0.15 * normalized_close_to_high
++ 0.15 * pulse_intensity
++ 0.15 * expansion_amplitude
++ 0.10 * emotional_load_delta
+
+failure_score =
+  0.30 * distortion_score
++ 0.20 * fragmentation_score
++ 0.20 * downside_break_score
++ 0.15 * negative_volume_confirmation
++ 0.15 * coherence_drop
+
+FEATURE / DATA DEPENDENCIES
+Before implementation, ensure feat/breathline layers can provide:
+- coherence_score
+- anchor_strength
+- distortion_score
+- emotional_load
+- expansion_amplitude
+- pulse_intensity
+- fragmentation_score
+- ret_24h
+- ret_48h
+- range_pct_24h
+- volume_ratio_20
+- volume_zscore_20
+- close_to_high_24h
+- breakout_score
+- local_range_position
+- short_trend_state
+- ema_alignment_fast
+- higher_low_flag
+
+IMPLEMENTATION ORDER
+1. finish selection_state stabilization
+2. build run_live_cycle.py
+3. enable historical signal/advice/selection backfill
+4. expand feat_candle / breathline_feat inputs where needed
+5. implement pre_impulse_signal interpreter
+6. feed output into advice_state / selection_state
+7. add transition logging later
+
+WHY THIS MATTERS
+Without this layer:
+- system buys too early on “bullish structure”
+- gets stuck in weak/non-igniting setups
+- confuses potential with activation
+
+With this layer:
+- structure and timing are separated
+- entries improve
+- starter sizing becomes possible
+- full add waits for confirmation
+- false bullish entries are reduced

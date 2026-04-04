@@ -1,0 +1,14 @@
+-- Optional native comments / small patch notes only.
+-- No required SQL changes for Patch 2 if Patch 1 schema already exists.
+--
+-- Recommended future addition if desired:
+-- CREATE TABLE state_transition_log (...) for raw event history.
+--
+-- Patch 2 below uses existing:
+--   strategy_version
+--   portfolio_target
+--   position_lot
+--   trade_lot
+--   position_snapshot
+--   strategy_metrics_daily
+--   state_transition_daily

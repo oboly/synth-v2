@@ -52,7 +52,7 @@ Commands
 /sql                   Switch to SQL-oriented system prompt
 /python                Switch to Python-oriented system prompt
 /debug                 Switch to debugging-oriented system prompt
-/compact               Keep only system + last 8 messages
+/compact               Keep only last 8 conversation messages
 /exit                  Save and quit
 """
 
@@ -101,12 +101,16 @@ def save_session(state: dict[str, Any]) -> None:
         "messages": state["messages"],
         "last_answer": state.get("last_answer", ""),
     }
-    SESSION_FILE.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    SESSION_FILE.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
 
 def load_session() -> dict[str, Any]:
     if not SESSION_FILE.exists():
         raise FileNotFoundError(f"No saved session at {SESSION_FILE}")
+
     data = json.loads(SESSION_FILE.read_text(encoding="utf-8"))
     return {
         "model": data.get("model", DEFAULT_MODEL),
@@ -136,17 +140,29 @@ def multiline_input() -> str:
     return "\n".join(lines).strip()
 
 
+def _message_to_api_item(role: str, text: str) -> dict[str, Any]:
+    if role == "assistant":
+        content_type = "output_text"
+    else:
+        content_type = "input_text"
+
+    return {
+        "role": role,
+        "content": [{"type": content_type, "text": text}],
+    }
+
+
 def build_input(messages: list[dict[str, str]], user_text: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
+
     for msg in messages:
-        items.append({
-            "role": msg["role"],
-            "content": [{"type": "input_text", "text": msg["content"]}],
-        })
-    items.append({
-        "role": "user",
-        "content": [{"type": "input_text", "text": user_text}],
-    })
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role not in {"user", "assistant"}:
+            continue
+        items.append(_message_to_api_item(role, content))
+
+    items.append(_message_to_api_item("user", user_text))
     return items
 
 
@@ -335,22 +351,6 @@ def main() -> int:
 
             user_text = injected_text if injected_text is not None else raw
 
-            # ---- autosummary check ----
-
-            if len(state["messages"]) > MAX_MESSAGES:
-
-                summary = summarize_messages(
-                    client,
-                    state["model"],
-                    state["messages"][:-KEEP_LAST]
-                )
-
-                state["messages"] = [
-                    {"role": "system", "content": f"Conversation summary:\n{summary}"}
-                ] + state["messages"][-KEEP_LAST:]
-
-                print("[conversation summarized]\n")
-
             print("\n--- assistant ---\n")
             answer = stream_response(
                 client=client,
@@ -364,11 +364,6 @@ def main() -> int:
             state["messages"].append({"role": "user", "content": user_text})
             state["messages"].append({"role": "assistant", "content": answer})
             state["last_answer"] = answer
-
-            state["messages"].insert(0, {
-                "role": "system",
-                "content": state["system_prompt"]
-            })
 
         except KeyboardInterrupt:
             print("\nInterrupted. Use /exit to quit.\n")

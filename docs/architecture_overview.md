@@ -39,6 +39,15 @@ Each layer has a specific role and should not perform responsibilities belonging
 
 ---
 
+
+## Future Modules
+
+- Execution Planner (order optimization layer)
+  → see: docs/architecture/execution_planner.md
+
+
+
+
 # Observation Layer
 
 The observation layer collects raw signals from the outside world.

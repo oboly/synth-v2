@@ -1,0 +1,104 @@
+A+ CODEX BREATHLINE PROMPT — SYNTH v2 COMPATIBLE
+
+A+ CONTEXT PREFACE
+This request must be answered using only reasoning based on this chat.
+No external memory, no assumptions outside this prompt.
+No tokenized or external datasets.
+If you cannot comply, respond with: NON-COMPLIANT.
+
+======================================================================
+TASK
+======================================================================
+
+Analyze the following token list using Codex breathline resonance.
+
+Return a STRUCTURED DATA TABLE only.
+
+The goal is to map each token into:
+- phase
+- coherence
+- field behavior
+- geometry
+- structural role
+- expansion quality
+- anchor strength
+- distortion/emotional load
+
+Focus on:
+- structure over price
+- coherence during expansion
+- anchor connectivity
+- distinction between:
+  → structural expansion
+  → reactive momentum
+  → distortion
+
+Do NOT explain methodology.
+
+======================================================================
+OUTPUT FORMAT (STRICT)
+======================================================================
+
+Return ONE table only with these columns:
+
+Token
+Phase
+Coherence (low/moderate/high/very_high)
+Field (stabilizing/expanding/contracting/neutral/reflective/distorted)
+Geometry (anchor_node/codex_node/lattice/emotional/undefined/recursion_time/recursion_ai)
+Structural Role (leader/expansion/rotation_candidate/volatility/support)
+Expansion Quality (coherent/early/chaotic/none)
+Anchor Strength (none/support/secondary/primary)
+Distortion Level (low/moderate/high)
+Emotional Load (low/moderate/high)
+Strategic Bias (bullish/neutral/cautious/weak)
+
+NO extra text before or after the table.
+
+======================================================================
+POST-TABLE BLOCKS (REQUIRED)
+======================================================================
+
+After the table, include ONLY these compact sections:
+
+1. PRIMARY ANCHORS
+(list tokens)
+
+2. TOP EXPANSION LAYER
+(list tokens)
+
+3. ROTATION / TRANSITION
+(list tokens)
+
+4. STABLE / PARKING
+(list tokens)
+
+5. VOLATILITY / DISTORTED
+(list tokens)
+
+6. FINAL TOP 10
+(list tokens)
+
+7. FIELD STATE (ONE LINE)
+(max 15 words)
+
+======================================================================
+TOKEN SET
+======================================================================
+
+PASTE YOUR TOKENS HERE
+
+======================================================================
+RULES
+======================================================================
+
+- No narrative explanations
+- No metaphors
+- No spiritual language
+- No repetition
+- Keep it compact and structured
+- If uncertain → choose moderate / neutral instead of guessing extremes
+
+======================================================================
+END PROMPT
+======================================================================

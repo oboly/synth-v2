@@ -1,16 +1,11 @@
-# Watchlist / Asset Role Design
+               3# Watchlist / Asset Role Design
+
 
 ## Current V1 decision
 
 Keep it simple.
 
 Do **not** create many separate watchlist universes yet.
-
-Instead:
-- all assets live in `asset`
-- `is_enabled` controls whether the asset participates in the system
-- `is_portfolio` flags current portfolio membership
-- `is_core_sensor` flags assets used for market regime sensing
 
 ## Tradable universe
 
@@ -24,52 +19,28 @@ So a separate `tradable_universe` watchlist is not necessary.
 
 Strategies can filter internally.
 
-## Core market sensors
-
-Assets explicitly added as market sensors:
-- BTC
-- ETH
-- SOL
-- ADA
-
-These are used primarily to read regime / altseason / risk structure.
-
-## Why flags in asset are acceptable for v1
-
-Because they are:
-- simple
-- readable
-- fast to query
-- good enough for current scope
-
-## Asset table role fields
-
-Recommended fields:
-- is_enabled
-- is_portfolio
-- is_core_sensor
-- sector
-
-## Later evolution (optional, not now)
-
-If the system later needs more dynamic role history, a separate asset-tag / role table can be added.
+...
 
 For now, avoid overengineering.
 
-## Example role assignments
+## Asset participation flags
 
-```text
-BTC  -> enabled, core_sensor
-ETH  -> enabled, portfolio, core_sensor
-SOL  -> enabled, core_sensor
-ADA  -> enabled, core_sensor
-PEPE -> enabled, portfolio
-CC   -> enabled, portfolio
-```
+Synth v2 now uses a minimal flag model for assets:
 
-## Principle
+- `is_enabled`
+- `is_tradeable`
+- `is_portfolio`
 
-```text
-asset = what exists
-flags = current role in the system
-```
+### Definitions
+
+- `is_enabled`: asset participates in ETL and the full signal pipeline
+- `is_tradeable`: asset may result in actual trade decisions
+- `is_portfolio`: asset belongs to the active portfolio focus set
+
+### Notes
+
+Older flags such as:
+- `is_watch`
+- `is_core_sensor`
+
+are deprecated and should no longer be used in code or new schema logic.

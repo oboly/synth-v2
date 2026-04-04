@@ -1,0 +1,30 @@
+# Generate Schema Snapshot — Synth v2
+
+This document explains how to generate a full database schema snapshot.
+
+## Purpose
+
+A schema snapshot is:
+- a **reference only**
+- useful for documentation, debugging, onboarding
+- NOT the source of truth
+
+Source of truth = `src/migrations/`
+
+---
+
+## Generate snapshot (MariaDB)
+
+Run from terminal:
+
+```bash
+mysqldump \
+  -h $DB_HOST \
+  -P $DB_PORT \
+  -u $DB_USER \
+  -p \
+  --no-data \
+  --routines \
+  --triggers \
+  $DB_NAME \
+  > docs/database/schema_snapshot.sql
