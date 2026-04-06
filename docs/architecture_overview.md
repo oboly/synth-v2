@@ -1,259 +1,139 @@
-# SYNTH Architecture Overview
+# Synth v2 — Architecture Overview
 
-This document describes the high-level architecture of the Synth analysis engine.
+## 🎯 Doel
+Modulaire trading engine met:
 
-Synth is a modular system designed to transform raw market observations into structured strategy decisions.
-
-Execution is intentionally separated and will be integrated later.
-
----
-
-# System Philosophy
-
-Synth is designed to be:
-
-- modular
-- explainable
-- extensible
-- research-friendly
-- safe for incremental development
-
-The system emphasizes **clarity of responsibility between layers**.
+- duidelijke lagen
+- explainable decisions
+- uitbreidbaarheid
+- scheiding analyse vs execution
 
 ---
 
-# Core Architecture Flow
+## 🧱 Core Layers
 
-Synth follows a strict layered architecture.
-
-Observation Layer  
-→ Feature Layer  
-→ Interpretation Layer  
-→ Strategy Layer  
-→ Decision Layer  
-→ Execution Layer
-
-This pipeline allows Synth to transform raw market observations into explainable strategy decisions.
-
-Each layer has a specific role and should not perform responsibilities belonging to other layers.
+Observation Layer
+    ↓
+Feature Layer
+    ↓
+Interpretation Layer
+    ↓
+Strategy Layer
+    ↓
+Decision Layer
+    ↓
+Execution Layer (in ontwikkeling)
 
 ---
 
+## 🔍 Observation Layer
 
-## Future Modules
+Brondata:
 
-- Execution Planner (order optimization layer)
-  → see: docs/architecture/execution_planner.md
-
-
-
-
-# Observation Layer
-
-The observation layer collects raw signals from the outside world.
-
-Examples include:
-
-Market Data
-
-- candles
-- tickers
-- market cap
+- obs_market_candle
 - volume data
-
-Structural Data
-
-- asset metadata
-- sector mappings
-- exchange listings
-
-Contextual Inputs
-
-- breathline observations
-- astro / cycle calendar
-- macro cycle windows
-
-Observation modules store data **without interpretation**.
+- exchange data
 
 ---
 
-# Feature Layer
+## ⚙️ Feature Layer
 
-The feature layer transforms observations into structured numerical features.
+Afgeleide data:
 
-Examples:
-
-Technical Indicators
-
-- SMA
-- EMA
-- RSI
-- ATR
-
-Volume Metrics
-
-- volume ratios
-- OBV
-- dollar volume
-
-Structural Metrics
-
-- sector strength
-- breadth metrics
-- volatility measurements
-
-Features are **quantitative transformations** of observations.
+- technische indicatoren
+- volume metrics
+- prijsstructuren
 
 ---
 
-# Interpretation Layer
+## 🧠 Interpretation Layer
 
-The interpretation layer converts features into **market state descriptions**.
+Interpretaties zoals:
 
-Examples:
-
-- market regime
-- trend strength
-- sector regime
-- volatility regime
-- breathline alignment state
-
-Interpretations describe the **current environment**.
-
-They do not produce trading decisions.
+- trend
+- volume regime
+- phase / structure
 
 ---
 
-# Strategy Layer
+## 🧩 Market Structure Layer
 
-Strategies generate **intentions** based on interpreted states.
+### Zones
+- support / resistance detectie
+- zone strength
 
-Strategies may combine:
+### Fibonacci
+- retracements + extensions
 
-- technical features
-- sector regimes
-- volatility states
-- contextual compass inputs
-
-Example strategies:
-
-- breakout strategy
-- swing rotation strategy
-- parking rotation strategy
-- mean reversion strategy
-
-Strategies produce **candidate actions**.
+### Volume context
+- ratio
+- z-score
+- alignment
 
 ---
 
-# Decision Layer
+## 📊 Context Layer
 
-The decision layer combines strategy outputs and determines the system's final position.
+### Tabel: strategy_signal_context
 
-Responsibilities include:
+Bevat:
 
-- ranking opportunities
-- resolving strategy conflicts
-- filtering low-quality setups
-- applying risk rules
-- managing patience and tolerance
-
-The decision layer produces **final decisions**.
+- zone_state
+- distance_to_support/resistance (bps)
+- fib_level
+- fib_state
+- fib_distance_bps
+- zone_confluence_score
+- fib_confluence_score
+- volume_alignment_score
+- context_score
 
 ---
 
-# Execution Layer
+## 🧠 Context Score
 
-Execution will be implemented later.
+- zones (40%)
+- fib (40%)
+- volume (20%)
 
-Future responsibilities include:
+---
 
-- exchange connectivity
+## 📈 Strategy Layer
+
+Interpreteert context → mogelijke acties
+
+---
+
+## 🧾 Decision Layer
+
+Maakt:
+
+- BUY / SELL / HOLD
+- position sizing
+- sleeve allocation
+
+---
+
+## ⚙️ Execution Layer (next)
+
 - order placement
-- portfolio management
-- position tracking
-- risk enforcement
-
-Execution will remain **separate from analysis logic**.
+- order management
+- reprice logic
 
 ---
 
-# Contextual Compass System
+## 🧠 Filosofie
 
-Certain inputs influence system bias without directly triggering trades.
+Analyse ≠ Execution
 
-Examples:
-
-- breathline observations
-- astro / cycle calendar
-- macro cycle signals
-
-These signals influence:
-
-- patience
-- ranking
-- tolerance
-- sector focus
-
-They function as a **contextual compass**.
+- Analyse bepaalt WAT
+- Execution bepaalt HOE
 
 ---
 
-# Sector Awareness
+## 🔮 Toekomst
 
-Synth includes sector-aware analysis.
+- Elliott Wave
+- multi-timeframe bias
+- ML op context features
 
-Assets may belong to multiple sectors.
-
-Sector analysis includes:
-
-- sector strength
-- sector breadth
-- leader / laggard behavior
-
-Sector regimes influence strategy weighting and asset ranking.
-
----
-
-# Time System
-
-Internal system time:
-
-**UTC**
-
-User display time:
-
-**Europe/Amsterdam**
-
-Market data is processed using **UTC timestamps**.
-
----
-
-# Currency System
-
-The system uses **EUR as the default reference currency**.
-
-Derived views may provide USD equivalents where necessary.
-
----
-
-# Modularity Principle
-
-Each module must be:
-
-- independently testable
-- independently schedulable
-- independent of execution logic
-
-Modules must communicate through **structured data layers**.
-
----
-
-# Design Goal
-
-The goal of Synth is to create a **transparent market reasoning engine** that can:
-
-- analyze markets
-- synthesize strategies
-- explain decisions
-- evolve safely over time

@@ -3,7 +3,7 @@ SYNTH v2
 Module: synth_sleeves.agents
 Purpose:
     Default sleeve agents using canonical selection semantics, relative strength,
-    momentum persistence, and size modulation for PREPARE / ENTER states.
+    momentum persistence, volume confirmation, and size modulation.
 Boundary:
     - No DB I/O
     - No external API I/O
@@ -40,6 +40,59 @@ DECIMAL_ZERO = Decimal("0")
 DECIMAL_ONE = Decimal("1")
 DECIMAL_TWO = Decimal("2")
 
+DECIMAL_05 = Decimal("0.05")
+DECIMAL_07 = Decimal("0.7")
+DECIMAL_08 = Decimal("0.8")
+DECIMAL_11 = Decimal("1.1")
+DECIMAL_12 = Decimal("1.2")
+DECIMAL_15 = Decimal("1.5")
+DECIMAL_20 = Decimal("20")
+
+
+def apply_core_volume_modifier(
+    action: str,
+    target_fraction: Decimal,
+    vol_ratio: Decimal | None,
+    vol_z: Decimal | None,
+) -> tuple[str, Decimal]:
+    if vol_ratio is None:
+        return action, target_fraction
+
+    if action == "ENTER_LONG" and vol_ratio < DECIMAL_08:
+        return "PREPARE", target_fraction * DECIMAL_07
+
+    if action == "ENTER_LONG" and vol_ratio > DECIMAL_15 and (vol_z or DECIMAL_ZERO) > DECIMAL_ZERO:
+        return action, target_fraction * DECIMAL_12
+
+    if action == "PREPARE" and vol_ratio > DECIMAL_12 and (vol_z or DECIMAL_ZERO) > DECIMAL_ZERO:
+        return "ENTER_LONG", target_fraction * DECIMAL_11
+
+    return action, target_fraction
+
+
+def apply_swing_volume_modifier(
+    action: str,
+    target_fraction: Decimal,
+    vol_ratio: Decimal | None,
+    vol_z: Decimal | None,
+) -> tuple[str, Decimal]:
+    if vol_ratio is None:
+        return action, target_fraction
+
+    # SWING blijft opportunistisch:
+    # zwak volume → kleinere positie, GEEN downgrade
+    if action == "ENTER_LONG" and vol_ratio < Decimal("0.8"):
+        return action, target_fraction * DECIMAL_07
+
+    # lichte boost bij goed volume
+    if action == "ENTER_LONG" and vol_ratio > DECIMAL_12:
+        return action, target_fraction * DECIMAL_11
+
+    # PREPARE → sneller promoten dan CORE
+    if action == "PREPARE" and vol_ratio > Decimal("1.0") and (vol_z or DECIMAL_ZERO) > Decimal("-0.2"):
+        return "ENTER_LONG", target_fraction * DECIMAL_11
+
+    return action, target_fraction
 
 def _has_valid_price(row: AgentSignalRow) -> bool:
     return row.latest_price_eur > DECIMAL_ZERO
@@ -58,10 +111,29 @@ def _clamp_0_1(value: Decimal) -> Decimal:
 
 
 def _normalize_persistence_score(raw_score: Decimal) -> Decimal:
-    # Typical observed range is roughly 0..20+, so divide by 20 and clamp.
     if raw_score <= DECIMAL_ZERO:
         return DECIMAL_ZERO
-    return _clamp_0_1(raw_score / Decimal("20"))
+    return _clamp_0_1(raw_score / DECIMAL_20)
+
+
+def _normalize_volume_ratio(raw_ratio: Decimal) -> Decimal:
+    if raw_ratio <= DECIMAL_ZERO:
+        return DECIMAL_ZERO
+    return _clamp_0_1(raw_ratio / DECIMAL_TWO)
+
+
+def _normalize_volume_zscore(raw_zscore: Decimal) -> Decimal:
+    if raw_zscore <= Decimal("-1"):
+        return DECIMAL_ZERO
+    return _clamp_0_1((raw_zscore + DECIMAL_ONE) / Decimal("3"))
+
+
+def _volume_ok_prepare(row: AgentSignalRow) -> bool:
+    return _d(row, "vc_volume_ratio_7d") >= Decimal("0.90") or _d(row, "vc_volume_zscore_7d") >= DECIMAL_ZERO
+
+
+def _volume_ok_enter(row: AgentSignalRow) -> bool:
+    return _d(row, "vc_volume_ratio_7d") >= DECIMAL_ONE or _d(row, "vc_volume_zscore_7d") >= Decimal("0.20")
 
 
 def _rs_ok_prepare(row: AgentSignalRow) -> bool:
@@ -81,50 +153,42 @@ def _mp_ok_enter(row: AgentSignalRow) -> bool:
 
 
 def _prepare_quality_score(row: AgentSignalRow) -> Decimal:
-    """
-    PREPARE quality:
-    - selection_score already captures a lot of upstream structure
-    - 14d RS adds medium-horizon competitive strength
-    - 14d persistence adds movement quality
-    """
     selection_component = _clamp_0_1(row.selection_score)
     rs_component = _clamp_0_1(_d(row, "rs_rank_pct_14d"))
     persistence_component = _normalize_persistence_score(_d(row, "mp_persistence_score_14d"))
+    volume_component = max(
+        _normalize_volume_ratio(_d(row, "vc_volume_ratio_14d")),
+        _normalize_volume_zscore(_d(row, "vc_volume_zscore_14d")),
+    )
 
     score = (
-        selection_component * Decimal("0.55")
-        + rs_component * Decimal("0.25")
+        selection_component * Decimal("0.45")
+        + rs_component * Decimal("0.20")
         + persistence_component * Decimal("0.20")
+        + volume_component * Decimal("0.15")
     )
     return _clamp_0_1(score)
 
 
 def _enter_quality_score(row: AgentSignalRow) -> Decimal:
-    """
-    ENTER quality:
-    - selection_score still dominant
-    - 7d RS matters more for active entry timing
-    - 7d persistence matters more for current movement quality
-    """
     selection_component = _clamp_0_1(row.selection_score)
     rs_component = _clamp_0_1(_d(row, "rs_rank_pct_7d"))
     persistence_component = _normalize_persistence_score(_d(row, "mp_persistence_score_7d"))
+    volume_component = max(
+        _normalize_volume_ratio(_d(row, "vc_volume_ratio_7d")),
+        _normalize_volume_zscore(_d(row, "vc_volume_zscore_7d")),
+    )
 
     score = (
-        selection_component * Decimal("0.50")
-        + rs_component * Decimal("0.30")
+        selection_component * Decimal("0.40")
+        + rs_component * Decimal("0.25")
         + persistence_component * Decimal("0.20")
+        + volume_component * Decimal("0.15")
     )
     return _clamp_0_1(score)
 
 
 def _scale_prepare_fraction(base_fraction: Decimal, quality_score: Decimal) -> Decimal:
-    """
-    PREPARE sizing:
-    - strong prepare: full base
-    - medium prepare: 2/3 base
-    - weak-but-allowed prepare: 1/3 base
-    """
     if quality_score >= Decimal("0.70"):
         return base_fraction
     if quality_score >= Decimal("0.50"):
@@ -133,11 +197,6 @@ def _scale_prepare_fraction(base_fraction: Decimal, quality_score: Decimal) -> D
 
 
 def _scale_enter_fraction(base_fraction: Decimal, quality_score: Decimal) -> Decimal:
-    """
-    ENTER sizing:
-    - strong enter: full base
-    - acceptable but not top-tier enter: 80% base
-    """
     if quality_score >= Decimal("0.75"):
         return base_fraction
     return base_fraction * Decimal("0.80")
@@ -153,9 +212,18 @@ def core_trend(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposal | Non
         and row.selection_score >= Decimal("0.55")
         and _rs_ok_enter(row)
         and _mp_ok_enter(row)
+        and _volume_ok_enter(row)
     ):
         quality = _enter_quality_score(row)
         requested_fraction = _scale_enter_fraction(Decimal("0.15"), quality)
+
+        desired_action = "ENTER_LONG"
+        desired_action, requested_fraction = apply_core_volume_modifier(
+            desired_action,
+            requested_fraction,
+            _d(row, "vc_volume_ratio_7d"),
+            _d(row, "vc_volume_zscore_7d"),
+        )
 
         return AgentProposal(
             run_ts_utc=run_ts_utc,
@@ -163,13 +231,13 @@ def core_trend(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposal | Non
             symbol=row.symbol,
             sleeve_code=SleeveCode.CORE,
             strategy_name="core_trend",
-            desired_action=DecisionAction.ENTER_LONG,
+            desired_action=DecisionAction(desired_action),
             requested_fraction=requested_fraction,
             score=row.selection_score,
             source_state=row.selection_state,
-            reasoning="CORE enter-ready structural alignment with acceptable relative strength and persistence.",
+            reasoning="CORE action after structure, persistence, RS, and volume modulation.",
             latest_price_eur=row.latest_price_eur,
-            entry_state=EntryState.ENTER_LONG,
+            entry_state=EntryState.ENTER_LONG if desired_action == "ENTER_LONG" else EntryState.PREPARE,
         )
 
     if (
@@ -178,9 +246,18 @@ def core_trend(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposal | Non
         and row.selection_score >= Decimal("0.50")
         and _rs_ok_prepare(row)
         and _mp_ok_prepare(row)
+        and _volume_ok_prepare(row)
     ):
         quality = _prepare_quality_score(row)
         requested_fraction = _scale_prepare_fraction(Decimal("0.20"), quality)
+
+        desired_action = "PREPARE"
+        desired_action, requested_fraction = apply_core_volume_modifier(
+            desired_action,
+            requested_fraction,
+            _d(row, "vc_volume_ratio_7d"),
+            _d(row, "vc_volume_zscore_7d"),
+        )
 
         return AgentProposal(
             run_ts_utc=run_ts_utc,
@@ -188,13 +265,13 @@ def core_trend(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposal | Non
             symbol=row.symbol,
             sleeve_code=SleeveCode.CORE,
             strategy_name="core_trend",
-            desired_action=DecisionAction.PREPARE,
+            desired_action=DecisionAction(desired_action),
             requested_fraction=requested_fraction,
             score=row.selection_score,
             source_state=row.selection_state,
-            reasoning="CORE prepare: early structural alignment with quality-scaled sizing.",
+            reasoning="CORE prepare with quality-scaled sizing and volume modulation.",
             latest_price_eur=row.latest_price_eur,
-            entry_state=EntryState.PREPARE,
+            entry_state=EntryState.PREPARE if desired_action == "PREPARE" else EntryState.ENTER_LONG,
         )
 
     if (
@@ -203,9 +280,18 @@ def core_trend(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposal | Non
         and row.selection_score >= Decimal("0.60")
         and _rs_ok_prepare(row)
         and _mp_ok_prepare(row)
+        and _volume_ok_prepare(row)
     ):
         quality = _prepare_quality_score(row)
         requested_fraction = _scale_prepare_fraction(Decimal("0.20"), quality)
+
+        desired_action = "PREPARE"
+        desired_action, requested_fraction = apply_core_volume_modifier(
+            desired_action,
+            requested_fraction,
+            _d(row, "vc_volume_ratio_7d"),
+            _d(row, "vc_volume_zscore_7d"),
+        )
 
         return AgentProposal(
             run_ts_utc=run_ts_utc,
@@ -213,13 +299,13 @@ def core_trend(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposal | Non
             symbol=row.symbol,
             sleeve_code=SleeveCode.CORE,
             strategy_name="core_trend",
-            desired_action=DecisionAction.PREPARE,
+            desired_action=DecisionAction(desired_action),
             requested_fraction=requested_fraction,
             score=row.selection_score,
             source_state=row.selection_state,
-            reasoning="CORE prepare: softer early structural alignment with quality-scaled sizing.",
+            reasoning="CORE early-watch prepare with quality-scaled sizing and volume modulation.",
             latest_price_eur=row.latest_price_eur,
-            entry_state=EntryState.PREPARE,
+            entry_state=EntryState.PREPARE if desired_action == "PREPARE" else EntryState.ENTER_LONG,
         )
 
     return None
@@ -235,9 +321,18 @@ def swing_rotation(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposal |
         and row.selection_score >= Decimal("0.52")
         and _rs_ok_prepare(row)
         and _mp_ok_prepare(row)
+        and _volume_ok_prepare(row)
     ):
         quality = _enter_quality_score(row)
         requested_fraction = _scale_enter_fraction(Decimal("0.05"), quality)
+
+        desired_action = "ENTER_LONG"
+        desired_action, requested_fraction = apply_swing_volume_modifier(
+            desired_action,
+            requested_fraction,
+            _d(row, "vc_volume_ratio_7d"),
+            _d(row, "vc_volume_zscore_7d"),
+        )
 
         return AgentProposal(
             run_ts_utc=run_ts_utc,
@@ -245,13 +340,13 @@ def swing_rotation(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposal |
             symbol=row.symbol,
             sleeve_code=SleeveCode.SWING,
             strategy_name="swing_rotation",
-            desired_action=DecisionAction.ENTER_LONG,
+            desired_action=DecisionAction(desired_action),
             requested_fraction=requested_fraction,
             score=row.selection_score,
             source_state=row.selection_state,
-            reasoning="SWING enter-ready rotation setup with acceptable relative strength and persistence.",
+            reasoning="SWING enter-ready rotation setup with sleeve-specific volume modulation.",
             latest_price_eur=row.latest_price_eur,
-            entry_state=EntryState.ENTER_LONG,
+            entry_state=EntryState.ENTER_LONG if desired_action == "ENTER_LONG" else EntryState.PREPARE,
         )
 
     if (
@@ -260,9 +355,18 @@ def swing_rotation(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposal |
         and row.selection_score >= Decimal("0.45")
         and _rs_ok_prepare(row)
         and _mp_ok_prepare(row)
+        and _volume_ok_prepare(row)
     ):
         quality = _prepare_quality_score(row)
         requested_fraction = _scale_prepare_fraction(Decimal("0.05"), quality)
+
+        desired_action = "PREPARE"
+        desired_action, requested_fraction = apply_swing_volume_modifier(
+            desired_action,
+            requested_fraction,
+            _d(row, "vc_volume_ratio_7d"),
+            _d(row, "vc_volume_zscore_7d"),
+        )
 
         return AgentProposal(
             run_ts_utc=run_ts_utc,
@@ -270,13 +374,13 @@ def swing_rotation(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposal |
             symbol=row.symbol,
             sleeve_code=SleeveCode.SWING,
             strategy_name="swing_rotation",
-            desired_action=DecisionAction.PREPARE,
+            desired_action=DecisionAction(desired_action),
             requested_fraction=requested_fraction,
             score=row.selection_score,
             source_state=row.selection_state,
-            reasoning="SWING prepare: constructive multi-day setup with quality-scaled sizing.",
+            reasoning="SWING prepare with sleeve-specific volume modulation.",
             latest_price_eur=row.latest_price_eur,
-            entry_state=EntryState.PREPARE,
+            entry_state=EntryState.PREPARE if desired_action == "PREPARE" else EntryState.ENTER_LONG,
         )
 
     if (
@@ -285,9 +389,18 @@ def swing_rotation(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposal |
         and row.selection_score >= Decimal("0.55")
         and _rs_ok_prepare(row)
         and _mp_ok_prepare(row)
+        and _volume_ok_prepare(row)
     ):
         quality = _prepare_quality_score(row)
         requested_fraction = _scale_prepare_fraction(Decimal("0.05"), quality)
+
+        desired_action = "PREPARE"
+        desired_action, requested_fraction = apply_swing_volume_modifier(
+            desired_action,
+            requested_fraction,
+            _d(row, "vc_volume_ratio_7d"),
+            _d(row, "vc_volume_zscore_7d"),
+        )
 
         return AgentProposal(
             run_ts_utc=run_ts_utc,
@@ -295,13 +408,13 @@ def swing_rotation(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposal |
             symbol=row.symbol,
             sleeve_code=SleeveCode.SWING,
             strategy_name="swing_rotation",
-            desired_action=DecisionAction.PREPARE,
+            desired_action=DecisionAction(desired_action),
             requested_fraction=requested_fraction,
             score=row.selection_score,
             source_state=row.selection_state,
-            reasoning="SWING prepare: early watch state with quality-scaled sizing.",
+            reasoning="SWING early-watch prepare with sleeve-specific volume modulation.",
             latest_price_eur=row.latest_price_eur,
-            entry_state=EntryState.PREPARE,
+            entry_state=EntryState.PREPARE if desired_action == "PREPARE" else EntryState.ENTER_LONG,
         )
 
     return None
@@ -316,6 +429,7 @@ def tactical_momentum(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposa
         and row.selection_score >= Decimal("0.55")
         and _rs_ok_prepare(row)
         and _mp_ok_prepare(row)
+        and _volume_ok_enter(row)
     ):
         return AgentProposal(
             run_ts_utc=run_ts_utc,
@@ -327,7 +441,7 @@ def tactical_momentum(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposa
             requested_fraction=Decimal("0.08"),
             score=row.selection_score,
             source_state=row.selection_state,
-            reasoning="TACTICAL momentum burst with acceptable relative strength and persistence.",
+            reasoning="TACTICAL momentum burst with acceptable relative strength, persistence, and volume confirmation.",
             latest_price_eur=row.latest_price_eur,
             entry_state=EntryState.SCALP_ONLY,
         )
@@ -344,6 +458,7 @@ def experimental_misc(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposa
         and row.selection_score >= Decimal("0.65")
         and _rs_ok_enter(row)
         and _mp_ok_enter(row)
+        and _volume_ok_enter(row)
     ):
         quality = _enter_quality_score(row)
         requested_fraction = _scale_enter_fraction(Decimal("0.05"), quality)
@@ -358,7 +473,7 @@ def experimental_misc(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposa
             requested_fraction=requested_fraction,
             score=row.selection_score,
             source_state=row.selection_state,
-            reasoning="EXPERIMENTAL enter-ready candidate with strong relative strength and persistence.",
+            reasoning="EXPERIMENTAL enter-ready candidate with strong relative strength, persistence, and volume confirmation.",
             latest_price_eur=row.latest_price_eur,
             entry_state=EntryState.ENTER_LONG,
         )
@@ -368,6 +483,7 @@ def experimental_misc(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposa
         and row.selection_score >= Decimal("0.65")
         and _rs_ok_enter(row)
         and _mp_ok_enter(row)
+        and _volume_ok_enter(row)
     ):
         quality = _prepare_quality_score(row)
         requested_fraction = _scale_prepare_fraction(Decimal("0.05"), quality)
@@ -382,7 +498,7 @@ def experimental_misc(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposa
             requested_fraction=requested_fraction,
             score=row.selection_score,
             source_state=row.selection_state,
-            reasoning="EXPERIMENTAL prepare candidate with strong relative strength and persistence.",
+            reasoning="EXPERIMENTAL prepare candidate with strong relative strength, persistence, and volume confirmation.",
             latest_price_eur=row.latest_price_eur,
             entry_state=EntryState.PREPARE,
         )
@@ -392,6 +508,7 @@ def experimental_misc(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposa
         and row.selection_score >= Decimal("0.60")
         and _rs_ok_enter(row)
         and _mp_ok_enter(row)
+        and _volume_ok_enter(row)
     ):
         return AgentProposal(
             run_ts_utc=run_ts_utc,
@@ -403,7 +520,7 @@ def experimental_misc(run_ts_utc: datetime, row: AgentSignalRow) -> AgentProposa
             requested_fraction=Decimal("0.05"),
             score=row.selection_score,
             source_state=row.selection_state,
-            reasoning="EXPERIMENTAL tactical candidate with strong relative strength and persistence.",
+            reasoning="EXPERIMENTAL tactical candidate with strong relative strength, persistence, and volume confirmation.",
             latest_price_eur=row.latest_price_eur,
             entry_state=EntryState.SCALP_ONLY,
         )
