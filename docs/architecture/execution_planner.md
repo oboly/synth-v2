@@ -10,6 +10,9 @@ It decides **how** to execute an already-approved target intelligently.
 
 ## Position in pipeline
 
+Planner cadence is candle-driven and ETL-gated.
+A planner run is valid only after the relevant candle is closed and ETL/context refresh for that candle has completed.
+
 Current high-level flow:
 
 ETL → feat → signal / selection → decision → risk → portfolio_target
@@ -323,6 +326,33 @@ Do not prioritize before:
 - Bitvavo communication layer exists
 
 ---
+
+EXECUTION WORKER V1 VALIDATION COMPLETE
+
+Validated in paper mode:
+- monitor branch: confirmed
+- passive reprice branch: confirmed
+- timeout escalate branch: confirmed
+- timeout abort branch: confirmed
+
+Additional confirmed behavior:
+- downward repricing now works
+- passive_price_eur is synchronized back into execution_plan on reprice
+- dedupe issue for active plans was cleaned up
+- planner rerun did not recreate duplicate active plan
+
+Observed execution_event evidence:
+- PAPER_MONITOR_OK
+- PAPER_REPRICE_PASSIVE (direction=down)
+- PAPER_ESCALATE_URGENT_LIMIT
+- PAPER_ABORT_TIMEOUT
+
+Current conclusion:
+- execution worker v1 is now branch-tested end-to-end in paper mode
+- safe next step is not immediate full live rollout, but controlled hardening and then tiny-notional live post-only validation
+
+
+___
 
 ## Suggested name
 
