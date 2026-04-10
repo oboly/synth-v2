@@ -40,3 +40,46 @@
 - Avoid overengineering early.
 - Use one global enabled asset universe for v1.
 - Let strategies filter internally.
+
+## Close-out summary — structure-state integration
+
+Completed in this cycle:
+
+1. Repaired and stabilized active pipeline usage:
+   - `feat_candle`
+   - `signal_engine_state`
+   - `advice_state`
+   - `ranking_state`
+   - `selection_state`
+
+2. Added measurement layer v1:
+   - table `structure_state`
+   - view `vw_structure_state_latest`
+   - engine `src/measurement/run_structure_state_engine.py`
+
+3. Implemented timeframe-aware measurement modules:
+   - `trend_state`
+   - `pullback_state`
+   - `reclaim_state`
+
+4. Kept architecture clean:
+   - no human interpretation inside measurement / ranking / selection
+   - no fake targets or pseudo execution values
+   - final advice layer intentionally postponed
+
+5. Integrated measurement layer into selection:
+   - `selection_engine` now uses structure-state context
+   - selection distribution now reflects structure + ranking + advice together
+
+Important current observations:
+- `1h` is mostly useful through `pullback_state`
+- `4h` and `1d` reclaim signals are sparse but meaningful
+- reclaim v1 is acceptable for downstream use, but later reclaim v2 should become a more explicit multi-candle state machine
+
+Open items not completed in this cycle:
+- final advice / human presentation layer
+- exit / position-management layer
+- additional measurement modules (`breakout_state`, `range_state`, `structure_event_state`, etc.)
+- real zone / target / invalidation layer
+- potential `selection_state` semantic refinement (e.g. split `AVOID` into `DEFER` vs `REJECT`)
+- possible `vw_selection_enriched` technical inspection view
