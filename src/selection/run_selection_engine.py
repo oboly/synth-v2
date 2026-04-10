@@ -1,196 +1,281 @@
 from __future__ import annotations
 
 import argparse
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from src.common.db import get_db_connection
 
 
-STATE_PRIORITY: dict[str, int] = {
-    "STRONG_CANDIDATE": 1,
-    "PRE_ALIGNMENT": 2,
-    "EARLY_WATCH": 3,
-    "TRIGGER_NO_HTF_CONFIRM": 4,
-    "HTF_READY_LTF_LAG": 5,
-    "MIXED_NEUTRAL": 6,
-    "LOW_PRIORITY": 7,
-    "REJECTED_HTF": 8,
-    "REJECTED_LTF": 9,
-    "INCOMPLETE_4H": 10,
-    "INCOMPLETE_1H": 11,
-    "NO_DATA": 12,
-}
+ENGINE_NAME = "selection_engine"
+ENGINE_VERSION = "1.1"
+RANKING_VERSION = "v2"
+STRUCTURE_ENGINE_NAME = "structure_state_engine"
+STRUCTURE_ENGINE_VERSION = "1.1"
 
 
-def fetch_latest_advice_by_interval(conn, interval_code: str) -> dict[int, dict[str, Any]]:
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run Synth selection engine from ranking + structure states"
+    )
+    parser.add_argument("--ranking-version", default=RANKING_VERSION)
+    return parser.parse_args()
+
+
+def _to_decimal(value: Any, default: str = "0") -> Decimal:
+    if value is None:
+        return Decimal(default)
+    return Decimal(str(value))
+
+
+def _ensure_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def fetch_ranking_rows(conn, *, ranking_version: str) -> list[dict[str, Any]]:
     sql = """
-    SELECT *
-    FROM (
-        SELECT
-            a.*,
-            ROW_NUMBER() OVER (
-                PARTITION BY a.asset_id, a.venue, a.interval_code
-                ORDER BY a.asof_ts_utc DESC
-            ) AS rn
-        FROM advice_state a
-        WHERE a.interval_code = %s
-    ) q
-    WHERE q.rn = 1
+    SELECT
+        symbol,
+        asset_class,
+        sector,
+        asset_id,
+        venue,
+        interval_code,
+        asof_ts_utc,
+        trade_quality_score,
+        rotation_bucket,
+        classification_code,
+        sleeve_fit_code
+    FROM vw_ranking_latest
+    WHERE ranking_version = %s
+      AND interval_code IN ('1h', '4h', '1d')
+    ORDER BY symbol, interval_code
     """
 
     with conn.cursor() as cur:
-        cur.execute(sql, (interval_code,))
+        cur.execute(sql, (ranking_version,))
         rows = cur.fetchall()
 
-    out: dict[int, dict[str, Any]] = {}
-
+    out: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
-            raise TypeError("Expected dict rows from database cursor")
-        out[int(row["asset_id"])] = row
-
+            raise TypeError("Expected dict rows")
+        out.append(row)
     return out
 
 
-def map_selection(
-    row_1h: dict[str, Any] | None,
-    row_4h: dict[str, Any] | None,
-) -> tuple[str, str, float, str]:
-    if row_1h is None and row_4h is None:
-        return ("NO_DATA", "NEUTRAL", 0.0, "No 1h or 4h advice available.")
+def fetch_latest_advice_rows(conn) -> list[dict[str, Any]]:
+    sql = """
+    WITH latest_per_interval AS (
+        SELECT
+            interval_code,
+            MAX(asof_ts_utc) AS max_ts
+        FROM advice_state
+        WHERE interval_code IN ('1h', '4h')
+        GROUP BY interval_code
+    )
+    SELECT
+        a.asset_id,
+        a.venue,
+        a.interval_code,
+        a.asof_ts_utc,
+        a.regime_label,
+        a.advice_state,
+        a.opportunity_score,
+        a.risk_score
+    FROM advice_state a
+    JOIN latest_per_interval l
+      ON a.interval_code = l.interval_code
+     AND a.asof_ts_utc = l.max_ts
+    WHERE a.interval_code IN ('1h', '4h')
+    """
 
-    if row_4h is None:
-        opp_1h = float(row_1h["opportunity_score"])
-        risk_1h = float(row_1h["risk_score"])
-        score = max(0.0, opp_1h - (0.25 * risk_1h))
-        return (
-            "INCOMPLETE_4H",
-            "WATCH",
-            round(score, 6),
-            "1h advice available, but 4h context missing.",
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise TypeError("Expected dict rows")
+        out.append(row)
+    return out
+
+
+def fetch_structure_rows(conn) -> list[dict[str, Any]]:
+    sql = """
+    SELECT
+        asset_id,
+        venue,
+        interval_code,
+        asof_ts_utc,
+        trend_state,
+        pullback_state,
+        reclaim_state,
+        trend_score,
+        pullback_score,
+        reclaim_score
+    FROM vw_structure_state_latest
+    WHERE engine_name = %s
+      AND engine_version = %s
+      AND interval_code IN ('1h', '4h', '1d')
+    ORDER BY asset_id, interval_code
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(sql, (STRUCTURE_ENGINE_NAME, STRUCTURE_ENGINE_VERSION))
+        rows = cur.fetchall()
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise TypeError("Expected dict rows")
+        out.append(row)
+    return out
+
+
+def group_by_asset(rows: list[dict[str, Any]]) -> dict[int, dict[str, dict[str, Any]]]:
+    grouped: dict[int, dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        asset_id = int(row["asset_id"])
+        interval_code = str(row["interval_code"])
+        grouped.setdefault(asset_id, {})
+        grouped[asset_id][interval_code] = row
+    return grouped
+
+
+def derive_selection_state(
+    row_4h_rank: dict[str, Any] | None,
+    row_1h_rank: dict[str, Any] | None,
+    row_1d_rank: dict[str, Any] | None,
+    row_4h_struct: dict[str, Any] | None,
+    row_1h_struct: dict[str, Any] | None,
+    row_1d_struct: dict[str, Any] | None,
+) -> str:
+    c4h = str((row_4h_rank or {}).get("classification_code") or "")
+    c1h = str((row_1h_rank or {}).get("classification_code") or "")
+    c1d = str((row_1d_rank or {}).get("classification_code") or "")
+    asset_class = str((row_4h_rank or row_1h_rank or row_1d_rank or {}).get("asset_class") or "")
+
+    trend_4h = str((row_4h_struct or {}).get("trend_state") or "")
+    pullback_1h = str((row_1h_struct or {}).get("pullback_state") or "")
+    reclaim_4h = str((row_4h_struct or {}).get("reclaim_state") or "")
+    reclaim_1d = str((row_1d_struct or {}).get("reclaim_state") or "")
+
+    if asset_class == "MEME":
+        return "TACTICAL_ONLY"
+
+    if (
+        c4h in {"LEADER", "CONTINUATION_CANDIDATE"}
+        and c1h == "CONTINUATION_CANDIDATE"
+        and trend_4h in {"UPTREND_STRONG", "UPTREND_WEAK"}
+    ):
+        return "BUY_READY"
+
+    if (
+        c4h in {"LEADER", "CONTINUATION_CANDIDATE"}
+        and (
+            c1h == "PULLBACK_WATCH"
+            or pullback_1h == "HEALTHY_PULLBACK"
+            or reclaim_4h in {"RECLAIM_ATTEMPT", "RECLAIM_CONFIRMED"}
         )
+    ):
+        return "PREPARE"
 
-    if row_1h is None:
-        opp_4h = float(row_4h["opportunity_score"])
-        risk_4h = float(row_4h["risk_score"])
-        score = max(0.0, opp_4h - (0.25 * risk_4h))
-        return (
-            "INCOMPLETE_1H",
-            "WATCH",
-            round(score, 6),
-            "4h advice available, but 1h timing context missing.",
-        )
+    if (
+        c4h == "PULLBACK_WATCH"
+        or reclaim_4h in {"RECLAIM_ATTEMPT", "RECLAIM_CONFIRMED"}
+        or reclaim_1d in {"RECLAIM_ATTEMPT", "RECLAIM_CONFIRMED"}
+    ):
+        return "WATCHLIST"
 
-    regime_1h = str(row_1h["regime_label"])
-    regime_4h = str(row_4h["regime_label"])
-    advice_1h = str(row_1h["advice_state"])
-    advice_4h = str(row_4h["advice_state"])
+    if c4h in {"RANGE_TRADER", "SPECULATIVE_HIGH_BETA"}:
+        return "TACTICAL_ONLY"
 
-    opp_1h = float(row_1h["opportunity_score"])
-    opp_4h = float(row_4h["opportunity_score"])
-    risk_1h = float(row_1h["risk_score"])
-    risk_4h = float(row_4h["risk_score"])
+    if c1d == "PULLBACK_WATCH":
+        return "WATCHLIST"
+
+    return "AVOID"
+
+
+def derive_selection_bias(selection_state: str) -> str:
+    return {
+        "BUY_READY": "BULLISH",
+        "PREPARE": "BULLISH",
+        "WATCHLIST": "NEUTRAL_POSITIVE",
+        "TACTICAL_ONLY": "TACTICAL",
+        "AVOID": "DEFENSIVE",
+    }.get(selection_state, "DEFENSIVE")
+
+
+def compute_selection_score(
+    row_4h_rank: dict[str, Any] | None,
+    row_1h_rank: dict[str, Any] | None,
+    row_1d_rank: dict[str, Any] | None,
+    row_4h_struct: dict[str, Any] | None,
+    row_1h_struct: dict[str, Any] | None,
+    row_1d_struct: dict[str, Any] | None,
+    selection_state: str,
+) -> Decimal:
+    score_4h = _to_decimal((row_4h_rank or {}).get("trade_quality_score"), "0")
+    score_1h = _to_decimal((row_1h_rank or {}).get("trade_quality_score"), "0")
+    score_1d = _to_decimal((row_1d_rank or {}).get("trade_quality_score"), "0")
+
+    trend_score_4h = _to_decimal((row_4h_struct or {}).get("trend_score"), "0")
+    pullback_score_1h = _to_decimal((row_1h_struct or {}).get("pullback_score"), "0")
+    reclaim_score_4h = _to_decimal((row_4h_struct or {}).get("reclaim_score"), "0")
+    reclaim_score_1d = _to_decimal((row_1d_struct or {}).get("reclaim_score"), "0")
 
     score = (
-        0.55 * opp_1h
-        + 0.45 * opp_4h
-        - 0.25 * risk_1h
-        - 0.20 * risk_4h
+        Decimal("0.45") * score_4h
+        + Decimal("0.25") * score_1h
+        + Decimal("0.10") * score_1d
+        + Decimal("0.10") * trend_score_4h
+        + Decimal("0.05") * pullback_score_1h
+        + Decimal("0.03") * reclaim_score_4h
+        + Decimal("0.02") * reclaim_score_1d
     )
 
-    # Hard higher-timeframe rejection
-    if regime_4h in {"RISK_OFF", "RESET_DAMAGE"} or advice_4h == "AVOID":
-        score -= 0.25
-        return (
-            "REJECTED_HTF",
-            "AVOID",
-            round(max(0.0, score), 6),
-            f"4h context is weak/damaged ({regime_4h}, {advice_4h}).",
-        )
+    state_bonus = {
+        "BUY_READY": Decimal("0.12"),
+        "PREPARE": Decimal("0.08"),
+        "WATCHLIST": Decimal("0.03"),
+        "TACTICAL_ONLY": Decimal("-0.02"),
+        "AVOID": Decimal("-0.10"),
+    }.get(selection_state, Decimal("0"))
 
-    # Hard lower-timeframe rejection when 1h is clearly risk-off
-    # and 4h is not strong enough to rescue the setup.
-    if regime_1h == "RISK_OFF" or advice_1h == "AVOID":
-        if not (
-            regime_4h in {"TREND_EXPANSION", "COMPRESSION_BUILD"}
-            and advice_4h in {"BUILD", "ARM", "TRIGGERED"}
-        ):
-            score -= 0.18
-            return (
-                "REJECTED_LTF",
-                "AVOID",
-                round(max(0.0, score), 6),
-                f"1h context is weak/risk-off ({regime_1h}, {advice_1h}) without strong 4h rescue.",
-            )
+    return (score + state_bonus).quantize(Decimal("0.000001"))
 
-    # Best aligned cases
-    if advice_1h in {"BUILD", "ARM"} and advice_4h in {"ARM", "WATCH", "BUILD"}:
-        if regime_4h in {"TREND_EXPANSION", "COMPRESSION_BUILD", "NEUTRAL_TRANSITION"}:
-            score += 0.12
-            return (
-                "STRONG_CANDIDATE",
-                "LONG_BIAS",
-                round(min(1.0, score), 6),
-                f"1h is actionable ({advice_1h}) and 4h supports continuation ({regime_4h}/{advice_4h}).",
-            )
 
-    # Higher timeframe ready, lower timeframe not aligned yet
-    if advice_4h in {"ARM", "BUILD"} and advice_1h in {"WATCH", "NO_ACTION"}:
-        if regime_4h in {"TREND_EXPANSION", "COMPRESSION_BUILD"}:
-            score += 0.05
-            return (
-                "PRE_ALIGNMENT",
-                "WATCH",
-                round(min(1.0, score), 6),
-                f"4h structure is constructive ({advice_4h}) but 1h timing is not aligned yet.",
-            )
+def build_summary(
+    symbol: str,
+    selection_state: str,
+    row_4h_rank: dict[str, Any] | None,
+    row_1h_rank: dict[str, Any] | None,
+    row_1d_rank: dict[str, Any] | None,
+    row_4h_struct: dict[str, Any] | None,
+    row_1h_struct: dict[str, Any] | None,
+    row_1d_struct: dict[str, Any] | None,
+) -> str:
+    c4h = str((row_4h_rank or {}).get("classification_code") or "-")
+    c1h = str((row_1h_rank or {}).get("classification_code") or "-")
+    c1d = str((row_1d_rank or {}).get("classification_code") or "-")
 
-    # 1h constructive, 4h neutral but not weak
-    if advice_1h in {"BUILD", "ARM"} and regime_4h in {"RANGE_CHOP", "NEUTRAL_TRANSITION", "COMPRESSION_BUILD"}:
-        return (
-            "EARLY_WATCH",
-            "WATCH",
-            round(max(0.0, score), 6),
-            f"1h is constructive ({advice_1h}) while 4h remains neutral/compression ({regime_4h}).",
-        )
+    t4h = str((row_4h_struct or {}).get("trend_state") or "-")
+    p1h = str((row_1h_struct or {}).get("pullback_state") or "-")
+    r4h = str((row_4h_struct or {}).get("reclaim_state") or "-")
+    r1d = str((row_1d_struct or {}).get("reclaim_state") or "-")
 
-    # 1h triggered but 4h still too passive
-    if advice_1h == "TRIGGERED" and advice_4h in {"NO_ACTION", "WATCH"}:
-        score -= 0.05
-        return (
-            "TRIGGER_NO_HTF_CONFIRM",
-            "WATCH",
-            round(max(0.0, score), 6),
-            f"1h trigger is active, but 4h confirmation is still limited ({advice_4h}/{regime_4h}).",
-        )
-
-    # 4h strong/triggered, 1h still lagging
-    if advice_4h in {"TRIGGERED", "ARM"} and advice_1h in {"WATCH", "NO_ACTION"}:
-        score += 0.03
-        return (
-            "HTF_READY_LTF_LAG",
-            "WATCH",
-            round(max(0.0, score), 6),
-            f"4h is active/ready ({advice_4h}) while 1h timing still lags.",
-        )
-
-    # Both mostly passive
-    if advice_1h in {"WATCH", "NO_ACTION"} and advice_4h in {"WATCH", "NO_ACTION"}:
-        return (
-            "LOW_PRIORITY",
-            "NEUTRAL",
-            round(max(0.0, score), 6),
-            "Both 1h and 4h remain non-actionable or watch-only.",
-        )
-
-    # Remaining cases are neutral mismatches, not top priority
-    score -= 0.04
     return (
-        "MIXED_NEUTRAL",
-        "WATCH",
-        round(max(0.0, score), 6),
-        f"Mixed timeframe state: 1h={advice_1h}/{regime_1h}, 4h={advice_4h}/{regime_4h}.",
-    )
+        f"{symbol}; selection_state={selection_state}; "
+        f"rank[4h={c4h},1h={c1h},1d={c1d}]; "
+        f"struct[4h_trend={t4h},1h_pullback={p1h},4h_reclaim={r4h},1d_reclaim={r1d}]"
+    )[:512]
 
 
 def upsert_selection_rows(conn, rows: list[dict[str, Any]]) -> int:
@@ -216,7 +301,9 @@ def upsert_selection_rows(conn, rows: list[dict[str, Any]]) -> int:
         risk_score_1h,
         risk_score_4h,
         priority_rank,
-        summary_text
+        summary_text,
+        engine_name,
+        engine_version
     ) VALUES (
         %(asset_id)s,
         %(venue)s,
@@ -235,7 +322,9 @@ def upsert_selection_rows(conn, rows: list[dict[str, Any]]) -> int:
         %(risk_score_1h)s,
         %(risk_score_4h)s,
         %(priority_rank)s,
-        %(summary_text)s
+        %(summary_text)s,
+        %(engine_name)s,
+        %(engine_version)s
     )
     ON DUPLICATE KEY UPDATE
         advice_ts_1h_utc = VALUES(advice_ts_1h_utc),
@@ -252,7 +341,9 @@ def upsert_selection_rows(conn, rows: list[dict[str, Any]]) -> int:
         risk_score_1h = VALUES(risk_score_1h),
         risk_score_4h = VALUES(risk_score_4h),
         priority_rank = VALUES(priority_rank),
-        summary_text = VALUES(summary_text)
+        summary_text = VALUES(summary_text),
+        engine_name = VALUES(engine_name),
+        engine_version = VALUES(engine_version)
     """
 
     with conn.cursor() as cur:
@@ -262,63 +353,136 @@ def upsert_selection_rows(conn, rows: list[dict[str, Any]]) -> int:
     return len(rows)
 
 
-def run() -> int:
+def run(*, ranking_version: str) -> int:
     conn = get_db_connection()
 
     try:
-        latest_1h = fetch_latest_advice_by_interval(conn, "1h")
-        latest_4h = fetch_latest_advice_by_interval(conn, "4h")
+        ranking_rows = fetch_ranking_rows(conn, ranking_version=ranking_version)
+        advice_rows = fetch_latest_advice_rows(conn)
+        structure_rows = fetch_structure_rows(conn)
 
-        all_asset_ids = sorted(set(latest_1h.keys()) | set(latest_4h.keys()))
-        rows: list[dict[str, Any]] = []
+        ranking_by_asset = group_by_asset(ranking_rows)
+        advice_by_asset = group_by_asset(advice_rows)
+        structure_by_asset = group_by_asset(structure_rows)
 
-        for asset_id in all_asset_ids:
-            row_1h = latest_1h.get(asset_id)
-            row_4h = latest_4h.get(asset_id)
+        if not ranking_by_asset:
+            print("[WARN] no ranking rows found")
+            return 0
 
-            venue = str(row_1h["venue"]) if row_1h is not None else str(row_4h["venue"])
-            asof_ts_utc = row_1h["asof_ts_utc"] if row_1h is not None else row_4h["asof_ts_utc"]
+        asof_ts = None
+        for by_tf in ranking_by_asset.values():
+            if "4h" in by_tf:
+                asof_ts = by_tf["4h"]["asof_ts_utc"]
+                break
+        if asof_ts is None:
+            for by_tf in ranking_by_asset.values():
+                for row in by_tf.values():
+                    asof_ts = row["asof_ts_utc"]
+                    break
+                if asof_ts is not None:
+                    break
 
-            selection_state, selection_bias, selection_score, summary_text = map_selection(
-                row_1h,
-                row_4h,
+        asof_ts = _ensure_utc(asof_ts)
+        if asof_ts is None:
+            print("[WARN] no ranking snapshot timestamp found")
+            return 0
+
+        out_rows: list[dict[str, Any]] = []
+
+        for asset_id, rank_tf in ranking_by_asset.items():
+            row_1h_rank = rank_tf.get("1h")
+            row_4h_rank = rank_tf.get("4h")
+            row_1d_rank = rank_tf.get("1d")
+
+            advice_1h = advice_by_asset.get(asset_id, {}).get("1h")
+            advice_4h = advice_by_asset.get(asset_id, {}).get("4h")
+
+            row_1h_struct = structure_by_asset.get(asset_id, {}).get("1h")
+            row_4h_struct = structure_by_asset.get(asset_id, {}).get("4h")
+            row_1d_struct = structure_by_asset.get(asset_id, {}).get("1d")
+
+            symbol = str((row_4h_rank or row_1h_rank or row_1d_rank or {}).get("symbol") or f"asset_{asset_id}")
+            venue = str((row_4h_rank or row_1h_rank or row_1d_rank or {}).get("venue") or "bitvavo")
+
+            selection_state = derive_selection_state(
+                row_4h_rank,
+                row_1h_rank,
+                row_1d_rank,
+                row_4h_struct,
+                row_1h_struct,
+                row_1d_struct,
+            )
+            selection_bias = derive_selection_bias(selection_state)
+            selection_score = compute_selection_score(
+                row_4h_rank,
+                row_1h_rank,
+                row_1d_rank,
+                row_4h_struct,
+                row_1h_struct,
+                row_1d_struct,
+                selection_state,
             )
 
-            rows.append(
+            out_rows.append(
                 {
                     "asset_id": asset_id,
                     "venue": venue,
-                    "asof_ts_utc": asof_ts_utc,
-                    "advice_ts_1h_utc": None if row_1h is None else row_1h["asof_ts_utc"],
-                    "advice_ts_4h_utc": None if row_4h is None else row_4h["asof_ts_utc"],
+                    "asof_ts_utc": asof_ts.replace(tzinfo=None),
+                    "advice_ts_1h_utc": None if advice_1h is None else advice_1h["asof_ts_utc"],
+                    "advice_ts_4h_utc": None if advice_4h is None else advice_4h["asof_ts_utc"],
                     "selection_state": selection_state,
                     "selection_bias": selection_bias,
-                    "selection_score": round(selection_score, 6),
-                    "regime_label_1h": None if row_1h is None else row_1h["regime_label"],
-                    "regime_label_4h": None if row_4h is None else row_4h["regime_label"],
-                    "advice_state_1h": None if row_1h is None else row_1h["advice_state"],
-                    "advice_state_4h": None if row_4h is None else row_4h["advice_state"],
-                    "opportunity_score_1h": None if row_1h is None else row_1h["opportunity_score"],
-                    "opportunity_score_4h": None if row_4h is None else row_4h["opportunity_score"],
-                    "risk_score_1h": None if row_1h is None else row_1h["risk_score"],
-                    "risk_score_4h": None if row_4h is None else row_4h["risk_score"],
+                    "selection_score": str(selection_score),
+                    "regime_label_1h": None if advice_1h is None else advice_1h["regime_label"],
+                    "regime_label_4h": None if advice_4h is None else advice_4h["regime_label"],
+                    "advice_state_1h": None if advice_1h is None else advice_1h["advice_state"],
+                    "advice_state_4h": None if advice_4h is None else advice_4h["advice_state"],
+                    "opportunity_score_1h": None if advice_1h is None else advice_1h["opportunity_score"],
+                    "opportunity_score_4h": None if advice_4h is None else advice_4h["opportunity_score"],
+                    "risk_score_1h": None if advice_1h is None else advice_1h["risk_score"],
+                    "risk_score_4h": None if advice_4h is None else advice_4h["risk_score"],
                     "priority_rank": None,
-                    "summary_text": summary_text,
+                    "summary_text": build_summary(
+                        symbol,
+                        selection_state,
+                        row_4h_rank,
+                        row_1h_rank,
+                        row_1d_rank,
+                        row_4h_struct,
+                        row_1h_struct,
+                        row_1d_struct,
+                    ),
+                    "engine_name": ENGINE_NAME,
+                    "engine_version": ENGINE_VERSION,
                 }
             )
 
-        rows.sort(
+        state_bias = {
+            "BUY_READY": 5,
+            "PREPARE": 4,
+            "WATCHLIST": 3,
+            "TACTICAL_ONLY": 2,
+            "AVOID": 1,
+        }
+
+        out_rows.sort(
             key=lambda r: (
-                STATE_PRIORITY.get(r["selection_state"], 999),
-                -r["selection_score"],
-            )
+                state_bias.get(r["selection_state"], 0),
+                Decimal(r["selection_score"]),
+                r["asset_id"],
+            ),
+            reverse=True,
         )
 
-        for idx, row in enumerate(rows, start=1):
+        for idx, row in enumerate(out_rows, start=1):
             row["priority_rank"] = idx
 
-        written = upsert_selection_rows(conn, rows)
-        print(f"[DONE] selection rows={written}")
+        written = upsert_selection_rows(conn, out_rows)
+        print(
+            f"[DONE] selection rows={written} "
+            f"engine={ENGINE_NAME} version={ENGINE_VERSION} "
+            f"asof_ts_utc={asof_ts.isoformat()}"
+        )
         return written
 
     finally:
@@ -326,6 +490,5 @@ def run() -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run multi-timeframe selection engine")
-    _ = parser.parse_args()
-    run()
+    args = parse_args()
+    raise SystemExit(run(ranking_version=args.ranking_version))

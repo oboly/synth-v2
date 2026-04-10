@@ -5,12 +5,9 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from src.common.db import db_cursor
-from src.reporting.presentation import (
-    derive_human_action,
-    derive_human_bucket,
-    derive_human_execution_label,
-    derive_one_liner,
-    derive_ui_priority,
+from src.reporting.human_labels import (
+    derive_human_labels,
+    safe_decimal_str,
     should_show_buy_fields,
     should_show_no_trade_fields,
     should_show_sell_fields,
@@ -226,37 +223,38 @@ def _fetch_rows() -> list[dict[str, Any]]:
         a.symbol,
 
         d.action_state AS decision_action,
-        d.summary_text AS decision_summary_text,
+        d.summary_text AS decision_summary,
 
-        a1.advice_state AS advice_state_1d,
-        a1.regime_label AS regime_label_1d,
-        a1.opportunity_score AS opportunity_score_1d,
+        a1.advice_state AS advice_action_1d,
+        a1.regime_label AS advice_setup_bias_1d,
+        a1.opportunity_score AS advice_context_score_1d,
         a1.risk_score AS advice_risk_score_1d,
-        a1.summary_text AS advice_summary_text_1d,
+        a1.summary_text AS advice_summary_1d,
 
-        a4.advice_state AS advice_state_4h,
-        a4.regime_label AS regime_label_4h,
-        a4.opportunity_score AS opportunity_score_4h,
+        a4.advice_state AS advice_action_4h,
+        a4.regime_label AS advice_setup_bias_4h,
+        a4.opportunity_score AS advice_context_score_4h,
         a4.risk_score AS advice_risk_score_4h,
-        a4.summary_text AS advice_summary_text_4h,
+        a4.summary_text AS advice_summary_4h,
+        a4.time_horizon_hint AS time_horizon_hint_4h,
 
         s1.trend_signal AS trend_signal_1d,
         s1.phase_signal AS phase_signal_1d,
         s1.setup_signal AS setup_signal_1d,
-        s1.signal_confidence AS signal_confidence_1d,
-        s1.reason_text AS reason_text_1d,
 
         s4.trend_signal AS trend_signal_4h,
         s4.phase_signal AS phase_signal_4h,
         s4.setup_signal AS setup_signal_4h,
         s4.signal_confidence AS signal_confidence_4h,
-        s4.reason_text AS reason_text_4h,
+        s4.expansion_position_score AS expansion_position_score_4h,
+        s4.pullback_quality_score AS pullback_quality_score_4h,
+        s4.late_trend_flag AS late_trend_flag_4h,
 
         s5.trend_signal AS trend_signal_5m,
         s5.phase_signal AS phase_signal_5m,
         s5.setup_signal AS setup_signal_5m,
-        s5.signal_confidence AS signal_confidence_5m,
-        s5.reason_text AS reason_text_5m,
+        s5.rotation_signal AS rotation_signal_5m,
+        s5.compass_signal AS compass_signal_5m,
 
         c1.close_1d,
         c4.close_4h,
@@ -281,9 +279,9 @@ def _fetch_rows() -> list[dict[str, Any]]:
         ON c4.asset_id = a.asset_id
     LEFT JOIN latest_close_5m c5
         ON c5.asset_id = a.asset_id
-    WHERE d.asset_id IS NOT NULL
-       OR a4.asset_id IS NOT NULL
+    WHERE a4.asset_id IS NOT NULL
        OR s4.asset_id IS NOT NULL
+       OR d.asset_id IS NOT NULL
     ORDER BY a.symbol ASC
     """
 
@@ -294,22 +292,23 @@ def _fetch_rows() -> list[dict[str, Any]]:
 
 def _derive_action(row: dict[str, Any], context_score: Decimal) -> str:
     decision_action = _safe_upper(row.get("decision_action"))
-    advice_state_4h = _safe_upper(row.get("advice_state_4h"))
-    advice_state_1d = _safe_upper(row.get("advice_state_1d"))
+    advice_action_4h = _safe_upper(row.get("advice_action_4h"))
+    advice_action_1d = _safe_upper(row.get("advice_action_1d"))
 
-    for candidate in (decision_action, advice_state_4h, advice_state_1d):
-        if candidate in {"BUY", "SELL", "HOLD"}:
-            return candidate
+    buy_aliases = {"BUY", "ACCUMULATE", "ADD", "TRIGGERED"}
+    sell_aliases = {"SELL", "REDUCE", "EXIT", "TRIM"}
+    hold_aliases = {"HOLD", "WATCH", "PREPARE", "NO_ACTION", "AVOID"}
 
-    trend_4h = _safe_upper(row.get("trend_signal_4h"))
-    trend_1d = _safe_upper(row.get("trend_signal_1d"))
+    for candidate in (decision_action, advice_action_4h, advice_action_1d):
+        if candidate in buy_aliases:
+            return "BUY"
+        if candidate in sell_aliases:
+            return "SELL"
+        if candidate in hold_aliases:
+            return "HOLD"
 
-    if context_score >= TOP_TRADE_THRESHOLD and ("UP" in trend_4h or "UP" in trend_1d):
+    if context_score >= TOP_TRADE_THRESHOLD:
         return "BUY"
-
-    if "DOWN" in trend_4h and context_score < WATCH_THRESHOLD:
-        return "SELL"
-
     return "HOLD"
 
 
@@ -319,12 +318,12 @@ def _derive_structure_state(row: dict[str, Any]) -> str:
 
     blob = " ".join([trend_4h, trend_1d])
 
-    if "RANGE" in blob:
-        return "RANGE"
-    if "DOWN" in blob:
-        return "TREND_DOWN"
-    if "UP" in blob:
+    if "TREND_UP" in blob:
         return "TREND_UP"
+    if "TREND_DOWN" in blob:
+        return "TREND_DOWN"
+    if "SIDEWAYS" in blob or "RANGE" in blob:
+        return "RANGE"
     return "TRANSITION"
 
 
@@ -345,25 +344,20 @@ def _derive_phase_state(row: dict[str, Any]) -> str:
 def _derive_tactical_state(row: dict[str, Any], structure_state: str) -> str:
     setup_5m = _safe_upper(row.get("setup_signal_5m"))
     trend_5m = _safe_upper(row.get("trend_signal_5m"))
-    reason_5m = _safe_upper(row.get("reason_text_5m"))
+    phase_5m = _safe_upper(row.get("phase_signal_5m"))
+    blob = " ".join([setup_5m, trend_5m, phase_5m])
 
-    blob = " ".join([setup_5m, trend_5m, reason_5m])
-
+    if "PULLBACK" in blob or "RECLAIM" in blob:
+        return "PULLBACK"
     if "REJECTION" in blob:
         return "REJECTION"
-    if "FAILURE" in blob:
+    if "BREAKOUT_FAILURE" in blob or "FAILURE" in blob:
         return "FAILURE"
     if "BREAKOUT" in blob:
         return "BREAKOUT_ATTEMPT"
-    if "RANGE" in blob:
+    if "RANGE" in blob or structure_state == "RANGE":
         return "RANGE"
-    if "PULLBACK" in blob or "RECLAIM" in blob:
-        return "PULLBACK"
 
-    if structure_state == "TREND_DOWN":
-        return "REJECTION"
-    if structure_state == "RANGE":
-        return "RANGE"
     return "PULLBACK"
 
 
@@ -371,8 +365,9 @@ def _derive_entry_quality(
     context_score: Decimal,
     structure_state: str,
     tactical_state: str,
+    trade_quality_score: Decimal,
 ) -> str:
-    if context_score >= TOP_TRADE_THRESHOLD and structure_state in {"TREND_UP", "RANGE"}:
+    if trade_quality_score >= TOP_TRADE_THRESHOLD and structure_state in {"TREND_UP", "RANGE"}:
         if tactical_state in {"PULLBACK", "REJECTION", "RANGE"}:
             return "HIGH"
 
@@ -396,218 +391,188 @@ def _round_price(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.00000001"))
 
 
-def _make_buy_zones(
-    current_price: Decimal,
-    structure_state: str,
-    phase_state: str,
-) -> list[Decimal]:
+def _make_buy_zones(current_price: Decimal, trade_type: str) -> list[Decimal]:
     if current_price <= DECIMAL_ZERO:
         return []
 
-    if structure_state == "TREND_UP":
-        if phase_state == "EXPANSION":
-            offsets = [Decimal("0.020"), Decimal("0.035"), Decimal("0.050")]
-        else:
-            offsets = [Decimal("0.010"), Decimal("0.0225"), Decimal("0.035")]
-    elif structure_state == "RANGE":
-        offsets = [Decimal("0.015"), Decimal("0.030"), Decimal("0.045")]
+    if trade_type == "TREND":
+        offsets = [Decimal("0.020"), Decimal("0.050")]
+    elif trade_type == "LATE_TREND_PULLBACK":
+        offsets = [Decimal("0.030"), Decimal("0.060")]
+    elif trade_type == "RANGE":
+        offsets = [Decimal("0.015"), Decimal("0.030")]
     else:
-        offsets = [Decimal("0.025"), Decimal("0.040"), Decimal("0.060")]
+        return []
 
     return [_round_price(current_price * (Decimal("1") - x)) for x in offsets]
 
 
-def _make_sell_zones(
-    current_price: Decimal,
-    structure_state: str,
-) -> list[Decimal]:
+def _make_sell_zones(current_price: Decimal, trade_type: str) -> list[Decimal]:
     if current_price <= DECIMAL_ZERO:
         return []
 
-    if structure_state == "TREND_UP":
-        offsets = [Decimal("0.025"), Decimal("0.050"), Decimal("0.080")]
-    elif structure_state == "RANGE":
-        offsets = [Decimal("0.015"), Decimal("0.030"), Decimal("0.045")]
+    if trade_type == "TREND":
+        offsets = [Decimal("0.050"), Decimal("0.100")]
+    elif trade_type == "LATE_TREND_PULLBACK":
+        offsets = [Decimal("0.050"), Decimal("0.100")]
+    elif trade_type == "RANGE":
+        offsets = [Decimal("0.015"), Decimal("0.030")]
     else:
-        offsets = [Decimal("0.020"), Decimal("0.040"), Decimal("0.060")]
+        return []
 
     return [_round_price(current_price * (Decimal("1") + x)) for x in offsets]
 
 
-def _make_invalidation_level(
-    current_price: Decimal,
-    structure_state: str,
-) -> Decimal | None:
+def _make_invalidation_level(current_price: Decimal, trade_type: str) -> Decimal | None:
     if current_price <= DECIMAL_ZERO:
         return None
 
-    if structure_state == "TREND_UP":
+    if trade_type == "TREND":
         return _round_price(current_price * Decimal("0.94"))
-    if structure_state == "RANGE":
+    if trade_type == "LATE_TREND_PULLBACK":
+        return _round_price(current_price * Decimal("0.93"))
+    if trade_type == "RANGE":
         return _round_price(current_price * Decimal("0.955"))
-    return _round_price(current_price * Decimal("0.92"))
+    return None
 
 
-def _derive_execution_mode(
-    action: str,
-    context_score: Decimal,
-    structure_state: str,
-    tactical_state: str,
-) -> str:
-    if action != "BUY":
+def _compute_trade_quality_score(row: dict[str, Any]) -> Decimal:
+    context_score = _coalesce_decimal(row, ["advice_context_score_4h", "advice_context_score_1d"], "0")
+    pullback_quality_score = _coalesce_decimal(row, ["pullback_quality_score_4h"], "0")
+    expansion_position_score = _coalesce_decimal(row, ["expansion_position_score_4h"], "0")
+
+    score = (
+        Decimal("0.4") * context_score
+        + Decimal("0.3") * pullback_quality_score
+        + Decimal("0.3") * expansion_position_score
+    )
+    return score.quantize(Decimal("0.000001"))
+
+
+def _infer_trade_type(row: dict[str, Any], structure_state: str) -> str:
+    advice = _safe_upper(row.get("advice_action_4h"))
+    setup = _safe_upper(row.get("setup_signal_4h"))
+    late_trend_flag = bool(row.get("late_trend_flag_4h"))
+
+    if late_trend_flag:
+        return "LATE_TREND_PULLBACK"
+
+    if advice in {"BUY", "ACCUMULATE", "ADD", "TRIGGERED"}:
+        return "TREND"
+
+    if structure_state == "RANGE" or advice in {"WATCH", "PREPARE"}:
+        return "RANGE"
+
+    if setup in {"CONFIRMED", "READY"}:
+        return "TREND"
+
+    return "WAIT"
+
+
+def _derive_execution_mode(action: str, trade_type: str) -> str:
+    if action == "SELL":
         return "WAIT"
 
-    if context_score >= TOP_TRADE_THRESHOLD and tactical_state in {"PULLBACK", "REJECTION"}:
-        return "PASSIVE_REPRICE"
-
-    if (
-        context_score >= TOP_TRADE_THRESHOLD
-        and structure_state == "TREND_UP"
-        and tactical_state == "BREAKOUT_ATTEMPT"
-    ):
-        return "AGGRESSIVE_LIMIT"
-
-    if context_score >= WATCH_THRESHOLD:
+    if trade_type == "TREND":
         return "PASSIVE"
-
+    if trade_type == "LATE_TREND_PULLBACK":
+        return "WAIT"
+    if trade_type == "RANGE":
+        return "PASSIVE_REPRICE"
     return "WAIT"
 
 
-def _derive_trade_type(
-    structure_state: str,
-    tactical_state: str,
-) -> str:
-    if structure_state == "TREND_UP":
-        return "TREND"
-    if structure_state == "RANGE":
-        return "RANGE"
-    if tactical_state == "FAILURE":
-        return "REVERSAL"
-    return "WAIT"
-
-
-def _make_ladder_plan(
-    action: str,
-    execution_mode: str,
-    buy_zones: list[Decimal],
-    sell_zones: list[Decimal],
-) -> list[str]:
+def _make_ladder_plan(action: str, buy_zones: list[Decimal], sell_zones: list[Decimal]) -> list[str]:
     if action == "BUY" and buy_zones:
-        if execution_mode == "AGGRESSIVE_LIMIT":
-            weights = ["40%", "35%", "25%"]
-        else:
-            weights = ["20%", "40%", "40%"]
-        return [
-            f"{weights[i]} @ {buy_zones[i]}"
-            for i in range(min(len(buy_zones), 3))
-        ]
+        weights = ["40%", "60%"] if len(buy_zones) == 2 else ["20%", "40%", "40%"]
+        return [f"{weights[i]} @ {buy_zones[i]}" for i in range(min(len(weights), len(buy_zones)))]
 
     if action == "SELL" and sell_zones:
-        weights = ["30%", "35%", "35%"]
-        return [
-            f"{weights[i]} @ {sell_zones[i]}"
-            for i in range(min(len(sell_zones), 3))
-        ]
+        weights = ["50%", "50%"] if len(sell_zones) == 2 else ["30%", "35%", "35%"]
+        return [f"{weights[i]} @ {sell_zones[i]}" for i in range(min(len(weights), len(sell_zones)))]
 
     return ["WAIT"]
 
 
 def _make_short_reason(
     action: str,
+    trade_type: str,
     structure_state: str,
     phase_state: str,
     tactical_state: str,
-    execution_mode: str,
-    row: dict[str, Any],
 ) -> str:
-    advice_text = _coalesce_text(
-        row,
-        ["advice_summary_text_4h", "advice_summary_text_1d", "decision_summary_text", "reason_text_4h"],
-        default="",
-    )
-
     if action == "BUY":
-        base = (
-            f"{structure_state} with {phase_state.lower()} context; tactical state={tactical_state.lower()}.\n"
-            f"Use {execution_mode.lower()} execution because structure leads and 5m only refines timing."
+        return (
+            f"{trade_type} candidate within {structure_state} / {phase_state}; tactical state={tactical_state.lower()}.\n"
+            f"Structure is usable, but timing still depends on cleaner pullback quality."
         )
-        if advice_text:
-            return f"{base}\n{advice_text}"
-        return base
 
     if action == "SELL":
         return (
-            "Structure is not supportive for fresh risk-on continuation.\n"
-            "Use staged exits into strength rather than forcing a market chase."
+            "Structure is weak or late for fresh upside positioning.\n"
+            "Reduce into strength rather than adding fresh longs."
         )
 
-    if advice_text:
-        return f"Structure clarity is insufficient or reward/risk is weak.\n{advice_text}"
-
     return (
-        "Structure clarity is insufficient or reward/risk is weak.\n"
-        "Preserve optionality and wait for cleaner alignment."
+        "Current setup is informative but not yet strong enough to justify new exposure.\n"
+        "Stay selective and preserve optionality."
     )
 
 
-def _classify_bucket(
-    action: str,
-    context_score: Decimal,
-    entry_quality: str,
-    structure_state: str,
-) -> str:
-    if action == "BUY" and context_score > TOP_TRADE_THRESHOLD and entry_quality == "HIGH":
-        return "TOP"
+def _classify_bucket(action: str, trade_type: str, trade_quality_score: Decimal) -> str:
     if action == "SELL":
-        return "REDUCE"
-    if context_score >= WATCH_THRESHOLD and structure_state in {"TREND_UP", "RANGE", "TRANSITION"}:
+        return "NO_TRADE"
+
+    if trade_type == "TREND" and trade_quality_score >= TOP_TRADE_THRESHOLD:
+        return "TOP"
+
+    if trade_quality_score >= WATCH_THRESHOLD and trade_type in {"TREND", "LATE_TREND_PULLBACK", "RANGE"}:
         return "WATCH"
+
     return "NO_TRADE"
 
 
 def _build_report(row: dict[str, Any]) -> AssetReport:
     context_score = max(
-        _coalesce_decimal(row, ["opportunity_score_4h"], "0"),
-        _coalesce_decimal(row, ["opportunity_score_1d"], "0"),
-        _coalesce_decimal(row, ["signal_confidence_4h"], "0"),
-        _coalesce_decimal(row, ["signal_confidence_1d"], "0"),
+        _coalesce_decimal(row, ["advice_context_score_4h"], "0"),
+        _coalesce_decimal(row, ["advice_context_score_1d"], "0"),
     )
 
-    action = _derive_action(row, context_score)
     structure_state = _derive_structure_state(row)
     phase_state = _derive_phase_state(row)
+    trade_quality_score = _compute_trade_quality_score(row)
+    trade_type = _infer_trade_type(row, structure_state)
     tactical_state = _derive_tactical_state(row, structure_state)
-    entry_quality = _derive_entry_quality(context_score, structure_state, tactical_state)
+    action = _derive_action(row, context_score)
+    entry_quality = _derive_entry_quality(context_score, structure_state, tactical_state, trade_quality_score)
 
     current_price = _pick_price_anchor(row)
-    buy_zones = _make_buy_zones(current_price, structure_state, phase_state)
-    sell_zones = _make_sell_zones(current_price, structure_state)
-    invalidation_level = _make_invalidation_level(current_price, structure_state)
-    execution_mode = _derive_execution_mode(action, context_score, structure_state, tactical_state)
-    trade_type = _derive_trade_type(structure_state, tactical_state)
-    ladder_plan = _make_ladder_plan(action, execution_mode, buy_zones, sell_zones)
-    bucket = _classify_bucket(action, context_score, entry_quality, structure_state)
+    buy_zones = _make_buy_zones(current_price, trade_type)
+    sell_zones = _make_sell_zones(current_price, trade_type)
+    invalidation_level = _make_invalidation_level(current_price, trade_type)
+    execution_mode = _derive_execution_mode(action, trade_type)
+    ladder_plan = _make_ladder_plan(action, buy_zones, sell_zones)
+    bucket = _classify_bucket(action, trade_type, trade_quality_score)
 
     setup_bias = _coalesce_text(
         row,
-        ["regime_label_4h", "regime_label_1d"],
+        ["advice_setup_bias_4h", "advice_setup_bias_1d"],
         default="NEUTRAL",
     ).upper()
 
     short_reason = _make_short_reason(
         action=action,
+        trade_type=trade_type,
         structure_state=structure_state,
         phase_state=phase_state,
         tactical_state=tactical_state,
-        execution_mode=execution_mode,
-        row=row,
     )
 
     return AssetReport(
         asset_id=int(row["asset_id"]),
         symbol=str(row["symbol"]),
         action=action,
-        context_score=context_score,
+        context_score=trade_quality_score,
         setup_bias=setup_bias,
         structure_state=structure_state,
         phase_state=phase_state,
@@ -625,7 +590,7 @@ def _build_report(row: dict[str, Any]) -> AssetReport:
     )
 
 
-def _sort_key(report: AssetReport) -> tuple[int, Decimal, int, int, str]:
+def _sort_key(report: AssetReport) -> tuple[Decimal, int, int, str]:
     entry_rank = {"HIGH": 3, "MEDIUM": 2, "LOW": 1}.get(report.entry_quality, 0)
     structure_rank = {
         "TREND_UP": 3,
@@ -634,7 +599,6 @@ def _sort_key(report: AssetReport) -> tuple[int, Decimal, int, int, str]:
         "TREND_DOWN": 0,
     }.get(report.structure_state, 0)
     return (
-        derive_ui_priority(report),
         report.context_score,
         entry_rank,
         structure_rank,
@@ -642,26 +606,10 @@ def _sort_key(report: AssetReport) -> tuple[int, Decimal, int, int, str]:
     )
 
 
-def _format_levels(levels: list[Decimal]) -> str:
-    if not levels:
-        return "[]"
-    return "[" + ", ".join(str(x) for x in levels) + "]"
-
-
 def _first_or_none(levels: list[Decimal], index: int) -> str:
     if len(levels) <= index:
         return "-"
     return str(levels[index])
-
-
-def _bucket_title_for_print(bucket_name: str) -> str:
-    mapping = {
-        "BUY NOW": "🔥 BUY NOW",
-        "WATCH BUY": "👀 WATCH BUY",
-        "REDUCE / SELL": "⚠ REDUCE / SELL INTO STRENGTH",
-        "NO TRADE": "❌ NO TRADE",
-    }
-    return mapping.get(bucket_name, bucket_name)
 
 
 def _print_human_section(title: str, reports: list[AssetReport]) -> None:
@@ -674,33 +622,45 @@ def _print_human_section(title: str, reports: list[AssetReport]) -> None:
         return
 
     for report in reports:
-        human_action = derive_human_action(report)
-        human_execution = derive_human_execution_label(report)
-        one_liner = derive_one_liner(report)
+        labels = derive_human_labels(report)
 
         print(
-            f"{report.symbol} | {human_action} | score={report.context_score} | "
-            f"{report.structure_state} | {human_execution}"
+            f"{report.symbol} | {labels['human_bucket']} | score={report.context_score} | "
+            f"{report.structure_state} | {labels['human_execution_label']}"
         )
-        print(f"Bias: {report.setup_bias} | Phase: {report.phase_state} | Entry: {report.entry_quality}")
+        print(
+            f"Action: {labels['human_action']} | "
+            f"Tone: {labels['ui_tone']} | "
+            f"Priority: {labels['ui_priority']}"
+        )
+        print(
+            f"Bias: {report.setup_bias} | Phase: {report.phase_state} | "
+            f"Entry: {report.entry_quality} | Type: {report.trade_type}"
+        )
 
         if should_show_buy_fields(report):
             print(f"Buy now: {_first_or_none(report.buy_zones, 0)}")
             print(f"Deeper buy: {_first_or_none(report.buy_zones, 1)}")
-            print(f"Sell first: {_first_or_none(report.sell_zones, 0)}")
-        elif should_show_sell_fields(report):
-            print(f"Sell first: {_first_or_none(report.sell_zones, 0)}")
-            print(f"Sell higher: {_first_or_none(report.sell_zones, 1)}")
-            print("Fresh longs: avoid")
-        elif should_show_no_trade_fields(report):
-            print("Action: no valid setup")
-            print("Fresh entries: avoid")
-            print(f"Next useful area: {_first_or_none(report.buy_zones, 0)}")
 
-        print(f"Invalidation: {report.invalidation_level if report.invalidation_level is not None else '-'}")
-        print(f"Why: {one_liner}")
+        if should_show_sell_fields(report):
+            print(f"Sell first: {_first_or_none(report.sell_zones, 0)}")
+
+        if should_show_no_trade_fields(report):
+            print("Buy now: -")
+            print("Deeper buy: -")
+            print("Sell first: -")
+
+        print(f"Invalidation: {safe_decimal_str(report.invalidation_level)}")
+        print(f"Why: {labels['one_liner']}")
         print("-" * 72)
+
     print()
+
+
+def _format_levels(levels: list[Decimal]) -> str:
+    if not levels:
+        return "[]"
+    return "[" + ", ".join(str(x) for x in levels) + "]"
 
 
 def _print_extended_bucket(title: str, reports: list[AssetReport]) -> None:
@@ -713,7 +673,9 @@ def _print_extended_bucket(title: str, reports: list[AssetReport]) -> None:
         return
 
     for report in reports:
-        print(f"{report.symbol} | {report.action} | score={report.context_score}")
+        labels = derive_human_labels(report)
+
+        print(f"{report.symbol} | {labels['human_bucket']} | score={report.context_score}")
         print(
             f"Structure: {report.structure_state} / {report.phase_state} / bias={report.setup_bias}"
         )
@@ -723,13 +685,15 @@ def _print_extended_bucket(title: str, reports: list[AssetReport]) -> None:
         print(
             f"Plan: Buy={_format_levels(report.buy_zones)} | Sell={_format_levels(report.sell_zones)}"
         )
-        print(f"Invalidation: {report.invalidation_level}")
+        print(f"Invalidation: {safe_decimal_str(report.invalidation_level)}")
         print(
-            f"Execution: {report.execution_mode} | Ladder={'; '.join(report.ladder_plan)}"
+            f"Execution: {labels['human_execution_label']} | Ladder={'; '.join(report.ladder_plan)}"
         )
         print("Reason:")
         print(report.short_reason)
+        print(labels["one_liner"])
         print("-" * 72)
+
     print()
 
 
@@ -738,30 +702,27 @@ def main() -> int:
     reports = [_build_report(row) for row in rows]
     reports.sort(key=_sort_key, reverse=True)
 
-    buy_now = [r for r in reports if derive_human_bucket(r) == "BUY NOW"]
-    watch_buy = [r for r in reports if derive_human_bucket(r) == "WATCH BUY"]
-    reduce_sell = [r for r in reports if derive_human_bucket(r) == "REDUCE / SELL"]
-    no_trade = [r for r in reports if derive_human_bucket(r) == "NO TRADE"]
+    top_trades = [r for r in reports if r.bucket == "TOP"]
+    active_watch = [r for r in reports if r.bucket == "WATCH"]
+    no_trade = [r for r in reports if r.bucket == "NO_TRADE"]
 
     print("=== LIVE TRADE REPORT (HUMAN) ===")
     print()
-    _print_human_section(_bucket_title_for_print("BUY NOW"), buy_now)
-    _print_human_section(_bucket_title_for_print("WATCH BUY"), watch_buy)
-    _print_human_section(_bucket_title_for_print("REDUCE / SELL"), reduce_sell)
-    _print_human_section(_bucket_title_for_print("NO TRADE"), no_trade)
+    _print_human_section("🔥 EXECUTE NOW", top_trades)
+    _print_human_section("👀 ACTIVE WATCH", active_watch)
+    _print_human_section("❌ NO TRADE", no_trade)
 
     print("=== LIVE TRADE REPORT (EXTENDED DETAIL) ===")
     print()
-    _print_extended_bucket("🔥 BUY NOW", buy_now)
-    _print_extended_bucket("👀 WATCH BUY", watch_buy)
-    _print_extended_bucket("⚠ REDUCE / SELL INTO STRENGTH", reduce_sell)
+    _print_extended_bucket("🔥 TOP TRADES (EXECUTE NOW)", top_trades)
+    _print_extended_bucket("👀 ACTIVE WATCH", active_watch)
     _print_extended_bucket("❌ NO TRADE", no_trade)
 
     print("SUMMARY")
-    print(f"buy_now={len(buy_now)}")
-    print(f"watch_buy={len(watch_buy)}")
-    print(f"reduce_sell={len(reduce_sell)}")
-    print(f"no_trade={len(no_trade)}")
+    print(f"buy_now={len([r for r in reports if derive_human_labels(r)['human_bucket'] == 'BUY NOW'])}")
+    print(f"watch_buy={len([r for r in reports if derive_human_labels(r)['human_bucket'] == 'WATCH BUY'])}")
+    print(f"reduce_sell={len([r for r in reports if derive_human_labels(r)['human_bucket'] == 'REDUCE / SELL'])}")
+    print(f"no_trade={len([r for r in reports if derive_human_labels(r)['human_bucket'] == 'NO TRADE'])}")
 
     return 0
 

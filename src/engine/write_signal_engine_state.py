@@ -37,6 +37,10 @@ class SignalEngineStateRow:
     setup_score: Optional[Decimal] = None
     risk_score: Optional[Decimal] = None
 
+    expansion_position_score: Optional[Decimal] = None
+    pullback_quality_score: Optional[Decimal] = None
+    late_trend_flag: int = 0
+
     signal_confidence: Optional[Decimal] = None
     reason_code: Optional[str] = None
     reason_text: Optional[str] = None
@@ -78,6 +82,10 @@ def upsert_signal_engine_state(conn, rows: List[SignalEngineStateRow]) -> int:
         setup_score,
         risk_score,
 
+        expansion_position_score,
+        pullback_quality_score,
+        late_trend_flag,
+
         signal_confidence,
         reason_code,
         reason_text,
@@ -87,6 +95,7 @@ def upsert_signal_engine_state(conn, rows: List[SignalEngineStateRow]) -> int:
         %s,%s,%s,%s,%s,%s,%s,%s,
         %s,%s,%s,%s,
         %s,%s,%s,%s,%s,%s,%s,%s,
+        %s,%s,%s,
         %s,%s,%s,%s
     )
     ON DUPLICATE KEY UPDATE
@@ -113,6 +122,10 @@ def upsert_signal_engine_state(conn, rows: List[SignalEngineStateRow]) -> int:
         relative_score = VALUES(relative_score),
         setup_score = VALUES(setup_score),
         risk_score = VALUES(risk_score),
+
+        expansion_position_score = VALUES(expansion_position_score),
+        pullback_quality_score = VALUES(pullback_quality_score),
+        late_trend_flag = VALUES(late_trend_flag),
 
         signal_confidence = VALUES(signal_confidence),
         reason_code = VALUES(reason_code),
@@ -149,6 +162,10 @@ def upsert_signal_engine_state(conn, rows: List[SignalEngineStateRow]) -> int:
             None if row.relative_score is None else str(row.relative_score),
             None if row.setup_score is None else str(row.setup_score),
             None if row.risk_score is None else str(row.risk_score),
+
+            None if row.expansion_position_score is None else str(row.expansion_position_score),
+            None if row.pullback_quality_score is None else str(row.pullback_quality_score),
+            row.late_trend_flag,
 
             None if row.signal_confidence is None else str(row.signal_confidence),
             row.reason_code,

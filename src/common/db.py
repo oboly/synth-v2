@@ -19,6 +19,9 @@ def _getenv_required(name: str) -> str:
     return value
 
 
+def get_db_connection():
+    return get_connection()
+
 def get_connection():
     return pymysql.connect(
         host=_getenv_required("DB_HOST"),
