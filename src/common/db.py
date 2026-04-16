@@ -22,6 +22,7 @@ def _getenv_required(name: str) -> str:
 def get_db_connection():
     return get_connection()
 
+
 def get_connection():
     return pymysql.connect(
         host=_getenv_required("DB_HOST"),
@@ -29,7 +30,7 @@ def get_connection():
         user=_getenv_required("DB_USER"),
         password=os.getenv("DB_PASSWORD", ""),
         database=_getenv_required("DB_NAME"),
-        charset="utf8mb4",
+        charset=os.getenv("DB_CHARSET", "utf8mb4"),
         cursorclass=DictCursor,
         autocommit=False,
     )

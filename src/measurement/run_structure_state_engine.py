@@ -5,14 +5,15 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-
 from src.common.db import get_db_connection
+from src.structure.range_state import compute_range_state
 
 
 ENGINE_NAME = "structure_state_engine"
-ENGINE_VERSION = "1.1"
+ENGINE_VERSION = "1.2"
 DEFAULT_VENUE = "bitvavo"
 DEFAULT_INTERVALS = ("1h", "4h", "1d")
+RANGE_LOOKBACK = 20
 
 
 def parse_args() -> argparse.Namespace:
@@ -99,6 +100,73 @@ def fetch_latest_feat_rows(
     return out
 
 
+def fetch_recent_candles_by_asset(
+    conn,
+    *,
+    venue: str,
+    interval_code: str,
+    asset_id: int | None,
+    limit_per_asset: int,
+) -> dict[int, list[dict[str, float]]]:
+    where = [
+        "mc.venue = %s",
+        "mc.interval_code = %s",
+        "a.is_enabled = 1",
+    ]
+    params: list[Any] = [venue, interval_code]
+
+    if asset_id is not None:
+        where.append("mc.asset_id = %s")
+        params.append(asset_id)
+
+    where_sql = " AND ".join(where)
+
+    sql = f"""
+    SELECT *
+    FROM (
+        SELECT
+            mc.asset_id,
+            mc.high_price AS high,
+            mc.low_price AS low,
+            mc.close_price AS close,
+            mc.close_ts_utc,
+            ROW_NUMBER() OVER (
+                PARTITION BY mc.asset_id, mc.venue, mc.interval_code
+                ORDER BY mc.close_ts_utc DESC
+            ) AS rn
+        FROM obs_market_candle mc
+        JOIN asset a
+          ON a.asset_id = mc.asset_id
+        WHERE {where_sql}
+    ) q
+    WHERE q.rn <= %s
+    ORDER BY q.asset_id, q.close_ts_utc ASC
+    """
+
+    params.append(limit_per_asset)
+
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+
+    result: dict[int, list[dict[str, float]]] = {}
+
+    for row in rows:
+        if not isinstance(row, dict):
+            raise TypeError("Expected dict rows from database cursor")
+
+        aid = int(row["asset_id"])
+        result.setdefault(aid, []).append(
+            {
+                "high": float(row["high"]),
+                "low": float(row["low"]),
+                "close": float(row["close"]),
+            }
+        )
+
+    return result
+
+
 def group_current_previous(
     rows: list[dict[str, Any]],
 ) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
@@ -157,7 +225,10 @@ def compute_trend_state(row: dict[str, Any]) -> tuple[str, Decimal]:
     return "RANGE", Decimal(str(round(bullish_score, 6)))
 
 
-def compute_pullback_state(row: dict[str, Any], trend_state: str) -> tuple[str, Decimal]:
+def compute_pullback_state(
+    row: dict[str, Any],
+    trend_state: str,
+) -> tuple[str, Decimal]:
     p20 = float(row["price_vs_ema20"]) if row["price_vs_ema20"] is not None else 0.0
     p50 = float(row["price_vs_ema50"]) if row["price_vs_ema50"] is not None else 0.0
 
@@ -224,8 +295,6 @@ def compute_reclaim_state(
     had_broader_weakness = (prev_p20 < 0.0) or (prev_p50 < 0.0)
     trend_is_bullish = current_trend_state in {"UPTREND_STRONG", "UPTREND_WEAK"}
 
-    # 1) Attempt:
-    # previous candle below EMA20, current candle back above EMA20
     if had_ema20_weakness and curr_p20 >= 0.0:
         score_value = (
             0.45
@@ -234,9 +303,6 @@ def compute_reclaim_state(
         )
         return "RECLAIM_ATTEMPT", Decimal(str(round(_clamp(score_value), 6)))
 
-    # 2) Confirmed:
-    # prior weakness existed, price is now clearly back above EMA20,
-    # with either near/above EMA50 or bullish trend context.
     if had_broader_weakness and curr_p20 >= 0.005 and (
         curr_p50 >= -0.01 or trend_is_bullish
     ):
@@ -249,13 +315,12 @@ def compute_reclaim_state(
             score_value += 0.03
         return "RECLAIM_CONFIRMED", Decimal(str(round(_clamp(score_value), 6)))
 
-    # 3) Failed:
-    # previous candle was near/above EMA20 after weakness, current loses it again
     if had_broader_weakness and prev_p20 >= -0.002 and curr_p20 < -0.005:
         score_value = 0.05 + 0.12 * _clamp(abs(curr_p20) / 0.04)
         return "FAILED_RECLAIM", Decimal(str(round(_clamp(score_value), 6)))
 
     return "NO_RECLAIM_ATTEMPT", Decimal("0.000000")
+
 
 def upsert_structure_rows(conn, rows: list[dict[str, Any]]) -> int:
     if not rows:
@@ -270,9 +335,11 @@ def upsert_structure_rows(conn, rows: list[dict[str, Any]]) -> int:
         trend_state,
         pullback_state,
         reclaim_state,
+        range_state,
         trend_score,
         pullback_score,
         reclaim_score,
+        range_score,
         engine_name,
         engine_version
     ) VALUES (
@@ -283,9 +350,11 @@ def upsert_structure_rows(conn, rows: list[dict[str, Any]]) -> int:
         %(trend_state)s,
         %(pullback_state)s,
         %(reclaim_state)s,
+        %(range_state)s,
         %(trend_score)s,
         %(pullback_score)s,
         %(reclaim_score)s,
+        %(range_score)s,
         %(engine_name)s,
         %(engine_version)s
     )
@@ -293,9 +362,11 @@ def upsert_structure_rows(conn, rows: list[dict[str, Any]]) -> int:
         trend_state = VALUES(trend_state),
         pullback_state = VALUES(pullback_state),
         reclaim_state = VALUES(reclaim_state),
+        range_state = VALUES(range_state),
         trend_score = VALUES(trend_score),
         pullback_score = VALUES(pullback_score),
-        reclaim_score = VALUES(reclaim_score)
+        reclaim_score = VALUES(reclaim_score),
+        range_score = VALUES(range_score)
     """
 
     with conn.cursor() as cur:
@@ -319,6 +390,14 @@ def run(*, venue: str, intervals: tuple[str, ...], asset_id: int | None) -> int:
                 asset_id=asset_id,
             )
 
+            recent_candles_by_asset = fetch_recent_candles_by_asset(
+                conn,
+                venue=venue,
+                interval_code=interval_code,
+                asset_id=asset_id,
+                limit_per_asset=RANGE_LOOKBACK,
+            )
+
             paired_rows = group_current_previous(feat_rows)
             out_rows: list[dict[str, Any]] = []
 
@@ -334,6 +413,12 @@ def run(*, venue: str, intervals: tuple[str, ...], asset_id: int | None) -> int:
                     trend_state,
                 )
 
+                candles = recent_candles_by_asset.get(int(current_row["asset_id"]), [])
+                range_state, range_score = compute_range_state(
+                    candles,
+                    lookback=RANGE_LOOKBACK,
+                )
+
                 out_rows.append(
                     {
                         "asset_id": int(current_row["asset_id"]),
@@ -343,9 +428,13 @@ def run(*, venue: str, intervals: tuple[str, ...], asset_id: int | None) -> int:
                         "trend_state": trend_state,
                         "pullback_state": pullback_state,
                         "reclaim_state": reclaim_state,
+                        "range_state": range_state,
                         "trend_score": _to_decimal_str(trend_score),
                         "pullback_score": _to_decimal_str(pullback_score),
                         "reclaim_score": _to_decimal_str(reclaim_score),
+                        "range_score": (
+                            str(range_score) if range_score is not None else None
+                        ),
                         "engine_name": ENGINE_NAME,
                         "engine_version": ENGINE_VERSION,
                     }
@@ -366,9 +455,11 @@ if __name__ == "__main__":
     args = parse_args()
     intervals = tuple(args.interval) if args.interval else DEFAULT_INTERVALS
     raise SystemExit(
-        0 if run(
+        0
+        if run(
             venue=args.venue,
             intervals=intervals,
             asset_id=args.asset_id,
-        ) >= 0 else 1
+        ) >= 0
+        else 1
     )

@@ -275,10 +275,12 @@ def run(interval: str) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run advice engine from signal_engine_state")
-    parser.add_argument("--interval", default="1h")
+    parser = argparse.ArgumentParser(
+        description="Run advice engine."
+    )
+    parser.add_argument("--interval", required=True)
+    parser.add_argument("--venue", default="bitvavo")  # <-- toevoegen
     return parser.parse_args()
-
 
 if __name__ == "__main__":
     args = parse_args()

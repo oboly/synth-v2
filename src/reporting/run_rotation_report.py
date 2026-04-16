@@ -9,9 +9,8 @@ from src.common.db import get_db_connection
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Human-friendly multi-timeframe rotation report"
+        description="Human-friendly rotation report using effective overlay-adjusted selection output"
     )
-    parser.add_argument("--ranking-version", default="v2")
     parser.add_argument("--top", type=int, default=15)
     return parser.parse_args()
 
@@ -22,28 +21,39 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
     return Decimal(str(value))
 
 
-def fetch_rows(conn, *, ranking_version: str) -> list[dict[str, Any]]:
+def fetch_rows(conn) -> list[dict[str, Any]]:
     sql = """
     SELECT
-        interval_code,
         asof_ts_utc,
-        final_rank,
         symbol,
-        asset_class,
-        sector,
-        trade_quality_score,
-        rotation_bucket,
-        classification_code,
-        sleeve_fit_code,
-        notes
-    FROM vw_ranking_latest
-    WHERE ranking_version = %s
-      AND interval_code IN ('1h', '4h', '1d')
-    ORDER BY interval_code, final_rank
+        selection_state,
+        selection_bias,
+        priority_rank,
+
+        base_selection_score,
+        effective_selection_score,
+        effective_recommendation,
+
+        regime_label_1h,
+        regime_label_4h,
+        advice_state_1h,
+        advice_state_4h,
+
+        breakout_failure_regime_tier,
+        structural_conflict_type,
+        htf_rule_state,
+        recommendation_cap_final,
+
+        latest_failed_breakout_ts_utc,
+        hours_since_failed_breakout,
+        summary_text
+
+    FROM v_selection_latest_effective
+    ORDER BY effective_selection_score DESC, symbol ASC
     """
 
     with conn.cursor() as cur:
-        cur.execute(sql, (ranking_version,))
+        cur.execute(sql)
         rows = cur.fetchall()
 
     out: list[dict[str, Any]] = []
@@ -54,179 +64,132 @@ def fetch_rows(conn, *, ranking_version: str) -> list[dict[str, Any]]:
     return out
 
 
-def group_by_symbol(rows: list[dict[str, Any]]) -> dict[str, dict[str, dict[str, Any]]]:
-    grouped: dict[str, dict[str, dict[str, Any]]] = {}
+def classify_action(row: dict[str, Any]) -> tuple[str, str, str]:
+    rec = str(row.get("effective_recommendation") or "NO_TRADE").upper()
+    selection_state = str(row.get("selection_state") or "").upper()
 
-    for row in rows:
-        symbol = str(row["symbol"])
-        interval_code = str(row["interval_code"])
-
-        grouped.setdefault(symbol, {})
-        grouped[symbol][interval_code] = row
-
-    return grouped
-
-
-def classify_action(
-    row_4h: dict[str, Any] | None,
-    row_1h: dict[str, Any] | None,
-    row_1d: dict[str, Any] | None,
-) -> tuple[str, str, str]:
-    class_4h = str((row_4h or {}).get("classification_code") or "")
-    class_1h = str((row_1h or {}).get("classification_code") or "")
-    class_1d = str((row_1d or {}).get("classification_code") or "")
-
-    if class_4h in {"LEADER", "CONTINUATION_CANDIDATE"} and class_1h == "CONTINUATION_CANDIDATE":
+    if rec == "BUY":
         return (
             "BUY READY",
             "Nu tot ongeveer 6 uur",
-            "Structuur en timing liggen beide redelijk goed.",
+            "Overlay-gecorrigeerde score en context laten directe allocatie toe.",
         )
 
-    if class_4h in {"LEADER", "CONTINUATION_CANDIDATE"} and class_1h == "PULLBACK_WATCH":
+    if rec == "WATCH":
+        if selection_state == "PREPARE":
+            return (
+                "PREPARE",
+                "Binnen ongeveer 4 tot 24 uur",
+                "Structuur is constructief, maar overlay-context remt directe aggressie.",
+            )
+
+        if selection_state == "WATCHLIST":
+            return (
+                "WATCHLIST",
+                "Binnen ongeveer 1 tot 3 dagen",
+                "Interessant, maar nog niet rijp voor directe allocatie.",
+            )
+
         return (
-            "PREPARE",
+            "WATCH",
             "Binnen ongeveer 4 tot 24 uur",
-            "Structuur is sterk, maar timing wacht nog op dip of reclaim.",
+            "Context is bruikbaar, maar nog niet sterk genoeg voor directe allocatie.",
         )
 
-    if class_4h == "PULLBACK_WATCH":
-        return (
-            "WATCHLIST",
-            "Binnen ongeveer 1 tot 3 dagen",
-            "Interessant, maar nog niet rijp voor directe actie.",
-        )
-
-    if class_4h in {"RANGE_TRADER", "SPECULATIVE_HIGH_BETA"}:
+    if rec == "TACTICAL_ONLY":
         return (
             "TACTICAL ONLY",
             "Intraday tot ongeveer 1 dag",
             "Alleen geschikt voor kortere, tactische trades.",
         )
 
-    if class_1d == "PULLBACK_WATCH" and class_4h in {"NO_TRADE", "RANGE_TRADER"}:
-        return (
-            "WATCHLIST",
-            "Binnen ongeveer 1 tot 3 dagen",
-            "Dagstructuur verbetert, maar 4h bevestigt nog niet genoeg.",
-        )
+    return (
+        "AVOID / NO TRADE",
+        "-",
+        "Geen duidelijke overlay-gecorrigeerde edge voor nieuwe allocatie.",
+    )
+
+
+def overlay_line(row: dict[str, Any]) -> str:
+    parts: list[str] = []
+
+    if row.get("breakout_failure_regime_tier"):
+        parts.append(f"breakout={row['breakout_failure_regime_tier']}")
+
+    if row.get("structural_conflict_type"):
+        parts.append(f"struct={row['structural_conflict_type']}")
+
+    if row.get("htf_rule_state"):
+        parts.append(f"htf={row['htf_rule_state']}")
+
+    if row.get("recommendation_cap_final"):
+        parts.append(f"cap={row['recommendation_cap_final']}")
+
+    if row.get("hours_since_failed_breakout") is not None and row.get("breakout_failure_regime_tier"):
+        parts.append(f"hours_since_failure={row['hours_since_failed_breakout']}")
+
+    if not parts:
+        return "Geen actieve overlay-conflicten."
+
+    return " | ".join(parts)
+
+
+def structure_line(row: dict[str, Any]) -> str:
+    symbol = str(row["symbol"])
+    state = str(row["selection_state"])
+    bias = str(row["selection_bias"])
+    base_score = str(row["base_selection_score"])
+    eff_score = str(row["effective_selection_score"])
 
     return (
-        "AVOID",
-        "-",
-        "Geen duidelijke edge voor nieuwe allocatie.",
+        f"{symbol} staat nu op {state} / {bias}. "
+        f"Base score={base_score}, effective score={eff_score}."
     )
 
 
-def structure_line(row_4h: dict[str, Any] | None) -> str:
-    if not row_4h:
-        return "Geen 4h-structuur beschikbaar."
+def timing_line(row: dict[str, Any]) -> str:
+    symbol = str(row["symbol"])
+    advice_4h = str(row.get("advice_state_4h") or "-")
+    advice_1h = str(row.get("advice_state_1h") or "-")
 
-    symbol = str(row_4h["symbol"])
-    classification = str(row_4h["classification_code"])
-    bucket = str(row_4h["rotation_bucket"])
-    score = str(row_4h["trade_quality_score"])
-
-    if classification == "LEADER":
-        return f"{symbol} is structureel sterk op 4h en hoort nu bij de voorlopers. Score: {score}."
-    if classification == "CONTINUATION_CANDIDATE":
-        return f"{symbol} heeft op 4h een bruikbare continuation-structuur. Score: {score}."
-    if classification == "PULLBACK_WATCH":
-        return f"{symbol} is op 4h interessant, maar wacht nog op een betere pullback-entry. Score: {score}."
-    if classification == "RANGE_TRADER":
-        return f"{symbol} zit op 4h meer in range-gedrag dan in echte trendrotatie. Score: {score}."
-    if classification == "SPECULATIVE_HIGH_BETA":
-        return f"{symbol} is op 4h vooral een high-beta/speculatieve setup. Score: {score}."
-
-    return f"{symbol} heeft op 4h nog geen overtuigende structurele allocatie-status. Bucket: {bucket}. Score: {score}."
+    return f"4h advice={advice_4h}; 1h advice={advice_1h} voor {symbol}."
 
 
-def timing_line(row_1h: dict[str, Any] | None) -> str:
-    if not row_1h:
-        return "Geen 1h-timing beschikbaar."
-
-    symbol = str(row_1h["symbol"])
-    classification = str(row_1h["classification_code"])
-    score = str(row_1h["trade_quality_score"])
-
-    if classification == "CONTINUATION_CANDIDATE":
-        return f"Op 1h ondersteunt timing de trend al redelijk; {symbol} hoeft niet per se op extra dip te wachten. Score: {score}."
-    if classification == "PULLBACK_WATCH":
-        return f"Op 1h wacht timing nog op een dip, reclaim of nettere entry voor {symbol}. Score: {score}."
-    if classification == "RANGE_TRADER":
-        return f"Op 1h is {symbol} momenteel vooral een range/timing-verhaal. Score: {score}."
-    if classification == "SPECULATIVE_HIGH_BETA":
-        return f"Op 1h is {symbol} beweeglijk en vooral tactisch bruikbaar. Score: {score}."
-
-    return f"Op 1h geeft {symbol} nog geen sterke entry-timing voor nieuwe longs. Score: {score}."
+def macro_line(row: dict[str, Any]) -> str:
+    regime_4h = str(row.get("regime_label_4h") or "-")
+    regime_1h = str(row.get("regime_label_1h") or "-")
+    return f"Regime 4h={regime_4h}; regime 1h={regime_1h}."
 
 
-def macro_line(row_1d: dict[str, Any] | None) -> str:
-    if not row_1d:
-        return "Geen 1d-context beschikbaar."
-
-    symbol = str(row_1d["symbol"])
-    classification = str(row_1d["classification_code"])
-    score = str(row_1d["trade_quality_score"])
-
-    if classification == "LEADER":
-        return f"Op 1d wordt {symbol} ook macro bevestigd als leider. Score: {score}."
-    if classification == "CONTINUATION_CANDIDATE":
-        return f"Op 1d ondersteunt de grotere structuur {symbol} al voorzichtig. Score: {score}."
-    if classification == "PULLBACK_WATCH":
-        return f"Op 1d verbetert {symbol}, maar de grotere structuur wacht nog op verdere bevestiging. Score: {score}."
-    if classification == "RANGE_TRADER":
-        return f"Op 1d zit {symbol} nog meer in neutrale/range-context dan in volle expansie. Score: {score}."
-
-    return f"Op 1d geeft {symbol} nog geen brede structurele bevestiging. Score: {score}."
-
-
-def final_priority(
-    row_4h: dict[str, Any] | None,
-    row_1h: dict[str, Any] | None,
-    row_1d: dict[str, Any] | None,
-    action_label: str,
-) -> tuple[int, Decimal, Decimal, Decimal, str]:
+def final_priority(row: dict[str, Any]) -> tuple[int, Decimal, str]:
     action_rank = {
-        "BUY READY": 5,
-        "PREPARE": 4,
-        "WATCHLIST": 3,
-        "TACTICAL ONLY": 2,
-        "AVOID": 1,
-    }.get(action_label, 0)
+        "BUY": 5,
+        "WATCH": 4,
+        "TACTICAL_ONLY": 3,
+        "NO_TRADE": 1,
+    }.get(str(row.get("effective_recommendation") or "NO_TRADE").upper(), 0)
 
-    score_4h = _to_decimal((row_4h or {}).get("trade_quality_score"), "0")
-    score_1h = _to_decimal((row_1h or {}).get("trade_quality_score"), "0")
-    score_1d = _to_decimal((row_1d or {}).get("trade_quality_score"), "0")
-    symbol = str((row_4h or row_1h or row_1d or {}).get("symbol") or "")
-
-    return (action_rank, score_4h, score_1h, score_1d, symbol)
+    score = _to_decimal(row.get("effective_selection_score"), "0")
+    symbol = str(row.get("symbol") or "")
+    return (action_rank, score, symbol)
 
 
-def render_coin_block(
-    symbol: str,
-    row_4h: dict[str, Any] | None,
-    row_1h: dict[str, Any] | None,
-    row_1d: dict[str, Any] | None,
-) -> str:
-    action_label, time_window, action_reason = classify_action(row_4h, row_1h, row_1d)
-
-    asset_class = str(
-        (row_4h or row_1h or row_1d or {}).get("asset_class") or "-"
-    )
-    sector = str(
-        (row_4h or row_1h or row_1d or {}).get("sector") or "-"
-    )
+def render_coin_block(row: dict[str, Any]) -> str:
+    symbol = str(row["symbol"])
+    action_label, time_window, action_reason = classify_action(row)
 
     lines = [
         f"{symbol} — {action_label}",
-        f"Klasse: {asset_class} | Sector: {sector}",
         f"Tijdvenster: {time_window}",
-        f"Structuur: {structure_line(row_4h)}",
-        f"Timing: {timing_line(row_1h)}",
-        f"Macro: {macro_line(row_1d)}",
+        f"Structuur: {structure_line(row)}",
+        f"Timing: {timing_line(row)}",
+        f"Macro: {macro_line(row)}",
+        f"Overlays: {overlay_line(row)}",
         f"Actie: {action_reason}",
     ]
+
+    if row.get("summary_text"):
+        lines.append(f"Samenvatting: {row['summary_text']}")
 
     return "\n".join(lines)
 
@@ -236,60 +199,47 @@ def main() -> int:
     conn = get_db_connection()
 
     try:
-        rows = fetch_rows(conn, ranking_version=args.ranking_version)
-        grouped = group_by_symbol(rows)
+        rows = fetch_rows(conn)
 
-        snapshot_4h = next((r["asof_ts_utc"] for r in rows if r["interval_code"] == "4h"), None)
-        snapshot_1h = next((r["asof_ts_utc"] for r in rows if r["interval_code"] == "1h"), None)
-        snapshot_1d = next((r["asof_ts_utc"] for r in rows if r["interval_code"] == "1d"), None)
+        if not rows:
+            print("[WARN] no effective rotation rows found")
+            return 0
 
-        ranked_items: list[tuple[tuple[int, Decimal, Decimal, Decimal, str], str, dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]] = []
+        snapshot_ts = rows[0]["asof_ts_utc"]
+        ranked_rows = sorted(rows, key=final_priority, reverse=True)
 
-        for symbol, by_tf in grouped.items():
-            row_4h = by_tf.get("4h")
-            row_1h = by_tf.get("1h")
-            row_1d = by_tf.get("1d")
-            action_label, _, _ = classify_action(row_4h, row_1h, row_1d)
-            prio = final_priority(row_4h, row_1h, row_1d, action_label)
-            ranked_items.append((prio, symbol, row_4h, row_1h, row_1d))
-
-        ranked_items.sort(reverse=True)
-
-        print("=== SYNTH ROTATION REPORT (HUMAN) ===")
+        print("=== SYNTH ROTATION REPORT (HUMAN / EFFECTIVE) ===")
         print()
-        print(f"ranking_version={args.ranking_version}")
-        print(f"snapshot_4h={snapshot_4h}")
-        print(f"snapshot_1h={snapshot_1h}")
-        print(f"snapshot_1d={snapshot_1d}")
+        print(f"snapshot_ts={snapshot_ts}")
         print()
 
         shown = 0
-        for _, symbol, row_4h, row_1h, row_1d in ranked_items:
+        for row in ranked_rows:
             if shown >= args.top:
                 break
 
-            print(render_coin_block(symbol, row_4h, row_1h, row_1d))
+            print(render_coin_block(row))
             print("-" * 88)
             shown += 1
 
         counts = {
-            "BUY READY": 0,
-            "PREPARE": 0,
-            "WATCHLIST": 0,
-            "TACTICAL ONLY": 0,
-            "AVOID": 0,
+            "BUY": 0,
+            "WATCH": 0,
+            "TACTICAL_ONLY": 0,
+            "NO_TRADE": 0,
         }
 
-        for _, _, row_4h, row_1h, row_1d in ranked_items:
-            action_label, _, _ = classify_action(row_4h, row_1h, row_1d)
-            counts[action_label] += 1
+        for row in ranked_rows:
+            rec = str(row.get("effective_recommendation") or "NO_TRADE").upper()
+            if rec not in counts:
+                rec = "NO_TRADE"
+            counts[rec] += 1
 
         print("SUMMARY")
-        print(f"buy_ready={counts['BUY READY']}")
-        print(f"prepare={counts['PREPARE']}")
-        print(f"watchlist={counts['WATCHLIST']}")
-        print(f"tactical_only={counts['TACTICAL ONLY']}")
-        print(f"avoid={counts['AVOID']}")
+        print(f"buy={counts['BUY']}")
+        print(f"watch={counts['WATCH']}")
+        print(f"tactical_only={counts['TACTICAL_ONLY']}")
+        print(f"no_trade={counts['NO_TRADE']}")
 
         return 0
 

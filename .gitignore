@@ -46,3 +46,6 @@ data/exports/
 # --- Temporary files ---
 *.tmp
 *.bak
+
+# local backups
+database/backups/

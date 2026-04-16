@@ -6,15 +6,9 @@ from typing import Any
 from src.common.db import get_db_connection
 
 
-STRUCTURE_ENGINE_NAME = "structure_state_engine"
-STRUCTURE_ENGINE_VERSION = "1.1"
-SELECTION_ENGINE_NAME = "selection_engine"
-SELECTION_ENGINE_VERSION = "1.1"
-
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Technical selection report with structure-state context"
+        description="Technical selection report using effective overlay-adjusted selection output"
     )
     parser.add_argument("--top", type=int, default=20)
     return parser.parse_args()
@@ -23,69 +17,36 @@ def parse_args() -> argparse.Namespace:
 def fetch_rows(conn) -> list[dict[str, Any]]:
     sql = """
     SELECT
-        s.asof_ts_utc,
-        s.priority_rank,
-        s.selection_state,
-        s.selection_bias,
-        s.selection_score,
-        s.regime_label_1h,
-        s.regime_label_4h,
-        s.advice_state_1h,
-        s.advice_state_4h,
-        s.summary_text,
-        a.symbol,
-        a.asset_class,
-        a.sector,
+        asof_ts_utc,
+        priority_rank,
+        symbol,
+        selection_state,
+        selection_bias,
 
-        st1h.trend_state AS trend_state_1h,
-        st1h.pullback_state AS pullback_state_1h,
-        st1h.reclaim_state AS reclaim_state_1h,
+        base_selection_score,
+        effective_selection_score,
 
-        st4h.trend_state AS trend_state_4h,
-        st4h.pullback_state AS pullback_state_4h,
-        st4h.reclaim_state AS reclaim_state_4h,
+        breakout_failure_regime_tier,
+        structural_conflict_type,
+        htf_rule_state,
 
-        st1d.trend_state AS trend_state_1d,
-        st1d.pullback_state AS pullback_state_1d,
-        st1d.reclaim_state AS reclaim_state_1d
+        recommendation_cap_final,
+        effective_recommendation,
 
-    FROM vw_selection_latest s
-    JOIN asset a
-      ON a.asset_id = s.asset_id
+        regime_label_1h,
+        regime_label_4h,
+        advice_state_1h,
+        advice_state_4h,
+        latest_failed_breakout_ts_utc,
+        hours_since_failed_breakout,
+        summary_text
 
-    LEFT JOIN vw_structure_state_latest st1h
-      ON st1h.asset_id = s.asset_id
-     AND st1h.interval_code = '1h'
-     AND st1h.engine_name = %s
-     AND st1h.engine_version = %s
-
-    LEFT JOIN vw_structure_state_latest st4h
-      ON st4h.asset_id = s.asset_id
-     AND st4h.interval_code = '4h'
-     AND st4h.engine_name = %s
-     AND st4h.engine_version = %s
-
-    LEFT JOIN vw_structure_state_latest st1d
-      ON st1d.asset_id = s.asset_id
-     AND st1d.interval_code = '1d'
-     AND st1d.engine_name = %s
-     AND st1d.engine_version = %s
-
-    WHERE s.engine_name = %s
-      AND s.engine_version = %s
-    ORDER BY s.priority_rank
+    FROM v_selection_latest_effective
+    ORDER BY effective_selection_score DESC, symbol ASC
     """
 
     with conn.cursor() as cur:
-        cur.execute(
-            sql,
-            (
-                STRUCTURE_ENGINE_NAME, STRUCTURE_ENGINE_VERSION,
-                STRUCTURE_ENGINE_NAME, STRUCTURE_ENGINE_VERSION,
-                STRUCTURE_ENGINE_NAME, STRUCTURE_ENGINE_VERSION,
-                SELECTION_ENGINE_NAME, SELECTION_ENGINE_VERSION,
-            ),
-        )
+        cur.execute(sql)
         rows = cur.fetchall()
 
     out: list[dict[str, Any]] = []
@@ -104,16 +65,32 @@ def print_group(title: str, rows: list[dict[str, Any]], limit: int) -> None:
         return
 
     for row in rows[:limit]:
+        overlay_bits: list[str] = []
+
+        if row.get("breakout_failure_regime_tier"):
+            overlay_bits.append(f"failure={row['breakout_failure_regime_tier']}")
+
+        if row.get("structural_conflict_type"):
+            overlay_bits.append(f"struct={row['structural_conflict_type']}")
+
+        if row.get("htf_rule_state"):
+            overlay_bits.append(f"htf={row['htf_rule_state']}")
+
+        if row.get("recommendation_cap_final"):
+            overlay_bits.append(f"cap={row['recommendation_cap_final']}")
+
+        overlay_text = " | ".join(overlay_bits) if overlay_bits else "-"
+
         print(
-            f"{row['priority_rank']}. {row['symbol']} | "
-            f"{row['selection_state']} | "
-            f"score={row['selection_score']} | "
+            f"{row['symbol']} | "
+            f"state={row['selection_state']} | "
+            f"bias={row['selection_bias']} | "
+            f"base={row['base_selection_score']} | "
+            f"effective={row['effective_selection_score']} | "
+            f"rec={row['effective_recommendation']} | "
             f"4h_advice={row['advice_state_4h']} | "
             f"1h_advice={row['advice_state_1h']} | "
-            f"4h_trend={row['trend_state_4h']} | "
-            f"1h_pullback={row['pullback_state_1h']} | "
-            f"4h_reclaim={row['reclaim_state_4h']} | "
-            f"1d_reclaim={row['reclaim_state_1d']}"
+            f"overlays={overlay_text}"
         )
     print()
 
@@ -126,31 +103,28 @@ def main() -> int:
         rows = fetch_rows(conn)
 
         if not rows:
-            print("[WARN] no selection rows found")
+            print("[WARN] no effective selection rows found")
             return 0
 
-        print("=== SYNTH SELECTION REPORT ===")
+        print("=== SYNTH SELECTION REPORT (EFFECTIVE) ===")
         print(f"snapshot_ts={rows[0]['asof_ts_utc']}")
         print()
 
-        buy_ready = [r for r in rows if r["selection_state"] == "BUY_READY"]
-        prepare = [r for r in rows if r["selection_state"] == "PREPARE"]
-        watchlist = [r for r in rows if r["selection_state"] == "WATCHLIST"]
-        tactical = [r for r in rows if r["selection_state"] == "TACTICAL_ONLY"]
-        avoid = [r for r in rows if r["selection_state"] == "AVOID"]
+        buy_ready = [r for r in rows if r["effective_recommendation"] == "BUY"]
+        watch = [r for r in rows if r["effective_recommendation"] == "WATCH"]
+        tactical = [r for r in rows if r["effective_recommendation"] == "TACTICAL_ONLY"]
+        avoid = [r for r in rows if r["effective_recommendation"] == "NO_TRADE"]
 
-        print_group("BUY READY", buy_ready, args.top)
-        print_group("PREPARE", prepare, args.top)
-        print_group("WATCHLIST", watchlist, args.top)
+        print_group("BUY", buy_ready, args.top)
+        print_group("WATCH", watch, args.top)
         print_group("TACTICAL ONLY", tactical, args.top)
-        print_group("AVOID", avoid, args.top)
+        print_group("NO TRADE", avoid, args.top)
 
         print("SUMMARY")
-        print(f"buy_ready={len(buy_ready)}")
-        print(f"prepare={len(prepare)}")
-        print(f"watchlist={len(watchlist)}")
+        print(f"buy={len(buy_ready)}")
+        print(f"watch={len(watch)}")
         print(f"tactical_only={len(tactical)}")
-        print(f"avoid={len(avoid)}")
+        print(f"no_trade={len(avoid)}")
 
         return 0
 
