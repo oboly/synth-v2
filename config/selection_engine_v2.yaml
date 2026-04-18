@@ -1,0 +1,52 @@
+quality:
+  penalties:
+    "1d":
+      TRUSTED: 0.0
+      NEW: 0.05
+      DEGRADED: 0.08
+    "4h":
+      TRUSTED: 0.0
+      DEGRADED: 0.05
+
+thresholds:
+  buy_ready:
+    min_score: 0.60
+    max_rank: 5
+
+  prepare:
+    min_score: 0.52
+
+ranking:
+  universe_limit: 30
+
+refinement:
+  "1h":
+    enabled_if_not_blocked: true
+    bonus: 0.03
+    penalty: -0.05
+
+states:
+  block_conditions:
+    - "1d == BLOCKED"
+    - "4h == BLOCKED"
+
+  new_asset_rules:
+    max_state: PREPARE
+
+sleeves:
+  CORE_STRUCTURAL:
+    requires:
+      - "1d == TRUSTED"
+      - "4h == TRUSTED"
+
+  SWING_STRUCTURAL:
+    allows:
+      - "1d in [TRUSTED, NEW, DEGRADED]"
+
+  TACTICAL_PULSE:
+    allows:
+      - "4h != BLOCKED"
+
+  EXPERIMENTAL:
+    allows:
+      - "1d != BLOCKED"

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -10,11 +9,27 @@ import requests
 
 
 BITVAVO_BASE_URL = "https://api.bitvavo.com/v2"
+BITVAVO_MAX_LIMIT = 1440
 
-INTERVAL_MS: dict[str, int] = {
-    "1h": 60 * 60 * 1000,
-    "4h": 4 * 60 * 60 * 1000,
-    "1d": 24 * 60 * 60 * 1000,
+
+INTERVAL_TO_MS: dict[str, int] = {
+    "1m": 60_000,
+    "5m": 5 * 60_000,
+    "15m": 15 * 60_000,
+    "30m": 30 * 60_000,
+    "1h": 60 * 60_000,
+    "4h": 4 * 60 * 60_000,
+    "1d": 24 * 60 * 60_000,
+}
+
+INTERVAL_TO_DELTA: dict[str, timedelta] = {
+    "1m": timedelta(minutes=1),
+    "5m": timedelta(minutes=5),
+    "15m": timedelta(minutes=15),
+    "30m": timedelta(minutes=30),
+    "1h": timedelta(hours=1),
+    "4h": timedelta(hours=4),
+    "1d": timedelta(days=1),
 }
 
 
@@ -25,174 +40,240 @@ class CandleRow:
     interval_code: str
     open_ts_utc: datetime
     close_ts_utc: datetime
-    open_price: Decimal
-    high_price: Decimal
-    low_price: Decimal
-    close_price: Decimal
-    volume_base: Decimal | None
-    volume_quote_eur: Decimal | None
-    trade_count: int | None
-    source_ts_utc: datetime | None
-    ingest_ts_utc: datetime
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal
 
 
-def utc_now() -> datetime:
-    return datetime.now(UTC)
-
-
-def to_ms(dt: datetime) -> int:
-    return int(dt.timestamp() * 1000)
-
-
-def from_ms(ms: int) -> datetime:
-    return datetime.fromtimestamp(ms / 1000, tz=UTC)
-
-
-def floor_dt(dt: datetime, interval: str) -> datetime:
-    if interval not in INTERVAL_MS:
-        raise ValueError(f"Unsupported interval: {interval}")
-
-    interval_ms = INTERVAL_MS[interval]
-    floored_ms = (to_ms(dt) // interval_ms) * interval_ms
-    return from_ms(floored_ms)
-
-
-def parse_utc_iso8601(value: str) -> datetime:
-    text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-
-    dt = datetime.fromisoformat(text)
-    if dt.tzinfo is None:
-        raise ValueError(f"Timestamp must be timezone-aware UTC: {value}")
-
-    return dt.astimezone(UTC)
-
-
-def parse_duration_to_timedelta(value: str) -> timedelta:
-    raw = value.strip().lower()
-
-    if raw.endswith("d"):
-        return timedelta(days=int(raw[:-1]))
-    if raw.endswith("h"):
-        return timedelta(hours=int(raw[:-1]))
-    if raw.endswith("m"):
-        return timedelta(minutes=int(raw[:-1]))
-
-    raise ValueError(f"Unsupported duration format: {value}")
-
-
-def resolve_range(
-    *,
-    start: str | None,
-    end: str | None,
-    default_lookback: str | dict[str, str],
-    interval: str,
-) -> tuple[datetime, datetime]:
-    """
-    Resolve start/end range in UTC.
-
-    Accepts:
-    - default_lookback as string, e.g. "120d"
-    - default_lookback as dict per interval, e.g. {"1h": "120d"}
-
-    The runner currently already resolves per-interval lookback,
-    but this helper remains backward-compatible.
-    """
-    end_dt = parse_utc_iso8601(end) if end else utc_now()
-    end_dt = floor_dt(end_dt, interval)
-
-    if start:
-        start_dt = parse_utc_iso8601(start)
-    else:
-        if isinstance(default_lookback, dict):
-            if interval not in default_lookback:
-                raise KeyError(f"Missing default_lookback for interval: {interval}")
-            lookback_value = default_lookback[interval]
-        else:
-            lookback_value = default_lookback
-
-        start_dt = end_dt - parse_duration_to_timedelta(str(lookback_value))
-
-    start_dt = floor_dt(start_dt, interval)
-
-    if start_dt >= end_dt:
-        raise ValueError(
-            f"Invalid range for {interval}: start={start_dt.isoformat()} end={end_dt.isoformat()}"
-        )
-
-    return start_dt, end_dt
-
-
-def build_requests_session(api_key: str | None = None) -> requests.Session:
+def build_requests_session() -> requests.Session:
     session = requests.Session()
-    if api_key:
-        session.headers.update({"Bitvavo-Access-Key": api_key})
+    session.headers.update({"Accept": "application/json"})
     return session
 
 
+def ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def interval_to_ms(interval_code: str) -> int:
+    if interval_code not in INTERVAL_TO_MS:
+        raise ValueError(f"Unsupported interval_code: {interval_code}")
+    return INTERVAL_TO_MS[interval_code]
+
+
+def interval_to_delta(interval_code: str) -> timedelta:
+    if interval_code not in INTERVAL_TO_DELTA:
+        raise ValueError(f"Unsupported interval_code: {interval_code}")
+    return INTERVAL_TO_DELTA[interval_code]
+
+
+def floor_to_interval(dt: datetime, interval_code: str) -> datetime:
+    dt = ensure_utc(dt)
+
+    if interval_code == "1m":
+        return dt.replace(second=0, microsecond=0)
+
+    if interval_code == "5m":
+        minute = (dt.minute // 5) * 5
+        return dt.replace(minute=minute, second=0, microsecond=0)
+
+    if interval_code == "15m":
+        minute = (dt.minute // 15) * 15
+        return dt.replace(minute=minute, second=0, microsecond=0)
+
+    if interval_code == "30m":
+        minute = (dt.minute // 30) * 30
+        return dt.replace(minute=minute, second=0, microsecond=0)
+
+    if interval_code == "1h":
+        return dt.replace(minute=0, second=0, microsecond=0)
+
+    if interval_code == "4h":
+        hour = (dt.hour // 4) * 4
+        return dt.replace(hour=hour, minute=0, second=0, microsecond=0)
+
+    if interval_code == "1d":
+        return dt.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    raise ValueError(f"Unsupported interval_code: {interval_code}")
+
+
+def dt_to_ms(dt: datetime) -> int:
+    return int(ensure_utc(dt).timestamp() * 1000)
+
+
+def ms_to_dt(ms: int) -> datetime:
+    return datetime.fromtimestamp(ms / 1000, tz=UTC)
+
+
 def fetch_bitvavo_candles(
+    *,
     session: requests.Session,
     market: str,
-    interval: str,
+    interval_code: str,
     start_ms: int,
     end_ms: int,
-    limit: int,
     timeout_seconds: int,
+    limit: int = BITVAVO_MAX_LIMIT,
 ) -> list[list[Any]]:
     url = f"{BITVAVO_BASE_URL}/{market}/candles"
     params = {
-        "interval": interval,
+        "interval": interval_code,
         "start": start_ms,
         "end": end_ms,
-        "limit": limit,
+        "limit": min(limit, BITVAVO_MAX_LIMIT),
     }
 
     response = session.get(url, params=params, timeout=timeout_seconds)
     response.raise_for_status()
+
     payload = response.json()
-
     if not isinstance(payload, list):
-        raise RuntimeError(f"Unexpected Bitvavo payload for {market} {interval}: {payload}")
+        raise RuntimeError(f"Unexpected Bitvavo response for {market} {interval_code}: {payload}")
 
-    # Bitvavo returns newest -> oldest. Reverse to chronological order.
     return list(reversed(payload))
 
 
-def normalize_bitvavo_candle(
+def parse_bitvavo_payload(
     *,
     asset_id: int,
     venue: str,
     interval_code: str,
-    raw: list[Any],
-    ingest_ts_utc: datetime,
-) -> CandleRow:
-    open_ms = int(raw[0])
-    open_ts_utc = from_ms(open_ms)
-    close_ts_utc = open_ts_utc + timedelta(milliseconds=INTERVAL_MS[interval_code])
+    payload: list[list[Any]],
+) -> list[CandleRow]:
+    delta = interval_to_delta(interval_code)
+    rows: list[CandleRow] = []
 
-    close_price = Decimal(str(raw[4]))
-    volume_base = Decimal(str(raw[5]))
+    for item in payload:
+        if not isinstance(item, list) or len(item) < 6:
+            continue
 
-    return CandleRow(
-        asset_id=asset_id,
-        venue=venue,
-        interval_code=interval_code,
-        open_ts_utc=open_ts_utc,
-        close_ts_utc=close_ts_utc,
-        open_price=Decimal(str(raw[1])),
-        high_price=Decimal(str(raw[2])),
-        low_price=Decimal(str(raw[3])),
-        close_price=close_price,
-        volume_base=volume_base,
-        volume_quote_eur=close_price * volume_base,
-        trade_count=None,
-        source_ts_utc=open_ts_utc,
-        ingest_ts_utc=ingest_ts_utc,
-    )
+        open_ts = ms_to_dt(int(item[0]))
+        close_ts = open_ts + delta
+
+        rows.append(
+            CandleRow(
+                asset_id=asset_id,
+                venue=venue,
+                interval_code=interval_code,
+                open_ts_utc=open_ts.replace(tzinfo=None),
+                close_ts_utc=close_ts.replace(tzinfo=None),
+                open=Decimal(str(item[1])),
+                high=Decimal(str(item[2])),
+                low=Decimal(str(item[3])),
+                close=Decimal(str(item[4])),
+                volume=Decimal(str(item[5])),
+            )
+        )
+
+    return rows
 
 
-def upsert_rows(conn, rows: list[CandleRow]) -> int:
+def filter_candles_strict(
+    *,
+    candles: list[CandleRow],
+    start_dt: datetime,
+    end_dt: datetime,
+) -> list[CandleRow]:
+    start_naive = ensure_utc(start_dt).replace(tzinfo=None)
+    end_naive = ensure_utc(end_dt).replace(tzinfo=None)
+
+    return [
+        row
+        for row in candles
+        if start_naive <= row.open_ts_utc < end_naive
+    ]
+
+
+def validate_chunk_rows(
+    *,
+    rows: list[CandleRow],
+    interval_code: str,
+    start_dt: datetime,
+    end_dt: datetime,
+) -> None:
+    if not rows:
+        return
+
+    interval_delta = interval_to_delta(interval_code)
+    interval_ms = interval_to_ms(interval_code)
+
+    start_naive = ensure_utc(start_dt).replace(tzinfo=None)
+    end_naive = ensure_utc(end_dt).replace(tzinfo=None)
+
+    seen_open_ts: set[datetime] = set()
+    prev_open_ts: datetime | None = None
+
+    for idx, row in enumerate(rows, start=1):
+        if row.open_ts_utc in seen_open_ts:
+            raise RuntimeError(
+                f"Duplicate open_ts_utc in chunk: interval={interval_code} ts={row.open_ts_utc.isoformat()}"
+            )
+        seen_open_ts.add(row.open_ts_utc)
+
+        if prev_open_ts is not None and row.open_ts_utc <= prev_open_ts:
+            raise RuntimeError(
+                f"Non-monotonic timestamps in chunk: interval={interval_code} "
+                f"prev={prev_open_ts.isoformat()} current={row.open_ts_utc.isoformat()}"
+            )
+        prev_open_ts = row.open_ts_utc
+
+        aligned_open = floor_to_interval(row.open_ts_utc.replace(tzinfo=UTC), interval_code).replace(tzinfo=None)
+        if row.open_ts_utc != aligned_open:
+            raise RuntimeError(
+                f"Unaligned open_ts_utc: interval={interval_code} ts={row.open_ts_utc.isoformat()}"
+            )
+
+        expected_close = row.open_ts_utc + interval_delta
+        if row.close_ts_utc != expected_close:
+            raise RuntimeError(
+                f"Invalid close_ts_utc: interval={interval_code} open={row.open_ts_utc.isoformat()} "
+                f"close={row.close_ts_utc.isoformat()} expected={expected_close.isoformat()}"
+            )
+
+        if not (start_naive <= row.open_ts_utc < end_naive):
+            raise RuntimeError(
+                f"Out-of-window candle after filtering: interval={interval_code} "
+                f"open_ts={row.open_ts_utc.isoformat()} "
+                f"window=[{start_naive.isoformat()}, {end_naive.isoformat()})"
+            )
+
+        if row.high < row.low:
+            raise RuntimeError(
+                f"Invalid OHLC geometry high<low: interval={interval_code} ts={row.open_ts_utc.isoformat()}"
+            )
+
+        if row.high < max(row.open, row.close):
+            raise RuntimeError(
+                f"Invalid OHLC geometry high<max(open,close): interval={interval_code} ts={row.open_ts_utc.isoformat()}"
+            )
+
+        if row.low > min(row.open, row.close):
+            raise RuntimeError(
+                f"Invalid OHLC geometry low>min(open,close): interval={interval_code} ts={row.open_ts_utc.isoformat()}"
+            )
+
+        if row.volume < 0:
+            raise RuntimeError(
+                f"Negative volume: interval={interval_code} ts={row.open_ts_utc.isoformat()}"
+            )
+
+    if len(rows) >= 2:
+        for prev_row, row in zip(rows[:-1], rows[1:]):
+            diff_ms = int((row.open_ts_utc - prev_row.open_ts_utc).total_seconds() * 1000)
+            if diff_ms != interval_ms:
+                print(
+                    f"[ETL][WARN] intra-chunk gap detected interval={interval_code} "
+                    f"prev={prev_row.open_ts_utc.isoformat()} "
+                    f"current={row.open_ts_utc.isoformat()} diff_ms={diff_ms}"
+                )
+
+
+def upsert_candles(conn, rows: list[CandleRow]) -> int:
     if not rows:
         return 0
 
@@ -208,12 +289,19 @@ def upsert_rows(conn, rows: list[CandleRow]) -> int:
         low_price,
         close_price,
         volume_base,
-        volume_quote_eur,
-        trade_count,
-        source_ts_utc,
-        ingest_ts_utc
+        volume_quote_eur
     ) VALUES (
-        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+        %(asset_id)s,
+        %(venue)s,
+        %(interval_code)s,
+        %(open_ts_utc)s,
+        %(close_ts_utc)s,
+        %(open_price)s,
+        %(high_price)s,
+        %(low_price)s,
+        %(close_price)s,
+        %(volume_base)s,
+        %(volume_quote_eur)s
     )
     ON DUPLICATE KEY UPDATE
         close_ts_utc = VALUES(close_ts_utc),
@@ -222,122 +310,127 @@ def upsert_rows(conn, rows: list[CandleRow]) -> int:
         low_price = VALUES(low_price),
         close_price = VALUES(close_price),
         volume_base = VALUES(volume_base),
-        volume_quote_eur = VALUES(volume_quote_eur),
-        trade_count = VALUES(trade_count),
-        source_ts_utc = VALUES(source_ts_utc),
-        ingest_ts_utc = VALUES(ingest_ts_utc)
+        volume_quote_eur = VALUES(volume_quote_eur)
     """
 
-    data = [
-        (
-            row.asset_id,
-            row.venue,
-            row.interval_code,
-            row.open_ts_utc.replace(tzinfo=None),
-            row.close_ts_utc.replace(tzinfo=None),
-            str(row.open_price),
-            str(row.high_price),
-            str(row.low_price),
-            str(row.close_price),
-            None if row.volume_base is None else str(row.volume_base),
-            None if row.volume_quote_eur is None else str(row.volume_quote_eur),
-            row.trade_count,
-            None if row.source_ts_utc is None else row.source_ts_utc.replace(tzinfo=None),
-            row.ingest_ts_utc.replace(tzinfo=None),
-        )
+    payload = [
+        {
+            "asset_id": row.asset_id,
+            "venue": row.venue,
+            "interval_code": row.interval_code,
+            "open_ts_utc": row.open_ts_utc,
+            "close_ts_utc": row.close_ts_utc,
+            "open_price": str(row.open),
+            "high_price": str(row.high),
+            "low_price": str(row.low),
+            "close_price": str(row.close),
+            "volume_base": str(row.volume),
+            "volume_quote_eur": str(row.volume * row.close),
+        }
         for row in rows
     ]
 
     with conn.cursor() as cur:
-        cur.executemany(sql, data)
+        cur.executemany(sql, payload)
 
-    conn.commit()
     return len(rows)
 
 
 def run_market_interval(
     *,
     conn,
-    session: requests.Session,
-    venue: str,
+    session,
     asset_id: int,
     market: str,
-    interval: str,
+    venue: str,
+    interval_code: str,
     start_dt: datetime,
     end_dt: datetime,
-    batch_limit: int,
-    timeout_seconds: int,
-    sleep_seconds: float,
-    dry_run: bool,
-) -> int:
-    if interval not in INTERVAL_MS:
-        raise ValueError(f"Unsupported interval: {interval}")
+    batch_limit: int = BITVAVO_MAX_LIMIT,
+    timeout_seconds: int = 20,
+    sleep_seconds: float = 0.0,
+    dry_run: bool = False,
+    **_: Any,
+) -> dict[str, int]:
+    del sleep_seconds
 
-    step_ms = INTERVAL_MS[interval]
-    total_rows = 0
+    start_dt = floor_to_interval(start_dt, interval_code)
+    end_dt = floor_to_interval(end_dt, interval_code)
 
-    # One chunk spans exactly `batch_limit` candles.
-    window_span_ms = batch_limit * step_ms
+    if end_dt <= start_dt:
+        print(
+            f"[ETL] skip market={market} interval={interval_code} "
+            f"reason=empty_window start={start_dt.isoformat()} end={end_dt.isoformat()}"
+        )
+        return {"written_rows": 0}
 
-    window_start_ms = to_ms(start_dt)
-    end_ms = to_ms(end_dt)
+    interval_ms = interval_to_ms(interval_code)
+    limit = min(batch_limit, BITVAVO_MAX_LIMIT)
+    chunk_span_ms = interval_ms * limit
 
-    while window_start_ms < end_ms:
-        window_end_ms = min(window_start_ms + window_span_ms, end_ms)
+    aligned_start_ms = dt_to_ms(start_dt)
+    aligned_end_ms = dt_to_ms(end_dt)
 
-        candles = fetch_bitvavo_candles(
+    window_start_ms = aligned_start_ms
+    total_written = 0
+    chunk_idx = 0
+
+    while window_start_ms < aligned_end_ms:
+        chunk_idx += 1
+        window_end_ms = min(window_start_ms + chunk_span_ms, aligned_end_ms)
+
+        raw_payload = fetch_bitvavo_candles(
             session=session,
             market=market,
-            interval=interval,
+            interval_code=interval_code,
             start_ms=window_start_ms,
             end_ms=window_end_ms,
-            limit=batch_limit,
             timeout_seconds=timeout_seconds,
+            limit=limit,
         )
 
-        ingest_ts_utc = utc_now()
-        rows: list[CandleRow] = []
+        parsed_rows = parse_bitvavo_payload(
+            asset_id=asset_id,
+            venue=venue,
+            interval_code=interval_code,
+            payload=raw_payload,
+        )
 
-        for raw in candles:
-            row = normalize_bitvavo_candle(
-                asset_id=asset_id,
-                venue=venue,
-                interval_code=interval,
-                raw=raw,
-                ingest_ts_utc=ingest_ts_utc,
-            )
+        filtered_rows = filter_candles_strict(
+            candles=parsed_rows,
+            start_dt=ms_to_dt(window_start_ms),
+            end_dt=ms_to_dt(window_end_ms),
+        )
 
-            if row.open_ts_utc < start_dt:
-                continue
-            if row.open_ts_utc >= end_dt:
-                continue
+        validate_chunk_rows(
+            rows=filtered_rows,
+            interval_code=interval_code,
+            start_dt=ms_to_dt(window_start_ms),
+            end_dt=ms_to_dt(window_end_ms),
+        )
 
-            rows.append(row)
-
-        inserted = len(rows) if dry_run else upsert_rows(conn=conn, rows=rows)
-        total_rows += inserted
-
-        chunk_start = from_ms(window_start_ms).isoformat()
-        chunk_end = from_ms(window_end_ms).isoformat()
+        first_raw_ts = raw_payload[0][0] if raw_payload else None
+        last_raw_ts = raw_payload[-1][0] if raw_payload else None
 
         print(
-            f"[CHUNK] market={market} interval={interval} "
-            f"window_start={chunk_start} window_end={chunk_end} rows={inserted}"
+            f"[ETL] chunk={chunk_idx} market={market} interval={interval_code} "
+            f"window_start={ms_to_dt(window_start_ms).isoformat()} "
+            f"window_end={ms_to_dt(window_end_ms).isoformat()} "
+            f"raw_count={len(raw_payload)} "
+            f"filtered_count={len(filtered_rows)} "
+            f"first_raw_ts={first_raw_ts} "
+            f"last_raw_ts={last_raw_ts}"
         )
 
-        if window_end_ms >= end_ms:
-            break
+        if not dry_run:
+            total_written += upsert_candles(conn, filtered_rows)
 
-        # 1 candle overlap to avoid boundary loss
-        next_window_start_ms = window_end_ms - step_ms
+        window_start_ms = window_end_ms
 
-        if next_window_start_ms <= window_start_ms:
-            print("[WARN] Non-advancing window detected, breaking")
-            break
+    print(
+        f"[ETL] done market={market} interval={interval_code} "
+        f"start={start_dt.isoformat()} end={end_dt.isoformat()} "
+        f"written={total_written} dry_run={dry_run}"
+    )
 
-        window_start_ms = next_window_start_ms
-
-        if sleep_seconds > 0:
-            time.sleep(sleep_seconds)
-
-    return total_rows
+    return {"written_rows": total_written}

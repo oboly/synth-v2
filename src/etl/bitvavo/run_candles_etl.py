@@ -412,6 +412,9 @@ def main() -> int:
                         f"interval={interval_code}"
                     )
 
+        if not args.dry_run:
+            conn.commit()
+
         print(f"[DONE] total_rows={total_written}")
         return 0
 
