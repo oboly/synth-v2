@@ -23,6 +23,7 @@ OUT_FILE="$BACKUP_DIR/ddl_${TIMESTAMP}.sql"
 mkdir -p "$BACKUP_DIR"
 
 echo "==> DDL backup: $TIMESTAMP"
+echo "Running on: $(hostname)"
 
 mysqldump \
   -h "$DB_HOST" \

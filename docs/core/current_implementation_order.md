@@ -110,6 +110,20 @@ executor = order handling
 
 ---
 
+## Backup strategy
+
+Files: naar Github
+DB:
+- candles nooit backuppen (rebuildable)
+- weekly core backup (state / selection / execution)
+- daily DDL backup
+- retention:
+  core: 3
+  ddl: 21 dagen
+- backups zijn remote DB aware (Odroid)
+
+---
+
 ## Samenvatting
 
 PREPARE → voorbereiden

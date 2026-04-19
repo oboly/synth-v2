@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 from dataclasses import asdict
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -10,23 +11,31 @@ from typing import Any
 from src.common.db import get_connection
 from src.selection.selection_engine_v2 import (
     SelectionCandidate,
+    SelectionRow,
     load_selection_config,
     rank_candidates,
 )
 
 
-DEFAULT_CONFIG_PATH = "config/selection_engine_v2.yaml"
+DEFAULT_CONFIG_PATH = "configs/selection_engine_v2.yaml"
 DEFAULT_VENUE = "bitvavo"
+DEFAULT_ENGINE_NAME = "selection_engine_v2"
+DEFAULT_ENGINE_VERSION = "2.0"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Selection Engine v2 (dry-run / CSV output)")
+    parser = argparse.ArgumentParser(
+        description="Run Selection Engine v2 (stdout / CSV / optional DB write)"
+    )
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--venue", default=DEFAULT_VENUE)
     parser.add_argument("--asset-id", type=int, default=None)
     parser.add_argument("--limit", type=int, default=250)
     parser.add_argument("--out-csv", default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--write-db", action="store_true")
+    parser.add_argument("--engine-name", default=DEFAULT_ENGINE_NAME)
+    parser.add_argument("--engine-version", default=DEFAULT_ENGINE_VERSION)
     return parser.parse_args()
 
 
@@ -196,7 +205,8 @@ def fetch_selection_candidates(
                 signal_confidence_1h=_to_decimal(row.get("signal_confidence_1h")),
                 risk_score_1h=_to_decimal(row.get("risk_score_1h")),
                 latest_quality_asof_ts_utc=(
-                    None if row.get("latest_quality_asof_ts_utc") is None
+                    None
+                    if row.get("latest_quality_asof_ts_utc") is None
                     else str(row["latest_quality_asof_ts_utc"])
                 ),
             )
@@ -220,29 +230,7 @@ def write_csv(path: str, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
-def main() -> int:
-    args = parse_args()
-    config = load_selection_config(args.config)
-
-    conn = get_connection()
-    try:
-        candidates = fetch_selection_candidates(
-            conn,
-            venue=args.venue,
-            asset_id=args.asset_id,
-            limit=args.limit,
-        )
-    finally:
-        conn.close()
-
-    rows = rank_candidates(candidates, config)
-
-    if not rows:
-        print("[DONE] no selection rows")
-        return 0
-
-    printable_rows: list[dict[str, Any]] = [asdict(row) for row in rows]
-
+def _print_rows(printable_rows: list[dict[str, Any]]) -> None:
     print(
         "asset_id,symbol,selection_state,selection_bias,selection_score,"
         "priority_rank,allow_trade_flag,allowed_sleeves,blocked_reason,"
@@ -268,16 +256,169 @@ def main() -> int:
             f"{row['quality_status_1h']}"
         )
 
-    if args.out_csv:
-        write_csv(args.out_csv, printable_rows)
-        print(f"[DONE] wrote csv -> {args.out_csv}")
 
-    if args.dry_run:
-        print("[DONE] dry-run complete")
+def _selection_row_to_db_params(
+    row: SelectionRow,
+    *,
+    run_asof_ts_utc: datetime,
+    engine_name: str,
+    engine_version: str,
+) -> tuple[Any, ...]:
+    return (
+        row.asset_id,
+        row.venue,
+        run_asof_ts_utc,
+        None,  # advice_ts_1h_utc
+        None,  # advice_ts_4h_utc
+        row.selection_state,
+        row.selection_bias,
+        row.selection_score,
+        None,  # regime_label_1h
+        None,  # regime_label_4h
+        None,  # advice_state_1h
+        None,  # advice_state_4h
+        None,  # opportunity_score_1h
+        None,  # opportunity_score_4h
+        None,  # risk_score_1h
+        None,  # risk_score_4h
+        row.priority_rank,
+        row.summary,
+        engine_name,
+        engine_version,
+    )
+
+
+def write_selection_state_rows(
+    conn,
+    *,
+    rows: list[SelectionRow],
+    run_asof_ts_utc: datetime,
+    engine_name: str,
+    engine_version: str,
+) -> int:
+    if not rows:
         return 0
 
-    print("[DONE] engine evaluation complete (no DB write yet)")
-    return 0
+    sql = """
+    INSERT INTO selection_state (
+        asset_id,
+        venue,
+        asof_ts_utc,
+        advice_ts_1h_utc,
+        advice_ts_4h_utc,
+        selection_state,
+        selection_bias,
+        selection_score,
+        regime_label_1h,
+        regime_label_4h,
+        advice_state_1h,
+        advice_state_4h,
+        opportunity_score_1h,
+        opportunity_score_4h,
+        risk_score_1h,
+        risk_score_4h,
+        priority_rank,
+        summary_text,
+        engine_name,
+        engine_version
+    ) VALUES (
+        %s, %s, %s, %s, %s,
+        %s, %s, %s, %s, %s,
+        %s, %s, %s, %s, %s,
+        %s, %s, %s, %s, %s
+    )
+    ON DUPLICATE KEY UPDATE
+        advice_ts_1h_utc = VALUES(advice_ts_1h_utc),
+        advice_ts_4h_utc = VALUES(advice_ts_4h_utc),
+        selection_state = VALUES(selection_state),
+        selection_bias = VALUES(selection_bias),
+        selection_score = VALUES(selection_score),
+        regime_label_1h = VALUES(regime_label_1h),
+        regime_label_4h = VALUES(regime_label_4h),
+        advice_state_1h = VALUES(advice_state_1h),
+        advice_state_4h = VALUES(advice_state_4h),
+        opportunity_score_1h = VALUES(opportunity_score_1h),
+        opportunity_score_4h = VALUES(opportunity_score_4h),
+        risk_score_1h = VALUES(risk_score_1h),
+        risk_score_4h = VALUES(risk_score_4h),
+        priority_rank = VALUES(priority_rank),
+        summary_text = VALUES(summary_text),
+        engine_name = VALUES(engine_name),
+        engine_version = VALUES(engine_version)
+    """
+
+    params = [
+        _selection_row_to_db_params(
+            row,
+            run_asof_ts_utc=run_asof_ts_utc,
+            engine_name=engine_name,
+            engine_version=engine_version,
+        )
+        for row in rows
+    ]
+
+    with conn.cursor() as cur:
+        cur.executemany(sql, params)
+
+    conn.commit()
+    return len(rows)
+
+
+def main() -> int:
+    args = parse_args()
+
+    if args.dry_run and args.write_db:
+        raise ValueError("--dry-run and --write-db are mutually exclusive")
+
+    config = load_selection_config(args.config)
+
+    conn = get_connection()
+    try:
+        candidates = fetch_selection_candidates(
+            conn,
+            venue=args.venue,
+            asset_id=args.asset_id,
+            limit=args.limit,
+        )
+
+        rows = rank_candidates(candidates, config)
+
+        if not rows:
+            print("[DONE] no selection rows")
+            return 0
+
+        printable_rows: list[dict[str, Any]] = [asdict(row) for row in rows]
+        _print_rows(printable_rows)
+
+        if args.out_csv:
+            write_csv(args.out_csv, printable_rows)
+            print(f"[DONE] wrote csv -> {args.out_csv}")
+
+        if args.dry_run:
+            print("[DONE] dry-run complete")
+            return 0
+
+        if args.write_db:
+            run_asof_ts_utc = datetime.now(UTC).replace(tzinfo=None)
+            written = write_selection_state_rows(
+                conn,
+                rows=rows,
+                run_asof_ts_utc=run_asof_ts_utc,
+                engine_name=str(args.engine_name),
+                engine_version=str(args.engine_version),
+            )
+            print(
+                "[DONE] wrote selection_state rows "
+                f"count={written} asof_ts_utc={run_asof_ts_utc.isoformat(sep=' ')} "
+                f"engine={args.engine_name} version={args.engine_version}"
+            )
+            return 0
+
+        print("[DONE] engine evaluation complete (no DB write yet)")
+        return 0
+
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

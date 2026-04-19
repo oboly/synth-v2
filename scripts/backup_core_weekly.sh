@@ -23,6 +23,7 @@ OUT_FILE="$BACKUP_DIR/core_${TIMESTAMP}.sql.gz"
 mkdir -p "$BACKUP_DIR"
 
 echo "==> CORE backup: $TIMESTAMP"
+echo "Running on: $(hostname)"
 
 mysqldump \
   -h "$DB_HOST" \
