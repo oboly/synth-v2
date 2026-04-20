@@ -23,13 +23,13 @@ def get_db_connection():
     return get_connection()
 
 
-def get_connection():
+def get_connection(database: str | None = None):
     return pymysql.connect(
         host=_getenv_required("DB_HOST"),
         port=int(os.getenv("DB_PORT", "3306")),
         user=_getenv_required("DB_USER"),
         password=os.getenv("DB_PASSWORD", ""),
-        database=_getenv_required("DB_NAME"),
+        database=database or _getenv_required("DB_NAME"),
         charset=os.getenv("DB_CHARSET", "utf8mb4"),
         cursorclass=DictCursor,
         autocommit=False,
@@ -37,8 +37,8 @@ def get_connection():
 
 
 @contextmanager
-def db_cursor(commit: bool = False) -> Iterator:
-    conn = get_connection()
+def db_cursor(commit: bool = False, database: str | None = None) -> Iterator:
+    conn = get_connection(database=database)
     try:
         with conn.cursor() as cur:
             yield conn, cur

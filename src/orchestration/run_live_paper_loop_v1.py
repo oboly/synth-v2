@@ -1,5 +1,51 @@
 from __future__ import annotations
 
+"""
+ENGINE: run_live_paper_loop_v1
+MODE: latest-only
+
+INPUT:
+- obs_market_candle
+- selection_state
+- execution_plan
+- capital_reservation
+- portfolio_position
+- execution_event
+- portfolio_sleeve
+- runtime_state
+- synth_bt.config_set
+- synth_bt.config_param
+
+OUTPUT:
+- selection_state
+- execution_plan
+- capital_reservation
+- execution_event
+- portfolio_position
+- portfolio_sleeve
+- runtime_state
+
+CLI:
+python -m src.orchestration.run_live_paper_loop_v1 \
+  --account-id 1 \
+  --sleeve-code SWING_STRUCTURAL \
+  --venue bitvavo \
+  --config-scope PAPER \
+  --config-name paper_sw_baseline
+
+HISTORICAL:
+- not supported
+- use backtest replay wrapper later
+
+NOTES:
+- runs only on new closed 1h candles
+- runtime persistence via runtime_state
+- strategy/policy/planner parameters come from config registry
+- orchestration parameters remain CLI args
+- lifecycle currently supports expiry + releasable reservation handling only
+- stage timings are logged to identify slow DB/network boundaries
+"""
+
 import argparse
 import json
 import time
@@ -8,6 +54,7 @@ from decimal import Decimal
 from typing import Any
 
 from src.common.db import get_connection
+from src.config_registry.loader import load_config_set
 from src.decision_gate.decision_gate_v1 import evaluate_selection_for_account
 from src.decision_gate.models import DecisionGateConfig
 from src.decision_gate.repository import DecisionGateRepository
@@ -27,13 +74,16 @@ from src.selection.run_selection_engine_v2 import (
 from src.selection.selection_engine_v2 import load_selection_config, rank_candidates
 
 
-DEFAULT_CONFIG_PATH = "configs/selection_engine_v2.yaml"
+DEFAULT_SELECTION_CONFIG_PATH = "configs/selection_engine_v2.yaml"
 RUNNER_NAME = "live_paper_loop_v1"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run live paper loop v1 on new closed 1h candles.")
-    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--selection-config", default=DEFAULT_SELECTION_CONFIG_PATH)
+    parser.add_argument("--config-scope", default="PAPER")
+    parser.add_argument("--config-name", required=True)
+
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--account-id", type=int, required=True)
     parser.add_argument("--sleeve-code", required=True)
@@ -42,22 +92,6 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--engine-name", default="selection_engine_v2")
     parser.add_argument("--engine-version", default="2.0")
-
-    parser.add_argument("--min-available-equity-eur", default="25.00")
-    parser.add_argument("--execution-mode", default="paper")
-    parser.add_argument("--prepare-target-fraction", default="0.06600000")
-    parser.add_argument("--execute-target-fraction", default="0.06600000")
-    parser.add_argument("--max-notional-eur", default="25.0000000000")
-    parser.add_argument("--max-reprices", type=int, default=5)
-    parser.add_argument("--max-wait-seconds", type=int, default=1800)
-    parser.add_argument("--max-chase-bps", default="15.00000000")
-    parser.add_argument("--min-spread-bps-for-capture", default="3.00000000")
-    parser.add_argument("--escalation-to-urgent-limit", action="store_true")
-    parser.add_argument("--no-abort-if-signal-invalidates", action="store_true")
-
-    parser.add_argument("--take-profit-pct", default="0.020000")
-    parser.add_argument("--stop-loss-pct", default="0.010000")
-    parser.add_argument("--entry-cooldown-candles", type=int, default=2)
 
     parser.add_argument("--poll-seconds", type=int, default=30)
     parser.add_argument("--waiting-log-every-polls", type=int, default=12)
@@ -79,7 +113,17 @@ def _fmt_decimal(value: Any, places: int = 6) -> str:
 
 
 def _scope_key(args: argparse.Namespace) -> str:
-    return f"account={args.account_id}|sleeve={args.sleeve_code}|venue={args.venue}"
+    return (
+        f"account={args.account_id}|"
+        f"sleeve={args.sleeve_code}|"
+        f"venue={args.venue}|"
+        f"config_scope={args.config_scope}|"
+        f"config_name={args.config_name}"
+    )
+
+
+def _ms_since(start_perf: float) -> int:
+    return int((time.perf_counter() - start_perf) * 1000)
 
 
 def load_last_processed_close_ts(*, scope_key: str) -> datetime | None:
@@ -226,7 +270,29 @@ def fetch_live_summary(*, account_id: int, sleeve_code: str) -> dict[str, Any]:
         conn.close()
 
 
+def _require_decimal(config_by_component: dict[str, dict[str, Any]], component: str, parameter_name: str) -> Decimal:
+    value = config_by_component[component][parameter_name]
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
+
+
+def _require_int(config_by_component: dict[str, dict[str, Any]], component: str, parameter_name: str) -> int:
+    return int(config_by_component[component][parameter_name])
+
+
 def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
+    cycle_start_perf = time.perf_counter()
+    stage_timings_ms: dict[str, int] = {}
+
+    stage_start = time.perf_counter()
+    loaded_config = load_config_set(
+        scope=args.config_scope,
+        config_name=args.config_name,
+    )
+    cfg = loaded_config.config_by_component
+    stage_timings_ms["config_load"] = _ms_since(stage_start)
+
     gate_repo = DecisionGateRepository()
     planner_repo = ExecutionPlannerRepository()
     executor_repo = ExecutorRepository()
@@ -238,12 +304,15 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
         "entry_plans_created": 0,
         "entry_cooldown_blocked": 0,
         "executor_results": 0,
+        "expired_count": 0,
         "lifecycle_results": 0,
         "eligible_count": 0,
+        "config_set_id": loaded_config.config_set.config_set_id,
+        "config_name": loaded_config.config_set.config_name,
     }
 
-    # 1. selection write
-    config = load_selection_config(args.config)
+    stage_start = time.perf_counter()
+    selection_config = load_selection_config(args.selection_config)
     conn = get_connection()
     try:
         candidates = fetch_selection_candidates(
@@ -252,7 +321,7 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
             asset_id=args.asset_id,
             limit=args.limit,
         )
-        rows = rank_candidates(candidates, config)
+        rows = rank_candidates(candidates, selection_config)
         run_asof_ts_utc = datetime.now(UTC).replace(tzinfo=None)
         if not args.dry_run:
             cycle_stats["selection_written"] = write_selection_state_rows(
@@ -266,34 +335,36 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
             cycle_stats["selection_written"] = len(rows)
     finally:
         conn.close()
+    stage_timings_ms["selection"] = _ms_since(stage_start)
 
-    # 2. exit policy
+    stage_start = time.perf_counter()
     exit_results = run_exit_policy_v1(
         account_id=args.account_id,
         sleeve_code=args.sleeve_code,
         venue=args.venue,
         config=ExitPolicyConfig(
-            take_profit_pct=Decimal(str(args.take_profit_pct)),
-            stop_loss_pct=Decimal(str(args.stop_loss_pct)),
+            take_profit_pct=_require_decimal(cfg, "exit_policy", "take_profit_pct"),
+            stop_loss_pct=_require_decimal(cfg, "exit_policy", "stop_loss_pct"),
         ),
     )
     cycle_stats["exit_plans_created"] = sum(1 for r in exit_results if r.exit_plan_created)
+    stage_timings_ms["exit_policy"] = _ms_since(stage_start)
 
-    # 3. entry planner
+    stage_start = time.perf_counter()
     gate_config = DecisionGateConfig(
-        min_available_equity_eur=Decimal(str(args.min_available_equity_eur))
+        min_available_equity_eur=_require_decimal(cfg, "planner", "max_notional_eur")
     )
     planner_config = ExecutionPlannerConfig(
-        execution_mode=str(args.execution_mode),
-        prepare_target_fraction=Decimal(str(args.prepare_target_fraction)),
-        execute_target_fraction=Decimal(str(args.execute_target_fraction)),
-        max_notional_eur=Decimal(str(args.max_notional_eur)),
-        max_reprices=int(args.max_reprices),
-        max_wait_seconds=int(args.max_wait_seconds),
-        max_chase_bps=Decimal(str(args.max_chase_bps)),
-        min_spread_bps_for_capture=Decimal(str(args.min_spread_bps_for_capture)),
-        escalation_to_urgent_limit=bool(args.escalation_to_urgent_limit),
-        abort_if_signal_invalidates=not bool(args.no_abort_if_signal_invalidates),
+        execution_mode="paper",
+        prepare_target_fraction=_require_decimal(cfg, "planner", "prepare_target_fraction"),
+        execute_target_fraction=_require_decimal(cfg, "planner", "execute_target_fraction"),
+        max_notional_eur=_require_decimal(cfg, "planner", "max_notional_eur"),
+        max_reprices=_require_int(cfg, "planner", "max_reprices"),
+        max_wait_seconds=_require_int(cfg, "planner", "max_wait_seconds"),
+        max_chase_bps=_require_decimal(cfg, "planner", "max_chase_bps"),
+        min_spread_bps_for_capture=_require_decimal(cfg, "planner", "min_spread_bps_for_capture"),
+        escalation_to_urgent_limit=False,
+        abort_if_signal_invalidates=True,
     )
 
     selection_rows = gate_repo.fetch_selection_rows(
@@ -345,7 +416,7 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
             venue=selection_row.venue,
             asset_id=selection_row.asset_id,
             symbol=selection_row.symbol,
-            cooldown_candles_after_close=args.entry_cooldown_candles,
+            cooldown_candles_after_close=_require_int(cfg, "entry_cooldown", "cooldown_candles"),
         )
         if cooldown.cooldown_blocked:
             cycle_stats["entry_cooldown_blocked"] += 1
@@ -367,8 +438,9 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
         if not args.dry_run:
             planner_repo.create_plan_with_reservation(plan)
         cycle_stats["entry_plans_created"] += 1
+    stage_timings_ms["planner"] = _ms_since(stage_start)
 
-    # 4. executor
+    stage_start = time.perf_counter()
     plans = executor_repo.fetch_open_plans(
         account_id=args.account_id,
         sleeve_code=args.sleeve_code,
@@ -379,19 +451,11 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
         if not args.dry_run:
             execute_plan_paper(plan, executor_repo)
         cycle_stats["executor_results"] += 1
+    stage_timings_ms["executor"] = _ms_since(stage_start)
 
-    # 5. lifecycle
+    stage_start = time.perf_counter()
     if not args.dry_run:
-        invalidatable_plans = lifecycle_repo.fetch_invalidatable_active_plans(
-            account_id=args.account_id,
-            sleeve_code=args.sleeve_code,
-            venue=args.venue,
-            limit=args.limit,
-        )
-        for plan in invalidatable_plans:
-            lifecycle_repo.invalidate_plan_for_selection_drop(plan)
-
-        lifecycle_repo.expire_due_plans(
+        cycle_stats["expired_count"] = lifecycle_repo.expire_due_plans(
             account_id=args.account_id,
             sleeve_code=args.sleeve_code,
             venue=args.venue,
@@ -406,8 +470,15 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
         for plan in releasable_plans:
             process_releasable_plan(plan, lifecycle_repo)
             cycle_stats["lifecycle_results"] += 1
+    stage_timings_ms["lifecycle"] = _ms_since(stage_start)
 
-    return cycle_stats
+    stage_timings_ms["total_cycle"] = _ms_since(cycle_start_perf)
+
+    return {
+        "stats": cycle_stats,
+        "config_snapshot": loaded_config.snapshot_json_ready,
+        "stage_timings_ms": stage_timings_ms,
+    }
 
 
 def main() -> int:
@@ -451,25 +522,32 @@ def main() -> int:
 
         wait_poll_counter = 0
         last_wait_key = None
-
         cycle_no += 1
         cycle_started = datetime.now(UTC).replace(tzinfo=None)
 
         try:
-            stats = run_single_cycle(args)
+            stage_start = time.perf_counter()
+            cycle_payload = run_single_cycle(args)
+            stats = cycle_payload["stats"]
+            timings = cycle_payload["stage_timings_ms"]
             summary = fetch_live_summary(
                 account_id=args.account_id,
                 sleeve_code=args.sleeve_code,
             )
+            timings["summary"] = _ms_since(stage_start) - timings["total_cycle"]
+
             print(
                 f"cycle={cycle_no} "
                 f"close_ts={latest_close_ts} "
+                f"config_set_id={stats['config_set_id']} "
+                f"config_name={stats['config_name']} "
                 f"selection={stats['selection_written']} "
                 f"eligible={stats['eligible_count']} "
                 f"exit_plans={stats['exit_plans_created']} "
                 f"entry_plans={stats['entry_plans_created']} "
                 f"cooldown_blocked={stats['entry_cooldown_blocked']} "
                 f"executor={stats['executor_results']} "
+                f"expired={stats['expired_count']} "
                 f"lifecycle={stats['lifecycle_results']} "
                 f"active_plans={summary['active_plans']} "
                 f"open_positions={summary['open_positions']} "
@@ -478,8 +556,17 @@ def main() -> int:
                 f"available={_fmt_decimal(summary['available']) if summary['available'] is not None else ''} "
                 f"last_event={summary['last_event_type'] or ''} "
                 f"last_symbol={summary['last_event_symbol'] or ''} "
+                f"timing_config_ms={timings['config_load']} "
+                f"timing_selection_ms={timings['selection']} "
+                f"timing_exit_ms={timings['exit_policy']} "
+                f"timing_planner_ms={timings['planner']} "
+                f"timing_executor_ms={timings['executor']} "
+                f"timing_lifecycle_ms={timings['lifecycle']} "
+                f"timing_summary_ms={timings['summary']} "
+                f"timing_total_cycle_ms={timings['total_cycle']} "
                 f"started={cycle_started}"
             )
+
             if not args.dry_run:
                 save_last_processed_close_ts(
                     scope_key=scope_key,
@@ -488,9 +575,13 @@ def main() -> int:
                         "cycle_no": cycle_no,
                         "latest_close_ts": latest_close_ts.isoformat(sep=" "),
                         "stats": stats,
+                        "timings_ms": timings,
+                        "config_snapshot": cycle_payload["config_snapshot"],
                     },
                 )
+
             last_processed_close_ts = latest_close_ts
+
         except Exception as exc:
             print(
                 f"cycle={cycle_no} close_ts={latest_close_ts} status=error "

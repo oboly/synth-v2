@@ -11,12 +11,11 @@ from src.plan_lifecycle.repository import PlanLifecycleRepository
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run plan_lifecycle_v1 for invalidation, expiry and reservation release.")
+    parser = argparse.ArgumentParser(description="Run plan_lifecycle_v1 for expiry and reservation release.")
     parser.add_argument("--account-id", type=int, default=None)
     parser.add_argument("--sleeve-code", default=None)
     parser.add_argument("--venue", default=None)
     parser.add_argument("--limit", type=int, default=50)
-    parser.add_argument("--skip-invalidation", action="store_true")
     parser.add_argument("--skip-expire", action="store_true")
     parser.add_argument("--output", choices=("table", "json"), default="table")
     return parser.parse_args()
@@ -28,17 +27,15 @@ def _serialize_value(value: Any) -> Any:
     return value
 
 
-def _print_json(rows: list[dict[str, Any]], invalidated_count: int, expired_count: int) -> None:
+def _print_json(rows: list[dict[str, Any]], expired_count: int) -> None:
     payload = {
-        "invalidated_count": invalidated_count,
         "expired_count": expired_count,
         "results": [{k: _serialize_value(v) for k, v in row.items()} for row in rows],
     }
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
 
-def _print_table(rows: list[dict[str, Any]], invalidated_count: int, expired_count: int) -> None:
-    print(f"invalidated_count={invalidated_count}")
+def _print_table(rows: list[dict[str, Any]], expired_count: int) -> None:
     print(f"expired_count={expired_count}")
     headers = [
         "execution_plan_id",
@@ -78,18 +75,6 @@ def main() -> int:
     args = parse_args()
     repo = PlanLifecycleRepository()
 
-    invalidated_count = 0
-    if not args.skip_invalidation:
-        invalidatable_plans = repo.fetch_invalidatable_active_plans(
-            account_id=args.account_id,
-            sleeve_code=args.sleeve_code,
-            venue=args.venue,
-            limit=args.limit,
-        )
-        for plan in invalidatable_plans:
-            repo.invalidate_plan_for_selection_drop(plan)
-        invalidated_count = len(invalidatable_plans)
-
     expired_count = 0
     if not args.skip_expire:
         expired_count = repo.expire_due_plans(
@@ -108,9 +93,9 @@ def main() -> int:
     results = [asdict(process_releasable_plan(plan, repo)) for plan in plans]
 
     if args.output == "json":
-        _print_json(results, invalidated_count, expired_count)
+        _print_json(results, expired_count)
     else:
-        _print_table(results, invalidated_count, expired_count)
+        _print_table(results, expired_count)
 
     return 0
 

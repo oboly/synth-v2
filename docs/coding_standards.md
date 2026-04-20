@@ -170,3 +170,29 @@ Always prioritize:
 3. Only then strategy tuning
 
 Never optimize strategy on incomplete data.
+
+---
+
+## Encoding & Unicode Standard
+
+The entire Synth system uses a strict UTF-8 standard.
+
+### Database
+
+- All tables must use:
+  - CHARSET = utf8mb4
+  - COLLATE = utf8mb4_unicode_ci
+
+- Never use:
+  - utf8 (incomplete UTF-8)
+  - latin1
+
+### Python
+
+- Always assume UTF-8 encoding
+- When reading/writing files:
+
+```python
+open(path, "r", encoding="utf-8")
+open(path, "w", encoding="utf-8")
+EOF
