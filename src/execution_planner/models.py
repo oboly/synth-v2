@@ -7,6 +7,7 @@ from typing import Final
 
 
 PLANNABLE_DECISION_STATES: Final[set[str]] = {
+    "WATCHLIST_PREPLAN_ALLOWED",
     "PREPARE_ALLOWED",
     "EXECUTION_ALLOWED",
 }
@@ -20,6 +21,7 @@ PLANNABLE_EXECUTION_INTENTS: Final[set[str]] = {
 @dataclass(frozen=True)
 class ExecutionPlannerConfig:
     execution_mode: str = "paper"
+    watchlist_preplan_target_fraction: Decimal = Decimal("0.03300000")
     prepare_target_fraction: Decimal = Decimal("0.06600000")
     execute_target_fraction: Decimal = Decimal("0.06600000")
     max_notional_eur: Decimal = Decimal("25.0000000000")
@@ -32,7 +34,7 @@ class ExecutionPlannerConfig:
     abort_if_signal_invalidates: bool = True
 
     planner_name: str = "execution_planner_v1"
-    planner_version: str = "1.0"
+    planner_version: str = "1.1"
 
 
 @dataclass(frozen=True)

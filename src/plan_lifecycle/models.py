@@ -10,6 +10,7 @@ class LifecyclePlanRow:
     execution_plan_id: int
     account_id: int
     asset_id: int
+    symbol: str | None
     sleeve_code: str
     venue: str
     desired_action: str
@@ -17,6 +18,8 @@ class LifecyclePlanRow:
     plan_state: str
     valid_until_ts_utc: datetime | None
     notes: str | None
+    selection_state: str | None
+    effective_selection_score: Decimal | None
 
 
 @dataclass(frozen=True)

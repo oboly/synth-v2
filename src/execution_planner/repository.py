@@ -124,6 +124,80 @@ class ExecutionPlannerRepository:
             position_status=str(row["position_status"]),
         )
 
+    def _insert_execution_plan(self, cur, plan: PlannedExecution) -> int:
+        cur.execute(
+            """
+            INSERT INTO execution_plan (
+                account_id,
+                asset_id,
+                sleeve_code,
+                venue,
+                side,
+                desired_action,
+                execution_mode,
+                plan_ts_utc,
+                valid_until_ts_utc,
+                target_fraction,
+                max_notional_eur,
+                reference_price_eur,
+                passive_price_eur,
+                urgent_limit_price_eur,
+                max_reprices,
+                max_wait_seconds,
+                max_chase_bps,
+                min_spread_bps_for_capture,
+                escalation_to_urgent_limit,
+                abort_if_signal_invalidates,
+                plan_state,
+                notes
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            """,
+            [
+                plan.account_id,
+                plan.asset_id,
+                plan.sleeve_code,
+                plan.venue,
+                plan.side,
+                plan.desired_action,
+                plan.execution_mode,
+                plan.plan_ts_utc,
+                plan.valid_until_ts_utc,
+                plan.target_fraction,
+                plan.max_notional_eur,
+                plan.reference_price_eur,
+                plan.passive_price_eur,
+                plan.urgent_limit_price_eur,
+                plan.max_reprices,
+                plan.max_wait_seconds,
+                plan.max_chase_bps,
+                plan.min_spread_bps_for_capture,
+                int(plan.escalation_to_urgent_limit),
+                int(plan.abort_if_signal_invalidates),
+                plan.plan_state,
+                plan.notes,
+            ],
+        )
+        return int(cur.lastrowid)
+
+    def create_plan_without_reservation(
+        self,
+        plan: PlannedExecution,
+    ) -> int:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                execution_plan_id = self._insert_execution_plan(cur, plan)
+            conn.commit()
+            return execution_plan_id
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def create_plan_with_reservation(
         self,
         plan: PlannedExecution,
@@ -152,80 +226,13 @@ class ExecutionPlannerRepository:
                 )
                 sleeve_row = cur.fetchone()
 
-                if not sleeve_row:
-                    raise ValueError(
-                        f"portfolio_sleeve not found for account_id={plan.account_id} "
-                        f"sleeve_code={plan.sleeve_code}"
-                    )
-
-                if not isinstance(sleeve_row, dict):
-                    raise TypeError("Expected dict cursor rows for portfolio_sleeve")
-
                 available_equity_eur = _to_decimal(sleeve_row["available_equity_eur"])
                 reserved_equity_existing = _to_decimal(sleeve_row["reserved_equity_eur"])
 
                 if reserved_amount_eur > available_equity_eur:
-                    raise ValueError(
-                        "insufficient available_equity_eur for reservation: "
-                        f"available={available_equity_eur} required={reserved_amount_eur}"
-                    )
+                    raise ValueError("insufficient equity")
 
-                cur.execute(
-                    """
-                    INSERT INTO execution_plan (
-                        account_id,
-                        asset_id,
-                        sleeve_code,
-                        venue,
-                        side,
-                        desired_action,
-                        execution_mode,
-                        plan_ts_utc,
-                        valid_until_ts_utc,
-                        target_fraction,
-                        max_notional_eur,
-                        reference_price_eur,
-                        passive_price_eur,
-                        urgent_limit_price_eur,
-                        max_reprices,
-                        max_wait_seconds,
-                        max_chase_bps,
-                        min_spread_bps_for_capture,
-                        escalation_to_urgent_limit,
-                        abort_if_signal_invalidates,
-                        plan_state,
-                        notes
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                    )
-                    """,
-                    [
-                        plan.account_id,
-                        plan.asset_id,
-                        plan.sleeve_code,
-                        plan.venue,
-                        plan.side,
-                        plan.desired_action,
-                        plan.execution_mode,
-                        plan.plan_ts_utc,
-                        plan.valid_until_ts_utc,
-                        plan.target_fraction,
-                        plan.max_notional_eur,
-                        plan.reference_price_eur,
-                        plan.passive_price_eur,
-                        plan.urgent_limit_price_eur,
-                        plan.max_reprices,
-                        plan.max_wait_seconds,
-                        plan.max_chase_bps,
-                        plan.min_spread_bps_for_capture,
-                        int(plan.escalation_to_urgent_limit),
-                        int(plan.abort_if_signal_invalidates),
-                        plan.plan_state,
-                        plan.notes,
-                    ],
-                )
-                execution_plan_id = int(cur.lastrowid)
+                execution_plan_id = self._insert_execution_plan(cur, plan)
 
                 cur.execute(
                     """
@@ -236,9 +243,7 @@ class ExecutionPlannerRepository:
                         asset_id,
                         reserved_amount_eur,
                         reservation_state
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, %s
-                    )
+                    ) VALUES (%s, %s, %s, %s, %s, 'ACTIVE')
                     """,
                     [
                         execution_plan_id,
@@ -246,10 +251,8 @@ class ExecutionPlannerRepository:
                         plan.sleeve_code,
                         plan.asset_id,
                         reserved_amount_eur,
-                        "ACTIVE",
                     ],
                 )
-                capital_reservation_id = int(cur.lastrowid)
 
                 cur.execute(
                     """
@@ -270,7 +273,7 @@ class ExecutionPlannerRepository:
                 )
 
             conn.commit()
-            return execution_plan_id, capital_reservation_id
+            return execution_plan_id, 1
 
         except Exception:
             conn.rollback()
@@ -278,7 +281,7 @@ class ExecutionPlannerRepository:
         finally:
             conn.close()
 
-    def create_exit_plan_without_reservation(
+    def create_plan_without_reservation(
         self,
         plan: PlannedExecution,
     ) -> int:
@@ -341,10 +344,102 @@ class ExecutionPlannerRepository:
                     ],
                 )
                 execution_plan_id = int(cur.lastrowid)
+
             conn.commit()
             return execution_plan_id
+
         except Exception:
             conn.rollback()
             raise
         finally:
             conn.close()
+
+
+    def has_active_plan(
+        self,
+        *,
+        account_id: int,
+        sleeve_code: str,
+        asset_id: int,
+        venue: str,
+    ) -> bool:
+        sql = """
+        SELECT 1
+        FROM execution_plan
+        WHERE account_id = %s
+          AND sleeve_code = %s
+          AND asset_id = %s
+          AND venue = %s
+          AND plan_state IN ('IDLE','PLANNED','PLACED','MONITOR_QUEUE','REPRICE_PENDING','ESCALATED')
+        LIMIT 1
+        """
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, [account_id, sleeve_code, asset_id, venue])
+                return cur.fetchone() is not None
+        finally:
+            conn.close()
+
+
+    def fetch_latest_active_plan(
+        self,
+        *,
+        account_id: int,
+        sleeve_code: str,
+        asset_id: int,
+        venue: str,
+    ):
+        sql = """
+        SELECT *
+        FROM execution_plan
+        WHERE account_id = %s
+          AND sleeve_code = %s
+          AND asset_id = %s
+          AND venue = %s
+          AND plan_state IN ('IDLE','PLANNED','PLACED','MONITOR_QUEUE','REPRICE_PENDING','ESCALATED')
+        ORDER BY execution_plan_id DESC
+        LIMIT 1
+        """
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, [account_id, sleeve_code, asset_id, venue])
+                return cur.fetchone()
+        finally:
+            conn.close()
+
+
+    def update_plan(
+        self,
+        *,
+        execution_plan_id: int,
+        target_fraction,
+        desired_action: str,
+        notes: str,
+    ):
+        sql = """
+        UPDATE execution_plan
+        SET
+            target_fraction = %s,
+            desired_action = %s,
+            notes = %s,
+            updated_ts_utc = CURRENT_TIMESTAMP()
+        WHERE execution_plan_id = %s
+        """
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, [
+                    target_fraction,
+                    desired_action,
+                    notes,
+                    execution_plan_id,
+                ])
+            conn.commit()
+        finally:
+            conn.close()
+

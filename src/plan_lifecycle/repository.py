@@ -10,6 +10,7 @@ from src.plan_lifecycle.models import LifecyclePlanRow, LifecycleReservationRow
 
 EXPIRABLE_PLAN_STATES = {"IDLE", "PLANNED"}
 RELEASABLE_PLAN_STATES = {"CANCELLED", "ABORTED", "EXPIRED"}
+INVALIDATABLE_PLAN_STATES = {"IDLE", "PLANNED"}
 
 
 def _to_decimal(value: Any, default: str = "0") -> Decimal:
@@ -22,77 +23,18 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
 
 @dataclass
 class PlanLifecycleRepository:
-    def fetch_symbol(self, asset_id: int) -> str | None:
-        sql = "SELECT symbol FROM asset WHERE asset_id = %s LIMIT 1"
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(sql, [asset_id])
-                row = cur.fetchone()
-        finally:
-            conn.close()
-
-        if not row:
-            return None
-        if isinstance(row, dict):
-            return str(row["symbol"])
-        return str(row[0])
-
-    def expire_due_plans(
+    def fetch_invalidatable_plans(
         self,
         *,
         account_id: int | None = None,
         sleeve_code: str | None = None,
         venue: str | None = None,
-    ) -> int:
-        clauses = [f"plan_state IN ({','.join(['%s'] * len(EXPIRABLE_PLAN_STATES))})"]
-        params: list[Any] = sorted(EXPIRABLE_PLAN_STATES)
-
-        clauses.append("valid_until_ts_utc IS NOT NULL")
-        clauses.append("valid_until_ts_utc < CURRENT_TIMESTAMP()")
-
-        if account_id is not None:
-            clauses.append("account_id = %s")
-            params.append(account_id)
-
-        if sleeve_code is not None:
-            clauses.append("sleeve_code = %s")
-            params.append(sleeve_code)
-
-        if venue is not None:
-            clauses.append("venue = %s")
-            params.append(venue)
-
-        sql = f"""
-        UPDATE execution_plan
-        SET
-            plan_state = 'EXPIRED',
-            updated_ts_utc = CURRENT_TIMESTAMP()
-        WHERE {" AND ".join(clauses)}
-        """
-
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                affected = cur.execute(sql, params)
-            conn.commit()
-            return int(affected)
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
-
-    def fetch_releasable_plans(
-        self,
-        *,
-        account_id: int | None = None,
-        sleeve_code: str | None = None,
-        venue: str | None = None,
-        limit: int = 50,
+        limit: int = 100,
     ) -> list[LifecyclePlanRow]:
-        clauses = [f"p.plan_state IN ({','.join(['%s'] * len(RELEASABLE_PLAN_STATES))})"]
-        params: list[Any] = sorted(RELEASABLE_PLAN_STATES)
+        clauses = [
+            f"p.plan_state IN ({','.join(['%s'] * len(INVALIDATABLE_PLAN_STATES))})"
+        ]
+        params: list[Any] = sorted(INVALIDATABLE_PLAN_STATES)
 
         if account_id is not None:
             clauses.append("p.account_id = %s")
@@ -113,21 +55,23 @@ class PlanLifecycleRepository:
             p.execution_plan_id,
             p.account_id,
             p.asset_id,
+            a.symbol,
             p.sleeve_code,
             p.venue,
             p.desired_action,
             p.execution_mode,
             p.plan_state,
             p.valid_until_ts_utc,
-            p.notes
+            p.notes,
+            s.selection_state,
+            s.effective_selection_score
         FROM execution_plan p
+        JOIN asset a
+          ON a.asset_id = p.asset_id
+        LEFT JOIN v_selection_latest_effective s
+          ON s.asset_id = p.asset_id
+         AND s.venue = p.venue
         WHERE {" AND ".join(clauses)}
-          AND EXISTS (
-              SELECT 1
-              FROM capital_reservation cr
-              WHERE cr.execution_plan_id = p.execution_plan_id
-                AND cr.reservation_state = 'ACTIVE'
-          )
         ORDER BY p.execution_plan_id ASC
         LIMIT %s
         """
@@ -140,23 +84,89 @@ class PlanLifecycleRepository:
         finally:
             conn.close()
 
-        out: list[LifecyclePlanRow] = []
-        for row in rows:
-            out.append(
-                LifecyclePlanRow(
-                    execution_plan_id=int(row["execution_plan_id"]),
-                    account_id=int(row["account_id"]),
-                    asset_id=int(row["asset_id"]),
-                    sleeve_code=str(row["sleeve_code"]),
-                    venue=str(row["venue"]),
-                    desired_action=str(row["desired_action"]),
-                    execution_mode=str(row["execution_mode"]),
-                    plan_state=str(row["plan_state"]),
-                    valid_until_ts_utc=row["valid_until_ts_utc"],
-                    notes=str(row["notes"]) if row["notes"] is not None else None,
-                )
+        return [
+            LifecyclePlanRow(
+                execution_plan_id=int(row["execution_plan_id"]),
+                account_id=int(row["account_id"]),
+                asset_id=int(row["asset_id"]),
+                symbol=str(row["symbol"]) if row["symbol"] is not None else None,
+                sleeve_code=str(row["sleeve_code"]),
+                venue=str(row["venue"]),
+                desired_action=str(row["desired_action"]),
+                execution_mode=str(row["execution_mode"]),
+                plan_state=str(row["plan_state"]),
+                valid_until_ts_utc=row["valid_until_ts_utc"],
+                notes=str(row["notes"]) if row["notes"] is not None else None,
+                selection_state=(
+                    str(row["selection_state"]).upper()
+                    if row["selection_state"] is not None
+                    else None
+                ),
+                effective_selection_score=(
+                    _to_decimal(row["effective_selection_score"])
+                    if row["effective_selection_score"] is not None
+                    else None
+                ),
             )
-        return out
+            for row in rows
+        ]
+
+    def abort_plan(
+        self,
+        *,
+        plan: LifecyclePlanRow,
+        reason: str,
+    ) -> None:
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE execution_plan
+                    SET
+                        plan_state = 'ABORTED',
+                        notes = CONCAT(COALESCE(notes, ''), ' | ABORTED: ', %s),
+                        updated_ts_utc = CURRENT_TIMESTAMP()
+                    WHERE execution_plan_id = %s
+                    """,
+                    [reason, plan.execution_plan_id],
+                )
+
+                cur.execute(
+                    """
+                    INSERT INTO execution_event (
+                        execution_plan_id,
+                        account_id,
+                        asset_id,
+                        sleeve_code,
+                        event_ts_utc,
+                        event_type,
+                        event_reason,
+                        side,
+                        notes
+                    ) VALUES (
+                        %s, %s, %s, %s, CURRENT_TIMESTAMP(),
+                        %s, %s, %s, %s
+                    )
+                    """,
+                    [
+                        plan.execution_plan_id,
+                        plan.account_id,
+                        plan.asset_id,
+                        plan.sleeve_code,
+                        "PLAN_ABORTED",
+                        reason,
+                        None,
+                        plan.notes,
+                    ],
+                )
+
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def release_reservation_for_plan(
         self,
@@ -256,38 +266,8 @@ class PlanLifecycleRepository:
                     ],
                 )
 
-                cur.execute(
-                    """
-                    INSERT INTO execution_event (
-                        execution_plan_id,
-                        account_id,
-                        asset_id,
-                        sleeve_code,
-                        event_ts_utc,
-                        event_type,
-                        event_reason,
-                        side,
-                        notes
-                    ) VALUES (
-                        %s, %s, %s, %s, CURRENT_TIMESTAMP(),
-                        %s, %s, %s, %s
-                    )
-                    """,
-                    [
-                        plan.execution_plan_id,
-                        plan.account_id,
-                        plan.asset_id,
-                        plan.sleeve_code,
-                        "CAPITAL_RESERVATION_RELEASED",
-                        f"PLAN_{plan.plan_state}_RESERVATION_RELEASED",
-                        None,
-                        plan.notes,
-                    ],
-                )
-
             conn.commit()
             return reservation.reserved_amount_eur
-
         except Exception:
             conn.rollback()
             raise

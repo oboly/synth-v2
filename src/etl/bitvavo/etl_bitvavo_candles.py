@@ -192,7 +192,10 @@ def filter_candles_strict(
 def validate_chunk_rows(
     *,
     rows: list[CandleRow],
+    market: str,
+    asset_id: int,
     interval_code: str,
+    chunk_index: int,
     start_dt: datetime,
     end_dt: datetime,
 ) -> None:
@@ -267,8 +270,9 @@ def validate_chunk_rows(
             diff_ms = int((row.open_ts_utc - prev_row.open_ts_utc).total_seconds() * 1000)
             if diff_ms != interval_ms:
                 print(
-                    f"[ETL][WARN] intra-chunk gap detected interval={interval_code} "
-                    f"prev={prev_row.open_ts_utc.isoformat()} "
+                    f"[ETL][WARN] intra-chunk gap detected "
+                    f"market={market} asset_id={asset_id} chunk={chunk_index} "
+                    f"interval={interval_code} prev={prev_row.open_ts_utc.isoformat()} "
                     f"current={row.open_ts_utc.isoformat()} diff_ms={diff_ms}"
                 )
 
@@ -404,10 +408,27 @@ def run_market_interval(
 
         validate_chunk_rows(
             rows=filtered_rows,
+            market=str(
+                locals().get("market")
+                or locals().get("market_code")
+                or getattr(locals().get("asset"), "market", None)
+                or "UNKNOWN"
+            ),
+            asset_id=int(
+                locals().get("asset_id")
+                or getattr(locals().get("asset"), "asset_id", -1)
+            ),
             interval_code=interval_code,
+            chunk_index=int(
+                locals().get("chunk_index")
+                or locals().get("chunk_idx")
+                or locals().get("chunk_no")
+                or locals().get("chunk")
+                or -1
+            ),
             start_dt=ms_to_dt(window_start_ms),
             end_dt=ms_to_dt(window_end_ms),
-        )
+            )
 
         first_raw_ts = raw_payload[0][0] if raw_payload else None
         last_raw_ts = raw_payload[-1][0] if raw_payload else None
