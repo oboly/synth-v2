@@ -15,26 +15,18 @@ OUTPUT:
 - synth_bt.bt_run
 - synth_bt.bt_selection_eval
 
-CLI:
-python -m src.backtest.run_backtest_selection_eval_v1 \
-  --config-scope BACKTEST \
-  --config-name backtest_baseline \
-  --venue bitvavo \
-  --from-ts "2026-04-01 00:00:00" \
-  --to-ts "2026-04-20 00:00:00"
-
-HISTORICAL:
-- supported
-
 NOTES:
 - evaluates persisted pipeline output only
 - does NOT invent a new strategy
-- joins only on asset_id + venue + timestamp
-- uses advice_ts_1h_utc as canonical entry timestamp for 1h evaluation
+- uses advice_ts_1h_utc as canonical entry timestamp
+- next_return_* is NET after round-trip fees
+- gross_return_* is stored separately
+- prints overall summary plus per-selection_state breakdown
 """
 
 import argparse
 import json
+from collections import defaultdict
 from decimal import Decimal
 from typing import Any
 
@@ -75,6 +67,18 @@ def _require_int(cfg: dict[str, dict[str, Any]], component: str, parameter_name:
     return int(cfg[component][parameter_name])
 
 
+def _require_decimal_with_default(
+    cfg: dict[str, dict[str, Any]],
+    component: str,
+    parameter_name: str,
+    default: str,
+) -> Decimal:
+    component_map = cfg.get(component, {})
+    if parameter_name not in component_map:
+        return Decimal(default)
+    return _to_decimal(component_map[parameter_name])
+
+
 def _snapshot_json(loaded_config) -> str:
     return json.dumps(loaded_config.snapshot_json_ready, ensure_ascii=False)
 
@@ -104,21 +108,41 @@ def ensure_bt_tables() -> None:
             selection_bias VARCHAR(32) DEFAULT NULL,
             selection_score DECIMAL(18,8) DEFAULT NULL,
             priority_rank INT DEFAULT NULL,
+            fee_bps_per_side DECIMAL(18,8) DEFAULT NULL,
             entry_close_price DECIMAL(28,10) DEFAULT NULL,
             next_ts_1h_utc DATETIME(6) DEFAULT NULL,
             next_close_price_1h DECIMAL(28,10) DEFAULT NULL,
+            gross_return_1h DECIMAL(18,8) DEFAULT NULL,
             next_return_1h DECIMAL(18,8) DEFAULT NULL,
             next_ts_4h_utc DATETIME(6) DEFAULT NULL,
             next_close_price_4h DECIMAL(28,10) DEFAULT NULL,
+            gross_return_4h DECIMAL(18,8) DEFAULT NULL,
             next_return_4h DECIMAL(18,8) DEFAULT NULL,
             next_ts_24h_utc DATETIME(6) DEFAULT NULL,
             next_close_price_24h DECIMAL(28,10) DEFAULT NULL,
+            gross_return_24h DECIMAL(18,8) DEFAULT NULL,
             next_return_24h DECIMAL(18,8) DEFAULT NULL,
             created_ts_utc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
             UNIQUE KEY uq_bt_selection_eval (bt_run_id, asset_id, venue, entry_ts_utc),
             KEY ix_bt_selection_eval_run (bt_run_id),
             KEY ix_bt_selection_eval_asset_ts (asset_id, entry_ts_utc)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """,
+        """
+        ALTER TABLE bt_selection_eval
+            ADD COLUMN IF NOT EXISTS fee_bps_per_side DECIMAL(18,8) DEFAULT NULL
+        """,
+        """
+        ALTER TABLE bt_selection_eval
+            ADD COLUMN IF NOT EXISTS gross_return_1h DECIMAL(18,8) DEFAULT NULL
+        """,
+        """
+        ALTER TABLE bt_selection_eval
+            ADD COLUMN IF NOT EXISTS gross_return_4h DECIMAL(18,8) DEFAULT NULL
+        """,
+        """
+        ALTER TABLE bt_selection_eval
+            ADD COLUMN IF NOT EXISTS gross_return_24h DECIMAL(18,8) DEFAULT NULL
         """,
     ]
 
@@ -145,13 +169,15 @@ def insert_bt_run(
     engine_name: str,
     engine_version: str,
     selection_states: list[str],
+    fee_bps_per_side: Decimal,
     dry_run: bool,
 ) -> int:
     notes = (
         f"Selection evaluation only; venue={venue}; "
         f"window=[{from_ts},{to_ts}); "
         f"engine={engine_name}:{engine_version}; "
-        f"states={','.join(selection_states)}"
+        f"states={','.join(selection_states)}; "
+        f"fee_bps_per_side={fee_bps_per_side}"
     )
 
     conn = get_connection(database=BT_DB)
@@ -196,8 +222,10 @@ def fetch_eval_rows(
     engine_name: str,
     engine_version: str,
     selection_states: list[str],
+    fee_bps_per_side: Decimal,
 ) -> list[dict[str, Any]]:
     state_placeholders = ",".join(["%s"] * len(selection_states))
+    round_trip_fee = (fee_bps_per_side * Decimal("2")) / Decimal("10000")
 
     sql = f"""
     WITH base AS (
@@ -230,6 +258,7 @@ def fetch_eval_rows(
         b.selection_bias,
         b.selection_score,
         b.priority_rank,
+        %s AS fee_bps_per_side,
 
         e1.close_price AS entry_close_price,
 
@@ -238,6 +267,10 @@ def fetch_eval_rows(
         CASE
             WHEN e1.close_price IS NULL OR e1.close_price = 0 OR n1.close_price IS NULL THEN NULL
             ELSE (n1.close_price - e1.close_price) / e1.close_price
+        END AS gross_return_1h,
+        CASE
+            WHEN e1.close_price IS NULL OR e1.close_price = 0 OR n1.close_price IS NULL THEN NULL
+            ELSE ((n1.close_price - e1.close_price) / e1.close_price) - %s
         END AS next_return_1h,
 
         n4.open_ts_utc AS next_ts_4h_utc,
@@ -245,6 +278,10 @@ def fetch_eval_rows(
         CASE
             WHEN e1.close_price IS NULL OR e1.close_price = 0 OR n4.close_price IS NULL THEN NULL
             ELSE (n4.close_price - e1.close_price) / e1.close_price
+        END AS gross_return_4h,
+        CASE
+            WHEN e1.close_price IS NULL OR e1.close_price = 0 OR n4.close_price IS NULL THEN NULL
+            ELSE ((n4.close_price - e1.close_price) / e1.close_price) - %s
         END AS next_return_4h,
 
         n24.open_ts_utc AS next_ts_24h_utc,
@@ -252,6 +289,10 @@ def fetch_eval_rows(
         CASE
             WHEN e1.close_price IS NULL OR e1.close_price = 0 OR n24.close_price IS NULL THEN NULL
             ELSE (n24.close_price - e1.close_price) / e1.close_price
+        END AS gross_return_24h,
+        CASE
+            WHEN e1.close_price IS NULL OR e1.close_price = 0 OR n24.close_price IS NULL THEN NULL
+            ELSE ((n24.close_price - e1.close_price) / e1.close_price) - %s
         END AS next_return_24h
 
     FROM base b
@@ -278,7 +319,11 @@ def fetch_eval_rows(
     ORDER BY b.entry_ts_utc ASC, b.asset_id ASC
     """
 
-    params: list[Any] = [venue, engine_name, engine_version, from_ts, to_ts] + selection_states
+    params: list[Any] = (
+        [venue, engine_name, engine_version, from_ts, to_ts]
+        + selection_states
+        + [fee_bps_per_side, round_trip_fee, round_trip_fee, round_trip_fee]
+    )
 
     conn = get_connection(database=SOURCE_DB)
     try:
@@ -316,31 +361,42 @@ def write_eval_rows(
                         selection_bias,
                         selection_score,
                         priority_rank,
+                        fee_bps_per_side,
                         entry_close_price,
                         next_ts_1h_utc,
                         next_close_price_1h,
+                        gross_return_1h,
                         next_return_1h,
                         next_ts_4h_utc,
                         next_close_price_4h,
+                        gross_return_4h,
                         next_return_4h,
                         next_ts_24h_utc,
                         next_close_price_24h,
+                        gross_return_24h,
                         next_return_24h
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    )
                     ON DUPLICATE KEY UPDATE
                         selection_state = VALUES(selection_state),
                         selection_bias = VALUES(selection_bias),
                         selection_score = VALUES(selection_score),
                         priority_rank = VALUES(priority_rank),
+                        fee_bps_per_side = VALUES(fee_bps_per_side),
                         entry_close_price = VALUES(entry_close_price),
                         next_ts_1h_utc = VALUES(next_ts_1h_utc),
                         next_close_price_1h = VALUES(next_close_price_1h),
+                        gross_return_1h = VALUES(gross_return_1h),
                         next_return_1h = VALUES(next_return_1h),
                         next_ts_4h_utc = VALUES(next_ts_4h_utc),
                         next_close_price_4h = VALUES(next_close_price_4h),
+                        gross_return_4h = VALUES(gross_return_4h),
                         next_return_4h = VALUES(next_return_4h),
                         next_ts_24h_utc = VALUES(next_ts_24h_utc),
                         next_close_price_24h = VALUES(next_close_price_24h),
+                        gross_return_24h = VALUES(gross_return_24h),
                         next_return_24h = VALUES(next_return_24h)
                     """,
                     [
@@ -353,15 +409,19 @@ def write_eval_rows(
                         row["selection_bias"],
                         row["selection_score"],
                         row["priority_rank"],
+                        row["fee_bps_per_side"],
                         row["entry_close_price"],
                         row["next_ts_1h_utc"],
                         row["next_close_price_1h"],
+                        row["gross_return_1h"],
                         row["next_return_1h"],
                         row["next_ts_4h_utc"],
                         row["next_close_price_4h"],
+                        row["gross_return_4h"],
                         row["next_return_4h"],
                         row["next_ts_24h_utc"],
                         row["next_close_price_24h"],
+                        row["gross_return_24h"],
                         row["next_return_24h"],
                     ],
                 )
@@ -441,6 +501,46 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, str]:
     }
 
 
+def summarize_by_state(rows: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row["selection_state"])].append(row)
+
+    out: dict[str, dict[str, str]] = {}
+    for state_name, state_rows in sorted(grouped.items()):
+        out[state_name] = summarize(state_rows)
+    return out
+
+
+def print_state_breakdown(rows: list[dict[str, Any]]) -> None:
+    breakdown = summarize_by_state(rows)
+    print("=== STATE BREAKDOWN ===")
+    print(
+        "selection_state | rows_total | rows_1h | rows_4h | rows_24h | "
+        "avg_return_1h | avg_return_4h | avg_return_24h | "
+        "winrate_1h | winrate_4h | winrate_24h"
+    )
+    print(
+        "---------------+------------+---------+---------+----------+"
+        "---------------+---------------+----------------+"
+        "------------+------------+-------------"
+    )
+    for state_name, stats in breakdown.items():
+        print(
+            f"{state_name} | "
+            f"{stats['rows_total']} | "
+            f"{stats['rows_1h']} | "
+            f"{stats['rows_4h']} | "
+            f"{stats['rows_24h']} | "
+            f"{stats['avg_return_1h']} | "
+            f"{stats['avg_return_4h']} | "
+            f"{stats['avg_return_24h']} | "
+            f"{stats['winrate_1h']} | "
+            f"{stats['winrate_4h']} | "
+            f"{stats['winrate_24h']}"
+        )
+
+
 def main() -> int:
     args = parse_args()
 
@@ -452,6 +552,7 @@ def main() -> int:
 
     entry_interval_code = str(cfg["backtest"]["entry_interval_code"])
     forward_horizon_candles = _require_int(cfg, "backtest", "forward_horizon_candles")
+    fee_bps_per_side = _require_decimal_with_default(cfg, "backtest", "fee_bps_per_side", "0")
 
     if entry_interval_code != "1h":
         raise ValueError("run_backtest_selection_eval_v1 currently supports only backtest.entry_interval_code = '1h'")
@@ -471,6 +572,7 @@ def main() -> int:
         engine_name=args.engine_name,
         engine_version=args.engine_version,
         selection_states=args.selection_states,
+        fee_bps_per_side=fee_bps_per_side,
     )
 
     bt_run_id = insert_bt_run(
@@ -482,6 +584,7 @@ def main() -> int:
         engine_name=args.engine_name,
         engine_version=args.engine_version,
         selection_states=args.selection_states,
+        fee_bps_per_side=fee_bps_per_side,
         dry_run=args.dry_run,
     )
 
@@ -501,6 +604,7 @@ def main() -> int:
         f"from_ts={args.from_ts} "
         f"to_ts={args.to_ts} "
         f"states={','.join(args.selection_states)} "
+        f"fee_bps_per_side={fee_bps_per_side} "
         f"rows_total={summary['rows_total']} "
         f"rows_written={rows_written} "
         f"rows_1h={summary['rows_1h']} "
@@ -514,6 +618,8 @@ def main() -> int:
         f"winrate_24h={summary['winrate_24h']} "
         f"dry_run={args.dry_run}"
     )
+
+    print_state_breakdown(rows)
     return 0
 
 
