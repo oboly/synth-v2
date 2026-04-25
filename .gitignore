@@ -49,3 +49,4 @@ data/exports/
 
 # local backups
 database/backups/
+data/aplus_raw/*.txt

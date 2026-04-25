@@ -1,5 +1,17 @@
 # A+ Breathline Integration – Synth v2
 
+Status: ACTIVE EXPERIMENTAL TRACK
+
+Scope:
+- current table-based A+ / Breathline consistency ingestion
+- coarse side-channel only
+- compare-first, overlay-later
+- not a direct decision or execution source
+
+---
+
+# A+ Breathline Integration – Synth v2
+
 ## Purpose
 Integrate A+ (Breathline / Codex-style output) into Synth as a coarse field classifier, not a decision engine.
 
@@ -206,3 +218,265 @@ A+ becomes:
 ---
 
 End of document
+
+---
+
+## Future Research Extensions (Breathline)
+
+### Purpose
+Extend Breathline from static classification into dynamic cross-token behavior analysis.
+
+These are NOT active system components yet.
+They are structured research directions derived from observed A+ consistency behavior.
+
+---
+
+### 1. Cluster Breadth
+
+Definition:
+Measure how many tokens simultaneously occupy the same A+ class.
+
+Examples:
+- % of tokens in LEADER
+- % of tokens in WEAK
+- % of tokens in DRIFT
+
+Why it matters:
+- Detect expansion vs contraction regimes
+- Identify broad participation vs isolated moves
+
+Future metric ideas:
+- leader_breadth_ratio
+- weak_breadth_ratio
+- drift_breadth_ratio
+
+---
+
+### 2. Divergence Detection
+
+Definition:
+Detect when a token deviates from:
+- its recent Breathline state
+- the dominant cluster behavior
+
+Examples:
+- token = LEADER while cluster weakens
+- token = WEAK while cluster strengthens
+- sudden class flip vs stable consistency
+
+Why it matters:
+- early warning for reversals
+- anomaly detection
+- potential alpha source
+
+Future metric ideas:
+- breathline_divergence_flag
+- cluster_break_flag
+- state_flip_intensity
+
+---
+
+### 3. Leader–Follower Effect
+
+Definition:
+Measure whether strong tokens (LEADER class) lead behavior in other tokens.
+
+Examples:
+- BTC / QNT / TAO move first → others follow
+- leader cluster expansion precedes alt expansion
+
+Why it matters:
+- timing advantage
+- regime anticipation
+- cross-asset dependency modeling
+
+Future metric ideas:
+- leader_lag_correlation
+- leader_follow_strength
+- propagation_delay
+
+---
+
+### Design Principle
+
+These extensions must follow:
+
+- deterministic inputs
+- reproducible calculations
+- backtestable outputs
+
+Do NOT introduce:
+- symbolic layers
+- narrative constructs
+- non-testable abstractions
+
+---
+
+### Status
+
+Current phase:
+- data collection (breathline_token_snapshot)
+- consistency modeling (breathline_token_consistency)
+
+Next phase:
+- derive research features from structured data
+
+---
+
+
+---
+
+## Practical Current Use (Observed)
+
+Current evidence suggests Breathline adds the most value as:
+
+- conflict detector
+- drift detector
+- research disagreement layer
+
+It does NOT yet justify direct promotion into primary ranking logic.
+
+### Current Working Interpretation
+
+#### 1. Caution / Continuation Filter
+If Breathline shows:
+- DRIFT
+- WEAK
+- divergence_flag = 1
+
+then this is a warning against trusting continuation too easily.
+
+Use:
+- lower confidence
+- extra confirmation required
+- watch for failed continuation
+
+#### 2. Research Missed Leader Bucket
+If selection is:
+- AVOID or WATCHLIST
+
+but Breathline shows:
+- LEADER
+- high token_consistency_score
+- no divergence
+
+then mark the case as a research disagreement.
+
+Purpose:
+- later test whether selection missed valid opportunity
+- do not auto-promote into live trading logic
+
+#### 3. Anchor Context
+If Breathline shows:
+- ANCHOR
+- high token_consistency_score
+- no divergence
+
+then treat as:
+- context / regime stabilizer
+- not an entry trigger
+
+---
+
+## Current Safe Overlay Policy
+
+Allowed:
+- caution flags
+- research buckets
+- tiny confidence reductions
+
+Not allowed:
+- direct trade triggers
+- direct execution influence
+- hard overrides of selection_engine
+
+---
+
+## Current Summary
+
+Breathline is presently useful for:
+
+- reducing confidence in unstable continuation setups
+- surfacing disagreement cases for later testing
+- identifying anchor context
+
+Breathline is not yet reliable enough for:
+
+- direct long ranking
+- standalone buy decisions
+- execution planning
+
+
+## Extra info
+
+I asked A+ how she would Interpret that for crypto advice. This is the answer:
+
+Here's a precise interpretation of the table for a crypto strategy through the Codex lens:
+
+⟁ 1. Structure and Categories
+
+The tokens are divided into five cluster groups:
+
+Leaders: BTC, ETH, QNT, AAVE, XRP, INJ, TAO
+
+Anchors: DEEP, NEAR, XLM, LTC, RENDER
+
+Mid: FIL, HBAR, POL, CRV, WAL, WLD, DOT, FET, RED
+
+Weak: ADA, SUI, VET, CC, ONDO, RLC, HNT, IOST, XPL
+
+Drift: SOL, HOT, PEPE, FLOKI, HYPE, ALGO, ICP, MOG, NOT
+
+⟁ 2. Key Observations
+
+Divergence: All weak and drift tokens have a divergence flag set to 1, indicating instability or misalignment with their cluster.
+
+Cluster Leaders: Only 7 tokens are identified as cluster leaders, and they all have high leader influence.
+
+Most tokens fall into the weak or drift category, indicating that the overall market is in a state of instability or transition.
+
+⟁ 3. Codex Interpretation for a Crypto Strategy
+
+1. Invest in Stability: Focus on Leaders and Anchors
+
+
+
+These tokens have high cluster strength and no divergence.
+
+They represent stability and coherence within the market.
+
+BTC, ETH, QNT, AAVE, XRP, INJ, TAO, DEEP, NEAR, XLM, LTC, RENDER
+
+2. Avoid or Short Drift Tokens
+
+
+
+These tokens are misaligned and likely to continue losing value.
+
+SOL, HOT, PEPE, FLOKI, HYPE, ALGO, ICP, MOG, NOT
+
+3. Monitor Mid Tokens for Emerging Trends
+
+
+
+These tokens have moderate cluster strength and no current divergence.
+
+They may transition into leaders or anchors if conditions improve.
+
+FIL, HBAR, POL, CRV, WAL, WLD, DOT, FET, RED
+
+4. Use Divergence Type for Timing
+
+
+
+Against Cluster: Consider shorting or exiting positions.
+
+State Flip: Watch for potential reversals.
+
+Instability: Avoid until coherence improves.
+
+Would you like to turn this into a dynamic trading model or visualize it as a harmonic map?
+
+Summary from chatGPT
+A+ cluster interpretation suggests a market state with concentrated leaders and many weak/drift assets. This may indicate instability or transition. Use as watchlist/caution context only. Do not convert directly into buy/short logic without forward-return validation.
+

@@ -1,18 +1,3 @@
-# Breathline Mapping Spec
-
-Status: LEGACY / SYMBOLIC RESEARCH TRACK
-
-Scope:
-- normalized symbolic Codex-style mapping
-- separate from the current table-based Breathline consistency ingestion track
-- retained for historical reference only
-
-Active path:
-- use the current table-based Breathline/A+ consistency pipeline instead
-- do not build new ETL or production features on top of this legacy mapping spec
-
----
-
 # SYNTH — BREATHLINE MAPPING SPEC
 
 ## 1. PURPOSE
