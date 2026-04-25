@@ -56,11 +56,11 @@ def fetch_selection_candidates(
 ) -> list[SelectionCandidate]:
     asset_filter_sql = ""
     params: list[Any] = [
-        venue,  # quality_latest inner
-        venue,  # quality_latest outer
-        venue,  # signal_latest inner
-        venue,  # signal_latest outer
-        venue,  # SELECT literal
+        venue,
+        venue,
+        venue,
+        venue,
+        venue,
     ]
 
     if asset_id is not None:
@@ -72,14 +72,14 @@ def fetch_selection_candidates(
     sql = f"""
     WITH quality_latest AS (
         SELECT q.*
-        FROM v_asset_interval_quality_v2 q
+        FROM v_asset_interval_quality_v3 q
         JOIN (
             SELECT
                 asset_id,
                 venue,
                 interval_code,
                 MAX(asof_ts_utc) AS max_asof_ts_utc
-            FROM v_asset_interval_quality_v2
+            FROM v_asset_interval_quality_v3
             WHERE venue = %s
             GROUP BY asset_id, venue, interval_code
         ) x
@@ -141,7 +141,10 @@ def fetch_selection_candidates(
                 COALESCE(q4h.asof_ts_utc, '1970-01-01 00:00:00'),
                 COALESCE(q1h.asof_ts_utc, '1970-01-01 00:00:00')
             ) AS CHAR
-        ) AS latest_quality_asof_ts_utc
+        ) AS latest_quality_asof_ts_utc,
+
+        CAST(sig1h.signal_ts_utc AS CHAR) AS advice_ts_1h_utc,
+        CAST(sig4h.signal_ts_utc AS CHAR) AS advice_ts_4h_utc
 
     FROM asset a
     LEFT JOIN quality_latest q1d
@@ -205,9 +208,16 @@ def fetch_selection_candidates(
                 signal_confidence_1h=_to_decimal(row.get("signal_confidence_1h")),
                 risk_score_1h=_to_decimal(row.get("risk_score_1h")),
                 latest_quality_asof_ts_utc=(
-                    None
-                    if row.get("latest_quality_asof_ts_utc") is None
+                    None if row.get("latest_quality_asof_ts_utc") is None
                     else str(row["latest_quality_asof_ts_utc"])
+                ),
+                advice_ts_1h_utc=(
+                    None if row.get("advice_ts_1h_utc") is None
+                    else str(row["advice_ts_1h_utc"])
+                ),
+                advice_ts_4h_utc=(
+                    None if row.get("advice_ts_4h_utc") is None
+                    else str(row["advice_ts_4h_utc"])
                 ),
             )
         )
@@ -235,7 +245,8 @@ def _print_rows(printable_rows: list[dict[str, Any]]) -> None:
         "asset_id,symbol,selection_state,selection_bias,selection_score,"
         "priority_rank,allow_trade_flag,allowed_sleeves,blocked_reason,"
         "trade_quality_score,timing_refinement_score,quality_penalty,"
-        "quality_status_1d,quality_status_4h,quality_status_1h"
+        "quality_status_1d,quality_status_4h,quality_status_1h,"
+        "advice_ts_1h_utc,advice_ts_4h_utc"
     )
     for row in printable_rows:
         print(
@@ -246,15 +257,71 @@ def _print_rows(printable_rows: list[dict[str, Any]]) -> None:
             f"{row['selection_score']},"
             f"{row['priority_rank']},"
             f"{row['allow_trade_flag']},"
-            f"{row['allowed_sleeves']},"
+            f"\"{row['allowed_sleeves']}\","
             f"{row['blocked_reason']},"
             f"{row['trade_quality_score']},"
             f"{row['timing_refinement_score']},"
             f"{row['quality_penalty']},"
             f"{row['quality_status_1d']},"
             f"{row['quality_status_4h']},"
-            f"{row['quality_status_1h']}"
+            f"{row['quality_status_1h']},"
+            f"{row['advice_ts_1h_utc']},"
+            f"{row['advice_ts_4h_utc']}"
         )
+
+
+def _derive_regime_label_4h(row: SelectionRow) -> str | None:
+    if row.quality_status_4h == "BLOCKED":
+        return None
+
+    if row.selection_state == "BUY_READY":
+        return "TREND_UP"
+
+    if row.selection_state == "PREPARE":
+        if row.selection_bias in {"BULLISH", "NEUTRAL_POSITIVE"}:
+            return "TREND_UP"
+        return "RANGE"
+
+    if row.selection_state == "WATCHLIST":
+        return "RANGE"
+
+    if row.selection_state == "NEUTRAL":
+        return "RANGE"
+
+    return None
+
+
+def _derive_regime_label_1h(row: SelectionRow) -> str | None:
+    if row.quality_status_1h == "BLOCKED":
+        return None
+
+    if row.selection_state in {"BUY_READY", "PREPARE"}:
+        return "TREND_UP"
+
+    if row.selection_state == "WATCHLIST":
+        return "RANGE"
+
+    return None
+
+
+def _derive_advice_state_4h(row: SelectionRow) -> str | None:
+    if row.selection_state == "BUY_READY":
+        return "ENTER_LONG"
+    if row.selection_state == "PREPARE":
+        return "PREPARE"
+    if row.selection_state == "WATCHLIST":
+        return "WATCH"
+    return "NO_ACTION"
+
+
+def _derive_advice_state_1h(row: SelectionRow) -> str | None:
+    if row.quality_status_1h == "BLOCKED":
+        return "NO_ACTION"
+    if row.selection_state == "BUY_READY":
+        return "ENTRY_REFINEMENT"
+    if row.selection_state == "PREPARE":
+        return "WATCH"
+    return "NO_ACTION"
 
 
 def _selection_row_to_db_params(
@@ -264,23 +331,28 @@ def _selection_row_to_db_params(
     engine_name: str,
     engine_version: str,
 ) -> tuple[Any, ...]:
+    regime_label_1h = _derive_regime_label_1h(row)
+    regime_label_4h = _derive_regime_label_4h(row)
+    advice_state_1h = _derive_advice_state_1h(row)
+    advice_state_4h = _derive_advice_state_4h(row)
+
     return (
         row.asset_id,
         row.venue,
         run_asof_ts_utc,
-        None,  # advice_ts_1h_utc
-        None,  # advice_ts_4h_utc
+        row.advice_ts_1h_utc,
+        row.advice_ts_4h_utc,
         row.selection_state,
         row.selection_bias,
         row.selection_score,
-        None,  # regime_label_1h
-        None,  # regime_label_4h
-        None,  # advice_state_1h
-        None,  # advice_state_4h
-        None,  # opportunity_score_1h
-        None,  # opportunity_score_4h
-        None,  # risk_score_1h
-        None,  # risk_score_4h
+        regime_label_1h,
+        regime_label_4h,
+        advice_state_1h,
+        advice_state_4h,
+        None,
+        None,
+        None,
+        None,
         row.priority_rank,
         row.summary,
         engine_name,

@@ -74,6 +74,8 @@ class SelectionCandidate:
     risk_score_1h: Decimal
 
     latest_quality_asof_ts_utc: str | None = None
+    advice_ts_1h_utc: str | None = None
+    advice_ts_4h_utc: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,9 @@ class SelectionRow:
     symbol: str
     venue: str
     asof_ts_utc: str | None
+
+    advice_ts_1h_utc: str | None
+    advice_ts_4h_utc: str | None
 
     quality_status_1d: str
     quality_status_4h: str
@@ -313,6 +318,30 @@ def _clamp_state_for_new_asset(
     return order[min(target_idx, max_idx)]
 
 
+def _prepare_context_ok(candidate: SelectionCandidate) -> bool:
+    if candidate.quality_status_1d == "BLOCKED":
+        return False
+    if candidate.quality_status_4h == "BLOCKED":
+        return False
+    if not _is_constructive_1d(candidate):
+        return False
+    if not _is_constructive_4h(candidate):
+        return False
+    return True
+
+
+def _buy_ready_context_ok(candidate: SelectionCandidate) -> bool:
+    if candidate.quality_status_1d != "TRUSTED":
+        return False
+    if candidate.quality_status_4h != "TRUSTED":
+        return False
+    if not _is_bullish_1d(candidate):
+        return False
+    if not _is_constructive_4h(candidate):
+        return False
+    return True
+
+
 def _state_from_score(
     candidate: SelectionCandidate,
     selection_score: Decimal,
@@ -339,9 +368,9 @@ def _state_from_score(
     buy_ready_min = _threshold_min_score(config, "buy_ready")
     prepare_min = _threshold_min_score(config, "prepare")
 
-    if _is_bullish_1d(candidate) and selection_score >= buy_ready_min:
+    if _buy_ready_context_ok(candidate) and selection_score >= buy_ready_min:
         state_name = "BUY_READY"
-    elif selection_score >= prepare_min:
+    elif _prepare_context_ok(candidate) and selection_score >= prepare_min:
         state_name = "PREPARE"
     elif selection_score >= Decimal("0.42"):
         state_name = "WATCHLIST"
@@ -485,20 +514,32 @@ def rank_candidates(
 
         allow_trade_flag = 0
         if (
-            state_name in {"BUY_READY", "PREPARE"}
+            state_name == "BUY_READY"
+            and priority_rank is not None
+            and priority_rank <= buy_ready_max_rank
+            and selection_score >= _threshold_min_score(config, "buy_ready")
+            and _buy_ready_context_ok(candidate)
+        ):
+            allow_trade_flag = 1
+        elif (
+            state_name == "PREPARE"
             and priority_rank is not None
             and priority_rank <= buy_ready_max_rank
             and selection_score >= _threshold_min_score(config, "prepare")
+            and _prepare_context_ok(candidate)
         ):
             allow_trade_flag = 1
 
         allowed_sleeves = _allowed_sleeves(candidate, state_name)
 
         if allow_trade_flag == 0 and state_name == "BUY_READY":
-            blocked_reason = blocked_reason or "BLOCKED_PRIORITY_TOO_LOW"
+            blocked_reason = blocked_reason or "BLOCKED_PRIORITY_TOO_LOW_OR_CONTEXT_INVALID"
+
         if allow_trade_flag == 0 and state_name == "PREPARE" and blocked_reason is None:
             if priority_rank is not None and priority_rank > buy_ready_max_rank:
                 blocked_reason = "BLOCKED_PRIORITY_TOO_LOW"
+            else:
+                blocked_reason = "BLOCKED_CONTEXT_INVALID"
 
         selection_bias = _selection_bias(candidate, item["trade_quality_score"])
         summary = _summary(
@@ -516,6 +557,8 @@ def rank_candidates(
                 symbol=candidate.symbol,
                 venue=candidate.venue,
                 asof_ts_utc=candidate.latest_quality_asof_ts_utc,
+                advice_ts_1h_utc=candidate.advice_ts_1h_utc,
+                advice_ts_4h_utc=candidate.advice_ts_4h_utc,
                 quality_status_1d=candidate.quality_status_1d,
                 quality_status_4h=candidate.quality_status_4h,
                 quality_status_1h=candidate.quality_status_1h,
