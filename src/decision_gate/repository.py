@@ -24,14 +24,13 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
 
 def _unwrap_cursor(db_obj: Any) -> Any:
     if isinstance(db_obj, tuple):
-        if len(db_obj) < 2:
-            raise ValueError("db_cursor() returned tuple with insufficient elements")
         return db_obj[1]
     return db_obj
 
 
 @dataclass
 class DecisionGateRepository:
+
     def fetch_selection_rows(
         self,
         venue: str,
@@ -39,6 +38,7 @@ class DecisionGateRepository:
         symbol: str | None = None,
         limit: int | None = None,
     ) -> list[SelectionInputRow]:
+
         clauses = ["venue = %(venue)s"]
         params: dict[str, Any] = {"venue": venue}
 
@@ -61,7 +61,8 @@ class DecisionGateRepository:
             selection_bias,
             priority_rank,
             effective_selection_score,
-            summary_text
+            summary_text,
+            regime_label_4h
         FROM v_selection_latest_effective
         WHERE {" AND ".join(clauses)}
         ORDER BY
@@ -86,12 +87,13 @@ class DecisionGateRepository:
                 asset_id=int(r["asset_id"]),
                 symbol=str(r["symbol"]),
                 venue=str(r["venue"]),
-                asof_ts_utc=str(r["asof_ts_utc"]) if r["asof_ts_utc"] is not None else None,
+                asof_ts_utc=str(r["asof_ts_utc"]) if r["asof_ts_utc"] else None,
                 selection_state=str(r["selection_state"]).upper(),
-                selection_bias=str(r["selection_bias"]) if r["selection_bias"] is not None else None,
-                priority_rank=int(r["priority_rank"]) if r["priority_rank"] is not None else None,
-                effective_selection_score=_to_decimal(r["effective_selection_score"]) if r["effective_selection_score"] is not None else None,
-                summary_text=str(r["summary_text"]) if r["summary_text"] is not None else None,
+                selection_bias=str(r["selection_bias"]) if r["selection_bias"] else None,
+                priority_rank=int(r["priority_rank"]) if r["priority_rank"] else None,
+                effective_selection_score=_to_decimal(r["effective_selection_score"]) if r["effective_selection_score"] else None,
+                summary_text=str(r["summary_text"]) if r["summary_text"] else None,
+                regime_label_4h=str(r["regime_label_4h"]) if r["regime_label_4h"] else None,
             )
             for r in rows
         ]
@@ -172,5 +174,4 @@ class DecisionGateRepository:
         return DuplicateState(bool(plan), bool(pos))
 
     def fetch_open_order_flag(self, account_id: int, sleeve_code: str, asset_id: int, venue: str) -> bool:
-        _ = (account_id, sleeve_code, asset_id, venue)
         return False

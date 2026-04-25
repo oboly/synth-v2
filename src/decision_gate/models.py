@@ -28,11 +28,16 @@ class SelectionInputRow:
     symbol: str
     venue: str
     asof_ts_utc: str | None
+
     selection_state: str
     selection_bias: str | None
     priority_rank: int | None
     effective_selection_score: Decimal | None
+
     summary_text: str | None
+
+    # 🔥 NEW: DIRECT CONTEXT (NO JSON)
+    regime_label_4h: str | None
 
 
 @dataclass(frozen=True)
@@ -67,12 +72,19 @@ class DecisionResult:
     symbol: str
     venue: str
     asof_ts_utc: str | None
+
     selection_state: str
     decision_state: str
     decision_reason: str
     execution_intent: str
+
     min_available_equity_eur: Decimal
     available_equity_eur: Decimal | None
+
     has_active_plan: bool
     has_open_position: bool
+
     summary_text: str | None
+
+    # 🔥 PASS THROUGH CONTEXT
+    regime_label_4h: str | None
