@@ -72,14 +72,14 @@ def fetch_selection_candidates(
     sql = f"""
     WITH quality_latest AS (
         SELECT q.*
-        FROM v_asset_interval_quality_v3 q
+        FROM asset_interval_quality q
         JOIN (
             SELECT
                 asset_id,
                 venue,
                 interval_code,
                 MAX(asof_ts_utc) AS max_asof_ts_utc
-            FROM v_asset_interval_quality_v3
+            FROM asset_interval_quality
             WHERE venue = %s
             GROUP BY asset_id, venue, interval_code
         ) x
