@@ -27,15 +27,30 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
 
 
 def fetch_latest_snapshot_ts(conn, *, venue: str, interval_code: str) -> datetime | None:
+    min_snapshot_rows = {
+        "1h": 20,
+        "4h": 20,
+        "1d": 20,
+    }.get(interval_code, 20)
+
     sql = """
-    SELECT MAX(s.signal_ts_utc) AS snapshot_ts_utc
+    SELECT
+        s.signal_ts_utc AS snapshot_ts_utc,
+        COUNT(*) AS snapshot_rows
     FROM signal_engine_state s
+    JOIN asset a
+      ON a.asset_id = s.asset_id
     WHERE s.venue = %s
       AND s.interval_code = %s
+      AND a.is_enabled = 1
+    GROUP BY s.signal_ts_utc
+    HAVING COUNT(*) >= %s
+    ORDER BY s.signal_ts_utc DESC
+    LIMIT 1
     """
 
     with conn.cursor() as cur:
-        cur.execute(sql, (venue, interval_code))
+        cur.execute(sql, (venue, interval_code, min_snapshot_rows))
         row = cur.fetchone()
 
     if not row:
