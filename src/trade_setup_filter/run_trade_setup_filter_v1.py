@@ -7,11 +7,15 @@ LAYER:
 market-only setup/context filter
 
 BOUNDARY:
-Read-only preview runner.
-No DB writes.
-No account state.
-No order state.
-No execution planning.
+Allowed:
+- latest market-only setup preview
+- optional paper/research observation logging
+
+Forbidden:
+- account state
+- order state
+- execution planning
+- broker/order actions
 """
 
 import argparse
@@ -22,12 +26,15 @@ from decimal import Decimal
 from typing import Any
 
 from src.trade_setup_filter.engine_v1 import evaluate_trade_setup
+from src.trade_setup_filter.observation_repository import write_observations
 from src.trade_setup_filter.repository import fetch_latest_candidates
 
 
 DEFAULT_VENUE = "bitvavo"
 DEFAULT_ENGINE_NAME = "selection_engine_v2"
 DEFAULT_ENGINE_VERSION = "2.0"
+FILTER_NAME = "trade_setup_filter_v1"
+FILTER_VERSION = "1.0"
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,6 +55,7 @@ def parse_args() -> argparse.Namespace:
         choices=("off", "candidate_weak_set"),
         default="off",
     )
+    parser.add_argument("--write-db", action="store_true")
     parser.add_argument("--output", choices=("table", "json"), default="table")
     return parser.parse_args()
 
@@ -141,9 +149,22 @@ def main() -> int:
 
     if args.output == "json":
         print(json.dumps(rows, indent=2, ensure_ascii=False, default=_json_default))
-        return 0
+    else:
+        _print_table(rows)
 
-    _print_table(rows)
+    if args.write_db:
+        written = write_observations(
+            decisions,
+            filter_name=FILTER_NAME,
+            filter_version=FILTER_VERSION,
+            asset_suitability_mode=str(args.asset_suitability_mode),
+        )
+        print(
+            f"[DONE] wrote trade_setup_filter observations "
+            f"rows={written} filter={FILTER_NAME} version={FILTER_VERSION} "
+            f"asset_suitability_mode={args.asset_suitability_mode}"
+        )
+
     return 0
 
 
