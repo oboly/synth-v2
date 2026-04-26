@@ -11,6 +11,11 @@ Read-only repository for latest selection_state + BTC context.
 No writes.
 No account state.
 No execution state.
+
+IMPORTANT:
+BTC context must be snapshot-global, not per-asset. Some assets can have stale
+advice_ts_1h_utc because of sparse candles or quality blocking. Using per-asset
+context timestamps would mix market regimes inside one filter run.
 """
 
 from decimal import Decimal
@@ -47,6 +52,15 @@ def fetch_latest_candidates(
           AND engine_name = %s
           AND engine_version = %s
     ),
+    context AS (
+        SELECT MAX(ss.advice_ts_1h_utc) AS context_ts_utc
+        FROM selection_state ss
+        JOIN latest l
+          ON l.latest_asof_ts_utc = ss.asof_ts_utc
+        WHERE ss.venue = %s
+          AND ss.engine_name = %s
+          AND ss.engine_version = %s
+    ),
     btc AS (
         SELECT asset_id
         FROM asset
@@ -58,7 +72,7 @@ def fetch_latest_candidates(
         a.symbol,
         ss.venue,
         ss.asof_ts_utc,
-        ss.advice_ts_1h_utc AS context_ts_utc,
+        c.context_ts_utc,
         ss.selection_state,
         ss.selection_bias,
         ss.selection_score,
@@ -77,6 +91,7 @@ def fetch_latest_candidates(
     FROM selection_state ss
     JOIN latest l
       ON l.latest_asof_ts_utc = ss.asof_ts_utc
+    JOIN context c
     JOIN asset a
       ON a.asset_id = ss.asset_id
     JOIN btc
@@ -85,13 +100,13 @@ def fetch_latest_candidates(
       ON btc_now.asset_id = btc.asset_id
      AND btc_now.venue = ss.venue
      AND btc_now.interval_code = '1h'
-     AND btc_now.close_ts_utc = ss.advice_ts_1h_utc
+     AND btc_now.close_ts_utc = c.context_ts_utc
 
     LEFT JOIN obs_market_candle btc_prev24
       ON btc_prev24.asset_id = btc.asset_id
      AND btc_prev24.venue = ss.venue
      AND btc_prev24.interval_code = '1h'
-     AND btc_prev24.close_ts_utc = DATE_SUB(ss.advice_ts_1h_utc, INTERVAL 24 HOUR)
+     AND btc_prev24.close_ts_utc = DATE_SUB(c.context_ts_utc, INTERVAL 24 HOUR)
 
     WHERE ss.venue = %s
       AND ss.engine_name = %s
@@ -107,6 +122,9 @@ def fetch_latest_candidates(
     """
 
     params = [
+        venue,
+        engine_name,
+        engine_version,
         venue,
         engine_name,
         engine_version,
