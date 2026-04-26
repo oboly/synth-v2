@@ -91,6 +91,7 @@ def parse_args() -> argparse.Namespace:
             "DATA_GAP",
             "NO_TRADE_GAP",
             "ILLIQUID_MARKET",
+            "SHORT_HISTORY",
             "NO_DATA",
         ],
     )
@@ -266,6 +267,18 @@ def classify(
             "HEALTHY",
             quant(severity),
             "continuous candles in diagnostic window",
+        )
+
+    if (
+        coverage_ratio < Decimal("0.75")
+        and gap_events == 0
+        and large_gap_events == 0
+        and lag <= 1
+    ):
+        return (
+            "SHORT_HISTORY",
+            quant(severity),
+            "limited observed history inside diagnostic window without internal gaps",
         )
 
     if (
