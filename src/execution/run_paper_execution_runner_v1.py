@@ -9,6 +9,12 @@ from dotenv import load_dotenv
 
 load_dotenv(".env")
 
+EXECUTABLE_DESIRED_ACTIONS = {
+    "SPREAD_CAPTURE_PASSIVE",
+    "ENTER",
+    "ENTER_LONG",
+}
+
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
     "port": int(os.getenv("DB_PORT", "3306")),
@@ -34,6 +40,11 @@ def fetch_idle_plans(conn, limit: int = 50):
         SELECT *
         FROM execution_plan
         WHERE plan_state = 'IDLE'
+          AND desired_action IN (
+              'SPREAD_CAPTURE_PASSIVE',
+              'ENTER',
+              'ENTER_LONG'
+          )
         ORDER BY plan_ts_utc ASC
         LIMIT %s
     """
@@ -130,6 +141,15 @@ def update_plan_state(conn, plan_id: int, new_state: str):
 
 
 def process_plan(conn, plan):
+    if str(plan["desired_action"]) not in EXECUTABLE_DESIRED_ACTIONS:
+        insert_execution_event(
+            conn,
+            plan,
+            event_type="EXECUTOR_SKIPPED_NON_EXECUTABLE_ACTION",
+            reason=f"desired_action={plan['desired_action']}",
+        )
+        return
+
     create_open_order(conn, plan)
 
     insert_execution_event(

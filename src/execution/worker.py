@@ -20,6 +20,12 @@ PRICE_RE = re.compile(r"price=([0-9.]+)")
 DECIMAL_ZERO = Decimal("0")
 BPS = Decimal("10000")
 
+EXECUTABLE_DESIRED_ACTIONS = {
+    "SPREAD_CAPTURE_PASSIVE",
+    "ENTER",
+    "ENTER_LONG",
+}
+
 
 @dataclass(slots=True)
 class PlanRuntime:
@@ -97,6 +103,11 @@ def _fetch_actionable_plans(limit: int = 50) -> list[PlanRuntime]:
         notes
     FROM execution_plan
     WHERE plan_state IN ('IDLE', 'PLACED', 'MONITOR_QUEUE', 'REPRICE_PENDING')
+      AND desired_action IN (
+          'SPREAD_CAPTURE_PASSIVE',
+          'ENTER',
+          'ENTER_LONG'
+      )
     ORDER BY plan_ts_utc ASC
     LIMIT %s
     """
@@ -561,6 +572,14 @@ def process_execution_plans() -> dict[str, int]:
         latest_event = latest_events.get(plan.execution_plan_id)
 
         try:
+            if plan.desired_action not in EXECUTABLE_DESIRED_ACTIONS:
+                _write_event(
+                    plan.execution_plan_id,
+                    "EXECUTOR_SKIPPED_NON_EXECUTABLE_ACTION",
+                    f"desired_action={plan.desired_action}",
+                )
+                continue
+
             if plan.plan_state == "IDLE":
                 if EXECUTION_MODE == "paper":
                     _place_initial_order_paper(plan)
