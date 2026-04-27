@@ -512,3 +512,107 @@ Next validation steps:
 3. Add drawdown and exposure-overlap reporting.
 4. Add per-symbol contribution caps.
 5. Only then propose a proper strategy module.
+
+## Non-overlapping walk-forward validation
+
+Runner:
+
+- `src/research/run_strategy_sim_walk_forward_v1.py`
+
+Validation window:
+
+- from: 2026-04-11 00:00:00 UTC
+- to: 2026-04-28 00:00:00 UTC
+- train_days = 10
+- test_days = 3
+- step_days = 3
+- splits = 2
+
+Reason:
+
+This excludes the earlier zero-train split and uses non-overlapping test windows.
+It is a stricter confirmation check than the overlapping rolling validation.
+
+### Result
+
+All tested 24h configs promoted to `PROMOTE_ROLLING_CANDIDATE`.
+
+#### Best aggregate candidate
+
+parking_rotation_recovery_v2:
+
+- hold_hours = 24
+- cooldown_hours_per_symbol = 24
+- max_trades_per_snapshot = 2
+- valid_test_splits = 2
+- positive_test_splits = 2
+- negative_test_splits = 0
+- zero_trade_test_splits = 0
+- train_trades = 11
+- test_trades = 21
+- avg_train = 0.063450
+- avg_test = 0.023765
+- avg_retention = 0.3745
+- avg_train_comp = 0.320995
+- avg_test_comp = 0.249340
+- compound_retention = 0.7768
+- test_comp_product = 0.522242
+- worst_test_avg = 0.004552
+- best_test_avg = 0.042978
+
+Status:
+
+- PRIMARY_NON_OVERLAP_CANDIDATE
+- strongest aggregate non-overlapping confirmation
+- still research-only
+
+#### Clean edge candidate
+
+parking_rotation_recovery_v1:
+
+- hold_hours = 24
+- cooldown_hours_per_symbol = 24
+- max_trades_per_snapshot = 1
+- valid_test_splits = 2
+- positive_test_splits = 2
+- negative_test_splits = 0
+- zero_trade_test_splits = 0
+- train_trades = 9
+- test_trades = 13
+- avg_train = 0.065088
+- avg_test = 0.026195
+- avg_retention = 0.4025
+- avg_train_comp = 0.272875
+- avg_test_comp = 0.197726
+- compound_retention = 0.7246
+- test_comp_product = 0.409262
+- worst_test_avg = 0.006732
+- best_test_avg = 0.045657
+
+Status:
+
+- CLEAN_EDGE_NON_OVERLAP_CANDIDATE
+- strongest non-overlap average test return per trade
+- lower trade count than v2
+
+## Non-overlap conclusion
+
+The 24h parking rotation recovery effect survives the current non-overlapping
+walk-forward check.
+
+Current research ranking after non-overlap:
+
+1. parking_rotation_recovery_v2 / 24h / max_per_snap=2 / cooldown=24h
+2. parking_rotation_recovery_v1 / 24h / max_per_snap=1 / cooldown=24h
+3. parking_rotation_recovery_v1 / 24h / max_per_snap=2 / cooldown=24h
+4. parking_rotation_recovery_v2 / 24h / max_per_snap=1 / cooldown=24h
+
+Important caveat:
+
+Only two non-overlapping test splits are available in the current replay window.
+This confirms the candidate inside the available replay data, but it is not
+enough for production approval.
+
+Next required step:
+
+Expand replay coverage backward before adding more tuning rules.
