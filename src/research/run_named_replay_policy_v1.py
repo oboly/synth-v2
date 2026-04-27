@@ -45,6 +45,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--eval-table", default=DEFAULT_EVAL_TABLE)
     parser.add_argument("--policy", default=DEFAULT_POLICY)
+    parser.add_argument("--from-ts", default=None)
+    parser.add_argument("--to-ts", default=None)
     parser.add_argument("--output", choices=("table", "json"), default="table")
     parser.add_argument("--show-trades", action="store_true")
     return parser.parse_args()
@@ -99,11 +101,11 @@ def _policy_where(policy: str) -> str:
     """
 
 
-def fetch_rows(sql: str) -> list[dict[str, Any]]:
+def fetch_rows(sql: str, params: list[Any] | None = None) -> list[dict[str, Any]]:
     conn = get_connection(database=BT_DB)
     try:
         with conn.cursor() as cur:
-            cur.execute(sql)
+            cur.execute(sql, params or [])
             rows = cur.fetchall() or []
             if not all(isinstance(row, dict) for row in rows):
                 raise TypeError("Expected dict rows from database cursor")
@@ -112,8 +114,34 @@ def fetch_rows(sql: str) -> list[dict[str, Any]]:
         conn.close()
 
 
-def evaluate_policy(*, eval_table: str, policy: str) -> dict[str, list[dict[str, Any]]]:
+def _time_filter_sql(*, from_ts: str | None, to_ts: str | None) -> tuple[str, list[Any]]:
+    filters: list[str] = []
+    params: list[Any] = []
+
+    if from_ts is not None:
+        filters.append("replay_asof_ts_utc >= %s")
+        params.append(from_ts)
+
+    if to_ts is not None:
+        filters.append("replay_asof_ts_utc < %s")
+        params.append(to_ts)
+
+    if not filters:
+        return "", []
+
+    return " AND " + " AND ".join(filters), params
+
+
+def evaluate_policy(
+    *,
+    eval_table: str,
+    policy: str,
+    from_ts: str | None,
+    to_ts: str | None,
+) -> dict[str, list[dict[str, Any]]]:
     where_sql = _policy_where(policy)
+    time_filter_sql, time_params = _time_filter_sql(from_ts=from_ts, to_ts=to_ts)
+    full_where_sql = f"{where_sql} {time_filter_sql}"
 
     summary = fetch_rows(
         f"""
@@ -137,8 +165,9 @@ def evaluate_policy(*, eval_table: str, policy: str) -> dict[str, list[dict[str,
             MIN(net_return_24h) AS worst_net_24h,
             MAX(net_return_24h) AS best_net_24h
         FROM {eval_table}
-        WHERE {where_sql}
-        """
+        WHERE {full_where_sql}
+        """,
+        time_params,
     )
 
     by_day = fetch_rows(
@@ -157,12 +186,13 @@ def evaluate_policy(*, eval_table: str, policy: str) -> dict[str, list[dict[str,
             MIN(net_return_24h) AS worst_net_24h,
             MAX(net_return_24h) AS best_net_24h
         FROM {eval_table}
-        WHERE {where_sql}
+        WHERE {full_where_sql}
         GROUP BY
             DATE(replay_asof_ts_utc)
         ORDER BY
             replay_day
-        """
+        """,
+        time_params,
     )
 
     by_symbol = fetch_rows(
@@ -181,13 +211,14 @@ def evaluate_policy(*, eval_table: str, policy: str) -> dict[str, list[dict[str,
             MIN(net_return_24h) AS worst_net_24h,
             MAX(net_return_24h) AS best_net_24h
         FROM {eval_table}
-        WHERE {where_sql}
+        WHERE {full_where_sql}
         GROUP BY
             symbol
         ORDER BY
             rows_24h DESC,
             avg_net_24h DESC
-        """
+        """,
+        time_params,
     )
 
     trades = fetch_rows(
@@ -206,11 +237,12 @@ def evaluate_policy(*, eval_table: str, policy: str) -> dict[str, list[dict[str,
             net_return_4h,
             net_return_24h
         FROM {eval_table}
-        WHERE {where_sql}
+        WHERE {full_where_sql}
         ORDER BY
             replay_asof_ts_utc,
             symbol
-        """
+        """,
+        time_params,
     )
 
     return {
@@ -227,6 +259,8 @@ def main() -> int:
     result = evaluate_policy(
         eval_table=str(args.eval_table),
         policy=str(args.policy),
+        from_ts=None if args.from_ts is None else str(args.from_ts),
+        to_ts=None if args.to_ts is None else str(args.to_ts),
     )
 
     if args.output == "json":

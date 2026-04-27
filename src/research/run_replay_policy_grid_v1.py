@@ -126,6 +126,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--eval-table", default=DEFAULT_EVAL_TABLE)
     parser.add_argument("--selection-states", nargs="+", default=["WATCHLIST"])
+    parser.add_argument("--from-ts", default=None)
+    parser.add_argument("--to-ts", default=None)
     parser.add_argument("--min-rows", type=int, default=25)
     parser.add_argument("--min-symbols", type=int, default=3)
     parser.add_argument("--max-dominant-symbol-share", default="0.50")
@@ -168,11 +170,23 @@ def fetch_eval_rows(
     *,
     eval_table: str,
     selection_states: list[str],
+    from_ts: str | None,
+    to_ts: str | None,
 ) -> list[EvalRow]:
     if not selection_states:
         raise ValueError("selection_states may not be empty")
 
     placeholders = ",".join(["%s"] * len(selection_states))
+    params: list[Any] = list(selection_states)
+    time_filter_sql = ""
+
+    if from_ts is not None:
+        time_filter_sql += " AND replay_asof_ts_utc >= %s"
+        params.append(from_ts)
+
+    if to_ts is not None:
+        time_filter_sql += " AND replay_asof_ts_utc < %s"
+        params.append(to_ts)
 
     sql = f"""
     SELECT
@@ -191,12 +205,13 @@ def fetch_eval_rows(
         gross_return_24h
     FROM {eval_table}
     WHERE selection_state IN ({placeholders})
+      {time_filter_sql}
     """
 
     conn = get_connection(database=BT_DB)
     try:
         with conn.cursor() as cur:
-            cur.execute(sql, selection_states)
+            cur.execute(sql, params)
             rows = cur.fetchall() or []
     finally:
         conn.close()
@@ -580,6 +595,8 @@ def main() -> int:
     rows = fetch_eval_rows(
         eval_table=str(args.eval_table),
         selection_states=[str(item) for item in args.selection_states],
+        from_ts=None if args.from_ts is None else str(args.from_ts),
+        to_ts=None if args.to_ts is None else str(args.to_ts),
     )
 
     policies = build_policy_specs(rows)
@@ -623,6 +640,8 @@ def main() -> int:
         "input": {
             "eval_table": str(args.eval_table),
             "selection_states": args.selection_states,
+            "from_ts": args.from_ts,
+            "to_ts": args.to_ts,
             "rows_loaded": len(rows),
             "policies_evaluated": len(results),
             "min_rows": min_rows,
@@ -640,6 +659,8 @@ def main() -> int:
 
     print("Replay policy grid")
     print(f"rows_loaded={len(rows)}")
+    print(f"from_ts={args.from_ts}")
+    print(f"to_ts={args.to_ts}")
     print(f"policies_evaluated={len(results)}")
     print(f"min_rows={min_rows}")
     print(f"min_symbols={min_symbols}")
