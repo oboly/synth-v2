@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+# Synth v2 — decision_gate repository
+# Layer: decision_gate
+# Responsibility: account-aware read model for permission checks.
+# Boundary: joins persisted market/setup observations; does not derive market signals.
+
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -28,48 +33,80 @@ def _unwrap_cursor(db_obj: Any) -> Any:
     return db_obj
 
 
+def _safe_schema_identifier(value: str) -> str:
+    if not value:
+        raise ValueError("schema name may not be empty")
+    if not all(ch.isalnum() or ch == "_" for ch in value):
+        raise ValueError(f"unsafe schema name: {value!r}")
+    return f"`{value}`"
+
+
 @dataclass
 class DecisionGateRepository:
-
     def fetch_selection_rows(
         self,
         venue: str,
         asset_id: int | None = None,
         symbol: str | None = None,
         limit: int | None = None,
+        setup_filter_database: str = "synth_bt",
+        filter_name: str = "trade_setup_filter_v1",
+        filter_version: str = "1.0",
+        asset_suitability_mode: str = "candidate_weak_set",
     ) -> list[SelectionInputRow]:
+        setup_filter_schema = _safe_schema_identifier(setup_filter_database)
 
-        clauses = ["venue = %(venue)s"]
-        params: dict[str, Any] = {"venue": venue}
+        clauses = ["v.venue = %(venue)s"]
+        params: dict[str, Any] = {
+            "venue": venue,
+            "filter_name": filter_name,
+            "filter_version": filter_version,
+            "asset_suitability_mode": asset_suitability_mode,
+        }
 
         if asset_id is not None:
-            clauses.append("asset_id = %(asset_id)s")
+            clauses.append("v.asset_id = %(asset_id)s")
             params["asset_id"] = asset_id
 
         if symbol is not None:
-            clauses.append("symbol = %(symbol)s")
+            clauses.append("v.symbol = %(symbol)s")
             params["symbol"] = symbol
 
         sql = f"""
         SELECT
-            selection_state_id,
-            asset_id,
-            symbol,
-            venue,
-            asof_ts_utc,
-            selection_state,
-            selection_bias,
-            priority_rank,
-            effective_selection_score,
-            summary_text,
-            regime_label_4h
-        FROM v_selection_latest_effective
+            v.selection_state_id,
+            v.asset_id,
+            v.symbol,
+            v.venue,
+            v.asof_ts_utc,
+            v.selection_state,
+            v.selection_bias,
+            v.priority_rank,
+            v.effective_selection_score,
+            v.summary_text,
+            v.regime_label_4h,
+
+            f.setup_filter_state,
+            f.setup_filter_reason,
+            f.target_horizon AS setup_filter_target_horizon,
+            f.context_ts_utc AS setup_filter_context_ts_utc,
+            f.filter_name AS setup_filter_name,
+            f.filter_version AS setup_filter_version,
+            f.asset_suitability_mode
+        FROM v_selection_latest_effective v
+        LEFT JOIN {setup_filter_schema}.trade_setup_filter_observation f
+          ON f.asset_id = v.asset_id
+         AND f.venue = v.venue
+         AND f.asof_ts_utc = v.asof_ts_utc
+         AND f.filter_name = %(filter_name)s
+         AND f.filter_version = %(filter_version)s
+         AND f.asset_suitability_mode = %(asset_suitability_mode)s
         WHERE {" AND ".join(clauses)}
         ORDER BY
-            priority_rank IS NULL,
-            priority_rank ASC,
-            effective_selection_score DESC,
-            symbol ASC
+            v.priority_rank IS NULL,
+            v.priority_rank ASC,
+            v.effective_selection_score DESC,
+            v.symbol ASC
         """
 
         if limit is not None:
@@ -90,10 +127,49 @@ class DecisionGateRepository:
                 asof_ts_utc=str(r["asof_ts_utc"]) if r["asof_ts_utc"] else None,
                 selection_state=str(r["selection_state"]).upper(),
                 selection_bias=str(r["selection_bias"]) if r["selection_bias"] else None,
-                priority_rank=int(r["priority_rank"]) if r["priority_rank"] else None,
-                effective_selection_score=_to_decimal(r["effective_selection_score"]) if r["effective_selection_score"] else None,
+                priority_rank=int(r["priority_rank"]) if r["priority_rank"] is not None else None,
+                effective_selection_score=(
+                    _to_decimal(r["effective_selection_score"])
+                    if r["effective_selection_score"] is not None
+                    else None
+                ),
                 summary_text=str(r["summary_text"]) if r["summary_text"] else None,
                 regime_label_4h=str(r["regime_label_4h"]) if r["regime_label_4h"] else None,
+                setup_filter_state=(
+                    str(r["setup_filter_state"]).upper()
+                    if r["setup_filter_state"]
+                    else None
+                ),
+                setup_filter_reason=(
+                    str(r["setup_filter_reason"])
+                    if r["setup_filter_reason"]
+                    else None
+                ),
+                setup_filter_target_horizon=(
+                    str(r["setup_filter_target_horizon"])
+                    if r["setup_filter_target_horizon"]
+                    else None
+                ),
+                setup_filter_context_ts_utc=(
+                    str(r["setup_filter_context_ts_utc"])
+                    if r["setup_filter_context_ts_utc"]
+                    else None
+                ),
+                setup_filter_name=(
+                    str(r["setup_filter_name"])
+                    if r["setup_filter_name"]
+                    else None
+                ),
+                setup_filter_version=(
+                    str(r["setup_filter_version"])
+                    if r["setup_filter_version"]
+                    else None
+                ),
+                asset_suitability_mode=(
+                    str(r["asset_suitability_mode"])
+                    if r["asset_suitability_mode"]
+                    else None
+                ),
             )
             for r in rows
         ]
@@ -134,7 +210,13 @@ class DecisionGateRepository:
             available_equity_eur=_to_decimal(r["available_equity_eur"]),
         )
 
-    def fetch_duplicate_state(self, account_id: int, sleeve_code: str, asset_id: int, venue: str) -> DuplicateState:
+    def fetch_duplicate_state(
+        self,
+        account_id: int,
+        sleeve_code: str,
+        asset_id: int,
+        venue: str,
+    ) -> DuplicateState:
         with db_cursor() as db_obj:
             cursor = _unwrap_cursor(db_obj)
 
@@ -173,5 +255,11 @@ class DecisionGateRepository:
 
         return DuplicateState(bool(plan), bool(pos))
 
-    def fetch_open_order_flag(self, account_id: int, sleeve_code: str, asset_id: int, venue: str) -> bool:
+    def fetch_open_order_flag(
+        self,
+        account_id: int,
+        sleeve_code: str,
+        asset_id: int,
+        venue: str,
+    ) -> bool:
         return False

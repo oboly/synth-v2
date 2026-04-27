@@ -73,10 +73,7 @@ def evaluate_trade_setup(
         setup_filter_reason = "BTC_PRIOR_24H_MISSING"
 
     elif candidate.btc_prior_24h < btc_prior_min:
-        setup_filter_reason = "BTC_PRIOR_DAMAGE_ZONE"
-
-    elif candidate.btc_prior_24h > btc_prior_max:
-        setup_filter_reason = "BTC_PRIOR_OVERHEAT_ZONE"
+        setup_filter_reason = "MARKET_DAMAGE_RISK"
 
     elif (
         asset_suitability_mode == "candidate_weak_set"
@@ -86,7 +83,10 @@ def evaluate_trade_setup(
 
     else:
         setup_filter_state = "PASS"
-        setup_filter_reason = "WATCHLIST_RANK_BTC_CONTEXT_OK"
+        if candidate.btc_prior_24h > btc_prior_max:
+            setup_filter_reason = "MARKET_MARKUP_CANDIDATE"
+        else:
+            setup_filter_reason = "RANK_AND_MARKET_CONTEXT_OK"
 
     notes = (
         f"state={candidate.selection_state}; "

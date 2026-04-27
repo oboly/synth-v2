@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Synth v2 — decision_gate CLI
+# Layer: decision_gate
+# Responsibility: dry-run/account permission visibility.
+
 import argparse
 import json
 from dataclasses import asdict
@@ -20,6 +24,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--symbol", type=str, default=None)
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--min-available-equity-eur", type=str, default="25.00")
+    parser.add_argument("--setup-filter-database", type=str, default="synth_bt")
+    parser.add_argument("--filter-name", type=str, default="trade_setup_filter_v1")
+    parser.add_argument("--filter-version", type=str, default="1.0")
+    parser.add_argument("--asset-suitability-mode", type=str, default="candidate_weak_set")
     parser.add_argument("--output", choices=("table", "json"), default="table")
     return parser.parse_args()
 
@@ -41,12 +49,14 @@ def _print_table(results: list[DecisionResult]) -> None:
     headers = [
         "symbol",
         "selection_state",
+        "setup_filter",
+        "setup_reason",
         "decision_state",
         "execution_intent",
         "reason",
         "available_equity_eur",
-        "has_active_plan",
-        "has_open_position",
+        "active_plan",
+        "open_position",
     ]
 
     rows: list[list[str]] = []
@@ -55,6 +65,8 @@ def _print_table(results: list[DecisionResult]) -> None:
             [
                 item.symbol,
                 item.selection_state,
+                item.setup_filter_state or "",
+                item.setup_filter_reason or "",
                 item.decision_state,
                 item.execution_intent,
                 item.decision_reason,
@@ -78,7 +90,7 @@ def _print_table(results: list[DecisionResult]) -> None:
         print(fmt(row))
 
 
-def main() -> None:
+def main() -> int:
     args = _parse_args()
 
     repo = DecisionGateRepository()
@@ -91,6 +103,10 @@ def main() -> None:
         asset_id=args.asset_id,
         symbol=args.symbol,
         limit=args.limit,
+        setup_filter_database=args.setup_filter_database,
+        filter_name=args.filter_name,
+        filter_version=args.filter_version,
+        asset_suitability_mode=args.asset_suitability_mode,
     )
 
     sleeve_state = repo.fetch_sleeve_state(
@@ -131,6 +147,8 @@ def main() -> None:
     else:
         _print_table(results)
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

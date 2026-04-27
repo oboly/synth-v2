@@ -112,3 +112,17 @@ Do not place this logic in decision_gate or execution_planner.
 2. Run paper-only context filter candidate.
 3. Compare against future unseen snapshots.
 4. Later promote to trade_setup_filter_v1 only if out-of-sample behavior holds.
+
+
+## Market context correction
+
+BTC prior 24h return is a temporary global regime proxy, not an asset-level comparison.
+
+Positive BTC movement must not be treated as an automatic hard block. A strong BTC move can mean overheat in normal conditions, but it can also mark broad risk-on, alt expansion, structural repricing, or parabolic markup conditions.
+
+Current rule direction:
+
+- negative BTC shock can remain a damage/risk block
+- positive BTC movement should route into market context / strategy interpretation
+- future `market_context_engine_v1` should classify regimes such as CALM_ROTATION, BROAD_RISK_ON, ALT_EXPANSION, PARABOLIC_MARKUP, BLOWOFF_RISK, and MARKET_DAMAGE
+- `decision_gate` remains account-aware permission only and must not contain market-regime logic
