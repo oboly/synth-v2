@@ -44,7 +44,7 @@ DEFAULT_VENUE = "bitvavo"
 DEFAULT_ENGINE_NAME = "selection_engine_v2"
 DEFAULT_ENGINE_VERSION = "2.0"
 FILTER_NAME = "trade_setup_filter_v1"
-FILTER_VERSION = "1.0"
+FILTER_VERSION = "1.1"
 RESULT_DB = "synth_bt"
 RESULT_TABLE = "bt_trade_setup_filter_observation"
 

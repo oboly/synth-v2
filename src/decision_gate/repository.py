@@ -17,7 +17,7 @@ from src.decision_gate.models import (
 
 TRADE_SETUP_FILTER_TABLE = "synth.trade_setup_filter_observation"
 TRADE_SETUP_FILTER_NAME = "trade_setup_filter_v1"
-TRADE_SETUP_FILTER_VERSION = "1.0"
+TRADE_SETUP_FILTER_VERSION = "1.1"
 TRADE_SETUP_FILTER_ASSET_SUITABILITY_MODE = "candidate_weak_set"
 
 
