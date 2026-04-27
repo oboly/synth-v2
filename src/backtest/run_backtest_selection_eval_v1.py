@@ -228,11 +228,13 @@ def fetch_eval_rows(
     round_trip_fee = (fee_bps_per_side * Decimal("2")) / Decimal("10000")
 
     sql = f"""
-    WITH base AS (
+    WITH base_raw AS (
         SELECT
+            s.selection_state_id,
             s.asset_id,
             a.symbol,
             s.venue,
+            s.asof_ts_utc,
             s.advice_ts_1h_utc AS entry_ts_utc,
             s.selection_state,
             s.selection_bias,
@@ -248,6 +250,32 @@ def fetch_eval_rows(
           AND s.advice_ts_1h_utc >= %s
           AND s.advice_ts_1h_utc < %s
           AND s.selection_state IN ({state_placeholders})
+    ),
+    base AS (
+        SELECT
+            ranked.asset_id,
+            ranked.symbol,
+            ranked.venue,
+            ranked.entry_ts_utc,
+            ranked.selection_state,
+            ranked.selection_bias,
+            ranked.selection_score,
+            ranked.priority_rank
+        FROM (
+            SELECT
+                base_raw.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY
+                        base_raw.asset_id,
+                        base_raw.venue,
+                        base_raw.entry_ts_utc
+                    ORDER BY
+                        base_raw.asof_ts_utc DESC,
+                        base_raw.selection_state_id DESC
+                ) AS row_rank
+            FROM base_raw
+        ) ranked
+        WHERE ranked.row_rank = 1
     )
     SELECT
         b.asset_id,
