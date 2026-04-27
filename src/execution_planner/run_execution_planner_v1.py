@@ -87,6 +87,21 @@ def _row_from_plan(
     )
 
 
+def _is_stale_idle_preplan(existing_plan: dict[str, Any], decision: Any) -> bool:
+    desired_action = str(existing_plan.get("desired_action", "")).upper()
+    plan_state = str(existing_plan.get("plan_state", "")).upper()
+    decision_state = str(getattr(decision, "decision_state", "")).upper()
+    execution_intent = str(getattr(decision, "execution_intent", "")).upper()
+
+    if desired_action != "PREPARE_PLAN":
+        return False
+
+    if plan_state != "IDLE":
+        return False
+
+    return decision_state == "NO_ACTION" or execution_intent == "NONE"
+
+
 def _print_json(rows: list[dict[str, Any]]) -> None:
     print(
         json.dumps(
@@ -201,6 +216,40 @@ def main() -> int:
 
         if existing_plan is not None:
             existing_plan_id = int(existing_plan["execution_plan_id"])
+
+            if _is_stale_idle_preplan(existing_plan, decision):
+                invalidation_reason = (
+                    f"current_decision_state={decision.decision_state}; "
+                    f"current_execution_intent={decision.execution_intent}; "
+                    f"current_decision_reason={decision.decision_reason}"
+                )
+
+                cancelled_rows = 0
+                if args.write_db:
+                    cancelled_rows = planner_repo.cancel_stale_preplan(
+                        execution_plan_id=existing_plan_id,
+                        reason=invalidation_reason,
+                    )
+
+                output_rows.append(
+                    _build_output_row(
+                        symbol=selection_row.symbol,
+                        selection_state=decision.selection_state,
+                        decision_state=decision.decision_state,
+                        execution_intent=decision.execution_intent,
+                        planner_action=(
+                            "CANCELLED_STALE_PREPLAN"
+                            if args.write_db and cancelled_rows > 0
+                            else "CANCEL_STALE_PREPLAN_PREVIEW"
+                        ),
+                        desired_action=str(existing_plan["desired_action"]),
+                        plan_state="CANCELLED" if args.write_db and cancelled_rows > 0 else str(existing_plan["plan_state"]),
+                        target_fraction=_serialize_value(existing_plan.get("target_fraction")),
+                        execution_plan_id=existing_plan_id,
+                        reason=decision.decision_reason,
+                    )
+                )
+                continue
 
             if decision.decision_state == "PREPARE_ALLOWED":
                 if args.write_db:

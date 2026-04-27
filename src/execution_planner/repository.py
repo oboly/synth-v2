@@ -355,6 +355,38 @@ class ExecutionPlannerRepository:
             conn.close()
 
 
+    def cancel_stale_preplan(
+        self,
+        *,
+        execution_plan_id: int,
+        reason: str,
+    ) -> int:
+        sql = """
+        UPDATE execution_plan
+        SET
+            plan_state = 'CANCELLED',
+            notes = CONCAT(
+                COALESCE(notes, ''),
+                ' | cancelled stale PREPARE_PLAN: ',
+                %s
+            ),
+            updated_ts_utc = UTC_TIMESTAMP()
+        WHERE execution_plan_id = %s
+          AND desired_action = 'PREPARE_PLAN'
+          AND plan_state = 'IDLE'
+        """
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, [reason, execution_plan_id])
+                affected_rows = int(cur.rowcount)
+            conn.commit()
+            return affected_rows
+        finally:
+            conn.close()
+
+
     def has_active_plan(
         self,
         *,
