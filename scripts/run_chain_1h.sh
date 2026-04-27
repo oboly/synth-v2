@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+
+# Prevent overlapping 1h chain runs.
+# This protects DB writes and avoids duplicate/competing pipeline snapshots.
+if [[ "${SYNTH_CHAIN_1H_LOCKED:-0}" != "1" ]]; then
+    exec env SYNTH_CHAIN_1H_LOCKED=1 flock -n /tmp/synth_chain_1h.lock "$0" "$@"
+fi
+
 set -euo pipefail
 
 cd /home/gurk/projects/synth-v2
