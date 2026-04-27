@@ -429,8 +429,7 @@ def run(interval_code: str, venue: str) -> int:
             f"[DONE] ranking rows={written} interval={interval_code} "
             f"snapshot_ts_utc={snapshot_ts_utc.isoformat()} version={RANKING_VERSION}"
         )
-        return written
-
+        return 0
     finally:
         conn.close()
 
