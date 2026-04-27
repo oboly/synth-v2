@@ -20,12 +20,15 @@ Forbidden:
 - execution plans
 - broker actions
 
-Named policy included:
+Named policies:
 - parking_rotation_recovery_v1
+- parking_rotation_recovery_v2
 """
 
 import argparse
 import json
+import re
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -36,7 +39,50 @@ BT_DB = "synth_bt"
 DEFAULT_EVAL_TABLE = "bt_selection_v2_replay_eval_horizon_v1"
 DEFAULT_POLICY = "parking_rotation_recovery_v1"
 
-WEAK_SYMBOLS_SQL = "'HNT','SOL','XLM','LTC','ETH','XRP','CC','NOT'"
+WEAK_SYMBOLS = ("HNT", "SOL", "XLM", "LTC", "ETH", "XRP", "CC", "NOT")
+WEAK_SYMBOLS_SQL = ",".join(f"'{symbol}'" for symbol in WEAK_SYMBOLS)
+
+
+@dataclass(frozen=True)
+class NamedPolicy:
+    policy_name: str
+    rank_min: int
+    rank_max: int
+    btc_prior_min: Decimal
+    btc_prior_max: Decimal
+    max_selection_score_exclusive: Decimal
+    exclude_weak_symbols: bool
+    rotation_bucket: str
+    classification_code: str
+    sleeve_fit_code: str
+
+
+POLICIES: dict[str, NamedPolicy] = {
+    "parking_rotation_recovery_v1": NamedPolicy(
+        policy_name="parking_rotation_recovery_v1",
+        rank_min=4,
+        rank_max=10,
+        btc_prior_min=Decimal("-0.010"),
+        btc_prior_max=Decimal("0.010"),
+        max_selection_score_exclusive=Decimal("0.50000000"),
+        exclude_weak_symbols=True,
+        rotation_bucket="ROTATION_EXIT",
+        classification_code="NO_TRADE",
+        sleeve_fit_code="EXPERIMENTAL",
+    ),
+    "parking_rotation_recovery_v2": NamedPolicy(
+        policy_name="parking_rotation_recovery_v2",
+        rank_min=6,
+        rank_max=15,
+        btc_prior_min=Decimal("-0.005"),
+        btc_prior_max=Decimal("0.015"),
+        max_selection_score_exclusive=Decimal("0.50000000"),
+        exclude_weak_symbols=True,
+        rotation_bucket="ROTATION_EXIT",
+        classification_code="NO_TRADE",
+        sleeve_fit_code="EXPERIMENTAL",
+    ),
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +96,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", choices=("table", "json"), default="table")
     parser.add_argument("--show-trades", action="store_true")
     return parser.parse_args()
+
+
+def _validate_table_name(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_]+", value):
+        raise ValueError(f"Unsafe eval table name: {value}")
+    return value
 
 
 def _json_default(value: Any) -> Any:
@@ -84,20 +136,28 @@ def _print_table(title: str, rows: list[dict[str, Any]]) -> None:
         print(fmt(row))
 
 
-def _policy_where(policy: str) -> str:
-    if policy != "parking_rotation_recovery_v1":
-        raise ValueError(f"Unsupported policy: {policy}")
+def _resolve_policy(policy_name: str) -> NamedPolicy:
+    if policy_name not in POLICIES:
+        allowed = ", ".join(sorted(POLICIES))
+        raise ValueError(f"Unsupported policy: {policy_name}. Allowed: {allowed}")
+    return POLICIES[policy_name]
+
+
+def _policy_where(policy: NamedPolicy) -> str:
+    weak_filter_sql = ""
+    if policy.exclude_weak_symbols:
+        weak_filter_sql = f"AND symbol NOT IN ({WEAK_SYMBOLS_SQL})"
 
     return f"""
         selection_state = 'WATCHLIST'
-        AND priority_rank BETWEEN 4 AND 10
-        AND btc_prior_24h >= -0.010
-        AND btc_prior_24h <= 0.010
-        AND selection_score < 0.50000000
-        AND symbol NOT IN ({WEAK_SYMBOLS_SQL})
-        AND rotation_bucket = 'ROTATION_EXIT'
-        AND classification_code = 'NO_TRADE'
-        AND sleeve_fit_code = 'EXPERIMENTAL'
+        AND priority_rank BETWEEN {policy.rank_min} AND {policy.rank_max}
+        AND btc_prior_24h >= {policy.btc_prior_min}
+        AND btc_prior_24h <= {policy.btc_prior_max}
+        AND selection_score < {policy.max_selection_score_exclusive}
+        {weak_filter_sql}
+        AND rotation_bucket = '{policy.rotation_bucket}'
+        AND classification_code = '{policy.classification_code}'
+        AND sleeve_fit_code = '{policy.sleeve_fit_code}'
     """
 
 
@@ -135,10 +195,13 @@ def _time_filter_sql(*, from_ts: str | None, to_ts: str | None) -> tuple[str, li
 def evaluate_policy(
     *,
     eval_table: str,
-    policy: str,
+    policy_name: str,
     from_ts: str | None,
     to_ts: str | None,
 ) -> dict[str, list[dict[str, Any]]]:
+    safe_eval_table = _validate_table_name(eval_table)
+    policy = _resolve_policy(policy_name)
+
     where_sql = _policy_where(policy)
     time_filter_sql, time_params = _time_filter_sql(from_ts=from_ts, to_ts=to_ts)
     full_where_sql = f"{where_sql} {time_filter_sql}"
@@ -146,7 +209,12 @@ def evaluate_policy(
     summary = fetch_rows(
         f"""
         SELECT
-            '{policy}' AS policy_name,
+            '{policy.policy_name}' AS policy_name,
+            {policy.rank_min} AS rank_min,
+            {policy.rank_max} AS rank_max,
+            {policy.btc_prior_min} AS btc_prior_min,
+            {policy.btc_prior_max} AS btc_prior_max,
+            {policy.max_selection_score_exclusive} AS selection_score_lt,
             COUNT(*) AS rows_total,
             COUNT(DISTINCT symbol) AS symbol_count,
             COUNT(DISTINCT DATE(replay_asof_ts_utc)) AS day_count,
@@ -164,7 +232,7 @@ def evaluate_policy(
             AVG(net_return_24h > 0) AS winrate_24h,
             MIN(net_return_24h) AS worst_net_24h,
             MAX(net_return_24h) AS best_net_24h
-        FROM {eval_table}
+        FROM {safe_eval_table}
         WHERE {full_where_sql}
         """,
         time_params,
@@ -185,7 +253,7 @@ def evaluate_policy(
             AVG(net_return_24h > 0) AS winrate_24h,
             MIN(net_return_24h) AS worst_net_24h,
             MAX(net_return_24h) AS best_net_24h
-        FROM {eval_table}
+        FROM {safe_eval_table}
         WHERE {full_where_sql}
         GROUP BY
             DATE(replay_asof_ts_utc)
@@ -210,7 +278,7 @@ def evaluate_policy(
             AVG(net_return_24h > 0) AS winrate_24h,
             MIN(net_return_24h) AS worst_net_24h,
             MAX(net_return_24h) AS best_net_24h
-        FROM {eval_table}
+        FROM {safe_eval_table}
         WHERE {full_where_sql}
         GROUP BY
             symbol
@@ -236,7 +304,7 @@ def evaluate_policy(
             sleeve_fit_code,
             net_return_4h,
             net_return_24h
-        FROM {eval_table}
+        FROM {safe_eval_table}
         WHERE {full_where_sql}
         ORDER BY
             replay_asof_ts_utc,
@@ -258,7 +326,7 @@ def main() -> int:
 
     result = evaluate_policy(
         eval_table=str(args.eval_table),
-        policy=str(args.policy),
+        policy_name=str(args.policy),
         from_ts=None if args.from_ts is None else str(args.from_ts),
         to_ts=None if args.to_ts is None else str(args.to_ts),
     )
