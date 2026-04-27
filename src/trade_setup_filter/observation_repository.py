@@ -27,13 +27,13 @@ from src.common.db import get_connection
 from src.trade_setup_filter.models import TradeSetupDecision
 
 
-BT_DB = "synth_bt"
+OPERATIONAL_DB = "synth"
 TABLE_NAME = "trade_setup_filter_observation"
 
 
 def ensure_observation_table() -> None:
     sql = f"""
-    CREATE TABLE IF NOT EXISTS {BT_DB}.{TABLE_NAME} (
+    CREATE TABLE IF NOT EXISTS {OPERATIONAL_DB}.{TABLE_NAME} (
         trade_setup_filter_observation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
         asset_id INT NOT NULL,
         symbol VARCHAR(32) NOT NULL,
@@ -130,7 +130,7 @@ def write_observations(
     ]
 
     sql = f"""
-    INSERT INTO {BT_DB}.{TABLE_NAME} (
+    INSERT INTO {OPERATIONAL_DB}.{TABLE_NAME} (
         asset_id,
         symbol,
         venue,

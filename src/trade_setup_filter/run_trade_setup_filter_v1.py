@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--asset-suitability-mode",
         choices=("off", "candidate_weak_set"),
-        default="off",
+        default="candidate_weak_set",
     )
     parser.add_argument("--write-db", action="store_true")
     parser.add_argument("--output", choices=("table", "json"), default="table")
