@@ -1,27 +1,23 @@
 from __future__ import annotations
 
-# Synth v2 — decision_gate models
-# Layer: decision_gate
-# Responsibility: account-aware permission models only.
-# Boundary: no market recomputation, no execution/order handling.
-
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Final
 
 
-ELIGIBLE_SELECTION_STATES: Final[set[str]] = {"PREPARE", "BUY_READY"}
+WATCHLIST_SELECTION_STATE: Final[str] = "WATCHLIST"
+PREPARE_SELECTION_STATE: Final[str] = "PREPARE"
+BUY_READY_SELECTION_STATE: Final[str] = "BUY_READY"
 
-WATCHLIST_PREPLAN_SELECTION_STATES: Final[set[str]] = {"WATCHLIST"}
+ELIGIBLE_SELECTION_STATES: Final[set[str]] = {
+    WATCHLIST_SELECTION_STATE,
+    PREPARE_SELECTION_STATE,
+    BUY_READY_SELECTION_STATE,
+}
 
-ACCOUNT_GATED_SELECTION_STATES: Final[set[str]] = (
-    ELIGIBLE_SELECTION_STATES | WATCHLIST_PREPLAN_SELECTION_STATES
-)
-
-STATE_ALLOWED_SLEEVES: Final[dict[str, set[str]]] = {
-    "WATCHLIST": {"SWING_STRUCTURAL", "TACTICAL_PULSE", "EXPERIMENTAL"},
-    "PREPARE": {"CORE_STRUCTURAL", "SWING_STRUCTURAL", "TACTICAL_PULSE", "EXPERIMENTAL"},
-    "BUY_READY": {"CORE_STRUCTURAL", "SWING_STRUCTURAL", "TACTICAL_PULSE", "EXPERIMENTAL"},
+DIRECT_SELECTION_STATES: Final[set[str]] = {
+    PREPARE_SELECTION_STATE,
+    BUY_READY_SELECTION_STATE,
 }
 
 ACTIVE_PLAN_STATES: Final[set[str]] = {
@@ -37,6 +33,8 @@ OPEN_POSITION_STATUSES: Final[set[str]] = {"OPEN"}
 
 ACTIVE_SLEEVE_STATUSES: Final[set[str]] = {"ACTIVE"}
 
+PASS_SETUP_FILTER_STATE: Final[str] = "PASS"
+
 
 @dataclass(frozen=True)
 class SelectionInputRow:
@@ -51,16 +49,13 @@ class SelectionInputRow:
     priority_rank: int | None
     effective_selection_score: Decimal | None
 
+    allowed_sleeves: str | None
     summary_text: str | None
     regime_label_4h: str | None
 
     setup_filter_state: str | None
     setup_filter_reason: str | None
-    setup_filter_target_horizon: str | None
-    setup_filter_context_ts_utc: str | None
-    setup_filter_name: str | None
-    setup_filter_version: str | None
-    asset_suitability_mode: str | None
+    target_horizon: str | None
 
 
 @dataclass(frozen=True)
@@ -107,13 +102,10 @@ class DecisionResult:
     has_active_plan: bool
     has_open_position: bool
 
-    summary_text: str | None
-    regime_label_4h: str | None
-
+    allowed_sleeves: str | None
     setup_filter_state: str | None
     setup_filter_reason: str | None
-    setup_filter_target_horizon: str | None
-    setup_filter_context_ts_utc: str | None
-    setup_filter_name: str | None
-    setup_filter_version: str | None
-    asset_suitability_mode: str | None
+    target_horizon: str | None
+
+    summary_text: str | None
+    regime_label_4h: str | None

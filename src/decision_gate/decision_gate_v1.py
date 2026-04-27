@@ -1,20 +1,25 @@
 from __future__ import annotations
 
-# Synth v2 — decision_gate engine
-# Layer: decision_gate
-# Responsibility: account-aware permission checks.
-# Boundary: consumes selection/setup-filter state; does not recompute market logic.
-
 from src.decision_gate.models import (
-    ACCOUNT_GATED_SELECTION_STATES,
     ACTIVE_SLEEVE_STATUSES,
+    BUY_READY_SELECTION_STATE,
     DecisionGateConfig,
     DecisionResult,
+    DIRECT_SELECTION_STATES,
     DuplicateState,
-    STATE_ALLOWED_SLEEVES,
+    ELIGIBLE_SELECTION_STATES,
+    PASS_SETUP_FILTER_STATE,
+    PREPARE_SELECTION_STATE,
     SelectionInputRow,
     SleeveState,
+    WATCHLIST_SELECTION_STATE,
 )
+
+
+def _available_equity(sleeve_state: SleeveState | None):
+    if sleeve_state is None:
+        return None
+    return sleeve_state.available_equity_eur
 
 
 def _build_result(
@@ -27,7 +32,7 @@ def _build_result(
     execution_intent: str,
     config: DecisionGateConfig,
     duplicate_state: DuplicateState,
-    available_equity_eur=None,
+    sleeve_state: SleeveState | None,
 ) -> DecisionResult:
     return DecisionResult(
         account_id=account_id,
@@ -42,48 +47,78 @@ def _build_result(
         decision_reason=decision_reason,
         execution_intent=execution_intent,
         min_available_equity_eur=config.min_available_equity_eur,
-        available_equity_eur=available_equity_eur,
+        available_equity_eur=_available_equity(sleeve_state),
         has_active_plan=duplicate_state.has_active_plan,
         has_open_position=duplicate_state.has_open_position,
-        summary_text=row.summary_text,
-        regime_label_4h=row.regime_label_4h,
+        allowed_sleeves=row.allowed_sleeves,
         setup_filter_state=row.setup_filter_state,
         setup_filter_reason=row.setup_filter_reason,
-        setup_filter_target_horizon=row.setup_filter_target_horizon,
-        setup_filter_context_ts_utc=row.setup_filter_context_ts_utc,
-        setup_filter_name=row.setup_filter_name,
-        setup_filter_version=row.setup_filter_version,
-        asset_suitability_mode=row.asset_suitability_mode,
+        target_horizon=row.target_horizon,
+        summary_text=row.summary_text,
+        regime_label_4h=row.regime_label_4h,
     )
 
 
-def _is_sleeve_allowed_for_state(selection_state: str, sleeve_code: str) -> bool:
-    allowed = STATE_ALLOWED_SLEEVES.get(selection_state, set())
-    return sleeve_code in allowed
+def _allowed_sleeve_set(allowed_sleeves: str | None) -> set[str]:
+    if allowed_sleeves is None:
+        return set()
+
+    return {
+        item.strip().upper()
+        for item in allowed_sleeves.split(",")
+        if item.strip()
+    }
 
 
-def _setup_filter_passed(row: SelectionInputRow) -> bool:
-    return (row.setup_filter_state or "").upper() == "PASS"
+def _is_sleeve_allowed(row: SelectionInputRow, sleeve_code: str) -> bool:
+    allowed = _allowed_sleeve_set(row.allowed_sleeves)
+    return sleeve_code.upper() in allowed
 
 
-def _setup_filter_block_reason(row: SelectionInputRow) -> str:
-    if row.setup_filter_state is None:
-        return "TRADE_SETUP_FILTER_MISSING"
-    if row.setup_filter_reason:
-        return f"TRADE_SETUP_FILTER_{row.setup_filter_reason}"
-    return f"TRADE_SETUP_FILTER_{row.setup_filter_state}"
+def _watchlist_setup_passes(row: SelectionInputRow) -> bool:
+    return str(row.setup_filter_state or "").upper() == PASS_SETUP_FILTER_STATE
 
 
-def _pass_account_checks(
+def _watchlist_block_reason(row: SelectionInputRow) -> str:
+    reason = row.setup_filter_reason or "MISSING_SETUP_FILTER"
+    return f"TRADE_SETUP_FILTER_{reason}"
+
+
+def evaluate_selection_for_account(
     row: SelectionInputRow,
-    *,
     account_id: int,
     sleeve_code: str,
     sleeve_state: SleeveState | None,
     duplicate_state: DuplicateState,
     config: DecisionGateConfig,
-    has_open_order: bool,
-) -> DecisionResult | None:
+    has_open_order: bool = False,
+) -> DecisionResult:
+    if row.selection_state not in ELIGIBLE_SELECTION_STATES:
+        return _build_result(
+            row,
+            account_id=account_id,
+            sleeve_code=sleeve_code,
+            decision_state="NO_ACTION",
+            decision_reason="SELECTION_NOT_ELIGIBLE",
+            execution_intent="NONE",
+            config=config,
+            duplicate_state=duplicate_state,
+            sleeve_state=sleeve_state,
+        )
+
+    if row.selection_state == WATCHLIST_SELECTION_STATE and not _watchlist_setup_passes(row):
+        return _build_result(
+            row,
+            account_id=account_id,
+            sleeve_code=sleeve_code,
+            decision_state="NO_ACTION",
+            decision_reason=_watchlist_block_reason(row),
+            execution_intent="NONE",
+            config=config,
+            duplicate_state=duplicate_state,
+            sleeve_state=sleeve_state,
+        )
+
     if sleeve_state is None:
         return _build_result(
             row,
@@ -94,7 +129,7 @@ def _pass_account_checks(
             execution_intent="NONE",
             config=config,
             duplicate_state=duplicate_state,
-            available_equity_eur=None,
+            sleeve_state=sleeve_state,
         )
 
     if sleeve_state.sleeve_status not in ACTIVE_SLEEVE_STATUSES:
@@ -107,20 +142,20 @@ def _pass_account_checks(
             execution_intent="NONE",
             config=config,
             duplicate_state=duplicate_state,
-            available_equity_eur=sleeve_state.available_equity_eur,
+            sleeve_state=sleeve_state,
         )
 
-    if not _is_sleeve_allowed_for_state(row.selection_state, sleeve_code):
+    if not _is_sleeve_allowed(row, sleeve_code):
         return _build_result(
             row,
             account_id=account_id,
             sleeve_code=sleeve_code,
             decision_state="BLOCKED_SLEEVE",
-            decision_reason="SLEEVE_NOT_ALLOWED_FOR_SELECTION_STATE",
+            decision_reason="SLEEVE_NOT_ALLOWED",
             execution_intent="NONE",
             config=config,
             duplicate_state=duplicate_state,
-            available_equity_eur=sleeve_state.available_equity_eur,
+            sleeve_state=sleeve_state,
         )
 
     if has_open_order:
@@ -133,7 +168,7 @@ def _pass_account_checks(
             execution_intent="NONE",
             config=config,
             duplicate_state=duplicate_state,
-            available_equity_eur=sleeve_state.available_equity_eur,
+            sleeve_state=sleeve_state,
         )
 
     if duplicate_state.has_active_plan:
@@ -146,7 +181,7 @@ def _pass_account_checks(
             execution_intent="NONE",
             config=config,
             duplicate_state=duplicate_state,
-            available_equity_eur=sleeve_state.available_equity_eur,
+            sleeve_state=sleeve_state,
         )
 
     if duplicate_state.has_open_position:
@@ -159,7 +194,7 @@ def _pass_account_checks(
             execution_intent="NONE",
             config=config,
             duplicate_state=duplicate_state,
-            available_equity_eur=sleeve_state.available_equity_eur,
+            sleeve_state=sleeve_state,
         )
 
     if sleeve_state.available_equity_eur < config.min_available_equity_eur:
@@ -172,75 +207,23 @@ def _pass_account_checks(
             execution_intent="NONE",
             config=config,
             duplicate_state=duplicate_state,
-            available_equity_eur=sleeve_state.available_equity_eur,
+            sleeve_state=sleeve_state,
         )
 
-    return None
-
-
-def evaluate_selection_for_account(
-    row: SelectionInputRow,
-    account_id: int,
-    sleeve_code: str,
-    sleeve_state: SleeveState | None,
-    duplicate_state: DuplicateState,
-    config: DecisionGateConfig,
-    has_open_order: bool = False,
-) -> DecisionResult:
-    if row.selection_state not in ACCOUNT_GATED_SELECTION_STATES:
-        return _build_result(
-            row,
-            account_id=account_id,
-            sleeve_code=sleeve_code,
-            decision_state="NO_ACTION",
-            decision_reason="SELECTION_NOT_ELIGIBLE",
-            execution_intent="NONE",
-            config=config,
-            duplicate_state=duplicate_state,
-            available_equity_eur=None,
-        )
-
-    if row.selection_state == "WATCHLIST" and not _setup_filter_passed(row):
-        return _build_result(
-            row,
-            account_id=account_id,
-            sleeve_code=sleeve_code,
-            decision_state="NO_ACTION",
-            decision_reason=_setup_filter_block_reason(row),
-            execution_intent="NONE",
-            config=config,
-            duplicate_state=duplicate_state,
-            available_equity_eur=None if sleeve_state is None else sleeve_state.available_equity_eur,
-        )
-
-    blocked = _pass_account_checks(
-        row,
-        account_id=account_id,
-        sleeve_code=sleeve_code,
-        sleeve_state=sleeve_state,
-        duplicate_state=duplicate_state,
-        config=config,
-        has_open_order=has_open_order,
-    )
-    if blocked is not None:
-        return blocked
-
-    assert sleeve_state is not None
-
-    if row.selection_state == "WATCHLIST":
+    if row.selection_state == WATCHLIST_SELECTION_STATE:
         return _build_result(
             row,
             account_id=account_id,
             sleeve_code=sleeve_code,
             decision_state="WATCHLIST_PREPLAN_ALLOWED",
-            decision_reason="TRADE_SETUP_FILTER_PASS",
+            decision_reason="WATCHLIST_SETUP_FILTER_PASS",
             execution_intent="PREPARE_PLAN",
             config=config,
             duplicate_state=duplicate_state,
-            available_equity_eur=sleeve_state.available_equity_eur,
+            sleeve_state=sleeve_state,
         )
 
-    if row.selection_state == "PREPARE":
+    if row.selection_state == PREPARE_SELECTION_STATE:
         return _build_result(
             row,
             account_id=account_id,
@@ -250,10 +233,10 @@ def evaluate_selection_for_account(
             execution_intent="PREPARE_PLAN",
             config=config,
             duplicate_state=duplicate_state,
-            available_equity_eur=sleeve_state.available_equity_eur,
+            sleeve_state=sleeve_state,
         )
 
-    if row.selection_state == "BUY_READY":
+    if row.selection_state == BUY_READY_SELECTION_STATE:
         return _build_result(
             row,
             account_id=account_id,
@@ -263,7 +246,20 @@ def evaluate_selection_for_account(
             execution_intent="PLACE_PASSIVE_LIMIT",
             config=config,
             duplicate_state=duplicate_state,
-            available_equity_eur=sleeve_state.available_equity_eur,
+            sleeve_state=sleeve_state,
+        )
+
+    if row.selection_state in DIRECT_SELECTION_STATES:
+        return _build_result(
+            row,
+            account_id=account_id,
+            sleeve_code=sleeve_code,
+            decision_state="NO_ACTION",
+            decision_reason="UNHANDLED_DIRECT_SELECTION_STATE",
+            execution_intent="NONE",
+            config=config,
+            duplicate_state=duplicate_state,
+            sleeve_state=sleeve_state,
         )
 
     return _build_result(
@@ -275,5 +271,5 @@ def evaluate_selection_for_account(
         execution_intent="NONE",
         config=config,
         duplicate_state=duplicate_state,
-        available_equity_eur=sleeve_state.available_equity_eur,
+        sleeve_state=sleeve_state,
     )
