@@ -10,7 +10,7 @@ BOUNDARY:
 Allowed:
 - read synth_bt replay eval table
 - evaluate named market-only research policies
-- print policy summary, day breakdown, symbol breakdown, and trade rows
+- persist policy-level research evaluation summaries into synth_bt
 
 Forbidden:
 - account state
@@ -38,6 +38,7 @@ from src.common.db import get_connection
 BT_DB = "synth_bt"
 DEFAULT_EVAL_TABLE = "bt_selection_v2_replay_eval_horizon_v1"
 DEFAULT_POLICY = "parking_rotation_recovery_v1"
+RESULT_TABLE = "bt_named_policy_eval_result_v1"
 
 WEAK_SYMBOLS = ("HNT", "SOL", "XLM", "LTC", "ETH", "XRP", "CC", "NOT")
 WEAK_SYMBOLS_SQL = ",".join(f"'{symbol}'" for symbol in WEAK_SYMBOLS)
@@ -93,6 +94,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy", default=DEFAULT_POLICY)
     parser.add_argument("--from-ts", default=None)
     parser.add_argument("--to-ts", default=None)
+    parser.add_argument("--result-set-name", default="manual")
+    parser.add_argument("--write-db", action="store_true")
     parser.add_argument("--output", choices=("table", "json"), default="table")
     parser.add_argument("--show-trades", action="store_true")
     return parser.parse_args()
@@ -190,6 +193,201 @@ def _time_filter_sql(*, from_ts: str | None, to_ts: str | None) -> tuple[str, li
         return "", []
 
     return " AND " + " AND ".join(filters), params
+
+
+def ensure_result_table() -> None:
+    sql = f"""
+    CREATE TABLE IF NOT EXISTS {RESULT_TABLE} (
+        named_policy_eval_result_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+
+        result_set_name VARCHAR(100) NOT NULL,
+        policy_name VARCHAR(100) NOT NULL,
+        eval_table VARCHAR(128) NOT NULL,
+
+        from_ts_utc DATETIME(6) DEFAULT NULL,
+        to_ts_utc DATETIME(6) DEFAULT NULL,
+
+        rank_min INT NOT NULL,
+        rank_max INT NOT NULL,
+        btc_prior_min DECIMAL(18,8) NOT NULL,
+        btc_prior_max DECIMAL(18,8) NOT NULL,
+        selection_score_lt DECIMAL(18,8) NOT NULL,
+        exclude_weak_symbols TINYINT(1) NOT NULL,
+
+        rotation_bucket VARCHAR(64) NOT NULL,
+        classification_code VARCHAR(64) NOT NULL,
+        sleeve_fit_code VARCHAR(64) NOT NULL,
+
+        rows_total INT NOT NULL,
+        symbol_count INT NOT NULL,
+        day_count INT NOT NULL,
+
+        rows_4h INT NOT NULL,
+        avg_net_4h DECIMAL(28,12) DEFAULT NULL,
+        avg_gross_4h DECIMAL(28,12) DEFAULT NULL,
+        winrate_4h DECIMAL(18,8) DEFAULT NULL,
+        worst_net_4h DECIMAL(28,12) DEFAULT NULL,
+        best_net_4h DECIMAL(28,12) DEFAULT NULL,
+
+        rows_24h INT NOT NULL,
+        avg_net_24h DECIMAL(28,12) DEFAULT NULL,
+        avg_gross_24h DECIMAL(28,12) DEFAULT NULL,
+        winrate_24h DECIMAL(18,8) DEFAULT NULL,
+        worst_net_24h DECIMAL(28,12) DEFAULT NULL,
+        best_net_24h DECIMAL(28,12) DEFAULT NULL,
+
+        created_ts_utc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+
+        PRIMARY KEY (named_policy_eval_result_id),
+        KEY ix_named_policy_eval_policy_window (
+            policy_name,
+            from_ts_utc,
+            to_ts_utc,
+            created_ts_utc
+        ),
+        KEY ix_named_policy_eval_result_set (
+            result_set_name,
+            created_ts_utc
+        ),
+        KEY ix_named_policy_eval_24h (
+            avg_net_24h,
+            winrate_24h,
+            rows_24h
+        )
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    """
+
+    conn = get_connection(database=BT_DB)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def write_result_summary(
+    *,
+    result_set_name: str,
+    eval_table: str,
+    policy: NamedPolicy,
+    from_ts: str | None,
+    to_ts: str | None,
+    summary_row: dict[str, Any],
+) -> int:
+    ensure_result_table()
+
+    sql = f"""
+    INSERT INTO {RESULT_TABLE} (
+        result_set_name,
+        policy_name,
+        eval_table,
+        from_ts_utc,
+        to_ts_utc,
+        rank_min,
+        rank_max,
+        btc_prior_min,
+        btc_prior_max,
+        selection_score_lt,
+        exclude_weak_symbols,
+        rotation_bucket,
+        classification_code,
+        sleeve_fit_code,
+        rows_total,
+        symbol_count,
+        day_count,
+        rows_4h,
+        avg_net_4h,
+        avg_gross_4h,
+        winrate_4h,
+        worst_net_4h,
+        best_net_4h,
+        rows_24h,
+        avg_net_24h,
+        avg_gross_24h,
+        winrate_24h,
+        worst_net_24h,
+        best_net_24h
+    ) VALUES (
+        %(result_set_name)s,
+        %(policy_name)s,
+        %(eval_table)s,
+        %(from_ts_utc)s,
+        %(to_ts_utc)s,
+        %(rank_min)s,
+        %(rank_max)s,
+        %(btc_prior_min)s,
+        %(btc_prior_max)s,
+        %(selection_score_lt)s,
+        %(exclude_weak_symbols)s,
+        %(rotation_bucket)s,
+        %(classification_code)s,
+        %(sleeve_fit_code)s,
+        %(rows_total)s,
+        %(symbol_count)s,
+        %(day_count)s,
+        %(rows_4h)s,
+        %(avg_net_4h)s,
+        %(avg_gross_4h)s,
+        %(winrate_4h)s,
+        %(worst_net_4h)s,
+        %(best_net_4h)s,
+        %(rows_24h)s,
+        %(avg_net_24h)s,
+        %(avg_gross_24h)s,
+        %(winrate_24h)s,
+        %(worst_net_24h)s,
+        %(best_net_24h)s
+    )
+    """
+
+    params = {
+        "result_set_name": result_set_name,
+        "policy_name": policy.policy_name,
+        "eval_table": eval_table,
+        "from_ts_utc": from_ts,
+        "to_ts_utc": to_ts,
+        "rank_min": policy.rank_min,
+        "rank_max": policy.rank_max,
+        "btc_prior_min": policy.btc_prior_min,
+        "btc_prior_max": policy.btc_prior_max,
+        "selection_score_lt": policy.max_selection_score_exclusive,
+        "exclude_weak_symbols": int(policy.exclude_weak_symbols),
+        "rotation_bucket": policy.rotation_bucket,
+        "classification_code": policy.classification_code,
+        "sleeve_fit_code": policy.sleeve_fit_code,
+        "rows_total": summary_row["rows_total"],
+        "symbol_count": summary_row["symbol_count"],
+        "day_count": summary_row["day_count"],
+        "rows_4h": summary_row["rows_4h"],
+        "avg_net_4h": summary_row["avg_net_4h"],
+        "avg_gross_4h": summary_row["avg_gross_4h"],
+        "winrate_4h": summary_row["winrate_4h"],
+        "worst_net_4h": summary_row["worst_net_4h"],
+        "best_net_4h": summary_row["best_net_4h"],
+        "rows_24h": summary_row["rows_24h"],
+        "avg_net_24h": summary_row["avg_net_24h"],
+        "avg_gross_24h": summary_row["avg_gross_24h"],
+        "winrate_24h": summary_row["winrate_24h"],
+        "worst_net_24h": summary_row["worst_net_24h"],
+        "best_net_24h": summary_row["best_net_24h"],
+    }
+
+    conn = get_connection(database=BT_DB)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            result_id = int(cur.lastrowid)
+        conn.commit()
+        return result_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def evaluate_policy(
@@ -324,12 +522,41 @@ def evaluate_policy(
 def main() -> int:
     args = parse_args()
 
+    eval_table = _validate_table_name(str(args.eval_table))
+    policy_name = str(args.policy)
+    from_ts = None if args.from_ts is None else str(args.from_ts)
+    to_ts = None if args.to_ts is None else str(args.to_ts)
+
     result = evaluate_policy(
-        eval_table=str(args.eval_table),
-        policy_name=str(args.policy),
-        from_ts=None if args.from_ts is None else str(args.from_ts),
-        to_ts=None if args.to_ts is None else str(args.to_ts),
+        eval_table=eval_table,
+        policy_name=policy_name,
+        from_ts=from_ts,
+        to_ts=to_ts,
     )
+
+    written_result_id: int | None = None
+
+    if args.write_db:
+        if not result["summary"]:
+            raise RuntimeError("No summary row produced; refusing to write empty result")
+
+        policy = _resolve_policy(policy_name)
+        written_result_id = write_result_summary(
+            result_set_name=str(args.result_set_name),
+            eval_table=eval_table,
+            policy=policy,
+            from_ts=from_ts,
+            to_ts=to_ts,
+            summary_row=result["summary"][0],
+        )
+
+        result["db_write"] = [
+            {
+                "named_policy_eval_result_id": written_result_id,
+                "result_set_name": str(args.result_set_name),
+                "policy_name": policy.policy_name,
+            }
+        ]
 
     if args.output == "json":
         if not args.show_trades:
@@ -340,6 +567,9 @@ def main() -> int:
     _print_table("SUMMARY", result["summary"])
     _print_table("BY DAY", result["by_day"])
     _print_table("BY SYMBOL", result["by_symbol"])
+
+    if written_result_id is not None:
+        _print_table("DB WRITE", result["db_write"])
 
     if args.show_trades:
         _print_table("TRADES", result["trades"])
