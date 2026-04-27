@@ -1,0 +1,154 @@
+# Parking Rotation Strategy Simulation V1
+
+## Layer
+
+Research / backtest simulation.
+
+This is not a live strategy and must not be connected directly to decision_gate,
+execution_planner, executor, account state, balances, orders, or broker logic.
+
+## Candidate family
+
+Parking rotation recovery.
+
+The strategy tests whether low-scoring WATCHLIST assets inside a rotation-exit /
+no-trade / experimental bucket can produce delayed recovery returns when held for
+a fixed horizon.
+
+## Current tested policies
+
+### parking_rotation_recovery_v1
+
+Policy parameters:
+
+- selection_state = WATCHLIST
+- priority_rank between 4 and 10
+- btc_prior_24h between -0.010 and 0.010
+- selection_score < 0.50000000
+- weak symbols excluded
+- rotation_bucket = ROTATION_EXIT
+- classification_code = NO_TRADE
+- sleeve_fit_code = EXPERIMENTAL
+
+### parking_rotation_recovery_v2
+
+Policy parameters:
+
+- selection_state = WATCHLIST
+- priority_rank between 6 and 15
+- btc_prior_24h between -0.005 and 0.015
+- selection_score < 0.50000000
+- weak symbols excluded
+- rotation_bucket = ROTATION_EXIT
+- classification_code = NO_TRADE
+- sleeve_fit_code = EXPERIMENTAL
+
+## Walk-forward windows
+
+Train window:
+
+- 2026-04-08 00:00:00 UTC
+- 2026-04-24 00:00:00 UTC
+
+Test window:
+
+- 2026-04-24 00:00:00 UTC
+- 2026-04-28 00:00:00 UTC
+
+## Simulation settings promoted for review
+
+### Primary research candidate
+
+parking_rotation_recovery_v1
+
+- hold_hours = 24
+- max_trades_per_snapshot = 2
+- cooldown_hours_per_symbol = 24
+- dedupe_symbol_overlap = true
+
+Train:
+
+- trades = 9
+- avg_net_return = 0.045867
+- winrate = 1.0000
+- compound_net_return_trade_sequence = 0.484602
+
+Test:
+
+- trades = 7
+- avg_net_return = 0.006966
+- winrate = 0.5714
+- compound_net_return_trade_sequence = 0.047407
+- worst_net_return = -0.023793
+- best_net_return = 0.060898
+
+Status:
+
+- PROMOTE_RESEARCH_CANDIDATE
+- not production-ready
+- suitable for deeper walk-forward testing
+
+Reason for primary preference:
+
+v1 has stronger per-trade test expectancy than v2, even though v2 has slightly
+higher test compound due to more trades.
+
+### Secondary research candidate
+
+parking_rotation_recovery_v2
+
+- hold_hours = 24
+- max_trades_per_snapshot = 2
+- cooldown_hours_per_symbol = 24
+- dedupe_symbol_overlap = true
+
+Train:
+
+- trades = 10
+- avg_net_return = 0.046700
+- winrate = 0.9000
+- compound_net_return_trade_sequence = 0.561790
+
+Test:
+
+- trades = 12
+- avg_net_return = 0.004552
+- winrate = 0.5833
+- compound_net_return_trade_sequence = 0.052847
+- worst_net_return = -0.022367
+- best_net_return = 0.060898
+
+Status:
+
+- PROMOTE_RESEARCH_CANDIDATE
+- not production-ready
+- useful as higher-volume variant
+
+## Rejected current interpretation
+
+The 4h version is rejected for now.
+
+Observed result:
+
+- v1 4h test avg_net_return = -0.002997
+- v1 4h test winrate = 0.2500
+- v1 4h test compound = -0.035624
+
+Interpretation:
+
+The recovery effect appears to need the 24h horizon. Cutting at 4h exits too early.
+
+## Current conclusion
+
+Parking rotation recovery is a valid research candidate, not a live strategy.
+
+Current best candidate:
+
+parking_rotation_recovery_v1 / 24h / max_per_snap=2 / cooldown=24h
+
+Next required validation:
+
+1. Expand historical replay coverage.
+2. Test multiple rolling walk-forward splits.
+3. Add drawdown and overlap exposure reporting.
+4. Only after broader validation, consider a strategy module proposal.
