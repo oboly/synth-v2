@@ -29,7 +29,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -204,8 +204,8 @@ CREATE TABLE IF NOT EXISTS {safe_table} (
     source_replay_id BIGINT NOT NULL,
     notes TEXT NULL,
     load_batch_id VARCHAR(64) NOT NULL,
-    created_ts_utc DATETIME(6) NOT NULL DEFAULT UTC_TIMESTAMP(6),
-    updated_ts_utc DATETIME(6) NOT NULL DEFAULT UTC_TIMESTAMP(6) ON UPDATE UTC_TIMESTAMP(6),
+    created_ts_utc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    updated_ts_utc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (candidate_id),
     UNIQUE KEY uq_research_paper_candidate_signal_key (candidate_key),
     KEY ix_research_paper_candidate_signal_status_ts (signal_status, asof_ts_utc),
@@ -361,7 +361,7 @@ def print_table(summary: dict[str, Any]) -> None:
 def main() -> int:
     args = parse_args()
     validate_table_name(args.table)
-    batch_id = args.batch_id or datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    batch_id = args.batch_id or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     valid, invalid = load_candidates(args.input)
 
     if args.init_db:
