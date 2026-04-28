@@ -211,3 +211,71 @@ Same core context as v3, but:
   - selection_score < 0.52000000
 
 These remain research-only policies.
+
+## Correction after v5/v6 exclusion hook repair
+
+The first v5/v6 no-symbol-block run did not actually apply the custom score exclusions because
+`build_policy_where()` appended exclusion clauses to a non-existing `where` variable.
+
+Fix:
+
+- `build_policy_where()` now appends custom exclusion clauses to `filters`
+- v5/v6 filters are confirmed active because v5 and v6 now produce different counts and results
+- no symbol blocker is used for v5/v6
+- universe quality is handled outside this runner
+
+Corrected active-filter result:
+
+### Primary candidate
+
+`swing_pullback_recovery_v5`
+
+- hold_hours = 24
+- cooldown_hours_per_symbol = 24
+- max_trades_per_snapshot = 2
+- valid_test_splits = 8
+- positive_test_splits = 7
+- negative_test_splits = 1
+- zero_trade_test_splits = 0
+- train_trades = 132
+- test_trades = 31
+- avg_train = 0.031618
+- avg_test = 0.027586
+- avg_retention = 0.8725
+- avg_train_comp = 0.617647
+- avg_test_comp = 0.108999
+- compound_retention = 0.1765
+- test_comp_product = 1.207758
+
+### Secondary candidate
+
+`swing_pullback_recovery_v6`
+
+- hold_hours = 24
+- cooldown_hours_per_symbol = 24
+- max_trades_per_snapshot = 2
+- valid_test_splits = 8
+- positive_test_splits = 7
+- negative_test_splits = 1
+- zero_trade_test_splits = 0
+- train_trades = 126
+- test_trades = 30
+- avg_train = 0.033448
+- avg_test = 0.027198
+- avg_retention = 0.8131
+- test_comp_product = 1.111102
+
+Interpretation:
+
+- v5 is currently preferred over v6
+- v5 keeps slightly more coverage
+- v5 has the better corrected test compound product
+- both remain 24h swing-recovery research candidates
+- neither is approved for decision_gate, execution_planner, paper trading, or live trading
+
+Current status:
+
+- `swing_pullback_recovery_v5` = PRIMARY_RESEARCH_CANDIDATE
+- `swing_pullback_recovery_v6` = SECONDARY_RESEARCH_CANDIDATE
+- no symbol-block strategy logic
+- universe quality must be handled upstream
