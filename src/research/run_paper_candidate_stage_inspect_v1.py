@@ -93,7 +93,7 @@ def fetch_columns(*, database: str, table_name: str) -> list[str]:
     conn = get_connection(database=database)
     try:
         with conn.cursor() as cur:
-            cur.execute("SHOW COLUMNS FROM {safe_table}")
+            cur.execute(f"SHOW COLUMNS FROM {safe_table}")
             rows = cur.fetchall() or []
     finally:
         conn.close()
