@@ -33,6 +33,7 @@ import argparse
 import json
 import sys
 from dataclasses import fields
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -82,6 +83,15 @@ def load_lines(input_path: str) -> list[str]:
     ]
 
 
+
+def parse_transport_ts(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str):
+        raise TypeError(f"Expected timestamp string, got {type(value).__name__}")
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
 def candidate_from_transport(payload: dict[str, Any]) -> ResearchPaperCandidateV1:
     field_names = {field.name for field in fields(ResearchPaperCandidateV1)}
     unexpected = sorted(set(payload) - field_names)
@@ -96,7 +106,7 @@ def candidate_from_transport(payload: dict[str, Any]) -> ResearchPaperCandidateV
         asset_id=int(payload["asset_id"]),
         symbol=str(payload["symbol"]),
         venue=str(payload["venue"]),
-        asof_ts_utc=str(payload["asof_ts_utc"]),
+        asof_ts_utc=parse_transport_ts(payload["asof_ts_utc"]),
         selection_state=str(payload["selection_state"]),
         priority_rank=None if payload.get("priority_rank") is None else int(payload["priority_rank"]),
         selection_score=decimal_or_none(payload.get("selection_score")),
