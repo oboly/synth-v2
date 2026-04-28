@@ -60,6 +60,10 @@ class NamedPolicy:
     rotation_bucket: str
     classification_code: str
     sleeve_fit_code: str
+    exclude_score_band_min: Decimal | None = None
+    exclude_score_band_max_exclusive: Decimal | None = None
+    exclude_score_band_rank_min: int | None = None
+    exclude_score_band_rank_max: int | None = None
 
 
 @dataclass(frozen=True)
@@ -166,7 +170,12 @@ POLICIES: dict[str, NamedPolicy] = {
         rotation_bucket="ROTATION_EARLY",
         classification_code="PULLBACK_WATCH",
         sleeve_fit_code="SWING_STRUCTURAL",
-    ),
+    
+        exclude_score_band_min=Decimal("0.50000000"),
+        exclude_score_band_max_exclusive=Decimal("0.52000000"),
+        exclude_score_band_rank_min=4,
+        exclude_score_band_rank_max=6,
+),
     "swing_pullback_recovery_v6": NamedPolicy(
         policy_name="swing_pullback_recovery_v6",
         selection_states=("WATCHLIST",),
@@ -180,7 +189,10 @@ POLICIES: dict[str, NamedPolicy] = {
         rotation_bucket="ROTATION_EARLY",
         classification_code="PULLBACK_WATCH",
         sleeve_fit_code="SWING_STRUCTURAL",
-    ),
+    
+        exclude_score_band_min=Decimal("0.50000000"),
+        exclude_score_band_max_exclusive=Decimal("0.52000000"),
+),
     "swing_pullback_recovery_v4": NamedPolicy(
         policy_name="swing_pullback_recovery_v4",
         selection_states=("WATCHLIST", "PREPARE", "BUY_READY"),
@@ -196,6 +208,45 @@ POLICIES: dict[str, NamedPolicy] = {
         sleeve_fit_code="SWING_STRUCTURAL",
     ),
 }
+
+
+def build_policy_exclusion_sql(policy: NamedPolicy) -> tuple[list[str], list[Any]]:
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if (
+        policy.exclude_score_band_min is None
+        or policy.exclude_score_band_max_exclusive is None
+    ):
+        return clauses, params
+
+    if (
+        policy.exclude_score_band_rank_min is not None
+        and policy.exclude_score_band_rank_max is not None
+    ):
+        clauses.append(
+            "NOT (selection_score >= %s "
+            "AND selection_score < %s "
+            "AND priority_rank BETWEEN %s AND %s)"
+        )
+        params.extend(
+            [
+                policy.exclude_score_band_min,
+                policy.exclude_score_band_max_exclusive,
+                policy.exclude_score_band_rank_min,
+                policy.exclude_score_band_rank_max,
+            ]
+        )
+        return clauses, params
+
+    clauses.append("NOT (selection_score >= %s AND selection_score < %s)")
+    params.extend(
+        [
+            policy.exclude_score_band_min,
+            policy.exclude_score_band_max_exclusive,
+        ]
+    )
+    return clauses, params
 
 
 def parse_args() -> argparse.Namespace:
@@ -344,6 +395,10 @@ def build_policy_where(policy: NamedPolicy, hold_hours: int) -> tuple[str, list[
     if policy.exclude_weak_symbols:
         filters.append("symbol NOT IN (" + ",".join(["%s"] * len(WEAK_SYMBOLS)) + ")")
         params.extend(WEAK_SYMBOLS)
+
+    extra_clauses, extra_params = build_policy_exclusion_sql(policy)
+    where.extend(extra_clauses)
+    params.extend(extra_params)
 
     return " AND ".join(filters), params
 
