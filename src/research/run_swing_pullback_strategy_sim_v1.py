@@ -263,10 +263,7 @@ def parse_args() -> argparse.Namespace:
         "--policies",
         nargs="+",
         default=[
-            "swing_pullback_recovery_v1",
-            "swing_pullback_recovery_v2",
-            "swing_pullback_recovery_v3",
-            "swing_pullback_recovery_v4",
+            "swing_pullback_recovery_v5",
         ],
     )
     parser.add_argument("--hold-hours", nargs="+", type=int, default=[24])

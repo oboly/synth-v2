@@ -372,3 +372,20 @@ Design a paper-candidate wrapper/spec that can be evaluated by `decision_gate` l
 Not allowed:
 
 Direct wiring from this research runner into `decision_gate`, `execution_planner`, executor, or live trading.
+
+## Default runner policy
+
+After promotion to `RESEARCH_PROMOTION_CANDIDATE`, the runner default policy was changed to:
+
+- `swing_pullback_recovery_v5`
+
+Older policies remain available for explicit comparison, but they are no longer the default research path.
+
+This does not promote v5 into production.
+
+The runner remains research-only and must not be wired directly into:
+
+- decision_gate
+- execution_planner
+- executor
+- account-aware portfolio layers
