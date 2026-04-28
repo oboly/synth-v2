@@ -397,7 +397,7 @@ def build_policy_where(policy: NamedPolicy, hold_hours: int) -> tuple[str, list[
         params.extend(WEAK_SYMBOLS)
 
     extra_clauses, extra_params = build_policy_exclusion_sql(policy)
-    where.extend(extra_clauses)
+    filters.extend(extra_clauses)
     params.extend(extra_params)
 
     return " AND ".join(filters), params
