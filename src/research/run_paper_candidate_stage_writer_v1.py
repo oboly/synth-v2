@@ -117,6 +117,7 @@ def payload_to_candidate(payload: dict[str, Any]) -> ResearchPaperCandidateV1:
         btc_prior_24h=parse_decimal(payload.get("btc_prior_24h")),
         rotation_bucket=None if payload.get("rotation_bucket") is None else str(payload["rotation_bucket"]),
         classification_code=None if payload.get("classification_code") is None else str(payload["classification_code"]),
+        execution_regime_label=str(payload["execution_regime_label"]),
         sleeve_fit_code=None if payload.get("sleeve_fit_code") is None else str(payload["sleeve_fit_code"]),
         simulated_horizon_hours=parse_int(payload["simulated_horizon_hours"]),
         simulated_net_return=parse_decimal(payload.get("simulated_net_return")),
@@ -197,6 +198,7 @@ CREATE TABLE IF NOT EXISTS {safe_table} (
     btc_prior_24h DECIMAL(24, 14) NULL,
     rotation_bucket VARCHAR(64) NULL,
     classification_code VARCHAR(64) NULL,
+    execution_regime_label VARCHAR(32) NULL,
     sleeve_fit_code VARCHAR(64) NULL,
     simulated_horizon_hours INT NOT NULL,
     simulated_net_return DECIMAL(24, 14) NULL,
@@ -219,11 +221,30 @@ CREATE TABLE IF NOT EXISTS {safe_table} (
 """
 
 
+
+
+def fetch_column_names(cur: Any, table_name: str) -> set[str]:
+    safe_table = validate_table_name(table_name)
+    cur.execute(f"SHOW COLUMNS FROM {safe_table}")
+    rows = cur.fetchall() or []
+    return {str(row["Field"]) for row in rows}
+
+
+def ensure_table_schema(cur: Any, table_name: str) -> None:
+    safe_table = validate_table_name(table_name)
+    columns = fetch_column_names(cur, safe_table)
+    if "execution_regime_label" not in columns:
+        cur.execute(
+            f"ALTER TABLE {safe_table} "
+            "ADD COLUMN execution_regime_label VARCHAR(32) NULL AFTER classification_code"
+        )
+
 def init_db(*, database: str, table_name: str) -> None:
     conn = get_connection(database=database)
     try:
         with conn.cursor() as cur:
             cur.execute(create_table_sql(table_name))
+            ensure_table_schema(cur, table_name)
         conn.commit()
     finally:
         conn.close()
@@ -236,14 +257,14 @@ INSERT INTO {safe_table} (
     candidate_key, contract_version, policy_name, policy_version, candidate_state,
     signal_status, asset_id, symbol, venue, asof_ts_utc, selection_state,
     priority_rank, selection_score, btc_prior_24h, rotation_bucket,
-    classification_code, sleeve_fit_code, simulated_horizon_hours,
+    classification_code, execution_regime_label, sleeve_fit_code, simulated_horizon_hours,
     simulated_net_return, source_table, source_replay_id, notes, load_batch_id
 ) VALUES (
     %(candidate_key)s, %(contract_version)s, %(policy_name)s, %(policy_version)s,
     %(candidate_state)s, %(signal_status)s, %(asset_id)s, %(symbol)s, %(venue)s,
     %(asof_ts_utc)s, %(selection_state)s, %(priority_rank)s, %(selection_score)s,
     %(btc_prior_24h)s, %(rotation_bucket)s, %(classification_code)s,
-    %(sleeve_fit_code)s, %(simulated_horizon_hours)s, %(simulated_net_return)s,
+    %(execution_regime_label)s, %(sleeve_fit_code)s, %(simulated_horizon_hours)s, %(simulated_net_return)s,
     %(source_table)s, %(source_replay_id)s, %(notes)s, %(load_batch_id)s
 )
 ON DUPLICATE KEY UPDATE
@@ -255,6 +276,7 @@ ON DUPLICATE KEY UPDATE
     btc_prior_24h = VALUES(btc_prior_24h),
     rotation_bucket = VALUES(rotation_bucket),
     classification_code = VALUES(classification_code),
+    execution_regime_label = VALUES(execution_regime_label),
     sleeve_fit_code = VALUES(sleeve_fit_code),
     simulated_horizon_hours = VALUES(simulated_horizon_hours),
     simulated_net_return = VALUES(simulated_net_return),
@@ -283,6 +305,7 @@ def candidate_to_db_params(loaded: LoadedCandidate, *, signal_status: str, batch
         "btc_prior_24h": c.btc_prior_24h,
         "rotation_bucket": c.rotation_bucket,
         "classification_code": c.classification_code,
+        "execution_regime_label": c.execution_regime_label,
         "sleeve_fit_code": c.sleeve_fit_code,
         "simulated_horizon_hours": c.simulated_horizon_hours,
         "simulated_net_return": c.simulated_net_return,

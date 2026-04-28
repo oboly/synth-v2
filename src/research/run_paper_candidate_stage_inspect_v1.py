@@ -60,6 +60,16 @@ FORBIDDEN_COLUMNS = frozenset(
 )
 
 
+
+ALLOWED_EXECUTION_REGIME_LABELS = frozenset(
+    {
+        "TREND_UP",
+        "RANGE",
+        "TREND_DOWN",
+    }
+)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Inspect staged paper-candidate research rows without writes."
@@ -197,6 +207,37 @@ def fetch_summary(*, args: argparse.Namespace) -> dict[str, Any]:
                 , [*params, args.limit],
             )
             samples = cur.fetchall() or []
+
+            cur.execute(
+                f'''
+                SELECT
+                    COALESCE(execution_regime_label, '<NULL>') AS execution_regime_label,
+                    COUNT(*) AS rows_total
+                FROM {safe_table}
+                WHERE 1=1
+                {where_sql}
+                GROUP BY COALESCE(execution_regime_label, '<NULL>')
+                ORDER BY rows_total DESC, execution_regime_label
+                '''
+                , params,
+            )
+            execution_regime_counts = cur.fetchall() or []
+
+            cur.execute(
+                f'''
+                SELECT
+                    SUM(execution_regime_label IS NULL) AS execution_regime_null_rows,
+                    SUM(
+                        execution_regime_label IS NOT NULL
+                        AND execution_regime_label NOT IN ('TREND_UP', 'RANGE', 'TREND_DOWN')
+                    ) AS execution_regime_invalid_rows
+                FROM {safe_table}
+                WHERE 1=1
+                {where_sql}
+                '''
+                , params,
+            )
+            execution_regime_quality = cur.fetchone() or {}
     finally:
         conn.close()
 
@@ -215,6 +256,8 @@ def fetch_summary(*, args: argparse.Namespace) -> dict[str, Any]:
         "summary": summary,
         "batches": batches,
         "symbols": symbols,
+        "execution_regime_quality": execution_regime_quality,
+        "execution_regime_counts": execution_regime_counts,
         "samples": samples,
     }
 
@@ -235,6 +278,16 @@ def print_table(payload: dict[str, Any]) -> None:
     print("--- summary ---")
     for key, value in payload['summary'].items():
         print(f'{key}: {json_default(value)}')
+
+    print()
+    print("--- execution regime health ---")
+    for key, value in payload['execution_regime_quality'].items():
+        print(f'{key}: {json_default(value)}')
+
+    print()
+    print("--- execution regime counts ---")
+    for row in payload['execution_regime_counts']:
+        print(row)
 
     print()
     print("--- batches ---")

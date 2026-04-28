@@ -10,7 +10,8 @@ BOUNDARY:
 Allowed:
 - define a transport-safe research candidate shape
 - validate market-only candidate payloads
-- reject account-aware or execution-aware fields
+- carry normalized market-only execution-context regime labels
+- reject account-aware or order/action-aware fields
 - serialize deterministic preview candidates for later adapters
 
 Forbidden:
@@ -49,6 +50,15 @@ ALLOWED_SLEEVE_CODES = frozenset(
         "SWING_STRUCTURAL",
         "TACTICAL_PULSE",
         "EXPERIMENTAL",
+    }
+)
+
+
+ALLOWED_EXECUTION_REGIME_LABELS = frozenset(
+    {
+        "TREND_UP",
+        "RANGE",
+        "TREND_DOWN",
     }
 )
 
@@ -108,6 +118,7 @@ class ResearchPaperCandidateV1:
 
     rotation_bucket: str
     classification_code: str
+    execution_regime_label: str
     sleeve_fit_code: str
 
     simulated_horizon_hours: int
@@ -183,6 +194,14 @@ def validate_candidate(candidate: ResearchPaperCandidateV1) -> ValidationResult:
             ValidationIssue(
                 field_name="sleeve_fit_code",
                 message="Sleeve fit code is not allowed.",
+            )
+        )
+
+    if candidate.execution_regime_label not in ALLOWED_EXECUTION_REGIME_LABELS:
+        issues.append(
+            ValidationIssue(
+                field_name="execution_regime_label",
+                message="Execution regime label is not allowed.",
             )
         )
 

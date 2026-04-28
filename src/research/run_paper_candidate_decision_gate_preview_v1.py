@@ -50,6 +50,15 @@ DEFAULT_SETUP_FILTER_STATE = "PASS"
 TABLE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]+$")
 
 
+ALLOWED_EXECUTION_REGIME_LABELS = frozenset(
+    {
+        "TREND_UP",
+        "RANGE",
+        "TREND_DOWN",
+    }
+)
+
+
 @dataclass(frozen=True)
 class StagedCandidateRow:
     candidate_id: int
@@ -69,6 +78,7 @@ class StagedCandidateRow:
     btc_prior_24h: Decimal | None
     rotation_bucket: str | None
     classification_code: str | None
+    execution_regime_label: str | None
     sleeve_fit_code: str | None
     simulated_horizon_hours: int
     simulated_net_return: Decimal | None
@@ -144,7 +154,7 @@ def fetch_staged_candidates(args: argparse.Namespace) -> list[StagedCandidateRow
             candidate_state, signal_status, asset_id, symbol, venue,
             CAST(asof_ts_utc AS CHAR) AS asof_ts_utc,
             selection_state, priority_rank, selection_score, btc_prior_24h,
-            rotation_bucket, classification_code, sleeve_fit_code,
+            rotation_bucket, classification_code, execution_regime_label, sleeve_fit_code,
             simulated_horizon_hours, simulated_net_return,
             source_table, source_replay_id, load_batch_id
         FROM {safe_table}
@@ -181,6 +191,7 @@ def fetch_staged_candidates(args: argparse.Namespace) -> list[StagedCandidateRow
                 btc_prior_24h=to_decimal(row.get("btc_prior_24h")),
                 rotation_bucket=str(row["rotation_bucket"]) if row.get("rotation_bucket") else None,
                 classification_code=str(row["classification_code"]) if row.get("classification_code") else None,
+                execution_regime_label=str(row["execution_regime_label"]) if row.get("execution_regime_label") else None,
                 sleeve_fit_code=str(row["sleeve_fit_code"]) if row.get("sleeve_fit_code") else None,
                 simulated_horizon_hours=int(row["simulated_horizon_hours"]),
                 simulated_net_return=to_decimal(row.get("simulated_net_return")),
@@ -190,6 +201,21 @@ def fetch_staged_candidates(args: argparse.Namespace) -> list[StagedCandidateRow
             )
         )
     return out
+
+
+
+def require_execution_regime_label(row: StagedCandidateRow) -> str:
+    value = row.execution_regime_label
+    if value not in ALLOWED_EXECUTION_REGIME_LABELS:
+        raise ValueError(
+            "Invalid or missing execution_regime_label for "
+            f"candidate_id={row.candidate_id} "
+            f"symbol={row.symbol} "
+            f"rotation_bucket={row.rotation_bucket} "
+            f"classification_code={row.classification_code} "
+            f"execution_regime_label={value}"
+        )
+    return value
 
 
 def staged_candidate_to_selection_input(row: StagedCandidateRow) -> SelectionInputRow:
@@ -203,9 +229,7 @@ def staged_candidate_to_selection_input(row: StagedCandidateRow) -> SelectionInp
         f'source={row.source_table}:{row.source_replay_id}; '
         f'batch={row.load_batch_id}'
     )
-    regime_label_4h = ';'.join(
-        item for item in [row.rotation_bucket, row.classification_code] if item
-    ) or None
+    regime_label_4h = require_execution_regime_label(row)
 
     return SelectionInputRow(
         selection_state_id=row.candidate_id,

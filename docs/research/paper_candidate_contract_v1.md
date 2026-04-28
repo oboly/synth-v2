@@ -68,3 +68,15 @@ This enables future adapter design, but does not approve live or paper execution
 Design a future adapter that reads contract-valid candidates and presents them to `decision_gate`.
 
 No shortcut from research preview to execution.
+
+## Execution regime label
+
+`execution_regime_label` is a normalized market-only execution-context regime label carried by the paper-candidate transport contract.
+
+Allowed values:
+
+- `TREND_UP`
+- `RANGE`
+- `TREND_DOWN`
+
+The field must be derived upstream of `decision_gate` from research context. `decision_gate` may pass it through as `SelectionInputRow.regime_label_4h`, but must not derive it from `rotation_bucket` or `classification_code`.

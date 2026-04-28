@@ -74,6 +74,7 @@ class PreviewCandidate:
     btc_prior_24h: Decimal | None
     rotation_bucket: str | None
     classification_code: str | None
+    execution_regime_label: str
     sleeve_fit_code: str | None
     net_return_24h: Decimal | None
 
@@ -113,6 +114,23 @@ class RejectedPreview:
     priority_rank: int | None
     selection_score: Decimal | None
 
+
+
+def derive_execution_regime_label(
+    *,
+    policy_name: str,
+    rotation_bucket: str | None,
+    classification_code: str | None,
+) -> str:
+    if policy_name == POLICY_NAME and rotation_bucket == "ROTATION_EARLY" and classification_code == "PULLBACK_WATCH":
+        return "TREND_UP"
+
+    raise ValueError(
+        "No execution_regime_label mapping for "
+        f"policy_name={policy_name} "
+        f"rotation_bucket={rotation_bucket} "
+        f"classification_code={classification_code}"
+    )
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -328,6 +346,11 @@ def apply_preview_throttle(
                 btc_prior_24h=row.btc_prior_24h,
                 rotation_bucket=row.rotation_bucket,
                 classification_code=row.classification_code,
+                execution_regime_label=derive_execution_regime_label(
+                    policy_name=POLICY_NAME,
+                    rotation_bucket=row.rotation_bucket,
+                    classification_code=row.classification_code,
+                ),
                 sleeve_fit_code=row.sleeve_fit_code,
                 suggested_hold_hours=hold_hours,
                 max_per_snapshot=max_per_snapshot,
@@ -380,6 +403,7 @@ def accepted_preview_to_contract_transport(
         btc_prior_24h=_preview_attr(row, "btc_prior_24h"),
         rotation_bucket=_preview_attr(row, "rotation_bucket"),
         classification_code=_preview_attr(row, "classification_code"),
+        execution_regime_label=_preview_attr(row, "execution_regime_label"),
         sleeve_fit_code=_preview_attr(row, "sleeve_fit_code"),
         simulated_horizon_hours=_preview_attr(row, "suggested_hold_hours", "simulated_horizon_hours"),
         simulated_net_return=_preview_attr(row, "simulated_net_return_24h", "net_return_24h", "simulated_net_return"),

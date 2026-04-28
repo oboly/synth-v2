@@ -71,3 +71,11 @@ python -m src.research.run_paper_candidate_execution_planner_preview_v1 --databa
 
 This override must not become the canonical production path. A real adapter must
 receive planner-compatible regime context from upstream market/selection context.
+
+## Regime adapter boundary
+
+Execution planner preview expects staged paper-candidate rows to already contain `execution_regime_label`.
+
+Default behavior uses the staged value and passes it through `decision_gate` as `regime_label_4h`.
+
+`--execution-regime-override` is diagnostic only. It must not become the production path and must not hide missing staged regime context.
