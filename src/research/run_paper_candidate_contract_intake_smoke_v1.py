@@ -44,6 +44,40 @@ from src.research.paper_candidate_contract_v1 import (
 )
 
 
+
+def validation_result_is_valid(result: Any) -> bool:
+    for attr_name in ("ok", "valid", "is_valid"):
+        if hasattr(result, attr_name):
+            return bool(getattr(result, attr_name))
+
+    issues = getattr(result, "issues", None)
+    if issues is not None:
+        return len(tuple(issues)) == 0
+
+    errors = getattr(result, "errors", None)
+    if errors is not None:
+        return len(tuple(errors)) == 0
+
+    raise AttributeError(
+        "ValidationResult has no ok/valid/is_valid/issues/errors field"
+    )
+
+
+def validation_result_messages(result: Any) -> list[str]:
+    issues = getattr(result, "issues", None)
+    if issues is not None:
+        return [
+            getattr(issue, "message", str(issue))
+            for issue in tuple(issues)
+        ]
+
+    errors = getattr(result, "errors", None)
+    if errors is not None:
+        return [str(error) for error in tuple(errors)]
+
+    return []
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Validate paper candidate contract JSONL without DB writes."
@@ -139,7 +173,7 @@ def main() -> int:
             candidate = candidate_from_transport(payload)
             result = validate_candidate(candidate)
 
-            if result.ok:
+            if validation_result_is_valid(result):
                 valid_count += 1
                 continue
 
@@ -152,7 +186,7 @@ def main() -> int:
                             "field": issue.field_name,
                             "message": issue.message,
                         }
-                        for issue in result.issues
+                        for issue in validation_result_messages(result)
                     ],
                 }
             )
