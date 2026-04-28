@@ -389,3 +389,24 @@ The runner remains research-only and must not be wired directly into:
 - execution_planner
 - executor
 - account-aware portfolio layers
+
+## Canonical V5 runner defaults
+
+The runner defaults were aligned with the promoted V5 research candidate:
+
+- policy = swing_pullback_recovery_v5
+- hold_hours = 24
+- max_trades_per_snapshot = 2
+- cooldown_hours = 24
+- min_test_trades_per_split = 1
+- min_valid_test_splits = 6
+
+Reason:
+
+The stress validation consistently favored the 24h V5 setup with two trades per snapshot.
+The runner default should therefore represent the canonical research candidate, not a broad comparison grid.
+
+Boundary:
+
+This is still research-only. These defaults do not authorize direct wiring into decision_gate,
+execution_planner, executor, account-aware portfolio state, or live trading.
