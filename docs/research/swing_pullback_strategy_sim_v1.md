@@ -323,3 +323,52 @@ Current status:
 - eligible for further paper-candidate design
 - not approved for live trading
 - not connected to account-aware layers
+
+## Final V5 research promotion verdict
+
+`swing_pullback_recovery_v5` survived the first cost-stress pass.
+
+Cost-stress result:
+
+- baseline net return with 25 bps per side: 0.029066
+- net return with 50 bps per side: 0.024066
+- net return with 75 bps per side: 0.019066
+- net return with 100 bps per side: 0.014066
+- net return with 25 bps per side plus 25 bps total slippage: 0.026566
+
+Verdict:
+
+- status = RESEARCH_PROMOTION_CANDIDATE
+- preferred hold horizon = 24h
+- preferred max trades per snapshot = 2
+- preferred cooldown per symbol = 24h
+- no symbol blocker inside the strategy
+- universe quality must be handled upstream by the tradable universe / asset selection process
+
+Architectural boundary:
+
+This candidate remains market-only research logic.
+
+It must not read:
+
+- balances
+- open orders
+- live positions
+- execution plans
+- account state
+
+It must not write:
+
+- decision_state
+- execution_intent
+- execution_plan
+- orders
+- account-aware portfolio state
+
+Next allowed step:
+
+Design a paper-candidate wrapper/spec that can be evaluated by `decision_gate` later.
+
+Not allowed:
+
+Direct wiring from this research runner into `decision_gate`, `execution_planner`, executor, or live trading.
