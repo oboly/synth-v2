@@ -38,6 +38,11 @@ from decimal import Decimal
 from typing import Any
 
 from src.common.db import get_connection
+from src.research.paper_candidate_contract_v1 import (
+    CONTRACT_VERSION,
+    ResearchPaperCandidateV1,
+    require_valid_candidate,
+)
 
 
 BT_DB = "synth_bt"
@@ -331,6 +336,53 @@ def apply_preview_throttle(
     return accepted, rejected
 
 
+
+def _preview_attr(row: AcceptedPreview, *names: str) -> Any:
+    for name in names:
+        if hasattr(row, name):
+            return getattr(row, name)
+    available = sorted(getattr(row, "__dict__", {}).keys())
+    raise AttributeError(f"Missing preview field {names}; available={available}")
+
+
+def _preview_attr(row: AcceptedPreview, *names: str) -> Any:
+    for name in names:
+        if hasattr(row, name):
+            return getattr(row, name)
+    available = sorted(getattr(row, "__dict__", {}).keys())
+    raise AttributeError(f"Missing preview field {names}; available={available}")
+
+
+def accepted_preview_to_contract_transport(
+    row: AcceptedPreview,
+    *,
+    source_table: str,
+) -> dict[str, Any]:
+    candidate = ResearchPaperCandidateV1(
+        contract_version=CONTRACT_VERSION,
+        policy_name=_preview_attr(row, "policy_name"),
+        policy_version=_preview_attr(row, "policy_version"),
+        candidate_state=_preview_attr(row, "candidate_state"),
+        asset_id=_preview_attr(row, "asset_id"),
+        symbol=_preview_attr(row, "symbol"),
+        venue=_preview_attr(row, "venue"),
+        asof_ts_utc=_preview_attr(row, "candidate_ts_utc", "asof_ts_utc", "replay_asof_ts_utc"),
+        selection_state=_preview_attr(row, "selection_state"),
+        priority_rank=_preview_attr(row, "priority_rank"),
+        selection_score=_preview_attr(row, "selection_score"),
+        btc_prior_24h=_preview_attr(row, "btc_prior_24h"),
+        rotation_bucket=_preview_attr(row, "rotation_bucket"),
+        classification_code=_preview_attr(row, "classification_code"),
+        sleeve_fit_code=_preview_attr(row, "sleeve_fit_code"),
+        simulated_horizon_hours=_preview_attr(row, "suggested_hold_hours", "simulated_horizon_hours"),
+        simulated_net_return=_preview_attr(row, "simulated_net_return_24h", "net_return_24h", "simulated_net_return"),
+        source_table=source_table,
+        source_replay_id=_preview_attr(row, "replay_id", "source_replay_id"),
+        notes="research-only preview export; not a decision, intent, plan, or order",
+    )
+    require_valid_candidate(candidate)
+    return candidate.to_transport_dict()
+
 def summarize(
     accepted: list[AcceptedPreview],
     rejected: list[RejectedPreview],
@@ -477,7 +529,7 @@ def main() -> int:
     if args.output == "json":
         payload = {
             "summary": summarize(accepted, rejected),
-            "accepted": [asdict(row) for row in accepted[: args.top]],
+            "accepted": [accepted_preview_to_contract_transport(row, source_table=args.eval_table) for row in accepted[: args.top]],
             "rejected": [asdict(row) for row in rejected[: args.top]]
             if args.include_rejected
             else [],
@@ -487,7 +539,7 @@ def main() -> int:
 
     if args.output == "jsonl":
         for row in accepted:
-            print(json.dumps(asdict(row), default=json_default, sort_keys=True))
+            print(json.dumps(accepted_preview_to_contract_transport(row, source_table=args.eval_table), default=json_default, sort_keys=True))
         if args.include_rejected:
             for row in rejected:
                 print(json.dumps(asdict(row), default=json_default, sort_keys=True))
