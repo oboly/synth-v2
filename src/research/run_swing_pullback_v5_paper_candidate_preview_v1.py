@@ -383,6 +383,7 @@ def print_table(
     accepted: list[AcceptedPreview],
     rejected: list[RejectedPreview],
     top: int,
+    show_rejected_sample: bool,
 ) -> None:
     summary = summarize(accepted, rejected)
 
@@ -437,7 +438,7 @@ def print_table(
     if len(accepted) > top:
         print(f"... {len(accepted) - top} more accepted rows not shown")
 
-    if rejected:
+    if show_rejected_sample and rejected:
         print()
         print("=== REJECTED PREVIEW SAMPLE ===")
         for row in rejected[: min(top, 20)]:
@@ -494,8 +495,9 @@ def main() -> int:
 
     print_table(
         accepted=accepted,
-        rejected=rejected if args.include_rejected else [],
+        rejected=rejected,
         top=args.top,
+        show_rejected_sample=args.include_rejected,
     )
     return 0
 
