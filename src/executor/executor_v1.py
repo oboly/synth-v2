@@ -25,15 +25,14 @@ def execute_plan_paper(plan, repo: ExecutorRepository) -> ExecutorResult:
     symbol = repo.fetch_symbol(plan.asset_id)
 
     if plan.desired_action == "PREPARE_PLAN":
-        repo.acknowledge_prepare_plan(plan)
         return ExecutorResult(
             execution_plan_id=plan.execution_plan_id,
             asset_id=plan.asset_id,
             symbol=symbol,
             desired_action=plan.desired_action,
             old_plan_state=plan.plan_state,
-            new_plan_state="PLANNED",
-            event_type="PAPER_PREPARE_ACK",
+            new_plan_state=plan.plan_state,
+            event_type="NON_EXECUTABLE_PREPARE_PLAN",
             fill_price_eur=None,
             fill_qty=None,
             reservation_released=False,

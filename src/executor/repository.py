@@ -10,6 +10,13 @@ from src.executor.models import CapitalReservationRow, ExecutionPlanRow
 
 ACTIVE_EXECUTOR_PLAN_STATES = {"IDLE", "PLANNED"}
 
+EXECUTABLE_DESIRED_ACTIONS = {
+    "SPREAD_CAPTURE_PASSIVE",
+    "ENTER",
+    "ENTER_LONG",
+    "CLOSE_POSITION_MARKET_PAPER",
+}
+
 
 def _to_decimal(value: Any, default: str = "0") -> Decimal:
     if value is None:
@@ -29,8 +36,14 @@ class ExecutorRepository:
         venue: str | None = None,
         limit: int = 20,
     ) -> list[ExecutionPlanRow]:
-        clauses = [f"plan_state IN ({','.join(['%s'] * len(ACTIVE_EXECUTOR_PLAN_STATES))})"]
-        params: list[Any] = sorted(ACTIVE_EXECUTOR_PLAN_STATES)
+        clauses = [
+            f"plan_state IN ({','.join(['%s'] * len(ACTIVE_EXECUTOR_PLAN_STATES))})",
+            f"desired_action IN ({','.join(['%s'] * len(EXECUTABLE_DESIRED_ACTIONS))})",
+        ]
+        params: list[Any] = [
+            *sorted(ACTIVE_EXECUTOR_PLAN_STATES),
+            *sorted(EXECUTABLE_DESIRED_ACTIONS),
+        ]
 
         if account_id is not None:
             clauses.append("account_id = %s")
@@ -197,56 +210,6 @@ class ExecutorRepository:
             reserved_amount_eur=_to_decimal(row["reserved_amount_eur"]),
             reservation_state=str(row["reservation_state"]),
         )
-
-    def acknowledge_prepare_plan(self, plan: ExecutionPlanRow) -> None:
-        conn = get_connection()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE execution_plan
-                    SET
-                        plan_state = 'PLANNED',
-                        updated_ts_utc = CURRENT_TIMESTAMP()
-                    WHERE execution_plan_id = %s
-                    """,
-                    [plan.execution_plan_id],
-                )
-
-                cur.execute(
-                    """
-                    INSERT INTO execution_event (
-                        execution_plan_id,
-                        account_id,
-                        asset_id,
-                        sleeve_code,
-                        event_ts_utc,
-                        event_type,
-                        event_reason,
-                        side,
-                        notes
-                    ) VALUES (
-                        %s, %s, %s, %s, CURRENT_TIMESTAMP(),
-                        %s, %s, %s, %s
-                    )
-                    """,
-                    [
-                        plan.execution_plan_id,
-                        plan.account_id,
-                        plan.asset_id,
-                        plan.sleeve_code,
-                        "PAPER_PREPARE_ACK",
-                        "PREPARE_PLAN_ACKNOWLEDGED",
-                        plan.side,
-                        plan.notes,
-                    ],
-                )
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
     def fill_passive_plan_paper(
         self,
