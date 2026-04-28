@@ -32,12 +32,19 @@ or execution layers.
 import argparse
 import json
 import re
+import signal
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
 from src.common.db import get_connection
+
+
+# Let shell pipelines such as `--output jsonl | head -5` close cleanly.
+if hasattr(signal, "SIGPIPE"):
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
 from src.research.paper_candidate_contract_v1 import (
     CONTRACT_VERSION,
     ResearchPaperCandidateV1,
