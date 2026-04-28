@@ -176,3 +176,38 @@ Current status:
 - not approved for decision_gate
 - not approved for execution_planner
 - not approved for paper/live trading
+
+## No-symbol-block refinement
+
+Symbol blocking was deliberately removed from the policy layer.
+
+Reason:
+
+- universe quality belongs upstream
+- research policy should test market context, not hard-code asset exclusions
+- decision/execution layers must not inherit symbol hygiene hacks from research
+
+Added policies:
+
+### swing_pullback_recovery_v5
+
+Same core context as v3, but:
+
+- selection_state = WATCHLIST
+- no weak-symbol exclusion
+- excludes the local weak bucket:
+  - selection_score >= 0.50000000
+  - selection_score < 0.52000000
+  - priority_rank between 4 and 6
+
+### swing_pullback_recovery_v6
+
+Same core context as v3, but:
+
+- selection_state = WATCHLIST
+- no weak-symbol exclusion
+- excludes the full mid-score band:
+  - selection_score >= 0.50000000
+  - selection_score < 0.52000000
+
+These remain research-only policies.
