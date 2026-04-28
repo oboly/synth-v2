@@ -1,5 +1,31 @@
 from __future__ import annotations
 
+"""
+Synth v2 - Ranking Backfill.
+
+LAYER:
+ranking
+
+BOUNDARY:
+Allowed:
+- read historical signal_engine_state snapshots
+- rebuild ranking_state rows deterministically
+- write ranking_state via normal ranking upsert path
+
+Forbidden:
+- account state
+- balances
+- positions
+- orders
+- execution plans
+- broker actions
+
+Important:
+Backfill must produce the same semantic fields as the live ranking engine.
+Do not copy nullable sleeve_fit_code from inputs. Recompute it from
+rotation_bucket + classification_code.
+"""
+
 import argparse
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -11,6 +37,7 @@ from src.ranking.run_ranking_engine import (
     _to_decimal,
     classify_code,
     classify_rotation_bucket,
+    classify_sleeve_fit,
     compute_relative_strength_score,
     compute_trade_quality_score,
     fetch_ranking_inputs,
@@ -83,6 +110,7 @@ def fetch_snapshot_timestamps(
         else:
             ts = ts.astimezone(UTC)
         out.append(ts)
+
     return out
 
 
@@ -96,12 +124,14 @@ def build_rows_for_snapshot(
     for row in rows:
         trade_quality_score = compute_trade_quality_score(row)
         relative_strength_score = compute_relative_strength_score(row)
+
         classification_code = classify_code(row, trade_quality_score)
         rotation_bucket = classify_rotation_bucket(
             row,
             trade_quality_score,
             classification_code,
         )
+        sleeve_fit_code = classify_sleeve_fit(rotation_bucket, classification_code)
 
         context_score = _to_decimal(row.get("opportunity_score"), "0")
         signal_confidence_score = _to_decimal(row.get("signal_confidence"), "0")
@@ -134,7 +164,7 @@ def build_rows_for_snapshot(
                 "pullback_quality_score": str(pullback_quality_score),
                 "rotation_bucket": rotation_bucket,
                 "classification_code": classification_code,
-                "sleeve_fit_code": row.get("sleeve_fit_code"),
+                "sleeve_fit_code": sleeve_fit_code,
                 "regime_label": row.get("regime_label"),
                 "time_horizon_hint": row.get("time_horizon_hint"),
                 "advice_state": row.get("advice_state"),

@@ -616,3 +616,47 @@ enough for production approval.
 Next required step:
 
 Expand replay coverage backward before adding more tuning rules.
+
+## Correction after ranking sleeve-fit repair
+
+A bug was found in the historical ranking backfill path:
+
+- `src/ranking/run_ranking_backfill.py` reused `row.get("sleeve_fit_code")`
+- historical signal/ranking input rows did not reliably carry that field
+- this caused most historical `ranking_state.sleeve_fit_code` values to become `NULL`
+- replay/eval and parking-rotation simulations were therefore partly evaluated against incomplete sleeve context
+
+Fix:
+
+- `run_ranking_backfill.py` now recomputes `sleeve_fit_code` using `classify_sleeve_fit(rotation_bucket, classification_code)`
+- 1h ranking history was repaired for the expanded replay window
+- replay eval table was refreshed
+
+After repair, the earlier strong promotion result is downgraded.
+
+Updated interpretation:
+
+- parking rotation recovery still shows pockets of positive out-of-sample behavior
+- the broad `ROTATION_EXIT / NO_TRADE / EXPERIMENTAL` bucket is only weakly positive
+- expanded non-overlapping walk-forward no longer supports direct promotion to strategy
+- the best repaired candidate is `parking_rotation_recovery_v2`, `hold_hours=24`, `max_trades_per_snapshot=2`
+- repaired expanded validation showed:
+  - valid_test_splits = 8
+  - positive_test_splits = 7
+  - negative_test_splits = 1
+  - avg_test = 0.013366
+  - test_comp_product = 1.220136
+  - avg_train = -0.002124
+
+Current status:
+
+- RESEARCH_WATCHLIST_ONLY
+- not approved for decision_gate
+- not approved for execution_planner
+- not approved for paper/live trading
+
+Next research direction:
+
+- run a broader policy grid on the repaired expanded replay dataset
+- do not anchor on the old parking-rotation promotion result
+- treat previous parking-rotation conclusions before the sleeve-fit repair as obsolete
