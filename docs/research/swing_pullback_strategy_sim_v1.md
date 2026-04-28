@@ -279,3 +279,47 @@ Current status:
 - `swing_pullback_recovery_v6` = SECONDARY_RESEARCH_CANDIDATE
 - no symbol-block strategy logic
 - universe quality must be handled upstream
+
+## V5 walk-forward stress validation
+
+`swing_pullback_recovery_v5` was stress-tested without adding new filters.
+
+Policy shape:
+
+- selection_state = WATCHLIST
+- priority_rank between 1 and 10
+- btc_prior_24h between -0.030 and 0.000
+- rotation_bucket = ROTATION_EARLY
+- classification_code = PULLBACK_WATCH
+- sleeve_fit_code = SWING_STRUCTURAL
+- no symbol blocker
+- excludes only the weak context bucket:
+  - selection_score >= 0.50000000
+  - selection_score < 0.52000000
+  - priority_rank between 4 and 6
+
+Stress results:
+
+| Case | Splits | Valid | Positive | Negative | Train trades | Test trades | Avg train | Avg test | Test compound product |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline 14d train / 3d test | 8 | 8 | 7 | 1 | 132 | 31 | 0.031618 | 0.027586 | 1.207758 |
+| strict min 2 test trades | 8 | 7 | 6 | 1 | 132 | 31 | 0.031618 | 0.028881 | 1.167619 |
+| short 10d train / 3d test | 9 | 9 | 8 | 1 | 106 | 38 | 0.030727 | 0.026182 | 1.947197 |
+| long 21d train / 3d test | 6 | 6 | 5 | 1 | 152 | 20 | 0.031640 | 0.026980 | 0.774970 |
+| later-only 10d train / 3d test | 5 | 5 | 4 | 1 | 56 | 21 | 0.030962 | 0.020003 | 0.698084 |
+
+Interpretation:
+
+- V5 survives train-window sensitivity.
+- V5 survives later-window validation.
+- The edge remains 24h-oriented.
+- The result does not justify short-horizon execution.
+- The strategy remains market-only research logic.
+- It is still not allowed to bypass decision_gate or execution_planner.
+
+Current status:
+
+- RESEARCH_PROMOTION_CANDIDATE
+- eligible for further paper-candidate design
+- not approved for live trading
+- not connected to account-aware layers
