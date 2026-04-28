@@ -134,3 +134,45 @@ Interpretation:
 2. Confirm whether this is a true swing edge or only delayed 24h recovery.
 3. Check symbol concentration and worst-split composition.
 4. Only after that, consider converting the candidate into a persistent named research policy.
+
+## 4h versus 24h sanity check
+
+A focused sanity check compared `swing_pullback_recovery_v3` and
+`swing_pullback_recovery_v4` across 4h and 24h holding horizons.
+
+Result:
+
+- 24h hold remains the only structurally valid horizon.
+- 4h hold is positive in some configurations, but unstable.
+- 4h with 24h cooldown turns weak or negative.
+- v4 score floor reduces coverage and does not improve robustness enough.
+- v3 remains the preferred candidate.
+
+Best current candidate:
+
+- policy = swing_pullback_recovery_v3
+- hold_hours = 24
+- max_trades_per_snapshot = 2
+- cooldown_hours_per_symbol = 24 or 4 produced identical 24h result in this test
+- valid_test_splits = 6
+- positive_test_splits = 5
+- negative_test_splits = 1
+- train_trades = 143
+- test_trades = 34
+- avg_train = 0.027519
+- avg_test = 0.024124
+- avg_retention = 0.8766
+- test_comp_product = 0.594194
+
+Interpretation:
+
+This behaves like a delayed swing recovery edge, not a tactical 4h edge.
+Do not promote this as a short-horizon exit strategy.
+
+Current status:
+
+- RESEARCH_CANDIDATE
+- 24h-only candidate
+- not approved for decision_gate
+- not approved for execution_planner
+- not approved for paper/live trading
