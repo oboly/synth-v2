@@ -160,3 +160,46 @@ parent-state logic review
 ```
 
 The 168h branch remains a research lead, not a live or paper candidate.
+---
+
+## Research Lead: swing_pullback_recovery_v5_168h_swing
+
+### Status
+
+```text
+candidate_state: RESEARCH_LEAD
+live_phase: NOT_PAPER_READY
+intended_sleeve: SWING_STRUCTURAL
+strategy_family: swing_pullback_recovery_v5
+hold_hours: 168
+```
+
+### Reasoning
+
+The 168h branch shows alpha on the 2021 bullrun replay after fixing the worst-month loss threshold logic, but it is not ready for paper promotion as a global strategy.
+
+```text
+alpha_status: PRESENT
+primary_blocker: EXIT_REGIME_TAIL_RISK
+paper_status: BLOCKED
+chart_debugger_status: DEFERRED_UNTIL_PAPER_OR_LIVE_FLOW
+```
+
+### Key Observation
+
+```text
+168h variant can pass promotion gates when max_worst_month_avg_loss >= 0.11,
+but the trade distribution contains enough tail risk that exit/regime logic must be improved first.
+```
+
+### Design Rule
+
+Symbol-level strength must not override global variant state directly.
+
+```text
+symbol_state = per-symbol diagnostic strength
+global_variant_state = full strategy/config promotion state
+```
+
+The 168h branch remains a research lead, not a paper candidate.
+

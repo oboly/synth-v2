@@ -716,7 +716,7 @@ def build_symbol_leaders(
             candidate = {
                 "symbol": symbol_row["symbol"],
                 "symbol_score": symbol_score,
-                "parent_variant_state": parent_state,
+                "global_variant_state": parent_state,
                 "symbol_state": symbol_state,
                 "symbol_metrics": symbol_row,
                 "params": params,
@@ -843,7 +843,7 @@ def print_table(payload: dict[str, Any]) -> None:
     print()
     print("--- per-symbol leaders ---")
     symbol_header = (
-        "symbol | score | hold | symbol_state | parent_variant_state | trades | avg | med | winrate | worst | best | "
+        "symbol | score | hold | symbol_state | global_variant_state | trades | avg | med | winrate | worst | best | "
         "max/snap | cooldown | rank<= | btc | min_score"
     )
     print(symbol_header)
@@ -857,7 +857,7 @@ def print_table(payload: dict[str, Any]) -> None:
             f"{item['symbol_score']} | "
             f"{params['hold_hours']}h | "
             f"{item['symbol_state']} | "
-            f"{item['parent_variant_state']} | "
+            f"{item['global_variant_state']} | "
             f"{metrics['trades']} | "
             f"{metrics['avg_return']} | "
             f"{metrics['median_return']} | "
