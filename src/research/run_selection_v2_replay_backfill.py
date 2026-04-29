@@ -134,12 +134,15 @@ def fetch_replay_candidates(
 
     sql = f"""
     WITH scoped_asset AS (
-        SELECT
-            a.asset_id,
+        SELECT DISTINCT
+            s.asset_id,
             a.symbol
-        FROM asset a
-        WHERE a.is_enabled = 1
-          AND a.is_tradeable = 1
+        FROM signal_engine_state s
+        JOIN asset a
+          ON a.asset_id = s.asset_id
+        WHERE s.venue = %s
+          AND s.interval_code = '1h'
+          AND s.signal_ts_utc = %s
           {asset_filter_sql}
     ),
     signal_latest AS (
@@ -212,7 +215,10 @@ def fetch_replay_candidates(
     """
 
     with conn.cursor() as cur:
-        execute_params: list[Any] = []
+        execute_params: list[Any] = [
+            venue,
+            replay_asof_ts_utc,
+        ]
 
         if asset_id is not None:
             execute_params.append(asset_id)
