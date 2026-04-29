@@ -147,6 +147,7 @@ def candidate_from_transport(payload: dict[str, Any]) -> ResearchPaperCandidateV
         btc_prior_24h=decimal_or_none(payload.get("btc_prior_24h")),
         rotation_bucket=str(payload["rotation_bucket"]),
         classification_code=str(payload["classification_code"]),
+        execution_regime_label=str(payload["execution_regime_label"]),
         sleeve_fit_code=str(payload["sleeve_fit_code"]),
         simulated_horizon_hours=int(payload["simulated_horizon_hours"]),
         simulated_net_return=decimal_or_none(payload.get("simulated_net_return")),
