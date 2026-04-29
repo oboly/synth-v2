@@ -202,4 +202,91 @@ global_variant_state = full strategy/config promotion state
 ```
 
 The 168h branch remains a research lead, not a paper candidate.
+---
 
+## 2026-04-29 Horizon Sensitivity Review
+
+### Paper-path trace
+
+Existing staged paper-candidate path was traced successfully.
+
+```text
+policy_name: swing_pullback_recovery_v5
+signal_status: VALIDATED
+sleeve: SWING_STRUCTURAL
+source_table: bt_selection_v2_replay_eval_horizon_v1
+decision_state: BLOCKED_BALANCE
+execution_intent: NONE
+planner_action: DECISION_GATE_BLOCKED
+reason: INSUFFICIENT_BALANCE
+```
+
+Interpretation: decision_gate correctly blocks account-invalid candidates, and execution_planner does not bypass decision_gate.
+
+### Contract mismatch
+
+The newer arena candidate is not yet staged in research_paper_candidate_signal.
+
+```text
+arena candidate:
+  policy_name: swing_pullback_recovery_v5_24h_tactical
+  candidate_state: PROMOTION_CANDIDATE
+  intended_sleeve: TACTICAL_PULSE
+  eval_table: bt_selection_v2_replay_eval_horizon_v2
+
+existing staged candidate:
+  policy_name: swing_pullback_recovery_v5
+  signal_status: VALIDATED
+  sleeve_fit_code: SWING_STRUCTURAL
+  eval_table/source_table: bt_selection_v2_replay_eval_horizon_v1
+```
+
+These contracts must not be mixed. A later bridge may explicitly stage arena-v2 candidates into the paper-candidate contract.
+
+### Horizon sensitivity conclusion
+
+Supported hold horizons tested: 4h, 24h, 48h, 72h, 168h.
+
+```text
+2021 strict tail gate max_worst_month_avg_loss=0.05:
+  24h: PROMOTION_CANDIDATE
+  48h: WATCH, alpha present, blocked by worst-month loss
+  72h: WATCH, weaker, blocked by worst-month loss
+  168h: WATCH, strong alpha present, tail-risk too large
+  4h: REJECTED, winrate too weak
+
+2021 permissive tail gate max_worst_month_avg_loss=0.11:
+  48h/72h/168h can promote only when tail-risk threshold is relaxed
+
+2026 current window:
+  24h: PROMOTION_CANDIDATE
+  48h/72h/168h: REJECTED
+```
+
+Interpretation: the entry logic contains alpha. Longer-horizon branches mainly fail on exit, regime, or tail-risk, not on signal discovery.
+
+### Decision
+
+```text
+24h tactical:
+  keep as paper-candidate direction
+  intended sleeve: TACTICAL_PULSE
+  next required bridge: arena-v2 result -> paper_candidate_signal staging
+
+48h / 72h:
+  keep as research diagnostics only
+
+168h:
+  keep as RESEARCH_LEAD
+  do not promote to paper
+  requires exit/regime solution before reconsideration
+```
+
+### Explicit non-actions
+
+```text
+Do not add unsupported 96h/120h horizons yet.
+Do not build chart debugger yet.
+Do not allow symbol_state to override global_variant_state.
+Do not stage arena-v2 candidates through the older swing_pullback_recovery_v5 contract.
+```
