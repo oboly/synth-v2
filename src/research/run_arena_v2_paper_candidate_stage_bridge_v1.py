@@ -374,7 +374,7 @@ def row_to_candidate(
         rotation_bucket=str(value_or_default(row, "rotation_bucket", args.rotation_bucket)),
         classification_code=str(value_or_default(row, "classification_code", args.classification_code)),
         execution_regime_label=str(value_or_default(row, "execution_regime_label", args.execution_regime_label)),
-        sleeve_fit_code=str(value_or_default(row, "sleeve_fit_code", args.sleeve_fit_code)),
+        sleeve_fit_code=str(args.sleeve_fit_code),
         simulated_horizon_hours=int(args.hold_hours),
         simulated_net_return=simulated_return(row, column_map),
         source_table=str(args.eval_table),
