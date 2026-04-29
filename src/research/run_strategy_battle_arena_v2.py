@@ -496,7 +496,7 @@ def classify_promotion(
     min_winrate = float(Decimal(str(args.min_winrate)))
     min_avg_return = float(Decimal(str(args.min_avg_return)))
     max_symbol_trade_share_allowed = float(Decimal(str(args.max_symbol_trade_share)))
-    max_worst_month_avg_loss = float(Decimal(str(args.max_worst_month_avg_loss)))
+    max_worst_month_avg_loss = abs(float(Decimal(str(args.max_worst_month_avg_loss))))
     min_positive_month_ratio = float(Decimal(str(args.min_positive_month_ratio)))
 
     reasons: list[str] = []
@@ -513,10 +513,13 @@ def classify_promotion(
         reasons.append("MAX_SYMBOL_TRADE_SHARE_EXCEEDED")
     if positive_month_ratio < min_positive_month_ratio:
         reasons.append("MIN_POSITIVE_MONTH_RATIO_NOT_MET")
+
     if worst_month_avg is None:
         reasons.append("NO_MONTHLY_SPLITS")
-    elif worst_month_avg < max_worst_month_avg_loss:
-        reasons.append("WORST_MONTH_AVG_LOSS_EXCEEDED")
+    else:
+        worst_month_loss = abs(min(0.0, float(worst_month_avg)))
+        if worst_month_loss > max_worst_month_avg_loss:
+            reasons.append("WORST_MONTH_AVG_LOSS_EXCEEDED")
 
     if not reasons:
         min_promotion_hold_hours = int(args.min_promotion_hold_hours)
@@ -529,7 +532,6 @@ def classify_promotion(
         return "WATCH", reasons
 
     return "REJECTED", reasons
-
 
 def promotion_state_rank(value: str) -> int:
     try:
