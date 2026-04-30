@@ -375,3 +375,49 @@ live execution permission: NOT GRANTED
 ```
 
 The candidate is ready for paper-path simulation work, but not live trading.
+
+---
+
+## 2026-04-30 Future-Return Leakage Audit
+
+### Scope
+
+This audit checked that simulated future-return fields remain confined to research, backtest, staging, and read-only paper-preview tooling.
+
+Relevant future-return fields:
+
+```text
+simulated_net_return
+net_return_24h
+gross_return_24h
+forward_close_price_*
+```
+
+### Result
+
+```text
+future-return usage in research tools: PASS
+future-return usage in backtest tools: PASS
+future-return usage in decision_gate runtime: NONE
+future-return usage in execution_planner runtime: NONE
+future-return usage in executor/execution runtime: NONE
+paper PnL preview read-only scan: PASS
+compile checks: PASS
+live execution permission: NOT_GRANTED
+```
+
+### Interpretation
+
+`simulated_net_return` may be displayed by decision/planner preview tools as diagnostic context, but it must not affect:
+
+```text
+decision_state
+execution_intent
+target_fraction
+reference_price_eur
+order planning
+live execution
+```
+
+The tactical 24h candidate remains eligible for paper-path simulation design, not live trading.
+
