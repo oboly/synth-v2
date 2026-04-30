@@ -11,7 +11,7 @@ Allowed:
 - read validated paper-candidate staging rows
 - run the existing decision_gate as a read-only preview
 - call build_execution_plan for preview only
-- fetch current reference price for plan construction
+- fetch point-in-time entry reference price from the staged source replay table
 - print deterministic preview output
 
 Forbidden:
@@ -36,12 +36,13 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from src.common.db import get_connection
+
 from src.decision_gate.decision_gate_v1 import evaluate_selection_for_account
 from src.decision_gate.models import DecisionGateConfig
 from src.decision_gate.repository import DecisionGateRepository
 from src.execution_planner.execution_planner_v1 import build_execution_plan
 from src.execution_planner.models import ExecutionPlannerConfig
-from src.execution_planner.repository import ExecutionPlannerRepository
 from src.research.run_paper_candidate_decision_gate_preview_v1 import (
     DEFAULT_DATABASE,
     DEFAULT_POLICY_NAME,
@@ -65,7 +66,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--account-id", type=int, required=True)
     parser.add_argument("--sleeve-code", required=True)
     parser.add_argument("--min-available-equity-eur", default="25.00")
-    parser.add_argument("--reference-interval", default="1h")
+    parser.add_argument(
+        "--reference-interval",
+        default="1h",
+        help="Compatibility only. Paper-candidate previews use source replay entry_close_price.",
+    )
     parser.add_argument(
         "--execution-regime-override",
         choices=("TREND_UP", "RANGE", "TREND_DOWN"),
@@ -111,9 +116,58 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+ALLOWED_REFERENCE_SOURCE_TABLES = frozenset(
+    {
+        "bt_selection_v2_replay_eval_horizon_v1",
+        "bt_selection_v2_replay_eval_horizon_v2",
+    }
+)
+
+
+def validate_reference_source_table(source_table: str) -> str:
+    if source_table not in ALLOWED_REFERENCE_SOURCE_TABLES:
+        allowed = ", ".join(sorted(ALLOWED_REFERENCE_SOURCE_TABLES))
+        raise ValueError(f"Unsupported reference source table: {source_table}. Allowed: {allowed}")
+    return source_table
+
+
+def fetch_staged_reference_price_eur(
+    *,
+    database: str,
+    source_table: str,
+    source_replay_id: int | None,
+) -> Decimal | None:
+    if source_replay_id is None:
+        return None
+
+    safe_table = validate_reference_source_table(source_table)
+    sql = f"""
+    SELECT entry_close_price
+    FROM {safe_table}
+    WHERE bt_selection_v2_replay_id = %s
+    LIMIT 1
+    """
+
+    conn = get_connection(database=database)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, [source_replay_id])
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+
+    value = row["entry_close_price"] if isinstance(row, dict) else row[0]
+    if value is None:
+        return None
+
+    return Decimal(str(value))
+
+
 def preview_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
     gate_repo = DecisionGateRepository()
-    planner_repo = ExecutionPlannerRepository()
 
     staged_rows = fetch_staged_candidates(args)
     sleeve_state = gate_repo.fetch_sleeve_state(
@@ -164,10 +218,10 @@ def preview_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
         planner_action = "DECISION_GATE_BLOCKED"
 
         if decision.execution_intent in {"PREPARE_PLAN", "PLACE_PASSIVE_LIMIT"}:
-            reference_price_eur = planner_repo.fetch_reference_price_eur(
-                asset_id=decision.asset_id,
-                venue=decision.venue,
-                interval_code=args.reference_interval,
+            reference_price_eur = fetch_staged_reference_price_eur(
+                database=args.database,
+                source_table=staged.source_table,
+                source_replay_id=staged.source_replay_id,
             )
             plan = build_execution_plan(
                 decision=decision,
