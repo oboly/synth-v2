@@ -290,3 +290,88 @@ Do not build chart debugger yet.
 Do not allow symbol_state to override global_variant_state.
 Do not stage arena-v2 candidates through the older swing_pullback_recovery_v5 contract.
 ```
+
+---
+
+## 2026-04-30 Paper Candidate Flow Audit
+
+### Candidate
+
+```text
+policy_name: swing_pullback_recovery_v5_24h_tactical
+policy_version: arena_v2_bridge_v1
+candidate_state: RESEARCH_PROMOTION_CANDIDATE
+signal_status: PROMOTION_CANDIDATE
+intended_sleeve: TACTICAL_PULSE
+batch_id: arena_v2_24h_tactical_2026
+source_table: bt_selection_v2_replay_eval_horizon_v2
+simulated_horizon_hours: 24
+```
+
+### Verified flow
+
+```text
+arena_v2 result
+-> arena_v2 paper-candidate bridge
+-> research_paper_candidate_signal
+-> decision_gate preview
+-> execution_planner preview
+```
+
+### Staging result
+
+```text
+rows_total: 27
+symbols: 20
+avg_simulated_net_return: 0.03245645
+winrate: 0.7037
+worst_simulated_net_return: -0.05584745762712
+best_simulated_net_return: 0.20728521174401
+execution_regime_label: TREND_UP
+sleeve_fit_code: TACTICAL_PULSE
+```
+
+### Decision-gate preview result
+
+With diagnostic balance gate opened:
+
+```text
+decision_state: WATCHLIST_PREPLAN_ALLOWED
+execution_intent: PREPARE_PLAN
+decision_reason: WATCHLIST_SETUP_FILTER_PASS
+rows: 27 / 27
+```
+
+### Execution-planner preview result
+
+```text
+planner_action: PLAN_PREVIEW
+desired_action: PREPARE_PLAN
+plan_state: IDLE
+target_fraction: 0.03300000
+rows: 27 / 27
+```
+
+### Point-in-time reference-price audit
+
+The execution-planner preview now uses the staged historical entry price from the replay/evaluation table instead of latest/live obs_market_candle price.
+
+```text
+reference_price_source: bt_selection_v2_replay_eval_horizon_v2.entry_close_price
+audit_result: PASS
+reference_price_mismatches: 0
+```
+
+This prevents historical paper-candidate previews from leaking current/live market prices into old candidate rows.
+
+### Architectural status
+
+```text
+research bridge: PASS
+paper staging: PASS
+decision gate preview: PASS
+execution planner preview: PASS
+live execution permission: NOT GRANTED
+```
+
+The candidate is ready for paper-path simulation work, but not live trading.
