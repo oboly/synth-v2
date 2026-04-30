@@ -103,6 +103,12 @@ def quant(value: Decimal, places: str = "0.0001") -> Decimal:
     return value.quantize(Decimal(places))
 
 
+def fmt_optional_decimal(value: Decimal | None, places: str = "0.0000") -> str:
+    if value is None:
+        return "None"
+    return str(value.quantize(Decimal(places)))
+
+
 def build_curve_metrics(name: str, points: list[EquityPoint]) -> RiskMetrics:
     if not points:
         return RiskMetrics(
@@ -200,7 +206,6 @@ def build_exposure_metrics(trades: list[Any]) -> ExposureMetrics:
         events.append((trade.entry_ts_utc, 1, trade.notional_eur))
         events.append((trade.exit_ts_utc, -1, -trade.notional_eur))
 
-    # CLOSE before OPEN at identical timestamps prevents artificial one-tick overstatement.
     events.sort(key=lambda row: (row[0], row[1]))
 
     active_positions = 0
@@ -235,6 +240,85 @@ def return_per_notional(return_pct_value: Decimal, notional: Decimal, account_eq
     if notional <= 0:
         return Decimal("0")
     return return_pct_value / (notional / account_equity)
+
+
+def build_generic_comparisons(
+    *,
+    strategy_metrics: RiskMetrics,
+    benchmark_metrics: list[RiskMetrics],
+    exposure: ExposureMetrics,
+    account_equity: Decimal,
+) -> dict[str, Any]:
+    benchmark_symbols = [row.name for row in benchmark_metrics]
+    benchmark_returns = [row.return_pct for row in benchmark_metrics]
+
+    best_benchmark = max(benchmark_metrics, key=lambda row: row.return_pct) if benchmark_metrics else None
+    worst_benchmark = min(benchmark_metrics, key=lambda row: row.return_pct) if benchmark_metrics else None
+
+    avg_benchmark_return = (
+        sum(benchmark_returns, Decimal("0")) / Decimal(len(benchmark_returns))
+        if benchmark_returns
+        else None
+    )
+
+    excess_by_symbol = {
+        row.name: strategy_metrics.return_pct - row.return_pct
+        for row in benchmark_metrics
+    }
+
+    beaten_symbols = [
+        row.name
+        for row in benchmark_metrics
+        if strategy_metrics.return_pct > row.return_pct
+    ]
+
+    rank_values = sorted(
+        [("strategy", strategy_metrics.return_pct)]
+        + [(row.name, row.return_pct) for row in benchmark_metrics],
+        key=lambda row: row[1],
+        reverse=True,
+    )
+    strategy_rank = next(
+        index + 1
+        for index, row in enumerate(rank_values)
+        if row[0] == "strategy"
+    )
+
+    out: dict[str, Any] = {
+        "benchmark_count": len(benchmark_metrics),
+        "benchmark_symbols": benchmark_symbols,
+        "benchmark_beaten_count": len(beaten_symbols),
+        "benchmark_beaten_symbols": beaten_symbols,
+        "strategy_rank_by_return": strategy_rank,
+        "best_benchmark_symbol": None if best_benchmark is None else best_benchmark.name,
+        "best_benchmark_return_pct": None if best_benchmark is None else best_benchmark.return_pct,
+        "worst_benchmark_symbol": None if worst_benchmark is None else worst_benchmark.name,
+        "worst_benchmark_return_pct": None if worst_benchmark is None else worst_benchmark.return_pct,
+        "avg_benchmark_return_pct": avg_benchmark_return,
+        "benchmark_excess_return_pct_by_symbol": excess_by_symbol,
+        "excess_return_vs_best_benchmark_pct": (
+            None
+            if best_benchmark is None
+            else strategy_metrics.return_pct - best_benchmark.return_pct
+        ),
+        "return_per_gross_notional_pct": return_per_notional(
+            strategy_metrics.return_pct,
+            exposure.gross_notional_eur,
+            account_equity,
+        ),
+        "return_per_max_active_notional_pct": return_per_notional(
+            strategy_metrics.return_pct,
+            exposure.max_active_notional_eur,
+            account_equity,
+        ),
+    }
+
+    if "BTC" in excess_by_symbol:
+        out["excess_return_vs_BTC_pct"] = excess_by_symbol["BTC"]
+    if "ETH" in excess_by_symbol:
+        out["excess_return_vs_ETH_pct"] = excess_by_symbol["ETH"]
+
+    return out
 
 
 def build_payload(args: argparse.Namespace) -> dict[str, Any]:
@@ -274,24 +358,6 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
             benchmarks.append(curve)
             benchmark_metrics.append(build_curve_metrics(symbol, curve.points))
 
-    benchmark_lookup = {row.name: row for row in benchmark_metrics}
-    btc = benchmark_lookup.get("BTC")
-    eth = benchmark_lookup.get("ETH")
-
-    excess_vs_btc = None if btc is None else strategy_metrics.return_pct - btc.return_pct
-    excess_vs_eth = None if eth is None else strategy_metrics.return_pct - eth.return_pct
-
-    gross_notional_return_efficiency = return_per_notional(
-        strategy_metrics.return_pct,
-        exposure.gross_notional_eur,
-        account_equity,
-    )
-    max_active_notional_return_efficiency = return_per_notional(
-        strategy_metrics.return_pct,
-        exposure.max_active_notional_eur,
-        account_equity,
-    )
-
     return {
         "summary": {
             "risk_metrics_version": "paper_candidate_curve_risk_metrics_v1",
@@ -304,18 +370,19 @@ def build_payload(args: argparse.Namespace) -> dict[str, Any]:
             "symbols": len({trade.symbol for trade in trades}),
             "account_equity_eur": str(account_equity),
             "target_fraction": str(args.target_fraction),
+            "benchmark_symbols": parse_benchmark_symbols(args.benchmark_symbols),
             "writes": "none",
             "live_execution_permission": "NOT_GRANTED",
         },
         "strategy": asdict(strategy_metrics),
         "benchmarks": [asdict(row) for row in benchmark_metrics],
         "exposure": asdict(exposure),
-        "comparisons": {
-            "excess_return_vs_BTC_pct": excess_vs_btc,
-            "excess_return_vs_ETH_pct": excess_vs_eth,
-            "return_per_gross_notional_pct": gross_notional_return_efficiency,
-            "return_per_max_active_notional_pct": max_active_notional_return_efficiency,
-        },
+        "comparisons": build_generic_comparisons(
+            strategy_metrics=strategy_metrics,
+            benchmark_metrics=benchmark_metrics,
+            exposure=exposure,
+            account_equity=account_equity,
+        ),
     }
 
 
@@ -336,6 +403,7 @@ def print_table(payload: dict[str, Any]) -> None:
         "symbols",
         "account_equity_eur",
         "target_fraction",
+        "benchmark_symbols",
         "writes",
         "live_execution_permission",
     ]:
@@ -370,9 +438,22 @@ def print_table(payload: dict[str, Any]) -> None:
         print(f"{key}: {exposure[key]}")
 
     print()
+    print("--- benchmark comparison ---")
+    print(f"benchmark_count: {comparisons['benchmark_count']}")
+    print(f"benchmark_symbols: {comparisons['benchmark_symbols']}")
+    print(f"benchmark_beaten_count: {comparisons['benchmark_beaten_count']}")
+    print(f"benchmark_beaten_symbols: {comparisons['benchmark_beaten_symbols']}")
+    print(f"strategy_rank_by_return: {comparisons['strategy_rank_by_return']}")
+    print(f"best_benchmark_symbol: {comparisons['best_benchmark_symbol']}")
+    print(f"best_benchmark_return_pct: {fmt_optional_decimal(comparisons['best_benchmark_return_pct'])}")
+    print(f"avg_benchmark_return_pct: {fmt_optional_decimal(comparisons['avg_benchmark_return_pct'])}")
+    print(f"excess_return_vs_best_benchmark_pct: {fmt_optional_decimal(comparisons['excess_return_vs_best_benchmark_pct'])}")
+    print(f"benchmark_excess_return_pct_by_symbol: {comparisons['benchmark_excess_return_pct_by_symbol']}")
+
+    print()
     print("--- comparisons ---")
-    for key, value in comparisons.items():
-        print(f"{key}: {value}")
+    print(f"return_per_gross_notional_pct: {comparisons['return_per_gross_notional_pct']}")
+    print(f"return_per_max_active_notional_pct: {comparisons['return_per_max_active_notional_pct']}")
 
     print()
     print("--- interpretation ---")

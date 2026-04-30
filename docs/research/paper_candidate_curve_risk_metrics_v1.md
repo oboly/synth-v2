@@ -25,30 +25,36 @@ Forbidden:
 
 ## Metrics
 
+    strategy_return_pct
     strategy_max_drawdown_pct
+    benchmark_return_pct
     benchmark_max_drawdown_pct
+    benchmark_beaten_count
+    benchmark_beaten_symbols
+    strategy_rank_by_return
+    excess_return_vs_best_benchmark_pct
     time_in_market_fraction
-    max_active_positions
     max_active_notional_eur
     gross_notional_eur
     return_per_gross_notional_pct
     return_per_max_active_notional_pct
-    excess_return_vs_BTC_pct
-    excess_return_vs_ETH_pct
+
+## Benchmark handling
+
+Benchmarks are generic.
+
+The tool accepts any comma-separated benchmark list available in the eval table.
+
+Examples:
+
+    BTC,ETH
+    XRP,ADA,VET,HOT
+    XRP,SUI,SOL,TAO,RENDER
+
+BTC/ETH-specific comparison keys are only emitted when those symbols are included.
 
 ## Research-only warning
 
 This tool intentionally uses simulated future returns and forward prices.
 
 It must remain in the research/backtest namespace only.
-
-## Example
-
-    python -m src.research.run_paper_candidate_curve_risk_metrics_v1 \
-      --database synth_bt \
-      --batch-id arena_v2_24h_tactical_2021 \
-      --account-equity-eur 1000 \
-      --target-fraction 0.03300000 \
-      --hold-hours 24 \
-      --benchmark-symbols BTC,ETH \
-      --output table
