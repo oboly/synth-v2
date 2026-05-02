@@ -1,243 +1,290 @@
-# Synth v1 legacy regime/strategy priors
+# Legacy Synth v1 Regime / Strategy Priors
 
-## Status
+Status: research/design prior  
+Scope: Synth v2.5 strategy architecture  
+Source: historical Synth v1 config/result audit  
+Live trading permission: NOT_GRANTED
 
-This document captures confirmed Synth v1 strategy evidence for use as research priors in Synth v2.
+---
 
-It is not a live-trading configuration.
+## Purpose
 
-## Core finding
+This document preserves useful strategy evidence from Synth v1 without importing the old Synth v1 architecture.
 
-Synth v1 did not only have separate MTF and no-MTF strategies. It also had an ADAPTIVE:<threshold> mechanism.
+Synth v1 showed materially different asset behavior across:
 
-Confirmed interpretation:
+- MTF strategy variants
+- no-MTF strategy variants
+- ADX-based adaptive switching
+
+The v2 lesson is not to copy the old strategy matrix directly.
+
+The v2 lesson is:
+
+1. classify market regime first
+2. select strategy family second
+3. keep asset behavior as research input
+4. keep account, order, and execution concerns outside strategy selection
+
+---
+
+## Architectural boundary
+
+This document is research/design only.
+
+It must not directly modify or drive:
+
+- selection_engine
+- decision_gate
+- execution_planner
+- executor
+- account tables
+- order tables
+- live runtime tables
+
+Allowed future usage:
+
+- research replay
+- backtest comparison
+- strategy-family test design
+- asset/profile/regime prior generation
+- documentation of historical behavior
+
+Forbidden usage:
+
+- direct live trade trigger
+- future-aware live feature
+- account-aware strategy logic
+- hard-coded live asset strategy routing without replay validation
+
+---
+
+## Synth v1 adaptive meaning
+
+In Synth v1, the notation:
 
     ADAPTIVE:<threshold>
-    = ADX-based regime selector
-    + strategy-family selector
 
-Synth v1 rule:
+should be interpreted as an ADX-threshold regime selector, not as a standalone strategy family.
 
-    1h ADX(14) >= threshold  -> TREND -> use no-MTF
-    1h ADX(14) <  threshold  -> CHOP  -> use MTF
-    NaN ADX                  -> MTF fallback
+Confirmed legacy interpretation:
 
-For Synth v2, this must be split cleanly:
+    ADX >= threshold -> TREND -> no-MTF
+    ADX < threshold  -> CHOP  -> MTF
 
-    regime_selector:
-      input: market data only
-      output: TREND / CHOP / UNKNOWN
+This maps to v2 as two separate layers:
 
-    strategy_selector:
-      input: asset_id + regime_group
-      output: strategy_family
+    regime_selector
+        outputs TREND / CHOP / RANGE / TRANSITION / UNKNOWN
 
-Do not port the old combined ADAPTIVE mechanism directly.
+    strategy_selector
+        maps asset profile + regime + available strategy families
+        to a strategy candidate or no-trade candidate
 
-## Confirmed v1 evidence files
+Do not collapse this back into one monolithic strategy matrix.
 
-    services/adaptive_switch.py
-    tools/adaptive_compare.py
-    results/strategy_matrix/strategy_matrix_summary.csv
-    results/adaptive/adaptive_summary.csv
-    configs/strategy_matrix.yaml.A
-    configs/strategy_matrix.yaml
-    configs/mtf_dual_flow_v1.yaml
-    strategies/mtf_filter.py
-    results/*trades*.csv
+---
 
-## ADX regime logic
+## Evidence sources from Synth v1
 
-Synth v1 computed ADX(14) on 1h OHLC data using exponential smoothing:
+Useful legacy files/artifacts identified during the v1 audit:
 
-    EWM alpha = 1 / 14
+- services/adaptive_switch.py
+- tools/adaptive_compare.py
+- tools/compare_mtf_vs_nomtf.py
+- tools/compare_mtf_vs_nomtf_plus_debug.py
+- tools/compare_selected_assets.py
+- tools/mtf_hybrid_picker.py
+- tools/live_step.py
+- configs/strategy_matrix.yaml
+- configs/strategy_matrix.yaml.A
+- configs/mtf_dual_flow_v1.yaml
+- results/mtf_compare*/summary_mtf.csv
+- results/mtf_compare*/summary_nomtf.csv
+- results/strategy_matrix/strategy_matrix_summary.csv
+- results/adaptive/adaptive_summary.csv
+- old trade CSVs with entry_time / exit_time / pnl / R
 
-Trade labeling used merge_asof(..., direction="backward") against entry_time.
+Important caution:
 
-That is important: it avoids future leakage because the regime value is the latest known ADX at or before trade entry.
+The old strategy_matrix format should not be ported directly into v2.
 
-## Strategy families confirmed from v1
+The useful part is the historical evidence that some assets had different strategy-family affinity under different regimes.
 
-    FIBO_MTF
-    FIBO_NO_MTF
-    MTF_DUAL_FLOW_5M_1H
-    NO_MTF_RSI_EMA_15M
-    SCALPER_5M
-    ADAPTIVE_ADX_REGIME_SELECTOR
+---
 
-Important distinction:
+## Historical asset priors
 
-    ADAPTIVE is not a strategy family.
-    ADAPTIVE is a regime/strategy routing mechanism.
+These are research priors only.
 
-## Minimal v2 model
+They are not live rules.
 
-Keep this simple first:
+| Asset | Synth v1 prior | Evidence summary | V2 interpretation |
+|---|---|---|---|
+| LINK | no-MTF candidate | no-MTF materially beat MTF in observed comparisons | Trend/no-MTF family deserves priority in replay tests |
+| XLM | no-MTF candidate | no-MTF materially beat MTF in observed comparisons | Trend/no-MTF family deserves priority in replay tests |
+| HBAR | adaptive candidate | MTF beat no-MTF in raw comparison; adaptive threshold 30 improved meaningfully over base-best | Regime-aware switching is high-priority to retest |
+| HOT | adaptive candidate | MTF slightly beat no-MTF; adaptive threshold 16 improved meaningfully over base-best | Regime-aware switching is high-priority to retest |
+| HYPE | MTF / weak adaptive candidate | MTF beat no-MTF; adaptive uplift was small at threshold 43 | Retest as MTF/adaptive candidate |
+| XRP | weak adaptive / retest | Results were weak/negative, but adaptive threshold 17 improved over base in one summary | Retest only with stricter validation |
+| SUI | caution / retest | Both MTF and no-MTF were negative; adaptive uplift small at threshold 42 | Do not trust without new evidence |
+| DEEP | disable or retest | Low-confidence / weak evidence | Disable or retest only in research |
 
-    asset_id + regime_group -> strategy_family
+---
 
-Do not introduce asset_profile yet as a required runtime concept.
+## Concrete historical result notes
 
-Reason:
+Observed old Synth v1 MTF vs no-MTF summaries included:
 
-    v1 proves asset-specific + regime-specific behavior.
-    v1 does not yet prove profile-specific abstraction.
+| Asset | Stronger observed behavior | Notes |
+|---|---|---|
+| HBAR | MTF / adaptive | MTF strongly beat no-MTF in one comparison; adaptive threshold 30 improved over base-best |
+| HOT | MTF / adaptive | MTF was better than no-MTF in one comparison; adaptive threshold 16 improved over base-best |
+| HYPE | MTF / weak adaptive | MTF beat no-MTF; adaptive uplift was small |
+| LINK | no-MTF | no-MTF beat MTF in repeated comparisons |
+| XLM | no-MTF | no-MTF beat MTF in repeated comparisons |
+| XRP | weak adaptive / caution | adaptive improved in one summary, but overall signal was not strong |
+| SUI | caution | negative/unstable historical results |
+| DEEP | caution | low-confidence / low-trade evidence |
 
-asset_profile can be introduced later if multiple assets show stable shared behavior.
+Known adaptive threshold notes:
 
-## Initial v2 selector rule shape
+| Asset | Legacy adaptive threshold | Interpretation |
+|---|---:|---|
+| HBAR | 30 | meaningful adaptive improvement |
+| HOT | 16 | meaningful adaptive improvement |
+| HYPE | 43 | small adaptive improvement |
+| SUI | 42 | small adaptive improvement; caution |
+| XRP | 17 | weak adaptive improvement; retest |
 
-Recommended minimal fields:
+These thresholds are historical priors, not parameters to copy into live v2.
 
-    asset_id
-    regime_group
-    strategy_family
-    adx_threshold
-    confidence
-    source
-    enabled
-    notes
+---
 
-Example research-prior rules:
+## Design translation to Synth v2.5
 
-    LINK-EUR | ANY   | FIBO_NO_MTF | null | HIGH
-    XLM-EUR  | ANY   | FIBO_NO_MTF | null | HIGH
+Recommended v2 decomposition:
 
-    HBAR-EUR | CHOP  | FIBO_MTF    | 30   | HIGH
-    HBAR-EUR | TREND | FIBO_NO_MTF | 30   | HIGH
+    market data
+        -> features
+        -> measurement / structure state
+        -> regime_selector
+        -> strategy_selector
+        -> selection_engine
+        -> decision_gate
+        -> execution_planner
+        -> executor
 
-    HOT-EUR  | CHOP  | FIBO_MTF    | 16   | MEDIUM
-    HOT-EUR  | TREND | FIBO_NO_MTF | 16   | MEDIUM
+Responsibilities:
 
-    HYPE-EUR | ANY   | FIBO_MTF    | null | MEDIUM
+| Layer | Responsibility | Must not do |
+|---|---|---|
+| regime_selector | classify market condition | choose account action |
+| strategy_selector | choose candidate strategy family | check balances/orders |
+| selection_engine | rank market-only opportunity | use account state |
+| decision_gate | permit/block action using account state | invent market signal |
+| execution_planner | create execution intent | place orders |
+| executor/agents | manage orders | reinterpret strategy |
 
-    XRP-EUR  | ANY   | RETEST      | 17   | LOW
-    SUI-EUR  | ANY   | DISABLED    | null | LOW
-    DEEP-EUR | ANY   | DISABLED    | null | LOW
+---
 
-## Legacy result interpretation
+## Candidate v2 strategy-family mapping
 
-### Strong no-MTF candidates
+Initial research mapping:
 
-    LINK-EUR
-    XLM-EUR
+| Regime | Candidate family | Notes |
+|---|---|---|
+| TREND | no-MTF / trend-follow continuation | Works where v1 showed trend preference |
+| CHOP | MTF / range-aware confirmation | Mirrors old ADX adaptive behavior |
+| RANGE | micro-scalp / passive range rotation | Future tactical module only |
+| TRANSITION | watch / prepare only | Avoid forcing entries |
+| UNKNOWN | no strategy | Must remain conservative |
 
-Reason:
+Asset priors may influence candidate ranking in research, but should not override current regime evidence.
 
-    LINK no-MTF strongly outperformed MTF.
-    XLM no-MTF strongly outperformed MTF.
-    Adaptive degraded both versus no-MTF base.
+Examples:
 
-### Adaptive candidates
+    LINK + TREND may rank no-MTF higher
+    XLM + TREND may rank no-MTF higher
+    HBAR + CHOP may rank MTF higher
+    HOT + CHOP may rank MTF higher
+    SUI + any regime requires stricter validation
 
-    HBAR-EUR
-    HOT-EUR
+---
 
-Reason:
+## Required replay validation before implementation
 
-    HBAR adaptive threshold 30 improved meaningfully over base-best.
-    HOT adaptive threshold 16 improved meaningfully over base-best.
+Before any live-path integration, run research-only validation:
 
-### MTF / weak adaptive candidate
+1. Rebuild or refresh point-in-time replay inputs.
+2. Join strategy candidates to point-in-time asset_profile_snapshot.
+3. Evaluate by asset, regime, interval, and market phase.
+4. Compare against simple benchmark families.
+5. Check whether priors persist out-of-sample.
+6. Promote only if invariant checks pass.
 
-    HYPE-EUR
+Minimum validation dimensions:
 
-Reason:
+- asset
+- interval
+- regime group
+- strategy family
+- market phase
+- liquidity class
+- volatility bucket
+- forward return horizon
+- drawdown / adverse excursion
+- exposure time
+- benchmark-relative return
 
-    MTF strongly beat no-MTF.
-    Adaptive uplift was tiny.
-    Treat as MTF candidate or retest candidate, not as strong adaptive evidence.
+---
 
-### Disable or retest
+## Data safety rule
 
-    SUI-EUR
-    DEEP-EUR
-    XRP-EUR
+Future-aware labels and hindsight returns may only be used inside research/backtest namespaces.
 
-Reason:
+They may never leak into:
 
-    SUI negative across tested variants.
-    DEEP low trade count and negative.
-    XRP weak/unstable; adaptive improved slightly but still not strong.
+- live selection_engine
+- decision_gate
+- execution_planner
+- executor
+- runtime account logic
 
-## Important v2 corrections
+Oracle/replay output is microscope data, not steering input.
 
-Do not copy v1 fallback behavior blindly.
+---
 
-Old v1 behavior:
+## Open implementation TODO
 
-    NaN ADX -> MTF
+Research-only next steps:
 
-Preferred v2 behavior:
+1. Define a v2 regime_selector contract.
+2. Define a v2 strategy_selector contract.
+3. Build a research export that labels historical rows with:
+   - asset_id
+   - symbol
+   - interval_code
+   - asof_ts_utc
+   - regime_code
+   - candidate_strategy_family
+   - source_prior
+4. Validate old priors on current v2 feature/signal data.
+5. Only then consider selection_engine integration.
 
-    NaN ADX -> UNKNOWN regime
-    UNKNOWN -> disabled unless explicitly configured fallback exists
+Do not implement direct old Synth v1 strategy routing in live code.
 
-Missing regime data is a data-quality state, not a market regime.
+---
 
-## Architecture boundary
+## Current recommendation
 
-Correct v2 ownership:
+Keep this as a research prior, not operational logic.
 
-    ADX computation                 -> regime_selector
-    TREND / CHOP classification     -> regime_selector
-    asset + regime -> strategy      -> strategy_selector
-    strategy signal generation      -> strategy module / signal layer
-    market-only ranking             -> selection_engine
-    balance / positions / sleeves   -> decision_gate
-    order intent                    -> execution_planner
-    order placement                 -> executor / agents
+The strongest architectural lesson from Synth v1 is:
 
-Do not mix these again.
+    regime first
+    strategy second
+    account later
+    execution last
 
-## Legacy artifacts not to port directly
-
-    configs/strategy_matrix.yaml
-    tools/live_step.py
-    live_trader.py
-    services/strategy_matrix.py
-
-Reason:
-
-    They mix strategy selection, regime selection, routing, risk, runtime, and execution concerns.
-    They are useful evidence, not v2 architecture.
-
-## Next extraction target
-
-Build a v2 research dataset from old trades:
-
-    trade CSV
-    + strategy_family
-    + entry_time
-    + ADX at entry
-    + regime_group
-    + threshold used
-    + pnl
-    + R
-
-Target table or export concept:
-
-    legacy_v1_trade_regime_label
-
-Purpose:
-
-    Measure performance by:
-    asset_id
-    + regime_group
-    + strategy_family
-
-This is the bridge from:
-
-    "v1 worked"
-
-to:
-
-    "v2 knows when a strategy works"
-
-## Design principle
-
-Use v1 as evidence.
-
-Do not rebuild v1.
-
-Synth v2 should preserve the edge while removing the spaghetti.
+This keeps Synth v2.5 modular, testable, and multi-account ready.
