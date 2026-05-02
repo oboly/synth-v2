@@ -1,216 +1,300 @@
 # Synth Documentation
 
-## Core Pipeline
+This is the top-level documentation index for Synth v2.5.
 
-selection_engine → decision_gate → execution_planner → executor
+Synth is a layered quantitative crypto trading and research system.
 
-- `selection_engine`: market opportunity, account-agnostic
-- `decision_gate`: account-aware permission / duplicate / balance checks
-- `execution_planner`: plan creation + execution commitment
-- `executor`: paper fills, position mutation, execution events
+The current focus is:
+
+- data correctness
+- pipeline completeness
+- research/backtest reliability
+- paper-runtime safety
+- later live execution readiness
+
+Live trading permission is not granted.
 
 ---
 
-## Stateful Paper Pipeline (current)
+## 1. Core Architecture
 
-The current paper runtime can do:
+Canonical pipeline:
+
+    obs
+    → feat
+    → measurement / event
+    → signal
+    → ranking
+    → selection
+    → decision
+    → execution
+
+Core rule:
+
+- `selection_engine` is market-only and account-agnostic.
+- `decision_gate` is account-aware permission and risk gating.
+- `execution_planner` creates execution intent/plans.
+- `executor` handles paper/live order lifecycle and state mutation.
+
+No layer may bypass the next permission layer.
+
+---
+
+## 2. Main Documentation Files
+
+General standards:
+
+    docs/coding_standards.md
+
+Database reference:
+
+    docs/database/README.md
+
+Architecture docs:
+
+    docs/architecture/
+
+Research docs:
+
+    docs/research/
+
+Core runtime docs:
+
+    docs/core/
+
+---
+
+## 3. Database and Schema Rules
+
+The database is the source of truth.
+
+Permanent schema meaning belongs in:
+
+    native table comments
+    native column comments
+    docs/database/README.md
+
+Encoding standard:
+
+    CHARSET = utf8mb4
+    COLLATE = utf8mb4_unicode_ci
+
+For broad schema/collation cleanup, preferred workflow when in-place migration is risky:
+
+    DDL export
+    normalize charset/collation/comments
+    deploy clean schema
+    reload/backfill data
+
+This is a migration workflow choice, not a universal rule for every small schema edit.
+
+---
+
+## 4. Current Important Tables
+
+Observation:
+
+    obs_market_candle
+
+Features:
+
+    feat_candle
+
+Market structure / measurement:
+
+    structure_state
+    feat_rejection_event
+    feat_liquidity_event
+
+Signals:
+
+    signal_engine_state
+
+Selection:
+
+    selection_state
+
+Asset profiles:
+
+    asset
+    asset_profile_snapshot
+    vw_asset_profile_latest
+
+Research/backtest:
+
+    bt_selection_v2_replay
+    bt_selection_v2_replay_eval_horizon_v2
+    research_paper_candidate_signal
+    research_oracle_*
+
+Paper/runtime:
+
+    decision_log
+    execution_plan
+    execution_event
+    capital_reservation
+    portfolio_position
+    portfolio_sleeve
+    runtime_state
+
+---
+
+## 5. Research / Backtest Boundary
+
+Research and backtest tools may use future-aware returns or labels only in clearly separated namespaces:
+
+    src/research/
+    src/backtest/
+    research_*
+    bt_*
+    docs/research/
+
+Future-aware data must never leak into:
+
+    live selection_engine path
+    decision_gate
+    execution_planner
+    executor
+    live inference
+
+Oracle research is a microscope, not a steering wheel.
+
+---
+
+## 6. Asset Profile Layer
+
+Static asset identity lives in:
+
+    asset
+
+Derived market behavior lives in:
+
+    asset_profile_snapshot
+    vw_asset_profile_latest
+
+Meaning:
+
+    liquidity_class = derived tradability tier
+    beta_profile = derived market sensitivity / volatility behavior
+    sector_group_code = empirical co-movement group
+
+Backtests and replay must use point-in-time profile snapshots:
+
+    asset_profile_snapshot.asof_ts_utc <= replay_asof_ts_utc
+
+Do not use `vw_asset_profile_latest` for historical replay.
+
+---
+
+## 7. UI / Chart Framework
+
+Current UI direction:
+
+    Streamlit + Plotly debug UI
+
+Purpose:
+
+- inspect candles
+- inspect features
+- inspect signal states
+- inspect selection states
+- inspect asset profiles
+- later inspect paper/backtest/oracle markers
+
+UI rule:
+
+    read-only only
+
+Forbidden in UI:
+
+    decision_state writes
+    execution_plan writes
+    order writes
+    account/balance mutation
+    trading control
+
+Future UI direction:
+
+    TradingView-style Lightweight Charts frontend
+    Python/FastAPI read-only backend
+
+---
+
+## 8. Stateful Paper Runtime
+
+The paper runtime can model:
 
     selection
     → decision
     → execution plan
     → capital reservation
-    → executor fill / ack
-    → portfolio_position mutation
+    → paper fill / ack
+    → portfolio position mutation
     → lifecycle invalidation / release
     → dashboard / runtime loop
 
-This means Synth now has a working stateful paper engine skeleton.
+This is a paper engine skeleton, not live execution.
 
 ---
 
-## Wat werkt nu
+## 9. Live Execution Status
 
-### Entry flow
-- selection write
-- decision gating
-- passive entry planning
-- capital reservation
-- paper fill
-- position open
-- sleeve capital moves from `reserved` to `deployed`
+Real Bitvavo execution is not active.
 
-### Prepare flow
-- prepare plan creation
-- prepare acknowledgement
-- reservation release on cancel / invalidation
+Still needed before live execution:
 
-### Exit flow
-- explicit exit planning
-- automatic TP/SL exit policy
-- paper close fill
-- realized pnl booking
-- sleeve capital moves from `deployed` back to `available`
+- Bitvavo REST/WebSocket execution adapter
+- canonical exchange order layer
+- live executor beside paper executor
+- idempotent client order IDs
+- fill reconciliation
+- retry/rate-limit/error handling
+- kill switch
+- hard paper/live mode separation
+- max notional / max active order controls
 
-### Runtime / operations
-- paper cycle runner
-- paper dashboard
-- live paper loop on closed 1h candles
-- runtime persistence via `runtime_state`
-- entry cooldown after close
+Live execution must be built as a separate live execution layer, not patched onto paper runtime.
 
 ---
 
-## Core Docs
+## 10. Current Operational Priorities
 
-Located in `docs/core/`
+Current priority order:
 
-- `decision_gate_v1.md`
-- `execution_planner_v1.md`
-- `capital_reservation_v1.md`
-- `executor_v1.md`
-- `exit_policy_v1.md`
-- `entry_cooldown_v1.md`
-- `live_paper_loop_v1.md`
-- `paper_dashboard_v1.md`
+    1. Data correctness
+    2. Pipeline completeness
+    3. Schema/docs alignment
+    4. Backtest/replay reliability
+    5. Strategy tuning
+    6. Runtime optimization
+    7. Live execution
 
----
-
-## Important Runtime Files
-
-Main operators / runners:
-
-- `src/orchestration/run_paper_cycle_v1.py`
-- `src/reporting/run_paper_dashboard_v1.py`
-- `src/orchestration/run_live_paper_loop_v1.py`
-
-Policy / support:
-
-- `src/policy/exit_policy_v1.py`
-- `src/policy/entry_cooldown_v1.py`
-
-Persistence / state:
-
-- `runtime_state`
-- `execution_plan`
-- `capital_reservation`
-- `portfolio_position`
-- `execution_event`
-- `portfolio_sleeve`
+Do not optimize strategy on incomplete or misaligned data.
 
 ---
 
-## Operational Commands
+## 11. Infrastructure Notes
 
-### Run one paper cycle
+Current development environment:
 
-    python -m src.orchestration.run_paper_cycle_v1 \
-      --account-id 1 \
-      --sleeve-code SWING_STRUCTURAL \
-      --venue bitvavo \
-      --limit 20 \
-      --output table
+    repo: ~/projects/synth-v2
+    DB connection via .env
+    UTC timestamps
+    remote DB possible
+    local MariaDB must not be assumed
 
-### Show dashboard
+Heavy backfills should preferably run on SSD-backed infrastructure.
 
-    python -m src.reporting.run_paper_dashboard_v1 \
-      --account-id 1 \
-      --sleeve-code SWING_STRUCTURAL \
-      --venue bitvavo
-
-### Run live paper loop
-
-    python -m src.orchestration.run_live_paper_loop_v1 \
-      --account-id 1 \
-      --sleeve-code SWING_STRUCTURAL \
-      --venue bitvavo \
-      --limit 20 \
-      --take-profit-pct 0.020000 \
-      --stop-loss-pct 0.010000 \
-      --entry-cooldown-candles 2 \
-      --poll-seconds 30
+SDHC/Odroid-style storage is acceptable for lightweight runtime, but not ideal for large historical rebuilds.
 
 ---
 
-## Infrastructure
+## 12. Final Rule
 
-- DB draait remote (Odroid), niet lokaal
-- verbinding via `.env`
-- UTC timestamps
-- geen lokale MariaDB aannemen als source of truth
+If a permanent rule, schema contract, or architectural boundary matters:
 
----
+    document it
+    add DB-native comments where relevant
+    then update code
 
-## Principes
-
-- strikte scheiding van verantwoordelijkheden
-- selection blijft market-only
-- decision blijft account-aware
-- planner doet commitment, niet execution
-- executor doet state transitions
-- explainability > black box
-- geen overcommit van capital
-- restart-safe live loop behavior
-
----
-
-## Live Bitvavo execution: what is still missing
-
-Er wordt nu nog geen echte actie op Bitvavo uitgevoerd.
-
-Voor live execution ontbreekt nog minimaal:
-
-- Bitvavo execution adapter (REST/WebSocket integratie)
-- canonical `exchange_order` / `order_state` laag
-- live executor naast paper executor
-- idempotent client order ids
-- fill reconciliation terug naar:
-  - `execution_event`
-  - `portfolio_position`
-  - `portfolio_sleeve`
-- live safety controls:
-  - max notional
-  - max active orders
-  - kill switch
-  - hard mode separation paper/live
-- retry / rate-limit / error handling
-
-Belangrijk:
-dit hoort als aparte live execution laag gebouwd te worden, niet als plakband op `executor_v1`.
-
----
-
-## Backtesting database approach
-
-Voor backtests:
-
-- live/paper operational DB mag prima gebruikt worden als **read/source**
-- maar liever NIET als **write target** voor backtest-resultaten
-
-Aanbevolen:
-
-- operational schema/DB voor live + paper runtime
-- aparte backtest schema/DB voor:
-  - bt trades
-  - bt positions
-  - bt metrics
-  - visualizer outputs
-  - experiment state
-
-Dus:
-
-- source data: mag uit live database komen
-- backtest writes: liever apart
-
-Dat voorkomt vervuiling en verwarring tussen echte paper runtime en backtest resultaten.
-
----
-
-## Research / next likely areas
-
-- backtest visualizer met buy/sell markers op price graph
-- live execution state design
-- exit policy uitbreiden
-- live loop service packaging
-- better reporting / status views
-- later: realistic execution microstructure
-
+Do not rely on chat memory alone for permanent system behavior.
