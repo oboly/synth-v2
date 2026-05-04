@@ -25,13 +25,11 @@ def _fetch_all(conn, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, A
         columns = [desc[0] for desc in cur.description or []]
 
     out: list[dict[str, Any]] = []
-
     for row in rows:
         if isinstance(row, dict):
             out.append(row)
         else:
             out.append(dict(zip(columns, row, strict=False)))
-
     return out
 
 
@@ -68,63 +66,89 @@ def _print_report(conn) -> None:
             """,
         ),
         (
-            "CLASS PERFORMANCE 4H",
+            "CLASS PERFORMANCE 24H / 72H / 168H",
             """
             SELECT
                 aplus_final_class,
-                COUNT(*) AS n,
-                ROUND(AVG(return_4h), 6) AS avg_return_4h,
-                ROUND(SUM(CASE WHEN return_4h > 0 THEN 1 ELSE 0 END) / COUNT(*), 4) AS winrate_4h
+                COUNT(*) AS n_total,
+                COUNT(return_24h) AS n_24h,
+                ROUND(AVG(return_24h), 6) AS avg_return_24h,
+                ROUND(
+                    SUM(CASE WHEN return_24h > 0 THEN 1 ELSE 0 END)
+                    / NULLIF(COUNT(return_24h), 0),
+                    4
+                ) AS winrate_24h,
+                COUNT(return_72h) AS n_72h,
+                ROUND(AVG(return_72h), 6) AS avg_return_72h,
+                ROUND(
+                    SUM(CASE WHEN return_72h > 0 THEN 1 ELSE 0 END)
+                    / NULLIF(COUNT(return_72h), 0),
+                    4
+                ) AS winrate_72h,
+                COUNT(return_168h) AS n_168h,
+                ROUND(AVG(return_168h), 6) AS avg_return_168h,
+                ROUND(
+                    SUM(CASE WHEN return_168h > 0 THEN 1 ELSE 0 END)
+                    / NULLIF(COUNT(return_168h), 0),
+                    4
+                ) AS winrate_168h
             FROM vw_aplus_research_with_returns
-            WHERE return_4h IS NOT NULL
             GROUP BY aplus_final_class
-            ORDER BY avg_return_4h DESC, aplus_final_class ASC
+            ORDER BY avg_return_72h DESC, aplus_final_class ASC
             """,
         ),
         (
-            "LEADER AVOID CONFLICT 4H",
+            "LEADER AVOID CONFLICT 24H / 72H / 168H",
             """
             SELECT
                 leader_avoid_conflict,
-                COUNT(*) AS n,
-                ROUND(AVG(return_4h), 6) AS avg_return_4h,
-                ROUND(SUM(CASE WHEN return_4h > 0 THEN 1 ELSE 0 END) / COUNT(*), 4) AS winrate_4h
+                COUNT(*) AS n_total,
+                COUNT(return_24h) AS n_24h,
+                ROUND(AVG(return_24h), 6) AS avg_return_24h,
+                ROUND(
+                    SUM(CASE WHEN return_24h > 0 THEN 1 ELSE 0 END)
+                    / NULLIF(COUNT(return_24h), 0),
+                    4
+                ) AS winrate_24h,
+                COUNT(return_72h) AS n_72h,
+                ROUND(AVG(return_72h), 6) AS avg_return_72h,
+                ROUND(
+                    SUM(CASE WHEN return_72h > 0 THEN 1 ELSE 0 END)
+                    / NULLIF(COUNT(return_72h), 0),
+                    4
+                ) AS winrate_72h,
+                COUNT(return_168h) AS n_168h,
+                ROUND(AVG(return_168h), 6) AS avg_return_168h,
+                ROUND(
+                    SUM(CASE WHEN return_168h > 0 THEN 1 ELSE 0 END)
+                    / NULLIF(COUNT(return_168h), 0),
+                    4
+                ) AS winrate_168h
             FROM vw_aplus_research_with_returns
-            WHERE return_4h IS NOT NULL
             GROUP BY leader_avoid_conflict
             ORDER BY leader_avoid_conflict DESC
             """,
         ),
         (
-            "HIGH CONSISTENCY 4H",
-            """
-            SELECT
-                high_consistency,
-                COUNT(*) AS n,
-                ROUND(AVG(return_4h), 6) AS avg_return_4h,
-                ROUND(SUM(CASE WHEN return_4h > 0 THEN 1 ELSE 0 END) / COUNT(*), 4) AS winrate_4h
-            FROM vw_aplus_research_with_returns
-            WHERE return_4h IS NOT NULL
-            GROUP BY high_consistency
-            ORDER BY high_consistency DESC
-            """,
-        ),
-        (
-            "DIVERGENCE SUMMARY 4H",
+            "DIVERGENCE SUMMARY 72H PRIMARY",
             """
             SELECT
                 divergence_flag,
-                COUNT(*) AS n,
-                ROUND(AVG(return_4h), 6) AS avg_return_4h,
-                ROUND(SUM(CASE WHEN return_4h > 0 THEN 1 ELSE 0 END) / COUNT(*), 4) AS winrate_4h
+                COUNT(*) AS n_72h,
+                ROUND(AVG(return_phase_primary), 6) AS avg_return_72h,
+                ROUND(
+                    SUM(CASE WHEN return_phase_primary > 0 THEN 1 ELSE 0 END)
+                    / NULLIF(COUNT(return_phase_primary), 0),
+                    4
+                ) AS winrate_72h
             FROM vw_aplus_divergence
-            WHERE return_4h IS NOT NULL
+            WHERE return_phase_primary IS NOT NULL
             GROUP BY divergence_flag
             ORDER BY divergence_flag DESC
             """,
         ),
         (
-            "REVIEW QUEUE",
+            "CURRENT REVIEW QUEUE",
             """
             SELECT
                 symbol,
@@ -140,10 +164,10 @@ def _print_report(conn) -> None:
             """,
         ),
         (
-            "CLUSTERS",
+            "A+ CLUSTERS BY PREDICTION TS",
             """
             SELECT
-                asof_ts_utc,
+                asof_ts_utc AS aplus_prediction_ts_utc,
                 cluster_members,
                 cluster_size,
                 ROUND(cluster_strength, 4) AS cluster_strength
@@ -212,9 +236,12 @@ def _persist_divergence_log(conn) -> int:
             divergence_flag,
             expected_dir,
             realized_dir,
-            return_4h
+            return_24h,
+            return_72h,
+            return_168h,
+            primary_validation_horizon
         FROM vw_aplus_divergence
-        WHERE return_4h IS NOT NULL
+        WHERE return_72h IS NOT NULL
         """,
     )
 
@@ -230,13 +257,19 @@ def _persist_divergence_log(conn) -> int:
                 divergence_flag,
                 expected_dir,
                 realized_dir,
-                return_4h
-            ) VALUES (%s, %s, %s, %s, %s, %s)
+                return_24h,
+                return_72h,
+                return_168h,
+                primary_validation_horizon
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON DUPLICATE KEY UPDATE
                 divergence_flag = VALUES(divergence_flag),
                 expected_dir = VALUES(expected_dir),
                 realized_dir = VALUES(realized_dir),
-                return_4h = VALUES(return_4h)
+                return_24h = VALUES(return_24h),
+                return_72h = VALUES(return_72h),
+                return_168h = VALUES(return_168h),
+                primary_validation_horizon = VALUES(primary_validation_horizon)
             """,
             [
                 (
@@ -245,7 +278,10 @@ def _persist_divergence_log(conn) -> int:
                     row["divergence_flag"],
                     row["expected_dir"],
                     row["realized_dir"],
-                    row["return_4h"],
+                    row["return_24h"],
+                    row["return_72h"],
+                    row["return_168h"],
+                    row["primary_validation_horizon"],
                 )
                 for row in rows
             ],
@@ -258,6 +294,9 @@ def main() -> None:
     args = _parse_args()
 
     print("[RUN] Breathline/A+ research report")
+    print("[INFO] Validation base: A+ prediction_ts_utc")
+    print("[INFO] Primary A+ validation horizon: 72h")
+    print("[INFO] Report horizons: 24h / 72h / 168h")
 
     conn = get_connection()
     try:
