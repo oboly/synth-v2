@@ -1,7 +1,7 @@
 # Market Structure Progress
 
-Status: active status note  
-Scope: Synth v2.5 market-structure / zone-fib validation  
+Status: active status note
+Scope: Synth v2.5 market-structure / zone-fib validation
 Live trading permission: NOT_GRANTED
 
 ---
