@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interval", default="4h")
     parser.add_argument("--sleeve-code", default="SWING_STRUCTURAL")
     parser.add_argument("--asset-id", type=int, default=None)
-    parser.add_argument("--limit-assets", type=int, default=40)
+    parser.add_argument("--limit-assets", type=int, default=100)
     parser.add_argument("--lookback-candles", type=int, default=300)
     parser.add_argument("--swing-window", type=int, default=2)
     parser.add_argument("--sr-tolerance-bps", default="60")
@@ -105,6 +105,15 @@ def main() -> int:
         asset_id=args.asset_id,
         limit=args.limit_assets,
     )
+
+    if args.write_db:
+        deleted_context_rows = repo.delete_execution_zone_context_scope(
+            venue=args.venue,
+            interval_code=args.interval,
+            sleeve_code=args.sleeve_code,
+            asset_id=args.asset_id,
+        )
+        print(f"deleted_existing_execution_zone_context_rows={deleted_context_rows}")
 
     for asset in assets:
         candles = repo.fetch_recent_candles(

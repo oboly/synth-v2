@@ -288,6 +288,42 @@ class ZoneRepository:
         finally:
             conn.close()
 
+    def delete_execution_zone_context_scope(
+        self,
+        *,
+        venue: str,
+        interval_code: str,
+        sleeve_code: str,
+        asset_id: int | None = None,
+    ) -> int:
+        params: list[Any] = [venue, interval_code, sleeve_code]
+        asset_filter_sql = ""
+
+        if asset_id is not None:
+            asset_filter_sql = "AND asset_id = %s"
+            params.append(asset_id)
+
+        sql = f"""
+        DELETE FROM execution_zone_context
+        WHERE venue = %s
+          AND interval_code = %s
+          AND sleeve_code = %s
+          {asset_filter_sql}
+        """
+
+        conn = get_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                deleted_rows = int(cur.rowcount)
+            conn.commit()
+            return deleted_rows
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
     def upsert_execution_zone_context(self, ctx: ExecutionZoneContextInput) -> None:
         sql = """
         INSERT INTO execution_zone_context (
