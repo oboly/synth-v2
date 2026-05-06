@@ -20,6 +20,17 @@ TRADE_SETUP_FILTER_NAME = "trade_setup_filter_v1"
 TRADE_SETUP_FILTER_VERSION = "1.1"
 TRADE_SETUP_FILTER_ASSET_SUITABILITY_MODE = "candidate_weak_set"
 
+ACTIVE_OPEN_ORDER_STATES: tuple[str, ...] = (
+    "NEW",
+    "OPEN",
+    "PLACED",
+    "PARTIALLY_FILLED",
+    "PENDING",
+    "MONITOR_QUEUE",
+    "REPRICE_PENDING",
+    "ESCALATED",
+)
+
 
 def _to_decimal(value: Any, default: str = "0") -> Decimal:
     if value is None:
@@ -284,4 +295,36 @@ class DecisionGateRepository:
         asset_id: int,
         venue: str,
     ) -> bool:
-        return False
+        sql = f"""
+        SELECT EXISTS(
+            SELECT 1
+            FROM open_order_state o
+            JOIN execution_plan p
+              ON p.execution_plan_id = o.execution_plan_id
+            WHERE p.account_id = %s
+              AND p.sleeve_code = %s
+              AND p.asset_id = %s
+              AND p.venue = %s
+              AND o.account_id = p.account_id
+              AND o.asset_id = p.asset_id
+              AND o.venue = p.venue
+              AND o.order_state IN ({",".join(["%s"] * len(ACTIVE_OPEN_ORDER_STATES))})
+            LIMIT 1
+        ) AS v
+        """
+
+        with db_cursor() as db_obj:
+            cursor = _unwrap_cursor(db_obj)
+            cursor.execute(
+                sql,
+                [
+                    account_id,
+                    sleeve_code,
+                    asset_id,
+                    venue,
+                    *ACTIVE_OPEN_ORDER_STATES,
+                ],
+            )
+            row = cursor.fetchone()
+
+        return bool(row["v"]) if row else False
