@@ -69,6 +69,7 @@ class ExecutionIntentPreview:
     decision_state: str
     decision_reason: str
     execution_mode: str = "paper"
+    ladder_levels: tuple[tuple[Decimal, Decimal], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -153,8 +154,7 @@ def _passive_price_for_side(side: str, context: ExecutionMarketContextPreview) -
         return _quantize_to_tick(context.best_bid_eur + context.tick_size, context.tick_size)
 
     if side == "SELL":
-        target = context.best_ask_eur - context.tick_size
-        return _quantize_to_tick(target, context.tick_size)
+        return _quantize_to_tick(context.best_ask_eur - context.tick_size, context.tick_size)
 
     raise ValueError(f"unsupported side: {side}")
 
@@ -214,6 +214,71 @@ def _build_single_leg(
     )
 
 
+def _validate_ladder_levels(
+    *,
+    side: str,
+    levels: tuple[tuple[Decimal, Decimal], ...],
+) -> None:
+    if not levels:
+        raise ValueError("ladder intent requires at least one ladder level")
+
+    fraction_sum = sum((fraction for _price, fraction in levels), Decimal("0"))
+
+    if fraction_sum != Decimal("1") and fraction_sum != Decimal("1.00000000"):
+        raise ValueError(f"ladder target fractions must sum to 1.0, got {fraction_sum}")
+
+    previous_price: Decimal | None = None
+    for price, fraction in levels:
+        if price <= Decimal("0"):
+            raise ValueError("ladder target prices must be > 0")
+        if fraction <= Decimal("0"):
+            raise ValueError("ladder target fractions must be > 0")
+
+        if previous_price is not None:
+            if side == "BUY" and price > previous_price:
+                raise ValueError("BUY ladder prices must be descending or equal")
+            if side == "SELL" and price < previous_price:
+                raise ValueError("SELL ladder prices must be ascending or equal")
+
+        previous_price = price
+
+
+def _build_ladder_legs(
+    *,
+    side: str,
+    levels: tuple[tuple[Decimal, Decimal], ...],
+    quantity_base: Decimal | None,
+    tick_size: Decimal,
+    profile: dict[str, Any],
+) -> list[ExecutionPlanLegPreview]:
+    _validate_ladder_levels(side=side, levels=levels)
+
+    legs: list[ExecutionPlanLegPreview] = []
+
+    for idx, (price, fraction) in enumerate(levels, start=1):
+        legs.append(
+            ExecutionPlanLegPreview(
+                leg_index=idx,
+                side=side,
+                leg_type="PASSIVE_LIMIT",
+                target_price_eur=_quantize_to_tick(price, tick_size),
+                target_fraction=fraction,
+                quantity_base=(quantity_base * fraction) if quantity_base is not None else None,
+                post_only=True,
+                time_in_force="GTC",
+                max_reprices=int(profile["max_reprices"]),
+                max_wait_seconds=int(profile["max_wait_seconds"]),
+                max_chase_bps=Decimal(str(profile["max_chase_bps"])),
+                min_spread_bps_for_capture=Decimal(str(profile["min_spread_bps_for_capture"])),
+                escalation_to_urgent_limit=bool(profile["escalation_to_urgent_limit"]),
+                abort_if_signal_invalidates=bool(profile["abort_if_signal_invalidates"]),
+                leg_state="IDLE",
+            )
+        )
+
+    return legs
+
+
 def build_execution_plan_preview(
     *,
     intent: ExecutionIntentPreview,
@@ -239,18 +304,32 @@ def build_execution_plan_preview(
     if intent_type.startswith("EXIT") and side != "SELL":
         raise ValueError("EXIT intent requires side=SELL")
 
+    if intent_type == "PLACE_LADDER" and side != "BUY":
+        raise ValueError("PLACE_LADDER currently requires side=BUY; use EXIT_LADDER for SELL ladder exits")
+
     profile = SLEEVE_PROFILES[sleeve_code]
     plan_type = _plan_type_for_intent(intent_type, side)
     total_target_fraction = _target_fraction_for_intent(intent_type)
 
-    leg = _build_single_leg(
-        side=side,
-        intent_type=intent_type,
-        target_fraction=total_target_fraction,
-        quantity_base=intent.quantity_base,
-        context=context,
-        profile=profile,
-    )
+    if intent_type in {"PLACE_LADDER", "EXIT_LADDER"}:
+        legs = _build_ladder_legs(
+            side=side,
+            levels=intent.ladder_levels,
+            quantity_base=intent.quantity_base,
+            tick_size=context.tick_size,
+            profile=profile,
+        )
+    else:
+        legs = [
+            _build_single_leg(
+                side=side,
+                intent_type=intent_type,
+                target_fraction=total_target_fraction,
+                quantity_base=intent.quantity_base,
+                context=context,
+                profile=profile,
+            )
+        ]
 
     return ExecutionPlanPreview(
         account_id=intent.account_id,
@@ -278,9 +357,10 @@ def build_execution_plan_preview(
             f"preview_only=1; "
             f"execution_style={profile['execution_style']}; "
             f"intent_type={intent_type}; "
+            f"asset_exit_profile_hint_is_metadata_only=1; "
             f"no_db_writes=1; no_executor=1"
         ),
-        legs=[leg],
+        legs=legs,
     )
 
 

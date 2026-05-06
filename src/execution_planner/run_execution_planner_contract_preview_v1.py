@@ -39,6 +39,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decision-state", default="EXECUTION_ALLOWED")
     parser.add_argument("--decision-reason", default="CONTRACT_PREVIEW")
     parser.add_argument("--execution-mode", default="paper")
+    parser.add_argument(
+        "--ladder-levels",
+        default=None,
+        help=(
+            "Comma-separated price:fraction ladder. "
+            "Example: '13.0:0.25,15.0:0.35,18.0:0.40'. "
+            "Fractions must sum to 1."
+        ),
+    )
 
     parser.add_argument("--reference-price-eur", required=True)
     parser.add_argument("--best-bid-eur", required=True)
@@ -66,9 +75,26 @@ def _optional_decimal(value: str | None) -> Decimal | None:
     return Decimal(stripped)
 
 
-def _print_table(row: dict[str, Any]) -> None:
-    leg = row["legs"][0] if row["legs"] else {}
+def _parse_ladder_levels(value: str | None) -> tuple[tuple[Decimal, Decimal], ...]:
+    if value is None or not value.strip():
+        return ()
 
+    levels: list[tuple[Decimal, Decimal]] = []
+    for raw_item in value.split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+
+        if ":" not in item:
+            raise ValueError(f"invalid ladder item, expected price:fraction: {item}")
+
+        raw_price, raw_fraction = item.split(":", 1)
+        levels.append((Decimal(raw_price.strip()), Decimal(raw_fraction.strip())))
+
+    return tuple(levels)
+
+
+def _print_table(row: dict[str, Any]) -> None:
     table = [
         ("symbol", row["symbol"]),
         ("sleeve_code", row["sleeve_code"]),
@@ -79,20 +105,28 @@ def _print_table(row: dict[str, Any]) -> None:
         ("reference_price_eur", row["reference_price_eur"]),
         ("best_bid_eur", row["best_bid_eur"]),
         ("best_ask_eur", row["best_ask_eur"]),
-        ("leg_type", leg.get("leg_type")),
-        ("target_price_eur", leg.get("target_price_eur")),
-        ("target_fraction", leg.get("target_fraction")),
-        ("post_only", leg.get("post_only")),
-        ("max_reprices", leg.get("max_reprices")),
-        ("max_wait_seconds", leg.get("max_wait_seconds")),
-        ("max_chase_bps", leg.get("max_chase_bps")),
-        ("escalation_to_urgent_limit", leg.get("escalation_to_urgent_limit")),
+        ("legs_count", len(row["legs"])),
+        ("asset_exit_profile_hint", row["asset_exit_profile_hint"]),
         ("notes", row["notes"]),
     ]
 
     width = max(len(key) for key, _ in table)
     for key, value in table:
         print(f"{key.ljust(width)} : {value}")
+
+    print()
+    print("legs:")
+    for item in row["legs"]:
+        print(
+            f"  {item['leg_index']}: "
+            f"{item['side']} {item['leg_type']} "
+            f"price={item['target_price_eur']} "
+            f"fraction={item['target_fraction']} "
+            f"qty={item['quantity_base']} "
+            f"post_only={item['post_only']} "
+            f"max_reprices={item['max_reprices']} "
+            f"max_wait_seconds={item['max_wait_seconds']}"
+        )
 
 
 def main() -> int:
@@ -111,6 +145,7 @@ def main() -> int:
         decision_state=args.decision_state,
         decision_reason=args.decision_reason,
         execution_mode=args.execution_mode,
+        ladder_levels=_parse_ladder_levels(args.ladder_levels),
     )
 
     context = ExecutionMarketContextPreview(
