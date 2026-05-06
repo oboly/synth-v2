@@ -480,3 +480,115 @@ Would you like to turn this into a dynamic trading model or visualize it as a ha
 Summary from chatGPT
 A+ cluster interpretation suggests a market state with concentrated leaders and many weak/drift assets. This may indicate instability or transition. Use as watchlist/caution context only. Do not convert directly into buy/short logic without forward-return validation.
 
+
+---
+
+## Cluster Transition Tracking
+
+A+ Breathline clusters are now tracked as a research-only layer.
+
+Purpose:
+
+- detect cluster breadth changes
+- detect persistent cluster members
+- detect rotation into / out of leader-anchor clusters
+- compare cluster transitions against later 24h / 72h / 168h returns
+
+This remains research-only.
+
+It must not affect:
+
+- selection_engine
+- decision_gate
+- execution_planner
+- executor
+- live/paper order logic
+
+---
+
+## Cluster Transition Report
+
+Read-only runner:
+
+- `src/breathline/run_breathline_cluster_transition_report.py`
+
+Source view:
+
+- `vw_aplus_clusters`
+
+The report shows:
+
+- snapshot cluster members
+- added tokens
+- removed tokens
+- persistent tokens
+- member appearance count
+- current persistence streak
+
+---
+
+## First Observed Cluster Transition Result
+
+Current snapshot sequence shows that the cluster is not random noise.
+
+Observed cluster sizes:
+
+- 2026-04-23 12:00:00 -> size 10
+- 2026-04-30 00:00:00 -> size 8
+- 2026-05-02 05:58:00 -> size 7
+- 2026-05-04 00:55:00 -> size 11
+- 2026-05-04 17:55:00 -> size 11
+- 2026-05-06 18:00:00 -> size 11
+
+Latest transition:
+
+- added: ETH
+- removed: SOL
+- held: AAVE, BTC, DEEP, FET, INJ, LTC, NOT, QNT, RENDER, TAO
+
+Most persistent members so far:
+
+- AAVE
+- INJ
+- LTC
+- QNT
+- TAO
+
+Interpretation:
+
+A+ cluster tracking may be more useful as a phase-persistence and rotation detector than as a direct token-level signal.
+
+Working hypothesis:
+
+- cluster persistence may indicate broader phase stability
+- cluster expansion may indicate broader market activation
+- cluster rotation may indicate changing leadership
+- removed members should be watched for weakening or transition
+- newly added members should be monitored, not directly traded
+
+---
+
+## Research Direction
+
+Future validation should compare:
+
+- cluster membership at prediction timestamp
+- cluster additions
+- cluster removals
+- persistence streaks
+- 24h / 72h / 168h forward returns
+
+Potential future features:
+
+- cluster_member_flag
+- cluster_added_flag
+- cluster_removed_flag
+- cluster_persistence_count
+- cluster_current_streak
+- cluster_breadth
+- cluster_rotation_count
+
+These are not trading signals.
+
+They are candidate research features for later forecasting.
+
