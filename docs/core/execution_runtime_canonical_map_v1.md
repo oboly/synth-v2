@@ -348,3 +348,24 @@ The decision gate is the permission officer.
 Research is the microscope.
 
 Live trading remains locked.
+
+---
+
+## Exit profile handoff rule
+
+Correct exit flow:
+
+    asset_exit_profile candidate
+    -> decision_gate validates actual position / sleeve / permission
+    -> execution_planner builds passive / urgent / ladder plan
+    -> executor places / monitors orders only
+
+Layer boundaries:
+
+- `asset_exit_profile` is a research/market-derived candidate only.
+- `asset_exit_profile` must not create orders.
+- `asset_exit_profile` must not bypass `decision_gate`.
+- `decision_gate` must confirm a real position, sleeve eligibility, account permission, and duplicate/open-order safety before any exit intent reaches the planner.
+- `execution_planner` may use the profile hint only after permission is granted.
+- `executor` must not interpret fib/pro/strategy/profile logic; it only executes and monitors approved plans.
+
