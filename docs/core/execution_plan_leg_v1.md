@@ -129,6 +129,12 @@ Default execution remains passive-first:
     BUY  = best_bid + 1 tick, post-only
     SELL = best_ask - 1 tick, post-only
 
+Preview caveat:
+
+    If the spread is exactly one tick, BUY = best_bid + 1 tick can equal best_ask.
+    A real post-only executor must avoid crossing the spread and must handle this with
+    venue-aware post-only validation or one-tick retreat logic.
+
 Ladder legs use explicit target prices supplied by planner logic and then quantized to tick size.
 
 ## Required rule

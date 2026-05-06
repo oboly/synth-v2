@@ -262,7 +262,7 @@ def _validate_ladder_levels(
 
     fraction_sum = sum((fraction for _price, fraction in levels), Decimal("0"))
 
-    if fraction_sum != Decimal("1") and fraction_sum != Decimal("1.00000000"):
+    if fraction_sum != Decimal("1"):
         raise ValueError(f"ladder target fractions must sum to 1.0, got {fraction_sum}")
 
     previous_price: Decimal | None = None
@@ -357,6 +357,13 @@ def build_execution_plan_preview(
 
     if sleeve_code not in SLEEVE_PROFILES:
         raise ValueError(f"unsupported sleeve_code: {sleeve_code}")
+
+    if (
+        intent_type != "PREPARE_PLAN"
+        and intent.max_notional_eur is None
+        and intent.quantity_base is None
+    ):
+        raise ValueError("non-PREPARE_PLAN intents require max_notional_eur or quantity_base")
 
     if intent_type.startswith("EXIT") and side != "SELL":
         raise ValueError("EXIT intent requires side=SELL")
