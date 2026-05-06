@@ -1,6 +1,6 @@
 # Execution Plan Leg V1
 
-Status: design only  
+Status: schema proposal only  
 Scope: future execution planner persistence  
 Live trading permission: NOT_GRANTED  
 
@@ -150,7 +150,7 @@ Research profiles must not create plan legs directly.
 
 ## Not implemented yet
 
-This document does not add:
+This document and migration proposal do not add:
 
 - SQL migration
 - repository writes
