@@ -122,6 +122,7 @@ def _print_table(row: dict[str, Any]) -> None:
             f"{item['side']} {item['leg_type']} "
             f"price={item['target_price_eur']} "
             f"fraction={item['target_fraction']} "
+            f"notional={item['target_notional_eur']} "
             f"qty={item['quantity_base']} "
             f"post_only={item['post_only']} "
             f"max_reprices={item['max_reprices']} "

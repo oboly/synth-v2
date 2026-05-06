@@ -94,7 +94,7 @@ Ladder leg pricing:
 
 - explicit ladder prices are quantized down to tick size
 - per-leg quantity is calculated from `quantity_base * target_fraction` when `quantity_base` is provided
-- BUY ladder notional allocation is not yet modeled per leg
+- BUY ladder notional allocation is modeled per leg as `max_notional_eur * target_fraction` when `max_notional_eur` is provided
 
 ### Example: passive BUY preview
 
@@ -125,6 +125,14 @@ Command:
 Expected plan type:
 
 `PASSIVE_EXIT_LADDER`
+
+Expected BUY ladder allocation when `max_notional_eur = 100`:
+
+| Leg | Fraction | Notional | Approx quantity |
+|---:|---:|---:|---:|
+| 1 | `0.50` | `50.00` | `50.00 / 12.40` |
+| 2 | `0.30` | `30.00` | `30.00 / 12.20` |
+| 3 | `0.20` | `20.00` | `20.00 / 12.00` |
 
 Expected quantities when `quantity_base = 10`:
 

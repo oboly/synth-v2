@@ -95,6 +95,7 @@ class ExecutionPlanLegPreview:
     leg_type: str
     target_price_eur: Decimal | None
     target_fraction: Decimal
+    target_notional_eur: Decimal | None
     quantity_base: Decimal | None
     post_only: bool
     time_in_force: str
@@ -184,16 +185,52 @@ def _target_fraction_for_intent(intent_type: str) -> Decimal:
     return Decimal("1.00000000")
 
 
+def _quantity_from_notional(
+    *,
+    notional_eur: Decimal,
+    price_eur: Decimal,
+) -> Decimal:
+    if price_eur <= Decimal("0"):
+        raise ValueError("price_eur must be > 0 for notional-to-quantity conversion")
+    return (notional_eur / price_eur).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+
+
+def _scaled_quantity(
+    *,
+    quantity_base: Decimal,
+    fraction: Decimal,
+) -> Decimal:
+    return (quantity_base * fraction).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
+
+
 def _build_single_leg(
     *,
     side: str,
     intent_type: str,
     target_fraction: Decimal,
+    max_notional_eur: Decimal | None,
     quantity_base: Decimal | None,
     context: ExecutionMarketContextPreview,
     profile: dict[str, Any],
 ) -> ExecutionPlanLegPreview:
     passive_price = None if intent_type == "PREPARE_PLAN" else _passive_price_for_side(side, context)
+
+    target_notional_eur = None
+    target_quantity_base = quantity_base
+
+    if passive_price is not None:
+        if side == "BUY" and max_notional_eur is not None:
+            target_notional_eur = max_notional_eur * target_fraction
+            target_quantity_base = _quantity_from_notional(
+                notional_eur=target_notional_eur,
+                price_eur=passive_price,
+            )
+        elif quantity_base is not None:
+            target_quantity_base = _scaled_quantity(
+                quantity_base=quantity_base,
+                fraction=target_fraction,
+            )
+            target_notional_eur = target_quantity_base * passive_price
 
     return ExecutionPlanLegPreview(
         leg_index=1,
@@ -201,7 +238,8 @@ def _build_single_leg(
         leg_type="PREPARE_ONLY" if intent_type == "PREPARE_PLAN" else "PASSIVE_LIMIT",
         target_price_eur=passive_price,
         target_fraction=target_fraction,
-        quantity_base=quantity_base,
+        target_notional_eur=target_notional_eur,
+        quantity_base=target_quantity_base,
         post_only=True,
         time_in_force="GTC",
         max_reprices=int(profile["max_reprices"]),
@@ -247,6 +285,7 @@ def _build_ladder_legs(
     *,
     side: str,
     levels: tuple[tuple[Decimal, Decimal], ...],
+    max_notional_eur: Decimal | None,
     quantity_base: Decimal | None,
     tick_size: Decimal,
     profile: dict[str, Any],
@@ -256,14 +295,32 @@ def _build_ladder_legs(
     legs: list[ExecutionPlanLegPreview] = []
 
     for idx, (price, fraction) in enumerate(levels, start=1):
+        target_price = _quantize_to_tick(price, tick_size)
+        target_notional_eur = None
+        target_quantity_base = None
+
+        if side == "BUY" and max_notional_eur is not None:
+            target_notional_eur = max_notional_eur * fraction
+            target_quantity_base = _quantity_from_notional(
+                notional_eur=target_notional_eur,
+                price_eur=target_price,
+            )
+        elif quantity_base is not None:
+            target_quantity_base = _scaled_quantity(
+                quantity_base=quantity_base,
+                fraction=fraction,
+            )
+            target_notional_eur = target_quantity_base * target_price
+
         legs.append(
             ExecutionPlanLegPreview(
                 leg_index=idx,
                 side=side,
                 leg_type="PASSIVE_LIMIT",
-                target_price_eur=_quantize_to_tick(price, tick_size),
+                target_price_eur=target_price,
                 target_fraction=fraction,
-                quantity_base=(quantity_base * fraction) if quantity_base is not None else None,
+                target_notional_eur=target_notional_eur,
+                quantity_base=target_quantity_base,
                 post_only=True,
                 time_in_force="GTC",
                 max_reprices=int(profile["max_reprices"]),
@@ -315,6 +372,7 @@ def build_execution_plan_preview(
         legs = _build_ladder_legs(
             side=side,
             levels=intent.ladder_levels,
+            max_notional_eur=intent.max_notional_eur,
             quantity_base=intent.quantity_base,
             tick_size=context.tick_size,
             profile=profile,
@@ -325,6 +383,7 @@ def build_execution_plan_preview(
                 side=side,
                 intent_type=intent_type,
                 target_fraction=total_target_fraction,
+                max_notional_eur=intent.max_notional_eur,
                 quantity_base=intent.quantity_base,
                 context=context,
                 profile=profile,
