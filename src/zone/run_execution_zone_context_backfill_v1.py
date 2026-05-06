@@ -286,7 +286,14 @@ def main() -> int:
     total_results = 0
     total_written_rows = 0
 
-    mode = "WRITE" if args.write_db else "DRY_RUN"
+    if args.write_db:
+        raise RuntimeError(
+            "Operational writes are disabled for this runner. "
+            "Historical zone context backfills must target synth_bt replay tables, "
+            "not synth.execution_zone_context."
+        )
+
+    mode = "DRY_RUN"
     print(
         f"mode={mode} venue={args.venue} interval={args.interval} "
         f"from_ts={from_ts} to_ts={to_ts} warmup_from_ts={warmup_from_ts} "
