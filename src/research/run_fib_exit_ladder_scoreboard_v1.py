@@ -88,6 +88,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--out-csv", default=None)
     parser.add_argument("--out-json", default=None)
+    parser.add_argument("--visual-labels-file", default="configs/research/fib_exit_visual_labels_v1.yaml")
     parser.add_argument("--env-file", default=None)
     return parser.parse_args()
 
@@ -151,6 +152,45 @@ def parse_symbol_list(text: str) -> list[str]:
 
 def parse_decimal_list(text: str) -> list[Decimal]:
     return [Decimal(value) for value in parse_csv_list(text)]
+
+
+def parse_visual_labels_file(path_text: str | None) -> dict[str, dict[str, str]]:
+    if path_text is None or path_text.strip() == "":
+        return {}
+
+    path = Path(path_text)
+    if not path.exists():
+        return {}
+
+    labels: dict[str, dict[str, str]] = {}
+    in_symbols = False
+    current_symbol: str | None = None
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].rstrip()
+        stripped = line.strip()
+
+        if not stripped:
+            continue
+
+        if stripped == "symbols:":
+            in_symbols = True
+            current_symbol = None
+            continue
+
+        if not in_symbols:
+            continue
+
+        if line.startswith("  ") and not line.startswith("    ") and stripped.endswith(":"):
+            current_symbol = stripped[:-1].strip().upper()
+            labels[current_symbol] = {}
+            continue
+
+        if current_symbol is not None and line.startswith("    ") and ":" in stripped:
+            key, value = stripped.split(":", 1)
+            labels[current_symbol][key.strip()] = value.strip().strip('"').strip("'")
+
+    return labels
 
 
 def parse_ts(text: str) -> datetime:
@@ -339,6 +379,7 @@ def result_to_row(
     target_family: str,
     max_ladder_sell_fraction: Decimal,
     rank_metric: str,
+    visual_labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     total_return = as_decimal(getattr(result, "total_return_pct_with_remaining", None))
     hold_return = as_decimal(getattr(result, "hold_return_pct", None))
@@ -369,11 +410,21 @@ def result_to_row(
 
     fills = getattr(result, "fills", None) or []
 
+    labels = visual_labels or {}
+
     row = {
         "symbol": getattr(result, "symbol", ""),
         "status": getattr(result, "status", ""),
         "target_family": target_family,
         "exit_archetype": exit_archetype_for_family(target_family),
+        "scoreboard_profile_hint": exit_archetype_for_family(target_family),
+        "visual_validation_status": labels.get("visual_validation_status", ""),
+        "validated_exit_profile_hint": labels.get("validated_exit_profile_hint", ""),
+        "fib_exit_responsiveness_class": labels.get("fib_exit_responsiveness_class", ""),
+        "ladder_timing_class": labels.get("ladder_timing_class", ""),
+        "distribution_hint": labels.get("distribution_hint", ""),
+        "moonbag_need_class": labels.get("moonbag_need_class", ""),
+        "visual_notes": labels.get("notes", ""),
         "max_ladder_sell_fraction": max_ladder_sell_fraction,
         "sold_fraction": sold_fraction,
         "remaining_fraction": remaining_fraction,
@@ -438,6 +489,14 @@ def printable_row(row: dict[str, Any]) -> dict[str, str]:
         "status": str(row.get("status", "")),
         "target_family": str(row.get("target_family", "")),
         "exit_archetype": str(row.get("exit_archetype", "")),
+        "scoreboard_profile_hint": str(row.get("scoreboard_profile_hint", "")),
+        "visual_validation_status": str(row.get("visual_validation_status", "")),
+        "validated_exit_profile_hint": str(row.get("validated_exit_profile_hint", "")),
+        "fib_exit_responsiveness_class": str(row.get("fib_exit_responsiveness_class", "")),
+        "ladder_timing_class": str(row.get("ladder_timing_class", "")),
+        "distribution_hint": str(row.get("distribution_hint", "")),
+        "moonbag_need_class": str(row.get("moonbag_need_class", "")),
+        "visual_notes": str(row.get("visual_notes", "")),
         "max_ladder_sell_fraction": dec_text(row.get("max_ladder_sell_fraction"), "0.0000"),
         "sold_fraction": dec_text(row.get("sold_fraction"), "0.0000"),
         "remaining_fraction": dec_text(row.get("remaining_fraction"), "0.0000"),
@@ -486,6 +545,11 @@ def print_best_rows(best_rows: list[dict[str, Any]]) -> None:
         "status",
         "target_family",
         "exit_archetype",
+        "visual_validation_status",
+        "validated_exit_profile_hint",
+        "fib_exit_responsiveness_class",
+        "distribution_hint",
+        "moonbag_need_class",
         "max_ladder_sell_fraction",
         "total_return_pct_with_remaining",
         "hold_return_pct",
@@ -508,6 +572,7 @@ def main() -> int:
     symbols = parse_symbol_list(args.symbols)
     target_families = parse_csv_list(args.target_families)
     max_sell_fractions = parse_decimal_list(args.max_sell_fractions)
+    visual_labels_by_symbol = parse_visual_labels_file(args.visual_labels_file)
     from_ts = parse_ts(args.from_ts)
     to_ts = parse_ts(args.to_ts)
 
@@ -538,6 +603,7 @@ def main() -> int:
                                 target_family=target_family,
                                 max_ladder_sell_fraction=max_sell_fraction,
                                 rank_metric=args.rank_metric,
+                                visual_labels=visual_labels_by_symbol.get(symbol, {}),
                             )
                         )
                 continue
@@ -574,6 +640,7 @@ def main() -> int:
                             target_family=target_family,
                             max_ladder_sell_fraction=max_sell_fraction,
                             rank_metric=args.rank_metric,
+                            visual_labels=visual_labels_by_symbol.get(symbol, {}),
                         )
                     )
 
@@ -594,6 +661,8 @@ def main() -> int:
         "target_families": target_families,
         "max_sell_fractions": max_sell_fractions,
         "rank_metric": args.rank_metric,
+        "visual_labels_file": args.visual_labels_file,
+        "visual_labels_by_symbol": visual_labels_by_symbol,
         "rows_total": len(all_rows),
         "best_rows": best_rows,
         "all_rows": all_rows,

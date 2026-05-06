@@ -1,0 +1,49 @@
+# Synth v2.6 research config
+# Manual visual validation labels for fib exit ladder research.
+# These labels are research-only and must not create orders or bypass decision_gate.
+
+symbols:
+  LINK:
+    visual_validation_status: VISUAL_PASS_BUT_EARLY
+    fib_exit_responsiveness_class: HIGH
+    ladder_timing_class: TOO_EARLY
+    distribution_hint: TOP_HEAVY
+    moonbag_need_class: MEDIUM
+    validated_exit_profile_hint: CONTROLLED_3X4X_TOP_HEAVY
+    notes: Fib target zones catch main peaks well; early ladder rungs are too heavy.
+
+  XLM:
+    visual_validation_status: VISUAL_PASS
+    fib_exit_responsiveness_class: HIGH
+    ladder_timing_class: GOOD
+    distribution_hint: TOP_HEAVY
+    moonbag_need_class: MEDIUM
+    validated_exit_profile_hint: CONTROLLED_3X4X_TOP_HEAVY
+    notes: Fib targets catch three main peaks very cleanly.
+
+  HOT:
+    visual_validation_status: VISUAL_PASS_BUT_EARLY
+    fib_exit_responsiveness_class: HIGH
+    ladder_timing_class: TOO_EARLY
+    distribution_hint: LATE_TOP_HEAVY
+    moonbag_need_class: EXTREME
+    validated_exit_profile_hint: EXPLOSIVE_SUPERCYCLE_LATE_MOONBAG
+    notes: Fib targets catch peak zones, but later extension requires higher ladder and large moonbag.
+
+  SOL:
+    visual_validation_status: VISUAL_WEAK
+    fib_exit_responsiveness_class: LOW
+    ladder_timing_class: UNCONFIRMED
+    distribution_hint: UNCONFIRMED
+    moonbag_need_class: UNCONFIRMED
+    validated_exit_profile_hint: UNCONFIRMED_SUPERCYCLE
+    notes: Scoreboard result is usable, but visual fib structure is not convincing.
+
+  XRP:
+    visual_validation_status: VISUAL_AMBIGUOUS
+    fib_exit_responsiveness_class: MEDIUM
+    ladder_timing_class: AMBIGUOUS
+    distribution_hint: UNCONFIRMED
+    moonbag_need_class: HIGH
+    validated_exit_profile_hint: UNCONFIRMED_EXPLOSIVE
+    notes: Difficult visual read; needs alternative anchor/pivot tests.
