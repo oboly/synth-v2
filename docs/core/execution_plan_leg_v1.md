@@ -1,8 +1,8 @@
 # Execution Plan Leg V1
 
-Status: schema proposal only  
-Scope: future execution planner persistence  
-Live trading permission: NOT_GRANTED  
+Status: schema proposal only
+Scope: future execution planner persistence
+Live trading permission: NOT_GRANTED
 
 ## Purpose
 
@@ -17,7 +17,7 @@ It supports:
 - per-leg fill monitoring
 - clean separation between planner intent and executor order handling
 
-This document is design-only.  
+This document is design-only.
 No migration is created here.
 
 ## Boundary
