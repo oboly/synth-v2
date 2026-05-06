@@ -172,7 +172,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--from-ts", default="2020-01-01 00:00:00")
     parser.add_argument("--to-ts", default="2022-01-01 00:00:00")
     parser.add_argument("--target-family", choices=sorted(TARGET_FAMILIES), default="PRO_3X4X")
-    parser.add_argument("--max-ladder-sell-fraction", default="1.00", help="Maximum total position fraction sold by the ladder. 0.80 leaves 20% moonbag.")
+    parser.add_argument("--max-ladder-sell-fraction", default="1.00", help="Maximum total position fraction sold by the ladder. 0.80 leaves 20%% moonbag.")
     parser.add_argument("--pivot-threshold-pct", default="0.25")
     parser.add_argument("--min-wave1-gain-pct", default="1.00", help="Minimum wave1 gain as fraction, e.g. 1.00 = +100%%.")
     parser.add_argument("--min-wave1-days", type=int, default=14, help="Minimum days between anchor low and wave1 high.")
