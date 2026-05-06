@@ -228,6 +228,40 @@ def fetch_asset_id(conn: pymysql.connections.Connection, symbol: str) -> Optiona
     )
 
 
+def resolve_candle_columns(conn: pymysql.connections.Connection) -> dict[str, str]:
+    helper_names = (
+        "detect_candle_columns",
+        "fetch_candle_columns",
+        "resolve_candle_columns",
+        "get_candle_columns",
+    )
+
+    for helper_name in helper_names:
+        helper = getattr(ladder_bt, helper_name, None)
+        if helper is None:
+            continue
+
+        resolved = call_with_known_kwargs(
+            helper,
+            {
+                "conn": conn,
+                "table_name": "obs_market_candle",
+                "table": "obs_market_candle",
+            },
+        )
+        if isinstance(resolved, dict):
+            return {str(key): str(value) for key, value in resolved.items()}
+
+    return {
+        "open_ts": "open_ts_utc",
+        "close_ts": "close_ts_utc",
+        "open": "open_price",
+        "high": "high_price",
+        "low": "low_price",
+        "close": "close_price",
+    }
+
+
 def fetch_candles(
     conn: pymysql.connections.Connection,
     *,
@@ -242,6 +276,7 @@ def fetch_candles(
         ladder_bt.fetch_candles,
         {
             "conn": conn,
+            "candle_columns": resolve_candle_columns(conn),
             "asset_id": asset_id,
             "symbol": symbol,
             "venue": venue,
