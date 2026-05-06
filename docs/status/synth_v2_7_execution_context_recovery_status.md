@@ -1,73 +1,142 @@
 # Synth v2.7 Execution Context Recovery Status
 
-Last updated: 2026-05-06
-
 ## Current state
 
-- Live trading permission: NOT_GRANTED.
-- 1h, 4h, and 1d chains remain paused in crontab.
-- Planner/executor/runtime integration was not touched.
-- No broker/order calls were made.
-- `execution_zone_context` has been restored as a latest-only operational table.
+Last confirmed HEAD:
 
-## Operational context scope
+- `eaa8fa7 Move trade setup filter observation DDL to migration`
 
-- Venue: `bitvavo`
-- Interval: `4h`
-- Sleeve: `SWING_STRUCTURAL`
-- Context rows: 41
-- Covered assets: 41
-- Current `asof_ts_utc`: `2026-05-06 16:00:00`
-- Contaminated historical backfill rows: 0
-- LINK asset_id 70 is included and no longer missing.
+Recent relevant commits:
 
-## Code hardening committed
-
-Latest relevant commit:
-
+- `eaa8fa7 Move trade setup filter observation DDL to migration`
+- `d25cb4c Remove plan lifecycle from paused chains`
+- `066a7d4 Document execution context recovery status`
 - `91eac01 Keep operational zone context latest-only`
+- `e25154d Document Synth v2.6 execution schema status`
 
-Changes:
+Branch status at last confirmation:
 
-- `src/zone/repository.py`
-  - Added `delete_execution_zone_context_scope()`.
-  - Deletes existing context rows for venue + interval + sleeve, optionally scoped to one asset.
+- `main == origin/main`
+- working tree clean after push
+- live trading permission: `NOT_GRANTED`
+- chains remain paused in crontab
 
-- `src/zone/run_zone_engine_v1.py`
-  - Deletes existing scoped context before `--write-db`.
-  - Default `--limit-assets` increased from 40 to 100 to avoid silently excluding LINK/other enabled assets.
+## Recovery outcome
 
-## Crontab status
+Operational `execution_zone_context` recovery succeeded.
 
-Chains remain paused:
+Verified:
 
-- `run_chain_1h.sh`
-- `run_chain_4h.sh`
-- `run_chain_1d.sh`
+- latest-only 4h operational context restored
+- LINK context restored
+- no missing/stale context rows for enabled tracked assets
+- no contaminated/historical rows in operational `execution_zone_context`
+- `src.zone.run_zone_engine_v1` import works
+- zone context generation writes current/latest operational rows only
 
-Backup DDL typo was fixed:
+The zone runner was hardened:
 
-- Correct path:
-  `/home/gurk/projects/synth-v2/logs/backup_ddl.log`
+- default `--limit-assets` increased from 40 to 100
+- before write, current scope is deleted by:
+  - venue
+  - interval_code
+  - sleeve_code
+  - optional asset_id
+- this keeps operational `execution_zone_context` latest-only
 
-## Architecture invariants
+## Chain safety cleanup
 
-- `selection_engine` remains market-only and account-agnostic.
-- `decision_gate` remains the account-aware permission layer.
-- `execution_planner` remains execution intent/planning only.
-- `executor` / agents remain order handling only.
-- Historical/research context backfills must not write into `synth.execution_zone_context`.
-- Research/backtest history belongs in `synth_bt` or dedicated research tables.
+The paused chain scripts were cleaned:
 
-## Next TODO
+- removed `src.plan_lifecycle.run_plan_lifecycle` from:
+  - `scripts/run_chain_1h.sh`
+  - `scripts/run_chain_4h.sh`
+  - `scripts/run_chain_1d.sh`
+- replaced `set -euo pipefail` with `set -u`
+- added explicit `run_step` wrappers
+- preserved flock overlap protection
+- added 4h zone context restore to `scripts/run_chain_4h.sh`
 
-1. Verify repo clean and `main == origin/main`.
-2. Inspect the 4h chain script before unpausing anything.
-3. Confirm the chain order is candle-close safe:
-   - market ETL complete
-   - features complete
-   - signals complete
-   - selection/advice/replay complete
-   - only then downstream consumers
-4. Add or verify a guard that fails if `execution_zone_context` is missing/stale for enabled tradeable assets.
-5. Do not resume planner/executor/live loops without explicit approval.
+Current intended 4h chain shape:
+
+1. candles ETL
+2. feature build
+3. signal state ETL
+4. advice engine
+5. ranking engine
+6. asset interval quality snapshot
+7. selection engine
+8. trade setup filter observation
+9. latest-only zone context restore
+
+Forbidden runtime modules remain out of the paused chains:
+
+- decision_gate
+- execution_planner
+- executor
+- broker/order handling
+- plan_lifecycle
+
+## Crontab safety
+
+Crontab status:
+
+- chain jobs remain commented with `PAUSED_FOR_SIGNAL_BACKFILL`
+- backup DDL log typo was corrected from `synt-v2` to `synth-v2`
+- exact bad path `/home/gurk/projects/synt-v2` no longer present
+
+Active cron jobs are limited to:
+
+- Bitvavo ticker24h ETL
+- CoinGecko asset/global ETL
+- backups
+
+## Trade setup filter cleanup
+
+Runtime DDL was removed from `src/trade_setup_filter/observation_repository.py`.
+
+The schema now lives in:
+
+- `db/migrations/20260507_trade_setup_filter_observation_v1.sql`
+
+Runtime now only verifies table existence before writing observations.
+
+Verified:
+
+- Python compile passes
+- no `CREATE TABLE`, `DROP TABLE`, or `ALTER TABLE` remains in `src/trade_setup_filter`
+- `synth.trade_setup_filter_observation` exists in the current dev DB
+
+## Important boundary
+
+`trade_setup_filter` is still market-only / observation-only.
+
+Allowed:
+
+- read latest selection/ranking/BTC context
+- evaluate market-only setup filter state
+- write market-only observation rows
+
+Forbidden:
+
+- account state
+- balance state
+- position state
+- open order state
+- execution plans
+- execution events
+- broker/order calls
+
+## Next verification
+
+Wait for the next completed 4h candle, then run one manual 4h chain smoke while cron remains paused.
+
+The manual smoke should verify:
+
+- chain exits cleanly
+- `execution_zone_context` contains exactly latest 4h operational context rows
+- no missing/stale context rows
+- no contaminated/historical operational context rows
+- no execution/decision/planner/executor/order tables are touched by the chain
+
+Do not resume cron chains until this manual 4h smoke passes.
