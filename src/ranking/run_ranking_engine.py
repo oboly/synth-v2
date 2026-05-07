@@ -26,6 +26,78 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
     return Decimal(str(value))
 
 
+def _normalize_ts(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def fetch_recent_snapshot_candidates(
+    conn,
+    *,
+    venue: str,
+    interval_code: str,
+    limit: int = 20,
+) -> list[datetime]:
+    sql = """
+    SELECT DISTINCT
+        s.signal_ts_utc
+    FROM signal_engine_state s
+    WHERE s.venue = %s
+      AND s.interval_code = %s
+    ORDER BY s.signal_ts_utc DESC
+    LIMIT %s
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(sql, (venue, interval_code, limit))
+        rows = cur.fetchall()
+
+    out: list[datetime] = []
+    for row in rows:
+        value = row["signal_ts_utc"] if isinstance(row, dict) else row[0]
+        if value is not None:
+            out.append(_normalize_ts(value))
+
+    return out
+
+
+def count_enabled_rows_for_snapshot(
+    conn,
+    *,
+    venue: str,
+    interval_code: str,
+    snapshot_ts_utc: datetime,
+) -> int:
+    sql = """
+    SELECT
+        COUNT(*) AS snapshot_rows
+    FROM signal_engine_state s
+    JOIN asset a
+      ON a.asset_id = s.asset_id
+    WHERE s.venue = %s
+      AND s.interval_code = %s
+      AND s.signal_ts_utc = %s
+      AND a.is_enabled = 1
+    """
+
+    with conn.cursor() as cur:
+        cur.execute(
+            sql,
+            (
+                venue,
+                interval_code,
+                snapshot_ts_utc.replace(tzinfo=None),
+            ),
+        )
+        row = cur.fetchone()
+
+    if not row:
+        return 0
+
+    return int(row["snapshot_rows"] if isinstance(row, dict) else row[0])
+
+
 def fetch_latest_snapshot_ts(conn, *, venue: str, interval_code: str) -> datetime | None:
     min_snapshot_rows = {
         "1h": 20,
@@ -33,37 +105,24 @@ def fetch_latest_snapshot_ts(conn, *, venue: str, interval_code: str) -> datetim
         "1d": 20,
     }.get(interval_code, 20)
 
-    sql = """
-    SELECT
-        s.signal_ts_utc AS snapshot_ts_utc,
-        COUNT(*) AS snapshot_rows
-    FROM signal_engine_state s
-    JOIN asset a
-      ON a.asset_id = s.asset_id
-    WHERE s.venue = %s
-      AND s.interval_code = %s
-      AND a.is_enabled = 1
-    GROUP BY s.signal_ts_utc
-    HAVING COUNT(*) >= %s
-    ORDER BY s.signal_ts_utc DESC
-    LIMIT 1
-    """
+    candidates = fetch_recent_snapshot_candidates(
+        conn,
+        venue=venue,
+        interval_code=interval_code,
+        limit=20,
+    )
 
-    with conn.cursor() as cur:
-        cur.execute(sql, (venue, interval_code, min_snapshot_rows))
-        row = cur.fetchone()
+    for snapshot_ts_utc in candidates:
+        snapshot_rows = count_enabled_rows_for_snapshot(
+            conn,
+            venue=venue,
+            interval_code=interval_code,
+            snapshot_ts_utc=snapshot_ts_utc,
+        )
+        if snapshot_rows >= min_snapshot_rows:
+            return snapshot_ts_utc
 
-    if not row:
-        return None
-
-    snapshot_ts = row["snapshot_ts_utc"] if isinstance(row, dict) else row[0]
-    if snapshot_ts is None:
-        return None
-
-    if snapshot_ts.tzinfo is None:
-        return snapshot_ts.replace(tzinfo=UTC)
-
-    return snapshot_ts.astimezone(UTC)
+    return None
 
 
 def fetch_ranking_inputs(
