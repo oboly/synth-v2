@@ -274,3 +274,36 @@ Interpretation:
 - The signal engine write path works on gurkDB.
 - `ROW_DELTA=0` is consistent with updating/upserting an existing latest signal row.
 - No chain, advice/ranking writer, selection writer, decision, execution, or cron runtime was started.
+
+## Stage 4a controlled signal engine write update
+
+Date: 2026-05-09
+
+A controlled single-shot signal engine writer test was completed on gurkDB.
+
+Scope:
+
+- asset: BTC
+- venue: bitvavo
+- interval: 1h
+- signal snapshot: 2026-05-08 05:00:00
+- writer: `src.signal_engine.run_signal_state_etl`
+- mode: manual, latest-snapshot, signal-only
+
+Dry-run result:
+
+- feat rows processed: 1
+- written: 0
+- row delta: 0
+
+Real write result:
+
+- signal rows written by runner: 1
+- row delta in `signal_engine_state`: 0
+- latest BTC 1h `created_ts_utc` updated to 2026-05-09 11:49:43
+
+Interpretation:
+
+- The signal engine write path works on gurkDB.
+- `ROW_DELTA=0` is consistent with updating/upserting an existing latest signal row.
+- No chain, advice/ranking writer, selection writer, decision, execution, or cron runtime was started.
