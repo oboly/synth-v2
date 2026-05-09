@@ -206,3 +206,38 @@ Interpretation:
 - The bounded ETL write path works on gurkDB.
 - `written=3` with `ROW_DELTA=2` is consistent with one existing candle being upserted and two new candles being inserted.
 - No chain, feature writer, signal/advice/ranking writer, decision, execution, or cron runtime was started.
+
+## Stage 3 controlled feature write update
+
+Date: 2026-05-09
+
+A controlled single-shot feature writer test was completed on gurkDB.
+
+Code baseline:
+
+- commit: 45ea1b5
+- change: bounded feature write-window support was merged into main
+- `run_feat_candle` now supports `--start`, `--end`, `--lookback-hours`, and `--warmup-bars`
+
+Scope:
+
+- asset: BTC
+- venue: bitvavo
+- interval: 1h
+- window start: 2026-05-08T05:00:00+00:00
+- window end: 2026-05-08T09:00:00+00:00
+- writer: `src.features.run_feat_candle`
+- mode: manual, bounded, feature-only
+- warmup bars: 300
+
+Result:
+
+- feature writer reported rows: 4
+- row delta in `feat_candle`: +3
+- latest BTC 1h feature close after test: 2026-05-08 08:00:00
+
+Interpretation:
+
+- The bounded feature write path works on gurkDB.
+- `rows=4` with `FEATURE_ROW_DELTA=3` is consistent with one existing feature row being upserted and three new feature rows being inserted.
+- No chain, ETL batch beyond the previous Stage 2 test, signal/advice/ranking writer, decision, execution, or cron runtime was started.
