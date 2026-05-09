@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -31,6 +31,28 @@ class FeatureRow:
     ema_spread_pct: Decimal | None
 
 
+def _normalize_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _db_ts(value: datetime) -> datetime:
+    return _normalize_utc(value).replace(tzinfo=None)
+
+
+def _interval_delta(interval_code: str) -> timedelta:
+    interval = interval_code.strip().lower()
+
+    if interval.endswith("m"):
+        return timedelta(minutes=int(interval[:-1]))
+    if interval.endswith("h"):
+        return timedelta(hours=int(interval[:-1]))
+    if interval.endswith("d"):
+        return timedelta(days=int(interval[:-1]))
+
+    raise ValueError(f"Unsupported interval_code for warmup calculation: {interval_code}")
+
 
 def load_assets(conn) -> list[dict[str, Any]]:
     sql = """
@@ -39,6 +61,7 @@ def load_assets(conn) -> list[dict[str, Any]]:
     WHERE is_enabled = 1
     ORDER BY asset_id
     """
+
     with conn.cursor() as cur:
         cur.execute(sql)
         rows = cur.fetchall()
@@ -70,8 +93,26 @@ def load_candles(
     asset_id: int,
     venue: str,
     interval_code: str,
+    *,
+    source_start_ts_utc: datetime | None = None,
+    source_end_ts_utc: datetime | None = None,
 ) -> pd.DataFrame:
-    sql = """
+    where_parts = [
+        "asset_id = %s",
+        "venue = %s",
+        "interval_code = %s",
+    ]
+    params: list[Any] = [asset_id, venue, interval_code]
+
+    if source_start_ts_utc is not None:
+        where_parts.append("close_ts_utc >= %s")
+        params.append(_db_ts(source_start_ts_utc))
+
+    if source_end_ts_utc is not None:
+        where_parts.append("close_ts_utc < %s")
+        params.append(_db_ts(source_end_ts_utc))
+
+    sql = f"""
     SELECT
         candle_id,
         asset_id,
@@ -85,14 +126,12 @@ def load_candles(
         close_price,
         volume_base
     FROM obs_market_candle
-    WHERE asset_id = %s
-      AND venue = %s
-      AND interval_code = %s
+    WHERE {" AND ".join(where_parts)}
     ORDER BY open_ts_utc
     """
 
     with conn.cursor() as cur:
-        cur.execute(sql, (asset_id, venue, interval_code))
+        cur.execute(sql, tuple(params))
         rows = cur.fetchall()
 
     if not rows:
@@ -214,6 +253,28 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def filter_write_window(
+    df: pd.DataFrame,
+    *,
+    write_start_ts_utc: datetime | None,
+    write_end_ts_utc: datetime | None,
+) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    out = df
+
+    if write_start_ts_utc is not None:
+        start_ts = pd.Timestamp(_normalize_utc(write_start_ts_utc))
+        out = out[out["close_ts_utc"] >= start_ts]
+
+    if write_end_ts_utc is not None:
+        end_ts = pd.Timestamp(_normalize_utc(write_end_ts_utc))
+        out = out[out["close_ts_utc"] < end_ts]
+
+    return out.copy()
+
+
 def dataframe_to_feature_rows(df: pd.DataFrame) -> list[FeatureRow]:
     if df.empty:
         return []
@@ -308,7 +369,7 @@ def upsert_feature_rows(conn, rows: list[FeatureRow]) -> int:
             row.asset_id,
             row.venue,
             row.interval_code,
-            row.close_ts_utc.replace(tzinfo=None),
+            _db_ts(row.close_ts_utc),
             None if row.ema_20 is None else str(row.ema_20),
             None if row.ema_50 is None else str(row.ema_50),
             None if row.rsi_14 is None else str(row.rsi_14),
@@ -339,17 +400,36 @@ def run_feat_candle_for_asset_interval(
     asset_id: int,
     venue: str,
     interval_code: str,
+    *,
+    write_start_ts_utc: datetime | None = None,
+    write_end_ts_utc: datetime | None = None,
+    warmup_bars: int = 300,
 ) -> int:
+    source_start_ts_utc = None
+
+    if write_start_ts_utc is not None:
+        source_start_ts_utc = _normalize_utc(write_start_ts_utc) - (
+            _interval_delta(interval_code) * warmup_bars
+        )
+
     df = load_candles(
         conn=conn,
         asset_id=asset_id,
         venue=venue,
         interval_code=interval_code,
+        source_start_ts_utc=source_start_ts_utc,
+        source_end_ts_utc=write_end_ts_utc,
     )
 
     if df.empty:
         return 0
 
     feat_df = compute_features(df)
-    rows = dataframe_to_feature_rows(feat_df)
+    write_df = filter_write_window(
+        feat_df,
+        write_start_ts_utc=write_start_ts_utc,
+        write_end_ts_utc=write_end_ts_utc,
+    )
+
+    rows = dataframe_to_feature_rows(write_df)
     return upsert_feature_rows(conn, rows)
