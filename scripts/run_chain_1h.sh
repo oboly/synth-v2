@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 
+# Re-exec with bash if someone accidentally starts this script via sh.
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec /usr/bin/env bash "$0" "$@"
+fi
+
 # Prevent overlapping 1h chain runs.
 # This protects DB writes and avoids duplicate/competing pipeline snapshots.
 if [[ "${SYNTH_CHAIN_1H_LOCKED:-0}" != "1" ]]; then
@@ -9,7 +14,14 @@ fi
 set -u
 
 cd /home/gurk/projects/synth-v2 || exit 1
-source venv/bin/activate
+if [ -f .venv/bin/activate ]; then
+    source .venv/bin/activate
+elif [ -f venv/bin/activate ]; then
+    source venv/bin/activate
+else
+    echo "[CHAIN][1h][FAIL] no Python venv found"
+    exit 1
+fi
 
 run_step() {
     echo "[CHAIN][1h][STEP] $*"
@@ -21,10 +33,24 @@ run_step() {
     fi
 }
 
-echo "[CHAIN][1h] START $(date -u +%F' '%T) UTC"
+CHAIN_1H_END_TS="$(date -u +%Y-%m-%dT%H:00:00+00:00)"
+CHAIN_1H_ETL_START_TS="$(date -u -d '48 hours ago' +%Y-%m-%dT%H:00:00+00:00)"
 
-run_step python -m src.etl.bitvavo.run_candles_etl --interval 1h
-run_step python -m src.features.run_feat_candle --interval 1h
+echo "[CHAIN][1h] START $(date -u +%F' '%T) UTC"
+echo "[CHAIN][1h] ETL window start=${CHAIN_1H_ETL_START_TS} end=${CHAIN_1H_END_TS}"
+echo "[CHAIN][1h] feature window lookback_hours=240 warmup_bars=300 end=${CHAIN_1H_END_TS}"
+
+run_step python -m src.etl.bitvavo.run_candles_etl \
+    --interval 1h \
+    --start "$CHAIN_1H_ETL_START_TS" \
+    --end "$CHAIN_1H_END_TS"
+
+run_step python -m src.features.run_feat_candle \
+    --interval 1h \
+    --lookback-hours 240 \
+    --warmup-bars 300 \
+    --end "$CHAIN_1H_END_TS"
+
 run_step python -m src.signal_engine.run_signal_state_etl --venue bitvavo --interval 1h
 run_step python -m src.advice.run_advice_engine --interval 1h
 run_step python -m src.ranking.run_ranking_engine --venue bitvavo --interval 1h
