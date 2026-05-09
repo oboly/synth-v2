@@ -343,3 +343,39 @@ Interpretation:
 - `ROW_DELTA=0` is consistent with updating/upserting existing latest advice rows.
 - `created_ts_utc` did not change because the advice upsert does not update that column.
 - No chain, ranking writer, selection writer, decision, execution, or cron runtime was started.
+
+## Stage 4c controlled ranking engine write update
+
+Date: 2026-05-09
+
+A controlled ranking engine writer test was completed on gurkDB.
+
+Scope:
+
+- venue: bitvavo
+- interval: 1h
+- signal/advice snapshot: 2026-05-08 05:00:00
+- writer: `src.ranking.run_ranking_engine`
+- mode: manual, latest-snapshot, ranking-only
+
+Preflight:
+
+- latest signal snapshot: 2026-05-08 05:00:00
+- enabled signal rows at latest snapshot: 37
+- enabled advice rows at latest snapshot: 37
+- ranking runner confirmed latest-snapshot only
+- ranking writer uses `INSERT ... ON DUPLICATE KEY UPDATE`
+- no DELETE or historical replay path was used
+
+Real write result:
+
+- ranking rows written by runner: 37
+- row delta in `ranking_state`: 0
+- rows at latest ranking snapshot after test: 37
+- latest ranking snapshot remained 2026-05-08 05:00:00
+
+Interpretation:
+
+- The ranking engine write path works on gurkDB.
+- `ROW_DELTA=0` is consistent with updating/upserting existing latest ranking rows.
+- No chain, selection writer, decision, execution, or cron runtime was started.
