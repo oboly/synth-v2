@@ -3,3 +3,4 @@ pymysql
 pandas
 numpy
 python-dotenv
+PyYAML
