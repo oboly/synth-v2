@@ -13,13 +13,16 @@ fi
 
 set -u
 
-cd /home/gurk/projects/synth-v2 || exit 1
-if [ -f .venv/bin/activate ]; then
-    source .venv/bin/activate
-elif [ -f venv/bin/activate ]; then
-    source venv/bin/activate
+REPO_DIR="/home/gurk/projects/synth-v2"
+
+cd "$REPO_DIR" || exit 1
+
+if [ -f ".venv/bin/activate" ]; then
+    source ".venv/bin/activate"
+elif [ -f "venv/bin/activate" ]; then
+    source "venv/bin/activate"
 else
-    echo "[CHAIN][1h][FAIL] no Python venv found"
+    echo "[CHAIN][1h][FAIL] no Python venv found at .venv/ or venv/"
     exit 1
 fi
 
@@ -37,6 +40,8 @@ CHAIN_1H_END_TS="$(date -u +%Y-%m-%dT%H:00:00+00:00)"
 CHAIN_1H_ETL_START_TS="$(date -u -d '48 hours ago' +%Y-%m-%dT%H:00:00+00:00)"
 
 echo "[CHAIN][1h] START $(date -u +%F' '%T) UTC"
+echo "[CHAIN][1h] repo=${REPO_DIR}"
+echo "[CHAIN][1h] python=$(command -v python)"
 echo "[CHAIN][1h] ETL window start=${CHAIN_1H_ETL_START_TS} end=${CHAIN_1H_END_TS}"
 echo "[CHAIN][1h] feature window lookback_hours=240 warmup_bars=300 end=${CHAIN_1H_END_TS}"
 
