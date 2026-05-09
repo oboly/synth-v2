@@ -379,3 +379,41 @@ Interpretation:
 - The ranking engine write path works on gurkDB.
 - `ROW_DELTA=0` is consistent with updating/upserting existing latest ranking rows.
 - No chain, selection writer, decision, execution, or cron runtime was started.
+
+## Stage 4d controlled selection engine write update
+
+Date: 2026-05-09
+
+A controlled selection engine writer test was completed on gurkDB.
+
+Scope:
+
+- venue: bitvavo
+- limit: 40
+- writer: `src.selection.run_selection_engine_v2`
+- mode: manual, selection-only
+- DB write required explicit `--write-db`
+
+Dry-run result:
+
+- selection rows printed: 40
+- row delta in `selection_state`: 0
+- latest selection snapshot remained unchanged
+
+Real write result:
+
+- selection rows written by runner: 40
+- row delta in `selection_state`: +40
+- new selection snapshot asof timestamp: 2026-05-09 11:57:18.165354
+- no decision, execution, or cron runtime was started
+
+Verification note:
+
+- The first verification query returned `ROWS_AT_AFTER_LATEST=0` because it formatted `asof_ts_utc` to second precision while `selection_state.asof_ts_utc` stores microseconds.
+- Exact verification should compare against `MAX(asof_ts_utc)` directly, preserving microseconds.
+
+Interpretation:
+
+- The selection engine write path works on gurkDB.
+- Selection remains market-only and does not trigger decision/execution.
+- No full chain or cron runtime was started.
