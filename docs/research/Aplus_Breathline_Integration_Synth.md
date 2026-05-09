@@ -592,3 +592,94 @@ These are not trading signals.
 
 They are candidate research features for later forecasting.
 
+
+---
+
+## Cluster Member Scoreboard
+
+A read-only cluster member scoreboard has been added:
+
+- `src/breathline/run_breathline_cluster_member_scoreboard.py`
+
+Purpose:
+
+- convert A+ cluster membership into token-level research context
+- track active cluster membership
+- track appearance count
+- track current persistence streak
+- join latest Synth selection context
+- compare 24h / 72h / 168h forward returns for cluster members
+
+This remains research-only.
+
+It must not affect:
+
+- selection_engine
+- decision_gate
+- execution_planner
+- executor
+- live/paper order logic
+
+---
+
+## First Scoreboard Observations
+
+Current active A+ cluster:
+
+- AAVE
+- BTC
+- DEEP
+- ETH
+- FET
+- INJ
+- LTC
+- NOT
+- QNT
+- RENDER
+- TAO
+
+Most persistent members:
+
+- AAVE
+- INJ
+- LTC
+- QNT
+- TAO
+- BTC
+
+Early strongest 72h candidates by current scoreboard:
+
+- TAO
+- INJ
+- RENDER
+- NOT
+- FET
+
+Important caveat:
+
+- NOT has very strong early forward returns, but sample size is still small.
+- QNT and AAVE are persistent but have weaker 72h forward performance so far.
+- ETH is a newer cluster member and does not yet have enough 72h/168h validation.
+- Removed members such as SOL, XRP, RED, and WLD should be treated as rotation-out context, not automatic bearish signals.
+
+Working hypothesis:
+
+A+ cluster membership is not sufficient alone.
+
+More useful candidate feature:
+
+- active cluster member
+- high current streak
+- positive 72h forward history
+- improving Synth selection state
+- not purely dependent on a single outlier token
+
+Future forecast layer should estimate:
+
+- probability of positive 24h / 72h / 168h return
+- expected return
+- sample size
+- persistence streak
+- cluster rotation status
+- selection-state disagreement
+
