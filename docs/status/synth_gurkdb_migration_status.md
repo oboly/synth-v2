@@ -142,3 +142,29 @@ Validation completed:
 - `/Data/mariadb` remained active as datadir
 
 Remaining AppArmor DENIED messages for `/sys/devices/.../block/.../dev` were observed during startup, but did not block MariaDB startup, datadir access, writes, or read-only Synth report operation. Treat as non-blocking unless future MariaDB errors appear.
+
+## synth_bt migration update
+
+Date: 2026-05-09
+
+The `synth_bt` database was migrated from Odroid to gurkDB.
+
+Migration method:
+
+- dumped base tables/data from Odroid
+- excluded views from the base dump
+- dumped views separately
+- imported base tables/data into a freshly created `synth_bt` database on gurkDB
+- imported views after stripping legacy DEFINER lines
+
+Validation completed on gurkDB:
+
+- checksum verification passed
+- `synth_bt` contains 26 objects
+- 8 views were imported and tested
+- all imported views returned sample counts successfully
+- total target size reported approximately 383 MB
+
+The first import attempt failed because the target DB was dropped without recreating/selecting `synth_bt`. This was corrected by explicitly creating `synth_bt` and importing with:
+
+    gzip -dc synth_bt_base.sql.gz | mariadb synth_bt
