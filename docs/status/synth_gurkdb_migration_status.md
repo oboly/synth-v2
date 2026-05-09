@@ -468,3 +468,36 @@ Interpretation:
 - The trade setup filter observation write path works on gurkDB.
 - The layer remains market-only and conservative.
 - No decision gate, execution planner, executor, broker/order call, full chain, or cron runtime was started.
+
+## Stage 5 downstream resume and DB helper compatibility update
+
+Date: 2026-05-09
+
+After the quality view/collation recovery, the failed manual 1h chain was resumed from the completed measurement step.
+
+Resume result:
+
+- `asset_interval_quality` latest snapshot: 2026-05-09 12:34:57
+- selection engine wrote 41 rows
+- latest `selection_state.asof_ts_utc`: 2026-05-09 12:36:07.953279
+- trade setup filter wrote 40 observations
+- latest `trade_setup_filter_observation.asof_ts_utc`: 2026-05-09 12:36:07.953279
+
+Selection outcome:
+
+- all candidates were classified as `AVOID`
+- dominant blocker: `BLOCKED_4H_QUALITY`
+- interpretation: the 1h pipeline is now fresh, but 4h quality/context is stale or blocked, so the market-only selection layer correctly refuses trade eligibility
+
+DB helper correction:
+
+- `src/common/db.py` keeps the canonical runtime charset/collation enforcement:
+  - charset: `utf8mb4`
+  - collation: `utf8mb4_unicode_ci`
+- the legacy `db_cursor` context manager was restored as a compatibility wrapper over `get_connection`
+- this prevents older backtest, market-structure, decision-gate, and execution modules from breaking on import while still using the canonical collation-safe connection path
+
+Boundary:
+
+- No decision gate, execution planner, executor, broker/order call, or live trading path was started.
+- The system remains conservative and market-only up to the setup filter stage.

@@ -8,6 +8,7 @@ Boundary:
 - Forces the project-wide charset/collation for every normal Synth runtime connection.
 - Prevents MariaDB client/version defaults from leaking utf8mb4_uca1400_* or other
   incompatible collations into string literals, views, temp expressions, or queries.
+- Preserves the legacy db_cursor context manager contract used by older modules.
 
 Canonical text standard:
 - charset: utf8mb4
@@ -15,6 +16,8 @@ Canonical text standard:
 """
 
 import os
+from contextlib import contextmanager
+from typing import Iterator
 
 import pymysql
 from dotenv import load_dotenv
@@ -80,6 +83,34 @@ def get_connection(database: str | None = None):
         read_timeout=_env_int("DB_READ_TIMEOUT", default=60),
         write_timeout=_env_int("DB_WRITE_TIMEOUT", default=60),
     )
+
+
+@contextmanager
+def db_cursor(commit: bool = False, database: str | None = None) -> Iterator[tuple[object, object]]:
+    """
+    Legacy-compatible cursor context manager.
+
+    Important:
+    - Uses the canonical get_connection() path, so charset/collation protection stays active.
+    - commit=False rolls back after successful read-style usage, matching the old helper.
+    - commit=True commits after successful write-style usage.
+    """
+    conn = get_connection(database=database)
+    try:
+        with conn.cursor() as cur:
+            yield conn, cur
+
+        if commit:
+            conn.commit()
+        else:
+            conn.rollback()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
 
 
 def test_connection(database: str | None = None) -> dict[str, object]:
