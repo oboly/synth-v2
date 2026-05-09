@@ -417,3 +417,54 @@ Interpretation:
 - The selection engine write path works on gurkDB.
 - Selection remains market-only and does not trigger decision/execution.
 - No full chain or cron runtime was started.
+
+## Stage 4e controlled trade setup filter observation update
+
+Date: 2026-05-09
+
+A controlled trade setup filter observation write test was completed on gurkDB.
+
+Scope:
+
+- venue: bitvavo
+- limit: 40
+- filter: `trade_setup_filter_v1`
+- filter version: 1.1
+- asset suitability mode: `candidate_weak_set`
+- writer: `src.trade_setup_filter.run_trade_setup_filter_v1`
+- mode: manual, market-only observation logging
+
+Preflight:
+
+- runner confirmed market-only boundary
+- no account state
+- no order state
+- no execution planning
+- no broker/order actions
+- observation writer uses `INSERT ... ON DUPLICATE KEY UPDATE`
+- no DELETE or runtime DDL path was used
+
+Preview result:
+
+- preview rows printed: 40
+- row delta in `trade_setup_filter_observation`: 0
+
+Real write result:
+
+- observations written by runner: 40
+- row delta in `trade_setup_filter_observation`: +40
+- latest observation `asof_ts_utc`: 2026-05-09 11:57:18.165354
+- latest observation `context_ts_utc`: 2026-05-08 05:00:00
+- rows at latest observation snapshot: 40
+
+Filter outcome:
+
+- all 40 candidates returned `FAIL`
+- main reasons included `MARKET_DAMAGE_RISK`, `RANK_OUTSIDE_SWEET_SPOT`, and `SELECTION_STATE_NOT_ELIGIBLE`
+- no candidate reached a trade-eligible setup state
+
+Interpretation:
+
+- The trade setup filter observation write path works on gurkDB.
+- The layer remains market-only and conservative.
+- No decision gate, execution planner, executor, broker/order call, full chain, or cron runtime was started.
