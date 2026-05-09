@@ -307,3 +307,39 @@ Interpretation:
 - The signal engine write path works on gurkDB.
 - `ROW_DELTA=0` is consistent with updating/upserting an existing latest signal row.
 - No chain, advice/ranking writer, selection writer, decision, execution, or cron runtime was started.
+
+## Stage 4b controlled advice engine write update
+
+Date: 2026-05-09
+
+A controlled advice engine writer test was completed on gurkDB.
+
+Scope:
+
+- venue: bitvavo
+- interval: 1h
+- signal snapshot: 2026-05-08 05:00:00
+- writer: `src.advice.run_advice_engine`
+- mode: manual, latest-snapshot, advice-only
+
+Preflight:
+
+- latest signal snapshot: 2026-05-08 05:00:00
+- enabled signal rows at latest snapshot: 37
+- advice runner confirmed latest-snapshot only
+- advice writer uses `INSERT ... ON DUPLICATE KEY UPDATE`
+- no DELETE or historical replay path was used
+
+Real write result:
+
+- advice rows written by runner: 37
+- row delta in `advice_state`: 0
+- rows at latest advice snapshot after test: 37
+- latest advice snapshot remained 2026-05-08 05:00:00
+
+Interpretation:
+
+- The advice engine write path works on gurkDB.
+- `ROW_DELTA=0` is consistent with updating/upserting existing latest advice rows.
+- `created_ts_utc` did not change because the advice upsert does not update that column.
+- No chain, ranking writer, selection writer, decision, execution, or cron runtime was started.
