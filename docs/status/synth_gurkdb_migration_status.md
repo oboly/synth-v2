@@ -116,3 +116,29 @@ Relevant stash on lapgurk:
 3. Restore additional views only when needed by a concrete command.
 4. Build a controlled runtime/cron plan.
 5. Do not start writers until the runtime plan is reviewed.
+
+## AppArmor cleanup update
+
+Date: 2026-05-09
+
+MariaDB AppArmor was moved from complain mode back to enforce mode.
+
+The active profile is:
+
+    /etc/apparmor.d/mariadbd
+
+The correct local override is:
+
+    /etc/apparmor.d/local/mariadbd
+
+The override allows the dedicated MariaDB datadir on `/Data/mariadb`.
+
+Validation completed:
+
+- controlled DB write smoke passed
+- MariaDB restart under AppArmor enforce passed
+- MariaDB remained active after restart
+- `synth` row checks passed
+- `/Data/mariadb` remained active as datadir
+
+Remaining AppArmor DENIED messages for `/sys/devices/.../block/.../dev` were observed during startup, but did not block MariaDB startup, datadir access, writes, or read-only Synth report operation. Treat as non-blocking unless future MariaDB errors appear.
