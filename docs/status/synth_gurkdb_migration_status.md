@@ -501,3 +501,17 @@ Boundary:
 
 - No decision gate, execution planner, executor, broker/order call, or live trading path was started.
 - The system remains conservative and market-only up to the setup filter stage.
+
+### Stage 5 DB helper compatibility caveat
+
+The canonical DB helper was verified on both Lapgurk and gurkDB:
+
+- `get_connection()` uses `utf8mb4_unicode_ci`
+- `db_cursor()` is restored as a compatibility wrapper
+- direct query against `v_asset_interval_quality_v3` works through the Python helper
+
+A representative import check hit an unrelated legacy backtest issue:
+
+- `src.backtest.repository` imports missing module `src.backtest.types`
+- this is not caused by the DB helper or collation fix
+- this should be handled later as legacy/backtest cleanup, not during gurkDB runtime recovery
