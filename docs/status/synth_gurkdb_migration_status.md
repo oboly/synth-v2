@@ -168,3 +168,41 @@ Validation completed on gurkDB:
 The first import attempt failed because the target DB was dropped without recreating/selecting `synth_bt`. This was corrected by explicitly creating `synth_bt` and importing with:
 
     gzip -dc synth_bt_base.sql.gz | mariadb synth_bt
+
+## Stage 2 controlled ETL write update
+
+Date: 2026-05-09
+
+A controlled single-shot ETL writer test was completed on gurkDB.
+
+Scope:
+
+- asset: BTC
+- market: BTC-EUR
+- venue: bitvavo
+- interval: 1h
+- window start: 2026-05-08T05:00:00+00:00
+- window end: 2026-05-08T08:00:00+00:00
+- writer: `src.etl.bitvavo.run_candles_etl`
+- mode: manual, bounded, ETL-only
+
+Dry-run result:
+
+- raw candles fetched: 3
+- filtered candles: 3
+- written: 0
+- row delta: 0
+
+Real write result:
+
+- raw candles fetched: 3
+- filtered candles: 3
+- ETL reported written: 3
+- row delta in `obs_market_candle`: +2
+- latest BTC 1h close after test: 2026-05-08 08:00:00
+
+Interpretation:
+
+- The bounded ETL write path works on gurkDB.
+- `written=3` with `ROW_DELTA=2` is consistent with one existing candle being upserted and two new candles being inserted.
+- No chain, feature writer, signal/advice/ranking writer, decision, execution, or cron runtime was started.
