@@ -85,4 +85,9 @@ run_step python -m src.trade_setup_filter.run_trade_setup_filter_v1 \
     --write-db \
     --output table
 
+run_step python -m src.strategy_runtime.run_strategy_runtime_snapshot \
+    --interval 1h \
+    --chain-name run_chain_1h \
+    --notes "successful market-only chain run; decision/execution disabled"
+
 echo "[CHAIN][1h] DONE  $(date -u +%F' '%T) UTC"
