@@ -1,46 +1,62 @@
 #!/usr/bin/env bash
 
-# Re-exec with bash if someone accidentally starts this script via sh.
+# Re-exec with bash when invoked through sh.
+# This prevents POSIX sh from breaking bash-compatible runtime behavior.
 if [ -z "${BASH_VERSION:-}" ]; then
-    exec /usr/bin/env bash "$0" "$@"
+    exec bash "$0" "$@"
 fi
 
 # Prevent overlapping 1h chain runs.
 # This protects DB writes and avoids duplicate/competing pipeline snapshots.
-if [[ "${SYNTH_CHAIN_1H_LOCKED:-0}" != "1" ]]; then
-    exec env SYNTH_CHAIN_1H_LOCKED=1 flock -n /tmp/synth_chain_1h.lock "$0" "$@"
+if [ "${SYNTH_CHAIN_1H_LOCKED:-0}" != "1" ]; then
+    exec env SYNTH_CHAIN_1H_LOCKED=1 flock -n /tmp/synth_chain_1h.lock bash "$0" "$@"
 fi
 
 set -u
 
-REPO_DIR="/home/gurk/projects/synth-v2"
+cd /home/gurk/projects/synth-v2 || exit 1
 
-cd "$REPO_DIR" || exit 1
+activate_runtime_venv() {
+    for candidate in venv .venv; do
+        if [ -f "${candidate}/bin/activate" ]; then
+            # shellcheck disable=SC1090
+            . "${candidate}/bin/activate"
 
-if [ -f ".venv/bin/activate" ]; then
-    source ".venv/bin/activate"
-elif [ -f "venv/bin/activate" ]; then
-    source "venv/bin/activate"
-else
-    echo "[CHAIN][1h][FAIL] no Python venv found at .venv/ or venv/"
+            if python -c 'import requests, pymysql, pandas, yaml, dotenv' >/dev/null 2>&1; then
+                echo "[CHAIN][1h] venv=${candidate}"
+                return 0
+            fi
+
+            deactivate >/dev/null 2>&1 || true
+        fi
+    done
+
+    echo "[CHAIN][1h][FAIL] no usable venv found; missing one of: requests pymysql pandas yaml dotenv"
     exit 1
-fi
+}
+
+activate_runtime_venv
 
 run_step() {
     echo "[CHAIN][1h][STEP] $*"
     "$@"
     rc=$?
-    if [[ "$rc" -ne 0 ]]; then
+    if [ "$rc" -ne 0 ]; then
         echo "[CHAIN][1h][FAIL] rc=$rc step=$*"
         exit "$rc"
     fi
 }
 
-CHAIN_1H_END_TS="$(date -u +%Y-%m-%dT%H:00:00+00:00)"
-CHAIN_1H_ETL_START_TS="$(date -u -d '48 hours ago' +%Y-%m-%dT%H:00:00+00:00)"
+CHAIN_1H_END_TS="$(
+    python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); print(n.replace(minute=0, second=0, microsecond=0).isoformat())'
+)"
+
+CHAIN_1H_ETL_START_TS="$(
+    python -c 'from datetime import datetime, timezone, timedelta; n=datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0); print((n - timedelta(hours=48)).isoformat())'
+)"
 
 echo "[CHAIN][1h] START $(date -u +%F' '%T) UTC"
-echo "[CHAIN][1h] repo=${REPO_DIR}"
+echo "[CHAIN][1h] repo=$(pwd)"
 echo "[CHAIN][1h] python=$(command -v python)"
 echo "[CHAIN][1h] ETL window start=${CHAIN_1H_ETL_START_TS} end=${CHAIN_1H_END_TS}"
 echo "[CHAIN][1h] feature window lookback_hours=240 warmup_bars=300 end=${CHAIN_1H_END_TS}"
@@ -52,9 +68,9 @@ run_step python -m src.etl.bitvavo.run_candles_etl \
 
 run_step python -m src.features.run_feat_candle \
     --interval 1h \
+    --end "$CHAIN_1H_END_TS" \
     --lookback-hours 240 \
-    --warmup-bars 300 \
-    --end "$CHAIN_1H_END_TS"
+    --warmup-bars 300
 
 run_step python -m src.signal_engine.run_signal_state_etl --venue bitvavo --interval 1h
 run_step python -m src.advice.run_advice_engine --interval 1h
