@@ -12,7 +12,7 @@ from src.common.db import get_db_connection
 
 
 REPORT_NAME = "broker_balance_latest_report_v1"
-REPORT_VERSION = "0.1"
+REPORT_VERSION = "0.2"
 DEFAULT_ACCOUNT_CODE = "bitvavo_synth_read"
 DEFAULT_VENUE = "bitvavo"
 DEFAULT_SOURCE_NAME = "bitvavo_private_balance_read_v1"
@@ -281,14 +281,29 @@ def run(args: argparse.Namespace) -> int:
             print_safety_rows(safety_rows)
 
         write_permission = broker_write_permission_state()
+        hard_zero_check_names = {
+            "execution_sell_plan_broker_submission_enabled",
+            "execution_sell_plan_live_trading_enabled",
+            "execution_sell_intent_live_trading_enabled",
+            "execution_sell_intent_execution_enabled",
+        }
         unsafe_safety_rows = [
-            row for row in safety_rows if int(row["rows_total"]) != 0
+            row
+            for row in safety_rows
+            if str(row["check_name"]) in hard_zero_check_names
+            and int(row["rows_total"]) != 0
         ]
+
+        broker_snapshot_rows = 0
+        for row in safety_rows:
+            if str(row["check_name"]) == "broker_order_snapshot":
+                broker_snapshot_rows = int(row["rows_total"])
 
         print()
         print("--- permission/safety summary ---")
         print(f"SYNTH_BROKER_WRITE_PERMISSION={write_permission}")
-        print(f"safety_nonzero_checks={len(unsafe_safety_rows)}")
+        print(f"broker_order_snapshot_rows={broker_snapshot_rows}")
+        print(f"hard_safety_nonzero_checks={len(unsafe_safety_rows)}")
 
         if write_permission == "GRANTED":
             print("[FAIL] broker write permission is granted")
