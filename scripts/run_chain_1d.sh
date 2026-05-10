@@ -1,30 +1,75 @@
 #!/usr/bin/env bash
 
+# Re-exec with bash when invoked through sh.
+# This prevents POSIX sh from breaking bash-compatible runtime behavior.
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 # Prevent overlapping 1d chain runs.
 # This protects DB writes and avoids duplicate/competing pipeline snapshots.
-if [[ "${SYNTH_CHAIN_1D_LOCKED:-0}" != "1" ]]; then
-    exec env SYNTH_CHAIN_1D_LOCKED=1 flock -n /tmp/synth_chain_1d.lock "$0" "$@"
+if [ "${SYNTH_CHAIN_1D_LOCKED:-0}" != "1" ]; then
+    exec env SYNTH_CHAIN_1D_LOCKED=1 flock -n /tmp/synth_chain_1d.lock bash "$0" "$@"
 fi
 
 set -u
 
 cd /home/gurk/projects/synth-v2 || exit 1
-source venv/bin/activate
+
+activate_runtime_venv() {
+    for candidate in venv .venv; do
+        if [ -f "${candidate}/bin/activate" ]; then
+            # shellcheck disable=SC1090
+            . "${candidate}/bin/activate"
+
+            if python -c 'import requests, pymysql, pandas, yaml, dotenv' >/dev/null 2>&1; then
+                echo "[CHAIN][1d] venv=${candidate}"
+                return 0
+            fi
+
+            deactivate >/dev/null 2>&1 || true
+        fi
+    done
+
+    echo "[CHAIN][1d][FAIL] no usable venv found; missing one of: requests pymysql pandas yaml dotenv"
+    exit 1
+}
+
+activate_runtime_venv
 
 run_step() {
     echo "[CHAIN][1d][STEP] $*"
     "$@"
     rc=$?
-    if [[ "$rc" -ne 0 ]]; then
+    if [ "$rc" -ne 0 ]; then
         echo "[CHAIN][1d][FAIL] rc=$rc step=$*"
         exit "$rc"
     fi
 }
 
-echo "[CHAIN][1d] START $(date -u +%F' '%T) UTC"
+CHAIN_1D_END_TS="$(
+    python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); print(n.replace(hour=0, minute=0, second=0, microsecond=0).isoformat())'
+)"
 
-run_step python -m src.etl.bitvavo.run_candles_etl --interval 1d
-run_step python -m src.features.run_feat_candle --interval 1d
+CHAIN_1D_ETL_START_TS="$(
+    python -c 'from datetime import datetime, timezone, timedelta; n=datetime.now(timezone.utc); e=n.replace(hour=0, minute=0, second=0, microsecond=0); print((e - timedelta(days=180)).isoformat())'
+)"
+
+echo "[CHAIN][1d] START $(date -u +%F' '%T) UTC"
+echo "[CHAIN][1d] ETL window start=${CHAIN_1D_ETL_START_TS} end=${CHAIN_1D_END_TS}"
+echo "[CHAIN][1d] feature window lookback_hours=2160 warmup_bars=300"
+
+run_step python -m src.etl.bitvavo.run_candles_etl \
+    --interval 1d \
+    --start "$CHAIN_1D_ETL_START_TS" \
+    --end "$CHAIN_1D_END_TS"
+
+run_step python -m src.features.run_feat_candle \
+    --interval 1d \
+    --end "$CHAIN_1D_END_TS" \
+    --lookback-hours 2160 \
+    --warmup-bars 300
+
 run_step python -m src.signal_engine.run_signal_state_etl --venue bitvavo --interval 1d
 run_step python -m src.advice.run_advice_engine --interval 1d
 run_step python -m src.ranking.run_ranking_engine --venue bitvavo --interval 1d
