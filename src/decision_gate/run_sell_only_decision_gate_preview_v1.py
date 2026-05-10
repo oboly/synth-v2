@@ -13,7 +13,7 @@ from src.common.db import get_db_connection
 
 
 POLICY_NAME = "sell_only_decision_gate_preview_v1"
-POLICY_VERSION = "0.2"
+POLICY_VERSION = "0.3"
 DEFAULT_ACCOUNT_CODE = "paper_sell_only_preview"
 DEFAULT_VENUE = "bitvavo"
 DEFAULT_REQUEST_FRACTION = Decimal("1.000000000000000000")
@@ -240,6 +240,62 @@ def decide_position(
     return ("APPROVED", "PAPER_PREVIEW_APPROVED_SELL_LIMIT", 0, 1, 0, requested_quantity)
 
 
+def find_existing_intent(
+    conn: Any,
+    *,
+    position: PositionRow,
+    intent_state: str,
+    reason_code: str,
+    requested_quantity_base: Decimal,
+    live_trading_enabled: int,
+    decision_gate_enabled: int,
+    execution_enabled: int,
+) -> int | None:
+    sql = """
+    SELECT execution_sell_intent_id
+    FROM execution_sell_intent
+    WHERE trading_account_id = %s
+      AND asset_id = %s
+      AND symbol = %s
+      AND venue = %s
+      AND intent_source = 'sell_only_decision_gate_preview_v1'
+      AND intent_state = %s
+      AND side = 'SELL'
+      AND order_type = 'LIMIT'
+      AND requested_quantity_base = %s
+      AND source_position_snapshot_id = %s
+      AND live_trading_enabled = %s
+      AND decision_gate_enabled = %s
+      AND execution_enabled = %s
+      AND reason_code <=> %s
+    ORDER BY intent_ts_utc DESC, execution_sell_intent_id DESC
+    LIMIT 1
+    """
+
+    with conn.cursor(pymysql.cursors.DictCursor) as cur:
+        cur.execute(
+            sql,
+            (
+                position.trading_account_id,
+                position.asset_id,
+                position.symbol,
+                position.venue,
+                intent_state,
+                requested_quantity_base,
+                position.account_position_snapshot_id,
+                live_trading_enabled,
+                decision_gate_enabled,
+                execution_enabled,
+                reason_code,
+            ),
+        )
+        row = cur.fetchone()
+
+    if not row:
+        return None
+    return int(row["execution_sell_intent_id"])
+
+
 def insert_intent(
     conn: Any,
     *,
@@ -431,13 +487,14 @@ def run(args: argparse.Namespace) -> int:
             print(
                 "[DONE] policy="
                 f"{POLICY_NAME} version={POLICY_VERSION} rows=1 "
-                "inserted_intents=0 event_only=1 write_db="
+                "inserted_intents=0 reused_intents=0 event_only=1 write_db="
                 f"{args.write_db}"
             )
             print("[DONE] broker=disabled planner=disabled live_order_submission=disabled")
             return 0
 
         inserted = 0
+        reused = 0
         blocked = 0
         approved = 0
 
@@ -459,7 +516,7 @@ def run(args: argparse.Namespace) -> int:
             action = "DRY_RUN"
 
             if args.write_db:
-                intent_id = insert_intent(
+                existing_intent_id = find_existing_intent(
                     conn,
                     position=position,
                     intent_state=intent_state,
@@ -470,43 +527,59 @@ def run(args: argparse.Namespace) -> int:
                     execution_enabled=execution_enabled,
                 )
 
-                event_type = (
-                    "SELL_ONLY_INTENT_APPROVED_PREVIEW"
-                    if intent_state == "APPROVED"
-                    else "SELL_ONLY_INTENT_BLOCKED"
-                )
-                message = (
-                    "Sell-only preview intent approved. No execution plan or broker submission."
-                    if intent_state == "APPROVED"
-                    else "Sell-only preview intent created as BLOCKED."
-                )
+                if existing_intent_id is not None:
+                    intent_id = existing_intent_id
+                    reused += 1
+                    action = "REUSED_INTENT"
+                else:
+                    intent_id = insert_intent(
+                        conn,
+                        position=position,
+                        intent_state=intent_state,
+                        reason_code=reason_code,
+                        requested_quantity_base=requested_quantity,
+                        live_trading_enabled=live_trading_enabled,
+                        decision_gate_enabled=decision_gate_enabled,
+                        execution_enabled=execution_enabled,
+                    )
 
-                insert_event(
-                    conn,
-                    trading_account_id=position.trading_account_id,
-                    execution_sell_intent_id=intent_id,
-                    event_type=event_type,
-                    severity="INFO",
-                    message=message,
-                    payload={
-                        "policy_name": POLICY_NAME,
-                        "policy_version": POLICY_VERSION,
-                        "symbol": position.symbol,
-                        "intent_state": intent_state,
-                        "reason_code": reason_code,
-                        "requested_quantity_base": str(requested_quantity),
-                        "reference_price_eur": str(position.mark_price_eur),
-                        "broker_submission_enabled": False,
-                        "execution_plan_enabled": False,
-                        "live_trading_enabled": bool(live_trading_enabled),
-                        "decision_gate_enabled": bool(decision_gate_enabled),
-                        "execution_enabled": bool(execution_enabled),
-                    },
-                )
-                conn.commit()
+                    event_type = (
+                        "SELL_ONLY_INTENT_APPROVED_PREVIEW"
+                        if intent_state == "APPROVED"
+                        else "SELL_ONLY_INTENT_BLOCKED"
+                    )
+                    message = (
+                        "Sell-only preview intent approved. No execution plan or broker submission."
+                        if intent_state == "APPROVED"
+                        else "Sell-only preview intent created as BLOCKED."
+                    )
 
-                inserted += 1
-                action = "INSERTED_INTENT"
+                    insert_event(
+                        conn,
+                        trading_account_id=position.trading_account_id,
+                        execution_sell_intent_id=intent_id,
+                        event_type=event_type,
+                        severity="INFO",
+                        message=message,
+                        payload={
+                            "policy_name": POLICY_NAME,
+                            "policy_version": POLICY_VERSION,
+                            "symbol": position.symbol,
+                            "intent_state": intent_state,
+                            "reason_code": reason_code,
+                            "requested_quantity_base": str(requested_quantity),
+                            "reference_price_eur": str(position.mark_price_eur),
+                            "broker_submission_enabled": False,
+                            "execution_plan_enabled": False,
+                            "live_trading_enabled": bool(live_trading_enabled),
+                            "decision_gate_enabled": bool(decision_gate_enabled),
+                            "execution_enabled": bool(execution_enabled),
+                        },
+                    )
+                    conn.commit()
+
+                    inserted += 1
+                    action = "INSERTED_INTENT"
 
             if intent_state == "APPROVED":
                 approved += 1
@@ -541,8 +614,8 @@ def run(args: argparse.Namespace) -> int:
         print(
             "[DONE] policy="
             f"{POLICY_NAME} version={POLICY_VERSION} rows={len(decisions)} "
-            f"inserted_intents={inserted} approved={approved} blocked={blocked} "
-            f"write_db={args.write_db}"
+            f"inserted_intents={inserted} reused_intents={reused} "
+            f"approved={approved} blocked={blocked} write_db={args.write_db}"
         )
         print("[DONE] broker=disabled planner=disabled live_order_submission=disabled")
 
