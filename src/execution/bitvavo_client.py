@@ -77,8 +77,34 @@ class BitvavoClient:
                 "is not explicitly granted."
             )
 
+    def _signed_path(self, path: str) -> str:
+        """
+        Bitvavo signs the API path including the REST version prefix.
+
+        Runtime URLs use rest_url such as:
+            https://api.bitvavo.com/v2
+
+        Endpoint paths inside this client use:
+            /balance
+            /{market}/order
+
+        Therefore the signed path must become:
+            /v2/balance
+            /v2/{market}/order
+        """
+        rest_path = urlparse(self.rest_url).path.rstrip("/")
+
+        if not path.startswith("/"):
+            path = f"/{path}"
+
+        if rest_path and not path.startswith(f"{rest_path}/") and path != rest_path:
+            return f"{rest_path}{path}"
+
+        return path
+
     def _sign(self, timestamp_ms: str, method: str, path: str, body: str) -> str:
-        message = f"{timestamp_ms}{method}{path}{body}"
+        signed_path = self._signed_path(path)
+        message = f"{timestamp_ms}{method}{signed_path}{body}"
         signature = hmac.new(
             self.api_secret.encode("utf-8"),
             message.encode("utf-8"),
