@@ -1,34 +1,47 @@
 #!/usr/bin/env bash
 
-# Re-exec with bash when accidentally invoked through sh.
+# Re-exec with bash when invoked through sh.
+# This prevents POSIX sh from breaking bash-compatible runtime behavior.
 if [ -z "${BASH_VERSION:-}" ]; then
     exec bash "$0" "$@"
 fi
 
 # Prevent overlapping 4h chain runs.
 # This protects DB writes and avoids duplicate/competing pipeline snapshots.
-if [[ "${SYNTH_CHAIN_4H_LOCKED:-0}" != "1" ]]; then
-    exec env SYNTH_CHAIN_4H_LOCKED=1 flock -n /tmp/synth_chain_4h.lock "$0" "$@"
+if [ "${SYNTH_CHAIN_4H_LOCKED:-0}" != "1" ]; then
+    exec env SYNTH_CHAIN_4H_LOCKED=1 flock -n /tmp/synth_chain_4h.lock bash "$0" "$@"
 fi
 
 set -u
 
 cd /home/gurk/projects/synth-v2 || exit 1
 
-if [ -d ".venv" ]; then
-    source .venv/bin/activate
-elif [ -d "venv" ]; then
-    source venv/bin/activate
-else
-    echo "[CHAIN][4h][FAIL] no .venv or venv found"
+activate_runtime_venv() {
+    for candidate in venv .venv; do
+        if [ -f "${candidate}/bin/activate" ]; then
+            # shellcheck disable=SC1090
+            . "${candidate}/bin/activate"
+
+            if python -c 'import requests, pymysql, pandas, yaml, dotenv' >/dev/null 2>&1; then
+                echo "[CHAIN][4h] venv=${candidate}"
+                return 0
+            fi
+
+            deactivate >/dev/null 2>&1 || true
+        fi
+    done
+
+    echo "[CHAIN][4h][FAIL] no usable venv found; missing one of: requests pymysql pandas yaml dotenv"
     exit 1
-fi
+}
+
+activate_runtime_venv
 
 run_step() {
     echo "[CHAIN][4h][STEP] $*"
     "$@"
     rc=$?
-    if [[ "$rc" -ne 0 ]]; then
+    if [ "$rc" -ne 0 ]; then
         echo "[CHAIN][4h][FAIL] rc=$rc step=$*"
         exit "$rc"
     fi
@@ -37,14 +50,14 @@ run_step() {
 CHAIN_4H_END_TS="$(
     python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); h=(n.hour//4)*4; print(n.replace(hour=h, minute=0, second=0, microsecond=0).isoformat())'
 )"
+
 CHAIN_4H_ETL_START_TS="$(
-    python -c 'from datetime import datetime, timezone, timedelta; n=datetime.now(timezone.utc); h=(n.hour//4)*4; e=n.replace(hour=h, minute=0, second=0, microsecond=0); print((e - timedelta(days=14)).isoformat())'
+    python -c 'from datetime import datetime, timezone, timedelta; n=datetime.now(timezone.utc); h=(n.hour//4)*4; e=n.replace(hour=h, minute=0, second=0, microsecond=0); print((e - timedelta(days=21)).isoformat())'
 )"
 
 echo "[CHAIN][4h] START $(date -u +%F' '%T) UTC"
 echo "[CHAIN][4h] ETL window start=${CHAIN_4H_ETL_START_TS} end=${CHAIN_4H_END_TS}"
 echo "[CHAIN][4h] feature window lookback_hours=720 warmup_bars=300"
-echo "[CHAIN][4h] decision/execution modules intentionally absent"
 
 run_step python -m src.etl.bitvavo.run_candles_etl \
     --interval 4h \
@@ -53,6 +66,7 @@ run_step python -m src.etl.bitvavo.run_candles_etl \
 
 run_step python -m src.features.run_feat_candle \
     --interval 4h \
+    --end "$CHAIN_4H_END_TS" \
     --lookback-hours 720 \
     --warmup-bars 300
 
