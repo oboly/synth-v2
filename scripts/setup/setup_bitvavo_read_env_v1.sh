@@ -24,36 +24,55 @@ if grep -q "^SYNTH_BROKER_WRITE_PERMISSION=${WRITE_GRANTED}$" "$ENV_FILE"; then
 fi
 
 echo "--- Bitvavo read API setup ---"
-echo "Use the Bitvavo API pair named: Synth read"
-echo "Bitvavo calls the visible field Name/Key differently than our env naming."
+echo "Use a Bitvavo API pair with READ/private-account-read permission only."
+echo
+echo "Important:"
+echo "- Do NOT enter the API pair display name, e.g. 'Synth read'."
+echo "- Enter the actual generated API key value."
+echo "- Then enter the matching API secret/signing key."
 echo
 
-read_visible_value "Bitvavo API name/key field: " BITVAVO_API_KEY_INPUT
-read_secret_stars "Bitvavo API secret/signing key: " BITVAVO_API_SECRET_INPUT
+read_visible_value "Bitvavo API KEY value, not name/label: " BITVAVO_API_KEY_INPUT
+read_secret_stars "Bitvavo API SECRET/signing key: " BITVAVO_API_SECRET_INPUT
 
 if [ -z "$BITVAVO_API_KEY_INPUT" ]; then
-    echo "FAIL: API name/key field is empty"
+    echo "FAIL: API key is empty"
     exit 1
 fi
 
 if [ -z "$BITVAVO_API_SECRET_INPUT" ]; then
-    echo "FAIL: API secret/signing key is empty"
+    echo "FAIL: API secret is empty"
+    exit 1
+fi
+
+if [ "$BITVAVO_API_KEY_INPUT" = "Synth read" ] || [ "$BITVAVO_API_KEY_INPUT" = "Synth Trade" ]; then
+    echo "FAIL: that is the API pair display name, not the API key value"
     exit 1
 fi
 
 case "$BITVAVO_API_KEY_INPUT" in
     *[[:space:]]*)
-        echo "FAIL: API name/key field contains whitespace; copy only the exact Bitvavo field"
+        echo "FAIL: API key contains whitespace; copy only the exact generated key value"
         exit 1
         ;;
 esac
 
 case "$BITVAVO_API_SECRET_INPUT" in
     *[[:space:]]*)
-        echo "FAIL: API secret/signing key contains whitespace; copy only the exact Bitvavo field"
+        echo "FAIL: API secret contains whitespace; copy only the exact generated secret value"
         exit 1
         ;;
 esac
+
+if [ "${#BITVAVO_API_KEY_INPUT}" -lt 20 ]; then
+    echo "FAIL: API key looks too short"
+    exit 1
+fi
+
+if [ "${#BITVAVO_API_SECRET_INPUT}" -lt 20 ]; then
+    echo "FAIL: API secret looks too short"
+    exit 1
+fi
 
 backup="${BACKUP_DIR}/env_before_bitvavo_read_setup_$(date -u +%Y%m%dT%H%M%SZ).txt"
 cp "$ENV_FILE" "$backup"
@@ -64,7 +83,7 @@ grep -vE '^(BITVAVO_API_KEY|BITVAVO_API_SECRET|SYNTH_BROKER_PRIVATE_READ_PERMISS
 
 {
     echo ""
-    echo "# Bitvavo read-only/private-read setup"
+    echo "# Bitvavo private read setup"
     echo "# Added by scripts/setup/setup_bitvavo_read_env_v1.sh"
     echo "BITVAVO_API_KEY=${BITVAVO_API_KEY_INPUT}"
     echo "BITVAVO_API_SECRET=${BITVAVO_API_SECRET_INPUT}"
@@ -84,5 +103,5 @@ grep -nE '^(BITVAVO_API_KEY|BITVAVO_API_SECRET|SYNTH_BROKER_PRIVATE_READ_PERMISS
 
 echo
 echo "backup=${backup}"
-echo "[DONE] Bitvavo read env setup complete"
+echo "[DONE] Bitvavo private read env setup complete"
 echo "[DONE] broker write permission unchanged"
