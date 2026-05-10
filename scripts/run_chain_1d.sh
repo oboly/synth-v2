@@ -83,6 +83,12 @@ run_step python -m src.trade_setup_filter.run_trade_setup_filter_v1 \
     --write-db \
     --output table
 
+run_step python -m src.research.run_trade_setup_filter_policy_preview_v1 \
+    --venue bitvavo \
+    --target-horizon 24H \
+    --write-db \
+    --output table
+
 run_step python -m src.strategy_runtime.run_strategy_runtime_snapshot \
     --interval 1d \
     --chain-name run_chain_1d \
