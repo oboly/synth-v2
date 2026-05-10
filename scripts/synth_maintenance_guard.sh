@@ -7,7 +7,7 @@
 #   new asset onboarding, schema maintenance, or controlled bootstrap work.
 # - If the lock exists, market chains exit cleanly before doing work.
 #
-# This is not an execution, broker, or live-trading switch.
+# This lock only skips market-chain work.
 
 SYNTH_MAINTENANCE_LOCK="${SYNTH_MAINTENANCE_LOCK:-/tmp/synth_maintenance.lock}"
 
