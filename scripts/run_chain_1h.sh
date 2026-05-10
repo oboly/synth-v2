@@ -15,6 +15,7 @@ fi
 set -u
 
 cd /home/gurk/projects/synth-v2 || exit 1
+source scripts/synth_maintenance_guard.sh
 
 activate_runtime_venv() {
     for candidate in venv .venv; do
