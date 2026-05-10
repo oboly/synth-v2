@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import hmac
 import json
@@ -14,6 +13,14 @@ import requests
 
 
 BITVAVO_REST_URL = os.getenv("BITVAVO_REST_URL", "https://api.bitvavo.com/v2")
+
+# Broker write calls are fail-closed by default.
+# This protects legacy execution paths from accidental live order placement.
+#
+# Required exact value for broker write calls:
+#   SYNTH_BROKER_WRITE_PERMISSION=I_UNDERSTAND_THIS_PLACES_REAL_ORDERS
+BROKER_WRITE_PERMISSION_ENV = "SYNTH_BROKER_WRITE_PERMISSION"
+BROKER_WRITE_PERMISSION_GRANTED_VALUE = "I_UNDERSTAND_THIS_PLACES_REAL_ORDERS"
 
 
 @dataclass(slots=True)
@@ -42,6 +49,15 @@ class BitvavoClient:
 
     def _has_auth(self) -> bool:
         return bool(self.api_key and self.api_secret)
+
+    def _require_private_write_permission(self, action: str) -> None:
+        permission_value = os.getenv(BROKER_WRITE_PERMISSION_ENV, "")
+        if permission_value != BROKER_WRITE_PERMISSION_GRANTED_VALUE:
+            raise PermissionError(
+                "Bitvavo broker write blocked fail-closed. "
+                f"action={action} env={BROKER_WRITE_PERMISSION_ENV} "
+                "is not explicitly granted."
+            )
 
     def _sign(self, timestamp_ms: str, method: str, path: str, body: str) -> str:
         message = f"{timestamp_ms}{method}{path}{body}"
@@ -89,6 +105,8 @@ class BitvavoClient:
         return response.json()
 
     def place_order(self, order: BitvavoOrderRequest) -> dict[str, Any]:
+        self._require_private_write_permission("place_order")
+
         path = f"/{order.market}/order"
         url = f"{self.rest_url}{path}"
 
@@ -136,6 +154,8 @@ class BitvavoClient:
         return response.json()
 
     def cancel_order(self, market: str, order_id: str) -> dict[str, Any]:
+        self._require_private_write_permission("cancel_order")
+
         path = f"/{market}/order"
         url = f"{self.rest_url}{path}"
 
