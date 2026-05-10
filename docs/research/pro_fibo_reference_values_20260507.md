@@ -1,9 +1,9 @@
 # PRO Fibo Reference Values — 2026-05-07
 
-Status: research-only  
-Runtime impact: none  
-Decision/execution impact: none  
-Live trading impact: none  
+Status: research-only
+Runtime impact: none
+Decision/execution impact: none
+Live trading impact: none
 
 ## Purpose
 
