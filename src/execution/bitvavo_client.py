@@ -8,16 +8,25 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
 
 
-BITVAVO_REST_URL = os.getenv("BITVAVO_REST_URL", "https://api.bitvavo.com/v2")
+BITVAVO_REST_URL = (
+    os.getenv("BITVAVO_REST_URL")
+    or os.getenv("BITVAVO_BASE_URL")
+    or "https://api.bitvavo.com/v2"
+)
+
+# Broker private read calls are fail-closed by default.
+# Required exact value:
+#   SYNTH_BROKER_PRIVATE_READ_PERMISSION=I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA
+BROKER_PRIVATE_READ_PERMISSION_ENV = "SYNTH_BROKER_PRIVATE_READ_PERMISSION"
+BROKER_PRIVATE_READ_PERMISSION_GRANTED_VALUE = "I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA"
 
 # Broker write calls are fail-closed by default.
-# This protects legacy execution paths from accidental live order placement.
-#
-# Required exact value for broker write calls:
+# Required exact value:
 #   SYNTH_BROKER_WRITE_PERMISSION=I_UNDERSTAND_THIS_PLACES_REAL_ORDERS
 BROKER_WRITE_PERMISSION_ENV = "SYNTH_BROKER_WRITE_PERMISSION"
 BROKER_WRITE_PERMISSION_GRANTED_VALUE = "I_UNDERSTAND_THIS_PLACES_REAL_ORDERS"
@@ -49,6 +58,15 @@ class BitvavoClient:
 
     def _has_auth(self) -> bool:
         return bool(self.api_key and self.api_secret)
+
+    def _require_private_read_permission(self, action: str) -> None:
+        permission_value = os.getenv(BROKER_PRIVATE_READ_PERMISSION_ENV, "")
+        if permission_value != BROKER_PRIVATE_READ_PERMISSION_GRANTED_VALUE:
+            raise PermissionError(
+                "Bitvavo private read blocked fail-closed. "
+                f"action={action} env={BROKER_PRIVATE_READ_PERMISSION_ENV} "
+                "is not explicitly granted."
+            )
 
     def _require_private_write_permission(self, action: str) -> None:
         permission_value = os.getenv(BROKER_WRITE_PERMISSION_ENV, "")
@@ -104,6 +122,35 @@ class BitvavoClient:
         response.raise_for_status()
         return response.json()
 
+    def get_balance(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        self._require_private_read_permission("get_balance")
+
+        path = "/balance"
+        params: dict[str, str] = {}
+
+        if symbol:
+            params["symbol"] = symbol.upper()
+
+        query_string = urlencode(params)
+        signed_path = f"{path}?{query_string}" if query_string else path
+        url = f"{self.rest_url}{path}"
+
+        headers = self._headers("GET", signed_path, "")
+
+        response = requests.get(
+            url,
+            headers=headers,
+            params=params or None,
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        if not isinstance(data, list):
+            raise RuntimeError("Unexpected Bitvavo balance response shape.")
+
+        return data
+
     def place_order(self, order: BitvavoOrderRequest) -> dict[str, Any]:
         self._require_private_write_permission("place_order")
 
@@ -137,12 +184,15 @@ class BitvavoClient:
         return response.json()
 
     def get_order(self, market: str, order_id: str) -> dict[str, Any]:
+        self._require_private_read_permission("get_order")
+
         path = f"/{market}/order"
         url = f"{self.rest_url}{path}"
 
         params = {"orderId": order_id}
-        query = f"?orderId={order_id}"
-        headers = self._headers("GET", f"{path}{query}", "")
+        query_string = urlencode(params)
+        signed_path = f"{path}?{query_string}"
+        headers = self._headers("GET", signed_path, "")
 
         response = requests.get(
             url,
