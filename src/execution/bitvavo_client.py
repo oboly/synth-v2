@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+from urllib.parse import urlparse
 from urllib.parse import urlencode
 
 import requests
