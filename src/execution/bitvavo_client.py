@@ -178,6 +178,41 @@ class BitvavoClient:
 
         return data
 
+    def get_open_orders(
+        self,
+        market: str | None = None,
+        base: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self._require_private_read_permission("get_open_orders")
+
+        path = "/ordersOpen"
+        params: dict[str, str] = {}
+
+        if market:
+            params["market"] = market
+
+        if base:
+            params["base"] = base
+
+        query_string = urlencode(params)
+        signed_path = f"{path}?{query_string}" if query_string else path
+        url = f"{self.rest_url}{path}"
+        headers = self._headers("GET", signed_path, "")
+
+        response = requests.get(
+            url,
+            headers=headers,
+            params=params or None,
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        if not isinstance(data, list):
+            raise RuntimeError("Unexpected Bitvavo open orders response shape.")
+
+        return data
+
     def place_order(self, order: BitvavoOrderRequest) -> dict[str, Any]:
         self._require_private_write_permission("place_order")
 
