@@ -10,6 +10,11 @@ import pymysql
 from dotenv import load_dotenv
 
 from src.common.db import get_db_connection
+from src.decision_gate.sell_intent_policy_v1 import (
+    SellIntentPolicyInput,
+    evaluate_sell_intent_policy_v1,
+)
+
 
 
 POLICY_NAME = "sell_only_decision_gate_preview_v1"
@@ -210,29 +215,55 @@ def decide_position(
 ) -> tuple[str, str, int, int, int, Decimal]:
     requested_quantity = position.available_quantity_base * request_fraction
 
-    if position.account_enabled != 1:
-        return ("BLOCKED", "ACCOUNT_DISABLED", 0, 0, 0, requested_quantity)
-
     if position.account_mode != "paper":
         return ("BLOCKED", "NON_PAPER_ACCOUNT_BLOCKED", 0, 0, 0, requested_quantity)
 
-    if position.account_live_trading_enabled != 0:
-        return ("BLOCKED", "ACCOUNT_LIVE_TRADING_FLAG_NOT_ALLOWED_FOR_PREVIEW", 0, 0, 0, requested_quantity)
+    policy_decision = evaluate_sell_intent_policy_v1(
+        SellIntentPolicyInput(
+            account_enabled=position.account_enabled,
+            account_live_trading_enabled=position.account_live_trading_enabled,
+            broker_write_permission_state="MISSING",
+            hard_safety_nonzero=False,
+            source_duplicate_symbol_rows=0,
+            source_negative_quantity_rows=0,
+            source_missing_mark_price_rows=0,
+            position_exists=True,
+            position_quantity_base=position.quantity_base,
+            available_quantity_base=position.available_quantity_base,
+            reserved_quantity_base=position.reserved_quantity_base,
+            open_sell_order_remaining_base=position.reserved_quantity_base,
+            requested_quantity_base=requested_quantity,
+            mark_price_exists=position.mark_price_eur is not None and position.mark_price_eur > 0,
+        )
+    )
 
-    if position.quantity_base <= 0:
-        return ("BLOCKED", "NO_POSITION", 0, 0, 0, requested_quantity)
+    reason_map = {
+        "ACCOUNT_DISABLED": "ACCOUNT_DISABLED",
+        "LIVE_TRADING_ENABLED_NOT_ALLOWED": "ACCOUNT_LIVE_TRADING_FLAG_NOT_ALLOWED_FOR_PREVIEW",
+        "NO_POSITION_QUANTITY": "NO_POSITION",
+        "NO_AVAILABLE_QUANTITY_RESERVED": "NO_AVAILABLE_QUANTITY",
+        "NO_AVAILABLE_QUANTITY": "NO_AVAILABLE_QUANTITY",
+        "REQUESTED_QUANTITY_NOT_POSITIVE": "REQUESTED_QUANTITY_NOT_POSITIVE",
+        "REQUEST_EXCEEDS_AVAILABLE_QUANTITY": "REQUEST_EXCEEDS_AVAILABLE_QUANTITY",
+        "MISSING_MARK_PRICE": "REFERENCE_PRICE_MISSING",
+        "BROKER_WRITE_PERMISSION_GRANTED": "BROKER_WRITE_PERMISSION_GRANTED",
+        "HARD_SAFETY_NONZERO": "HARD_SAFETY_NONZERO",
+        "SOURCE_DUPLICATES": "SOURCE_DUPLICATES",
+        "SOURCE_NEGATIVE_QUANTITIES": "SOURCE_NEGATIVE_QUANTITIES",
+        "SOURCE_MISSING_MARK_PRICE": "SOURCE_MISSING_MARK_PRICE",
+        "RESERVED_OPEN_ORDER_MISMATCH": "RESERVED_OPEN_ORDER_MISMATCH",
+    }
 
-    if position.available_quantity_base <= 0:
-        return ("BLOCKED", "NO_AVAILABLE_QUANTITY", 0, 0, 0, requested_quantity)
-
-    if requested_quantity <= 0:
-        return ("BLOCKED", "REQUESTED_QUANTITY_NOT_POSITIVE", 0, 0, 0, requested_quantity)
-
-    if requested_quantity > position.available_quantity_base:
-        return ("BLOCKED", "REQUEST_EXCEEDS_AVAILABLE_QUANTITY", 0, 0, 0, requested_quantity)
-
-    if position.mark_price_eur is None or position.mark_price_eur <= 0:
-        return ("BLOCKED", "REFERENCE_PRICE_MISSING", 0, 0, 0, requested_quantity)
+    if policy_decision.blocking_reasons:
+        first_reason = policy_decision.blocking_reasons[0]
+        return (
+            "BLOCKED",
+            reason_map.get(first_reason, first_reason),
+            0,
+            0,
+            0,
+            requested_quantity,
+        )
 
     if not approve_paper_preview:
         return ("BLOCKED", "PAPER_APPROVAL_FLAG_NOT_SET", 0, 0, 0, requested_quantity)
