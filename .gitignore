@@ -50,3 +50,4 @@ data/exports/
 # local backups
 database/backups/
 data/external/
+data/research/breath_curve_template_matcher_v1/
