@@ -10,6 +10,11 @@ import pymysql
 from dotenv import load_dotenv
 
 from src.common.db import get_db_connection
+from src.decision_gate.sell_intent_policy_v1 import (
+    SellIntentPolicyInput,
+    evaluate_sell_intent_policy_v1,
+)
+
 
 
 REPORT_NAME = "sell_intent_readonly_preview_v1"
@@ -356,69 +361,6 @@ def fetch_hard_safety_rows(conn: Any) -> list[dict[str, Any]]:
         return list(cur.fetchall())
 
 
-def build_blockers(
-    *,
-    account: TradingAccount,
-    position: PositionRow | None,
-    order_summary: OrderSummary,
-    requested_quantity_base: Decimal,
-    source_checks: dict[str, int],
-    hard_safety_nonzero: bool,
-    write_permission: str,
-    tolerance: Decimal,
-) -> list[str]:
-    blockers: list[str] = []
-
-    if account.enabled != 1:
-        blockers.append("ACCOUNT_DISABLED")
-
-    if account.live_trading_enabled != 0:
-        blockers.append("LIVE_TRADING_ENABLED_NOT_ALLOWED")
-
-    if write_permission == "GRANTED":
-        blockers.append("BROKER_WRITE_PERMISSION_GRANTED")
-
-    if hard_safety_nonzero:
-        blockers.append("HARD_SAFETY_NONZERO")
-
-    if source_checks.get("duplicate_symbol_rows", 0) != 0:
-        blockers.append("SOURCE_DUPLICATES")
-
-    if source_checks.get("negative_quantity_rows", 0) != 0:
-        blockers.append("SOURCE_NEGATIVE_QUANTITIES")
-
-    if source_checks.get("missing_mark_price_rows", 0) != 0:
-        blockers.append("SOURCE_MISSING_MARK_PRICE")
-
-    if position is None:
-        blockers.append("NO_POSITION")
-        return blockers
-
-    if position.quantity_base <= 0:
-        blockers.append("NO_POSITION_QUANTITY")
-
-    if position.available_quantity_base <= 0:
-        if position.reserved_quantity_base > 0:
-            blockers.append("NO_AVAILABLE_QUANTITY_RESERVED")
-        else:
-            blockers.append("NO_AVAILABLE_QUANTITY")
-
-    if requested_quantity_base <= 0:
-        blockers.append("REQUESTED_QUANTITY_NOT_POSITIVE")
-
-    if requested_quantity_base > position.available_quantity_base + tolerance:
-        blockers.append("REQUEST_EXCEEDS_AVAILABLE_QUANTITY")
-
-    if position.mark_price_eur is None:
-        blockers.append("MISSING_MARK_PRICE")
-
-    reserved_diff = position.reserved_quantity_base - order_summary.remaining_quantity_base
-    if abs(reserved_diff) > tolerance:
-        blockers.append("RESERVED_OPEN_ORDER_MISMATCH")
-
-    return blockers
-
-
 def print_table(headers: list[str], rows: list[list[str]]) -> None:
     widths = [len(header) for header in headers]
 
@@ -485,19 +427,29 @@ def run(args: argparse.Namespace) -> int:
         else:
             requested_quantity_base = Decimal(str(args.requested_quantity_base))
 
-        blockers = build_blockers(
-            account=account,
-            position=position,
-            order_summary=order_summary,
-            requested_quantity_base=requested_quantity_base,
-            source_checks=source_checks,
-            hard_safety_nonzero=bool(hard_safety_nonzero_rows),
-            write_permission=write_permission,
-            tolerance=tolerance,
+        policy_decision = evaluate_sell_intent_policy_v1(
+            SellIntentPolicyInput(
+                account_enabled=account.enabled,
+                account_live_trading_enabled=account.live_trading_enabled,
+                broker_write_permission_state=write_permission,
+                hard_safety_nonzero=bool(hard_safety_nonzero_rows),
+                source_duplicate_symbol_rows=source_checks.get("duplicate_symbol_rows", 0),
+                source_negative_quantity_rows=source_checks.get("negative_quantity_rows", 0),
+                source_missing_mark_price_rows=source_checks.get("missing_mark_price_rows", 0),
+                position_exists=position is not None,
+                position_quantity_base=Decimal("0") if position is None else position.quantity_base,
+                available_quantity_base=Decimal("0") if position is None else position.available_quantity_base,
+                reserved_quantity_base=Decimal("0") if position is None else position.reserved_quantity_base,
+                open_sell_order_remaining_base=order_summary.remaining_quantity_base,
+                requested_quantity_base=requested_quantity_base,
+                mark_price_exists=position is not None and position.mark_price_eur is not None,
+                tolerance=tolerance,
+            )
         )
 
-        preview_state = "WOULD_APPROVE_SELL_INTENT_PREVIEW" if not blockers else "BLOCKED"
-        actual_execution_permission = "NOT_GRANTED"
+        blockers = list(policy_decision.blocking_reasons)
+        preview_state = policy_decision.preview_state
+        actual_execution_permission = policy_decision.actual_execution_permission
 
         estimated_notional_eur = Decimal("0")
         if position is not None and position.mark_price_eur is not None:
