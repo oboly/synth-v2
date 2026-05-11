@@ -172,11 +172,11 @@ def load_db(symbol: str, asset_id: int | None, venue: str, interval_code: str, s
         cols = table_cols(conn, "obs_market_candle")
 
         asset_col = choose(cols, ["asset_id"])
-        ts_col = choose(cols, ["open_ts_utc", "ts_utc", "timestamp_utc"])
-        open_col = choose(cols, ["open"])
-        high_col = choose(cols, ["high"])
-        low_col = choose(cols, ["low"])
-        close_col = choose(cols, ["close"])
+        ts_col = choose(cols, ["open_ts_utc", "close_ts_utc", "ts_utc", "timestamp_utc"])
+        open_col = choose(cols, ["open", "open_price", "close_open", "o"])
+        high_col = choose(cols, ["high", "high_price", "close_high", "h"])
+        low_col = choose(cols, ["low", "low_price", "close_low", "l"])
+        close_col = choose(cols, ["close", "close_price", "close_close", "c"])
         venue_col = choose(cols, ["venue"], required=False)
         interval_col = choose(cols, ["interval_code", "timeframe"], required=False)
         volume_col = choose(cols, ["volume_quote_eur", "volume_base", "quote_volume", "volume"], required=False)
@@ -319,7 +319,7 @@ def shape_score(candles: list[Candle], anchor: datetime, markers: list[MarkerMat
         "second_peak_above_first_dip": gt(second_high, first_low),
         "second_peak_retests_first_lift": gt(second_high, first_high, 0.025),
         "second_dip_below_second_peak": lt(second_low, second_high),
-        "second_dip_higher_than_first_dip": gt(second_low, first_low, 0.010),
+        "second_dip_higher_than_first_dip": gt(second_low, first_low),
         "ignition_above_second_dip": gt(ignition, second_low),
         "pulse_above_ignition": gt(pulse, ignition),
         "pulse_above_second_peak": gt(pulse, second_high),

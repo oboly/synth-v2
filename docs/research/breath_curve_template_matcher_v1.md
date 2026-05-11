@@ -142,3 +142,18 @@ V2 may support fine search:
 
 - range: -10.5 to +10.5 days
 - step: 0.5 day, or 1 candle
+
+## DB schema note
+
+The DB loader supports both generic OHLC names and the current candle schema:
+
+    open / high / low / close
+    open_price / high_price / low_price / close_price
+    close_open / close_high / close_low / close_close
+
+Timestamp candidates:
+
+    open_ts_utc
+    close_ts_utc
+    ts_utc
+    timestamp_utc
