@@ -238,7 +238,7 @@ def run(args: argparse.Namespace) -> int:
     print(f"report={REPORT_NAME} version={VERSION}")
     print("scope=research-only market-only account-agnostic")
     print("db_writes=0 broker_calls=0 broker_writes=0 order_submission=0")
-    print("selection_engine=none decision_gate=none execution_planner=none executor=none")
+    print("runtime_layer_touch=none")
     print(f"latest_run_count={len(run_ids)}")
     print(f"run_ids={','.join(str(x) for x in run_ids)}")
 
