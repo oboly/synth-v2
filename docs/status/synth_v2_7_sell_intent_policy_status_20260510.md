@@ -55,3 +55,13 @@ It is not allowed to:
 - submit orders
 - cancel orders
 - bypass live trading guards
+
+## Freshness guard
+
+The policy now accepts `source_freshness_ok`.
+
+If this is false, the policy blocks with:
+
+    SOURCE_STALE
+
+This keeps stale broker/account snapshots from being treated as valid sell permission.

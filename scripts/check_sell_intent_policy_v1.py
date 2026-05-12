@@ -87,6 +87,13 @@ def main() -> int:
         ("BROKER_WRITE_PERMISSION_GRANTED",),
     )
 
+    assert_case(
+        "stale_source",
+        base_input(source_freshness_ok=False),
+        "BLOCKED",
+        ("SOURCE_STALE",),
+    )
+
     print("[DONE] sell_intent_policy_v1 smoke checks passed")
     return 0
 

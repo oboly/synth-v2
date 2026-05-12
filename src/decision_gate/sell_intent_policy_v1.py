@@ -25,6 +25,7 @@ class SellIntentPolicyInput:
     requested_quantity_base: Decimal
     mark_price_exists: bool
     tolerance: Decimal = Decimal("0.00000001")
+    source_freshness_ok: bool = True
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,9 @@ def evaluate_sell_intent_policy_v1(
 
     if policy_input.source_missing_mark_price_rows != 0:
         blockers.append("SOURCE_MISSING_MARK_PRICE")
+
+    if not policy_input.source_freshness_ok:
+        blockers.append("SOURCE_STALE")
 
     if not policy_input.position_exists:
         blockers.append("NO_POSITION")
