@@ -51,3 +51,6 @@ data/exports/
 database/backups/
 data/external/
 data/research/breath_curve_template_matcher_v1/
+
+# Generated breath curve research policy backtest outputs
+data/research/breath_curve_policy_backtest_v1/
