@@ -488,6 +488,16 @@ def load_20260507_reference_rows(cur, source_id: int, rows: list[dict[str, Any]]
                     notes="External PRO reference range from 2026-05-07 manifest.",
                 )
                 inserted += 2
+            elif isinstance(value, str):
+                insert_narrative_claim(
+                    cur,
+                    source_id,
+                    symbol,
+                    "NARRATIVE",
+                    f"{symbol} external PRO reference metadata {key}: {value}.",
+                    "MIXED",
+                    quality_score="0.7500",
+                )
             else:
                 kind = "REFERENCE_LEVEL"
                 if "break" in key or "confirmation" in key or "shoulder" in key:
