@@ -77,6 +77,14 @@ run_step python -m src.ranking.run_ranking_engine --venue bitvavo --interval 4h
 run_step python -m src.measurement.run_asset_interval_quality_snapshot --venue bitvavo --write-db --output none
 run_step python -m src.selection.run_selection_engine_v2 --venue bitvavo --write-db
 
+run_step python -m src.zone.run_zone_engine_v1 \
+    --venue bitvavo \
+    --interval 4h \
+    --lookback-candles 120 \
+    --swing-window 5 \
+    --write-db \
+    --output table
+
 run_step python -m src.trade_setup_filter.run_trade_setup_filter_v1 \
     --venue bitvavo \
     --limit 40 \
