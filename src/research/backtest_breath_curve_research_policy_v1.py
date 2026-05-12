@@ -211,11 +211,17 @@ def print_summary(title: str, summary: dict[str, Any]) -> None:
 
 def write_outputs(rows: list[PolicyRow], out_dir: Path, config: PolicyConfig) -> tuple[Path, Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    safe_policy_name = "".join(
+        ch if ch.isalnum() or ch in {"_", "-"} else "_"
+        for ch in config.policy_name
+    )
 
-    csv_path = out_dir / f"breath_curve_research_policy_backtest_v1_{stamp}.csv"
-    jsonl_path = out_dir / f"breath_curve_research_policy_backtest_v1_{stamp}.jsonl"
-    summary_path = out_dir / f"breath_curve_research_policy_backtest_v1_{stamp}_summary.json"
+    file_stem = f"breath_curve_research_policy_backtest_v1_{safe_policy_name}_{stamp}"
+
+    csv_path = out_dir / f"{file_stem}.csv"
+    jsonl_path = out_dir / f"{file_stem}.jsonl"
+    summary_path = out_dir / f"{file_stem}_summary.json"
 
     fieldnames = list(asdict(rows[0]).keys()) if rows else list(PolicyRow.__dataclass_fields__.keys())
 

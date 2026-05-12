@@ -76,3 +76,12 @@ Not allowed:
     execution_planner logic
     executor logic
     selection_engine modifier without later validation
+
+## Output naming
+
+Output files include:
+
+    policy_name
+    UTC timestamp with microseconds
+
+This prevents two policy runs in the same second from overwriting each other.
