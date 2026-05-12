@@ -24,6 +24,7 @@ def base_input(**overrides):
         "open_sell_order_remaining_base": Decimal("0"),
         "requested_quantity_base": Decimal("10"),
         "mark_price_exists": True,
+        "source_freshness_ok": True,
     }
     data.update(overrides)
     return SellIntentPolicyInput(**data)

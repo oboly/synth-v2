@@ -24,8 +24,8 @@ class SellIntentPolicyInput:
     open_sell_order_remaining_base: Decimal
     requested_quantity_base: Decimal
     mark_price_exists: bool
+    source_freshness_ok: bool
     tolerance: Decimal = Decimal("0.00000001")
-    source_freshness_ok: bool = True
 
 
 @dataclass(frozen=True)
