@@ -62,3 +62,6 @@ data/research/breath_curve_phase_calibration_v2/
 
 # Generated breath curve calibrated policy backtest outputs
 data/research/breath_curve_calibrated_policy_backtest_v1/
+
+# Generated breath curve symbol/regime validation outputs
+data/research/breath_curve_symbol_regime_validation_v1/
