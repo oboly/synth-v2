@@ -59,3 +59,6 @@ data/research/breath_curve_phase_band_report_v1/
 data/research/aplus_harmonic_snapshot_validation_v1/
 data/research/aplus_harmonic_transition_validation_v1/
 data/research/breath_curve_phase_calibration_v2/
+
+# Generated breath curve calibrated policy backtest outputs
+data/research/breath_curve_calibrated_policy_backtest_v1/
