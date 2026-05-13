@@ -74,3 +74,6 @@ data/research/breath_curve_broader_history_v1/
 
 # Generated strategy scoring board outputs
 data/research/strategy_scoring_board_v1/
+
+# Generated breath curve regime-gate diagnostic outputs
+data/research/breath_curve_regime_gate_v1/
