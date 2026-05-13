@@ -65,3 +65,6 @@ data/research/breath_curve_calibrated_policy_backtest_v1/
 
 # Generated breath curve symbol/regime validation outputs
 data/research/breath_curve_symbol_regime_validation_v1/
+
+# Generated breath curve composite preview outputs
+data/research/breath_curve_composite_preview_v1/
