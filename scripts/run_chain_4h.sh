@@ -98,6 +98,12 @@ run_step python -m src.research.run_trade_setup_filter_policy_preview_v1 \
     --write-db \
     --output table
 
+run_step python -m src.advice.run_paper_advice_policy_v1 \
+  --venue bitvavo \
+  --interval 4h \
+  --write-db \
+  --output table
+
 run_step python -m src.strategy_runtime.run_strategy_runtime_snapshot \
     --interval 4h \
     --chain-name run_chain_4h \
