@@ -5,100 +5,160 @@ Layer: market-only / account-agnostic
 Broker calls: none  
 Broker writes: none  
 Orders: none  
-DB writes: none  
+Runtime impact: none  
 
 ## Purpose
 
-Test whether Breath Curve research-policy outcomes outperform same-symbol random anchors.
+Test whether calibrated 0.618 Breath Curve early-recognition filters outperform same-symbol random anchors.
 
-This report answers:
+This is the first hard edge test after phase calibration showed that exact offset-match is too brittle for 0.618.
 
-    Does 0.618 + offset_match beat same-symbol random anchors?
+## Critical correction
+
+This runner tests only early-available filters.
+
+It does not use these post-hoc labels as entry filters:
+
+    0786_ignition_band_match_v1
+    extension_best_full_plus7_v1
+    best_full_band
+    selected-to-best phase drift
+
+Those can be used later as outcome classes, not checkpoint-time filters.
+
+## Tested policies
+
+### 0618_selected_minus8_v1
+
+Gate:
+
+    checkpoint = 0.618
+    selected_band_w1_0 = -8
+
+Purpose:
+
+    primary early-recognition candidate
+
+### 0618_selected_minus7_v1
+
+Gate:
+
+    checkpoint = 0.618
+    selected_band_w1_0 = -7
+
+Purpose:
+
+    secondary early-recognition candidate
+
+### 0618_selected_early_band_v1
+
+Gate:
+
+    checkpoint = 0.618
+    selected_band_w1_0 in [-8, -7]
+
+Purpose:
+
+    combined early-recognition candidate
 
 ## Method
 
-The runner samples random anchors per symbol from the same tested date window as the existing Breath Curve partial-to-full research lane.
+For each symbol:
 
-For each random anchor, it recomputes:
-
-- partial checkpoint recognition
-- full-cycle template match
-- selected partial offset
-- offset-match status against best full offset
-- return to 1.000 marker
-- return to 1.272 marker
-- synthetic research-policy return
-
-The random baseline is recomputed from candles and matcher logic. It is not derived from already-selected policy rows.
-
-## Comparisons
-
-The report compares:
-
-- real 0.618 all vs random 0.618 all
-- real 0.618 offset_match vs random 0.618 offset_match
-- real 0.786 all vs random 0.786 all
-- real 0.786 offset_match vs random 0.786 offset_match
+1. Use the real Breath Curve anchors.
+2. Generate random anchors inside the same date window.
+3. Exclude random anchors close to real anchors.
+4. Recompute partial matching at 0.618.
+5. Recompute full-cycle outcomes.
+6. Apply the same early-available calibrated filters.
+7. Compare real anchors against same-symbol random anchors.
 
 ## Metrics
 
-For each bucket:
+The report includes:
 
-- total random candidates
-- eligible count
-- selection rate
-- average policy return
-- median policy return
-- positive rate
-- best/worst return
-- same-window hold-to-1.000
-- same-window hold-to-1.272
-- real policy minus random
-- policy minus hold baselines
-- per-symbol buckets
+    evaluated rows
+    eligible rows
+    selection rate
+    average return to 1.000
+    median return to 1.000
+    positive rate to 1.000
+    best/worst return to 1.000
+    average return to 1.272
+    positive rate to 1.272
+    by-symbol summaries
 
-## Leakage controls
+Important:
 
-Random anchors are:
+    selection_rate is measured against all evaluated anchors,
+    not only against selected rows.
 
-- same-symbol only
-- sampled within the same tested date window
-- excluded if too close to known real anchors, default +/- 3 days
-- required to have sufficient candle coverage before partial checkpoint and through full-cycle target window
+## Runner
 
-Non-selected random anchors remain in the denominator for selection-rate calculation.
+Default:
 
-## Default runner
+    python -m src.research.run_breath_curve_random_anchor_baseline_v2 --output table
+
+Recommended smoke:
 
     python -m src.research.run_breath_curve_random_anchor_baseline_v2 \
-      --start-date 2026-03-01 \
-      --end-date 2026-04-12 \
-      --samples-per-symbol 100 \
-      --seed 260512 \
+      --random-count-per-symbol 10 \
+      --output table
+
+Recommended fuller run:
+
+    python -m src.research.run_breath_curve_random_anchor_baseline_v2 \
+      --random-count-per-symbol 100 \
       --output table
 
 ## Output
 
-Generated CSV outputs are written under:
+Generated CSV files are written under:
 
     data/research/breath_curve_random_anchor_baseline_v2/
 
-These outputs are research artifacts and should remain ignored unless explicitly promoted.
+This path is ignored by git.
 
 ## Boundary
 
-This is not a strategy.
+Allowed:
 
-Forbidden downstream use:
+    research-only matching
+    same-symbol random-anchor comparison
+    market-only validation
+    generated research CSV output
 
-- selection_engine modifier
-- decision_gate rule
-- execution_planner instruction
-- executor/order logic
-- live or paper execution trigger
-- broker API call
-- broker write
+Forbidden:
+
+    selection_engine modifier
+    decision_gate rule
+    execution_planner instruction
+    executor/order logic
+    broker API call
+    broker write
+    live or paper execution trigger
+
+## Interpretation rule
+
+A calibrated filter becomes interesting only if it beats same-symbol random anchors on:
+
+    average return
+    positive rate
+    worst-case profile
+    selection quality
+
+Passing this test does not make it a live strategy.
 
 Correct path:
 
-    random-anchor baseline -> validation report -> regime tests -> optional later market-only feature proposal
+    random-anchor baseline
+    -> regime bucket validation
+    -> broader history
+    -> optional market-only feature proposal
+
+Incorrect path:
+
+    random-anchor win
+    -> BUY_READY
+
+That would bypass the architecture.

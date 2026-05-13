@@ -3,17 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 import random
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
 from pathlib import Path
 from statistics import median
 from typing import Any
 
-import pymysql
-from dotenv import load_dotenv
-
-from src.common.db import get_db_connection
 from src.research.breath_curve_template_matcher_v1 import (
     Candle,
     MarkerMatch,
@@ -28,43 +24,17 @@ from src.research.run_breath_curve_template_partial_v1 import partial_match
 REPORT_NAME = "breath_curve_random_anchor_baseline_v2"
 VERSION = "0.1"
 
-DEFAULT_SYMBOLS = "BTC,ETH,TAO,RENDER,FIL,HBAR,XLM,PEPE"
-DEFAULT_REAL_POLICY_NAMES = (
-    "breath_curve_research_policy_0618_v1,"
-    "breath_curve_research_policy_0786_extension_v1,"
-    "breath_curve_research_policy_0618_offset_match_v1,"
-    "breath_curve_research_policy_0786_offset_match_v1"
+POLICY_NAMES = (
+    "0618_selected_minus8_v1",
+    "0618_selected_minus7_v1",
+    "0618_selected_early_band_v1",
 )
-
-POLICY_LABELS = {
-    ("0.618", False): "0618_all",
-    ("0.618", True): "0618_offset_match",
-    ("0.786", False): "0786_all",
-    ("0.786", True): "0786_offset_match",
-}
 
 
 @dataclass(frozen=True)
-class RandomOutcome:
-    symbol: str
-    anchor_date: str
-    checkpoint_ratio: str
-    selected_partial_offset_days: float | None
-    selected_partial_score: float | None
-    selected_partial_shape: float | None
-    selected_partial_timing: float | None
-    selected_partial_coverage: float | None
-    selected_partial_due_markers: int | None
-    selected_partial_observed_markers: int | None
-    offset_matches_best_full: bool
-    return_to_1000_pct: float | None
-    return_to_1272_pct: float | None
-    policy_return_pct: float | None
-    hold_to_1000_pct: float | None
-    hold_to_1272_pct: float | None
-    eligible_all: bool
-    eligible_offset_match: bool
-    exclusion_reason: str
+class PolicySpec:
+    policy_name: str
+    purpose: str
 
 
 def parse_csv_list(raw: str) -> list[str]:
@@ -75,12 +45,54 @@ def iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def date_key(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).date().isoformat()
-
-
 def expected_ts(anchor: datetime, cycle_days: float, ratio: float, offset_days: float) -> datetime:
     return anchor + timedelta(days=(cycle_days * ratio) + offset_days)
+
+
+def nearest_band(offset: float | None, bands: list[float], width: float) -> str:
+    if offset is None:
+        return "UNCLEAR"
+
+    best = min(bands, key=lambda band: abs(offset - band))
+    if abs(offset - best) <= width:
+        return f"{best:+g}"
+
+    return "DRIFT"
+
+
+def distance_bucket(distance: float | None) -> str:
+    if distance is None:
+        return "UNCLEAR"
+    if distance <= 0.25:
+        return "D00_EXACT_OR_NEAR"
+    if distance <= 0.50:
+        return "D05_WITHIN_0_5D"
+    if distance <= 1.00:
+        return "D10_WITHIN_1D"
+    if distance <= 1.50:
+        return "D15_WITHIN_1_5D"
+    if distance <= 3.00:
+        return "D30_WITHIN_3D"
+    return "D99_FAR"
+
+
+def phase_drift_bucket(selected_offset: float | None, best_offset: float | None) -> str:
+    if selected_offset is None or best_offset is None:
+        return "DRIFT_UNKNOWN"
+
+    drift = best_offset - selected_offset
+
+    if abs(drift) <= 0.50:
+        return "DRIFT_FLAT_0_5D"
+    if drift > 0 and drift <= 3.00:
+        return "DRIFT_FORWARD_0_3D"
+    if drift > 3.00 and drift <= 7.00:
+        return "DRIFT_FORWARD_3_7D"
+    if drift > 7.00:
+        return "DRIFT_FORWARD_7D_PLUS"
+    if drift < 0 and abs(drift) <= 3.00:
+        return "DRIFT_BACKWARD_0_3D"
+    return "DRIFT_BACKWARD_3D_PLUS"
 
 
 def marker_by_code(markers: list[MarkerMatch], code: str) -> MarkerMatch | None:
@@ -103,47 +115,18 @@ def pct_return(from_price: float | None, to_price: float | None) -> float | None
     return round(((to_price / from_price) - 1.0) * 100.0, 4)
 
 
-def calc_policy_return(
-    ret1000: float | None,
-    ret1272: float | None,
-    tp1_weight: float,
-    tp2_weight: float,
-    cost_bps: float,
-) -> float | None:
-    if ret1000 is None and ret1272 is None:
-        return None
-
-    w1 = tp1_weight
-    w2 = tp2_weight
-
-    if ret1272 is None:
-        w1 = 1.0
-        w2 = 0.0
-
-    if ret1000 is None:
-        w1 = 0.0
-        w2 = 1.0
-
-    gross = 0.0
-    if ret1000 is not None:
-        gross += w1 * ret1000
-    if ret1272 is not None:
-        gross += w2 * ret1272
-
-    return round(gross - (cost_bps / 100.0), 4)
-
-
 def fmt(value: Any, places: int = 4) -> str:
     if value is None:
         return ""
 
-    dec = value if isinstance(value, Decimal) else Decimal(str(value))
-    q = Decimal("1").scaleb(-places)
-    text = format(dec.quantize(q), "f")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
 
+    text = f"{number:.{places}f}"
     if "." in text:
         text = text.rstrip("0").rstrip(".")
-
     return text or "0"
 
 
@@ -165,429 +148,11 @@ def print_table(headers: list[str], rows: list[list[str]]) -> None:
         print(" | ".join(row[idx].ljust(widths[idx]) for idx in range(len(headers))))
 
 
-def numeric_values(values: list[float | None]) -> list[float]:
-    return [float(x) for x in values if x is not None]
-
-
-def positive_rate(values: list[float]) -> float | None:
-    if not values:
-        return None
-    return round(sum(1 for x in values if x > 0.0) / len(values) * 100.0, 4)
-
-
-def avg(values: list[float]) -> float | None:
-    if not values:
-        return None
-    return round(sum(values) / len(values), 4)
-
-
-def med(values: list[float]) -> float | None:
-    if not values:
-        return None
-    return round(float(median(values)), 4)
-
-
-def metric_from_returns(
-    total_count: int,
-    selected_returns: list[float | None],
-    hold1000_returns: list[float | None],
-    hold1272_returns: list[float | None],
-) -> dict[str, Any]:
-    policy_values = numeric_values(selected_returns)
-    hold1000_values = numeric_values(hold1000_returns)
-    hold1272_values = numeric_values(hold1272_returns)
-
-    return {
-        "total_count": total_count,
-        "eligible_count": len(policy_values),
-        "selection_rate_pct": round((len(policy_values) / total_count * 100.0), 4) if total_count else None,
-        "avg_policy_return_pct": avg(policy_values),
-        "median_policy_return_pct": med(policy_values),
-        "positive_rate_pct": positive_rate(policy_values),
-        "best_policy_return_pct": max(policy_values) if policy_values else None,
-        "worst_policy_return_pct": min(policy_values) if policy_values else None,
-        "avg_hold_to_1000_pct": avg(hold1000_values),
-        "avg_hold_to_1272_pct": avg(hold1272_values),
-        "policy_minus_hold_1000_pct": round(avg(policy_values) - avg(hold1000_values), 4) if policy_values and hold1000_values else None,
-        "policy_minus_hold_1272_pct": round(avg(policy_values) - avg(hold1272_values), 4) if policy_values and hold1272_values else None,
-    }
-
-
-def fetch_real_policy_rows(conn: Any, policy_names: list[str]) -> list[dict[str, Any]]:
-    if not policy_names:
-        return []
-
-    placeholders = ",".join(["%s"] * len(policy_names))
-
-    sql = f"""
-    SELECT
-        r.policy_name,
-        r.checkpoint_set,
-        r.require_offset_match,
-        x.symbol,
-        x.anchor_date,
-        x.checkpoint_ratio,
-        x.offset_matches_best_full,
-        x.return_to_1000_pct,
-        x.return_to_1272_pct,
-        x.policy_return_pct
-    FROM research_breath_curve_policy_run r
-    JOIN (
-        SELECT
-            policy_name,
-            MAX(research_breath_curve_policy_run_id) AS latest_run_id
-        FROM research_breath_curve_policy_run
-        WHERE policy_name IN ({placeholders})
-        GROUP BY policy_name
-    ) latest
-      ON latest.latest_run_id = r.research_breath_curve_policy_run_id
-    JOIN research_breath_curve_policy_result x
-      ON x.research_breath_curve_policy_run_id = r.research_breath_curve_policy_run_id
-    ORDER BY
-        r.policy_name,
-        x.symbol,
-        x.anchor_date,
-        x.checkpoint_ratio
-    """
-
-    with conn.cursor(pymysql.cursors.DictCursor) as cur:
-        cur.execute(sql, policy_names)
-        return list(cur.fetchall())
-
-
-def real_policy_label(row: dict[str, Any]) -> str:
-    checkpoint = fmt(row["checkpoint_ratio"], 3)
-    require_offset = bool(row["require_offset_match"])
-    key = (checkpoint, require_offset)
-    return POLICY_LABELS.get(key, f"{checkpoint}_{int(require_offset)}")
-
-
-def summarize_real_rows(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    grouped: dict[str, list[dict[str, Any]]] = {}
-
-    for row in rows:
-        grouped.setdefault(real_policy_label(row), []).append(row)
-
-    out: dict[str, dict[str, Any]] = {}
-
-    for label, group in grouped.items():
-        out[label] = metric_from_returns(
-            total_count=len(group),
-            selected_returns=[float(row["policy_return_pct"]) for row in group],
-            hold1000_returns=[float(row["return_to_1000_pct"]) if row["return_to_1000_pct"] is not None else None for row in group],
-            hold1272_returns=[float(row["return_to_1272_pct"]) if row["return_to_1272_pct"] is not None else None for row in group],
-        )
-
-    return out
-
-
-def real_anchor_dates_by_symbol(rows: list[dict[str, Any]]) -> dict[str, set[datetime]]:
-    out: dict[str, set[datetime]] = {}
-
-    for row in rows:
-        symbol = str(row["symbol"])
-        anchor_date = row["anchor_date"]
-
-        if isinstance(anchor_date, datetime):
-            dt = anchor_date.replace(tzinfo=timezone.utc)
-        else:
-            dt = parse_dt(str(anchor_date))
-
-        out.setdefault(symbol, set()).add(dt)
-
-    return out
-
-
-def is_near_real_anchor(candidate: datetime, real_anchors: set[datetime], exclude_days: int) -> bool:
-    for real_anchor in real_anchors:
-        delta_days = abs((candidate.date() - real_anchor.date()).days)
-        if delta_days <= exclude_days:
-            return True
-    return False
-
-
-def candidate_anchors_from_candles(
-    candles: list[Candle],
-    start: datetime,
-    end: datetime,
-    earliest_required: datetime,
-    latest_required: datetime,
-    real_anchors: set[datetime],
-    exclude_real_anchor_days: int,
-) -> list[datetime]:
-    out: list[datetime] = []
-
-    seen_dates: set[str] = set()
-
-    for candle in candles:
-        if not (start <= candle.ts <= end):
-            continue
-
-        key = date_key(candle.ts)
-        if key in seen_dates:
-            continue
-        seen_dates.add(key)
-
-        if candle.ts < earliest_required:
-            continue
-
-        if candle.ts > latest_required:
-            continue
-
-        if is_near_real_anchor(candle.ts, real_anchors, exclude_real_anchor_days):
-            continue
-
-        out.append(candle.ts)
-
-    return out
-
-
-def evaluate_random_anchor(
-    *,
-    candles: list[Candle],
-    symbol: str,
-    venue: str,
-    interval_code: str,
-    anchor: datetime,
-    checkpoint: float,
-    cycle_days: float,
-    offsets: list[float],
-    tolerance_hours: float,
-    min_due_markers: int,
-    min_partial_score: float,
-    future_target_ratio: float,
-    tp1_weight: float,
-    tp2_weight: float,
-    cost_bps: float,
-) -> RandomOutcome:
-    as_of = expected_ts(anchor, cycle_days, checkpoint, 0.0)
-    partial_candles = [c for c in candles if c.ts <= as_of]
-
-    if len(partial_candles) < 3:
-        return RandomOutcome(
-            symbol=symbol,
-            anchor_date=date_key(anchor),
-            checkpoint_ratio=fmt(checkpoint, 3),
-            selected_partial_offset_days=None,
-            selected_partial_score=None,
-            selected_partial_shape=None,
-            selected_partial_timing=None,
-            selected_partial_coverage=None,
-            selected_partial_due_markers=None,
-            selected_partial_observed_markers=None,
-            offset_matches_best_full=False,
-            return_to_1000_pct=None,
-            return_to_1272_pct=None,
-            policy_return_pct=None,
-            hold_to_1000_pct=None,
-            hold_to_1272_pct=None,
-            eligible_all=False,
-            eligible_offset_match=False,
-            exclusion_reason="INSUFFICIENT_PARTIAL_CANDLES",
-        )
-
-    full_results = [
-        match(
-            candles=candles,
-            symbol=symbol,
-            venue=venue,
-            interval_code=interval_code,
-            anchor=anchor,
-            cycle_days=cycle_days,
-            offset_days=offset,
-            tolerance_hours=tolerance_hours,
-        )
-        for offset in offsets
-    ]
-
-    best_full = max(full_results, key=lambda result: result.template_match_score)
-    full_by_offset = {result.phase_offset_days: result for result in full_results}
-
-    ranked_candidates: list[tuple[float, float, float, Any, bool]] = []
-
-    for offset in offsets:
-        pr = partial_match(
-            candles=partial_candles,
-            symbol=symbol,
-            venue=venue,
-            interval_code=interval_code,
-            anchor=anchor,
-            as_of=as_of,
-            cycle_days=cycle_days,
-            offset_days=offset,
-            tolerance_hours=tolerance_hours,
-            min_due_markers=min_due_markers,
-            required_ratio=checkpoint,
-        )
-
-        target_ts = expected_ts(anchor, cycle_days, future_target_ratio, offset)
-        target_is_future = target_ts > as_of
-        ranking_score = pr.partial_match_score if target_is_future else 0.0
-        ranked_candidates.append((ranking_score, pr.partial_match_score, offset, pr, target_is_future))
-
-    ranked_candidates.sort(reverse=True, key=lambda item: (item[0], item[1], item[2]))
-
-    selected_ranking_score, _, selected_offset, selected_partial, selected_target_is_future = ranked_candidates[0]
-    selected_full = full_by_offset[selected_offset]
-
-    marker1000 = marker_by_code(selected_full.markers, "MAIN_PULSE_TP_HIGH")
-    marker1272 = marker_by_code(selected_full.markers, "OVERSHOOT_EXTENSION_TP")
-    as_of_close = last_close_at_or_before(candles, as_of)
-
-    ret1000 = pct_return(
-        as_of_close,
-        marker1000.observed_price if marker1000 and marker1000.matched else None,
-    )
-    ret1272 = pct_return(
-        as_of_close,
-        marker1272.observed_price if marker1272 and marker1272.matched else None,
-    )
-
-    policy_return = calc_policy_return(
-        ret1000,
-        ret1272,
-        tp1_weight,
-        tp2_weight,
-        cost_bps,
-    )
-
-    offset_match = selected_offset == best_full.phase_offset_days
-
-    eligible_all = (
-        selected_target_is_future
-        and selected_partial.partial_match_score >= min_partial_score
-        and policy_return is not None
-    )
-    eligible_offset_match = eligible_all and offset_match
-
-    exclusion_reason = "ELIGIBLE"
-    if not selected_target_is_future:
-        exclusion_reason = "TARGET_NOT_FUTURE"
-    elif selected_partial.partial_match_score < min_partial_score:
-        exclusion_reason = "PARTIAL_SCORE_BELOW_THRESHOLD"
-    elif policy_return is None:
-        exclusion_reason = "NO_RETURN_TARGET"
-    elif not offset_match:
-        exclusion_reason = "ELIGIBLE_ALL_ONLY_OFFSET_NOT_MATCHED"
-
-    return RandomOutcome(
-        symbol=symbol,
-        anchor_date=date_key(anchor),
-        checkpoint_ratio=fmt(checkpoint, 3),
-        selected_partial_offset_days=selected_offset,
-        selected_partial_score=selected_partial.partial_match_score,
-        selected_partial_shape=selected_partial.partial_shape_score,
-        selected_partial_timing=selected_partial.partial_timing_score,
-        selected_partial_coverage=selected_partial.marker_coverage_score,
-        selected_partial_due_markers=selected_partial.due_marker_count,
-        selected_partial_observed_markers=selected_partial.observed_marker_count,
-        offset_matches_best_full=offset_match,
-        return_to_1000_pct=ret1000,
-        return_to_1272_pct=ret1272,
-        policy_return_pct=policy_return,
-        hold_to_1000_pct=ret1000,
-        hold_to_1272_pct=ret1272,
-        eligible_all=eligible_all,
-        eligible_offset_match=eligible_offset_match,
-        exclusion_reason=exclusion_reason,
-    )
-
-
-def summarize_random_outcomes(outcomes: list[RandomOutcome]) -> dict[str, dict[str, Any]]:
-    grouped: dict[str, list[RandomOutcome]] = {}
-
-    for outcome in outcomes:
-        grouped.setdefault(f"{outcome.checkpoint_ratio}_all", []).append(outcome)
-        grouped.setdefault(f"{outcome.checkpoint_ratio}_offset_match", []).append(outcome)
-
-    result: dict[str, dict[str, Any]] = {}
-
-    for label, group in grouped.items():
-        if label.endswith("_offset_match"):
-            selected = [x for x in group if x.eligible_offset_match]
-        else:
-            selected = [x for x in group if x.eligible_all]
-
-        result[label] = metric_from_returns(
-            total_count=len(group),
-            selected_returns=[x.policy_return_pct for x in selected],
-            hold1000_returns=[x.hold_to_1000_pct for x in selected],
-            hold1272_returns=[x.hold_to_1272_pct for x in selected],
-        )
-
-    return result
-
-
-def summarize_random_by_symbol(outcomes: list[RandomOutcome]) -> list[dict[str, Any]]:
-    buckets: dict[tuple[str, str], list[RandomOutcome]] = {}
-
-    for outcome in outcomes:
-        buckets.setdefault((outcome.symbol, f"{outcome.checkpoint_ratio}_all"), []).append(outcome)
-        buckets.setdefault((outcome.symbol, f"{outcome.checkpoint_ratio}_offset_match"), []).append(outcome)
-
-    rows: list[dict[str, Any]] = []
-
-    for (symbol, label), group in sorted(buckets.items()):
-        if label.endswith("_offset_match"):
-            selected = [x for x in group if x.eligible_offset_match]
-        else:
-            selected = [x for x in group if x.eligible_all]
-
-        metrics = metric_from_returns(
-            total_count=len(group),
-            selected_returns=[x.policy_return_pct for x in selected],
-            hold1000_returns=[x.hold_to_1000_pct for x in selected],
-            hold1272_returns=[x.hold_to_1272_pct for x in selected],
-        )
-
-        rows.append(
-            {
-                "symbol": symbol,
-                "bucket": label,
-                **metrics,
-            }
-        )
-
-    return rows
-
-
-def write_random_samples_csv(path: Path, outcomes: list[RandomOutcome]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-    fields = [
-        "symbol",
-        "anchor_date",
-        "checkpoint_ratio",
-        "selected_partial_offset_days",
-        "selected_partial_score",
-        "selected_partial_shape",
-        "selected_partial_timing",
-        "selected_partial_coverage",
-        "selected_partial_due_markers",
-        "selected_partial_observed_markers",
-        "offset_matches_best_full",
-        "return_to_1000_pct",
-        "return_to_1272_pct",
-        "policy_return_pct",
-        "hold_to_1000_pct",
-        "hold_to_1272_pct",
-        "eligible_all",
-        "eligible_offset_match",
-        "exclusion_reason",
-    ]
-
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
-        writer.writeheader()
-
-        for outcome in outcomes:
-            writer.writerow({field: getattr(outcome, field) for field in fields})
-
-
-def write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     if not rows:
+        path.write_text("", encoding="utf-8")
         return
 
     fields = sorted({key for row in rows for key in row.keys()})
@@ -599,273 +164,724 @@ def write_summary_csv(path: Path, rows: list[dict[str, Any]]) -> None:
             writer.writerow(row)
 
 
-def comparison_rows(real_metrics: dict[str, dict[str, Any]], random_metrics: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    label_map = {
-        "0618_all": "0.618_all",
-        "0618_offset_match": "0.618_offset_match",
-        "0786_all": "0.786_all",
-        "0786_offset_match": "0.786_offset_match",
+def policy_specs() -> list[PolicySpec]:
+    return [
+        PolicySpec(
+            policy_name="0618_selected_minus8_v1",
+            purpose="0.618 selected -8 early recognition",
+        ),
+        PolicySpec(
+            policy_name="0618_selected_minus7_v1",
+            purpose="0.618 selected -7 early recognition",
+        ),
+        PolicySpec(
+            policy_name="0618_selected_early_band_v1",
+            purpose="0.618 selected -7/-8 combined early recognition",
+        ),
+    ]
+
+
+def policy_matches(row: dict[str, Any], policy_name: str) -> bool:
+    if row.get("status") != "OK":
+        return False
+
+    if str(row.get("checkpoint_ratio")) != "0.618":
+        return False
+
+    selected_band = str(row.get("selected_band_w1_0"))
+
+    if policy_name == "0618_selected_minus8_v1":
+        return selected_band == "-8"
+
+    if policy_name == "0618_selected_minus7_v1":
+        return selected_band == "-7"
+
+    if policy_name == "0618_selected_early_band_v1":
+        return selected_band in {"-8", "-7"}
+
+    raise RuntimeError(f"Unknown policy_name={policy_name}")
+
+
+def generate_random_anchors(
+    *,
+    start: datetime,
+    end: datetime,
+    count: int,
+    real_anchors: list[datetime],
+    exclude_days: float,
+    seed: int,
+    symbol: str,
+) -> list[datetime]:
+    if end < start:
+        raise RuntimeError(f"Invalid random window: start={iso(start)} end={iso(end)}")
+
+    rng = random.Random(f"{seed}:{symbol}")
+    total_days = max(0, int((end.date() - start.date()).days))
+    real_dates = [anchor.date() for anchor in real_anchors]
+    anchors: list[datetime] = []
+    used_dates: set[str] = set()
+    attempts = 0
+    max_attempts = max(count * 100, 1000)
+
+    while len(anchors) < count and attempts < max_attempts:
+        attempts += 1
+        day_offset = rng.randint(0, total_days)
+        candidate = datetime.combine(
+            start.date() + timedelta(days=day_offset),
+            datetime.min.time(),
+            tzinfo=timezone.utc,
+        )
+
+        key = candidate.date().isoformat()
+        if key in used_dates:
+            continue
+
+        too_close = any(abs((candidate.date() - real_date).days) <= exclude_days for real_date in real_dates)
+        if too_close:
+            continue
+
+        used_dates.add(key)
+        anchors.append(candidate)
+
+    if len(anchors) < count:
+        print(
+            f"WARN symbol={symbol} requested_random_anchors={count} "
+            f"generated={len(anchors)} window={start.date()}..{end.date()} "
+            f"exclude_days={exclude_days}"
+        )
+
+    return sorted(anchors)
+
+
+def load_symbol_candles(
+    *,
+    symbol: str,
+    venue: str,
+    interval_code: str,
+    anchors: list[datetime],
+    cycle_days: float,
+    offsets: list[float],
+    tolerance_hours: float,
+) -> list[Candle]:
+    query_start = min(anchors) + timedelta(days=min(offsets)) - timedelta(hours=tolerance_hours + 48)
+    query_end = max(anchors) + timedelta(days=cycle_days * 1.272 + max(offsets)) + timedelta(
+        hours=tolerance_hours + 48
+    )
+
+    return load_db(
+        symbol=symbol,
+        asset_id=None,
+        venue=venue,
+        interval_code=interval_code,
+        start=query_start,
+        end=query_end,
+    )
+
+
+def anchor_window_candles(
+    *,
+    candles: list[Candle],
+    anchor: datetime,
+    cycle_days: float,
+    offsets: list[float],
+    tolerance_hours: float,
+) -> list[Candle]:
+    start = anchor + timedelta(days=min(offsets)) - timedelta(hours=tolerance_hours + 48)
+    end = anchor + timedelta(days=cycle_days * 1.272 + max(offsets)) + timedelta(
+        hours=tolerance_hours + 48
+    )
+    return [candle for candle in candles if start <= candle.ts <= end]
+
+
+def evaluate_anchor(
+    *,
+    source: str,
+    symbol: str,
+    anchor: datetime,
+    candles: list[Candle],
+    venue: str,
+    interval_code: str,
+    cycle_days: float,
+    checkpoint: float,
+    offsets: list[float],
+    tolerance_hours: float,
+    min_due_markers: int,
+    future_target_ratio: float,
+    bands: list[float],
+) -> dict[str, Any]:
+    try:
+        full_candles = anchor_window_candles(
+            candles=candles,
+            anchor=anchor,
+            cycle_days=cycle_days,
+            offsets=offsets,
+            tolerance_hours=tolerance_hours,
+        )
+
+        if len(full_candles) < 5:
+            raise RuntimeError(f"Not enough full-cycle candles loaded: {len(full_candles)}")
+
+        full_results = [
+            match(
+                candles=full_candles,
+                symbol=symbol,
+                venue=venue,
+                interval_code=interval_code,
+                anchor=anchor,
+                cycle_days=cycle_days,
+                offset_days=offset,
+                tolerance_hours=tolerance_hours,
+            )
+            for offset in offsets
+        ]
+
+        best_full = max(full_results, key=lambda result: result.template_match_score)
+        full_by_offset = {result.phase_offset_days: result for result in full_results}
+
+        as_of = expected_ts(anchor, cycle_days, checkpoint, 0.0)
+        partial_candles = [candle for candle in full_candles if candle.ts <= as_of]
+
+        if len(partial_candles) < 3:
+            raise RuntimeError(f"Not enough partial candles loaded: {len(partial_candles)}")
+
+        ranked_candidates = []
+
+        for offset in offsets:
+            partial = partial_match(
+                candles=partial_candles,
+                symbol=symbol,
+                venue=venue,
+                interval_code=interval_code,
+                anchor=anchor,
+                as_of=as_of,
+                cycle_days=cycle_days,
+                offset_days=offset,
+                tolerance_hours=tolerance_hours,
+                min_due_markers=min_due_markers,
+                required_ratio=checkpoint,
+            )
+
+            target_ts = expected_ts(anchor, cycle_days, future_target_ratio, offset)
+            target_is_future = target_ts > as_of
+            ranking_score = partial.partial_match_score if target_is_future else 0.0
+
+            ranked_candidates.append((ranking_score, partial.partial_match_score, offset, partial, target_is_future))
+
+        ranked_candidates.sort(reverse=True, key=lambda item: (item[0], item[1], item[2]))
+        _, _, selected_offset, selected, target_is_future = ranked_candidates[0]
+
+        same_full = full_by_offset[selected_offset]
+        marker_1000 = marker_by_code(same_full.markers, "MAIN_PULSE_TP_HIGH")
+        marker_1272 = marker_by_code(same_full.markers, "OVERSHOOT_EXTENSION_TP")
+        as_of_close = last_close_at_or_before(full_candles, as_of)
+
+        return_to_1000 = pct_return(
+            as_of_close,
+            marker_1000.observed_price if marker_1000 and marker_1000.matched else None,
+        )
+        return_to_1272 = pct_return(
+            as_of_close,
+            marker_1272.observed_price if marker_1272 and marker_1272.matched else None,
+        )
+
+        best_offset = best_full.phase_offset_days
+        offset_distance = abs(selected_offset - best_offset)
+        selected_band = nearest_band(selected_offset, bands, 1.0)
+        best_band = nearest_band(best_offset, bands, 1.0)
+
+        row = {
+            "status": "OK",
+            "source": source,
+            "symbol": symbol,
+            "anchor_ts_utc": iso(anchor),
+            "checkpoint_ratio": f"{checkpoint:.3f}",
+            "as_of_ts_utc": iso(as_of),
+            "selected_partial_offset_days": selected_offset,
+            "selected_band_w1_0": selected_band,
+            "selected_partial_score": selected.partial_match_score,
+            "selected_partial_shape": selected.partial_shape_score,
+            "selected_partial_timing": selected.partial_timing_score,
+            "selected_partial_coverage": selected.marker_coverage_score,
+            "selected_partial_due_markers": selected.due_marker_count,
+            "selected_partial_observed_markers": selected.observed_marker_count,
+            "future_target_ratio": future_target_ratio,
+            "future_target_is_future": target_is_future,
+            "as_of_close": as_of_close,
+            "return_to_1000_pct": return_to_1000,
+            "return_to_1272_pct": return_to_1272,
+            "same_offset_full_score": same_full.template_match_score,
+            "same_offset_full_shape": same_full.shape_score,
+            "same_offset_full_timing": same_full.timing_score,
+            "best_full_offset_days": best_offset,
+            "best_full_band_w1_0": best_band,
+            "best_full_score": best_full.template_match_score,
+            "best_full_shape": best_full.shape_score,
+            "best_full_timing": best_full.timing_score,
+            "offset_distance_days": offset_distance,
+            "offset_distance_bucket": distance_bucket(offset_distance),
+            "phase_drift_days": best_offset - selected_offset,
+            "phase_drift_bucket": phase_drift_bucket(selected_offset, best_offset),
+            "offset_matches_best_full_legacy": selected_offset == best_offset,
+            "band_match_1_0": selected_band == best_band and selected_band not in {"DRIFT", "UNCLEAR"},
+            "venue": venue,
+            "interval_code": interval_code,
+            "cycle_days": cycle_days,
+            "tolerance_hours": tolerance_hours,
+            "error": "",
+        }
+
+        for spec in policy_specs():
+            row[spec.policy_name] = policy_matches(row, spec.policy_name)
+
+        return row
+
+    except Exception as exc:
+        return {
+            "status": "ERROR",
+            "source": source,
+            "symbol": symbol,
+            "anchor_ts_utc": iso(anchor),
+            "checkpoint_ratio": f"{checkpoint:.3f}",
+            "error": str(exc),
+            "venue": venue,
+            "interval_code": interval_code,
+            "cycle_days": cycle_days,
+            "tolerance_hours": tolerance_hours,
+        }
+
+
+def numeric_values(rows: list[dict[str, Any]], key: str) -> list[float]:
+    out: list[float] = []
+    for row in rows:
+        value = row.get(key)
+        if value in ("", None):
+            continue
+        try:
+            out.append(float(value))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def summarize_returns(*, evaluated_rows: list[dict[str, Any]], selected_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    ret1000 = numeric_values(selected_rows, "return_to_1000_pct")
+    ret1272 = numeric_values(selected_rows, "return_to_1272_pct")
+    partial = numeric_values(selected_rows, "selected_partial_score")
+
+    def avg(items: list[float]) -> float | None:
+        if not items:
+            return None
+        return round(sum(items) / len(items), 4)
+
+    def med(items: list[float]) -> float | None:
+        if not items:
+            return None
+        return round(float(median(items)), 4)
+
+    def positive_rate(items: list[float]) -> float | None:
+        if not items:
+            return None
+        return round(sum(1 for item in items if item > 0.0) / len(items) * 100.0, 4)
+
+    eligible = len(selected_rows)
+    evaluated = len(evaluated_rows)
+
+    return {
+        "evaluated_rows": evaluated,
+        "eligible_rows": eligible,
+        "selection_rate_pct": round(eligible / evaluated * 100.0, 4) if evaluated else None,
+        "avg_partial_score": avg(partial),
+        "avg_return_to_1000_pct": avg(ret1000),
+        "median_return_to_1000_pct": med(ret1000),
+        "positive_to_1000_pct": positive_rate(ret1000),
+        "best_return_to_1000_pct": max(ret1000) if ret1000 else None,
+        "worst_return_to_1000_pct": min(ret1000) if ret1000 else None,
+        "avg_return_to_1272_pct": avg(ret1272),
+        "median_return_to_1272_pct": med(ret1272),
+        "positive_to_1272_pct": positive_rate(ret1272),
+        "best_return_to_1272_pct": max(ret1272) if ret1272 else None,
+        "worst_return_to_1272_pct": min(ret1272) if ret1272 else None,
     }
 
+
+def build_policy_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
 
-    for real_label, random_label in label_map.items():
-        real = real_metrics.get(real_label, {})
-        rnd = random_metrics.get(random_label, {})
+    for spec in policy_specs():
+        for row in rows:
+            if policy_matches(row, spec.policy_name):
+                out.append(
+                    {
+                        **row,
+                        "policy_name": spec.policy_name,
+                        "policy_purpose": spec.purpose,
+                    }
+                )
 
-        real_avg = real.get("avg_policy_return_pct")
-        random_avg = rnd.get("avg_policy_return_pct")
+    return out
+
+
+def summary_by_policy(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+
+    for spec in policy_specs():
+        for source in ("real", "random"):
+            evaluated = [row for row in rows if row.get("source") == source and row.get("status") == "OK"]
+            selected = [row for row in evaluated if policy_matches(row, spec.policy_name)]
+            out.append(
+                {
+                    "policy_name": spec.policy_name,
+                    "source": source,
+                    **summarize_returns(evaluated_rows=evaluated, selected_rows=selected),
+                }
+            )
+
+    return out
+
+
+def comparison_by_policy(summary_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped = {(row["policy_name"], row["source"]): row for row in summary_rows}
+    out: list[dict[str, Any]] = []
+
+    for spec in policy_specs():
+        real = grouped.get((spec.policy_name, "real"), {})
+        random_row = grouped.get((spec.policy_name, "random"), {})
+
+        real_avg = real.get("avg_return_to_1000_pct")
+        random_avg = random_row.get("avg_return_to_1000_pct")
+        real_sel = real.get("selection_rate_pct")
+        random_sel = random_row.get("selection_rate_pct")
 
         out.append(
             {
-                "bucket": real_label,
-                "real_rows": real.get("eligible_count"),
-                "random_candidates": rnd.get("total_count"),
-                "random_eligible": rnd.get("eligible_count"),
-                "random_selection_rate_pct": rnd.get("selection_rate_pct"),
-                "real_avg_policy_return_pct": real_avg,
-                "random_avg_policy_return_pct": random_avg,
-                "real_minus_random_pct": round(real_avg - random_avg, 4) if real_avg is not None and random_avg is not None else None,
-                "real_positive_rate_pct": real.get("positive_rate_pct"),
-                "random_positive_rate_pct": rnd.get("positive_rate_pct"),
-                "real_worst_policy_return_pct": real.get("worst_policy_return_pct"),
-                "random_worst_policy_return_pct": rnd.get("worst_policy_return_pct"),
-                "real_policy_minus_hold_1000_pct": real.get("policy_minus_hold_1000_pct"),
-                "random_policy_minus_hold_1000_pct": rnd.get("policy_minus_hold_1000_pct"),
-                "real_policy_minus_hold_1272_pct": real.get("policy_minus_hold_1272_pct"),
-                "random_policy_minus_hold_1272_pct": rnd.get("policy_minus_hold_1272_pct"),
+                "policy_name": spec.policy_name,
+                "real_evaluated": real.get("evaluated_rows"),
+                "real_eligible": real.get("eligible_rows"),
+                "real_selection_rate_pct": real_sel,
+                "real_avg_1000": real_avg,
+                "real_pos_1000": real.get("positive_to_1000_pct"),
+                "real_worst_1000": real.get("worst_return_to_1000_pct"),
+                "random_evaluated": random_row.get("evaluated_rows"),
+                "random_eligible": random_row.get("eligible_rows"),
+                "random_selection_rate_pct": random_sel,
+                "random_avg_1000": random_avg,
+                "random_pos_1000": random_row.get("positive_to_1000_pct"),
+                "random_worst_1000": random_row.get("worst_return_to_1000_pct"),
+                "edge_avg_1000": round(real_avg - random_avg, 4)
+                if real_avg is not None and random_avg is not None
+                else None,
+                "selection_rate_delta": round(real_sel - random_sel, 4)
+                if real_sel is not None and random_sel is not None
+                else None,
             }
         )
 
     return out
 
 
-def run(args: argparse.Namespace) -> int:
-    load_dotenv(dotenv_path=".env", override=False)
+def summary_by_policy_symbol(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    symbols = sorted({str(row.get("symbol")) for row in rows if row.get("status") == "OK"})
+    out: list[dict[str, Any]] = []
 
-    symbols = parse_csv_list(args.symbols)
-    checkpoints = [float(x) for x in parse_csv_list(args.checkpoints)]
-    offsets = parse_offsets(args.offsets)
-    policy_names = parse_csv_list(args.real_policy_names)
-
-    start_dt = parse_dt(args.start_date)
-    end_dt = parse_dt(args.end_date)
-
-    conn = get_db_connection()
-
-    try:
-        real_rows = fetch_real_policy_rows(conn, policy_names)
-    finally:
-        conn.close()
-
-    real_metrics = summarize_real_rows(real_rows)
-    real_anchors = real_anchor_dates_by_symbol(real_rows)
-
-    outcomes: list[RandomOutcome] = []
-
-    for symbol in symbols:
-        query_start = start_dt + timedelta(days=min(offsets)) - timedelta(hours=args.tolerance_hours + 48)
-        query_end = end_dt + timedelta(days=args.cycle_days * 1.272 + max(offsets)) + timedelta(hours=args.tolerance_hours + 48)
-
-        candles = load_db(
-            symbol=symbol,
-            asset_id=None,
-            venue=args.venue,
-            interval_code=args.interval_code,
-            start=query_start,
-            end=query_end,
-        )
-
-        if len(candles) < 10:
-            print(f"WARN symbol={symbol} insufficient candles={len(candles)}")
-            continue
-
-        earliest_required = candles[0].ts - timedelta(days=min(offsets)) + timedelta(hours=args.tolerance_hours + 48)
-        latest_required = candles[-1].ts - timedelta(days=args.cycle_days * 1.272 + max(offsets)) - timedelta(hours=args.tolerance_hours + 48)
-
-        candidates = candidate_anchors_from_candles(
-            candles=candles,
-            start=start_dt,
-            end=end_dt,
-            earliest_required=earliest_required,
-            latest_required=latest_required,
-            real_anchors=real_anchors.get(symbol, set()),
-            exclude_real_anchor_days=args.exclude_real_anchor_days,
-        )
-
-        rng = random.Random(f"{args.seed}:{symbol}")
-        rng.shuffle(candidates)
-        selected_anchors = sorted(candidates[: args.samples_per_symbol])
-
-        print(
-            f"symbol={symbol} candidates={len(candidates)} sampled={len(selected_anchors)} "
-            f"real_anchor_exclusion_days={args.exclude_real_anchor_days}"
-        )
-
-        for anchor in selected_anchors:
-            for checkpoint in checkpoints:
-                outcomes.append(
-                    evaluate_random_anchor(
-                        candles=candles,
-                        symbol=symbol,
-                        venue=args.venue,
-                        interval_code=args.interval_code,
-                        anchor=anchor,
-                        checkpoint=checkpoint,
-                        cycle_days=args.cycle_days,
-                        offsets=offsets,
-                        tolerance_hours=args.tolerance_hours,
-                        min_due_markers=args.min_due_markers,
-                        min_partial_score=args.min_partial_score,
-                        future_target_ratio=args.future_target_ratio,
-                        tp1_weight=args.tp1_weight,
-                        tp2_weight=args.tp2_weight,
-                        cost_bps=args.cost_bps,
-                    )
+    for spec in policy_specs():
+        for symbol in symbols:
+            for source in ("real", "random"):
+                evaluated = [
+                    row
+                    for row in rows
+                    if row.get("source") == source
+                    and row.get("symbol") == symbol
+                    and row.get("status") == "OK"
+                ]
+                selected = [row for row in evaluated if policy_matches(row, spec.policy_name)]
+                out.append(
+                    {
+                        "policy_name": spec.policy_name,
+                        "symbol": symbol,
+                        "source": source,
+                        **summarize_returns(evaluated_rows=evaluated, selected_rows=selected),
+                    }
                 )
 
-    random_metrics = summarize_random_outcomes(outcomes)
-    comparisons = comparison_rows(real_metrics, random_metrics)
-    symbol_rows = summarize_random_by_symbol(outcomes)
+    return out
 
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    out_dir = Path(args.out_dir)
-    sample_path = out_dir / f"breath_curve_random_anchor_baseline_v2_samples_{stamp}.csv"
-    summary_path = out_dir / f"breath_curve_random_anchor_baseline_v2_summary_{stamp}.csv"
-    symbol_path = out_dir / f"breath_curve_random_anchor_baseline_v2_symbol_buckets_{stamp}.csv"
 
-    write_random_samples_csv(sample_path, outcomes)
-    write_summary_csv(summary_path, comparisons)
-    write_summary_csv(symbol_path, symbol_rows)
-
-    if args.output == "table":
-        print("")
-        print(f"report={REPORT_NAME} version={VERSION}")
-        print("scope=research-only market-only account-agnostic")
-        print("db_writes=0 broker_calls=0 broker_writes=0 order_submission=0")
-        print("runtime_layer_touch=none")
-        print(f"symbols={','.join(symbols)}")
-        print(f"window={args.start_date}..{args.end_date}")
-        print(f"samples_per_symbol={args.samples_per_symbol}")
-        print(f"seed={args.seed}")
-        print(f"checkpoints={','.join(fmt(x, 3) for x in checkpoints)}")
-        print(f"exclude_real_anchor_days={args.exclude_real_anchor_days}")
-        print("")
-        print("--- real vs random baseline ---")
-        print_table(
+def print_policy_comparison(rows: list[dict[str, Any]]) -> None:
+    print("--- real vs same-symbol random anchors ---")
+    print_table(
+        [
+            "policy",
+            "real_eval",
+            "real_elig",
+            "real_sel",
+            "real_avg1000",
+            "real_pos",
+            "real_worst",
+            "rand_eval",
+            "rand_elig",
+            "rand_sel",
+            "rand_avg1000",
+            "rand_pos",
+            "rand_worst",
+            "edge1000",
+            "sel_delta",
+        ],
+        [
             [
-                "bucket",
-                "real_rows",
-                "rand_total",
-                "rand_elig",
-                "rand_sel",
-                "real_avg",
-                "rand_avg",
-                "real-rand",
-                "real_pos",
-                "rand_pos",
-                "real_worst",
-                "rand_worst",
-                "real-h1000",
-                "rand-h1000",
-                "real-h1272",
-                "rand-h1272",
-            ],
-            [
-                [
-                    str(row["bucket"]),
-                    str(row["real_rows"]),
-                    str(row["random_candidates"]),
-                    str(row["random_eligible"]),
-                    fmt(row["random_selection_rate_pct"], 2),
-                    fmt(row["real_avg_policy_return_pct"]),
-                    fmt(row["random_avg_policy_return_pct"]),
-                    fmt(row["real_minus_random_pct"]),
-                    fmt(row["real_positive_rate_pct"], 2),
-                    fmt(row["random_positive_rate_pct"], 2),
-                    fmt(row["real_worst_policy_return_pct"]),
-                    fmt(row["random_worst_policy_return_pct"]),
-                    fmt(row["real_policy_minus_hold_1000_pct"]),
-                    fmt(row["random_policy_minus_hold_1000_pct"]),
-                    fmt(row["real_policy_minus_hold_1272_pct"]),
-                    fmt(row["random_policy_minus_hold_1272_pct"]),
-                ]
-                for row in comparisons
-            ],
-        )
+                str(row["policy_name"]),
+                str(row["real_evaluated"]),
+                str(row["real_eligible"]),
+                fmt(row["real_selection_rate_pct"], 2),
+                fmt(row["real_avg_1000"]),
+                fmt(row["real_pos_1000"], 2),
+                fmt(row["real_worst_1000"]),
+                str(row["random_evaluated"]),
+                str(row["random_eligible"]),
+                fmt(row["random_selection_rate_pct"], 2),
+                fmt(row["random_avg_1000"]),
+                fmt(row["random_pos_1000"], 2),
+                fmt(row["random_worst_1000"]),
+                fmt(row["edge_avg_1000"]),
+                fmt(row["selection_rate_delta"], 2),
+            ]
+            for row in rows
+        ],
+    )
 
-        print("")
-        print("--- random per-symbol buckets ---")
-        print_table(
-            [
-                "symbol",
-                "bucket",
-                "total",
-                "eligible",
-                "sel_rate",
-                "avg",
-                "median",
-                "pos",
-                "best",
-                "worst",
-                "hold1000",
-                "hold1272",
-            ],
-            [
-                [
-                    str(row["symbol"]),
-                    str(row["bucket"]),
-                    str(row["total_count"]),
-                    str(row["eligible_count"]),
-                    fmt(row["selection_rate_pct"], 2),
-                    fmt(row["avg_policy_return_pct"]),
-                    fmt(row["median_policy_return_pct"]),
-                    fmt(row["positive_rate_pct"], 2),
-                    fmt(row["best_policy_return_pct"]),
-                    fmt(row["worst_policy_return_pct"]),
-                    fmt(row["avg_hold_to_1000_pct"]),
-                    fmt(row["avg_hold_to_1272_pct"]),
-                ]
-                for row in symbol_rows
-            ],
-        )
 
-        print("")
-        print(f"wrote_samples_csv={sample_path}")
-        print(f"wrote_summary_csv={summary_path}")
-        print(f"wrote_symbol_buckets_csv={symbol_path}")
-        print("[DONE] db_writes=0 broker_calls=0 broker_writes=0 order_submission=0")
+def print_policy_source_summary(rows: list[dict[str, Any]]) -> None:
+    print()
+    print("--- policy source summary ---")
+    print_table(
+        [
+            "policy",
+            "source",
+            "eval",
+            "eligible",
+            "sel_rate",
+            "partial",
+            "avg1000",
+            "pos1000",
+            "best1000",
+            "worst1000",
+            "avg1272",
+            "pos1272",
+            "best1272",
+            "worst1272",
+        ],
+        [
+            [
+                str(row["policy_name"]),
+                str(row["source"]),
+                str(row["evaluated_rows"]),
+                str(row["eligible_rows"]),
+                fmt(row["selection_rate_pct"], 2),
+                fmt(row["avg_partial_score"]),
+                fmt(row["avg_return_to_1000_pct"]),
+                fmt(row["positive_to_1000_pct"], 2),
+                fmt(row["best_return_to_1000_pct"]),
+                fmt(row["worst_return_to_1000_pct"]),
+                fmt(row["avg_return_to_1272_pct"]),
+                fmt(row["positive_to_1272_pct"], 2),
+                fmt(row["best_return_to_1272_pct"]),
+                fmt(row["worst_return_to_1272_pct"]),
+            ]
+            for row in rows
+        ],
+    )
 
-    return 0
+
+def print_policy_symbol_summary(rows: list[dict[str, Any]]) -> None:
+    print()
+    print("--- policy symbol summary ---")
+    print_table(
+        [
+            "policy",
+            "symbol",
+            "source",
+            "eval",
+            "eligible",
+            "sel_rate",
+            "avg1000",
+            "pos1000",
+            "worst1000",
+            "avg1272",
+            "pos1272",
+        ],
+        [
+            [
+                str(row["policy_name"]),
+                str(row["symbol"]),
+                str(row["source"]),
+                str(row["evaluated_rows"]),
+                str(row["eligible_rows"]),
+                fmt(row["selection_rate_pct"], 2),
+                fmt(row["avg_return_to_1000_pct"]),
+                fmt(row["positive_to_1000_pct"], 2),
+                fmt(row["worst_return_to_1000_pct"]),
+                fmt(row["avg_return_to_1272_pct"]),
+                fmt(row["positive_to_1272_pct"], 2),
+            ]
+            for row in rows
+            if row["eligible_rows"] > 0
+        ],
+    )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Research-only Breath Curve same-symbol random-anchor baseline v2."
+        description="Research-only same-symbol random-anchor baseline for calibrated Breath Curve 0.618 early filters."
     )
-    parser.add_argument("--symbols", default=DEFAULT_SYMBOLS)
-    parser.add_argument("--start-date", default="2026-03-01")
-    parser.add_argument("--end-date", default="2026-04-12")
-    parser.add_argument("--checkpoints", default="0.618,0.786")
-    parser.add_argument("--samples-per-symbol", type=int, default=100)
-    parser.add_argument("--seed", type=int, default=260512)
-    parser.add_argument("--exclude-real-anchor-days", type=int, default=3)
+    parser.add_argument("--symbols", default="BTC,ETH,TAO,RENDER,FIL,HBAR,XLM,PEPE")
+    parser.add_argument("--real-anchors", default="2026-03-01,2026-03-22,2026-04-12")
+    parser.add_argument("--random-window-start", default=None)
+    parser.add_argument("--random-window-end", default=None)
+    parser.add_argument("--random-count-per-symbol", type=int, default=100)
+    parser.add_argument("--random-seed", type=int, default=42)
+    parser.add_argument("--exclude-real-anchor-days", type=float, default=3.0)
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--interval", dest="interval_code", default="1d")
     parser.add_argument("--cycle-days", type=float, default=21.0)
-    parser.add_argument("--offsets", default="-10.5,-7,-5,-3,0,3,5,7,10.5")
+    parser.add_argument(
+        "--offsets",
+        default="-10.5,-10,-9.5,-9,-8.5,-8,-7.5,-7,-6.5,-6,-5.5,-5,-4.5,-4,-3.5,-3,-2.5,-2,-1.5,-1,-0.5,0,0.5,1,1.5,2,2.5,3,3.5,4,4.5,5,5.5,6,6.5,7,7.5,8,8.5,9,9.5,10,10.5",
+    )
+    parser.add_argument("--bands", default="-10.5,-9,-8,-7,-5,-3,0,3,5,7,9,10.5")
+    parser.add_argument("--checkpoint", type=float, default=0.618)
+    parser.add_argument("--future-target-ratio", type=float, default=1.000)
     parser.add_argument("--tolerance-hours", type=float, default=36.0)
     parser.add_argument("--min-due-markers", type=int, default=3)
-    parser.add_argument("--min-partial-score", type=float, default=0.70)
-    parser.add_argument("--future-target-ratio", type=float, default=1.000)
-    parser.add_argument("--tp1-weight", type=float, default=0.50)
-    parser.add_argument("--tp2-weight", type=float, default=0.50)
-    parser.add_argument("--cost-bps", type=float, default=20.0)
-    parser.add_argument("--real-policy-names", default=DEFAULT_REAL_POLICY_NAMES)
     parser.add_argument("--out-dir", default="data/research/breath_curve_random_anchor_baseline_v2")
     parser.add_argument("--output", choices=["table", "none"], default="table")
     return parser.parse_args()
 
 
+def main() -> int:
+    args = parse_args()
+
+    symbols = parse_csv_list(args.symbols)
+    real_anchors = [parse_dt(raw) for raw in parse_csv_list(args.real_anchors)]
+    offsets = parse_offsets(args.offsets)
+    bands = parse_offsets(args.bands)
+
+    random_window_start = parse_dt(args.random_window_start) if args.random_window_start else min(real_anchors)
+    random_window_end = parse_dt(args.random_window_end) if args.random_window_end else max(real_anchors)
+
+    all_rows: list[dict[str, Any]] = []
+
+    for symbol in symbols:
+        random_anchors = generate_random_anchors(
+            start=random_window_start,
+            end=random_window_end,
+            count=args.random_count_per_symbol,
+            real_anchors=real_anchors,
+            exclude_days=args.exclude_real_anchor_days,
+            seed=args.random_seed,
+            symbol=symbol,
+        )
+
+        all_anchors = real_anchors + random_anchors
+        symbol_candles = load_symbol_candles(
+            symbol=symbol,
+            venue=args.venue,
+            interval_code=args.interval_code,
+            anchors=all_anchors,
+            cycle_days=args.cycle_days,
+            offsets=offsets,
+            tolerance_hours=args.tolerance_hours,
+        )
+
+        print(
+            f"symbol={symbol} candles={len(symbol_candles)} "
+            f"real_anchors={len(real_anchors)} random_anchors={len(random_anchors)}"
+        )
+
+        for anchor in real_anchors:
+            row = evaluate_anchor(
+                source="real",
+                symbol=symbol,
+                anchor=anchor,
+                candles=symbol_candles,
+                venue=args.venue,
+                interval_code=args.interval_code,
+                cycle_days=args.cycle_days,
+                checkpoint=args.checkpoint,
+                offsets=offsets,
+                tolerance_hours=args.tolerance_hours,
+                min_due_markers=args.min_due_markers,
+                future_target_ratio=args.future_target_ratio,
+                bands=bands,
+            )
+            all_rows.append(row)
+
+        for anchor in random_anchors:
+            row = evaluate_anchor(
+                source="random",
+                symbol=symbol,
+                anchor=anchor,
+                candles=symbol_candles,
+                venue=args.venue,
+                interval_code=args.interval_code,
+                cycle_days=args.cycle_days,
+                checkpoint=args.checkpoint,
+                offsets=offsets,
+                tolerance_hours=args.tolerance_hours,
+                min_due_markers=args.min_due_markers,
+                future_target_ratio=args.future_target_ratio,
+                bands=bands,
+            )
+            all_rows.append(row)
+
+    policy_rows = build_policy_rows(all_rows)
+    source_summary = summary_by_policy(all_rows)
+    comparison_rows = comparison_by_policy(source_summary)
+    symbol_summary = summary_by_policy_symbol(all_rows)
+
+    out_dir = Path(args.out_dir)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    all_path = out_dir / f"breath_curve_random_anchor_baseline_v2_{stamp}_all_rows.csv"
+    policy_path = out_dir / f"breath_curve_random_anchor_baseline_v2_{stamp}_policy_rows.csv"
+    source_summary_path = out_dir / f"breath_curve_random_anchor_baseline_v2_{stamp}_source_summary.csv"
+    comparison_path = out_dir / f"breath_curve_random_anchor_baseline_v2_{stamp}_comparison.csv"
+    symbol_summary_path = out_dir / f"breath_curve_random_anchor_baseline_v2_{stamp}_symbol_summary.csv"
+
+    write_csv(all_path, all_rows)
+    write_csv(policy_path, policy_rows)
+    write_csv(source_summary_path, source_summary)
+    write_csv(comparison_path, comparison_rows)
+    write_csv(symbol_summary_path, symbol_summary)
+
+    if args.output == "table":
+        print()
+        print(f"report={REPORT_NAME} version={VERSION}")
+        print("scope=research-only market-only account-agnostic")
+        print("db_writes=0 broker_calls=0 broker_writes=0 order_submission=0")
+        print("selection_engine=none decision_gate=none execution_planner=none executor=none")
+        print("post_hoc_fields_used_as_filters=0")
+        print("tested_filters=0618_selected_minus8_v1,0618_selected_minus7_v1,0618_selected_early_band_v1")
+        print(f"symbols={','.join(symbols)}")
+        print(f"real_anchors={','.join(iso(anchor) for anchor in real_anchors)}")
+        print(f"random_window={iso(random_window_start)}..{iso(random_window_end)}")
+        print(f"random_count_per_symbol={args.random_count_per_symbol}")
+        print(f"random_seed={args.random_seed}")
+        print(f"rows={len(all_rows)} policy_rows={len(policy_rows)}")
+        print()
+
+        print_policy_comparison(comparison_rows)
+        print_policy_source_summary(source_summary)
+        print_policy_symbol_summary(symbol_summary)
+
+        print()
+        print(f"wrote_all_rows={all_path}")
+        print(f"wrote_policy_rows={policy_path}")
+        print(f"wrote_source_summary={source_summary_path}")
+        print(f"wrote_comparison={comparison_path}")
+        print(f"wrote_symbol_summary={symbol_summary_path}")
+        print("[DONE] db_writes=0 broker_calls=0 broker_writes=0 order_submission=0")
+
+    return 0
+
+
 if __name__ == "__main__":
-    raise SystemExit(run(parse_args()))
+    raise SystemExit(main())
