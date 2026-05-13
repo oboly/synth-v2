@@ -234,15 +234,16 @@ def summarize_random(samples: list[dict[str, Any]], snapshot: dict[str, dict[str
     for row in samples:
         symbol = str(row["symbol"])
         checkpoint = str(row["checkpoint_ratio"])
+        checkpoint_prefix = checkpoint.replace("0.", "0")
         bucket = aplus_bucket(snapshot.get(symbol))
 
-        all_bucket = f"{checkpoint}_all"
+        all_bucket = f"{checkpoint_prefix}_all"
         total_by_group[(bucket, all_bucket)] += 1
 
         if as_bool(row.get("eligible_all")):
             returns_by_group[(bucket, all_bucket)].append(as_float(row.get("policy_return_pct")))
 
-        offset_bucket = f"{checkpoint}_offset_match"
+        offset_bucket = f"{checkpoint_prefix}_offset_match"
         total_by_group[(bucket, offset_bucket)] += 1
 
         if as_bool(row.get("eligible_offset_match")):
