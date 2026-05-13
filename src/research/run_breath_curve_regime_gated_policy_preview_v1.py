@@ -278,10 +278,12 @@ def get_trend_bucket(row: dict[str, Any]) -> str:
 
 
 def is_minus8(row: dict[str, Any]) -> bool:
-    policy = get_policy(row)
-    selected_band = str(row_value(row, "selected_band_w1_0", "selected_band")).strip()
-
-    return policy == MINUS8_POLICY or selected_band == "-8"
+    # Exact policy match only.
+    #
+    # Do not also match selected_band == "-8" here. The input policy rows can
+    # contain multiple policy families with the same selected band, which
+    # double-counts rows and inflates sample sizes.
+    return get_policy(row) == MINUS8_POLICY
 
 
 def is_early_band(row: dict[str, Any]) -> bool:
