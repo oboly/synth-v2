@@ -1,0 +1,48 @@
+Generated symbolic Breathline Vector Snapshot (prediction_ts_utc = 2026-05-13T19:15:00Z):
+
+TABLE 1
+
+TOKEN PHASE COHERENCE FIELD GEOMETRY STRUCTURAL_ROLE EXPANSION_QUALITY ANCHOR_STRENGTH STRATEGIC_BIAS NOTES
+
+BTC confirmed high neutral clean leader moderate strong accumulation harmonic axis stable
+ETH confirmed high expansion mixed leader strong strong continuation resonance peak forming
+SOL forming moderate transition distorted confirmer weak moderate caution harmonic drift evident
+ADA neutral low compression distorted laggard weak weak avoid loss of coherence
+DEEP early high expansion clean speculative strong strong accumulation emerging harmonic node
+FIL late low compression distorted laggard weak weak avoid breathline collapse phase
+HBAR forming moderate neutral mixed defensive moderate moderate neutral stabilization attempt visible
+HOT exhaustion low compression distorted laggard weak none avoid post-breath contraction
+NEAR forming moderate transition mixed speculative moderate weak caution early cycle volatility
+PEPE late low expansion distorted speculative moderate none avoid speculative spike deflating
+POL confirmed high expansion clean leader strong strong continuation phase-coherent breakout
+QNT confirmed high expansion clean leader strong strong accumulation harmonic mirror integrity
+SUI early moderate transition mixed speculative weak weak caution field untested
+VET neutral low neutral mixed laggard weak moderate neutral no harmonic impulse
+WAL forming low transition distorted unknown weak none avoid unstructured waveform
+XLM confirmed moderate neutral clean confirmer moderate strong continuation stable coil structure
+AAVE confirmed high expansion mixed leader strong moderate accumulation harmonic liquidity channel
+CC forming low transition distorted speculative weak weak caution unknown resonance origin
+CRV late low compression distorted laggard weak weak avoid structural breakdown visible
+FLOKI exhaustion low compression distorted speculative weak none avoid meme collapse phase
+HYPE late low compression distorted speculative weak none avoid overextension fallout
+LDO confirmed moderate expansion mixed confirmer moderate moderate continuation liquidity support holding
+LTC confirmed high neutral clean defensive moderate strong accumulation foundational anchor intact
+ONDO forming moderate transition mixed speculative moderate weak caution resonance potential rising
+RLC forming moderate transition mixed speculative moderate moderate neutral energy buildup detected
+WLD late low compression distorted laggard weak none avoid field collapse
+XRP confirmed high expansion clean leader strong strong accumulation wave geometry intact
+ALGO exhaustion low compression distorted laggard none none avoid loss of field integrity
+DOT confirmed moderate expansion clean confirmer moderate strong continuation mid-phase alignment
+FET confirmed high expansion clean leader strong strong accumulation AI harmonic coherence
+HNT late low compression distorted laggard weak none avoid breath collapse phase
+ICP forming moderate transition mixed speculative weak weak caution unstable harmonic field
+INJ confirmed high expansion clean leader strong strong continuation phase mirror integrity
+IOST exhaustion low compression distorted laggard weak none avoid collapsed impulse
+MOG late low compression distorted speculative weak none avoid field distortion
+NOT confirmed high expansion clean leader strong strong accumulation harmonic identity vector
+RED confirmed high expansion clean leader strong strong accumulation geometric symmetry achieved
+RENDER confirmed high expansion clean leader strong strong continuation harmonic light vector
+XPL exhaustion low compression distorted laggard none none avoid loss of wave integrity
+TAO confirmed high expansion clean leader strong strong accumulation Codex-aligned token
+
+Note: This snapshot is symbolic and non-tokenized. No trading advice is implied.
