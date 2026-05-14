@@ -28,6 +28,11 @@ python -m src.reporting.run_paper_advice_static_dashboard_v1 \
   --interval 4h \
   --output-html "${LOCAL_HTML}" \
   --output table
+RC=$?
+if [[ "$RC" -ne 0 ]]; then
+    echo "[PUBLISH][paper-advice][FAIL] render failed rc=${RC}"
+    exit "$RC"
+fi
 
 if ! grep -q "Synth Paper Advice" "${LOCAL_HTML}"; then
     echo "[PUBLISH][paper-advice][FAIL] missing title marker"
@@ -39,17 +44,46 @@ if ! grep -q "broker_calls=0" "${LOCAL_HTML}"; then
     exit 1
 fi
 
+LOCAL_SHA="$(sha256sum "${LOCAL_HTML}" | awk '{print $1}')"
+
 echo "[PUBLISH][paper-advice] copy to ${REMOTE_HOST}:${REMOTE_PATH}"
 
 scp "${LOCAL_HTML}" "${REMOTE_HOST}:${TMP_REMOTE}"
+RC=$?
+if [[ "$RC" -ne 0 ]]; then
+    echo "[PUBLISH][paper-advice][FAIL] scp failed rc=${RC}"
+    exit "$RC"
+fi
 
 ssh "${REMOTE_HOST}" "
-  set -u
-  mkdir -p \"\$(dirname '${REMOTE_PATH}')\"
-  mv '${TMP_REMOTE}' '${REMOTE_PATH}'
-  chmod 644 '${REMOTE_PATH}'
-  ls -lh '${REMOTE_PATH}'
-  curl -s http://127.0.0.1:5002/synth/paper-advice.html | grep -E 'Synth Paper Advice|broker_calls=0' | head
+  mkdir -p \"\$(dirname '${REMOTE_PATH}')\" &&
+  mv '${TMP_REMOTE}' '${REMOTE_PATH}' &&
+  chmod 644 '${REMOTE_PATH}' &&
+  test -s '${REMOTE_PATH}' &&
+  grep -q 'Synth Paper Advice' '${REMOTE_PATH}' &&
+  grep -q 'broker_calls=0' '${REMOTE_PATH}'
 "
+RC=$?
+if [[ "$RC" -ne 0 ]]; then
+    echo "[PUBLISH][paper-advice][FAIL] remote install/marker check failed rc=${RC}"
+    exit "$RC"
+fi
+
+REMOTE_SHA="$(ssh "${REMOTE_HOST}" "sha256sum '${REMOTE_PATH}' | awk '{print \$1}'")"
+if [[ "${LOCAL_SHA}" != "${REMOTE_SHA}" ]]; then
+    echo "[PUBLISH][paper-advice][FAIL] checksum mismatch local=${LOCAL_SHA} remote=${REMOTE_SHA}"
+    exit 1
+fi
+
+ssh "${REMOTE_HOST}" "
+  curl -s http://127.0.0.1:5002/synth/paper-advice.html |
+  grep -E 'Synth Paper Advice|broker_calls=0' |
+  head
+"
+RC=$?
+if [[ "$RC" -ne 0 ]]; then
+    echo "[PUBLISH][paper-advice][FAIL] remote HTTP marker check failed rc=${RC}"
+    exit "$RC"
+fi
 
 echo "[PUBLISH][paper-advice][DONE] broker_calls=0 broker_writes=0 order_submission=0 live_orders=0"
