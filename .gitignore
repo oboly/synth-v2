@@ -86,3 +86,6 @@ data/research/aplus_canonical_table1_v1/
 
 # Generated A+ Table 1 regime-gate validation outputs
 data/research/aplus_table1_regime_gate_validation_v1/
+
+# Generated A+ canonical TABLE 2 harmonic overlay parser outputs
+data/research/aplus_table2_harmonic_overlay_v1/
