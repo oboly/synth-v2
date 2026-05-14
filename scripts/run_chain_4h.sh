@@ -117,4 +117,9 @@ run_step python -m src.strategy_runtime.run_strategy_runtime_snapshot \
     --chain-name run_chain_4h \
     --notes "successful market-only chain run; decision/execution disabled"
 
+
+if [[ -n "${SYNTH_PAPER_ADVICE_DASHBOARD_REMOTE_HOST:-}" ]]; then
+    run_step scripts/publish_paper_advice_dashboard_to_odroid.sh
+fi
+
 echo "[CHAIN][4h] DONE  $(date -u +%F' '%T) UTC"
