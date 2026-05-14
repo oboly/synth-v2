@@ -96,18 +96,20 @@ can be queried independently after the fact.
 
 ## Regime classifications
 
-### Global regime (v1)
+### Global regime (v1.1)
 
-Based on BTC 24h return and average alt outperformance:
+Based on BTC 24h return and average alt outperformance.
+`GLOBAL_UNKNOWN` is reserved strictly for missing/undetermined data.
 
-| Label                    | Condition                                              |
-|--------------------------|--------------------------------------------------------|
-| `GLOBAL_BTC_BREAKDOWN`   | BTC 24h < −5%                                         |
-| `GLOBAL_BTC_OVERHEATED`  | BTC 24h > +8%                                         |
-| `GLOBAL_ROTATION_WINDOW` | BTC < +4%, average alt outperformance > +4% above BTC |
-| `GLOBAL_RISK_ON`         | BTC 24h > +1%                                         |
-| `GLOBAL_NEUTRAL`         | BTC 24h ∈ [−1%, +1%]                                 |
-| `GLOBAL_UNKNOWN`         | BTC candle data absent                                 |
+| Label                     | Condition                                              |
+|---------------------------|--------------------------------------------------------|
+| `GLOBAL_BTC_BREAKDOWN`    | BTC 24h < −5%                                         |
+| `GLOBAL_BTC_MILD_DECLINE` | BTC 24h ∈ [−5%, −1%)                                 |
+| `GLOBAL_NEUTRAL`          | BTC 24h ∈ [−1%, +1%]                                 |
+| `GLOBAL_BTC_OVERHEATED`   | BTC 24h > +8%                                         |
+| `GLOBAL_ROTATION_WINDOW`  | BTC < +4%, average alt outperformance > +4% above BTC |
+| `GLOBAL_RISK_ON`          | BTC 24h > +1%                                         |
+| `GLOBAL_UNKNOWN`          | BTC candle data absent (missing only, not a market state) |
 
 ### Asset class regime (v1)
 
@@ -139,14 +141,25 @@ Based on class 24h return relative to BTC 24h return:
 
 ### Strategy signature
 
-Combines five strategy layer fields into a single bucketing key:
+Combines five strategy layer fields into a canonical key=value format (v1.1+):
 
 ```
-{selection_state}|{setup_filter_state}|{policy_decision}|{advice_state}|{aplus_bucket}
+SEL={selection_state}|SETUP={setup_filter_state}|POLICY={policy_decision}|ADVICE={advice_state}|APLUS={aplus_bucket}
 ```
 
-When an optional table is absent, its component is `UNKNOWN`. The signature is always
-non-null so the UNIQUE KEY constraint works correctly.
+Rules:
+- Keys are always exactly: `SEL`, `SETUP`, `POLICY`, `ADVICE`, `APLUS`
+- Order is always fixed: SEL, SETUP, POLICY, ADVICE, APLUS
+- Values are raw coded values from source tables
+- `UNKNOWN` is the only substitute for missing or blank values
+- No reason text, no free text, no truncation
+
+Example:
+```
+SEL=WATCHLIST|SETUP=PASS|POLICY=BLOCK_FOR_24H|ADVICE=BLOCK_24H|APLUS=APLUS_ANCHOR_CONTEXT
+```
+
+The signature is always non-null so the UNIQUE KEY constraint works correctly.
 
 ---
 
@@ -255,3 +268,51 @@ based on backtest findings alone.
 - Does not implement paper/live parity logic.
 - Does not manually select horizons for regime routing.
 - Does not read account state, balances, sleeve configurations, or positions.
+
+---
+
+## Version history
+
+### v1.1 — 2026-05-14
+
+**GLOBAL_UNKNOWN semantic fix:**
+v1.0 had a classification gap: BTC 24h returns in the range [−5%, −1%) matched no labelled
+regime and fell through to `GLOBAL_UNKNOWN`. This silently mixed missing-data observations
+with a real and distinct market state (mild BTC decline).
+
+v1.1 adds `GLOBAL_BTC_MILD_DECLINE` to cover BTC 24h ∈ [−5%, −1%):
+
+```
+GLOBAL_UNKNOWN        → BTC candle data absent (missing only)
+GLOBAL_BTC_BREAKDOWN  → BTC 24h < −5%
+GLOBAL_BTC_MILD_DECLINE → BTC 24h ∈ [−5%, −1%)   ← new in v1.1
+GLOBAL_NEUTRAL        → BTC 24h ∈ [−1%, +1%]
+GLOBAL_RISK_ON        → BTC 24h > +1%
+GLOBAL_BTC_OVERHEATED → BTC 24h > +8%
+GLOBAL_ROTATION_WINDOW → BTC < +4%, alts outperforming by > +4%
+```
+
+`GLOBAL_UNKNOWN` must mean missing or undetermined data only. It must never represent
+a real but unlabelled market condition.
+
+**Strategy signature canonical format:**
+v1.0 used positional pipe-separated values with no keys, making signatures fragile to
+field-order changes and hard to query selectively.
+
+v1.1 uses fixed key=value pairs in fixed order:
+
+```
+v1.0: WATCHLIST|PASS|BLOCK_FOR_24H|UNKNOWN|UNKNOWN
+v1.1: SEL=WATCHLIST|SETUP=PASS|POLICY=BLOCK_FOR_24H|ADVICE=UNKNOWN|APLUS=UNKNOWN
+```
+
+Keys are always `SEL`, `SETUP`, `POLICY`, `ADVICE`, `APLUS` in that order.
+`UNKNOWN` is the only substitute for missing values. No free text or reason codes.
+
+**Coexistence:**
+v1.0 and v1.1 rows coexist in `regime_selector_backtest_observation_v1` via
+`report_version`. The UNIQUE KEY includes `report_version` so reruns of either version
+overwrite cleanly without affecting the other.
+
+v1.0 rows: 59,676 (GLOBAL_UNKNOWN conflated, positional signatures)
+v1.1 rows: 59,640 (GLOBAL_BTC_MILD_DECLINE explicit, canonical signatures)

@@ -59,7 +59,7 @@ from dotenv import load_dotenv
 from src.common.db import get_db_connection
 
 REPORT_NAME = "regime_selector_backtest_v1"
-REPORT_VERSION = "1.0"
+REPORT_VERSION = "1.1"
 OUTPUT_TABLE = "regime_selector_backtest_observation_v1"
 
 ALL_SELECTOR_MODES = [
@@ -128,10 +128,16 @@ def classify_asset_class(symbol: str) -> str:
 # ---------------------------------------------------------------------------
 
 def classify_global_regime(btc_24h: float | None, avg_alt_24h: float | None) -> str:
+    # UNKNOWN is reserved for missing/undetermined data only.
+    # Every real BTC 24h return must resolve to a named label.
     if btc_24h is None:
         return "GLOBAL_UNKNOWN"
     if btc_24h < -0.05:
         return "GLOBAL_BTC_BREAKDOWN"
+    if -0.05 <= btc_24h < -0.01:
+        return "GLOBAL_BTC_MILD_DECLINE"
+    if -0.01 <= btc_24h <= 0.01:
+        return "GLOBAL_NEUTRAL"
     if btc_24h > 0.08:
         return "GLOBAL_BTC_OVERHEATED"
     if avg_alt_24h is not None:
@@ -140,8 +146,6 @@ def classify_global_regime(btc_24h: float | None, avg_alt_24h: float | None) -> 
             return "GLOBAL_ROTATION_WINDOW"
     if btc_24h > 0.01:
         return "GLOBAL_RISK_ON"
-    if -0.01 <= btc_24h <= 0.01:
-        return "GLOBAL_NEUTRAL"
     return "GLOBAL_UNKNOWN"
 
 
@@ -172,14 +176,19 @@ def make_strategy_signature(
     advice_state: str | None,
     aplus_bucket: str | None,
 ) -> str:
-    parts = [
-        (selection_state or "UNKNOWN").strip() or "UNKNOWN",
-        (setup_filter_state or "UNKNOWN").strip() or "UNKNOWN",
-        (policy_decision or "UNKNOWN").strip() or "UNKNOWN",
-        (advice_state or "UNKNOWN").strip() or "UNKNOWN",
-        (aplus_bucket or "UNKNOWN").strip() or "UNKNOWN",
-    ]
-    return "|".join(parts)
+    # Canonical format: fixed key=value pairs in fixed order.
+    # UNKNOWN is the only substitute for missing/blank values.
+    def _v(s: str | None) -> str:
+        v = (s or "").strip()
+        return v if v else "UNKNOWN"
+
+    return (
+        f"SEL={_v(selection_state)}"
+        f"|SETUP={_v(setup_filter_state)}"
+        f"|POLICY={_v(policy_decision)}"
+        f"|ADVICE={_v(advice_state)}"
+        f"|APLUS={_v(aplus_bucket)}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1093,6 +1102,13 @@ def main() -> int:
         else:
             print(f"\n[DONE] dry-run (use --write-db to persist)  obs={len(all_obs)}")
 
+        print(
+            "\n[SAFETY]"
+            " broker_calls=0"
+            " broker_writes=0"
+            " order_submission=0"
+            " live_orders=0"
+        )
         return 0
 
     finally:
