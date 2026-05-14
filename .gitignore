@@ -50,3 +50,6 @@ data/exports/
 # local backups
 database/backups/
 data/aplus_raw/*.txt
+
+# Generated A+ Table 1 + Table 2 normalized outputs
+data/research/aplus_table1_table2_normalized_v1/
