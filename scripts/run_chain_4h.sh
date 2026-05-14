@@ -104,6 +104,14 @@ run_step python -m src.advice.run_paper_advice_policy_v1 \
   --write-db \
   --output table
 
+if [[ -n "${SYNTH_PAPER_ADVICE_DASHBOARD_HTML:-}" ]]; then
+    run_step python -m src.reporting.run_paper_advice_static_dashboard_v1 \
+      --venue bitvavo \
+      --interval 4h \
+      --output-html "$SYNTH_PAPER_ADVICE_DASHBOARD_HTML" \
+      --output table
+fi
+
 run_step python -m src.strategy_runtime.run_strategy_runtime_snapshot \
     --interval 4h \
     --chain-name run_chain_4h \
