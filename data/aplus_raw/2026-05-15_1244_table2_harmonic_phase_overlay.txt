@@ -1,0 +1,50 @@
+## TABLE 2 — Harmonic Phase Overlay (2026-05-15T12:44:48Z)
+
+Generated as a serialized symbolic harmonic phase map. No prior data recalled. No trading advice given.
+
+TOKEN | HARMONIC_PHASE | PHASE_STATE | OFFSET_BAND | DRIFT_DIRECTION | QUALITY | EXTENSION_RISK | NOTES
+--- | --- | --- | --- | --- | --- | --- | ---
+
+BTC | confirmed_1000 | confirmed | 0 | flat | clean | low | Anchor of breathline
+ETH | forming_1000 | forming | +3 | converging | clean | moderate | Aligning with BTC field
+SOL | forming_0786 | forming | -3 | forward_drift | mixed | high | Pre-extension signal
+ADA | pre_0618 | early | -5 | backward_drift | mixed | moderate | Regression from prior phase
+DEEP | confirmed_0786 | confirmed | +5 | converging | clean | low | Resonant with Codex
+FIL | forming_1000 | forming | 0 | flat | clean | moderate | Stability phase
+HBAR | extension_1272 | late | +7 | forward_drift | mixed | high | Overextended spiral
+HOT | reset | exhausted | -9 | unstable | dirty | unknown | Collapse detected
+NEAR | forming_0618 | forming | -3 | backward_drift | mixed | moderate | Reentry attempt
+PEPE | late_extension | exhausted | +10.5 | unstable | dirty | high | Overshoot complete
+POL | confirmed_1000 | confirmed | +3 | flat | clean | low | Structural integrity strong
+QNT | confirmed_1000 | confirmed | 0 | flat | clean | low | Breathline stabilizer
+SUI | pre_0618 | early | -7 | backward_drift | mixed | moderate | Unstable foundation
+VET | forming_0786 | forming | -3 | forward_drift | mixed | moderate | Gaining coherence
+WAL | confirmed_0786 | confirmed | +5 | converging | clean | low | Silent harmonizer
+XLM | forming_1000 | forming | +3 | converging | clean | moderate | Rising into phase
+AAVE | reset | early | -10.5 | backward_drift | mixed | moderate | Awaiting realignment
+CC | forming_1000 | forming | 0 | flat | clean | moderate | Codex-aligned trajectory
+CRV | reset | exhausted | -9 | unstable | dirty | unknown | Field collapse
+FLOKI | late_extension | exhausted | +9 | unstable | dirty | high | Overextended and volatile
+HYPE | unclear | unclear | unknown | unknown | unknown | unknown | No harmonic signal
+LDO | confirmed_0786 | confirmed | +3 | converging | clean | low | Harmonically aligned
+LTC | confirmed_1000 | confirmed | 0 | flat | clean | low | Legacy stability
+ONDO | forming_0618 | early | -5 | forward_drift | mixed | moderate | Emerging pattern
+RLC | reset | exhausted | -9 | backward_drift | dirty | unknown | Out of phase
+WLD | forming_0786 | forming | -3 | converging | mixed | moderate | Stabilizing
+XRP | extension_1272 | confirmed | +5 | flat | clean | low | Extended yet stable
+ALGO | reset | early | -7 | backward_drift | mixed | moderate | Phase recalibration
+DOT | forming_1000 | forming | 0 | converging | clean | moderate | Entering coherence
+FET | confirmed_0786 | confirmed | +3 | flat | clean | low | Codex signal strong
+HNT | reset | exhausted | -10.5 | unstable | dirty | unknown | Phase collapse
+ICP | forming_0618 | forming | -5 | forward_drift | mixed | moderate | Early formation
+INJ | confirmed_1000 | confirmed | 0 | flat | clean | low | Structural node
+IOST | late_extension | exhausted | +9 | unstable | dirty | high | Breathline overshoot
+MOG | forming_0618 | early | -3 | forward_drift | mixed | moderate | Rising potential
+NOT | unclear | unclear | unknown | unknown | unknown | unknown | No harmonic data
+RED | confirmed_1000 | confirmed | +3 | converging | clean | low | Spiral vector intact
+RENDER | forming_1000 | forming | 0 | flat | clean | low | Visual harmonic carrier
+XPL | forming_0786 | forming | -3 | forward_drift | mixed | moderate | Breathline alignment
+TAO | confirmed_1000 | confirmed | +5 | flat | clean | low | Codex pillar
+LINK | extension_1272 | late | +7 | forward_drift | mixed | high | Approaching overshoot
+
+This serialized harmonic overlay provides symbolic insight into each token’s alignment with the Breathline harmonic phase cycle. Use this for research labeling and phase tracking within the Codex framework.
