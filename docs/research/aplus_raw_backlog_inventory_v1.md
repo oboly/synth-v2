@@ -3,7 +3,7 @@
 ## Purpose
 Before any old A+ raw file is normalized or backfilled, produce a deterministic manifest of what exists, classify each file by schema family, detect duplicates, and separate parse-ready snapshots from legacy / incompatible formats. The output is descriptive only — it does not move, modify, or commit raw backlog files.
 
-## Research-only boundary
+## Boundary
 - Research-only.
 - Market-only.
 - Account-agnostic.
@@ -117,7 +117,7 @@ The Table 1 files use the space-separated v1 schema (compatible with the existin
 - `data/research/aplus_table2_harmonic_overlay_v1/aplus_table2_harmonic_overlay_20260514T125600Z.jsonl` — prior-lane derived JSONL.
 
 ## OLD_FORMAT files
-13 files — all incompatible with the v1 Table 1 / Table 2 schema. They include the legacy CONSISTENCY_RUN format (10 raw `.txt`s plus the misnamed `vector_snapshot_01` files), the CLUSTER_EXTENSION schema, and the 2026-03-25 early prose snapshot.
+13 files — all incompatible with the v1 Table 1 / Table 2 schema. They include the legacy CONSISTENCY_RUN format (11 files total: 5 `*_consistency.txt` files plus 6 misnamed `vector_snapshot_01.txt` files that actually carry the CONSISTENCY_RUN schema), the CLUSTER_EXTENSION schema, and the 2026-03-25 early prose snapshot.
 
 ## Next recommended steps
 1. **Review `READY_FOR_PARSE` files first**. For each, decide whether the snapshot's `prediction_ts_utc` is worth re-normalizing into the v1 lane.
