@@ -78,6 +78,36 @@ def slug_from_ts(prediction_ts_utc: str) -> str:
     return dt.strftime("%Y%m%d_%H%M")
 
 
+def parse_ts_to_dt(prediction_ts_utc: str) -> datetime:
+    dt = datetime.strptime(prediction_ts_utc.replace("Z", ""), "%Y-%m-%dT%H:%M:%S")
+    return dt.replace(tzinfo=timezone.utc)
+
+
+def compute_pair_metadata(t1_ts: str, t2_ts: str) -> dict[str, Any]:
+    t1_dt = parse_ts_to_dt(t1_ts)
+    t2_dt = parse_ts_to_dt(t2_ts)
+    delta_seconds = abs((t1_dt - t2_dt).total_seconds())
+    mismatch_minutes = int(round(delta_seconds / 60.0))
+    same_snapshot_ts = mismatch_minutes <= 5
+    later_dt = max(t1_dt, t2_dt)
+    pair_reference_ts_utc = later_dt.isoformat().replace("+00:00", "Z")
+    return {
+        "table1_prediction_ts_utc": t1_ts,
+        "table2_prediction_ts_utc": t2_ts,
+        "pair_reference_ts_utc": pair_reference_ts_utc,
+        "timestamp_mismatch_minutes": mismatch_minutes,
+        "same_snapshot_ts": same_snapshot_ts,
+        "timestamp_mismatch_allowed": True,
+    }
+
+
+def clean_notes(text: str) -> str:
+    s = text.strip()
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        s = s[1:-1].strip()
+    return s
+
+
 def parse_pipe_row(line: str) -> list[str] | None:
     if "|" not in line:
         return None
@@ -132,7 +162,7 @@ def normalize_table1_row(cells: list[str], prediction_ts_utc: str, source_path: 
         "table1_expansion_quality": cells[6].strip().lower(),
         "table1_anchor_strength": cells[7].strip().lower(),
         "table1_strategic_bias": cells[8].strip().lower(),
-        "table1_notes": cells[9].strip(),
+        "table1_notes": clean_notes(cells[9]),
         "source_table1_path": str(source_path),
         "parser_version": PARSER_VERSION,
     }
@@ -158,7 +188,7 @@ def normalize_table2_row(cells: list[str], prediction_ts_utc: str, source_path: 
         "table2_drift_direction": cells[4].strip().lower(),
         "table2_quality": cells[5].strip().lower(),
         "table2_extension_risk": cells[6].strip().lower(),
-        "table2_notes": cells[7].strip(),
+        "table2_notes": clean_notes(cells[7]),
         "source_table2_path": str(source_path),
         "parser_version": PARSER_VERSION,
     }
@@ -193,6 +223,7 @@ def build_joined(
     t2_rows: list[dict[str, Any]],
     t1_path: Path,
     t2_path: Path,
+    pair_meta: dict[str, Any],
 ) -> list[dict[str, Any]]:
     t1_by = {row["token"]: row for row in t1_rows}
     t2_by = {row["token"]: row for row in t2_rows}
@@ -202,8 +233,14 @@ def build_joined(
         t1 = t1_by[token]
         t2 = t2_by[token]
         rec: dict[str, Any] = {
-            "prediction_ts_utc": t1["prediction_ts_utc"],
+            "prediction_ts_utc": pair_meta["pair_reference_ts_utc"],
             "token": token,
+            "table1_prediction_ts_utc": pair_meta["table1_prediction_ts_utc"],
+            "table2_prediction_ts_utc": pair_meta["table2_prediction_ts_utc"],
+            "pair_reference_ts_utc": pair_meta["pair_reference_ts_utc"],
+            "timestamp_mismatch_minutes": pair_meta["timestamp_mismatch_minutes"],
+            "same_snapshot_ts": pair_meta["same_snapshot_ts"],
+            "timestamp_mismatch_allowed": pair_meta["timestamp_mismatch_allowed"],
         }
         for k, v in t1.items():
             if k.startswith("table1_"):
@@ -273,10 +310,15 @@ def render_table_summary(summary: dict[str, Any]) -> str:
         "scope=research-only market-only account-agnostic",
         "db_writes=0 broker_calls=0 broker_writes=0 order_submission=0 live_orders=0",
         "selection_engine=none advice_engine=none decision_gate=none execution_planner=none executor=none",
-        f"prediction_ts_utc={summary['prediction_ts_utc']}",
+        f"table1_prediction_ts_utc={summary['table1_prediction_ts_utc']}",
+        f"table2_prediction_ts_utc={summary['table2_prediction_ts_utc']}",
+        f"pair_reference_ts_utc={summary['pair_reference_ts_utc']}",
+        f"timestamp_mismatch_minutes={summary['timestamp_mismatch_minutes']}",
+        f"same_snapshot_ts={summary['same_snapshot_ts']}",
+        f"timestamp_mismatch_allowed={summary['timestamp_mismatch_allowed']}",
+        f"prediction_ts_utc_pair_ref={summary['prediction_ts_utc']}",
         f"table1_path={summary['source_table1_path']}",
         f"table2_path={summary['source_table2_path']}",
-        f"timestamps_match={summary['timestamps_match']}",
         f"table1_rows={summary['table1_rows']}",
         f"table2_rows={summary['table2_rows']}",
         f"joined_rows={summary['joined_rows']}",
@@ -329,11 +371,12 @@ def main(argv: list[str] | None = None) -> int:
     invalid_table1 = collect_invalid(t1_rows, "table1")
     invalid_table2 = collect_invalid(t2_rows, "table2")
 
-    joined = build_joined(t1_rows, t2_rows, t1_path, t2_path)
+    pair_meta = compute_pair_metadata(t1_ts, t2_ts)
+    joined = build_joined(t1_rows, t2_rows, t1_path, t2_path, pair_meta)
 
-    table1_count_ok = len(t1_rows) == EXPECTED_TOKEN_COUNT
-    table2_count_ok = len(t2_rows) == EXPECTED_TOKEN_COUNT
-    joined_count_ok = len(joined) == EXPECTED_TOKEN_COUNT
+    table1_count_matches_expected = len(t1_rows) == EXPECTED_TOKEN_COUNT
+    table2_count_matches_expected = len(t2_rows) == EXPECTED_TOKEN_COUNT
+    joined_count_equals_intersection = len(joined) == len(audit["tokens_in_both"])
     all_expected_in_t1 = not audit["missing_table1_vs_expected"]
     all_expected_in_t2 = not audit["missing_table2_vs_expected"]
     no_dups = not audit["duplicates_table1"] and not audit["duplicates_table2"]
@@ -341,50 +384,58 @@ def main(argv: list[str] | None = None) -> int:
     no_invalid_t1 = not invalid_table1
     no_invalid_t2 = not invalid_table2
     all_valid_joined = all(r["validation_status"] == "VALID" for r in joined)
-    timestamps_match = t1_ts == t2_ts
 
     validation_status = "VALID" if all([
-        table1_count_ok,
-        table2_count_ok,
-        joined_count_ok,
-        all_expected_in_t1,
-        all_expected_in_t2,
         no_dups,
-        no_extras,
         no_invalid_t1,
         no_invalid_t2,
         all_valid_joined,
-        timestamps_match,
+        joined_count_equals_intersection,
+        len(joined) > 0,
+        pair_meta["timestamp_mismatch_allowed"],
     ]) else "INVALID"
 
-    prediction_ts_utc = t1_ts
-    slug = slug_from_ts(prediction_ts_utc)
+    t1_slug = slug_from_ts(t1_ts)
+    t2_slug = slug_from_ts(t2_ts)
+    if t1_slug == t2_slug:
+        pair_slug = t1_slug
+    else:
+        date_part_t1, time_part_t1 = t1_slug.split("_")
+        _, time_part_t2 = t2_slug.split("_")
+        pair_slug = f"{date_part_t1}_{time_part_t1}_{time_part_t2}"
+
     out_dir = Path(args.output_dir)
     output_paths = {
-        "table1_jsonl": str(out_dir / f"table1_normalized_{slug}.jsonl"),
-        "table2_jsonl": str(out_dir / f"table2_normalized_{slug}.jsonl"),
-        "joined_jsonl": str(out_dir / f"table1_table2_joined_{slug}.jsonl"),
-        "validation_json": str(out_dir / f"validation_summary_{slug}.json"),
+        "table1_jsonl": str(out_dir / f"table1_normalized_{t1_slug}.jsonl"),
+        "table2_jsonl": str(out_dir / f"table2_normalized_{t2_slug}.jsonl"),
+        "joined_jsonl": str(out_dir / f"table1_table2_joined_{pair_slug}.jsonl"),
+        "validation_json": str(out_dir / f"validation_summary_{pair_slug}.json"),
     }
 
     summary: dict[str, Any] = {
         "report": REPORT_NAME,
         "parser_version": PARSER_VERSION,
         "scope": "research-only market-only account-agnostic",
-        "prediction_ts_utc": prediction_ts_utc,
+        "prediction_ts_utc": pair_meta["pair_reference_ts_utc"],
+        "prediction_ts_utc_note": "pair-level reference only; see table1_prediction_ts_utc / table2_prediction_ts_utc for per-table snapshot timestamps",
         "source_table1_path": str(t1_path),
         "source_table2_path": str(t2_path),
-        "table1_prediction_ts_utc": t1_ts,
-        "table2_prediction_ts_utc": t2_ts,
-        "timestamps_match": timestamps_match,
+        "table1_prediction_ts_utc": pair_meta["table1_prediction_ts_utc"],
+        "table2_prediction_ts_utc": pair_meta["table2_prediction_ts_utc"],
+        "pair_reference_ts_utc": pair_meta["pair_reference_ts_utc"],
+        "timestamp_mismatch_minutes": pair_meta["timestamp_mismatch_minutes"],
+        "same_snapshot_ts": pair_meta["same_snapshot_ts"],
+        "timestamp_mismatch_allowed": pair_meta["timestamp_mismatch_allowed"],
         "expected_token_count": EXPECTED_TOKEN_COUNT,
         "expected_tokens": EXPECTED_TOKENS,
         "table1_rows": len(t1_rows),
         "table2_rows": len(t2_rows),
         "joined_rows": len(joined),
-        "table1_count_ok": table1_count_ok,
-        "table2_count_ok": table2_count_ok,
-        "joined_count_ok": joined_count_ok,
+        "table1_count_matches_expected": table1_count_matches_expected,
+        "table2_count_matches_expected": table2_count_matches_expected,
+        "joined_count_equals_intersection": joined_count_equals_intersection,
+        "all_expected_in_table1": all_expected_in_t1,
+        "all_expected_in_table2": all_expected_in_t2,
         "no_duplicates": no_dups,
         "no_extras": no_extras,
         "no_invalid_table1": no_invalid_t1,

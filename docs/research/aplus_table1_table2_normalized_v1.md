@@ -39,9 +39,15 @@ Columns:
 `TOKEN | HARMONIC_PHASE | PHASE_STATE | OFFSET_BAND | DRIFT_DIRECTION | QUALITY | EXTENSION_RISK | NOTES`
 
 ### Joined row grain
-One row per `(prediction_ts_utc, token)`.
+One row per `(pair_reference_ts_utc, token)`. The two tables' snapshot timestamps may differ slightly — see "Timestamp pairing rule" below.
 Fields:
-- `prediction_ts_utc`
+- `pair_reference_ts_utc` — always the later of `table1_prediction_ts_utc` and `table2_prediction_ts_utc`.
+- `table1_prediction_ts_utc`
+- `table2_prediction_ts_utc`
+- `timestamp_mismatch_minutes` — integer minutes between the two per-table timestamps.
+- `same_snapshot_ts` — `true` iff `timestamp_mismatch_minutes <= 5`.
+- `timestamp_mismatch_allowed` — `true` when the pair is permitted as a joined research snapshot family.
+- `prediction_ts_utc` — retained for downstream compatibility; equals `pair_reference_ts_utc`. **Pair-level reference only**, not a per-table snapshot timestamp.
 - `token`
 - `table1_phase`, `table1_coherence`, `table1_field`, `table1_geometry`, `table1_structural_role`, `table1_expansion_quality`, `table1_anchor_strength`, `table1_strategic_bias`, `table1_notes`
 - `table2_harmonic_phase`, `table2_phase_state`, `table2_offset_band`, `table2_drift_direction`, `table2_quality`, `table2_extension_risk`, `table2_notes`
@@ -49,6 +55,17 @@ Fields:
 - `source_table2_path`
 - `parser_version`
 - `validation_status`
+
+### Timestamp pairing rule
+- If `abs(table1_prediction_ts_utc - table2_prediction_ts_utc) <= 5 minutes`:
+  - `same_snapshot_ts = true`
+  - `prediction_ts_utc` may collapse to `pair_reference_ts_utc`.
+- If `abs(table1_prediction_ts_utc - table2_prediction_ts_utc) > 5 minutes`:
+  - `same_snapshot_ts = false`
+  - Do not collapse the originals — both per-table timestamps are preserved.
+  - `prediction_ts_utc`, if retained for compatibility, equals `pair_reference_ts_utc` and is documented as pair-level reference only.
+- `pair_reference_ts_utc` is always the **later** of the two per-table timestamps.
+- `timestamp_mismatch_allowed = true` by default — the pair is still joined as a "research snapshot family" with the mismatch surfaced rather than hidden. Setting this `false` would reject the pair.
 
 ## Allowed values
 
@@ -84,30 +101,65 @@ Validation rules:
 - Header row required; cell count must match expected schema.
 - Token-cell must match `^[A-Z][A-Z0-9_+\-]*$` after upper-casing; non-token lines are skipped.
 - Each controlled cell must exactly match its allowed value set.
-- Notes are kept as free text and are not required to be non-empty.
+- Notes are kept as free text and are not required to be non-empty. Outer double-quotes around a notes cell are stripped (some raw snapshots quote their notes).
+
+Token expectations:
+- The `EXPECTED_TOKENS` list of 41 (BTC … LINK) is informational. Missing tokens (e.g. LINK absent from a snapshot) are reported in the audit but do **not** make `validation_status = INVALID` on their own.
+- `validation_status = VALID` requires: no duplicate tokens, all controlled-field values valid in both tables, all joined rows internally valid, `joined_rows == |T1 ∩ T2|`, `joined_rows > 0`, and `timestamp_mismatch_allowed = true`.
 
 Timestamp extraction:
-- The first `YYYY-MM-DDTHH:MM:SSZ` substring in the file is taken as `prediction_ts_utc`.
-- Table 1 and Table 2 must produce the same timestamp for the joined dataset to validate.
+- The first `YYYY-MM-DDTHH:MM:SSZ` substring in each file is taken as that table's per-table prediction timestamp.
+- Table 1 and Table 2 timestamps may differ — see "Timestamp pairing rule" above.
 
 ## Output files
 Output dir: `data/research/aplus_table1_table2_normalized_v1/`
 
-For the 2026-05-15 12:44 snapshot:
+File-naming convention:
+- Per-table files use that table's own slug: `tableN_normalized_<YYYYMMDD>_<HHMM>.jsonl`.
+- The joined and validation files use a **pair slug**:
+  - If `t1_slug == t2_slug` (same snapshot minute), the pair slug is the single slug.
+  - Otherwise the pair slug is `<YYYYMMDD>_<t1_HHMM>_<t2_HHMM>`.
+
+For the 2026-05-15 12:44 snapshot (same_snapshot_ts = true):
 - `table1_normalized_20260515_1244.jsonl`
 - `table2_normalized_20260515_1244.jsonl`
 - `table1_table2_joined_20260515_1244.jsonl`
 - `validation_summary_20260515_1244.json`
 
+For the 2026-05-14 backfill pair (same_snapshot_ts = false; T1 = 13:15Z, T2 = 12:56Z, mismatch = 19 min):
+- `table1_normalized_20260514_1315.jsonl`
+- `table2_normalized_20260514_1256.jsonl`
+- `table1_table2_joined_20260514_1315_1256.jsonl`
+- `validation_summary_20260514_1315_1256.json`
+
 No DB writes. No CSV. No broker calls. No account data.
 
-## Validation summary (snapshot 2026-05-15T12:44:48Z)
+## Validation summary — snapshot 2026-05-15T12:44:48Z
 - `table1_rows = 41`
 - `table2_rows = 41`
 - `joined_rows = 41`
-- `timestamps_match = true`
+- `same_snapshot_ts = true` (T1 ts == T2 ts)
 - `missing_table1 = none`
 - `missing_table2 = none`
+- `extra_table1 = none`
+- `extra_table2 = none`
+- `duplicates_table1 = none`
+- `duplicates_table2 = none`
+- `invalid_table1_count = 0`
+- `invalid_table2_count = 0`
+- `all_valid_joined = true`
+- `validation_status = VALID`
+
+## Validation summary — 2026-05-14 backfill pair (T1 = 13:15:00Z, T2 = 12:56:00Z)
+- `pair_reference_ts_utc = 2026-05-14T13:15:00Z`
+- `timestamp_mismatch_minutes = 19`
+- `same_snapshot_ts = false`
+- `timestamp_mismatch_allowed = true`
+- `table1_rows = 40`
+- `table2_rows = 40`
+- `joined_rows = 40` (= |T1 ∩ T2|)
+- `missing_table1 = LINK` (informational — not in this snapshot)
+- `missing_table2 = LINK` (informational — not in this snapshot)
 - `extra_table1 = none`
 - `extra_table2 = none`
 - `duplicates_table1 = none`
