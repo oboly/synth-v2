@@ -1,0 +1,333 @@
+{
+  "aggregations": {
+    "horizon_24h": {
+      "crosses": {
+        "table1_coherence__x__table2_quality": {},
+        "table1_phase__x__table2_harmonic_phase": {},
+        "table1_strategic_bias__x__table2_extension_risk": {}
+      },
+      "overall": {
+        "avg_mae_pct": null,
+        "avg_mfe_pct": null,
+        "avg_return_pct": null,
+        "median_return_pct": null,
+        "n": 0,
+        "n_with_return": 0,
+        "win_rate_pct": null
+      },
+      "single_field": {
+        "table1_coherence": {},
+        "table1_field": {},
+        "table1_phase": {},
+        "table1_strategic_bias": {},
+        "table1_structural_role": {},
+        "table2_extension_risk": {},
+        "table2_harmonic_phase": {},
+        "table2_offset_band": {},
+        "table2_quality": {}
+      }
+    },
+    "horizon_4h": {
+      "crosses": {
+        "table1_coherence__x__table2_quality": {},
+        "table1_phase__x__table2_harmonic_phase": {},
+        "table1_strategic_bias__x__table2_extension_risk": {}
+      },
+      "overall": {
+        "avg_mae_pct": null,
+        "avg_mfe_pct": null,
+        "avg_return_pct": null,
+        "median_return_pct": null,
+        "n": 0,
+        "n_with_return": 0,
+        "win_rate_pct": null
+      },
+      "single_field": {
+        "table1_coherence": {},
+        "table1_field": {},
+        "table1_phase": {},
+        "table1_strategic_bias": {},
+        "table1_structural_role": {},
+        "table2_extension_risk": {},
+        "table2_harmonic_phase": {},
+        "table2_offset_band": {},
+        "table2_quality": {}
+      }
+    },
+    "horizon_72h": {
+      "crosses": {
+        "table1_coherence__x__table2_quality": {},
+        "table1_phase__x__table2_harmonic_phase": {},
+        "table1_strategic_bias__x__table2_extension_risk": {}
+      },
+      "overall": {
+        "avg_mae_pct": null,
+        "avg_mfe_pct": null,
+        "avg_return_pct": null,
+        "median_return_pct": null,
+        "n": 0,
+        "n_with_return": 0,
+        "win_rate_pct": null
+      },
+      "single_field": {
+        "table1_coherence": {},
+        "table1_field": {},
+        "table1_phase": {},
+        "table1_strategic_bias": {},
+        "table1_structural_role": {},
+        "table2_extension_risk": {},
+        "table2_harmonic_phase": {},
+        "table2_offset_band": {},
+        "table2_quality": {}
+      }
+    }
+  },
+  "best_worst": {
+    "horizon_24h": {
+      "top_positive_groups": [],
+      "weakest_groups": []
+    },
+    "horizon_4h": {
+      "top_positive_groups": [],
+      "weakest_groups": []
+    },
+    "horizon_72h": {
+      "top_positive_groups": [],
+      "weakest_groups": []
+    }
+  },
+  "coverage": {
+    "horizon_24h": {
+      "missing_tokens": [
+        "AAVE",
+        "ADA",
+        "ALGO",
+        "BTC",
+        "CC",
+        "CRV",
+        "DEEP",
+        "DOT",
+        "ETH",
+        "FET",
+        "FIL",
+        "FLOKI",
+        "HBAR",
+        "HNT",
+        "HOT",
+        "HYPE",
+        "ICP",
+        "INJ",
+        "IOST",
+        "LDO",
+        "LINK",
+        "LTC",
+        "MOG",
+        "NEAR",
+        "NOT",
+        "ONDO",
+        "PEPE",
+        "POL",
+        "QNT",
+        "RED",
+        "RENDER",
+        "RLC",
+        "SOL",
+        "SUI",
+        "TAO",
+        "VET",
+        "WAL",
+        "WLD",
+        "XLM",
+        "XPL",
+        "XRP"
+      ],
+      "status_counts": {
+        "NO_FUTURE_CANDLE": 41
+      },
+      "total": 41,
+      "valid": 0
+    },
+    "horizon_4h": {
+      "missing_tokens": [
+        "AAVE",
+        "ADA",
+        "ALGO",
+        "BTC",
+        "CC",
+        "CRV",
+        "DEEP",
+        "DOT",
+        "ETH",
+        "FET",
+        "FIL",
+        "FLOKI",
+        "HBAR",
+        "HNT",
+        "HOT",
+        "HYPE",
+        "ICP",
+        "INJ",
+        "IOST",
+        "LDO",
+        "LINK",
+        "LTC",
+        "MOG",
+        "NEAR",
+        "NOT",
+        "ONDO",
+        "PEPE",
+        "POL",
+        "QNT",
+        "RED",
+        "RENDER",
+        "RLC",
+        "SOL",
+        "SUI",
+        "TAO",
+        "VET",
+        "WAL",
+        "WLD",
+        "XLM",
+        "XPL",
+        "XRP"
+      ],
+      "status_counts": {
+        "NO_FUTURE_CANDLE": 41
+      },
+      "total": 41,
+      "valid": 0
+    },
+    "horizon_72h": {
+      "missing_tokens": [
+        "AAVE",
+        "ADA",
+        "ALGO",
+        "BTC",
+        "CC",
+        "CRV",
+        "DEEP",
+        "DOT",
+        "ETH",
+        "FET",
+        "FIL",
+        "FLOKI",
+        "HBAR",
+        "HNT",
+        "HOT",
+        "HYPE",
+        "ICP",
+        "INJ",
+        "IOST",
+        "LDO",
+        "LINK",
+        "LTC",
+        "MOG",
+        "NEAR",
+        "NOT",
+        "ONDO",
+        "PEPE",
+        "POL",
+        "QNT",
+        "RED",
+        "RENDER",
+        "RLC",
+        "SOL",
+        "SUI",
+        "TAO",
+        "VET",
+        "WAL",
+        "WLD",
+        "XLM",
+        "XPL",
+        "XRP"
+      ],
+      "status_counts": {
+        "NO_FUTURE_CANDLE": 41
+      },
+      "total": 41,
+      "valid": 0
+    }
+  },
+  "horizons": [
+    4,
+    24,
+    72
+  ],
+  "input_tokens": 41,
+  "interval": "4h",
+  "joined_path": "data/research/aplus_table1_table2_normalized_v1/table1_table2_joined_20260515_1244.jsonl",
+  "outcome_rows": 123,
+  "output_paths": {
+    "label_outcomes_jsonl": "data/research/aplus_table1_table2_outcome_validation_v1/label_outcomes_20260515_1244.jsonl",
+    "validation_summary_json": "data/research/aplus_table1_table2_outcome_validation_v1/validation_summary_20260515_1244.json"
+  },
+  "parser_version": "0.1",
+  "prediction_ts_utc": "2026-05-15T12:44:48Z",
+  "report": "aplus_table1_table2_outcome_validation_v1",
+  "runtime_promotion_allowed": false,
+  "safety_markers": {
+    "account_agnostic": true,
+    "account_state": "not_allowed",
+    "advice_engine_changes": 0,
+    "broker_calls": 0,
+    "broker_writes": 0,
+    "db_writes": 0,
+    "decision_gate_changes": 0,
+    "execution_planner_changes": 0,
+    "executor_changes": 0,
+    "live_orders": 0,
+    "market_only": true,
+    "order_submission": 0,
+    "paper_live_logic": "not_allowed",
+    "research_only": true,
+    "selection_engine_changes": 0
+  },
+  "sample_limitation": "LOW_SAMPLE_SINGLE_SNAPSHOT",
+  "scope": "research-only market-only account-agnostic",
+  "tokens": [
+    "AAVE",
+    "ADA",
+    "ALGO",
+    "BTC",
+    "CC",
+    "CRV",
+    "DEEP",
+    "DOT",
+    "ETH",
+    "FET",
+    "FIL",
+    "FLOKI",
+    "HBAR",
+    "HNT",
+    "HOT",
+    "HYPE",
+    "ICP",
+    "INJ",
+    "IOST",
+    "LDO",
+    "LINK",
+    "LTC",
+    "MOG",
+    "NEAR",
+    "NOT",
+    "ONDO",
+    "PEPE",
+    "POL",
+    "QNT",
+    "RED",
+    "RENDER",
+    "RLC",
+    "SOL",
+    "SUI",
+    "TAO",
+    "VET",
+    "WAL",
+    "WLD",
+    "XLM",
+    "XPL",
+    "XRP"
+  ],
+  "tokens_missing_asset": [],
+  "venue": "bitvavo",
+  "wrote_files": true
+}
