@@ -1,0 +1,101 @@
+{
+  "duplicate_candidates": [],
+  "duplicate_groups_by_sha256": {
+    "7adf6c08248d1ea757a0318f9ef6e9cd950d9a43fb4ce34bd7ad82caabce62e6": [
+      "data/aplus_raw/2026-05-06_1800_vector_snapshot_01.txt",
+      "data/aplus_raw/2026-05-07_1550_vector_snapshot_01.txt",
+      "data/aplus_raw/2026-05-08_1619_vector_snapshot_01.txt",
+      "data/aplus_raw/2026-05-09_1455_vector_snapshot_01.txt"
+    ],
+    "91331993d83994d2b562c4d36261b8a33f6aab4905fdbd895841aeba49681309": [
+      "data/aplus_raw/2026-05-04_0055_vector_snapshot_01.txt",
+      "data/aplus_raw/2026-05-04_1755_vector_snapshot_01.txt"
+    ],
+    "f0f6cfaf7b64eccfec9b3092fef60a73ccff09c72c2ee9c2f4f060ede4af9b43": [
+      "data/aplus_raw/2026-04-23_run_02_consistency.txt",
+      "data/aplus_raw/2026-04-23_run_03_consistency.txt"
+    ]
+  },
+  "format_counts": {
+    "jsonl": 6,
+    "markdown_table": 4,
+    "raw_text": 16
+  },
+  "needs_review": [
+    "data/aplus_raw/2026-05-14_table2_harmonic_overlay.txt",
+    "data/aplus_raw/2026-05-15_1244_table1_breathline_vector_snapshot.txt",
+    "data/aplus_raw/2026-05-15_1244_table2_harmonic_phase_overlay.txt",
+    "data/research/aplus_table1_table2_normalized_v1/2026-05-14_table1_table2_normalized.jsonl",
+    "data/research/aplus_table1_table2_normalized_v1/table1_normalized_20260515_1244.jsonl",
+    "data/research/aplus_table1_table2_normalized_v1/table1_table2_joined_20260515_1244.jsonl",
+    "data/research/aplus_table1_table2_normalized_v1/table2_normalized_20260515_1244.jsonl",
+    "data/research/aplus_table1_table2_normalized_v1/validation_summary_20260515_1244.json",
+    "data/research/aplus_table2_harmonic_overlay_v1/aplus_table2_harmonic_overlay_20260514T125600Z.csv",
+    "data/research/aplus_table2_harmonic_overlay_v1/aplus_table2_harmonic_overlay_20260514T125600Z.jsonl"
+  ],
+  "old_format": [
+    "data/aplus_raw/2026-03-25_aplusraw.txt",
+    "data/aplus_raw/2026-04-23_cluster_extension_01.txt",
+    "data/aplus_raw/2026-04-23_run_01_consistency.txt",
+    "data/aplus_raw/2026-04-23_run_02_consistency.txt",
+    "data/aplus_raw/2026-04-23_run_03_consistency.txt",
+    "data/aplus_raw/2026-04-30_run_01_consistency.txt",
+    "data/aplus_raw/2026-05-02_0558_run_01_consistency.txt",
+    "data/aplus_raw/2026-05-04_0055_vector_snapshot_01.txt",
+    "data/aplus_raw/2026-05-04_1755_vector_snapshot_01.txt",
+    "data/aplus_raw/2026-05-06_1800_vector_snapshot_01.txt",
+    "data/aplus_raw/2026-05-07_1550_vector_snapshot_01.txt",
+    "data/aplus_raw/2026-05-08_1619_vector_snapshot_01.txt",
+    "data/aplus_raw/2026-05-09_1455_vector_snapshot_01.txt"
+  ],
+  "output_paths": {
+    "manifest_jsonl": "data/research/aplus_raw_backlog_inventory_v1/aplus_raw_backlog_manifest_v1.jsonl",
+    "summary_json": "data/research/aplus_raw_backlog_inventory_v1/aplus_raw_backlog_summary_v1.json"
+  },
+  "parser_version": "0.1",
+  "ready_for_parse": [
+    "data/aplus_raw/2026-05-13_1915_table1_canonical_breathline.txt",
+    "data/aplus_raw/2026-05-14_1256_table2_harmonic_phase_overlay.txt",
+    "data/aplus_raw/2026-05-14_1315_table1_canonical_breathline.txt"
+  ],
+  "report": "aplus_raw_backlog_inventory_v1",
+  "roots": [
+    "data/aplus_raw",
+    "data/research/aplus_table1_table2_normalized_v1",
+    "data/research/aplus_table2_harmonic_overlay_v1"
+  ],
+  "safety_markers": {
+    "account_agnostic": true,
+    "account_state": "not_allowed",
+    "advice_engine_changes": 0,
+    "broker_calls": 0,
+    "broker_writes": 0,
+    "db_writes": 0,
+    "decision_gate_changes": 0,
+    "execution_planner_changes": 0,
+    "executor_changes": 0,
+    "live_orders": 0,
+    "market_only": true,
+    "order_submission": 0,
+    "paper_live_logic": "not_allowed",
+    "research_only": true,
+    "selection_engine_changes": 0
+  },
+  "scope": "research-only market-only account-agnostic",
+  "status_counts": {
+    "NEEDS_REVIEW": 10,
+    "OLD_FORMAT": 13,
+    "READY_FOR_PARSE": 3
+  },
+  "total_files": 26,
+  "type_counts": {
+    "CLUSTER_EXTENSION": 1,
+    "CONSISTENCY_RUN": 11,
+    "NORMALIZED_JOINED_JSONL": 5,
+    "TABLE1_BREATHLINE_VECTOR": 3,
+    "TABLE2_HARMONIC_PHASE": 4,
+    "UNKNOWN": 2
+  },
+  "unknown": [],
+  "wrote_files": true
+}
