@@ -1,4 +1,6 @@
 {
+  "all_expected_in_table1": true,
+  "all_expected_in_table2": true,
   "all_valid_joined": true,
   "expected_token_count": 41,
   "expected_tokens": [
@@ -46,7 +48,7 @@
   ],
   "invalid_table1": [],
   "invalid_table2": [],
-  "joined_count_ok": true,
+  "joined_count_equals_intersection": true,
   "joined_rows": 41,
   "no_duplicates": true,
   "no_extras": true,
@@ -58,8 +60,10 @@
     "table2_jsonl": "data/research/aplus_table1_table2_normalized_v1/table2_normalized_20260515_1244.jsonl",
     "validation_json": "data/research/aplus_table1_table2_normalized_v1/validation_summary_20260515_1244.json"
   },
+  "pair_reference_ts_utc": "2026-05-15T12:44:48Z",
   "parser_version": "0.1",
   "prediction_ts_utc": "2026-05-15T12:44:48Z",
+  "prediction_ts_utc_note": "pair-level reference only; see table1_prediction_ts_utc / table2_prediction_ts_utc for per-table snapshot timestamps",
   "report": "aplus_table1_table2_normalized_v1",
   "safety_markers": {
     "account_agnostic": true,
@@ -78,16 +82,18 @@
     "research_only": true,
     "selection_engine_changes": 0
   },
+  "same_snapshot_ts": true,
   "scope": "research-only market-only account-agnostic",
   "source_table1_path": "data/aplus_raw/2026-05-15_1244_table1_breathline_vector_snapshot.txt",
   "source_table2_path": "data/aplus_raw/2026-05-15_1244_table2_harmonic_phase_overlay.txt",
-  "table1_count_ok": true,
+  "table1_count_matches_expected": true,
   "table1_prediction_ts_utc": "2026-05-15T12:44:48Z",
   "table1_rows": 41,
-  "table2_count_ok": true,
+  "table2_count_matches_expected": true,
   "table2_prediction_ts_utc": "2026-05-15T12:44:48Z",
   "table2_rows": 41,
-  "timestamps_match": true,
+  "timestamp_mismatch_allowed": true,
+  "timestamp_mismatch_minutes": 0,
   "token_audit": {
     "duplicates_table1": [],
     "duplicates_table2": [],
