@@ -137,6 +137,15 @@ def css_class(value: str | None) -> str:
     return mapping.get(normalized, "muted")
 
 
+def zone_labels(leg_direction: str | None) -> tuple[str, str, str]:
+    normalized = (leg_direction or "").strip().upper()
+    if normalized == "UP":
+        return ("Entry zone", "Upside TP zone", "Invalidation below")
+    if normalized == "DOWN":
+        return ("Reaction zone", "Downside target zone", "Invalidation above")
+    return ("Zone", "Target zone", "Invalidation")
+
+
 def fetch_latest_rows(
     conn: pymysql.connections.Connection,
     venue: str,
@@ -327,19 +336,32 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         rank = row.get("priority_rank")
         rank_text = "—" if rank is None else str(rank)
 
+        zone_label, target_label, invalidation_label = zone_labels(leg_direction)
+
         body.append(
             f"""
             <tr>
                 <td class="mono center">{esc(rank_text)}</td>
-                <td class="symbol">{esc(row.get("symbol"))}</td>
+                <td class="symbol">
+                    {esc(row.get("symbol"))}
+                    <div><span class="pill {css_class(leg_direction)}">{esc(leg_direction or "—")}</span></div>
+                </td>
                 <td><span class="pill {css_class(advice_state)}">{esc(advice_state)}</span></td>
                 <td>{esc(row.get("advice_action"))}</td>
                 <td class="mono right">{fmt_score(row.get("confidence_score"))}</td>
                 <td><span class="pill {css_class(risk_label)}">{esc(risk_label)}</span></td>
-                <td><span class="pill {css_class(leg_direction)}">{esc(leg_direction or "—")}</span></td>
-                <td class="mono">{fmt_range(row.get("entry_zone_low"), row.get("entry_zone_high"))}</td>
-                <td class="mono">{fmt_range(row.get("tp_zone_low"), row.get("tp_zone_high"))}</td>
-                <td class="mono">{fmt_decimal(row.get("invalidation_price"))}</td>
+                <td class="mono">
+                    <div class="cell-label">{esc(zone_label)}</div>
+                    {fmt_range(row.get("entry_zone_low"), row.get("entry_zone_high"))}
+                </td>
+                <td class="mono">
+                    <div class="cell-label">{esc(target_label)}</div>
+                    {fmt_range(row.get("tp_zone_low"), row.get("tp_zone_high"))}
+                </td>
+                <td class="mono">
+                    <div class="cell-label">{esc(invalidation_label)}</div>
+                    {fmt_decimal(row.get("invalidation_price"))}
+                </td>
                 <td>{esc(row.get("selection_state"))}</td>
                 <td>{esc(row.get("setup_filter_state"))}</td>
                 <td>{esc(row.get("policy_decision"))}</td>
@@ -355,14 +377,13 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             <thead>
                 <tr>
                     <th>Rank</th>
-                    <th>Symbol</th>
+                    <th>Symbol / Leg</th>
                     <th>Advice</th>
                     <th>Action</th>
                     <th>Conf</th>
                     <th>Risk</th>
-                    <th>Leg</th>
-                    <th>Entry zone</th>
-                    <th>TP zone</th>
+                    <th>Zone</th>
+                    <th>Target</th>
                     <th>Invalidation</th>
                     <th>Selection</th>
                     <th>Setup</th>
@@ -542,6 +563,13 @@ def render_html(
         .center {{ text-align: center; }}
         .small {{ font-size: 12px; }}
         .muted {{ color: var(--muted); }}
+        .cell-label {{
+            color: var(--muted);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: 2px;
+        }}
         .pill {{
             display: inline-flex;
             border-radius: 999px;
