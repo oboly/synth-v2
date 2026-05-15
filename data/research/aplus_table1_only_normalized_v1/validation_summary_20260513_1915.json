@@ -1,0 +1,45 @@
+{
+  "all_rows_valid": true,
+  "duplicate_token_list": [],
+  "duplicate_tokens": 0,
+  "expected_token_count": 41,
+  "extra_tokens": [],
+  "invalid_controlled_values": 0,
+  "invalid_rows": [],
+  "joined_pair_available": false,
+  "missing_expected_tokens": [
+    "LINK"
+  ],
+  "output_paths": {
+    "table1_jsonl": "data/research/aplus_table1_only_normalized_v1/table1_normalized_20260513_1915.jsonl",
+    "validation_json": "data/research/aplus_table1_only_normalized_v1/validation_summary_20260513_1915.json"
+  },
+  "parser_version": "0.1",
+  "prediction_ts_utc": "2026-05-13T19:15:00Z",
+  "report": "aplus_table1_only_normalized_v1",
+  "safety_markers": {
+    "account_agnostic": true,
+    "account_state": "not_allowed",
+    "advice_engine_changes": 0,
+    "broker_calls": 0,
+    "broker_writes": 0,
+    "db_writes": 0,
+    "decision_gate_changes": 0,
+    "execution_planner_changes": 0,
+    "executor_changes": 0,
+    "live_orders": 0,
+    "market_only": true,
+    "order_submission": 0,
+    "paper_live_logic": "not_allowed",
+    "research_only": true,
+    "selection_engine_changes": 0
+  },
+  "scope": "research-only market-only account-agnostic",
+  "snapshot_id": "20260513_1915_table1_only",
+  "source_table1_path": "data/aplus_raw/2026-05-13_1915_table1_canonical_breathline.txt",
+  "table1_prediction_ts_utc": "2026-05-13T19:15:00Z",
+  "table1_rows": 40,
+  "table2_present": false,
+  "validation_status": "VALID",
+  "wrote_files": true
+}
