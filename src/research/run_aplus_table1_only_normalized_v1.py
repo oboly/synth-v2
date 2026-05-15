@@ -139,9 +139,9 @@ def parse_table1_space(text: str, source_path: Path) -> tuple[list[list[str]], b
             continue
         if len(parts) < 9:
             continue
-        token = parts[0].upper()
-        if not TOKEN_RE.match(token):
+        if not TOKEN_RE.match(parts[0]):
             continue
+        token = parts[0].upper()
         notes = " ".join(parts[9:]) if len(parts) > 9 else ""
         # Reconstruct as a 10-cell list matching TABLE1_HEADER_TOKENS order.
         cells = [token] + [p.lower() for p in parts[1:9]] + [notes]

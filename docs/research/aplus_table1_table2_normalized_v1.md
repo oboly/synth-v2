@@ -132,6 +132,12 @@ For the 2026-05-14 backfill pair (same_snapshot_ts = false; T1 = 13:15Z, T2 = 12
 - `table1_table2_joined_20260514_1315_1256.jsonl`
 - `validation_summary_20260514_1315_1256.json`
 
+For the 2026-05-16 pair (same_snapshot_ts = true; T1 = 01:15Z, T2 = 01:17Z, mismatch = 2 min):
+- `table1_normalized_20260516_0115.jsonl`
+- `table2_normalized_20260516_0117.jsonl`
+- `table1_table2_joined_20260516_0115_0117.jsonl`
+- `validation_summary_20260516_0115_0117.json`
+
 No DB writes. No CSV. No broker calls. No account data.
 
 ## Validation summary — snapshot 2026-05-15T12:44:48Z
@@ -149,6 +155,29 @@ No DB writes. No CSV. No broker calls. No account data.
 - `invalid_table2_count = 0`
 - `all_valid_joined = true`
 - `validation_status = VALID`
+
+## Validation summary — 2026-05-16 pair (T1 = 01:15:11Z, T2 = 01:17:00Z)
+- `pair_reference_ts_utc = 2026-05-16T01:17:00Z`
+- `table1_prediction_ts_utc = 2026-05-16T01:15:11Z`
+- `table2_prediction_ts_utc = 2026-05-16T01:17:00Z`
+- `timestamp_mismatch_minutes = 2`
+- `same_snapshot_ts = true` (mismatch ≤ 5 min)
+- `timestamp_mismatch_allowed = true`
+- `table1_rows = 41`
+- `table2_rows = 41`
+- `joined_rows = 41`
+- `missing_table1 = none`
+- `missing_table2 = none`
+- `extra_table1 = none`
+- `extra_table2 = none`
+- `duplicates_table1 = none`
+- `duplicates_table2 = none`
+- `invalid_table1_count = 0`
+- `invalid_table2_count = 0`
+- `all_valid_joined = true`
+- `validation_status = VALID`
+
+**Timestamp override note:** The 2026-05-16 Table 2 raw file (`2026-05-16_0117_table2_harmonic_phase_overlay.txt`) contains a stale internal timestamp `2026-05-15T12:44:48Z` — the same value as the 2026-05-15 snapshot. The correct capture timestamp `2026-05-16T01:17:00Z` was applied via `--table2-ts-override`. The stale internal timestamp is recorded in the validation summary as `table2_ts_internal = 2026-05-15T12:44:48Z` and `table2_ts_override_applied = true`. The override takes precedence for all pair metadata, output filenames, and per-row timestamps.
 
 ## Validation summary — 2026-05-14 backfill pair (T1 = 13:15:00Z, T2 = 12:56:00Z)
 - `pair_reference_ts_utc = 2026-05-14T13:15:00Z`
@@ -204,6 +233,16 @@ Any future use must:
 - never produce order intent
 - never imply account permission
 
+## Timestamp override rule
+
+Raw snapshot files occasionally carry stale internal timestamps (e.g. a Table 2 file generated against an older session that retained the prior day's timestamp header). When this occurs:
+- Pass the correct capture timestamp via `--table1-ts-override` or `--table2-ts-override`.
+- The override takes precedence over the internal timestamp for pair metadata, output slugs, and all per-row `prediction_ts_utc` fields.
+- The original internal timestamp is preserved in the validation summary as `table1_ts_internal` / `table2_ts_internal` for audit purposes.
+- `table1_ts_override_applied` / `table2_ts_override_applied` flags in the summary confirm the override was active.
+
+Do not silently use a stale internal timestamp. Always surface the mismatch in the validation summary.
+
 ## Script
 `src/research/run_aplus_table1_table2_normalized_v1.py`
 
@@ -213,5 +252,7 @@ CLI:
 - `--output-dir` (default `data/research/aplus_table1_table2_normalized_v1`)
 - `--output {table,json}` (default `table`)
 - `--write-files` (flag — writes the four output files when set)
+- `--table1-ts-override` (optional — override internal Table 1 timestamp, `YYYY-MM-DDTHH:MM:SSZ`)
+- `--table2-ts-override` (optional — override internal Table 2 timestamp, `YYYY-MM-DDTHH:MM:SSZ`)
 
 Exit code is `0` only when `validation_status = VALID`.

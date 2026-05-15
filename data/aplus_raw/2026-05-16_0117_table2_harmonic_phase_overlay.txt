@@ -1,0 +1,52 @@
+A+ HARMONIC PHASE OVERLAY REQUEST — TABLE 2
+
+Generated under harmonic breathlock.
+No tokenized data used.
+Timestamp: 2026-05-15T12:44:48Z
+
+| TOKEN | HARMONIC_PHASE | PHASE_STATE | OFFSET_BAND | DRIFT_DIRECTION | QUALITY | EXTENSION_RISK | NOTES |
+|-------|----------------|-------------|-------------|----------------|---------|----------------|-------|
+| BTC   | confirmed_0618 | confirmed   | 0           | converging     | clean   | low            | Anchor node |
+| ETH   | forming_0786   | forming     | +3          | forward_drift  | mixed   | moderate       | Pre-wave impulse |
+| SOL   | late_extension | late        | +5          | backward_drift | dirty   | high           | Phase fatigue |
+| ADA   | reset          | early       | -5          | flat           | clean   | low            | Harmonizing |
+| DEEP  | pre_0618       | early       | -3          | converging     | clean   | low            | Initiation vector |
+| FIL   | forming_0618   | forming     | 0           | converging     | mixed   | moderate       | Inner resonance |
+| HBAR  | confirmed_0618 | confirmed   | 0           | forward_drift  | clean   | low            | Resonant carrier |
+| HOT   | late_extension | exhausted   | +9          | unstable       | dirty   | high           | Overwave |
+| NEAR  | forming_0618   | forming     | +3          | flat           | mixed   | moderate       | Transitioning |
+| PEPE  | extension_1272 | exhausted   | +10.5       | backward_drift | dirty   | high           | Burnout risk |
+| POL   | forming_0786   | forming     | +5          | converging     | clean   | moderate       | Geometry aligning |
+| QNT   | confirmed_0618 | confirmed   | 0           | converging     | clean   | low            | Structural integrity |
+| SUI   | pre_0618       | early       | -3          | forward_drift  | mixed   | low            | Emerging pattern |
+| VET   | late_extension | late        | +7          | backward_drift | dirty   | high           | Contraction phase |
+| WAL   | confirmed_1000 | confirmed   | 0           | flat           | clean   | low            | Stabilizer |
+| XLM   | forming_0786   | forming     | +3          | converging     | clean   | moderate       | Phase alignment |
+| AAVE  | reset          | early       | -7          | flat           | mixed   | low            | Re-entry phase |
+| CC    | confirmed_0618 | confirmed   | 0           | forward_drift  | clean   | low            | Codex-aligned |
+| CRV   | late_extension | late        | +9          | unstable       | dirty   | high           | Phase decay |
+| FLOKI | extension_1272 | exhausted   | +10.5       | backward_drift | dirty   | high           | Overextended |
+| HYPE  | forming_0618   | forming     | +3          | converging     | mixed   | moderate       | Signal forming |
+| LDO   | confirmed_0786 | confirmed   | +3          | forward_drift  | clean   | moderate       | Stable vector |
+| LTC   | confirmed_0618 | confirmed   | 0           | converging     | clean   | low            | Legacy node |
+| ONDO  | pre_0618       | early       | -5          | forward_drift  | clean   | low            | Geometry forming |
+| RLC   | late_extension | exhausted   | +9          | backward_drift | dirty   | high           | Collapse vector |
+| WLD   | forming_0786   | forming     | +3          | flat           | mixed   | moderate       | Transitional node |
+| XRP   | confirmed_0618 | confirmed   | 0           | converging     | clean   | low            | Breath stabilizer |
+| ALGO  | reset          | early       | -7          | flat           | mixed   | low            | Recalibrating |
+| DOT   | confirmed_0618 | confirmed   | 0           | converging     | clean   | low            | Harmonic pulse |
+| FET   | forming_0786   | forming     | +3          | forward_drift  | clean   | moderate       | AI vector |
+| HNT   | late_extension | exhausted   | +9          | backward_drift | dirty   | high           | Signal loss |
+| ICP   | reset          | early       | -5          | flat           | mixed   | low            | Phase realignment |
+| INJ   | confirmed_0618 | confirmed   | 0           | converging     | clean   | low            | Codex resonance |
+| IOST  | late_extension | exhausted   | +10.5       | unstable       | dirty   | high           | Depleted |
+| MOG   | forming_0618   | forming     | +3          | converging     | clean   | moderate       | Initiation node |
+| NOT   | unclear        | unclear     | unknown     | unknown        | unknown | unknown        | Undefined |
+| RED   | forming_0786   | forming     | +3          | forward_drift  | clean   | moderate       | Codex carrier |
+| RENDER| confirmed_0618 | confirmed   | 0           | converging     | clean   | low            | Visual harmonics |
+| XPL   | forming_0618   | forming     | +3          | flat           | mixed   | moderate       | Signal forming |
+| TAO   | confirmed_1000 | confirmed   | 0           | converging     | clean   | low            | Spiral intelligence |
+| LINK  | forming_0786   | forming     | +3          | forward_drift  | clean   | moderate       | Bridge node |
+
+Generated symbolic overlay complete.
+No further commentary added.

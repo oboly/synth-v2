@@ -202,10 +202,56 @@ def normalize_table2_row(cells: list[str], prediction_ts_utc: str, source_path: 
     return record
 
 
+def parse_table1_space_rows(text: str) -> tuple[list[list[str]], bool]:
+    """Parse space-separated Table 1 rows.
+
+    Header line: TOKEN PHASE COHERENCE FIELD GEOMETRY STRUCTURAL_ROLE
+                 EXPANSION_QUALITY ANCHOR_STRENGTH STRATEGIC_BIAS NOTES
+    Data lines:  TOKEN field1 ... field8 [notes words...]
+    """
+    rows: list[list[str]] = []
+    header_seen = False
+    header_upper = [h.upper() for h in TABLE1_HEADER]
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split()
+        if not header_seen:
+            if len(parts) >= len(TABLE1_HEADER) and [p.upper() for p in parts[:len(TABLE1_HEADER)]] == header_upper:
+                header_seen = True
+            continue
+        if len(parts) < 9:
+            continue
+        # Check the raw token (before uppercasing) so mixed-case prose lines
+        # like "This snapshot reflects..." are rejected — they fail [A-Z][A-Z0-9_+\-]*
+        # because of lowercase letters.
+        if not TOKEN_RE.match(parts[0]):
+            continue
+        token = parts[0].upper()
+        notes = " ".join(parts[9:]) if len(parts) > 9 else ""
+        # Reconstruct as a cell list matching TABLE1_HEADER column order.
+        cells = [token] + [p.lower() for p in parts[1:9]] + [notes]
+        rows.append(cells)
+    return rows, header_seen
+
+
 def parse_table1(path: Path) -> tuple[str, list[dict[str, Any]]]:
     text = path.read_text(encoding="utf-8")
     prediction_ts_utc = extract_timestamp(text)
-    cell_rows = parse_table_rows(text, TABLE1_HEADER)
+
+    # Try pipe-separated first; fall back to space-separated.
+    try:
+        cell_rows = parse_table_rows(text, TABLE1_HEADER)
+    except ValueError:
+        space_rows, space_header = parse_table1_space_rows(text)
+        if not space_header or not space_rows:
+            raise ValueError(
+                f"No recognisable Table 1 header found in {path} "
+                "(tried pipe-separated and space-separated formats)"
+            )
+        cell_rows = space_rows
+
     rows = [normalize_table1_row(c, prediction_ts_utc, path) for c in cell_rows]
     return prediction_ts_utc, rows
 
@@ -317,6 +363,10 @@ def render_table_summary(summary: dict[str, Any]) -> str:
         f"same_snapshot_ts={summary['same_snapshot_ts']}",
         f"timestamp_mismatch_allowed={summary['timestamp_mismatch_allowed']}",
         f"prediction_ts_utc_pair_ref={summary['prediction_ts_utc']}",
+        f"table1_ts_override_applied={summary['table1_ts_override_applied']}",
+        f"table2_ts_override_applied={summary['table2_ts_override_applied']}",
+        f"table1_ts_internal={summary['table1_ts_internal']}",
+        f"table2_ts_internal={summary['table2_ts_internal']}",
         f"table1_path={summary['source_table1_path']}",
         f"table2_path={summary['source_table2_path']}",
         f"table1_rows={summary['table1_rows']}",
@@ -356,6 +406,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output", choices=["table", "json"], default="table")
     parser.add_argument("--write-files", action="store_true")
+    parser.add_argument(
+        "--table1-ts-override",
+        default=None,
+        help="Override the internal Table 1 timestamp (YYYY-MM-DDTHH:MM:SSZ). "
+             "Use when the raw file carries a stale or incorrect timestamp.",
+    )
+    parser.add_argument(
+        "--table2-ts-override",
+        default=None,
+        help="Override the internal Table 2 timestamp (YYYY-MM-DDTHH:MM:SSZ). "
+             "Use when the raw file carries a stale or incorrect timestamp.",
+    )
     args = parser.parse_args(argv)
 
     t1_path = Path(args.table1_path)
@@ -363,6 +425,20 @@ def main(argv: list[str] | None = None) -> int:
 
     t1_ts, t1_rows = parse_table1(t1_path)
     t2_ts, t2_rows = parse_table2(t2_path)
+
+    # Record internal timestamps before any override so the override fact is documented.
+    t1_ts_internal = t1_ts
+    t2_ts_internal = t2_ts
+
+    if args.table1_ts_override:
+        t1_ts = args.table1_ts_override
+        for r in t1_rows:
+            r["prediction_ts_utc"] = t1_ts
+
+    if args.table2_ts_override:
+        t2_ts = args.table2_ts_override
+        for r in t2_rows:
+            r["prediction_ts_utc"] = t2_ts
 
     t1_tokens = [r["token"] for r in t1_rows]
     t2_tokens = [r["token"] for r in t2_rows]
@@ -426,6 +502,10 @@ def main(argv: list[str] | None = None) -> int:
         "timestamp_mismatch_minutes": pair_meta["timestamp_mismatch_minutes"],
         "same_snapshot_ts": pair_meta["same_snapshot_ts"],
         "timestamp_mismatch_allowed": pair_meta["timestamp_mismatch_allowed"],
+        "table1_ts_internal": t1_ts_internal,
+        "table2_ts_internal": t2_ts_internal,
+        "table1_ts_override_applied": bool(args.table1_ts_override),
+        "table2_ts_override_applied": bool(args.table2_ts_override),
         "expected_token_count": EXPECTED_TOKEN_COUNT,
         "expected_tokens": EXPECTED_TOKENS,
         "table1_rows": len(t1_rows),
