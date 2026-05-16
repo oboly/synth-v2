@@ -37,18 +37,13 @@ Format: space-separated (no pipes). Header: `TOKEN PHASE COHERENCE FIELD GEOMETR
 ## Schema
 
 ### Staging row (one per token)
-- `snapshot_id` — `{YYYYMMDD}_{HHMM}_table1_only`
-- `table1_prediction_ts_utc` — per-table timestamp from the raw file
-- `prediction_ts_utc` — equals `table1_prediction_ts_utc` (no pair alignment needed)
-- `table2_present` — always `false` in this lane
-- `joined_pair_available` — always `false` in this lane
 - `token`
 - `table1_phase`, `table1_coherence`, `table1_field`, `table1_geometry`
 - `table1_structural_role`, `table1_expansion_quality`, `table1_anchor_strength`, `table1_strategic_bias`
 - `table1_notes`
-- `source_table1_path`
-- `parser_version`
-- `validation_status`
+- `prediction_ts_utc` — equals `table1_prediction_ts_utc` (no pair alignment needed)
+- `table1_prediction_ts_utc` — per-table timestamp from the raw file, filename fallback, or explicit override
+- `snapshot_id` — `{YYYYMMDD}_{HHMM}_table1_only`
 
 ### Allowed Table 1 values
 - `PHASE`: early / forming / confirmed / late / exhaustion / reset / neutral
@@ -73,12 +68,13 @@ Missing expected tokens (e.g. LINK absent from this snapshot) are informational 
 
 - `snapshot_id = 20260513_1915_table1_only`
 - `table1_prediction_ts_utc = 2026-05-13T19:15:00Z`
-- `table2_present = false`
-- `joined_pair_available = false`
+- `timestamp_source = content` for default parsing; `override` when `--table1-ts-override` is supplied
+- `paired_dataset_eligible = false`
+- `limitation = TABLE1_ONLY_NO_TABLE2_PAIR`
 - `table1_rows = 40`
-- `duplicate_tokens = 0`
+- `duplicate_tokens = none`
 - `invalid_controlled_values = 0`
-- `missing_expected_tokens = LINK` (informational)
+- `missing_tokens = LINK` (informational)
 - `extra_tokens = none`
 - `validation_status = VALID`
 
@@ -124,13 +120,14 @@ Any future use must:
 CLI:
 - `--table1-path` (default: `data/aplus_raw/2026-05-13_1915_table1_canonical_breathline.txt`)
 - `--output-dir` (default: `data/research/aplus_table1_only_normalized_v1`)
+- `--table1-ts-override` (optional authoritative timestamp override)
 - `--output {table,json}` (default: `table`)
 - `--write-files` (writes output files when set)
 
 Exit code is `0` only when `validation_status = VALID`.
 
 ## Output files
-- `data/research/aplus_table1_only_normalized_v1/table1_normalized_20260513_1915.jsonl` — 40 staging rows
+- `data/research/aplus_table1_only_normalized_v1/table1_only_normalized_20260513_1915.jsonl` — 40 staging rows
 - `data/research/aplus_table1_only_normalized_v1/validation_summary_20260513_1915.json`
 
 ## No trading advice

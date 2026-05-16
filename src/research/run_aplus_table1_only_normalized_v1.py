@@ -12,6 +12,7 @@ from typing import Any
 REPORT_NAME = "aplus_table1_only_normalized_v1"
 PARSER_VERSION = "0.1"
 SNAPSHOT_ID_SUFFIX = "table1_only"
+LIMITATION = "TABLE1_ONLY_NO_TABLE2_PAIR"
 
 EXPECTED_TOKENS = [
     "BTC", "ETH", "SOL", "ADA", "DEEP", "FIL", "HBAR", "HOT", "NEAR", "PEPE",
@@ -43,6 +44,7 @@ TABLE1_ALLOWED = {
 }
 
 TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)")
+FILENAME_TS_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})_(\d{4})")
 SEP_CELL_RE = re.compile(r"^[\s\-:]+$")
 TOKEN_RE = re.compile(r"^[A-Z][A-Z0-9_+\-]*$")
 
@@ -52,6 +54,16 @@ def extract_timestamp(text: str) -> str:
     if not match:
         raise ValueError("Could not find prediction_ts_utc (YYYY-MM-DDTHH:MM:SSZ) in raw file")
     raw = match.group(1)
+    dt = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def timestamp_from_filename(path: Path) -> str:
+    match = FILENAME_TS_RE.search(path.name)
+    if not match:
+        raise ValueError(f"Could not infer timestamp from filename: {path.name}")
+    yyyy, mm, dd, hhmm = match.groups()
+    raw = f"{yyyy}-{mm}-{dd}T{hhmm[:2]}:{hhmm[2:]}:00Z"
     dt = datetime.strptime(raw, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     return dt.isoformat().replace("+00:00", "Z")
 
@@ -151,9 +163,21 @@ def parse_table1_space(text: str, source_path: Path) -> tuple[list[list[str]], b
 
 # ── unified parser ─────────────────────────────────────────────────────────────
 
-def parse_table1(path: Path) -> tuple[str, list[dict[str, Any]]]:
+def parse_table1(
+    path: Path,
+    table1_ts_override: str | None = None,
+) -> tuple[str, str, list[dict[str, Any]]]:
     text = path.read_text(encoding="utf-8")
-    prediction_ts_utc = extract_timestamp(text)
+    if table1_ts_override:
+        prediction_ts_utc = table1_ts_override
+        timestamp_source = "override"
+    else:
+        try:
+            prediction_ts_utc = extract_timestamp(text)
+            timestamp_source = "content"
+        except ValueError:
+            prediction_ts_utc = timestamp_from_filename(path)
+            timestamp_source = "filename"
 
     # Try pipe format first; fall back to space-separated.
     pipe_rows, pipe_header = parse_table1_pipe(text, path)
@@ -169,7 +193,7 @@ def parse_table1(path: Path) -> tuple[str, list[dict[str, Any]]]:
         cell_rows = space_rows
 
     rows = [normalize_row(c, prediction_ts_utc, path) for c in cell_rows]
-    return prediction_ts_utc, rows
+    return prediction_ts_utc, timestamp_source, rows
 
 
 def normalize_row(cells: list[str], prediction_ts_utc: str, source_path: Path) -> dict[str, Any]:
@@ -205,11 +229,6 @@ def build_staging_row(
     prediction_ts_utc: str,
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
-        "snapshot_id": snapshot_id,
-        "table1_prediction_ts_utc": prediction_ts_utc,
-        "prediction_ts_utc": prediction_ts_utc,
-        "table2_present": False,
-        "joined_pair_available": False,
         "token": raw["token"],
         "table1_phase": raw["table1_phase"],
         "table1_coherence": raw["table1_coherence"],
@@ -220,9 +239,9 @@ def build_staging_row(
         "table1_anchor_strength": raw["table1_anchor_strength"],
         "table1_strategic_bias": raw["table1_strategic_bias"],
         "table1_notes": raw.get("table1_notes", ""),
-        "source_table1_path": raw["source_table1_path"],
-        "parser_version": raw["parser_version"],
-        "validation_status": raw["validation_status"],
+        "prediction_ts_utc": prediction_ts_utc,
+        "table1_prediction_ts_utc": prediction_ts_utc,
+        "snapshot_id": snapshot_id,
     }
     return row
 
@@ -268,12 +287,13 @@ def render_table_summary(summary: dict[str, Any]) -> str:
     lines.append("selection_engine=none advice_engine=none decision_gate=none execution_planner=none executor=none")
     lines.append(f"snapshot_id={summary['snapshot_id']}")
     lines.append(f"table1_prediction_ts_utc={summary['table1_prediction_ts_utc']}")
-    lines.append(f"table2_present={summary['table2_present']}")
-    lines.append(f"joined_pair_available={summary['joined_pair_available']}")
+    lines.append(f"timestamp_source={summary['timestamp_source']}")
+    lines.append(f"limitation={summary['limitation']}")
+    lines.append(f"paired_dataset_eligible={summary['paired_dataset_eligible']}")
     lines.append(f"table1_rows={summary['table1_rows']}")
-    lines.append(f"duplicate_tokens={summary['duplicate_tokens']}")
+    lines.append(f"duplicate_tokens={_fmt_list(summary['duplicate_tokens'])}")
     lines.append(f"invalid_controlled_values={summary['invalid_controlled_values']}")
-    lines.append(f"missing_expected_tokens={_fmt_list(summary['missing_expected_tokens'])}")
+    lines.append(f"missing_tokens={_fmt_list(summary['missing_tokens'])}")
     lines.append(f"extra_tokens={_fmt_list(summary['extra_tokens'])}")
     lines.append(f"validation_status={summary['validation_status']}")
     lines.append("")
@@ -299,6 +319,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-dir",
         default="data/research/aplus_table1_only_normalized_v1",
     )
+    parser.add_argument(
+        "--table1-ts-override",
+        default=None,
+        help="Optional authoritative Table 1 timestamp override, e.g. 2026-05-13T19:15:00Z.",
+    )
     parser.add_argument("--output", choices=["table", "json"], default="table")
     parser.add_argument("--write-files", action="store_true")
     return parser.parse_args(argv)
@@ -310,7 +335,10 @@ def main(argv: list[str] | None = None) -> int:
     table1_path = Path(args.table1_path)
     out_dir = Path(args.output_dir)
 
-    prediction_ts_utc, raw_rows = parse_table1(table1_path)
+    prediction_ts_utc, timestamp_source, raw_rows = parse_table1(
+        table1_path,
+        table1_ts_override=args.table1_ts_override,
+    )
 
     slug = slug_from_ts(prediction_ts_utc)
     snapshot_id = f"{slug}_{SNAPSHOT_ID_SUFFIX}"
@@ -333,33 +361,46 @@ def main(argv: list[str] | None = None) -> int:
     validation_status = "VALID" if is_valid else "INVALID"
 
     output_paths = {
-        "table1_jsonl": str(out_dir / f"table1_normalized_{slug}.jsonl"),
+        "table1_jsonl": str(out_dir / f"table1_only_normalized_{slug}.jsonl"),
         "validation_json": str(out_dir / f"validation_summary_{slug}.json"),
     }
 
     summary: dict[str, Any] = {
         "report": REPORT_NAME,
-        "parser_version": PARSER_VERSION,
+        "version": PARSER_VERSION,
         "scope": "research-only market-only account-agnostic",
+        "input_path": str(table1_path),
         "snapshot_id": snapshot_id,
-        "table1_prediction_ts_utc": prediction_ts_utc,
         "prediction_ts_utc": prediction_ts_utc,
-        "table2_present": False,
-        "joined_pair_available": False,
-        "source_table1_path": str(table1_path),
+        "table1_prediction_ts_utc": prediction_ts_utc,
+        "timestamp_source": timestamp_source,
         "table1_rows": len(raw_rows),
         "expected_token_count": len(EXPECTED_TOKENS),
-        "duplicate_tokens": len(audit["duplicates"]),
-        "duplicate_token_list": audit["duplicates"],
+        "missing_tokens": audit["missing_vs_expected"],
+        "extra_tokens": audit["extra_vs_expected"],
+        "duplicate_tokens": audit["duplicates"],
+        "duplicate_token_count": len(audit["duplicates"]),
         "invalid_controlled_values": invalid_count,
         "invalid_rows": [
             {"token": r["token"], "invalid_fields": r.get("_invalid", [])}
             for r in invalid_rows
         ],
-        "missing_expected_tokens": audit["missing_vs_expected"],
-        "extra_tokens": audit["extra_vs_expected"],
         "all_rows_valid": all_rows_valid,
         "validation_status": validation_status,
+        "limitation": LIMITATION,
+        "paired_dataset_eligible": False,
+        "runtime_promotion_allowed": False,
+        "feature_candidate_promotion_allowed": False,
+        "broker_calls": 0,
+        "broker_writes": 0,
+        "order_submission": 0,
+        "live_orders": 0,
+        "db_writes": 0,
+        "selection_engine_changes": 0,
+        "advice_engine_changes": 0,
+        "decision_gate_changes": 0,
+        "execution_planner_changes": 0,
+        "executor_changes": 0,
         "output_paths": output_paths,
         "wrote_files": bool(args.write_files),
         "safety_markers": {
