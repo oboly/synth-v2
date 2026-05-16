@@ -49,6 +49,7 @@ Current read-only sources include:
 
 The UI displays latest available source timestamps independently:
 
+- Latest plotted chart-frame candle `open_ts_utc`.
 - Latest plotted chart-frame candle `close_ts_utc`.
 - Latest candle `close_ts_utc`.
 - Latest signal `signal_ts_utc`.
@@ -84,7 +85,11 @@ These overlays must not be labeled as buy or sell instructions.
 
 ## Time Alignment
 
-Chart rows are bounded by asset, venue, interval, start timestamp, end timestamp, and limit. Freshness rows intentionally use latest available source timestamps so the UI can show whether post-pipeline sources are current relative to the selected chart window. The displayed chart-frame latest close and source latest candle close may differ when the selected date window or cache excludes the newest source candle.
+Chart rows are bounded by asset, venue, interval, start timestamp, end timestamp, and limit. The chart x-axis uses the candle open timestamp because the plotted OHLC bar is anchored at `open_ts_utc`. Freshness uses candle close timestamps when reporting source completion.
+
+Daily candles can therefore show the previous calendar date on the x-axis while the same candle closes after midnight in Europe/Amsterdam time. For example, a daily candle opened on May 15 UTC can close on May 16 at 02:00 CEST. This is expected and is shown explicitly through separate chart-frame open, chart-frame close, and source candle close fields.
+
+Freshness rows intentionally use latest available source timestamps so the UI can show whether post-pipeline sources are current relative to the selected chart window. The displayed chart-frame latest close and source latest candle close may differ when the selected date window or cache excludes the newest source candle.
 
 ## Performance Rules
 
@@ -93,6 +98,7 @@ Queries must remain bounded by asset, venue, interval, timestamp range, or lates
 ## Current Features
 
 - Candlestick chart from `obs_market_candle`.
+- Candlestick hover shows local candle open and close times.
 - EMA, RSI, volume, signal confidence, and signal label overlays where available.
 - Selection vertical lines.
 - Point-in-time asset profile display.

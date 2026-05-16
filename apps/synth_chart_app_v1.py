@@ -315,21 +315,24 @@ with count_middle:
 with count_right:
     st.metric("Paper candidate rows", len(paper_candidate_frame))
 
-fresh_left, fresh_middle, fresh_right, fresh_fourth, fresh_fifth = st.columns(5)
+fresh_left, fresh_middle, fresh_right, fresh_fourth, fresh_fifth, fresh_sixth = st.columns(6)
 
 with fresh_left:
     st.metric("Latest close", display_value(price_context.get("latest_close_price"), 8))
 
 with fresh_middle:
-    st.metric("Chart latest close", format_display_timestamp(freshness.get("chart_frame_latest_close_ts_utc")))
+    st.metric("Chart latest open", format_display_timestamp(freshness.get("chart_frame_latest_open_ts_utc")))
 
 with fresh_right:
-    st.metric("Source candle close", format_display_timestamp(freshness.get("latest_candle_close_ts_utc")))
+    st.metric("Chart latest close", format_display_timestamp(freshness.get("chart_frame_latest_close_ts_utc")))
 
 with fresh_fourth:
-    st.metric("Zone as-of", format_display_timestamp(freshness.get("latest_execution_zone_asof_ts_utc")))
+    st.metric("Source candle close", format_display_timestamp(freshness.get("latest_candle_close_ts_utc")))
 
 with fresh_fifth:
+    st.metric("Zone as-of", format_display_timestamp(freshness.get("latest_execution_zone_asof_ts_utc")))
+
+with fresh_sixth:
     st.metric("Runtime snapshot", runtime_snapshot_display(freshness))
 
 zone_left, zone_middle, zone_right = st.columns(3)

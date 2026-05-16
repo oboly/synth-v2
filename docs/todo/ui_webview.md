@@ -65,9 +65,10 @@ Status: done for read-only freshness v1.
 Display tasks:
 
 - Show latest close price from `obs_market_candle`.
-- Show latest chart-frame close timestamp and latest source candle close timestamp.
+- Show latest chart-frame open timestamp, chart-frame close timestamp, and latest source candle close timestamp.
 - Convert display timestamps to Europe/Amsterdam local time with CET/CEST abbreviation while keeping DB/repository timestamps in UTC.
 - Show freshness footer with UTC and Amsterdam columns.
+- Show candle hover text with local open time, local close time, OHLC, and signal fields where available.
 - Show latest signal, selection, advice, execution-zone, and runtime snapshot timestamps where available.
 - Show `entry_zone_low`, `entry_zone_high`, `tp_zone_low`, `tp_zone_high`, and `invalidation_price`.
 - Show `distance_to_zone_pct`.

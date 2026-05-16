@@ -171,11 +171,11 @@ def _distance_to_target_pct(
     return ((close_price - high) / close_price) * 100.0
 
 
-def _chart_frame_latest_close_ts(frame: pd.DataFrame) -> str | None:
-    if frame.empty or "close_ts_utc" not in frame.columns:
+def _chart_frame_latest_ts(frame: pd.DataFrame, column: str) -> str | None:
+    if frame.empty or column not in frame.columns:
         return None
 
-    values = pd.to_datetime(frame["close_ts_utc"], errors="coerce")
+    values = pd.to_datetime(frame[column], errors="coerce")
     values = values.dropna()
     if values.empty:
         return None
@@ -212,7 +212,8 @@ def prepare_display_context(raw_context: dict[str, Any] | None, chart_frame: pd.
 
     return {
         "freshness": {
-            "chart_frame_latest_close_ts_utc": _chart_frame_latest_close_ts(chart_frame),
+            "chart_frame_latest_open_ts_utc": _chart_frame_latest_ts(chart_frame, "open_ts_utc"),
+            "chart_frame_latest_close_ts_utc": _chart_frame_latest_ts(chart_frame, "close_ts_utc"),
             "latest_candle_close_ts_utc": _iso_or_none(latest_candle.get("close_ts_utc")),
             "latest_signal_ts_utc": _iso_or_none(latest_signal.get("signal_ts_utc")),
             "latest_selection_asof_ts_utc": _iso_or_none(latest_selection.get("asof_ts_utc")),

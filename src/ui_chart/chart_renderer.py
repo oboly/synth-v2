@@ -105,6 +105,36 @@ def _add_zone_overlays(fig: go.Figure, display_context: dict[str, Any] | None) -
         )
 
 
+def _hover_text(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return "not available"
+    return str(value)
+
+
+def _candlestick_customdata(frame: pd.DataFrame) -> pd.DataFrame:
+    custom = pd.DataFrame(index=frame.index)
+    custom["open_time_local"] = frame["open_ts_utc"].map(format_display_timestamp)
+    custom["close_time_local"] = frame["close_ts_utc"].map(format_display_timestamp)
+
+    signal_columns = [
+        "trend_signal",
+        "volume_signal",
+        "phase_signal",
+        "setup_signal",
+        "risk_signal",
+        "signal_confidence",
+        "reason_code",
+    ]
+
+    for column in signal_columns:
+        if column in frame.columns:
+            custom[column] = frame[column].map(_hover_text)
+        else:
+            custom[column] = "not available"
+
+    return custom
+
+
 def render_main_chart(
     frame: pd.DataFrame,
     selection_frame: pd.DataFrame,
@@ -141,6 +171,23 @@ def render_main_chart(
             low=frame["low_price"],
             close=frame["close_price"],
             name="OHLC",
+            customdata=_candlestick_customdata(frame).to_numpy(),
+            hovertemplate=(
+                "Open time: %{customdata[0]}<br>"
+                "Close time: %{customdata[1]}<br>"
+                "Open: %{open}<br>"
+                "High: %{high}<br>"
+                "Low: %{low}<br>"
+                "Close: %{close}<br>"
+                "Trend: %{customdata[2]}<br>"
+                "Volume: %{customdata[3]}<br>"
+                "Phase: %{customdata[4]}<br>"
+                "Setup: %{customdata[5]}<br>"
+                "Risk: %{customdata[6]}<br>"
+                "Confidence: %{customdata[7]}<br>"
+                "Reason: %{customdata[8]}"
+                "<extra></extra>"
+            ),
         ),
         row=1,
         col=1,
@@ -369,6 +416,7 @@ def display_context_to_markdown(display_context: dict[str, Any] | None) -> str:
     ]
 
     freshness_rows = [
+        ("Chart frame open", freshness.get("chart_frame_latest_open_ts_utc")),
         ("Chart frame close", freshness.get("chart_frame_latest_close_ts_utc")),
         ("Source candle close", freshness.get("latest_candle_close_ts_utc")),
         ("Signal", freshness.get("latest_signal_ts_utc")),
