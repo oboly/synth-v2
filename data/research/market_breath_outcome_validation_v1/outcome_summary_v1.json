@@ -1,0 +1,172 @@
+{
+  "advice_engine_changes": 0,
+  "asset_count_avg": 41.0,
+  "broker_calls": 0,
+  "broker_writes": 0,
+  "db_writes": 0,
+  "decision_gate_changes": 0,
+  "excluded_from_conclusions": [
+    "HOLD_COMPRESSION"
+  ],
+  "execution_planner_changes": 0,
+  "executor_changes": 0,
+  "exploratory_phases": [
+    "OVERBREATH_EXTENSION",
+    "INHALE_ACCUMULATION"
+  ],
+  "feature_candidate_promotion_allowed": false,
+  "from_ts": "2026-03-13T12:00:00Z",
+  "interpretation": [
+    "First-pass outcome measurement only; do not declare strategy edge.",
+    "EXHALE_EXPANSION is the primary validation candidate.",
+    "COLLAPSE_RESET is the secondary validation candidate.",
+    "OVERBREATH_EXTENSION and INHALE_ACCUMULATION are exploratory only.",
+    "HOLD_COMPRESSION is excluded from conclusions due low sample count.",
+    "NEUTRAL_TRANSITION is the conservative rest-bucket baseline."
+  ],
+  "interval_code": "4h",
+  "limitations": [
+    "Uses future candles only after each historical as-of to calculate research outcomes.",
+    "Does not use outcomes to change labels, thresholds, or runtime behavior.",
+    "No strategy rules, buy/sell recommendations, or execution permissions are produced.",
+    "Sparse phases may not have enough sample mass for stable conclusions."
+  ],
+  "live_orders": 0,
+  "no_threshold_changes_applied": true,
+  "order_submission": 0,
+  "outcome_available_count": 2135,
+  "output_paths": {
+    "outcome_rows_jsonl": "data/research/market_breath_outcome_validation_v1/outcome_rows_v1.jsonl",
+    "outcome_summary_json": "data/research/market_breath_outcome_validation_v1/outcome_summary_v1.json"
+  },
+  "phase_counts": {
+    "COLLAPSE_RESET": 89,
+    "EXHALE_EXPANSION": 165,
+    "HOLD_COMPRESSION": 4,
+    "INHALE_ACCUMULATION": 16,
+    "INSUFFICIENT_DATA": 0,
+    "NEUTRAL_TRANSITION": 2157,
+    "OVERBREATH_EXTENSION": 29
+  },
+  "phase_outcome_summary": {
+    "COLLAPSE_RESET": {
+      "avg_fwd_return_12c": 1.315374,
+      "avg_fwd_return_18c": 1.948899,
+      "avg_fwd_return_1c": 0.220147,
+      "avg_fwd_return_24c": 2.712149,
+      "avg_fwd_return_3c": -0.424925,
+      "avg_fwd_return_6c": 0.942652,
+      "avg_max_drawdown_24c": -2.452035,
+      "avg_max_runup_24c": 5.257871,
+      "count": 89,
+      "interpretation_bucket": "SECONDARY",
+      "median_fwd_return_24c": 3.409656,
+      "outcome_available_count": 77,
+      "positive_rate_24c": 77.922078
+    },
+    "EXHALE_EXPANSION": {
+      "avg_fwd_return_12c": -0.44026,
+      "avg_fwd_return_18c": -0.292541,
+      "avg_fwd_return_1c": -0.085977,
+      "avg_fwd_return_24c": -0.619549,
+      "avg_fwd_return_3c": -0.073311,
+      "avg_fwd_return_6c": -0.662027,
+      "avg_max_drawdown_24c": -5.568692,
+      "avg_max_runup_24c": 5.555084,
+      "count": 165,
+      "interpretation_bucket": "PRIMARY",
+      "median_fwd_return_24c": -2.330056,
+      "outcome_available_count": 145,
+      "positive_rate_24c": 37.241379
+    },
+    "HOLD_COMPRESSION": {
+      "avg_fwd_return_12c": -1.853628,
+      "avg_fwd_return_18c": -4.593161,
+      "avg_fwd_return_1c": -0.837942,
+      "avg_fwd_return_24c": -3.382801,
+      "avg_fwd_return_3c": -3.326374,
+      "avg_fwd_return_6c": -2.925742,
+      "avg_max_drawdown_24c": -4.607268,
+      "avg_max_runup_24c": 1.613813,
+      "count": 4,
+      "interpretation_bucket": "EXCLUDED_LOW_SAMPLE",
+      "median_fwd_return_24c": -3.382801,
+      "outcome_available_count": 1,
+      "positive_rate_24c": 0.0
+    },
+    "INHALE_ACCUMULATION": {
+      "avg_fwd_return_12c": -1.111492,
+      "avg_fwd_return_18c": 2.396078,
+      "avg_fwd_return_1c": -0.195384,
+      "avg_fwd_return_24c": -0.821763,
+      "avg_fwd_return_3c": -1.734535,
+      "avg_fwd_return_6c": -0.175999,
+      "avg_max_drawdown_24c": -3.986273,
+      "avg_max_runup_24c": 3.908464,
+      "count": 16,
+      "interpretation_bucket": "EXPLORATORY",
+      "median_fwd_return_24c": 0.354712,
+      "outcome_available_count": 8,
+      "positive_rate_24c": 62.5
+    },
+    "INSUFFICIENT_DATA": {
+      "avg_fwd_return_12c": null,
+      "avg_fwd_return_18c": null,
+      "avg_fwd_return_1c": null,
+      "avg_fwd_return_24c": null,
+      "avg_fwd_return_3c": null,
+      "avg_fwd_return_6c": null,
+      "avg_max_drawdown_24c": null,
+      "avg_max_runup_24c": null,
+      "count": 0,
+      "interpretation_bucket": "EXCLUDED_LOW_SAMPLE",
+      "median_fwd_return_24c": null,
+      "outcome_available_count": 0,
+      "positive_rate_24c": null
+    },
+    "NEUTRAL_TRANSITION": {
+      "avg_fwd_return_12c": 0.512358,
+      "avg_fwd_return_18c": 0.659563,
+      "avg_fwd_return_1c": 0.16101,
+      "avg_fwd_return_24c": 0.628198,
+      "avg_fwd_return_3c": 0.169607,
+      "avg_fwd_return_6c": 0.290729,
+      "avg_max_drawdown_24c": -3.452774,
+      "avg_max_runup_24c": 5.211968,
+      "count": 2157,
+      "interpretation_bucket": "BASELINE_REST_BUCKET",
+      "median_fwd_return_24c": 0.070389,
+      "outcome_available_count": 1879,
+      "positive_rate_24c": 50.399148
+    },
+    "OVERBREATH_EXTENSION": {
+      "avg_fwd_return_12c": -1.571944,
+      "avg_fwd_return_18c": -1.793492,
+      "avg_fwd_return_1c": -0.426507,
+      "avg_fwd_return_24c": -0.975624,
+      "avg_fwd_return_3c": -0.257407,
+      "avg_fwd_return_6c": 0.063957,
+      "avg_max_drawdown_24c": -6.864168,
+      "avg_max_runup_24c": 6.968585,
+      "count": 29,
+      "interpretation_bucket": "EXPLORATORY",
+      "median_fwd_return_24c": -2.773642,
+      "outcome_available_count": 25,
+      "positive_rate_24c": 36.0
+    }
+  },
+  "primary_validation_phases": [
+    "EXHALE_EXPANSION"
+  ],
+  "report": "market_breath_outcome_validation_v1",
+  "row_count": 2460,
+  "runtime_promotion_allowed": false,
+  "sample_count": 60,
+  "scope": "research-only market-only account-agnostic no-aplus no-pro no-symbolic-labels outcome-measurement-only",
+  "selection_engine_changes": 0,
+  "strategy_logic_added": false,
+  "to_ts": "2026-05-12T12:00:00Z",
+  "venue": "bitvavo",
+  "version": "1.0",
+  "wrote_files": true
+}

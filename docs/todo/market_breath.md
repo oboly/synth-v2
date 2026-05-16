@@ -12,9 +12,13 @@ A+ symbolic reports are parked and must not be used as input for Market Breath.
 
 - docs/research/market_breath_v1_1_calibration_audit.md
 - docs/research/market_breath_v1_1_neutral_rest_bucket_review.md
+- docs/research/market_breath_outcome_validation_v1.md
 - src/research/run_market_breath_v1_1_calibration_audit.py
+- src/research/run_market_breath_outcome_validation_v1.py
 - data/research/market_breath_v1_1_calibration_audit/calibration_summary_v1.json
 - data/research/market_breath_v1_1_calibration_audit/phase_distribution_by_asof_v1.jsonl
+- data/research/market_breath_outcome_validation_v1/outcome_summary_v1.json
+- data/research/market_breath_outcome_validation_v1/outcome_rows_v1.jsonl
 
 ## Current calibration snapshot
 
@@ -107,11 +111,27 @@ Rules:
 
 ## P3 — Outcome validation
 
-Status: next recommended step.
+Status: done for V1 dry runner.
 
 Goal:
 
 Run a limited Market Breath outcome-validation dry lane for sufficient-sample phases.
+
+Implemented by:
+
+- Market Breath outcome validation V1 dry runner.
+
+Initial output:
+
+- sample_count=60
+- row_count=2460
+- outcome_available_count=2135
+- `EXHALE_EXPANSION`: primary bucket, count=165, outcome_available_count=145.
+- `COLLAPSE_RESET`: secondary bucket, count=89, outcome_available_count=77.
+- `OVERBREATH_EXTENSION`: exploratory bucket, count=29, outcome_available_count=25.
+- `INHALE_ACCUMULATION`: exploratory bucket, count=16, outcome_available_count=8.
+- `HOLD_COMPRESSION`: excluded low-sample bucket, count=4, outcome_available_count=1.
+- `NEUTRAL_TRANSITION`: baseline rest bucket, count=2157, outcome_available_count=1879.
 
 Recommended scope:
 
@@ -130,6 +150,22 @@ Rules:
 - No A+ input.
 - No PRO input.
 - No symbolic labels.
+
+## P4 — Review outcome validation findings
+
+Status: next recommended step.
+
+Goal:
+
+Review `data/research/market_breath_outcome_validation_v1/outcome_summary_v1.json` and decide whether the dry-lane findings are stable enough to keep threshold calibration blocked.
+
+Rules:
+
+- Do not declare strategy edge from V1 dry-run output alone.
+- Do not promote to runtime.
+- Do not recommend buys or sells.
+- Decide whether P2 threshold calibration remains blocked or becomes necessary.
+- Keep any threshold calibration as a separate research patch.
 
 ## Non-goals
 
