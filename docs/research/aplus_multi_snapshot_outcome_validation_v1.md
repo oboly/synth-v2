@@ -1,7 +1,7 @@
 # A+ Multi-Snapshot Outcome Validation V1
 
 ## Purpose
-Measure whether A+ Table 1/Table 2 labels correlate with forward market outcomes across all currently normalized joined snapshots. This is a pooled measurement across two snapshot pairs; it is not a single-snapshot result.
+Measure whether A+ Table 1/Table 2 labels correlate with forward market outcomes across all currently normalized joined snapshots. This is a pooled measurement across three snapshot pairs; it is not a single-snapshot result.
 
 ## Research-only boundary
 - Research-only.
@@ -18,6 +18,7 @@ Measure whether A+ Table 1/Table 2 labels correlate with forward market outcomes
 ## Source joined files
 - `data/research/aplus_table1_table2_normalized_v1/table1_table2_joined_20260514_1315_1256.jsonl` — 40 tokens, pair_reference_ts=2026-05-14T13:15:00Z, same_snapshot_ts=false, mismatch=19 min
 - `data/research/aplus_table1_table2_normalized_v1/table1_table2_joined_20260515_1244.jsonl` — 41 tokens, pair_reference_ts=2026-05-15T12:44:48Z, same_snapshot_ts=true, mismatch=0 min
+- `data/research/aplus_table1_table2_normalized_v1/table1_table2_joined_20260516_0115_0117.jsonl` — 41 tokens, pair_reference_ts=2026-05-16T01:17:00Z, same_snapshot_ts=true, mismatch=2 min
 
 ## Timestamp alignment rule
 `pair_reference_ts_utc` is the outcome alignment timestamp for each snapshot. If `pair_reference_ts_utc` is absent in a row, `prediction_ts_utc` is used as fallback. Per-table timestamps (`table1_prediction_ts_utc`, `table2_prediction_ts_utc`) are carried through for transparency but are not used individually for candle alignment.
@@ -37,11 +38,11 @@ DB: `obs_market_candle`, venue=bitvavo, interval_code=4h.
 - 72h
 
 ## Input summary
-- Input snapshots: 2
-- Input token rows: 81 (40 + 41)
-- Outcome rows: 243 (81 × 3 horizons)
+- Input snapshots: 3
+- Input token rows: 122 (40 + 41 + 41)
+- Outcome rows: 366 (122 × 3 horizons)
 
-## Coverage summary (run 2026-05-15)
+## Coverage summary (run 2026-05-16)
 
 ### 2026-05-14 snapshot (`20260514_1315_1256`)
 - 4h: 40/40 VALID
@@ -53,19 +54,26 @@ DB: `obs_market_candle`, venue=bitvavo, interval_code=4h.
 - 24h: 0/41 VALID — all NO_FUTURE_CANDLE (snapshot too fresh)
 - 72h: 0/41 VALID — all NO_FUTURE_CANDLE
 
+### 2026-05-16 snapshot (`20260516_0115_0117`)
+- 4h: 0/41 VALID — all NO_FUTURE_CANDLE (candles not yet available)
+- 24h: 0/41 VALID — all NO_FUTURE_CANDLE
+- 72h: 0/41 VALID — all NO_FUTURE_CANDLE
+
 ### Overall by horizon
 | Horizon | Total | VALID | NO_FUTURE_CANDLE |
 |---------|-------|-------|-----------------|
-| 4h      | 81    | 81    | 0               |
-| 24h     | 81    | 40    | 41              |
-| 72h     | 81    | 0     | 81              |
+| 4h      | 122   | 81    | 41              |
+| 24h     | 122   | 40    | 82              |
+| 72h     | 122   | 0     | 122             |
 
 ## Per-horizon overall aggregation
-| Horizon | n  | snapshots | avg_return | win_rate | avg_mfe | avg_mae |
-|---------|-----|-----------|------------|----------|---------|---------|
-| 4h      | 81 | 2         | -0.097%    | 49.4%    | +1.804% | -2.301% |
-| 24h     | 40 | 1         | +0.581%    | 67.5%    | +5.305% | -1.257% |
-| 72h     | 0  | 0         | —          | —        | —       | —       |
+| Horizon | n  | snapshots | avg_return | win_rate | avg_mfe  | avg_mae  |
+|---------|-----|-----------|------------|----------|----------|----------|
+| 4h      | 81  | 2         | -0.097%    | 49.4%    | +1.804%  | -2.301%  |
+| 24h     | 40  | 1         | +0.581%    | 67.5%    | +5.305%  | -1.257%  |
+| 72h     | 0   | 0         | —          | —        | —        | —        |
+
+Note: 2026-05-16 future candles are not yet available at any horizon. Aggregations are unchanged from the 2-snapshot run — the 2026-05-16 rows are present in the output file with `outcome_status=NO_FUTURE_CANDLE` and will resolve on the next refresh once ETL populates the forward candles.
 
 ## Label aggregation groups
 
@@ -129,7 +137,7 @@ DB: `obs_market_candle`, venue=bitvavo, interval_code=4h.
 | table1_phase: reset | 2 | 1 | -2.629% | 0% |
 
 ## LOW_SAMPLE_MULTI_SNAPSHOT limitation
-Only two snapshot pairs are currently available. The 24h horizon has data from one snapshot only; the 72h horizon has zero coverage. No label group has n ≥ 2 across both snapshots except the two 4h cross groups (`caution|high` and `accumulation|high`). All apparent signal must be treated as exploratory pattern observation, not a validated finding.
+Three snapshot pairs are currently available. The 24h horizon has data from one snapshot only (2026-05-14); the 72h horizon has zero coverage across all three snapshots. The 2026-05-16 snapshot has no future coverage at any horizon — all outcome rows are NO_FUTURE_CANDLE pending ETL. No label group has n ≥ 2 across three snapshots. All apparent signal must be treated as exploratory pattern observation, not a validated finding.
 
 No runtime promotion is allowed. No feature candidate promotion is allowed yet. More snapshot accumulation is required before any conclusion can be drawn.
 
@@ -161,7 +169,7 @@ CLI:
 - `--write-files` (writes output files when set)
 
 ## Output files
-- `data/research/aplus_multi_snapshot_outcome_validation_v1/label_outcomes_multi_snapshot_v1.jsonl` — 243 rows (one per snapshot/token/horizon)
+- `data/research/aplus_multi_snapshot_outcome_validation_v1/label_outcomes_multi_snapshot_v1.jsonl` — 366 rows (one per snapshot/token/horizon)
 - `data/research/aplus_multi_snapshot_outcome_validation_v1/validation_summary_multi_snapshot_v1.json`
 
 ## Safety markers

@@ -2919,10 +2919,10 @@
     24,
     72
   ],
-  "input_snapshots": 2,
-  "input_token_rows": 81,
+  "input_snapshots": 3,
+  "input_token_rows": 122,
   "interval": "4h",
-  "outcome_rows": 243,
+  "outcome_rows": 366,
   "output_paths": {
     "label_outcomes_jsonl": "data/research/aplus_multi_snapshot_outcome_validation_v1/label_outcomes_multi_snapshot_v1.jsonl",
     "validation_summary_json": "data/research/aplus_multi_snapshot_outcome_validation_v1/validation_summary_multi_snapshot_v1.json"
@@ -2930,24 +2930,25 @@
   "overall_coverage": {
     "horizon_24h": {
       "status_counts": {
-        "NO_FUTURE_CANDLE": 41,
+        "NO_FUTURE_CANDLE": 82,
         "VALID": 40
       },
-      "total": 81,
+      "total": 122,
       "valid": 40
     },
     "horizon_4h": {
       "status_counts": {
+        "NO_FUTURE_CANDLE": 41,
         "VALID": 81
       },
-      "total": 81,
+      "total": 122,
       "valid": 81
     },
     "horizon_72h": {
       "status_counts": {
-        "NO_FUTURE_CANDLE": 81
+        "NO_FUTURE_CANDLE": 122
       },
-      "total": 81,
+      "total": 122,
       "valid": 0
     }
   },
@@ -3103,6 +3104,82 @@
         "XPL",
         "XRP"
       ]
+    },
+    "20260516_0115_0117": {
+      "horizons": {
+        "horizon_24h": {
+          "no_future_candle": 41,
+          "status_counts": {
+            "NO_FUTURE_CANDLE": 41
+          },
+          "total": 41,
+          "valid": 0
+        },
+        "horizon_4h": {
+          "no_future_candle": 41,
+          "status_counts": {
+            "NO_FUTURE_CANDLE": 41
+          },
+          "total": 41,
+          "valid": 0
+        },
+        "horizon_72h": {
+          "no_future_candle": 41,
+          "status_counts": {
+            "NO_FUTURE_CANDLE": 41
+          },
+          "total": 41,
+          "valid": 0
+        }
+      },
+      "missing_assets": [],
+      "pair_reference_ts_utc": "2026-05-16T01:17:00Z",
+      "same_snapshot_ts": true,
+      "timestamp_mismatch_minutes": 2,
+      "token_count": 41,
+      "tokens": [
+        "AAVE",
+        "ADA",
+        "ALGO",
+        "BTC",
+        "CC",
+        "CRV",
+        "DEEP",
+        "DOT",
+        "ETH",
+        "FET",
+        "FIL",
+        "FLOKI",
+        "HBAR",
+        "HNT",
+        "HOT",
+        "HYPE",
+        "ICP",
+        "INJ",
+        "IOST",
+        "LDO",
+        "LINK",
+        "LTC",
+        "MOG",
+        "NEAR",
+        "NOT",
+        "ONDO",
+        "PEPE",
+        "POL",
+        "QNT",
+        "RED",
+        "RENDER",
+        "RLC",
+        "SOL",
+        "SUI",
+        "TAO",
+        "VET",
+        "WAL",
+        "WLD",
+        "XLM",
+        "XPL",
+        "XRP"
+      ]
     }
   },
   "report": "aplus_multi_snapshot_outcome_validation_v1",
@@ -3140,11 +3217,19 @@
       "source_path": "data/research/aplus_table1_table2_normalized_v1/table1_table2_joined_20260515_1244.jsonl",
       "timestamp_mismatch_allowed": true,
       "timestamp_mismatch_minutes": 0
+    },
+    "20260516_0115_0117": {
+      "pair_reference_ts_utc": "2026-05-16T01:17:00Z",
+      "same_snapshot_ts": true,
+      "source_path": "data/research/aplus_table1_table2_normalized_v1/table1_table2_joined_20260516_0115_0117.jsonl",
+      "timestamp_mismatch_allowed": true,
+      "timestamp_mismatch_minutes": 2
     }
   },
   "snapshot_pair_ids": [
     "20260514_1315_1256",
-    "20260515_1244"
+    "20260515_1244",
+    "20260516_0115_0117"
   ],
   "tokens_missing_asset": [],
   "venue": "bitvavo",
