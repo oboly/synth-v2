@@ -8,6 +8,51 @@ Main active direction is fully Synth-native Market Breath analysis from market d
 
 A+ symbolic reports are parked and must not be used as input for Market Breath.
 
+## Design rule — regime first
+
+Assume Market Breath phase meaning is regime-dependent unless proven otherwise.
+
+Do not evaluate phases as universal signals.
+
+Correct question:
+
+- In which regime does this phase/context work, fail, invert, or become unusable?
+
+Incorrect question:
+
+- Does this phase work universally?
+
+Working interpretation path:
+
+```text
+phase label + regime context -> context interpretation
+```
+
+Not:
+
+```text
+phase label -> buy/sell
+```
+
+Classification targets for future analysis:
+
+- stable context candidate
+- regime-dependent context
+- inverted in some regimes
+- low-sample / unusable
+- late-risk warning
+- reset/bounce context candidate
+
+If a phase/context is stable across multiple regimes, that does not automatically create a new action item. It can simply mean the sensor interpretation is sufficiently characterized and should be parked until a downstream use-case explicitly needs it.
+
+System rule:
+
+```text
+Regime first.
+Signal second.
+Execution last.
+```
+
 ## Sources
 
 - docs/research/market_breath_v1_1_calibration_audit.md
@@ -221,20 +266,36 @@ Rules:
 - No selection/advice/decision/execution/broker integration.
 - No DB reads.
 
-## P6 — Review bucketed findings
+## P6 — Longer-history / regime-stability validation
 
 Status: next recommended step.
 
 Goal:
 
-Review `data/research/market_breath_outcome_bucket_analysis_v1/bucket_summary_v1.json` and decide whether threshold calibration remains blocked.
+Check whether first-pass bucket findings persist across longer history and rolling windows, assuming all phase behavior is regime-dependent unless proven otherwise.
+
+Primary questions:
+
+- Does `COLLAPSE_RESET` outperformance persist across multiple regimes/windows?
+- Is `EXHALE_EXPANSION` underperformance stable, or was it a recent-regime artifact?
+- Does `OVERBREATH_EXTENSION` consistently behave like late-risk / exhaustion?
+- Are results symbol-specific, regime-specific, or broadly stable?
+- Should threshold calibration remain blocked after longer-history validation?
+
+Possible terminal outcomes:
+
+- If a context is stable across regimes, document it as a characterized Market Breath context and park it until a downstream use-case explicitly needs it.
+- If a context is regime-dependent, document the regime dependency and keep it as research context only.
+- If a context is mixed or low-sample, keep it blocked from promotion.
+- Stable does not mean action. Stable means the sensor may be understood well enough for now.
 
 Rules:
 
+- Do not evaluate phases as universal signals.
+- Classify each phase/bucket as stable, regime-dependent, inverted, low-sample, late-risk, or reset/bounce context candidate.
 - Do not declare strategy edge.
 - Do not recommend buys or sells.
 - Do not promote to runtime.
-- Consider longer-history validation only if needed for stability.
 - Keep any threshold calibration as a separate research patch.
 
 ## Non-goals
