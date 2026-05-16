@@ -60,15 +60,19 @@ Execution last.
 - docs/research/market_breath_outcome_validation_v1.md
 - docs/research/market_breath_outcome_validation_v1_findings.md
 - docs/research/market_breath_outcome_bucket_analysis_v1.md
+- docs/research/market_breath_regime_stability_validation_v1.md
 - src/research/run_market_breath_v1_1_calibration_audit.py
 - src/research/run_market_breath_outcome_validation_v1.py
 - src/research/run_market_breath_outcome_bucket_analysis_v1.py
+- src/research/run_market_breath_regime_stability_validation_v1.py
 - data/research/market_breath_v1_1_calibration_audit/calibration_summary_v1.json
 - data/research/market_breath_v1_1_calibration_audit/phase_distribution_by_asof_v1.jsonl
 - data/research/market_breath_outcome_validation_v1/outcome_summary_v1.json
 - data/research/market_breath_outcome_validation_v1/outcome_rows_v1.jsonl
 - data/research/market_breath_outcome_bucket_analysis_v1/bucket_summary_v1.json
 - data/research/market_breath_outcome_bucket_analysis_v1/bucket_rows_v1.jsonl
+- data/research/market_breath_regime_stability_validation_v1/stability_summary_v1.json
+- data/research/market_breath_regime_stability_validation_v1/window_summary_v1.jsonl
 
 ## Current calibration snapshot
 
@@ -266,28 +270,45 @@ Rules:
 - No selection/advice/decision/execution/broker integration.
 - No DB reads.
 
-## P6 — Longer-history / regime-stability validation
+## P6 — Longer-history / regime-dependency mapping
 
-Status: next recommended step.
+Status: done.
 
 Goal:
 
-Check whether first-pass bucket findings persist across longer history and rolling windows, assuming all phase behavior is regime-dependent unless proven otherwise.
+Map whether Market Breath phase behavior changes across rolling historical windows. This is not a search for universal stability across all regimes; assume all phase behavior is regime-dependent unless proven otherwise.
 
 Primary questions:
 
 - Does `COLLAPSE_RESET` outperformance persist across multiple regimes/windows?
-- Is `EXHALE_EXPANSION` underperformance stable, or was it a recent-regime artifact?
+- Does `EXHALE_EXPANSION` underperformance repeat across sampled windows, or was it a recent-regime artifact?
 - Does `OVERBREATH_EXTENSION` consistently behave like late-risk / exhaustion?
-- Are results symbol-specific, regime-specific, or broadly stable?
+- Are results symbol-specific, regime-specific, inverted, or low-sample?
 - Should threshold calibration remain blocked after longer-history validation?
 
 Possible terminal outcomes:
 
-- If a context is stable across regimes, document it as a characterized Market Breath context and park it until a downstream use-case explicitly needs it.
+- If a context repeats across sampled windows, document it as characterized within those windows and park it until a downstream use-case explicitly needs it.
 - If a context is regime-dependent, document the regime dependency and keep it as research context only.
 - If a context is mixed or low-sample, keep it blocked from promotion.
 - Stable does not mean action. Stable means the sensor may be understood well enough for now.
+
+Implemented by:
+
+- Market Breath regime stability validation V1.
+
+Initial output:
+
+- history_days=180
+- window_days=60
+- step_days=30
+- window_count=5
+- min_count=20
+- `COLLAPSE_RESET`: mixed across rolling windows; treat outperformance as regime-dependent reset/bounce context, not failed and not a signal.
+- `EXHALE_EXPANSION`: underperformed in 3 of 5 sufficient windows; treat as late-risk / exhaustion candidate in tested windows, not a universal rule.
+- `OVERBREATH_EXTENSION`: underperformed in 3 of 3 sufficient windows; treat as late-risk / exhaustion candidate in tested windows with sample caution.
+- `INHALE_ACCUMULATION` and `HOLD_COMPRESSION`: low-sample / unusable for regime conclusions.
+- Threshold calibration remains blocked.
 
 Rules:
 
@@ -297,6 +318,24 @@ Rules:
 - Do not recommend buys or sells.
 - Do not promote to runtime.
 - Keep any threshold calibration as a separate research patch.
+- Do not recalibrate thresholds just because behavior is regime-dependent.
+- Reopen threshold calibration only for a specific reachability or measurement problem.
+
+## P7 — Manual regime/window review
+
+Status: next recommended step.
+
+Goal:
+
+Review `data/research/market_breath_regime_stability_validation_v1/stability_summary_v1.json` and `window_summary_v1.jsonl`.
+
+Next decisions:
+
+- Decide whether Market Breath should be documented as a state/risk-timing classifier.
+- Optionally add explicit regime labels later.
+- Keep threshold calibration blocked unless a specific measurement/reachability problem appears.
+- No strategy logic.
+- No runtime promotion.
 
 ## Non-goals
 

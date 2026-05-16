@@ -1,0 +1,96 @@
+{
+  "advice_engine_changes": 0,
+  "broker_calls": 0,
+  "broker_writes": 0,
+  "collapse_reset_stability_interpretation": "COLLAPSE_RESET is mixed across rolling windows; treat any outperformance as regime-dependent.",
+  "db_writes": 0,
+  "decision_gate_changes": 0,
+  "execution_planner_changes": 0,
+  "executor_changes": 0,
+  "exhale_expansion_stability_interpretation": "EXHALE_EXPANSION repeatedly underperforms in sampled windows; treat it as a regime-dependent late-risk / exhaustion context candidate only.",
+  "feature_candidate_promotion_allowed": false,
+  "history_days": 180,
+  "interval_code": "4h",
+  "live_orders": 0,
+  "min_count": 20,
+  "next_recommended_step": [
+    "Manually review stability_summary_v1.json.",
+    "Decide whether Market Breath should be documented as a state/risk-timing classifier.",
+    "Review phase behavior by regime/window instead of searching for regime-independent stability.",
+    "Keep threshold calibration blocked unless regime-specific findings indicate a measurement or reachability problem.",
+    "Do not promote to runtime."
+  ],
+  "no_threshold_changes_applied": true,
+  "order_submission": 0,
+  "overbreath_extension_stability_interpretation": "OVERBREATH_EXTENSION repeatedly underperforms in sufficient sampled windows; treat it as a regime-dependent late-risk / exhaustion context candidate only if manual review accepts the sample mass.",
+  "phase_stability": {
+    "COLLAPSE_RESET": {
+      "avg_vs_neutral_avg_fwd_return_24c": 0.054214,
+      "avg_vs_neutral_positive_rate_24c": 10.789553,
+      "stability_hint": "MIXED",
+      "windows_outperforming_baseline": 2,
+      "windows_sufficient": 5,
+      "windows_underperforming_baseline": 0
+    },
+    "EXHALE_EXPANSION": {
+      "avg_vs_neutral_avg_fwd_return_24c": -0.799968,
+      "avg_vs_neutral_positive_rate_24c": -8.795948,
+      "stability_hint": "CONSISTENT_UNDERPERFORMER",
+      "windows_outperforming_baseline": 0,
+      "windows_sufficient": 5,
+      "windows_underperforming_baseline": 3
+    },
+    "HOLD_COMPRESSION": {
+      "avg_vs_neutral_avg_fwd_return_24c": null,
+      "avg_vs_neutral_positive_rate_24c": null,
+      "stability_hint": "LOW_SAMPLE",
+      "windows_outperforming_baseline": 0,
+      "windows_sufficient": 0,
+      "windows_underperforming_baseline": 0
+    },
+    "INHALE_ACCUMULATION": {
+      "avg_vs_neutral_avg_fwd_return_24c": null,
+      "avg_vs_neutral_positive_rate_24c": null,
+      "stability_hint": "LOW_SAMPLE",
+      "windows_outperforming_baseline": 0,
+      "windows_sufficient": 0,
+      "windows_underperforming_baseline": 0
+    },
+    "INSUFFICIENT_DATA": {
+      "avg_vs_neutral_avg_fwd_return_24c": null,
+      "avg_vs_neutral_positive_rate_24c": null,
+      "stability_hint": "LOW_SAMPLE",
+      "windows_outperforming_baseline": 0,
+      "windows_sufficient": 0,
+      "windows_underperforming_baseline": 0
+    },
+    "NEUTRAL_TRANSITION": {
+      "avg_vs_neutral_avg_fwd_return_24c": 0.0,
+      "avg_vs_neutral_positive_rate_24c": 0.0,
+      "stability_hint": "MIXED",
+      "windows_outperforming_baseline": 0,
+      "windows_sufficient": 5,
+      "windows_underperforming_baseline": 0
+    },
+    "OVERBREATH_EXTENSION": {
+      "avg_vs_neutral_avg_fwd_return_24c": -4.125906,
+      "avg_vs_neutral_positive_rate_24c": -28.876661,
+      "stability_hint": "CONSISTENT_UNDERPERFORMER",
+      "windows_outperforming_baseline": 0,
+      "windows_sufficient": 3,
+      "windows_underperforming_baseline": 3
+    }
+  },
+  "regime_dependency_assumption": "Treat all Market Breath outcome behavior as regime-dependent. Stability hints describe repeated behavior across sampled rolling windows only; they are not claims of regime-independent behavior.",
+  "report": "market_breath_regime_stability_validation_v1",
+  "runtime_promotion_allowed": false,
+  "scope": "research-only market-only account-agnostic no-aplus no-pro no-symbolic-labels outcome-measurement-only",
+  "selection_engine_changes": 0,
+  "step_days": 30,
+  "strategy_logic_added": false,
+  "threshold_calibration_status": "blocked; no threshold changes applied",
+  "venue": "bitvavo",
+  "version": "1.0",
+  "window_count": 5,
+  "window_days": 60
+}
