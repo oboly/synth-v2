@@ -1,0 +1,567 @@
+{
+  "coverage_by_horizon": {
+    "horizon_24h": {
+      "no_future_candle": 82,
+      "snapshots": [
+        "20260514_1315_1256"
+      ],
+      "total": 122,
+      "valid": 40
+    },
+    "horizon_4h": {
+      "no_future_candle": 41,
+      "snapshots": [
+        "20260514_1315_1256",
+        "20260515_1244"
+      ],
+      "total": 122,
+      "valid": 81
+    },
+    "horizon_72h": {
+      "no_future_candle": 122,
+      "snapshots": [],
+      "total": 122,
+      "valid": 0
+    }
+  },
+  "feature_candidate_promotion_allowed": false,
+  "group_definitions": 39,
+  "horizons_covered": [
+    4,
+    24,
+    72
+  ],
+  "input_outcome_rows": 366,
+  "metric_rows_written": 757,
+  "outcomes_path": "data/research/aplus_multi_snapshot_outcome_validation_v1/label_outcomes_multi_snapshot_v1.jsonl",
+  "output_paths": {
+    "metrics_jsonl": "data/research/aplus_table1_table2_interaction_discovery_v1/interaction_group_metrics_v1.jsonl",
+    "summary_json": "data/research/aplus_table1_table2_interaction_discovery_v1/interaction_discovery_summary_v1.json"
+  },
+  "parser_version": "0.1",
+  "reliability_label_counts": {
+    "LOW_SAMPLE": 506,
+    "MIXED": 100,
+    "NEGATIVE_CANDIDATE": 86,
+    "WATCH_CANDIDATE": 65
+  },
+  "report": "aplus_table1_table2_interaction_discovery_v1",
+  "runtime_promotion_allowed": false,
+  "safety_markers": {
+    "account_agnostic": true,
+    "account_state": "not_allowed",
+    "advice_engine_changes": 0,
+    "broker_calls": 0,
+    "broker_writes": 0,
+    "db_writes": 0,
+    "decision_gate_changes": 0,
+    "execution_planner_changes": 0,
+    "executor_changes": 0,
+    "live_orders": 0,
+    "market_only": true,
+    "order_submission": 0,
+    "paper_live_logic": "not_allowed",
+    "research_only": true,
+    "selection_engine_changes": 0
+  },
+  "sample_limitation": "LOW_SAMPLE_THREE_SNAPSHOTS_PARTIAL_OUTCOME_COVERAGE",
+  "scope": "research-only market-only account-agnostic",
+  "strongest_single_fields": [
+    {
+      "avg_return_pct": 6.712167922759342,
+      "group_key": "table1_strategic_bias",
+      "group_type": "single_field",
+      "group_values_str": "caution",
+      "horizon_hours": 24,
+      "n_with_return": 3,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 2.986883037352733,
+      "group_key": "table2_harmonic_phase",
+      "group_type": "single_field",
+      "group_values_str": "forming_1000",
+      "horizon_hours": 24,
+      "n_with_return": 6,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 83.33333333333333
+    },
+    {
+      "avg_return_pct": 2.7789270007649307,
+      "group_key": "table2_harmonic_phase",
+      "group_type": "single_field",
+      "group_values_str": "confirmed_0618",
+      "horizon_hours": 4,
+      "n_with_return": 9,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 2.6783387272173074,
+      "group_key": "table1_expansion_quality",
+      "group_type": "single_field",
+      "group_values_str": "strong",
+      "horizon_hours": 24,
+      "n_with_return": 14,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 92.85714285714286
+    },
+    {
+      "avg_return_pct": 2.594805209765153,
+      "group_key": "table1_geometry",
+      "group_type": "single_field",
+      "group_values_str": "unknown",
+      "horizon_hours": 4,
+      "n_with_return": 4,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 2.4983820708399347,
+      "group_key": "table2_offset_band",
+      "group_type": "single_field",
+      "group_values_str": "0",
+      "horizon_hours": 24,
+      "n_with_return": 7,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 71.42857142857143
+    },
+    {
+      "avg_return_pct": 2.1145828636686352,
+      "group_key": "table2_offset_band",
+      "group_type": "single_field",
+      "group_values_str": "-5",
+      "horizon_hours": 24,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 1.958550995708134,
+      "group_key": "table1_strategic_bias",
+      "group_type": "single_field",
+      "group_values_str": "caution",
+      "horizon_hours": 4,
+      "n_with_return": 5,
+      "reliability_label": "WATCH_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 60.0
+    }
+  ],
+  "strongest_three_field_interactions": [
+    {
+      "avg_return_pct": 10.526115063485207,
+      "group_key": "table1_field__x__table2_harmonic_phase__x__table2_drift_direction",
+      "group_type": "three_field",
+      "group_values_str": "expansion|forming_1000|forward_drift",
+      "horizon_hours": 24,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 7.144322167162063,
+      "group_key": "table1_field__x__table2_harmonic_phase__x__table2_drift_direction",
+      "group_type": "three_field",
+      "group_values_str": "expansion|forming_1000|forward_drift",
+      "horizon_hours": 4,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 4.982080629476354,
+      "group_key": "table1_structural_role__x__table2_quality__x__table2_extension_risk",
+      "group_type": "three_field",
+      "group_values_str": "speculative|mixed|high",
+      "horizon_hours": 4,
+      "n_with_return": 4,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 4.757224878427981,
+      "group_key": "table1_coherence__x__table2_quality__x__table2_extension_risk",
+      "group_type": "three_field",
+      "group_values_str": "moderate|mixed|high",
+      "horizon_hours": 4,
+      "n_with_return": 5,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 4.666656704966025,
+      "group_key": "table1_strategic_bias__x__table2_harmonic_phase__x__table2_offset_band",
+      "group_type": "three_field",
+      "group_values_str": "accumulation|forming_0786|+9",
+      "horizon_hours": 4,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    }
+  ],
+  "strongest_two_field_interactions": [
+    {
+      "avg_return_pct": 10.526115063485207,
+      "group_key": "table1_field__x__table2_harmonic_phase",
+      "group_type": "two_field",
+      "group_values_str": "expansion|forming_1000",
+      "horizon_hours": 24,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 9.022193065981432,
+      "group_key": "table1_phase__x__table2_offset_band",
+      "group_type": "two_field",
+      "group_values_str": "forming|0",
+      "horizon_hours": 24,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 6.660481277934337,
+      "group_key": "table1_expansion_quality__x__table2_quality",
+      "group_type": "two_field",
+      "group_values_str": "strong|mixed",
+      "horizon_hours": 24,
+      "n_with_return": 3,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 6.257693967159697,
+      "group_key": "table2_offset_band__x__table2_quality",
+      "group_type": "two_field",
+      "group_values_str": "0|mixed",
+      "horizon_hours": 24,
+      "n_with_return": 3,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 5.627847767184537,
+      "group_key": "table2_offset_band__x__table2_quality",
+      "group_type": "two_field",
+      "group_values_str": "unknown|mixed",
+      "horizon_hours": 4,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 5.1727849323483115,
+      "group_key": "table2_offset_band__x__table2_quality",
+      "group_type": "two_field",
+      "group_values_str": "0|mixed",
+      "horizon_hours": 4,
+      "n_with_return": 3,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 4.797885314761509,
+      "group_key": "table1_structural_role__x__table2_harmonic_phase",
+      "group_type": "two_field",
+      "group_values_str": "speculative|forming_1000",
+      "horizon_hours": 4,
+      "n_with_return": 4,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 4.666656704966025,
+      "group_key": "table2_harmonic_phase__x__table2_offset_band",
+      "group_type": "two_field",
+      "group_values_str": "forming_0786|+9",
+      "horizon_hours": 4,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    }
+  ],
+  "top_negative_candidates": [
+    {
+      "avg_return_pct": -0.0176502676162727,
+      "group_key": "table2_harmonic_phase__x__table2_offset_band",
+      "group_type": "two_field",
+      "group_values_str": "forming_1000|0",
+      "horizon_hours": 4,
+      "n_with_return": 5,
+      "reliability_label": "NEGATIVE_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 40.0
+    },
+    {
+      "avg_return_pct": -0.147697518001962,
+      "group_key": "table1_geometry__x__table2_quality",
+      "group_type": "two_field",
+      "group_values_str": "mixed|clean",
+      "horizon_hours": 4,
+      "n_with_return": 5,
+      "reliability_label": "NEGATIVE_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 40.0
+    },
+    {
+      "avg_return_pct": -0.24438050891970908,
+      "group_key": "table2_offset_band__x__table2_quality",
+      "group_type": "two_field",
+      "group_values_str": "+7|mixed",
+      "horizon_hours": 4,
+      "n_with_return": 3,
+      "reliability_label": "NEGATIVE_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 33.333333333333336
+    },
+    {
+      "avg_return_pct": -0.399056276400717,
+      "group_key": "table1_anchor_strength__x__table2_quality",
+      "group_type": "two_field",
+      "group_values_str": "strong|clean",
+      "horizon_hours": 4,
+      "n_with_return": 27,
+      "reliability_label": "NEGATIVE_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 44.44444444444444
+    },
+    {
+      "avg_return_pct": -0.41685640930628304,
+      "group_key": "table1_structural_role__x__table2_quality__x__table2_extension_risk",
+      "group_type": "three_field",
+      "group_values_str": "speculative|mixed|moderate",
+      "horizon_hours": 4,
+      "n_with_return": 7,
+      "reliability_label": "NEGATIVE_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 42.857142857142854
+    },
+    {
+      "avg_return_pct": -0.4508699954201338,
+      "group_key": "table2_harmonic_phase",
+      "group_type": "single_field",
+      "group_values_str": "confirmed_1000",
+      "horizon_hours": 4,
+      "n_with_return": 12,
+      "reliability_label": "NEGATIVE_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 41.666666666666664
+    },
+    {
+      "avg_return_pct": -0.5008683236569251,
+      "group_key": "table1_phase__x__table2_offset_band",
+      "group_type": "two_field",
+      "group_values_str": "confirmed|0",
+      "horizon_hours": 4,
+      "n_with_return": 9,
+      "reliability_label": "NEGATIVE_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 44.44444444444444
+    },
+    {
+      "avg_return_pct": -0.504062681752935,
+      "group_key": "table1_anchor_strength__x__table2_quality",
+      "group_type": "two_field",
+      "group_values_str": "moderate|mixed",
+      "horizon_hours": 4,
+      "n_with_return": 15,
+      "reliability_label": "NEGATIVE_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 40.0
+    }
+  ],
+  "top_positive_watch_candidates": [
+    {
+      "avg_return_pct": 3.5627594827092177,
+      "group_key": "table1_phase__x__table2_extension_risk",
+      "group_type": "two_field",
+      "group_values_str": "forming|high",
+      "horizon_hours": 4,
+      "n_with_return": 7,
+      "reliability_label": "WATCH_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 85.71428571428571
+    },
+    {
+      "avg_return_pct": 3.140604810747866,
+      "group_key": "table1_phase__x__table2_quality",
+      "group_type": "two_field",
+      "group_values_str": "forming|mixed",
+      "horizon_hours": 4,
+      "n_with_return": 15,
+      "reliability_label": "WATCH_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 86.66666666666667
+    },
+    {
+      "avg_return_pct": 3.019270996109029,
+      "group_key": "table1_coherence__x__table2_drift_direction",
+      "group_type": "two_field",
+      "group_values_str": "moderate|forward_drift",
+      "horizon_hours": 4,
+      "n_with_return": 14,
+      "reliability_label": "WATCH_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 85.71428571428571
+    },
+    {
+      "avg_return_pct": 2.8233784925065644,
+      "group_key": "table1_strategic_bias__x__table2_extension_risk",
+      "group_type": "two_field",
+      "group_values_str": "accumulation|high",
+      "horizon_hours": 4,
+      "n_with_return": 7,
+      "reliability_label": "WATCH_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 85.71428571428571
+    },
+    {
+      "avg_return_pct": 2.567025347289927,
+      "group_key": "table1_phase__x__table1_coherence__x__table2_harmonic_phase",
+      "group_type": "three_field",
+      "group_values_str": "forming|moderate|forming_1000",
+      "horizon_hours": 4,
+      "n_with_return": 8,
+      "reliability_label": "WATCH_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 75.0
+    },
+    {
+      "avg_return_pct": 2.3944289778129746,
+      "group_key": "table2_quality__x__table2_extension_risk",
+      "group_type": "two_field",
+      "group_values_str": "mixed|high",
+      "horizon_hours": 4,
+      "n_with_return": 9,
+      "reliability_label": "WATCH_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 66.66666666666667
+    },
+    {
+      "avg_return_pct": 2.184087274711067,
+      "group_key": "table1_structural_role__x__table2_offset_band",
+      "group_type": "two_field",
+      "group_values_str": "speculative|+9",
+      "horizon_hours": 4,
+      "n_with_return": 4,
+      "reliability_label": "WATCH_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 75.0
+    },
+    {
+      "avg_return_pct": 2.106877377542303,
+      "group_key": "table1_expansion_quality__x__table2_quality",
+      "group_type": "two_field",
+      "group_values_str": "moderate|mixed",
+      "horizon_hours": 4,
+      "n_with_return": 14,
+      "reliability_label": "WATCH_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 78.57142857142857
+    },
+    {
+      "avg_return_pct": 2.0141858662592225,
+      "group_key": "table1_structural_role__x__table2_quality__x__table2_extension_risk",
+      "group_type": "three_field",
+      "group_values_str": "confirmer|clean|low",
+      "horizon_hours": 4,
+      "n_with_return": 6,
+      "reliability_label": "WATCH_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 83.33333333333333
+    },
+    {
+      "avg_return_pct": 1.9962958701288303,
+      "group_key": "table1_field__x__table2_harmonic_phase",
+      "group_type": "two_field",
+      "group_values_str": "transition|forming_0618",
+      "horizon_hours": 4,
+      "n_with_return": 3,
+      "reliability_label": "WATCH_CANDIDATE",
+      "snapshot_count": 2,
+      "win_rate_pct": 66.66666666666667
+    }
+  ],
+  "valid_outcome_rows": 121,
+  "weakest_interactions": [
+    {
+      "avg_return_pct": -5.92658545685202,
+      "group_key": "table1_phase__x__table2_offset_band",
+      "group_type": "two_field",
+      "group_values_str": "exhaustion|+9",
+      "horizon_hours": 4,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -5.92658545685202,
+      "group_key": "table1_strategic_bias__x__table2_offset_band",
+      "group_type": "two_field",
+      "group_values_str": "avoid|+9",
+      "horizon_hours": 4,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -5.92658545685202,
+      "group_key": "table2_harmonic_phase__x__table2_offset_band",
+      "group_type": "two_field",
+      "group_values_str": "late_extension|+9",
+      "horizon_hours": 4,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -5.92658545685202,
+      "group_key": "table2_offset_band__x__table2_quality",
+      "group_type": "two_field",
+      "group_values_str": "+9|dirty",
+      "horizon_hours": 4,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -5.92658545685202,
+      "group_key": "table1_strategic_bias__x__table2_harmonic_phase__x__table2_offset_band",
+      "group_type": "three_field",
+      "group_values_str": "avoid|late_extension|+9",
+      "horizon_hours": 4,
+      "n_with_return": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    }
+  ],
+  "wrote_files": true
+}
