@@ -189,6 +189,30 @@ Suggested interpretation:
 - If `EXHALE_EXPANSION` appears only rarely, inspect whether its momentum and relative-strength gate is too strict.
 - If all phases appear with non-trivial frequency and no phase dominates excessively, thresholds may be plausible enough to proceed to outcome validation.
 
+## TODO: sparse phase diagnostics review
+
+The initial 60-day calibration output showed that `COLLAPSE_RESET` was not structurally dominant, while `NEUTRAL_TRANSITION` dominated strongly and the selective phases were reachable but sparse.
+
+This should be tracked as a calibration-audit interpretation TODO, not as an immediate Market Breath V1 threshold change.
+
+Current TODO:
+
+- Preserve the existing Market Breath V1 thresholds until a separate threshold-calibration patch is explicitly opened.
+- Improve the V1.1 audit interpretation so it distinguishes intended selectivity from functional unreachability.
+- Add explicit diagnostic language for `NEUTRAL_TRANSITION` structural dominance.
+- Add explicit diagnostic language for sparse-but-reachable phases, especially `HOLD_COMPRESSION` and `INHALE_ACCUMULATION`.
+- Avoid treating rare phases as automatically wrong; the thresholds were intentionally selected during V1 setup to avoid noisy phase firing.
+- Before outcome validation, review whether `NEUTRAL_TRANSITION` is intended to remain a large rest bucket or whether V1 should classify more observations into specific breath phases.
+
+Important distinction:
+
+```text
+Latest collapse-heavy run = likely temporary current 4h market-state skew.
+60-day audit = not collapse-biased, but strongly neutral-dominant.
+```
+
+This TODO remains research-only and market-only. It must not introduce strategy logic, selection changes, advice changes, decision-gate changes, execution-planner changes, executor changes, DB writes, broker calls, broker writes, or order submission.
+
 ## Known limitation
 
 No future outcomes are used.
