@@ -436,7 +436,7 @@ def build_base_observation(
         "market_breath_phase": phase,
         "market_breath_state": state,
         "market_breath_score": None,
-        "market_breath_confidence": None,
+        "market_breath_confidence": confidence(len(candles), lookback_candles, None),
         "invalid_reason": None,
     }
 
@@ -478,7 +478,6 @@ def add_breadth_and_scores(rows: list[dict[str, Any]], lookback_candles: int) ->
                 breadth_alignment=breadth_score,
             )
         )
-        row["market_breath_confidence"] = confidence(lookback_candles, lookback_candles, row.get("invalid_reason"))
         out.append(row)
     return out
 
