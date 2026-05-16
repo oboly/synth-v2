@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -47,10 +49,67 @@ def _add_selection_vertical_lines(
         )
 
 
+def _zone_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _add_zone_overlays(fig: go.Figure, display_context: dict[str, Any] | None) -> None:
+    if not display_context:
+        return
+
+    zone = display_context.get("zone_context") or {}
+    entry_low = _zone_float(zone.get("entry_zone_low"))
+    entry_high = _zone_float(zone.get("entry_zone_high"))
+    target_low = _zone_float(zone.get("tp_zone_low"))
+    target_high = _zone_float(zone.get("tp_zone_high"))
+    invalidation_price = _zone_float(zone.get("invalidation_price"))
+
+    if entry_low is not None and entry_high is not None:
+        fig.add_hrect(
+            y0=min(entry_low, entry_high),
+            y1=max(entry_low, entry_high),
+            row=1,
+            col=1,
+            fillcolor="#2f80ed",
+            opacity=0.12,
+            line_width=0,
+            layer="below",
+        )
+
+    if target_low is not None and target_high is not None:
+        fig.add_hrect(
+            y0=min(target_low, target_high),
+            y1=max(target_low, target_high),
+            row=1,
+            col=1,
+            fillcolor="#27ae60",
+            opacity=0.10,
+            line_width=0,
+            layer="below",
+        )
+
+    if invalidation_price is not None:
+        fig.add_hline(
+            y=invalidation_price,
+            row=1,
+            col=1,
+            line_width=1,
+            line_dash="dot",
+            line_color="#c0392b",
+            opacity=0.70,
+        )
+
+
 def render_main_chart(
     frame: pd.DataFrame,
     selection_frame: pd.DataFrame,
     profile: dict[str, Any] | None,
+    display_context: dict[str, Any] | None,
     show_ema20: bool,
     show_ema50: bool,
     show_rsi: bool,
@@ -177,6 +236,8 @@ def render_main_chart(
     if show_selection_lines:
         _add_selection_vertical_lines(fig, selection_frame)
 
+    _add_zone_overlays(fig, display_context)
+
     fig.update_layout(
         title=None,
         height=760,
@@ -240,9 +301,56 @@ def profile_to_markdown(profile: dict[str, Any] | None) -> str:
 def display_value(value: Any, precision: int | None = None) -> str:
     if value is None or value == "":
         return "not available"
-    if isinstance(value, float) and precision is not None:
+    if isinstance(value, (float, int)) and precision is not None:
         return f"{value:.{precision}f}"
     return str(value)
+
+
+def _parse_timestamp(value: Any) -> datetime | None:
+    if value is None or value == "":
+        return None
+
+    if isinstance(value, pd.Timestamp):
+        parsed = value.to_pydatetime()
+    elif isinstance(value, datetime):
+        parsed = value
+    else:
+        text = str(value).replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            parsed_timestamp = pd.to_datetime(value, errors="coerce", utc=False)
+            if pd.isna(parsed_timestamp):
+                return None
+            parsed = parsed_timestamp.to_pydatetime()
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return parsed.astimezone(timezone.utc)
+
+
+def format_utc_timestamp(value: Any) -> str:
+    parsed = _parse_timestamp(value)
+    if parsed is None:
+        return "not available"
+    return parsed.strftime("%Y-%m-%d %H:%M UTC")
+
+
+def format_display_timestamp(value: Any, timezone_name: str = "Europe/Amsterdam") -> str:
+    parsed = _parse_timestamp(value)
+    if parsed is None:
+        return "not available"
+    local_value = parsed.astimezone(ZoneInfo(timezone_name))
+    return local_value.strftime("%Y-%m-%d %H:%M %Z")
+
+
+def runtime_snapshot_display(freshness: dict[str, Any]) -> str:
+    snapshot_id = display_value(freshness.get("latest_strategy_runtime_snapshot_id"))
+    snapshot_ts = format_display_timestamp(freshness.get("latest_strategy_runtime_snapshot_ts_utc"))
+    if snapshot_id == "not available" and snapshot_ts == "not available":
+        return "not available"
+    return snapshot_id + " / " + snapshot_ts
 
 
 def display_context_to_markdown(display_context: dict[str, Any] | None) -> str:
@@ -256,43 +364,50 @@ def display_context_to_markdown(display_context: dict[str, Any] | None) -> str:
     lines = [
         "### Freshness",
         "",
-        "| Field | Value |",
-        "|---|---:|",
-        "| latest_candle_close_ts_utc | "
-        + display_value(freshness.get("latest_candle_close_ts_utc"))
-        + " |",
-        "| latest_signal_ts_utc | "
-        + display_value(freshness.get("latest_signal_ts_utc"))
-        + " |",
-        "| latest_selection_asof_ts_utc | "
-        + display_value(freshness.get("latest_selection_asof_ts_utc"))
-        + " |",
-        "| latest_advice_asof_ts_utc | "
-        + display_value(freshness.get("latest_advice_asof_ts_utc"))
-        + " |",
-        "| latest_execution_zone_asof_ts_utc | "
-        + display_value(freshness.get("latest_execution_zone_asof_ts_utc"))
-        + " |",
-        "| latest_strategy_runtime_snapshot_ts_utc | "
-        + display_value(freshness.get("latest_strategy_runtime_snapshot_ts_utc"))
-        + " |",
-        "| latest_strategy_runtime_snapshot_id | "
-        + display_value(freshness.get("latest_strategy_runtime_snapshot_id"))
-        + " |",
-        "",
-        "### Latest Price And Zone Context",
-        "",
-        "| Field | Value |",
-        "|---|---:|",
-        "| latest_close_price | " + display_value(price.get("latest_close_price"), 8) + " |",
-        "| entry_zone_low | " + display_value(zone.get("entry_zone_low"), 8) + " |",
-        "| entry_zone_high | " + display_value(zone.get("entry_zone_high"), 8) + " |",
-        "| tp_zone_low | " + display_value(zone.get("tp_zone_low"), 8) + " |",
-        "| tp_zone_high | " + display_value(zone.get("tp_zone_high"), 8) + " |",
-        "| invalidation_price | " + display_value(zone.get("invalidation_price"), 8) + " |",
-        "| zone_relation | " + display_value(zone.get("zone_relation")) + " |",
-        "| distance_to_zone_pct | " + display_value(zone.get("distance_to_zone_pct"), 4) + " |",
-        "| distance_to_target_pct | " + display_value(zone.get("distance_to_target_pct"), 4) + " |",
+        "| Source | UTC | Amsterdam |",
+        "|---|---:|---:|",
     ]
+
+    freshness_rows = [
+        ("Chart frame close", freshness.get("chart_frame_latest_close_ts_utc")),
+        ("Source candle close", freshness.get("latest_candle_close_ts_utc")),
+        ("Signal", freshness.get("latest_signal_ts_utc")),
+        ("Selection", freshness.get("latest_selection_asof_ts_utc")),
+        ("Advice", freshness.get("latest_advice_asof_ts_utc")),
+        ("Execution zone", freshness.get("latest_execution_zone_asof_ts_utc")),
+        ("Runtime snapshot", freshness.get("latest_strategy_runtime_snapshot_ts_utc")),
+    ]
+
+    for source, timestamp in freshness_rows:
+        lines.append(
+            "| "
+            + source
+            + " | "
+            + format_utc_timestamp(timestamp)
+            + " | "
+            + format_display_timestamp(timestamp)
+            + " |"
+        )
+
+    snapshot_id = display_value(freshness.get("latest_strategy_runtime_snapshot_id"))
+    lines.extend(
+        [
+            "| Runtime snapshot id | " + snapshot_id + " | " + snapshot_id + " |",
+            "",
+            "### Latest Price And Zone Context",
+            "",
+            "| Field | Value |",
+            "|---|---:|",
+            "| latest_close_price | " + display_value(price.get("latest_close_price"), 8) + " |",
+            "| entry_zone_low | " + display_value(zone.get("entry_zone_low"), 8) + " |",
+            "| entry_zone_high | " + display_value(zone.get("entry_zone_high"), 8) + " |",
+            "| tp_zone_low | " + display_value(zone.get("tp_zone_low"), 8) + " |",
+            "| tp_zone_high | " + display_value(zone.get("tp_zone_high"), 8) + " |",
+            "| invalidation_price | " + display_value(zone.get("invalidation_price"), 8) + " |",
+            "| zone_relation | " + display_value(zone.get("zone_relation")) + " |",
+            "| distance_to_zone_pct | " + display_value(zone.get("distance_to_zone_pct"), 4) + " |",
+            "| distance_to_target_pct | " + display_value(zone.get("distance_to_target_pct"), 4) + " |",
+        ]
+    )
 
     return "\n".join(lines)

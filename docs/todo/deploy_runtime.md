@@ -78,11 +78,14 @@ Tasks:
 
 - Define market-only snapshot source for current/latest price display.
 - Current chart v1 uses latest `obs_market_candle.close_price` for display.
+- Current chart v1 displays source freshness in UTC and Europe/Amsterdam local time.
+- Current chart v1 shows both chart-frame latest close and source latest candle close to make selected-window or cache differences visible.
 - Current chart v1 derives display-only zone relation and distances from existing candle and execution-zone rows when stored values are absent:
   - latest close price
   - distance_to_zone_pct
   - distance_to_target_pct
   - zone_relation
+- Current chart v1 draws display-only entry-zone, target-zone, and invalidation overlays from existing zone context.
 - Decide whether refresh cadence should be 300 seconds or slower.
 - Keep renderer read-only.
 - Avoid direct live ticker calls inside chart renderer.

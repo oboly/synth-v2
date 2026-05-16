@@ -2,9 +2,9 @@
 
 ## Status
 
-Active / read-only freshness display updated.
+Active / read-only freshness and zone display updated.
 
-The chart webview now exposes post-pipeline source freshness and zone context from existing database rows. It remains an inspection/display UI only.
+The chart webview now exposes post-pipeline source freshness, Amsterdam-local timestamp display, chart/source candle timestamp comparison, and zone context overlays from existing database rows. It remains an inspection/display UI only.
 
 ## Sources
 
@@ -65,12 +65,15 @@ Status: done for read-only freshness v1.
 Display tasks:
 
 - Show latest close price from `obs_market_candle`.
-- Show latest candle close timestamp.
+- Show latest chart-frame close timestamp and latest source candle close timestamp.
+- Convert display timestamps to Europe/Amsterdam local time with CET/CEST abbreviation while keeping DB/repository timestamps in UTC.
+- Show freshness footer with UTC and Amsterdam columns.
 - Show latest signal, selection, advice, execution-zone, and runtime snapshot timestamps where available.
 - Show `entry_zone_low`, `entry_zone_high`, `tp_zone_low`, `tp_zone_high`, and `invalidation_price`.
 - Show `distance_to_zone_pct`.
 - Show `distance_to_target_pct`.
 - Show `zone_relation` as `ABOVE_ZONE`, `INSIDE_ZONE`, or `BELOW_ZONE`.
+- Draw display-only entry-zone band, target-zone band, and invalidation line on the chart when values exist.
 - Optional 300-second auto-refresh.
 
 Design rules:
@@ -81,6 +84,7 @@ Design rules:
 - Show `not available` when a source row or field is absent.
 - Keep database retrieval in `src/ui_chart/chart_repository.py`.
 - Keep renderer functions limited to assembled view models.
+- Do not label chart overlays as buy or sell instructions.
 
 ## Later UI v2 direction
 

@@ -49,6 +49,7 @@ Current read-only sources include:
 
 The UI displays latest available source timestamps independently:
 
+- Latest plotted chart-frame candle `close_ts_utc`.
 - Latest candle `close_ts_utc`.
 - Latest signal `signal_ts_utc`.
 - Latest selection `asof_ts_utc`.
@@ -56,7 +57,7 @@ The UI displays latest available source timestamps independently:
 - Latest execution-zone `asof_ts_utc`.
 - Latest `strategy_runtime_snapshot` timestamp and id, when available.
 
-Missing source rows or missing fields are rendered as `not available`.
+Database and repository timestamps remain UTC. Display rendering converts timestamps to Europe/Amsterdam local time with the correct CET or CEST abbreviation. The freshness table shows both UTC and Amsterdam time. Missing source rows or missing fields are rendered as `not available`.
 
 ## Zone Context
 
@@ -73,9 +74,17 @@ The UI displays existing zone context fields where available:
 
 When stored relation or distance fields are absent, `chart_assembler.py` computes display-only values from the latest close and existing zone bounds. These derived values are for inspection only and are not strategy rules.
 
+The chart renderer may draw display-only overlays from the assembled zone context:
+
+- Entry zone band between `entry_zone_low` and `entry_zone_high`.
+- Target zone band between `tp_zone_low` and `tp_zone_high`.
+- Invalidation line at `invalidation_price`.
+
+These overlays must not be labeled as buy or sell instructions.
+
 ## Time Alignment
 
-Chart rows are bounded by asset, venue, interval, start timestamp, end timestamp, and limit. Freshness rows intentionally use latest available source timestamps so the UI can show whether post-pipeline sources are current relative to the selected chart window.
+Chart rows are bounded by asset, venue, interval, start timestamp, end timestamp, and limit. Freshness rows intentionally use latest available source timestamps so the UI can show whether post-pipeline sources are current relative to the selected chart window. The displayed chart-frame latest close and source latest candle close may differ when the selected date window or cache excludes the newest source candle.
 
 ## Performance Rules
 

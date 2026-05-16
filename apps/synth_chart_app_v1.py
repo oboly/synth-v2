@@ -13,7 +13,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.ui_chart.chart_assembler import build_chart_bundle
 from src.ui_chart.chart_config import DEFAULT_INTERVAL, DEFAULT_VENUE, SUPPORTED_INTERVALS
-from src.ui_chart.chart_renderer import display_context_to_markdown, display_value, profile_to_markdown, render_main_chart
+from src.ui_chart.chart_renderer import (
+    display_context_to_markdown,
+    display_value,
+    format_display_timestamp,
+    profile_to_markdown,
+    render_main_chart,
+    runtime_snapshot_display,
+)
 from src.ui_chart.chart_repository import (
     fetch_assets,
     fetch_chart_frame,
@@ -308,19 +315,22 @@ with count_middle:
 with count_right:
     st.metric("Paper candidate rows", len(paper_candidate_frame))
 
-fresh_left, fresh_middle, fresh_right, fresh_fourth = st.columns(4)
+fresh_left, fresh_middle, fresh_right, fresh_fourth, fresh_fifth = st.columns(5)
 
 with fresh_left:
     st.metric("Latest close", display_value(price_context.get("latest_close_price"), 8))
 
 with fresh_middle:
-    st.metric("Latest candle close", display_value(freshness.get("latest_candle_close_ts_utc")))
+    st.metric("Chart latest close", format_display_timestamp(freshness.get("chart_frame_latest_close_ts_utc")))
 
 with fresh_right:
-    st.metric("Zone as-of", display_value(freshness.get("latest_execution_zone_asof_ts_utc")))
+    st.metric("Source candle close", format_display_timestamp(freshness.get("latest_candle_close_ts_utc")))
 
 with fresh_fourth:
-    st.metric("Runtime snapshot", display_value(freshness.get("latest_strategy_runtime_snapshot_id")))
+    st.metric("Zone as-of", format_display_timestamp(freshness.get("latest_execution_zone_asof_ts_utc")))
+
+with fresh_fifth:
+    st.metric("Runtime snapshot", runtime_snapshot_display(freshness))
 
 zone_left, zone_middle, zone_right = st.columns(3)
 
@@ -350,6 +360,7 @@ fig = render_main_chart(
     frame=chart_frame,
     selection_frame=selection_frame,
     profile=profile,
+    display_context=display_context,
     show_ema20=show_ema20,
     show_ema50=show_ema50,
     show_rsi=show_rsi,

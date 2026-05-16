@@ -171,7 +171,19 @@ def _distance_to_target_pct(
     return ((close_price - high) / close_price) * 100.0
 
 
-def prepare_display_context(raw_context: dict[str, Any] | None) -> dict[str, Any]:
+def _chart_frame_latest_close_ts(frame: pd.DataFrame) -> str | None:
+    if frame.empty or "close_ts_utc" not in frame.columns:
+        return None
+
+    values = pd.to_datetime(frame["close_ts_utc"], errors="coerce")
+    values = values.dropna()
+    if values.empty:
+        return None
+
+    return _iso_or_none(values.max())
+
+
+def prepare_display_context(raw_context: dict[str, Any] | None, chart_frame: pd.DataFrame) -> dict[str, Any]:
     context = raw_context or {}
     latest_candle = dict(context.get("latest_candle") or {})
     latest_signal = dict(context.get("latest_signal") or {})
@@ -200,6 +212,7 @@ def prepare_display_context(raw_context: dict[str, Any] | None) -> dict[str, Any
 
     return {
         "freshness": {
+            "chart_frame_latest_close_ts_utc": _chart_frame_latest_close_ts(chart_frame),
             "latest_candle_close_ts_utc": _iso_or_none(latest_candle.get("close_ts_utc")),
             "latest_signal_ts_utc": _iso_or_none(latest_signal.get("signal_ts_utc")),
             "latest_selection_asof_ts_utc": _iso_or_none(latest_selection.get("asof_ts_utc")),
@@ -237,10 +250,11 @@ def build_chart_bundle(
     profile: dict[str, Any] | None,
     display_context: dict[str, Any] | None = None,
 ) -> ChartBundle:
+    prepared_chart_frame = prepare_chart_frame(chart_frame)
     return ChartBundle(
-        chart_frame=prepare_chart_frame(chart_frame),
+        chart_frame=prepared_chart_frame,
         selection_frame=prepare_selection_frame(selection_frame),
         paper_candidate_frame=paper_candidate_frame,
         profile=profile,
-        display_context=prepare_display_context(display_context),
+        display_context=prepare_display_context(display_context, prepared_chart_frame),
     )
