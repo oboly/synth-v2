@@ -4,7 +4,7 @@
 
 Central TODO workspace for active and parked Synth v2 lanes.
 
-This folder is the working TODO board. Canonical design details stay in their source docs under `docs/research/`, `docs/status/`, or `docs/architecture/`.
+This folder is the working TODO board. Canonical design details stay in their source docs under `docs/research/`, `docs/status/`, `docs/architecture/`, or `docs/ops/`.
 
 ## Rule
 
@@ -45,6 +45,7 @@ Do not bypass layers.
 | `breath_curve.md` | parked/open | Breath Curve baseline, partial-cycle, and regime-gated validation continuation |
 | `strategy_candidates.md` | open design | Horizon bucket design and same-asset candidate conflict rules |
 | `paper_candidate_contract.md` | future design | Safe adapter path from research candidates to decision_gate |
+| `dev_ops_hygiene.md` | mostly parked | Codex smoke state, DBeaver/MariaDB access recovery, MariaDB backup/export hygiene, local untracked-file hygiene |
 | `parked_backlog.md` | parked/backlog | A+ archive state and external PRO narrative backlog |
 
 ## Active next-step recommendation
@@ -54,5 +55,5 @@ Do not bypass layers.
 2. Review whether NEUTRAL_TRANSITION should remain the large rest bucket.
 3. Decide whether a Market Breath threshold-calibration patch is needed or skipped.
 4. Only then open Market Breath outcome validation.
-5. Keep UI/Webview, Breath Curve, A+, and PRO lanes parked unless directly needed.
+5. Keep UI/Webview, Dev/Ops, Breath Curve, A+, and PRO lanes parked unless directly needed.
 ```
