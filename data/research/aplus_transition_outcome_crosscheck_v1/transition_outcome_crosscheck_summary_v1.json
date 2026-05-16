@@ -1,0 +1,274 @@
+{
+  "coverage_by_horizon": {
+    "horizon_24h": {
+      "snapshots_with_valid_outcomes": [],
+      "status_counts": {
+        "NO_FUTURE_CANDLE": 81
+      },
+      "total": 81,
+      "valid": 0
+    },
+    "horizon_4h": {
+      "snapshots_with_valid_outcomes": [
+        "20260515_1244"
+      ],
+      "status_counts": {
+        "NO_FUTURE_CANDLE": 41,
+        "VALID": 40
+      },
+      "total": 81,
+      "valid": 40
+    },
+    "horizon_72h": {
+      "snapshots_with_valid_outcomes": [],
+      "status_counts": {
+        "NO_FUTURE_CANDLE": 81
+      },
+      "total": 81,
+      "valid": 0
+    }
+  },
+  "feature_candidate_promotion_allowed": false,
+  "input_outcome_rows": 366,
+  "input_transition_rows": 81,
+  "joined_transition_outcome_rows": 243,
+  "metric_rows_written": 168,
+  "outcomes_path": "data/research/aplus_multi_snapshot_outcome_validation_v1/label_outcomes_multi_snapshot_v1.jsonl",
+  "output_paths": {
+    "rows_jsonl": "data/research/aplus_transition_outcome_crosscheck_v1/transition_outcome_crosscheck_rows_v1.jsonl",
+    "summary_json": "data/research/aplus_transition_outcome_crosscheck_v1/transition_outcome_crosscheck_summary_v1.json"
+  },
+  "parser_version": "0.1",
+  "reliability_label_counts": {
+    "LOW_SAMPLE": 55,
+    "TOO_SMALL": 113
+  },
+  "report": "aplus_transition_outcome_crosscheck_v1",
+  "runtime_promotion_allowed": false,
+  "safety_markers": {
+    "account_agnostic": true,
+    "account_state": "not_allowed",
+    "advice_engine_changes": 0,
+    "broker_calls": 0,
+    "broker_writes": 0,
+    "db_writes": 0,
+    "decision_gate_changes": 0,
+    "execution_planner_changes": 0,
+    "executor_changes": 0,
+    "live_orders": 0,
+    "market_only": true,
+    "order_submission": 0,
+    "paper_live_logic": "not_allowed",
+    "research_only": true,
+    "selection_engine_changes": 0
+  },
+  "sample_limitation": "LOW_SAMPLE_TRANSITION_OUTCOME_COVERAGE",
+  "scope": "research-only market-only account-agnostic",
+  "top_negative_observations": [
+    {
+      "avg_return_pct": -7.631552966729194,
+      "group_key": "table1_phase_transition",
+      "group_value": "late->exhaustion",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -7.631552966729194,
+      "group_key": "table2_offset_band_transition",
+      "group_value": "+7->+9",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -7.631552966729194,
+      "group_key": "combined_exposure_transition",
+      "group_value": "late|avoid|late_extension|+7|dirty|high->exhaustion|avoid|late_extension|+9|dirty|high",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -5.92658545685202,
+      "group_key": "table2_harmonic_phase_transition",
+      "group_value": "late_extension->late_extension",
+      "horizon_hours": 4,
+      "n_valid": 2,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -5.815175186149559,
+      "group_key": "table2_offset_band_transition",
+      "group_value": "0->0",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -5.815175186149559,
+      "group_key": "combined_exposure_transition",
+      "group_value": "confirmed|continuation|confirmed_0618|0|clean|low->confirmed|continuation|confirmed_1000|0|clean|low",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -5.083514887436456,
+      "group_key": "table2_harmonic_phase_transition",
+      "group_value": "forming_0786->forming_0618",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -5.083514887436456,
+      "group_key": "combined_exposure_transition",
+      "group_value": "forming|accumulation|forming_0786|+9|mixed|high->early|accumulation|forming_0618|-3|mixed|moderate",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -5.034287900638668,
+      "group_key": "table1_phase_transition",
+      "group_value": "reset->confirmed",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -5.034287900638668,
+      "group_key": "table1_bias_transition",
+      "group_value": "neutral->continuation",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    }
+  ],
+  "top_positive_observations": [
+    {
+      "avg_return_pct": 0.050494121041621584,
+      "group_key": "table2_offset_band_transition",
+      "group_value": "unknown->0",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": 0.050494121041621584,
+      "group_key": "combined_exposure_transition",
+      "group_value": "forming|accumulation|forming_0786|unknown|clean|moderate->early|accumulation|forming_1000|0|clean|moderate",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 100.0
+    },
+    {
+      "avg_return_pct": -0.9895677348507537,
+      "group_key": "table2_harmonic_phase_transition",
+      "group_value": "confirmed_0618->extension_1272",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -0.9895677348507537,
+      "group_key": "table2_offset_band_transition",
+      "group_value": "0->+7",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -0.9895677348507537,
+      "group_key": "table2_extension_risk_transition",
+      "group_value": "low->high",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -0.9895677348507537,
+      "group_key": "combined_exposure_transition",
+      "group_value": "confirmed|continuation|confirmed_0618|0|clean|low->confirmed|continuation|extension_1272|+7|mixed|high",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -1.4757029426464754,
+      "group_key": "table2_offset_band_transition",
+      "group_value": "0->+3",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -1.4757029426464754,
+      "group_key": "combined_exposure_transition",
+      "group_value": "confirmed|continuation|forming_0786|0|mixed|moderate->forming|accumulation|forming_1000|+3|clean|moderate",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    },
+    {
+      "avg_return_pct": -1.6673855427240598,
+      "group_key": "table2_harmonic_phase_transition",
+      "group_value": "forming_0786->forming_1000",
+      "horizon_hours": 4,
+      "n_valid": 3,
+      "reliability_label": "LOW_SAMPLE",
+      "snapshot_count": 1,
+      "win_rate_pct": 33.333333333333336
+    },
+    {
+      "avg_return_pct": -1.6764010878773017,
+      "group_key": "table2_harmonic_phase_transition",
+      "group_value": "forming_1000->confirmed_1000",
+      "horizon_hours": 4,
+      "n_valid": 1,
+      "reliability_label": "TOO_SMALL",
+      "snapshot_count": 1,
+      "win_rate_pct": 0.0
+    }
+  ],
+  "transition_outcome_alignment": "outcomes joined to transition to_snapshot_pair_id",
+  "transitions_path": "data/research/aplus_phase_exposure_stability_v1/phase_exposure_transition_rows_v1.jsonl",
+  "wrote_files": true
+}
