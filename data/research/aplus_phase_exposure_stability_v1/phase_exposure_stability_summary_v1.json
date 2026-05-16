@@ -1,0 +1,296 @@
+{
+  "combined_exposure_stability_rate": 0.0,
+  "feature_candidate_promotion_allowed": false,
+  "input_rows": 122,
+  "input_snapshots": 3,
+  "limitation": "LOW_SAMPLE_THREE_SNAPSHOTS",
+  "most_common_combined_exposure_transitions": [
+    {
+      "count": 4,
+      "from": "confirmed|continuation|confirmed_1000|0|clean|low",
+      "to": "confirmed|continuation|confirmed_0618|0|clean|low"
+    },
+    {
+      "count": 3,
+      "from": "late|avoid|reset|-9|dirty|unknown",
+      "to": "late|avoid|late_extension|+9|dirty|high"
+    },
+    {
+      "count": 1,
+      "from": "forming|accumulation|forming_0618|-3|mixed|moderate",
+      "to": "reset|neutral|reset|-10.5|mixed|moderate"
+    },
+    {
+      "count": 1,
+      "from": "late|caution|confirmed_1000|-3|clean|low",
+      "to": "reset|neutral|pre_0618|-5|mixed|moderate"
+    },
+    {
+      "count": 1,
+      "from": "forming|accumulation|forming_0618|0|mixed|moderate",
+      "to": "reset|neutral|reset|-7|mixed|moderate"
+    }
+  ],
+  "most_common_table1_phase_transitions": [
+    {
+      "count": 6,
+      "from": "confirmed",
+      "to": "forming"
+    },
+    {
+      "count": 4,
+      "from": "forming",
+      "to": "early"
+    },
+    {
+      "count": 3,
+      "from": "forming",
+      "to": "reset"
+    },
+    {
+      "count": 3,
+      "from": "forming",
+      "to": "confirmed"
+    },
+    {
+      "count": 2,
+      "from": "forming",
+      "to": "neutral"
+    }
+  ],
+  "most_common_table2_harmonic_phase_transitions": [
+    {
+      "count": 5,
+      "from": "confirmed_0618",
+      "to": "confirmed_1000"
+    },
+    {
+      "count": 4,
+      "from": "forming_0618",
+      "to": "reset"
+    },
+    {
+      "count": 4,
+      "from": "confirmed_1000",
+      "to": "confirmed_0618"
+    },
+    {
+      "count": 4,
+      "from": "reset",
+      "to": "late_extension"
+    },
+    {
+      "count": 3,
+      "from": "forming_0786",
+      "to": "forming_1000"
+    }
+  ],
+  "most_common_table2_offset_band_transitions": [
+    {
+      "count": 5,
+      "from": "-3",
+      "to": "+3"
+    },
+    {
+      "count": 4,
+      "from": "+5",
+      "to": "0"
+    },
+    {
+      "count": 3,
+      "from": "+9",
+      "to": "-3"
+    },
+    {
+      "count": 3,
+      "from": "-9",
+      "to": "+9"
+    },
+    {
+      "count": 2,
+      "from": "+3",
+      "to": "0"
+    }
+  ],
+  "output_paths": {
+    "summary_json": "data/research/aplus_phase_exposure_stability_v1/phase_exposure_stability_summary_v1.json",
+    "trajectories_jsonl": "data/research/aplus_phase_exposure_stability_v1/token_phase_exposure_trajectories_v1.jsonl",
+    "transitions_jsonl": "data/research/aplus_phase_exposure_stability_v1/phase_exposure_transition_rows_v1.jsonl"
+  },
+  "parser_version": "0.1",
+  "report": "aplus_phase_exposure_stability_v1",
+  "runtime_promotion_allowed": false,
+  "safety_markers": {
+    "account_agnostic": true,
+    "account_state": "not_allowed",
+    "advice_engine_changes": 0,
+    "broker_calls": 0,
+    "broker_writes": 0,
+    "db_writes": 0,
+    "decision_gate_changes": 0,
+    "execution_planner_changes": 0,
+    "executor_changes": 0,
+    "live_orders": 0,
+    "market_only": true,
+    "order_submission": 0,
+    "paper_live_logic": "not_allowed",
+    "research_only": true,
+    "selection_engine_changes": 0
+  },
+  "scope": "research-only market-only account-agnostic",
+  "snapshot_pair_ids": [
+    "20260514_1315_1256",
+    "20260515_1244",
+    "20260516_0115_0117"
+  ],
+  "stability_class_counts": {
+    "DRIFTING": 27,
+    "FULLY_STABLE": 0,
+    "INSUFFICIENT_SNAPSHOTS": 0,
+    "TABLE1_DRIFT_TABLE2_STABLE": 0,
+    "TABLE1_STABLE_TABLE2_DRIFT": 14
+  },
+  "table1_bias_stability_rate": 51.22,
+  "table1_phase_stability_rate": 41.46,
+  "table2_extension_risk_stability_rate": 29.27,
+  "table2_harmonic_phase_stability_rate": 4.88,
+  "table2_offset_band_stability_rate": 9.76,
+  "table2_quality_stability_rate": 56.1,
+  "tokens_missing_any_snapshot": [
+    "LINK"
+  ],
+  "tokens_with_all_snapshots": [
+    "AAVE",
+    "ADA",
+    "ALGO",
+    "BTC",
+    "CC",
+    "CRV",
+    "DEEP",
+    "DOT",
+    "ETH",
+    "FET",
+    "FIL",
+    "FLOKI",
+    "HBAR",
+    "HNT",
+    "HOT",
+    "HYPE",
+    "ICP",
+    "INJ",
+    "IOST",
+    "LDO",
+    "LTC",
+    "MOG",
+    "NEAR",
+    "NOT",
+    "ONDO",
+    "PEPE",
+    "POL",
+    "QNT",
+    "RED",
+    "RENDER",
+    "RLC",
+    "SOL",
+    "SUI",
+    "TAO",
+    "VET",
+    "WAL",
+    "WLD",
+    "XLM",
+    "XPL",
+    "XRP"
+  ],
+  "tokens_with_combined_exposure_drift": [
+    "AAVE",
+    "ADA",
+    "ALGO",
+    "BTC",
+    "CC",
+    "CRV",
+    "DEEP",
+    "DOT",
+    "ETH",
+    "FET",
+    "FIL",
+    "FLOKI",
+    "HBAR",
+    "HNT",
+    "HOT",
+    "HYPE",
+    "ICP",
+    "INJ",
+    "IOST",
+    "LDO",
+    "LINK",
+    "LTC",
+    "MOG",
+    "NEAR",
+    "NOT",
+    "ONDO",
+    "PEPE",
+    "POL",
+    "QNT",
+    "RED",
+    "RENDER",
+    "RLC",
+    "SOL",
+    "SUI",
+    "TAO",
+    "VET",
+    "WAL",
+    "WLD",
+    "XLM",
+    "XPL",
+    "XRP"
+  ],
+  "tokens_with_offset_band_drift": [
+    "AAVE",
+    "ADA",
+    "ALGO",
+    "BTC",
+    "CC",
+    "CRV",
+    "DEEP",
+    "DOT",
+    "ETH",
+    "FET",
+    "FIL",
+    "FLOKI",
+    "HBAR",
+    "HNT",
+    "HOT",
+    "HYPE",
+    "ICP",
+    "IOST",
+    "LINK",
+    "LTC",
+    "MOG",
+    "NEAR",
+    "ONDO",
+    "POL",
+    "QNT",
+    "RED",
+    "RENDER",
+    "RLC",
+    "SOL",
+    "SUI",
+    "TAO",
+    "VET",
+    "WAL",
+    "WLD",
+    "XLM",
+    "XPL",
+    "XRP"
+  ],
+  "tokens_with_stable_combined_exposure": [],
+  "tokens_with_stable_offset_band": [
+    "INJ",
+    "LDO",
+    "NOT",
+    "PEPE"
+  ],
+  "transition_rows": 81,
+  "unique_tokens": 41,
+  "wrote_files": true
+}
