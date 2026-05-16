@@ -68,7 +68,7 @@ No broker trading calls.
 
 ## P2 — Webview data refresh runner
 
-Status: open.
+Status: partially addressed by read-only chart freshness display.
 
 Goal:
 
@@ -77,8 +77,9 @@ Refresh read-only data used by the chart/webview layer so UI inspection stays cu
 Tasks:
 
 - Define market-only snapshot source for current/latest price display.
-- Refresh derived display metrics:
-  - current_price or latest_price_snapshot
+- Current chart v1 uses latest `obs_market_candle.close_price` for display.
+- Current chart v1 derives display-only zone relation and distances from existing candle and execution-zone rows when stored values are absent:
+  - latest close price
   - distance_to_zone_pct
   - distance_to_target_pct
   - zone_relation
@@ -86,6 +87,7 @@ Tasks:
 - Keep renderer read-only.
 - Avoid direct live ticker calls inside chart renderer.
 - Make source timestamp and freshness visible in UI.
+- Keep any future refresh runner read-only for UI display sources unless a separate market-data ingestion task explicitly owns writes.
 
 Boundary:
 
@@ -93,6 +95,7 @@ Boundary:
 Read-only display support.
 No writes to decision, execution, order, account, balance, or position tables.
 No broker/order path.
+No direct ticker calls from chart renderer.
 ```
 
 ## P3 — Runtime orchestration standard

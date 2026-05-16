@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 DEFAULT_VENUE = "bitvavo"
-DEFAULT_INTERVAL = "1h"
+DEFAULT_INTERVAL = "4h"
 
 SUPPORTED_INTERVALS = ["1h", "4h", "1d"]
 

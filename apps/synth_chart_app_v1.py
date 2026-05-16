@@ -13,10 +13,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.ui_chart.chart_assembler import build_chart_bundle
 from src.ui_chart.chart_config import DEFAULT_INTERVAL, DEFAULT_VENUE, SUPPORTED_INTERVALS
-from src.ui_chart.chart_renderer import profile_to_markdown, render_main_chart
+from src.ui_chart.chart_renderer import display_context_to_markdown, display_value, profile_to_markdown, render_main_chart
 from src.ui_chart.chart_repository import (
     fetch_assets,
     fetch_chart_frame,
+    fetch_display_context,
     fetch_paper_candidate_frame,
     fetch_point_in_time_profile,
     fetch_selection_frame,
@@ -171,11 +172,18 @@ def cached_chart_data(
         end_ts_utc=end_ts,
     )
 
+    display_context = fetch_display_context(
+        asset_id=asset.asset_id,
+        venue=venue,
+        interval_code=interval_code,
+    )
+
     bundle = build_chart_bundle(
         chart_frame=chart_frame,
         selection_frame=selection_frame,
         paper_candidate_frame=paper_candidate_frame,
         profile=profile,
+        display_context=display_context,
     )
 
     return {
@@ -185,6 +193,7 @@ def cached_chart_data(
         "selection_frame": bundle.selection_frame,
         "paper_candidate_frame": bundle.paper_candidate_frame,
         "profile": bundle.profile,
+        "display_context": bundle.display_context,
     }
 
 
@@ -282,17 +291,47 @@ chart_frame = payload["chart_frame"]
 selection_frame = payload["selection_frame"]
 paper_candidate_frame = payload["paper_candidate_frame"]
 profile = payload["profile"]
+display_context = payload["display_context"]
 
-left, middle, right = st.columns(3)
+freshness = display_context.get("freshness", {})
+price_context = display_context.get("price", {})
+zone_context = display_context.get("zone_context", {})
 
-with left:
+count_left, count_middle, count_right = st.columns(3)
+
+with count_left:
     st.metric("Candles", len(chart_frame))
 
-with middle:
+with count_middle:
     st.metric("Selection rows", len(selection_frame))
 
-with right:
+with count_right:
     st.metric("Paper candidate rows", len(paper_candidate_frame))
+
+fresh_left, fresh_middle, fresh_right, fresh_fourth = st.columns(4)
+
+with fresh_left:
+    st.metric("Latest close", display_value(price_context.get("latest_close_price"), 8))
+
+with fresh_middle:
+    st.metric("Latest candle close", display_value(freshness.get("latest_candle_close_ts_utc")))
+
+with fresh_right:
+    st.metric("Zone as-of", display_value(freshness.get("latest_execution_zone_asof_ts_utc")))
+
+with fresh_fourth:
+    st.metric("Runtime snapshot", display_value(freshness.get("latest_strategy_runtime_snapshot_id")))
+
+zone_left, zone_middle, zone_right = st.columns(3)
+
+with zone_left:
+    st.metric("Zone relation", display_value(zone_context.get("zone_relation")))
+
+with zone_middle:
+    st.metric("Distance to zone %", display_value(zone_context.get("distance_to_zone_pct"), 4))
+
+with zone_right:
+    st.metric("Distance to target %", display_value(zone_context.get("distance_to_target_pct"), 4))
 
 profile_label = "No profile"
 if profile:
@@ -326,6 +365,9 @@ st.plotly_chart(
 
 with st.expander("Point-in-time asset profile"):
     st.markdown(profile_to_markdown(profile))
+
+with st.expander("Freshness and zone context", expanded=True):
+    st.markdown(display_context_to_markdown(display_context))
 
 with st.expander("Latest chart rows"):
     if isinstance(chart_frame, pd.DataFrame) and not chart_frame.empty:

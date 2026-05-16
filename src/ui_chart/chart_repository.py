@@ -59,6 +59,30 @@ def table_exists(table_name: str) -> bool:
     return bool(row and int(row["n"]) > 0)
 
 
+def table_columns(table_name: str) -> set[str]:
+    rows = _fetch_all(
+        "SELECT column_name "
+        "FROM information_schema.columns "
+        "WHERE table_schema = DATABASE() "
+        "AND table_name = %s",
+        (table_name,),
+    )
+    return {str(row["column_name"]) for row in rows}
+
+
+def _clean_row(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not row:
+        return None
+
+    cleaned: dict[str, Any] = {}
+    for key, value in row.items():
+        if isinstance(value, Decimal):
+            cleaned[key] = float(value)
+        else:
+            cleaned[key] = value
+    return cleaned
+
+
 def fetch_assets() -> list[AssetRef]:
     rows = _fetch_all(
         "SELECT asset_id, symbol, name "
@@ -266,13 +290,7 @@ def fetch_point_in_time_profile(
     if not row:
         return None
 
-    cleaned: dict[str, Any] = {}
-    for key, value in row.items():
-        if isinstance(value, Decimal):
-            cleaned[key] = float(value)
-        else:
-            cleaned[key] = value
-    return cleaned
+    return _clean_row(row)
 
 
 def fetch_paper_candidate_frame(
@@ -315,3 +333,280 @@ def fetch_paper_candidate_frame(
 
     rows = _fetch_all(sql, tuple(params))
     return _rows_to_dataframe(rows)
+
+
+def fetch_display_context(
+    asset_id: int,
+    venue: str,
+    interval_code: str,
+) -> dict[str, Any]:
+    return {
+        "latest_candle": fetch_latest_candle_context(asset_id, venue, interval_code),
+        "latest_signal": fetch_latest_signal_context(asset_id, venue, interval_code),
+        "latest_selection": fetch_latest_selection_context(asset_id, venue),
+        "latest_advice": fetch_latest_advice_context(asset_id, venue, interval_code),
+        "latest_execution_zone": fetch_latest_execution_zone_context(asset_id, venue, interval_code),
+        "latest_strategy_runtime_snapshot": fetch_latest_strategy_runtime_snapshot_context(
+            venue=venue,
+            interval_code=interval_code,
+            chain_name="run_chain_4h",
+        ),
+    }
+
+
+def fetch_latest_candle_context(
+    asset_id: int,
+    venue: str,
+    interval_code: str,
+) -> dict[str, Any] | None:
+    row = _fetch_one(
+        "SELECT "
+        "asset_id, "
+        "venue, "
+        "interval_code, "
+        "close_ts_utc, "
+        "close_price "
+        "FROM obs_market_candle "
+        "WHERE asset_id = %s "
+        "AND venue = %s "
+        "AND interval_code = %s "
+        "ORDER BY close_ts_utc DESC "
+        "LIMIT 1",
+        (asset_id, venue, interval_code),
+    )
+    return _clean_row(row)
+
+
+def fetch_latest_signal_context(
+    asset_id: int,
+    venue: str,
+    interval_code: str,
+) -> dict[str, Any] | None:
+    if not table_exists("signal_engine_state"):
+        return None
+
+    row = _fetch_one(
+        "SELECT "
+        "asset_id, "
+        "venue, "
+        "interval_code, "
+        "signal_ts_utc, "
+        "trend_signal, "
+        "volume_signal, "
+        "phase_signal, "
+        "setup_signal, "
+        "risk_signal, "
+        "signal_confidence, "
+        "reason_code "
+        "FROM signal_engine_state "
+        "WHERE asset_id = %s "
+        "AND venue = %s "
+        "AND interval_code = %s "
+        "ORDER BY signal_ts_utc DESC "
+        "LIMIT 1",
+        (asset_id, venue, interval_code),
+    )
+    return _clean_row(row)
+
+
+def fetch_latest_selection_context(
+    asset_id: int,
+    venue: str,
+) -> dict[str, Any] | None:
+    if not table_exists("selection_state"):
+        return None
+
+    row = _fetch_one(
+        "SELECT "
+        "asset_id, "
+        "venue, "
+        "asof_ts_utc, "
+        "selection_state, "
+        "selection_bias, "
+        "selection_score, "
+        "priority_rank, "
+        "advice_state_1h, "
+        "advice_state_4h "
+        "FROM selection_state "
+        "WHERE asset_id = %s "
+        "AND venue = %s "
+        "ORDER BY asof_ts_utc DESC "
+        "LIMIT 1",
+        (asset_id, venue),
+    )
+    return _clean_row(row)
+
+
+def fetch_latest_advice_context(
+    asset_id: int,
+    venue: str,
+    interval_code: str,
+) -> dict[str, Any] | None:
+    if table_exists("paper_advice_observation"):
+        row = _fetch_one(
+            "SELECT "
+            "asset_id, "
+            "symbol, "
+            "venue, "
+            "interval_code, "
+            "asof_ts_utc, "
+            "context_ts_utc, "
+            "advice_state, "
+            "advice_action, "
+            "confidence_score, "
+            "risk_label, "
+            "policy_decision, "
+            "allowed_now "
+            "FROM paper_advice_observation "
+            "WHERE asset_id = %s "
+            "AND venue = %s "
+            "AND interval_code = %s "
+            "ORDER BY asof_ts_utc DESC "
+            "LIMIT 1",
+            (asset_id, venue, interval_code),
+        )
+        return _clean_row(row)
+
+    if not table_exists("advice_state"):
+        return None
+
+    columns = table_columns("advice_state")
+    if not {"asset_id", "venue", "interval_code", "asof_ts_utc"}.issubset(columns):
+        return None
+
+    selected_columns = [
+        "asset_id",
+        "venue",
+        "interval_code",
+        "asof_ts_utc",
+    ]
+    for column in ["advice_state", "horizon_hint", "confidence_score", "reason_text"]:
+        if column in columns:
+            selected_columns.append(column)
+
+    sql = (
+        "SELECT "
+        + ", ".join(selected_columns)
+        + " FROM advice_state "
+        + "WHERE asset_id = %s "
+        + "AND venue = %s "
+        + "AND interval_code = %s "
+        + "ORDER BY asof_ts_utc DESC "
+        + "LIMIT 1"
+    )
+    row = _fetch_one(sql, (asset_id, venue, interval_code))
+    return _clean_row(row)
+
+
+def fetch_latest_execution_zone_context(
+    asset_id: int,
+    venue: str,
+    interval_code: str,
+) -> dict[str, Any] | None:
+    if table_exists("vw_paper_advice_execution_zone_context_v1"):
+        row = _fetch_one(
+            "SELECT "
+            "asset_id, "
+            "venue, "
+            "interval_code, "
+            "asof_ts_utc, "
+            "leg_direction, "
+            "entry_zone_low, "
+            "entry_zone_high, "
+            "entry_zone_type, "
+            "tp_zone_low, "
+            "tp_zone_high, "
+            "tp_zone_type, "
+            "invalidation_price, "
+            "zone_confidence_score, "
+            "zone_alignment_score "
+            "FROM vw_paper_advice_execution_zone_context_v1 "
+            "WHERE asset_id = %s "
+            "AND venue = %s "
+            "AND interval_code = %s "
+            "ORDER BY asof_ts_utc DESC "
+            "LIMIT 1",
+            (asset_id, venue, interval_code),
+        )
+        return _clean_row(row)
+
+    if not table_exists("execution_zone_context"):
+        return None
+
+    row = _fetch_one(
+        "SELECT "
+        "asset_id, "
+        "venue, "
+        "interval_code, "
+        "asof_ts_utc, "
+        "expected_entry_zone_low AS entry_zone_low, "
+        "expected_entry_zone_high AS entry_zone_high, "
+        "expected_entry_zone_type AS entry_zone_type, "
+        "expected_take_profit_zone_low AS tp_zone_low, "
+        "expected_take_profit_zone_high AS tp_zone_high, "
+        "expected_take_profit_zone_type AS tp_zone_type, "
+        "invalidation_price, "
+        "zone_confidence_score, "
+        "zone_alignment_score "
+        "FROM execution_zone_context "
+        "WHERE asset_id = %s "
+        "AND venue = %s "
+        "AND interval_code = %s "
+        "ORDER BY asof_ts_utc DESC "
+        "LIMIT 1",
+        (asset_id, venue, interval_code),
+    )
+    return _clean_row(row)
+
+
+def fetch_latest_strategy_runtime_snapshot_context(
+    *,
+    venue: str,
+    interval_code: str,
+    chain_name: str,
+) -> dict[str, Any] | None:
+    if not table_exists("strategy_runtime_snapshot"):
+        return None
+
+    columns = table_columns("strategy_runtime_snapshot")
+    if not {"strategy_runtime_snapshot_id", "snapshot_ts_utc"}.issubset(columns):
+        return None
+
+    where_parts = []
+    params: list[Any] = []
+
+    if "venue" in columns:
+        where_parts.append("venue = %s")
+        params.append(venue)
+    if "interval_code" in columns:
+        where_parts.append("interval_code = %s")
+        params.append(interval_code)
+    if "chain_name" in columns:
+        where_parts.append("chain_name = %s")
+        params.append(chain_name)
+
+    selected_columns = [
+        "strategy_runtime_snapshot_id",
+        "snapshot_ts_utc",
+    ]
+    for column in [
+        "git_commit",
+        "runtime_scope",
+        "venue",
+        "interval_code",
+        "chain_name",
+        "live_trading_enabled",
+        "decision_gate_enabled",
+        "execution_enabled",
+        "notes",
+    ]:
+        if column in columns:
+            selected_columns.append(column)
+
+    sql = "SELECT " + ", ".join(selected_columns) + " FROM strategy_runtime_snapshot"
+    if where_parts:
+        sql += " WHERE " + " AND ".join(where_parts)
+    sql += " ORDER BY strategy_runtime_snapshot_id DESC LIMIT 1"
+
+    row = _fetch_one(sql, tuple(params))
+    return _clean_row(row)

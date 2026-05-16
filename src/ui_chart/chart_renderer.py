@@ -235,3 +235,64 @@ def profile_to_markdown(profile: dict[str, Any] | None) -> str:
         lines.append("| " + key + " | " + str(profile.get(key)) + " |")
 
     return "\n".join(lines)
+
+
+def display_value(value: Any, precision: int | None = None) -> str:
+    if value is None or value == "":
+        return "not available"
+    if isinstance(value, float) and precision is not None:
+        return f"{value:.{precision}f}"
+    return str(value)
+
+
+def display_context_to_markdown(display_context: dict[str, Any] | None) -> str:
+    if not display_context:
+        return "No display context found."
+
+    freshness = display_context.get("freshness") or {}
+    price = display_context.get("price") or {}
+    zone = display_context.get("zone_context") or {}
+
+    lines = [
+        "### Freshness",
+        "",
+        "| Field | Value |",
+        "|---|---:|",
+        "| latest_candle_close_ts_utc | "
+        + display_value(freshness.get("latest_candle_close_ts_utc"))
+        + " |",
+        "| latest_signal_ts_utc | "
+        + display_value(freshness.get("latest_signal_ts_utc"))
+        + " |",
+        "| latest_selection_asof_ts_utc | "
+        + display_value(freshness.get("latest_selection_asof_ts_utc"))
+        + " |",
+        "| latest_advice_asof_ts_utc | "
+        + display_value(freshness.get("latest_advice_asof_ts_utc"))
+        + " |",
+        "| latest_execution_zone_asof_ts_utc | "
+        + display_value(freshness.get("latest_execution_zone_asof_ts_utc"))
+        + " |",
+        "| latest_strategy_runtime_snapshot_ts_utc | "
+        + display_value(freshness.get("latest_strategy_runtime_snapshot_ts_utc"))
+        + " |",
+        "| latest_strategy_runtime_snapshot_id | "
+        + display_value(freshness.get("latest_strategy_runtime_snapshot_id"))
+        + " |",
+        "",
+        "### Latest Price And Zone Context",
+        "",
+        "| Field | Value |",
+        "|---|---:|",
+        "| latest_close_price | " + display_value(price.get("latest_close_price"), 8) + " |",
+        "| entry_zone_low | " + display_value(zone.get("entry_zone_low"), 8) + " |",
+        "| entry_zone_high | " + display_value(zone.get("entry_zone_high"), 8) + " |",
+        "| tp_zone_low | " + display_value(zone.get("tp_zone_low"), 8) + " |",
+        "| tp_zone_high | " + display_value(zone.get("tp_zone_high"), 8) + " |",
+        "| invalidation_price | " + display_value(zone.get("invalidation_price"), 8) + " |",
+        "| zone_relation | " + display_value(zone.get("zone_relation")) + " |",
+        "| distance_to_zone_pct | " + display_value(zone.get("distance_to_zone_pct"), 4) + " |",
+        "| distance_to_target_pct | " + display_value(zone.get("distance_to_target_pct"), 4) + " |",
+    ]
+
+    return "\n".join(lines)
