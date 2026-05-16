@@ -13,6 +13,7 @@ A+ symbolic reports are parked and must not be used as input for Market Breath.
 - docs/research/market_breath_v1_1_calibration_audit.md
 - docs/research/market_breath_v1_1_neutral_rest_bucket_review.md
 - docs/research/market_breath_outcome_validation_v1.md
+- docs/research/market_breath_outcome_validation_v1_findings.md
 - src/research/run_market_breath_v1_1_calibration_audit.py
 - src/research/run_market_breath_outcome_validation_v1.py
 - data/research/market_breath_v1_1_calibration_audit/calibration_summary_v1.json
@@ -99,7 +100,7 @@ Status: blocked.
 
 Trigger:
 
-Only open this if limited validation or a separate reachability review confirms that V1 has a measurement problem rather than merely intentionally conservative labels.
+Only open this if limited validation, bucket analysis, or a separate reachability review confirms that V1 has a measurement problem rather than merely intentionally conservative labels.
 
 Rules:
 
@@ -133,39 +134,69 @@ Initial output:
 - `HOLD_COMPRESSION`: excluded low-sample bucket, count=4, outcome_available_count=1.
 - `NEUTRAL_TRANSITION`: baseline rest bucket, count=2157, outcome_available_count=1879.
 
-Recommended scope:
-
-- Primary: `EXHALE_EXPANSION`.
-- Secondary: `COLLAPSE_RESET`.
-- Exploratory readout only: `OVERBREATH_EXTENSION`.
-- Weak exploratory readout only: `INHALE_ACCUMULATION`.
-- Exclude from conclusions: `HOLD_COMPRESSION`.
-- Baseline/rest bucket: `NEUTRAL_TRANSITION`.
-
 Rules:
 
-- No outcome validation inside V1.1 calibration audit.
 - No strategy candidate before outcome validation exists.
 - No selection/advice/decision/execution/broker integration.
 - No A+ input.
 - No PRO input.
 - No symbolic labels.
 
-## P4 — Review outcome validation findings
+## Done — P4 outcome validation findings review
+
+Status: done.
+
+Finding:
+
+- `EXHALE_EXPANSION` underperformed the neutral baseline in first-pass 24-candle outcome validation.
+- `COLLAPSE_RESET` outperformed the neutral baseline in first-pass 24-candle outcome validation.
+- `OVERBREATH_EXTENSION` behaved like late-risk / exhaustion in the first pass.
+- `INHALE_ACCUMULATION` and `HOLD_COMPRESSION` have too little sample mass for strong conclusions.
+- Market Breath V1 currently looks more like a market-state / risk-timing classifier than a direct continuation-entry classifier.
+
+Decision:
+
+- Keep Market Breath V1 thresholds unchanged.
+- Keep threshold calibration blocked for now.
+- Do not declare strategy edge.
+- Do not promote to runtime.
+
+## P5 — Bucketed outcome analysis
 
 Status: next recommended step.
 
 Goal:
 
-Review `data/research/market_breath_outcome_validation_v1/outcome_summary_v1.json` and decide whether the dry-lane findings are stable enough to keep threshold calibration blocked.
+Determine whether the first-pass findings are broad, symbol-specific, regime-specific, or score-band-specific.
+
+Recommended bucket dimensions:
+
+- symbol
+- BTC / broad-market regime proxy
+- market breadth regime
+- Market Breath state
+- confidence band
+- momentum score band
+- relative strength score band
+- expansion score band
+- reset / reversal-pressure band
+
+Priority questions:
+
+- Is `COLLAPSE_RESET` broadly positive or driven by specific symbols/regimes?
+- Does `EXHALE_EXPANSION` work only for high-confidence/high-relative-strength cases, or is it generally late-risk?
+- Is `OVERBREATH_EXTENSION` consistently an exhaustion warning?
+- Can `INHALE_ACCUMULATION` become useful with more history or different regime filters?
+- Is `HOLD_COMPRESSION` worth reachability calibration, or should it remain rare by design?
 
 Rules:
 
-- Do not declare strategy edge from V1 dry-run output alone.
-- Do not promote to runtime.
-- Do not recommend buys or sells.
-- Decide whether P2 threshold calibration remains blocked or becomes necessary.
-- Keep any threshold calibration as a separate research patch.
+- Research-only.
+- Market-only.
+- Account-agnostic.
+- No threshold changes.
+- No strategy logic.
+- No selection/advice/decision/execution/broker integration.
 
 ## Non-goals
 
