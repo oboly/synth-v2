@@ -1,0 +1,141 @@
+{
+  "asof_ts_utc": "2026-05-16T08:00:00Z",
+  "assets_processed": 41,
+  "feature_candidate_promotion_allowed": false,
+  "insufficient_data_count": 0,
+  "interval_code": "4h",
+  "limitations": [
+    "V1 uses deterministic OHLCV proxies only; no ML and no outcome labels.",
+    "No future candles are used; all candles are close_ts_utc <= asof_ts_utc.",
+    "Scores are research measurements, not trading advice or runtime signals.",
+    "Thresholds require outcome validation before any feature-candidate promotion."
+  ],
+  "observations_written": 41,
+  "output_paths": {
+    "observations_jsonl": "data/research/market_breath_analysis_v1/market_breath_observations_v1.jsonl",
+    "summary_json": "data/research/market_breath_analysis_v1/market_breath_summary_v1.json"
+  },
+  "phase_counts": {
+    "COLLAPSE_RESET": 23,
+    "EXHALE_EXPANSION": 1,
+    "HOLD_COMPRESSION": 0,
+    "INHALE_ACCUMULATION": 0,
+    "INSUFFICIENT_DATA": 0,
+    "NEUTRAL_TRANSITION": 17,
+    "OVERBREATH_EXTENSION": 0
+  },
+  "report": "market_breath_analysis_v1",
+  "runtime_promotion_allowed": false,
+  "safety_markers": {
+    "advice_engine_changes": 0,
+    "broker_calls": 0,
+    "broker_writes": 0,
+    "db_writes": 0,
+    "decision_gate_changes": 0,
+    "execution_planner_changes": 0,
+    "executor_changes": 0,
+    "live_orders": 0,
+    "order_submission": 0,
+    "selection_engine_changes": 0
+  },
+  "scope": "research-only market-only account-agnostic",
+  "state_counts": {
+    "CONFIRMED": 1,
+    "EARLY": 0,
+    "FORMING": 0,
+    "LATE": 0,
+    "RESET": 23,
+    "UNKNOWN": 17
+  },
+  "top_collapse_reset": [
+    {
+      "asset_id": 21,
+      "market_breath_score": 55.255188,
+      "market_breath_state": "RESET",
+      "relative_strength_score": 4.052994,
+      "return_12": 8.455397,
+      "return_6": -9.802796,
+      "symbol": "HYPE"
+    },
+    {
+      "asset_id": 23,
+      "market_breath_score": 53.29938,
+      "market_breath_state": "RESET",
+      "relative_strength_score": -4.21755,
+      "return_12": -0.984494,
+      "return_6": -3.582984,
+      "symbol": "LTC"
+    },
+    {
+      "asset_id": 7,
+      "market_breath_score": 51.594776,
+      "market_breath_state": "RESET",
+      "relative_strength_score": -4.896004,
+      "return_12": -1.269394,
+      "return_6": -3.47324,
+      "symbol": "HBAR"
+    },
+    {
+      "asset_id": 4,
+      "market_breath_score": 50.818655,
+      "market_breath_state": "RESET",
+      "relative_strength_score": -17.613977,
+      "return_12": -2.63892,
+      "return_6": -4.665077,
+      "symbol": "ADA"
+    },
+    {
+      "asset_id": 3,
+      "market_breath_score": 48.53727,
+      "market_breath_state": "RESET",
+      "relative_strength_score": -17.463909,
+      "return_12": -3.008245,
+      "return_6": -4.335616,
+      "symbol": "SOL"
+    },
+    {
+      "asset_id": 70,
+      "market_breath_score": 47.999822,
+      "market_breath_state": "RESET",
+      "relative_strength_score": -22.705631,
+      "return_12": -3.197006,
+      "return_6": -5.134217,
+      "symbol": "LINK"
+    },
+    {
+      "asset_id": 29,
+      "market_breath_score": 47.490227,
+      "market_breath_state": "RESET",
+      "relative_strength_score": -29.268062,
+      "return_12": -3.929707,
+      "return_6": -5.727903,
+      "symbol": "DOT"
+    },
+    {
+      "asset_id": 14,
+      "market_breath_score": 47.478065,
+      "market_breath_state": "RESET",
+      "relative_strength_score": -26.661863,
+      "return_12": -4.195158,
+      "return_6": -5.036861,
+      "symbol": "VET"
+    }
+  ],
+  "top_exhale_expansion": [
+    {
+      "asset_id": 12,
+      "market_breath_score": 90.062262,
+      "market_breath_state": "CONFIRMED",
+      "relative_strength_score": 94.188845,
+      "return_12": 9.238845,
+      "return_6": 5.944538,
+      "symbol": "QNT"
+    }
+  ],
+  "top_hold_compression": [],
+  "top_inhale_accumulation": [],
+  "top_overbreath_extension": [],
+  "venue": "bitvavo",
+  "version": "0.1",
+  "wrote_files": true
+}
