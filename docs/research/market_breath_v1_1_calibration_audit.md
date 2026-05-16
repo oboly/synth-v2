@@ -189,29 +189,122 @@ Suggested interpretation:
 - If `EXHALE_EXPANSION` appears only rarely, inspect whether its momentum and relative-strength gate is too strict.
 - If all phases appear with non-trivial frequency and no phase dominates excessively, thresholds may be plausible enough to proceed to outcome validation.
 
-## TODO: sparse phase diagnostics review
+## Calibration result snapshot
 
-The initial 60-day calibration output showed that `COLLAPSE_RESET` was not structurally dominant, while `NEUTRAL_TRANSITION` dominated strongly and the selective phases were reachable but sparse.
+Initial 60-day calibration output:
 
-This should be tracked as a calibration-audit interpretation TODO, not as an immediate Market Breath V1 threshold change.
+```text
+sample_count=60
+assets_per_sample=41
+observations=2460
 
-Current TODO:
+NEUTRAL_TRANSITION=88.333333%
+EXHALE_EXPANSION=6.056911%
+COLLAPSE_RESET=3.699187%
+OVERBREATH_EXTENSION=1.178862%
+INHALE_ACCUMULATION=0.650407%
+HOLD_COMPRESSION=0.081301%
+INSUFFICIENT_DATA=0.0%
+```
 
-- Preserve the existing Market Breath V1 thresholds until a separate threshold-calibration patch is explicitly opened.
-- Improve the V1.1 audit interpretation so it distinguishes intended selectivity from functional unreachability.
-- Add explicit diagnostic language for `NEUTRAL_TRANSITION` structural dominance.
-- Add explicit diagnostic language for sparse-but-reachable phases, especially `HOLD_COMPRESSION` and `INHALE_ACCUMULATION`.
-- Avoid treating rare phases as automatically wrong; the thresholds were intentionally selected during V1 setup to avoid noisy phase firing.
-- Before outcome validation, review whether `NEUTRAL_TRANSITION` is intended to remain a large rest bucket or whether V1 should classify more observations into specific breath phases.
-
-Important distinction:
+Interpretation:
 
 ```text
 Latest collapse-heavy run = likely temporary current 4h market-state skew.
 60-day audit = not collapse-biased, but strongly neutral-dominant.
+Selective phases = reachable, intentionally conservative, but sparse.
 ```
 
-This TODO remains research-only and market-only. It must not introduce strategy logic, selection changes, advice changes, decision-gate changes, execution-planner changes, executor changes, DB writes, broker calls, broker writes, or order submission.
+## TODO list
+
+All open TODOs for this lane live here.
+
+### Done
+
+- Added Market Breath V1.1 calibration audit runner.
+- Added Market Breath V1.1 research documentation.
+- Generated and committed the initial 60-day calibration output files.
+- Confirmed the lane uses Market Breath V1 logic without changing V1 thresholds.
+- Confirmed the latest collapse-heavy V1 run is not representative of the 60-day distribution.
+
+### Open — P0: clean up audit interpretation language
+
+Status: open.
+
+Goal: improve the audit diagnosis so it reports sparse phase behavior more accurately without implying immediate threshold changes.
+
+Tasks:
+
+- Add explicit diagnostic language for `NEUTRAL_TRANSITION` structural dominance.
+- Add explicit diagnostic language for sparse-but-reachable phases.
+- Distinguish intended selectivity from functional unreachability.
+- Avoid treating rare phases as automatically wrong.
+- Replace overly broad `thresholds appear plausible` output with a more precise summary when neutral dominance is high.
+
+Suggested future wording:
+
+```text
+COLLAPSE_RESET not structurally dominant.
+NEUTRAL_TRANSITION structurally dominant.
+HOLD_COMPRESSION sparse / near-unreachable.
+INHALE_ACCUMULATION sparse but reachable.
+OVERBREATH_EXTENSION sparse but reachable.
+No Market Breath V1 threshold changes applied.
+```
+
+### Open — P1: review whether neutral is intentionally a large rest bucket
+
+Status: open.
+
+Goal: decide whether `NEUTRAL_TRANSITION` should remain the dominant rest bucket or whether V1 should classify more observations into specific breath phases.
+
+Review questions:
+
+- Is `NEUTRAL_TRANSITION` expected to absorb most non-clean market states?
+- Does an 88% neutral rate make the later outcome validation too sparse for several phases?
+- Should phase-specific validation focus first on `EXHALE_EXPANSION` and `COLLAPSE_RESET`, where sample counts are more meaningful?
+- Should `HOLD_COMPRESSION` be reviewed separately because it appears only 2 times in 2460 observations?
+
+### Open — P2: optional separate threshold-calibration patch
+
+Status: blocked until P0 and P1 are reviewed.
+
+Goal: only if calibration review confirms a real measurement problem, open a separate patch for threshold calibration.
+
+Rules:
+
+- Do not change Market Breath V1 thresholds in this audit-output commit.
+- Do not mix audit interpretation cleanup with threshold changes.
+- Any threshold-calibration patch must remain research-only and market-only.
+- Any threshold-calibration patch must rerun the same distribution audit before outcome validation.
+
+### Open — P3: market_breath_outcome_validation
+
+Status: blocked until P0/P1 are reviewed and P2 is either skipped or completed.
+
+Goal: validate whether Market Breath labels have useful future market behavior.
+
+Rules:
+
+- No outcome validation in this V1.1 calibration audit lane.
+- No strategy candidate until outcome validation exists.
+- No selection, advice, decision, execution, broker, or order integration.
+
+### Not TODO in this lane
+
+These are explicitly out of scope:
+
+- Change Market Breath V1 thresholds now.
+- Add strategy logic.
+- Add selection engine modifiers.
+- Add advice engine behavior.
+- Add decision-gate permissions.
+- Add execution planner behavior.
+- Add executor/order behavior.
+- Add broker calls or broker writes.
+- Add DB writes.
+- Touch `run_chain_4h.sh`.
+- Use A+, PRO, symbolic, or external labels.
 
 ## Known limitation
 
