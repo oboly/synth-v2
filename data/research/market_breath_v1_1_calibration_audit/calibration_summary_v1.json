@@ -1,0 +1,71 @@
+{
+  "advice_engine_changes": 0,
+  "aggregate_phase_counts": {
+    "COLLAPSE_RESET": 91,
+    "EXHALE_EXPANSION": 149,
+    "HOLD_COMPRESSION": 2,
+    "INHALE_ACCUMULATION": 16,
+    "INSUFFICIENT_DATA": 0,
+    "NEUTRAL_TRANSITION": 2173,
+    "OVERBREATH_EXTENSION": 29
+  },
+  "aggregate_phase_percentages": {
+    "COLLAPSE_RESET": 3.699187,
+    "EXHALE_EXPANSION": 6.056911,
+    "HOLD_COMPRESSION": 0.081301,
+    "INHALE_ACCUMULATION": 0.650407,
+    "INSUFFICIENT_DATA": 0.0,
+    "NEUTRAL_TRANSITION": 88.333333,
+    "OVERBREATH_EXTENSION": 1.178862
+  },
+  "assets_per_sample_avg": 41.0,
+  "assets_per_sample_max": 41,
+  "assets_per_sample_min": 41,
+  "broker_calls": 0,
+  "broker_writes": 0,
+  "calibration_recommendations": [
+    "Do not change thresholds in this lane.",
+    "Proceed to market_breath_outcome_validation only after review."
+  ],
+  "days_with_collapse_reset_gt_50pct": 1,
+  "days_with_zero_exhale": 22,
+  "days_with_zero_hold": 58,
+  "days_with_zero_inhale": 51,
+  "days_with_zero_overbreath": 41,
+  "db_writes": 0,
+  "decision_gate_changes": 0,
+  "execution_planner_changes": 0,
+  "executor_changes": 0,
+  "feature_candidate_promotion_allowed": false,
+  "from_ts": "2026-03-17T12:00:00Z",
+  "interval_code": "4h",
+  "live_orders": 0,
+  "most_common_phase_per_day": {
+    "COLLAPSE_RESET": 2,
+    "EXHALE_EXPANSION": 2,
+    "HOLD_COMPRESSION": 0,
+    "INHALE_ACCUMULATION": 0,
+    "INSUFFICIENT_DATA": 0,
+    "NEUTRAL_TRANSITION": 56,
+    "OVERBREATH_EXTENSION": 0
+  },
+  "no_threshold_changes_applied": true,
+  "order_submission": 0,
+  "outcome_validation_allowed": false,
+  "output_paths": {
+    "calibration_summary_json": "data/research/market_breath_v1_1_calibration_audit/calibration_summary_v1.json",
+    "phase_distribution_jsonl": "data/research/market_breath_v1_1_calibration_audit/phase_distribution_by_asof_v1.jsonl"
+  },
+  "report": "market_breath_v1_1_calibration_audit",
+  "runtime_promotion_allowed": false,
+  "sample_count": 60,
+  "scope": "research-only market-only account-agnostic no-aplus no-external-labels no-outcomes",
+  "selection_engine_changes": 0,
+  "suspected_threshold_issues": [
+    "thresholds appear plausible"
+  ],
+  "to_ts": "2026-05-16T12:00:00Z",
+  "venue": "bitvavo",
+  "version": "1.1",
+  "wrote_files": true
+}
