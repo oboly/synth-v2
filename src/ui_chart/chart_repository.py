@@ -335,6 +335,15 @@ def fetch_paper_candidate_frame(
     return _rows_to_dataframe(rows)
 
 
+def runtime_chain_name_for_interval(interval_code: str) -> str:
+    chain_names = {
+        "1h": "run_chain_1h",
+        "4h": "run_chain_4h",
+        "1d": "run_chain_1d",
+    }
+    return chain_names.get(interval_code, f"run_chain_{interval_code}")
+
+
 def fetch_display_context(
     asset_id: int,
     venue: str,
@@ -349,7 +358,7 @@ def fetch_display_context(
         "latest_strategy_runtime_snapshot": fetch_latest_strategy_runtime_snapshot_context(
             venue=venue,
             interval_code=interval_code,
-            chain_name="run_chain_4h",
+            chain_name=runtime_chain_name_for_interval(interval_code),
         ),
     }
 
