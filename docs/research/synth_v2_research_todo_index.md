@@ -262,7 +262,7 @@ research preview -> execution
 
 ---
 
-## P3 — A+ archive / raw file housekeeping
+## Done / Parked — A+ archive and raw file handling
 
 Sources:
 
@@ -274,7 +274,7 @@ db/migrations/20260516_aplus_report_archive_v1.sql
 src/research/load_aplus_reports_to_db_v1.py
 ```
 
-Status: low priority.
+Status: done / parked.
 
 Current project direction:
 
@@ -284,12 +284,19 @@ Existing A+ reports are DB-backed as archive/comparator data only.
 Main active direction is fully Synth-native Market Breath analysis from market data.
 ```
 
-Tasks:
+Resolved decisions:
 
-- Do not spend major time here unless cleanup blocks active research.
-- If raw source text is already stored in DB with enough auditability, raw files do not need to be kept in git.
+- A+ is archive/comparator data only, not active signal input.
+- Raw A+ files do not need active cleanup work while they do not block Market Breath research.
+- If raw source text is already stored in DB with sufficient auditability, raw files do not need to be committed.
 - If raw source text is not fully stored in DB, keeping raw files under `data/aplus_raw/` is acceptable.
 - Do not mix A+ files into Market Breath commits.
+
+Standing hygiene note:
+
+- Untracked A+ files may remain locally while parked.
+- Do not stage broad `data/` paths from Market Breath branches.
+- Revisit only if A+ archive auditability becomes unclear or if untracked files start blocking active work.
 
 Boundary:
 
