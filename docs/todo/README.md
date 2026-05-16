@@ -48,6 +48,7 @@ Do not bypass layers.
 |---|---:|---|
 | `workflow_standard.md` | standard | TODO creation, update, closure, priority, boundary, and commit rules |
 | `market_breath.md` | active | Market Breath V1.1 calibration, neutral rest-bucket review, optional threshold patch, outcome validation path |
+| `deploy_runtime.md` | open/future ops | Odroid deploy, candle ingestion runners, webview data refresh runners, runtime orchestration |
 | `fibo_zones.md` | parked/open | Fib target maps, zone context guardrails, exit ladder profiles, and zone UI overlays |
 | `ui_webview.md` | parked/open | Read-only chart/UI/Webview upgrades and documentation |
 | `breath_curve.md` | parked/open | Breath Curve baseline, partial-cycle, and regime-gated validation continuation |
@@ -63,5 +64,5 @@ Do not bypass layers.
 2. Review whether NEUTRAL_TRANSITION should remain the large rest bucket.
 3. Decide whether a Market Breath threshold-calibration patch is needed or skipped.
 4. Only then open Market Breath outcome validation.
-5. Keep Fibo/Zones, UI/Webview, Dev/Ops, Breath Curve, A+, and PRO lanes parked unless directly needed.
+5. Keep Deploy/Runtime, Fibo/Zones, UI/Webview, Dev/Ops, Breath Curve, A+, and PRO lanes parked unless directly needed.
 ```
