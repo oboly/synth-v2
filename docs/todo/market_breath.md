@@ -14,12 +14,16 @@ A+ symbolic reports are parked and must not be used as input for Market Breath.
 - docs/research/market_breath_v1_1_neutral_rest_bucket_review.md
 - docs/research/market_breath_outcome_validation_v1.md
 - docs/research/market_breath_outcome_validation_v1_findings.md
+- docs/research/market_breath_outcome_bucket_analysis_v1.md
 - src/research/run_market_breath_v1_1_calibration_audit.py
 - src/research/run_market_breath_outcome_validation_v1.py
+- src/research/run_market_breath_outcome_bucket_analysis_v1.py
 - data/research/market_breath_v1_1_calibration_audit/calibration_summary_v1.json
 - data/research/market_breath_v1_1_calibration_audit/phase_distribution_by_asof_v1.jsonl
 - data/research/market_breath_outcome_validation_v1/outcome_summary_v1.json
 - data/research/market_breath_outcome_validation_v1/outcome_rows_v1.jsonl
+- data/research/market_breath_outcome_bucket_analysis_v1/bucket_summary_v1.json
+- data/research/market_breath_outcome_bucket_analysis_v1/bucket_rows_v1.jsonl
 
 ## Current calibration snapshot
 
@@ -163,11 +167,29 @@ Decision:
 
 ## P5 — Bucketed outcome analysis
 
-Status: next recommended step.
+Status: done.
 
 Goal:
 
 Determine whether the first-pass findings are broad, symbol-specific, regime-specific, or score-band-specific.
+
+Implemented by:
+
+- Market Breath outcome bucket analysis V1.
+
+Initial output:
+
+- row_count=2460
+- outcome_available_count=2135
+- bucket_rows=282
+- min_count=20
+- neutral baseline avg_fwd_return_24c=0.628198
+- neutral baseline positive_rate_24c=50.399148
+- `COLLAPSE_RESET` has sufficient outperforming buckets and remains a candidate for further review, not a signal.
+- `EXHALE_EXPANSION` has sufficient underperforming buckets and no sufficient outperforming buckets in this pass.
+- `OVERBREATH_EXTENSION` remains consistent with late-risk / exhaustion, with limited sample mass.
+- `INHALE_ACCUMULATION` and `HOLD_COMPRESSION` remain too sparse for meaningful bucket conclusions.
+- Threshold calibration remains blocked pending manual review or longer-history validation.
 
 Recommended bucket dimensions:
 
@@ -197,6 +219,23 @@ Rules:
 - No threshold changes.
 - No strategy logic.
 - No selection/advice/decision/execution/broker integration.
+- No DB reads.
+
+## P6 — Review bucketed findings
+
+Status: next recommended step.
+
+Goal:
+
+Review `data/research/market_breath_outcome_bucket_analysis_v1/bucket_summary_v1.json` and decide whether threshold calibration remains blocked.
+
+Rules:
+
+- Do not declare strategy edge.
+- Do not recommend buys or sells.
+- Do not promote to runtime.
+- Consider longer-history validation only if needed for stability.
+- Keep any threshold calibration as a separate research patch.
 
 ## Non-goals
 
