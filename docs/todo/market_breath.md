@@ -11,6 +11,7 @@ A+ symbolic reports are parked and must not be used as input for Market Breath.
 ## Sources
 
 - docs/research/market_breath_v1_1_calibration_audit.md
+- docs/research/market_breath_v1_1_neutral_rest_bucket_review.md
 - src/research/run_market_breath_v1_1_calibration_audit.py
 - data/research/market_breath_v1_1_calibration_audit/calibration_summary_v1.json
 - data/research/market_breath_v1_1_calibration_audit/phase_distribution_by_asof_v1.jsonl
@@ -41,7 +42,7 @@ Status: done.
 
 Implemented by:
 
-- d8688f3 Add Market Breath V1.1 sparse phase diagnostics
+- 1794f7c Add Market Breath V1.1 sparse phase diagnostics
 
 Resulting diagnostics now report:
 
@@ -69,27 +70,32 @@ Boundary preserved:
 
 ## P1 — Review neutral rest-bucket role
 
-Status: open.
+Status: done.
 
-Questions:
+Result:
 
-- Is NEUTRAL_TRANSITION intended to absorb most non-clean states?
-- Does an 88% neutral rate make later outcome validation too sparse for several phases?
-- Should outcome validation first focus on phases with enough sample mass, such as EXHALE_EXPANSION and COLLAPSE_RESET?
-- Should HOLD_COMPRESSION be reviewed separately because it appears only 2 times in 2460 observations?
+- `NEUTRAL_TRANSITION` is structurally dominant and should remain the conservative rest bucket for now.
+- The 88.333333% neutral rate constrains validation design but does not by itself prove that Market Breath V1 thresholds are wrong.
+- Later validation should not treat all phases equally.
+- `EXHALE_EXPANSION` and `COLLAPSE_RESET` are the first reasonable validation candidates.
+- `OVERBREATH_EXTENSION` is sparse but reachable and should be exploratory only.
+- `INHALE_ACCUMULATION` is very sparse and should be weak exploratory only.
+- `HOLD_COMPRESSION` is near-unreachable and should not drive validation conclusions unless a separate threshold-calibration patch is opened.
 
 Boundary:
 
 - Review only.
 - Do not change thresholds without a separate threshold-calibration patch.
+- No outcome validation was performed.
+- No strategy logic or runtime promotion was added.
 
 ## P2 — Optional threshold-calibration patch
 
-Status: blocked by P1.
+Status: blocked.
 
 Trigger:
 
-Only open this if calibration review confirms that V1 has a measurement problem rather than merely intentionally conservative labels.
+Only open this if limited validation or a separate reachability review confirms that V1 has a measurement problem rather than merely intentionally conservative labels.
 
 Rules:
 
@@ -101,17 +107,29 @@ Rules:
 
 ## P3 — Outcome validation
 
-Status: blocked by P1 and optionally P2.
+Status: next recommended step.
 
 Goal:
 
-Validate whether Market Breath labels have useful future market behavior.
+Run a limited Market Breath outcome-validation dry lane for sufficient-sample phases.
+
+Recommended scope:
+
+- Primary: `EXHALE_EXPANSION`.
+- Secondary: `COLLAPSE_RESET`.
+- Exploratory readout only: `OVERBREATH_EXTENSION`.
+- Weak exploratory readout only: `INHALE_ACCUMULATION`.
+- Exclude from conclusions: `HOLD_COMPRESSION`.
+- Baseline/rest bucket: `NEUTRAL_TRANSITION`.
 
 Rules:
 
 - No outcome validation inside V1.1 calibration audit.
 - No strategy candidate before outcome validation exists.
 - No selection/advice/decision/execution/broker integration.
+- No A+ input.
+- No PRO input.
+- No symbolic labels.
 
 ## Non-goals
 
