@@ -12,6 +12,12 @@ If a TODO is active or likely to be resumed later, it belongs in this folder.
 
 Avoid scattering active TODOs across chat history, temporary notes, or unrelated research docs.
 
+Workflow standard:
+
+```text
+docs/todo/workflow_standard.md
+```
+
 ## Global boundaries
 
 Unless a task explicitly says otherwise:
@@ -40,6 +46,7 @@ Do not bypass layers.
 
 | File | Status | Purpose |
 |---|---:|---|
+| `workflow_standard.md` | standard | TODO creation, update, closure, priority, boundary, and commit rules |
 | `market_breath.md` | active | Market Breath V1.1 calibration, neutral rest-bucket review, optional threshold patch, outcome validation path |
 | `fibo_zones.md` | parked/open | Fib target maps, zone context guardrails, exit ladder profiles, and zone UI overlays |
 | `ui_webview.md` | parked/open | Read-only chart/UI/Webview upgrades and documentation |
