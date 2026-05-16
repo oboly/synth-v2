@@ -54,6 +54,13 @@ SAFETY_MARKERS = {
     "executor_changes": 0,
 }
 
+NEUTRAL_STRUCTURALLY_DOMINANT_PCT = 75.0
+HOLD_SPARSE_PCT = 0.5
+HOLD_ZERO_DAY_RATIO = 0.9
+INHALE_SPARSE_PCT = 1.0
+OVERBREATH_SPARSE_PCT = 1.5
+COLLAPSE_NOT_DOMINANT_PCT = 10.0
+
 
 @dataclass(frozen=True)
 class OutputPaths:
@@ -278,41 +285,70 @@ def detect_threshold_issues(records: list[dict[str, Any]], aggregate_percentages
 
     sample_count = len(records)
     issues: list[str] = []
+    aggregate_counts_by_phase = aggregate_counts(records)
     collapse_dominant_days = sum(1 for record in records if record["collapse_reset_pct"] > 50.0)
-    if aggregate_percentages["COLLAPSE_RESET"] > 50.0 or collapse_dominant_days / sample_count >= 0.35:
-        issues.append("COLLAPSE_RESET too dominant")
-    if all(record["phase_counts"]["HOLD_COMPRESSION"] == 0 for record in records):
-        issues.append("HOLD_COMPRESSION unreachable")
-    if all(record["phase_counts"]["INHALE_ACCUMULATION"] == 0 for record in records):
-        issues.append("INHALE_ACCUMULATION unreachable")
-    if all(record["phase_counts"]["OVERBREATH_EXTENSION"] == 0 for record in records):
-        issues.append("OVERBREATH_EXTENSION unreachable")
-    if all(record["phase_counts"]["EXHALE_EXPANSION"] == 0 for record in records) or aggregate_percentages["EXHALE_EXPANSION"] < 2.0:
-        issues.append("EXHALE_EXPANSION too strict")
+    hold_zero_days = sum(1 for record in records if record["phase_counts"]["HOLD_COMPRESSION"] == 0)
+
+    if (
+        aggregate_percentages["COLLAPSE_RESET"] < COLLAPSE_NOT_DOMINANT_PCT
+        and collapse_dominant_days <= 1
+    ):
+        issues.append("COLLAPSE_RESET not structurally dominant")
+    else:
+        issues.append("COLLAPSE_RESET needs review for dominance")
+
+    if aggregate_percentages["NEUTRAL_TRANSITION"] > NEUTRAL_STRUCTURALLY_DOMINANT_PCT:
+        issues.append("NEUTRAL_TRANSITION structurally dominant")
+
+    if (
+        aggregate_percentages["HOLD_COMPRESSION"] < HOLD_SPARSE_PCT
+        or hold_zero_days / sample_count > HOLD_ZERO_DAY_RATIO
+    ):
+        issues.append("HOLD_COMPRESSION sparse / near-unreachable")
+
+    if (
+        aggregate_percentages["INHALE_ACCUMULATION"] < INHALE_SPARSE_PCT
+        and aggregate_counts_by_phase["INHALE_ACCUMULATION"] > 0
+    ):
+        issues.append("INHALE_ACCUMULATION sparse but reachable")
+    elif aggregate_counts_by_phase["INHALE_ACCUMULATION"] == 0:
+        issues.append("INHALE_ACCUMULATION near-unreachable")
+
+    if (
+        aggregate_percentages["OVERBREATH_EXTENSION"] < OVERBREATH_SPARSE_PCT
+        and aggregate_counts_by_phase["OVERBREATH_EXTENSION"] > 0
+    ):
+        issues.append("OVERBREATH_EXTENSION sparse but reachable")
+    elif aggregate_counts_by_phase["OVERBREATH_EXTENSION"] == 0:
+        issues.append("OVERBREATH_EXTENSION near-unreachable")
+
+    if aggregate_counts_by_phase["EXHALE_EXPANSION"] > 0:
+        issues.append("EXHALE_EXPANSION present; validate later if sample count is sufficient")
+    else:
+        issues.append("EXHALE_EXPANSION absent; review reachability before validation")
+
+    issues.append("No Market Breath V1 threshold changes applied")
     if not issues:
-        issues.append("thresholds appear plausible")
+        issues.append("No calibration diagnostics available")
     return issues
 
 
 def calibration_recommendations(issues: list[str]) -> list[str]:
-    recommendations = ["Do not change thresholds in this lane."]
-    if issues == ["thresholds appear plausible"]:
-        recommendations.append("Proceed to market_breath_outcome_validation only after review.")
-        return recommendations
+    recommendations = ["Do not change Market Breath V1 thresholds in this lane."]
     if "NO_SAMPLES_AVAILABLE" in issues:
         recommendations.append("Run the audit against a DB with obs_market_candle history before interpreting thresholds.")
         return recommendations
-    recommendations.append("Open a separate optional threshold calibration patch only after reviewing this distribution audit.")
-    if "COLLAPSE_RESET too dominant" in issues:
-        recommendations.append("Inspect the reset gate: momentum < -25 and reversal_pressure >= 45 may dominate broad drawdown windows.")
-    if "HOLD_COMPRESSION unreachable" in issues:
-        recommendations.append("Inspect compression gate reachability: compression >= 60, expansion < 35, and abs(momentum) <= 20.")
-    if "INHALE_ACCUMULATION unreachable" in issues:
-        recommendations.append("Inspect accumulation gate reachability: compression >= 45, positive momentum band, and positive relative strength.")
-    if "OVERBREATH_EXTENSION unreachable" in issues:
-        recommendations.append("Inspect extension gate reachability: expansion >= 65, momentum >= 55, and reversal_pressure >= 45 may require rare reversal timing.")
-    if "EXHALE_EXPANSION too strict" in issues:
-        recommendations.append("Inspect expansion gate reachability before outcome validation; do not relax it here.")
+    recommendations.append("Treat sparse phase diagnostics as audit interpretation only, not strategy rules.")
+    if "NEUTRAL_TRANSITION structurally dominant" in issues:
+        recommendations.append("Use later validation to determine whether neutral dominance is acceptable before any promotion.")
+    if "HOLD_COMPRESSION sparse / near-unreachable" in issues:
+        recommendations.append("Record HOLD_COMPRESSION as sparse under current V1 thresholds; rarity alone is not evidence of wrong thresholds.")
+    if "INHALE_ACCUMULATION sparse but reachable" in issues:
+        recommendations.append("Record INHALE_ACCUMULATION as selective but reachable.")
+    if "OVERBREATH_EXTENSION sparse but reachable" in issues:
+        recommendations.append("Record OVERBREATH_EXTENSION as selective but reachable.")
+    if "EXHALE_EXPANSION present; validate later if sample count is sufficient" in issues:
+        recommendations.append("Keep EXHALE_EXPANSION available for later outcome validation when sample count is sufficient.")
     return recommendations
 
 

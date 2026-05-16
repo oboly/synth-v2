@@ -24,8 +24,13 @@
   "broker_calls": 0,
   "broker_writes": 0,
   "calibration_recommendations": [
-    "Do not change thresholds in this lane.",
-    "Proceed to market_breath_outcome_validation only after review."
+    "Do not change Market Breath V1 thresholds in this lane.",
+    "Treat sparse phase diagnostics as audit interpretation only, not strategy rules.",
+    "Use later validation to determine whether neutral dominance is acceptable before any promotion.",
+    "Record HOLD_COMPRESSION as sparse under current V1 thresholds; rarity alone is not evidence of wrong thresholds.",
+    "Record INHALE_ACCUMULATION as selective but reachable.",
+    "Record OVERBREATH_EXTENSION as selective but reachable.",
+    "Keep EXHALE_EXPANSION available for later outcome validation when sample count is sufficient."
   ],
   "days_with_collapse_reset_gt_50pct": 1,
   "days_with_zero_exhale": 22,
@@ -62,7 +67,13 @@
   "scope": "research-only market-only account-agnostic no-aplus no-external-labels no-outcomes",
   "selection_engine_changes": 0,
   "suspected_threshold_issues": [
-    "thresholds appear plausible"
+    "COLLAPSE_RESET not structurally dominant",
+    "NEUTRAL_TRANSITION structurally dominant",
+    "HOLD_COMPRESSION sparse / near-unreachable",
+    "INHALE_ACCUMULATION sparse but reachable",
+    "OVERBREATH_EXTENSION sparse but reachable",
+    "EXHALE_EXPANSION present; validate later if sample count is sufficient",
+    "No Market Breath V1 threshold changes applied"
   ],
   "to_ts": "2026-05-16T12:00:00Z",
   "venue": "bitvavo",

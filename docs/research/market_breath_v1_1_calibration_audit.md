@@ -32,8 +32,7 @@ The order is therefore:
 ```text
 Market Breath V1
 -> V1.1 calibration audit
--> optional threshold calibration patch
--> market_breath_outcome_validation
+-> market_breath_outcome_validation only when sample count is sufficient
 -> only later possible strategy candidate
 ```
 
@@ -171,23 +170,31 @@ The summary contains:
 
 ## Interpretation rules
 
-The audit reports possible threshold issues only. It does not change thresholds.
+The audit reports distribution diagnostics only. It does not change thresholds, and rare phases are not automatically classified as wrong.
 
-Possible reported issues:
+Possible reported diagnostics:
 
-- `COLLAPSE_RESET too dominant`
-- `HOLD_COMPRESSION unreachable`
-- `INHALE_ACCUMULATION unreachable`
-- `OVERBREATH_EXTENSION unreachable`
-- `EXHALE_EXPANSION too strict`
-- `thresholds appear plausible`
+- `COLLAPSE_RESET not structurally dominant`
+- `COLLAPSE_RESET needs review for dominance`
+- `NEUTRAL_TRANSITION structurally dominant`
+- `HOLD_COMPRESSION sparse / near-unreachable`
+- `INHALE_ACCUMULATION sparse but reachable`
+- `INHALE_ACCUMULATION near-unreachable`
+- `OVERBREATH_EXTENSION sparse but reachable`
+- `OVERBREATH_EXTENSION near-unreachable`
+- `EXHALE_EXPANSION present; validate later if sample count is sufficient`
+- `EXHALE_EXPANSION absent; review reachability before validation`
+- `No Market Breath V1 threshold changes applied`
 
 Suggested interpretation:
 
-- If `COLLAPSE_RESET` dominates most sampled days, inspect the reset gate before outcome validation.
-- If a phase is zero across all sampled days, treat that phase as potentially unreachable under current V1 thresholds.
-- If `EXHALE_EXPANSION` appears only rarely, inspect whether its momentum and relative-strength gate is too strict.
-- If all phases appear with non-trivial frequency and no phase dominates excessively, thresholds may be plausible enough to proceed to outcome validation.
+- `NEUTRAL_TRANSITION` is structurally dominant when its aggregate percentage is above 75%.
+- `HOLD_COMPRESSION` is sparse / near-unreachable when its aggregate percentage is below 0.5% or it is zero on more than 90% of sampled days.
+- `INHALE_ACCUMULATION` is sparse but reachable when its aggregate percentage is below 1.0% and its aggregate count is greater than zero.
+- `OVERBREATH_EXTENSION` is sparse but reachable when its aggregate percentage is below 1.5% and its aggregate count is greater than zero.
+- `COLLAPSE_RESET` is not structurally dominant when its aggregate percentage is below 10% and no more than one sampled day has `COLLAPSE_RESET` above 50%.
+- `EXHALE_EXPANSION` being present is enough to keep it available for later validation when sample count is sufficient.
+- These thresholds are audit wording rules only, not strategy rules, runtime gates, or Market Breath V1 threshold changes.
 
 ## Calibration result snapshot
 
@@ -367,8 +374,7 @@ Promotion path remains blocked until the research sequence is complete:
 
 ```text
 Market Breath V1.1 calibration audit
--> reviewed threshold calibration patch if needed
--> market_breath_outcome_validation
+-> market_breath_outcome_validation only when sample count is sufficient
 -> feature-candidate review
 -> possible strategy candidate only after validation
 ```
