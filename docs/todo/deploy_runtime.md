@@ -11,6 +11,7 @@ This lane tracks deployment of Synth runtime components to the Odroid and schedu
 ```text
 Recent chat TODO: deploy Synth on Odroid and add runners for candle ingestion and webview data refresh.
 Known infra context: Odroid C4 targeted for 24/7 runtime agents; MariaDB host is gurkdb.
+Recent chat TODO: after Odroid runners are stable, select the first strategy candidate and develop Synth toward paper execution support.
 ```
 
 ## P2 — Deploy Synth runtime on Odroid
@@ -101,6 +102,50 @@ No broker/order path.
 No direct ticker calls from chart renderer.
 ```
 
+## P2 — First paper strategy lane after Odroid runners
+
+Status: blocked until Odroid runners are deployed and stable.
+
+Goal:
+
+After the Odroid market-data / feature / signal runners are stable, select one first strategy candidate and develop the missing Synth paper-trading path around it.
+
+Sequencing:
+
+```text
+Odroid runners stable
+-> market-data freshness checks stable
+-> first strategy candidate selected
+-> paper-only strategy candidate contract
+-> paper decision permission layer
+-> paper execution intent / simulated fills
+-> paper reporting
+```
+
+Tasks:
+
+- Define the minimum stable-runner requirement before selecting a strategy candidate.
+- Select exactly one initial strategy candidate for paper validation.
+- Keep `asset != strategy`; the selected unit must be `asset + strategy_family + horizon_bucket + setup_context + validation_state`.
+- Define paper-only candidate state and paper account assumptions.
+- Ensure selection stays market-only and account-agnostic.
+- Ensure decision_gate owns paper permission, exposure, sizing, and account constraints.
+- Ensure execution_planner produces paper execution intent only.
+- Ensure simulated fills are clearly marked as paper/simulated.
+- Add paper run reporting before any live path is considered.
+
+Boundary:
+
+```text
+Paper only.
+No live trading.
+No broker writes.
+No real order submission.
+No executor activation for live orders.
+No bypass around decision_gate.
+No strategy logic inside execution_planner/executor.
+```
+
 ## P3 — Runtime orchestration standard
 
 Status: future design.
@@ -112,6 +157,7 @@ Tasks:
 - Document lock/guard strategy to prevent duplicate writers.
 - Document failure logging and recovery.
 - Document freshness checks per runner.
+- Document when paper-only strategy runners are allowed to start after market-data runners are stable.
 
 Potential doc target:
 
@@ -122,8 +168,7 @@ docs/ops/synth_runtime_runners_v1.md
 ## Non-goals
 
 - No live trading enablement.
-- No paper/live branching from this TODO.
-- No executor activation.
 - No broker writes.
-- No order submission.
+- No real order submission.
 - No secrets in git.
+- No paper strategy activation before Odroid runners are stable and the first strategy candidate is reviewed.
