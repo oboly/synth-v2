@@ -49,7 +49,7 @@ Do not bypass layers.
 | `workflow_standard.md` | standard | TODO creation, update, closure, priority, boundary, and commit rules |
 | `market_breath.md` | characterized/parked | Market Breath V1 characterization as a regime-dependent state/risk-timing sensor |
 | `watchlist_candidates.md` | open intake | User-thesis watchlist candidates such as KITE before validation/promotion |
-| `deploy_runtime.md` | open/future ops | Odroid deploy, candle ingestion runners, webview data refresh runners, runtime orchestration |
+| `deploy_runtime.md` | plan drafted/open ops | Odroid deploy, candle ingestion runners, webview data refresh runners, runtime orchestration |
 | `fibo_zones.md` | open research | Fib target maps, leak-free zone/fib touch evaluation, zone context guardrails, exit ladder profiles, and zone UI overlays |
 | `ui_webview.md` | parked/open | Read-only chart/UI/Webview upgrades and documentation |
 | `breath_curve.md` | parked/open | Breath Curve baseline, non-overlap follow-up, partial-cycle, and regime-gated validation continuation |
@@ -61,9 +61,9 @@ Do not bypass layers.
 ## Active next-step recommendation
 
 ```text
-1. Review current Watchlist candidate intake for APT/KITE/SXT before any further universe/runtime decision.
-2. Keep Market Breath characterized and parked until a downstream regime-aware use-case explicitly needs it.
-3. If strategy-validation work resumes, prefer the leak-free Zone/Fib touch evaluator or Breath Curve regime-difference follow-up.
-4. Keep threshold calibration, paper-candidate promotion, and runtime promotion blocked unless a separate reviewed task opens them.
+1. Review the Odroid runtime runners plan before installing services or timers.
+2. Keep first paper strategy candidate selection blocked until Odroid runners are stable.
+3. Review current Watchlist candidate intake for APT/KITE/SXT before any further universe/runtime decision.
+4. Keep Market Breath characterized and parked until a downstream regime-aware use-case explicitly needs it.
 5. Keep A+, PRO, execution, broker, and live/paper lanes parked unless directly needed by an explicit task.
 ```

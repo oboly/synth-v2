@@ -12,11 +12,35 @@ This lane tracks deployment of Synth runtime components to the Odroid and schedu
 Recent chat TODO: deploy Synth on Odroid and add runners for candle ingestion and webview data refresh.
 Known infra context: Odroid C4 targeted for 24/7 runtime agents; MariaDB host is gurkdb.
 Recent chat TODO: after Odroid runners are stable, select the first strategy candidate and develop Synth toward paper execution support.
+docs/ops/synth_runtime_runners_v1.md
 ```
+
+## P1 — Odroid runtime runners deployment plan
+
+Status: drafted / review pending.
+
+Plan:
+
+```text
+docs/ops/synth_runtime_runners_v1.md
+```
+
+Scope:
+
+- Odroid host roles.
+- Phase order from inventory through guarded market-only chain review.
+- Allowed initial runner scope.
+- Systemd timer preference.
+- Locking / duplicate-writer guard.
+- Freshness checks.
+- Safety markers.
+- Paper strategy follow-up gate.
+
+Actual deployment remains open. No services, timers, chain scripts, secrets, schema changes, asset metadata, or selection/advice/decision/execution logic were changed by the plan.
 
 ## P2 — Deploy Synth runtime on Odroid
 
-Status: open.
+Status: open; plan drafted.
 
 Goal:
 
@@ -148,7 +172,7 @@ No strategy logic inside execution_planner/executor.
 
 ## P3 — Runtime orchestration standard
 
-Status: future design.
+Status: drafted in ops plan / future implementation.
 
 Tasks:
 
@@ -164,6 +188,8 @@ Potential doc target:
 ```text
 docs/ops/synth_runtime_runners_v1.md
 ```
+
+Next implementation remains blocked until the ops plan is reviewed.
 
 ## Non-goals
 
