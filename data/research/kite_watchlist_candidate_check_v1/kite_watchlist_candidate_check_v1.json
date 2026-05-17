@@ -3,7 +3,7 @@
   "asset_metadata": {
     "asset_class": "SMALL_ALT",
     "asset_id": 74.0,
-    "is_enabled": 0.0,
+    "is_enabled": 1.0,
     "is_portfolio": 0.0,
     "is_tradeable": 0.0,
     "name": "Kite",
@@ -62,7 +62,7 @@
   "decision_gate_changes": 0,
   "execution_planner_changes": 0,
   "executor_changes": 0,
-  "generated_ts_utc": "2026-05-17T00:04:12Z",
+  "generated_ts_utc": "2026-05-17T00:14:10Z",
   "liquidity_proxy_summary": {
     "latest_volume_quote_eur": 58.169269318,
     "low_liquidity_warning": true,
@@ -72,6 +72,7 @@
   "live_orders": 0,
   "local_asset_found": true,
   "market": "KITE-EUR",
+  "metadata_reproducibility_note": "APT, KITE, and SXT are enabled in the current local DB for market-data / analysis ingestion only. If this must be reproducible in a fresh environment, create a separate reviewed migration/seed task.",
   "next_step": "Review this report manually, then monitor as research-only watchlist context without runtime promotion.",
   "no_advice_changes": true,
   "no_decision_changes": true,
@@ -79,6 +80,104 @@
   "no_runtime_promotion": true,
   "no_selection_changes": true,
   "order_submission": 0,
+  "post_backfill_watchlist_assets": {
+    "APT": {
+      "asset_metadata": {
+        "asset_id": 72,
+        "is_enabled": 1,
+        "is_portfolio": 0,
+        "is_tradeable": 0,
+        "name": "Aptos",
+        "quote_asset": "EUR",
+        "symbol": "APT"
+      },
+      "coverage_by_interval": {
+        "1d": {
+          "latest_close_price": 0.815,
+          "latest_close_ts_utc": "2026-05-17T00:00:00",
+          "min_open_ts_utc": "2023-04-04T00:00:00",
+          "row_count": 1139
+        },
+        "1h": {
+          "latest_close_price": 0.815,
+          "latest_close_ts_utc": "2026-05-17T00:00:00",
+          "min_open_ts_utc": "2023-04-04T11:00:00",
+          "row_count": 26132
+        },
+        "4h": {
+          "latest_close_price": 0.815,
+          "latest_close_ts_utc": "2026-05-17T00:00:00",
+          "min_open_ts_utc": "2023-04-04T08:00:00",
+          "row_count": 6819
+        }
+      },
+      "status": "RESEARCH_WATCHLIST_READY_DATA_COVERAGE"
+    },
+    "KITE": {
+      "asset_metadata": {
+        "asset_id": 74,
+        "is_enabled": 1,
+        "is_portfolio": 0,
+        "is_tradeable": 0,
+        "name": "Kite",
+        "quote_asset": "EUR",
+        "symbol": "KITE"
+      },
+      "coverage_by_interval": {
+        "1d": {
+          "latest_close_price": 0.18463,
+          "latest_close_ts_utc": "2026-05-17T00:00:00",
+          "min_open_ts_utc": "2025-11-18T00:00:00",
+          "row_count": 180
+        },
+        "1h": {
+          "latest_close_price": 0.18463,
+          "latest_close_ts_utc": "2026-05-17T00:00:00",
+          "min_open_ts_utc": "2025-11-18T11:00:00",
+          "row_count": 3826
+        },
+        "4h": {
+          "latest_close_price": 0.18463,
+          "latest_close_ts_utc": "2026-05-17T00:00:00",
+          "min_open_ts_utc": "2025-11-18T08:00:00",
+          "row_count": 1060
+        }
+      },
+      "status": "RESEARCH_WATCHLIST_READY_WITH_LOW_LIQUIDITY_CAUTION"
+    },
+    "SXT": {
+      "asset_metadata": {
+        "asset_id": 73,
+        "is_enabled": 1,
+        "is_portfolio": 0,
+        "is_tradeable": 0,
+        "name": "Space and Time",
+        "quote_asset": "EUR",
+        "symbol": "SXT"
+      },
+      "coverage_by_interval": {
+        "1d": {
+          "latest_close_price": 0.010631,
+          "latest_close_ts_utc": "2026-05-17T00:00:00",
+          "min_open_ts_utc": "2025-06-06T00:00:00",
+          "row_count": 345
+        },
+        "1h": {
+          "latest_close_price": 0.010631,
+          "latest_close_ts_utc": "2026-05-17T00:00:00",
+          "min_open_ts_utc": "2025-06-06T10:00:00",
+          "row_count": 7197
+        },
+        "4h": {
+          "latest_close_price": 0.010631,
+          "latest_close_ts_utc": "2026-05-17T00:00:00",
+          "min_open_ts_utc": "2025-06-06T08:00:00",
+          "row_count": 2032
+        }
+      },
+      "status": "RESEARCH_WATCHLIST_READY_DATA_COVERAGE"
+    }
+  },
   "recommendation": "RESEARCH_WATCHLIST_READY",
   "repo_references": [
     {
@@ -102,17 +201,17 @@
       "text": "parser.add_argument(\"--symbol\", default=\"KITE\")"
     },
     {
-      "line": 334,
+      "line": 335,
       "path": "src/research/run_kite_watchlist_candidate_check_v1.py",
       "text": "availability_parts.append(\"KITE is not present in local asset metadata.\")"
     },
     {
-      "line": 336,
+      "line": 337,
       "path": "src/research/run_kite_watchlist_candidate_check_v1.py",
       "text": "availability_parts.append(\"KITE is present in local asset metadata.\")"
     },
     {
-      "line": 381,
+      "line": 382,
       "path": "src/research/run_kite_watchlist_candidate_check_v1.py",
       "text": "path = output_dir / \"kite_watchlist_candidate_check_v1.json\""
     },

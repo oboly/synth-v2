@@ -61,7 +61,7 @@ runtime_allowed=false
 Tasks:
 
 - Verify KITE exists in local `asset` metadata and Bitvavo market data universe. Done.
-- If missing locally, add only through the normal asset/universe process. Done as disabled research/watchlist metadata.
+- If missing locally, add only through the normal asset/universe process. Done as market-data / analysis ingestion metadata.
 - Check whether `KITE-EUR` candles are available in `obs_market_candle`. Done.
 - If candles are missing, decide whether Bitvavo candle ingestion should include KITE.
 - Check liquidity, spread, candle history length, and minimum order constraints before any research promotion.
@@ -73,7 +73,7 @@ Latest local status:
 ```text
 report=data/research/kite_watchlist_candidate_check_v1/kite_watchlist_candidate_check_v1.json
 recommendation=RESEARCH_WATCHLIST_READY
-asset_flags=is_enabled=0,is_tradeable=0,is_portfolio=0
+asset_flags=is_enabled=1,is_tradeable=0,is_portfolio=0
 candles=1h/4h/1d present through 2026-05-17 00:00:00 UTC
 runtime_allowed=false
 ```
@@ -81,9 +81,17 @@ runtime_allowed=false
 Related watchlist intake spot checks:
 
 ```text
-APT: local disabled metadata exists; 1h/4h/1d candles present; research-only.
-SXT: local disabled metadata exists; partial 4h candle coverage only; needs manual review.
+APT: enabled for market-data / analysis ingestion only; non-tradeable; non-portfolio; 1h/4h/1d candles present; research-watchlist-ready from data coverage.
+KITE: enabled for market-data / analysis ingestion only; non-tradeable; non-portfolio; 1h/4h/1d candles present; low-liquidity caution.
+SXT: enabled for market-data / analysis ingestion only; non-tradeable; non-portfolio; 1h/4h/1d candles present; previous partial coverage note is obsolete.
 ASX: not in scope; user clarified it is not of interest.
+```
+
+Reproducibility note:
+
+```text
+APT/KITE/SXT asset metadata changes are current local DB state.
+If this must be reproducible on a fresh environment, create a separate reviewed migration/seed task.
 ```
 
 Initial research questions:
