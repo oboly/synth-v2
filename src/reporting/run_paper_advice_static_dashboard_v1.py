@@ -142,8 +142,23 @@ def zone_labels(leg_direction: str | None) -> tuple[str, str, str]:
     if normalized == "UP":
         return ("Entry zone", "Upside TP zone", "Invalidation below")
     if normalized == "DOWN":
-        return ("Reaction zone", "Downside target zone", "Invalidation above")
+        return ("Reaction zone", "Downside entry zone", "Invalidation above reaction zone")
     return ("Zone", "Target zone", "Invalidation")
+
+
+def display_badges(row: dict[str, Any]) -> list[tuple[str, str]]:
+    badges: list[tuple[str, str]] = []
+    leg_direction = str(row.get("leg_direction") or "").strip().upper()
+    policy_decision = str(row.get("policy_decision") or "").strip().upper()
+
+    if leg_direction == "DOWN":
+        badges.append(("PULLBACK WATCH", "watch"))
+        badges.append(("WATCHLIST ONLY", "context"))
+
+        if policy_decision == "BLOCK_FOR_24H":
+            badges.append(("NOT ACTIONABLE", "block"))
+
+    return badges
 
 
 def fetch_latest_rows(
@@ -337,6 +352,13 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         rank_text = "—" if rank is None else str(rank)
 
         zone_label, target_label, invalidation_label = zone_labels(leg_direction)
+        badges = display_badges(row)
+        badge_html = ""
+        if badges:
+            badge_html = "".join(
+                f'<span class="pill {esc(css_name)}">{esc(label)}</span>' for label, css_name in badges
+            )
+            badge_html = f'<div class="badge-row">{badge_html}</div>'
 
         body.append(
             f"""
@@ -345,6 +367,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                 <td class="symbol">
                     {esc(row.get("symbol"))}
                     <div><span class="pill {css_class(leg_direction)}">{esc(leg_direction or "—")}</span></div>
+                    {badge_html}
                 </td>
                 <td><span class="pill {css_class(advice_state)}">{esc(advice_state)}</span></td>
                 <td>{esc(row.get("advice_action"))}</td>
@@ -578,6 +601,12 @@ def render_html(
             font-size: 12px;
             white-space: nowrap;
             background: rgba(255,255,255,0.04);
+        }}
+        .badge-row {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 4px;
+            margin-top: 6px;
         }}
         .good {{ color: var(--good); }}
         .watch {{ color: var(--watch); }}
