@@ -232,6 +232,17 @@ def zone_lifecycle_start_ts(row: dict[str, Any]) -> datetime | None:
     return parse_ts(row.get("context_ts_utc")) or parse_ts(row.get("asof_ts_utc"))
 
 
+def zone_thesis_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        str(row.get("leg_direction") or "").strip().upper(),
+        to_decimal(row.get("entry_zone_low")),
+        to_decimal(row.get("entry_zone_high")),
+        to_decimal(row.get("tp_zone_low")),
+        to_decimal(row.get("tp_zone_high")),
+        to_decimal(row.get("invalidation_price")),
+    )
+
+
 def is_pullback_invalidated(row: dict[str, Any]) -> bool:
     return bool(row.get("path_invalidated"))
 
@@ -333,6 +344,84 @@ def display_badges(row: dict[str, Any]) -> list[tuple[str, str]]:
     return badges
 
 
+def enrich_zone_thesis_starts(
+    conn: pymysql.connections.Connection,
+    rows: list[dict[str, Any]],
+    venue: str,
+    advice_interval: str,
+) -> None:
+    down_rows = [
+        row
+        for row in rows
+        if row.get("asset_id") is not None
+        and str(row.get("leg_direction") or "").strip().upper() == "DOWN"
+    ]
+    if not down_rows:
+        return
+
+    asset_ids = sorted({int(row["asset_id"]) for row in down_rows})
+    placeholders = ",".join(["%s"] * len(asset_ids))
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+                asset_id,
+                asof_ts_utc,
+                context_ts_utc,
+                source_ref_json,
+                leg_direction,
+                entry_zone_low,
+                entry_zone_high,
+                tp_zone_low,
+                tp_zone_high,
+                invalidation_price
+            FROM paper_advice_observation
+            WHERE venue = %s
+              AND interval_code = %s
+              AND asset_id IN ({placeholders})
+            ORDER BY asset_id ASC, asof_ts_utc DESC
+            """,
+            [venue, advice_interval, *asset_ids],
+        )
+        history_rows = list(cur.fetchall())
+
+    history_by_asset: dict[int, list[dict[str, Any]]] = {}
+    for history_row in history_rows:
+        history_by_asset.setdefault(int(history_row["asset_id"]), []).append(history_row)
+
+    for row in down_rows:
+        asset_id = int(row["asset_id"])
+        current_asof = parse_ts(row.get("asof_ts_utc"))
+        current_key = zone_thesis_key(row)
+        contiguous_matches: list[dict[str, Any]] = []
+
+        for history_row in history_by_asset.get(asset_id, []):
+            history_asof = parse_ts(history_row.get("asof_ts_utc"))
+            if current_asof is not None and history_asof is not None and history_asof > current_asof:
+                continue
+
+            if zone_thesis_key(history_row) != current_key:
+                if contiguous_matches:
+                    break
+                continue
+
+            contiguous_matches.append(history_row)
+
+        start_candidates = [
+            ts for ts in (zone_lifecycle_start_ts(history_row) for history_row in contiguous_matches) if ts is not None
+        ]
+
+        if start_candidates:
+            row["zone_thesis_start_ts_utc"] = min(start_candidates)
+            row["zone_thesis_snapshot_count"] = len(contiguous_matches)
+        else:
+            fallback = zone_lifecycle_start_ts(row)
+            if fallback is not None:
+                row["zone_thesis_start_ts_utc"] = fallback
+                row["zone_thesis_snapshot_count"] = 1
+
+
 def enrich_candle_context(
     conn: pymysql.connections.Connection,
     rows: list[dict[str, Any]],
@@ -343,6 +432,8 @@ def enrich_candle_context(
     asset_ids = sorted({int(row["asset_id"]) for row in rows if row.get("asset_id") is not None})
     if not asset_ids:
         return
+
+    enrich_zone_thesis_starts(conn, rows, venue, advice_interval)
 
     placeholders = ",".join(["%s"] * len(asset_ids))
     latest_params: list[Any] = [
@@ -357,7 +448,9 @@ def enrich_candle_context(
     for row in rows:
         if row.get("asset_id") is None:
             continue
-        start_ts = zone_lifecycle_start_ts(row)
+        start_ts = row.get("zone_thesis_start_ts_utc")
+        if not isinstance(start_ts, datetime):
+            start_ts = zone_lifecycle_start_ts(row)
         if start_ts is None:
             continue
         asset_id = int(row["asset_id"])
@@ -669,6 +762,12 @@ def render_table(rows: list[dict[str, Any]]) -> str:
 
         rank = row.get("priority_rank")
         rank_text = "—" if rank is None else str(rank)
+        zone_thesis_text = ""
+        if leg_direction.strip().upper() == "DOWN":
+            thesis_start = fmt_ts(row.get("zone_thesis_start_ts_utc"))
+            snapshot_count = row.get("zone_thesis_snapshot_count")
+            suffix = f" · snapshots={snapshot_count}" if snapshot_count is not None else ""
+            zone_thesis_text = f'<div class="muted small">zone thesis: {esc(thesis_start)} UTC{esc(suffix)}</div>'
 
         zone_cell_1, zone_cell_2, zone_cell_3 = zone_display_cells(row)
         row_class = "expired" if leg_direction.strip().upper() == "DOWN" and is_pullback_invalidated(row) else ""
@@ -688,6 +787,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                     {esc(row.get("symbol"))}
                     <div><span class="pill {css_class(leg_direction)}">{esc(leg_direction or "—")}</span></div>
                     {badge_html}
+                    {zone_thesis_text}
                 </td>
                 <td><span class="pill {css_class(advice_state)}">{esc(advice_state)}</span></td>
                 <td>{esc(row.get("advice_action"))}</td>
