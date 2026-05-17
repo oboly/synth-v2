@@ -116,6 +116,9 @@ Tasks:
 - Avoid direct live ticker calls inside chart renderer.
 - Make source timestamp and freshness visible in UI.
 - Keep any future refresh runner read-only for UI display sources unless a separate market-data ingestion task explicitly owns writes.
+- Paper advice dashboard refresh may render static HTML frequently using the latest 4h `paper_advice_observation` snapshot plus 1h candle path data for display-only DOWN pullback lifecycle badges.
+- Frequent lifecycle refresh does not imply trade permission, paper execution permission, or runtime promotion.
+- If a DOWN row is `INVALIDATED`, the dashboard should show `RECOMPUTE NEEDED`; zone recomputation belongs upstream in `execution_zone_context` / paper advice, not in the dashboard.
 
 Boundary:
 
@@ -124,6 +127,36 @@ Read-only display support.
 No writes to decision, execution, order, account, balance, or position tables.
 No broker/order path.
 No direct ticker calls from chart renderer.
+No dashboard zone recomputation.
+```
+
+## P2 — Paper advice dashboard lifecycle refresh runner
+
+Status: drafted / implementation review pending.
+
+Script:
+
+```text
+scripts/odroid/run_paper_advice_dashboard_refresh_once.sh
+```
+
+Tasks:
+
+- Render the static paper advice dashboard from the latest 4h paper advice snapshot.
+- Use 1h `obs_market_candle` ranges for path-aware DOWN pullback lifecycle display.
+- Use `flock` to avoid duplicate dashboard renders.
+- Print explicit safety markers.
+- Keep output as static HTML only.
+
+Boundary:
+
+```text
+Display-only.
+Read-only DB access.
+No strategy/policy/decision/execution changes.
+No broker/private calls.
+No broker writes.
+No order submission.
 ```
 
 ## P2 — First paper strategy lane after Odroid runners

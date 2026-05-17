@@ -35,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--interval", default="4h")
+    parser.add_argument("--lifecycle-candle-interval", default="1h")
     parser.add_argument("--output-html", default=DEFAULT_OUTPUT_HTML)
     parser.add_argument("--limit", type=int, default=80)
     parser.add_argument("--title", default="Synth Paper Advice")
@@ -108,6 +109,23 @@ def esc(value: Any) -> str:
     return html.escape(str(value))
 
 
+def parse_ts(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "null", "nat"}:
+        return None
+
+    text = text.replace("T", " ").removesuffix("Z")
+    try:
+        return datetime.fromisoformat(text).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
 def css_class(value: str | None) -> str:
     if not value:
         return "muted"
@@ -174,26 +192,82 @@ def _range_bounds(low: Any, high: Any) -> tuple[Decimal | None, Decimal | None]:
     return min(values), max(values)
 
 
+def zone_lifecycle_start_ts(row: dict[str, Any]) -> datetime | None:
+    raw_source_ref = row.get("source_ref_json")
+    if raw_source_ref:
+        try:
+            payload = json.loads(str(raw_source_ref))
+            if isinstance(payload, dict):
+                zone_ts = parse_ts(payload.get("zone_asof_ts_utc"))
+                if zone_ts is not None:
+                    return zone_ts
+        except json.JSONDecodeError:
+            pass
+
+    return parse_ts(row.get("context_ts_utc")) or parse_ts(row.get("asof_ts_utc"))
+
+
+def is_pullback_invalidated(row: dict[str, Any]) -> bool:
+    return bool(row.get("path_invalidated"))
+
+
 def pullback_lifecycle_badge(row: dict[str, Any]) -> tuple[str, str]:
     price = to_decimal(row.get("latest_close_price"))
+    latest_high = to_decimal(row.get("latest_high_price"))
+    latest_low = to_decimal(row.get("latest_low_price"))
     reaction_low, reaction_high = _range_bounds(row.get("entry_zone_low"), row.get("entry_zone_high"))
     downside_low, downside_high = _range_bounds(row.get("tp_zone_low"), row.get("tp_zone_high"))
-    invalidation = to_decimal(row.get("invalidation_price"))
 
     if price is None:
         return "PULLBACK WATCH", "watch"
 
-    if invalidation is not None and price > invalidation:
+    if is_pullback_invalidated(row):
         return "INVALIDATED", "danger"
 
+    latest_overlaps_downside_entry = (
+        latest_low is not None
+        and latest_high is not None
+        and downside_low is not None
+        and downside_high is not None
+        and latest_low <= downside_high
+        and latest_high >= downside_low
+    )
+
+    if row.get("path_downside_entry_reached"):
+        if (
+            reaction_high is not None
+            and (price > reaction_high or (latest_high is not None and latest_high > reaction_high))
+        ):
+            return "REACTION RETEST AFTER ENTRY", "watch"
+        if price is not None and downside_high is not None and price > downside_high:
+            return "POST-ENTRY BOUNCE", "watch"
+        if latest_overlaps_downside_entry:
+            return "DOWNSIDE ENTRY REACHED", "context"
+        if price is not None and downside_low is not None and price < downside_low:
+            return "BELOW DOWNSIDE ENTRY", "block"
+        return "DOWNSIDE ENTRY REACHED", "context"
+
     if downside_low is not None and downside_high is not None:
-        if downside_low <= price <= downside_high:
+        if latest_overlaps_downside_entry:
             return "DOWNSIDE ENTRY REACHED", "context"
         if price < downside_low:
             return "BELOW DOWNSIDE ENTRY", "block"
 
     if reaction_low is not None and reaction_high is not None and reaction_low <= price <= reaction_high:
         return "REACTION ZONE ACTIVE", "watch"
+
+    if (
+        reaction_low is not None
+        and reaction_high is not None
+        and latest_low is not None
+        and latest_high is not None
+        and latest_low <= reaction_high
+        and latest_high >= reaction_low
+    ):
+        return "REACTION ZONE ACTIVE", "watch"
+
+    if reaction_high is not None and (price > reaction_high or (latest_high is not None and latest_high > reaction_high)):
+        return "REACTION RETEST", "watch"
 
     if (
         reaction_low is not None
@@ -214,33 +288,60 @@ def display_badges(row: dict[str, Any]) -> list[tuple[str, str]]:
     selection_state = str(row.get("selection_state") or "").strip().upper()
 
     if leg_direction == "DOWN":
+        invalidated = is_pullback_invalidated(row)
         badges.append(pullback_lifecycle_badge(row))
+        if invalidated:
+            badges.append(("RECOMPUTE NEEDED", "block"))
+            badges.append(("NOT ACTIONABLE", "block"))
+
         badges.append(("WATCHLIST ONLY", "context"))
 
-        if setup_filter_state == "FAIL":
-            badges.append(("SETUP FAILED", "muted"))
-
-        if selection_state in {"AVOID", "NO_EDGE_PERMISSION"}:
-            badges.append(("NO EDGE", "danger"))
-
-        if policy_decision == "BLOCK_FOR_24H":
+        if policy_decision == "BLOCK_FOR_24H" and not invalidated:
             badges.append(("NOT ACTIONABLE", "block"))
+
+    if setup_filter_state == "FAIL":
+        badges.append(("SETUP FAILED", "muted"))
+
+    if selection_state in {"AVOID", "NO_EDGE_PERMISSION"}:
+        badges.append(("NO EDGE", "danger"))
 
     return badges
 
 
-def enrich_latest_prices(
+def enrich_candle_context(
     conn: pymysql.connections.Connection,
     rows: list[dict[str, Any]],
     venue: str,
-    interval: str,
+    advice_interval: str,
+    lifecycle_candle_interval: str,
 ) -> None:
     asset_ids = sorted({int(row["asset_id"]) for row in rows if row.get("asset_id") is not None})
     if not asset_ids:
         return
 
     placeholders = ",".join(["%s"] * len(asset_ids))
-    params: list[Any] = [venue, interval, *asset_ids, venue, interval]
+    latest_params: list[Any] = [
+        venue,
+        lifecycle_candle_interval,
+        *asset_ids,
+        venue,
+        lifecycle_candle_interval,
+    ]
+
+    lifecycle_starts: dict[int, datetime] = {}
+    for row in rows:
+        if row.get("asset_id") is None:
+            continue
+        start_ts = zone_lifecycle_start_ts(row)
+        if start_ts is None:
+            continue
+        asset_id = int(row["asset_id"])
+        existing = lifecycle_starts.get(asset_id)
+        if existing is None or start_ts < existing:
+            lifecycle_starts[asset_id] = start_ts
+        row["zone_lifecycle_start_ts_utc"] = start_ts
+        row["advice_interval_code"] = advice_interval
+        row["lifecycle_candle_interval_code"] = lifecycle_candle_interval
 
     with conn.cursor() as cur:
         cur.execute(
@@ -248,7 +349,9 @@ def enrich_latest_prices(
             SELECT
                 c.asset_id,
                 c.close_ts_utc,
-                c.close_price
+                c.close_price,
+                c.high_price,
+                c.low_price
             FROM obs_market_candle c
             JOIN (
                 SELECT asset_id, MAX(close_ts_utc) AS max_close_ts_utc
@@ -263,7 +366,7 @@ def enrich_latest_prices(
             WHERE c.venue = %s
               AND c.interval_code = %s
             """,
-            params,
+            latest_params,
         )
         price_rows = {int(row["asset_id"]): row for row in cur.fetchall()}
 
@@ -275,13 +378,83 @@ def enrich_latest_prices(
         if not price_row:
             continue
         row["latest_close_price"] = price_row.get("close_price")
+        row["latest_high_price"] = price_row.get("high_price")
+        row["latest_low_price"] = price_row.get("low_price")
         row["latest_close_ts_utc"] = price_row.get("close_ts_utc")
+
+    if not lifecycle_starts:
+        return
+
+    min_start_ts = min(lifecycle_starts.values())
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+                asset_id,
+                close_ts_utc,
+                high_price,
+                low_price
+            FROM obs_market_candle
+            WHERE venue = %s
+              AND interval_code = %s
+              AND asset_id IN ({placeholders})
+              AND close_ts_utc >= %s
+            ORDER BY asset_id, close_ts_utc
+            """,
+            [venue, lifecycle_candle_interval, *asset_ids, min_start_ts],
+        )
+        path_candles = list(cur.fetchall())
+
+    candles_by_asset: dict[int, list[dict[str, Any]]] = {}
+    for candle in path_candles:
+        candles_by_asset.setdefault(int(candle["asset_id"]), []).append(candle)
+
+    for row in rows:
+        if str(row.get("leg_direction") or "").strip().upper() != "DOWN":
+            continue
+        if row.get("asset_id") is None:
+            continue
+
+        start_ts = row.get("zone_lifecycle_start_ts_utc")
+        if not isinstance(start_ts, datetime):
+            continue
+
+        invalidation = to_decimal(row.get("invalidation_price"))
+        downside_low, downside_high = _range_bounds(row.get("tp_zone_low"), row.get("tp_zone_high"))
+        path_invalidated = False
+        path_downside_entry_reached = False
+
+        for candle in candles_by_asset.get(int(row["asset_id"]), []):
+            close_ts = parse_ts(candle.get("close_ts_utc"))
+            if close_ts is None or close_ts < start_ts:
+                continue
+
+            high = to_decimal(candle.get("high_price"))
+            low = to_decimal(candle.get("low_price"))
+
+            if invalidation is not None and high is not None and high >= invalidation:
+                path_invalidated = True
+
+            if (
+                downside_low is not None
+                and downside_high is not None
+                and low is not None
+                and high is not None
+                and low <= downside_high
+                and high >= downside_low
+            ):
+                path_downside_entry_reached = True
+
+        row["path_invalidated"] = path_invalidated
+        row["path_downside_entry_reached"] = path_downside_entry_reached
 
 
 def fetch_latest_rows(
     conn: pymysql.connections.Connection,
     venue: str,
     interval: str,
+    lifecycle_candle_interval: str,
     limit: int,
 ) -> tuple[datetime | None, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
     with conn.cursor() as cur:
@@ -357,6 +530,7 @@ def fetch_latest_rows(
                 confidence_score,
                 risk_label,
                 reason_codes_json,
+                source_ref_json,
                 asof_ts_utc,
                 context_ts_utc
             FROM paper_advice_observation
@@ -389,7 +563,7 @@ def fetch_latest_rows(
         )
         rows = list(cur.fetchall())
 
-    enrich_latest_prices(conn, rows, venue, interval)
+    enrich_candle_context(conn, rows, venue, interval, lifecycle_candle_interval)
 
     with conn.cursor() as cur:
         cur.execute(
@@ -472,6 +646,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         rank_text = "—" if rank is None else str(rank)
 
         zone_cell_1, zone_cell_2, zone_cell_3 = zone_display_cells(row)
+        row_class = "expired" if leg_direction.strip().upper() == "DOWN" and is_pullback_invalidated(row) else ""
         badges = display_badges(row)
         badge_html = ""
         if badges:
@@ -482,7 +657,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
 
         body.append(
             f"""
-            <tr>
+            <tr class="{esc(row_class)}">
                 <td class="mono center">{esc(rank_text)}</td>
                 <td class="symbol">
                     {esc(row.get("symbol"))}
@@ -547,6 +722,7 @@ def render_html(
     title: str,
     venue: str,
     interval: str,
+    lifecycle_candle_interval: str,
     latest_asof: datetime | None,
     rows: list[dict[str, Any]],
     counts: list[dict[str, Any]],
@@ -694,6 +870,14 @@ def render_html(
         tr:hover {{
             background: rgba(96, 165, 250, 0.07);
         }}
+        tr.expired {{
+            opacity: 0.68;
+        }}
+        tr.expired td:nth-child(7),
+        tr.expired td:nth-child(8),
+        tr.expired td:nth-child(9) {{
+            color: var(--muted);
+        }}
         .symbol {{
             font-weight: 800;
             font-size: 14px;
@@ -759,7 +943,7 @@ def render_html(
             <div>
                 <h1>{esc(title)}</h1>
                 <div class="subtitle">
-                    Read-only paper navigation · venue={esc(venue)} · interval={esc(interval)} · latest advice={esc(latest_text)}<br>
+                    Read-only paper navigation · venue={esc(venue)} · advice interval={esc(interval)} · lifecycle candles={esc(lifecycle_candle_interval)} · latest advice={esc(latest_text)}<br>
                     Static page refreshes every 5 minutes. Data changes when the 4h chain writes a new paper_advice_observation snapshot.
                 </div>
             </div>
@@ -799,11 +983,18 @@ def write_html(path: Path, content: str) -> None:
     tmp_path.replace(path)
 
 
-def print_table(path: Path, latest_asof: datetime | None, rows: list[dict[str, Any]], counts: list[dict[str, Any]]) -> None:
+def print_table(
+    path: Path,
+    latest_asof: datetime | None,
+    rows: list[dict[str, Any]],
+    counts: list[dict[str, Any]],
+    lifecycle_candle_interval: str,
+) -> None:
     print(f"report={POLICY_NAME} version={POLICY_VERSION}")
     print("scope=static-readonly paper-navigation")
     print("broker_calls=0 broker_writes=0 order_submission=0 live_orders=0")
     print(f"latest_asof={latest_asof}")
+    print(f"lifecycle_candle_interval={lifecycle_candle_interval}")
     print(f"rows={len(rows)}")
     print(f"output_html={path}")
     print()
@@ -822,6 +1013,7 @@ def main() -> int:
             conn,
             venue=str(args.venue),
             interval=str(args.interval),
+            lifecycle_candle_interval=str(args.lifecycle_candle_interval),
             limit=int(args.limit),
         )
     finally:
@@ -831,6 +1023,7 @@ def main() -> int:
         title=str(args.title),
         venue=str(args.venue),
         interval=str(args.interval),
+        lifecycle_candle_interval=str(args.lifecycle_candle_interval),
         latest_asof=latest_asof,
         rows=rows,
         counts=counts,
@@ -846,6 +1039,7 @@ def main() -> int:
                     "policy_name": POLICY_NAME,
                     "policy_version": POLICY_VERSION,
                     "latest_asof": latest_asof.isoformat(sep=" ") if latest_asof else None,
+                    "lifecycle_candle_interval": str(args.lifecycle_candle_interval),
                     "rows": len(rows),
                     "output_html": str(output_path),
                     "broker_calls": 0,
@@ -857,7 +1051,7 @@ def main() -> int:
             )
         )
     else:
-        print_table(output_path, latest_asof, rows, counts)
+        print_table(output_path, latest_asof, rows, counts, str(args.lifecycle_candle_interval))
 
     return 0
 
