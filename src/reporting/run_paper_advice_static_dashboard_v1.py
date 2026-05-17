@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pymysql
 from dotenv import load_dotenv
@@ -124,6 +125,30 @@ def parse_ts(value: Any) -> datetime | None:
         return datetime.fromisoformat(text).replace(tzinfo=None)
     except ValueError:
         return None
+
+
+def fmt_ts(value: Any) -> str:
+    parsed = parse_ts(value)
+    if parsed is None:
+        return "not available"
+    return parsed.isoformat(sep=" ", timespec="seconds")
+
+
+def fmt_ts_local(value: Any, timezone: str = "Europe/Amsterdam") -> str:
+    parsed = parse_ts(value)
+    if parsed is None:
+        return "not available"
+
+    utc_value = parsed.replace(tzinfo=UTC)
+    local_value = utc_value.astimezone(ZoneInfo(timezone))
+    return local_value.strftime("%Y-%m-%d %H:%M %Z")
+
+
+def latest_lifecycle_candle_ts(rows: list[dict[str, Any]]) -> datetime | None:
+    timestamps = [ts for ts in (parse_ts(row.get("latest_close_ts_utc")) for row in rows) if ts is not None]
+    if not timestamps:
+        return None
+    return max(timestamps)
 
 
 def css_class(value: str | None) -> str:
@@ -730,8 +755,12 @@ def render_html(
 ) -> str:
     generated_ts = datetime.now(UTC).replace(tzinfo=None)
     primary_rows, defensive_rows = split_rows(rows)
+    latest_lifecycle_ts = latest_lifecycle_candle_ts(rows)
 
-    latest_text = latest_asof.isoformat(sep=" ", timespec="seconds") if latest_asof else "NO DATA"
+    latest_text = fmt_ts(latest_asof)
+    latest_lifecycle_text = fmt_ts(latest_lifecycle_ts)
+    latest_lifecycle_local_text = fmt_ts_local(latest_lifecycle_ts)
+    generated_text = fmt_ts(generated_ts)
     runtime_text = "—"
     runtime_flags = "—"
 
@@ -943,8 +972,11 @@ def render_html(
             <div>
                 <h1>{esc(title)}</h1>
                 <div class="subtitle">
-                    Read-only paper navigation · venue={esc(venue)} · advice interval={esc(interval)} · lifecycle candles={esc(lifecycle_candle_interval)} · latest advice={esc(latest_text)}<br>
-                    Static page refreshes every 5 minutes. Data changes when the 4h chain writes a new paper_advice_observation snapshot.
+                    Read-only paper navigation · venue={esc(venue)} · advice interval={esc(interval)} · lifecycle candles={esc(lifecycle_candle_interval)}<br>
+                    latest advice snapshot: {esc(latest_text)} UTC<br>
+                    latest lifecycle candle: {esc(latest_lifecycle_text)} UTC · {esc(latest_lifecycle_local_text)}<br>
+                    dashboard rendered: {esc(generated_text)} UTC<br>
+                    Setup/policy changes when the 4h chain writes a new paper_advice_observation snapshot. Lifecycle badges refresh from 1h candle path data when the dashboard refresh runner runs.
                 </div>
             </div>
             <div class="badge">broker_calls=0 · broker_writes=0 · order_submission=0</div>
@@ -965,7 +997,7 @@ def render_html(
         </section>
 
         <section class="footer">
-            Generated UTC: {esc(generated_ts)}<br>
+            Generated UTC: {esc(generated_text)}<br>
             Runtime: {esc(runtime_text)}<br>
             Runtime flags: {esc(runtime_flags)}<br>
             Boundary: this page is display-only. It does not call the broker, decision_gate, execution_planner, executor, or order APIs.
