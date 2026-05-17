@@ -37,7 +37,7 @@ Forbidden:
 
 ## P2 — KITE moonshot asymmetry candidate
 
-Status: open.
+Status: research-watchlist-ready.
 
 User thesis:
 
@@ -60,13 +60,31 @@ runtime_allowed=false
 
 Tasks:
 
-- Verify KITE exists in local `asset` metadata and Bitvavo market data universe.
-- If missing locally, add only through the normal asset/universe process.
-- Check whether `KITE-EUR` candles are available in `obs_market_candle`.
+- Verify KITE exists in local `asset` metadata and Bitvavo market data universe. Done.
+- If missing locally, add only through the normal asset/universe process. Done as disabled research/watchlist metadata.
+- Check whether `KITE-EUR` candles are available in `obs_market_candle`. Done.
 - If candles are missing, decide whether Bitvavo candle ingestion should include KITE.
 - Check liquidity, spread, candle history length, and minimum order constraints before any research promotion.
 - Keep KITE out of selection/advice/decision/execution until market-only validation exists.
 - If validated later, classify as `MOONSHOT_ASYMMETRY` or another explicit horizon bucket, not as a raw asset rank.
+
+Latest local status:
+
+```text
+report=data/research/kite_watchlist_candidate_check_v1/kite_watchlist_candidate_check_v1.json
+recommendation=RESEARCH_WATCHLIST_READY
+asset_flags=is_enabled=0,is_tradeable=0,is_portfolio=0
+candles=1h/4h/1d present through 2026-05-17 00:00:00 UTC
+runtime_allowed=false
+```
+
+Related watchlist intake spot checks:
+
+```text
+APT: local disabled metadata exists; 1h/4h/1d candles present; research-only.
+SXT: local disabled metadata exists; partial 4h candle coverage only; needs manual review.
+ASX: not in scope; user clarified it is not of interest.
+```
 
 Initial research questions:
 

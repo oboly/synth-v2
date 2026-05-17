@@ -1,0 +1,246 @@
+{
+  "advice_engine_changes": 0,
+  "asset_metadata": {
+    "asset_class": "SMALL_ALT",
+    "asset_id": 74.0,
+    "is_enabled": 0.0,
+    "is_portfolio": 0.0,
+    "is_tradeable": 0.0,
+    "name": "Kite",
+    "quote_asset": "EUR",
+    "sector": "Other",
+    "symbol": "KITE"
+  },
+  "availability_summary": "KITE is present in local asset metadata. Local candles exist for: 1h, 4h, 1d.",
+  "broker_private_calls": 0,
+  "broker_writes": 0,
+  "candle_coverage_by_interval": {
+    "1d": {
+      "has_rows": true,
+      "latest_close_price": 0.18463,
+      "latest_close_ts_utc": "2026-05-17T00:00:00",
+      "latest_open_ts_utc": "2026-05-16T00:00:00",
+      "latest_volume_base": 2109758.5215,
+      "latest_volume_quote_eur": 389524.715824545,
+      "max_close_ts_utc": "2026-05-17T00:00:00",
+      "max_open_ts_utc": "2026-05-16T00:00:00",
+      "min_open_ts_utc": "2025-11-18T00:00:00",
+      "recent_30_median_volume_quote_eur": 131145.922890185,
+      "recent_gap_hint": "LATEST_CLOSE_RECORDED",
+      "row_count": 180.0
+    },
+    "1h": {
+      "has_rows": true,
+      "latest_close_price": 0.18463,
+      "latest_close_ts_utc": "2026-05-17T00:00:00",
+      "latest_open_ts_utc": "2026-05-16T23:00:00",
+      "latest_volume_base": 315.0586,
+      "latest_volume_quote_eur": 58.169269318,
+      "max_close_ts_utc": "2026-05-17T00:00:00",
+      "max_open_ts_utc": "2026-05-16T23:00:00",
+      "min_open_ts_utc": "2025-11-18T11:00:00",
+      "recent_30_median_volume_quote_eur": 11503.724075573999,
+      "recent_gap_hint": "LATEST_CLOSE_RECORDED",
+      "row_count": 3826.0
+    },
+    "4h": {
+      "has_rows": true,
+      "latest_close_price": 0.18463,
+      "latest_close_ts_utc": "2026-05-17T00:00:00",
+      "latest_open_ts_utc": "2026-05-16T20:00:00",
+      "latest_volume_base": 96145.9501,
+      "latest_volume_quote_eur": 17751.426766963,
+      "max_close_ts_utc": "2026-05-17T00:00:00",
+      "max_open_ts_utc": "2026-05-16T20:00:00",
+      "min_open_ts_utc": "2025-11-18T08:00:00",
+      "recent_30_median_volume_quote_eur": 66898.97246343001,
+      "recent_gap_hint": "LATEST_CLOSE_RECORDED",
+      "row_count": 1060.0
+    }
+  },
+  "db_writes": 0,
+  "decision_gate_changes": 0,
+  "execution_planner_changes": 0,
+  "executor_changes": 0,
+  "generated_ts_utc": "2026-05-17T00:04:12Z",
+  "liquidity_proxy_summary": {
+    "latest_volume_quote_eur": 58.169269318,
+    "low_liquidity_warning": true,
+    "median_volume_quote_eur_recent_window": 11503.724075573999,
+    "source_interval": "1h"
+  },
+  "live_orders": 0,
+  "local_asset_found": true,
+  "market": "KITE-EUR",
+  "next_step": "Review this report manually, then monitor as research-only watchlist context without runtime promotion.",
+  "no_advice_changes": true,
+  "no_decision_changes": true,
+  "no_execution_changes": true,
+  "no_runtime_promotion": true,
+  "no_selection_changes": true,
+  "order_submission": 0,
+  "recommendation": "RESEARCH_WATCHLIST_READY",
+  "repo_references": [
+    {
+      "line": 14,
+      "path": "src/research/run_kite_watchlist_candidate_check_v1.py",
+      "text": "REPORT = \"kite_watchlist_candidate_check\""
+    },
+    {
+      "line": 16,
+      "path": "src/research/run_kite_watchlist_candidate_check_v1.py",
+      "text": "DEFAULT_OUTPUT_DIR = Path(\"data/research/kite_watchlist_candidate_check_v1\")"
+    },
+    {
+      "line": 29,
+      "path": "src/research/run_kite_watchlist_candidate_check_v1.py",
+      "text": "parser = argparse.ArgumentParser(description=\"Check KITE local watchlist candidate readiness.\")"
+    },
+    {
+      "line": 31,
+      "path": "src/research/run_kite_watchlist_candidate_check_v1.py",
+      "text": "parser.add_argument(\"--symbol\", default=\"KITE\")"
+    },
+    {
+      "line": 334,
+      "path": "src/research/run_kite_watchlist_candidate_check_v1.py",
+      "text": "availability_parts.append(\"KITE is not present in local asset metadata.\")"
+    },
+    {
+      "line": 336,
+      "path": "src/research/run_kite_watchlist_candidate_check_v1.py",
+      "text": "availability_parts.append(\"KITE is present in local asset metadata.\")"
+    },
+    {
+      "line": 381,
+      "path": "src/research/run_kite_watchlist_candidate_check_v1.py",
+      "text": "path = output_dir / \"kite_watchlist_candidate_check_v1.json\""
+    },
+    {
+      "line": 38,
+      "path": "docs/todo/watchlist_candidates.md",
+      "text": "## P2 \u2014 KITE moonshot asymmetry candidate"
+    },
+    {
+      "line": 45,
+      "path": "docs/todo/watchlist_candidates.md",
+      "text": "KITE is Bitvavo-listed."
+    },
+    {
+      "line": 53,
+      "path": "docs/todo/watchlist_candidates.md",
+      "text": "symbol=KITE"
+    },
+    {
+      "line": 63,
+      "path": "docs/todo/watchlist_candidates.md",
+      "text": "- Verify KITE exists in local `asset` metadata and Bitvavo market data universe. Done."
+    },
+    {
+      "line": 65,
+      "path": "docs/todo/watchlist_candidates.md",
+      "text": "- Check whether `KITE-EUR` candles are available in `obs_market_candle`. Done."
+    },
+    {
+      "line": 66,
+      "path": "docs/todo/watchlist_candidates.md",
+      "text": "- If candles are missing, decide whether Bitvavo candle ingestion should include KITE."
+    },
+    {
+      "line": 68,
+      "path": "docs/todo/watchlist_candidates.md",
+      "text": "- Keep KITE out of selection/advice/decision/execution until market-only validation exists."
+    },
+    {
+      "line": 74,
+      "path": "docs/todo/watchlist_candidates.md",
+      "text": "report=data/research/kite_watchlist_candidate_check_v1/kite_watchlist_candidate_check_v1.json"
+    },
+    {
+      "line": 91,
+      "path": "docs/todo/watchlist_candidates.md",
+      "text": "- Is KITE liquid enough on Bitvavo to exit during a pump?"
+    },
+    {
+      "line": 92,
+      "path": "docs/todo/watchlist_candidates.md",
+      "text": "- Does KITE have enough candle history for basic Market Breath / momentum / volatility analysis?"
+    },
+    {
+      "line": 94,
+      "path": "docs/todo/watchlist_candidates.md",
+      "text": "- Does KITE belong in short-term spike watchlist, moonshot asymmetry, or both as separate candidates?"
+    },
+    {
+      "line": 51,
+      "path": "docs/todo/README.md",
+      "text": "| `watchlist_candidates.md` | open intake | User-thesis watchlist candidates such as KITE before validation/promotion |"
+    },
+    {
+      "line": 1,
+      "path": "docs/research/kite_watchlist_candidate_check_v1.md",
+      "text": "# KITE Watchlist Candidate Check V1"
+    },
+    {
+      "line": 5,
+      "path": "docs/research/kite_watchlist_candidate_check_v1.md",
+      "text": "Check whether KITE exists locally and whether local market data is sufficient for research-only watchlist monitoring."
+    },
+    {
+      "line": 9,
+      "path": "docs/research/kite_watchlist_candidate_check_v1.md",
+      "text": "The user thesis is that KITE is Bitvavo-listed and may have attractive asymmetry. This document treats that as watchlist intake only."
+    },
+    {
+      "line": 17,
+      "path": "docs/research/kite_watchlist_candidate_check_v1.md",
+      "text": "KITE is now present in local `asset` metadata as a disabled research/watchlist asset:"
+    },
+    {
+      "line": 22,
+      "path": "docs/research/kite_watchlist_candidate_check_v1.md",
+      "text": "| symbol | KITE |"
+    },
+    {
+      "line": 23,
+      "path": "docs/research/kite_watchlist_candidate_check_v1.md",
+      "text": "| name | Kite |"
+    },
+    {
+      "line": 30,
+      "path": "docs/research/kite_watchlist_candidate_check_v1.md",
+      "text": "The disabled flags mean KITE is not promoted into the normal runtime universe."
+    },
+    {
+      "line": 34,
+      "path": "docs/research/kite_watchlist_candidate_check_v1.md",
+      "text": "Local `obs_market_candle` coverage exists for KITE on Bitvavo:"
+    },
+    {
+      "line": 51,
+      "path": "docs/research/kite_watchlist_candidate_check_v1.md",
+      "text": "| KITE | present, disabled | 1h/4h/1d present | research-watchlist-ready |"
+    },
+    {
+      "line": 58,
+      "path": "docs/research/kite_watchlist_candidate_check_v1.md",
+      "text": "KITE is `RESEARCH_WATCHLIST_READY` for market-only monitoring. This means it can be reviewed as a watchlist candidate, not as a signal or order candidate."
+    },
+    {
+      "line": 62,
+      "path": "docs/research/kite_watchlist_candidate_check_v1.md",
+      "text": "Manually review `data/research/kite_watchlist_candidate_check_v1/kite_watchlist_candidate_check_v1.json`, then decide whether a separate follow-up should add research-only monitoring views for KITE, APT, and/or SXT."
+    },
+    {
+      "line": 66,
+      "path": "docs/research/kite_watchlist_candidate_check_v1.md",
+      "text": "KITE remains disabled and non-tradeable in local metadata. Do not add KITE to runtime selection, advice, decision, execution, order, or chain scripts from this report."
+    }
+  ],
+  "report": "kite_watchlist_candidate_check",
+  "scope": "research_only_market_only_account_agnostic_watchlist_intake",
+  "selection_engine_changes": 0,
+  "symbol": "KITE",
+  "venue": "bitvavo",
+  "version": "1.0"
+}
