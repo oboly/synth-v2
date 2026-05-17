@@ -108,6 +108,23 @@ def esc(value: Any) -> str:
     return html.escape(str(value))
 
 
+def parse_ts(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+
+    text = str(value).strip()
+    if not text or text.lower() in {"none", "null", "nat"}:
+        return None
+
+    text = text.replace("T", " ").removesuffix("Z")
+    try:
+        return datetime.fromisoformat(text).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
 def css_class(value: str | None) -> str:
     if not value:
         return "muted"
@@ -174,17 +191,51 @@ def _range_bounds(low: Any, high: Any) -> tuple[Decimal | None, Decimal | None]:
     return min(values), max(values)
 
 
+def zone_lifecycle_start_ts(row: dict[str, Any]) -> datetime | None:
+    raw_source_ref = row.get("source_ref_json")
+    if raw_source_ref:
+        try:
+            payload = json.loads(str(raw_source_ref))
+            if isinstance(payload, dict):
+                zone_ts = parse_ts(payload.get("zone_asof_ts_utc"))
+                if zone_ts is not None:
+                    return zone_ts
+        except json.JSONDecodeError:
+            pass
+
+    return parse_ts(row.get("context_ts_utc")) or parse_ts(row.get("asof_ts_utc"))
+
+
+def is_pullback_invalidated(row: dict[str, Any]) -> bool:
+    return bool(row.get("path_invalidated"))
+
+
 def pullback_lifecycle_badge(row: dict[str, Any]) -> tuple[str, str]:
     price = to_decimal(row.get("latest_close_price"))
     reaction_low, reaction_high = _range_bounds(row.get("entry_zone_low"), row.get("entry_zone_high"))
     downside_low, downside_high = _range_bounds(row.get("tp_zone_low"), row.get("tp_zone_high"))
-    invalidation = to_decimal(row.get("invalidation_price"))
 
     if price is None:
         return "PULLBACK WATCH", "watch"
 
-    if invalidation is not None and price > invalidation:
+    if is_pullback_invalidated(row):
         return "INVALIDATED", "danger"
+
+    if row.get("path_downside_entry_reached"):
+        if price is not None and reaction_high is not None and price > reaction_high:
+            return "REACTION RETEST AFTER ENTRY", "watch"
+        if price is not None and downside_high is not None and price > downside_high:
+            return "POST-ENTRY BOUNCE", "watch"
+        if (
+            price is not None
+            and downside_low is not None
+            and downside_high is not None
+            and downside_low <= price <= downside_high
+        ):
+            return "DOWNSIDE ENTRY REACHED", "context"
+        if price is not None and downside_low is not None and price < downside_low:
+            return "BELOW DOWNSIDE ENTRY", "block"
+        return "DOWNSIDE ENTRY REACHED", "context"
 
     if downside_low is not None and downside_high is not None:
         if downside_low <= price <= downside_high:
@@ -194,6 +245,9 @@ def pullback_lifecycle_badge(row: dict[str, Any]) -> tuple[str, str]:
 
     if reaction_low is not None and reaction_high is not None and reaction_low <= price <= reaction_high:
         return "REACTION ZONE ACTIVE", "watch"
+
+    if reaction_high is not None and price > reaction_high:
+        return "REACTION RETEST", "watch"
 
     if (
         reaction_low is not None
@@ -214,7 +268,12 @@ def display_badges(row: dict[str, Any]) -> list[tuple[str, str]]:
     selection_state = str(row.get("selection_state") or "").strip().upper()
 
     if leg_direction == "DOWN":
+        invalidated = is_pullback_invalidated(row)
         badges.append(pullback_lifecycle_badge(row))
+        if invalidated:
+            badges.append(("RECOMPUTE NEEDED", "block"))
+            badges.append(("NOT ACTIONABLE", "block"))
+
         badges.append(("WATCHLIST ONLY", "context"))
 
         if setup_filter_state == "FAIL":
@@ -223,13 +282,13 @@ def display_badges(row: dict[str, Any]) -> list[tuple[str, str]]:
         if selection_state in {"AVOID", "NO_EDGE_PERMISSION"}:
             badges.append(("NO EDGE", "danger"))
 
-        if policy_decision == "BLOCK_FOR_24H":
+        if policy_decision == "BLOCK_FOR_24H" and not invalidated:
             badges.append(("NOT ACTIONABLE", "block"))
 
     return badges
 
 
-def enrich_latest_prices(
+def enrich_candle_context(
     conn: pymysql.connections.Connection,
     rows: list[dict[str, Any]],
     venue: str,
@@ -241,6 +300,19 @@ def enrich_latest_prices(
 
     placeholders = ",".join(["%s"] * len(asset_ids))
     params: list[Any] = [venue, interval, *asset_ids, venue, interval]
+
+    lifecycle_starts: dict[int, datetime] = {}
+    for row in rows:
+        if row.get("asset_id") is None:
+            continue
+        start_ts = zone_lifecycle_start_ts(row)
+        if start_ts is None:
+            continue
+        asset_id = int(row["asset_id"])
+        existing = lifecycle_starts.get(asset_id)
+        if existing is None or start_ts < existing:
+            lifecycle_starts[asset_id] = start_ts
+        row["zone_lifecycle_start_ts_utc"] = start_ts
 
     with conn.cursor() as cur:
         cur.execute(
@@ -276,6 +348,73 @@ def enrich_latest_prices(
             continue
         row["latest_close_price"] = price_row.get("close_price")
         row["latest_close_ts_utc"] = price_row.get("close_ts_utc")
+
+    if not lifecycle_starts:
+        return
+
+    min_start_ts = min(lifecycle_starts.values())
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+                asset_id,
+                close_ts_utc,
+                high_price,
+                low_price
+            FROM obs_market_candle
+            WHERE venue = %s
+              AND interval_code = %s
+              AND asset_id IN ({placeholders})
+              AND close_ts_utc >= %s
+            ORDER BY asset_id, close_ts_utc
+            """,
+            [venue, interval, *asset_ids, min_start_ts],
+        )
+        path_candles = list(cur.fetchall())
+
+    candles_by_asset: dict[int, list[dict[str, Any]]] = {}
+    for candle in path_candles:
+        candles_by_asset.setdefault(int(candle["asset_id"]), []).append(candle)
+
+    for row in rows:
+        if str(row.get("leg_direction") or "").strip().upper() != "DOWN":
+            continue
+        if row.get("asset_id") is None:
+            continue
+
+        start_ts = row.get("zone_lifecycle_start_ts_utc")
+        if not isinstance(start_ts, datetime):
+            continue
+
+        invalidation = to_decimal(row.get("invalidation_price"))
+        downside_low, downside_high = _range_bounds(row.get("tp_zone_low"), row.get("tp_zone_high"))
+        path_invalidated = False
+        path_downside_entry_reached = False
+
+        for candle in candles_by_asset.get(int(row["asset_id"]), []):
+            close_ts = parse_ts(candle.get("close_ts_utc"))
+            if close_ts is None or close_ts < start_ts:
+                continue
+
+            high = to_decimal(candle.get("high_price"))
+            low = to_decimal(candle.get("low_price"))
+
+            if invalidation is not None and high is not None and high >= invalidation:
+                path_invalidated = True
+
+            if (
+                downside_low is not None
+                and downside_high is not None
+                and low is not None
+                and high is not None
+                and low <= downside_high
+                and high >= downside_low
+            ):
+                path_downside_entry_reached = True
+
+        row["path_invalidated"] = path_invalidated
+        row["path_downside_entry_reached"] = path_downside_entry_reached
 
 
 def fetch_latest_rows(
@@ -357,6 +496,7 @@ def fetch_latest_rows(
                 confidence_score,
                 risk_label,
                 reason_codes_json,
+                source_ref_json,
                 asof_ts_utc,
                 context_ts_utc
             FROM paper_advice_observation
@@ -389,7 +529,7 @@ def fetch_latest_rows(
         )
         rows = list(cur.fetchall())
 
-    enrich_latest_prices(conn, rows, venue, interval)
+    enrich_candle_context(conn, rows, venue, interval)
 
     with conn.cursor() as cur:
         cur.execute(
@@ -472,6 +612,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         rank_text = "—" if rank is None else str(rank)
 
         zone_cell_1, zone_cell_2, zone_cell_3 = zone_display_cells(row)
+        row_class = "expired" if leg_direction.strip().upper() == "DOWN" and is_pullback_invalidated(row) else ""
         badges = display_badges(row)
         badge_html = ""
         if badges:
@@ -482,7 +623,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
 
         body.append(
             f"""
-            <tr>
+            <tr class="{esc(row_class)}">
                 <td class="mono center">{esc(rank_text)}</td>
                 <td class="symbol">
                     {esc(row.get("symbol"))}
@@ -693,6 +834,14 @@ def render_html(
         }}
         tr:hover {{
             background: rgba(96, 165, 250, 0.07);
+        }}
+        tr.expired {{
+            opacity: 0.68;
+        }}
+        tr.expired td:nth-child(7),
+        tr.expired td:nth-child(8),
+        tr.expired td:nth-child(9) {{
+            color: var(--muted);
         }}
         .symbol {{
             font-weight: 800;
