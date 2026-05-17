@@ -146,6 +146,27 @@ def zone_labels(leg_direction: str | None) -> tuple[str, str, str]:
     return ("Zone", "Target zone", "Invalidation")
 
 
+def zone_display_cells(row: dict[str, Any]) -> tuple[tuple[str, str], tuple[str, str], tuple[str, str]]:
+    leg_direction = str(row.get("leg_direction") or "").strip().upper()
+    zone_label, target_label, invalidation_label = zone_labels(leg_direction)
+    reaction_zone = fmt_range(row.get("entry_zone_low"), row.get("entry_zone_high"))
+    target_zone = fmt_range(row.get("tp_zone_low"), row.get("tp_zone_high"))
+    invalidation = fmt_decimal(row.get("invalidation_price"))
+
+    if leg_direction == "DOWN":
+        return (
+            (zone_label, reaction_zone),
+            (invalidation_label, invalidation),
+            (target_label, target_zone),
+        )
+
+    return (
+        (zone_label, reaction_zone),
+        (target_label, target_zone),
+        (invalidation_label, invalidation),
+    )
+
+
 def display_badges(row: dict[str, Any]) -> list[tuple[str, str]]:
     badges: list[tuple[str, str]] = []
     leg_direction = str(row.get("leg_direction") or "").strip().upper()
@@ -351,7 +372,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         rank = row.get("priority_rank")
         rank_text = "—" if rank is None else str(rank)
 
-        zone_label, target_label, invalidation_label = zone_labels(leg_direction)
+        zone_cell_1, zone_cell_2, zone_cell_3 = zone_display_cells(row)
         badges = display_badges(row)
         badge_html = ""
         if badges:
@@ -374,16 +395,16 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                 <td class="mono right">{fmt_score(row.get("confidence_score"))}</td>
                 <td><span class="pill {css_class(risk_label)}">{esc(risk_label)}</span></td>
                 <td class="mono">
-                    <div class="cell-label">{esc(zone_label)}</div>
-                    {fmt_range(row.get("entry_zone_low"), row.get("entry_zone_high"))}
+                    <div class="cell-label">{esc(zone_cell_1[0])}</div>
+                    {zone_cell_1[1]}
                 </td>
                 <td class="mono">
-                    <div class="cell-label">{esc(target_label)}</div>
-                    {fmt_range(row.get("tp_zone_low"), row.get("tp_zone_high"))}
+                    <div class="cell-label">{esc(zone_cell_2[0])}</div>
+                    {zone_cell_2[1]}
                 </td>
                 <td class="mono">
-                    <div class="cell-label">{esc(invalidation_label)}</div>
-                    {fmt_decimal(row.get("invalidation_price"))}
+                    <div class="cell-label">{esc(zone_cell_3[0])}</div>
+                    {zone_cell_3[1]}
                 </td>
                 <td>{esc(row.get("selection_state"))}</td>
                 <td>{esc(row.get("setup_filter_state"))}</td>
@@ -405,9 +426,9 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                     <th>Action</th>
                     <th>Conf</th>
                     <th>Risk</th>
-                    <th>Zone</th>
-                    <th>Target</th>
-                    <th>Invalidation</th>
+                    <th>Zone 1</th>
+                    <th>Zone 2</th>
+                    <th>Zone 3</th>
                     <th>Selection</th>
                     <th>Setup</th>
                     <th>Policy</th>
