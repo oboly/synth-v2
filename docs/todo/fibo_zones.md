@@ -125,6 +125,45 @@ No strategy shortcut through zone context.
 No executor/order behavior in zone research.
 ```
 
+## P2 — Leak-free Zone/Fib touch evaluation
+
+Status: open research validation lane.
+
+Source:
+
+```text
+docs/status/market_structure_progress.md
+```
+
+Tasks:
+
+- Refactor `src/research/run_zone_fib_overlay_eval_v1.py` into a leak-free read-only evaluator.
+- Preserve the current simple runner behavior only if it remains useful as a probe.
+- Run conservative logic across 2026-03 and 2026-04.
+- Compare touched outcomes across:
+  - `TREND_UP`
+  - `TREND_DOWN`
+  - `RANGE`
+  - `MID` / `HIGH` / `LOW` volatility buckets
+- Only after that decide whether a zone/fib paper-candidate policy is worth designing.
+
+Current recommendation:
+
+```text
+Zone/Fib touch evaluation is a possible next core strategy-validation lane.
+Paper staging remains paused until a leak-free evaluator confirms broader edge.
+```
+
+Boundary:
+
+```text
+Read-only research evaluator.
+No operational execution_zone_context backfill.
+No strategy shortcut.
+No paper/live promotion.
+No order creation.
+```
+
 ## P3 — Fibo/zone UI overlays
 
 Status: open / parked behind UI/Webview lane.
