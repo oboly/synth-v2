@@ -167,19 +167,115 @@ def zone_display_cells(row: dict[str, Any]) -> tuple[tuple[str, str], tuple[str,
     )
 
 
+def _range_bounds(low: Any, high: Any) -> tuple[Decimal | None, Decimal | None]:
+    values = [value for value in (to_decimal(low), to_decimal(high)) if value is not None]
+    if not values:
+        return None, None
+    return min(values), max(values)
+
+
+def pullback_lifecycle_badge(row: dict[str, Any]) -> tuple[str, str]:
+    price = to_decimal(row.get("latest_close_price"))
+    reaction_low, reaction_high = _range_bounds(row.get("entry_zone_low"), row.get("entry_zone_high"))
+    downside_low, downside_high = _range_bounds(row.get("tp_zone_low"), row.get("tp_zone_high"))
+    invalidation = to_decimal(row.get("invalidation_price"))
+
+    if price is None:
+        return "PULLBACK WATCH", "watch"
+
+    if invalidation is not None and price > invalidation:
+        return "INVALIDATED", "danger"
+
+    if downside_low is not None and downside_high is not None:
+        if downside_low <= price <= downside_high:
+            return "DOWNSIDE ENTRY REACHED", "context"
+        if price < downside_low:
+            return "BELOW DOWNSIDE ENTRY", "block"
+
+    if reaction_low is not None and reaction_high is not None and reaction_low <= price <= reaction_high:
+        return "REACTION ZONE ACTIVE", "watch"
+
+    if (
+        reaction_low is not None
+        and downside_high is not None
+        and price < reaction_low
+        and price > downside_high
+    ):
+        return "PULLBACK IN PROGRESS", "watch"
+
+    return "PULLBACK WATCH", "watch"
+
+
 def display_badges(row: dict[str, Any]) -> list[tuple[str, str]]:
     badges: list[tuple[str, str]] = []
     leg_direction = str(row.get("leg_direction") or "").strip().upper()
     policy_decision = str(row.get("policy_decision") or "").strip().upper()
+    setup_filter_state = str(row.get("setup_filter_state") or "").strip().upper()
+    selection_state = str(row.get("selection_state") or "").strip().upper()
 
     if leg_direction == "DOWN":
-        badges.append(("PULLBACK WATCH", "watch"))
+        badges.append(pullback_lifecycle_badge(row))
         badges.append(("WATCHLIST ONLY", "context"))
+
+        if setup_filter_state == "FAIL":
+            badges.append(("SETUP FAILED", "muted"))
+
+        if selection_state in {"AVOID", "NO_EDGE_PERMISSION"}:
+            badges.append(("NO EDGE", "danger"))
 
         if policy_decision == "BLOCK_FOR_24H":
             badges.append(("NOT ACTIONABLE", "block"))
 
     return badges
+
+
+def enrich_latest_prices(
+    conn: pymysql.connections.Connection,
+    rows: list[dict[str, Any]],
+    venue: str,
+    interval: str,
+) -> None:
+    asset_ids = sorted({int(row["asset_id"]) for row in rows if row.get("asset_id") is not None})
+    if not asset_ids:
+        return
+
+    placeholders = ",".join(["%s"] * len(asset_ids))
+    params: list[Any] = [venue, interval, *asset_ids, venue, interval]
+
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+                c.asset_id,
+                c.close_ts_utc,
+                c.close_price
+            FROM obs_market_candle c
+            JOIN (
+                SELECT asset_id, MAX(close_ts_utc) AS max_close_ts_utc
+                FROM obs_market_candle
+                WHERE venue = %s
+                  AND interval_code = %s
+                  AND asset_id IN ({placeholders})
+                GROUP BY asset_id
+            ) latest
+              ON latest.asset_id = c.asset_id
+             AND latest.max_close_ts_utc = c.close_ts_utc
+            WHERE c.venue = %s
+              AND c.interval_code = %s
+            """,
+            params,
+        )
+        price_rows = {int(row["asset_id"]): row for row in cur.fetchall()}
+
+    for row in rows:
+        asset_id = row.get("asset_id")
+        if asset_id is None:
+            continue
+        price_row = price_rows.get(int(asset_id))
+        if not price_row:
+            continue
+        row["latest_close_price"] = price_row.get("close_price")
+        row["latest_close_ts_utc"] = price_row.get("close_ts_utc")
 
 
 def fetch_latest_rows(
@@ -226,6 +322,7 @@ def fetch_latest_rows(
         cur.execute(
             """
             SELECT
+                asset_id,
                 symbol,
                 priority_rank,
                 selection_state,
@@ -291,6 +388,8 @@ def fetch_latest_rows(
             },
         )
         rows = list(cur.fetchall())
+
+    enrich_latest_prices(conn, rows, venue, interval)
 
     with conn.cursor() as cur:
         cur.execute(
