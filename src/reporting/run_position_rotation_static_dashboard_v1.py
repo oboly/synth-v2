@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any
 
 from src.common.db import get_connection
+from src.market_data.market_price_snapshot_v1 import (
+    MarketPriceSnapshot,
+    fetch_latest_prices_by_symbol,
+)
 from src.research.run_position_rotation_preview_v1 import (
     build_rows,
     fetch_latest_paper_advice_rows,
@@ -26,6 +30,7 @@ def parse_args() -> argparse.Namespace:
         description="Render static HTML dashboard for read-only position rotation preview."
     )
     parser.add_argument("--venue", default="bitvavo")
+    parser.add_argument("--quote", default="EUR")
     parser.add_argument("--interval", default="4h")
     parser.add_argument("--trading-account-id", type=int, default=2)
     parser.add_argument("--stale-days", type=Decimal, default=Decimal("1.0"))
@@ -50,6 +55,13 @@ def dec_text(value: Decimal | None, places: str = "0.01") -> str:
         return str(value)
 
 
+def price_age_min(snapshot: MarketPriceSnapshot | None, *, now_utc: datetime) -> Decimal | None:
+    if snapshot is None:
+        return None
+    age_seconds = Decimal(str((now_utc.replace(tzinfo=None) - snapshot.observed_ts_utc).total_seconds()))
+    return age_seconds / Decimal("60")
+
+
 def now_local_first() -> tuple[str, str]:
     now_utc = datetime.now(UTC)
     try:
@@ -72,8 +84,17 @@ def pill_class(text: str | None) -> str:
     return "muted"
 
 
-def render_html(rows: list[Any], *, venue: str, interval: str, account_id: int) -> str:
+def render_html(
+    rows: list[Any],
+    *,
+    venue: str,
+    quote_currency: str,
+    interval: str,
+    account_id: int,
+    price_by_symbol: dict[str, MarketPriceSnapshot],
+) -> str:
     local_ts, utc_ts = now_local_first()
+    now_utc = datetime.now(UTC)
 
     state_counts: dict[str, int] = {}
     total_value = Decimal("0")
@@ -94,6 +115,8 @@ def render_html(rows: list[Any], *, venue: str, interval: str, account_id: int) 
                 tp_zone = f"{dec_text(row.tp_zone_low, '0.000000')}..{dec_text(row.tp_zone_high, '0.000000')}"
 
             better = ", ".join(row.better_candidates[:3]) if row.better_candidates else ""
+            latest_price = price_by_symbol.get(row.position_symbol)
+            latest_price_age_min = price_age_min(latest_price, now_utc=now_utc)
 
             out.append(
                 "<tr>"
@@ -107,6 +130,8 @@ def render_html(rows: list[Any], *, venue: str, interval: str, account_id: int) 
                 f"<td>{esc(row.leg_direction)}</td>"
                 f"<td><span class='pill {pill_class(row.advice_action)}'>{esc(row.advice_action)}</span></td>"
                 f"<td><span class='pill {pill_class(row.aplus_bucket)}'>{esc(row.aplus_bucket)}</span></td>"
+                f"<td class='num'>{esc(dec_text(None if latest_price is None else latest_price.price, '0.000000'))}</td>"
+                f"<td class='num'>{esc(dec_text(latest_price_age_min, '0.1'))}</td>"
                 f"<td>{esc(tp_zone)}</td>"
                 f"<td><span class='pill {pill_class(row.rotation_state)}'>{esc(row.rotation_state)}</span></td>"
                 f"<td class='num'>{esc(row.rotation_pressure_score)}</td>"
@@ -133,6 +158,8 @@ def render_html(rows: list[Any], *, venue: str, interval: str, account_id: int) 
                   <th>Leg</th>
                   <th>Action</th>
                   <th>A+</th>
+                  <th>Current price</th>
+                  <th>Price age min</th>
                   <th>TP / target zone</th>
                   <th>Rotation</th>
                   <th>Score</th>
@@ -227,7 +254,7 @@ def render_html(rows: list[Any], *, venue: str, interval: str, account_id: int) 
   <header>
     <h1>Position Rotation Preview</h1>
     <div class="muted">Rendered {esc(local_ts)} · {esc(utc_ts)}</div>
-    <div class="muted">venue={esc(venue)} · interval={esc(interval)} · trading_account_id={esc(account_id)}</div>
+    <div class="muted">venue={esc(venue)} · quote={esc(quote_currency)} · interval={esc(interval)} · trading_account_id={esc(account_id)}</div>
     <div style="margin-top:12px">
       <a href="./index.html">Cockpit</a> ·
       <a href="./paper-advice.html">Paper Advice</a>
@@ -313,6 +340,12 @@ def main() -> int:
             venue=args.venue,
             interval=args.interval,
         )
+        price_by_symbol = fetch_latest_prices_by_symbol(
+            conn,
+            venue=args.venue,
+            quote_currency=args.quote,
+            symbols=[str(row["symbol"]) for row in position_rows],
+        )
     finally:
         conn.close()
 
@@ -328,8 +361,10 @@ def main() -> int:
         render_html(
             rows,
             venue=args.venue,
+            quote_currency=args.quote.upper(),
             interval=args.interval,
             account_id=args.trading_account_id,
+            price_by_symbol=price_by_symbol,
         ),
         encoding="utf-8",
     )
@@ -339,6 +374,7 @@ def main() -> int:
         print(f"report={REPORT_NAME} version={REPORT_VERSION}")
         print("scope=read-only account-aware static dashboard")
         print("broker_writes=0 order_submission=0 executor=none")
+        print(f"market_price_snapshot_rows={len(price_by_symbol)} quote={args.quote.upper()}")
         print(f"rows={len(rows)} output_html={output_path}")
         print(f"index_html={index_path}")
 
