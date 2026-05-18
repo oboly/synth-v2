@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+from pathlib import Path
 import time
 from dataclasses import dataclass
 from decimal import Decimal
@@ -12,7 +13,11 @@ from urllib.parse import urlparse
 from urllib.parse import urlencode
 
 import requests
+from dotenv import load_dotenv
 
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(REPO_ROOT / ".env", override=True)
 
 BITVAVO_REST_URL = (
     os.getenv("BITVAVO_REST_URL")
