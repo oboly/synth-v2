@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Synth MVP read-only cockpit refresh every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+Unit=synth-mvp-readonly-cockpit.service
+
+[Install]
+WantedBy=timers.target
