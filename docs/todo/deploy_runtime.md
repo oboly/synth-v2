@@ -56,6 +56,8 @@ Tasks:
 - Confirm log directory and service user.
 - Decide whether runners are managed by cron, systemd timers, or a supervised process.
 - Review generated systemd templates under `docs/ops/systemd/`.
+- Confirm Odroid service user and repo path before copying templates to `/etc/systemd/system`.
+- Current Odroid template defaults are `User=theone` and `WorkingDirectory=/home/theone/projects/synth-v2`.
 - Do not install or enable timers until the templates are reviewed on the Odroid.
 
 Boundary:
@@ -119,7 +121,7 @@ Tasks:
 - Avoid direct live ticker calls inside chart renderer.
 - Make source timestamp and freshness visible in UI.
 - Keep any future refresh runner read-only for UI display sources unless a separate market-data ingestion task explicitly owns writes.
-- Paper advice dashboard refresh may render static HTML frequently using the latest 4h `paper_advice_observation` snapshot plus 1h candle path data for display-only DOWN pullback lifecycle badges.
+- Paper advice dashboard refresh may render static HTML frequently using the latest 4h `paper_advice_observation` snapshot plus 15m candle path data for display-only DOWN pullback lifecycle badges.
 - Frequent lifecycle refresh does not imply trade permission, paper execution permission, or runtime promotion.
 - If a DOWN row is `INVALIDATED`, the dashboard should show `RECOMPUTE NEEDED`; zone recomputation belongs upstream in `execution_zone_context` / paper advice, not in the dashboard.
 
@@ -209,6 +211,7 @@ Tasks:
 
 - Review 4h schedule: `00,04,08,12,16,20:12 UTC`.
 - Confirm the service calls the existing `scripts/run_chain_4h.sh`.
+- Confirm `User=theone` and `WorkingDirectory=/home/theone/projects/synth-v2` match the Odroid host before installing.
 - Confirm decision/execution/order permissions remain disabled.
 - Confirm broker writes remain disabled.
 - Confirm journal logging and safety markers after manual dry run.

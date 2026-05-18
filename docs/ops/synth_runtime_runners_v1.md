@@ -134,6 +134,15 @@ docs/ops/systemd/synth-4h-market-chain.timer
 
 These files are templates only. They are not installed, copied to `/etc/systemd/system`, enabled, or started by this repository lane.
 
+The templates use Odroid-oriented defaults:
+
+```text
+User=theone
+WorkingDirectory=/home/theone/projects/synth-v2
+```
+
+Review the host user, repo path, venv path, `.env` location, and web output directory before copying any unit to `/etc/systemd/system`.
+
 Paper advice lifecycle refresh:
 
 - timer cadence: every 5 minutes

@@ -6,8 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=gurk
-WorkingDirectory=/home/gurk/projects/synth-v2
+# Odroid template default. Review host user/path before installing.
+User=theone
+WorkingDirectory=/home/theone/projects/synth-v2
 Environment=SYNTH_PAPER_ADVICE_LIFECYCLE_INTERVAL=15m
 Environment=SYNTH_PAPER_ADVICE_DASHBOARD_HTML=/var/www/html/synth/paper-advice.html
 Environment=SYNTH_PAPER_ADVICE_INTERVAL=4h

@@ -141,7 +141,17 @@ def fmt_ts_local(value: Any, timezone: str = "Europe/Amsterdam") -> str:
 
     utc_value = parsed.replace(tzinfo=UTC)
     local_value = utc_value.astimezone(ZoneInfo(timezone))
-    return local_value.strftime("%Y-%m-%d %H:%M %Z")
+    return local_value.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+
+def fmt_ts_local_first(value: Any, timezone: str = "Europe/Amsterdam") -> str:
+    parsed = parse_ts(value)
+    if parsed is None:
+        return "not available"
+
+    utc_text = parsed.strftime("%Y-%m-%d %H:%M:%S UTC")
+    local_text = fmt_ts_local(parsed, timezone=timezone)
+    return f"{local_text} · {utc_text}"
 
 
 def latest_lifecycle_candle_ts(rows: list[dict[str, Any]]) -> datetime | None:
@@ -316,6 +326,7 @@ def display_badges(row: dict[str, Any]) -> list[tuple[str, str]]:
         invalidated = is_pullback_invalidated(row)
         badges.append(pullback_lifecycle_badge(row))
         if invalidated:
+            badges.append(("EXPIRED MAP", "danger"))
             badges.append(("RECOMPUTE NEEDED", "block"))
             badges.append(("NOT ACTIONABLE", "block"))
 
@@ -617,11 +628,23 @@ def fetch_latest_rows(
     return latest_asof, rows, counts, runtime
 
 
-def split_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def is_expired_recompute_map(row: dict[str, Any]) -> bool:
+    leg_direction = str(row.get("leg_direction") or "").strip().upper()
+    return leg_direction == "DOWN" and is_pullback_invalidated(row)
+
+
+def split_rows(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     primary_states = {"WATCH_CORE", "WATCH", "BLOCK_24H", "CORE_CONTEXT", "WAIT"}
-    primary = [row for row in rows if str(row.get("advice_state", "")).upper() in primary_states]
-    defensive = [row for row in rows if row not in primary]
-    return primary, defensive
+    expired = [row for row in rows if is_expired_recompute_map(row)]
+    expired_ids = {id(row) for row in expired}
+    primary = [
+        row
+        for row in rows
+        if id(row) not in expired_ids and str(row.get("advice_state", "")).upper() in primary_states
+    ]
+    primary_ids = {id(row) for row in primary}
+    defensive = [row for row in rows if id(row) not in primary_ids and id(row) not in expired_ids]
+    return primary, expired, defensive
 
 
 def render_count_cards(counts: list[dict[str, Any]]) -> str:
@@ -754,13 +777,12 @@ def render_html(
     runtime: dict[str, Any] | None,
 ) -> str:
     generated_ts = datetime.now(UTC).replace(tzinfo=None)
-    primary_rows, defensive_rows = split_rows(rows)
+    primary_rows, expired_rows, defensive_rows = split_rows(rows)
     latest_lifecycle_ts = latest_lifecycle_candle_ts(rows)
 
-    latest_text = fmt_ts(latest_asof)
-    latest_lifecycle_text = fmt_ts(latest_lifecycle_ts)
-    latest_lifecycle_local_text = fmt_ts_local(latest_lifecycle_ts)
-    generated_text = fmt_ts(generated_ts)
+    latest_text = fmt_ts_local_first(latest_asof)
+    latest_lifecycle_text = fmt_ts_local_first(latest_lifecycle_ts)
+    generated_text = fmt_ts_local_first(generated_ts)
     runtime_text = "—"
     runtime_flags = "—"
 
@@ -973,10 +995,10 @@ def render_html(
                 <h1>{esc(title)}</h1>
                 <div class="subtitle">
                     Read-only paper navigation · venue={esc(venue)} · advice interval={esc(interval)} · lifecycle candles={esc(lifecycle_candle_interval)}<br>
-                    latest advice snapshot: {esc(latest_text)} UTC<br>
-                    latest lifecycle candle: {esc(latest_lifecycle_text)} UTC · {esc(latest_lifecycle_local_text)}<br>
-                    dashboard rendered: {esc(generated_text)} UTC<br>
-                    Setup/policy changes when the 4h chain writes a new paper_advice_observation snapshot. Lifecycle badges refresh from 1h candle path data when the dashboard refresh runner runs.
+                    latest advice snapshot: {esc(latest_text)}<br>
+                    latest lifecycle candle: {esc(latest_lifecycle_text)}<br>
+                    dashboard rendered: {esc(generated_text)}<br>
+                    Setup/policy changes when the 4h chain writes a new paper_advice_observation snapshot. Lifecycle badges refresh from {esc(lifecycle_candle_interval)} candle path data when the dashboard refresh runner runs.
                 </div>
             </div>
             <div class="badge">broker_calls=0 · broker_writes=0 · order_submission=0</div>
@@ -992,12 +1014,17 @@ def render_html(
         </section>
 
         <section class="panel">
+            <h2>Expired / recompute-needed maps</h2>
+            {render_table(expired_rows)}
+        </section>
+
+        <section class="panel">
             <h2>Defensive / no-new-buy rows</h2>
             {render_table(defensive_rows)}
         </section>
 
         <section class="footer">
-            Generated UTC: {esc(generated_text)}<br>
+            Generated: {esc(generated_text)}<br>
             Runtime: {esc(runtime_text)}<br>
             Runtime flags: {esc(runtime_flags)}<br>
             Boundary: this page is display-only. It does not call the broker, decision_gate, execution_planner, executor, or order APIs.
