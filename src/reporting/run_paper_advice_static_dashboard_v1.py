@@ -185,6 +185,13 @@ def css_class(value: str | None) -> str:
         "FAIL": "muted",
         "BLOCK_FOR_24H": "block",
         "INSUFFICIENT_SAMPLE": "muted",
+        "MARKET_DAMAGE_RISK": "block",
+        "BTC_PRIOR_OVERHEAT_ZONE": "block",
+        "SELECTION_STATE_NOT_ELIGIBLE": "muted",
+        "RANK_OUTSIDE_SETUP_ELIGIBLE_RANGE": "muted",
+        "PRIORITY_RANK_MISSING": "muted",
+        "BTC_PRIOR_24H_MISSING": "muted",
+        "ASSET_SUITABILITY_WEAK_SET_CANDIDATE": "muted",
     }
 
     return mapping.get(normalized, "muted")
@@ -337,11 +344,49 @@ def display_badges(row: dict[str, Any]) -> list[tuple[str, str]]:
 
     if setup_filter_state == "FAIL":
         badges.append(("SETUP FAILED", "muted"))
+        setup_reason = setup_fail_primary_reason(row)
+        if setup_reason:
+            badges.append((setup_reason, css_class(setup_reason)))
 
     if selection_state in {"AVOID", "NO_EDGE_PERMISSION"}:
         badges.append(("NO EDGE", "danger"))
 
     return badges
+
+
+def setup_fail_primary_reason(row: dict[str, Any]) -> str:
+    setup_filter_state = str(row.get("setup_filter_state") or "").strip().upper()
+    if setup_filter_state != "FAIL":
+        return ""
+    return str(row.get("setup_filter_reason") or "").strip().upper()
+
+
+def setup_reason_codes(row: dict[str, Any]) -> list[str]:
+    reason = setup_fail_primary_reason(row)
+    return [reason] if reason else []
+
+
+def reason_codes_display(row: dict[str, Any]) -> str:
+    codes: list[str] = []
+    raw_reason_codes = row.get("reason_codes_json")
+    if raw_reason_codes:
+        try:
+            parsed = json.loads(str(raw_reason_codes))
+            if isinstance(parsed, list):
+                codes.extend(str(item) for item in parsed)
+            elif isinstance(parsed, dict):
+                codes.extend(f"{k}={v}" for k, v in parsed.items())
+            else:
+                codes.append(str(parsed))
+        except json.JSONDecodeError:
+            codes.append(str(raw_reason_codes))
+
+    for code in setup_reason_codes(row):
+        if code and code not in codes:
+            insert_at = codes.index("SETUP_FAIL") + 1 if "SETUP_FAIL" in codes else len(codes)
+            codes.insert(insert_at, code)
+
+    return ", ".join(codes)
 
 
 def enrich_candle_context(
@@ -676,19 +721,11 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         risk_label = str(row.get("risk_label") or "")
         leg_direction = str(row.get("leg_direction") or "")
 
-        reason_codes = ""
-        raw_reason_codes = row.get("reason_codes_json")
-        if raw_reason_codes:
-            try:
-                parsed = json.loads(str(raw_reason_codes))
-                if isinstance(parsed, list):
-                    reason_codes = ", ".join(str(item) for item in parsed)
-                elif isinstance(parsed, dict):
-                    reason_codes = ", ".join(f"{k}={v}" for k, v in parsed.items())
-                else:
-                    reason_codes = str(parsed)
-            except json.JSONDecodeError:
-                reason_codes = str(raw_reason_codes)
+        reason_codes = reason_codes_display(row)
+        setup_reason = setup_fail_primary_reason(row)
+        setup_reason_html = ""
+        if setup_reason:
+            setup_reason_html = f'<div class="muted small">setup reason: {esc(setup_reason)}</div>'
 
         rank = row.get("priority_rank")
         rank_text = "—" if rank is None else str(rank)
@@ -729,7 +766,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                     {zone_cell_3[1]}
                 </td>
                 <td>{esc(row.get("selection_state"))}</td>
-                <td>{esc(row.get("setup_filter_state"))}</td>
+                <td>{esc(row.get("setup_filter_state"))}{setup_reason_html}</td>
                 <td>{esc(row.get("policy_decision"))}</td>
                 <td>{esc(row.get("aplus_bucket"))}</td>
                 <td class="muted small">{esc(reason_codes)}</td>
@@ -1027,6 +1064,7 @@ def render_html(
             Generated: {esc(generated_text)}<br>
             Runtime: {esc(runtime_text)}<br>
             Runtime flags: {esc(runtime_flags)}<br>
+            Setup-fail reasons are read from paper_advice_observation / trade_setup_filter observations when available.<br>
             Boundary: this page is display-only. It does not call the broker, decision_gate, execution_planner, executor, or order APIs.
         </section>
     </main>

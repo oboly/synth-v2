@@ -54,6 +54,18 @@ The runner reports per symbol:
 - advice state, policy decision, confidence, and reason codes when available
 - zone values when available from paper advice context
 
+## Dashboard Display
+
+The static paper advice dashboard now exposes the setup-filter primary fail reason when available. A row can show both the generic `SETUP FAILED` badge and the specific market-only guard, for example `MARKET_DAMAGE_RISK`.
+
+`MARKET_DAMAGE_RISK` is separate from the old rank sweet spot issue. After the rank eligibility correction, HYPE can be rank-eligible at rank `1` while still failing setup because BTC prior 24h breached the configured market damage threshold.
+
+The dashboard also appends the setup fail reason to the visible Reasons column, for example:
+
+```text
+SELECTION_WATCHLIST, SETUP_FAIL, MARKET_DAMAGE_RISK, APLUS_UNKNOWN, WATCHLIST_NO_FULL_PERMISSION
+```
+
 ## Boundaries
 
 This diagnostic does not write to the database, recompute zones, change policy, enable paper/live execution, call brokers, submit orders, or touch decision/execution layers.

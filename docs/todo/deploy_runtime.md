@@ -329,6 +329,33 @@ No order submission.
 No runtime permission changes.
 ```
 
+## P2 — Paper advice setup-fail reason display
+
+Status: done / review pending.
+
+Goal:
+
+Expose the setup-filter primary fail reason in the static paper advice dashboard so rows do not only show generic `SETUP FAILED`.
+
+Current display behavior:
+
+- `SETUP FAILED` remains the generic setup-state badge.
+- Specific setup-filter guards such as `MARKET_DAMAGE_RISK` are shown as visible row badges and added to the Reasons column when available.
+- This is display-only and reads the reason from the existing paper advice / setup-filter observation context.
+
+Boundary:
+
+```text
+No trade_setup_filter behavior changes.
+No advice/policy behavior changes.
+No decision_gate changes.
+No execution_planner changes.
+No executor changes.
+No broker writes.
+No order submission.
+No systemd timer changes.
+```
+
 ## P3 — Runtime orchestration standard
 
 Status: drafted in ops plan / future implementation.
