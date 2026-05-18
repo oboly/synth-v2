@@ -55,6 +55,72 @@ def dec_text(value: Decimal | None, places: str = "0.01") -> str:
         return str(value)
 
 
+def signed_pct_text(value: Decimal | None) -> str:
+    if value is None:
+        return ""
+    try:
+        quantized = value.quantize(Decimal("0.01"))
+    except Exception:
+        quantized = value
+    if quantized == 0:
+        return "0.00%"
+    if quantized > 0:
+        return f"+{quantized}%"
+    return f"{quantized}%"
+
+
+def pct_class(value: Decimal | None) -> str:
+    if value is None:
+        return ""
+    if value > 0:
+        return "ok"
+    if value < 0:
+        return "warn"
+    return "muted"
+
+
+def pct_delta(reference: Decimal | None, current_price: Decimal | None) -> Decimal | None:
+    if reference is None or current_price is None or current_price <= 0:
+        return None
+    return ((reference / current_price) - Decimal("1")) * Decimal("100")
+
+
+def entry_delta_pct(
+    *,
+    entry_zone_low: Decimal | None,
+    entry_zone_high: Decimal | None,
+    current_price: Decimal | None,
+) -> Decimal | None:
+    if current_price is None or current_price <= 0:
+        return None
+    if entry_zone_low is None and entry_zone_high is None:
+        return None
+    if entry_zone_low is not None and entry_zone_high is not None:
+        low = min(entry_zone_low, entry_zone_high)
+        high = max(entry_zone_low, entry_zone_high)
+        if low <= current_price <= high:
+            return Decimal("0")
+        if current_price < low:
+            return pct_delta(low, current_price)
+        return pct_delta(high, current_price)
+    return pct_delta(entry_zone_low or entry_zone_high, current_price)
+
+
+def midpoint_or_edge(low: Decimal | None, high: Decimal | None) -> Decimal | None:
+    if low is not None and high is not None:
+        return (low + high) / Decimal("2")
+    if low is not None:
+        return low
+    return high
+
+
+def pct_cell(value: Decimal | None) -> str:
+    text = signed_pct_text(value)
+    if not text:
+        return "<td class='num'></td>"
+    return f"<td class='num'><span class='pill {pct_class(value)}'>{esc(text)}</span></td>"
+
+
 def price_age_min(snapshot: MarketPriceSnapshot | None, *, now_utc: datetime) -> Decimal | None:
     if snapshot is None:
         return None
@@ -116,7 +182,18 @@ def render_html(
 
             better = ", ".join(row.better_candidates[:3]) if row.better_candidates else ""
             latest_price = price_by_symbol.get(row.position_symbol)
+            current_price = None if latest_price is None else latest_price.price
             latest_price_age_min = price_age_min(latest_price, now_utc=now_utc)
+            delta_entry_pct = entry_delta_pct(
+                entry_zone_low=row.entry_zone_low,
+                entry_zone_high=row.entry_zone_high,
+                current_price=current_price,
+            )
+            delta_tp_pct = pct_delta(
+                midpoint_or_edge(row.tp_zone_low, row.tp_zone_high),
+                current_price,
+            )
+            delta_invalidation_pct = pct_delta(row.invalidation_price, current_price)
 
             out.append(
                 "<tr>"
@@ -130,8 +207,11 @@ def render_html(
                 f"<td>{esc(row.leg_direction)}</td>"
                 f"<td><span class='pill {pill_class(row.advice_action)}'>{esc(row.advice_action)}</span></td>"
                 f"<td><span class='pill {pill_class(row.aplus_bucket)}'>{esc(row.aplus_bucket)}</span></td>"
-                f"<td class='num'>{esc(dec_text(None if latest_price is None else latest_price.price, '0.000000'))}</td>"
+                f"<td class='num'>{esc(dec_text(current_price, '0.000000'))}</td>"
                 f"<td class='num'>{esc(dec_text(latest_price_age_min, '0.1'))}</td>"
+                f"{pct_cell(delta_entry_pct)}"
+                f"{pct_cell(delta_tp_pct)}"
+                f"{pct_cell(delta_invalidation_pct)}"
                 f"<td>{esc(tp_zone)}</td>"
                 f"<td><span class='pill {pill_class(row.rotation_state)}'>{esc(row.rotation_state)}</span></td>"
                 f"<td class='num'>{esc(row.rotation_pressure_score)}</td>"
@@ -160,6 +240,9 @@ def render_html(
                   <th>A+</th>
                   <th>Current price</th>
                   <th>Price age min</th>
+                  <th>Δ entry %</th>
+                  <th>Δ TP %</th>
+                  <th>Δ invalidation %</th>
                   <th>TP / target zone</th>
                   <th>Rotation</th>
                   <th>Score</th>
@@ -242,7 +325,7 @@ def render_html(
     .pill.ok {{ color: var(--ok); border-color: rgba(85,214,167,.45); }}
     .pill.muted {{ color: var(--muted); }}
     .table-wrap {{ overflow-x: auto; }}
-    table {{ width: 100%; border-collapse: collapse; min-width: 1300px; }}
+    table {{ width: 100%; border-collapse: collapse; min-width: 1550px; }}
     th, td {{ border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; }}
     th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }}
     .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
@@ -263,7 +346,7 @@ def render_html(
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
       <div class="metric"><div class="muted">Total position value</div><h2>€ {esc(dec_text(total_value, '0.01'))}</h2></div>
       <div class="metric"><div class="muted">State counts</div>{counts_html}</div>
-      <div class="metric"><div class="muted">Safety</div><span class="pill ok">broker_writes=0</span><span class="pill ok">order_submission=0</span><span class="pill ok">executor=none</span></div>
+      <div class="metric"><div class="muted">Safety</div><span class="pill ok">broker_private_calls=0</span><span class="pill ok">broker_writes=0</span><span class="pill ok">order_submission=0</span><span class="pill ok">executor=none</span></div>
     </div>
   </header>
   <main>
@@ -304,7 +387,7 @@ def write_index(output_dir: Path) -> Path:
   <main>
     <h1>Synth MVP Read-only Cockpit</h1>
     <p class="muted">Rendered {esc(local_ts)} · {esc(utc_ts)}</p>
-    <p><span class="pill">broker_writes=0</span><span class="pill">order_submission=0</span><span class="pill">executor=none</span></p>
+    <p><span class="pill">broker_private_calls=0</span><span class="pill">broker_writes=0</span><span class="pill">order_submission=0</span><span class="pill">executor=none</span></p>
     <div class="grid">
       <div class="card">
         <a href="./paper-advice.html">Paper Advice</a>
@@ -373,7 +456,7 @@ def main() -> int:
     if args.output == "summary":
         print(f"report={REPORT_NAME} version={REPORT_VERSION}")
         print("scope=read-only account-aware static dashboard")
-        print("broker_writes=0 order_submission=0 executor=none")
+        print("broker_private_calls=0 broker_writes=0 order_submission=0 executor=none")
         print(f"market_price_snapshot_rows={len(price_by_symbol)} quote={args.quote.upper()}")
         print(f"rows={len(rows)} output_html={output_path}")
         print(f"index_html={index_path}")
