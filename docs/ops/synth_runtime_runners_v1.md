@@ -123,6 +123,49 @@ Suggested cadence:
 
 Initial timers should use conservative buffers. A late run is safer than a duplicate or partial candle run.
 
+Template files for review:
+
+```text
+docs/ops/systemd/synth-paper-advice-lifecycle-refresh.service
+docs/ops/systemd/synth-paper-advice-lifecycle-refresh.timer
+docs/ops/systemd/synth-4h-market-chain.service
+docs/ops/systemd/synth-4h-market-chain.timer
+```
+
+These files are templates only. They are not installed, copied to `/etc/systemd/system`, enabled, or started by this repository lane.
+
+The templates use Odroid-oriented defaults:
+
+```text
+User=theone
+WorkingDirectory=/home/theone/projects/synth-v2
+```
+
+Review the host user, repo path, venv path, `.env` location, and web output directory before copying any unit to `/etc/systemd/system`.
+
+Paper advice lifecycle refresh:
+
+- timer cadence: every 5 minutes
+- service command: `scripts/odroid/run_paper_advice_lifecycle_refresh_once.sh`
+- lifecycle candle interval: `SYNTH_PAPER_ADVICE_LIFECYCLE_INTERVAL=15m`
+- output: `/var/www/html/synth/paper-advice.html`
+- scope: public candle ETL plus static dashboard render
+- excluded: features, signals, selection, advice, policy, decision, execution, orders
+
+4h market chain:
+
+- timer cadence: 12 minutes after each 4h UTC candle close
+- service command: `scripts/run_chain_4h.sh`
+- source of setup / policy / zone / `paper_advice_observation` snapshots
+- must remain market-only with decision/execution disabled
+- must not enable broker writes
+
+Logging:
+
+- use systemd journal by default through `StandardOutput=journal` and `StandardError=journal`
+- runner scripts already print safety markers
+- optional host-local log paths can be added later if journal retention is insufficient
+
 ## Locking / Duplicate-Writer Guard
 
 Each writer runner needs a fail-closed lock strategy before service installation.
@@ -169,6 +212,13 @@ Minimum checks:
 - `signal_engine_state` max `signal_ts_utc` by interval
 - `strategy_runtime_snapshot` only if a guarded full market-only chain is later allowed
 
+Paper advice monitoring checks:
+
+- latest `paper_advice_observation` snapshot timestamp
+- latest `obs_market_candle.close_ts_utc` for `15m`
+- dashboard rendered timestamp in `/var/www/html/synth/paper-advice.html`
+- latest `strategy_runtime_snapshot` for the 4h chain when the chain timer is enabled
+
 Watchlist note:
 
 - APT, KITE, and SXT are included as analysis-enabled but non-tradeable and non-portfolio assets.
@@ -179,6 +229,18 @@ Freshness output should make stale or missing intervals visible without guessing
 ## Safety Markers
 
 Every planned runner must declare safety markers in logs or docs before installation.
+
+Required safety marker set for paper advice monitoring runners:
+
+```text
+broker_private_calls=0
+broker_writes=0
+order_submission=0
+live_orders=0
+decision_gate_changes=0
+execution_planner_changes=0
+executor_changes=0
+```
 
 Candles ETL:
 
@@ -340,6 +402,7 @@ Do not create these files in this lane. Intended future unit/timer names:
 - `synth-freshness-check.service` / `synth-freshness-check.timer`
 - `synth-paper-advice-dashboard-refresh.service` / `synth-paper-advice-dashboard-refresh.timer`
 - `synth-paper-advice-lifecycle-refresh.service` / `synth-paper-advice-lifecycle-refresh.timer`
+- `synth-4h-market-chain.service` / `synth-4h-market-chain.timer`
 - future `synth-market-trigger-engine.service`
 
 ## Market Trigger Engine Path

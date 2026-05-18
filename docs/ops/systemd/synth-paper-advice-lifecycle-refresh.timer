@@ -1,0 +1,13 @@
+[Unit]
+Description=Synth paper advice lifecycle refresh timer (every 5 minutes)
+Documentation=docs/ops/synth_runtime_runners_v1.md
+Requires=synth-paper-advice-lifecycle-refresh.service
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+RandomizedDelaySec=20
+Unit=synth-paper-advice-lifecycle-refresh.service
+
+[Install]
+WantedBy=timers.target

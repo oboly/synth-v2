@@ -41,7 +41,7 @@ Actual deployment remains open. No services, timers, chain scripts, secrets, sch
 
 ## P2 — Deploy Synth runtime on Odroid
 
-Status: open; plan drafted.
+Status: open; plan and service/timer templates drafted.
 
 Goal:
 
@@ -55,6 +55,10 @@ Tasks:
 - Confirm network access from Odroid to `gurkdb` MariaDB.
 - Confirm log directory and service user.
 - Decide whether runners are managed by cron, systemd timers, or a supervised process.
+- Review generated systemd templates under `docs/ops/systemd/`.
+- Confirm Odroid service user and repo path before copying templates to `/etc/systemd/system`.
+- Current Odroid template defaults are `User=theone` and `WorkingDirectory=/home/theone/projects/synth-v2`.
+- Do not install or enable timers until the templates are reviewed on the Odroid.
 
 Boundary:
 
@@ -117,7 +121,7 @@ Tasks:
 - Avoid direct live ticker calls inside chart renderer.
 - Make source timestamp and freshness visible in UI.
 - Keep any future refresh runner read-only for UI display sources unless a separate market-data ingestion task explicitly owns writes.
-- Paper advice dashboard refresh may render static HTML frequently using the latest 4h `paper_advice_observation` snapshot plus 1h candle path data for display-only DOWN pullback lifecycle badges.
+- Paper advice dashboard refresh may render static HTML frequently using the latest 4h `paper_advice_observation` snapshot plus 15m candle path data for display-only DOWN pullback lifecycle badges.
 - Frequent lifecycle refresh does not imply trade permission, paper execution permission, or runtime promotion.
 - If a DOWN row is `INVALIDATED`, the dashboard should show `RECOMPUTE NEEDED`; zone recomputation belongs upstream in `execution_zone_context` / paper advice, not in the dashboard.
 
@@ -133,13 +137,15 @@ No dashboard zone recomputation.
 
 ## P2 — Paper advice dashboard lifecycle refresh runner
 
-Status: fast refresh runner drafted / implementation review pending.
+Status: fast refresh runner smoke-tested; systemd templates drafted / installation pending.
 
 Script:
 
 ```text
 scripts/odroid/run_paper_advice_dashboard_refresh_once.sh
 scripts/odroid/run_paper_advice_lifecycle_refresh_once.sh
+docs/ops/systemd/synth-paper-advice-lifecycle-refresh.service
+docs/ops/systemd/synth-paper-advice-lifecycle-refresh.timer
 ```
 
 Tasks:
@@ -147,6 +153,8 @@ Tasks:
 - Render the static paper advice dashboard from the latest 4h paper advice snapshot.
 - Use faster `obs_market_candle` ranges for path-aware DOWN pullback lifecycle display.
 - Use `15m` as the initial fast lifecycle interval.
+- Run every 5 minutes once the timer is reviewed and installed manually.
+- Render `/var/www/html/synth/paper-advice.html`.
 - Smoke-test `5m` separately before using it operationally.
 - Use `flock` to avoid duplicate dashboard renders.
 - Print explicit safety markers.
@@ -163,6 +171,61 @@ No strategy/policy/decision/execution changes.
 No broker/private calls.
 No broker writes.
 No order submission.
+```
+
+Manual freshness checks:
+
+- latest `paper_advice_observation` snapshot timestamp
+- latest `obs_market_candle.close_ts_utc` for `15m`
+- dashboard rendered timestamp
+- lifecycle badge sample in the static HTML
+
+Required safety markers:
+
+```text
+broker_private_calls=0
+broker_writes=0
+order_submission=0
+live_orders=0
+decision_gate_changes=0
+execution_planner_changes=0
+executor_changes=0
+```
+
+## P2 — 4h market chain timer templates
+
+Status: templates drafted / installation pending.
+
+Templates:
+
+```text
+docs/ops/systemd/synth-4h-market-chain.service
+docs/ops/systemd/synth-4h-market-chain.timer
+```
+
+Goal:
+
+Run the reviewed 4h market-only chain on a conservative schedule after each 4h candle close so `paper_advice_observation`, setup zones, policy map, and runtime snapshot freshness are updated before the faster lifecycle dashboard runner observes path state.
+
+Tasks:
+
+- Review 4h schedule: `00,04,08,12,16,20:12 UTC`.
+- Confirm the service calls the existing `scripts/run_chain_4h.sh`.
+- Confirm `User=theone` and `WorkingDirectory=/home/theone/projects/synth-v2` match the Odroid host before installing.
+- Confirm decision/execution/order permissions remain disabled.
+- Confirm broker writes remain disabled.
+- Confirm journal logging and safety markers after manual dry run.
+- Confirm latest `strategy_runtime_snapshot` after a successful run.
+
+Boundary:
+
+```text
+Templates only.
+No service installation by this lane.
+No chain script changes.
+No broker writes.
+No order submission.
+No decision_gate/execution_planner/executor activation.
 ```
 
 ## P2 — Market trigger engine design

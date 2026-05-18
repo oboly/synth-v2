@@ -1,0 +1,14 @@
+[Unit]
+Description=Synth 4h market-only chain timer (after 4h candle close)
+Documentation=docs/ops/synth_runtime_runners_v1.md
+Requires=synth-4h-market-chain.service
+
+[Timer]
+# Conservative schedule: 12 minutes after each 4h UTC candle close.
+OnCalendar=*-*-* 00,04,08,12,16,20:12:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+Unit=synth-4h-market-chain.service
+
+[Install]
+WantedBy=timers.target
