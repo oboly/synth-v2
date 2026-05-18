@@ -71,7 +71,9 @@ Phase 5: freshness/reporting runner.
 - Do not call direct ticker APIs from renderers.
 - Refresh the static paper advice dashboard more frequently than the 4h advice snapshot when useful.
 - Keep paper advice setup and policy state sourced from the 4h `paper_advice_observation` snapshot.
-- Use 1h `obs_market_candle` rows for display-only DOWN pullback lifecycle badges.
+- Use faster `obs_market_candle` rows for display-only DOWN pullback lifecycle badges.
+- Start the fast lifecycle runner with `15m` candles; smoke-test `5m` separately before using it operationally.
+- Treat the fast lifecycle runner as route-state display support only, not as selection, advice, policy, execution, or order refresh.
 
 Phase 6: guarded full market-only chain review.
 
@@ -115,7 +117,8 @@ Suggested cadence:
 - `4h` refresh: every 4 hours after close with buffer.
 - `1d` refresh: daily after UTC daily close with buffer.
 - freshness check: after each runner.
-- paper advice dashboard lifecycle refresh: frequent static HTML render after 1h candle data is fresh.
+- paper advice dashboard lifecycle refresh: frequent static HTML render after lifecycle candle data is fresh.
+- fast paper advice lifecycle refresh: bounded public candle ETL for `15m` followed by static HTML render; `5m` only after ETL/API smoke test.
 - log rotation: daily or weekly depending on volume.
 
 Initial timers should use conservative buffers. A late run is safer than a duplicate or partial candle run.
@@ -228,7 +231,8 @@ executor_changes=0
 Paper advice dashboard lifecycle refresh:
 
 ```text
-broker_calls=0
+broker_calls=0 except public market-data API only
+broker_private_calls=0
 broker_writes=0
 order_submission=0
 live_orders=0
@@ -237,7 +241,33 @@ execution_planner_changes=0
 executor_changes=0
 ```
 
-The dashboard refresh reads the latest 4h `paper_advice_observation` snapshot and 1h `obs_market_candle` path data. It writes static HTML only. Frequent dashboard refresh does not grant trade permission.
+The standard dashboard refresh reads the latest 4h `paper_advice_observation` snapshot and candle path data. It writes static HTML only. Frequent dashboard refresh does not grant trade permission.
+
+Fast lifecycle refresh:
+
+```text
+broker_calls=0 except public market-data API only
+broker_private_calls=0
+broker_writes=0
+order_submission=0
+live_orders=0
+decision_gate_changes=0
+execution_planner_changes=0
+executor_changes=0
+```
+
+The fast lifecycle refresh performs bounded public candle ETL for the lifecycle interval, then renders the static paper advice dashboard. It does not refresh features, signals, selection, advice, policy, execution, or order state.
+
+Initial interval:
+
+- `15m` via `SYNTH_PAPER_ADVICE_LIFECYCLE_INTERVAL=15m`.
+- `5m` may be used only after a smoke test confirms the ETL/API path supports it cleanly.
+
+Architecture note:
+
+- The 4h chain produces the setup / policy / zone map.
+- The fast lifecycle runner updates route / path / invalidation / entry-touch display state from public candles.
+- This is a polling bridge toward a future shared `market_trigger_engine`.
 
 For DOWN pullback rows, `INVALIDATED` means the displayed zone context is stale and upstream recomputation is needed in `execution_zone_context` / paper advice. The dashboard must not recompute zones.
 
@@ -309,6 +339,27 @@ Do not create these files in this lane. Intended future unit/timer names:
 - `synth-features-signals-1d.service` / `synth-features-signals-1d.timer`
 - `synth-freshness-check.service` / `synth-freshness-check.timer`
 - `synth-paper-advice-dashboard-refresh.service` / `synth-paper-advice-dashboard-refresh.timer`
+- `synth-paper-advice-lifecycle-refresh.service` / `synth-paper-advice-lifecycle-refresh.timer`
+- future `synth-market-trigger-engine.service`
+
+## Market Trigger Engine Path
+
+The future shared market trigger engine is documented in:
+
+```text
+docs/architecture/market_trigger_engine_v1.md
+```
+
+It is the future public-market trigger layer for dashboard lifecycle state, alerts, and later execution-agent / order-monitor use after explicit decision and execution permission exists.
+
+Boundary:
+
+- no private broker calls
+- no broker writes
+- no order submission
+- no bypass around `decision_gate`
+- no replacement for `execution_planner`
+- no dashboard zone recomputation
 
 ## Boundaries
 

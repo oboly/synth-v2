@@ -13,6 +13,7 @@ Recent chat TODO: deploy Synth on Odroid and add runners for candle ingestion an
 Known infra context: Odroid C4 targeted for 24/7 runtime agents; MariaDB host is gurkdb.
 Recent chat TODO: after Odroid runners are stable, select the first strategy candidate and develop Synth toward paper execution support.
 docs/ops/synth_runtime_runners_v1.md
+docs/architecture/market_trigger_engine_v1.md
 ```
 
 ## P1 — Odroid runtime runners deployment plan
@@ -132,31 +133,71 @@ No dashboard zone recomputation.
 
 ## P2 — Paper advice dashboard lifecycle refresh runner
 
-Status: drafted / implementation review pending.
+Status: fast refresh runner drafted / implementation review pending.
 
 Script:
 
 ```text
 scripts/odroid/run_paper_advice_dashboard_refresh_once.sh
+scripts/odroid/run_paper_advice_lifecycle_refresh_once.sh
 ```
 
 Tasks:
 
 - Render the static paper advice dashboard from the latest 4h paper advice snapshot.
-- Use 1h `obs_market_candle` ranges for path-aware DOWN pullback lifecycle display.
+- Use faster `obs_market_candle` ranges for path-aware DOWN pullback lifecycle display.
+- Use `15m` as the initial fast lifecycle interval.
+- Smoke-test `5m` separately before using it operationally.
 - Use `flock` to avoid duplicate dashboard renders.
 - Print explicit safety markers.
 - Keep output as static HTML only.
+- Do not refresh features, signals, selection, advice, policy, execution, or order state in the fast lifecycle runner.
+- Keep `INVALIDATED` as a display context requiring upstream recomputation; the dashboard must not recompute zones.
 
 Boundary:
 
 ```text
 Display-only.
-Read-only DB access.
+Public candle ETL plus static HTML render only.
 No strategy/policy/decision/execution changes.
 No broker/private calls.
 No broker writes.
 No order submission.
+```
+
+## P2 — Market trigger engine design
+
+Status: design drafted / implementation blocked.
+
+Design:
+
+```text
+docs/architecture/market_trigger_engine_v1.md
+```
+
+Goal:
+
+Define a reusable public market-data trigger engine for threshold and zone events that can later feed paper advice lifecycle state, dashboard refreshes, alerts, and future execution-agent / order-monitor components.
+
+Tasks:
+
+- Keep the current fast lifecycle runner as a polling bridge.
+- Review watch definition, event, and state schema proposals.
+- Decide whether future storage should use DB event log plus current state.
+- Decide how dynamic symbol subscriptions should be built from the latest paper advice snapshot.
+- Keep trigger events as market facts, not trade permission.
+
+Boundary:
+
+```text
+No service installation yet.
+No DB migration yet.
+No private broker calls.
+No broker writes.
+No order submission.
+No bypass around decision_gate.
+No replacement for execution_planner.
+No runtime promotion.
 ```
 
 ## P2 — First paper strategy lane after Odroid runners
