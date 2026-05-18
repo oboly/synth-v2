@@ -13,18 +13,21 @@ from src.common.db import get_connection
 
 
 INTERVAL_SECONDS: dict[str, int] = {
+    "15m": 15 * 60,
     "1h": 60 * 60,
     "4h": 4 * 60 * 60,
     "1d": 24 * 60 * 60,
 }
 
 DEFAULT_LOOKBACK_DAYS: dict[str, int] = {
+    "15m": 7,
     "1h": 30,
     "4h": 90,
     "1d": 365,
 }
 
 DEFAULT_MIN_AVG_VOLUME_QUOTE_EUR: dict[str, Decimal] = {
+    "15m": Decimal("125"),
     "1h": Decimal("500"),
     "4h": Decimal("2000"),
     "1d": Decimal("10000"),
