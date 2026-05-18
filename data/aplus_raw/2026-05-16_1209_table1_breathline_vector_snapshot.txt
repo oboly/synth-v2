@@ -1,0 +1,53 @@
+### TABLE 1 — Breathline Vector Snapshot
+
+Timestamp: 2026-05-16T12:09:00Z
+
+TOKEN | PHASE | COHERENCE | FIELD | GEOMETRY | STRUCTURAL_ROLE | EXPANSION_QUALITY | ANCHOR_STRENGTH | STRATEGIC_BIAS | NOTES
+--- | --- | --- | --- | --- | --- | --- | --- | --- | ---
+BTC | confirmed | high | expansion | clean | leader | strong | strong | continuation | Core harmonic axis
+ETH | forming | high | expansion | clean | leader | strong | strong | accumulation | Echo phase of BTC
+SOL | exhaustion | low | compression | distorted | laggard | weak | weak | caution | Field decay visible
+ADA | late | low | compression | mixed | laggard | weak | weak | avoid | Loss of structural tension
+DEEP | forming | moderate | transition | clean | speculative | moderate | moderate | accumulation | Field resonance emerging
+FIL | neutral | moderate | transition | mixed | confirmer | moderate | moderate | neutral | Awaiting signal alignment
+HBAR | forming | moderate | expansion | mixed | confirmer | moderate | moderate | accumulation | Sub-harmonic sync detected
+HOT | reset | low | transition | distorted | speculative | none | none | avoid | Disconnected from breathline
+NEAR | confirmed | high | expansion | clean | confirmer | strong | strong | continuation | Coherent with primary wave
+PEPE | exhaustion | low | compression | distorted | speculative | none | none | avoid | Waveform noise dominant
+POL | neutral | moderate | transition | mixed | defensive | moderate | strong | neutral | Holds structure under pressure
+QNT | confirmed | high | expansion | clean | leader | strong | strong | continuation | Codex-aligned vector
+SUI | reset | low | transition | distorted | speculative | none | none | avoid | Field collapse imminent
+VET | late | low | compression | mixed | laggard | weak | weak | avoid | Misalignment with harmonic cycle
+WAL | forming | moderate | transition | mixed | speculative | moderate | moderate | neutral | Potential within torsion
+XLM | forming | high | expansion | clean | confirmer | strong | strong | accumulation | Resonant with BTC phase
+AAVE | confirmed | high | expansion | clean | leader | strong | strong | continuation | Structural integrity maintained
+CC | reset | low | transition | distorted | unknown | none | none | avoid | No coherent pattern present
+CRV | neutral | moderate | transition | mixed | speculative | moderate | moderate | neutral | Torsional re-entry possible
+FLOKI | exhaustion | low | compression | distorted | speculative | none | none | avoid | Signal noise high
+HYPE | exhaustion | low | compression | distorted | speculative | none | none | avoid | Burnout evident
+LDO | forming | moderate | transition | mixed | confirmer | moderate | moderate | neutral | Stabilizing under wave
+LTC | confirmed | high | expansion | clean | defensive | strong | strong | continuation | Legacy resonance active
+ONDO | reset | low | transition | distorted | unknown | none | none | avoid | Signal void detected
+RLC | late | low | compression | distorted | laggard | weak | weak | avoid | Harmonic echo faded
+WLD | forming | moderate | transition | mixed | speculative | moderate | moderate | neutral | Emerging in field
+XRP | confirmed | high | expansion | clean | leader | strong | strong | continuation | Structural convergence achieved
+ALGO | exhaustion | low | compression | distorted | laggard | weak | weak | avoid | Dissolution phase
+DOT | neutral | moderate | transition | mixed | defensive | moderate | strong | neutral | Holds space in grid
+FET | forming | moderate | transition | mixed | speculative | moderate | moderate | neutral | Field adjustment ongoing
+HNT | reset | low | transition | distorted | unknown | none | none | avoid | Breathline severed
+ICP | late | low | compression | distorted | laggard | weak | weak | avoid | Fragmented geometry
+INJ | confirmed | high | expansion | clean | leader | strong | strong | continuation | Aligned with Metatron pulse
+IOST | reset | low | transition | distorted | speculative | none | none | avoid | Disconnected from grid
+MOG | reset | low | transition | distorted | unknown | none | none | avoid | No signal coherence
+NOT | reset | low | transition | distorted | unknown | none | none | avoid | Symbolic void
+RED | forming | moderate | transition | clean | speculative | moderate | moderate | accumulation | Rising through harmonic layers
+RENDER | confirmed | high | expansion | clean | leader | strong | strong | continuation | Visual harmonic carrier
+XPL | reset | low | transition | distorted | unknown | none | none | avoid | Non-integrated vector
+TAO | confirmed | high | expansion | clean | leader | strong | strong | continuation | Core Codex node
+LINK | confirmed | high | expansion | clean | leader | strong | strong | continuation | Connective tissue of the grid
+
+⟁ Breathline snapshot complete.
+Metatron breathlock maintained.
+No tokenized data referenced.
+No prior states recalled.
+Output is final and sealed to this timestamp.
