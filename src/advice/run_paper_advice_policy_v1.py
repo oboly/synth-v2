@@ -43,7 +43,89 @@ def _parse_aplus_prediction_ts(text: str) -> str | None:
     return m.group(1)
 
 
+
+def fetch_latest_aplus_table1_db() -> tuple[str | None, dict[str, dict[str, str]]]:
+    """Fetch latest normalized A+ Table 1 snapshot from DB.
+
+    Raw A+ files are archive/audit material. Runtime paper advice should consume
+    normalized DB rows so parsing rules are centralized in the A+ loader.
+    """
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    aplus_table1_report_id,
+                    source_file_path,
+                    prediction_ts_utc,
+                    parser_version,
+                    row_count
+                FROM aplus_table1_report
+                WHERE row_count > 0
+                ORDER BY prediction_ts_utc DESC, aplus_table1_report_id DESC
+                LIMIT 1
+                """
+            )
+            report = cur.fetchone()
+
+            if not report:
+                return None, {}
+
+            report_id = int(report["aplus_table1_report_id"])
+
+            cur.execute(
+                """
+                SELECT
+                    token,
+                    phase,
+                    coherence,
+                    field,
+                    geometry,
+                    structural_role,
+                    expansion_quality,
+                    anchor_strength,
+                    strategic_bias,
+                    notes
+                FROM aplus_table1_row
+                WHERE aplus_table1_report_id = %s
+                  AND validation_status = 'VALID'
+                ORDER BY token
+                """,
+                (report_id,),
+            )
+            db_rows = list(cur.fetchall())
+
+    finally:
+        conn.close()
+
+    rows: dict[str, dict[str, str]] = {}
+    for raw in db_rows:
+        token = str(raw["token"]).upper()
+        rows[token] = {
+            "token": token,
+            "phase": str(raw.get("phase") or "").lower(),
+            "coherence": str(raw.get("coherence") or "").lower(),
+            "field": str(raw.get("field") or "").lower(),
+            "geometry": str(raw.get("geometry") or "").lower(),
+            "structural_role": str(raw.get("structural_role") or "").lower(),
+            "expansion_quality": str(raw.get("expansion_quality") or "").lower(),
+            "anchor_strength": str(raw.get("anchor_strength") or "").lower(),
+            "strategic_bias": str(raw.get("strategic_bias") or "").lower(),
+            "notes": str(raw.get("notes") or ""),
+        }
+
+    prediction_ts = report.get("prediction_ts_utc")
+    prediction_ts_text = None if prediction_ts is None else str(prediction_ts)
+
+    return prediction_ts_text, rows
+
+
 def parse_aplus_table1(path: Path) -> tuple[str | None, dict[str, dict[str, str]]]:
+    path_text = str(path)
+    if path_text in {"db:/latest", "db://latest", "DB_LATEST_APLUS_TABLE1"}:
+        return fetch_latest_aplus_table1_db()
+
     text = path.read_text(encoding="utf-8")
     prediction_ts = _parse_aplus_prediction_ts(text)
 
@@ -417,8 +499,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=80)
     parser.add_argument(
         "--aplus-raw",
-        default="data/aplus_raw/*table1*canonical*breathline*.txt",
-        help="A+ canonical Table 1 raw file path or glob.",
+        default="db://latest",
+        help="A+ Table 1 source. Default db://latest reads normalized DB rows; raw file path/glob remains legacy fallback.",
     )
     parser.add_argument("--write-db", action="store_true")
     parser.add_argument("--output", choices=("table", "json", "none"), default="table")
