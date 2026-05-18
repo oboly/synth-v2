@@ -1,11 +1,9 @@
 [Unit]
-Description=Synth MVP read-only cockpit refresh
+Description=Synth MVP read-only cockpit dashboard render
 After=network-online.target
 
 [Service]
 Type=oneshot
 WorkingDirectory=/home/theone/projects/synth-v2
-Environment=SYNTH_MVP_RUN_MARKET_CHAIN=0
 Environment=SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML=/var/www/html/synth/rotation-preview.html
-Environment=SYNTH_PAPER_ADVICE_DASHBOARD_HTML=/var/www/html/synth/paper-advice.html
-ExecStart=/home/theone/projects/synth-v2/scripts/odroid/run_mvp_readonly_pipeline_once.sh
+ExecStart=/home/theone/projects/synth-v2/scripts/odroid/run_mvp_dashboard_render_once.sh

@@ -13,6 +13,8 @@ export SYNTH_BROKER_WRITE_PERMISSION="${SYNTH_BROKER_WRITE_PERMISSION:-NOT_GRANT
 export SYNTH_PAPER_ADVICE_DASHBOARD_HTML="${SYNTH_PAPER_ADVICE_DASHBOARD_HTML:-/var/www/html/synth/paper-advice.html}"
 export SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML="${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML:-/var/www/html/synth/rotation-preview.html}"
 export SYNTH_MVP_RUN_MARKET_CHAIN="${SYNTH_MVP_RUN_MARKET_CHAIN:-0}"
+export SYNTH_MVP_WRITE_PAPER_ADVICE="${SYNTH_MVP_WRITE_PAPER_ADVICE:-0}"
+export SYNTH_MVP_RENDER_PAPER_DASHBOARD="${SYNTH_MVP_RENDER_PAPER_DASHBOARD:-0}"
 
 echo "[MVP][START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "[MVP][SAFETY] live_execution=${SYNTH_LIVE_EXECUTION_PERMISSION} broker_write=${SYNTH_BROKER_WRITE_PERMISSION}"
@@ -51,16 +53,24 @@ run_step python -m src.operations.run_decision_gate_position_source_audit_v1 \
   --venue bitvavo \
   --output table
 
-run_step python -m src.advice.run_paper_advice_policy_v1 \
-  --venue bitvavo \
-  --interval 4h \
-  --write-db \
-  --output none
-
-if [ -f "scripts/odroid/run_paper_advice_dashboard_refresh_once.sh" ]; then
-  run_step bash scripts/odroid/run_paper_advice_dashboard_refresh_once.sh
+if [ "${SYNTH_MVP_WRITE_PAPER_ADVICE}" = "1" ]; then
+  run_step python -m src.advice.run_paper_advice_policy_v1 \
+    --venue bitvavo \
+    --interval 4h \
+    --write-db \
+    --output none
 else
-  echo "[MVP][WARN] paper advice dashboard refresh script not found; skipping paper dashboard render"
+  echo "[MVP][SKIP] paper advice policy write skipped; lifecycle/4h chain owns paper advice by default"
+fi
+
+if [ "${SYNTH_MVP_RENDER_PAPER_DASHBOARD}" = "1" ]; then
+  if [ -f "scripts/odroid/run_paper_advice_dashboard_refresh_once.sh" ]; then
+    run_step bash scripts/odroid/run_paper_advice_dashboard_refresh_once.sh
+  else
+    echo "[MVP][WARN] paper advice dashboard refresh script not found; skipping paper dashboard render"
+  fi
+else
+  echo "[MVP][SKIP] paper advice dashboard render skipped; lifecycle runner owns paper-advice.html by default"
 fi
 
 run_step python -m src.reporting.run_position_rotation_static_dashboard_v1 \

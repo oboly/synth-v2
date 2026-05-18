@@ -1,0 +1,8 @@
+[Unit]
+Description=Synth MVP private account snapshot refresh
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/theone/projects/synth-v2
+ExecStart=/home/theone/projects/synth-v2/scripts/odroid/run_mvp_account_refresh_once.sh
