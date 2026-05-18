@@ -309,7 +309,7 @@ No strategy logic inside execution_planner/executor.
 
 ## P2 — Trade setup rank eligibility correction
 
-Status: production correction branch prepared / review pending.
+Status: done / committed to main.
 
 Context:
 
@@ -331,7 +331,7 @@ No runtime permission changes.
 
 ## P2 — Paper advice setup-fail reason display
 
-Status: done / review pending.
+Status: done / committed to main.
 
 Goal:
 
