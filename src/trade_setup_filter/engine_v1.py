@@ -27,7 +27,7 @@ from src.trade_setup_filter.models import TradeSetupCandidate, TradeSetupDecisio
 
 
 DEFAULT_SELECTION_STATE = "WATCHLIST"
-DEFAULT_RANK_MIN = 4
+DEFAULT_RANK_MIN = 1
 DEFAULT_RANK_MAX = 10
 DEFAULT_BTC_PRIOR_MIN = Decimal("-0.015")
 DEFAULT_BTC_PRIOR_MAX = Decimal("0.015")
@@ -67,7 +67,7 @@ def evaluate_trade_setup(
         setup_filter_reason = "PRIORITY_RANK_MISSING"
 
     elif candidate.priority_rank < rank_min or candidate.priority_rank > rank_max:
-        setup_filter_reason = "RANK_OUTSIDE_SWEET_SPOT"
+        setup_filter_reason = "RANK_OUTSIDE_SETUP_ELIGIBLE_RANGE"
 
     elif candidate.btc_prior_24h is None:
         setup_filter_reason = "BTC_PRIOR_24H_MISSING"
@@ -88,11 +88,16 @@ def evaluate_trade_setup(
         setup_filter_state = "PASS"
         setup_filter_reason = "RANK_AND_MARKET_CONTEXT_OK"
 
+    rank_context = ""
+    if candidate.priority_rank is not None and candidate.priority_rank < 4:
+        rank_context = "; rank_context=TOP_RANK_PRIORITY; chase_risk_context=REVIEW_METRICS"
+
     notes = (
         f"state={candidate.selection_state}; "
         f"rank={candidate.priority_rank}; "
         f"btc_prior_24h={candidate.btc_prior_24h}; "
         f"asset_suitability_mode={asset_suitability_mode}"
+        f"{rank_context}"
     )
 
     return TradeSetupDecision(

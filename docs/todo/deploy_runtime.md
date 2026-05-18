@@ -307,6 +307,28 @@ No bypass around decision_gate.
 No strategy logic inside execution_planner/executor.
 ```
 
+## P2 — Trade setup rank eligibility correction
+
+Status: production correction branch prepared / review pending.
+
+Context:
+
+- Old setup-filter rank sweet spot required rank `4..10`.
+- That was inverted relative to the original intent because rank `1..3` could fail setup purely for being top-ranked.
+- Correct setup eligibility should allow rank `1..10`; top-rank rows may carry priority/chase-risk context only.
+- Actionable count limiting belongs downstream in paper advice policy preview or the account-aware decision gate.
+
+Boundary:
+
+```text
+No decision_gate changes.
+No execution_planner changes.
+No executor changes.
+No broker writes.
+No order submission.
+No runtime permission changes.
+```
+
 ## P3 — Runtime orchestration standard
 
 Status: drafted in ops plan / future implementation.

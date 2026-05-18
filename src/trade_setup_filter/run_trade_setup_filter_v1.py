@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--engine-version", default=DEFAULT_ENGINE_VERSION)
     parser.add_argument("--limit", type=int, default=40)
     parser.add_argument("--selection-state", default="WATCHLIST")
-    parser.add_argument("--rank-min", type=int, default=4)
+    parser.add_argument("--rank-min", type=int, default=1)
     parser.add_argument("--rank-max", type=int, default=10)
     parser.add_argument("--btc-prior-min", default="-0.015")
     parser.add_argument("--btc-prior-max", default="0.015")
