@@ -30,6 +30,7 @@ DEFAULT_SELECTION_STATE = "WATCHLIST"
 DEFAULT_RANK_MIN = 1
 DEFAULT_RANK_MAX = 10
 DEFAULT_BTC_PRIOR_MIN = Decimal("-0.015")
+DEFAULT_BTC_DAMAGE_HARD_MIN = Decimal("-0.025")
 DEFAULT_BTC_PRIOR_MAX = Decimal("0.015")
 DEFAULT_TARGET_HORIZON = "24H"
 
@@ -54,6 +55,7 @@ def evaluate_trade_setup(
     rank_min: int = DEFAULT_RANK_MIN,
     rank_max: int = DEFAULT_RANK_MAX,
     btc_prior_min: Decimal = DEFAULT_BTC_PRIOR_MIN,
+    btc_damage_hard_min: Decimal = DEFAULT_BTC_DAMAGE_HARD_MIN,
     btc_prior_max: Decimal = DEFAULT_BTC_PRIOR_MAX,
     asset_suitability_mode: str = "off",
 ) -> TradeSetupDecision:
@@ -72,8 +74,11 @@ def evaluate_trade_setup(
     elif candidate.btc_prior_24h is None:
         setup_filter_reason = "BTC_PRIOR_24H_MISSING"
 
-    elif candidate.btc_prior_24h < btc_prior_min:
+    elif candidate.btc_prior_24h < btc_damage_hard_min:
         setup_filter_reason = "MARKET_DAMAGE_RISK"
+
+    elif candidate.btc_prior_24h < btc_prior_min:
+        setup_filter_reason = "MARKET_DAMAGE_CAUTION"
 
     elif candidate.btc_prior_24h > btc_prior_max:
         setup_filter_reason = "BTC_PRIOR_OVERHEAT_ZONE"
@@ -96,6 +101,8 @@ def evaluate_trade_setup(
         f"state={candidate.selection_state}; "
         f"rank={candidate.priority_rank}; "
         f"btc_prior_24h={candidate.btc_prior_24h}; "
+        f"btc_damage_hard_min={btc_damage_hard_min}; "
+        f"btc_prior_min={btc_prior_min}; "
         f"asset_suitability_mode={asset_suitability_mode}"
         f"{rank_context}"
     )
