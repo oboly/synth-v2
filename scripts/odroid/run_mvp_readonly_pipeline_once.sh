@@ -21,6 +21,11 @@ run_step() {
   echo
   echo "[MVP][STEP] $*"
   "$@"
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    echo "[MVP][FAIL] step failed status=$status command=$*"
+    exit "$status"
+  fi
 }
 
 if [ "${SYNTH_MVP_RUN_MARKET_CHAIN}" = "1" ]; then
