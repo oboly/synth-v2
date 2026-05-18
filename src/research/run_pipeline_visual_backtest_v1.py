@@ -53,6 +53,7 @@ BLOCK_ADVICE_ACTIONS = {
 EVENT_ORDER = [
     "SETUP_PASS",
     "SETUP_FAIL",
+    "SETUP_PASS_NO_ZONE_CONTEXT",
     "ENTER_SIM",
     "EXIT_TARGET_SIM",
     "EXIT_RISK_SIM",
@@ -129,6 +130,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-events-jsonl", default=None)
     parser.add_argument("--output", choices=["summary", "table", "json", "none"], default="summary")
     parser.add_argument("--max-bars", type=int, default=12)
+    parser.add_argument(
+        "--include-all-contexts",
+        action="store_true",
+        help="Use every raw observation context instead of the latest context per future candle timestamp.",
+    )
     return parser.parse_args()
 
 
@@ -445,6 +451,30 @@ def make_event(
     )
 
 
+def dedupe_event_key(event: PipelineEvent) -> tuple[Any, ...]:
+    return (
+        event.symbol,
+        event.interval_code,
+        event.timestamp_utc,
+        event.event_type,
+        event.setup_filter_reason,
+        event.advice_action,
+        event.leg_direction,
+    )
+
+
+def dedupe_events(events: list[PipelineEvent]) -> list[PipelineEvent]:
+    seen: set[tuple[Any, ...]] = set()
+    unique: list[PipelineEvent] = []
+    for event in events:
+        key = dedupe_event_key(event)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(event)
+    return unique
+
+
 def target_hit(context: PipelineContext, candle: Candle) -> bool:
     target = target_ref(context)
     direction = (context.leg_direction or "").upper()
@@ -478,9 +508,25 @@ def is_blocked(context: PipelineContext) -> str | None:
 
 
 def is_actionable(context: PipelineContext) -> bool:
-    if context.allowed_now is True:
-        return True
     return (context.setup_filter_state or "").upper() == "PASS"
+
+
+def has_full_zone_context(context: PipelineContext) -> bool:
+    return (
+        (context.leg_direction or "").upper() in {"UP", "DOWN"}
+        and context.entry_zone_low is not None
+        and context.entry_zone_high is not None
+        and target_ref(context) is not None
+        and context.invalidation_price is not None
+    )
+
+
+def has_exit_sim_context(context: PipelineContext) -> bool:
+    return (
+        (context.leg_direction or "").upper() in {"UP", "DOWN"}
+        and target_ref(context) is not None
+        and context.invalidation_price is not None
+    )
 
 
 def future_candles_for_context(
@@ -490,6 +536,26 @@ def future_candles_for_context(
 ) -> list[Candle]:
     future = [candle for candle in candles if candle.open_ts_utc > context.asof_ts_utc]
     return future[:max_bars]
+
+
+def context_event_timestamp(context: PipelineContext, candles: list[Candle]) -> datetime:
+    future = future_candles_for_context(context, candles, max_bars=1)
+    if future:
+        return future[0].open_ts_utc
+    return context.asof_ts_utc
+
+
+def select_latest_context_per_candle(
+    contexts: list[PipelineContext],
+    candles: list[Candle],
+) -> list[PipelineContext]:
+    selected: dict[datetime, PipelineContext] = {}
+    for context in contexts:
+        event_ts = context_event_timestamp(context, candles)
+        existing = selected.get(event_ts)
+        if existing is None or context.asof_ts_utc > existing.asof_ts_utc:
+            selected[event_ts] = context
+    return [selected[key] for key in sorted(selected)]
 
 
 def simulate_events(
@@ -540,7 +606,7 @@ def simulate_events(
             )
 
         for candle in future:
-            if risk_hit(context, candle):
+            if context.invalidation_price is not None and risk_hit(context, candle):
                 events.append(
                     make_event(
                         context,
@@ -555,6 +621,18 @@ def simulate_events(
         if block_type or not is_actionable(context) or not future:
             continue
 
+        if not has_full_zone_context(context):
+            events.append(
+                make_event(
+                    context,
+                    event_type="SETUP_PASS_NO_ZONE_CONTEXT",
+                    timestamp_utc=event_ts,
+                    price=price_for_event(first_candle),
+                    notes="setup_filter_state=PASS but entry/target/risk/leg context is incomplete",
+                )
+            )
+            continue
+
         enter_candle = future[0]
         events.append(
             make_event(
@@ -567,25 +645,26 @@ def simulate_events(
         )
 
         terminal_event: PipelineEvent | None = None
-        for candle in future:
-            if risk_hit(context, candle):
-                terminal_event = make_event(
-                    context,
-                    event_type="EXIT_RISK_SIM",
-                    timestamp_utc=candle.open_ts_utc,
-                    price=price_for_event(candle, context.invalidation_price),
-                    notes="risk/invalidation hit before target",
-                )
-                break
-            if target_hit(context, candle):
-                terminal_event = make_event(
-                    context,
-                    event_type="EXIT_TARGET_SIM",
-                    timestamp_utc=candle.open_ts_utc,
-                    price=price_for_event(candle, target_ref(context)),
-                    notes="target reference hit before timeout",
-                )
-                break
+        if has_exit_sim_context(context):
+            for candle in future:
+                if risk_hit(context, candle):
+                    terminal_event = make_event(
+                        context,
+                        event_type="EXIT_RISK_SIM",
+                        timestamp_utc=candle.open_ts_utc,
+                        price=price_for_event(candle, context.invalidation_price),
+                        notes="risk/invalidation hit before target",
+                    )
+                    break
+                if target_hit(context, candle):
+                    terminal_event = make_event(
+                        context,
+                        event_type="EXIT_TARGET_SIM",
+                        timestamp_utc=candle.open_ts_utc,
+                        price=price_for_event(candle, target_ref(context)),
+                        notes="target reference hit before timeout",
+                    )
+                    break
 
         if terminal_event is None:
             last_candle = future[-1]
@@ -605,6 +684,7 @@ def event_hover(event: PipelineEvent) -> str:
     return "<br>".join(
         [
             f"timestamp={event.timestamp_utc}",
+            f"asof_ts_utc={event.asof_ts_utc}",
             f"event_type={event.event_type}",
             f"setup_filter_reason={event.setup_filter_reason or ''}",
             f"advice_action={event.advice_action or ''}",
@@ -699,6 +779,7 @@ def render_chart(
     add_zone_overlays(fig, first_zone_context(contexts))
 
     marker_styles = {
+        "SETUP_PASS_NO_ZONE_CONTEXT": ("circle-open", "#7f7f7f", 10),
         "ENTER_SIM": ("triangle-up", "#1f77b4", 11),
         "EXIT_TARGET_SIM": ("star", "#2ca02c", 13),
         "EXIT_RISK_SIM": ("x", "#d62728", 12),
@@ -746,9 +827,20 @@ def write_events_jsonl(events: list[PipelineEvent], output_path: Path) -> None:
             handle.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
-def print_summary(events: list[PipelineEvent], output: str) -> None:
+def print_summary(
+    *,
+    events: list[PipelineEvent],
+    raw_event_count: int,
+    selected_context_count: int,
+    raw_context_count: int,
+    output: str,
+) -> None:
     counts = Counter(event.event_type for event in events)
     summary = {event_type: counts.get(event_type, 0) for event_type in EVENT_ORDER}
+    summary["raw_context_count"] = raw_context_count
+    summary["selected_context_count"] = selected_context_count
+    summary["raw_event_count"] = raw_event_count
+    summary["unique_event_count"] = len(events)
     summary["total_events"] = len(events)
 
     if output == "json":
@@ -757,6 +849,10 @@ def print_summary(events: list[PipelineEvent], output: str) -> None:
         print("event_type,count")
         for event_type in EVENT_ORDER:
             print(f"{event_type},{counts.get(event_type, 0)}")
+        print(f"raw_context_count,{raw_context_count}")
+        print(f"selected_context_count,{selected_context_count}")
+        print(f"raw_event_count,{raw_event_count}")
+        print(f"unique_event_count,{len(events)}")
         print(f"total_events,{len(events)}")
     elif output == "summary":
         print("summary_counts=" + json.dumps(summary, sort_keys=True))
@@ -808,12 +904,19 @@ def main() -> int:
         start_ts_utc=start_ts_utc,
         end_ts_utc=end_ts_utc,
     )
-    events = simulate_events(contexts, candles, max_bars=args.max_bars)
+    raw_context_count = len(contexts)
+    selected_contexts = (
+        contexts
+        if args.include_all_contexts
+        else select_latest_context_per_candle(contexts, candles)
+    )
+    raw_events = simulate_events(selected_contexts, candles, max_bars=args.max_bars)
+    events = dedupe_events(raw_events)
 
     render_chart(
         chart_frame=chart_frame,
         selection_frame=selection_frame,
-        contexts=contexts,
+        contexts=selected_contexts,
         events=events,
         title=f"{REPORT_NAME} {REPORT_VERSION} - {asset.symbol} {args.venue} {args.interval}",
         output_html=Path(args.output_html),
@@ -824,13 +927,23 @@ def main() -> int:
 
     print(f"report_name={REPORT_NAME} report_version={REPORT_VERSION}")
     print(f"symbol={asset.symbol} venue={args.venue} interval={args.interval}")
-    print(f"candles={len(candles)} contexts={len(contexts)} events={len(events)}")
+    print(
+        f"candles={len(candles)} raw_contexts={raw_context_count} "
+        f"selected_contexts={len(selected_contexts)} raw_events={len(raw_events)} "
+        f"unique_events={len(events)}"
+    )
     if not any(event.event_type == "MAP_INVALIDATED_PENDING_RECOMPUTE" for event in events):
         print(
             "map_invalidated_pending_recompute=0 "
             "reason=no future candle crossed the available invalidation_price for the observed leg_direction"
         )
-    print_summary(events, args.output)
+    print_summary(
+        events=events,
+        raw_event_count=len(raw_events),
+        selected_context_count=len(selected_contexts),
+        raw_context_count=raw_context_count,
+        output=args.output,
+    )
     return 0
 
 

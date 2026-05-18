@@ -62,6 +62,11 @@ python -m src.research.run_pipeline_visual_backtest_v1 \
 `market_price_snapshot` is not required for V1. Historical candles are the
 primary price path.
 
+By default, the runner selects the latest observation context per future 4h
+candle timestamp before simulation. This keeps the chart reviewable when many
+runtime observations were written inside the same candle. Use
+`--include-all-contexts` to inspect every raw observation context.
+
 ## Event Model
 
 The runner reads observations within the requested window and evaluates future
@@ -71,6 +76,7 @@ Generated event types:
 
 - `SETUP_PASS`
 - `SETUP_FAIL`
+- `SETUP_PASS_NO_ZONE_CONTEXT`
 - `ENTER_SIM`
 - `EXIT_TARGET_SIM`
 - `EXIT_RISK_SIM`
@@ -86,12 +92,26 @@ V1 policy:
 - `BLOCK_AVOID_OR_DO_NOT_ADD` when `advice_action` is one of
   `AVOID_NO_NEW_BUY`, `DO_NOT_ADD`, `BLOCK_FOR_24H`, or
   `CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP`.
-- `ENTER_SIM` only when `setup_filter_state = PASS` or `allowed_now` is true.
+- `SETUP_PASS_NO_ZONE_CONTEXT` when `setup_filter_state = PASS` but
+  entry/target/risk/leg context is incomplete.
+- `ENTER_SIM` requires `setup_filter_state = PASS` and complete
+  entry/target/risk/leg context.
 - `EXIT_TARGET_SIM` when future candle high/low reaches the target reference for
   the observed `leg_direction`.
 - `EXIT_RISK_SIM` when invalidation is reached before target.
+- target/risk exits are not simulated without `leg_direction`, target reference,
+  and invalidation context.
 - `TIMEOUT_SIM` after `--max-bars`, default `12`, when no target or risk exit is
   observed.
+
+Events are de-duplicated for review by:
+
+```text
+symbol, interval, timestamp_utc, event_type, setup_filter_reason, advice_action, leg_direction
+```
+
+The summary preserves both `raw_event_count` and `unique_event_count`. The chart
+and optional JSONL output use the unique event set.
 
 ## Zone Invalidation
 
@@ -122,8 +142,8 @@ The HTML chart contains:
   block events
 
 Marker hover text includes timestamp, event type, setup filter reason, advice
-action, selection state, leg direction, entry zone, target reference, and
-invalidation price.
+action, selection state, leg direction, `asof_ts_utc`, entry zone, target
+reference, and invalidation price.
 
 ## Interpretation
 
