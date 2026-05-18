@@ -79,6 +79,43 @@ def pct_class(value: Decimal | None) -> str:
     return "muted"
 
 
+def distance_context(row: Any) -> str | None:
+    leg_direction = str(row.leg_direction or "").upper()
+    advice_action = str(row.advice_action or "").upper()
+    rotation_state = str(row.rotation_state or "").upper()
+
+    if (
+        leg_direction == "DOWN"
+        or advice_action == "DO_NOT_ADD"
+        or "REDUCE" in rotation_state
+        or "EXIT" in rotation_state
+    ):
+        return "down"
+    if leg_direction == "UP":
+        return "up"
+    return None
+
+
+def target_pct_class(value: Decimal | None, context: str | None) -> str:
+    if value is None:
+        return ""
+    if context == "down":
+        return "ok" if value < 0 else "warn" if value > 0 else "muted"
+    if context == "up":
+        return "ok" if value > 0 else "warn" if value < 0 else "muted"
+    return pct_class(value)
+
+
+def risk_pct_class(value: Decimal | None, context: str | None) -> str:
+    if value is None:
+        return ""
+    if context == "down":
+        return "bad" if value > 0 else "ok" if value < 0 else "muted"
+    if context == "up":
+        return "bad" if value < 0 else "ok" if value > 0 else "muted"
+    return pct_class(value)
+
+
 def pct_delta(reference: Decimal | None, current_price: Decimal | None) -> Decimal | None:
     if reference is None or current_price is None or current_price <= 0:
         return None
@@ -114,11 +151,12 @@ def midpoint_or_edge(low: Decimal | None, high: Decimal | None) -> Decimal | Non
     return high
 
 
-def pct_cell(value: Decimal | None) -> str:
+def pct_cell(value: Decimal | None, class_name: str | None = None) -> str:
     text = signed_pct_text(value)
     if not text:
         return "<td class='num'></td>"
-    return f"<td class='num'><span class='pill {pct_class(value)}'>{esc(text)}</span></td>"
+    pill_class_name = class_name or pct_class(value)
+    return f"<td class='num'><span class='pill {pill_class_name}'>{esc(text)}</span></td>"
 
 
 def price_age_min(snapshot: MarketPriceSnapshot | None, *, now_utc: datetime) -> Decimal | None:
@@ -194,6 +232,7 @@ def render_html(
                 current_price,
             )
             delta_invalidation_pct = pct_delta(row.invalidation_price, current_price)
+            context = distance_context(row)
 
             out.append(
                 "<tr>"
@@ -210,8 +249,8 @@ def render_html(
                 f"<td class='num'>{esc(dec_text(current_price, '0.000000'))}</td>"
                 f"<td class='num'>{esc(dec_text(latest_price_age_min, '0.1'))}</td>"
                 f"{pct_cell(delta_entry_pct)}"
-                f"{pct_cell(delta_tp_pct)}"
-                f"{pct_cell(delta_invalidation_pct)}"
+                f"{pct_cell(delta_tp_pct, target_pct_class(delta_tp_pct, context))}"
+                f"{pct_cell(delta_invalidation_pct, risk_pct_class(delta_invalidation_pct, context))}"
                 f"<td>{esc(tp_zone)}</td>"
                 f"<td><span class='pill {pill_class(row.rotation_state)}'>{esc(row.rotation_state)}</span></td>"
                 f"<td class='num'>{esc(row.rotation_pressure_score)}</td>"
@@ -241,8 +280,8 @@ def render_html(
                   <th>Current price</th>
                   <th>Price age min</th>
                   <th>Δ entry %</th>
-                  <th>Δ TP %</th>
-                  <th>Δ invalidation %</th>
+                  <th>Δ target %</th>
+                  <th>Δ risk %</th>
                   <th>TP / target zone</th>
                   <th>Rotation</th>
                   <th>Score</th>
