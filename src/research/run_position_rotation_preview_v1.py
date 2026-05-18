@@ -46,6 +46,7 @@ class RotationRow:
     tp_zone_high: Decimal | None
     invalidation_price: Decimal | None
     aplus_bucket: str | None
+    better_candidates: list[str]
     rotation_state: str
     rotation_pressure_score: int
     reason_codes: list[str]
@@ -274,6 +275,103 @@ def classify_rotation(
     return "HOLD", score, reasons
 
 
+
+def market_candidate_quality_score(advice_row: dict[str, Any] | None) -> Decimal:
+    if not advice_row:
+        return Decimal("-999")
+
+    score = Decimal("0")
+    selection_state = str(advice_row.get("selection_state") or "").upper()
+    setup_state = str(advice_row.get("setup_filter_state") or "").upper()
+    setup_reason = str(advice_row.get("setup_filter_reason") or "").upper()
+    advice_action = str(advice_row.get("advice_action") or "").upper()
+    leg_direction = str(advice_row.get("leg_direction") or "").upper()
+    aplus_bucket = str(advice_row.get("aplus_bucket") or "").upper()
+
+    selection_score = dec(advice_row.get("selection_score")) or Decimal("0")
+    score += selection_score * Decimal("10")
+
+    if selection_state == "WATCHLIST":
+        score += Decimal("4")
+    elif selection_state == "NEUTRAL":
+        score += Decimal("1")
+    elif selection_state == "AVOID":
+        score -= Decimal("4")
+
+    if setup_state == "PASS":
+        score += Decimal("5")
+    elif setup_state == "FAIL":
+        score -= Decimal("2")
+
+    if setup_reason == "MARKET_DAMAGE_RISK":
+        score -= Decimal("5")
+    elif setup_reason == "MARKET_DAMAGE_CAUTION":
+        score -= Decimal("2")
+    elif setup_reason == "SELECTION_STATE_NOT_ELIGIBLE":
+        score -= Decimal("2")
+
+    if advice_action in {"BUY_READY", "ACCUMULATE", "BUY"}:
+        score += Decimal("5")
+    elif advice_action == "WATCH_ONLY":
+        score -= Decimal("1")
+    elif advice_action == "WAIT":
+        score += Decimal("0")
+
+    if leg_direction == "UP":
+        score += Decimal("2")
+    elif leg_direction == "DOWN":
+        score -= Decimal("2")
+
+    if aplus_bucket == "APLUS_AVOID":
+        score -= Decimal("4")
+    elif aplus_bucket == "APLUS_UNKNOWN":
+        score -= Decimal("1")
+    elif aplus_bucket.startswith("APLUS_"):
+        score += Decimal("1")
+
+    return score
+
+
+def rank_market_candidates(
+    advice_by_symbol: dict[str, dict[str, Any]],
+) -> list[tuple[str, Decimal]]:
+    ranked: list[tuple[str, Decimal]] = []
+
+    for symbol, advice in advice_by_symbol.items():
+        selection_state = str(advice.get("selection_state") or "").upper()
+        if selection_state == "AVOID":
+            continue
+
+        candidate_score = market_candidate_quality_score(advice)
+        ranked.append((symbol, candidate_score))
+
+    ranked.sort(key=lambda item: (item[1], item[0]), reverse=True)
+    return ranked
+
+
+def choose_better_candidates(
+    *,
+    current_symbol: str,
+    current_advice: dict[str, Any] | None,
+    ranked_candidates: list[tuple[str, Decimal]],
+    max_items: int = 3,
+) -> list[str]:
+    current_quality = market_candidate_quality_score(current_advice)
+
+    out: list[str] = []
+    for symbol, candidate_score in ranked_candidates:
+        if symbol == current_symbol:
+            continue
+        if candidate_score <= current_quality:
+            continue
+        out.append(f"{symbol}:{candidate_score.quantize(Decimal('0.01'))}")
+        if len(out) >= max_items:
+            break
+
+    return out
+
+
+
 def build_rows(
     position_rows: list[dict[str, Any]],
     advice_by_symbol: dict[str, dict[str, Any]],
@@ -281,6 +379,7 @@ def build_rows(
     stale_days: Decimal,
 ) -> list[RotationRow]:
     out: list[RotationRow] = []
+    ranked_candidates = rank_market_candidates(advice_by_symbol)
 
     for position in position_rows:
         symbol = str(position["symbol"]).upper()
@@ -295,6 +394,15 @@ def build_rows(
             position_source_state=source_state,
         )
         reason_codes = list(dict.fromkeys(source_reasons + rotation_reasons))
+        better_candidates = choose_better_candidates(
+            current_symbol=symbol,
+            current_advice=advice,
+            ranked_candidates=ranked_candidates,
+        )
+        if better_candidates:
+            reason_codes.append("BETTER_CANDIDATES_AVAILABLE")
+        else:
+            reason_codes.append("NO_BETTER_CANDIDATES_FOUND")
 
         out.append(
             RotationRow(
@@ -330,6 +438,7 @@ def build_rows(
                 tp_zone_high=None if not advice else dec(advice.get("tp_zone_high")),
                 invalidation_price=None if not advice else dec(advice.get("invalidation_price")),
                 aplus_bucket=None if not advice else advice.get("aplus_bucket"),
+                better_candidates=better_candidates,
                 rotation_state=rotation_state,
                 rotation_pressure_score=pressure_score,
                 reason_codes=reason_codes,
@@ -363,6 +472,7 @@ def print_table(rows: list[RotationRow]) -> None:
         "tp_zone",
         "rotation",
         "score",
+        "better",
     ]
 
     table: list[list[str]] = []
@@ -384,6 +494,7 @@ def print_table(rows: list[RotationRow]) -> None:
                 tp_zone,
                 row.rotation_state,
                 str(row.rotation_pressure_score),
+                ",".join(row.better_candidates[:3]),
             ]
         )
 
