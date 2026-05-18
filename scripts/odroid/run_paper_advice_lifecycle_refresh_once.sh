@@ -19,7 +19,9 @@ echo "lifecycle_candle_interval=${LIFECYCLE_CANDLE_INTERVAL}"
 
 cd "${REPO_DIR}"
 
-if [[ -d ".venv" ]]; then
+if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+  echo "Using active virtualenv: ${VIRTUAL_ENV}"
+elif [[ -d ".venv" ]]; then
   # shellcheck disable=SC1091
   source ".venv/bin/activate"
 elif [[ -d "venv" ]]; then
@@ -86,7 +88,7 @@ from src.common.db import get_db_connection
 venue = sys.argv[1]
 interval_code = sys.argv[2]
 
-load_dotenv()
+load_dotenv(dotenv_path=".env")
 conn = get_db_connection()
 try:
     with conn.cursor() as cur:
