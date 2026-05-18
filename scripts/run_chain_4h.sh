@@ -108,9 +108,12 @@ run_step python -m src.advice.run_paper_advice_policy_v1 \
   --output table
 
 if [[ -n "${SYNTH_PAPER_ADVICE_DASHBOARD_HTML:-}" ]]; then
+    DASHBOARD_LIFECYCLE_INTERVAL="${SYNTH_PAPER_ADVICE_LIFECYCLE_INTERVAL:-15m}"
+
     run_step python -m src.reporting.run_paper_advice_static_dashboard_v1 \
       --venue bitvavo \
       --interval 4h \
+      --lifecycle-candle-interval "${DASHBOARD_LIFECYCLE_INTERVAL}" \
       --output-html "$SYNTH_PAPER_ADVICE_DASHBOARD_HTML" \
       --output table
 fi
