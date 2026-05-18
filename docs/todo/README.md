@@ -54,6 +54,7 @@ Do not bypass layers.
 | `ui_webview.md` | parked/open | Read-only chart/UI/Webview upgrades and documentation |
 | `breath_curve.md` | parked/open | Breath Curve baseline, non-overlap follow-up, partial-cycle, and regime-gated validation continuation |
 | `strategy_candidates.md` | open design | Horizon bucket design, same-asset candidate conflict rules, and research-lead follow-ups |
+| `position_rotation_preview.md` | open design | Account-aware read-only preview for HOLD / REDUCE / EXIT / ROTATE candidates |
 | `paper_candidate_contract.md` | future design | Safe adapter path from research candidates to decision_gate |
 | `dev_ops_hygiene.md` | mostly parked | Codex smoke state, DBeaver/MariaDB access recovery, MariaDB backup/export hygiene, local untracked-file hygiene |
 | `parked_backlog.md` | parked/backlog | A+ archive state and external PRO narrative backlog |
