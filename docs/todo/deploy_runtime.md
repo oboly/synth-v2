@@ -2,7 +2,7 @@
 
 ## Status
 
-Open / future runtime operations lane.
+Active runtime operations lane. Initial Odroid runtime is deployed; follow-up work remains open for market damage hysteresis, A+ DB integration, dashboard quality display, and final ops cleanup.
 
 This lane tracks deployment of Synth runtime components to the Odroid and scheduled runners for market-data refresh and UI/webview data freshness.
 
@@ -18,7 +18,7 @@ docs/architecture/market_trigger_engine_v1.md
 
 ## P1 — Odroid runtime runners deployment plan
 
-Status: drafted / review pending.
+Status: done / Odroid runtime active.
 
 Plan:
 
@@ -37,11 +37,11 @@ Scope:
 - Safety markers.
 - Paper strategy follow-up gate.
 
-Actual deployment remains open. No services, timers, chain scripts, secrets, schema changes, asset metadata, or selection/advice/decision/execution logic were changed by the plan.
+Initial Odroid deployment is active. The installed runtime uses systemd timers on the Odroid with `User=theone` and `WorkingDirectory=/home/theone/projects/synth-v2`. Safety remains paper/read-only: live execution permission and broker write permission are disabled.
 
 ## P2 — Deploy Synth runtime on Odroid
 
-Status: open; plan and service/timer templates drafted.
+Status: done / Odroid runtime active.
 
 Goal:
 
@@ -72,7 +72,7 @@ Read/write scope must be explicit per runner.
 
 ## P2 — Candle ingestion runner
 
-Status: open.
+Status: done / active for bounded public candle ingestion.
 
 Goal:
 
@@ -98,7 +98,7 @@ No broker trading calls.
 
 ## P2 — Webview data refresh runner
 
-Status: partially addressed by read-only chart freshness display.
+Status: done for static paper advice dashboard freshness display; broader UI/webview work remains parked in `docs/todo/ui_webview.md`.
 
 Goal:
 
@@ -137,7 +137,7 @@ No dashboard zone recomputation.
 
 ## P2 — Paper advice dashboard lifecycle refresh runner
 
-Status: fast refresh runner smoke-tested; systemd templates drafted / installation pending.
+Status: done / systemd timer active on Odroid.
 
 Script:
 
@@ -153,7 +153,7 @@ Tasks:
 - Render the static paper advice dashboard from the latest 4h paper advice snapshot.
 - Use faster `obs_market_candle` ranges for path-aware DOWN pullback lifecycle display.
 - Use `15m` as the initial fast lifecycle interval.
-- Run every 5 minutes once the timer is reviewed and installed manually.
+- Runs every 5 minutes via `synth-paper-advice-lifecycle-refresh.timer` on Odroid.
 - Render `/var/www/html/synth/paper-advice.html`.
 - Smoke-test `5m` separately before using it operationally.
 - Use `flock` to avoid duplicate dashboard renders.
@@ -194,7 +194,7 @@ executor_changes=0
 
 ## P2 — 4h market chain timer templates
 
-Status: templates drafted / installation pending.
+Status: done / systemd timer active on Odroid.
 
 Templates:
 
@@ -265,7 +265,7 @@ No runtime promotion.
 
 ## P2 — First paper strategy lane after Odroid runners
 
-Status: blocked until Odroid runners are deployed and stable.
+Status: open / blocked until runtime stability is observed and first strategy candidate is reviewed.
 
 Goal:
 
@@ -358,7 +358,7 @@ No systemd timer changes.
 
 ## P3 — Runtime orchestration standard
 
-Status: drafted in ops plan / future implementation.
+Status: open / needs final ops cleanup and runtime verification checklist.
 
 Tasks:
 
