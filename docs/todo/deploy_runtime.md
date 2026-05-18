@@ -14,6 +14,7 @@ Known infra context: Odroid C4 targeted for 24/7 runtime agents; MariaDB host is
 Recent chat TODO: after Odroid runners are stable, select the first strategy candidate and develop Synth toward paper execution support.
 docs/ops/synth_runtime_runners_v1.md
 docs/architecture/market_trigger_engine_v1.md
+docs/research/trade_setup_fail_reason_diagnostic_v1.md
 ```
 
 ## P1 — Odroid runtime runners deployment plan
@@ -190,6 +191,38 @@ live_orders=0
 decision_gate_changes=0
 execution_planner_changes=0
 executor_changes=0
+```
+
+## P2 — Trade setup fail reason diagnostic
+
+Status: diagnostic runner added / review pending.
+
+Tool:
+
+```text
+src/research/run_trade_setup_fail_reason_diagnostic_v1.py
+docs/research/trade_setup_fail_reason_diagnostic_v1.md
+```
+
+Purpose:
+
+Explain why fresh paper advice rows show `SETUP FAILED` before changing setup-filter, policy, selection, decision, execution, or order logic.
+
+Current diagnostic finding:
+
+- most setup failures are `SELECTION_STATE_NOT_ELIGIBLE`
+- HYPE currently fails `RANK_OUTSIDE_SWEET_SPOT`
+- current DB stores the first fail reason, not a full guard trace
+
+Boundary:
+
+```text
+Read-only diagnostic.
+No setup-filter behavior change.
+No strategy/policy/selection changes.
+No decision/execution/order changes.
+No broker writes.
+No DB schema changes.
 ```
 
 ## P2 — 4h market chain timer templates

@@ -219,6 +219,18 @@ Paper advice monitoring checks:
 - dashboard rendered timestamp in `/var/www/html/synth/paper-advice.html`
 - latest `strategy_runtime_snapshot` for the 4h chain when the chain timer is enabled
 
+Setup-fail diagnostics:
+
+```bash
+python -m src.research.run_trade_setup_fail_reason_diagnostic_v1 \
+  --venue bitvavo \
+  --interval 4h \
+  --limit 80 \
+  --output table
+```
+
+This diagnostic is read-only. It explains `SETUP FAILED` rows from stored paper advice and trade setup filter observations before any setup-filter or policy change is considered.
+
 Watchlist note:
 
 - APT, KITE, and SXT are included as analysis-enabled but non-tradeable and non-portfolio assets.
