@@ -40,6 +40,32 @@ Tasks:
 - Define graduation rules from `BREATH_CURVE_RESEARCH` to runtime-eligible candidate buckets only after validation.
 - Preserve the rule: asset is not a strategy.
 
+## P1 — Current strategy audit follow-up
+
+Status: open.
+
+Source:
+
+```text
+docs/research/current_strategy_audit_v1.md
+```
+
+Tasks:
+
+- Start with same-window buy-and-hold baselines before evaluating strategy labels.
+- Validate `selection_state` forward returns from replay tables, not operational table backfills.
+- Validate `trade_setup_filter_v1` PASS/FAIL/reason buckets only from point-in-time replay rows.
+- Keep `paper_advice_policy_v1` validation blocked until A+ Table 1 and zone context can be replayed point-in-time.
+- Treat rotation preview as account-aware retrospective review only, not a selection strategy.
+
+Boundary:
+
+```text
+Backtest outputs stay in synth_bt or data/research.
+No forward-return fields in runtime tables.
+No decision_gate, execution_planner, executor, broker, or order changes.
+```
+
 ## Boundary
 
 ```text

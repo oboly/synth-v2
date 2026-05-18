@@ -2,13 +2,19 @@
 
 ## Status
 
-Open / active design lane.
+MVP implemented / parked follow-up lane.
 
 ## Purpose
 
 Build a read-only, account-aware preview that evaluates whether existing positions should be held, reduced, exited, or considered for rotation into stronger candidates.
 
 This lane exists because market-only paper advice can say a symbol is weak or blocked, but it must not decide what to do with an existing account position. Existing exposure belongs to an account-aware layer.
+
+The MVP cockpit path, Odroid render orchestration, public current-price snapshot
+display, and deterministic distance semantics are now implemented. This TODO
+remains as the parking place for account-aware review refinements only; strategy
+and backtest work belongs in `docs/research/current_strategy_audit_v1.md` and
+`docs/todo/strategy_candidates.md`.
 
 ## Current trigger
 
@@ -27,7 +33,7 @@ A+ Table 1 DB context also indicates weak structural context for HYPE, but A+ da
 
 ## Target output
 
-The preview should classify existing positions as:
+The preview classifies existing positions as:
 
 ```text
 HOLD
@@ -37,7 +43,7 @@ ROTATE_CANDIDATE
 NO_POSITION_CONTEXT
 ```
 
-The output should include:
+The implemented/readout output includes:
 
 - symbol
 - position source and timestamp
@@ -51,6 +57,9 @@ The output should include:
 - A+ Table 1 bucket when available
 - candidate alternatives ranked by market-only strength
 - rotation pressure reason codes
+- current public market price from `market_price_snapshot`
+- price age
+- distance to entry, target, and risk/invalidation context
 
 ## Inputs
 
@@ -90,7 +99,7 @@ no decision_gate permission change
 
 ## P1 — Schema/source inventory
 
-Status: next.
+Status: implemented for MVP cockpit.
 
 Tasks:
 
@@ -102,7 +111,7 @@ Tasks:
 
 ## P1 — Read-only preview runner
 
-Status: blocked until schema/source inventory is done.
+Status: implemented for MVP cockpit.
 
 Proposed file:
 
@@ -120,13 +129,40 @@ live_orders=0
 db_writes=0
 ```
 
+## P1 — Current-price and distance semantics
+
+Status: implemented.
+
+Implemented behavior:
+
+- public market prices come from `market_price_snapshot`
+- the renderer does not fetch Bitvavo directly
+- dashboard columns include current price, price age, entry distance, target
+  distance, and risk distance
+- distance semantics are display/review context only and do not change scoring
+  or better-candidate logic
+
 ## P2 — Better-candidate comparison
 
-Status: later.
+Status: MVP implemented; future refinements only.
 
 Use market-only candidates only. Do not move capital to a symbol purely because it is less bad than the current holding.
+
+## Next Strategy Work
+
+Status: separate research lane.
+
+The next work is not more cockpit plumbing. It is forward-return validation:
+
+- same-window buy-and-hold baseline
+- `selection_state` forward returns
+- `trade_setup_filter_v1` pass/fail/reason forward returns
+- `paper_advice_policy_v1` labels only after point-in-time A+ and zone replay
+  sources exist
+
+Operational `execution_zone_context` must not be historically backfilled for
+this work.
 
 ## Parked
 
 A+ Table 2 / breath rhythm module is explicitly parked for now.
-

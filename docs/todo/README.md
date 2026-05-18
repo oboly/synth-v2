@@ -49,12 +49,12 @@ Do not bypass layers.
 | `workflow_standard.md` | standard | TODO creation, update, closure, priority, boundary, and commit rules |
 | `market_breath.md` | characterized/parked | Market Breath V1 characterization as a regime-dependent state/risk-timing sensor |
 | `watchlist_candidates.md` | open intake | User-thesis watchlist candidates such as KITE before validation/promotion |
-| `deploy_runtime.md` | plan drafted/open ops | Odroid deploy, candle ingestion runners, webview data refresh runners, runtime orchestration |
+| `deploy_runtime.md` | MVP cockpit implemented / ops follow-up | Odroid read-only cockpit runner, dashboard render path, and related operational follow-ups |
 | `fibo_zones.md` | open research | Fib target maps, leak-free zone/fib touch evaluation, zone context guardrails, exit ladder profiles, and zone UI overlays |
 | `ui_webview.md` | parked/open | Read-only chart/UI/Webview upgrades and documentation |
 | `breath_curve.md` | parked/open | Breath Curve baseline, non-overlap follow-up, partial-cycle, and regime-gated validation continuation |
-| `strategy_candidates.md` | open design | Horizon bucket design, same-asset candidate conflict rules, and research-lead follow-ups |
-| `position_rotation_preview.md` | open design | Account-aware read-only preview for HOLD / REDUCE / EXIT / ROTATE candidates |
+| `strategy_candidates.md` | active next research | Current strategy audit follow-up, forward-return backtests, horizon bucket design, and research-lead follow-ups |
+| `position_rotation_preview.md` | MVP implemented / parked follow-up | Account-aware read-only cockpit/rotation preview with current price and distance semantics; strategy/backtests remain separate |
 | `paper_candidate_contract.md` | future design | Safe adapter path from research candidates to decision_gate |
 | `dev_ops_hygiene.md` | mostly parked | Codex smoke state, DBeaver/MariaDB access recovery, MariaDB backup/export hygiene, local untracked-file hygiene |
 | `parked_backlog.md` | parked/backlog | A+ archive state and external PRO narrative backlog |
@@ -62,9 +62,16 @@ Do not bypass layers.
 ## Active next-step recommendation
 
 ```text
-1. Review the Odroid runtime runners plan before installing services or timers.
-2. Keep first paper strategy candidate selection blocked until Odroid runners are stable.
-3. Review current Watchlist candidate intake for APT/KITE/SXT before any further universe/runtime decision.
-4. Keep Market Breath characterized and parked until a downstream regime-aware use-case explicitly needs it.
-5. Keep A+, PRO, execution, broker, and live/paper lanes parked unless directly needed by an explicit task.
+1. Treat the MVP read-only cockpit/timer path, current-price snapshot display,
+   and rotation distance semantics as implemented baseline behavior.
+2. Keep strategy and backtest work in the research lane; next priority is the
+   forward-return sequence in `docs/research/current_strategy_audit_v1.md`.
+3. Keep first paper strategy candidate selection blocked until selection/setup
+   forward-return validation is complete.
+4. Review current Watchlist candidate intake for APT/KITE/SXT before any further
+   universe/runtime decision.
+5. Keep Market Breath characterized and parked until a downstream regime-aware
+   use-case explicitly needs it.
+6. Keep A+, PRO, execution, broker, and live/paper lanes parked unless directly
+   needed by an explicit task.
 ```
