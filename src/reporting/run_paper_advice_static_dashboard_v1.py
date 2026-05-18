@@ -186,6 +186,7 @@ def css_class(value: str | None) -> str:
         "BLOCK_FOR_24H": "block",
         "INSUFFICIENT_SAMPLE": "muted",
         "MARKET_DAMAGE_RISK": "block",
+        "MARKET_DAMAGE_CAUTION": "watch",
         "BTC_PRIOR_OVERHEAT_ZONE": "block",
         "SELECTION_STATE_NOT_ELIGIBLE": "muted",
         "RANK_OUTSIDE_SETUP_ELIGIBLE_RANGE": "muted",
