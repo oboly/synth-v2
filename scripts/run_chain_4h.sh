@@ -14,7 +14,10 @@ fi
 
 set -u
 
-cd /home/gurk/projects/synth-v2 || exit 1
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_DIR="${SYNTH_REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+
+cd "${REPO_DIR}" || exit 1
 source scripts/synth_maintenance_guard.sh
 
 activate_runtime_venv() {
