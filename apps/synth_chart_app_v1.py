@@ -248,12 +248,12 @@ with st.sidebar:
     )
 
     start_date = st.date_input(
-        "Start date UTC",
+        "Start date",
         value=default_start,
     )
 
     end_date = st.date_input(
-        "End date UTC",
+        "End date",
         value=default_end,
     )
 
@@ -321,16 +321,28 @@ with fresh_left:
     st.metric("Latest close", display_value(price_context.get("latest_close_price"), 8))
 
 with fresh_middle:
-    st.metric("Chart latest open", format_display_timestamp(freshness.get("chart_frame_latest_open_ts_utc")))
+    st.metric(
+        "Chart latest open (Amsterdam time)",
+        format_display_timestamp(freshness.get("chart_frame_latest_open_ts_utc")),
+    )
 
 with fresh_right:
-    st.metric("Chart latest close", format_display_timestamp(freshness.get("chart_frame_latest_close_ts_utc")))
+    st.metric(
+        "Chart latest close (Amsterdam time)",
+        format_display_timestamp(freshness.get("chart_frame_latest_close_ts_utc")),
+    )
 
 with fresh_fourth:
-    st.metric("Source candle close", format_display_timestamp(freshness.get("latest_candle_close_ts_utc")))
+    st.metric(
+        "Source candle close (Amsterdam time)",
+        format_display_timestamp(freshness.get("latest_candle_close_ts_utc")),
+    )
 
 with fresh_fifth:
-    st.metric("Zone as-of", format_display_timestamp(freshness.get("latest_execution_zone_asof_ts_utc")))
+    st.metric(
+        "Zone as-of (Amsterdam time)",
+        format_display_timestamp(freshness.get("latest_execution_zone_asof_ts_utc")),
+    )
 
 with fresh_sixth:
     st.metric("Runtime snapshot", runtime_snapshot_display(freshness))

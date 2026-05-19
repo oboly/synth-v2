@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.common.db import get_connection
 from src.market_data.market_price_snapshot_v1 import (
@@ -166,15 +167,10 @@ def price_age_min(snapshot: MarketPriceSnapshot | None, *, now_utc: datetime) ->
     return age_seconds / Decimal("60")
 
 
-def now_local_first() -> tuple[str, str]:
+def now_local_label() -> str:
     now_utc = datetime.now(UTC)
-    try:
-        from zoneinfo import ZoneInfo
-
-        local = now_utc.astimezone(ZoneInfo("Europe/Amsterdam"))
-        return local.strftime("%Y-%m-%d %H:%M:%S %Z"), now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
-    except Exception:
-        return now_utc.strftime("%Y-%m-%d %H:%M:%S UTC"), now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    local = now_utc.astimezone(ZoneInfo("Europe/Amsterdam"))
+    return local.strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
 def pill_class(text: str | None) -> str:
@@ -197,7 +193,7 @@ def render_html(
     account_id: int,
     price_by_symbol: dict[str, MarketPriceSnapshot],
 ) -> str:
-    local_ts, utc_ts = now_local_first()
+    local_ts = now_local_label()
     now_utc = datetime.now(UTC)
 
     state_counts: dict[str, int] = {}
@@ -375,7 +371,7 @@ def render_html(
 <body>
   <header>
     <h1>Position Rotation Preview</h1>
-    <div class="muted">Rendered {esc(local_ts)} · {esc(utc_ts)}</div>
+    <div class="muted">Rendered {esc(local_ts)} Amsterdam time</div>
     <div class="muted">venue={esc(venue)} · quote={esc(quote_currency)} · interval={esc(interval)} · trading_account_id={esc(account_id)}</div>
     <div style="margin-top:12px">
       <a href="./index.html">Cockpit</a> ·
@@ -399,7 +395,7 @@ def render_html(
 
 
 def write_index(output_dir: Path) -> Path:
-    local_ts, utc_ts = now_local_first()
+    local_ts = now_local_label()
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / "index.html"
     target.write_text(
@@ -425,7 +421,7 @@ def write_index(output_dir: Path) -> Path:
 <body>
   <main>
     <h1>Synth MVP Read-only Cockpit</h1>
-    <p class="muted">Rendered {esc(local_ts)} · {esc(utc_ts)}</p>
+    <p class="muted">Rendered {esc(local_ts)} Amsterdam time</p>
     <p><span class="pill">broker_private_calls=0</span><span class="pill">broker_writes=0</span><span class="pill">order_submission=0</span><span class="pill">executor=none</span></p>
     <div class="grid">
       <div class="card">

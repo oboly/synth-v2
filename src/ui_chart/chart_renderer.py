@@ -21,6 +21,13 @@ def _to_py_datetime(value: Any) -> Any:
     return value
 
 
+def _to_local_datetime(value: Any, timezone_name: str = "Europe/Amsterdam") -> Any:
+    parsed = _parse_timestamp(value)
+    if parsed is None:
+        return None
+    return parsed.astimezone(ZoneInfo(timezone_name)).replace(tzinfo=None)
+
+
 def _add_selection_vertical_lines(
     fig: go.Figure,
     selection_frame: pd.DataFrame,
@@ -29,7 +36,7 @@ def _add_selection_vertical_lines(
         return
 
     for _, row in selection_frame.iterrows():
-        x_value = _to_py_datetime(row["asof_ts_utc"])
+        x_value = _to_local_datetime(row["asof_ts_utc"])
         if x_value is None:
             continue
 
@@ -135,6 +142,10 @@ def _candlestick_customdata(frame: pd.DataFrame) -> pd.DataFrame:
     return custom
 
 
+def _local_x(frame: pd.DataFrame, column: str = "ts_utc") -> pd.Series:
+    return frame[column].map(_to_local_datetime)
+
+
 def render_main_chart(
     frame: pd.DataFrame,
     selection_frame: pd.DataFrame,
@@ -165,7 +176,7 @@ def render_main_chart(
 
     fig.add_trace(
         go.Candlestick(
-            x=frame["ts_utc"],
+            x=_local_x(frame),
             open=frame["open_price"],
             high=frame["high_price"],
             low=frame["low_price"],
@@ -173,8 +184,8 @@ def render_main_chart(
             name="OHLC",
             customdata=_candlestick_customdata(frame).to_numpy(),
             hovertemplate=(
-                "Open time: %{customdata[0]}<br>"
-                "Close time: %{customdata[1]}<br>"
+                "Open time (Amsterdam): %{customdata[0]}<br>"
+                "Close time (Amsterdam): %{customdata[1]}<br>"
                 "Open: %{open}<br>"
                 "High: %{high}<br>"
                 "Low: %{low}<br>"
@@ -196,7 +207,7 @@ def render_main_chart(
     if show_ema20 and _has_column(frame, "ema_20"):
         fig.add_trace(
             go.Scatter(
-                x=frame["ts_utc"],
+                x=_local_x(frame),
                 y=frame["ema_20"],
                 mode="lines",
                 name="EMA 20",
@@ -209,7 +220,7 @@ def render_main_chart(
     if show_ema50 and _has_column(frame, "ema_50"):
         fig.add_trace(
             go.Scatter(
-                x=frame["ts_utc"],
+                x=_local_x(frame),
                 y=frame["ema_50"],
                 mode="lines",
                 name="EMA 50",
@@ -224,7 +235,7 @@ def render_main_chart(
         if not labeled.empty:
             fig.add_trace(
                 go.Scatter(
-                    x=labeled["ts_utc"],
+                    x=_local_x(labeled),
                     y=labeled["close_price"],
                     mode="markers",
                     name="Signal labels",
@@ -243,7 +254,7 @@ def render_main_chart(
     if _has_column(frame, volume_column):
         fig.add_trace(
             go.Bar(
-                x=frame["ts_utc"],
+                x=_local_x(frame),
                 y=frame[volume_column],
                 name=volume_column,
             ),
@@ -254,7 +265,7 @@ def render_main_chart(
     if show_rsi and _has_column(frame, "rsi_14"):
         fig.add_trace(
             go.Scatter(
-                x=frame["ts_utc"],
+                x=_local_x(frame),
                 y=frame["rsi_14"],
                 mode="lines",
                 name="RSI 14",
@@ -269,7 +280,7 @@ def render_main_chart(
     if show_signal_confidence and _has_column(frame, "signal_confidence"):
         fig.add_trace(
             go.Scatter(
-                x=frame["ts_utc"],
+                x=_local_x(frame),
                 y=frame["signal_confidence"],
                 mode="lines",
                 name="Signal confidence",
@@ -313,7 +324,7 @@ def render_main_chart(
     fig.update_yaxes(title_text="Volume", row=2, col=1, title_font_size=8, tickfont_size=8)
     fig.update_yaxes(title_text="RSI", row=3, col=1, title_font_size=8, tickfont_size=8)
     fig.update_yaxes(title_text="Confidence", row=4, col=1, title_font_size=8, tickfont_size=8)
-    fig.update_xaxes(tickfont_size=8)
+    fig.update_xaxes(tickfont_size=8, title_text="Amsterdam time")
 
     return fig
 
@@ -411,8 +422,8 @@ def display_context_to_markdown(display_context: dict[str, Any] | None) -> str:
     lines = [
         "### Freshness",
         "",
-        "| Source | UTC | Amsterdam |",
-        "|---|---:|---:|",
+        "| Source | Amsterdam time |",
+        "|---|---:|",
     ]
 
     freshness_rows = [
@@ -431,8 +442,6 @@ def display_context_to_markdown(display_context: dict[str, Any] | None) -> str:
             "| "
             + source
             + " | "
-            + format_utc_timestamp(timestamp)
-            + " | "
             + format_display_timestamp(timestamp)
             + " |"
         )
@@ -440,7 +449,7 @@ def display_context_to_markdown(display_context: dict[str, Any] | None) -> str:
     snapshot_id = display_value(freshness.get("latest_strategy_runtime_snapshot_id"))
     lines.extend(
         [
-            "| Runtime snapshot id | " + snapshot_id + " | " + snapshot_id + " |",
+            "| Runtime snapshot id | " + snapshot_id + " |",
             "",
             "### Latest Price And Zone Context",
             "",

@@ -150,6 +150,7 @@ namespace such as `synth_bt` or an explicit `data/research/...` artifact.
 The HTML chart contains:
 
 - Plotly candlesticks from `obs_market_candle`
+- chart axis and marker hover timestamps labeled in Europe/Amsterdam local time
 - selection timestamp guide lines
 - entry zone band when context is available
 - target zone band when context is available
@@ -157,9 +158,12 @@ The HTML chart contains:
 - markers for simulated entry, target exit, risk exit, map invalidation, and
   block events
 
-Marker hover text includes timestamp, event type, setup filter reason, advice
-action, selection state, leg direction, `asof_ts_utc`, entry zone, target
-reference, and invalidation price.
+Marker hover text includes Amsterdam-local timestamp, event type, setup filter
+reason, advice action, selection state, leg direction, Amsterdam-local as-of
+time, entry zone, target reference, and invalidation price.
+
+Machine-readable JSONL event fields keep their UTC field names and values for
+reproducibility.
 
 ## Interpretation
 

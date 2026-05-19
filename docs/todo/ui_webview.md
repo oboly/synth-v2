@@ -67,7 +67,7 @@ Display tasks:
 - Show latest close price from `obs_market_candle`.
 - Show latest chart-frame open timestamp, chart-frame close timestamp, and latest source candle close timestamp.
 - Convert display timestamps to Europe/Amsterdam local time with CET/CEST abbreviation while keeping DB/repository timestamps in UTC.
-- Show freshness footer with UTC and Amsterdam columns.
+- Show freshness footer with Amsterdam-local timestamps only.
 - Show candle hover text with local open time, local close time, OHLC, and signal fields where available.
 - Show latest signal, selection, advice, execution-zone, and runtime snapshot timestamps where available.
 - Show `entry_zone_low`, `entry_zone_high`, `tp_zone_low`, `tp_zone_high`, and `invalidation_price`.
@@ -95,6 +95,31 @@ Design rules:
 - Multi-pane charting.
 - Paper/backtest/oracle marker overlays.
 
+## P1 — Local-only UI timestamps
+
+Status: implemented in `feature/ui-local-time-only-v1`.
+
+Goal:
+All human-facing dashboards and chart HTML should display Europe/Amsterdam local time only.
+
+Rules:
+- UI should not show UTC timestamps by default.
+- Use Europe/Amsterdam timezone conversion.
+- Label as "Amsterdam time" or "Local time".
+- Do not hardcode CEST, because winter uses CET.
+- JSONL, DB fields, logs, and internal reproducibility artifacts remain UTC.
+- Optional: keep UTC only in machine-readable JSONL, not chart labels/tooltips.
+
+Affected UI:
+- rotation-preview.html
+- paper-advice.html
+- index.html
+- pipeline visual backtest HTML
+- Streamlit chart app
+
+Implementation notes:
+- Human-facing dashboards and chart HTML use Europe/Amsterdam via `zoneinfo`.
+- Runtime logs, DB field names, and research JSONL remain UTC for reproducibility.
 ## Boundary
 
 ```text

@@ -26,6 +26,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -194,6 +195,16 @@ def json_ready(value: Any) -> Any:
     if isinstance(value, Decimal):
         return str(value)
     return value
+
+
+def amsterdam_datetime(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC).astimezone(ZoneInfo("Europe/Amsterdam")).replace(tzinfo=None)
+
+
+def amsterdam_label(value: datetime) -> str:
+    return value.replace(tzinfo=UTC).astimezone(ZoneInfo("Europe/Amsterdam")).strftime(
+        "%Y-%m-%d %H:%M:%S %Z"
+    )
 
 
 def fetch_all(sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
@@ -718,8 +729,8 @@ def leakage_bad_row_count(events: list[PipelineEvent]) -> int:
 def event_hover(event: PipelineEvent) -> str:
     return "<br>".join(
         [
-            f"timestamp={event.timestamp_utc}",
-            f"asof_ts_utc={event.asof_ts_utc}",
+            f"timestamp Amsterdam time={amsterdam_label(event.timestamp_utc)}",
+            f"asof Amsterdam time={amsterdam_label(event.asof_ts_utc)}",
             f"event_type={event.event_type}",
             f"setup_filter_reason={event.setup_filter_reason or ''}",
             f"advice_action={event.advice_action or ''}",
@@ -789,11 +800,12 @@ def render_chart(
 ) -> None:
     frame = prepare_chart_frame(chart_frame)
     selection = prepare_selection_frame(selection_frame)
+    x_values = frame["ts_utc"].map(amsterdam_datetime) if not frame.empty else []
 
     fig = go.Figure()
     fig.add_trace(
         go.Candlestick(
-            x=frame["ts_utc"] if not frame.empty else [],
+            x=x_values,
             open=frame["open_price"] if not frame.empty else [],
             high=frame["high_price"] if not frame.empty else [],
             low=frame["low_price"] if not frame.empty else [],
@@ -805,7 +817,7 @@ def render_chart(
     if not selection.empty and "asof_ts_utc" in selection.columns:
         for _, row in selection.iterrows():
             fig.add_vline(
-                x=row["asof_ts_utc"],
+                x=amsterdam_datetime(row["asof_ts_utc"]),
                 line_width=1,
                 opacity=0.12,
                 line_color="#666",
@@ -829,7 +841,7 @@ def render_chart(
             continue
         fig.add_trace(
             go.Scatter(
-                x=[event.timestamp_utc for event in matching],
+                x=[amsterdam_datetime(event.timestamp_utc) for event in matching],
                 y=[float(event.price) for event in matching],
                 mode="markers",
                 name=event_type,
@@ -848,7 +860,7 @@ def render_chart(
         hovermode="x unified",
     )
     fig.update_yaxes(title_text="Price")
-    fig.update_xaxes(title_text="UTC")
+    fig.update_xaxes(title_text="Amsterdam time")
 
     output_html.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(str(output_html), include_plotlyjs="cdn", full_html=True)

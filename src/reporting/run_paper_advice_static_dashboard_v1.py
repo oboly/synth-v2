@@ -149,9 +149,8 @@ def fmt_ts_local_first(value: Any, timezone: str = "Europe/Amsterdam") -> str:
     if parsed is None:
         return "not available"
 
-    utc_text = parsed.strftime("%Y-%m-%d %H:%M:%S UTC")
     local_text = fmt_ts_local(parsed, timezone=timezone)
-    return f"{local_text} · {utc_text}"
+    return f"{local_text} Amsterdam time"
 
 
 def latest_lifecycle_candle_ts(rows: list[dict[str, Any]]) -> datetime | None:
@@ -827,7 +826,7 @@ def render_html(
     if runtime:
         runtime_text = (
             f"id={runtime.get('strategy_runtime_snapshot_id')} "
-            f"snapshot={runtime.get('snapshot_ts_utc')} "
+            f"snapshot={fmt_ts_local_first(runtime.get('snapshot_ts_utc'))} "
             f"chain={runtime.get('chain_name')}"
         )
         runtime_flags = (
