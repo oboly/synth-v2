@@ -15,8 +15,12 @@ from src.market_data.market_price_snapshot_v1 import (
 )
 from src.research.run_position_rotation_preview_v1 import (
     build_rows,
+    dec,
     fetch_latest_paper_advice_rows,
     fetch_latest_position_rows,
+    rank_market_candidates,
+    risk_state_for_advice,
+    target_state_for_advice,
 )
 
 
@@ -217,6 +221,72 @@ def is_reduce_exit_row(row: Any) -> bool:
     )
 
 
+def tp_zone_text(advice_or_row: Any) -> str:
+    if isinstance(advice_or_row, dict):
+        low = dec(advice_or_row.get("tp_zone_low"))
+        high = dec(advice_or_row.get("tp_zone_high"))
+    else:
+        low = advice_or_row.tp_zone_low
+        high = advice_or_row.tp_zone_high
+    if low is None and high is None:
+        return ""
+    return f"{dec_text(low, '0.000000')}..{dec_text(high, '0.000000')}"
+
+
+def held_rotation_exclusion(row: Any | None) -> str | None:
+    if row is None:
+        return None
+    rotation_state = str(row.rotation_state or "").upper()
+    risk_state = str(row.risk_state or "").upper()
+    reason_codes = {str(reason).upper() for reason in row.reason_codes}
+    if (
+        "REDUCE" in rotation_state
+        or "EXIT" in rotation_state
+        or "TARGET_REACHED" in rotation_state
+        or risk_state == "RISK_NEAR"
+        or "RISK_NEAR" in reason_codes
+    ):
+        return "HELD_ROTATION_REVIEW_PRESSURE"
+    return None
+
+
+def destination_diagnostic_exclusions(
+    *,
+    advice_row: dict[str, Any] | None,
+    current_price: Decimal | None,
+    held_row: Any | None,
+) -> list[str]:
+    if not advice_row:
+        return ["ADVICE_MISSING"]
+
+    reasons: list[str] = []
+    target_state = target_state_for_advice(advice_row, current_price)
+    risk_state = risk_state_for_advice(advice_row, current_price)
+    setup_state = str(advice_row.get("setup_filter_state") or "").upper()
+    setup_reason = str(advice_row.get("setup_filter_reason") or "").upper()
+    advice_action = str(advice_row.get("advice_action") or "").upper()
+    aplus_bucket = str(advice_row.get("aplus_bucket") or "").upper()
+
+    if target_state == "TARGET_REACHED":
+        reasons.append("TARGET_REACHED")
+    if risk_state in {"RISK_NEAR", "RISK_UNKNOWN"}:
+        reasons.append(risk_state)
+    if aplus_bucket == "APLUS_AVOID":
+        reasons.append("APLUS_AVOID")
+    if advice_action in {"DO_NOT_ADD", "AVOID_NO_NEW_BUY"}:
+        reasons.append(advice_action)
+    if setup_reason == "MARKET_DAMAGE_RISK":
+        reasons.append("MARKET_DAMAGE_RISK")
+    if setup_state != "PASS":
+        reasons.append("SETUP_NOT_PASS")
+
+    held_exclusion = held_rotation_exclusion(held_row)
+    if held_exclusion:
+        reasons.append(held_exclusion)
+
+    return list(dict.fromkeys(reasons))
+
+
 def render_html(
     rows: list[Any],
     *,
@@ -225,6 +295,7 @@ def render_html(
     interval: str,
     account_id: int,
     price_by_symbol: dict[str, MarketPriceSnapshot],
+    advice_by_symbol: dict[str, dict[str, Any]],
 ) -> str:
     local_ts = now_local_label()
     now_utc = datetime.now(UTC)
@@ -254,13 +325,17 @@ def render_html(
         r for r in rows
         if r not in tp_harvest_rows and r not in reduce_rows and r not in review_rows
     ]
+    held_row_by_symbol = {row.position_symbol: row for row in rows}
+    current_price_by_symbol = {
+        symbol: snapshot.price
+        for symbol, snapshot in price_by_symbol.items()
+    }
+    ranked_candidates = rank_market_candidates(advice_by_symbol, current_price_by_symbol)
 
     def table_rows(table_rows: list[Any]) -> str:
         out = []
         for row in table_rows:
-            tp_zone = ""
-            if row.tp_zone_low is not None or row.tp_zone_high is not None:
-                tp_zone = f"{dec_text(row.tp_zone_low, '0.000000')}..{dec_text(row.tp_zone_high, '0.000000')}"
+            tp_zone = tp_zone_text(row)
 
             review_refs = ", ".join(row.review_references[:3]) if row.review_references else ""
             destinations = (
@@ -310,6 +385,87 @@ def render_html(
                 "</tr>"
             )
         return "\n".join(out)
+
+    def candidate_diagnostic_rows() -> str:
+        out = []
+        for rank, (symbol, candidate_score) in enumerate(ranked_candidates, start=1):
+            advice = advice_by_symbol.get(symbol)
+            held_row = held_row_by_symbol.get(symbol)
+            latest_price = price_by_symbol.get(symbol)
+            current_price = None if latest_price is None else latest_price.price
+            target_state = target_state_for_advice(advice, current_price)
+            risk_state = risk_state_for_advice(advice, current_price)
+            exclusions = destination_diagnostic_exclusions(
+                advice_row=advice,
+                current_price=current_price,
+                held_row=held_row,
+            )
+            eligible = not exclusions
+            held_value = None if held_row is None else held_row.position_value_eur
+            held_rotation_state = "" if held_row is None else held_row.rotation_state
+            invalidation_price = None if not advice else dec(advice.get("invalidation_price"))
+
+            out.append(
+                "<tr>"
+                f"<td class='num'>{rank}</td>"
+                f"<td><strong>{esc(symbol)}</strong></td>"
+                f"<td class='num'>{esc(dec_text(candidate_score, '0.01'))}</td>"
+                f"<td><span class='pill {'ok' if eligible else 'bad'}'>{'YES' if eligible else 'NO'}</span></td>"
+                f"<td class='small'>{esc(', '.join(exclusions))}</td>"
+                f"<td>{esc(None if not advice else advice.get('selection_state'))}</td>"
+                f"<td>{esc(None if not advice else advice.get('setup_filter_state'))}</td>"
+                f"<td><span class='pill {pill_class(None if not advice else advice.get('setup_filter_reason'))}'>{esc(None if not advice else advice.get('setup_filter_reason'))}</span></td>"
+                f"<td>{esc(None if not advice else advice.get('advice_state'))}</td>"
+                f"<td><span class='pill {pill_class(None if not advice else advice.get('advice_action'))}'>{esc(None if not advice else advice.get('advice_action'))}</span></td>"
+                f"<td>{esc(None if not advice else advice.get('leg_direction'))}</td>"
+                f"<td><span class='pill {pill_class(target_state)}'>{esc(target_state)}</span></td>"
+                f"<td><span class='pill {pill_class(risk_state)}'>{esc(risk_state)}</span></td>"
+                f"<td class='num'>{esc(dec_text(current_price, '0.000000'))}</td>"
+                f"<td>{esc(tp_zone_text(advice or {}))}</td>"
+                f"<td class='num'>{esc(dec_text(invalidation_price, '0.000000'))}</td>"
+                f"<td><span class='pill {'ok' if held_row is not None else 'muted'}'>{'YES' if held_row is not None else 'NO'}</span></td>"
+                f"<td class='num'>{esc(dec_text(held_value, '0.01'))}</td>"
+                f"<td><span class='pill {pill_class(held_rotation_state)}'>{esc(held_rotation_state)}</span></td>"
+                "</tr>"
+            )
+        return "\n".join(out)
+
+    def candidate_diagnostics_section() -> str:
+        return f"""
+        <section class="card">
+          <h2>Rotation candidate diagnostics <span class="muted">({len(ranked_candidates)})</span></h2>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Symbol</th>
+                  <th>Market ref score</th>
+                  <th>Destination eligible</th>
+                  <th>Exclusion reasons</th>
+                  <th>Selection</th>
+                  <th>Setup</th>
+                  <th>Setup reason</th>
+                  <th>Policy</th>
+                  <th>Action</th>
+                  <th>Leg</th>
+                  <th>Target state</th>
+                  <th>Risk state</th>
+                  <th>Current price</th>
+                  <th>TP / target zone</th>
+                  <th>Invalidation</th>
+                  <th>Held</th>
+                  <th>Held value €</th>
+                  <th>Held rotation state</th>
+                </tr>
+              </thead>
+              <tbody>
+                {candidate_diagnostic_rows()}
+              </tbody>
+            </table>
+          </div>
+        </section>
+        """
 
     def section(title: str, table_rows_data: list[Any]) -> str:
         return f"""
@@ -447,6 +603,9 @@ def render_html(
       <div><strong>Rotation score</strong> = account-position review pressure score.</div>
       <div><strong>Market review refs</strong> = market-only comparison scores, not buy advice.</div>
       <div><strong>Rotation destinations</strong> = stricter filtered candidates.</div>
+      <div><strong>Market ref score</strong> = market-only comparison score.</div>
+      <div><strong>Destination eligible</strong> = strict candidate after paper/setup/risk/account-position filters.</div>
+      <div><strong>Exclusion reasons</strong> explain why a strong reference is not a destination.</div>
       <div><strong>Target reached rows</strong> are harvest/review candidates, not automatic sell orders.</div>
     </div>
     <div class="grid">
@@ -457,6 +616,7 @@ def render_html(
     </div>
   </header>
   <main>
+    {candidate_diagnostics_section()}
     {section("TP / harvest review", tp_harvest_rows)}
     {section("Reduce / exit review candidates", reduce_rows)}
     {section("Hold review", review_rows)}
@@ -534,11 +694,17 @@ def main() -> int:
             venue=args.venue,
             interval=args.interval,
         )
+        price_symbols = sorted(
+            {
+                *(str(row["symbol"]).upper() for row in position_rows),
+                *advice_by_symbol.keys(),
+            }
+        )
         price_by_symbol = fetch_latest_prices_by_symbol(
             conn,
             venue=args.venue,
             quote_currency=args.quote,
-            symbols=[str(row["symbol"]) for row in position_rows],
+            symbols=price_symbols,
         )
     finally:
         conn.close()
@@ -563,6 +729,7 @@ def main() -> int:
             interval=args.interval,
             account_id=args.trading_account_id,
             price_by_symbol=price_by_symbol,
+            advice_by_symbol=advice_by_symbol,
         ),
         encoding="utf-8",
     )
