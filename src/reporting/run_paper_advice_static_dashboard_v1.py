@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 import pymysql
 from dotenv import load_dotenv
 
+from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
+
 
 POLICY_NAME = "paper_advice_static_dashboard_v1"
 POLICY_VERSION = "0.1"
@@ -108,17 +110,6 @@ def esc(value: Any) -> str:
     if isinstance(value, datetime):
         return html.escape(value.isoformat(sep=" ", timespec="seconds"))
     return html.escape(str(value))
-
-
-def cockpit_nav() -> str:
-    return """
-                <nav class="cockpit-nav" aria-label="Cockpit navigation">
-                    <a href="/synth/index.html">Cockpit</a>
-                    <a href="/synth/paper-advice.html">Paper Advice</a>
-                    <a href="/synth/entry-candidates.html">Entry Candidates</a>
-                    <a href="/synth/rotation-preview.html">Rotation Preview</a>
-                </nav>
-    """
 
 
 def parse_ts(value: Any) -> datetime | None:
@@ -755,7 +746,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             f"""
             <tr class="{esc(row_class)}">
                 <td class="mono center">{esc(rank_text)}</td>
-                <td class="symbol">
+                <td class="symbol sticky-symbol">
                     {esc(row.get("symbol"))}
                     <div><span class="pill {css_class(leg_direction)}">{esc(leg_direction or "—")}</span></div>
                     {badge_html}
@@ -791,7 +782,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             <thead>
                 <tr>
                     <th>Rank</th>
-                    <th>Symbol / Leg</th>
+                    <th class="sticky-symbol">Symbol / Leg</th>
                     <th>Advice</th>
                     <th>Action</th>
                     <th>Conf</th>
@@ -854,6 +845,7 @@ def render_html(
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{esc(title)}</title>
     <style>
+        {cockpit_base_css(min_table_width=1600)}
         :root {{
             --bg: #0b1020;
             --panel: #121a2f;
@@ -875,7 +867,7 @@ def render_html(
             font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }}
         .page {{
-            max-width: 1600px;
+            max-width: 1760px;
             margin: 0 auto;
             padding: 24px;
         }}
@@ -1064,7 +1056,7 @@ def render_html(
                 </div>
                 {cockpit_nav()}
             </div>
-            <div class="badge">broker_calls=0 · broker_writes=0 · order_submission=0</div>
+            <div class="badge">broker_private_calls=0 · broker_calls=0 · broker_writes=0 · order_submission=0 · executor=none</div>
         </section>
 
         <section class="grid">
@@ -1115,7 +1107,7 @@ def print_table(
 ) -> None:
     print(f"report={POLICY_NAME} version={POLICY_VERSION}")
     print("scope=static-readonly paper-navigation")
-    print("broker_calls=0 broker_writes=0 order_submission=0 live_orders=0")
+    print("broker_private_calls=0 broker_calls=0 broker_writes=0 order_submission=0 live_orders=0 executor=none")
     print(f"latest_asof={latest_asof}")
     print(f"lifecycle_candle_interval={lifecycle_candle_interval}")
     print(f"rows={len(rows)}")
@@ -1166,8 +1158,10 @@ def main() -> int:
                     "rows": len(rows),
                     "output_html": str(output_path),
                     "broker_calls": 0,
+                    "broker_private_calls": 0,
                     "broker_writes": 0,
                     "order_submission": 0,
+                    "executor": "none",
                     "live_orders": 0,
                 },
                 indent=2,

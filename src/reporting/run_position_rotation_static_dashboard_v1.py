@@ -9,6 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.common.db import get_connection
+from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
@@ -50,17 +51,6 @@ def esc(value: Any) -> str:
     if value is None:
         return ""
     return html.escape(str(value))
-
-
-def cockpit_nav() -> str:
-    return """
-    <nav class="cockpit-nav" aria-label="Cockpit navigation">
-      <a href="/synth/index.html">Cockpit</a>
-      <a href="/synth/paper-advice.html">Paper Advice</a>
-      <a href="/synth/entry-candidates.html">Entry Candidates</a>
-      <a href="/synth/rotation-preview.html">Rotation Preview</a>
-    </nav>
-    """
 
 
 def dec_text(value: Decimal | None, places: str = "0.01") -> str:
@@ -378,10 +368,11 @@ def render_html(
                 tp_zone_high=row.tp_zone_high,
                 invalidation_price=row.invalidation_price,
             )
+            row_class = "stale-map" if lifecycle.recompute_needed else ""
 
             out.append(
-                "<tr>"
-                f"<td><strong>{esc(row.position_symbol)}</strong></td>"
+                f"<tr class='{row_class}'>"
+                f"<td class='sticky-symbol'><strong>{esc(row.position_symbol)}</strong></td>"
                 f"<td class='num'>{esc(dec_text(row.position_value_eur, '0.01'))}</td>"
                 f"<td class='num'>{esc(dec_text(row.quantity_base, '0.000000'))}</td>"
                 f"<td><span class='pill {pill_class(row.position_source_state)}'>{esc(row.position_source_state)}</span></td>"
@@ -391,7 +382,7 @@ def render_html(
                 f"<td>{esc(row.leg_direction)}</td>"
                 f"<td><span class='pill {pill_class(row.advice_action)}'>{esc(row.advice_action)}</span></td>"
                 f"<td><span class='pill {pill_class(row.aplus_bucket)}'>{esc(row.aplus_bucket)}</span></td>"
-                f"<td class='num'>{esc(dec_text(current_price, '0.000000'))}</td>"
+                f"<td class='num sticky-price'>{esc(dec_text(current_price, '0.000000'))}</td>"
                 f"<td class='num'>{esc(dec_text(latest_price_age_min, '0.1'))}</td>"
                 f"<td><span class='pill {pill_class(row.target_state)}'>{esc(row.target_state)}</span></td>"
                 f"<td><span class='pill {pill_class(row.risk_state)}'>{esc(row.risk_state)}</span></td>"
@@ -401,7 +392,7 @@ def render_html(
                 f"{pct_cell(delta_entry_pct)}"
                 f"{pct_cell(delta_tp_pct, target_pct_class(delta_tp_pct, context))}"
                 f"{pct_cell(delta_invalidation_pct, risk_pct_class(delta_invalidation_pct, context))}"
-                f"<td>{esc(tp_zone)}</td>"
+                f"<td class='zone-value'>{esc(tp_zone)}</td>"
                 f"<td><span class='pill {pill_class(row.rotation_state)}'>{esc(row.rotation_state)}</span></td>"
                 f"<td class='num'>{esc(row.rotation_pressure_score)}</td>"
                 f"<td class='small'>{esc(review_refs)}</td>"
@@ -435,11 +426,12 @@ def render_html(
                 tp_zone_high=None if not advice else advice.get("tp_zone_high"),
                 invalidation_price=invalidation_price,
             )
+            row_class = "stale-map" if lifecycle.recompute_needed else ""
 
             out.append(
-                "<tr>"
+                f"<tr class='{row_class}'>"
                 f"<td class='num'>{rank}</td>"
-                f"<td><strong>{esc(symbol)}</strong></td>"
+                f"<td class='sticky-symbol'><strong>{esc(symbol)}</strong></td>"
                 f"<td class='num'>{esc(dec_text(candidate_score, '0.01'))}</td>"
                 f"<td><span class='pill {'ok' if eligible else 'bad'}'>{'YES' if eligible else 'NO'}</span></td>"
                 f"<td class='small'>{esc(', '.join(exclusions))}</td>"
@@ -451,12 +443,12 @@ def render_html(
                 f"<td>{esc(None if not advice else advice.get('leg_direction'))}</td>"
                 f"<td><span class='pill {pill_class(target_state)}'>{esc(target_state)}</span></td>"
                 f"<td><span class='pill {pill_class(risk_state)}'>{esc(risk_state)}</span></td>"
-                f"<td class='num'>{esc(dec_text(current_price, '0.000000'))}</td>"
+                f"<td class='num sticky-price'>{esc(dec_text(current_price, '0.000000'))}</td>"
                 f"<td><span class='pill {pill_class(lifecycle.lifecycle_state)}'>{esc(lifecycle.lifecycle_state)}</span></td>"
                 f"<td><span class='pill {pill_class('MAP_RECOMPUTE_NEEDED' if lifecycle.recompute_needed else 'ACTIVE_MAP')}'>{'YES' if lifecycle.recompute_needed else 'NO'}</span></td>"
                 f"<td class='small'>{esc(lifecycle.recompute_reason)}</td>"
-                f"<td>{esc(tp_zone_text(advice or {}))}</td>"
-                f"<td class='num'>{esc(dec_text(invalidation_price, '0.000000'))}</td>"
+                f"<td class='zone-value'>{esc(tp_zone_text(advice or {}))}</td>"
+                f"<td class='num zone-value'>{esc(dec_text(invalidation_price, '0.000000'))}</td>"
                 f"<td><span class='pill {'ok' if held_row is not None else 'muted'}'>{'YES' if held_row is not None else 'NO'}</span></td>"
                 f"<td class='num'>{esc(dec_text(held_value, '0.01'))}</td>"
                 f"<td><span class='pill {pill_class(held_rotation_state)}'>{esc(held_rotation_state)}</span></td>"
@@ -466,14 +458,14 @@ def render_html(
 
     def candidate_diagnostics_section() -> str:
         return f"""
-        <section class="card">
+        <section class="card priority">
           <h2>Rotation candidate diagnostics <span class="muted">({len(ranked_candidates)})</span></h2>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>Rank</th>
-                  <th>Symbol</th>
+                  <th class="sticky-symbol">Symbol</th>
                   <th>Market ref score</th>
                   <th>Destination eligible</th>
                   <th>Exclusion reasons</th>
@@ -485,7 +477,7 @@ def render_html(
                   <th>Leg</th>
                   <th>Target state</th>
                   <th>Risk state</th>
-                  <th>Current price</th>
+                  <th class="sticky-price">Current price</th>
                   <th>Lifecycle state</th>
                   <th>Recompute needed</th>
                   <th>Recompute reason</th>
@@ -504,15 +496,16 @@ def render_html(
         </section>
         """
 
-    def section(title: str, table_rows_data: list[Any]) -> str:
+    def section(title: str, table_rows_data: list[Any], class_name: str = "") -> str:
+        section_class = f"card {class_name}".strip()
         return f"""
-        <section class="card">
+        <section class="{esc(section_class)}">
           <h2>{esc(title)} <span class="muted">({len(table_rows_data)})</span></h2>
           <div class="table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Symbol</th>
+                  <th class="sticky-symbol">Symbol</th>
                   <th>Value €</th>
                   <th>Qty</th>
                   <th>Source</th>
@@ -522,7 +515,7 @@ def render_html(
                   <th>Leg</th>
                   <th>Action</th>
                   <th>A+</th>
-                  <th>Current price</th>
+                  <th class="sticky-price">Current price</th>
                   <th>Price age min</th>
                   <th>Target state</th>
                   <th>Risk state</th>
@@ -560,77 +553,7 @@ def render_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Synth Rotation Preview</title>
   <style>
-    :root {{
-      --bg: #0b1020;
-      --panel: #121a2f;
-      --panel2: #18223d;
-      --text: #e7edf8;
-      --muted: #8ea0bf;
-      --line: #273657;
-      --bad: #ff6b6b;
-      --warn: #ffd166;
-      --ok: #55d6a7;
-      --blue: #7aa2ff;
-    }}
-    body {{
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
-    }}
-    header {{
-      padding: 24px;
-      border-bottom: 1px solid var(--line);
-      background: linear-gradient(135deg, #101936, #0b1020);
-    }}
-    h1, h2 {{ margin: 0 0 12px; }}
-    .muted {{ color: var(--muted); }}
-    .small {{ font-size: 12px; }}
-    .grid {{
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 12px;
-      margin-top: 16px;
-    }}
-    .metric, .card {{
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      padding: 16px;
-      box-shadow: 0 12px 40px rgba(0,0,0,.22);
-    }}
-    .legend {{
-      display: grid;
-      gap: 6px;
-      margin-top: 16px;
-      color: var(--muted);
-      font-size: 13px;
-    }}
-    .legend strong {{ color: var(--text); }}
-    main {{ padding: 18px; display: grid; gap: 18px; }}
-    .pill {{
-      display: inline-block;
-      border-radius: 999px;
-      padding: 3px 8px;
-      margin: 2px;
-      font-size: 12px;
-      border: 1px solid var(--line);
-      background: var(--panel2);
-      white-space: nowrap;
-    }}
-    .pill.bad {{ color: var(--bad); border-color: rgba(255,107,107,.45); }}
-    .pill.warn {{ color: var(--warn); border-color: rgba(255,209,102,.45); }}
-    .pill.ok {{ color: var(--ok); border-color: rgba(85,214,167,.45); }}
-    .pill.muted {{ color: var(--muted); }}
-    .table-wrap {{ overflow-x: auto; }}
-    table {{ width: 100%; border-collapse: collapse; min-width: 1750px; }}
-    th, td {{ border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; }}
-    th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }}
-    .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
-    a {{ color: var(--blue); text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
-    .cockpit-nav {{ display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; }}
-    .cockpit-nav a {{ font-size: 14px; }}
+    {cockpit_base_css(min_table_width=2050)}
   </style>
 </head>
 <body>
@@ -640,6 +563,7 @@ def render_html(
     <div class="muted">venue={esc(venue)} · quote={esc(quote_currency)} · interval={esc(interval)} · trading_account_id={esc(account_id)}</div>
     {cockpit_nav()}
     <div class="legend">
+      <div><strong>TP / harvest review</strong> = existing positions near or past target.</div>
       <div><strong>Rotation score</strong> = account-position review pressure score.</div>
       <div><strong>Market review refs</strong> = market-only comparison scores, not buy advice.</div>
       <div><strong>Rotation destinations</strong> = stricter filtered candidates.</div>
@@ -647,7 +571,7 @@ def render_html(
       <div><strong>Destination eligible</strong> = strict candidate after paper/setup/risk/account-position filters.</div>
       <div><strong>Exclusion reasons</strong> explain why a strong reference is not a destination.</div>
       <div><strong>Target reached rows</strong> are harvest/review candidates, not automatic sell orders.</div>
-      <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction and does not imply buy/sell.</div>
+      <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction, does not imply buy/sell, and indicates the strategy/advice map should be refreshed.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
@@ -658,7 +582,7 @@ def render_html(
   </header>
   <main>
     {candidate_diagnostics_section()}
-    {section("TP / harvest review", tp_harvest_rows)}
+    {section("TP / harvest review", tp_harvest_rows, "harvest")}
     {section("Reduce / exit review candidates", reduce_rows)}
     {section("Hold review", review_rows)}
     {section("Hold / other", hold_rows)}

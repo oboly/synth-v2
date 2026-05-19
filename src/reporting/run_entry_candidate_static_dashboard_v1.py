@@ -14,6 +14,7 @@ from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
     fetch_latest_prices_by_symbol,
 )
+from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 
 
@@ -159,17 +160,6 @@ def css_class(value: str | None) -> str:
     if normalized in {"CONTEXT_ONLY", "CORE_CONTEXT", "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP"}:
         return "context"
     return "muted"
-
-
-def cockpit_nav() -> str:
-    return """
-    <nav class="cockpit-nav" aria-label="Cockpit navigation">
-      <a href="/synth/index.html">Cockpit</a>
-      <a href="/synth/paper-advice.html">Paper Advice</a>
-      <a href="/synth/entry-candidates.html">Entry Candidates</a>
-      <a href="/synth/rotation-preview.html">Rotation Preview</a>
-    </nav>
-    """
 
 
 def local_label(value: datetime | None) -> str:
@@ -382,10 +372,11 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         group = str(row.get("candidate_group") or "")
         allowed_now = bool_text(row.get("allowed_now"))
         reason_codes = ", ".join(str(code) for code in row.get("candidate_reason_codes", []))
+        row_class = "stale-map" if row.get("recompute_needed") else ""
         body.append(
-            "<tr>"
+            f"<tr class='{row_class}'>"
             f"<td class='num'>{esc(rank_text)}</td>"
-            f"<td><strong>{esc(row.get('symbol'))}</strong></td>"
+            f"<td class='sticky-symbol'><strong>{esc(row.get('symbol'))}</strong></td>"
             f"<td><span class='pill {css_class(group)}'>{esc(group)}</span></td>"
             f"<td>{esc(row.get('selection_state'))}</td>"
             f"<td class='num'>{esc(dec_text(row.get('selection_score'), '0.0000'))}</td>"
@@ -399,13 +390,13 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             f"<td><span class='pill {css_class(row.get('aplus_bucket'))}'>{esc(row.get('aplus_bucket'))}</span></td>"
             f"<td class='num'>{esc(pct_text(row.get('confidence_score')))}</td>"
             f"<td><span class='pill {css_class(row.get('risk_label'))}'>{esc(row.get('risk_label'))}</span></td>"
-            f"<td class='num'>{esc(dec_text(row.get('current_price')))}</td>"
+            f"<td class='num sticky-price'>{esc(dec_text(row.get('current_price')))}</td>"
             f"<td><span class='pill {css_class(row.get('lifecycle_state'))}'>{esc(row.get('lifecycle_state'))}</span></td>"
             f"<td><span class='pill {css_class('MAP_RECOMPUTE_NEEDED' if row.get('recompute_needed') else 'ACTIVE_MAP')}'>{'YES' if row.get('recompute_needed') else 'NO'}</span></td>"
             f"<td class='small'>{esc(row.get('recompute_reason'))}</td>"
-            f"<td class='num'>{esc(fmt_zone(row.get('entry_zone_low'), row.get('entry_zone_high')))}</td>"
-            f"<td class='num'>{esc(fmt_zone(row.get('tp_zone_low'), row.get('tp_zone_high')))}</td>"
-            f"<td class='num'>{esc(dec_text(row.get('invalidation_price')))}</td>"
+            f"<td class='num zone-value'>{esc(fmt_zone(row.get('entry_zone_low'), row.get('entry_zone_high')))}</td>"
+            f"<td class='num zone-value'>{esc(fmt_zone(row.get('tp_zone_low'), row.get('tp_zone_high')))}</td>"
+            f"<td class='num zone-value'>{esc(dec_text(row.get('invalidation_price')))}</td>"
             f"<td class='small'>{esc(reason_codes)}</td>"
             "</tr>"
         )
@@ -416,7 +407,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         <thead>
           <tr>
             <th>Rank</th>
-            <th>Symbol</th>
+            <th class="sticky-symbol">Symbol</th>
             <th>Group</th>
             <th>Selection</th>
             <th>Selection score</th>
@@ -430,7 +421,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             <th>A+</th>
             <th>Confidence</th>
             <th>Risk label</th>
-            <th>Current price</th>
+            <th class="sticky-price">Current price</th>
             <th>Lifecycle state</th>
             <th>Recompute needed</th>
             <th>Recompute reason</th>
@@ -450,8 +441,9 @@ def render_table(rows: list[dict[str, Any]]) -> str:
 
 def render_group_section(group: str, rows: list[dict[str, Any]]) -> str:
     group_rows = [row for row in rows if row.get("candidate_group") == group]
+    priority_class = " priority" if group in {"PAPER_BUY_READY", "RECLAIM_NEAR"} else ""
     return f"""
-    <section class="card">
+    <section class="card{priority_class}">
       <h2>{esc(group)} <span class="muted">({len(group_rows)})</span></h2>
       {render_table(group_rows)}
     </section>
@@ -485,44 +477,7 @@ def render_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Synth Entry Candidates</title>
   <style>
-    :root {{
-      --bg: #0b1020;
-      --panel: #121a2f;
-      --panel2: #18223d;
-      --text: #e7edf8;
-      --muted: #8ea0bf;
-      --line: #273657;
-      --bad: #ff6b6b;
-      --warn: #ffd166;
-      --ok: #55d6a7;
-      --context: #7aa2ff;
-    }}
-    body {{ margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, sans-serif; }}
-    header {{ padding: 24px; border-bottom: 1px solid var(--line); background: linear-gradient(135deg, #101936, #0b1020); }}
-    h1, h2 {{ margin: 0 0 12px; }}
-    main {{ padding: 18px; display: grid; gap: 18px; }}
-    .muted {{ color: var(--muted); }}
-    .small {{ font-size: 12px; }}
-    .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
-    .card, .metric {{ background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.22); }}
-    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 16px; }}
-    .legend {{ display: grid; gap: 6px; margin-top: 16px; color: var(--muted); font-size: 13px; }}
-    .legend strong {{ color: var(--text); }}
-    .pill {{ display: inline-block; border-radius: 999px; padding: 3px 8px; margin: 2px; font-size: 12px; border: 1px solid var(--line); background: var(--panel2); white-space: nowrap; }}
-    .pill.bad {{ color: var(--bad); border-color: rgba(255,107,107,.45); }}
-    .pill.warn {{ color: var(--warn); border-color: rgba(255,209,102,.45); }}
-    .pill.ok {{ color: var(--ok); border-color: rgba(85,214,167,.45); }}
-    .pill.context {{ color: var(--context); border-color: rgba(122,162,255,.45); }}
-    .pill.muted {{ color: var(--muted); }}
-    .table-wrap {{ overflow-x: auto; }}
-    table {{ width: 100%; border-collapse: collapse; min-width: 1800px; }}
-    th, td {{ border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; vertical-align: top; }}
-    th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }}
-    a {{ color: var(--context); text-decoration: none; }}
-    a:hover {{ text-decoration: underline; }}
-    .cockpit-nav {{ display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; }}
-    .cockpit-nav a {{ font-size: 14px; }}
-    .empty {{ color: var(--muted); padding: 12px 0; }}
+    {cockpit_base_css(min_table_width=1950)}
   </style>
 </head>
 <body>
@@ -534,9 +489,10 @@ def render_html(
     <div class="legend">
       <div><strong>Entry candidates</strong> are market-only and account-agnostic.</div>
       <div><strong>PAPER_BUY_READY</strong> is not an order.</div>
+      <div><strong>RECLAIM_NEAR</strong> means watch for map invalidation/reclaim, not automatic buy.</div>
       <div><strong>Account sizing/permission</strong> belongs later in decision_gate.</div>
       <div><strong>Rotation preview</strong> remains for existing positions only.</div>
-      <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction and does not imply buy/sell.</div>
+      <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction, does not imply buy/sell, and indicates the strategy/advice map should be refreshed.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>

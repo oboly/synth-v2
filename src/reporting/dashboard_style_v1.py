@@ -1,0 +1,172 @@
+from __future__ import annotations
+
+
+def cockpit_nav() -> str:
+    return """
+    <nav class="cockpit-nav" aria-label="Cockpit navigation">
+      <a href="/synth/index.html">Cockpit</a>
+      <a href="/synth/paper-advice.html">Paper Advice</a>
+      <a href="/synth/entry-candidates.html">Entry Candidates</a>
+      <a href="/synth/rotation-preview.html">Rotation Preview</a>
+    </nav>
+    """
+
+
+def cockpit_base_css(*, min_table_width: int = 1800) -> str:
+    return f"""
+    :root {{
+      --bg: #0b1020;
+      --panel: #121a2f;
+      --panel2: #18223d;
+      --text: #e7edf8;
+      --muted: #8ea0bf;
+      --line: #273657;
+      --bad: #ff6b6b;
+      --warn: #ffd166;
+      --ok: #55d6a7;
+      --context: #7aa2ff;
+      --sticky-bg: #151f39;
+      --stale-bg: rgba(82, 23, 31, .34);
+      --stale-line: rgba(255, 107, 107, .34);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      font-size: 14px;
+    }}
+    .page {{
+      max-width: 1760px;
+      margin: 0 auto;
+      padding: 18px;
+    }}
+    header, .header {{
+      padding: 24px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(135deg, #101936, #0b1020);
+    }}
+    h1, h2 {{ margin: 0 0 12px; }}
+    .muted {{ color: var(--muted); }}
+    .small {{ font-size: 12px; }}
+    .num, .right {{ text-align: right; font-variant-numeric: tabular-nums; }}
+    .center {{ text-align: center; }}
+    .grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 16px;
+    }}
+    main {{
+      padding: 18px;
+      display: grid;
+      gap: 18px;
+    }}
+    .metric, .card, .panel {{
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 12px 40px rgba(0,0,0,.22);
+    }}
+    .panel.priority, .card.priority {{
+      border-color: rgba(85,214,167,.38);
+      box-shadow: inset 0 1px 0 rgba(85,214,167,.16), 0 12px 40px rgba(0,0,0,.22);
+    }}
+    .panel.harvest, .card.harvest {{
+      border-color: rgba(255,209,102,.42);
+      box-shadow: inset 0 1px 0 rgba(255,209,102,.16), 0 12px 40px rgba(0,0,0,.22);
+    }}
+    .legend, .help {{
+      display: grid;
+      gap: 6px;
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }}
+    .legend strong, .help strong {{ color: var(--text); }}
+    .pill, .badge {{
+      display: inline-block;
+      border-radius: 999px;
+      padding: 3px 8px;
+      margin: 2px;
+      font-size: 12px;
+      border: 1px solid var(--line);
+      background: var(--panel2);
+      white-space: nowrap;
+    }}
+    .pill.bad, .badge.bad, .bad {{ color: var(--bad); }}
+    .pill.warn, .badge.warn, .warn, .watch {{ color: var(--warn); }}
+    .pill.ok, .badge.ok, .ok, .good {{ color: var(--ok); }}
+    .pill.context, .badge.context, .context {{ color: var(--context); }}
+    .pill.muted, .badge.muted, .muted, .wait {{ color: var(--muted); }}
+    .pill.bad {{ border-color: rgba(255,107,107,.45); }}
+    .pill.warn {{ border-color: rgba(255,209,102,.45); }}
+    .pill.ok {{ border-color: rgba(85,214,167,.45); }}
+    .pill.context {{ border-color: rgba(122,162,255,.45); }}
+    .table-wrap {{
+      width: 100%;
+      overflow-x: auto;
+      overscroll-behavior-x: contain;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      min-width: {min_table_width}px;
+      font-size: 13px;
+    }}
+    th, td {{
+      border-bottom: 1px solid var(--line);
+      padding: 9px 8px;
+      text-align: left;
+      vertical-align: top;
+      background-clip: padding-box;
+    }}
+    th {{
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      white-space: nowrap;
+    }}
+    tr:hover td {{ background-color: rgba(122,162,255,.06); }}
+    tr.stale-map td, tr.workflow-stale td {{
+      background-color: var(--stale-bg);
+      border-bottom-color: var(--stale-line);
+    }}
+    tr.stale-map .zone-value, tr.workflow-stale .zone-value {{
+      color: #79849f;
+    }}
+    .sticky-symbol, .sticky-price {{
+      position: sticky;
+      z-index: 3;
+      background: var(--sticky-bg);
+    }}
+    th.sticky-symbol, th.sticky-price {{ z-index: 5; }}
+    .sticky-symbol {{ left: 0; min-width: 108px; }}
+    .sticky-price {{ left: 108px; min-width: 126px; }}
+    .zone-value {{ font-variant-numeric: tabular-nums; }}
+    a {{ color: var(--context); text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .cockpit-nav {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-top: 12px;
+    }}
+    .cockpit-nav a {{ font-size: 14px; }}
+    .empty {{ color: var(--muted); padding: 12px 0; }}
+    .footer {{ color: var(--muted); font-size: 12px; margin-top: 24px; line-height: 1.6; }}
+    @media (max-width: 860px) {{
+      .page {{ padding: 12px; }}
+      header, .header {{ padding: 16px; }}
+      main {{ padding: 12px; }}
+      table {{ font-size: 12px; }}
+      th, td {{ padding: 8px 6px; }}
+      .sticky-symbol {{ min-width: 94px; }}
+      .sticky-price {{ left: 94px; min-width: 112px; }}
+    }}
+    """
