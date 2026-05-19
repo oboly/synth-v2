@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,21 @@ CANDIDATE_GROUPS = [
     "CONTEXT_ONLY",
     "INSUFFICIENT_SAMPLE",
 ]
+
+STALE_LIFECYCLE_STATES = {
+    "MAP_RECOMPUTE_NEEDED",
+    "TARGET_REACHED_STALE",
+    "TARGET_OVERSHOT",
+    "INVALIDATION_TOUCHED",
+}
+
+WARNING_LIFECYCLE_STATES = {
+    "TARGET_REACHED",
+    "INVALIDATION_NEAR",
+    "RECLAIM_NEAR",
+}
+
+FRESH_MAP_THRESHOLD = timedelta(hours=6)
 
 
 def parse_args() -> argparse.Namespace:
@@ -160,6 +175,51 @@ def css_class(value: str | None) -> str:
     if normalized in {"CONTEXT_ONLY", "CORE_CONTEXT", "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP"}:
         return "context"
     return "muted"
+
+
+def as_utc_naive(ts: Any) -> datetime | None:
+    if ts is None or not isinstance(ts, datetime):
+        return None
+    if ts.tzinfo is None:
+        return ts
+    return ts.astimezone(UTC).replace(tzinfo=None)
+
+
+def fresh_map_badge(asof_ts: Any, *, now_utc: datetime, lifecycle_state: str) -> str:
+    if str(lifecycle_state or "").upper() != "ACTIVE_MAP":
+        return ""
+    normalized = as_utc_naive(asof_ts)
+    if normalized is None:
+        return ""
+    age = now_utc.replace(tzinfo=None) - normalized
+    if timedelta(0) <= age <= FRESH_MAP_THRESHOLD:
+        return "FRESH_MAP"
+    return ""
+
+
+def workflow_row_class(
+    *,
+    lifecycle_state: str,
+    recompute_needed: bool,
+    fresh_badge: str,
+) -> str:
+    state = str(lifecycle_state or "").upper()
+    if recompute_needed or state in STALE_LIFECYCLE_STATES:
+        return "stale-map"
+    if state in WARNING_LIFECYCLE_STATES:
+        return "warning-map"
+    if fresh_badge:
+        return "fresh-map"
+    return ""
+
+
+def lifecycle_badges_html(lifecycle_state: str, fresh_badge: str) -> str:
+    badges = [
+        f"<span class='pill {css_class(lifecycle_state)}'>{esc(lifecycle_state)}</span>"
+    ]
+    if fresh_badge:
+        badges.append(f"<span class='pill ok'>{esc(fresh_badge)}</span>")
+    return "".join(badges)
 
 
 def local_label(value: datetime | None) -> str:
@@ -327,6 +387,7 @@ def enriched_rows(
     price_by_symbol: dict[str, MarketPriceSnapshot],
 ) -> list[dict[str, Any]]:
     output = []
+    now_utc = datetime.now(UTC)
     for row in rows:
         group, reasons = classify_candidate(row)
         symbol = str(row.get("symbol") or "").upper()
@@ -346,6 +407,11 @@ def enriched_rows(
         enriched["lifecycle_state"] = lifecycle.lifecycle_state
         enriched["recompute_needed"] = lifecycle.recompute_needed
         enriched["recompute_reason"] = lifecycle.recompute_reason
+        enriched["fresh_map_badge"] = fresh_map_badge(
+            row.get("asof_ts_utc"),
+            now_utc=now_utc,
+            lifecycle_state=lifecycle.lifecycle_state,
+        )
         output.append(enriched)
 
     order = {group: index for index, group in enumerate(CANDIDATE_GROUPS)}
@@ -372,7 +438,11 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         group = str(row.get("candidate_group") or "")
         allowed_now = bool_text(row.get("allowed_now"))
         reason_codes = ", ".join(str(code) for code in row.get("candidate_reason_codes", []))
-        row_class = "stale-map" if row.get("recompute_needed") else ""
+        row_class = workflow_row_class(
+            lifecycle_state=str(row.get("lifecycle_state") or ""),
+            recompute_needed=bool(row.get("recompute_needed")),
+            fresh_badge=str(row.get("fresh_map_badge") or ""),
+        )
         body.append(
             f"<tr class='{row_class}'>"
             f"<td class='num'>{esc(rank_text)}</td>"
@@ -391,7 +461,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             f"<td class='num'>{esc(pct_text(row.get('confidence_score')))}</td>"
             f"<td><span class='pill {css_class(row.get('risk_label'))}'>{esc(row.get('risk_label'))}</span></td>"
             f"<td class='num sticky-price'>{esc(dec_text(row.get('current_price')))}</td>"
-            f"<td><span class='pill {css_class(row.get('lifecycle_state'))}'>{esc(row.get('lifecycle_state'))}</span></td>"
+            f"<td>{lifecycle_badges_html(str(row.get('lifecycle_state') or ''), str(row.get('fresh_map_badge') or ''))}</td>"
             f"<td><span class='pill {css_class('MAP_RECOMPUTE_NEEDED' if row.get('recompute_needed') else 'ACTIVE_MAP')}'>{'YES' if row.get('recompute_needed') else 'NO'}</span></td>"
             f"<td class='small'>{esc(row.get('recompute_reason'))}</td>"
             f"<td class='num zone-value'>{esc(fmt_zone(row.get('entry_zone_low'), row.get('entry_zone_high')))}</td>"
@@ -493,6 +563,8 @@ def render_html(
       <div><strong>Account sizing/permission</strong> belongs later in decision_gate.</div>
       <div><strong>Rotation preview</strong> remains for existing positions only.</div>
       <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction, does not imply buy/sell, and indicates the strategy/advice map should be refreshed.</div>
+      <div><strong>Fresh green rows</strong> = newly updated/fresh map context.</div>
+      <div><strong>Red rows</strong> = stale, invalidated, or recompute-needed map context.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>

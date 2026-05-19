@@ -28,6 +28,8 @@ def cockpit_base_css(*, min_table_width: int = 1800) -> str:
       --sticky-bg: #151f39;
       --stale-bg: rgba(82, 23, 31, .34);
       --stale-line: rgba(255, 107, 107, .34);
+      --fresh-bg: rgba(23, 82, 58, .24);
+      --fresh-line: rgba(85, 214, 167, .28);
     }}
     * {{ box-sizing: border-box; }}
     body {{
@@ -77,6 +79,10 @@ def cockpit_base_css(*, min_table_width: int = 1800) -> str:
     .panel.harvest, .card.harvest {{
       border-color: rgba(255,209,102,.42);
       box-shadow: inset 0 1px 0 rgba(255,209,102,.16), 0 12px 40px rgba(0,0,0,.22);
+    }}
+    .panel.downside, .card.downside {{
+      border-color: rgba(122,162,255,.38);
+      box-shadow: inset 0 1px 0 rgba(122,162,255,.14), 0 12px 40px rgba(0,0,0,.22);
     }}
     .legend, .help {{
       display: grid;
@@ -133,6 +139,14 @@ def cockpit_base_css(*, min_table_width: int = 1800) -> str:
       white-space: nowrap;
     }}
     tr:hover td {{ background-color: rgba(122,162,255,.06); }}
+    tr.fresh-map td, tr.workflow-fresh td {{
+      background-color: var(--fresh-bg);
+      border-bottom-color: var(--fresh-line);
+    }}
+    tr.warning-map td, tr.workflow-warning td {{
+      background-color: rgba(107, 80, 24, .20);
+      border-bottom-color: rgba(255, 209, 102, .28);
+    }}
     tr.stale-map td, tr.workflow-stale td {{
       background-color: var(--stale-bg);
       border-bottom-color: var(--stale-line);
@@ -144,6 +158,17 @@ def cockpit_base_css(*, min_table_width: int = 1800) -> str:
       position: sticky;
       z-index: 3;
       background: var(--sticky-bg);
+      box-shadow: 1px 0 0 var(--line);
+    }}
+    tr.fresh-map .sticky-symbol, tr.fresh-map .sticky-price {{
+      background: #15372f;
+    }}
+    tr.warning-map .sticky-symbol, tr.warning-map .sticky-price {{
+      background: #332c21;
+    }}
+    tr.stale-map .sticky-symbol, tr.stale-map .sticky-price,
+    tr.workflow-stale .sticky-symbol, tr.workflow-stale .sticky-price {{
+      background: #321b27;
     }}
     th.sticky-symbol, th.sticky-price {{ z-index: 5; }}
     .sticky-symbol {{ left: 0; min-width: 108px; }}

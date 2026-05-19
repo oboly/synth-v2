@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import html
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -208,11 +208,45 @@ TP_HARVEST_REVIEW_STATES = {
     "REDUCE_REVIEW_TARGET_REACHED",
 }
 
+TARGET_REACHED_LIFECYCLE_STATES = {
+    "TARGET_REACHED",
+    "TARGET_OVERSHOT",
+    "TARGET_REACHED_STALE",
+}
 
-def is_tp_harvest_review_row(row: Any) -> bool:
+STALE_LIFECYCLE_STATES = {
+    "MAP_RECOMPUTE_NEEDED",
+    "TARGET_REACHED_STALE",
+    "TARGET_OVERSHOT",
+    "INVALIDATION_TOUCHED",
+}
+
+WARNING_LIFECYCLE_STATES = {
+    "TARGET_REACHED",
+    "INVALIDATION_NEAR",
+    "RECLAIM_NEAR",
+}
+
+FRESH_MAP_THRESHOLD = timedelta(hours=6)
+
+
+def has_target_reached_context(row: Any, lifecycle_state: str) -> bool:
     return (
         str(row.target_state or "").upper() == "TARGET_REACHED"
         or str(row.rotation_state or "").upper() in TP_HARVEST_REVIEW_STATES
+        or lifecycle_state in TARGET_REACHED_LIFECYCLE_STATES
+    )
+
+
+def is_up_target_review_row(row: Any, lifecycle_state: str) -> bool:
+    return str(row.leg_direction or "").upper() == "UP" and has_target_reached_context(
+        row, lifecycle_state
+    )
+
+
+def is_downside_target_review_row(row: Any, lifecycle_state: str) -> bool:
+    return str(row.leg_direction or "").upper() == "DOWN" and has_target_reached_context(
+        row, lifecycle_state
     )
 
 
@@ -291,6 +325,51 @@ def destination_diagnostic_exclusions(
     return list(dict.fromkeys(reasons))
 
 
+def as_utc_naive(ts: Any) -> datetime | None:
+    if ts is None or not isinstance(ts, datetime):
+        return None
+    if ts.tzinfo is None:
+        return ts
+    return ts.astimezone(UTC).replace(tzinfo=None)
+
+
+def fresh_map_badge(asof_ts: Any, *, now_utc: datetime, lifecycle_state: str) -> str:
+    if lifecycle_state.upper() != "ACTIVE_MAP":
+        return ""
+    normalized = as_utc_naive(asof_ts)
+    if normalized is None:
+        return ""
+    age = now_utc.replace(tzinfo=None) - normalized
+    if timedelta(0) <= age <= FRESH_MAP_THRESHOLD:
+        return "FRESH_MAP"
+    return ""
+
+
+def workflow_row_class(
+    *,
+    lifecycle_state: str,
+    recompute_needed: bool,
+    fresh_badge: str,
+) -> str:
+    state = lifecycle_state.upper()
+    if recompute_needed or state in STALE_LIFECYCLE_STATES:
+        return "stale-map"
+    if state in WARNING_LIFECYCLE_STATES:
+        return "warning-map"
+    if fresh_badge:
+        return "fresh-map"
+    return ""
+
+
+def lifecycle_badges_html(lifecycle_state: str, fresh_badge: str) -> str:
+    badges = [
+        f"<span class='pill {pill_class(lifecycle_state)}'>{esc(lifecycle_state)}</span>"
+    ]
+    if fresh_badge:
+        badges.append(f"<span class='pill ok'>{esc(fresh_badge)}</span>")
+    return "".join(badges)
+
+
 def render_html(
     rows: list[Any],
     *,
@@ -311,15 +390,45 @@ def render_html(
         if row.position_value_eur is not None:
             total_value += row.position_value_eur
 
-    tp_harvest_rows = [r for r in rows if is_tp_harvest_review_row(r)]
+    current_price_by_symbol = {
+        symbol: snapshot.price
+        for symbol, snapshot in price_by_symbol.items()
+    }
+
+    def lifecycle_for_row(row: Any) -> Any:
+        return classify_fast_lifecycle(
+            leg_direction=row.leg_direction,
+            current_price=current_price_by_symbol.get(row.position_symbol),
+            tp_zone_low=row.tp_zone_low,
+            tp_zone_high=row.tp_zone_high,
+            invalidation_price=row.invalidation_price,
+        )
+
+    lifecycle_state_by_symbol = {
+        row.position_symbol: lifecycle_for_row(row).lifecycle_state
+        for row in rows
+    }
+
+    tp_harvest_rows = [
+        r for r in rows
+        if is_up_target_review_row(r, lifecycle_state_by_symbol.get(r.position_symbol, ""))
+    ]
+    downside_target_rows = [
+        r for r in rows
+        if (
+            r not in tp_harvest_rows
+            and is_downside_target_review_row(r, lifecycle_state_by_symbol.get(r.position_symbol, ""))
+        )
+    ]
     reduce_rows = [
         r for r in rows
-        if r not in tp_harvest_rows and is_reduce_exit_row(r)
+        if r not in tp_harvest_rows and r not in downside_target_rows and is_reduce_exit_row(r)
     ]
     review_rows = [
         r for r in rows
         if (
             r not in tp_harvest_rows
+            and r not in downside_target_rows
             and r not in reduce_rows
             and "REVIEW" in str(r.rotation_state or "").upper()
             and str(r.target_state or "").upper() != "TARGET_REACHED"
@@ -327,13 +436,14 @@ def render_html(
     ]
     hold_rows = [
         r for r in rows
-        if r not in tp_harvest_rows and r not in reduce_rows and r not in review_rows
+        if (
+            r not in tp_harvest_rows
+            and r not in downside_target_rows
+            and r not in reduce_rows
+            and r not in review_rows
+        )
     ]
     held_row_by_symbol = {row.position_symbol: row for row in rows}
-    current_price_by_symbol = {
-        symbol: snapshot.price
-        for symbol, snapshot in price_by_symbol.items()
-    }
     ranked_candidates = rank_market_candidates(advice_by_symbol, current_price_by_symbol)
 
     def table_rows(table_rows: list[Any]) -> str:
@@ -361,14 +471,17 @@ def render_html(
             )
             delta_invalidation_pct = pct_delta(row.invalidation_price, current_price)
             context = distance_context(row)
-            lifecycle = classify_fast_lifecycle(
-                leg_direction=row.leg_direction,
-                current_price=current_price,
-                tp_zone_low=row.tp_zone_low,
-                tp_zone_high=row.tp_zone_high,
-                invalidation_price=row.invalidation_price,
+            lifecycle = lifecycle_for_row(row)
+            fresh_badge = fresh_map_badge(
+                row.paper_asof_ts_utc,
+                now_utc=now_utc,
+                lifecycle_state=lifecycle.lifecycle_state,
             )
-            row_class = "stale-map" if lifecycle.recompute_needed else ""
+            row_class = workflow_row_class(
+                lifecycle_state=lifecycle.lifecycle_state,
+                recompute_needed=lifecycle.recompute_needed,
+                fresh_badge=fresh_badge,
+            )
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -386,7 +499,7 @@ def render_html(
                 f"<td class='num'>{esc(dec_text(latest_price_age_min, '0.1'))}</td>"
                 f"<td><span class='pill {pill_class(row.target_state)}'>{esc(row.target_state)}</span></td>"
                 f"<td><span class='pill {pill_class(row.risk_state)}'>{esc(row.risk_state)}</span></td>"
-                f"<td><span class='pill {pill_class(lifecycle.lifecycle_state)}'>{esc(lifecycle.lifecycle_state)}</span></td>"
+                f"<td>{lifecycle_badges_html(lifecycle.lifecycle_state, fresh_badge)}</td>"
                 f"<td><span class='pill {pill_class('MAP_RECOMPUTE_NEEDED' if lifecycle.recompute_needed else 'ACTIVE_MAP')}'>{'YES' if lifecycle.recompute_needed else 'NO'}</span></td>"
                 f"<td class='small'>{esc(lifecycle.recompute_reason)}</td>"
                 f"{pct_cell(delta_entry_pct)}"
@@ -426,7 +539,16 @@ def render_html(
                 tp_zone_high=None if not advice else advice.get("tp_zone_high"),
                 invalidation_price=invalidation_price,
             )
-            row_class = "stale-map" if lifecycle.recompute_needed else ""
+            fresh_badge = fresh_map_badge(
+                None if not advice else advice.get("asof_ts_utc"),
+                now_utc=now_utc,
+                lifecycle_state=lifecycle.lifecycle_state,
+            )
+            row_class = workflow_row_class(
+                lifecycle_state=lifecycle.lifecycle_state,
+                recompute_needed=lifecycle.recompute_needed,
+                fresh_badge=fresh_badge,
+            )
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -444,7 +566,7 @@ def render_html(
                 f"<td><span class='pill {pill_class(target_state)}'>{esc(target_state)}</span></td>"
                 f"<td><span class='pill {pill_class(risk_state)}'>{esc(risk_state)}</span></td>"
                 f"<td class='num sticky-price'>{esc(dec_text(current_price, '0.000000'))}</td>"
-                f"<td><span class='pill {pill_class(lifecycle.lifecycle_state)}'>{esc(lifecycle.lifecycle_state)}</span></td>"
+                f"<td>{lifecycle_badges_html(lifecycle.lifecycle_state, fresh_badge)}</td>"
                 f"<td><span class='pill {pill_class('MAP_RECOMPUTE_NEEDED' if lifecycle.recompute_needed else 'ACTIVE_MAP')}'>{'YES' if lifecycle.recompute_needed else 'NO'}</span></td>"
                 f"<td class='small'>{esc(lifecycle.recompute_reason)}</td>"
                 f"<td class='zone-value'>{esc(tp_zone_text(advice or {}))}</td>"
@@ -563,7 +685,8 @@ def render_html(
     <div class="muted">venue={esc(venue)} · quote={esc(quote_currency)} · interval={esc(interval)} · trading_account_id={esc(account_id)}</div>
     {cockpit_nav()}
     <div class="legend">
-      <div><strong>TP / harvest review</strong> = existing positions near or past target.</div>
+      <div><strong>UP target reached</strong> = TP / harvest / reduce review for existing long/upside maps.</div>
+      <div><strong>DOWN target reached</strong> = downside target/support reached; not long TP.</div>
       <div><strong>Rotation score</strong> = account-position review pressure score.</div>
       <div><strong>Market review refs</strong> = market-only comparison scores, not buy advice.</div>
       <div><strong>Rotation destinations</strong> = stricter filtered candidates.</div>
@@ -572,6 +695,8 @@ def render_html(
       <div><strong>Exclusion reasons</strong> explain why a strong reference is not a destination.</div>
       <div><strong>Target reached rows</strong> are harvest/review candidates, not automatic sell orders.</div>
       <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction, does not imply buy/sell, and indicates the strategy/advice map should be refreshed.</div>
+      <div><strong>Fresh green rows</strong> = newly updated/fresh map context.</div>
+      <div><strong>Red rows</strong> = stale, invalidated, or recompute-needed map context.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
@@ -582,7 +707,8 @@ def render_html(
   </header>
   <main>
     {candidate_diagnostics_section()}
-    {section("TP / harvest review", tp_harvest_rows, "harvest")}
+    {section("TP / harvest / reduce review", tp_harvest_rows, "harvest")}
+    {section("Downside target / support / recompute review", downside_target_rows, "downside")}
     {section("Reduce / exit review candidates", reduce_rows)}
     {section("Hold review", review_rows)}
     {section("Hold / other", hold_rows)}

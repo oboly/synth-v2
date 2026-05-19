@@ -4,7 +4,7 @@ import argparse
 import html
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -30,6 +30,8 @@ ADVICE_ORDER = {
     "NO_NEW_BUY": 6,
     "AVOID": 7,
 }
+
+FRESH_MAP_THRESHOLD = timedelta(hours=6)
 
 
 def parse_args() -> argparse.Namespace:
@@ -127,6 +129,14 @@ def parse_ts(value: Any) -> datetime | None:
         return datetime.fromisoformat(text).replace(tzinfo=None)
     except ValueError:
         return None
+
+
+def is_recent_ts(value: Any, *, now_utc: datetime) -> bool:
+    ts = parse_ts(value)
+    if ts is None:
+        return False
+    age = now_utc.replace(tzinfo=None) - ts
+    return timedelta(0) <= age <= FRESH_MAP_THRESHOLD
 
 
 def fmt_ts(value: Any) -> str:
@@ -717,6 +727,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         return '<div class="empty">No rows.</div>'
 
     body = []
+    now_utc = datetime.now(UTC)
 
     for row in rows:
         advice_state = str(row.get("advice_state") or "")
@@ -733,8 +744,15 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         rank_text = "—" if rank is None else str(rank)
 
         zone_cell_1, zone_cell_2, zone_cell_3 = zone_display_cells(row)
-        row_class = "expired" if leg_direction.strip().upper() == "DOWN" and is_pullback_invalidated(row) else ""
+        row_classes = []
+        if leg_direction.strip().upper() == "DOWN" and is_pullback_invalidated(row):
+            row_classes.extend(["expired", "stale-map"])
+        elif is_recent_ts(row.get("asof_ts_utc"), now_utc=now_utc):
+            row_classes.append("fresh-map")
+        row_class = " ".join(row_classes)
         badges = display_badges(row)
+        if "fresh-map" in row_classes:
+            badges.append(("FRESH_MAP", "good"))
         badge_html = ""
         if badges:
             badge_html = "".join(
@@ -869,7 +887,7 @@ def render_html(
         .page {{
             max-width: 1760px;
             margin: 0 auto;
-            padding: 24px;
+            padding: 18px;
         }}
         .header {{
             display: flex;
