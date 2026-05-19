@@ -12,6 +12,7 @@ fi
 export SYNTH_LIVE_EXECUTION_PERMISSION="${SYNTH_LIVE_EXECUTION_PERMISSION:-NOT_GRANTED}"
 export SYNTH_BROKER_WRITE_PERMISSION="${SYNTH_BROKER_WRITE_PERMISSION:-NOT_GRANTED}"
 export SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML="${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML:-/var/www/html/synth/rotation-preview.html}"
+export SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML="${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML:-/var/www/html/synth/entry-candidates.html}"
 export SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
 
 echo "[MVP_DASHBOARD][START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -43,7 +44,14 @@ run_step python -m src.reporting.run_position_rotation_static_dashboard_v1 \
   --output-html "${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML}" \
   --output summary
 
+run_step python -m src.reporting.run_entry_candidate_static_dashboard_v1 \
+  --venue bitvavo \
+  --interval 4h \
+  --output-html "${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML}" \
+  --output summary
+
 echo
 echo "[MVP_DASHBOARD][DONE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "[MVP_DASHBOARD][OUTPUT] ${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML}"
+echo "[MVP_DASHBOARD][OUTPUT] ${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML}"
 echo "[MVP_DASHBOARD][OUTPUT] $(dirname "${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML}")/index.html"

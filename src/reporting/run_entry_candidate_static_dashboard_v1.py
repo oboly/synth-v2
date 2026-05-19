@@ -1,0 +1,573 @@
+from __future__ import annotations
+
+import argparse
+import html
+import json
+from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+from src.common.db import get_connection
+
+
+REPORT_NAME = "entry_candidate_static_dashboard_v1"
+REPORT_VERSION = "0.1"
+
+DEFAULT_OUTPUT_HTML = "/var/www/html/synth/entry-candidates.html"
+
+CANDIDATE_GROUPS = [
+    "PAPER_BUY_READY",
+    "WATCH_FOR_CONFIRMATION",
+    "RECLAIM_NEAR",
+    "BLOCKED_NO_NEW_BUY",
+    "CONTEXT_ONLY",
+    "INSUFFICIENT_SAMPLE",
+]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Render market-only entry/setup candidates to a static read-only HTML dashboard."
+    )
+    parser.add_argument("--venue", default="bitvavo")
+    parser.add_argument("--interval", default="4h")
+    parser.add_argument("--limit", type=int, default=120)
+    parser.add_argument("--output-html", default=DEFAULT_OUTPUT_HTML)
+    parser.add_argument("--output", choices=("summary", "json", "none"), default="summary")
+    return parser.parse_args()
+
+
+def esc(value: Any) -> str:
+    if value is None:
+        return ""
+    return html.escape(str(value))
+
+
+def to_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def dec_text(value: Any, places: str = "0.000000") -> str:
+    dec = to_decimal(value)
+    if dec is None:
+        return ""
+    try:
+        return str(dec.quantize(Decimal(places)))
+    except Exception:
+        return str(dec)
+
+
+def pct_text(value: Any) -> str:
+    dec = to_decimal(value)
+    if dec is None:
+        return ""
+    return f"{(dec * Decimal('100')).quantize(Decimal('0.1'))}%"
+
+
+def bool_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "YES" if value else "NO"
+    text = str(value).strip().upper()
+    if text in {"1", "TRUE", "YES", "Y"}:
+        return "YES"
+    if text in {"0", "FALSE", "NO", "N"}:
+        return "NO"
+    return text
+
+
+def parse_reason_codes(raw: Any) -> list[str]:
+    if raw is None:
+        return []
+    try:
+        parsed = json.loads(str(raw))
+    except json.JSONDecodeError:
+        return [str(raw)]
+    if isinstance(parsed, list):
+        return [str(item) for item in parsed]
+    if isinstance(parsed, dict):
+        return [f"{key}={value}" for key, value in parsed.items()]
+    return [str(parsed)]
+
+
+def fmt_zone(low: Any, high: Any) -> str:
+    left = dec_text(low)
+    right = dec_text(high)
+    if not left and not right:
+        return ""
+    if left == right:
+        return left
+    return f"{left}..{right}"
+
+
+def has_required_zones(row: dict[str, Any]) -> bool:
+    return (
+        (row.get("entry_zone_low") is not None or row.get("entry_zone_high") is not None)
+        and (row.get("tp_zone_low") is not None or row.get("tp_zone_high") is not None)
+        and row.get("invalidation_price") is not None
+    )
+
+
+def css_class(value: str | None) -> str:
+    normalized = (value or "").upper()
+    if normalized in {"PAPER_BUY_READY", "PASS", "UP", "WATCHLIST", "YES", "BUY_READY", "ALLOW"}:
+        return "ok"
+    if normalized in {"WATCH_FOR_CONFIRMATION", "RECLAIM_NEAR", "WATCH", "WATCH_ONLY", "MODERATE"}:
+        return "warn"
+    if normalized in {
+        "BLOCKED_NO_NEW_BUY",
+        "FAIL",
+        "AVOID",
+        "APLUS_AVOID",
+        "DO_NOT_ADD",
+        "AVOID_NO_NEW_BUY",
+        "MARKET_DAMAGE_RISK",
+        "HIGH",
+        "ELEVATED",
+        "DOWN",
+        "NO",
+    }:
+        return "bad"
+    if normalized in {"CONTEXT_ONLY", "CORE_CONTEXT", "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP"}:
+        return "context"
+    return "muted"
+
+
+def cockpit_nav() -> str:
+    return """
+    <nav class="cockpit-nav" aria-label="Cockpit navigation">
+      <a href="/synth/index.html">Cockpit</a>
+      <a href="/synth/paper-advice.html">Paper Advice</a>
+      <a href="/synth/entry-candidates.html">Entry Candidates</a>
+      <a href="/synth/rotation-preview.html">Rotation Preview</a>
+    </nav>
+    """
+
+
+def local_label(value: datetime | None) -> str:
+    if value is None:
+        return "not available"
+    local = value.replace(tzinfo=UTC).astimezone(ZoneInfo("Europe/Amsterdam"))
+    return local.strftime("%Y-%m-%d %H:%M:%S %Z Amsterdam time")
+
+
+def now_local_label() -> str:
+    return local_label(datetime.now(UTC).replace(tzinfo=None))
+
+
+def fetch_latest_rows(
+    conn: Any,
+    *,
+    venue: str,
+    interval: str,
+    limit: int,
+) -> tuple[datetime | None, list[dict[str, Any]]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT MAX(asof_ts_utc) AS latest_asof
+            FROM paper_advice_observation
+            WHERE venue = %(venue)s
+              AND interval_code = %(interval)s
+            """,
+            {"venue": venue, "interval": interval},
+        )
+        latest = cur.fetchone()
+
+    latest_asof = None if not latest else latest.get("latest_asof")
+    if latest_asof is None:
+        return None, []
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                symbol,
+                priority_rank,
+                selection_state,
+                selection_score,
+                setup_filter_state,
+                setup_filter_reason,
+                policy_decision,
+                allowed_now,
+                advice_state,
+                advice_action,
+                leg_direction,
+                aplus_bucket,
+                confidence_score,
+                risk_label,
+                entry_zone_low,
+                entry_zone_high,
+                tp_zone_low,
+                tp_zone_high,
+                invalidation_price,
+                reason_codes_json,
+                asof_ts_utc
+            FROM paper_advice_observation
+            WHERE venue = %(venue)s
+              AND interval_code = %(interval)s
+              AND asof_ts_utc = %(latest_asof)s
+            ORDER BY
+                priority_rank IS NULL,
+                priority_rank ASC,
+                confidence_score DESC,
+                symbol ASC
+            LIMIT %(limit)s
+            """,
+            {
+                "venue": venue,
+                "interval": interval,
+                "latest_asof": latest_asof,
+                "limit": int(limit),
+            },
+        )
+        return latest_asof, list(cur.fetchall())
+
+
+def classify_candidate(row: dict[str, Any]) -> tuple[str, list[str]]:
+    selection_state = str(row.get("selection_state") or "").upper()
+    setup_state = str(row.get("setup_filter_state") or "").upper()
+    setup_reason = str(row.get("setup_filter_reason") or "").upper()
+    policy_decision = str(row.get("policy_decision") or "").upper()
+    allowed_now = bool_text(row.get("allowed_now"))
+    advice_state = str(row.get("advice_state") or "").upper()
+    advice_action = str(row.get("advice_action") or "").upper()
+    leg_direction = str(row.get("leg_direction") or "").upper()
+    aplus_bucket = str(row.get("aplus_bucket") or "").upper()
+    risk_label = str(row.get("risk_label") or "").upper()
+    reason_codes = [code.upper() for code in parse_reason_codes(row.get("reason_codes_json"))]
+    reasons: list[str] = []
+
+    explicit_insufficient = (
+        "INSUFFICIENT_SAMPLE" in setup_reason
+        or "INSUFFICIENT_SAMPLE" in policy_decision
+        or any("INSUFFICIENT_SAMPLE" in code for code in reason_codes)
+    )
+    if explicit_insufficient or not has_required_zones(row):
+        if explicit_insufficient:
+            reasons.append("INSUFFICIENT_SAMPLE")
+        if not has_required_zones(row):
+            reasons.append("MISSING_REQUIRED_ZONE_DATA")
+        return "INSUFFICIENT_SAMPLE", reasons
+
+    hard_blocks = []
+    if aplus_bucket == "APLUS_AVOID":
+        hard_blocks.append("APLUS_AVOID")
+    if advice_action in {"DO_NOT_ADD", "AVOID_NO_NEW_BUY"}:
+        hard_blocks.append(advice_action)
+    if setup_reason == "MARKET_DAMAGE_RISK":
+        hard_blocks.append("MARKET_DAMAGE_RISK")
+    if selection_state == "AVOID":
+        hard_blocks.append("SELECTION_AVOID")
+    if setup_state == "FAIL":
+        hard_blocks.append("SETUP_FAIL")
+    if hard_blocks:
+        return "BLOCKED_NO_NEW_BUY", hard_blocks
+
+    if advice_action == "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP" or advice_state in {"CORE_CONTEXT", "CONTEXT"}:
+        return "CONTEXT_ONLY", ["CONTEXT_ONLY"]
+
+    allowed = allowed_now == "YES" or policy_decision in {"ALLOW", "BUY_READY", "BUY", "WATCH_CORE"}
+    action_allows = advice_action in {"BUY_READY", "ACCUMULATE", "BUY"}
+    if (
+        setup_state == "PASS"
+        and selection_state in {"WATCHLIST", "WATCH_CORE", "STRONG_WATCHLIST"}
+        and (allowed or action_allows)
+        and advice_action not in {"DO_NOT_ADD", "AVOID_NO_NEW_BUY", "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP"}
+        and aplus_bucket != "APLUS_AVOID"
+        and setup_reason != "MARKET_DAMAGE_RISK"
+        and leg_direction == "UP"
+    ):
+        return "PAPER_BUY_READY", ["SETUP_PASS", "MARKET_ONLY_READY"]
+
+    if (
+        leg_direction == "DOWN"
+        and setup_state in {"PASS", "NEAR_PASS", "WATCH"}
+        and advice_action in {"WAIT_FOR_MARKET_RECLAIM", "WATCH_FOR_SETUP_CONFIRMATION", "WATCH_ONLY"}
+        and risk_label in {"HIGH", "ELEVATED", "MODERATE", "RISK_NEAR"}
+    ):
+        return "RECLAIM_NEAR", ["DOWN_LEG_RECLAIM_WATCH"]
+
+    if (
+        setup_state == "PASS"
+        and (
+            advice_action in {"WATCH_ONLY", "WATCH_FOR_SETUP_CONFIRMATION"}
+            or policy_decision in {"WATCH", "WATCH_ONLY"}
+        )
+    ):
+        return "WATCH_FOR_CONFIRMATION", ["SETUP_PASS_WAITING_CONFIRMATION"]
+
+    if setup_state == "PASS":
+        return "WATCH_FOR_CONFIRMATION", ["SETUP_PASS_NOT_BUY_READY"]
+
+    return "CONTEXT_ONLY", ["NOT_ACTIONABLE"]
+
+
+def enriched_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output = []
+    for row in rows:
+        group, reasons = classify_candidate(row)
+        enriched = dict(row)
+        enriched["candidate_group"] = group
+        enriched["candidate_reason_codes"] = reasons + parse_reason_codes(row.get("reason_codes_json"))
+        output.append(enriched)
+
+    order = {group: index for index, group in enumerate(CANDIDATE_GROUPS)}
+    output.sort(
+        key=lambda row: (
+            order.get(str(row["candidate_group"]), 99),
+            row.get("priority_rank") is None,
+            row.get("priority_rank") or 999999,
+            -(to_decimal(row.get("confidence_score")) or Decimal("0")),
+            str(row.get("symbol") or ""),
+        )
+    )
+    return output
+
+
+def render_table(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return '<div class="empty">No rows.</div>'
+
+    body = []
+    for row in rows:
+        rank = row.get("priority_rank")
+        rank_text = "" if rank is None else str(rank)
+        group = str(row.get("candidate_group") or "")
+        allowed_now = bool_text(row.get("allowed_now"))
+        reason_codes = ", ".join(str(code) for code in row.get("candidate_reason_codes", []))
+        body.append(
+            "<tr>"
+            f"<td class='num'>{esc(rank_text)}</td>"
+            f"<td><strong>{esc(row.get('symbol'))}</strong></td>"
+            f"<td><span class='pill {css_class(group)}'>{esc(group)}</span></td>"
+            f"<td>{esc(row.get('selection_state'))}</td>"
+            f"<td class='num'>{esc(dec_text(row.get('selection_score'), '0.0000'))}</td>"
+            f"<td><span class='pill {css_class(row.get('setup_filter_state'))}'>{esc(row.get('setup_filter_state'))}</span></td>"
+            f"<td><span class='pill {css_class(row.get('setup_filter_reason'))}'>{esc(row.get('setup_filter_reason'))}</span></td>"
+            f"<td>{esc(row.get('policy_decision'))}</td>"
+            f"<td><span class='pill {css_class(allowed_now)}'>{esc(allowed_now)}</span></td>"
+            f"<td>{esc(row.get('advice_state'))}</td>"
+            f"<td><span class='pill {css_class(row.get('advice_action'))}'>{esc(row.get('advice_action'))}</span></td>"
+            f"<td><span class='pill {css_class(row.get('leg_direction'))}'>{esc(row.get('leg_direction'))}</span></td>"
+            f"<td><span class='pill {css_class(row.get('aplus_bucket'))}'>{esc(row.get('aplus_bucket'))}</span></td>"
+            f"<td class='num'>{esc(pct_text(row.get('confidence_score')))}</td>"
+            f"<td><span class='pill {css_class(row.get('risk_label'))}'>{esc(row.get('risk_label'))}</span></td>"
+            f"<td class='num'>{esc(fmt_zone(row.get('entry_zone_low'), row.get('entry_zone_high')))}</td>"
+            f"<td class='num'>{esc(fmt_zone(row.get('tp_zone_low'), row.get('tp_zone_high')))}</td>"
+            f"<td class='num'>{esc(dec_text(row.get('invalidation_price')))}</td>"
+            f"<td class='small'>{esc(reason_codes)}</td>"
+            "</tr>"
+        )
+
+    return f"""
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Rank</th>
+            <th>Symbol</th>
+            <th>Group</th>
+            <th>Selection</th>
+            <th>Selection score</th>
+            <th>Setup</th>
+            <th>Setup reason</th>
+            <th>Policy</th>
+            <th>Allowed now</th>
+            <th>Advice state</th>
+            <th>Action</th>
+            <th>Leg</th>
+            <th>A+</th>
+            <th>Confidence</th>
+            <th>Risk label</th>
+            <th>Entry / reaction zone</th>
+            <th>TP / target zone</th>
+            <th>Invalidation</th>
+            <th>Reason codes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {''.join(body)}
+        </tbody>
+      </table>
+    </div>
+    """
+
+
+def render_group_section(group: str, rows: list[dict[str, Any]]) -> str:
+    group_rows = [row for row in rows if row.get("candidate_group") == group]
+    return f"""
+    <section class="card">
+      <h2>{esc(group)} <span class="muted">({len(group_rows)})</span></h2>
+      {render_table(group_rows)}
+    </section>
+    """
+
+
+def render_html(
+    *,
+    venue: str,
+    interval: str,
+    latest_asof: datetime | None,
+    rows: list[dict[str, Any]],
+) -> str:
+    generated_text = now_local_label()
+    latest_text = local_label(latest_asof)
+    counts = {
+        group: sum(1 for row in rows if row.get("candidate_group") == group)
+        for group in CANDIDATE_GROUPS
+    }
+    counts_html = "".join(
+        f"<span class='pill {css_class(group)}'>{esc(group)}: {count}</span>"
+        for group, count in counts.items()
+    )
+    sections = "\n".join(render_group_section(group, rows) for group in CANDIDATE_GROUPS)
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="300">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Synth Entry Candidates</title>
+  <style>
+    :root {{
+      --bg: #0b1020;
+      --panel: #121a2f;
+      --panel2: #18223d;
+      --text: #e7edf8;
+      --muted: #8ea0bf;
+      --line: #273657;
+      --bad: #ff6b6b;
+      --warn: #ffd166;
+      --ok: #55d6a7;
+      --context: #7aa2ff;
+    }}
+    body {{ margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, Segoe UI, sans-serif; }}
+    header {{ padding: 24px; border-bottom: 1px solid var(--line); background: linear-gradient(135deg, #101936, #0b1020); }}
+    h1, h2 {{ margin: 0 0 12px; }}
+    main {{ padding: 18px; display: grid; gap: 18px; }}
+    .muted {{ color: var(--muted); }}
+    .small {{ font-size: 12px; }}
+    .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+    .card, .metric {{ background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; box-shadow: 0 12px 40px rgba(0,0,0,.22); }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-top: 16px; }}
+    .legend {{ display: grid; gap: 6px; margin-top: 16px; color: var(--muted); font-size: 13px; }}
+    .legend strong {{ color: var(--text); }}
+    .pill {{ display: inline-block; border-radius: 999px; padding: 3px 8px; margin: 2px; font-size: 12px; border: 1px solid var(--line); background: var(--panel2); white-space: nowrap; }}
+    .pill.bad {{ color: var(--bad); border-color: rgba(255,107,107,.45); }}
+    .pill.warn {{ color: var(--warn); border-color: rgba(255,209,102,.45); }}
+    .pill.ok {{ color: var(--ok); border-color: rgba(85,214,167,.45); }}
+    .pill.context {{ color: var(--context); border-color: rgba(122,162,255,.45); }}
+    .pill.muted {{ color: var(--muted); }}
+    .table-wrap {{ overflow-x: auto; }}
+    table {{ width: 100%; border-collapse: collapse; min-width: 1800px; }}
+    th, td {{ border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; vertical-align: top; }}
+    th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }}
+    a {{ color: var(--context); text-decoration: none; }}
+    a:hover {{ text-decoration: underline; }}
+    .cockpit-nav {{ display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; }}
+    .cockpit-nav a {{ font-size: 14px; }}
+    .empty {{ color: var(--muted); padding: 12px 0; }}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Entry Candidates</h1>
+    <div class="muted">Rendered {esc(generated_text)}</div>
+    <div class="muted">latest advice snapshot: {esc(latest_text)} · venue={esc(venue)} · interval={esc(interval)}</div>
+    {cockpit_nav()}
+    <div class="legend">
+      <div><strong>Entry candidates</strong> are market-only and account-agnostic.</div>
+      <div><strong>PAPER_BUY_READY</strong> is not an order.</div>
+      <div><strong>Account sizing/permission</strong> belongs later in decision_gate.</div>
+      <div><strong>Rotation preview</strong> remains for existing positions only.</div>
+    </div>
+    <div class="grid">
+      <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
+      <div class="metric"><div class="muted">Candidate groups</div>{counts_html}</div>
+      <div class="metric"><div class="muted">Safety</div><span class="pill ok">broker_private_calls=0</span><span class="pill ok">broker_writes=0</span><span class="pill ok">order_submission=0</span><span class="pill ok">executor=none</span><span class="pill ok">account_awareness=0</span></div>
+    </div>
+  </header>
+  <main>
+    {sections}
+  </main>
+</body>
+</html>
+"""
+
+
+def write_html(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def main() -> int:
+    args = parse_args()
+    conn = get_connection()
+    try:
+        latest_asof, rows = fetch_latest_rows(
+            conn,
+            venue=str(args.venue),
+            interval=str(args.interval),
+            limit=int(args.limit),
+        )
+    finally:
+        conn.close()
+
+    rows = enriched_rows(rows)
+    output_path = Path(args.output_html)
+    write_html(
+        output_path,
+        render_html(
+            venue=str(args.venue),
+            interval=str(args.interval),
+            latest_asof=latest_asof,
+            rows=rows,
+        ),
+    )
+
+    if args.output == "summary":
+        print(f"report={REPORT_NAME} version={REPORT_VERSION}")
+        print("scope=market-only account-agnostic static dashboard")
+        print("broker_private_calls=0 broker_writes=0 order_submission=0 executor=none account_awareness=0")
+        print(f"rows={len(rows)} output_html={output_path}")
+        for group in CANDIDATE_GROUPS:
+            count = sum(1 for row in rows if row.get("candidate_group") == group)
+            print(f"{group}={count}")
+    elif args.output == "json":
+        print(
+            json.dumps(
+                {
+                    "report": REPORT_NAME,
+                    "version": REPORT_VERSION,
+                    "rows": len(rows),
+                    "output_html": str(output_path),
+                    "broker_private_calls": 0,
+                    "broker_writes": 0,
+                    "order_submission": 0,
+                    "executor": "none",
+                    "account_awareness": 0,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

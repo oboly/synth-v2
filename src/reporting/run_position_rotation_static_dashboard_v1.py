@@ -56,6 +56,7 @@ def cockpit_nav() -> str:
     <nav class="cockpit-nav" aria-label="Cockpit navigation">
       <a href="/synth/index.html">Cockpit</a>
       <a href="/synth/paper-advice.html">Paper Advice</a>
+      <a href="/synth/entry-candidates.html">Entry Candidates</a>
       <a href="/synth/rotation-preview.html">Rotation Preview</a>
     </nav>
     """
@@ -663,6 +664,10 @@ def write_index(output_dir: Path) -> Path:
       <div class="card">
         <a href="/synth/paper-advice.html">Paper Advice</a>
         <p class="muted">Market/setup/A+ context and paper navigation.</p>
+      </div>
+      <div class="card">
+        <a href="/synth/entry-candidates.html">Entry Candidates</a>
+        <p class="muted">Market-only setup candidates and readiness groups.</p>
       </div>
       <div class="card">
         <a href="/synth/rotation-preview.html">Rotation Preview</a>
