@@ -9,6 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.common.db import get_connection
+from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
     fetch_latest_prices_by_symbol,
@@ -192,9 +193,21 @@ def pill_class(text: str | None) -> str:
     value = (text or "").upper()
     if "REDUCE" in value or "AVOID" in value or "DO_NOT_ADD" in value or "HIGH" in value:
         return "bad"
-    if "CAUTION" in value or "WATCH" in value or "REVIEW" in value or "MODERATE" in value or "TARGET_REACHED" in value or "RISK_NEAR" in value:
+    if (
+        "CAUTION" in value
+        or "WATCH" in value
+        or "REVIEW" in value
+        or "MODERATE" in value
+        or "TARGET_REACHED" in value
+        or "TARGET_OVERSHOT" in value
+        or "RISK_NEAR" in value
+        or "INVALIDATION_NEAR" in value
+        or "RECLAIM_NEAR" in value
+    ):
         return "warn"
-    if "HOLD" in value or "CORE" in value or "FRESH" in value or "RISK_OK" in value:
+    if "INVALIDATION_TOUCHED" in value or "MAP_RECOMPUTE_NEEDED" in value:
+        return "bad"
+    if "HOLD" in value or "CORE" in value or "FRESH" in value or "RISK_OK" in value or "ACTIVE_MAP" in value:
         return "ok"
     return "muted"
 
@@ -358,6 +371,13 @@ def render_html(
             )
             delta_invalidation_pct = pct_delta(row.invalidation_price, current_price)
             context = distance_context(row)
+            lifecycle = classify_fast_lifecycle(
+                leg_direction=row.leg_direction,
+                current_price=current_price,
+                tp_zone_low=row.tp_zone_low,
+                tp_zone_high=row.tp_zone_high,
+                invalidation_price=row.invalidation_price,
+            )
 
             out.append(
                 "<tr>"
@@ -375,6 +395,9 @@ def render_html(
                 f"<td class='num'>{esc(dec_text(latest_price_age_min, '0.1'))}</td>"
                 f"<td><span class='pill {pill_class(row.target_state)}'>{esc(row.target_state)}</span></td>"
                 f"<td><span class='pill {pill_class(row.risk_state)}'>{esc(row.risk_state)}</span></td>"
+                f"<td><span class='pill {pill_class(lifecycle.lifecycle_state)}'>{esc(lifecycle.lifecycle_state)}</span></td>"
+                f"<td><span class='pill {pill_class('MAP_RECOMPUTE_NEEDED' if lifecycle.recompute_needed else 'ACTIVE_MAP')}'>{'YES' if lifecycle.recompute_needed else 'NO'}</span></td>"
+                f"<td class='small'>{esc(lifecycle.recompute_reason)}</td>"
                 f"{pct_cell(delta_entry_pct)}"
                 f"{pct_cell(delta_tp_pct, target_pct_class(delta_tp_pct, context))}"
                 f"{pct_cell(delta_invalidation_pct, risk_pct_class(delta_invalidation_pct, context))}"
@@ -405,6 +428,13 @@ def render_html(
             held_value = None if held_row is None else held_row.position_value_eur
             held_rotation_state = "" if held_row is None else held_row.rotation_state
             invalidation_price = None if not advice else dec(advice.get("invalidation_price"))
+            lifecycle = classify_fast_lifecycle(
+                leg_direction=None if not advice else advice.get("leg_direction"),
+                current_price=current_price,
+                tp_zone_low=None if not advice else advice.get("tp_zone_low"),
+                tp_zone_high=None if not advice else advice.get("tp_zone_high"),
+                invalidation_price=invalidation_price,
+            )
 
             out.append(
                 "<tr>"
@@ -422,6 +452,9 @@ def render_html(
                 f"<td><span class='pill {pill_class(target_state)}'>{esc(target_state)}</span></td>"
                 f"<td><span class='pill {pill_class(risk_state)}'>{esc(risk_state)}</span></td>"
                 f"<td class='num'>{esc(dec_text(current_price, '0.000000'))}</td>"
+                f"<td><span class='pill {pill_class(lifecycle.lifecycle_state)}'>{esc(lifecycle.lifecycle_state)}</span></td>"
+                f"<td><span class='pill {pill_class('MAP_RECOMPUTE_NEEDED' if lifecycle.recompute_needed else 'ACTIVE_MAP')}'>{'YES' if lifecycle.recompute_needed else 'NO'}</span></td>"
+                f"<td class='small'>{esc(lifecycle.recompute_reason)}</td>"
                 f"<td>{esc(tp_zone_text(advice or {}))}</td>"
                 f"<td class='num'>{esc(dec_text(invalidation_price, '0.000000'))}</td>"
                 f"<td><span class='pill {'ok' if held_row is not None else 'muted'}'>{'YES' if held_row is not None else 'NO'}</span></td>"
@@ -453,6 +486,9 @@ def render_html(
                   <th>Target state</th>
                   <th>Risk state</th>
                   <th>Current price</th>
+                  <th>Lifecycle state</th>
+                  <th>Recompute needed</th>
+                  <th>Recompute reason</th>
                   <th>TP / target zone</th>
                   <th>Invalidation</th>
                   <th>Held</th>
@@ -490,6 +526,9 @@ def render_html(
                   <th>Price age min</th>
                   <th>Target state</th>
                   <th>Risk state</th>
+                  <th>Lifecycle state</th>
+                  <th>Recompute needed</th>
+                  <th>Recompute reason</th>
                   <th>Δ entry %</th>
                   <th>Δ target %</th>
                   <th>Δ risk %</th>
@@ -608,6 +647,7 @@ def render_html(
       <div><strong>Destination eligible</strong> = strict candidate after paper/setup/risk/account-position filters.</div>
       <div><strong>Exclusion reasons</strong> explain why a strong reference is not a destination.</div>
       <div><strong>Target reached rows</strong> are harvest/review candidates, not automatic sell orders.</div>
+      <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction and does not imply buy/sell.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>

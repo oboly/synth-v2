@@ -10,6 +10,11 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.common.db import get_connection
+from src.market_data.market_price_snapshot_v1 import (
+    MarketPriceSnapshot,
+    fetch_latest_prices_by_symbol,
+)
+from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 
 
 REPORT_NAME = "entry_candidate_static_dashboard_v1"
@@ -32,6 +37,7 @@ def parse_args() -> argparse.Namespace:
         description="Render market-only entry/setup candidates to a static read-only HTML dashboard."
     )
     parser.add_argument("--venue", default="bitvavo")
+    parser.add_argument("--quote", default="EUR")
     parser.add_argument("--interval", default="4h")
     parser.add_argument("--limit", type=int, default=120)
     parser.add_argument("--output-html", default=DEFAULT_OUTPUT_HTML)
@@ -125,6 +131,14 @@ def css_class(value: str | None) -> str:
     if normalized in {"WATCH_FOR_CONFIRMATION", "RECLAIM_NEAR", "WATCH", "WATCH_ONLY", "MODERATE"}:
         return "warn"
     if normalized in {
+        "TARGET_REACHED",
+        "TARGET_OVERSHOT",
+        "TARGET_REACHED_STALE",
+        "INVALIDATION_NEAR",
+        "RECLAIM_NEAR",
+    }:
+        return "warn"
+    if normalized in {
         "BLOCKED_NO_NEW_BUY",
         "FAIL",
         "AVOID",
@@ -136,8 +150,12 @@ def css_class(value: str | None) -> str:
         "ELEVATED",
         "DOWN",
         "NO",
+        "INVALIDATION_TOUCHED",
+        "MAP_RECOMPUTE_NEEDED",
     }:
         return "bad"
+    if normalized in {"ACTIVE_MAP"}:
+        return "ok"
     if normalized in {"CONTEXT_ONLY", "CORE_CONTEXT", "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP"}:
         return "context"
     return "muted"
@@ -313,13 +331,31 @@ def classify_candidate(row: dict[str, Any]) -> tuple[str, list[str]]:
     return "CONTEXT_ONLY", ["NOT_ACTIONABLE"]
 
 
-def enriched_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def enriched_rows(
+    rows: list[dict[str, Any]],
+    *,
+    price_by_symbol: dict[str, MarketPriceSnapshot],
+) -> list[dict[str, Any]]:
     output = []
     for row in rows:
         group, reasons = classify_candidate(row)
+        symbol = str(row.get("symbol") or "").upper()
+        snapshot = price_by_symbol.get(symbol)
+        current_price = None if snapshot is None else snapshot.price
+        lifecycle = classify_fast_lifecycle(
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            tp_zone_low=row.get("tp_zone_low"),
+            tp_zone_high=row.get("tp_zone_high"),
+            invalidation_price=row.get("invalidation_price"),
+        )
         enriched = dict(row)
         enriched["candidate_group"] = group
         enriched["candidate_reason_codes"] = reasons + parse_reason_codes(row.get("reason_codes_json"))
+        enriched["current_price"] = current_price
+        enriched["lifecycle_state"] = lifecycle.lifecycle_state
+        enriched["recompute_needed"] = lifecycle.recompute_needed
+        enriched["recompute_reason"] = lifecycle.recompute_reason
         output.append(enriched)
 
     order = {group: index for index, group in enumerate(CANDIDATE_GROUPS)}
@@ -363,6 +399,10 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             f"<td><span class='pill {css_class(row.get('aplus_bucket'))}'>{esc(row.get('aplus_bucket'))}</span></td>"
             f"<td class='num'>{esc(pct_text(row.get('confidence_score')))}</td>"
             f"<td><span class='pill {css_class(row.get('risk_label'))}'>{esc(row.get('risk_label'))}</span></td>"
+            f"<td class='num'>{esc(dec_text(row.get('current_price')))}</td>"
+            f"<td><span class='pill {css_class(row.get('lifecycle_state'))}'>{esc(row.get('lifecycle_state'))}</span></td>"
+            f"<td><span class='pill {css_class('MAP_RECOMPUTE_NEEDED' if row.get('recompute_needed') else 'ACTIVE_MAP')}'>{'YES' if row.get('recompute_needed') else 'NO'}</span></td>"
+            f"<td class='small'>{esc(row.get('recompute_reason'))}</td>"
             f"<td class='num'>{esc(fmt_zone(row.get('entry_zone_low'), row.get('entry_zone_high')))}</td>"
             f"<td class='num'>{esc(fmt_zone(row.get('tp_zone_low'), row.get('tp_zone_high')))}</td>"
             f"<td class='num'>{esc(dec_text(row.get('invalidation_price')))}</td>"
@@ -390,6 +430,10 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             <th>A+</th>
             <th>Confidence</th>
             <th>Risk label</th>
+            <th>Current price</th>
+            <th>Lifecycle state</th>
+            <th>Recompute needed</th>
+            <th>Recompute reason</th>
             <th>Entry / reaction zone</th>
             <th>TP / target zone</th>
             <th>Invalidation</th>
@@ -492,6 +536,7 @@ def render_html(
       <div><strong>PAPER_BUY_READY</strong> is not an order.</div>
       <div><strong>Account sizing/permission</strong> belongs later in decision_gate.</div>
       <div><strong>Rotation preview</strong> remains for existing positions only.</div>
+      <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction and does not imply buy/sell.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
@@ -524,10 +569,16 @@ def main() -> int:
             interval=str(args.interval),
             limit=int(args.limit),
         )
+        price_by_symbol = fetch_latest_prices_by_symbol(
+            conn,
+            venue=str(args.venue),
+            quote_currency=str(args.quote),
+            symbols=sorted({str(row.get("symbol") or "").upper() for row in rows}),
+        )
     finally:
         conn.close()
 
-    rows = enriched_rows(rows)
+    rows = enriched_rows(rows, price_by_symbol=price_by_symbol)
     output_path = Path(args.output_html)
     write_html(
         output_path,
@@ -543,6 +594,7 @@ def main() -> int:
         print(f"report={REPORT_NAME} version={REPORT_VERSION}")
         print("scope=market-only account-agnostic static dashboard")
         print("broker_private_calls=0 broker_writes=0 order_submission=0 executor=none account_awareness=0")
+        print(f"market_price_snapshot_rows={len(price_by_symbol)} quote={str(args.quote).upper()}")
         print(f"rows={len(rows)} output_html={output_path}")
         for group in CANDIDATE_GROUPS:
             count = sum(1 for row in rows if row.get("candidate_group") == group)
