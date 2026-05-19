@@ -47,6 +47,16 @@ def esc(value: Any) -> str:
     return html.escape(str(value))
 
 
+def cockpit_nav() -> str:
+    return """
+    <nav class="cockpit-nav" aria-label="Cockpit navigation">
+      <a href="/synth/index.html">Cockpit</a>
+      <a href="/synth/paper-advice.html">Paper Advice</a>
+      <a href="/synth/rotation-preview.html">Rotation Preview</a>
+    </nav>
+    """
+
+
 def dec_text(value: Decimal | None, places: str = "0.01") -> str:
     if value is None:
         return ""
@@ -377,6 +387,8 @@ def render_html(
     .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
     a {{ color: var(--blue); text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
+    .cockpit-nav {{ display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; }}
+    .cockpit-nav a {{ font-size: 14px; }}
   </style>
 </head>
 <body>
@@ -384,10 +396,7 @@ def render_html(
     <h1>Position Rotation Preview</h1>
     <div class="muted">Rendered {esc(local_ts)} Amsterdam time</div>
     <div class="muted">venue={esc(venue)} · quote={esc(quote_currency)} · interval={esc(interval)} · trading_account_id={esc(account_id)}</div>
-    <div style="margin-top:12px">
-      <a href="./index.html">Cockpit</a> ·
-      <a href="./paper-advice.html">Paper Advice</a>
-    </div>
+    {cockpit_nav()}
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
       <div class="metric"><div class="muted">Total position value</div><h2>€ {esc(dec_text(total_value, '0.01'))}</h2></div>
@@ -427,20 +436,23 @@ def write_index(output_dir: Path) -> Path:
     a:hover {{ text-decoration:underline; }}
     .muted {{ color:#8ea0bf; }}
     .pill {{ display:inline-block; border-radius:999px; padding:4px 9px; margin:4px 4px 0 0; border:1px solid #273657; color:#55d6a7; }}
+    .cockpit-nav {{ display:flex; flex-wrap:wrap; gap:14px; margin:14px 0 18px; }}
+    .cockpit-nav a {{ font-size:16px; }}
   </style>
 </head>
 <body>
   <main>
     <h1>Synth MVP Read-only Cockpit</h1>
     <p class="muted">Rendered {esc(local_ts)} Amsterdam time</p>
+    {cockpit_nav()}
     <p><span class="pill">broker_private_calls=0</span><span class="pill">broker_writes=0</span><span class="pill">order_submission=0</span><span class="pill">executor=none</span></p>
     <div class="grid">
       <div class="card">
-        <a href="./paper-advice.html">Paper Advice</a>
+        <a href="/synth/paper-advice.html">Paper Advice</a>
         <p class="muted">Market/setup/A+ context and paper navigation.</p>
       </div>
       <div class="card">
-        <a href="./rotation-preview.html">Rotation Preview</a>
+        <a href="/synth/rotation-preview.html">Rotation Preview</a>
         <p class="muted">Account-aware read-only HOLD / REDUCE review dashboard.</p>
       </div>
     </div>

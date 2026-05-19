@@ -110,6 +110,16 @@ def esc(value: Any) -> str:
     return html.escape(str(value))
 
 
+def cockpit_nav() -> str:
+    return """
+                <nav class="cockpit-nav" aria-label="Cockpit navigation">
+                    <a href="/synth/index.html">Cockpit</a>
+                    <a href="/synth/paper-advice.html">Paper Advice</a>
+                    <a href="/synth/rotation-preview.html">Rotation Preview</a>
+                </nav>
+    """
+
+
 def parse_ts(value: Any) -> datetime | None:
     if value is None:
         return None
@@ -901,6 +911,20 @@ def render_html(
             font-size: 13px;
             white-space: nowrap;
         }}
+        .cockpit-nav {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+            margin-top: 12px;
+        }}
+        .cockpit-nav a {{
+            color: var(--context);
+            font-size: 14px;
+            text-decoration: none;
+        }}
+        .cockpit-nav a:hover {{
+            text-decoration: underline;
+        }}
         .grid {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1037,6 +1061,7 @@ def render_html(
                     dashboard rendered: {esc(generated_text)}<br>
                     Setup/policy changes when the 4h chain writes a new paper_advice_observation snapshot. Lifecycle badges refresh from {esc(lifecycle_candle_interval)} candle path data when the dashboard refresh runner runs.
                 </div>
+                {cockpit_nav()}
             </div>
             <div class="badge">broker_calls=0 · broker_writes=0 · order_submission=0</div>
         </section>
