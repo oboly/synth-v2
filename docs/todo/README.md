@@ -75,3 +75,7 @@ Do not bypass layers.
 6. Keep A+, PRO, execution, broker, and live/paper lanes parked unless directly
    needed by an explicit task.
 ```
+
+## 2026-05-19 Product/Cockpit/Strategy bundle
+
+- [2026-05-19 Product, Cockpit, Strategy TODO Bundle](2026-05-19_product_cockpit_strategy_bundle.md)
