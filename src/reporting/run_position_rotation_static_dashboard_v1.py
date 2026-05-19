@@ -194,6 +194,29 @@ def pill_class(text: str | None) -> str:
     return "muted"
 
 
+TP_HARVEST_REVIEW_STATES = {
+    "PARTIAL_TP_REVIEW",
+    "TARGET_REACHED_REVIEW",
+    "REDUCE_REVIEW_TARGET_REACHED",
+}
+
+
+def is_tp_harvest_review_row(row: Any) -> bool:
+    return (
+        str(row.target_state or "").upper() == "TARGET_REACHED"
+        or str(row.rotation_state or "").upper() in TP_HARVEST_REVIEW_STATES
+    )
+
+
+def is_reduce_exit_row(row: Any) -> bool:
+    rotation_state = str(row.rotation_state or "").upper()
+    return (
+        rotation_state in {"EXIT_CANDIDATE", "REDUCE_CANDIDATE"}
+        or "REDUCE" in rotation_state
+        or "EXIT" in rotation_state
+    )
+
+
 def render_html(
     rows: list[Any],
     *,
@@ -213,9 +236,24 @@ def render_html(
         if row.position_value_eur is not None:
             total_value += row.position_value_eur
 
-    reduce_rows = [r for r in rows if "REDUCE" in r.rotation_state or "EXIT" in r.rotation_state]
-    review_rows = [r for r in rows if "REVIEW" in r.rotation_state and r not in reduce_rows]
-    hold_rows = [r for r in rows if r not in reduce_rows and r not in review_rows]
+    tp_harvest_rows = [r for r in rows if is_tp_harvest_review_row(r)]
+    reduce_rows = [
+        r for r in rows
+        if r not in tp_harvest_rows and is_reduce_exit_row(r)
+    ]
+    review_rows = [
+        r for r in rows
+        if (
+            r not in tp_harvest_rows
+            and r not in reduce_rows
+            and "REVIEW" in str(r.rotation_state or "").upper()
+            and str(r.target_state or "").upper() != "TARGET_REACHED"
+        )
+    ]
+    hold_rows = [
+        r for r in rows
+        if r not in tp_harvest_rows and r not in reduce_rows and r not in review_rows
+    ]
 
     def table_rows(table_rows: list[Any]) -> str:
         out = []
@@ -300,8 +338,8 @@ def render_html(
                   <th>Δ risk %</th>
                   <th>TP / target zone</th>
                   <th>Rotation</th>
-                  <th>Score</th>
-                  <th>Review references</th>
+                  <th>Rotation score</th>
+                  <th>Market review refs</th>
                   <th>Rotation destinations</th>
                 </tr>
               </thead>
@@ -365,6 +403,14 @@ def render_html(
       padding: 16px;
       box-shadow: 0 12px 40px rgba(0,0,0,.22);
     }}
+    .legend {{
+      display: grid;
+      gap: 6px;
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 13px;
+    }}
+    .legend strong {{ color: var(--text); }}
     main {{ padding: 18px; display: grid; gap: 18px; }}
     .pill {{
       display: inline-block;
@@ -397,6 +443,12 @@ def render_html(
     <div class="muted">Rendered {esc(local_ts)} Amsterdam time</div>
     <div class="muted">venue={esc(venue)} · quote={esc(quote_currency)} · interval={esc(interval)} · trading_account_id={esc(account_id)}</div>
     {cockpit_nav()}
+    <div class="legend">
+      <div><strong>Rotation score</strong> = account-position review pressure score.</div>
+      <div><strong>Market review refs</strong> = market-only comparison scores, not buy advice.</div>
+      <div><strong>Rotation destinations</strong> = stricter filtered candidates.</div>
+      <div><strong>Target reached rows</strong> are harvest/review candidates, not automatic sell orders.</div>
+    </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
       <div class="metric"><div class="muted">Total position value</div><h2>€ {esc(dec_text(total_value, '0.01'))}</h2></div>
@@ -405,6 +457,7 @@ def render_html(
     </div>
   </header>
   <main>
+    {section("TP / harvest review", tp_harvest_rows)}
     {section("Reduce / exit review candidates", reduce_rows)}
     {section("Hold review", review_rows)}
     {section("Hold / other", hold_rows)}
