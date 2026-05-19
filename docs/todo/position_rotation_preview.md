@@ -142,6 +142,22 @@ Implemented behavior:
 - distance semantics are display/review context only and do not change scoring
   or better-candidate logic
 
+## P1 — Target/risk-aware rotation classification
+
+Status: implemented.
+
+Implemented behavior:
+
+- target state labels: `TARGET_REACHED`, `TARGET_PENDING`, `TARGET_UNKNOWN`
+- risk state labels: `RISK_NEAR`, `RISK_OK`, `RISK_UNKNOWN`
+- harvest review labels: `PARTIAL_TP_REVIEW`, `TARGET_REACHED_REVIEW`,
+  `REDUCE_REVIEW_TARGET_REACHED`
+- candidate lists are split into `review_references` and
+  `rotation_destination_candidates`
+- destination candidates exclude rows with reached targets, near risk,
+  `APLUS_AVOID`, `DO_NOT_ADD`, `AVOID_NO_NEW_BUY`, `MARKET_DAMAGE_RISK`, or
+  `setup_filter_state != PASS`
+
 ## P2 — Better-candidate comparison
 
 Status: MVP implemented; future refinements only.

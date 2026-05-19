@@ -46,6 +46,10 @@ class RotationRow:
     tp_zone_high: Decimal | None
     invalidation_price: Decimal | None
     aplus_bucket: str | None
+    target_state: str
+    risk_state: str
+    review_references: list[str]
+    rotation_destination_candidates: list[str]
     better_candidates: list[str]
     rotation_state: str
     rotation_pressure_score: int
@@ -86,6 +90,57 @@ def dt_text(value: datetime | None) -> str:
     if value is None:
         return ""
     return value.isoformat(sep=" ")
+
+
+def midpoint_or_edge(low: Decimal | None, high: Decimal | None) -> Decimal | None:
+    if low is not None and high is not None:
+        return (low + high) / Decimal("2")
+    if low is not None:
+        return low
+    return high
+
+
+def target_state_for_advice(
+    advice_row: dict[str, Any] | None,
+    current_price: Decimal | None,
+) -> str:
+    if not advice_row or current_price is None or current_price <= 0:
+        return "TARGET_UNKNOWN"
+
+    leg_direction = str(advice_row.get("leg_direction") or "").upper()
+    target = midpoint_or_edge(dec(advice_row.get("tp_zone_low")), dec(advice_row.get("tp_zone_high")))
+    if target is None or leg_direction not in {"UP", "DOWN"}:
+        return "TARGET_UNKNOWN"
+
+    if leg_direction == "UP" and current_price >= target:
+        return "TARGET_REACHED"
+    if leg_direction == "DOWN" and current_price <= target:
+        return "TARGET_REACHED"
+    return "TARGET_PENDING"
+
+
+def risk_state_for_advice(
+    advice_row: dict[str, Any] | None,
+    current_price: Decimal | None,
+    *,
+    near_threshold_pct: Decimal = Decimal("2.0"),
+) -> str:
+    if not advice_row or current_price is None or current_price <= 0:
+        return "RISK_UNKNOWN"
+
+    leg_direction = str(advice_row.get("leg_direction") or "").upper()
+    invalidation_price = dec(advice_row.get("invalidation_price"))
+    if invalidation_price is None or invalidation_price <= 0 or leg_direction not in {"UP", "DOWN"}:
+        return "RISK_UNKNOWN"
+
+    if leg_direction == "UP":
+        distance_pct = ((current_price / invalidation_price) - Decimal("1")) * Decimal("100")
+    else:
+        distance_pct = ((invalidation_price / current_price) - Decimal("1")) * Decimal("100")
+
+    if distance_pct <= near_threshold_pct:
+        return "RISK_NEAR"
+    return "RISK_OK"
 
 
 def fetch_latest_position_rows(
@@ -195,6 +250,8 @@ def classify_rotation(
     position_row: dict[str, Any],
     advice_row: dict[str, Any] | None,
     position_source_state: str,
+    target_state: str,
+    risk_state: str,
 ) -> tuple[str, int, list[str]]:
     reasons: list[str] = []
     score = 0
@@ -231,6 +288,8 @@ def classify_rotation(
         reasons.append(f"LEG_{leg_direction}")
     if aplus_bucket:
         reasons.append(aplus_bucket)
+    reasons.append(target_state)
+    reasons.append(risk_state)
 
     if setup_reason == "MARKET_DAMAGE_RISK":
         score += 4
@@ -257,6 +316,16 @@ def classify_rotation(
     elif selection_state == "WATCHLIST":
         score -= 1
 
+    if target_state == "TARGET_REACHED":
+        score += 3
+    elif target_state == "TARGET_UNKNOWN":
+        score += 1
+
+    if risk_state == "RISK_NEAR":
+        score += 3
+    elif risk_state == "RISK_UNKNOWN":
+        score += 1
+
     if position_source_state == "STALE":
         # Stale private-read position data must never escalate to an exit label.
         # It may raise review pressure, but fresh account state is required before
@@ -264,6 +333,13 @@ def classify_rotation(
         if score >= 4:
             return "REDUCE_REVIEW_CANDIDATE_STALE_SOURCE", score, reasons
         return "HOLD_REVIEW_STALE_SOURCE", score, reasons
+
+    if target_state == "TARGET_REACHED":
+        if score >= 6:
+            return "REDUCE_REVIEW_TARGET_REACHED", score, reasons
+        if score >= 4:
+            return "TARGET_REACHED_REVIEW", score, reasons
+        return "PARTIAL_TP_REVIEW", score, reasons
 
     if score >= 7:
         return "EXIT_CANDIDATE", score, reasons
@@ -334,8 +410,10 @@ def market_candidate_quality_score(advice_row: dict[str, Any] | None) -> Decimal
 
 def rank_market_candidates(
     advice_by_symbol: dict[str, dict[str, Any]],
+    current_price_by_symbol: dict[str, Decimal] | None = None,
 ) -> list[tuple[str, Decimal]]:
     ranked: list[tuple[str, Decimal]] = []
+    prices = current_price_by_symbol or {}
 
     for symbol, advice in advice_by_symbol.items():
         selection_state = str(advice.get("selection_state") or "").upper()
@@ -349,26 +427,72 @@ def rank_market_candidates(
     return ranked
 
 
+def candidate_exclusion_reasons(
+    advice_row: dict[str, Any] | None,
+    *,
+    current_price: Decimal | None,
+) -> list[str]:
+    if not advice_row:
+        return ["ADVICE_MISSING"]
+
+    reasons: list[str] = []
+    target_state = target_state_for_advice(advice_row, current_price)
+    risk_state = risk_state_for_advice(advice_row, current_price)
+    setup_state = str(advice_row.get("setup_filter_state") or "").upper()
+    setup_reason = str(advice_row.get("setup_filter_reason") or "").upper()
+    advice_action = str(advice_row.get("advice_action") or "").upper()
+    aplus_bucket = str(advice_row.get("aplus_bucket") or "").upper()
+
+    if target_state == "TARGET_REACHED":
+        reasons.append("TARGET_REACHED")
+    if risk_state == "RISK_NEAR":
+        reasons.append("RISK_NEAR")
+    if aplus_bucket == "APLUS_AVOID":
+        reasons.append("APLUS_AVOID")
+    if advice_action in {"DO_NOT_ADD", "AVOID_NO_NEW_BUY"}:
+        reasons.append(advice_action)
+    if setup_reason == "MARKET_DAMAGE_RISK":
+        reasons.append("MARKET_DAMAGE_RISK")
+    if setup_state != "PASS":
+        reasons.append("SETUP_NOT_PASS")
+
+    return reasons
+
+
 def choose_better_candidates(
     *,
     current_symbol: str,
     current_advice: dict[str, Any] | None,
     ranked_candidates: list[tuple[str, Decimal]],
+    advice_by_symbol: dict[str, dict[str, Any]],
+    current_price_by_symbol: dict[str, Decimal] | None = None,
     max_items: int = 3,
-) -> list[str]:
+) -> tuple[list[str], list[str]]:
     current_quality = market_candidate_quality_score(current_advice)
+    prices = current_price_by_symbol or {}
 
-    out: list[str] = []
+    review_references: list[str] = []
+    destinations: list[str] = []
     for symbol, candidate_score in ranked_candidates:
         if symbol == current_symbol:
             continue
         if candidate_score <= current_quality:
             continue
-        out.append(f"{symbol}:{candidate_score.quantize(Decimal('0.01'))}")
-        if len(out) >= max_items:
+        label = f"{symbol}:{candidate_score.quantize(Decimal('0.01'))}"
+        review_references.append(label)
+
+        advice = advice_by_symbol.get(symbol)
+        exclusions = candidate_exclusion_reasons(
+            advice,
+            current_price=prices.get(symbol),
+        )
+        if not exclusions:
+            destinations.append(label)
+
+        if len(review_references) >= max_items and len(destinations) >= max_items:
             break
 
-    return out
+    return review_references[:max_items], destinations[:max_items]
 
 
 
@@ -377,13 +501,18 @@ def build_rows(
     advice_by_symbol: dict[str, dict[str, Any]],
     *,
     stale_days: Decimal,
+    current_price_by_symbol: dict[str, Decimal] | None = None,
 ) -> list[RotationRow]:
     out: list[RotationRow] = []
-    ranked_candidates = rank_market_candidates(advice_by_symbol)
+    prices = current_price_by_symbol or {}
+    ranked_candidates = rank_market_candidates(advice_by_symbol, prices)
 
     for position in position_rows:
         symbol = str(position["symbol"]).upper()
         advice = advice_by_symbol.get(symbol)
+        current_price = prices.get(symbol) or dec(position.get("mark_price_eur"))
+        target_state = target_state_for_advice(advice, current_price)
+        risk_state = risk_state_for_advice(advice, current_price)
         source_state, source_age_days, source_reasons = classify_position_source(
             snapshot_ts=position.get("snapshot_ts_utc"),
             stale_days=stale_days,
@@ -392,17 +521,25 @@ def build_rows(
             position_row=position,
             advice_row=advice,
             position_source_state=source_state,
+            target_state=target_state,
+            risk_state=risk_state,
         )
         reason_codes = list(dict.fromkeys(source_reasons + rotation_reasons))
-        better_candidates = choose_better_candidates(
+        review_references, rotation_destination_candidates = choose_better_candidates(
             current_symbol=symbol,
             current_advice=advice,
             ranked_candidates=ranked_candidates,
+            advice_by_symbol=advice_by_symbol,
+            current_price_by_symbol=prices,
         )
-        if better_candidates:
-            reason_codes.append("BETTER_CANDIDATES_AVAILABLE")
+        if review_references:
+            reason_codes.append("REVIEW_REFERENCES_AVAILABLE")
         else:
-            reason_codes.append("NO_BETTER_CANDIDATES_FOUND")
+            reason_codes.append("NO_REVIEW_REFERENCES_FOUND")
+        if rotation_destination_candidates:
+            reason_codes.append("ROTATION_DESTINATION_CANDIDATES_AVAILABLE")
+        else:
+            reason_codes.append("NO_ROTATION_DESTINATION_CANDIDATES_FOUND")
 
         out.append(
             RotationRow(
@@ -438,7 +575,11 @@ def build_rows(
                 tp_zone_high=None if not advice else dec(advice.get("tp_zone_high")),
                 invalidation_price=None if not advice else dec(advice.get("invalidation_price")),
                 aplus_bucket=None if not advice else advice.get("aplus_bucket"),
-                better_candidates=better_candidates,
+                target_state=target_state,
+                risk_state=risk_state,
+                review_references=review_references,
+                rotation_destination_candidates=rotation_destination_candidates,
+                better_candidates=review_references,
                 rotation_state=rotation_state,
                 rotation_pressure_score=pressure_score,
                 reason_codes=reason_codes,
@@ -469,10 +610,13 @@ def print_table(rows: list[RotationRow]) -> None:
         "setup_reason",
         "leg",
         "action",
+        "target_state",
+        "risk_state",
         "tp_zone",
         "rotation",
         "score",
-        "better",
+        "review_refs",
+        "destinations",
     ]
 
     table: list[list[str]] = []
@@ -491,10 +635,13 @@ def print_table(rows: list[RotationRow]) -> None:
                 row.setup_filter_reason or "",
                 row.leg_direction or "",
                 row.advice_action or "",
+                row.target_state,
+                row.risk_state,
                 tp_zone,
                 row.rotation_state,
                 str(row.rotation_pressure_score),
-                ",".join(row.better_candidates[:3]),
+                ",".join(row.review_references[:3]),
+                ",".join(row.rotation_destination_candidates[:3]),
             ]
         )
 

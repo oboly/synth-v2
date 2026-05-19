@@ -177,9 +177,9 @@ def pill_class(text: str | None) -> str:
     value = (text or "").upper()
     if "REDUCE" in value or "AVOID" in value or "DO_NOT_ADD" in value or "HIGH" in value:
         return "bad"
-    if "CAUTION" in value or "WATCH" in value or "REVIEW" in value or "MODERATE" in value:
+    if "CAUTION" in value or "WATCH" in value or "REVIEW" in value or "MODERATE" in value or "TARGET_REACHED" in value or "RISK_NEAR" in value:
         return "warn"
-    if "HOLD" in value or "CORE" in value or "FRESH" in value:
+    if "HOLD" in value or "CORE" in value or "FRESH" in value or "RISK_OK" in value:
         return "ok"
     return "muted"
 
@@ -214,7 +214,12 @@ def render_html(
             if row.tp_zone_low is not None or row.tp_zone_high is not None:
                 tp_zone = f"{dec_text(row.tp_zone_low, '0.000000')}..{dec_text(row.tp_zone_high, '0.000000')}"
 
-            better = ", ".join(row.better_candidates[:3]) if row.better_candidates else ""
+            review_refs = ", ".join(row.review_references[:3]) if row.review_references else ""
+            destinations = (
+                ", ".join(row.rotation_destination_candidates[:3])
+                if row.rotation_destination_candidates
+                else ""
+            )
             latest_price = price_by_symbol.get(row.position_symbol)
             current_price = None if latest_price is None else latest_price.price
             latest_price_age_min = price_age_min(latest_price, now_utc=now_utc)
@@ -244,13 +249,16 @@ def render_html(
                 f"<td><span class='pill {pill_class(row.aplus_bucket)}'>{esc(row.aplus_bucket)}</span></td>"
                 f"<td class='num'>{esc(dec_text(current_price, '0.000000'))}</td>"
                 f"<td class='num'>{esc(dec_text(latest_price_age_min, '0.1'))}</td>"
+                f"<td><span class='pill {pill_class(row.target_state)}'>{esc(row.target_state)}</span></td>"
+                f"<td><span class='pill {pill_class(row.risk_state)}'>{esc(row.risk_state)}</span></td>"
                 f"{pct_cell(delta_entry_pct)}"
                 f"{pct_cell(delta_tp_pct, target_pct_class(delta_tp_pct, context))}"
                 f"{pct_cell(delta_invalidation_pct, risk_pct_class(delta_invalidation_pct, context))}"
                 f"<td>{esc(tp_zone)}</td>"
                 f"<td><span class='pill {pill_class(row.rotation_state)}'>{esc(row.rotation_state)}</span></td>"
                 f"<td class='num'>{esc(row.rotation_pressure_score)}</td>"
-                f"<td class='small'>{esc(better)}</td>"
+                f"<td class='small'>{esc(review_refs)}</td>"
+                f"<td class='small'>{esc(destinations)}</td>"
                 "</tr>"
             )
         return "\n".join(out)
@@ -275,13 +283,16 @@ def render_html(
                   <th>A+</th>
                   <th>Current price</th>
                   <th>Price age min</th>
+                  <th>Target state</th>
+                  <th>Risk state</th>
                   <th>Δ entry %</th>
                   <th>Δ target %</th>
                   <th>Δ risk %</th>
                   <th>TP / target zone</th>
                   <th>Rotation</th>
                   <th>Score</th>
-                  <th>Better candidates</th>
+                  <th>Review references</th>
+                  <th>Rotation destinations</th>
                 </tr>
               </thead>
               <tbody>
@@ -360,7 +371,7 @@ def render_html(
     .pill.ok {{ color: var(--ok); border-color: rgba(85,214,167,.45); }}
     .pill.muted {{ color: var(--muted); }}
     .table-wrap {{ overflow-x: auto; }}
-    table {{ width: 100%; border-collapse: collapse; min-width: 1550px; }}
+    table {{ width: 100%; border-collapse: collapse; min-width: 1750px; }}
     th, td {{ border-bottom: 1px solid var(--line); padding: 9px 8px; text-align: left; }}
     th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }}
     .num {{ text-align: right; font-variant-numeric: tabular-nums; }}
@@ -471,6 +482,10 @@ def main() -> int:
         position_rows,
         advice_by_symbol,
         stale_days=args.stale_days,
+        current_price_by_symbol={
+            symbol: snapshot.price
+            for symbol, snapshot in price_by_symbol.items()
+        },
     )
 
     output_path = Path(args.output_html)
