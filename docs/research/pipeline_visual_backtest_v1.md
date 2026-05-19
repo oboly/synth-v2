@@ -67,6 +67,12 @@ candle timestamp before simulation. This keeps the chart reviewable when many
 runtime observations were written inside the same candle. Use
 `--include-all-contexts` to inspect every raw observation context.
 
+Contexts with no future candle inside the requested window are skipped by
+default. The summary reports `skipped_no_future_candle_contexts`. Use
+`--include-open-ended-contexts` to emit an explicit
+`OPEN_CONTEXT_NO_FUTURE_CANDLE` event for those rows instead of normal setup,
+block, entry, exit, or map-invalidation events.
+
 ## Event Model
 
 The runner reads observations within the requested window and evaluates future
@@ -77,6 +83,7 @@ Generated event types:
 - `SETUP_PASS`
 - `SETUP_FAIL`
 - `SETUP_PASS_NO_ZONE_CONTEXT`
+- `OPEN_CONTEXT_NO_FUTURE_CANDLE`
 - `ENTER_SIM`
 - `EXIT_TARGET_SIM`
 - `EXIT_RISK_SIM`
@@ -87,6 +94,10 @@ Generated event types:
 
 V1 policy:
 
+- no normal event is emitted for a selected context unless there is a future
+  candle after `asof_ts_utc` inside the requested window.
+- `OPEN_CONTEXT_NO_FUTURE_CANDLE` is emitted only when
+  `--include-open-ended-contexts` is set.
 - `BLOCK_MARKET_DAMAGE_RISK` when `setup_filter_reason` is
   `MARKET_DAMAGE_RISK`.
 - `BLOCK_AVOID_OR_DO_NOT_ADD` when `advice_action` is one of
@@ -111,7 +122,12 @@ symbol, interval, timestamp_utc, event_type, setup_filter_reason, advice_action,
 ```
 
 The summary preserves both `raw_event_count` and `unique_event_count`. The chart
-and optional JSONL output use the unique event set.
+and optional JSONL output use the unique event set. In default mode, JSONL and
+chart output include only events with non-null `timestamp_utc` and non-null
+`price`.
+
+The summary also reports `bad_rows`, a leakage sanity count where
+`asof_ts_utc > timestamp_utc`. Expected value is `0`.
 
 ## Zone Invalidation
 

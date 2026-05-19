@@ -54,6 +54,7 @@ EVENT_ORDER = [
     "SETUP_PASS",
     "SETUP_FAIL",
     "SETUP_PASS_NO_ZONE_CONTEXT",
+    "OPEN_CONTEXT_NO_FUTURE_CANDLE",
     "ENTER_SIM",
     "EXIT_TARGET_SIM",
     "EXIT_RISK_SIM",
@@ -117,6 +118,12 @@ class PipelineEvent:
     notes: str
 
 
+@dataclass(frozen=True)
+class SimulationResult:
+    events: list[PipelineEvent]
+    skipped_no_future_candle_contexts: int
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Research-only visual pipeline backtest with Plotly event markers."
@@ -134,6 +141,11 @@ def parse_args() -> argparse.Namespace:
         "--include-all-contexts",
         action="store_true",
         help="Use every raw observation context instead of the latest context per future candle timestamp.",
+    )
+    parser.add_argument(
+        "--include-open-ended-contexts",
+        action="store_true",
+        help="Emit OPEN_CONTEXT_NO_FUTURE_CANDLE for contexts with no future candle.",
     )
     return parser.parse_args()
 
@@ -563,13 +575,29 @@ def simulate_events(
     candles: list[Candle],
     *,
     max_bars: int,
-) -> list[PipelineEvent]:
+    include_open_ended_contexts: bool,
+) -> SimulationResult:
     events: list[PipelineEvent] = []
+    skipped_no_future_candle_contexts = 0
 
     for context in contexts:
         future = future_candles_for_context(context, candles, max_bars=max_bars)
         first_candle = future[0] if future else None
-        event_ts = first_candle.open_ts_utc if first_candle else context.asof_ts_utc
+        if first_candle is None:
+            skipped_no_future_candle_contexts += 1
+            if include_open_ended_contexts:
+                events.append(
+                    make_event(
+                        context,
+                        event_type="OPEN_CONTEXT_NO_FUTURE_CANDLE",
+                        timestamp_utc=context.asof_ts_utc,
+                        price=None,
+                        notes="selected context has no future candle inside the requested window",
+                    )
+                )
+            continue
+
+        event_ts = first_candle.open_ts_utc
 
         setup_state = (context.setup_filter_state or "").upper()
         if setup_state == "PASS":
@@ -618,7 +646,7 @@ def simulate_events(
                 )
                 break
 
-        if block_type or not is_actionable(context) or not future:
+        if block_type or not is_actionable(context):
             continue
 
         if not has_full_zone_context(context):
@@ -677,7 +705,14 @@ def simulate_events(
             )
         events.append(terminal_event)
 
-    return events
+    return SimulationResult(
+        events=events,
+        skipped_no_future_candle_contexts=skipped_no_future_candle_contexts,
+    )
+
+
+def leakage_bad_row_count(events: list[PipelineEvent]) -> int:
+    return sum(1 for event in events if event.asof_ts_utc > event.timestamp_utc)
 
 
 def event_hover(event: PipelineEvent) -> str:
@@ -833,14 +868,18 @@ def print_summary(
     raw_event_count: int,
     selected_context_count: int,
     raw_context_count: int,
+    skipped_no_future_candle_contexts: int,
+    bad_rows: int,
     output: str,
 ) -> None:
     counts = Counter(event.event_type for event in events)
     summary = {event_type: counts.get(event_type, 0) for event_type in EVENT_ORDER}
     summary["raw_context_count"] = raw_context_count
     summary["selected_context_count"] = selected_context_count
+    summary["skipped_no_future_candle_contexts"] = skipped_no_future_candle_contexts
     summary["raw_event_count"] = raw_event_count
     summary["unique_event_count"] = len(events)
+    summary["bad_rows"] = bad_rows
     summary["total_events"] = len(events)
 
     if output == "json":
@@ -851,8 +890,10 @@ def print_summary(
             print(f"{event_type},{counts.get(event_type, 0)}")
         print(f"raw_context_count,{raw_context_count}")
         print(f"selected_context_count,{selected_context_count}")
+        print(f"skipped_no_future_candle_contexts,{skipped_no_future_candle_contexts}")
         print(f"raw_event_count,{raw_event_count}")
         print(f"unique_event_count,{len(events)}")
+        print(f"bad_rows,{bad_rows}")
         print(f"total_events,{len(events)}")
     elif output == "summary":
         print("summary_counts=" + json.dumps(summary, sort_keys=True))
@@ -910,27 +951,40 @@ def main() -> int:
         if args.include_all_contexts
         else select_latest_context_per_candle(contexts, candles)
     )
-    raw_events = simulate_events(selected_contexts, candles, max_bars=args.max_bars)
+    simulation = simulate_events(
+        selected_contexts,
+        candles,
+        max_bars=args.max_bars,
+        include_open_ended_contexts=args.include_open_ended_contexts,
+    )
+    raw_events = simulation.events
     events = dedupe_events(raw_events)
+    artifact_events = (
+        events
+        if args.include_open_ended_contexts
+        else [event for event in events if event.price is not None]
+    )
+    bad_rows = leakage_bad_row_count(events)
 
     render_chart(
         chart_frame=chart_frame,
         selection_frame=selection_frame,
         contexts=selected_contexts,
-        events=events,
+        events=artifact_events,
         title=f"{REPORT_NAME} {REPORT_VERSION} - {asset.symbol} {args.venue} {args.interval}",
         output_html=Path(args.output_html),
     )
 
     if args.output_events_jsonl:
-        write_events_jsonl(events, Path(args.output_events_jsonl))
+        write_events_jsonl(artifact_events, Path(args.output_events_jsonl))
 
     print(f"report_name={REPORT_NAME} report_version={REPORT_VERSION}")
     print(f"symbol={asset.symbol} venue={args.venue} interval={args.interval}")
     print(
         f"candles={len(candles)} raw_contexts={raw_context_count} "
         f"selected_contexts={len(selected_contexts)} raw_events={len(raw_events)} "
-        f"unique_events={len(events)}"
+        f"unique_events={len(events)} skipped_no_future_candle_contexts="
+        f"{simulation.skipped_no_future_candle_contexts} bad_rows={bad_rows}"
     )
     if not any(event.event_type == "MAP_INVALIDATED_PENDING_RECOMPUTE" for event in events):
         print(
@@ -942,6 +996,8 @@ def main() -> int:
         raw_event_count=len(raw_events),
         selected_context_count=len(selected_contexts),
         raw_context_count=raw_context_count,
+        skipped_no_future_candle_contexts=simulation.skipped_no_future_candle_contexts,
+        bad_rows=bad_rows,
         output=args.output,
     )
     return 0
