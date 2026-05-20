@@ -14,7 +14,7 @@ from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
     fetch_latest_prices_by_symbol,
 )
-from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
+from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav, pill_classes
 from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
     classify_price_progress_state,
@@ -150,9 +150,9 @@ def has_required_zones(row: dict[str, Any]) -> bool:
 def css_class(value: str | None) -> str:
     normalized = (value or "").upper()
     if normalized in {"PAPER_BUY_READY", "PASS", "UP", "WATCHLIST", "YES", "BUY_READY", "ALLOW"}:
-        return "ok"
+        return pill_classes("ok", normalized)
     if normalized in {"WATCH_FOR_CONFIRMATION", "RECLAIM_NEAR", "WATCH", "WATCH_ONLY", "MODERATE"}:
-        return "warn"
+        return pill_classes("warn", normalized)
     if normalized in {
         "TARGET_REACHED",
         "TARGET_OVERSHOT",
@@ -174,7 +174,7 @@ def css_class(value: str | None) -> str:
         "DOWNSIDE_TARGET_APPROACHING",
         "DOWNSIDE_TARGET_NEAR",
     }:
-        return "warn"
+        return pill_classes("warn", normalized)
     if normalized in {
         "BLOCKED_NO_NEW_BUY",
         "FAIL",
@@ -188,16 +188,19 @@ def css_class(value: str | None) -> str:
         "DOWN",
         "NO",
         "INVALIDATION_TOUCHED",
+        "RECLAIM_CONFIRMED",
         "MAP_RECOMPUTE_NEEDED",
+        "DOWN_MAP_INVALIDATED_BY_RECLAIM",
+        "UP_MAP_INVALIDATED_BY_BREAKDOWN",
     }:
-        return "bad"
+        return pill_classes("bad", normalized)
     if normalized in {"TARGET_REACHED", "DOWNSIDE_TARGET_REACHED"}:
-        return "warn"
+        return pill_classes("warn", normalized)
     if normalized in {"ACTIVE_MAP"}:
-        return "ok"
+        return pill_classes("ok", normalized)
     if normalized in {"CONTEXT_ONLY", "CORE_CONTEXT", "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP"}:
-        return "context"
-    return "muted"
+        return pill_classes("context", normalized)
+    return pill_classes("muted", normalized)
 
 
 def as_utc_naive(ts: Any) -> datetime | None:
@@ -423,6 +426,9 @@ def enriched_rows(
             tp_zone_high=row.get("tp_zone_high"),
             invalidation_price=row.get("invalidation_price"),
         )
+        if group == "RECLAIM_NEAR" and lifecycle.lifecycle_state == "RECLAIM_CONFIRMED":
+            group = "CONTEXT_ONLY"
+            reasons = reasons + ["RECLAIM_CONFIRMED", "DOWN_MAP_INVALIDATED_BY_RECLAIM"]
         enriched = dict(row)
         enriched["candidate_group"] = group
         enriched["candidate_reason_codes"] = reasons + parse_reason_codes(row.get("reason_codes_json"))
@@ -649,6 +655,7 @@ def render_html(
       <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction, does not imply buy/sell, and indicates the strategy/advice map should be refreshed.</div>
       <div><strong>Fresh green rows</strong> = newly updated/fresh map context.</div>
       <div><strong>Red rows</strong> = stale, invalidated, or recompute-needed map context.</div>
+      <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>

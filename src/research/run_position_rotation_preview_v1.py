@@ -133,6 +133,9 @@ def risk_state_for_advice(
     if invalidation_price is None or invalidation_price <= 0 or leg_direction not in {"UP", "DOWN"}:
         return "RISK_UNKNOWN"
 
+    if leg_direction == "DOWN" and current_price >= invalidation_price:
+        return "RECLAIM_CONFIRMED"
+
     if leg_direction == "UP":
         distance_pct = ((current_price / invalidation_price) - Decimal("1")) * Decimal("100")
     else:
@@ -321,10 +324,17 @@ def classify_rotation(
     elif target_state == "TARGET_UNKNOWN":
         score += 1
 
-    if risk_state == "RISK_NEAR":
+    if risk_state == "RECLAIM_CONFIRMED":
+        reasons.append("DOWN_MAP_INVALIDATED_BY_RECLAIM")
+        reasons.append("MAP_RECOMPUTE_NEEDED")
+        score += 2
+    elif risk_state == "RISK_NEAR":
         score += 3
     elif risk_state == "RISK_UNKNOWN":
         score += 1
+
+    if risk_state == "RECLAIM_CONFIRMED":
+        return "RECLAIM_CONFIRMED_REVIEW", score, reasons
 
     if position_source_state == "STALE":
         # Stale private-read position data must never escalate to an exit label.
@@ -445,8 +455,8 @@ def candidate_exclusion_reasons(
 
     if target_state == "TARGET_REACHED":
         reasons.append("TARGET_REACHED")
-    if risk_state == "RISK_NEAR":
-        reasons.append("RISK_NEAR")
+    if risk_state in {"RISK_NEAR", "RECLAIM_CONFIRMED"}:
+        reasons.append(risk_state)
     if aplus_bucket == "APLUS_AVOID":
         reasons.append("APLUS_AVOID")
     if advice_action in {"DO_NOT_ADD", "AVOID_NO_NEW_BUY"}:

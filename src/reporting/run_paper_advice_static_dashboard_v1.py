@@ -17,7 +17,7 @@ from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
     fetch_latest_prices_by_symbol,
 )
-from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
+from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav, pill_classes
 from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
     classify_price_progress_state,
@@ -25,6 +25,7 @@ from src.reporting.entry_zone_state_v1 import (
     confirmation_display_state,
     promotion_blockers,
 )
+from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 
 
 POLICY_NAME = "paper_advice_static_dashboard_v1"
@@ -245,6 +246,14 @@ def css_class(value: str | None) -> str:
         "TARGET_PENDING": "muted",
         "TARGET_REACHED": "watch",
         "DOWNSIDE_TARGET_REACHED": "watch",
+        "TARGET_REACHED_STALE": "watch",
+        "TARGET_OVERSHOT": "watch",
+        "RECLAIM_NEAR": "watch",
+        "RECLAIM_CONFIRMED": "watch",
+        "INVALIDATION_TOUCHED": "danger",
+        "MAP_RECOMPUTE_NEEDED": "danger",
+        "DOWN_MAP_INVALIDATED_BY_RECLAIM": "danger",
+        "UP_MAP_INVALIDATED_BY_BREAKDOWN": "danger",
         "BTC_PRIOR_OVERHEAT_ZONE": "block",
         "SELECTION_STATE_NOT_ELIGIBLE": "muted",
         "RANK_OUTSIDE_SETUP_ELIGIBLE_RANGE": "muted",
@@ -253,7 +262,7 @@ def css_class(value: str | None) -> str:
         "ASSET_SUITABILITY_WEAK_SET_CANDIDATE": "muted",
     }
 
-    return mapping.get(normalized, "muted")
+    return pill_classes(mapping.get(normalized, "muted"), normalized)
 
 
 def zone_labels(leg_direction: str | None) -> tuple[str, str, str]:
@@ -813,6 +822,13 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             tp_zone_high=row.get("tp_zone_high"),
             in_position_context=False,
         )
+        lifecycle = classify_fast_lifecycle(
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            tp_zone_low=row.get("tp_zone_low"),
+            tp_zone_high=row.get("tp_zone_high"),
+            invalidation_price=row.get("invalidation_price"),
+        )
         progress_labels = "".join(
             f'<span class="pill {css_class(label)}">{esc(label)}</span>'
             for label in price_progress.labels
@@ -830,12 +846,19 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         )
         blockers = promotion_blockers(row, candidate_group=None) if entry_state.endswith("_REACHED") else []
         row_classes = []
-        if leg_direction.strip().upper() == "DOWN" and is_pullback_invalidated(row):
+        if lifecycle.recompute_needed or (leg_direction.strip().upper() == "DOWN" and is_pullback_invalidated(row)):
             row_classes.extend(["expired", "stale-map"])
         elif is_recent_ts(row.get("asof_ts_utc"), now_utc=now_utc):
             row_classes.append("fresh-map")
         row_class = " ".join(row_classes)
         badges = display_badges(row)
+        if lifecycle.lifecycle_state not in {"ACTIVE_MAP", "PRICE_UNKNOWN", "LIFECYCLE_UNKNOWN"}:
+            badges.append((lifecycle.lifecycle_state, css_class(lifecycle.lifecycle_state)))
+        if lifecycle.recompute_needed:
+            badges.append(("MAP_RECOMPUTE_NEEDED", css_class("MAP_RECOMPUTE_NEEDED")))
+        for reason in (part.strip() for part in lifecycle.recompute_reason.split(",")):
+            if reason in {"DOWN_MAP_INVALIDATED_BY_RECLAIM", "UP_MAP_INVALIDATED_BY_BREAKDOWN"}:
+                badges.append((reason, css_class(reason)))
         if "fresh-map" in row_classes:
             badges.append(("FRESH_MAP", "good"))
         badge_html = ""
@@ -1178,6 +1201,7 @@ def render_html(
                     <div><strong>Price progress</strong> shows where current price sits between entry/reaction zone and target. TARGET_PENDING can still be true while TARGET_NEAR is shown.</div>
                     <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
                     <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
+                    <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
                 </div>
             </div>
             <div class="badge">broker_private_calls=0 · broker_calls=0 · broker_writes=0 · order_submission=0 · executor=none · account_awareness=0</div>

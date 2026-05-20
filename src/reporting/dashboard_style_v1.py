@@ -1,6 +1,52 @@
 from __future__ import annotations
 
 
+LIFECYCLE_CRITICAL_LABELS = {
+    "INVALIDATION_TOUCHED",
+    "MAP_RECOMPUTE_NEEDED",
+    "TARGET_REACHED_STALE",
+    "TARGET_OVERSHOT",
+    "RECLAIM_NEAR",
+    "RECLAIM_CONFIRMED",
+    "DOWN_MAP_INVALIDATED_BY_RECLAIM",
+    "UP_MAP_INVALIDATED_BY_BREAKDOWN",
+    "TARGET_REACHED",
+    "DOWNSIDE_TARGET_REACHED",
+}
+
+OLD_MAP_CONTEXT_LABELS = {
+    "RISK_OK",
+    "RISK_NEAR",
+    "TARGET_PENDING",
+    "ACTIVE_MAP",
+    "FRESH_MAP",
+    "HOLD",
+    "HOLD_REVIEW",
+    "REDUCE_CANDIDATE",
+    "EXIT_CANDIDATE",
+    "WATCHLIST",
+    "PREPARE",
+    "PASS",
+    "FAIL",
+}
+
+OLD_MAP_CONTEXT_PREFIXES = ("APLUS_",)
+
+
+def pill_context_class(value: object) -> str:
+    label = str(value or "").upper()
+    if label in LIFECYCLE_CRITICAL_LABELS:
+        return "lifecycle-critical"
+    if label in OLD_MAP_CONTEXT_LABELS or any(label.startswith(prefix) for prefix in OLD_MAP_CONTEXT_PREFIXES):
+        return "old-map-context"
+    return ""
+
+
+def pill_classes(tone: str, value: object) -> str:
+    context = pill_context_class(value)
+    return f"{tone} {context}".strip()
+
+
 def cockpit_nav() -> str:
     return """
     <nav class="cockpit-nav" aria-label="Cockpit navigation">
@@ -153,6 +199,25 @@ def cockpit_base_css(*, min_table_width: int = 1800) -> str:
     }}
     tr.stale-map .zone-value, tr.workflow-stale .zone-value {{
       color: #79849f;
+    }}
+    tr.stale-map .pill.old-map-context,
+    tr.workflow-stale .pill.old-map-context {{
+      opacity: .48;
+      filter: saturate(.55);
+      border-color: rgba(142,160,191,.26);
+    }}
+    tr.stale-map .pill.lifecycle-critical,
+    tr.workflow-stale .pill.lifecycle-critical {{
+      opacity: 1;
+      filter: none;
+      font-weight: 750;
+      border-color: rgba(255,209,102,.70);
+      box-shadow: 0 0 0 1px rgba(255,209,102,.14) inset;
+    }}
+    tr.stale-map .pill.lifecycle-critical.bad,
+    tr.workflow-stale .pill.lifecycle-critical.bad {{
+      border-color: rgba(255,107,107,.80);
+      box-shadow: 0 0 0 1px rgba(255,107,107,.18) inset;
     }}
     .sticky-symbol, .sticky-price {{
       position: sticky;

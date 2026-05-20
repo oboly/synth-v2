@@ -9,7 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.common.db import get_connection
-from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
+from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav, pill_classes
 from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
     classify_price_progress_state,
@@ -187,7 +187,7 @@ def now_local_label() -> str:
 def pill_class(text: str | None) -> str:
     value = (text or "").upper()
     if "REDUCE" in value or "AVOID" in value or "DO_NOT_ADD" in value or "HIGH" in value:
-        return "bad"
+        return pill_classes("bad", value)
     if (
         "CAUTION" in value
         or "WATCH" in value
@@ -198,6 +198,9 @@ def pill_class(text: str | None) -> str:
         or "RISK_NEAR" in value
         or "INVALIDATION_NEAR" in value
         or "RECLAIM_NEAR" in value
+        or "RECLAIM_CONFIRMED" in value
+        or "DOWN_MAP_INVALIDATED_BY_RECLAIM" in value
+        or "UP_MAP_INVALIDATED_BY_BREAKDOWN" in value
         or "ENTRY_ZONE_REACHED" in value
         or "REACTION_ZONE_REACHED" in value
         or "ENTRY_ZONE_NEAR" in value
@@ -213,12 +216,12 @@ def pill_class(text: str | None) -> str:
         or "DOWNSIDE_TARGET_APPROACHING" in value
         or "DOWNSIDE_TARGET_NEAR" in value
     ):
-        return "warn"
+        return pill_classes("warn", value)
     if "INVALIDATION_TOUCHED" in value or "MAP_RECOMPUTE_NEEDED" in value:
-        return "bad"
+        return pill_classes("bad", value)
     if "HOLD" in value or "CORE" in value or "FRESH" in value or "RISK_OK" in value or "ACTIVE_MAP" in value:
-        return "ok"
-    return "muted"
+        return pill_classes("ok", value)
+    return pill_classes("muted", value)
 
 
 TP_HARVEST_REVIEW_STATES = {
@@ -300,8 +303,9 @@ def held_rotation_exclusion(row: Any | None) -> str | None:
         "REDUCE" in rotation_state
         or "EXIT" in rotation_state
         or "TARGET_REACHED" in rotation_state
-        or risk_state == "RISK_NEAR"
+        or risk_state in {"RISK_NEAR", "RECLAIM_CONFIRMED"}
         or "RISK_NEAR" in reason_codes
+        or "RECLAIM_CONFIRMED" in reason_codes
     ):
         return "HELD_ROTATION_REVIEW_PRESSURE"
     return None
@@ -326,7 +330,7 @@ def destination_diagnostic_exclusions(
 
     if target_state == "TARGET_REACHED":
         reasons.append("TARGET_REACHED")
-    if risk_state in {"RISK_NEAR", "RISK_UNKNOWN"}:
+    if risk_state in {"RISK_NEAR", "RISK_UNKNOWN", "RECLAIM_CONFIRMED"}:
         reasons.append(risk_state)
     if aplus_bucket == "APLUS_AVOID":
         reasons.append("APLUS_AVOID")
@@ -775,6 +779,7 @@ def render_html(
       <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction, does not imply buy/sell, and indicates the strategy/advice map should be refreshed.</div>
       <div><strong>Fresh green rows</strong> = newly updated/fresh map context.</div>
       <div><strong>Red rows</strong> = stale, invalidated, or recompute-needed map context.</div>
+      <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>

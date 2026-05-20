@@ -98,11 +98,16 @@ def classify_fast_lifecycle(
         reasons.append("TARGET_OVERSHOT")
     if target_stale:
         reasons.append("TARGET_REACHED_STALE")
-    if invalidation_near:
-        reasons.append("INVALIDATION_NEAR")
     if invalidation_touched:
-        reasons.append("INVALIDATION_TOUCHED")
-    if reclaim_near:
+        if leg == "DOWN":
+            reasons.append("RECLAIM_CONFIRMED")
+            reasons.append("DOWN_MAP_INVALIDATED_BY_RECLAIM")
+        else:
+            reasons.append("INVALIDATION_TOUCHED")
+            reasons.append("UP_MAP_INVALIDATED_BY_BREAKDOWN")
+    elif invalidation_near:
+        reasons.append("RECLAIM_NEAR" if leg == "DOWN" else "INVALIDATION_NEAR")
+    if reclaim_near and not invalidation_touched:
         reasons.append("RECLAIM_NEAR")
 
     recompute_needed = target_stale or invalidation_touched or reclaim_near
@@ -110,7 +115,7 @@ def classify_fast_lifecycle(
         reasons.append("MAP_RECOMPUTE_NEEDED")
 
     if invalidation_touched:
-        state = "INVALIDATION_TOUCHED"
+        state = "RECLAIM_CONFIRMED" if leg == "DOWN" else "INVALIDATION_TOUCHED"
     elif target_stale:
         state = "TARGET_REACHED_STALE"
     elif target_overshot:
