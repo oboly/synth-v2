@@ -26,6 +26,10 @@ from src.reporting.entry_zone_state_v1 import (
     promotion_blockers,
 )
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
+from src.reporting.market_breath_context_bridge_v1 import (
+    build_market_breath_context_rows,
+    rows_by_symbol as market_breath_rows_by_symbol,
+)
 from src.reporting.next_zone_preview_v1 import (
     NextZonePreview,
     format_zone,
@@ -279,6 +283,19 @@ def css_class(value: str | None) -> str:
         "PRIORITY_RANK_MISSING": "muted",
         "BTC_PRIOR_24H_MISSING": "muted",
         "ASSET_SUITABILITY_WEAK_SET_CANDIDATE": "muted",
+        "MARKET_BREATH_EXPANSION_CONTEXT": "good",
+        "MARKET_BREATH_ACCUMULATION_CONTEXT": "watch",
+        "MARKET_BREATH_LATE_RISK_CONTEXT": "block",
+        "MARKET_BREATH_RESET_CONTEXT": "danger",
+        "MARKET_BREATH_NEUTRAL_CONTEXT": "muted",
+        "MARKET_BREATH_COMPRESSION_CONTEXT": "watch",
+        "MARKET_BREATH_UNKNOWN": "muted",
+        "FRESH": "good",
+        "AGING": "watch",
+        "STALE": "block",
+        "VERY_STALE": "danger",
+        "LEGACY_CONTEXT_ONLY": "muted",
+        "READ_ONLY_APLUS_AVOID": "block",
     }
 
     return pill_classes(mapping.get(normalized, "muted"), normalized)
@@ -335,6 +352,29 @@ def next_zone_html(preview: NextZonePreview) -> str:
     if preview.next_zone_reason:
         parts.append(f'<div class="muted small">{esc(preview.next_zone_reason)}</div>')
     return "".join(parts)
+
+
+def market_breath_context_html(row: dict[str, Any] | None) -> str:
+    if not row:
+        return '<span class="muted small">not available</span>'
+
+    phase = str(row.get("market_breath_phase") or "UNKNOWN")
+    state = str(row.get("market_breath_state") or "UNKNOWN")
+    context_state = str(row.get("market_breath_context_state") or "MARKET_BREATH_UNKNOWN")
+    freshness = str(row.get("aplus_legacy_freshness_state") or "UNKNOWN")
+    bias = str(row.get("aplus_table1_strategic_bias") or "").upper()
+    bias_label = f"APLUS_{bias}" if bias else "APLUS_UNKNOWN"
+    age = fmt_decimal(row.get("aplus_table1_age_hours"), places=1)
+    suggested_context = f"{freshness}_{bias_label} + {context_state}"
+
+    return (
+        f'<div><span class="pill {css_class(phase)}">{esc(phase)}</span> '
+        f'<span class="pill {css_class(state)}">{esc(state)}</span></div>'
+        f'<div class="small"><span class="pill {css_class(context_state)}">{esc(context_state)}</span></div>'
+        f'<div class="muted small">A+ legacy age: <span class="mono">{esc(age)}</span>h '
+        f'<span class="pill {css_class(freshness)}">{esc(freshness)}</span></div>'
+        f'<div class="muted small">{esc(suggested_context)}</div>'
+    )
 
 
 def _range_bounds(low: Any, high: Any) -> tuple[Decimal | None, Decimal | None]:
@@ -820,7 +860,7 @@ def render_count_cards(counts: list[dict[str, Any]]) -> str:
     return "\n".join(cards)
 
 
-def render_table(rows: list[dict[str, Any]]) -> str:
+def render_table(rows: list[dict[str, Any]], market_breath_by_symbol: dict[str, dict[str, Any]] | None = None) -> str:
     if not rows:
         return '<div class="empty">No rows.</div>'
 
@@ -833,6 +873,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         leg_direction = str(row.get("leg_direction") or "")
 
         reason_codes = reason_codes_display(row)
+        market_breath_row = (market_breath_by_symbol or {}).get(str(row.get("symbol") or "").upper())
         setup_reason = setup_fail_primary_reason(row)
         setup_reason_html = ""
         if setup_reason:
@@ -961,6 +1002,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                 <td>{esc(row.get("setup_filter_state"))}{setup_reason_html}</td>
                 <td>{esc(row.get("policy_decision"))}</td>
                 <td>{esc(row.get("aplus_bucket"))}</td>
+                <td>{market_breath_context_html(market_breath_row)}</td>
                 <td class="muted small">{esc(reason_codes)}</td>
             </tr>
             """
@@ -992,6 +1034,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                     <th>Setup</th>
                     <th>Policy</th>
                     <th>A+</th>
+                    <th>Market Breath Context</th>
                     <th>Reasons</th>
                 </tr>
             </thead>
@@ -1012,6 +1055,7 @@ def render_html(
     rows: list[dict[str, Any]],
     counts: list[dict[str, Any]],
     runtime: dict[str, Any] | None,
+    market_breath_by_symbol: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     generated_ts = datetime.now(UTC).replace(tzinfo=None)
     primary_rows, expired_rows, defensive_rows = split_rows(rows)
@@ -1273,17 +1317,17 @@ def render_html(
 
         <section class="panel">
             <h2>Navigation candidates</h2>
-            {render_table(primary_rows)}
+            {render_table(primary_rows, market_breath_by_symbol)}
         </section>
 
         <section class="panel">
             <h2>Expired / recompute-needed maps</h2>
-            {render_table(expired_rows)}
+            {render_table(expired_rows, market_breath_by_symbol)}
         </section>
 
         <section class="panel">
             <h2>Defensive / no-new-buy rows</h2>
-            {render_table(defensive_rows)}
+            {render_table(defensive_rows, market_breath_by_symbol)}
         </section>
 
         <section class="footer">
@@ -1348,6 +1392,13 @@ def main() -> int:
             quote_currency=str(args.quote),
             symbols=sorted({str(row.get("symbol") or "").upper() for row in rows}),
         )
+        market_breath_rows = build_market_breath_context_rows(
+            conn,
+            venue=str(args.venue),
+            interval_code=str(args.interval),
+            symbols=sorted({str(row.get("symbol") or "").upper() for row in rows}),
+        )
+        market_breath_by_symbol = market_breath_rows_by_symbol(market_breath_rows)
     finally:
         conn.close()
 
@@ -1366,6 +1417,7 @@ def main() -> int:
         rows=rows,
         counts=counts,
         runtime=runtime,
+        market_breath_by_symbol=market_breath_by_symbol,
     )
 
     write_html(output_path, html_content)
@@ -1379,6 +1431,7 @@ def main() -> int:
                     "latest_asof": latest_asof.isoformat(sep=" ") if latest_asof else None,
                     "lifecycle_candle_interval": str(args.lifecycle_candle_interval),
                     "market_price_snapshot_rows": len(price_by_symbol),
+                    "market_breath_context_rows": len(market_breath_by_symbol),
                     "quote": str(args.quote).upper(),
                     "rows": len(rows),
                     "output_html": str(output_path),
