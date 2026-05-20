@@ -18,11 +18,13 @@ QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
 FAST_RECOMPUTE_REFRESH_ENABLED="${SYNTH_FAST_RECOMPUTE_REFRESH_ENABLED:-1}"
 FAST_RECOMPUTE_INTERVAL="${SYNTH_FAST_RECOMPUTE_INTERVAL:-4h}"
 FAST_RECOMPUTE_MAX_ASSETS="${SYNTH_FAST_RECOMPUTE_MAX_ASSETS:-8}"
+STRUCTURAL_MISSING_REFRESH_ENABLED="${SYNTH_STRUCTURAL_MISSING_REFRESH_ENABLED:-1}"
+STRUCTURAL_MISSING_MAX_ASSETS="${SYNTH_STRUCTURAL_MISSING_MAX_ASSETS:-8}"
 
 echo "[MVP_DASHBOARD][START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "[MVP_DASHBOARD][SAFETY] live_execution=${SYNTH_LIVE_EXECUTION_PERMISSION} broker_write=${SYNTH_BROKER_WRITE_PERMISSION}"
 echo "[MVP_DASHBOARD][SAFETY] broker_private_calls=0 broker_calls=0 broker_writes=0 order_submission=0 live_orders=0 decision_gate_changes=0 execution_planner_changes=0 executor=none account_awareness=0"
-echo "[MVP_DASHBOARD][CONFIG] venue=${VENUE} quote=${QUOTE} fast_recompute_enabled=${FAST_RECOMPUTE_REFRESH_ENABLED} fast_recompute_interval=${FAST_RECOMPUTE_INTERVAL} fast_recompute_max_assets=${FAST_RECOMPUTE_MAX_ASSETS}"
+echo "[MVP_DASHBOARD][CONFIG] venue=${VENUE} quote=${QUOTE} structural_missing_enabled=${STRUCTURAL_MISSING_REFRESH_ENABLED} structural_missing_max_assets=${STRUCTURAL_MISSING_MAX_ASSETS} fast_recompute_enabled=${FAST_RECOMPUTE_REFRESH_ENABLED} fast_recompute_interval=${FAST_RECOMPUTE_INTERVAL} fast_recompute_max_assets=${FAST_RECOMPUTE_MAX_ASSETS}"
 
 run_step() {
   echo
@@ -40,6 +42,22 @@ run_step python -m src.market_data.run_market_price_snapshot_v1 \
   --quote "${QUOTE}" \
   --write-db \
   --output none
+
+if [ "${STRUCTURAL_MISSING_REFRESH_ENABLED}" = "0" ]; then
+  echo
+  echo "[MVP_DASHBOARD][STRUCTURAL_MISSING] skipped SYNTH_STRUCTURAL_MISSING_REFRESH_ENABLED=0"
+else
+  echo
+  echo "[MVP_DASHBOARD][STRUCTURAL_MISSING] market-only missing structural context refresh enabled; running before fast recompute"
+  echo "[MVP_DASHBOARD][STRUCTURAL_MISSING][SAFETY] broker_private_calls=0 broker_calls=0 broker_writes=0 order_submission=0 live_orders=0 decision_gate_changes=0 execution_planner_changes=0 executor=none account_awareness=0"
+  run_step python -m src.advice.run_structural_missing_refresh_v1 \
+    --venue "${VENUE}" \
+    --interval "${FAST_RECOMPUTE_INTERVAL}" \
+    --quote "${QUOTE}" \
+    --max-assets "${STRUCTURAL_MISSING_MAX_ASSETS}" \
+    --write-db \
+    --output table
+fi
 
 if [ "${FAST_RECOMPUTE_REFRESH_ENABLED}" = "0" ]; then
   echo
