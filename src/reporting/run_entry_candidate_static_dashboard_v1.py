@@ -313,22 +313,37 @@ def fetch_latest_rows(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT MAX(asof_ts_utc) AS latest_asof
-            FROM paper_advice_observation
-            WHERE venue = %(venue)s
-              AND interval_code = %(interval)s
-            """,
-            {"venue": venue, "interval": interval},
-        )
-        latest = cur.fetchone()
-
-    latest_asof = None if not latest else latest.get("latest_asof")
-    if latest_asof is None:
-        return None, []
-
-    with conn.cursor() as cur:
-        cur.execute(
-            """
+            WITH ranked_advice AS (
+                SELECT
+                    symbol,
+                    priority_rank,
+                    selection_state,
+                    selection_score,
+                    setup_filter_state,
+                    setup_filter_reason,
+                    policy_decision,
+                    allowed_now,
+                    advice_state,
+                    advice_action,
+                    leg_direction,
+                    aplus_bucket,
+                    confidence_score,
+                    risk_label,
+                    entry_zone_low,
+                    entry_zone_high,
+                    tp_zone_low,
+                    tp_zone_high,
+                    invalidation_price,
+                    reason_codes_json,
+                    asof_ts_utc,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY asset_id
+                        ORDER BY asof_ts_utc DESC, updated_ts_utc DESC
+                    ) AS rn
+                FROM paper_advice_observation
+                WHERE venue = %(venue)s
+                  AND interval_code = %(interval)s
+            )
             SELECT
                 symbol,
                 priority_rank,
@@ -351,10 +366,8 @@ def fetch_latest_rows(
                 invalidation_price,
                 reason_codes_json,
                 asof_ts_utc
-            FROM paper_advice_observation
-            WHERE venue = %(venue)s
-              AND interval_code = %(interval)s
-              AND asof_ts_utc = %(latest_asof)s
+            FROM ranked_advice
+            WHERE rn = 1
             ORDER BY
                 priority_rank IS NULL,
                 priority_rank ASC,
@@ -365,11 +378,16 @@ def fetch_latest_rows(
             {
                 "venue": venue,
                 "interval": interval,
-                "latest_asof": latest_asof,
                 "limit": int(limit),
             },
         )
-        return latest_asof, list(cur.fetchall())
+        rows = list(cur.fetchall())
+
+    latest_asof = max(
+        (row.get("asof_ts_utc") for row in rows if isinstance(row.get("asof_ts_utc"), datetime)),
+        default=None,
+    )
+    return latest_asof, rows
 
 
 def classify_candidate(row: dict[str, Any]) -> tuple[str, list[str]]:
