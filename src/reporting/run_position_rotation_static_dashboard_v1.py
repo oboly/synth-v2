@@ -10,7 +10,11 @@ from zoneinfo import ZoneInfo
 
 from src.common.db import get_connection
 from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
-from src.reporting.entry_zone_state_v1 import classify_entry_zone_state, confirmation_state
+from src.reporting.entry_zone_state_v1 import (
+    classify_entry_zone_state,
+    classify_price_progress_state,
+    confirmation_display_state,
+)
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
@@ -199,6 +203,15 @@ def pill_class(text: str | None) -> str:
         or "ENTRY_ZONE_NEAR" in value
         or "REACTION_ZONE_NEAR" in value
         or "CONFIRMATION_PENDING" in value
+        or "POST_ENTRY_PROGRESS" in value
+        or "TARGET_APPROACHING" in value
+        or "TARGET_NEAR" in value
+        or "ENTRY_WINDOW_PASSED" in value
+        or "CHASE_RISK" in value
+        or "LATE_ENTRY_REVIEW" in value
+        or "REACTION_PROGRESS" in value
+        or "DOWNSIDE_TARGET_APPROACHING" in value
+        or "DOWNSIDE_TARGET_NEAR" in value
     ):
         return "warn"
     if "INVALIDATION_TOUCHED" in value or "MAP_RECOMPUTE_NEEDED" in value:
@@ -488,6 +501,23 @@ def render_html(
                 recompute_needed=lifecycle.recompute_needed,
                 fresh_badge=fresh_badge,
             )
+            price_progress = classify_price_progress_state(
+                leg_direction=row.leg_direction,
+                current_price=current_price,
+                entry_zone_low=row.entry_zone_low,
+                entry_zone_high=row.entry_zone_high,
+                tp_zone_low=row.tp_zone_low,
+                tp_zone_high=row.tp_zone_high,
+                in_position_context=True,
+            )
+            progress_labels = "".join(
+                f"<span class='pill {pill_class(label)}'>{esc(label)}</span>"
+                for label in price_progress.labels
+            )
+            progress_html = (
+                f"<span class='pill {pill_class(price_progress.progress_state)}'>{esc(price_progress.progress_state)}</span>"
+                f"{progress_labels}"
+            )
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -503,6 +533,7 @@ def render_html(
                 f"<td><span class='pill {pill_class(row.aplus_bucket)}'>{esc(row.aplus_bucket)}</span></td>"
                 f"<td class='num sticky-price'>{esc(dec_text(current_price, '0.000000'))}</td>"
                 f"<td class='num'>{esc(dec_text(latest_price_age_min, '0.1'))}</td>"
+                f"<td>{progress_html}</td>"
                 f"<td><span class='pill {pill_class(row.target_state)}'>{esc(row.target_state)}</span></td>"
                 f"<td><span class='pill {pill_class(row.risk_state)}'>{esc(row.risk_state)}</span></td>"
                 f"<td>{lifecycle_badges_html(lifecycle.lifecycle_state, fresh_badge)}</td>"
@@ -535,9 +566,29 @@ def render_html(
                 entry_zone_low=None if not advice else advice.get("entry_zone_low"),
                 entry_zone_high=None if not advice else advice.get("entry_zone_high"),
             )
-            confirm_state = confirmation_state(
+            price_progress = classify_price_progress_state(
+                leg_direction=None if not advice else advice.get("leg_direction"),
+                current_price=current_price,
+                entry_zone_low=None if not advice else advice.get("entry_zone_low"),
+                entry_zone_high=None if not advice else advice.get("entry_zone_high"),
+                tp_zone_low=None if not advice else advice.get("tp_zone_low"),
+                tp_zone_high=None if not advice else advice.get("tp_zone_high"),
+                in_position_context=held_row is not None,
+            )
+            progress_labels = "".join(
+                f"<span class='pill {pill_class(label)}'>{esc(label)}</span>"
+                for label in price_progress.labels
+            )
+            progress_html = (
+                f"<span class='pill {pill_class(price_progress.progress_state)}'>{esc(price_progress.progress_state)}</span>"
+                f"{progress_labels}"
+            )
+            confirm_state = confirmation_display_state(
                 advice_action=None if not advice else advice.get("advice_action"),
                 policy_decision=None if not advice else advice.get("policy_decision"),
+                entry_state=entry_state,
+                price_progress_state=price_progress.progress_state,
+                price_progress_labels=price_progress.labels,
             )
             exclusions = destination_diagnostic_exclusions(
                 advice_row=advice,
@@ -580,6 +631,7 @@ def render_html(
                 f"<td><span class='pill {pill_class(None if not advice else advice.get('advice_action'))}'>{esc(None if not advice else advice.get('advice_action'))}</span></td>"
                 f"<td>{esc(None if not advice else advice.get('leg_direction'))}</td>"
                 f"<td><span class='pill {pill_class(entry_state)}'>{esc(entry_state)}</span></td>"
+                f"<td>{progress_html}</td>"
                 f"<td><span class='pill {pill_class(confirm_state)}'>{esc(confirm_state)}</span></td>"
                 f"<td><span class='pill {pill_class(target_state)}'>{esc(target_state)}</span></td>"
                 f"<td><span class='pill {pill_class(risk_state)}'>{esc(risk_state)}</span></td>"
@@ -616,6 +668,7 @@ def render_html(
                   <th>Action</th>
                   <th>Leg</th>
                   <th>Entry state</th>
+                  <th>Price progress</th>
                   <th>Confirmation</th>
                   <th>Target state</th>
                   <th>Risk state</th>
@@ -659,6 +712,7 @@ def render_html(
                   <th>A+</th>
                   <th class="sticky-price">Current price</th>
                   <th>Price age min</th>
+                  <th>Price progress</th>
                   <th>Target state</th>
                   <th>Risk state</th>
                   <th>Lifecycle state</th>
@@ -695,7 +749,7 @@ def render_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Synth Rotation Preview</title>
   <style>
-    {cockpit_base_css(min_table_width=2050)}
+    {cockpit_base_css(min_table_width=2200)}
   </style>
 </head>
 <body>
@@ -715,6 +769,7 @@ def render_html(
       <div><strong>Exclusion reasons</strong> explain why a strong reference is not a destination.</div>
       <div><strong>Target reached rows</strong> are harvest/review candidates, not automatic sell orders.</div>
       <div><strong>ENTRY_ZONE_REACHED</strong> is separate from target state and is not buy permission.</div>
+      <div><strong>Price progress</strong> shows where current price sits between entry/reaction zone and target. TARGET_PENDING can still be true while TARGET_NEAR is shown.</div>
       <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
       <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
       <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction, does not imply buy/sell, and indicates the strategy/advice map should be refreshed.</div>

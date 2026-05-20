@@ -20,8 +20,9 @@ from src.market_data.market_price_snapshot_v1 import (
 from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
 from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
+    classify_price_progress_state,
     classify_target_state,
-    confirmation_state,
+    confirmation_display_state,
     promotion_blockers,
 )
 
@@ -231,9 +232,19 @@ def css_class(value: str | None) -> str:
         "REACTION_ZONE_REACHED": "watch",
         "REACTION_ZONE_NEAR": "watch",
         "CONFIRMATION_PENDING": "watch",
+        "POST_ENTRY_PROGRESS": "watch",
+        "TARGET_APPROACHING": "watch",
+        "TARGET_NEAR": "watch",
+        "ENTRY_WINDOW_PASSED": "watch",
+        "CHASE_RISK": "watch",
+        "LATE_ENTRY_REVIEW": "watch",
+        "REACTION_PROGRESS": "watch",
+        "DOWNSIDE_TARGET_APPROACHING": "watch",
+        "DOWNSIDE_TARGET_NEAR": "watch",
         "PAPER_BUY_READY": "good",
         "TARGET_PENDING": "muted",
         "TARGET_REACHED": "watch",
+        "DOWNSIDE_TARGET_REACHED": "watch",
         "BTC_PRIOR_OVERHEAT_ZONE": "block",
         "SELECTION_STATE_NOT_ELIGIBLE": "muted",
         "RANK_OUTSIDE_SETUP_ELIGIBLE_RANGE": "muted",
@@ -793,9 +804,29 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             tp_zone_low=row.get("tp_zone_low"),
             tp_zone_high=row.get("tp_zone_high"),
         )
-        confirm_state = confirmation_state(
+        price_progress = classify_price_progress_state(
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            entry_zone_low=row.get("entry_zone_low"),
+            entry_zone_high=row.get("entry_zone_high"),
+            tp_zone_low=row.get("tp_zone_low"),
+            tp_zone_high=row.get("tp_zone_high"),
+            in_position_context=False,
+        )
+        progress_labels = "".join(
+            f'<span class="pill {css_class(label)}">{esc(label)}</span>'
+            for label in price_progress.labels
+        )
+        progress_html = (
+            f'<span class="pill {css_class(price_progress.progress_state)}">{esc(price_progress.progress_state)}</span>'
+            f"{progress_labels}"
+        )
+        confirm_state = confirmation_display_state(
             advice_action=row.get("advice_action"),
             policy_decision=row.get("policy_decision"),
+            entry_state=entry_state,
+            price_progress_state=price_progress.progress_state,
+            price_progress_labels=price_progress.labels,
         )
         blockers = promotion_blockers(row, candidate_group=None) if entry_state.endswith("_REACHED") else []
         row_classes = []
@@ -830,6 +861,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                 <td class="mono right sticky-price">{esc(fmt_snapshot_price(current_price))}</td>
                 <td class="mono right">{fmt_decimal(row.get("price_age_min"), places=1)}</td>
                 <td><span class="pill {css_class(entry_state)}">{esc(entry_state)}</span></td>
+                <td>{progress_html}</td>
                 <td><span class="pill {css_class(target_state)}">{esc(target_state)}</span></td>
                 <td><span class="pill {css_class(confirm_state)}">{esc(confirm_state)}</span></td>
                 <td class="muted small">{esc(", ".join(blockers))}</td>
@@ -868,6 +900,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                     <th class="sticky-price">Current price</th>
                     <th>Price age min</th>
                     <th>Entry state</th>
+                    <th>Price progress</th>
                     <th>Target state</th>
                     <th>Confirmation</th>
                     <th>Promotion blockers</th>
@@ -929,7 +962,7 @@ def render_html(
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{esc(title)}</title>
     <style>
-        {cockpit_base_css(min_table_width=1900)}
+        {cockpit_base_css(min_table_width=2050)}
         :root {{
             --bg: #0b1020;
             --panel: #121a2f;
@@ -1142,6 +1175,7 @@ def render_html(
                 <div class="legend">
                     <div><strong>ENTRY_ZONE_REACHED</strong> means price is in the entry/reaction zone; it is separate from target state and is not buy permission.</div>
                     <div><strong>CONFIRMATION_PENDING</strong> means price/setup still needs policy or advice confirmation.</div>
+                    <div><strong>Price progress</strong> shows where current price sits between entry/reaction zone and target. TARGET_PENDING can still be true while TARGET_NEAR is shown.</div>
                     <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
                     <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
                 </div>

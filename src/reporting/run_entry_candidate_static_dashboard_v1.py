@@ -17,8 +17,9 @@ from src.market_data.market_price_snapshot_v1 import (
 from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
 from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
+    classify_price_progress_state,
     classify_target_state,
-    confirmation_state,
+    confirmation_display_state,
     promotion_blockers,
 )
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
@@ -163,6 +164,15 @@ def css_class(value: str | None) -> str:
         "ENTRY_ZONE_NEAR",
         "REACTION_ZONE_NEAR",
         "CONFIRMATION_PENDING",
+        "POST_ENTRY_PROGRESS",
+        "TARGET_APPROACHING",
+        "TARGET_NEAR",
+        "ENTRY_WINDOW_PASSED",
+        "CHASE_RISK",
+        "LATE_ENTRY_REVIEW",
+        "REACTION_PROGRESS",
+        "DOWNSIDE_TARGET_APPROACHING",
+        "DOWNSIDE_TARGET_NEAR",
     }:
         return "warn"
     if normalized in {
@@ -181,6 +191,8 @@ def css_class(value: str | None) -> str:
         "MAP_RECOMPUTE_NEEDED",
     }:
         return "bad"
+    if normalized in {"TARGET_REACHED", "DOWNSIDE_TARGET_REACHED"}:
+        return "warn"
     if normalized in {"ACTIVE_MAP"}:
         return "ok"
     if normalized in {"CONTEXT_ONLY", "CORE_CONTEXT", "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP"}:
@@ -430,9 +442,23 @@ def enriched_rows(
             tp_zone_low=row.get("tp_zone_low"),
             tp_zone_high=row.get("tp_zone_high"),
         )
-        enriched["confirmation_state"] = confirmation_state(
+        price_progress = classify_price_progress_state(
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            entry_zone_low=row.get("entry_zone_low"),
+            entry_zone_high=row.get("entry_zone_high"),
+            tp_zone_low=row.get("tp_zone_low"),
+            tp_zone_high=row.get("tp_zone_high"),
+            in_position_context=False,
+        )
+        enriched["price_progress_state"] = price_progress.progress_state
+        enriched["price_progress_labels"] = list(price_progress.labels)
+        enriched["confirmation_state"] = confirmation_display_state(
             advice_action=row.get("advice_action"),
             policy_decision=row.get("policy_decision"),
+            entry_state=enriched["entry_state"],
+            price_progress_state=price_progress.progress_state,
+            price_progress_labels=price_progress.labels,
         )
         if str(enriched["entry_state"]).endswith("_REACHED") and group != "PAPER_BUY_READY":
             enriched["promotion_blockers"] = promotion_blockers(
@@ -473,6 +499,14 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         allowed_now = bool_text(row.get("allowed_now"))
         reason_codes = ", ".join(str(code) for code in row.get("candidate_reason_codes", []))
         blockers = ", ".join(str(code) for code in row.get("promotion_blockers", []))
+        progress_labels = "".join(
+            f"<span class='pill {css_class(str(label))}'>{esc(label)}</span>"
+            for label in row.get("price_progress_labels", [])
+        )
+        progress_html = (
+            f"<span class='pill {css_class(row.get('price_progress_state'))}'>{esc(row.get('price_progress_state'))}</span>"
+            f"{progress_labels}"
+        )
         row_class = workflow_row_class(
             lifecycle_state=str(row.get("lifecycle_state") or ""),
             recompute_needed=bool(row.get("recompute_needed")),
@@ -497,6 +531,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             f"<td><span class='pill {css_class(row.get('risk_label'))}'>{esc(row.get('risk_label'))}</span></td>"
             f"<td class='num sticky-price'>{esc(dec_text(row.get('current_price')))}</td>"
             f"<td><span class='pill {css_class(row.get('entry_state'))}'>{esc(row.get('entry_state'))}</span></td>"
+            f"<td>{progress_html}</td>"
             f"<td><span class='pill {css_class(row.get('target_state'))}'>{esc(row.get('target_state'))}</span></td>"
             f"<td><span class='pill {css_class(row.get('confirmation_state'))}'>{esc(row.get('confirmation_state'))}</span></td>"
             f"<td class='small'>{esc(blockers)}</td>"
@@ -532,6 +567,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             <th>Risk label</th>
             <th class="sticky-price">Current price</th>
             <th>Entry state</th>
+            <th>Price progress</th>
             <th>Target state</th>
             <th>Confirmation</th>
             <th>Promotion blockers</th>
@@ -590,7 +626,7 @@ def render_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Synth Entry Candidates</title>
   <style>
-    {cockpit_base_css(min_table_width=1950)}
+    {cockpit_base_css(min_table_width=2100)}
   </style>
 </head>
 <body>
@@ -605,6 +641,7 @@ def render_html(
       <div><strong>RECLAIM_NEAR</strong> means watch for map invalidation/reclaim, not automatic buy.</div>
       <div><strong>ENTRY_ZONE_REACHED</strong> means price is in the entry/reaction zone; it is separate from target state and is not buy permission.</div>
       <div><strong>CONFIRMATION_PENDING</strong> means setup is in-zone but still waiting for policy/advice confirmation.</div>
+      <div><strong>Price progress</strong> shows where current price sits between entry/reaction zone and target. TARGET_PENDING can still be true while TARGET_NEAR is shown.</div>
       <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
       <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
       <div><strong>Account sizing/permission</strong> belongs later in decision_gate.</div>

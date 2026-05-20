@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
 
 DEFAULT_ENTRY_NEAR_PCT = Decimal("2.0")
+
+
+@dataclass(frozen=True)
+class PriceProgress:
+    progress_state: str
+    labels: tuple[str, ...] = ()
+    progress_pct: Decimal | None = None
 
 
 def to_decimal(value: Any) -> Decimal | None:
@@ -79,11 +87,104 @@ def classify_target_state(
     return "TARGET_PENDING"
 
 
+def classify_price_progress_state(
+    *,
+    leg_direction: Any,
+    current_price: Any,
+    entry_zone_low: Any,
+    entry_zone_high: Any,
+    tp_zone_low: Any,
+    tp_zone_high: Any,
+    in_position_context: bool = False,
+) -> PriceProgress:
+    leg = str(leg_direction or "").upper()
+    price = to_decimal(current_price)
+    entry_low, entry_high = zone_bounds(entry_zone_low, entry_zone_high)
+    target_low, target_high = zone_bounds(tp_zone_low, tp_zone_high)
+
+    if (
+        price is None
+        or price <= 0
+        or entry_low is None
+        or entry_high is None
+        or target_low is None
+        or target_high is None
+        or leg not in {"UP", "DOWN"}
+    ):
+        return PriceProgress("PRICE_PROGRESS_UNKNOWN")
+
+    entry_mid = (entry_low + entry_high) / Decimal("2")
+    target_mid = (target_low + target_high) / Decimal("2")
+    if leg == "UP":
+        denominator = target_mid - entry_mid
+        if denominator <= 0:
+            return PriceProgress("PRICE_PROGRESS_UNKNOWN")
+        if entry_low <= price <= entry_high:
+            return PriceProgress("ENTRY_ZONE_ACTIVE", progress_pct=Decimal("0"))
+        progress = (price - entry_mid) / denominator
+        labels: list[str] = []
+        if price > entry_high and price < target_mid:
+            labels.append("ENTRY_WINDOW_PASSED")
+        if progress >= Decimal("0.50") and price < target_mid and not in_position_context:
+            labels.extend(["CHASE_RISK", "LATE_ENTRY_REVIEW"])
+        if price >= target_mid:
+            return PriceProgress("TARGET_REACHED", tuple(labels), progress)
+        if progress >= Decimal("0.85"):
+            return PriceProgress("TARGET_NEAR", tuple(labels), progress)
+        if progress >= Decimal("0.50"):
+            return PriceProgress("TARGET_APPROACHING", tuple(labels), progress)
+        if price > entry_high:
+            return PriceProgress("POST_ENTRY_PROGRESS", tuple(labels), progress)
+        return PriceProgress("PRICE_PROGRESS_PENDING", progress_pct=progress)
+
+    denominator = entry_mid - target_mid
+    if denominator <= 0:
+        return PriceProgress("PRICE_PROGRESS_UNKNOWN")
+    if entry_low <= price <= entry_high:
+        return PriceProgress("REACTION_ZONE_ACTIVE", progress_pct=Decimal("0"))
+    progress = (entry_mid - price) / denominator
+    if price <= target_mid:
+        return PriceProgress("DOWNSIDE_TARGET_REACHED", progress_pct=progress)
+    if progress >= Decimal("0.85"):
+        return PriceProgress("DOWNSIDE_TARGET_NEAR", progress_pct=progress)
+    if progress >= Decimal("0.50"):
+        return PriceProgress("DOWNSIDE_TARGET_APPROACHING", progress_pct=progress)
+    if price < entry_low:
+        return PriceProgress("REACTION_PROGRESS", progress_pct=progress)
+    return PriceProgress("PRICE_PROGRESS_PENDING", progress_pct=progress)
+
+
 def confirmation_state(*, advice_action: Any, policy_decision: Any) -> str:
     action = str(advice_action or "").upper()
     policy = str(policy_decision or "").upper()
     if action == "WATCH_FOR_SETUP_CONFIRMATION" or policy in {"WATCH", "WATCH_ONLY", "LONG_HORIZON_ONLY"}:
         return "CONFIRMATION_PENDING"
+    return ""
+
+
+def confirmation_display_state(
+    *,
+    advice_action: Any,
+    policy_decision: Any,
+    entry_state: Any,
+    price_progress_state: Any = None,
+    price_progress_labels: tuple[str, ...] | list[str] = (),
+) -> str:
+    state = confirmation_state(advice_action=advice_action, policy_decision=policy_decision)
+    if not state:
+        return ""
+    progress = str(price_progress_state or "").upper()
+    labels = {str(label or "").upper() for label in price_progress_labels}
+    if progress in {"TARGET_APPROACHING", "TARGET_NEAR"} or "ENTRY_WINDOW_PASSED" in labels:
+        return ""
+    normalized_entry = str(entry_state or "").upper()
+    if normalized_entry in {
+        "ENTRY_ZONE_REACHED",
+        "ENTRY_ZONE_NEAR",
+        "REACTION_ZONE_REACHED",
+        "REACTION_ZONE_NEAR",
+    }:
+        return state
     return ""
 
 
