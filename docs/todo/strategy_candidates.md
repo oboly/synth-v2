@@ -134,3 +134,152 @@ Legacy priors are microscope data, not steering input.
 Do not implement direct old Synth v1 strategy routing in live code.
 No selection/advice/decision/execution changes without a separate reviewed task.
 ```
+
+
+####################################
+# External Research Ingestion TODO #
+####################################
+
+## Goal
+
+Extract structured zones, targets, thresholds, timing windows, and asset labels from external PRO/RV/Martee/A+/membership notes.
+
+This is research-only input. It must not create buy/sell signals, selection_engine modifiers, decision_gate permissions, execution_planner behavior, or order logic.
+
+## Priority
+
+High.
+
+## Why
+
+External notes contain concrete levels and timing windows that should be machine-readable for later validation.
+
+Examples:
+- BTC reclaim / resistance / B-wave thresholds
+- altcoin fib targets
+- Martee Oracle follow-up zones
+- PRO buy zones / sell zones / shoulder lines
+- RV chart trajectory targets
+- commodity macro zones
+- regulatory/event timing windows
+
+## Proposed outputs
+
+### Docs
+
+- docs/research/external_pro_narrative_registry.md
+- docs/research/external_research_zone_extraction_v1.md
+- docs/research/external_algorithmic_zone_forecast_v1.md
+- docs/research/external_asset_targets_registry_v1.md
+
+### Data
+
+- data/research/external_pro_registry/
+- data/research/external_asset_targets/
+- data/research/external_oracle_zones/
+- data/research/external_watch_windows/
+
+## Proposed structured fields
+
+asset:
+  Symbol or macro asset, e.g. BTC, LINK, HYPE, ENJ, DXY, gold, crude.
+
+source_name:
+  FFGRV, Martee, A+, Crypto Masterminds, RV session, etc.
+
+source_date:
+  Session or publication date.
+
+source_type:
+  PRO_NOTE / RV_NOTE / ORACLE_ZONE / TECHNICAL_ANALYSIS / MACRO_NOTE.
+
+level_type:
+  BUY_ZONE / SUPPORT / RESISTANCE / BREAKOUT_TRIGGER / INVALIDATION /
+  TARGET / EXIT_ZONE / SHOULDER_LINE / FIB_TARGET / WATCH_LEVEL /
+  MACRO_THRESHOLD / TIME_WINDOW.
+
+zone_low:
+  Decimal where applicable.
+
+zone_high:
+  Decimal where applicable.
+
+level_single:
+  Decimal where applicable.
+
+quote_currency:
+  USD / EUR / INDEX_POINTS / PERCENT / UNKNOWN.
+
+time_window_start:
+  Optional.
+
+time_window_end:
+  Optional.
+
+horizon:
+  SHORT_TERM / MEDIUM_TERM / LONG_TERM / MULTI_YEAR / EVENT_WINDOW.
+
+confidence_source:
+  HIGH / MEDIUM / LOW according to source confidence.
+
+synth_validation_status:
+  UNVALIDATED / PUBLIC_ANCHORED / HIT_REACTED / HIT_FAILED / EXPIRED.
+
+actionability:
+  WATCH_ONLY.
+
+notes:
+  Short source-specific note.
+
+architecture_boundary:
+  Research-only. No runtime trading logic.
+
+## Validation metrics
+
+For every extracted zone/target:
+
+- was_zone_reached
+- first_touch_ts
+- max_reaction_after_touch
+- direction_after_touch
+- volume_confirmation
+- relative_strength_confirmation
+- invalidated_before_target
+- time_to_target
+- false_positive_notes
+
+## Implementation phases
+
+### Phase 1 — Manual extraction
+
+Extract all zones/targets from current external PRO bundle into markdown and/or JSONL.
+
+### Phase 2 — Schema proposal
+
+Create a simple JSONL contract for external targets.
+
+### Phase 3 — Loader preview
+
+Build read-only parser/loader that validates the JSONL shape.
+No DB writes in v1 unless explicitly approved.
+
+### Phase 4 — DB staging table
+
+Optional later:
+external_research_target_observation
+
+DB writes only after schema review.
+
+### Phase 5 — Validation report
+
+Compare historical/current price movement against extracted zones.
+
+## Hard boundaries
+
+- Do not add to selection_engine.
+- Do not add to decision_gate.
+- Do not add to execution_planner.
+- Do not add to executor.
+- Do not create orders.
+- No broker writes.
+- No live trading.
