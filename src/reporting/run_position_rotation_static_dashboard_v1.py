@@ -26,6 +26,13 @@ from src.reporting.next_zone_preview_v1 import (
     format_zone,
     preview_next_zones,
 )
+from src.reporting.market_breath_context_bridge_v1 import (
+    build_market_breath_context_rows,
+    rows_by_symbol as market_breath_rows_by_symbol,
+)
+from src.reporting.paper_advice_severity_calibration_v1 import (
+    calibrate_paper_advice_severity,
+)
 from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
     fetch_latest_prices_by_symbol,
@@ -252,7 +259,14 @@ def now_local_label() -> str:
 
 def pill_class(text: str | None) -> str:
     value = (text or "").upper()
-    if "REDUCE" in value or "AVOID" in value or "DO_NOT_ADD" in value or "HIGH" in value:
+    if (
+        "REDUCE" in value
+        or "AVOID" in value
+        or "DO_NOT_ADD" in value
+        or "HIGH" in value
+        or "HARD_BLOCK" in value
+        or "CRITICAL_DATA_MISSING" in value
+    ):
         return pill_classes("bad", value)
     if (
         "CAUTION" in value
@@ -291,6 +305,12 @@ def pill_class(text: str | None) -> str:
         or "NEXT_DOWNSIDE_EXTENSION" in value
         or "BREAKDOWN_RETEST_RESISTANCE" in value
         or "NEXT_DOWNSIDE_REACTION_TARGET" in value
+        or "MOMENTUM_EXTENSION_REVIEW" in value
+        or "RECLAIM_REVIEW" in value
+        or "WAIT_FOR_RECLAIM" in value
+        or "WAIT_FOR_PULLBACK" in value
+        or "OPPORTUNITY_REVIEW" in value
+        or "REFRESH_NEEDED_REVIEW" in value
     ):
         return pill_classes("warn", value)
     if (
@@ -309,8 +329,17 @@ def pill_class(text: str | None) -> str:
         or "ACTIVE_MAP" in value
         or "CURRENT_MAP_ACTIVE" in value
         or "MARKET_PRICE_SNAPSHOT" in value
+        or "CONTEXT_ONLY" in value
+        or "ACTIVE_REVIEW_CONTEXT" in value
     ):
         return pill_classes("ok", value)
+    if (
+        "SOFT_BLOCK" in value
+        or "STALE_APLUS_CONTEXT" in value
+        or "NO_CHASE_WITHOUT_NEW_ZONE" in value
+        or "CURRENT_CAUTION_CONTEXT" in value
+    ):
+        return pill_classes("warn", value)
     if "ACCOUNT_POSITION_MARK_FALLBACK" in value:
         return pill_classes("warn", value)
     return pill_classes("muted", value)
@@ -508,6 +537,14 @@ def next_zone_html(preview: NextZonePreview) -> str:
     return "".join(parts)
 
 
+def severity_html(severity: Any) -> str:
+    return (
+        f"<div><span class='pill {pill_class(severity.advice_severity)}'>{esc(severity.advice_severity)}</span></div>"
+        f"<div><span class='pill {pill_class(severity.advice_substate)}'>{esc(severity.advice_substate)}</span></div>"
+        f"<div class='muted small'>{esc(severity.display_note)}</div>"
+    )
+
+
 def fetch_latest_eur_balance_snapshot(
     conn: Any,
     *,
@@ -548,6 +585,7 @@ def render_html(
     price_by_symbol: dict[str, MarketPriceSnapshot],
     eur_balance: EurBalanceSnapshot | None,
     advice_by_symbol: dict[str, dict[str, Any]],
+    market_breath_by_symbol: dict[str, dict[str, Any]] | None = None,
 ) -> str:
     local_ts = now_local_label()
     now_utc = datetime.now(UTC)
@@ -719,6 +757,16 @@ def render_html(
                 target_state=row.target_state,
                 price_progress_state=price_progress.progress_state,
             )
+            severity = calibrate_paper_advice_severity(
+                row,
+                market_breath_row=(market_breath_by_symbol or {}).get(row.position_symbol),
+                lifecycle_state=lifecycle.lifecycle_state,
+                recompute_needed=lifecycle.recompute_needed,
+                recompute_reason=lifecycle.recompute_reason,
+                target_state=row.target_state,
+                risk_state=row.risk_state,
+                price_progress_state=price_progress.progress_state,
+            )
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -733,6 +781,7 @@ def render_html(
                 f"<td>{esc(row.leg_direction)}</td>"
                 f"<td><span class='pill {pill_class(row.advice_action)}'>{esc(row.advice_action)}</span></td>"
                 f"<td><span class='pill {pill_class(row.aplus_bucket)}'>{esc(row.aplus_bucket)}</span></td>"
+                f"<td>{severity_html(severity)}</td>"
                 f"<td class='num sticky-price'>{esc(dec_text(current_price, '0.000000'))}</td>"
                 f"<td class='num'>{esc(dec_text(latest_price_age_min, '0.1'))}</td>"
                 f"<td>{progress_html}</td>"
@@ -841,6 +890,17 @@ def render_html(
                 target_state=target_state,
                 price_progress_state=price_progress.progress_state,
             )
+            severity = calibrate_paper_advice_severity(
+                advice,
+                market_breath_row=(market_breath_by_symbol or {}).get(symbol),
+                lifecycle_state=lifecycle.lifecycle_state,
+                recompute_needed=lifecycle.recompute_needed,
+                recompute_reason=lifecycle.recompute_reason,
+                target_state=target_state,
+                risk_state=risk_state,
+                entry_state=entry_state,
+                price_progress_state=price_progress.progress_state,
+            )
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -854,6 +914,7 @@ def render_html(
                 f"<td><span class='pill {pill_class(None if not advice else advice.get('setup_filter_reason'))}'>{esc(None if not advice else advice.get('setup_filter_reason'))}</span></td>"
                 f"<td>{esc(None if not advice else advice.get('advice_state'))}</td>"
                 f"<td><span class='pill {pill_class(None if not advice else advice.get('advice_action'))}'>{esc(None if not advice else advice.get('advice_action'))}</span></td>"
+                f"<td>{severity_html(severity)}</td>"
                 f"<td>{esc(None if not advice else advice.get('leg_direction'))}</td>"
                 f"<td><span class='pill {pill_class(entry_state)}'>{esc(entry_state)}</span></td>"
                 f"<td>{progress_html}</td>"
@@ -892,6 +953,7 @@ def render_html(
                   <th>Setup reason</th>
                   <th>Policy</th>
                   <th>Action</th>
+                  <th>Severity / Substate</th>
                   <th>Leg</th>
                   <th>Entry state</th>
                   <th>Price progress</th>
@@ -947,6 +1009,7 @@ def render_html(
                   <th>Leg</th>
                   <th>Action</th>
                   <th>A+</th>
+                  <th>Severity / Substate</th>
                   <th class="sticky-price">Current price</th>
                   <th>Price age min</th>
                   <th>Price progress</th>
@@ -1017,6 +1080,7 @@ def render_html(
       <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
       <div><strong>Positions value</strong> uses latest market_price_snapshot when available, with ACCOUNT_POSITION_MARK_FALLBACK only when current market price is missing. Asset positions only; excludes EUR cash.</div>
       <div><strong>Maps needing refresh</strong> are refresh candidates, not trade advice.</div>
+      <div><strong>Severity / Substate</strong> separates hard blocks, stale A+ context, reclaim review, wait-for-reclaim, and momentum-extension review. These labels are review context, not trade advice.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
@@ -1126,6 +1190,13 @@ def main() -> int:
             quote_currency=args.quote,
             symbols=price_symbols,
         )
+        market_breath_rows = build_market_breath_context_rows(
+            conn,
+            venue=args.venue,
+            interval_code=args.interval,
+            symbols=price_symbols,
+        )
+        market_breath_by_symbol = market_breath_rows_by_symbol(market_breath_rows)
         eur_balance = fetch_latest_eur_balance_snapshot(
             conn,
             trading_account_id=args.trading_account_id,
@@ -1155,6 +1226,7 @@ def main() -> int:
             price_by_symbol=price_by_symbol,
             eur_balance=eur_balance,
             advice_by_symbol=advice_by_symbol,
+            market_breath_by_symbol=market_breath_by_symbol,
         ),
         encoding="utf-8",
     )

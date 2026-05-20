@@ -35,6 +35,9 @@ from src.reporting.next_zone_preview_v1 import (
     format_zone,
     preview_next_zones,
 )
+from src.reporting.paper_advice_severity_calibration_v1 import (
+    calibrate_paper_advice_severity,
+)
 
 
 POLICY_NAME = "paper_advice_static_dashboard_v1"
@@ -296,6 +299,20 @@ def css_class(value: str | None) -> str:
         "VERY_STALE": "danger",
         "LEGACY_CONTEXT_ONLY": "muted",
         "READ_ONLY_APLUS_AVOID": "block",
+        "HARD_BLOCK": "danger",
+        "SOFT_BLOCK": "block",
+        "OPPORTUNITY_REVIEW": "watch",
+        "MOMENTUM_EXTENSION_REVIEW": "watch",
+        "RECLAIM_REVIEW": "watch",
+        "WAIT_FOR_RECLAIM": "watch",
+        "WAIT_FOR_PULLBACK": "watch",
+        "CONTEXT_ONLY": "context",
+        "STALE_APLUS_CONTEXT": "muted",
+        "REFRESH_NEEDED_REVIEW": "watch",
+        "NO_CHASE_WITHOUT_NEW_ZONE": "block",
+        "CURRENT_CAUTION_CONTEXT": "block",
+        "ACTIVE_REVIEW_CONTEXT": "context",
+        "SETUP_CONTEXT_ONLY": "muted",
     }
 
     return pill_classes(mapping.get(normalized, "muted"), normalized)
@@ -374,6 +391,14 @@ def market_breath_context_html(row: dict[str, Any] | None) -> str:
         f'<div class="muted small">A+ legacy age: <span class="mono">{esc(age)}</span>h '
         f'<span class="pill {css_class(freshness)}">{esc(freshness)}</span></div>'
         f'<div class="muted small">{esc(suggested_context)}</div>'
+    )
+
+
+def advice_severity_html(severity: Any) -> str:
+    return (
+        f'<div><span class="pill {css_class(severity.advice_severity)}">{esc(severity.advice_severity)}</span></div>'
+        f'<div><span class="pill {css_class(severity.advice_substate)}">{esc(severity.advice_substate)}</span></div>'
+        f'<div class="muted small">{esc(severity.display_note)}</div>'
     )
 
 
@@ -941,6 +966,17 @@ def render_table(rows: list[dict[str, Any]], market_breath_by_symbol: dict[str, 
             price_progress_state=price_progress.progress_state,
             price_progress_labels=price_progress.labels,
         )
+        severity = calibrate_paper_advice_severity(
+            row,
+            market_breath_row=market_breath_row,
+            lifecycle_state=lifecycle.lifecycle_state,
+            recompute_needed=lifecycle.recompute_needed,
+            recompute_reason=lifecycle.recompute_reason,
+            target_state=target_state,
+            risk_state=None,
+            entry_state=entry_state,
+            price_progress_state=price_progress.progress_state,
+        )
         blockers = promotion_blockers(row, candidate_group=None) if entry_state.endswith("_REACHED") else []
         row_classes = []
         if lifecycle.recompute_needed or (leg_direction.strip().upper() == "DOWN" and is_pullback_invalidated(row)):
@@ -1003,6 +1039,7 @@ def render_table(rows: list[dict[str, Any]], market_breath_by_symbol: dict[str, 
                 <td>{esc(row.get("policy_decision"))}</td>
                 <td>{esc(row.get("aplus_bucket"))}</td>
                 <td>{market_breath_context_html(market_breath_row)}</td>
+                <td>{advice_severity_html(severity)}</td>
                 <td class="muted small">{esc(reason_codes)}</td>
             </tr>
             """
@@ -1035,6 +1072,7 @@ def render_table(rows: list[dict[str, Any]], market_breath_by_symbol: dict[str, 
                     <th>Policy</th>
                     <th>A+</th>
                     <th>Market Breath Context</th>
+                    <th>Severity / Substate</th>
                     <th>Reasons</th>
                 </tr>
             </thead>
@@ -1306,6 +1344,7 @@ def render_html(
                     <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
                     <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
                     <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
+                    <div><strong>Severity / Substate</strong>: Review context, not trade advice. Soft caution is not permission; stale A+ context is not a hard current veto by itself.</div>
                 </div>
             </div>
             <div class="badge">broker_private_calls=0 · broker_calls=0 · broker_writes=0 · order_submission=0 · executor=none · account_awareness=0</div>
