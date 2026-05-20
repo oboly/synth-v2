@@ -16,6 +16,11 @@ from src.reporting.entry_zone_state_v1 import (
     confirmation_display_state,
 )
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
+from src.reporting.next_zone_preview_v1 import (
+    NextZonePreview,
+    format_zone,
+    preview_next_zones,
+)
 from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
     fetch_latest_prices_by_symbol,
@@ -215,11 +220,34 @@ def pill_class(text: str | None) -> str:
         or "REACTION_PROGRESS" in value
         or "DOWNSIDE_TARGET_APPROACHING" in value
         or "DOWNSIDE_TARGET_NEAR" in value
+        or "UPSIDE_EXTENSION_PREVIEW" in value
+        or "DOWNSIDE_EXTENSION_PREVIEW" in value
+        or "RECLAIM_RETEST_SUPPORT" in value
+        or "NEXT_UPSIDE_REACTION_TARGET" in value
+        or "TARGET_RETEST_SUPPORT" in value
+        or "NEXT_UPSIDE_EXTENSION" in value
+        or "DOWNSIDE_TARGET_SUPPORT_RETEST" in value
+        or "NEXT_DOWNSIDE_EXTENSION" in value
+        or "BREAKDOWN_RETEST_RESISTANCE" in value
+        or "NEXT_DOWNSIDE_REACTION_TARGET" in value
     ):
         return pill_classes("warn", value)
-    if "INVALIDATION_TOUCHED" in value or "MAP_RECOMPUTE_NEEDED" in value:
+    if (
+        "INVALIDATION_TOUCHED" in value
+        or "MAP_RECOMPUTE_NEEDED" in value
+        or "RECLAIM_NEXT_ZONE_PREVIEW" in value
+        or "BREAKDOWN_NEXT_ZONE_PREVIEW" in value
+        or "NEXT_ZONE_UNKNOWN" in value
+    ):
         return pill_classes("bad", value)
-    if "HOLD" in value or "CORE" in value or "FRESH" in value or "RISK_OK" in value or "ACTIVE_MAP" in value:
+    if (
+        "HOLD" in value
+        or "CORE" in value
+        or "FRESH" in value
+        or "RISK_OK" in value
+        or "ACTIVE_MAP" in value
+        or "CURRENT_MAP_ACTIVE" in value
+    ):
         return pill_classes("ok", value)
     return pill_classes("muted", value)
 
@@ -393,6 +421,29 @@ def lifecycle_badges_html(lifecycle_state: str, fresh_badge: str) -> str:
     return "".join(badges)
 
 
+def next_zone_html(preview: NextZonePreview) -> str:
+    parts = [
+        f"<span class='pill {pill_class(preview.next_zone_state)}'>{esc(preview.next_zone_state)}</span>"
+    ]
+    if preview.next_reaction_zone_label and preview.next_reaction_zone:
+        parts.append(
+            "<div class='small'>"
+            f"<span class='pill {pill_class(preview.next_reaction_zone_label)}'>{esc(preview.next_reaction_zone_label)}</span> "
+            f"<span class='zone-value'>{esc(format_zone(preview.next_reaction_zone))}</span>"
+            "</div>"
+        )
+    if preview.next_target_zone_label and preview.next_target_zone:
+        parts.append(
+            "<div class='small'>"
+            f"<span class='pill {pill_class(preview.next_target_zone_label)}'>{esc(preview.next_target_zone_label)}</span> "
+            f"<span class='zone-value'>{esc(format_zone(preview.next_target_zone))}</span>"
+            "</div>"
+        )
+    if preview.next_zone_reason:
+        parts.append(f"<div class='muted small'>{esc(preview.next_zone_reason)}</div>")
+    return "".join(parts)
+
+
 def render_html(
     rows: list[Any],
     *,
@@ -522,6 +573,20 @@ def render_html(
                 f"<span class='pill {pill_class(price_progress.progress_state)}'>{esc(price_progress.progress_state)}</span>"
                 f"{progress_labels}"
             )
+            next_preview = preview_next_zones(
+                symbol=row.position_symbol,
+                leg_direction=row.leg_direction,
+                current_price=current_price,
+                entry_zone_low=row.entry_zone_low,
+                entry_zone_high=row.entry_zone_high,
+                tp_zone_low=row.tp_zone_low,
+                tp_zone_high=row.tp_zone_high,
+                invalidation_price=row.invalidation_price,
+                lifecycle_state=lifecycle.lifecycle_state,
+                lifecycle_reason=lifecycle.recompute_reason,
+                target_state=row.target_state,
+                price_progress_state=price_progress.progress_state,
+            )
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -543,6 +608,7 @@ def render_html(
                 f"<td>{lifecycle_badges_html(lifecycle.lifecycle_state, fresh_badge)}</td>"
                 f"<td><span class='pill {pill_class('MAP_RECOMPUTE_NEEDED' if lifecycle.recompute_needed else 'ACTIVE_MAP')}'>{'YES' if lifecycle.recompute_needed else 'NO'}</span></td>"
                 f"<td class='small'>{esc(lifecycle.recompute_reason)}</td>"
+                f"<td>{next_zone_html(next_preview)}</td>"
                 f"{pct_cell(delta_entry_pct)}"
                 f"{pct_cell(delta_tp_pct, target_pct_class(delta_tp_pct, context))}"
                 f"{pct_cell(delta_invalidation_pct, risk_pct_class(delta_invalidation_pct, context))}"
@@ -620,6 +686,20 @@ def render_html(
                 recompute_needed=lifecycle.recompute_needed,
                 fresh_badge=fresh_badge,
             )
+            next_preview = preview_next_zones(
+                symbol=symbol,
+                leg_direction=None if not advice else advice.get("leg_direction"),
+                current_price=current_price,
+                entry_zone_low=None if not advice else advice.get("entry_zone_low"),
+                entry_zone_high=None if not advice else advice.get("entry_zone_high"),
+                tp_zone_low=None if not advice else advice.get("tp_zone_low"),
+                tp_zone_high=None if not advice else advice.get("tp_zone_high"),
+                invalidation_price=invalidation_price,
+                lifecycle_state=lifecycle.lifecycle_state,
+                lifecycle_reason=lifecycle.recompute_reason,
+                target_state=target_state,
+                price_progress_state=price_progress.progress_state,
+            )
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -643,6 +723,7 @@ def render_html(
                 f"<td>{lifecycle_badges_html(lifecycle.lifecycle_state, fresh_badge)}</td>"
                 f"<td><span class='pill {pill_class('MAP_RECOMPUTE_NEEDED' if lifecycle.recompute_needed else 'ACTIVE_MAP')}'>{'YES' if lifecycle.recompute_needed else 'NO'}</span></td>"
                 f"<td class='small'>{esc(lifecycle.recompute_reason)}</td>"
+                f"<td>{next_zone_html(next_preview)}</td>"
                 f"<td class='zone-value'>{esc(tp_zone_text(advice or {}))}</td>"
                 f"<td class='num zone-value'>{esc(dec_text(invalidation_price, '0.000000'))}</td>"
                 f"<td><span class='pill {'ok' if held_row is not None else 'muted'}'>{'YES' if held_row is not None else 'NO'}</span></td>"
@@ -680,6 +761,7 @@ def render_html(
                   <th>Lifecycle state</th>
                   <th>Recompute needed</th>
                   <th>Recompute reason</th>
+                  <th>Next zones</th>
                   <th>TP / target zone</th>
                   <th>Invalidation</th>
                   <th>Held</th>
@@ -722,6 +804,7 @@ def render_html(
                   <th>Lifecycle state</th>
                   <th>Recompute needed</th>
                   <th>Recompute reason</th>
+                  <th>Next zones</th>
                   <th>Δ entry %</th>
                   <th>Δ target %</th>
                   <th>Δ risk %</th>
@@ -753,7 +836,7 @@ def render_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Synth Rotation Preview</title>
   <style>
-    {cockpit_base_css(min_table_width=2200)}
+    {cockpit_base_css(min_table_width=2450)}
   </style>
 </head>
 <body>
@@ -780,6 +863,7 @@ def render_html(
       <div><strong>Fresh green rows</strong> = newly updated/fresh map context.</div>
       <div><strong>Red rows</strong> = stale, invalidated, or recompute-needed map context.</div>
       <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
+      <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>

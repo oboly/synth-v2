@@ -23,6 +23,11 @@ from src.reporting.entry_zone_state_v1 import (
     promotion_blockers,
 )
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
+from src.reporting.next_zone_preview_v1 import (
+    NextZonePreview,
+    format_zone,
+    preview_next_zones,
+)
 
 
 REPORT_NAME = "entry_candidate_static_dashboard_v1"
@@ -192,11 +197,27 @@ def css_class(value: str | None) -> str:
         "MAP_RECOMPUTE_NEEDED",
         "DOWN_MAP_INVALIDATED_BY_RECLAIM",
         "UP_MAP_INVALIDATED_BY_BREAKDOWN",
+        "RECLAIM_NEXT_ZONE_PREVIEW",
+        "BREAKDOWN_NEXT_ZONE_PREVIEW",
+        "NEXT_ZONE_UNKNOWN",
     }:
         return pill_classes("bad", normalized)
+    if normalized in {
+        "UPSIDE_EXTENSION_PREVIEW",
+        "DOWNSIDE_EXTENSION_PREVIEW",
+        "RECLAIM_RETEST_SUPPORT",
+        "NEXT_UPSIDE_REACTION_TARGET",
+        "TARGET_RETEST_SUPPORT",
+        "NEXT_UPSIDE_EXTENSION",
+        "DOWNSIDE_TARGET_SUPPORT_RETEST",
+        "NEXT_DOWNSIDE_EXTENSION",
+        "BREAKDOWN_RETEST_RESISTANCE",
+        "NEXT_DOWNSIDE_REACTION_TARGET",
+    }:
+        return pill_classes("warn", normalized)
     if normalized in {"TARGET_REACHED", "DOWNSIDE_TARGET_REACHED"}:
         return pill_classes("warn", normalized)
-    if normalized in {"ACTIVE_MAP"}:
+    if normalized in {"ACTIVE_MAP", "CURRENT_MAP_ACTIVE"}:
         return pill_classes("ok", normalized)
     if normalized in {"CONTEXT_ONLY", "CORE_CONTEXT", "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP"}:
         return pill_classes("context", normalized)
@@ -246,6 +267,29 @@ def lifecycle_badges_html(lifecycle_state: str, fresh_badge: str) -> str:
     if fresh_badge:
         badges.append(f"<span class='pill ok'>{esc(fresh_badge)}</span>")
     return "".join(badges)
+
+
+def next_zone_html(preview: NextZonePreview) -> str:
+    parts = [
+        f"<span class='pill {css_class(preview.next_zone_state)}'>{esc(preview.next_zone_state)}</span>"
+    ]
+    if preview.next_reaction_zone_label and preview.next_reaction_zone:
+        parts.append(
+            "<div class='small'>"
+            f"<span class='pill {css_class(preview.next_reaction_zone_label)}'>{esc(preview.next_reaction_zone_label)}</span> "
+            f"<span class='zone-value'>{esc(format_zone(preview.next_reaction_zone))}</span>"
+            "</div>"
+        )
+    if preview.next_target_zone_label and preview.next_target_zone:
+        parts.append(
+            "<div class='small'>"
+            f"<span class='pill {css_class(preview.next_target_zone_label)}'>{esc(preview.next_target_zone_label)}</span> "
+            f"<span class='zone-value'>{esc(format_zone(preview.next_target_zone))}</span>"
+            "</div>"
+        )
+    if preview.next_zone_reason:
+        parts.append(f"<div class='muted small'>{esc(preview.next_zone_reason)}</div>")
+    return "".join(parts)
 
 
 def local_label(value: datetime | None) -> str:
@@ -466,6 +510,20 @@ def enriched_rows(
             price_progress_state=price_progress.progress_state,
             price_progress_labels=price_progress.labels,
         )
+        enriched["next_zone_preview"] = preview_next_zones(
+            symbol=symbol,
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            entry_zone_low=row.get("entry_zone_low"),
+            entry_zone_high=row.get("entry_zone_high"),
+            tp_zone_low=row.get("tp_zone_low"),
+            tp_zone_high=row.get("tp_zone_high"),
+            invalidation_price=row.get("invalidation_price"),
+            lifecycle_state=lifecycle.lifecycle_state,
+            lifecycle_reason=lifecycle.recompute_reason,
+            target_state=enriched["target_state"],
+            price_progress_state=price_progress.progress_state,
+        )
         if str(enriched["entry_state"]).endswith("_REACHED") and group != "PAPER_BUY_READY":
             enriched["promotion_blockers"] = promotion_blockers(
                 enriched,
@@ -505,6 +563,8 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         allowed_now = bool_text(row.get("allowed_now"))
         reason_codes = ", ".join(str(code) for code in row.get("candidate_reason_codes", []))
         blockers = ", ".join(str(code) for code in row.get("promotion_blockers", []))
+        next_preview = row.get("next_zone_preview")
+        next_preview_html = next_zone_html(next_preview) if isinstance(next_preview, NextZonePreview) else ""
         progress_labels = "".join(
             f"<span class='pill {css_class(str(label))}'>{esc(label)}</span>"
             for label in row.get("price_progress_labels", [])
@@ -544,6 +604,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             f"<td>{lifecycle_badges_html(str(row.get('lifecycle_state') or ''), str(row.get('fresh_map_badge') or ''))}</td>"
             f"<td><span class='pill {css_class('MAP_RECOMPUTE_NEEDED' if row.get('recompute_needed') else 'ACTIVE_MAP')}'>{'YES' if row.get('recompute_needed') else 'NO'}</span></td>"
             f"<td class='small'>{esc(row.get('recompute_reason'))}</td>"
+            f"<td>{next_preview_html}</td>"
             f"<td class='num zone-value'>{esc(fmt_zone(row.get('entry_zone_low'), row.get('entry_zone_high')))}</td>"
             f"<td class='num zone-value'>{esc(fmt_zone(row.get('tp_zone_low'), row.get('tp_zone_high')))}</td>"
             f"<td class='num zone-value'>{esc(dec_text(row.get('invalidation_price')))}</td>"
@@ -580,6 +641,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             <th>Lifecycle state</th>
             <th>Recompute needed</th>
             <th>Recompute reason</th>
+            <th>Next zones</th>
             <th>Entry / reaction zone</th>
             <th>TP / target zone</th>
             <th>Invalidation</th>
@@ -632,7 +694,7 @@ def render_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Synth Entry Candidates</title>
   <style>
-    {cockpit_base_css(min_table_width=2100)}
+    {cockpit_base_css(min_table_width=2300)}
   </style>
 </head>
 <body>
@@ -656,6 +718,7 @@ def render_html(
       <div><strong>Fresh green rows</strong> = newly updated/fresh map context.</div>
       <div><strong>Red rows</strong> = stale, invalidated, or recompute-needed map context.</div>
       <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
+      <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>

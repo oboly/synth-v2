@@ -26,6 +26,11 @@ from src.reporting.entry_zone_state_v1 import (
     promotion_blockers,
 )
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
+from src.reporting.next_zone_preview_v1 import (
+    NextZonePreview,
+    format_zone,
+    preview_next_zones,
+)
 
 
 POLICY_NAME = "paper_advice_static_dashboard_v1"
@@ -254,6 +259,20 @@ def css_class(value: str | None) -> str:
         "MAP_RECOMPUTE_NEEDED": "danger",
         "DOWN_MAP_INVALIDATED_BY_RECLAIM": "danger",
         "UP_MAP_INVALIDATED_BY_BREAKDOWN": "danger",
+        "RECLAIM_NEXT_ZONE_PREVIEW": "danger",
+        "BREAKDOWN_NEXT_ZONE_PREVIEW": "danger",
+        "NEXT_ZONE_UNKNOWN": "danger",
+        "UPSIDE_EXTENSION_PREVIEW": "watch",
+        "DOWNSIDE_EXTENSION_PREVIEW": "watch",
+        "RECLAIM_RETEST_SUPPORT": "watch",
+        "NEXT_UPSIDE_REACTION_TARGET": "watch",
+        "TARGET_RETEST_SUPPORT": "watch",
+        "NEXT_UPSIDE_EXTENSION": "watch",
+        "DOWNSIDE_TARGET_SUPPORT_RETEST": "watch",
+        "NEXT_DOWNSIDE_EXTENSION": "watch",
+        "BREAKDOWN_RETEST_RESISTANCE": "watch",
+        "NEXT_DOWNSIDE_REACTION_TARGET": "watch",
+        "CURRENT_MAP_ACTIVE": "good",
         "BTC_PRIOR_OVERHEAT_ZONE": "block",
         "SELECTION_STATE_NOT_ELIGIBLE": "muted",
         "RANK_OUTSIDE_SETUP_ELIGIBLE_RANGE": "muted",
@@ -293,6 +312,29 @@ def zone_display_cells(row: dict[str, Any]) -> tuple[tuple[str, str], tuple[str,
         (target_label, target_zone),
         (invalidation_label, invalidation),
     )
+
+
+def next_zone_html(preview: NextZonePreview) -> str:
+    parts = [
+        f'<span class="pill {css_class(preview.next_zone_state)}">{esc(preview.next_zone_state)}</span>'
+    ]
+    if preview.next_reaction_zone_label and preview.next_reaction_zone:
+        parts.append(
+            '<div class="small">'
+            f'<span class="pill {css_class(preview.next_reaction_zone_label)}">{esc(preview.next_reaction_zone_label)}</span> '
+            f'<span class="zone-value">{esc(format_zone(preview.next_reaction_zone))}</span>'
+            "</div>"
+        )
+    if preview.next_target_zone_label and preview.next_target_zone:
+        parts.append(
+            '<div class="small">'
+            f'<span class="pill {css_class(preview.next_target_zone_label)}">{esc(preview.next_target_zone_label)}</span> '
+            f'<span class="zone-value">{esc(format_zone(preview.next_target_zone))}</span>'
+            "</div>"
+        )
+    if preview.next_zone_reason:
+        parts.append(f'<div class="muted small">{esc(preview.next_zone_reason)}</div>')
+    return "".join(parts)
 
 
 def _range_bounds(low: Any, high: Any) -> tuple[Decimal | None, Decimal | None]:
@@ -829,6 +871,20 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             tp_zone_high=row.get("tp_zone_high"),
             invalidation_price=row.get("invalidation_price"),
         )
+        next_preview = preview_next_zones(
+            symbol=row.get("symbol"),
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            entry_zone_low=row.get("entry_zone_low"),
+            entry_zone_high=row.get("entry_zone_high"),
+            tp_zone_low=row.get("tp_zone_low"),
+            tp_zone_high=row.get("tp_zone_high"),
+            invalidation_price=row.get("invalidation_price"),
+            lifecycle_state=lifecycle.lifecycle_state,
+            lifecycle_reason=lifecycle.recompute_reason,
+            target_state=target_state,
+            price_progress_state=price_progress.progress_state,
+        )
         progress_labels = "".join(
             f'<span class="pill {css_class(label)}">{esc(label)}</span>'
             for label in price_progress.labels
@@ -888,6 +944,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                 <td><span class="pill {css_class(target_state)}">{esc(target_state)}</span></td>
                 <td><span class="pill {css_class(confirm_state)}">{esc(confirm_state)}</span></td>
                 <td class="muted small">{esc(", ".join(blockers))}</td>
+                <td>{next_zone_html(next_preview)}</td>
                 <td class="mono">
                     <div class="cell-label">{esc(zone_cell_1[0])}</div>
                     {zone_cell_1[1]}
@@ -927,6 +984,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                     <th>Target state</th>
                     <th>Confirmation</th>
                     <th>Promotion blockers</th>
+                    <th>Next zones</th>
                     <th>Zone 1</th>
                     <th>Zone 2</th>
                     <th>Zone 3</th>
@@ -1096,6 +1154,7 @@ def render_html(
         }}
         table {{
             width: 100%;
+            min-width: 2250px;
             border-collapse: collapse;
             font-size: 13px;
         }}
@@ -1202,6 +1261,7 @@ def render_html(
                     <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
                     <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
                     <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
+                    <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
                 </div>
             </div>
             <div class="badge">broker_private_calls=0 · broker_calls=0 · broker_writes=0 · order_submission=0 · executor=none · account_awareness=0</div>
