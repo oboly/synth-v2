@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import html
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -42,6 +43,20 @@ REPORT_VERSION = "0.1"
 DEFAULT_OUTPUT_HTML = "/var/www/html/synth/rotation-preview.html"
 
 
+@dataclass(frozen=True)
+class EurBalanceSnapshot:
+    available_amount: Decimal
+    reserved_amount: Decimal
+    total_amount: Decimal
+    snapshot_ts_utc: datetime | None
+
+
+@dataclass(frozen=True)
+class PositionValuation:
+    value_eur: Decimal | None
+    source: str
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Render static HTML dashboard for read-only position rotation preview."
@@ -70,6 +85,32 @@ def dec_text(value: Decimal | None, places: str = "0.01") -> str:
         return str(value.quantize(Decimal(places)))
     except Exception:
         return str(value)
+
+
+def eur_text(value: Decimal | None) -> str:
+    if value is None:
+        return "UNKNOWN"
+    return f"€ {dec_text(value, '0.01')}"
+
+
+def eur_html(value: Decimal | None) -> str:
+    if value is None:
+        return "<span class='muted'>UNKNOWN</span>"
+    return esc(eur_text(value))
+
+
+def age_minutes(ts: datetime | None, *, now_utc: datetime) -> Decimal | None:
+    if ts is None:
+        return None
+    age_seconds = Decimal(str((now_utc.replace(tzinfo=None) - ts).total_seconds()))
+    return age_seconds / Decimal("60")
+
+
+def age_days(ts: datetime | None, *, now_utc: datetime) -> Decimal | None:
+    minutes = age_minutes(ts, now_utc=now_utc)
+    if minutes is None:
+        return None
+    return minutes / Decimal("1440")
 
 
 def signed_pct_text(value: Decimal | None) -> str:
@@ -179,8 +220,24 @@ def pct_cell(value: Decimal | None, class_name: str | None = None) -> str:
 def price_age_min(snapshot: MarketPriceSnapshot | None, *, now_utc: datetime) -> Decimal | None:
     if snapshot is None:
         return None
-    age_seconds = Decimal(str((now_utc.replace(tzinfo=None) - snapshot.observed_ts_utc).total_seconds()))
-    return age_seconds / Decimal("60")
+    return age_minutes(snapshot.observed_ts_utc, now_utc=now_utc)
+
+
+def position_valuation(row: Any, current_price: Decimal | None) -> PositionValuation:
+    quantity = row.quantity_base
+    if quantity is None:
+        return PositionValuation(value_eur=None, source="POSITION_QUANTITY_MISSING")
+    if current_price is not None:
+        return PositionValuation(
+            value_eur=quantity * current_price,
+            source="MARKET_PRICE_SNAPSHOT",
+        )
+    if row.position_mark_price_eur is not None:
+        return PositionValuation(
+            value_eur=quantity * row.position_mark_price_eur,
+            source="ACCOUNT_POSITION_MARK_FALLBACK",
+        )
+    return PositionValuation(value_eur=None, source="VALUATION_UNKNOWN")
 
 
 def now_local_label() -> str:
@@ -247,8 +304,11 @@ def pill_class(text: str | None) -> str:
         or "RISK_OK" in value
         or "ACTIVE_MAP" in value
         or "CURRENT_MAP_ACTIVE" in value
+        or "MARKET_PRICE_SNAPSHOT" in value
     ):
         return pill_classes("ok", value)
+    if "ACCOUNT_POSITION_MARK_FALLBACK" in value:
+        return pill_classes("warn", value)
     return pill_classes("muted", value)
 
 
@@ -444,6 +504,36 @@ def next_zone_html(preview: NextZonePreview) -> str:
     return "".join(parts)
 
 
+def fetch_latest_eur_balance_snapshot(
+    conn: Any,
+    *,
+    trading_account_id: int,
+) -> EurBalanceSnapshot | None:
+    sql = """
+    SELECT
+        available_amount,
+        reserved_amount,
+        total_amount,
+        snapshot_ts_utc
+    FROM trading_account_balance_snapshot
+    WHERE trading_account_id = %(trading_account_id)s
+      AND currency_code = 'EUR'
+    ORDER BY snapshot_ts_utc DESC
+    LIMIT 1
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, {"trading_account_id": int(trading_account_id)})
+        row = cur.fetchone()
+    if not row:
+        return None
+    return EurBalanceSnapshot(
+        available_amount=dec(row.get("available_amount")) or Decimal("0"),
+        reserved_amount=dec(row.get("reserved_amount")) or Decimal("0"),
+        total_amount=dec(row.get("total_amount")) or Decimal("0"),
+        snapshot_ts_utc=row.get("snapshot_ts_utc"),
+    )
+
+
 def render_html(
     rows: list[Any],
     *,
@@ -452,22 +542,50 @@ def render_html(
     interval: str,
     account_id: int,
     price_by_symbol: dict[str, MarketPriceSnapshot],
+    eur_balance: EurBalanceSnapshot | None,
     advice_by_symbol: dict[str, dict[str, Any]],
 ) -> str:
     local_ts = now_local_label()
     now_utc = datetime.now(UTC)
 
     state_counts: dict[str, int] = {}
-    total_value = Decimal("0")
     for row in rows:
         state_counts[row.rotation_state] = state_counts.get(row.rotation_state, 0) + 1
-        if row.position_value_eur is not None:
-            total_value += row.position_value_eur
 
     current_price_by_symbol = {
         symbol: snapshot.price
         for symbol, snapshot in price_by_symbol.items()
     }
+    valuation_by_symbol = {
+        row.position_symbol: position_valuation(
+            row,
+            current_price_by_symbol.get(row.position_symbol),
+        )
+        for row in rows
+    }
+    known_position_values = [
+        valuation.value_eur
+        for valuation in valuation_by_symbol.values()
+        if valuation.value_eur is not None
+    ]
+    positions_value_current = sum(known_position_values, Decimal("0"))
+    total_eur_cash = None if eur_balance is None else eur_balance.total_amount
+    indicative_account_value = (
+        None
+        if total_eur_cash is None
+        else positions_value_current + total_eur_cash
+    )
+    position_snapshot_age_days = age_days(
+        max(
+            (row.position_snapshot_ts_utc for row in rows if row.position_snapshot_ts_utc is not None),
+            default=None,
+        ),
+        now_utc=now_utc,
+    )
+    balance_snapshot_age_min = None if eur_balance is None else age_minutes(
+        eur_balance.snapshot_ts_utc,
+        now_utc=now_utc,
+    )
 
     def lifecycle_for_row(row: Any) -> Any:
         return classify_fast_lifecycle(
@@ -534,6 +652,10 @@ def render_html(
             latest_price = price_by_symbol.get(row.position_symbol)
             current_price = None if latest_price is None else latest_price.price
             latest_price_age_min = price_age_min(latest_price, now_utc=now_utc)
+            valuation = valuation_by_symbol.get(
+                row.position_symbol,
+                PositionValuation(value_eur=None, source="VALUATION_UNKNOWN"),
+            )
             delta_entry_pct = entry_delta_pct(
                 entry_zone_low=row.entry_zone_low,
                 entry_zone_high=row.entry_zone_high,
@@ -591,7 +713,8 @@ def render_html(
             out.append(
                 f"<tr class='{row_class}'>"
                 f"<td class='sticky-symbol'><strong>{esc(row.position_symbol)}</strong></td>"
-                f"<td class='num'>{esc(dec_text(row.position_value_eur, '0.01'))}</td>"
+                f"<td class='num'>{esc(dec_text(valuation.value_eur, '0.01'))}</td>"
+                f"<td><span class='pill {pill_class(valuation.source)}'>{esc(valuation.source)}</span></td>"
                 f"<td class='num'>{esc(dec_text(row.quantity_base, '0.000000'))}</td>"
                 f"<td><span class='pill {pill_class(row.position_source_state)}'>{esc(row.position_source_state)}</span></td>"
                 f"<td class='num'>{esc(dec_text(row.position_source_age_days, '0.01'))}</td>"
@@ -666,7 +789,15 @@ def render_html(
                 held_row=held_row,
             )
             eligible = not exclusions
-            held_value = None if held_row is None else held_row.position_value_eur
+            held_valuation = (
+                None
+                if held_row is None
+                else valuation_by_symbol.get(
+                    held_row.position_symbol,
+                    PositionValuation(value_eur=None, source="VALUATION_UNKNOWN"),
+                )
+            )
+            held_value = None if held_valuation is None else held_valuation.value_eur
             held_rotation_state = "" if held_row is None else held_row.rotation_state
             invalidation_price = None if not advice else dec(advice.get("invalidation_price"))
             lifecycle = classify_fast_lifecycle(
@@ -788,6 +919,7 @@ def render_html(
                 <tr>
                   <th class="sticky-symbol">Symbol</th>
                   <th>Value €</th>
+                  <th>Valuation source</th>
                   <th>Qty</th>
                   <th>Source</th>
                   <th>Age d</th>
@@ -864,10 +996,15 @@ def render_html(
       <div><strong>Red rows</strong> = stale, invalidated, or recompute-needed map context.</div>
       <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
       <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
+      <div><strong>Positions value</strong> uses latest market_price_snapshot when available, with ACCOUNT_POSITION_MARK_FALLBACK only when current market price is missing. Asset positions only; excludes EUR cash.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
-      <div class="metric"><div class="muted">Total position value</div><h2>€ {esc(dec_text(total_value, '0.01'))}</h2></div>
+      <div class="metric"><div class="muted">Positions value</div><h2>{eur_html(positions_value_current)}</h2><div class="muted small">Asset positions only; excludes EUR cash. Position snapshot age: {esc(dec_text(position_snapshot_age_days, '0.01'))} d</div></div>
+      <div class="metric"><div class="muted">Free EUR cash</div><h2>{eur_html(None if eur_balance is None else eur_balance.available_amount)}</h2><div class="muted small">Balance snapshot age: {esc(dec_text(balance_snapshot_age_min, '0.1'))} min</div></div>
+      <div class="metric"><div class="muted">Reserved EUR cash</div><h2>{eur_html(None if eur_balance is None else eur_balance.reserved_amount)}</h2></div>
+      <div class="metric"><div class="muted">Total EUR cash</div><h2>{eur_html(total_eur_cash)}</h2></div>
+      <div class="metric"><div class="muted">Indicative account value</div><h2>{eur_html(indicative_account_value)}</h2><div class="muted small">Positions value + Total EUR cash when EUR balance is known.</div></div>
       <div class="metric"><div class="muted">State counts</div>{counts_html}</div>
       <div class="metric"><div class="muted">Safety</div><span class="pill ok">broker_private_calls=0</span><span class="pill ok">broker_writes=0</span><span class="pill ok">order_submission=0</span><span class="pill ok">executor=none</span></div>
     </div>
@@ -968,6 +1105,10 @@ def main() -> int:
             quote_currency=args.quote,
             symbols=price_symbols,
         )
+        eur_balance = fetch_latest_eur_balance_snapshot(
+            conn,
+            trading_account_id=args.trading_account_id,
+        )
     finally:
         conn.close()
 
@@ -991,6 +1132,7 @@ def main() -> int:
             interval=args.interval,
             account_id=args.trading_account_id,
             price_by_symbol=price_by_symbol,
+            eur_balance=eur_balance,
             advice_by_symbol=advice_by_symbol,
         ),
         encoding="utf-8",
