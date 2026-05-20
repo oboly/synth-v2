@@ -220,6 +220,24 @@ def latest_lifecycle_candle_ts(rows: list[dict[str, Any]]) -> datetime | None:
     return max(timestamps)
 
 
+def selected_asof_bounds(rows: list[dict[str, Any]]) -> tuple[datetime | None, datetime | None]:
+    timestamps = [ts for ts in (parse_ts(row.get("asof_ts_utc")) for row in rows) if ts is not None]
+    if not timestamps:
+        return None, None
+    return min(timestamps), max(timestamps)
+
+
+def advice_state_counts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        state = str(row.get("advice_state") or "UNKNOWN")
+        counts[state] = counts.get(state, 0) + 1
+    return [
+        {"advice_state": state, "n": count}
+        for state, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
 def css_class(value: str | None) -> str:
     if not value:
         return "muted"
@@ -783,23 +801,55 @@ def fetch_latest_rows(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT
-                advice_state,
-                COUNT(*) AS n
-            FROM paper_advice_observation
-            WHERE venue = %(venue)s
-              AND interval_code = %(interval)s
-              AND asof_ts_utc = %(latest_asof)s
-            GROUP BY advice_state
-            ORDER BY n DESC, advice_state ASC
-            """,
-            {"venue": venue, "interval": interval, "latest_asof": latest_asof},
-        )
-        counts = list(cur.fetchall())
-
-    with conn.cursor() as cur:
-        cur.execute(
-            """
+            WITH ranked_advice AS (
+                SELECT
+                    paper_advice_observation_id,
+                    asset_id,
+                    symbol,
+                    priority_rank,
+                    selection_state,
+                    selection_bias,
+                    selection_score,
+                    setup_filter_state,
+                    setup_filter_reason,
+                    policy_decision,
+                    suggested_horizon,
+                    allowed_now,
+                    aplus_bucket,
+                    aplus_phase,
+                    aplus_coherence,
+                    aplus_field,
+                    aplus_geometry,
+                    aplus_structural_role,
+                    aplus_expansion_quality,
+                    aplus_anchor_strength,
+                    aplus_strategic_bias,
+                    leg_direction,
+                    entry_zone_low,
+                    entry_zone_high,
+                    entry_zone_type,
+                    tp_zone_low,
+                    tp_zone_high,
+                    tp_zone_type,
+                    invalidation_price,
+                    zone_confidence_score,
+                    zone_alignment_score,
+                    advice_state,
+                    advice_action,
+                    confidence_score,
+                    risk_label,
+                    reason_codes_json,
+                    source_ref_json,
+                    asof_ts_utc,
+                    context_ts_utc,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY asset_id
+                        ORDER BY asof_ts_utc DESC, paper_advice_observation_id DESC
+                    ) AS rn
+                FROM paper_advice_observation
+                WHERE venue = %(venue)s
+                  AND interval_code = %(interval)s
+            )
             SELECT
                 asset_id,
                 symbol,
@@ -839,10 +889,8 @@ def fetch_latest_rows(
                 source_ref_json,
                 asof_ts_utc,
                 context_ts_utc
-            FROM paper_advice_observation
-            WHERE venue = %(venue)s
-              AND interval_code = %(interval)s
-              AND asof_ts_utc = %(latest_asof)s
+            FROM ranked_advice
+            WHERE rn = 1
             ORDER BY
                 CASE advice_state
                     WHEN 'WATCH_CORE' THEN 1
@@ -863,12 +911,12 @@ def fetch_latest_rows(
             {
                 "venue": venue,
                 "interval": interval,
-                "latest_asof": latest_asof,
                 "limit": int(limit),
             },
         )
         rows = list(cur.fetchall())
 
+    counts = advice_state_counts(rows)
     enrich_candle_context(conn, rows, venue, interval, lifecycle_candle_interval)
 
     with conn.cursor() as cur:
@@ -1167,8 +1215,11 @@ def render_html(
     generated_ts = datetime.now(UTC).replace(tzinfo=None)
     primary_rows, expired_rows, defensive_rows = split_rows(rows)
     latest_lifecycle_ts = latest_lifecycle_candle_ts(rows)
+    selected_min_asof, selected_max_asof = selected_asof_bounds(rows)
 
     latest_text = fmt_ts_local_first(latest_asof)
+    selected_min_text = fmt_ts_local_first(selected_min_asof)
+    selected_max_text = fmt_ts_local_first(selected_max_asof)
     latest_lifecycle_text = fmt_ts_local_first(latest_lifecycle_ts)
     generated_text = fmt_ts_local_first(generated_ts)
     runtime_text = "—"
@@ -1399,7 +1450,8 @@ def render_html(
                 <h1>{esc(title)}</h1>
                 <div class="subtitle">
                     Read-only paper advice · venue={esc(venue)} · advice interval={esc(interval)} · Fast lifecycle candles={esc(lifecycle_candle_interval)}<br>
-                    latest advice snapshot: {esc(latest_text)}<br>
+                    row mode: latest_per_asset · latest overall advice asof: {esc(latest_text)}<br>
+                    selected row asof range: {esc(selected_min_text)} → {esc(selected_max_text)}<br>
                     latest Fast lifecycle candle: {esc(latest_lifecycle_text)}<br>
                     dashboard rendered: {esc(generated_text)}<br>
                     Setup/policy changes when the 4h chain writes a new paper_advice_observation snapshot. Fast lifecycle candles check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.
@@ -1473,7 +1525,11 @@ def print_table(
     print(f"report={POLICY_NAME} version={POLICY_VERSION}")
     print("scope=static-readonly paper-advice")
     print("broker_private_calls=0 broker_calls=0 broker_writes=0 order_submission=0 live_orders=0 executor=none account_awareness=0")
+    selected_min_asof, selected_max_asof = selected_asof_bounds(rows)
+    print("row_mode=latest_per_asset")
     print(f"latest_asof={latest_asof}")
+    print(f"selected_min_asof={selected_min_asof}")
+    print(f"selected_max_asof={selected_max_asof}")
     print(f"lifecycle_candle_interval={lifecycle_candle_interval}")
     print(f"market_price_snapshot_rows={market_price_snapshot_rows} quote={quote_currency.upper()}")
     print(f"rows={len(rows)}")
@@ -1526,6 +1582,7 @@ def main() -> int:
         snapshot = price_by_symbol.get(str(row.get("symbol") or "").upper())
         row["current_price"] = None if snapshot is None else snapshot.price
         row["price_age_min"] = price_age_min(snapshot, now_utc=now_utc)
+    selected_min_asof, selected_max_asof = selected_asof_bounds(rows)
 
     html_content = render_html(
         title=str(args.title),
@@ -1548,7 +1605,14 @@ def main() -> int:
                 {
                     "policy_name": POLICY_NAME,
                     "policy_version": POLICY_VERSION,
+                    "row_mode": "latest_per_asset",
                     "latest_asof": latest_asof.isoformat(sep=" ") if latest_asof else None,
+                    "selected_min_asof": (
+                        selected_min_asof.isoformat(sep=" ") if selected_min_asof else None
+                    ),
+                    "selected_max_asof": (
+                        selected_max_asof.isoformat(sep=" ") if selected_max_asof else None
+                    ),
                     "lifecycle_candle_interval": str(args.lifecycle_candle_interval),
                     "market_price_snapshot_rows": len(price_by_symbol),
                     "market_breath_context_rows": len(market_breath_by_symbol),
