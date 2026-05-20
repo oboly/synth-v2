@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -53,6 +53,16 @@ class RefreshResultRow:
     paper_advice_refreshed: str
 
 
+@dataclass(frozen=True)
+class CooldownMarker:
+    symbol: str
+    asset_id: int
+    advice_asof_ts_utc: datetime | None
+    refreshed_zone_asof_ts_utc: str | None
+    refresh_scope: str | None
+    cooldown_state: str
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Consume the fast recompute lifecycle worklist and refresh market-only zones/advice."
@@ -89,6 +99,32 @@ def json_default(value: Any) -> Any:
     return str(value)
 
 
+def _json_loads_dict(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _asof_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat(sep=" ", timespec="microseconds")
+    return str(value)
+
+
+def cooldown_applies(row: RecomputeLifecycleRow, marker: CooldownMarker | None) -> bool:
+    if marker is None:
+        return False
+    return _asof_text(row.asof_ts_utc) == _asof_text(marker.advice_asof_ts_utc)
+
+
 def resolve_asset_ids(conn: Any, symbols: list[str]) -> dict[str, int]:
     normalized = sorted({symbol.upper() for symbol in symbols if symbol})
     if not normalized:
@@ -110,16 +146,99 @@ def resolve_asset_ids(conn: Any, symbols: list[str]) -> dict[str, int]:
     return {str(row["symbol"]).upper(): int(row["asset_id"]) for row in rows}
 
 
+def fetch_cooldown_markers(
+    conn: Any,
+    *,
+    venue: str,
+    interval: str,
+    symbols: list[str],
+) -> dict[str, CooldownMarker]:
+    normalized = sorted({symbol.upper() for symbol in symbols if symbol})
+    if not normalized:
+        return {}
+
+    placeholders = []
+    params: dict[str, Any] = {
+        "venue": venue,
+        "interval": interval,
+    }
+    for idx, symbol in enumerate(normalized):
+        key = f"symbol_{idx}"
+        placeholders.append(f"%({key})s")
+        params[key] = symbol
+
+    sql = f"""
+    WITH ranked_advice AS (
+        SELECT
+            asset_id,
+            symbol,
+            asof_ts_utc,
+            source_ref_json,
+            ROW_NUMBER() OVER (
+                PARTITION BY asset_id
+                ORDER BY asof_ts_utc DESC, updated_ts_utc DESC
+            ) AS rn
+        FROM paper_advice_observation
+        WHERE venue = %(venue)s
+          AND interval_code = %(interval)s
+          AND UPPER(symbol) IN ({', '.join(placeholders)})
+    )
+    SELECT
+        asset_id,
+        symbol,
+        asof_ts_utc,
+        source_ref_json
+    FROM ranked_advice
+    WHERE rn = 1
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        rows = list(cur.fetchall())
+
+    markers: dict[str, CooldownMarker] = {}
+    for row in rows:
+        source_ref = _json_loads_dict(row.get("source_ref_json"))
+        refresh_ref = _json_loads_dict(source_ref.get("fast_recompute_refresh"))
+        if refresh_ref.get("refreshed_by") != REPORT_NAME:
+            continue
+        marker_interval = refresh_ref.get("interval_code")
+        if marker_interval is not None and str(marker_interval) != interval:
+            continue
+        refreshed_zone_asof = refresh_ref.get("zone_asof_ts_utc")
+        if not refreshed_zone_asof:
+            continue
+        symbol = str(row["symbol"]).upper()
+        markers[symbol] = CooldownMarker(
+            symbol=symbol,
+            asset_id=int(row["asset_id"]),
+            advice_asof_ts_utc=row.get("asof_ts_utc"),
+            refreshed_zone_asof_ts_utc=str(refreshed_zone_asof),
+            refresh_scope=(
+                None
+                if refresh_ref.get("refresh_scope") is None
+                else str(refresh_ref.get("refresh_scope"))
+            ),
+            cooldown_state="COOLDOWN_ALREADY_REFRESHED_THIS_CANDLE",
+        )
+    return markers
+
+
 def selected_worklist_rows(
     rows: list[RecomputeLifecycleRow],
     *,
     max_assets: int,
     include_advice_only_review: bool,
+    cooldown_by_symbol: dict[str, CooldownMarker],
 ) -> list[RecomputeLifecycleRow]:
     enabled = set(ENABLED_SCOPES)
     if include_advice_only_review:
         enabled.add("ADVICE_ONLY_REVIEW")
-    selected = [row for row in rows if row.recommended_refresh_scope in enabled]
+    selected = [
+        row
+        for row in rows
+        if row.recommended_refresh_scope in enabled
+        and not cooldown_applies(row, cooldown_by_symbol.get(row.symbol.upper()))
+    ]
     return selected[:max_assets]
 
 
@@ -175,6 +294,7 @@ def refresh_paper_advice_for_assets(
     *,
     conn: Any,
     asset_ids: list[int],
+    refresh_context_by_asset_id: dict[int, RefreshResultRow],
     venue: str,
     interval: str,
     write_db: bool,
@@ -197,6 +317,26 @@ def refresh_paper_advice_for_assets(
         aplus_raw_path=Path("db://latest"),
         aplus_prediction_ts=aplus_prediction_ts,
     )
+    refresh_ts = datetime.now(UTC).replace(tzinfo=None)
+    for output_row in output_rows:
+        asset_id = int(output_row["asset_id"])
+        refresh_context = refresh_context_by_asset_id.get(asset_id)
+        if refresh_context is None:
+            continue
+        source_ref = _json_loads_dict(output_row.get("source_ref_json"))
+        zone_asof = None if refresh_context.new_zone_asof_ts_utc is None else str(refresh_context.new_zone_asof_ts_utc)
+        source_ref["fast_recompute_refresh"] = {
+            "refreshed_by": REPORT_NAME,
+            "version": REPORT_VERSION,
+            "interval_code": interval,
+            "recompute_asof_ts_utc": str(output_row.get("asof_ts_utc")),
+            "zone_asof_ts_utc": zone_asof,
+            "refreshed_at_utc": refresh_ts.isoformat(sep=" ", timespec="microseconds"),
+            "refresh_scope": refresh_context.recommended_refresh_scope,
+            "lifecycle": refresh_context.lifecycle_state,
+            "reason": refresh_context.recompute_reason,
+        }
+        output_row["source_ref_json"] = json.dumps(source_ref, ensure_ascii=False, default=json_default)
     return write_rows(conn, output_rows)
 
 
@@ -204,6 +344,7 @@ def build_refresh_rows(
     *,
     worklist_rows: list[RecomputeLifecycleRow],
     asset_by_symbol: dict[str, int],
+    cooldown_by_symbol: dict[str, CooldownMarker],
     args: argparse.Namespace,
 ) -> tuple[list[RefreshResultRow], list[int]]:
     repo = ZoneRepository()
@@ -213,12 +354,27 @@ def build_refresh_rows(
         worklist_rows,
         max_assets=int(args.max_assets),
         include_advice_only_review=bool(args.include_advice_only_review),
+        cooldown_by_symbol=cooldown_by_symbol,
     )
     selected_symbols = {row.symbol for row in selected}
+    enabled_scopes = set(ENABLED_SCOPES)
+    if bool(args.include_advice_only_review):
+        enabled_scopes.add("ADVICE_ONLY_REVIEW")
 
     for row in worklist_rows:
         asset_id = asset_by_symbol.get(row.symbol)
-        if row.symbol not in selected_symbols:
+        cooldown = cooldown_by_symbol.get(row.symbol.upper())
+        if cooldown_applies(row, cooldown) and row.recommended_refresh_scope in enabled_scopes:
+            action = "SKIPPED_ALREADY_REFRESHED_THIS_ASOF"
+            zone_state = cooldown.cooldown_state
+            new_asof = None
+            paper_refreshed = "NO"
+        elif row.symbol not in selected_symbols and row.recommended_refresh_scope in enabled_scopes:
+            action = "SKIPPED_MAX_ASSETS_THROTTLE"
+            zone_state = "WAITING_MAX_ASSETS_THROTTLE"
+            new_asof = None
+            paper_refreshed = "NO"
+        elif row.symbol not in selected_symbols:
             action = "SKIPPED_SCOPE_NOT_ENABLED"
             zone_state = "NOT_SELECTED"
             new_asof = None
@@ -302,6 +458,15 @@ def mark_paper_refreshed(rows: list[RefreshResultRow], refreshed_asset_ids: set[
     return output
 
 
+def build_refresh_context_by_asset_id(rows: list[RefreshResultRow]) -> dict[int, RefreshResultRow]:
+    contexts: dict[int, RefreshResultRow] = {}
+    for row in rows:
+        if row.asset_id is None or row.action_taken != "ZONE_RECOMPUTED":
+            continue
+        contexts[int(row.asset_id)] = row
+    return contexts
+
+
 def print_table(rows: list[RefreshResultRow]) -> None:
     headers = [
         "symbol",
@@ -364,14 +529,22 @@ def main() -> int:
             price_by_symbol=price_by_symbol,
         )
         asset_by_symbol = resolve_asset_ids(conn, [row.symbol for row in worklist_rows])
+        cooldown_by_symbol = fetch_cooldown_markers(
+            conn,
+            venue=str(args.venue),
+            interval=str(args.interval),
+            symbols=[row.symbol for row in worklist_rows],
+        )
         result_rows, refreshed_asset_ids = build_refresh_rows(
             worklist_rows=worklist_rows,
             asset_by_symbol=asset_by_symbol,
+            cooldown_by_symbol=cooldown_by_symbol,
             args=args,
         )
         advice_written = refresh_paper_advice_for_assets(
             conn=conn,
             asset_ids=refreshed_asset_ids,
+            refresh_context_by_asset_id=build_refresh_context_by_asset_id(result_rows),
             venue=str(args.venue),
             interval=str(args.interval),
             write_db=bool(args.write_db),
