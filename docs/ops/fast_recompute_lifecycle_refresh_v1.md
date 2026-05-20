@@ -6,6 +6,8 @@ P0-b is `src/advice/run_fast_recompute_lifecycle_refresh_v1.py`. It consumes the
 
 P0-c is `scripts/odroid/run_mvp_dashboard_render_once.sh`. It wires the P0-b consumer into the Odroid read-only cockpit lifecycle before dashboard render, so stale/reclaimed/target-hit maps can be refreshed between normal 4h baseline runs.
 
+Cooldown/fairness v1 adds a same-advice-asof cooldown marker to refreshed `paper_advice_observation.source_ref_json`. A symbol successfully refreshed by this consumer is skipped on later cockpit renders while the latest paper-advice row still carries the same marker. The `--max-assets` throttle is then applied to the remaining eligible candidates, so the selected set advances instead of repeatedly refreshing the same top rows.
+
 ## Boundaries
 
 - Market-only and account-agnostic.
@@ -28,6 +30,15 @@ Default skipped scope:
 
 The consumer resolves `symbol -> asset_id`, recomputes zones for selected assets only, and refreshes paper advice only for those refreshed `asset_id` values.
 
+Fairness behavior:
+
+- `PAPER_ADVICE_REFRESHED`: zone and paper advice were refreshed for the selected asset.
+- `SKIPPED_ALREADY_REFRESHED_THIS_ASOF`: the latest paper-advice row already records a successful fast recompute refresh for the same advice asof window.
+- `SKIPPED_MAX_ASSETS_THROTTLE`: the row remains eligible but was behind the current `--max-assets` limit after cooldown filtering.
+- `SKIPPED_SCOPE_NOT_ENABLED`: the row is outside the market-only zone/advice recompute scope, such as `WAIT_FOR_NEXT_CANDLE`, active/fresh maps, or unknown-data rows.
+
+The cooldown marker is metadata only. It is not a trading decision, not a veto, and not a selection-engine input. A normal later paper-advice refresh or a new structural cycle naturally replaces the latest paper-advice metadata and clears the same-asof cooldown.
+
 Example dry-run:
 
 ```bash
@@ -45,7 +56,7 @@ python -m src.advice.run_fast_recompute_lifecycle_refresh_v1 \
   --venue bitvavo \
   --interval 4h \
   --quote EUR \
-  --max-assets 3 \
+  --max-assets 8 \
   --write-db \
   --output table
 ```
@@ -59,7 +70,7 @@ python -m src.advice.run_fast_recompute_lifecycle_refresh_v1 \
   --venue "${VENUE}" \
   --interval "${SYNTH_FAST_RECOMPUTE_INTERVAL:-4h}" \
   --quote "${QUOTE}" \
-  --max-assets "${SYNTH_FAST_RECOMPUTE_MAX_ASSETS:-3}" \
+  --max-assets "${SYNTH_FAST_RECOMPUTE_MAX_ASSETS:-8}" \
   --write-db \
   --output table
 ```
@@ -67,20 +78,20 @@ python -m src.advice.run_fast_recompute_lifecycle_refresh_v1 \
 Runtime knobs:
 
 - `SYNTH_FAST_RECOMPUTE_REFRESH_ENABLED`, default `1`
-- `SYNTH_FAST_RECOMPUTE_MAX_ASSETS`, default `3`
+- `SYNTH_FAST_RECOMPUTE_MAX_ASSETS`, default `8`
 - `SYNTH_FAST_RECOMPUTE_INTERVAL`, default `4h`
 
 When `SYNTH_FAST_RECOMPUTE_REFRESH_ENABLED=0`, the runner skips the consumer and renders dashboards as before.
 
 When enabled, the runner fails closed: if the market-only refresh consumer fails, the script exits non-zero before rendering dashboards. This prevents stale or ambiguous cockpit output after a failed refresh attempt.
 
-Default runtime is conservative: only up to three eligible assets are refreshed per run unless `SYNTH_FAST_RECOMPUTE_MAX_ASSETS` is explicitly raised.
+Default runtime is still throttled: only up to eight eligible assets are refreshed per run unless `SYNTH_FAST_RECOMPUTE_MAX_ASSETS` is explicitly changed.
 
 Manual Odroid verification command:
 
 ```bash
 SYNTH_FAST_RECOMPUTE_REFRESH_ENABLED=1 \
-SYNTH_FAST_RECOMPUTE_MAX_ASSETS=3 \
+SYNTH_FAST_RECOMPUTE_MAX_ASSETS=8 \
 SYNTH_FAST_RECOMPUTE_INTERVAL=4h \
 scripts/odroid/run_mvp_dashboard_render_once.sh
 ```
