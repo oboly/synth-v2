@@ -165,8 +165,25 @@ def parse_aplus_table1(path: Path) -> tuple[str | None, dict[str, dict[str, str]
     return prediction_ts, rows
 
 
-def fetch_latest_inputs(conn: Any, venue: str, interval_code: str, limit: int | None) -> list[dict[str, Any]]:
-    sql = """
+def fetch_latest_inputs(
+    conn: Any,
+    venue: str,
+    interval_code: str,
+    limit: int | None,
+    asset_ids: list[int] | None = None,
+) -> list[dict[str, Any]]:
+    asset_filter_sql = ""
+    asset_params: dict[str, Any] = {}
+    normalized_asset_ids = sorted({int(asset_id) for asset_id in asset_ids or []})
+    if normalized_asset_ids:
+        placeholders = []
+        for idx, asset_id in enumerate(normalized_asset_ids):
+            key = f"asset_id_{idx}"
+            placeholders.append(f"%({key})s")
+            asset_params[key] = asset_id
+        asset_filter_sql = f"AND s.asset_id IN ({', '.join(placeholders)})"
+
+    sql = f"""
     WITH latest_selection AS (
         SELECT MAX(asof_ts_utc) AS asof_ts_utc
         FROM selection_state
@@ -178,10 +195,11 @@ def fetch_latest_inputs(conn: Any, venue: str, interval_code: str, limit: int | 
         WHERE venue = %(venue)s
     ),
     latest_zone AS (
-        SELECT MAX(asof_ts_utc) AS asof_ts_utc
+        SELECT asset_id, MAX(asof_ts_utc) AS asof_ts_utc
         FROM execution_zone_context
         WHERE venue = %(venue)s
           AND interval_code = %(interval_code)s
+        GROUP BY asset_id
     )
     SELECT
         s.asset_id,
@@ -236,7 +254,7 @@ def fetch_latest_inputs(conn: Any, venue: str, interval_code: str, limit: int | 
      AND p.asof_ts_utc = lp.asof_ts_utc
 
     LEFT JOIN latest_zone lz
-      ON 1 = 1
+      ON lz.asset_id = s.asset_id
     LEFT JOIN vw_paper_advice_execution_zone_context_v1 z
       ON z.asset_id = s.asset_id
      AND z.venue = s.venue
@@ -244,6 +262,7 @@ def fetch_latest_inputs(conn: Any, venue: str, interval_code: str, limit: int | 
      AND z.asof_ts_utc = lz.asof_ts_utc
 
     WHERE s.venue = %(venue)s
+      {asset_filter_sql}
 
     ORDER BY
         s.priority_rank IS NULL,
@@ -255,6 +274,7 @@ def fetch_latest_inputs(conn: Any, venue: str, interval_code: str, limit: int | 
     params: dict[str, Any] = {
         "venue": venue,
         "interval_code": interval_code,
+        **asset_params,
     }
 
     if limit is not None:
@@ -498,6 +518,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interval", default="4h")
     parser.add_argument("--limit", type=int, default=80)
     parser.add_argument(
+        "--asset-id",
+        action="append",
+        type=int,
+        default=None,
+        help="Restrict refresh to one asset_id. May be passed repeatedly.",
+    )
+    parser.add_argument(
         "--aplus-raw",
         default="db://latest",
         help="A+ Table 1 source. Default db://latest reads normalized DB rows; raw file path/glob remains legacy fallback.",
@@ -523,6 +550,7 @@ def main() -> int:
             venue=args.venue,
             interval_code=args.interval,
             limit=args.limit,
+            asset_ids=args.asset_id,
         )
         output_rows = build_output_rows(
             input_rows,
@@ -544,6 +572,8 @@ def main() -> int:
     print("broker_calls=0 broker_writes=0 order_submission=0 live_orders=0")
     print("decision_gate=none execution_planner=none executor=none")
     print(f"venue={args.venue} interval={args.interval}")
+    if args.asset_id:
+        print(f"asset_ids={','.join(str(asset_id) for asset_id in sorted(set(args.asset_id)))}")
     print(f"aplus_raw={aplus_path}")
     print(f"aplus_prediction_ts_utc={aplus_prediction_ts}")
     print(f"aplus_rows={len(aplus_rows)} input_rows={len(input_rows)} output_rows={len(output_rows)} db_written={written}")
