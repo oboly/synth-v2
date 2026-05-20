@@ -13,7 +13,17 @@ from zoneinfo import ZoneInfo
 import pymysql
 from dotenv import load_dotenv
 
+from src.market_data.market_price_snapshot_v1 import (
+    MarketPriceSnapshot,
+    fetch_latest_prices_by_symbol,
+)
 from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
+from src.reporting.entry_zone_state_v1 import (
+    classify_entry_zone_state,
+    classify_target_state,
+    confirmation_state,
+    promotion_blockers,
+)
 
 
 POLICY_NAME = "paper_advice_static_dashboard_v1"
@@ -39,6 +49,7 @@ def parse_args() -> argparse.Namespace:
         description="Render latest paper advice observation rows to a static read-only HTML dashboard."
     )
     parser.add_argument("--venue", default="bitvavo")
+    parser.add_argument("--quote", default="EUR")
     parser.add_argument("--interval", default="4h")
     parser.add_argument("--lifecycle-candle-interval", default="1h")
     parser.add_argument("--output-html", default=DEFAULT_OUTPUT_HTML)
@@ -86,6 +97,23 @@ def fmt_decimal(value: Any, places: int | None = None) -> str:
     if text == "-0":
         text = "0"
     return text
+
+
+def fmt_snapshot_price(value: Any) -> str:
+    dec = to_decimal(value)
+    if dec is None:
+        return ""
+    try:
+        return str(dec.quantize(Decimal("0.000000")))
+    except Exception:
+        return format(dec, "f")
+
+
+def price_age_min(snapshot: MarketPriceSnapshot | None, *, now_utc: datetime) -> Decimal | None:
+    if snapshot is None:
+        return None
+    age_seconds = Decimal(str((now_utc.replace(tzinfo=None) - snapshot.observed_ts_utc).total_seconds()))
+    return age_seconds / Decimal("60")
 
 
 def fmt_score(value: Any) -> str:
@@ -198,6 +226,14 @@ def css_class(value: str | None) -> str:
         "INSUFFICIENT_SAMPLE": "muted",
         "MARKET_DAMAGE_RISK": "block",
         "MARKET_DAMAGE_CAUTION": "watch",
+        "ENTRY_ZONE_REACHED": "watch",
+        "ENTRY_ZONE_NEAR": "watch",
+        "REACTION_ZONE_REACHED": "watch",
+        "REACTION_ZONE_NEAR": "watch",
+        "CONFIRMATION_PENDING": "watch",
+        "PAPER_BUY_READY": "good",
+        "TARGET_PENDING": "muted",
+        "TARGET_REACHED": "watch",
         "BTC_PRIOR_OVERHEAT_ZONE": "block",
         "SELECTION_STATE_NOT_ELIGIBLE": "muted",
         "RANK_OUTSIDE_SETUP_ELIGIBLE_RANGE": "muted",
@@ -744,6 +780,24 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         rank_text = "—" if rank is None else str(rank)
 
         zone_cell_1, zone_cell_2, zone_cell_3 = zone_display_cells(row)
+        current_price = row.get("current_price")
+        entry_state = classify_entry_zone_state(
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            entry_zone_low=row.get("entry_zone_low"),
+            entry_zone_high=row.get("entry_zone_high"),
+        )
+        target_state = classify_target_state(
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            tp_zone_low=row.get("tp_zone_low"),
+            tp_zone_high=row.get("tp_zone_high"),
+        )
+        confirm_state = confirmation_state(
+            advice_action=row.get("advice_action"),
+            policy_decision=row.get("policy_decision"),
+        )
+        blockers = promotion_blockers(row, candidate_group=None) if entry_state.endswith("_REACHED") else []
         row_classes = []
         if leg_direction.strip().upper() == "DOWN" and is_pullback_invalidated(row):
             row_classes.extend(["expired", "stale-map"])
@@ -773,6 +827,12 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                 <td>{esc(row.get("advice_action"))}</td>
                 <td class="mono right">{fmt_score(row.get("confidence_score"))}</td>
                 <td><span class="pill {css_class(risk_label)}">{esc(risk_label)}</span></td>
+                <td class="mono right sticky-price">{esc(fmt_snapshot_price(current_price))}</td>
+                <td class="mono right">{fmt_decimal(row.get("price_age_min"), places=1)}</td>
+                <td><span class="pill {css_class(entry_state)}">{esc(entry_state)}</span></td>
+                <td><span class="pill {css_class(target_state)}">{esc(target_state)}</span></td>
+                <td><span class="pill {css_class(confirm_state)}">{esc(confirm_state)}</span></td>
+                <td class="muted small">{esc(", ".join(blockers))}</td>
                 <td class="mono">
                     <div class="cell-label">{esc(zone_cell_1[0])}</div>
                     {zone_cell_1[1]}
@@ -805,6 +865,12 @@ def render_table(rows: list[dict[str, Any]]) -> str:
                     <th>Action</th>
                     <th>Conf</th>
                     <th>Risk</th>
+                    <th class="sticky-price">Current price</th>
+                    <th>Price age min</th>
+                    <th>Entry state</th>
+                    <th>Target state</th>
+                    <th>Confirmation</th>
+                    <th>Promotion blockers</th>
                     <th>Zone 1</th>
                     <th>Zone 2</th>
                     <th>Zone 3</th>
@@ -863,7 +929,7 @@ def render_html(
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{esc(title)}</title>
     <style>
-        {cockpit_base_css(min_table_width=1600)}
+        {cockpit_base_css(min_table_width=1900)}
         :root {{
             --bg: #0b1020;
             --panel: #121a2f;
@@ -1066,15 +1132,21 @@ def render_html(
             <div>
                 <h1>{esc(title)}</h1>
                 <div class="subtitle">
-                    Read-only paper navigation · venue={esc(venue)} · advice interval={esc(interval)} · lifecycle candles={esc(lifecycle_candle_interval)}<br>
+                    Read-only paper advice · venue={esc(venue)} · advice interval={esc(interval)} · Fast lifecycle candles={esc(lifecycle_candle_interval)}<br>
                     latest advice snapshot: {esc(latest_text)}<br>
-                    latest lifecycle candle: {esc(latest_lifecycle_text)}<br>
+                    latest Fast lifecycle candle: {esc(latest_lifecycle_text)}<br>
                     dashboard rendered: {esc(generated_text)}<br>
-                    Setup/policy changes when the 4h chain writes a new paper_advice_observation snapshot. Lifecycle badges refresh from {esc(lifecycle_candle_interval)} candle path data when the dashboard refresh runner runs.
+                    Setup/policy changes when the 4h chain writes a new paper_advice_observation snapshot. Fast lifecycle candles check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.
                 </div>
                 {cockpit_nav()}
+                <div class="legend">
+                    <div><strong>ENTRY_ZONE_REACHED</strong> means price is in the entry/reaction zone; it is separate from target state and is not buy permission.</div>
+                    <div><strong>CONFIRMATION_PENDING</strong> means price/setup still needs policy or advice confirmation.</div>
+                    <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
+                    <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
+                </div>
             </div>
-            <div class="badge">broker_private_calls=0 · broker_calls=0 · broker_writes=0 · order_submission=0 · executor=none</div>
+            <div class="badge">broker_private_calls=0 · broker_calls=0 · broker_writes=0 · order_submission=0 · executor=none · account_awareness=0</div>
         </section>
 
         <section class="grid">
@@ -1122,12 +1194,15 @@ def print_table(
     rows: list[dict[str, Any]],
     counts: list[dict[str, Any]],
     lifecycle_candle_interval: str,
+    market_price_snapshot_rows: int,
+    quote_currency: str,
 ) -> None:
     print(f"report={POLICY_NAME} version={POLICY_VERSION}")
-    print("scope=static-readonly paper-navigation")
-    print("broker_private_calls=0 broker_calls=0 broker_writes=0 order_submission=0 live_orders=0 executor=none")
+    print("scope=static-readonly paper-advice")
+    print("broker_private_calls=0 broker_calls=0 broker_writes=0 order_submission=0 live_orders=0 executor=none account_awareness=0")
     print(f"latest_asof={latest_asof}")
     print(f"lifecycle_candle_interval={lifecycle_candle_interval}")
+    print(f"market_price_snapshot_rows={market_price_snapshot_rows} quote={quote_currency.upper()}")
     print(f"rows={len(rows)}")
     print(f"output_html={path}")
     print()
@@ -1149,8 +1224,20 @@ def main() -> int:
             lifecycle_candle_interval=str(args.lifecycle_candle_interval),
             limit=int(args.limit),
         )
+        price_by_symbol = fetch_latest_prices_by_symbol(
+            conn,
+            venue=str(args.venue),
+            quote_currency=str(args.quote),
+            symbols=sorted({str(row.get("symbol") or "").upper() for row in rows}),
+        )
     finally:
         conn.close()
+
+    now_utc = datetime.now(UTC)
+    for row in rows:
+        snapshot = price_by_symbol.get(str(row.get("symbol") or "").upper())
+        row["current_price"] = None if snapshot is None else snapshot.price
+        row["price_age_min"] = price_age_min(snapshot, now_utc=now_utc)
 
     html_content = render_html(
         title=str(args.title),
@@ -1173,6 +1260,8 @@ def main() -> int:
                     "policy_version": POLICY_VERSION,
                     "latest_asof": latest_asof.isoformat(sep=" ") if latest_asof else None,
                     "lifecycle_candle_interval": str(args.lifecycle_candle_interval),
+                    "market_price_snapshot_rows": len(price_by_symbol),
+                    "quote": str(args.quote).upper(),
                     "rows": len(rows),
                     "output_html": str(output_path),
                     "broker_calls": 0,
@@ -1181,12 +1270,21 @@ def main() -> int:
                     "order_submission": 0,
                     "executor": "none",
                     "live_orders": 0,
+                    "account_awareness": 0,
                 },
                 indent=2,
             )
         )
     else:
-        print_table(output_path, latest_asof, rows, counts, str(args.lifecycle_candle_interval))
+        print_table(
+            output_path,
+            latest_asof,
+            rows,
+            counts,
+            str(args.lifecycle_candle_interval),
+            len(price_by_symbol),
+            str(args.quote),
+        )
 
     return 0
 

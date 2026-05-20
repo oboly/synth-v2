@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from src.common.db import get_connection
 from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
+from src.reporting.entry_zone_state_v1 import classify_entry_zone_state, confirmation_state
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
@@ -193,6 +194,11 @@ def pill_class(text: str | None) -> str:
         or "RISK_NEAR" in value
         or "INVALIDATION_NEAR" in value
         or "RECLAIM_NEAR" in value
+        or "ENTRY_ZONE_REACHED" in value
+        or "REACTION_ZONE_REACHED" in value
+        or "ENTRY_ZONE_NEAR" in value
+        or "REACTION_ZONE_NEAR" in value
+        or "CONFIRMATION_PENDING" in value
     ):
         return "warn"
     if "INVALIDATION_TOUCHED" in value or "MAP_RECOMPUTE_NEEDED" in value:
@@ -523,6 +529,16 @@ def render_html(
             current_price = None if latest_price is None else latest_price.price
             target_state = target_state_for_advice(advice, current_price)
             risk_state = risk_state_for_advice(advice, current_price)
+            entry_state = classify_entry_zone_state(
+                leg_direction=None if not advice else advice.get("leg_direction"),
+                current_price=current_price,
+                entry_zone_low=None if not advice else advice.get("entry_zone_low"),
+                entry_zone_high=None if not advice else advice.get("entry_zone_high"),
+            )
+            confirm_state = confirmation_state(
+                advice_action=None if not advice else advice.get("advice_action"),
+                policy_decision=None if not advice else advice.get("policy_decision"),
+            )
             exclusions = destination_diagnostic_exclusions(
                 advice_row=advice,
                 current_price=current_price,
@@ -563,6 +579,8 @@ def render_html(
                 f"<td>{esc(None if not advice else advice.get('advice_state'))}</td>"
                 f"<td><span class='pill {pill_class(None if not advice else advice.get('advice_action'))}'>{esc(None if not advice else advice.get('advice_action'))}</span></td>"
                 f"<td>{esc(None if not advice else advice.get('leg_direction'))}</td>"
+                f"<td><span class='pill {pill_class(entry_state)}'>{esc(entry_state)}</span></td>"
+                f"<td><span class='pill {pill_class(confirm_state)}'>{esc(confirm_state)}</span></td>"
                 f"<td><span class='pill {pill_class(target_state)}'>{esc(target_state)}</span></td>"
                 f"<td><span class='pill {pill_class(risk_state)}'>{esc(risk_state)}</span></td>"
                 f"<td class='num sticky-price'>{esc(dec_text(current_price, '0.000000'))}</td>"
@@ -597,6 +615,8 @@ def render_html(
                   <th>Policy</th>
                   <th>Action</th>
                   <th>Leg</th>
+                  <th>Entry state</th>
+                  <th>Confirmation</th>
                   <th>Target state</th>
                   <th>Risk state</th>
                   <th class="sticky-price">Current price</th>
@@ -694,6 +714,9 @@ def render_html(
       <div><strong>Destination eligible</strong> = strict candidate after paper/setup/risk/account-position filters.</div>
       <div><strong>Exclusion reasons</strong> explain why a strong reference is not a destination.</div>
       <div><strong>Target reached rows</strong> are harvest/review candidates, not automatic sell orders.</div>
+      <div><strong>ENTRY_ZONE_REACHED</strong> is separate from target state and is not buy permission.</div>
+      <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
+      <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
       <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction, does not imply buy/sell, and indicates the strategy/advice map should be refreshed.</div>
       <div><strong>Fresh green rows</strong> = newly updated/fresh map context.</div>
       <div><strong>Red rows</strong> = stale, invalidated, or recompute-needed map context.</div>

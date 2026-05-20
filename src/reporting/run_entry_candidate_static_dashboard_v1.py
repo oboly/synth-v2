@@ -15,6 +15,12 @@ from src.market_data.market_price_snapshot_v1 import (
     fetch_latest_prices_by_symbol,
 )
 from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
+from src.reporting.entry_zone_state_v1 import (
+    classify_entry_zone_state,
+    classify_target_state,
+    confirmation_state,
+    promotion_blockers,
+)
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 
 
@@ -152,6 +158,11 @@ def css_class(value: str | None) -> str:
         "TARGET_REACHED_STALE",
         "INVALIDATION_NEAR",
         "RECLAIM_NEAR",
+        "ENTRY_ZONE_REACHED",
+        "REACTION_ZONE_REACHED",
+        "ENTRY_ZONE_NEAR",
+        "REACTION_ZONE_NEAR",
+        "CONFIRMATION_PENDING",
     }:
         return "warn"
     if normalized in {
@@ -407,6 +418,29 @@ def enriched_rows(
         enriched["lifecycle_state"] = lifecycle.lifecycle_state
         enriched["recompute_needed"] = lifecycle.recompute_needed
         enriched["recompute_reason"] = lifecycle.recompute_reason
+        enriched["entry_state"] = classify_entry_zone_state(
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            entry_zone_low=row.get("entry_zone_low"),
+            entry_zone_high=row.get("entry_zone_high"),
+        )
+        enriched["target_state"] = classify_target_state(
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            tp_zone_low=row.get("tp_zone_low"),
+            tp_zone_high=row.get("tp_zone_high"),
+        )
+        enriched["confirmation_state"] = confirmation_state(
+            advice_action=row.get("advice_action"),
+            policy_decision=row.get("policy_decision"),
+        )
+        if str(enriched["entry_state"]).endswith("_REACHED") and group != "PAPER_BUY_READY":
+            enriched["promotion_blockers"] = promotion_blockers(
+                enriched,
+                candidate_group=group,
+            )
+        else:
+            enriched["promotion_blockers"] = []
         enriched["fresh_map_badge"] = fresh_map_badge(
             row.get("asof_ts_utc"),
             now_utc=now_utc,
@@ -438,6 +472,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         group = str(row.get("candidate_group") or "")
         allowed_now = bool_text(row.get("allowed_now"))
         reason_codes = ", ".join(str(code) for code in row.get("candidate_reason_codes", []))
+        blockers = ", ".join(str(code) for code in row.get("promotion_blockers", []))
         row_class = workflow_row_class(
             lifecycle_state=str(row.get("lifecycle_state") or ""),
             recompute_needed=bool(row.get("recompute_needed")),
@@ -461,6 +496,10 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             f"<td class='num'>{esc(pct_text(row.get('confidence_score')))}</td>"
             f"<td><span class='pill {css_class(row.get('risk_label'))}'>{esc(row.get('risk_label'))}</span></td>"
             f"<td class='num sticky-price'>{esc(dec_text(row.get('current_price')))}</td>"
+            f"<td><span class='pill {css_class(row.get('entry_state'))}'>{esc(row.get('entry_state'))}</span></td>"
+            f"<td><span class='pill {css_class(row.get('target_state'))}'>{esc(row.get('target_state'))}</span></td>"
+            f"<td><span class='pill {css_class(row.get('confirmation_state'))}'>{esc(row.get('confirmation_state'))}</span></td>"
+            f"<td class='small'>{esc(blockers)}</td>"
             f"<td>{lifecycle_badges_html(str(row.get('lifecycle_state') or ''), str(row.get('fresh_map_badge') or ''))}</td>"
             f"<td><span class='pill {css_class('MAP_RECOMPUTE_NEEDED' if row.get('recompute_needed') else 'ACTIVE_MAP')}'>{'YES' if row.get('recompute_needed') else 'NO'}</span></td>"
             f"<td class='small'>{esc(row.get('recompute_reason'))}</td>"
@@ -492,6 +531,10 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             <th>Confidence</th>
             <th>Risk label</th>
             <th class="sticky-price">Current price</th>
+            <th>Entry state</th>
+            <th>Target state</th>
+            <th>Confirmation</th>
+            <th>Promotion blockers</th>
             <th>Lifecycle state</th>
             <th>Recompute needed</th>
             <th>Recompute reason</th>
@@ -560,6 +603,10 @@ def render_html(
       <div><strong>Entry candidates</strong> are market-only and account-agnostic.</div>
       <div><strong>PAPER_BUY_READY</strong> is not an order.</div>
       <div><strong>RECLAIM_NEAR</strong> means watch for map invalidation/reclaim, not automatic buy.</div>
+      <div><strong>ENTRY_ZONE_REACHED</strong> means price is in the entry/reaction zone; it is separate from target state and is not buy permission.</div>
+      <div><strong>CONFIRMATION_PENDING</strong> means setup is in-zone but still waiting for policy/advice confirmation.</div>
+      <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
+      <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
       <div><strong>Account sizing/permission</strong> belongs later in decision_gate.</div>
       <div><strong>Rotation preview</strong> remains for existing positions only.</div>
       <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction, does not imply buy/sell, and indicates the strategy/advice map should be refreshed.</div>
