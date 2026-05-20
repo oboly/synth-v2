@@ -17,6 +17,10 @@ from src.reporting.entry_zone_state_v1 import (
     confirmation_display_state,
 )
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
+from src.reporting.run_fast_recompute_lifecycle_v1 import (
+    build_recompute_rows,
+    render_rows_table as render_recompute_rows_table,
+)
 from src.reporting.next_zone_preview_v1 import (
     NextZonePreview,
     format_zone,
@@ -637,6 +641,12 @@ def render_html(
     ]
     held_row_by_symbol = {row.position_symbol: row for row in rows}
     ranked_candidates = rank_market_candidates(advice_by_symbol, current_price_by_symbol)
+    recompute_rows = build_recompute_rows(
+        list(advice_by_symbol.values()),
+        venue=venue,
+        interval=interval,
+        price_by_symbol=price_by_symbol,
+    )
 
     def table_rows(table_rows: list[Any]) -> str:
         out = []
@@ -908,6 +918,15 @@ def render_html(
         </section>
         """
 
+    def recompute_lifecycle_section() -> str:
+        return f"""
+        <section class="card priority">
+          <h2>Maps needing refresh <span class="muted">({len(recompute_rows)})</span></h2>
+          <p class="muted small">Refresh candidate, not trade advice. Market-only worklist for stale, finished, reclaimed, or invalidated maps.</p>
+          {render_recompute_rows_table(recompute_rows, limit=20)}
+        </section>
+        """
+
     def section(title: str, table_rows_data: list[Any], class_name: str = "") -> str:
         section_class = f"card {class_name}".strip()
         return f"""
@@ -997,6 +1016,7 @@ def render_html(
       <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
       <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
       <div><strong>Positions value</strong> uses latest market_price_snapshot when available, with ACCOUNT_POSITION_MARK_FALLBACK only when current market price is missing. Asset positions only; excludes EUR cash.</div>
+      <div><strong>Maps needing refresh</strong> are refresh candidates, not trade advice.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
@@ -1010,6 +1030,7 @@ def render_html(
     </div>
   </header>
   <main>
+    {recompute_lifecycle_section()}
     {candidate_diagnostics_section()}
     {section("TP / harvest / reduce review", tp_harvest_rows, "harvest")}
     {section("Downside target / support / recompute review", downside_target_rows, "downside")}
