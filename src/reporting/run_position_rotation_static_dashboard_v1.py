@@ -17,6 +17,10 @@ from src.reporting.entry_zone_state_v1 import (
     confirmation_display_state,
 )
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
+from src.reporting.intrabar_lifecycle_context_v1 import (
+    build_intrabar_lifecycle_context_rows,
+    rows_by_symbol as intrabar_rows_by_symbol,
+)
 from src.reporting.run_fast_recompute_lifecycle_v1 import (
     build_recompute_rows,
     render_rows_table as render_recompute_rows_table,
@@ -311,6 +315,10 @@ def pill_class(text: str | None) -> str:
         or "WAIT_FOR_PULLBACK" in value
         or "OPPORTUNITY_REVIEW" in value
         or "REFRESH_NEEDED_REVIEW" in value
+        or "INTRABAR_TARGET_TOUCHED" in value
+        or "INTRABAR_RECLAIM_TOUCHED" in value
+        or "INTRABAR_EXTENSION_CONTINUING" in value
+        or "INTRABAR_MONITOR_RECOMPUTE" in value
     ):
         return pill_classes("warn", value)
     if (
@@ -331,6 +339,10 @@ def pill_class(text: str | None) -> str:
         or "MARKET_PRICE_SNAPSHOT" in value
         or "CONTEXT_ONLY" in value
         or "ACTIVE_REVIEW_CONTEXT" in value
+        or "INTRABAR_ACTIVE" in value
+        or "PRICE_SNAPSHOT_FRESH" in value
+        or "LTF_CANDLES_FRESH" in value
+        or "NO_INTRABAR_RECOMPUTE_HINT" in value
     ):
         return pill_classes("ok", value)
     if (
@@ -338,8 +350,22 @@ def pill_class(text: str | None) -> str:
         or "STALE_APLUS_CONTEXT" in value
         or "NO_CHASE_WITHOUT_NEW_ZONE" in value
         or "CURRENT_CAUTION_CONTEXT" in value
+        or "INTRABAR_TARGET_OVERSHOT" in value
+        or "INTRABAR_RECLAIM_CONFIRMED" in value
+        or "INTRABAR_RECOMPUTE_REVIEW" in value
+        or "PRICE_SNAPSHOT_STALE" in value
+        or "LTF_CANDLES_STALE" in value
+        or "LTF_HISTORY_SHORT" in value
     ):
         return pill_classes("warn", value)
+    if (
+        "INTRABAR_INVALIDATION_TOUCHED" in value
+        or "INTRABAR_UNKNOWN" in value
+        or "LTF_MISSING" in value
+        or "STRUCTURAL_MAP_MISSING" in value
+        or "NO_STRUCTURAL_MAP" in value
+    ):
+        return pill_classes("bad", value)
     if "ACCOUNT_POSITION_MARK_FALLBACK" in value:
         return pill_classes("warn", value)
     return pill_classes("muted", value)
@@ -545,6 +571,23 @@ def severity_html(severity: Any) -> str:
     )
 
 
+def intrabar_html(row: Any | None) -> str:
+    if row is None:
+        return "<span class='muted small'>not available</span>"
+    quality = "".join(
+        f"<span class='pill {pill_class(part)}'>{esc(part)}</span>"
+        for part in str(row.data_quality_state or "").split(";")
+        if part
+    )
+    return (
+        f"<div><span class='pill {pill_class(row.intrabar_lifecycle_state)}'>{esc(row.intrabar_lifecycle_state)}</span></div>"
+        f"<div><span class='pill {pill_class(row.intrabar_recompute_hint)}'>{esc(row.intrabar_recompute_hint)}</span></div>"
+        f"<div class='muted small'>source={esc(row.price_source)} · 15m={esc(row.latest_15m_close_ts_utc or 'missing')}</div>"
+        f"<div>{quality}</div>"
+        "<div class='muted small'>Intrabar context, not trade advice.</div>"
+    )
+
+
 def fetch_latest_eur_balance_snapshot(
     conn: Any,
     *,
@@ -586,6 +629,7 @@ def render_html(
     eur_balance: EurBalanceSnapshot | None,
     advice_by_symbol: dict[str, dict[str, Any]],
     market_breath_by_symbol: dict[str, dict[str, Any]] | None = None,
+    intrabar_by_symbol: dict[str, Any] | None = None,
 ) -> str:
     local_ts = now_local_label()
     now_utc = datetime.now(UTC)
@@ -767,6 +811,7 @@ def render_html(
                 risk_state=row.risk_state,
                 price_progress_state=price_progress.progress_state,
             )
+            intrabar_row = (intrabar_by_symbol or {}).get(row.position_symbol)
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -782,6 +827,7 @@ def render_html(
                 f"<td><span class='pill {pill_class(row.advice_action)}'>{esc(row.advice_action)}</span></td>"
                 f"<td><span class='pill {pill_class(row.aplus_bucket)}'>{esc(row.aplus_bucket)}</span></td>"
                 f"<td>{severity_html(severity)}</td>"
+                f"<td>{intrabar_html(intrabar_row)}</td>"
                 f"<td class='num sticky-price'>{esc(dec_text(current_price, '0.000000'))}</td>"
                 f"<td class='num'>{esc(dec_text(latest_price_age_min, '0.1'))}</td>"
                 f"<td>{progress_html}</td>"
@@ -901,6 +947,7 @@ def render_html(
                 entry_state=entry_state,
                 price_progress_state=price_progress.progress_state,
             )
+            intrabar_row = (intrabar_by_symbol or {}).get(symbol)
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -915,6 +962,7 @@ def render_html(
                 f"<td>{esc(None if not advice else advice.get('advice_state'))}</td>"
                 f"<td><span class='pill {pill_class(None if not advice else advice.get('advice_action'))}'>{esc(None if not advice else advice.get('advice_action'))}</span></td>"
                 f"<td>{severity_html(severity)}</td>"
+                f"<td>{intrabar_html(intrabar_row)}</td>"
                 f"<td>{esc(None if not advice else advice.get('leg_direction'))}</td>"
                 f"<td><span class='pill {pill_class(entry_state)}'>{esc(entry_state)}</span></td>"
                 f"<td>{progress_html}</td>"
@@ -954,6 +1002,7 @@ def render_html(
                   <th>Policy</th>
                   <th>Action</th>
                   <th>Severity / Substate</th>
+                  <th>Intrabar lifecycle</th>
                   <th>Leg</th>
                   <th>Entry state</th>
                   <th>Price progress</th>
@@ -1010,6 +1059,7 @@ def render_html(
                   <th>Action</th>
                   <th>A+</th>
                   <th>Severity / Substate</th>
+                  <th>Intrabar lifecycle</th>
                   <th class="sticky-price">Current price</th>
                   <th>Price age min</th>
                   <th>Price progress</th>
@@ -1081,6 +1131,7 @@ def render_html(
       <div><strong>Positions value</strong> uses latest market_price_snapshot when available, with ACCOUNT_POSITION_MARK_FALLBACK only when current market price is missing. Asset positions only; excludes EUR cash.</div>
       <div><strong>Maps needing refresh</strong> are refresh candidates, not trade advice.</div>
       <div><strong>Severity / Substate</strong> separates hard blocks, stale A+ context, reclaim review, wait-for-reclaim, and momentum-extension review. These labels are review context, not trade advice.</div>
+      <div><strong>Intrabar lifecycle</strong> is a 15m/current-price overlay against the current 4h structural map. It is context only and does not change decisions or execution.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
@@ -1197,6 +1248,14 @@ def main() -> int:
             symbols=price_symbols,
         )
         market_breath_by_symbol = market_breath_rows_by_symbol(market_breath_rows)
+        intrabar_rows = build_intrabar_lifecycle_context_rows(
+            conn,
+            venue=args.venue,
+            quote_currency=args.quote,
+            structural_interval_code=args.interval,
+            symbols=price_symbols,
+        )
+        intrabar_by_symbol = intrabar_rows_by_symbol(intrabar_rows)
         eur_balance = fetch_latest_eur_balance_snapshot(
             conn,
             trading_account_id=args.trading_account_id,
@@ -1227,6 +1286,7 @@ def main() -> int:
             eur_balance=eur_balance,
             advice_by_symbol=advice_by_symbol,
             market_breath_by_symbol=market_breath_by_symbol,
+            intrabar_by_symbol=intrabar_by_symbol,
         ),
         encoding="utf-8",
     )

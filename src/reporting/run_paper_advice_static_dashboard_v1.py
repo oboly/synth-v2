@@ -26,6 +26,10 @@ from src.reporting.entry_zone_state_v1 import (
     promotion_blockers,
 )
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
+from src.reporting.intrabar_lifecycle_context_v1 import (
+    build_intrabar_lifecycle_context_rows,
+    rows_by_symbol as intrabar_rows_by_symbol,
+)
 from src.reporting.market_breath_context_bridge_v1 import (
     build_market_breath_context_rows,
     rows_by_symbol as market_breath_rows_by_symbol,
@@ -313,6 +317,26 @@ def css_class(value: str | None) -> str:
         "CURRENT_CAUTION_CONTEXT": "block",
         "ACTIVE_REVIEW_CONTEXT": "context",
         "SETUP_CONTEXT_ONLY": "muted",
+        "INTRABAR_ACTIVE": "good",
+        "INTRABAR_TARGET_TOUCHED": "watch",
+        "INTRABAR_TARGET_OVERSHOT": "block",
+        "INTRABAR_RECLAIM_TOUCHED": "watch",
+        "INTRABAR_RECLAIM_CONFIRMED": "block",
+        "INTRABAR_INVALIDATION_TOUCHED": "danger",
+        "INTRABAR_EXTENSION_CONTINUING": "watch",
+        "INTRABAR_RETESTING_NEW_ZONE": "watch",
+        "INTRABAR_UNKNOWN": "muted",
+        "INTRABAR_RECOMPUTE_REVIEW": "block",
+        "INTRABAR_MONITOR_RECOMPUTE": "watch",
+        "NO_INTRABAR_RECOMPUTE_HINT": "muted",
+        "NO_STRUCTURAL_MAP": "danger",
+        "PRICE_SNAPSHOT_FRESH": "good",
+        "PRICE_SNAPSHOT_STALE": "block",
+        "LTF_CANDLES_FRESH": "good",
+        "LTF_CANDLES_STALE": "block",
+        "LTF_HISTORY_SHORT": "block",
+        "LTF_MISSING": "danger",
+        "STRUCTURAL_MAP_MISSING": "danger",
     }
 
     return pill_classes(mapping.get(normalized, "muted"), normalized)
@@ -399,6 +423,23 @@ def advice_severity_html(severity: Any) -> str:
         f'<div><span class="pill {css_class(severity.advice_severity)}">{esc(severity.advice_severity)}</span></div>'
         f'<div><span class="pill {css_class(severity.advice_substate)}">{esc(severity.advice_substate)}</span></div>'
         f'<div class="muted small">{esc(severity.display_note)}</div>'
+    )
+
+
+def intrabar_context_html(row: Any | None) -> str:
+    if not row:
+        return '<span class="muted small">not available</span>'
+    quality_labels = "".join(
+        f'<span class="pill {css_class(part)}">{esc(part)}</span>'
+        for part in str(row.data_quality_state or "").split(";")
+        if part
+    )
+    return (
+        f'<div><span class="pill {css_class(row.intrabar_lifecycle_state)}">{esc(row.intrabar_lifecycle_state)}</span></div>'
+        f'<div><span class="pill {css_class(row.intrabar_recompute_hint)}">{esc(row.intrabar_recompute_hint)}</span></div>'
+        f'<div class="muted small">source={esc(row.price_source)} · 15m={esc(row.latest_15m_close_ts_utc or "missing")}</div>'
+        f'<div class="badge-row">{quality_labels}</div>'
+        '<div class="muted small">Intrabar context, not trade advice.</div>'
     )
 
 
@@ -885,7 +926,11 @@ def render_count_cards(counts: list[dict[str, Any]]) -> str:
     return "\n".join(cards)
 
 
-def render_table(rows: list[dict[str, Any]], market_breath_by_symbol: dict[str, dict[str, Any]] | None = None) -> str:
+def render_table(
+    rows: list[dict[str, Any]],
+    market_breath_by_symbol: dict[str, dict[str, Any]] | None = None,
+    intrabar_by_symbol: dict[str, Any] | None = None,
+) -> str:
     if not rows:
         return '<div class="empty">No rows.</div>'
 
@@ -898,7 +943,9 @@ def render_table(rows: list[dict[str, Any]], market_breath_by_symbol: dict[str, 
         leg_direction = str(row.get("leg_direction") or "")
 
         reason_codes = reason_codes_display(row)
-        market_breath_row = (market_breath_by_symbol or {}).get(str(row.get("symbol") or "").upper())
+        symbol = str(row.get("symbol") or "").upper()
+        market_breath_row = (market_breath_by_symbol or {}).get(symbol)
+        intrabar_row = (intrabar_by_symbol or {}).get(symbol)
         setup_reason = setup_fail_primary_reason(row)
         setup_reason_html = ""
         if setup_reason:
@@ -1039,6 +1086,7 @@ def render_table(rows: list[dict[str, Any]], market_breath_by_symbol: dict[str, 
                 <td>{esc(row.get("policy_decision"))}</td>
                 <td>{esc(row.get("aplus_bucket"))}</td>
                 <td>{market_breath_context_html(market_breath_row)}</td>
+                <td>{intrabar_context_html(intrabar_row)}</td>
                 <td>{advice_severity_html(severity)}</td>
                 <td class="muted small">{esc(reason_codes)}</td>
             </tr>
@@ -1072,6 +1120,7 @@ def render_table(rows: list[dict[str, Any]], market_breath_by_symbol: dict[str, 
                     <th>Policy</th>
                     <th>A+</th>
                     <th>Market Breath Context</th>
+                    <th>Intrabar Lifecycle</th>
                     <th>Severity / Substate</th>
                     <th>Reasons</th>
                 </tr>
@@ -1094,6 +1143,7 @@ def render_html(
     counts: list[dict[str, Any]],
     runtime: dict[str, Any] | None,
     market_breath_by_symbol: dict[str, dict[str, Any]] | None = None,
+    intrabar_by_symbol: dict[str, Any] | None = None,
 ) -> str:
     generated_ts = datetime.now(UTC).replace(tzinfo=None)
     primary_rows, expired_rows, defensive_rows = split_rows(rows)
@@ -1345,6 +1395,7 @@ def render_html(
                     <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
                     <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
                     <div><strong>Severity / Substate</strong>: Review context, not trade advice. Soft caution is not permission; stale A+ context is not a hard current veto by itself.</div>
+                    <div><strong>Intrabar lifecycle</strong>: 15m/current-price overlay against the 4h structural map. It is context only and does not change paper advice permission.</div>
                 </div>
             </div>
             <div class="badge">broker_private_calls=0 · broker_calls=0 · broker_writes=0 · order_submission=0 · executor=none · account_awareness=0</div>
@@ -1356,17 +1407,17 @@ def render_html(
 
         <section class="panel">
             <h2>Navigation candidates</h2>
-            {render_table(primary_rows, market_breath_by_symbol)}
+            {render_table(primary_rows, market_breath_by_symbol, intrabar_by_symbol)}
         </section>
 
         <section class="panel">
             <h2>Expired / recompute-needed maps</h2>
-            {render_table(expired_rows, market_breath_by_symbol)}
+            {render_table(expired_rows, market_breath_by_symbol, intrabar_by_symbol)}
         </section>
 
         <section class="panel">
             <h2>Defensive / no-new-buy rows</h2>
-            {render_table(defensive_rows, market_breath_by_symbol)}
+            {render_table(defensive_rows, market_breath_by_symbol, intrabar_by_symbol)}
         </section>
 
         <section class="footer">
@@ -1438,6 +1489,14 @@ def main() -> int:
             symbols=sorted({str(row.get("symbol") or "").upper() for row in rows}),
         )
         market_breath_by_symbol = market_breath_rows_by_symbol(market_breath_rows)
+        intrabar_rows = build_intrabar_lifecycle_context_rows(
+            conn,
+            venue=str(args.venue),
+            quote_currency=str(args.quote),
+            structural_interval_code=str(args.interval),
+            symbols=sorted({str(row.get("symbol") or "").upper() for row in rows}),
+        )
+        intrabar_by_symbol = intrabar_rows_by_symbol(intrabar_rows)
     finally:
         conn.close()
 
@@ -1457,6 +1516,7 @@ def main() -> int:
         counts=counts,
         runtime=runtime,
         market_breath_by_symbol=market_breath_by_symbol,
+        intrabar_by_symbol=intrabar_by_symbol,
     )
 
     write_html(output_path, html_content)
@@ -1471,6 +1531,7 @@ def main() -> int:
                     "lifecycle_candle_interval": str(args.lifecycle_candle_interval),
                     "market_price_snapshot_rows": len(price_by_symbol),
                     "market_breath_context_rows": len(market_breath_by_symbol),
+                    "intrabar_lifecycle_context_rows": len(intrabar_by_symbol),
                     "quote": str(args.quote).upper(),
                     "rows": len(rows),
                     "output_html": str(output_path),
