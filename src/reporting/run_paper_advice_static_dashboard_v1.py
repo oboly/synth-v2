@@ -24,6 +24,8 @@ from src.reporting.entry_zone_state_v1 import (
     classify_target_state,
     confirmation_display_state,
     promotion_blockers,
+    semantic_advice_action_display,
+    semantic_entry_display_state,
 )
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 from src.reporting.intrabar_lifecycle_context_v1 import (
@@ -248,6 +250,8 @@ def css_class(value: str | None) -> str:
         "ENTRY_ZONE_NEAR": "watch",
         "REACTION_ZONE_REACHED": "watch",
         "REACTION_ZONE_NEAR": "watch",
+        "IN_ENTRY_ZONE": "watch",
+        "IN_REACTION_ZONE": "watch",
         "CONFIRMATION_PENDING": "watch",
         "POST_ENTRY_PROGRESS": "watch",
         "TARGET_APPROACHING": "watch",
@@ -314,6 +318,9 @@ def css_class(value: str | None) -> str:
         "STALE_APLUS_CONTEXT": "muted",
         "REFRESH_NEEDED_REVIEW": "watch",
         "NO_CHASE_WITHOUT_NEW_ZONE": "block",
+        "TARGET_REACHED_WAIT_FOR_REMAP": "watch",
+        "EXTENSION_REVIEW_NO_CHASE": "watch",
+        "WAIT_FOR_NEW_MAP": "watch",
         "CURRENT_CAUTION_CONTEXT": "block",
         "ACTIVE_REVIEW_CONTEXT": "context",
         "SETUP_CONTEXT_ONLY": "muted",
@@ -392,6 +399,8 @@ def next_zone_html(preview: NextZonePreview) -> str:
         )
     if preview.next_zone_reason:
         parts.append(f'<div class="muted small">{esc(preview.next_zone_reason)}</div>')
+    if preview.next_zone_state in {"RECLAIM_NEXT_ZONE_PREVIEW", "BREAKDOWN_NEXT_ZONE_PREVIEW"}:
+        parts.append('<div class="muted small">Market context, not permission.</div>')
     return "".join(parts)
 
 
@@ -1006,6 +1015,11 @@ def render_table(
             f'<span class="pill {css_class(price_progress.progress_state)}">{esc(price_progress.progress_state)}</span>'
             f"{progress_labels}"
         )
+        entry_display_state = semantic_entry_display_state(
+            entry_state=entry_state,
+            price_progress_state=price_progress.progress_state,
+            price_progress_labels=price_progress.labels,
+        )
         confirm_state = confirmation_display_state(
             advice_action=row.get("advice_action"),
             policy_decision=row.get("policy_decision"),
@@ -1023,6 +1037,11 @@ def render_table(
             risk_state=None,
             entry_state=entry_state,
             price_progress_state=price_progress.progress_state,
+        )
+        action_display = semantic_advice_action_display(
+            advice_action=row.get("advice_action"),
+            lifecycle_state=lifecycle.lifecycle_state,
+            intrabar_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
         )
         blockers = promotion_blockers(row, candidate_group=None) if entry_state.endswith("_REACHED") else []
         row_classes = []
@@ -1058,12 +1077,12 @@ def render_table(
                     {badge_html}
                 </td>
                 <td><span class="pill {css_class(advice_state)}">{esc(advice_state)}</span></td>
-                <td>{esc(row.get("advice_action"))}</td>
+                <td><span class="pill {css_class(action_display)}">{esc(action_display)}</span><div class="muted small">policy/action: {esc(row.get("advice_action"))}</div></td>
                 <td class="mono right">{fmt_score(row.get("confidence_score"))}</td>
                 <td><span class="pill {css_class(risk_label)}">{esc(risk_label)}</span></td>
                 <td class="mono right sticky-price">{esc(fmt_snapshot_price(current_price))}</td>
                 <td class="mono right">{fmt_decimal(row.get("price_age_min"), places=1)}</td>
-                <td><span class="pill {css_class(entry_state)}">{esc(entry_state)}</span></td>
+                <td><span class="pill {css_class(entry_display_state)}">{esc(entry_display_state)}</span><div class="muted small">raw: {esc(entry_state)}</div></td>
                 <td>{progress_html}</td>
                 <td><span class="pill {css_class(target_state)}">{esc(target_state)}</span></td>
                 <td><span class="pill {css_class(confirm_state)}">{esc(confirm_state)}</span></td>
@@ -1388,12 +1407,14 @@ def render_html(
                 {cockpit_nav()}
                 <div class="legend">
                     <div><strong>ENTRY_ZONE_REACHED</strong> means price is in the entry/reaction zone; it is separate from target state and is not buy permission.</div>
+                    <div><strong>Entry state precedence</strong>: target touched, post-entry progress, and entry-window-passed labels take precedence over near-entry labels.</div>
                     <div><strong>CONFIRMATION_PENDING</strong> means price/setup still needs policy or advice confirmation.</div>
                     <div><strong>Price progress</strong> shows where current price sits between entry/reaction zone and target. TARGET_PENDING can still be true while TARGET_NEAR is shown.</div>
                     <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
                     <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
                     <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
                     <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
+                    <div><strong>Market context is not trade permission.</strong> Policy blocks and next-zone previews can coexist.</div>
                     <div><strong>Severity / Substate</strong>: Review context, not trade advice. Soft caution is not permission; stale A+ context is not a hard current veto by itself.</div>
                     <div><strong>Intrabar lifecycle</strong>: 15m/current-price overlay against the 4h structural map. It is context only and does not change paper advice permission.</div>
                 </div>

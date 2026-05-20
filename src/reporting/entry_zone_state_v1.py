@@ -188,6 +188,69 @@ def confirmation_display_state(
     return ""
 
 
+def semantic_entry_display_state(
+    *,
+    entry_state: Any,
+    price_progress_state: Any,
+    price_progress_labels: tuple[str, ...] | list[str] = (),
+) -> str:
+    """Choose the primary entry label for dashboards without changing source state."""
+    entry = str(entry_state or "").upper()
+    progress = str(price_progress_state or "").upper()
+    labels = {str(label or "").upper() for label in price_progress_labels}
+
+    if progress in {"TARGET_REACHED", "DOWNSIDE_TARGET_REACHED"}:
+        return progress
+    if "ENTRY_WINDOW_PASSED" in labels:
+        return "ENTRY_WINDOW_PASSED"
+    if progress == "POST_ENTRY_PROGRESS":
+        return "POST_ENTRY_PROGRESS"
+    if progress in {"ENTRY_ZONE_ACTIVE", "REACTION_ZONE_ACTIVE"}:
+        return "IN_ENTRY_ZONE" if progress == "ENTRY_ZONE_ACTIVE" else "IN_REACTION_ZONE"
+    if entry in {"ENTRY_ZONE_REACHED", "REACTION_ZONE_REACHED"}:
+        return "IN_ENTRY_ZONE" if entry == "ENTRY_ZONE_REACHED" else "IN_REACTION_ZONE"
+    if entry in {"ENTRY_ZONE_NEAR", "REACTION_ZONE_NEAR"}:
+        return entry
+    if entry in {"ENTRY_ZONE_PENDING", "REACTION_ZONE_PENDING"}:
+        return entry
+    return "UNKNOWN"
+
+
+def semantic_advice_action_display(
+    *,
+    advice_action: Any,
+    lifecycle_state: Any = None,
+    intrabar_state: Any = None,
+) -> str:
+    """Display target/extension context before generic context-only wait labels."""
+    action = str(advice_action or "").upper()
+    lifecycle = str(lifecycle_state or "").upper()
+    intrabar = str(intrabar_state or "").upper()
+
+    target_touched = (
+        lifecycle in {"TARGET_REACHED", "TARGET_REACHED_STALE"}
+        or intrabar == "INTRABAR_TARGET_TOUCHED"
+    )
+    extension = (
+        lifecycle == "TARGET_OVERSHOT"
+        or intrabar in {"INTRABAR_TARGET_OVERSHOT", "INTRABAR_EXTENSION_CONTINUING"}
+    )
+
+    if action == "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP":
+        if extension:
+            return "EXTENSION_REVIEW_NO_CHASE"
+        if target_touched:
+            return "TARGET_REACHED_WAIT_FOR_REMAP"
+    if lifecycle in {"TARGET_REACHED_STALE", "TARGET_OVERSHOT"} and action in {
+        "DO_NOT_ADD",
+        "WATCH_ONLY",
+        "CONTEXT_ONLY",
+        "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP",
+    }:
+        return "NO_CHASE_WITHOUT_NEW_ZONE"
+    return action
+
+
 def promotion_blockers(row: dict[str, Any], *, candidate_group: str | None = None) -> list[str]:
     blockers: list[str] = []
     action = str(row.get("advice_action") or "").upper()

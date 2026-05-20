@@ -21,6 +21,8 @@ from src.reporting.entry_zone_state_v1 import (
     classify_target_state,
     confirmation_display_state,
     promotion_blockers,
+    semantic_advice_action_display,
+    semantic_entry_display_state,
 )
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 from src.reporting.next_zone_preview_v1 import (
@@ -166,6 +168,8 @@ def css_class(value: str | None) -> str:
         "RECLAIM_NEAR",
         "ENTRY_ZONE_REACHED",
         "REACTION_ZONE_REACHED",
+        "IN_ENTRY_ZONE",
+        "IN_REACTION_ZONE",
         "ENTRY_ZONE_NEAR",
         "REACTION_ZONE_NEAR",
         "CONFIRMATION_PENDING",
@@ -213,6 +217,10 @@ def css_class(value: str | None) -> str:
         "NEXT_DOWNSIDE_EXTENSION",
         "BREAKDOWN_RETEST_RESISTANCE",
         "NEXT_DOWNSIDE_REACTION_TARGET",
+        "TARGET_REACHED_WAIT_FOR_REMAP",
+        "EXTENSION_REVIEW_NO_CHASE",
+        "NO_CHASE_WITHOUT_NEW_ZONE",
+        "WAIT_FOR_NEW_MAP",
     }:
         return pill_classes("warn", normalized)
     if normalized in {"TARGET_REACHED", "DOWNSIDE_TARGET_REACHED"}:
@@ -289,6 +297,8 @@ def next_zone_html(preview: NextZonePreview) -> str:
         )
     if preview.next_zone_reason:
         parts.append(f"<div class='muted small'>{esc(preview.next_zone_reason)}</div>")
+    if preview.next_zone_state in {"RECLAIM_NEXT_ZONE_PREVIEW", "BREAKDOWN_NEXT_ZONE_PREVIEW"}:
+        parts.append("<div class='muted small'>Market context, not permission.</div>")
     return "".join(parts)
 
 
@@ -521,6 +531,15 @@ def enriched_rows(
         )
         enriched["price_progress_state"] = price_progress.progress_state
         enriched["price_progress_labels"] = list(price_progress.labels)
+        enriched["entry_display_state"] = semantic_entry_display_state(
+            entry_state=enriched["entry_state"],
+            price_progress_state=price_progress.progress_state,
+            price_progress_labels=price_progress.labels,
+        )
+        enriched["advice_action_display"] = semantic_advice_action_display(
+            advice_action=row.get("advice_action"),
+            lifecycle_state=lifecycle.lifecycle_state,
+        )
         enriched["confirmation_state"] = confirmation_display_state(
             advice_action=row.get("advice_action"),
             policy_decision=row.get("policy_decision"),
@@ -608,13 +627,13 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             f"<td>{esc(row.get('policy_decision'))}</td>"
             f"<td><span class='pill {css_class(allowed_now)}'>{esc(allowed_now)}</span></td>"
             f"<td>{esc(row.get('advice_state'))}</td>"
-            f"<td><span class='pill {css_class(row.get('advice_action'))}'>{esc(row.get('advice_action'))}</span></td>"
+            f"<td><span class='pill {css_class(row.get('advice_action_display'))}'>{esc(row.get('advice_action_display'))}</span><div class='muted small'>policy/action: {esc(row.get('advice_action'))}</div></td>"
             f"<td><span class='pill {css_class(row.get('leg_direction'))}'>{esc(row.get('leg_direction'))}</span></td>"
             f"<td><span class='pill {css_class(row.get('aplus_bucket'))}'>{esc(row.get('aplus_bucket'))}</span></td>"
             f"<td class='num'>{esc(pct_text(row.get('confidence_score')))}</td>"
             f"<td><span class='pill {css_class(row.get('risk_label'))}'>{esc(row.get('risk_label'))}</span></td>"
             f"<td class='num sticky-price'>{esc(dec_text(row.get('current_price')))}</td>"
-            f"<td><span class='pill {css_class(row.get('entry_state'))}'>{esc(row.get('entry_state'))}</span></td>"
+            f"<td><span class='pill {css_class(row.get('entry_display_state'))}'>{esc(row.get('entry_display_state'))}</span><div class='muted small'>raw: {esc(row.get('entry_state'))}</div></td>"
             f"<td>{progress_html}</td>"
             f"<td><span class='pill {css_class(row.get('target_state'))}'>{esc(row.get('target_state'))}</span></td>"
             f"<td><span class='pill {css_class(row.get('confirmation_state'))}'>{esc(row.get('confirmation_state'))}</span></td>"
@@ -726,6 +745,7 @@ def render_html(
       <div><strong>PAPER_BUY_READY</strong> is not an order.</div>
       <div><strong>RECLAIM_NEAR</strong> means watch for map invalidation/reclaim, not automatic buy.</div>
       <div><strong>ENTRY_ZONE_REACHED</strong> means price is in the entry/reaction zone; it is separate from target state and is not buy permission.</div>
+      <div><strong>Entry state precedence</strong>: target touched, post-entry progress, and entry-window-passed labels take precedence over near-entry labels.</div>
       <div><strong>CONFIRMATION_PENDING</strong> means setup is in-zone but still waiting for policy/advice confirmation.</div>
       <div><strong>Price progress</strong> shows where current price sits between entry/reaction zone and target. TARGET_PENDING can still be true while TARGET_NEAR is shown.</div>
       <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
@@ -737,6 +757,7 @@ def render_html(
       <div><strong>Red rows</strong> = stale, invalidated, or recompute-needed map context.</div>
       <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
       <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
+      <div><strong>Market context is not trade permission.</strong> Policy blocks and next-zone previews can coexist.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>

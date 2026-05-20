@@ -15,6 +15,8 @@ from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
     classify_price_progress_state,
     confirmation_display_state,
+    semantic_advice_action_display,
+    semantic_entry_display_state,
 )
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 from src.reporting.intrabar_lifecycle_context_v1 import (
@@ -232,6 +234,49 @@ def pct_cell(value: Decimal | None, class_name: str | None = None) -> str:
     return f"<td class='num'><span class='pill {pill_class_name}'>{esc(text)}</span></td>"
 
 
+def entry_distance_cell(
+    *,
+    leg_direction: Any,
+    entry_zone_low: Decimal | None,
+    entry_zone_high: Decimal | None,
+    current_price: Decimal | None,
+) -> str:
+    if current_price is None or current_price <= 0:
+        return "<td class='num'></td>"
+    if entry_zone_low is None and entry_zone_high is None:
+        return "<td class='num'></td>"
+
+    low = entry_zone_low
+    high = entry_zone_high
+    if low is not None and high is not None:
+        low, high = min(low, high), max(low, high)
+    reference_low = low or high
+    reference_high = high or low
+    if reference_low is None or reference_high is None:
+        return "<td class='num'></td>"
+
+    leg = str(leg_direction or "").upper()
+    zone_name = "reaction" if leg == "DOWN" else "entry"
+
+    if reference_low <= current_price <= reference_high:
+        return f"<td class='num'><span class='pill ok'>inside {zone_name}</span></td>"
+
+    if current_price > reference_high:
+        pct = ((current_price / reference_high) - Decimal("1")) * Decimal("100")
+        css = "muted" if leg == "DOWN" else "warn"
+        return (
+            f"<td class='num'><span class='pill {css}'>"
+            f"above {zone_name} {esc(signed_pct_text(pct))}</span></td>"
+        )
+
+    pct = ((current_price / reference_low) - Decimal("1")) * Decimal("100")
+    css = "warn" if leg == "DOWN" else "muted"
+    return (
+        f"<td class='num'><span class='pill {css}'>"
+        f"below {zone_name} {esc(signed_pct_text(pct))}</span></td>"
+    )
+
+
 def price_age_min(snapshot: MarketPriceSnapshot | None, *, now_utc: datetime) -> Decimal | None:
     if snapshot is None:
         return None
@@ -287,6 +332,8 @@ def pill_class(text: str | None) -> str:
         or "UP_MAP_INVALIDATED_BY_BREAKDOWN" in value
         or "ENTRY_ZONE_REACHED" in value
         or "REACTION_ZONE_REACHED" in value
+        or "IN_ENTRY_ZONE" in value
+        or "IN_REACTION_ZONE" in value
         or "ENTRY_ZONE_NEAR" in value
         or "REACTION_ZONE_NEAR" in value
         or "CONFIRMATION_PENDING" in value
@@ -315,6 +362,9 @@ def pill_class(text: str | None) -> str:
         or "WAIT_FOR_PULLBACK" in value
         or "OPPORTUNITY_REVIEW" in value
         or "REFRESH_NEEDED_REVIEW" in value
+        or "TARGET_REACHED_WAIT_FOR_REMAP" in value
+        or "EXTENSION_REVIEW_NO_CHASE" in value
+        or "WAIT_FOR_NEW_MAP" in value
         or "INTRABAR_TARGET_TOUCHED" in value
         or "INTRABAR_RECLAIM_TOUCHED" in value
         or "INTRABAR_EXTENSION_CONTINUING" in value
@@ -560,6 +610,8 @@ def next_zone_html(preview: NextZonePreview) -> str:
         )
     if preview.next_zone_reason:
         parts.append(f"<div class='muted small'>{esc(preview.next_zone_reason)}</div>")
+    if preview.next_zone_state in {"RECLAIM_NEXT_ZONE_PREVIEW", "BREAKDOWN_NEXT_ZONE_PREVIEW"}:
+        parts.append("<div class='muted small'>Market context, not permission.</div>")
     return "".join(parts)
 
 
@@ -748,11 +800,6 @@ def render_html(
                 row.position_symbol,
                 PositionValuation(value_eur=None, source="VALUATION_UNKNOWN"),
             )
-            delta_entry_pct = entry_delta_pct(
-                entry_zone_low=row.entry_zone_low,
-                entry_zone_high=row.entry_zone_high,
-                current_price=current_price,
-            )
             delta_tp_pct = pct_delta(
                 midpoint_or_edge(row.tp_zone_low, row.tp_zone_high),
                 current_price,
@@ -778,6 +825,16 @@ def render_html(
                 tp_zone_low=row.tp_zone_low,
                 tp_zone_high=row.tp_zone_high,
                 in_position_context=True,
+            )
+            entry_display_state = semantic_entry_display_state(
+                entry_state=classify_entry_zone_state(
+                    leg_direction=row.leg_direction,
+                    current_price=current_price,
+                    entry_zone_low=row.entry_zone_low,
+                    entry_zone_high=row.entry_zone_high,
+                ),
+                price_progress_state=price_progress.progress_state,
+                price_progress_labels=price_progress.labels,
             )
             progress_labels = "".join(
                 f"<span class='pill {pill_class(label)}'>{esc(label)}</span>"
@@ -812,6 +869,11 @@ def render_html(
                 price_progress_state=price_progress.progress_state,
             )
             intrabar_row = (intrabar_by_symbol or {}).get(row.position_symbol)
+            action_display = semantic_advice_action_display(
+                advice_action=row.advice_action,
+                lifecycle_state=lifecycle.lifecycle_state,
+                intrabar_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
+            )
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -824,20 +886,20 @@ def render_html(
                 f"<td>{esc(row.selection_state)}</td>"
                 f"<td><span class='pill {pill_class(row.setup_filter_reason)}'>{esc(row.setup_filter_reason)}</span></td>"
                 f"<td>{esc(row.leg_direction)}</td>"
-                f"<td><span class='pill {pill_class(row.advice_action)}'>{esc(row.advice_action)}</span></td>"
+                f"<td><span class='pill {pill_class(action_display)}'>{esc(action_display)}</span><div class='muted small'>policy/action: {esc(row.advice_action)}</div></td>"
                 f"<td><span class='pill {pill_class(row.aplus_bucket)}'>{esc(row.aplus_bucket)}</span></td>"
                 f"<td>{severity_html(severity)}</td>"
                 f"<td>{intrabar_html(intrabar_row)}</td>"
                 f"<td class='num sticky-price'>{esc(dec_text(current_price, '0.000000'))}</td>"
                 f"<td class='num'>{esc(dec_text(latest_price_age_min, '0.1'))}</td>"
-                f"<td>{progress_html}</td>"
+                f"<td><span class='pill {pill_class(entry_display_state)}'>{esc(entry_display_state)}</span><div>{progress_html}</div></td>"
                 f"<td><span class='pill {pill_class(row.target_state)}'>{esc(row.target_state)}</span></td>"
                 f"<td><span class='pill {pill_class(row.risk_state)}'>{esc(row.risk_state)}</span></td>"
                 f"<td>{lifecycle_badges_html(lifecycle.lifecycle_state, fresh_badge)}</td>"
                 f"<td><span class='pill {pill_class('MAP_RECOMPUTE_NEEDED' if lifecycle.recompute_needed else 'ACTIVE_MAP')}'>{'YES' if lifecycle.recompute_needed else 'NO'}</span></td>"
                 f"<td class='small'>{esc(lifecycle.recompute_reason)}</td>"
                 f"<td>{next_zone_html(next_preview)}</td>"
-                f"{pct_cell(delta_entry_pct)}"
+                f"{entry_distance_cell(leg_direction=row.leg_direction, entry_zone_low=row.entry_zone_low, entry_zone_high=row.entry_zone_high, current_price=current_price)}"
                 f"{pct_cell(delta_tp_pct, target_pct_class(delta_tp_pct, context))}"
                 f"{pct_cell(delta_invalidation_pct, risk_pct_class(delta_invalidation_pct, context))}"
                 f"<td class='zone-value'>{esc(tp_zone)}</td>"
@@ -880,6 +942,11 @@ def render_html(
             progress_html = (
                 f"<span class='pill {pill_class(price_progress.progress_state)}'>{esc(price_progress.progress_state)}</span>"
                 f"{progress_labels}"
+            )
+            entry_display_state = semantic_entry_display_state(
+                entry_state=entry_state,
+                price_progress_state=price_progress.progress_state,
+                price_progress_labels=price_progress.labels,
             )
             confirm_state = confirmation_display_state(
                 advice_action=None if not advice else advice.get("advice_action"),
@@ -948,6 +1015,11 @@ def render_html(
                 price_progress_state=price_progress.progress_state,
             )
             intrabar_row = (intrabar_by_symbol or {}).get(symbol)
+            action_display = semantic_advice_action_display(
+                advice_action=None if not advice else advice.get("advice_action"),
+                lifecycle_state=lifecycle.lifecycle_state,
+                intrabar_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
+            )
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -960,11 +1032,11 @@ def render_html(
                 f"<td>{esc(None if not advice else advice.get('setup_filter_state'))}</td>"
                 f"<td><span class='pill {pill_class(None if not advice else advice.get('setup_filter_reason'))}'>{esc(None if not advice else advice.get('setup_filter_reason'))}</span></td>"
                 f"<td>{esc(None if not advice else advice.get('advice_state'))}</td>"
-                f"<td><span class='pill {pill_class(None if not advice else advice.get('advice_action'))}'>{esc(None if not advice else advice.get('advice_action'))}</span></td>"
+                f"<td><span class='pill {pill_class(action_display)}'>{esc(action_display)}</span><div class='muted small'>policy/action: {esc(None if not advice else advice.get('advice_action'))}</div></td>"
                 f"<td>{severity_html(severity)}</td>"
                 f"<td>{intrabar_html(intrabar_row)}</td>"
                 f"<td>{esc(None if not advice else advice.get('leg_direction'))}</td>"
-                f"<td><span class='pill {pill_class(entry_state)}'>{esc(entry_state)}</span></td>"
+                f"<td><span class='pill {pill_class(entry_display_state)}'>{esc(entry_display_state)}</span><div class='muted small'>raw: {esc(entry_state)}</div></td>"
                 f"<td>{progress_html}</td>"
                 f"<td><span class='pill {pill_class(confirm_state)}'>{esc(confirm_state)}</span></td>"
                 f"<td><span class='pill {pill_class(target_state)}'>{esc(target_state)}</span></td>"
@@ -1069,7 +1141,7 @@ def render_html(
                   <th>Recompute needed</th>
                   <th>Recompute reason</th>
                   <th>Next zones</th>
-                  <th>Δ entry %</th>
+                  <th>Entry distance</th>
                   <th>Δ target %</th>
                   <th>Δ risk %</th>
                   <th>TP / target zone</th>
@@ -1120,6 +1192,7 @@ def render_html(
       <div><strong>Exclusion reasons</strong> explain why a strong reference is not a destination.</div>
       <div><strong>Target reached rows</strong> are harvest/review candidates, not automatic sell orders.</div>
       <div><strong>ENTRY_ZONE_REACHED</strong> is separate from target state and is not buy permission.</div>
+      <div><strong>Entry distance</strong> is leg-aware display context. Above-entry BUY gaps are warnings, not green opportunity labels.</div>
       <div><strong>Price progress</strong> shows where current price sits between entry/reaction zone and target. TARGET_PENDING can still be true while TARGET_NEAR is shown.</div>
       <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
       <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
@@ -1128,6 +1201,7 @@ def render_html(
       <div><strong>Red rows</strong> = stale, invalidated, or recompute-needed map context.</div>
       <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
       <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
+      <div><strong>Market context is not trade permission.</strong> Policy blocks and next-zone previews can coexist.</div>
       <div><strong>Positions value</strong> uses latest market_price_snapshot when available, with ACCOUNT_POSITION_MARK_FALLBACK only when current market price is missing. Asset positions only; excludes EUR cash.</div>
       <div><strong>Maps needing refresh</strong> are refresh candidates, not trade advice.</div>
       <div><strong>Severity / Substate</strong> separates hard blocks, stale A+ context, reclaim review, wait-for-reclaim, and momentum-extension review. These labels are review context, not trade advice.</div>
