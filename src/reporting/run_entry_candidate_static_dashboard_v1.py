@@ -30,6 +30,10 @@ from src.reporting.next_zone_preview_v1 import (
     format_zone,
     preview_next_zones,
 )
+from src.reporting.policy_block_reason_display_v1 import (
+    block_reason_summary_text,
+    classify_policy_block_display,
+)
 
 
 REPORT_NAME = "entry_candidate_static_dashboard_v1"
@@ -158,7 +162,17 @@ def css_class(value: str | None) -> str:
     normalized = (value or "").upper()
     if normalized in {"PAPER_BUY_READY", "PASS", "UP", "WATCHLIST", "YES", "BUY_READY", "ALLOW"}:
         return pill_classes("ok", normalized)
-    if normalized in {"WATCH_FOR_CONFIRMATION", "RECLAIM_NEAR", "WATCH", "WATCH_ONLY", "MODERATE"}:
+    if normalized in {
+        "WATCH_FOR_CONFIRMATION",
+        "RECLAIM_NEAR",
+        "WATCH",
+        "WATCH_ONLY",
+        "MODERATE",
+        "BLOCK_MARKET_DAMAGE",
+        "BLOCK_SETUP_FILTER_FAIL",
+        "BLOCK_RECOMPUTE_PENDING",
+        "BLOCK_CHASE_RISK",
+    }:
         return pill_classes("warn", normalized)
     if normalized in {
         "TARGET_REACHED",
@@ -204,6 +218,7 @@ def css_class(value: str | None) -> str:
         "RECLAIM_NEXT_ZONE_PREVIEW",
         "BREAKDOWN_NEXT_ZONE_PREVIEW",
         "NEXT_ZONE_UNKNOWN",
+        "BLOCK_POLICY_UNCLASSIFIED",
     }:
         return pill_classes("bad", normalized)
     if normalized in {
@@ -227,6 +242,13 @@ def css_class(value: str | None) -> str:
         return pill_classes("warn", normalized)
     if normalized in {"ACTIVE_MAP", "CURRENT_MAP_ACTIVE"}:
         return pill_classes("ok", normalized)
+    if normalized in {
+        "BLOCK_SELECTION_NOT_ELIGIBLE",
+        "BLOCK_INSUFFICIENT_SAMPLE",
+        "LEGACY_CONTEXT_ONLY",
+        "READ_ONLY_APLUS_AVOID_CONTEXT",
+    }:
+        return pill_classes("muted", normalized)
     if normalized in {"CONTEXT_ONLY", "CORE_CONTEXT", "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP"}:
         return pill_classes("context", normalized)
     return pill_classes("muted", normalized)
@@ -658,6 +680,32 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             recompute_needed=bool(row.get("recompute_needed")),
             fresh_badge=str(row.get("fresh_map_badge") or ""),
         )
+        block_display = classify_policy_block_display(
+            row,
+            candidate_group=group,
+            lifecycle_state=str(row.get("lifecycle_state") or ""),
+            recompute_needed=bool(row.get("recompute_needed")),
+            recompute_reason=str(row.get("recompute_reason") or ""),
+            target_state=str(row.get("target_state") or ""),
+            entry_state=str(row.get("entry_state") or ""),
+            price_progress_state=str(row.get("price_progress_state") or ""),
+            extra_reason_codes=list(row.get("candidate_reason_codes", [])),
+        )
+        policy_html = f"{esc(row.get('policy_decision'))}"
+        if block_display is not None:
+            policy_html = (
+                f"<span class='pill {css_class(block_display.display_policy_label)}'>{esc(block_display.display_policy_label)}</span>"
+                f"<div class='muted small'>raw: {esc(block_display.raw_policy_state)}</div>"
+                f"<div class='muted small'>cause: {esc(block_display.block_primary_reason)}</div>"
+                f"<div class='muted small'>unblock: {esc(block_display.unblock_condition_label)}</div>"
+            )
+        action_label = row.get("advice_action_display")
+        action_class = css_class(str(action_label))
+        action_detail = f"policy/action: {esc(row.get('advice_action'))}"
+        if block_display is not None:
+            action_label = block_display.display_policy_label
+            action_class = css_class(block_display.display_policy_label)
+            action_detail = block_reason_summary_text(block_display)
         body.append(
             f"<tr class='{row_class}'>"
             f"<td class='num'>{esc(rank_text)}</td>"
@@ -667,10 +715,10 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             f"<td class='num'>{esc(dec_text(row.get('selection_score'), '0.0000'))}</td>"
             f"<td><span class='pill {css_class(row.get('setup_filter_state'))}'>{esc(row.get('setup_filter_state'))}</span></td>"
             f"<td><span class='pill {css_class(row.get('setup_filter_reason'))}'>{esc(row.get('setup_filter_reason'))}</span></td>"
-            f"<td>{esc(row.get('policy_decision'))}</td>"
+            f"<td>{policy_html}</td>"
             f"<td><span class='pill {css_class(allowed_now)}'>{esc(allowed_now)}</span></td>"
             f"<td>{esc(row.get('advice_state'))}</td>"
-            f"<td><span class='pill {css_class(row.get('advice_action_display'))}'>{esc(row.get('advice_action_display'))}</span><div class='muted small'>policy/action: {esc(row.get('advice_action'))}</div></td>"
+            f"<td><span class='pill {action_class}'>{esc(action_label)}</span><div class='muted small'>{esc(action_detail)}</div></td>"
             f"<td><span class='pill {css_class(row.get('leg_direction'))}'>{esc(row.get('leg_direction'))}</span></td>"
             f"<td><span class='pill {css_class(row.get('aplus_bucket'))}'>{esc(row.get('aplus_bucket'))}</span></td>"
             f"<td class='num'>{esc(pct_text(row.get('confidence_score')))}</td>"

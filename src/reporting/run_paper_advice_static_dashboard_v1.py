@@ -41,6 +41,10 @@ from src.reporting.next_zone_preview_v1 import (
     format_zone,
     preview_next_zones,
 )
+from src.reporting.policy_block_reason_display_v1 import (
+    block_reason_summary_text,
+    classify_policy_block_display,
+)
 from src.reporting.paper_advice_severity_calibration_v1 import (
     calibrate_paper_advice_severity,
 )
@@ -324,6 +328,14 @@ def css_class(value: str | None) -> str:
         "STALE": "block",
         "VERY_STALE": "danger",
         "LEGACY_CONTEXT_ONLY": "muted",
+        "READ_ONLY_APLUS_AVOID_CONTEXT": "muted",
+        "BLOCK_MARKET_DAMAGE": "watch",
+        "BLOCK_SETUP_FILTER_FAIL": "watch",
+        "BLOCK_RECOMPUTE_PENDING": "watch",
+        "BLOCK_CHASE_RISK": "watch",
+        "BLOCK_INSUFFICIENT_SAMPLE": "muted",
+        "BLOCK_SELECTION_NOT_ELIGIBLE": "muted",
+        "BLOCK_POLICY_UNCLASSIFIED": "watch",
         "READ_ONLY_APLUS_AVOID": "block",
         "HARD_BLOCK": "danger",
         "SOFT_BLOCK": "block",
@@ -485,9 +497,18 @@ def market_breath_context_html(row: dict[str, Any] | None) -> str:
 
 
 def advice_severity_html(severity: Any) -> str:
+    policy_block = getattr(severity, "policy_block", None)
+    policy_html = ""
+    if policy_block is not None:
+        policy_html = (
+            f'<div><span class="pill {css_class(policy_block.display_policy_label)}">{esc(policy_block.display_policy_label)}</span></div>'
+            f'<div class="muted small">Cause: {esc(policy_block.block_primary_reason)}</div>'
+            f'<div class="muted small">Unblock: {esc(policy_block.unblock_condition_label)}</div>'
+        )
     return (
         f'<div><span class="pill {css_class(severity.advice_severity)}">{esc(severity.advice_severity)}</span></div>'
         f'<div><span class="pill {css_class(severity.advice_substate)}">{esc(severity.advice_substate)}</span></div>'
+        f"{policy_html}"
         f'<div class="muted small">{esc(severity.display_note)}</div>'
     )
 
@@ -1132,6 +1153,42 @@ def render_table(
             intrabar_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
         )
         blockers = promotion_blockers(row, candidate_group=None) if entry_state.endswith("_REACHED") else []
+        block_display = classify_policy_block_display(
+            row,
+            lifecycle_state=lifecycle.lifecycle_state,
+            recompute_needed=lifecycle.recompute_needed,
+            recompute_reason=lifecycle.recompute_reason,
+            target_state=target_state,
+            entry_state=entry_state,
+            price_progress_state=price_progress.progress_state,
+            market_breath_row=market_breath_row,
+        )
+        severity = (
+            severity
+            if block_display is None
+            else type(severity)(
+                advice_severity=severity.advice_severity,
+                advice_substate=severity.advice_substate,
+                reason_codes=severity.reason_codes,
+                display_label=severity.display_label,
+                display_note=severity.display_note,
+                policy_block=block_display,
+            )
+        )
+        action_label = action_display
+        action_class = css_class(action_label)
+        action_detail = f"policy/action: {esc(row.get('advice_action'))}"
+        policy_html = esc(row.get("policy_decision"))
+        if block_display is not None:
+            action_label = block_display.display_policy_label
+            action_class = css_class(block_display.display_policy_label)
+            action_detail = block_reason_summary_text(block_display)
+            policy_html = (
+                f'<span class="pill {css_class(block_display.display_policy_label)}">{esc(block_display.display_policy_label)}</span>'
+                f'<div class="muted small">raw: {esc(block_display.raw_policy_state)}</div>'
+                f'<div class="muted small">cause: {esc(block_display.block_primary_reason)}</div>'
+                f'<div class="muted small">unblock: {esc(block_display.unblock_condition_label)}</div>'
+            )
         row_classes = []
         if lifecycle.recompute_needed or (leg_direction.strip().upper() == "DOWN" and is_pullback_invalidated(row)):
             row_classes.extend(["expired", "stale-map"])
@@ -1165,7 +1222,7 @@ def render_table(
                     {badge_html}
                 </td>
                 <td><span class="pill {css_class(advice_state)}">{esc(advice_state)}</span></td>
-                <td><span class="pill {css_class(action_display)}">{esc(action_display)}</span><div class="muted small">policy/action: {esc(row.get("advice_action"))}</div></td>
+                <td><span class="pill {action_class}">{esc(action_label)}</span><div class="muted small">{esc(action_detail)}</div></td>
                 <td class="mono right">{fmt_score(row.get("confidence_score"))}</td>
                 <td><span class="pill {css_class(risk_label)}">{esc(risk_label)}</span></td>
                 <td class="mono right sticky-price">{esc(fmt_snapshot_price(current_price))}</td>
@@ -1191,7 +1248,7 @@ def render_table(
                 </td>
                 <td>{esc(row.get("selection_state"))}</td>
                 <td>{esc(row.get("setup_filter_state"))}{setup_reason_html}</td>
-                <td>{esc(row.get("policy_decision"))}</td>
+                <td>{policy_html}</td>
                 <td>{esc(row.get("aplus_bucket"))}</td>
                 <td>{market_breath_context_html(market_breath_row)}</td>
                 <td>{intrabar_context_html(intrabar_row)}</td>

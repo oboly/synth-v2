@@ -39,6 +39,10 @@ from src.reporting.market_breath_context_bridge_v1 import (
 from src.reporting.paper_advice_severity_calibration_v1 import (
     calibrate_paper_advice_severity,
 )
+from src.reporting.policy_block_reason_display_v1 import (
+    block_reason_summary_text,
+    classify_policy_block_display,
+)
 from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
     fetch_latest_prices_by_symbol,
@@ -365,6 +369,10 @@ def pill_class(text: str | None) -> str:
         or "TARGET_REACHED_WAIT_FOR_REMAP" in value
         or "EXTENSION_REVIEW_NO_CHASE" in value
         or "WAIT_FOR_NEW_MAP" in value
+        or "BLOCK_MARKET_DAMAGE" in value
+        or "BLOCK_SETUP_FILTER_FAIL" in value
+        or "BLOCK_RECOMPUTE_PENDING" in value
+        or "BLOCK_CHASE_RISK" in value
         or "INTRABAR_TARGET_TOUCHED" in value
         or "INTRABAR_RECLAIM_TOUCHED" in value
         or "INTRABAR_EXTENSION_CONTINUING" in value
@@ -379,6 +387,13 @@ def pill_class(text: str | None) -> str:
         or "NEXT_ZONE_UNKNOWN" in value
     ):
         return pill_classes("bad", value)
+    if (
+        "BLOCK_SELECTION_NOT_ELIGIBLE" in value
+        or "BLOCK_INSUFFICIENT_SAMPLE" in value
+        or "LEGACY_CONTEXT_ONLY" in value
+        or "READ_ONLY_APLUS_AVOID_CONTEXT" in value
+    ):
+        return pill_classes("muted", value)
     if (
         "HOLD" in value
         or "CORE" in value
@@ -908,6 +923,24 @@ def render_html(
                 lifecycle_state=lifecycle.lifecycle_state,
                 intrabar_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
             )
+            block_display = classify_policy_block_display(
+                row,
+                lifecycle_state=lifecycle.lifecycle_state,
+                recompute_needed=lifecycle.recompute_needed,
+                recompute_reason=lifecycle.recompute_reason,
+                target_state=row.target_state,
+                entry_state=entry_display_state,
+                price_progress_state=price_progress.progress_state,
+                market_breath_row=(market_breath_by_symbol or {}).get(row.position_symbol),
+                extra_reason_codes=list(row.reason_codes),
+            )
+            action_label = action_display
+            action_class = pill_class(action_display)
+            action_detail = f"policy/action: {esc(row.advice_action)}"
+            if block_display is not None:
+                action_label = block_display.display_policy_label
+                action_class = pill_class(block_display.display_policy_label)
+                action_detail = block_reason_summary_text(block_display)
             target_html = relevant_target_html(
                 leg_direction=row.leg_direction,
                 tp_zone_low=row.tp_zone_low,
@@ -928,7 +961,7 @@ def render_html(
                 f"<td>{esc(row.selection_state)}</td>"
                 f"<td><span class='pill {pill_class(row.setup_filter_reason)}'>{esc(row.setup_filter_reason)}</span></td>"
                 f"<td>{esc(row.leg_direction)}</td>"
-                f"<td><span class='pill {pill_class(action_display)}'>{esc(action_display)}</span><div class='muted small'>policy/action: {esc(row.advice_action)}</div></td>"
+                f"<td><span class='pill {action_class}'>{esc(action_label)}</span><div class='muted small'>{esc(action_detail)}</div></td>"
                 f"<td><span class='pill {pill_class(row.aplus_bucket)}'>{esc(row.aplus_bucket)}</span></td>"
                 f"<td>{severity_html(severity)}</td>"
                 f"<td>{intrabar_html(intrabar_row)}</td>"
@@ -1062,6 +1095,31 @@ def render_html(
                 lifecycle_state=lifecycle.lifecycle_state,
                 intrabar_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
             )
+            candidate_block_display = classify_policy_block_display(
+                advice,
+                lifecycle_state=lifecycle.lifecycle_state,
+                recompute_needed=lifecycle.recompute_needed,
+                recompute_reason=lifecycle.recompute_reason,
+                target_state=target_state,
+                entry_state=entry_display_state,
+                price_progress_state=price_progress.progress_state,
+                market_breath_row=(market_breath_by_symbol or {}).get(symbol),
+                extra_reason_codes=exclusions,
+            )
+            candidate_action_label = action_display
+            candidate_action_class = pill_class(action_display)
+            candidate_action_detail = f"policy/action: {esc(None if not advice else advice.get('advice_action'))}"
+            candidate_policy_html = esc(None if not advice else advice.get("advice_state"))
+            if candidate_block_display is not None:
+                candidate_action_label = candidate_block_display.display_policy_label
+                candidate_action_class = pill_class(candidate_block_display.display_policy_label)
+                candidate_action_detail = block_reason_summary_text(candidate_block_display)
+                candidate_policy_html = (
+                    f"<span class='pill {pill_class(candidate_block_display.display_policy_label)}'>{esc(candidate_block_display.display_policy_label)}</span>"
+                    f"<div class='muted small'>raw: {esc(candidate_block_display.raw_policy_state)}</div>"
+                    f"<div class='muted small'>cause: {esc(candidate_block_display.block_primary_reason)}</div>"
+                    f"<div class='muted small'>unblock: {esc(candidate_block_display.unblock_condition_label)}</div>"
+                )
             candidate_target_html = relevant_target_html(
                 leg_direction=None if not advice else advice.get("leg_direction"),
                 tp_zone_low=None if not advice else dec(advice.get("tp_zone_low")),
@@ -1087,8 +1145,8 @@ def render_html(
                 f"<td>{esc(None if not advice else advice.get('selection_state'))}</td>"
                 f"<td>{esc(None if not advice else advice.get('setup_filter_state'))}</td>"
                 f"<td><span class='pill {pill_class(None if not advice else advice.get('setup_filter_reason'))}'>{esc(None if not advice else advice.get('setup_filter_reason'))}</span></td>"
-                f"<td>{esc(None if not advice else advice.get('advice_state'))}</td>"
-                f"<td><span class='pill {pill_class(action_display)}'>{esc(action_display)}</span><div class='muted small'>policy/action: {esc(None if not advice else advice.get('advice_action'))}</div></td>"
+                f"<td>{candidate_policy_html}</td>"
+                f"<td><span class='pill {candidate_action_class}'>{esc(candidate_action_label)}</span><div class='muted small'>{esc(candidate_action_detail)}</div></td>"
                 f"<td>{severity_html(severity)}</td>"
                 f"<td>{intrabar_html(intrabar_row)}</td>"
                 f"<td>{esc(None if not advice else advice.get('leg_direction'))}</td>"

@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from src.reporting.policy_block_reason_display_v1 import PolicyBlockDisplay
+
 
 HARD_BLOCK = "HARD_BLOCK"
 SOFT_BLOCK = "SOFT_BLOCK"
@@ -39,6 +41,7 @@ class PaperAdviceSeverity:
     reason_codes: list[str]
     display_label: str
     display_note: str
+    policy_block: PolicyBlockDisplay | None = None
 
 
 def _value(row: Any, name: str) -> Any:
@@ -114,7 +117,6 @@ def calibrate_paper_advice_severity(
     aplus_freshness = _aplus_freshness(market_breath_row)
     stale_aplus_avoid = aplus_bucket == "APLUS_AVOID" and aplus_freshness in {"STALE", "VERY_STALE"}
     constructive_market = market_context in CONSTRUCTIVE_MARKET_BREATH_CONTEXTS
-
     severity_reasons: list[str] = []
     if stale_aplus_avoid:
         severity_reasons.append("STALE_APLUS_CONTEXT")
