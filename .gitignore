@@ -81,6 +81,9 @@ data/research/breath_curve_regime_gate_v1/
 # Generated breath curve regime-gated policy preview outputs
 data/research/breath_curve_regime_gated_policy_preview_v1/
 
+# Generated overbreath-by-regime research backtest outputs
+data/research/overbreath_by_regime_backtest_v1/
+
 # Generated A+ canonical TABLE 1 parser outputs
 data/research/aplus_canonical_table1_v1/
 
