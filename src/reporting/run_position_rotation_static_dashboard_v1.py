@@ -43,6 +43,10 @@ from src.reporting.policy_block_reason_display_v1 import (
     block_reason_summary_text,
     classify_policy_block_display,
 )
+from src.reporting.rotation_destination_eligibility_v1 import (
+    DestinationEligibility,
+    evaluate_rotation_destination_eligibility,
+)
 from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
     fetch_latest_prices_by_symbol,
@@ -52,6 +56,7 @@ from src.research.run_position_rotation_preview_v1 import (
     dec,
     fetch_latest_paper_advice_rows,
     fetch_latest_position_rows,
+    market_candidate_quality_score,
     rank_market_candidates,
     risk_state_for_advice,
     target_state_for_advice,
@@ -505,61 +510,6 @@ def tp_zone_text(advice_or_row: Any) -> str:
     return f"{dec_text(low, '0.000000')}..{dec_text(high, '0.000000')}"
 
 
-def held_rotation_exclusion(row: Any | None) -> str | None:
-    if row is None:
-        return None
-    rotation_state = str(row.rotation_state or "").upper()
-    risk_state = str(row.risk_state or "").upper()
-    reason_codes = {str(reason).upper() for reason in row.reason_codes}
-    if (
-        "REDUCE" in rotation_state
-        or "EXIT" in rotation_state
-        or "TARGET_REACHED" in rotation_state
-        or risk_state in {"RISK_NEAR", "RECLAIM_CONFIRMED"}
-        or "RISK_NEAR" in reason_codes
-        or "RECLAIM_CONFIRMED" in reason_codes
-    ):
-        return "HELD_ROTATION_REVIEW_PRESSURE"
-    return None
-
-
-def destination_diagnostic_exclusions(
-    *,
-    advice_row: dict[str, Any] | None,
-    current_price: Decimal | None,
-    held_row: Any | None,
-) -> list[str]:
-    if not advice_row:
-        return ["ADVICE_MISSING"]
-
-    reasons: list[str] = []
-    target_state = target_state_for_advice(advice_row, current_price)
-    risk_state = risk_state_for_advice(advice_row, current_price)
-    setup_state = str(advice_row.get("setup_filter_state") or "").upper()
-    setup_reason = str(advice_row.get("setup_filter_reason") or "").upper()
-    advice_action = str(advice_row.get("advice_action") or "").upper()
-    aplus_bucket = str(advice_row.get("aplus_bucket") or "").upper()
-
-    if target_state == "TARGET_REACHED":
-        reasons.append("TARGET_REACHED")
-    if risk_state in {"RISK_NEAR", "RISK_UNKNOWN", "RECLAIM_CONFIRMED"}:
-        reasons.append(risk_state)
-    if aplus_bucket == "APLUS_AVOID":
-        reasons.append("APLUS_AVOID")
-    if advice_action in {"DO_NOT_ADD", "AVOID_NO_NEW_BUY"}:
-        reasons.append(advice_action)
-    if setup_reason == "MARKET_DAMAGE_RISK":
-        reasons.append("MARKET_DAMAGE_RISK")
-    if setup_state != "PASS":
-        reasons.append("SETUP_NOT_PASS")
-
-    held_exclusion = held_rotation_exclusion(held_row)
-    if held_exclusion:
-        reasons.append(held_exclusion)
-
-    return list(dict.fromkeys(reasons))
-
-
 def as_utc_naive(ts: Any) -> datetime | None:
     if ts is None or not isinstance(ts, datetime):
         return None
@@ -831,16 +781,121 @@ def render_html(
         price_by_symbol=price_by_symbol,
     )
 
+    def destination_eligibility_for_candidate(symbol: str) -> DestinationEligibility:
+        advice = advice_by_symbol.get(symbol)
+        latest_price = price_by_symbol.get(symbol)
+        current_price = None if latest_price is None else latest_price.price
+        target_state = target_state_for_advice(advice, current_price)
+        risk_state = risk_state_for_advice(advice, current_price)
+        entry_state = classify_entry_zone_state(
+            leg_direction=None if not advice else advice.get("leg_direction"),
+            current_price=current_price,
+            entry_zone_low=None if not advice else advice.get("entry_zone_low"),
+            entry_zone_high=None if not advice else advice.get("entry_zone_high"),
+        )
+        price_progress = classify_price_progress_state(
+            leg_direction=None if not advice else advice.get("leg_direction"),
+            current_price=current_price,
+            entry_zone_low=None if not advice else advice.get("entry_zone_low"),
+            entry_zone_high=None if not advice else advice.get("entry_zone_high"),
+            tp_zone_low=None if not advice else advice.get("tp_zone_low"),
+            tp_zone_high=None if not advice else advice.get("tp_zone_high"),
+            in_position_context=held_row_by_symbol.get(symbol) is not None,
+        )
+        entry_display_state = semantic_entry_display_state(
+            entry_state=entry_state,
+            price_progress_state=price_progress.progress_state,
+            price_progress_labels=price_progress.labels,
+        )
+        invalidation_price = None if not advice else dec(advice.get("invalidation_price"))
+        lifecycle = classify_fast_lifecycle(
+            leg_direction=None if not advice else advice.get("leg_direction"),
+            current_price=current_price,
+            tp_zone_low=None if not advice else advice.get("tp_zone_low"),
+            tp_zone_high=None if not advice else advice.get("tp_zone_high"),
+            invalidation_price=invalidation_price,
+        )
+        next_preview = preview_next_zones(
+            symbol=symbol,
+            leg_direction=None if not advice else advice.get("leg_direction"),
+            current_price=current_price,
+            entry_zone_low=None if not advice else advice.get("entry_zone_low"),
+            entry_zone_high=None if not advice else advice.get("entry_zone_high"),
+            tp_zone_low=None if not advice else advice.get("tp_zone_low"),
+            tp_zone_high=None if not advice else advice.get("tp_zone_high"),
+            invalidation_price=invalidation_price,
+            lifecycle_state=lifecycle.lifecycle_state,
+            lifecycle_reason=lifecycle.recompute_reason,
+            target_state=target_state,
+            price_progress_state=price_progress.progress_state,
+        )
+        intrabar_row = (intrabar_by_symbol or {}).get(symbol)
+        action_display = semantic_advice_action_display(
+            advice_action=None if not advice else advice.get("advice_action"),
+            lifecycle_state=lifecycle.lifecycle_state,
+            intrabar_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
+        )
+        block_display = classify_policy_block_display(
+            advice,
+            lifecycle_state=lifecycle.lifecycle_state,
+            recompute_needed=lifecycle.recompute_needed,
+            recompute_reason=lifecycle.recompute_reason,
+            target_state=target_state,
+            entry_state=entry_display_state,
+            price_progress_state=price_progress.progress_state,
+            market_breath_row=(market_breath_by_symbol or {}).get(symbol),
+        )
+        return evaluate_rotation_destination_eligibility(
+            advice,
+            current_price=current_price,
+            target_state=target_state,
+            risk_state=risk_state,
+            lifecycle_state=lifecycle.lifecycle_state,
+            recompute_needed=lifecycle.recompute_needed,
+            recompute_reason=lifecycle.recompute_reason,
+            policy_label=None if block_display is None else block_display.display_policy_label,
+            action_label=action_display,
+            entry_state=entry_display_state,
+            price_progress_state=price_progress.progress_state,
+            price_progress_labels=price_progress.labels,
+            next_zone_state=next_preview.next_zone_state,
+            next_reaction_zone_label=next_preview.next_reaction_zone_label,
+            next_target_zone_label=next_preview.next_target_zone_label,
+            next_target_zone=next_preview.next_target_zone,
+            intrabar_lifecycle_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
+            intrabar_recompute_hint=None if intrabar_row is None else intrabar_row.intrabar_recompute_hint,
+            intrabar_data_quality_state=None if intrabar_row is None else intrabar_row.data_quality_state,
+        )
+
+    def strict_rotation_destinations_for_row(row: Any, *, max_items: int = 3) -> list[str]:
+        current_quality = market_candidate_quality_score(
+            advice_by_symbol.get(row.position_symbol)
+        )
+        destinations: list[str] = []
+        for symbol, candidate_score in ranked_candidates:
+            if symbol == row.position_symbol:
+                continue
+            if candidate_score <= current_quality:
+                continue
+            eligibility = destination_eligibility_for_candidate(symbol)
+            if eligibility.eligible:
+                destinations.append(f"{symbol}:{candidate_score.quantize(Decimal('0.01'))}")
+            if len(destinations) >= max_items:
+                break
+        return destinations
+
     def table_rows(table_rows: list[Any]) -> str:
         out = []
         for row in table_rows:
             tp_zone = tp_zone_text(row)
 
             review_refs = ", ".join(row.review_references[:3]) if row.review_references else ""
-            destinations = (
-                ", ".join(row.rotation_destination_candidates[:3])
-                if row.rotation_destination_candidates
-                else ""
+            strict_destinations = strict_rotation_destinations_for_row(row)
+            destinations = ", ".join(strict_destinations) if strict_destinations else ""
+            destinations_html = (
+                esc(destinations)
+                if destinations
+                else "<span class='muted'>No actionable destination</span>"
             )
             latest_price = price_by_symbol.get(row.position_symbol)
             current_price = None if latest_price is None else latest_price.price
@@ -981,7 +1036,7 @@ def render_html(
                 f"<td><span class='pill {pill_class(row.rotation_state)}'>{esc(row.rotation_state)}</span></td>"
                 f"<td class='num'>{esc(row.rotation_pressure_score)}</td>"
                 f"<td class='small'>{esc(review_refs)}</td>"
-                f"<td class='small'>{esc(destinations)}</td>"
+                f"<td class='small'>{destinations_html}</td>"
                 "</tr>"
             )
         return "\n".join(out)
@@ -1030,12 +1085,9 @@ def render_html(
                 price_progress_state=price_progress.progress_state,
                 price_progress_labels=price_progress.labels,
             )
-            exclusions = destination_diagnostic_exclusions(
-                advice_row=advice,
-                current_price=current_price,
-                held_row=held_row,
-            )
-            eligible = not exclusions
+            eligibility = destination_eligibility_for_candidate(symbol)
+            exclusions = eligibility.exclusion_reasons
+            eligible = eligibility.eligible
             held_valuation = (
                 None
                 if held_row is None
@@ -1302,6 +1354,7 @@ def render_html(
       <div><strong>Rotation score</strong> = account-position review pressure score.</div>
       <div><strong>Market review refs</strong> = market-only comparison scores, not buy advice.</div>
       <div><strong>Rotation destinations</strong> = stricter filtered candidates.</div>
+      <div><strong>Market review refs are broad comparison assets. Rotation destinations are stricter actionable-review candidates, not trade advice.</strong></div>
       <div><strong>Market ref score</strong> = market-only comparison score.</div>
       <div><strong>Destination eligible</strong> = strict candidate after paper/setup/risk/account-position filters.</div>
       <div><strong>Exclusion reasons</strong> explain why a strong reference is not a destination.</div>
