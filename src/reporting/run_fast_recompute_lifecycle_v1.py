@@ -47,6 +47,7 @@ TARGET_FINISHED_LABELS = {
 
 @dataclass(frozen=True)
 class RecomputeLifecycleRow:
+    asset_id: int | None
     symbol: str
     venue: str
     interval_code: str
@@ -65,6 +66,9 @@ class RecomputeLifecycleRow:
     next_target_zone: str
     recommended_refresh_scope: str
     freshness_state: str
+    post_refresh_state: str
+    cooldown_label: str
+    display_severity: str
     priority: int
 
 
@@ -134,7 +138,14 @@ def labels_text(*values: Any) -> str:
 
 def css_class(value: str | None) -> str:
     normalized = str(value or "").upper()
-    if normalized in {"ZONE_AND_ADVICE_RECOMPUTE", "MAP_RECOMPUTE_NEEDED"}:
+    if normalized in {
+        "ZONE_AND_ADVICE_RECOMPUTE",
+        "MAP_RECOMPUTE_NEEDED",
+        "REFRESH_NEEDED",
+        "RECOMPUTED_BUT_STILL_TRIGGERING",
+        "REFRESH_FAILED_OR_STALE",
+        "DISPLAY_CRITICAL",
+    }:
         return pill_classes("bad", normalized)
     if normalized in {
         "ADVICE_ONLY_REVIEW",
@@ -145,10 +156,26 @@ def css_class(value: str | None) -> str:
         "INVALIDATION_TOUCHED",
         "TARGET_REACHED_STALE",
         "TARGET_OVERSHOT",
+        "COOLDOWN_MONITOR",
+        "DISPLAY_WATCH",
     }:
         return pill_classes("warn", normalized)
-    if normalized in {"SKIP_ACTIVE_MAP", "CURRENT_MAP_ACTIVE", "FRESH_REVIEW"}:
+    if normalized in {
+        "SKIP_ACTIVE_MAP",
+        "CURRENT_MAP_ACTIVE",
+        "FRESH_REVIEW",
+        "NO_REFRESH_NEEDED",
+        "REFRESHED_THIS_RUN",
+        "DISPLAY_CONTEXT",
+    }:
         return pill_classes("ok", normalized)
+    if normalized in {
+        "REFRESHED_RECENTLY",
+        "COOLDOWN_ALREADY_REFRESHED_THIS_CANDLE",
+        "SKIPPED_ALREADY_REFRESHED_THIS_ASOF",
+        "DISPLAY_MUTED",
+    }:
+        return pill_classes("muted", normalized)
     if normalized.startswith("SKIP"):
         return pill_classes("muted", normalized)
     return pill_classes("muted", normalized)
@@ -180,7 +207,38 @@ def fetch_latest_advice_rows(
     with conn.cursor() as cur:
         cur.execute(
             """
+            WITH ranked_advice AS (
+                SELECT
+                    paper_advice_observation_id,
+                    asset_id,
+                    symbol,
+                    venue,
+                    interval_code,
+                    asof_ts_utc,
+                    selection_state,
+                    setup_filter_state,
+                    setup_filter_reason,
+                    policy_decision,
+                    advice_state,
+                    advice_action,
+                    leg_direction,
+                    entry_zone_low,
+                    entry_zone_high,
+                    tp_zone_low,
+                    tp_zone_high,
+                    invalidation_price,
+                    confidence_score,
+                    source_ref_json,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY asset_id
+                        ORDER BY asof_ts_utc DESC, paper_advice_observation_id DESC
+                    ) AS rn
+                FROM paper_advice_observation
+                WHERE venue = %(venue)s
+                  AND interval_code = %(interval)s
+            )
             SELECT
+                asset_id,
                 symbol,
                 venue,
                 interval_code,
@@ -197,11 +255,10 @@ def fetch_latest_advice_rows(
                 tp_zone_low,
                 tp_zone_high,
                 invalidation_price,
-                confidence_score
-            FROM paper_advice_observation
-            WHERE venue = %(venue)s
-              AND interval_code = %(interval)s
-              AND asof_ts_utc = %(latest_asof)s
+                confidence_score,
+                source_ref_json
+            FROM ranked_advice
+            WHERE rn = 1
             ORDER BY
                 confidence_score DESC,
                 symbol ASC
@@ -210,11 +267,69 @@ def fetch_latest_advice_rows(
             {
                 "venue": venue,
                 "interval": interval,
-                "latest_asof": latest_asof,
                 "limit": int(limit),
             },
         )
         return latest_asof, list(cur.fetchall())
+
+
+def json_loads_dict(value: Any) -> dict[str, Any]:
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def fast_recompute_refresh_ref(row: dict[str, Any]) -> dict[str, Any]:
+    source_ref = json_loads_dict(row.get("source_ref_json"))
+    refresh_ref = json_loads_dict(source_ref.get("fast_recompute_refresh"))
+    if refresh_ref.get("refreshed_by") != "fast_recompute_lifecycle_refresh_v1":
+        return {}
+    return refresh_ref
+
+
+def same_asof_text(left: Any, right: Any) -> bool:
+    def text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, datetime):
+            return value.isoformat(sep=" ", timespec="microseconds")
+        return str(value)
+
+    return text(left) == text(right)
+
+
+def classify_post_refresh_display(
+    *,
+    row: dict[str, Any],
+    recompute_needed: bool,
+    recommended_refresh_scope: str,
+    lifecycle_state: str,
+) -> tuple[str, str, str]:
+    refresh_ref = fast_recompute_refresh_ref(row)
+    if not refresh_ref:
+        if recommended_refresh_scope == "SKIP_ACTIVE_MAP":
+            return "NO_REFRESH_NEEDED", "", "DISPLAY_CONTEXT"
+        if recommended_refresh_scope in {"ZONE_AND_ADVICE_RECOMPUTE", "ADVICE_ONLY_REVIEW"}:
+            return "REFRESH_NEEDED", "", "DISPLAY_CRITICAL"
+        return "NO_REFRESH_NEEDED", "", "DISPLAY_MUTED"
+
+    cooldown_label = "COOLDOWN_ALREADY_REFRESHED_THIS_CANDLE"
+    if same_asof_text(row.get("asof_ts_utc"), refresh_ref.get("recompute_asof_ts_utc")):
+        if lifecycle_state in {"INVALIDATION_TOUCHED"}:
+            return "RECOMPUTED_BUT_STILL_TRIGGERING", cooldown_label, "DISPLAY_CRITICAL"
+        if recompute_needed or recommended_refresh_scope == "ZONE_AND_ADVICE_RECOMPUTE":
+            return "COOLDOWN_MONITOR", cooldown_label, "DISPLAY_WATCH"
+        return "REFRESHED_RECENTLY", cooldown_label, "DISPLAY_MUTED"
+
+    if recompute_needed:
+        return "REFRESH_NEEDED", "", "DISPLAY_CRITICAL"
+    return "REFRESHED_RECENTLY", cooldown_label, "DISPLAY_MUTED"
 
 
 def recommended_scope(
@@ -317,8 +432,15 @@ def build_recompute_rows(
             label in text for label in RECOMPUTE_TRIGGER_LABELS | TARGET_FINISHED_LABELS
         ):
             continue
+        post_refresh_state, cooldown_label, display_severity = classify_post_refresh_display(
+            row=row,
+            recompute_needed=lifecycle.recompute_needed,
+            recommended_refresh_scope=scope,
+            lifecycle_state=lifecycle.lifecycle_state,
+        )
         output.append(
             RecomputeLifecycleRow(
+                asset_id=None if row.get("asset_id") is None else int(row["asset_id"]),
                 symbol=symbol,
                 venue=str(row.get("venue") or venue),
                 interval_code=str(row.get("interval_code") or interval),
@@ -337,6 +459,9 @@ def build_recompute_rows(
                 next_target_zone=format_zone(next_preview.next_target_zone),
                 recommended_refresh_scope=scope,
                 freshness_state=freshness_state,
+                post_refresh_state=post_refresh_state,
+                cooldown_label=cooldown_label,
+                display_severity=display_severity,
                 priority=priority,
             )
         )
@@ -368,13 +493,19 @@ def render_rows_table(rows: list[RecomputeLifecycleRow], *, limit: int | None = 
         return '<div class="empty">No recompute lifecycle rows.</div>'
     body = []
     for row in selected:
+        recompute_label = "MAP_RECOMPUTE_NEEDED" if row.recompute_needed else "SKIP_ACTIVE_MAP"
+        if row.post_refresh_state in {"REFRESHED_RECENTLY", "COOLDOWN_MONITOR"}:
+            recompute_label = row.post_refresh_state
         body.append(
             "<tr>"
             f"<td class='sticky-symbol'><strong>{esc(row.symbol)}</strong></td>"
+            f"<td><span class='pill {css_class(row.post_refresh_state)}'>{esc(row.post_refresh_state)}</span></td>"
+            f"<td><span class='pill {css_class(row.display_severity)}'>{esc(row.display_severity)}</span></td>"
             f"<td><span class='pill {css_class(row.recommended_refresh_scope)}'>{esc(row.recommended_refresh_scope)}</span></td>"
             f"<td><span class='pill {css_class(row.lifecycle_state)}'>{esc(row.lifecycle_state)}</span></td>"
-            f"<td><span class='pill {css_class('MAP_RECOMPUTE_NEEDED' if row.recompute_needed else 'SKIP_ACTIVE_MAP')}'>{'YES' if row.recompute_needed else 'NO'}</span></td>"
+            f"<td><span class='pill {css_class(recompute_label)}'>{esc(recompute_label)}</span></td>"
             f"<td class='small'>{esc(row.recompute_reason)}</td>"
+            f"<td><span class='pill {css_class(row.cooldown_label)}'>{esc(row.cooldown_label)}</span></td>"
             f"<td class='num sticky-price'>{esc(dec_text(row.current_price))}</td>"
             f"<td>{esc(row.leg_direction)}</td>"
             f"<td><span class='pill {css_class(row.next_zone_state)}'>{esc(row.next_zone_state)}</span></td>"
@@ -389,12 +520,15 @@ def render_rows_table(rows: list[RecomputeLifecycleRow], *, limit: int | None = 
     <div class="table-wrap">
       <table>
         <thead>
-          <tr>
-            <th class="sticky-symbol">Symbol</th>
-            <th>Refresh scope</th>
-            <th>Lifecycle</th>
-            <th>Recompute</th>
-            <th>Reason</th>
+            <tr>
+              <th class="sticky-symbol">Symbol</th>
+              <th>Post-refresh state</th>
+              <th>Display severity</th>
+              <th>Refresh scope</th>
+              <th>Lifecycle</th>
+              <th>Recompute</th>
+              <th>Reason</th>
+              <th>Cooldown</th>
             <th class="sticky-price">Current price</th>
             <th>Old leg</th>
             <th>Next-zone state</th>
@@ -429,6 +563,7 @@ def render_html(rows: list[RecomputeLifecycleRow], *, venue: str, interval: str)
     <div class="legend">
       <div><strong>Refresh candidate, not trade advice.</strong></div>
       <div>This page is market-only and account-agnostic. It identifies stale, finished, reclaimed, or invalidated advice maps for future zone/advice refresh.</div>
+      <div><strong>Post-refresh state</strong> separates old trigger labels from refreshed, cooldown, and still-actionable refresh state.</div>
       <div><strong>Safety</strong>: broker_private_calls=0 broker_writes=0 order_submission=0 executor=none account_awareness=0</div>
     </div>
   </header>
@@ -446,10 +581,13 @@ def render_html(rows: list[RecomputeLifecycleRow], *, venue: str, interval: str)
 def print_table(rows: list[RecomputeLifecycleRow]) -> None:
     headers = [
         "symbol",
+        "post_refresh",
+        "display_severity",
         "scope",
         "lifecycle",
         "recompute",
         "reason",
+        "cooldown",
         "price",
         "leg",
         "next_zone",
@@ -462,10 +600,17 @@ def print_table(rows: list[RecomputeLifecycleRow]) -> None:
             "\t".join(
                 [
                     row.symbol,
+                    row.post_refresh_state,
+                    row.display_severity,
                     row.recommended_refresh_scope,
                     row.lifecycle_state,
-                    "YES" if row.recompute_needed else "NO",
+                    (
+                        row.post_refresh_state
+                        if row.post_refresh_state in {"REFRESHED_RECENTLY", "COOLDOWN_MONITOR"}
+                        else "YES" if row.recompute_needed else "NO"
+                    ),
                     row.recompute_reason,
+                    row.cooldown_label,
                     dec_text(row.current_price),
                     row.leg_direction,
                     row.next_zone_state,

@@ -37,6 +37,16 @@ Fairness behavior:
 - `SKIPPED_MAX_ASSETS_THROTTLE`: the row remains eligible but was behind the current `--max-assets` limit after cooldown filtering.
 - `SKIPPED_SCOPE_NOT_ENABLED`: the row is outside the market-only zone/advice recompute scope, such as `WAIT_FOR_NEXT_CANDLE`, active/fresh maps, or unknown-data rows.
 
+Post-refresh display state:
+
+- `REFRESH_NEEDED`: no successful refresh or cooldown marker explains the current recompute trigger.
+- `REFRESHED_THIS_RUN`: this consumer recomputed the zone/advice during the current run.
+- `REFRESHED_RECENTLY`: same-candle refresh metadata exists and the row is no longer currently actionable.
+- `COOLDOWN_MONITOR`: same-candle refresh metadata exists, but the market trigger still deserves watch status.
+- `RECOMPUTED_BUT_STILL_TRIGGERING`: a recomputed row still shows a critical trigger, such as touched invalidation.
+- `REFRESH_FAILED_OR_STALE`: refresh was attempted but did not produce a usable refreshed state.
+- `NO_REFRESH_NEEDED`: active/current map does not need refresh.
+
 The cooldown marker is metadata only. It is not a trading decision, not a veto, and not a selection-engine input. A normal later paper-advice refresh or a new structural cycle naturally replaces the latest paper-advice metadata and clears the same-asof cooldown.
 
 Example dry-run:
@@ -80,6 +90,9 @@ Runtime knobs:
 - `SYNTH_FAST_RECOMPUTE_REFRESH_ENABLED`, default `1`
 - `SYNTH_FAST_RECOMPUTE_MAX_ASSETS`, default `8`
 - `SYNTH_FAST_RECOMPUTE_INTERVAL`, default `4h`
+- `SYNTH_FAST_RECOMPUTE_COOLDOWN_MINUTES`, default `15`
+- `SYNTH_FAST_RECOMPUTE_ALLOW_INTRABAR_REPEAT`, default `1`
+- `SYNTH_FAST_RECOMPUTE_MAX_PER_ASSET_PER_4H`, default `3`
 
 When `SYNTH_FAST_RECOMPUTE_REFRESH_ENABLED=0`, the runner skips the consumer and renders dashboards as before.
 

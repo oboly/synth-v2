@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -51,6 +52,12 @@ class RefreshResultRow:
     zone_result_state: str
     new_zone_asof_ts_utc: datetime | None
     paper_advice_refreshed: str
+    post_refresh_state: str
+    cooldown_label: str
+    latest_zone_asof: str
+    latest_advice_asof: datetime | None
+    display_severity: str
+    previous_refresh_count_for_asof: int
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,11 @@ class CooldownMarker:
     refreshed_zone_asof_ts_utc: str | None
     refresh_scope: str | None
     cooldown_state: str
+    refreshed_at_utc: datetime | None
+    refresh_count_for_asof: int
+    current_price: Decimal | None
+    lifecycle_state: str | None
+    reason: str | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,6 +91,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--include-advice-only-review", action="store_true")
     parser.add_argument("--write-db", action="store_true")
     parser.add_argument("--output", choices=("summary", "table", "json"), default="table")
+    parser.add_argument(
+        "--cooldown-minutes",
+        type=Decimal,
+        default=Decimal(os.getenv("SYNTH_FAST_RECOMPUTE_COOLDOWN_MINUTES", "15")),
+    )
+    parser.add_argument(
+        "--allow-intrabar-repeat",
+        type=int,
+        default=int(os.getenv("SYNTH_FAST_RECOMPUTE_ALLOW_INTRABAR_REPEAT", "1")),
+    )
+    parser.add_argument(
+        "--max-per-asset-per-4h",
+        type=int,
+        default=int(os.getenv("SYNTH_FAST_RECOMPUTE_MAX_PER_ASSET_PER_4H", "3")),
+    )
     return parser.parse_args()
 
 
@@ -119,10 +146,63 @@ def _asof_text(value: Any) -> str:
     return str(value)
 
 
-def cooldown_applies(row: RecomputeLifecycleRow, marker: CooldownMarker | None) -> bool:
+def _parse_dt(value: Any) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    text = str(value).strip().replace("T", " ").removesuffix("Z")
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def _optional_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
+
+
+def _price_move_pct(old: Decimal | None, new: Decimal | None) -> Decimal | None:
+    if old is None or new is None or old <= 0:
+        return None
+    return abs((new / old) - Decimal("1")) * Decimal("100")
+
+
+def cooldown_applies(
+    row: RecomputeLifecycleRow,
+    marker: CooldownMarker | None,
+    *,
+    cooldown_minutes: Decimal = Decimal("15"),
+    allow_intrabar_repeat: bool = True,
+    max_per_asset_per_4h: int = 3,
+) -> bool:
     if marker is None:
         return False
-    return _asof_text(row.asof_ts_utc) == _asof_text(marker.advice_asof_ts_utc)
+    if _asof_text(row.asof_ts_utc) != _asof_text(marker.advice_asof_ts_utc):
+        return False
+    if not allow_intrabar_repeat:
+        return True
+    if marker.refresh_count_for_asof >= max_per_asset_per_4h:
+        return True
+    refreshed_at = marker.refreshed_at_utc
+    if refreshed_at is None:
+        return True
+    age_minutes = Decimal(str((datetime.now(UTC).replace(tzinfo=None) - refreshed_at).total_seconds())) / Decimal("60")
+    if age_minutes < cooldown_minutes:
+        return True
+    lifecycle_changed = (
+        (marker.lifecycle_state or "") != row.lifecycle_state
+        or (marker.reason or "") != row.recompute_reason
+    )
+    price_moved = (_price_move_pct(marker.current_price, row.current_price) or Decimal("0")) >= Decimal("0.25")
+    return not (lifecycle_changed or price_moved)
 
 
 def resolve_asset_ids(conn: Any, symbols: list[str]) -> dict[str, int]:
@@ -219,6 +299,13 @@ def fetch_cooldown_markers(
                 else str(refresh_ref.get("refresh_scope"))
             ),
             cooldown_state="COOLDOWN_ALREADY_REFRESHED_THIS_CANDLE",
+            refreshed_at_utc=_parse_dt(refresh_ref.get("refreshed_at_utc")),
+            refresh_count_for_asof=int(refresh_ref.get("refresh_count_for_asof") or 1),
+            current_price=_optional_decimal(refresh_ref.get("current_price")),
+            lifecycle_state=(
+                None if refresh_ref.get("lifecycle") is None else str(refresh_ref.get("lifecycle"))
+            ),
+            reason=None if refresh_ref.get("reason") is None else str(refresh_ref.get("reason")),
         )
     return markers
 
@@ -229,6 +316,9 @@ def selected_worklist_rows(
     max_assets: int,
     include_advice_only_review: bool,
     cooldown_by_symbol: dict[str, CooldownMarker],
+    cooldown_minutes: Decimal = Decimal("15"),
+    allow_intrabar_repeat: bool = True,
+    max_per_asset_per_4h: int = 3,
 ) -> list[RecomputeLifecycleRow]:
     enabled = set(ENABLED_SCOPES)
     if include_advice_only_review:
@@ -237,7 +327,13 @@ def selected_worklist_rows(
         row
         for row in rows
         if row.recommended_refresh_scope in enabled
-        and not cooldown_applies(row, cooldown_by_symbol.get(row.symbol.upper()))
+        and not cooldown_applies(
+            row,
+            cooldown_by_symbol.get(row.symbol.upper()),
+            cooldown_minutes=cooldown_minutes,
+            allow_intrabar_repeat=allow_intrabar_repeat,
+            max_per_asset_per_4h=max_per_asset_per_4h,
+        )
     ]
     return selected[:max_assets]
 
@@ -332,12 +428,54 @@ def refresh_paper_advice_for_assets(
             "recompute_asof_ts_utc": str(output_row.get("asof_ts_utc")),
             "zone_asof_ts_utc": zone_asof,
             "refreshed_at_utc": refresh_ts.isoformat(sep=" ", timespec="microseconds"),
+            "refresh_count_for_asof": refresh_context.previous_refresh_count_for_asof + 1,
             "refresh_scope": refresh_context.recommended_refresh_scope,
             "lifecycle": refresh_context.lifecycle_state,
             "reason": refresh_context.recompute_reason,
+            "current_price": (
+                None if refresh_context.current_price is None else str(refresh_context.current_price)
+            ),
+            "old_next_zone_state": refresh_context.old_next_zone_state,
         }
         output_row["source_ref_json"] = json.dumps(source_ref, ensure_ascii=False, default=json_default)
     return write_rows(conn, output_rows)
+
+
+def classify_refresh_result(
+    *,
+    row: RecomputeLifecycleRow,
+    action: str,
+    zone_state: str,
+    cooldown: CooldownMarker | None,
+    new_asof: datetime | None,
+) -> tuple[str, str, str, str]:
+    if action == "PAPER_ADVICE_REFRESHED":
+        return "REFRESHED_THIS_RUN", "", "DISPLAY_CONTEXT", _asof_text(new_asof)
+    if action == "ZONE_RECOMPUTED":
+        return "REFRESHED_THIS_RUN", "", "DISPLAY_CONTEXT", _asof_text(new_asof)
+    if action == "SKIPPED_ALREADY_REFRESHED_THIS_ASOF":
+        cooldown_label = "" if cooldown is None else cooldown.cooldown_state
+        if row.lifecycle_state == "INVALIDATION_TOUCHED":
+            return "RECOMPUTED_BUT_STILL_TRIGGERING", cooldown_label, "DISPLAY_CRITICAL", (
+                "" if cooldown is None else str(cooldown.refreshed_zone_asof_ts_utc or "")
+            )
+        if row.recompute_needed or row.recommended_refresh_scope == "ZONE_AND_ADVICE_RECOMPUTE":
+            return "COOLDOWN_MONITOR", cooldown_label, "DISPLAY_WATCH", (
+                "" if cooldown is None else str(cooldown.refreshed_zone_asof_ts_utc or "")
+            )
+        return "REFRESHED_RECENTLY", cooldown_label, "DISPLAY_MUTED", (
+            "" if cooldown is None else str(cooldown.refreshed_zone_asof_ts_utc or "")
+        )
+    if action in {"FAILED_SAFE", "SKIPPED_ZONE_RESULT_MISSING"} or zone_state in {
+        "FAILED_SAFE",
+        "SKIPPED_ZONE_RESULT_MISSING",
+    }:
+        return "REFRESH_FAILED_OR_STALE", "", "DISPLAY_CRITICAL", ""
+    if action in {"SKIPPED_MAX_ASSETS_THROTTLE", "DRY_RUN_ZONE_AND_ADVICE_RECOMPUTE"}:
+        return "REFRESH_NEEDED", "", "DISPLAY_CRITICAL", ""
+    if row.recommended_refresh_scope == "SKIP_ACTIVE_MAP":
+        return "NO_REFRESH_NEEDED", "", "DISPLAY_CONTEXT", ""
+    return "NO_REFRESH_NEEDED", "", "DISPLAY_MUTED", ""
 
 
 def build_refresh_rows(
@@ -355,6 +493,9 @@ def build_refresh_rows(
         max_assets=int(args.max_assets),
         include_advice_only_review=bool(args.include_advice_only_review),
         cooldown_by_symbol=cooldown_by_symbol,
+        cooldown_minutes=Decimal(str(args.cooldown_minutes)),
+        allow_intrabar_repeat=bool(int(args.allow_intrabar_repeat)),
+        max_per_asset_per_4h=int(args.max_per_asset_per_4h),
     )
     selected_symbols = {row.symbol for row in selected}
     enabled_scopes = set(ENABLED_SCOPES)
@@ -364,7 +505,13 @@ def build_refresh_rows(
     for row in worklist_rows:
         asset_id = asset_by_symbol.get(row.symbol)
         cooldown = cooldown_by_symbol.get(row.symbol.upper())
-        if cooldown_applies(row, cooldown) and row.recommended_refresh_scope in enabled_scopes:
+        if cooldown_applies(
+            row,
+            cooldown,
+            cooldown_minutes=Decimal(str(args.cooldown_minutes)),
+            allow_intrabar_repeat=bool(int(args.allow_intrabar_repeat)),
+            max_per_asset_per_4h=int(args.max_per_asset_per_4h),
+        ) and row.recommended_refresh_scope in enabled_scopes:
             action = "SKIPPED_ALREADY_REFRESHED_THIS_ASOF"
             zone_state = cooldown.cooldown_state
             new_asof = None
@@ -420,6 +567,14 @@ def build_refresh_rows(
                 new_asof = None
                 paper_refreshed = "NO"
 
+        post_refresh_state, cooldown_label, display_severity, latest_zone_asof = classify_refresh_result(
+            row=row,
+            action=action,
+            zone_state=zone_state,
+            cooldown=cooldown,
+            new_asof=new_asof,
+        )
+        previous_refresh_count = 0 if cooldown is None else int(cooldown.refresh_count_for_asof)
         output.append(
             RefreshResultRow(
                 symbol=row.symbol,
@@ -434,6 +589,12 @@ def build_refresh_rows(
                 zone_result_state=zone_state,
                 new_zone_asof_ts_utc=new_asof,
                 paper_advice_refreshed=paper_refreshed,
+                post_refresh_state=post_refresh_state,
+                cooldown_label=cooldown_label,
+                latest_zone_asof=latest_zone_asof,
+                latest_advice_asof=row.asof_ts_utc,
+                display_severity=display_severity,
+                previous_refresh_count_for_asof=previous_refresh_count,
             )
         )
 
@@ -450,6 +611,8 @@ def mark_paper_refreshed(rows: list[RefreshResultRow], refreshed_asset_ids: set[
                         **asdict(row),
                         "action_taken": "PAPER_ADVICE_REFRESHED",
                         "paper_advice_refreshed": "YES",
+                        "post_refresh_state": "REFRESHED_THIS_RUN",
+                        "display_severity": "DISPLAY_CONTEXT",
                     }
                 )
             )
@@ -479,6 +642,11 @@ def print_table(rows: list[RefreshResultRow]) -> None:
         "old_next_zone",
         "action",
         "zone_state",
+        "post_refresh_state",
+        "cooldown",
+        "display_severity",
+        "latest_zone_asof",
+        "latest_advice_asof",
         "new_zone_asof",
         "paper_advice",
     ]
@@ -498,6 +666,11 @@ def print_table(rows: list[RefreshResultRow]) -> None:
                     row.old_next_zone_state,
                     row.action_taken,
                     row.zone_result_state,
+                    row.post_refresh_state,
+                    row.cooldown_label,
+                    row.display_severity,
+                    row.latest_zone_asof,
+                    "" if row.latest_advice_asof is None else str(row.latest_advice_asof),
                     "" if row.new_zone_asof_ts_utc is None else str(row.new_zone_asof_ts_utc),
                     row.paper_advice_refreshed,
                 ]
@@ -558,6 +731,12 @@ def main() -> int:
         print(f"report={REPORT_NAME} version={REPORT_VERSION}")
         print(f"write_db={bool(args.write_db)} candidates={len(worklist_rows)} rows={len(result_rows)}")
         print(f"zone_refreshed_assets={len(refreshed_asset_ids)} paper_advice_rows_written={advice_written}")
+        print(
+            "cadence="
+            f"cooldown_minutes={args.cooldown_minutes} "
+            f"allow_intrabar_repeat={int(args.allow_intrabar_repeat)} "
+            f"max_per_asset_per_4h={int(args.max_per_asset_per_4h)}"
+        )
         print(SAFETY_LINE)
     elif args.output == "json":
         print(
@@ -568,6 +747,9 @@ def main() -> int:
                     "write_db": bool(args.write_db),
                     "rows": [asdict(row) for row in result_rows],
                     "paper_advice_rows_written": advice_written,
+                    "cooldown_minutes": str(args.cooldown_minutes),
+                    "allow_intrabar_repeat": int(args.allow_intrabar_repeat),
+                    "max_per_asset_per_4h": int(args.max_per_asset_per_4h),
                     "broker_private_calls": 0,
                     "broker_calls": 0,
                     "broker_writes": 0,
