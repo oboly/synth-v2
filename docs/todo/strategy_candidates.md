@@ -66,6 +66,45 @@ No forward-return fields in runtime tables.
 No decision_gate, execution_planner, executor, broker, or order changes.
 ```
 
+## P1 — Long-term regime classifier and dual-bucket research
+
+Status: open research.
+
+Long-term regime classifier:
+
+- Build and validate a regime classifier before strategy promotion.
+- Regime labels to backtest:
+  - `SIDEWAYS_MARKET`
+  - `BULL_MARKET`
+  - `BEAR_MARKET`
+  - `CRASH_MARKET`
+  - `SUPER_BULL_MARKET`
+  - `LIQUIDITY_ROTATION`
+
+Dual bucket policy research:
+
+- Backtest a dual bucket policy:
+  - 50% long-term fibo target exposure
+  - 50% short-term breath trading
+- Compare with single-bucket variants and buy-and-hold baselines.
+
+Super-bull / god-candle scenario:
+
+- Backtest preselected long-term exposure versus waiting for short-term entry signal.
+- Measure risk of missing a move if no prior exposure exists.
+- Include drawdown, missed-move, and opportunity-cost metrics.
+
+Scoring requirements:
+
+- Do not choose strategies only by historical profit.
+- Include sample size, profit factor, max drawdown, out-of-sample result, walk-forward result, regime stability, fee/slippage sensitivity, liquidity, and failure modes.
+
+Boundary:
+
+- Research/backtest only.
+- Validated candidates may feed market-only candidate ranking later.
+- User/account permissions still belong in user strategy profiles, decision_gate, and execution_planner.
+
 ## Boundary
 
 ```text

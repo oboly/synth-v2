@@ -422,6 +422,45 @@ def next_zone_html(preview: NextZonePreview) -> str:
     return "".join(parts)
 
 
+def _target_midpoint(low: Any, high: Any) -> Decimal | None:
+    low_dec = to_decimal(low)
+    high_dec = to_decimal(high)
+    if low_dec is not None and high_dec is not None:
+        return (low_dec + high_dec) / Decimal("2")
+    return low_dec if low_dec is not None else high_dec
+
+
+def _target_distance_text(target_mid: Decimal | None, current_price: Any) -> str:
+    price = to_decimal(current_price)
+    if target_mid is None or price is None or price <= 0:
+        return ""
+    delta = ((target_mid / price) - Decimal("1")) * Decimal("100")
+    return f"{delta.quantize(Decimal('0.1'))}%"
+
+
+def relevant_target_html(row: dict[str, Any], preview: NextZonePreview) -> str:
+    if preview.next_target_zone_label and preview.next_target_zone:
+        zone_text = format_zone(preview.next_target_zone)
+        target_mid = (preview.next_target_zone[0] + preview.next_target_zone[1]) / Decimal("2")
+        label = preview.next_target_zone_label
+    else:
+        leg_direction = str(row.get("leg_direction") or "").strip().upper()
+        _, target_label, _ = zone_labels(leg_direction)
+        zone_text = fmt_range(row.get("tp_zone_low"), row.get("tp_zone_high"))
+        if zone_text == "—":
+            return '<span class="muted">—</span>'
+        label = target_label
+        target_mid = _target_midpoint(row.get("tp_zone_low"), row.get("tp_zone_high"))
+
+    distance = _target_distance_text(target_mid, row.get("current_price"))
+    distance_html = "" if not distance else f'<div class="muted small">distance: {esc(distance)}</div>'
+    return (
+        f'<div><span class="pill {css_class(label)}">{esc(label)}</span></div>'
+        f'<div class="zone-value">{esc(zone_text)}</div>'
+        f"{distance_html}"
+    )
+
+
 def market_breath_context_html(row: dict[str, Any] | None) -> str:
     if not row:
         return '<span class="muted small">not available</span>'
@@ -1055,6 +1094,7 @@ def render_table(
             target_state=target_state,
             price_progress_state=price_progress.progress_state,
         )
+        target_html = relevant_target_html(row, next_preview)
         progress_labels = "".join(
             f'<span class="pill {css_class(label)}">{esc(label)}</span>'
             for label in price_progress.labels
@@ -1133,6 +1173,7 @@ def render_table(
                 <td><span class="pill {css_class(entry_display_state)}">{esc(entry_display_state)}</span><div class="muted small">raw: {esc(entry_state)}</div></td>
                 <td>{progress_html}</td>
                 <td><span class="pill {css_class(target_state)}">{esc(target_state)}</span></td>
+                <td class="mono sticky-target">{target_html}</td>
                 <td><span class="pill {css_class(confirm_state)}">{esc(confirm_state)}</span></td>
                 <td class="muted small">{esc(", ".join(blockers))}</td>
                 <td>{next_zone_html(next_preview)}</td>
@@ -1162,8 +1203,8 @@ def render_table(
 
     return f"""
     <div class="table-wrap">
-        <table>
-            <thead>
+        <table class="sticky-table">
+            <thead class="sticky-header">
                 <tr>
                     <th>Rank</th>
                     <th class="sticky-symbol">Symbol / Leg</th>
@@ -1176,6 +1217,7 @@ def render_table(
                     <th>Entry state</th>
                     <th>Price progress</th>
                     <th>Target state</th>
+                    <th class="sticky-target">Relevant target</th>
                     <th>Confirmation</th>
                     <th>Promotion blockers</th>
                     <th>Next zones</th>

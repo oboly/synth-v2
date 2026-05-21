@@ -615,6 +615,40 @@ def next_zone_html(preview: NextZonePreview) -> str:
     return "".join(parts)
 
 
+def relevant_target_html(
+    *,
+    leg_direction: Any,
+    tp_zone_low: Decimal | None,
+    tp_zone_high: Decimal | None,
+    current_price: Decimal | None,
+    next_preview: NextZonePreview,
+    delta_target_pct: Decimal | None,
+) -> str:
+    if next_preview.next_target_zone_label and next_preview.next_target_zone:
+        label = next_preview.next_target_zone_label
+        zone_text = format_zone(next_preview.next_target_zone)
+        distance_text = signed_pct_text(
+            pct_delta(
+                (next_preview.next_target_zone[0] + next_preview.next_target_zone[1]) / Decimal("2"),
+                current_price,
+            )
+        )
+    else:
+        zone_text = tp_zone_text({"tp_zone_low": tp_zone_low, "tp_zone_high": tp_zone_high})
+        if not zone_text:
+            return "<span class='muted'>—</span>"
+        leg = str(leg_direction or "").upper()
+        label = "TP / upside target" if leg == "UP" else "Downside target" if leg == "DOWN" else "Target"
+        distance_text = signed_pct_text(delta_target_pct)
+
+    distance_html = "" if not distance_text else f"<div class='muted small'>distance: {esc(distance_text)}</div>"
+    return (
+        f"<div><span class='pill {pill_class(label)}'>{esc(label)}</span></div>"
+        f"<div class='zone-value'>{esc(zone_text)}</div>"
+        f"{distance_html}"
+    )
+
+
 def severity_html(severity: Any) -> str:
     return (
         f"<div><span class='pill {pill_class(severity.advice_severity)}'>{esc(severity.advice_severity)}</span></div>"
@@ -874,6 +908,14 @@ def render_html(
                 lifecycle_state=lifecycle.lifecycle_state,
                 intrabar_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
             )
+            target_html = relevant_target_html(
+                leg_direction=row.leg_direction,
+                tp_zone_low=row.tp_zone_low,
+                tp_zone_high=row.tp_zone_high,
+                current_price=current_price,
+                next_preview=next_preview,
+                delta_target_pct=delta_tp_pct,
+            )
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -902,7 +944,7 @@ def render_html(
                 f"{entry_distance_cell(leg_direction=row.leg_direction, entry_zone_low=row.entry_zone_low, entry_zone_high=row.entry_zone_high, current_price=current_price)}"
                 f"{pct_cell(delta_tp_pct, target_pct_class(delta_tp_pct, context))}"
                 f"{pct_cell(delta_invalidation_pct, risk_pct_class(delta_invalidation_pct, context))}"
-                f"<td class='zone-value'>{esc(tp_zone)}</td>"
+                f"<td class='zone-value sticky-target'>{target_html}</td>"
                 f"<td><span class='pill {pill_class(row.rotation_state)}'>{esc(row.rotation_state)}</span></td>"
                 f"<td class='num'>{esc(row.rotation_pressure_score)}</td>"
                 f"<td class='small'>{esc(review_refs)}</td>"
@@ -1020,6 +1062,20 @@ def render_html(
                 lifecycle_state=lifecycle.lifecycle_state,
                 intrabar_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
             )
+            candidate_target_html = relevant_target_html(
+                leg_direction=None if not advice else advice.get("leg_direction"),
+                tp_zone_low=None if not advice else dec(advice.get("tp_zone_low")),
+                tp_zone_high=None if not advice else dec(advice.get("tp_zone_high")),
+                current_price=current_price,
+                next_preview=next_preview,
+                delta_target_pct=pct_delta(
+                    midpoint_or_edge(
+                        None if not advice else dec(advice.get("tp_zone_low")),
+                        None if not advice else dec(advice.get("tp_zone_high")),
+                    ),
+                    current_price,
+                ),
+            )
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -1046,7 +1102,7 @@ def render_html(
                 f"<td><span class='pill {pill_class('MAP_RECOMPUTE_NEEDED' if lifecycle.recompute_needed else 'ACTIVE_MAP')}'>{'YES' if lifecycle.recompute_needed else 'NO'}</span></td>"
                 f"<td class='small'>{esc(lifecycle.recompute_reason)}</td>"
                 f"<td>{next_zone_html(next_preview)}</td>"
-                f"<td class='zone-value'>{esc(tp_zone_text(advice or {}))}</td>"
+                f"<td class='zone-value sticky-target'>{candidate_target_html}</td>"
                 f"<td class='num zone-value'>{esc(dec_text(invalidation_price, '0.000000'))}</td>"
                 f"<td><span class='pill {'ok' if held_row is not None else 'muted'}'>{'YES' if held_row is not None else 'NO'}</span></td>"
                 f"<td class='num'>{esc(dec_text(held_value, '0.01'))}</td>"
@@ -1060,8 +1116,8 @@ def render_html(
         <section class="card priority">
           <h2>Rotation candidate diagnostics <span class="muted">({len(ranked_candidates)})</span></h2>
           <div class="table-wrap">
-            <table>
-              <thead>
+            <table class="sticky-table">
+              <thead class="sticky-header">
                 <tr>
                   <th>Rank</th>
                   <th class="sticky-symbol">Symbol</th>
@@ -1086,7 +1142,7 @@ def render_html(
                   <th>Recompute needed</th>
                   <th>Recompute reason</th>
                   <th>Next zones</th>
-                  <th>TP / target zone</th>
+                  <th class="sticky-target">Relevant target</th>
                   <th>Invalidation</th>
                   <th>Held</th>
                   <th>Held value €</th>
@@ -1116,8 +1172,8 @@ def render_html(
         <section class="{esc(section_class)}">
           <h2>{esc(title)} <span class="muted">({len(table_rows_data)})</span></h2>
           <div class="table-wrap">
-            <table>
-              <thead>
+            <table class="sticky-table">
+              <thead class="sticky-header">
                 <tr>
                   <th class="sticky-symbol">Symbol</th>
                   <th>Value €</th>
@@ -1144,7 +1200,7 @@ def render_html(
                   <th>Entry distance</th>
                   <th>Δ target %</th>
                   <th>Δ risk %</th>
-                  <th>TP / target zone</th>
+                  <th class="sticky-target">Relevant target</th>
                   <th>Rotation</th>
                   <th>Rotation score</th>
                   <th>Market review refs</th>
@@ -1170,15 +1226,16 @@ def render_html(
   <meta charset="utf-8">
   <meta http-equiv="refresh" content="300">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Synth Rotation Preview</title>
+  <title>Synth Portfolio Cockpit</title>
   <style>
     {cockpit_base_css(min_table_width=2450)}
   </style>
 </head>
 <body>
   <header>
-    <h1>Position Rotation Preview</h1>
+    <h1>Portfolio Cockpit</h1>
     <div class="muted">Rendered {esc(local_ts)} Amsterdam time</div>
+    <div class="muted">portefeuille / rotatie / huidige holdings</div>
     <div class="muted">venue={esc(venue)} · quote={esc(quote_currency)} · interval={esc(interval)} · trading_account_id={esc(account_id)}</div>
     {cockpit_nav()}
     <div class="legend">

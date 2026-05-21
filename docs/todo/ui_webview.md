@@ -95,6 +95,39 @@ Design rules:
 - Multi-pane charting.
 - Paper/backtest/oracle marker overlays.
 
+## P1 — Cockpit usability and reading flow
+
+Status: open / active design follow-up.
+
+Table usability:
+
+- Keep symbol, current price, relevant target/zone columns sticky where useful.
+- Keep dashboard table header rows sticky for wide cockpit tables.
+- Preserve mobile/simple rendering.
+
+Information architecture:
+
+- Split cockpit information into clear sections:
+  - market state
+  - policy/action state
+  - pipeline/recompute state
+- Keep policy/action blocks separate from market context and next-zone previews.
+- Continue to label dashboard context as review context, not trade permission.
+
+Final simplified user dashboard:
+
+- One practical overview based on natural reading flow.
+- Per-coin compact cards.
+- 5-day mini graph/sparkline.
+- Markers for entry, current price, target, invalidation, reclaim, and recompute.
+- Compact state plus human-readable reason.
+
+Boundary:
+
+- UI/reporting only.
+- No market logic changes.
+- No selection, advice, decision, execution, broker, or order path changes.
+
 ## P1 — Local-only UI timestamps
 
 Status: implemented in `feature/ui-local-time-only-v1`.

@@ -51,9 +51,9 @@ Do not bypass layers.
 | `watchlist_candidates.md` | open intake | User-thesis watchlist candidates such as KITE before validation/promotion |
 | `deploy_runtime.md` | MVP cockpit implemented / ops follow-up | Odroid read-only cockpit runner, dashboard render path, and related operational follow-ups |
 | `fibo_zones.md` | open research | Fib target maps, leak-free zone/fib touch evaluation, zone context guardrails, exit ladder profiles, and zone UI overlays |
-| `ui_webview.md` | parked/open | Read-only chart/UI/Webview upgrades and documentation |
+| `ui_webview.md` | active/open | Read-only chart/UI/Webview upgrades, cockpit sticky columns, reading-flow split, and simplified dashboard design |
 | `breath_curve.md` | parked/open | Breath Curve baseline, non-overlap follow-up, partial-cycle, and regime-gated validation continuation |
-| `strategy_candidates.md` | active next research | Current strategy audit follow-up, forward-return backtests, horizon bucket design, and research-lead follow-ups |
+| `strategy_candidates.md` | active next research | Current strategy audit follow-up, forward-return backtests, horizon bucket design, long-term regime classifier, dual-bucket policy research, and research-lead follow-ups |
 | `position_rotation_preview.md` | MVP implemented / parked follow-up | Account-aware read-only cockpit/rotation preview with current price and distance semantics; strategy/backtests remain separate |
 | `paper_candidate_contract.md` | future design | Safe adapter path from research candidates to decision_gate |
 | `dev_ops_hygiene.md` | mostly parked | Codex smoke state, DBeaver/MariaDB access recovery, MariaDB backup/export hygiene, local untracked-file hygiene |

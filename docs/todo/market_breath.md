@@ -183,6 +183,38 @@ No further work is needed in this loop unless one of the following happens:
 - a specific threshold reachability problem is opened
 - longer history becomes materially different and warrants rerun
 
+## P1 — Regime cockpit page
+
+Status: open / downstream cockpit use-case.
+
+Add:
+
+```text
+/synth/regime.html
+```
+
+Language rule:
+
+- Use `Market Breath` spelling for breath rhythm/phase context.
+- Use `breadth` only where it explicitly means market breadth participation/alignment.
+
+Per-asset display:
+
+- `market_breath_phase`
+- `market_breath_state`
+- `market_breath_context_state`
+- `momentum_score`
+- `relative_strength_score`
+- `btc_alignment_score`
+- `breadth_alignment_score`
+- A+ legacy freshness/context
+
+Boundary:
+
+- Regime page is read-only cockpit context.
+- Market Breath remains market-only and account-agnostic.
+- Do not convert Market Breath into buy/sell logic.
+
 ## Boundary
 
 - Research-only.

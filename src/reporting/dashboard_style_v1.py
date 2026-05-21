@@ -72,6 +72,7 @@ def cockpit_base_css(*, min_table_width: int = 1800) -> str:
       --ok: #55d6a7;
       --context: #7aa2ff;
       --sticky-bg: #151f39;
+      --sticky-header-bg: #111a31;
       --stale-bg: rgba(82, 23, 31, .34);
       --stale-line: rgba(255, 107, 107, .34);
       --fresh-bg: rgba(23, 82, 58, .24);
@@ -184,6 +185,13 @@ def cockpit_base_css(*, min_table_width: int = 1800) -> str:
       letter-spacing: .04em;
       white-space: nowrap;
     }}
+    .sticky-table thead th, thead.sticky-header th, th.sticky-header {{
+      position: sticky;
+      top: 0;
+      z-index: 6;
+      background: var(--sticky-header-bg);
+      box-shadow: 0 1px 0 var(--line);
+    }}
     tr:hover td {{ background-color: rgba(122,162,255,.06); }}
     tr.fresh-map td, tr.workflow-fresh td {{
       background-color: var(--fresh-bg);
@@ -219,25 +227,40 @@ def cockpit_base_css(*, min_table_width: int = 1800) -> str:
       border-color: rgba(255,107,107,.80);
       box-shadow: 0 0 0 1px rgba(255,107,107,.18) inset;
     }}
-    .sticky-symbol, .sticky-price {{
+    .sticky-symbol, .sticky-price, .sticky-target,
+    .sticky-col-symbol, .sticky-col-price, .sticky-col-target {{
       position: sticky;
       z-index: 3;
       background: var(--sticky-bg);
       box-shadow: 1px 0 0 var(--line);
     }}
-    tr.fresh-map .sticky-symbol, tr.fresh-map .sticky-price {{
+    tr.fresh-map .sticky-symbol, tr.fresh-map .sticky-price, tr.fresh-map .sticky-target,
+    tr.fresh-map .sticky-col-symbol, tr.fresh-map .sticky-col-price, tr.fresh-map .sticky-col-target {{
       background: #15372f;
     }}
-    tr.warning-map .sticky-symbol, tr.warning-map .sticky-price {{
+    tr.warning-map .sticky-symbol, tr.warning-map .sticky-price, tr.warning-map .sticky-target,
+    tr.warning-map .sticky-col-symbol, tr.warning-map .sticky-col-price, tr.warning-map .sticky-col-target {{
       background: #332c21;
     }}
-    tr.stale-map .sticky-symbol, tr.stale-map .sticky-price,
-    tr.workflow-stale .sticky-symbol, tr.workflow-stale .sticky-price {{
+    tr.stale-map .sticky-symbol, tr.stale-map .sticky-price, tr.stale-map .sticky-target,
+    tr.workflow-stale .sticky-symbol, tr.workflow-stale .sticky-price, tr.workflow-stale .sticky-target,
+    tr.stale-map .sticky-col-symbol, tr.stale-map .sticky-col-price, tr.stale-map .sticky-col-target,
+    tr.workflow-stale .sticky-col-symbol, tr.workflow-stale .sticky-col-price, tr.workflow-stale .sticky-col-target {{
       background: #321b27;
     }}
-    th.sticky-symbol, th.sticky-price {{ z-index: 5; }}
-    .sticky-symbol {{ left: 0; min-width: 108px; }}
-    .sticky-price {{ left: 108px; min-width: 126px; }}
+    th.sticky-symbol, th.sticky-price, th.sticky-target,
+    th.sticky-col-symbol, th.sticky-col-price, th.sticky-col-target {{
+      z-index: 8;
+      background: var(--sticky-header-bg);
+    }}
+    .sticky-symbol, .sticky-col-symbol {{ left: 0; min-width: 108px; }}
+    .sticky-price, .sticky-col-price {{ left: 108px; min-width: 126px; }}
+    .sticky-target, .sticky-col-target {{
+      right: 0;
+      min-width: 170px;
+      max-width: 240px;
+      box-shadow: -1px 0 0 var(--line);
+    }}
     .zone-value {{ font-variant-numeric: tabular-nums; }}
     a {{ color: var(--context); text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
@@ -256,7 +279,8 @@ def cockpit_base_css(*, min_table_width: int = 1800) -> str:
       main {{ padding: 12px; }}
       table {{ font-size: 12px; }}
       th, td {{ padding: 8px 6px; }}
-      .sticky-symbol {{ min-width: 94px; }}
-      .sticky-price {{ left: 94px; min-width: 112px; }}
+      .sticky-symbol, .sticky-col-symbol {{ min-width: 94px; }}
+      .sticky-price, .sticky-col-price {{ left: 94px; min-width: 112px; }}
+      .sticky-target, .sticky-col-target {{ min-width: 146px; max-width: 190px; }}
     }}
     """

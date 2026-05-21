@@ -302,6 +302,44 @@ def next_zone_html(preview: NextZonePreview) -> str:
     return "".join(parts)
 
 
+def _zone_midpoint(low: Any, high: Any) -> Decimal | None:
+    low_dec = to_decimal(low)
+    high_dec = to_decimal(high)
+    if low_dec is not None and high_dec is not None:
+        return (low_dec + high_dec) / Decimal("2")
+    return low_dec if low_dec is not None else high_dec
+
+
+def _target_distance_text(target_mid: Decimal | None, current_price: Any) -> str:
+    price = to_decimal(current_price)
+    if target_mid is None or price is None or price <= 0:
+        return ""
+    delta = ((target_mid / price) - Decimal("1")) * Decimal("100")
+    return f"{delta.quantize(Decimal('0.1'))}%"
+
+
+def relevant_target_html(row: dict[str, Any], preview: NextZonePreview) -> str:
+    if preview.next_target_zone_label and preview.next_target_zone:
+        zone_text = format_zone(preview.next_target_zone)
+        target_mid = (preview.next_target_zone[0] + preview.next_target_zone[1]) / Decimal("2")
+        label = preview.next_target_zone_label
+    else:
+        zone_text = fmt_zone(row.get("tp_zone_low"), row.get("tp_zone_high"))
+        if not zone_text:
+            return "<span class='muted'>—</span>"
+        leg = str(row.get("leg_direction") or "").upper()
+        label = "TP / upside target" if leg == "UP" else "Downside target" if leg == "DOWN" else "Target"
+        target_mid = _zone_midpoint(row.get("tp_zone_low"), row.get("tp_zone_high"))
+
+    distance = _target_distance_text(target_mid, row.get("current_price"))
+    distance_html = "" if not distance else f"<div class='muted small'>distance: {esc(distance)}</div>"
+    return (
+        f"<div><span class='pill {css_class(label)}'>{esc(label)}</span></div>"
+        f"<div class='zone-value'>{esc(zone_text)}</div>"
+        f"{distance_html}"
+    )
+
+
 def local_label(value: datetime | None) -> str:
     if value is None:
         return "not available"
@@ -602,6 +640,11 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         blockers = ", ".join(str(code) for code in row.get("promotion_blockers", []))
         next_preview = row.get("next_zone_preview")
         next_preview_html = next_zone_html(next_preview) if isinstance(next_preview, NextZonePreview) else ""
+        target_html = (
+            relevant_target_html(row, next_preview)
+            if isinstance(next_preview, NextZonePreview)
+            else "<span class='muted'>—</span>"
+        )
         progress_labels = "".join(
             f"<span class='pill {css_class(str(label))}'>{esc(label)}</span>"
             for label in row.get("price_progress_labels", [])
@@ -643,7 +686,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             f"<td class='small'>{esc(row.get('recompute_reason'))}</td>"
             f"<td>{next_preview_html}</td>"
             f"<td class='num zone-value'>{esc(fmt_zone(row.get('entry_zone_low'), row.get('entry_zone_high')))}</td>"
-            f"<td class='num zone-value'>{esc(fmt_zone(row.get('tp_zone_low'), row.get('tp_zone_high')))}</td>"
+            f"<td class='num zone-value sticky-target'>{target_html}</td>"
             f"<td class='num zone-value'>{esc(dec_text(row.get('invalidation_price')))}</td>"
             f"<td class='small'>{esc(reason_codes)}</td>"
             "</tr>"
@@ -651,8 +694,8 @@ def render_table(rows: list[dict[str, Any]]) -> str:
 
     return f"""
     <div class="table-wrap">
-      <table>
-        <thead>
+      <table class="sticky-table">
+        <thead class="sticky-header">
           <tr>
             <th>Rank</th>
             <th class="sticky-symbol">Symbol</th>
@@ -680,7 +723,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             <th>Recompute reason</th>
             <th>Next zones</th>
             <th>Entry / reaction zone</th>
-            <th>TP / target zone</th>
+            <th class="sticky-target">Relevant target</th>
             <th>Invalidation</th>
             <th>Reason codes</th>
           </tr>
