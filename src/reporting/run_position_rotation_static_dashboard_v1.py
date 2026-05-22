@@ -85,6 +85,25 @@ class PositionValuation:
     source: str
 
 
+@dataclass(frozen=True)
+class CandidateDestinationContext:
+    advice: dict[str, Any] | None
+    current_price: Decimal | None
+    target_state: str
+    risk_state: str
+    entry_state: str
+    entry_display_state: str
+    price_progress: Any
+    lifecycle: Any
+    effective_lifecycle_state: str
+    effective_recompute_needed: bool
+    effective_recompute_reason: str
+    next_preview: NextZonePreview
+    intrabar_row: Any
+    action_display: str
+    confirmation_state: str
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Render static HTML dashboard for read-only position rotation preview."
@@ -388,9 +407,16 @@ def pill_class(text: str | None) -> str:
         or "LOW_CONFIDENCE_DESTINATION" in value
         or "MARKET_ONLY_DESTINATION" in value
         or "MISSING_APLUS_CONTEXT" in value
+        or "MISSING_CURVE_CONTEXT" in value
+        or "MARKET_BREATH_UNKNOWN" in value
         or "STALE_APLUS_CONTEXT" in value
         or "APLUS_AVOID_OR_DISTORTED" in value
         or "WEAK_CURVE_STRUCTURE" in value
+        or "WEAK_MARKET_BREATH_CONFIDENCE" in value
+        or "WEAK_RELATIVE_STRENGTH" in value
+        or "WEAK_MOMENTUM" in value
+        or "CURVE_NEUTRAL" in value
+        or "CURVE_WEAK" in value
     ):
         return pill_classes("warn", value)
     if (
@@ -399,6 +425,9 @@ def pill_class(text: str | None) -> str:
         or "RECLAIM_NEXT_ZONE_PREVIEW" in value
         or "BREAKDOWN_NEXT_ZONE_PREVIEW" in value
         or "NEXT_ZONE_UNKNOWN" in value
+        or "CURVE_DOWN_PRESSURE" in value
+        or "CURVE_FAILED_RECLAIM" in value
+        or "CURVE_NO_UP_SIGNAL" in value
     ):
         return pill_classes("bad", value)
     if (
@@ -423,6 +452,7 @@ def pill_class(text: str | None) -> str:
         or "LTF_CANDLES_FRESH" in value
         or "NO_INTRABAR_RECOMPUTE_HINT" in value
         or "HIGH_CONFIDENCE_DESTINATION" in value
+        or "CURVE_UP_CONFIRMED" in value
     ):
         return pill_classes("ok", value)
     if (
@@ -847,6 +877,46 @@ def render_html(
         return badges
 
     def destination_eligibility_for_candidate(symbol: str) -> DestinationEligibility:
+        context = candidate_destination_context(symbol)
+        block_display = classify_policy_block_display(
+            context.advice,
+            lifecycle_state=context.effective_lifecycle_state,
+            recompute_needed=context.effective_recompute_needed,
+            recompute_reason=context.effective_recompute_reason,
+            target_state=context.target_state,
+            entry_state=context.entry_display_state,
+            price_progress_state=context.price_progress.progress_state,
+            market_breath_row=(market_breath_by_symbol or {}).get(symbol),
+        )
+        return evaluate_rotation_destination_eligibility(
+            context.advice,
+            current_price=context.current_price,
+            target_state=context.target_state,
+            risk_state=context.risk_state,
+            lifecycle_state=context.effective_lifecycle_state,
+            recompute_needed=context.effective_recompute_needed,
+            recompute_reason=context.effective_recompute_reason,
+            policy_label=None if block_display is None else block_display.display_policy_label,
+            action_label=context.action_display,
+            entry_state=context.entry_display_state,
+            price_progress_state=context.price_progress.progress_state,
+            price_progress_labels=context.price_progress.labels,
+            next_zone_state=context.next_preview.next_zone_state,
+            next_reaction_zone_label=context.next_preview.next_reaction_zone_label,
+            next_target_zone_label=context.next_preview.next_target_zone_label,
+            next_target_zone=context.next_preview.next_target_zone,
+            intrabar_lifecycle_state=(
+                None if context.intrabar_row is None else context.intrabar_row.intrabar_lifecycle_state
+            ),
+            intrabar_recompute_hint=(
+                None if context.intrabar_row is None else context.intrabar_row.intrabar_recompute_hint
+            ),
+            intrabar_data_quality_state=(
+                None if context.intrabar_row is None else context.intrabar_row.data_quality_state
+            ),
+        )
+
+    def candidate_destination_context(symbol: str) -> CandidateDestinationContext:
         advice = advice_by_symbol.get(symbol)
         latest_price = price_by_symbol.get(symbol)
         current_price = None if latest_price is None else latest_price.price
@@ -868,6 +938,13 @@ def render_html(
             in_position_context=held_row_by_symbol.get(symbol) is not None,
         )
         entry_display_state = semantic_entry_display_state(
+            entry_state=entry_state,
+            price_progress_state=price_progress.progress_state,
+            price_progress_labels=price_progress.labels,
+        )
+        confirmation_state = confirmation_display_state(
+            advice_action=None if not advice else advice.get("advice_action"),
+            policy_decision=None if not advice else advice.get("policy_decision"),
             entry_state=entry_state,
             price_progress_state=price_progress.progress_state,
             price_progress_labels=price_progress.labels,
@@ -903,43 +980,39 @@ def render_html(
             lifecycle_state=lifecycle.lifecycle_state,
             intrabar_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
         )
-        block_display = classify_policy_block_display(
-            advice,
-            lifecycle_state=effective_lifecycle_state,
-            recompute_needed=effective_recompute_needed,
-            recompute_reason=effective_recompute_reason,
-            target_state=target_state,
-            entry_state=entry_display_state,
-            price_progress_state=price_progress.progress_state,
-            market_breath_row=(market_breath_by_symbol or {}).get(symbol),
-        )
-        return evaluate_rotation_destination_eligibility(
-            advice,
+        return CandidateDestinationContext(
+            advice=advice,
             current_price=current_price,
             target_state=target_state,
             risk_state=risk_state,
-            lifecycle_state=effective_lifecycle_state,
-            recompute_needed=effective_recompute_needed,
-            recompute_reason=effective_recompute_reason,
-            policy_label=None if block_display is None else block_display.display_policy_label,
-            action_label=action_display,
-            entry_state=entry_display_state,
-            price_progress_state=price_progress.progress_state,
-            price_progress_labels=price_progress.labels,
-            next_zone_state=next_preview.next_zone_state,
-            next_reaction_zone_label=next_preview.next_reaction_zone_label,
-            next_target_zone_label=next_preview.next_target_zone_label,
-            next_target_zone=next_preview.next_target_zone,
-            intrabar_lifecycle_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
-            intrabar_recompute_hint=None if intrabar_row is None else intrabar_row.intrabar_recompute_hint,
-            intrabar_data_quality_state=None if intrabar_row is None else intrabar_row.data_quality_state,
+            entry_state=entry_state,
+            entry_display_state=entry_display_state,
+            price_progress=price_progress,
+            lifecycle=lifecycle,
+            effective_lifecycle_state=effective_lifecycle_state,
+            effective_recompute_needed=effective_recompute_needed,
+            effective_recompute_reason=effective_recompute_reason,
+            next_preview=next_preview,
+            intrabar_row=intrabar_row,
+            action_display=action_display,
+            confirmation_state=confirmation_state,
         )
 
     def destination_confidence_for_candidate(symbol: str) -> DestinationConfidence:
-        advice = advice_by_symbol.get(symbol)
+        context = candidate_destination_context(symbol)
         return destination_confidence(
-            advice,
+            context.advice,
             market_breath_row=(market_breath_by_symbol or {}).get(symbol),
+            target_state=context.target_state,
+            risk_state=context.risk_state,
+            lifecycle_state=context.effective_lifecycle_state,
+            recompute_reason=context.effective_recompute_reason,
+            price_progress_state=context.price_progress.progress_state,
+            price_progress_labels=context.price_progress.labels,
+            next_zone_state=context.next_preview.next_zone_state,
+            next_reaction_zone_label=context.next_preview.next_reaction_zone_label,
+            next_target_zone_label=context.next_preview.next_target_zone_label,
+            confirmation_state=context.confirmation_state,
         )
 
     def destination_confidence_html(confidence: DestinationConfidence) -> str:
@@ -950,6 +1023,10 @@ def render_html(
         return (
             f"<span class='pill {pill_class(confidence.confidence_label)}'>"
             f"{esc(confidence.confidence_label)}</span>"
+            "<div class='small'>"
+            f"<span class='pill {pill_class(confidence.curve_sanity_label)}'>"
+            f"{esc(confidence.curve_sanity_label)}</span>"
+            "</div>"
             f"<div>{evidence}</div>"
         )
 
@@ -967,7 +1044,7 @@ def render_html(
             confidence = destination_confidence_for_candidate(symbol)
             if eligibility.eligible and confidence.clean_actionable:
                 destinations.append(
-                    f"{symbol}:{candidate_score.quantize(Decimal('0.01'))}:{confidence.confidence_label}"
+                    f"{symbol}:{candidate_score.quantize(Decimal('0.01'))}:{confidence.confidence_label}/{confidence.curve_sanity_label}"
                 )
             if len(destinations) >= max_items:
                 break
@@ -1462,6 +1539,7 @@ def render_html(
       <div><strong>Rotation destinations</strong> = stricter filtered candidates.</div>
       <div><strong>Market review refs are broad comparison assets. Rotation destinations are stricter actionable-review candidates, not trade advice.</strong></div>
       <div><strong>Rotation destination confidence includes market structure plus available A+/curve context. Missing A+ lowers confidence; it is not trade advice.</strong></div>
+      <div><strong>Curve sanity checks whether the destination has visible up-confirmation. Weak/down-pressure curves lower destination confidence; not trade advice.</strong></div>
       <div><strong>Market ref score</strong> = market-only comparison score.</div>
       <div><strong>Destination eligible</strong> = strict candidate after paper/setup/risk/account-position filters.</div>
       <div><strong>Exclusion reasons</strong> explain why a strong reference is not a destination.</div>

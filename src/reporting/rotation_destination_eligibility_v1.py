@@ -49,6 +49,7 @@ class DestinationEligibility:
 @dataclass(frozen=True)
 class DestinationConfidence:
     confidence_label: str
+    curve_sanity_label: str
     evidence_labels: list[str]
     clean_actionable: bool
 
@@ -108,10 +109,21 @@ def destination_confidence(
     advice_row: dict[str, Any] | None,
     *,
     market_breath_row: dict[str, Any] | None = None,
+    target_state: Any = None,
+    risk_state: Any = None,
+    lifecycle_state: Any = None,
+    recompute_reason: Any = None,
+    price_progress_state: Any = None,
+    price_progress_labels: tuple[str, ...] | list[str] = (),
+    next_zone_state: Any = None,
+    next_reaction_zone_label: Any = None,
+    next_target_zone_label: Any = None,
+    confirmation_state: Any = None,
 ) -> DestinationConfidence:
     if not advice_row:
         return DestinationConfidence(
             confidence_label="MISSING_APLUS_CONTEXT",
+            curve_sanity_label="CURVE_NO_UP_SIGNAL",
             evidence_labels=["MISSING_APLUS_CONTEXT"],
             clean_actionable=False,
         )
@@ -140,6 +152,33 @@ def destination_confidence(
         None if market_breath_row is None else market_breath_row.get("momentum_score")
     )
 
+    curve_context = text_blob(
+        value(advice_row, "leg_direction"),
+        target_state,
+        risk_state,
+        lifecycle_state,
+        recompute_reason,
+        price_progress_state,
+        price_progress_labels,
+        next_zone_state,
+        next_reaction_zone_label,
+        next_target_zone_label,
+        confirmation_state,
+    )
+    curve_sanity = curve_sanity_label(
+        advice_row,
+        target_state=target_state,
+        risk_state=risk_state,
+        lifecycle_state=lifecycle_state,
+        recompute_reason=recompute_reason,
+        price_progress_state=price_progress_state,
+        price_progress_labels=price_progress_labels,
+        next_zone_state=next_zone_state,
+        next_reaction_zone_label=next_reaction_zone_label,
+        next_target_zone_label=next_target_zone_label,
+        confirmation_state=confirmation_state,
+    )
+
     if (
         not aplus_bucket
         or aplus_bucket == "APLUS_UNKNOWN"
@@ -155,19 +194,20 @@ def destination_confidence(
     } or strategic_bias == "AVOID":
         evidence.append("APLUS_AVOID_OR_DISTORTED")
 
-    weak_curve = False
-    if market_breath_row is None:
-        weak_curve = True
-    if market_breath_context in {"", "MARKET_BREATH_UNKNOWN"}:
-        weak_curve = True
-    if market_breath_confidence is not None and market_breath_confidence < Decimal("0.35"):
-        weak_curve = True
-    if relative_strength is not None and relative_strength <= Decimal("0"):
-        weak_curve = True
-    if momentum is not None and momentum <= Decimal("0"):
-        weak_curve = True
-    if weak_curve:
-        evidence.append("WEAK_CURVE_STRUCTURE")
+    if curve_sanity == "CURVE_NO_UP_SIGNAL" and not curve_context:
+        evidence.append("MISSING_CURVE_CONTEXT")
+    if curve_sanity == "CURVE_UP_CONFIRMED" and market_breath_context in {"", "MARKET_BREATH_UNKNOWN"}:
+        evidence.append("MARKET_BREATH_UNKNOWN")
+    if curve_sanity == "CURVE_UP_CONFIRMED" and (
+        market_breath_confidence is not None and market_breath_confidence < Decimal("0.35")
+    ):
+        evidence.append("WEAK_MARKET_BREATH_CONFIDENCE")
+    if curve_sanity == "CURVE_UP_CONFIRMED" and (
+        relative_strength is not None and relative_strength <= Decimal("0")
+    ):
+        evidence.append("WEAK_RELATIVE_STRENGTH")
+    if curve_sanity == "CURVE_UP_CONFIRMED" and momentum is not None and momentum <= Decimal("0"):
+        evidence.append("WEAK_MOMENTUM")
 
     evidence = list(dict.fromkeys(evidence))
     if any(
@@ -179,9 +219,24 @@ def destination_confidence(
         }
     ):
         label = "LOW_CONFIDENCE_DESTINATION"
-    elif "WEAK_CURVE_STRUCTURE" in evidence:
+    elif curve_sanity == "CURVE_UP_CONFIRMED" and (
+        aplus_freshness == "AGING"
+        or "MARKET_BREATH_UNKNOWN" in evidence
+        or "WEAK_MARKET_BREATH_CONFIDENCE" in evidence
+        or "WEAK_RELATIVE_STRENGTH" in evidence
+        or "WEAK_MOMENTUM" in evidence
+    ):
         label = "MEDIUM_CONFIDENCE_DESTINATION"
-    elif aplus_bucket.startswith("APLUS_") and aplus_freshness in {"FRESH", "AGING"}:
+    elif curve_sanity == "CURVE_WEAK":
+        label = "LOW_CONFIDENCE_DESTINATION"
+    elif curve_sanity in {
+        "CURVE_NEUTRAL",
+        "CURVE_DOWN_PRESSURE",
+        "CURVE_FAILED_RECLAIM",
+        "CURVE_NO_UP_SIGNAL",
+    }:
+        label = "MARKET_ONLY_DESTINATION"
+    elif curve_sanity == "CURVE_UP_CONFIRMED" and aplus_bucket.startswith("APLUS_") and aplus_freshness == "FRESH":
         label = "HIGH_CONFIDENCE_DESTINATION"
     else:
         label = "MARKET_ONLY_DESTINATION"
@@ -191,12 +246,122 @@ def destination_confidence(
 
     return DestinationConfidence(
         confidence_label=label,
+        curve_sanity_label=curve_sanity,
         evidence_labels=evidence,
-        clean_actionable=label in {
+        clean_actionable=curve_sanity == "CURVE_UP_CONFIRMED" and label in {
             "HIGH_CONFIDENCE_DESTINATION",
             "MEDIUM_CONFIDENCE_DESTINATION",
         },
     )
+
+
+def curve_sanity_label(
+    advice_row: dict[str, Any] | None,
+    *,
+    target_state: Any = None,
+    risk_state: Any = None,
+    lifecycle_state: Any = None,
+    recompute_reason: Any = None,
+    price_progress_state: Any = None,
+    price_progress_labels: tuple[str, ...] | list[str] = (),
+    next_zone_state: Any = None,
+    next_reaction_zone_label: Any = None,
+    next_target_zone_label: Any = None,
+    confirmation_state: Any = None,
+) -> str:
+    if not advice_row:
+        return "CURVE_NO_UP_SIGNAL"
+
+    leg_direction = norm(value(advice_row, "leg_direction"))
+    context = text_blob(
+        leg_direction,
+        target_state,
+        risk_state,
+        lifecycle_state,
+        recompute_reason,
+        price_progress_state,
+        price_progress_labels,
+        next_zone_state,
+        next_reaction_zone_label,
+        next_target_zone_label,
+        confirmation_state,
+    )
+    if not context:
+        return "CURVE_NO_UP_SIGNAL"
+    if leg_direction == "DOWN":
+        return "CURVE_DOWN_PRESSURE"
+
+    if any(
+        token in context
+        for token in {
+            "BREAKDOWN",
+            "DOWNSIDE_TARGET",
+            "NEXT_DOWNSIDE",
+            "DOWNSIDE_EXTENSION",
+            "INVALIDATION_TOUCHED",
+            "INTRABAR_INVALIDATION_TOUCHED",
+        }
+    ):
+        return "CURVE_DOWN_PRESSURE"
+
+    if any(
+        token in context
+        for token in {
+            "WAIT_FOR_RECLAIM",
+            "RECLAIM_REVIEW",
+            "RECLAIM_NEAR",
+            "RECLAIM_NEXT_ZONE_PREVIEW",
+            "UP_MAP_INVALIDATED_BY_BREAKDOWN",
+            "INTRABAR_RECLAIM_TOUCHED",
+        }
+    ):
+        return "CURVE_FAILED_RECLAIM"
+
+    if any(
+        token in context
+        for token in {
+            "CONFIRMED",
+            "POST_ENTRY_PROGRESS",
+            "TARGET_APPROACHING",
+            "TARGET_NEAR",
+            "RECLAIM_RETEST_SUPPORT",
+            "TARGET_RETEST_SUPPORT",
+            "NEXT_UPSIDE_REACTION_TARGET",
+            "NEXT_UPSIDE_EXTENSION",
+            "UPSIDE_EXTENSION_PREVIEW",
+        }
+    ):
+        return "CURVE_UP_CONFIRMED"
+
+    if any(
+        token in context
+        for token in {
+            "ENTRY_ZONE_PENDING",
+            "ENTRY_ZONE_NEAR",
+            "REACTION_ZONE_PENDING",
+            "REACTION_ZONE_NEAR",
+            "PRICE_PROGRESS_PENDING",
+            "CONFIRMATION_PENDING",
+        }
+    ):
+        return "CURVE_WEAK"
+
+    if any(
+        token in context
+        for token in {
+            "ENTRY_ZONE_REACHED",
+            "REACTION_ZONE_REACHED",
+            "IN_ENTRY_ZONE",
+            "IN_REACTION_ZONE",
+            "CURRENT_MAP_ACTIVE",
+            "ACTIVE_MAP",
+            "TARGET_PENDING",
+            "RISK_OK",
+        }
+    ):
+        return "CURVE_NEUTRAL"
+
+    return "CURVE_NO_UP_SIGNAL"
 
 
 def post_refresh_state_is_clean(

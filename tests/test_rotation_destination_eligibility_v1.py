@@ -45,6 +45,23 @@ def evaluate(row, **overrides):
     return evaluate_rotation_destination_eligibility(row, **kwargs)
 
 
+def up_confirmed_curve_kwargs(**overrides):
+    kwargs = {
+        "target_state": "TARGET_PENDING",
+        "risk_state": "RISK_OK",
+        "lifecycle_state": "ACTIVE_MAP",
+        "recompute_reason": "",
+        "price_progress_state": "TARGET_APPROACHING",
+        "price_progress_labels": ("POST_ENTRY_PROGRESS",),
+        "next_zone_state": "CURRENT_MAP_ACTIVE",
+        "next_reaction_zone_label": "RECLAIM_RETEST_SUPPORT",
+        "next_target_zone_label": "NEXT_UPSIDE_REACTION_TARGET",
+        "confirmation_state": "CONFIRMED",
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
 def test_down_setup_fail_candidate_is_excluded_with_compact_reasons():
     result = evaluate(
         base_advice(
@@ -108,9 +125,11 @@ def test_destination_confidence_high_when_aplus_and_curve_context_are_clean():
             "relative_strength_score": Decimal("0.4"),
             "momentum_score": Decimal("0.5"),
         },
+        **up_confirmed_curve_kwargs(),
     )
 
     assert result.confidence_label == "HIGH_CONFIDENCE_DESTINATION"
+    assert result.curve_sanity_label == "CURVE_UP_CONFIRMED"
     assert result.clean_actionable
     assert result.evidence_labels == []
 
@@ -126,9 +145,11 @@ def test_destination_confidence_missing_aplus_is_low_not_clean_actionable():
             "relative_strength_score": Decimal("0.4"),
             "momentum_score": Decimal("0.5"),
         },
+        **up_confirmed_curve_kwargs(),
     )
 
     assert result.confidence_label == "LOW_CONFIDENCE_DESTINATION"
+    assert result.curve_sanity_label == "CURVE_UP_CONFIRMED"
     assert not result.clean_actionable
     assert "MISSING_APLUS_CONTEXT" in result.evidence_labels
 
@@ -137,9 +158,9 @@ def test_destination_confidence_missing_market_breath_row_is_low_not_clean_actio
     result = destination_confidence(base_advice(aplus_bucket="APLUS_BUY"))
 
     assert result.confidence_label == "LOW_CONFIDENCE_DESTINATION"
+    assert result.curve_sanity_label == "CURVE_NO_UP_SIGNAL"
     assert not result.clean_actionable
     assert "MISSING_APLUS_CONTEXT" in result.evidence_labels
-    assert "WEAK_CURVE_STRUCTURE" in result.evidence_labels
 
 
 def test_destination_confidence_stale_or_avoid_aplus_is_low_not_clean_actionable():
@@ -153,6 +174,7 @@ def test_destination_confidence_stale_or_avoid_aplus_is_low_not_clean_actionable
             "relative_strength_score": Decimal("0.4"),
             "momentum_score": Decimal("0.5"),
         },
+        **up_confirmed_curve_kwargs(),
     )
     avoid = destination_confidence(
         base_advice(aplus_bucket="APLUS_AVOID"),
@@ -165,6 +187,7 @@ def test_destination_confidence_stale_or_avoid_aplus_is_low_not_clean_actionable
             "relative_strength_score": Decimal("0.4"),
             "momentum_score": Decimal("0.5"),
         },
+        **up_confirmed_curve_kwargs(),
     )
 
     assert stale.confidence_label == "LOW_CONFIDENCE_DESTINATION"
@@ -175,22 +198,99 @@ def test_destination_confidence_stale_or_avoid_aplus_is_low_not_clean_actionable
     assert "APLUS_AVOID_OR_DISTORTED" in avoid.evidence_labels
 
 
-def test_destination_confidence_weak_curve_is_medium_with_evidence_label():
+def test_destination_confidence_weak_curve_is_low_and_not_clean():
     result = destination_confidence(
         base_advice(aplus_bucket="APLUS_BUY"),
         market_breath_row={
             "aplus_legacy_freshness_state": "FRESH",
             "aplus_legacy_block_strength": "NONE",
             "market_breath_context_state": "MARKET_BREATH_EXPANSION_CONTEXT",
-            "market_breath_confidence": Decimal("0.20"),
+            "market_breath_confidence": Decimal("0.82"),
             "relative_strength_score": Decimal("0.4"),
             "momentum_score": Decimal("0.5"),
         },
+        **up_confirmed_curve_kwargs(
+            price_progress_state="PRICE_PROGRESS_PENDING",
+            price_progress_labels=("ENTRY_ZONE_NEAR",),
+            next_reaction_zone_label="",
+            next_target_zone_label="",
+            confirmation_state="CONFIRMATION_PENDING",
+        ),
+    )
+
+    assert result.confidence_label == "LOW_CONFIDENCE_DESTINATION"
+    assert result.curve_sanity_label == "CURVE_WEAK"
+    assert not result.clean_actionable
+
+
+def test_destination_confidence_failed_reclaim_is_market_only_not_clean():
+    result = destination_confidence(
+        base_advice(aplus_bucket="APLUS_BUY"),
+        market_breath_row={
+            "aplus_legacy_freshness_state": "FRESH",
+            "aplus_legacy_block_strength": "NONE",
+            "market_breath_context_state": "MARKET_BREATH_EXPANSION_CONTEXT",
+            "market_breath_confidence": Decimal("0.82"),
+            "relative_strength_score": Decimal("0.4"),
+            "momentum_score": Decimal("0.5"),
+        },
+        **up_confirmed_curve_kwargs(
+            price_progress_state="PRICE_PROGRESS_PENDING",
+            price_progress_labels=("WAIT_FOR_RECLAIM",),
+            next_zone_state="RECLAIM_NEXT_ZONE_PREVIEW",
+            next_reaction_zone_label="RECLAIM_REVIEW",
+            next_target_zone_label="",
+            confirmation_state="CONFIRMATION_PENDING",
+        ),
+    )
+
+    assert result.confidence_label == "MARKET_ONLY_DESTINATION"
+    assert result.curve_sanity_label == "CURVE_FAILED_RECLAIM"
+    assert not result.clean_actionable
+
+
+def test_destination_confidence_down_pressure_is_market_only_not_clean():
+    result = destination_confidence(
+        base_advice(aplus_bucket="APLUS_BUY", leg_direction="DOWN"),
+        market_breath_row={
+            "aplus_legacy_freshness_state": "FRESH",
+            "aplus_legacy_block_strength": "NONE",
+            "market_breath_context_state": "MARKET_BREATH_EXPANSION_CONTEXT",
+            "market_breath_confidence": Decimal("0.82"),
+            "relative_strength_score": Decimal("0.4"),
+            "momentum_score": Decimal("0.5"),
+        },
+        **up_confirmed_curve_kwargs(
+            target_state="DOWNSIDE_TARGET_APPROACHING",
+            risk_state="RISK_NEAR",
+            next_zone_state="BREAKDOWN_NEXT_ZONE_PREVIEW",
+            next_target_zone_label="NEXT_DOWNSIDE_EXTENSION",
+            confirmation_state="CONFIRMATION_PENDING",
+        ),
+    )
+
+    assert result.confidence_label == "MARKET_ONLY_DESTINATION"
+    assert result.curve_sanity_label == "CURVE_DOWN_PRESSURE"
+    assert not result.clean_actionable
+
+
+def test_destination_confidence_up_confirmed_with_aging_aplus_is_medium_clean():
+    result = destination_confidence(
+        base_advice(aplus_bucket="APLUS_BUY"),
+        market_breath_row={
+            "aplus_legacy_freshness_state": "AGING",
+            "aplus_legacy_block_strength": "NONE",
+            "market_breath_context_state": "MARKET_BREATH_EXPANSION_CONTEXT",
+            "market_breath_confidence": Decimal("0.82"),
+            "relative_strength_score": Decimal("0.4"),
+            "momentum_score": Decimal("0.5"),
+        },
+        **up_confirmed_curve_kwargs(),
     )
 
     assert result.confidence_label == "MEDIUM_CONFIDENCE_DESTINATION"
+    assert result.curve_sanity_label == "CURVE_UP_CONFIRMED"
     assert result.clean_actionable
-    assert "WEAK_CURVE_STRUCTURE" in result.evidence_labels
 
 
 def test_destination_confidence_non_aplus_label_is_market_only_not_clean():
@@ -204,8 +304,10 @@ def test_destination_confidence_non_aplus_label_is_market_only_not_clean():
             "relative_strength_score": Decimal("0.4"),
             "momentum_score": Decimal("0.5"),
         },
+        **up_confirmed_curve_kwargs(),
     )
 
     assert result.confidence_label == "MARKET_ONLY_DESTINATION"
+    assert result.curve_sanity_label == "CURVE_UP_CONFIRMED"
     assert not result.clean_actionable
     assert "MARKET_ONLY_DESTINATION" in result.evidence_labels
