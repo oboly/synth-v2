@@ -46,6 +46,13 @@ class DestinationEligibility:
     exclusion_reasons: list[str]
 
 
+@dataclass(frozen=True)
+class DestinationConfidence:
+    confidence_label: str
+    evidence_labels: list[str]
+    clean_actionable: bool
+
+
 def norm(value: Any) -> str:
     return "" if value is None else str(value).strip().upper()
 
@@ -95,6 +102,101 @@ def pct_delta(reference: Decimal | None, current_price: Decimal | None) -> Decim
     if reference is None or current_price is None or current_price <= 0:
         return None
     return ((reference / current_price) - Decimal("1")) * Decimal("100")
+
+
+def destination_confidence(
+    advice_row: dict[str, Any] | None,
+    *,
+    market_breath_row: dict[str, Any] | None = None,
+) -> DestinationConfidence:
+    if not advice_row:
+        return DestinationConfidence(
+            confidence_label="MISSING_APLUS_CONTEXT",
+            evidence_labels=["MISSING_APLUS_CONTEXT"],
+            clean_actionable=False,
+        )
+
+    evidence: list[str] = []
+    aplus_bucket = norm(value(advice_row, "aplus_bucket"))
+    aplus_freshness = norm(
+        None if market_breath_row is None else market_breath_row.get("aplus_legacy_freshness_state")
+    )
+    aplus_block_strength = norm(
+        None if market_breath_row is None else market_breath_row.get("aplus_legacy_block_strength")
+    )
+    strategic_bias = norm(
+        None if market_breath_row is None else market_breath_row.get("aplus_table1_strategic_bias")
+    )
+    market_breath_context = norm(
+        None if market_breath_row is None else market_breath_row.get("market_breath_context_state")
+    )
+    market_breath_confidence = to_decimal(
+        None if market_breath_row is None else market_breath_row.get("market_breath_confidence")
+    )
+    relative_strength = to_decimal(
+        None if market_breath_row is None else market_breath_row.get("relative_strength_score")
+    )
+    momentum = to_decimal(
+        None if market_breath_row is None else market_breath_row.get("momentum_score")
+    )
+
+    if (
+        not aplus_bucket
+        or aplus_bucket == "APLUS_UNKNOWN"
+        or not aplus_freshness
+        or aplus_freshness == "UNKNOWN"
+    ):
+        evidence.append("MISSING_APLUS_CONTEXT")
+    if aplus_freshness in {"STALE", "VERY_STALE"}:
+        evidence.append("STALE_APLUS_CONTEXT")
+    if aplus_bucket == "APLUS_AVOID" or aplus_block_strength in {
+        "READ_ONLY_APLUS_AVOID",
+        "LEGACY_CONTEXT_ONLY",
+    } or strategic_bias == "AVOID":
+        evidence.append("APLUS_AVOID_OR_DISTORTED")
+
+    weak_curve = False
+    if market_breath_row is None:
+        weak_curve = True
+    if market_breath_context in {"", "MARKET_BREATH_UNKNOWN"}:
+        weak_curve = True
+    if market_breath_confidence is not None and market_breath_confidence < Decimal("0.35"):
+        weak_curve = True
+    if relative_strength is not None and relative_strength <= Decimal("0"):
+        weak_curve = True
+    if momentum is not None and momentum <= Decimal("0"):
+        weak_curve = True
+    if weak_curve:
+        evidence.append("WEAK_CURVE_STRUCTURE")
+
+    evidence = list(dict.fromkeys(evidence))
+    if any(
+        label in evidence
+        for label in {
+            "MISSING_APLUS_CONTEXT",
+            "STALE_APLUS_CONTEXT",
+            "APLUS_AVOID_OR_DISTORTED",
+        }
+    ):
+        label = "LOW_CONFIDENCE_DESTINATION"
+    elif "WEAK_CURVE_STRUCTURE" in evidence:
+        label = "MEDIUM_CONFIDENCE_DESTINATION"
+    elif aplus_bucket.startswith("APLUS_") and aplus_freshness in {"FRESH", "AGING"}:
+        label = "HIGH_CONFIDENCE_DESTINATION"
+    else:
+        label = "MARKET_ONLY_DESTINATION"
+
+    if label == "MARKET_ONLY_DESTINATION":
+        evidence.append("MARKET_ONLY_DESTINATION")
+
+    return DestinationConfidence(
+        confidence_label=label,
+        evidence_labels=evidence,
+        clean_actionable=label in {
+            "HIGH_CONFIDENCE_DESTINATION",
+            "MEDIUM_CONFIDENCE_DESTINATION",
+        },
+    )
 
 
 def post_refresh_state_is_clean(

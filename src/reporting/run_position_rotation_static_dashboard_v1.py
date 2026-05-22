@@ -44,7 +44,9 @@ from src.reporting.policy_block_reason_display_v1 import (
     classify_policy_block_display,
 )
 from src.reporting.rotation_destination_eligibility_v1 import (
+    DestinationConfidence,
     DestinationEligibility,
+    destination_confidence,
     evaluate_rotation_destination_eligibility,
 )
 from src.market_data.market_price_snapshot_v1 import (
@@ -382,6 +384,13 @@ def pill_class(text: str | None) -> str:
         or "INTRABAR_RECLAIM_TOUCHED" in value
         or "INTRABAR_EXTENSION_CONTINUING" in value
         or "INTRABAR_MONITOR_RECOMPUTE" in value
+        or "MEDIUM_CONFIDENCE_DESTINATION" in value
+        or "LOW_CONFIDENCE_DESTINATION" in value
+        or "MARKET_ONLY_DESTINATION" in value
+        or "MISSING_APLUS_CONTEXT" in value
+        or "STALE_APLUS_CONTEXT" in value
+        or "APLUS_AVOID_OR_DISTORTED" in value
+        or "WEAK_CURVE_STRUCTURE" in value
     ):
         return pill_classes("warn", value)
     if (
@@ -413,6 +422,7 @@ def pill_class(text: str | None) -> str:
         or "PRICE_SNAPSHOT_FRESH" in value
         or "LTF_CANDLES_FRESH" in value
         or "NO_INTRABAR_RECOMPUTE_HINT" in value
+        or "HIGH_CONFIDENCE_DESTINATION" in value
     ):
         return pill_classes("ok", value)
     if (
@@ -925,6 +935,24 @@ def render_html(
             intrabar_data_quality_state=None if intrabar_row is None else intrabar_row.data_quality_state,
         )
 
+    def destination_confidence_for_candidate(symbol: str) -> DestinationConfidence:
+        advice = advice_by_symbol.get(symbol)
+        return destination_confidence(
+            advice,
+            market_breath_row=(market_breath_by_symbol or {}).get(symbol),
+        )
+
+    def destination_confidence_html(confidence: DestinationConfidence) -> str:
+        evidence = "".join(
+            f"<span class='pill {pill_class(label)}'>{esc(label)}</span>"
+            for label in confidence.evidence_labels
+        )
+        return (
+            f"<span class='pill {pill_class(confidence.confidence_label)}'>"
+            f"{esc(confidence.confidence_label)}</span>"
+            f"<div>{evidence}</div>"
+        )
+
     def strict_rotation_destinations_for_row(row: Any, *, max_items: int = 3) -> list[str]:
         current_quality = market_candidate_quality_score(
             advice_by_symbol.get(row.position_symbol)
@@ -936,8 +964,11 @@ def render_html(
             if candidate_score <= current_quality:
                 continue
             eligibility = destination_eligibility_for_candidate(symbol)
-            if eligibility.eligible:
-                destinations.append(f"{symbol}:{candidate_score.quantize(Decimal('0.01'))}")
+            confidence = destination_confidence_for_candidate(symbol)
+            if eligibility.eligible and confidence.clean_actionable:
+                destinations.append(
+                    f"{symbol}:{candidate_score.quantize(Decimal('0.01'))}:{confidence.confidence_label}"
+                )
             if len(destinations) >= max_items:
                 break
         return destinations
@@ -1147,6 +1178,7 @@ def render_html(
                 price_progress_labels=price_progress.labels,
             )
             eligibility = destination_eligibility_for_candidate(symbol)
+            confidence = destination_confidence_for_candidate(symbol)
             exclusions = eligibility.exclusion_reasons
             eligible = eligibility.eligible
             held_valuation = (
@@ -1257,6 +1289,7 @@ def render_html(
                 f"<td class='sticky-symbol'><strong>{esc(symbol)}</strong></td>"
                 f"<td class='num'>{esc(dec_text(candidate_score, '0.01'))}</td>"
                 f"<td><span class='pill {'ok' if eligible else 'bad'}'>{'YES' if eligible else 'NO'}</span></td>"
+                f"<td>{destination_confidence_html(confidence)}</td>"
                 f"<td class='small'>{esc(', '.join(exclusions))}</td>"
                 f"<td>{esc(None if not advice else advice.get('selection_state'))}</td>"
                 f"<td>{esc(None if not advice else advice.get('setup_filter_state'))}</td>"
@@ -1297,6 +1330,7 @@ def render_html(
                   <th class="sticky-symbol">Symbol</th>
                   <th>Market ref score</th>
                   <th>Destination eligible</th>
+                  <th>Destination confidence</th>
                   <th>Exclusion reasons</th>
                   <th>Selection</th>
                   <th>Setup</th>
@@ -1427,6 +1461,7 @@ def render_html(
       <div><strong>Market review refs</strong> = market-only comparison scores, not buy advice.</div>
       <div><strong>Rotation destinations</strong> = stricter filtered candidates.</div>
       <div><strong>Market review refs are broad comparison assets. Rotation destinations are stricter actionable-review candidates, not trade advice.</strong></div>
+      <div><strong>Rotation destination confidence includes market structure plus available A+/curve context. Missing A+ lowers confidence; it is not trade advice.</strong></div>
       <div><strong>Market ref score</strong> = market-only comparison score.</div>
       <div><strong>Destination eligible</strong> = strict candidate after paper/setup/risk/account-position filters.</div>
       <div><strong>Exclusion reasons</strong> explain why a strong reference is not a destination.</div>

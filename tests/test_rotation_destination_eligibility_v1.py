@@ -1,6 +1,7 @@
 from decimal import Decimal
 
 from src.reporting.rotation_destination_eligibility_v1 import (
+    destination_confidence,
     evaluate_rotation_destination_eligibility,
 )
 
@@ -93,3 +94,118 @@ def test_no_chase_and_recompute_pending_are_excluded():
     assert not result.eligible
     assert "EXCLUDED_NO_CHASE" in result.exclusion_reasons
     assert "EXCLUDED_RECOMPUTE_PENDING" in result.exclusion_reasons
+
+
+def test_destination_confidence_high_when_aplus_and_curve_context_are_clean():
+    result = destination_confidence(
+        base_advice(aplus_bucket="APLUS_BUY"),
+        market_breath_row={
+            "aplus_legacy_freshness_state": "FRESH",
+            "aplus_legacy_block_strength": "NONE",
+            "aplus_table1_strategic_bias": "buy",
+            "market_breath_context_state": "MARKET_BREATH_EXPANSION_CONTEXT",
+            "market_breath_confidence": Decimal("0.82"),
+            "relative_strength_score": Decimal("0.4"),
+            "momentum_score": Decimal("0.5"),
+        },
+    )
+
+    assert result.confidence_label == "HIGH_CONFIDENCE_DESTINATION"
+    assert result.clean_actionable
+    assert result.evidence_labels == []
+
+
+def test_destination_confidence_missing_aplus_is_low_not_clean_actionable():
+    result = destination_confidence(
+        base_advice(aplus_bucket="APLUS_UNKNOWN"),
+        market_breath_row={
+            "aplus_legacy_freshness_state": "UNKNOWN",
+            "aplus_legacy_block_strength": "UNKNOWN_LEGACY_CONTEXT",
+            "market_breath_context_state": "MARKET_BREATH_EXPANSION_CONTEXT",
+            "market_breath_confidence": Decimal("0.78"),
+            "relative_strength_score": Decimal("0.4"),
+            "momentum_score": Decimal("0.5"),
+        },
+    )
+
+    assert result.confidence_label == "LOW_CONFIDENCE_DESTINATION"
+    assert not result.clean_actionable
+    assert "MISSING_APLUS_CONTEXT" in result.evidence_labels
+
+
+def test_destination_confidence_missing_market_breath_row_is_low_not_clean_actionable():
+    result = destination_confidence(base_advice(aplus_bucket="APLUS_BUY"))
+
+    assert result.confidence_label == "LOW_CONFIDENCE_DESTINATION"
+    assert not result.clean_actionable
+    assert "MISSING_APLUS_CONTEXT" in result.evidence_labels
+    assert "WEAK_CURVE_STRUCTURE" in result.evidence_labels
+
+
+def test_destination_confidence_stale_or_avoid_aplus_is_low_not_clean_actionable():
+    stale = destination_confidence(
+        base_advice(aplus_bucket="APLUS_BUY"),
+        market_breath_row={
+            "aplus_legacy_freshness_state": "VERY_STALE",
+            "aplus_legacy_block_strength": "NONE",
+            "market_breath_context_state": "MARKET_BREATH_EXPANSION_CONTEXT",
+            "market_breath_confidence": Decimal("0.78"),
+            "relative_strength_score": Decimal("0.4"),
+            "momentum_score": Decimal("0.5"),
+        },
+    )
+    avoid = destination_confidence(
+        base_advice(aplus_bucket="APLUS_AVOID"),
+        market_breath_row={
+            "aplus_legacy_freshness_state": "FRESH",
+            "aplus_legacy_block_strength": "READ_ONLY_APLUS_AVOID",
+            "aplus_table1_strategic_bias": "avoid",
+            "market_breath_context_state": "MARKET_BREATH_EXPANSION_CONTEXT",
+            "market_breath_confidence": Decimal("0.78"),
+            "relative_strength_score": Decimal("0.4"),
+            "momentum_score": Decimal("0.5"),
+        },
+    )
+
+    assert stale.confidence_label == "LOW_CONFIDENCE_DESTINATION"
+    assert not stale.clean_actionable
+    assert "STALE_APLUS_CONTEXT" in stale.evidence_labels
+    assert avoid.confidence_label == "LOW_CONFIDENCE_DESTINATION"
+    assert not avoid.clean_actionable
+    assert "APLUS_AVOID_OR_DISTORTED" in avoid.evidence_labels
+
+
+def test_destination_confidence_weak_curve_is_medium_with_evidence_label():
+    result = destination_confidence(
+        base_advice(aplus_bucket="APLUS_BUY"),
+        market_breath_row={
+            "aplus_legacy_freshness_state": "FRESH",
+            "aplus_legacy_block_strength": "NONE",
+            "market_breath_context_state": "MARKET_BREATH_EXPANSION_CONTEXT",
+            "market_breath_confidence": Decimal("0.20"),
+            "relative_strength_score": Decimal("0.4"),
+            "momentum_score": Decimal("0.5"),
+        },
+    )
+
+    assert result.confidence_label == "MEDIUM_CONFIDENCE_DESTINATION"
+    assert result.clean_actionable
+    assert "WEAK_CURVE_STRUCTURE" in result.evidence_labels
+
+
+def test_destination_confidence_non_aplus_label_is_market_only_not_clean():
+    result = destination_confidence(
+        base_advice(aplus_bucket="CANONICAL_CORE"),
+        market_breath_row={
+            "aplus_legacy_freshness_state": "FRESH",
+            "aplus_legacy_block_strength": "NONE",
+            "market_breath_context_state": "MARKET_BREATH_EXPANSION_CONTEXT",
+            "market_breath_confidence": Decimal("0.82"),
+            "relative_strength_score": Decimal("0.4"),
+            "momentum_score": Decimal("0.5"),
+        },
+    )
+
+    assert result.confidence_label == "MARKET_ONLY_DESTINATION"
+    assert not result.clean_actionable
+    assert "MARKET_ONLY_DESTINATION" in result.evidence_labels
