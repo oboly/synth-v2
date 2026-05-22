@@ -466,6 +466,19 @@ WARNING_LIFECYCLE_STATES = {
     "RECLAIM_NEAR",
 }
 
+SOFT_POST_REFRESH_STATES = {
+    "REFRESHED_THIS_RUN",
+    "REFRESHED_RECENTLY",
+    "COOLDOWN_MONITOR",
+    "NO_REFRESH_NEEDED",
+}
+
+ACTIONABLE_POST_REFRESH_STATES = {
+    "REFRESH_NEEDED",
+    "RECOMPUTED_BUT_STILL_TRIGGERING",
+    "REFRESH_FAILED_OR_STALE",
+}
+
 FRESH_MAP_THRESHOLD = timedelta(hours=6)
 
 
@@ -780,6 +793,48 @@ def render_html(
         interval=interval,
         price_by_symbol=price_by_symbol,
     )
+    recompute_row_by_symbol = {row.symbol.upper(): row for row in recompute_rows}
+
+    post_refresh_counts: dict[str, int] = {}
+    display_severity_counts: dict[str, int] = {}
+    for row in recompute_rows:
+        post_refresh_counts[row.post_refresh_state] = post_refresh_counts.get(row.post_refresh_state, 0) + 1
+        display_severity_counts[row.display_severity] = display_severity_counts.get(row.display_severity, 0) + 1
+
+    def recompute_row_for_symbol(symbol: str) -> Any | None:
+        return recompute_row_by_symbol.get(str(symbol or "").upper())
+
+    def post_refresh_is_soft(row: Any | None) -> bool:
+        if row is None:
+            return False
+        return (
+            row.post_refresh_state in SOFT_POST_REFRESH_STATES
+            and row.display_severity in {"DISPLAY_CONTEXT", "DISPLAY_WATCH", "DISPLAY_MUTED"}
+        )
+
+    def effective_recompute_context(symbol: str, lifecycle: Any) -> tuple[str, bool, str]:
+        refresh_row = recompute_row_for_symbol(symbol)
+        if post_refresh_is_soft(refresh_row):
+            return "ACTIVE_MAP", False, refresh_row.post_refresh_state
+        return lifecycle.lifecycle_state, lifecycle.recompute_needed, lifecycle.recompute_reason
+
+    def recompute_label_for_symbol(symbol: str, lifecycle: Any) -> str:
+        refresh_row = recompute_row_for_symbol(symbol)
+        if post_refresh_is_soft(refresh_row) or (
+            refresh_row is not None and refresh_row.post_refresh_state in ACTIONABLE_POST_REFRESH_STATES
+        ):
+            return refresh_row.post_refresh_state
+        return "MAP_RECOMPUTE_NEEDED" if lifecycle.recompute_needed else "ACTIVE_MAP"
+
+    def lifecycle_badges_for_symbol(symbol: str, lifecycle_state: str, fresh_badge: str) -> str:
+        refresh_row = recompute_row_for_symbol(symbol)
+        badges = lifecycle_badges_html(lifecycle_state, fresh_badge)
+        if refresh_row is not None:
+            badges += (
+                f"<div><span class='pill {pill_class(refresh_row.post_refresh_state)}'>"
+                f"{esc(refresh_row.post_refresh_state)}</span></div>"
+            )
+        return badges
 
     def destination_eligibility_for_candidate(symbol: str) -> DestinationEligibility:
         advice = advice_by_symbol.get(symbol)
@@ -815,6 +870,9 @@ def render_html(
             tp_zone_high=None if not advice else advice.get("tp_zone_high"),
             invalidation_price=invalidation_price,
         )
+        effective_lifecycle_state, effective_recompute_needed, effective_recompute_reason = effective_recompute_context(
+            symbol, lifecycle
+        )
         next_preview = preview_next_zones(
             symbol=symbol,
             leg_direction=None if not advice else advice.get("leg_direction"),
@@ -837,9 +895,9 @@ def render_html(
         )
         block_display = classify_policy_block_display(
             advice,
-            lifecycle_state=lifecycle.lifecycle_state,
-            recompute_needed=lifecycle.recompute_needed,
-            recompute_reason=lifecycle.recompute_reason,
+            lifecycle_state=effective_lifecycle_state,
+            recompute_needed=effective_recompute_needed,
+            recompute_reason=effective_recompute_reason,
             target_state=target_state,
             entry_state=entry_display_state,
             price_progress_state=price_progress.progress_state,
@@ -850,9 +908,9 @@ def render_html(
             current_price=current_price,
             target_state=target_state,
             risk_state=risk_state,
-            lifecycle_state=lifecycle.lifecycle_state,
-            recompute_needed=lifecycle.recompute_needed,
-            recompute_reason=lifecycle.recompute_reason,
+            lifecycle_state=effective_lifecycle_state,
+            recompute_needed=effective_recompute_needed,
+            recompute_reason=effective_recompute_reason,
             policy_label=None if block_display is None else block_display.display_policy_label,
             action_label=action_display,
             entry_state=entry_display_state,
@@ -911,14 +969,17 @@ def render_html(
             delta_invalidation_pct = pct_delta(row.invalidation_price, current_price)
             context = distance_context(row)
             lifecycle = lifecycle_for_row(row)
+            effective_lifecycle_state, effective_recompute_needed, effective_recompute_reason = effective_recompute_context(
+                row.position_symbol, lifecycle
+            )
             fresh_badge = fresh_map_badge(
                 row.paper_asof_ts_utc,
                 now_utc=now_utc,
-                lifecycle_state=lifecycle.lifecycle_state,
+                lifecycle_state=effective_lifecycle_state,
             )
             row_class = workflow_row_class(
-                lifecycle_state=lifecycle.lifecycle_state,
-                recompute_needed=lifecycle.recompute_needed,
+                lifecycle_state=effective_lifecycle_state,
+                recompute_needed=effective_recompute_needed,
                 fresh_badge=fresh_badge,
             )
             price_progress = classify_price_progress_state(
@@ -965,9 +1026,9 @@ def render_html(
             severity = calibrate_paper_advice_severity(
                 row,
                 market_breath_row=(market_breath_by_symbol or {}).get(row.position_symbol),
-                lifecycle_state=lifecycle.lifecycle_state,
-                recompute_needed=lifecycle.recompute_needed,
-                recompute_reason=lifecycle.recompute_reason,
+                lifecycle_state=effective_lifecycle_state,
+                recompute_needed=effective_recompute_needed,
+                recompute_reason=effective_recompute_reason,
                 target_state=row.target_state,
                 risk_state=row.risk_state,
                 price_progress_state=price_progress.progress_state,
@@ -980,9 +1041,9 @@ def render_html(
             )
             block_display = classify_policy_block_display(
                 row,
-                lifecycle_state=lifecycle.lifecycle_state,
-                recompute_needed=lifecycle.recompute_needed,
-                recompute_reason=lifecycle.recompute_reason,
+                lifecycle_state=effective_lifecycle_state,
+                recompute_needed=effective_recompute_needed,
+                recompute_reason=effective_recompute_reason,
                 target_state=row.target_state,
                 entry_state=entry_display_state,
                 price_progress_state=price_progress.progress_state,
@@ -1025,9 +1086,9 @@ def render_html(
                 f"<td><span class='pill {pill_class(entry_display_state)}'>{esc(entry_display_state)}</span><div>{progress_html}</div></td>"
                 f"<td><span class='pill {pill_class(row.target_state)}'>{esc(row.target_state)}</span></td>"
                 f"<td><span class='pill {pill_class(row.risk_state)}'>{esc(row.risk_state)}</span></td>"
-                f"<td>{lifecycle_badges_html(lifecycle.lifecycle_state, fresh_badge)}</td>"
-                f"<td><span class='pill {pill_class('MAP_RECOMPUTE_NEEDED' if lifecycle.recompute_needed else 'ACTIVE_MAP')}'>{'YES' if lifecycle.recompute_needed else 'NO'}</span></td>"
-                f"<td class='small'>{esc(lifecycle.recompute_reason)}</td>"
+                f"<td>{lifecycle_badges_for_symbol(row.position_symbol, lifecycle.lifecycle_state, fresh_badge)}</td>"
+                f"<td><span class='pill {pill_class(recompute_label_for_symbol(row.position_symbol, lifecycle))}'>{esc(recompute_label_for_symbol(row.position_symbol, lifecycle))}</span></td>"
+                f"<td class='small'>{esc(effective_recompute_reason)}</td>"
                 f"<td>{next_zone_html(next_preview)}</td>"
                 f"{entry_distance_cell(leg_direction=row.leg_direction, entry_zone_low=row.entry_zone_low, entry_zone_high=row.entry_zone_high, current_price=current_price)}"
                 f"{pct_cell(delta_tp_pct, target_pct_class(delta_tp_pct, context))}"
@@ -1106,14 +1167,17 @@ def render_html(
                 tp_zone_high=None if not advice else advice.get("tp_zone_high"),
                 invalidation_price=invalidation_price,
             )
+            effective_lifecycle_state, effective_recompute_needed, effective_recompute_reason = effective_recompute_context(
+                symbol, lifecycle
+            )
             fresh_badge = fresh_map_badge(
                 None if not advice else advice.get("asof_ts_utc"),
                 now_utc=now_utc,
-                lifecycle_state=lifecycle.lifecycle_state,
+                lifecycle_state=effective_lifecycle_state,
             )
             row_class = workflow_row_class(
-                lifecycle_state=lifecycle.lifecycle_state,
-                recompute_needed=lifecycle.recompute_needed,
+                lifecycle_state=effective_lifecycle_state,
+                recompute_needed=effective_recompute_needed,
                 fresh_badge=fresh_badge,
             )
             next_preview = preview_next_zones(
@@ -1133,9 +1197,9 @@ def render_html(
             severity = calibrate_paper_advice_severity(
                 advice,
                 market_breath_row=(market_breath_by_symbol or {}).get(symbol),
-                lifecycle_state=lifecycle.lifecycle_state,
-                recompute_needed=lifecycle.recompute_needed,
-                recompute_reason=lifecycle.recompute_reason,
+                lifecycle_state=effective_lifecycle_state,
+                recompute_needed=effective_recompute_needed,
+                recompute_reason=effective_recompute_reason,
                 target_state=target_state,
                 risk_state=risk_state,
                 entry_state=entry_state,
@@ -1149,9 +1213,9 @@ def render_html(
             )
             candidate_block_display = classify_policy_block_display(
                 advice,
-                lifecycle_state=lifecycle.lifecycle_state,
-                recompute_needed=lifecycle.recompute_needed,
-                recompute_reason=lifecycle.recompute_reason,
+                lifecycle_state=effective_lifecycle_state,
+                recompute_needed=effective_recompute_needed,
+                recompute_reason=effective_recompute_reason,
                 target_state=target_state,
                 entry_state=entry_display_state,
                 price_progress_state=price_progress.progress_state,
@@ -1208,9 +1272,9 @@ def render_html(
                 f"<td><span class='pill {pill_class(target_state)}'>{esc(target_state)}</span></td>"
                 f"<td><span class='pill {pill_class(risk_state)}'>{esc(risk_state)}</span></td>"
                 f"<td class='num sticky-price'>{esc(dec_text(current_price, '0.000000'))}</td>"
-                f"<td>{lifecycle_badges_html(lifecycle.lifecycle_state, fresh_badge)}</td>"
-                f"<td><span class='pill {pill_class('MAP_RECOMPUTE_NEEDED' if lifecycle.recompute_needed else 'ACTIVE_MAP')}'>{'YES' if lifecycle.recompute_needed else 'NO'}</span></td>"
-                f"<td class='small'>{esc(lifecycle.recompute_reason)}</td>"
+                f"<td>{lifecycle_badges_for_symbol(symbol, lifecycle.lifecycle_state, fresh_badge)}</td>"
+                f"<td><span class='pill {pill_class(recompute_label_for_symbol(symbol, lifecycle))}'>{esc(recompute_label_for_symbol(symbol, lifecycle))}</span></td>"
+                f"<td class='small'>{esc(effective_recompute_reason)}</td>"
                 f"<td>{next_zone_html(next_preview)}</td>"
                 f"<td class='zone-value sticky-target'>{candidate_target_html}</td>"
                 f"<td class='num zone-value'>{esc(dec_text(invalidation_price, '0.000000'))}</td>"
@@ -1329,6 +1393,14 @@ def render_html(
         f"<span class='pill {pill_class(k)}'>{esc(k)}: {v}</span>"
         for k, v in sorted(state_counts.items())
     )
+    post_refresh_counts_html = "".join(
+        f"<span class='pill {pill_class(k)}'>{esc(k)}: {v}</span>"
+        for k, v in sorted(post_refresh_counts.items())
+    )
+    display_severity_counts_html = "".join(
+        f"<span class='pill {pill_class(k)}'>{esc(k)}: {v}</span>"
+        for k, v in sorted(display_severity_counts.items())
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -1372,6 +1444,7 @@ def render_html(
       <div><strong>Market context is not trade permission.</strong> Policy blocks and next-zone previews can coexist.</div>
       <div><strong>Positions value</strong> uses latest market_price_snapshot when available, with ACCOUNT_POSITION_MARK_FALLBACK only when current market price is missing. Asset positions only; excludes EUR cash.</div>
       <div><strong>Maps needing refresh</strong> are refresh candidates, not trade advice.</div>
+      <div><strong>Post-refresh state</strong> separates old trigger labels from current display state. Refreshed and cooldown rows stay visible as context/watch, while failed, stale, and still-triggering rows remain critical.</div>
       <div><strong>Severity / Substate</strong> separates hard blocks, stale A+ context, reclaim review, wait-for-reclaim, and momentum-extension review. These labels are review context, not trade advice.</div>
       <div><strong>Intrabar lifecycle</strong> is a 15m/current-price overlay against the current 4h structural map. It is context only and does not change decisions or execution.</div>
     </div>
@@ -1383,6 +1456,7 @@ def render_html(
       <div class="metric"><div class="muted">Total EUR cash</div><h2>{eur_html(total_eur_cash)}</h2></div>
       <div class="metric"><div class="muted">Indicative account value</div><h2>{eur_html(indicative_account_value)}</h2><div class="muted small">Positions value + Total EUR cash when EUR balance is known.</div></div>
       <div class="metric"><div class="muted">State counts</div>{counts_html}</div>
+      <div class="metric"><div class="muted">Recompute state counts</div><h2>{len(recompute_rows)}</h2><div>{post_refresh_counts_html}</div><div class="muted small">{display_severity_counts_html}</div></div>
       <div class="metric"><div class="muted">Safety</div><span class="pill ok">broker_private_calls=0</span><span class="pill ok">broker_writes=0</span><span class="pill ok">order_submission=0</span><span class="pill ok">executor=none</span></div>
     </div>
   </header>

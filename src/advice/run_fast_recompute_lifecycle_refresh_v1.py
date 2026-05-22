@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -678,6 +679,22 @@ def print_table(rows: list[RefreshResultRow]) -> None:
         )
 
 
+def summary_counts(rows: list[RefreshResultRow], *, total_recompute_candidates: int) -> dict[str, int]:
+    state_counts = Counter(row.post_refresh_state for row in rows)
+    action_counts = Counter(row.action_taken for row in rows)
+    return {
+        "total_recompute_candidates": int(total_recompute_candidates),
+        "refreshed_this_run": int(state_counts.get("REFRESHED_THIS_RUN", 0)),
+        "cooldown_monitor": int(state_counts.get("COOLDOWN_MONITOR", 0)),
+        "recomputed_but_still_triggering": int(
+            state_counts.get("RECOMPUTED_BUT_STILL_TRIGGERING", 0)
+        ),
+        "skipped_max_assets_throttle": int(action_counts.get("SKIPPED_MAX_ASSETS_THROTTLE", 0)),
+        "refresh_failed_or_stale": int(state_counts.get("REFRESH_FAILED_OR_STALE", 0)),
+        "no_refresh_needed": int(state_counts.get("NO_REFRESH_NEEDED", 0)),
+    }
+
+
 def main() -> int:
     args = parse_args()
 
@@ -728,9 +745,11 @@ def main() -> int:
         conn.close()
 
     if args.output == "summary":
+        counts = summary_counts(result_rows, total_recompute_candidates=len(worklist_rows))
         print(f"report={REPORT_NAME} version={REPORT_VERSION}")
         print(f"write_db={bool(args.write_db)} candidates={len(worklist_rows)} rows={len(result_rows)}")
         print(f"zone_refreshed_assets={len(refreshed_asset_ids)} paper_advice_rows_written={advice_written}")
+        print("counts=" + " ".join(f"{key}={value}" for key, value in counts.items()))
         print(
             "cadence="
             f"cooldown_minutes={args.cooldown_minutes} "
@@ -745,6 +764,10 @@ def main() -> int:
                     "report": REPORT_NAME,
                     "version": REPORT_VERSION,
                     "write_db": bool(args.write_db),
+                    "summary_counts": summary_counts(
+                        result_rows,
+                        total_recompute_candidates=len(worklist_rows),
+                    ),
                     "rows": [asdict(row) for row in result_rows],
                     "paper_advice_rows_written": advice_written,
                     "cooldown_minutes": str(args.cooldown_minutes),
