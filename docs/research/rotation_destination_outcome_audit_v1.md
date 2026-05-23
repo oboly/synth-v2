@@ -10,13 +10,21 @@ Backtest whether dashboard rotation destinations have positive forward outcomes 
 python -m src.research.run_rotation_destination_outcome_audit_v1 --help
 ```
 
-Default output directory:
+Generated outputs are ignored by git under:
 
 ```text
 data/research/rotation_destination_outcome_audit_v1/
 ```
 
-Generated files:
+If `--output-dir` is not supplied, each run writes into a unique timestamped run directory:
+
+```text
+data/research/rotation_destination_outcome_audit_v1/run_<YYYYMMDDTHHMMSSZ>/
+```
+
+If `--output-dir` is supplied, that path is used exactly.
+
+Generated files per run:
 
 ```text
 event_table_v1.csv
@@ -127,3 +135,32 @@ python -m src.research.run_rotation_destination_outcome_audit_v1 \
 ```
 
 This writes only research files by default. Use `--no-write-files` for stdout-only checks.
+
+Without `--output-dir`, files are written under a unique `run_*` directory.
+
+## Full Run Example
+
+```bash
+python -m src.research.run_rotation_destination_outcome_audit_v1 \
+  --venue bitvavo \
+  --interval 4h \
+  --from-ts 2026-01-01T00:00:00Z \
+  --to-ts 2026-05-31T23:59:59Z \
+  --sample-step-hours 24 \
+  --max-events 5000 \
+  --output table
+```
+
+For an explicit location on a GamePC or other larger run host:
+
+```bash
+python -m src.research.run_rotation_destination_outcome_audit_v1 \
+  --venue bitvavo \
+  --interval 4h \
+  --from-ts 2026-01-01T00:00:00Z \
+  --to-ts 2026-05-31T23:59:59Z \
+  --sample-step-hours 24 \
+  --max-events 5000 \
+  --output-dir data/research/rotation_destination_outcome_audit_v1/gamepc_full_20260531 \
+  --output table
+```

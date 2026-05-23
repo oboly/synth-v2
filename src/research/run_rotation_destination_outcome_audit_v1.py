@@ -55,6 +55,7 @@ from src.research.run_position_rotation_preview_v1 import (
 REPORT_NAME = "rotation_destination_outcome_audit_v1"
 VERSION = "1.0"
 DEFAULT_OUTPUT_DIR = "data/research/rotation_destination_outcome_audit_v1"
+DEFAULT_RUN_DIR_PREFIX = "run_"
 
 EVENT_TABLE_CSV = "event_table_v1.csv"
 EVENT_TABLE_JSONL = "event_table_v1.jsonl"
@@ -153,7 +154,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--symbols", nargs="*", default=None)
     parser.add_argument("--sample-step-hours", type=int, default=24)
     parser.add_argument("--max-events", type=int, default=1000)
-    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--output-dir", default=None)
     parser.add_argument("--write-files", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--output", choices=("table", "json"), default="table")
     return parser.parse_args(argv)
@@ -166,6 +167,16 @@ def parse_symbols(values: list[str] | None) -> list[str] | None:
     for value in values:
         symbols.extend(part.strip().upper() for part in str(value).split(",") if part.strip())
     return sorted(dict.fromkeys(symbols)) or None
+
+
+def utc_run_id(now_utc: datetime) -> str:
+    return now_utc.replace(tzinfo=UTC).strftime("%Y%m%dT%H%M%SZ")
+
+
+def resolve_output_dir(*, requested_output_dir: str | None, run_id: str) -> Path:
+    if requested_output_dir:
+        return Path(requested_output_dir)
+    return Path(DEFAULT_OUTPUT_DIR) / f"{DEFAULT_RUN_DIR_PREFIX}{run_id}"
 
 
 def json_default(value: Any) -> Any:
@@ -958,6 +969,8 @@ def render_report(
 
 def render_table(manifest: dict[str, Any], summary_by_confidence: list[dict[str, Any]]) -> str:
     lines = [
+        f"[RUN][ID] {manifest['run_id']}",
+        f"[RUN][OUT_DIR] {manifest['output_dir']}",
         f"report={REPORT_NAME} version={VERSION}",
         "scope=research-only market-only point-in-time outcome audit",
         "input=paper_advice_observation obs_market_candle asset aplus_table1_report aplus_table1_row",
@@ -980,7 +993,7 @@ def render_table(manifest: dict[str, Any], summary_by_confidence: list[dict[str,
     lines.append(f"wrote_files={manifest['wrote_files']}")
     if manifest["wrote_files"]:
         for key, value in manifest["output_paths"].items():
-            lines.append(f"  {key}={value}")
+            lines.append(f"  wrote_file[{key}]={value}")
     lines.append("[DONE] db_writes=0 broker_calls=0 broker_writes=0 order_submission=0 live_orders=0")
     return "\n".join(lines)
 
@@ -988,6 +1001,8 @@ def render_table(manifest: dict[str, Any], summary_by_confidence: list[dict[str,
 def build_manifest(
     *,
     args: argparse.Namespace,
+    run_id: str,
+    out_dir: Path,
     from_ts: datetime,
     to_ts: datetime,
     sample_count: int,
@@ -1002,6 +1017,8 @@ def build_manifest(
     return {
         "report": REPORT_NAME,
         "version": VERSION,
+        "run_id": run_id,
+        "output_dir": str(out_dir),
         "run_started_at_utc": fmt_ts(run_started_at.replace(tzinfo=None)),
         "run_finished_at_utc": fmt_ts(run_finished_at.replace(tzinfo=None)),
         "run_duration_sec": round(run_duration_sec, 6),
@@ -1044,7 +1061,8 @@ def main(argv: list[str] | None = None) -> int:
 
     run_started_at = datetime.now(UTC)
     started = perf_counter()
-    out_dir = Path(args.output_dir)
+    run_id = utc_run_id(run_started_at)
+    out_dir = resolve_output_dir(requested_output_dir=args.output_dir, run_id=run_id)
     paths = output_paths(out_dir)
     symbols = parse_symbols(args.symbols)
 
@@ -1091,6 +1109,8 @@ def main(argv: list[str] | None = None) -> int:
     run_finished_at = datetime.now(UTC)
     manifest = build_manifest(
         args=args,
+        run_id=run_id,
+        out_dir=out_dir,
         from_ts=from_ts,
         to_ts=to_ts,
         sample_count=len(asof_samples),
@@ -1120,6 +1140,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     if args.output == "json":
+        print(f"[RUN][ID] {manifest['run_id']}")
+        print(f"[RUN][OUT_DIR] {manifest['output_dir']}")
+        if manifest["wrote_files"]:
+            for key, value in manifest["output_paths"].items():
+                print(f"wrote_file[{key}]={value}")
         print(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True, default=json_default))
     else:
         print(render_table(manifest, summary_by_confidence))
