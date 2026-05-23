@@ -1,0 +1,44 @@
+{
+  "broker_calls": 0,
+  "broker_writes": 0,
+  "db_writes": 0,
+  "event_count": 141,
+  "exit_code": 0,
+  "from_ts": "2026-05-01T00:00:00Z",
+  "interval_code": "4h",
+  "live_orders": 0,
+  "max_events": 200,
+  "notes": [
+    "Forward return horizons use the first selected-interval candle close at or after the target horizon.",
+    "A+ context is selected point-in-time from the latest A+ Table 1 report at or before each as-of.",
+    "This runner measures outcomes only and does not tune or promote runtime behavior."
+  ],
+  "order_submission": 0,
+  "output_paths": {
+    "event_table_csv": "data/research/rotation_destination_outcome_audit_v1/event_table_v1.csv",
+    "event_table_jsonl": "data/research/rotation_destination_outcome_audit_v1/event_table_v1.jsonl",
+    "manifest_json": "data/research/rotation_destination_outcome_audit_v1/manifest_v1.json",
+    "report_md": "data/research/rotation_destination_outcome_audit_v1/report_v1.md",
+    "summary_by_confidence_csv": "data/research/rotation_destination_outcome_audit_v1/summary_by_confidence_v1.csv",
+    "summary_by_reason_csv": "data/research/rotation_destination_outcome_audit_v1/summary_by_reason_v1.csv"
+  },
+  "report": "rotation_destination_outcome_audit_v1",
+  "run_duration_sec": 2.790191,
+  "run_finished_at_utc": "2026-05-23T20:41:53.634022Z",
+  "run_started_at_utc": "2026-05-23T20:41:50.843833Z",
+  "sample_count": 9,
+  "sample_step_hours": 24,
+  "symbols": [
+    "HYPE",
+    "INJ",
+    "KITE",
+    "NEAR",
+    "RENDER",
+    "SOL",
+    "TAO"
+  ],
+  "to_ts": "2026-05-31T23:59:59Z",
+  "venue": "bitvavo",
+  "version": "1.0",
+  "wrote_files": true
+}

@@ -1,0 +1,4 @@
+label,event_count,eligible_count,clean_actionable_count,avg_return_1h,avg_return_4h,avg_return_24h,median_return_24h,positive_rate_24h,avg_return_72h,median_return_72h,positive_rate_72h,avg_max_adverse_excursion_24h,avg_max_favorable_excursion_24h
+LOW_CONFIDENCE_DESTINATION,120,24,0,-0.859862,-0.859862,-0.527491,2.136772,57.0,8.521803,7.205759,78.481013,-5.466499,4.927935
+MARKET_ONLY_DESTINATION,18,0,0,2.384609,2.384609,2.118171,2.105944,100.0,2.564872,-4.504771,38.888889,-1.993403,7.082167
+MEDIUM_CONFIDENCE_DESTINATION,3,0,0,0.1854,0.1854,2.448822,2.448822,100.0,-3.90627,-3.90627,0.0,-1.287498,3.298571
