@@ -29,8 +29,13 @@ Generated files per run:
 ```text
 event_table_v1.csv
 event_table_v1.jsonl
+event_table_dedup_destination_v1.csv
+event_table_dedup_destination_v1.jsonl
 summary_by_confidence_v1.csv
 summary_by_reason_v1.csv
+summary_by_confidence_dedup_v1.csv
+summary_by_reason_dedup_v1.csv
+summary_by_curve_sanity_dedup_v1.csv
 manifest_v1.json
 report_v1.md
 ```
@@ -62,6 +67,8 @@ It reuses the dashboard destination helpers where possible:
 
 For each sampled `paper_advice_observation.asof_ts_utc`, the runner ranks destination candidates using the same market-candidate score used by the rotation preview. It emits one event for every destination whose score is greater than the source symbol score. Clean destinations and excluded/low-confidence destinations are both retained so outcomes can be compared instead of filtered away.
 
+The raw event table is source-weighted: the same destination can repeat for the same `asof_ts` when multiple held source symbols point to it.
+
 Per event fields:
 
 - `asof_ts`
@@ -87,6 +94,22 @@ Forward return horizons use the first candle close at or after the target horizo
 
 If `--to-ts` includes recent snapshots without enough future candles for a horizon, that horizon is left blank for those events. Summaries aggregate only available numeric values per metric.
 
+## Destination-Dedup View
+
+The runner also writes a destination-dedup view to remove repeated `asof_ts + destination_symbol` rows from the summary layer.
+
+Dedup key:
+
+- `asof_ts`
+- `destination_symbol`
+
+Dedup row choice:
+
+- highest `destination_score`
+- deterministic tie-breaker: `source_symbol` ascending
+
+This produces a destination-dedup perspective that is less sensitive to how many current source holdings happened to point at the same destination on the same snapshot.
+
 ## Comparison Buckets
 
 `summary_by_confidence_v1.csv` groups outcomes by:
@@ -106,6 +129,16 @@ If `--to-ts` includes recent snapshots without enough future candles for a horiz
 - `CURVE_WEAK`
 - `CLEAN_DESTINATION`
 - `EXCLUDED_OR_LOW_CONFIDENCE_DESTINATION`
+
+Destination-dedup summaries:
+
+- `summary_by_confidence_dedup_v1.csv`
+- `summary_by_reason_dedup_v1.csv`
+- `summary_by_curve_sanity_dedup_v1.csv`
+
+Use the raw summaries for source-weighted portfolio-pressure interpretation, and the dedup summaries for per-destination outcome interpretation.
+
+`report_v1.md` shows raw row count vs destination-dedup row count, plus raw-by-confidence and dedup-by-confidence tables.
 
 ## Safety
 
@@ -131,6 +164,7 @@ python -m src.research.run_rotation_destination_outcome_audit_v1 \
   --to-ts 2026-05-31T23:59:59Z \
   --symbols KITE TAO HYPE NEAR RENDER SOL INJ \
   --max-events 200 \
+  --write-files \
   --output table
 ```
 

@@ -59,8 +59,13 @@ DEFAULT_RUN_DIR_PREFIX = "run_"
 
 EVENT_TABLE_CSV = "event_table_v1.csv"
 EVENT_TABLE_JSONL = "event_table_v1.jsonl"
+EVENT_TABLE_DEDUP_DESTINATION_CSV = "event_table_dedup_destination_v1.csv"
+EVENT_TABLE_DEDUP_DESTINATION_JSONL = "event_table_dedup_destination_v1.jsonl"
 SUMMARY_BY_CONFIDENCE_CSV = "summary_by_confidence_v1.csv"
 SUMMARY_BY_REASON_CSV = "summary_by_reason_v1.csv"
+SUMMARY_BY_CONFIDENCE_DEDUP_CSV = "summary_by_confidence_dedup_v1.csv"
+SUMMARY_BY_REASON_DEDUP_CSV = "summary_by_reason_dedup_v1.csv"
+SUMMARY_BY_CURVE_SANITY_DEDUP_CSV = "summary_by_curve_sanity_dedup_v1.csv"
 MANIFEST_JSON = "manifest_v1.json"
 REPORT_MD = "report_v1.md"
 
@@ -102,8 +107,13 @@ EVENT_COLUMNS = [
 class OutputPaths:
     event_csv: Path
     event_jsonl: Path
+    event_dedup_destination_csv: Path
+    event_dedup_destination_jsonl: Path
     summary_by_confidence_csv: Path
     summary_by_reason_csv: Path
+    summary_by_confidence_dedup_csv: Path
+    summary_by_reason_dedup_csv: Path
+    summary_by_curve_sanity_dedup_csv: Path
     manifest_json: Path
     report_md: Path
 
@@ -846,12 +856,59 @@ def build_summary_by_reason(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [summary_row(label, by_reason[label]) for label in sorted(by_reason)]
 
 
+def build_summary_by_field(rows: list[dict[str, Any]], field_name: str) -> list[dict[str, Any]]:
+    labels = sorted(
+        {
+            str(row.get(field_name) or "")
+            for row in rows
+            if str(row.get(field_name) or "")
+        }
+    )
+    return [summary_row(label, [row for row in rows if str(row.get(field_name) or "") == label]) for label in labels]
+
+
+def dedup_destination_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        dedup_key = (
+            str(row.get("asof_ts") or ""),
+            str(row.get("destination_symbol") or ""),
+        )
+        current = best_by_key.get(dedup_key)
+        if current is None:
+            best_by_key[dedup_key] = row
+            continue
+
+        row_score = dec(row.get("destination_score")) or Decimal("-999999")
+        current_score = dec(current.get("destination_score")) or Decimal("-999999")
+        row_source = str(row.get("source_symbol") or "")
+        current_source = str(current.get("source_symbol") or "")
+        if row_score > current_score or (row_score == current_score and row_source < current_source):
+            best_by_key[dedup_key] = row
+
+    deduped = list(best_by_key.values())
+    deduped.sort(
+        key=lambda row: (
+            str(row.get("asof_ts") or ""),
+            str(row.get("destination_symbol") or ""),
+            -(dec(row.get("destination_score")) or Decimal("0")),
+            str(row.get("source_symbol") or ""),
+        )
+    )
+    return deduped
+
+
 def output_paths(output_dir: Path) -> OutputPaths:
     return OutputPaths(
         event_csv=output_dir / EVENT_TABLE_CSV,
         event_jsonl=output_dir / EVENT_TABLE_JSONL,
+        event_dedup_destination_csv=output_dir / EVENT_TABLE_DEDUP_DESTINATION_CSV,
+        event_dedup_destination_jsonl=output_dir / EVENT_TABLE_DEDUP_DESTINATION_JSONL,
         summary_by_confidence_csv=output_dir / SUMMARY_BY_CONFIDENCE_CSV,
         summary_by_reason_csv=output_dir / SUMMARY_BY_REASON_CSV,
+        summary_by_confidence_dedup_csv=output_dir / SUMMARY_BY_CONFIDENCE_DEDUP_CSV,
+        summary_by_reason_dedup_csv=output_dir / SUMMARY_BY_REASON_DEDUP_CSV,
+        summary_by_curve_sanity_dedup_csv=output_dir / SUMMARY_BY_CURVE_SANITY_DEDUP_CSV,
         manifest_json=output_dir / MANIFEST_JSON,
         report_md=output_dir / REPORT_MD,
     )
@@ -889,8 +946,8 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 def render_report(
     *,
     manifest: dict[str, Any],
-    summary_by_confidence: list[dict[str, Any]],
-    summary_by_reason: list[dict[str, Any]],
+    raw_summary_by_confidence: list[dict[str, Any]],
+    dedup_summary_by_confidence: list[dict[str, Any]],
 ) -> str:
     lines = [
         f"# Rotation Destination Outcome Audit V1",
@@ -910,46 +967,40 @@ def render_report(
         f"- from_ts: `{manifest['from_ts']}`",
         f"- to_ts: `{manifest['to_ts']}`",
         f"- sample_count: `{manifest['sample_count']}`",
-        f"- event_count: `{manifest['event_count']}`",
+        f"- raw_event_count: `{manifest['raw_event_count']}`",
+        f"- dedup_destination_event_count: `{manifest['dedup_destination_event_count']}`",
         "",
-        "## Summary By Confidence",
+        "## Interpretation",
+        "",
+        "- Raw view is source-weighted: the same destination can appear multiple times at one as-of when several held source symbols point to it.",
+        "- Destination-dedup view keeps one row per `asof_ts + destination_symbol`, choosing the highest `destination_score` and then `source_symbol` ascending as the deterministic tie-breaker.",
+        "",
+        "## Raw By Confidence",
         "",
         "| label | events | avg_24h | median_24h | positive_24h | avg_mae_24h | avg_mfe_24h |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
-    for row in summary_by_confidence:
+    for row in raw_summary_by_confidence:
         lines.append(
             f"| {row['label']} | {row['event_count']} | {row['avg_return_24h']} | "
             f"{row['median_return_24h']} | {row['positive_rate_24h']} | "
             f"{row['avg_max_adverse_excursion_24h']} | {row['avg_max_favorable_excursion_24h']} |"
         )
 
-    key_reasons = {
-        "CLEAN_DESTINATION",
-        "EXCLUDED_OR_LOW_CONFIDENCE_DESTINATION",
-        "MARKET_ONLY_DESTINATION",
-        "MISSING_APLUS_CONTEXT",
-        "STALE_APLUS_CONTEXT",
-        "APLUS_AVOID_OR_DISTORTED",
-        "CURVE_NO_UP_SIGNAL",
-        "CURVE_DOWN_PRESSURE",
-        "CURVE_WEAK",
-    }
     lines.extend(
         [
             "",
-            "## Key Reason Buckets",
+            "## Dedup By Confidence",
             "",
-            "| label | events | avg_24h | median_24h | positive_24h |",
-            "| --- | ---: | ---: | ---: | ---: |",
+            "| label | events | avg_24h | median_24h | positive_24h | avg_mae_24h | avg_mfe_24h |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
-    for row in summary_by_reason:
-        if row["label"] not in key_reasons:
-            continue
+    for row in dedup_summary_by_confidence:
         lines.append(
             f"| {row['label']} | {row['event_count']} | {row['avg_return_24h']} | "
-            f"{row['median_return_24h']} | {row['positive_rate_24h']} |"
+            f"{row['median_return_24h']} | {row['positive_rate_24h']} | "
+            f"{row['avg_max_adverse_excursion_24h']} | {row['avg_max_favorable_excursion_24h']} |"
         )
 
     lines.extend(
@@ -967,7 +1018,11 @@ def render_report(
     return "\n".join(lines) + "\n"
 
 
-def render_table(manifest: dict[str, Any], summary_by_confidence: list[dict[str, Any]]) -> str:
+def render_table(
+    manifest: dict[str, Any],
+    raw_summary_by_confidence: list[dict[str, Any]],
+    dedup_summary_by_confidence: list[dict[str, Any]],
+) -> str:
     lines = [
         f"[RUN][ID] {manifest['run_id']}",
         f"[RUN][OUT_DIR] {manifest['output_dir']}",
@@ -977,11 +1032,24 @@ def render_table(manifest: dict[str, Any], summary_by_confidence: list[dict[str,
         "db_writes=0 broker_calls=0 broker_writes=0 order_submission=0 live_orders=0",
         "selection_engine=none decision_gate=none execution_planner=none executor=none",
         f"venue={manifest['venue']} interval={manifest['interval_code']}",
-        f"from_ts={manifest['from_ts']} to_ts={manifest['to_ts']} sample_count={manifest['sample_count']} event_count={manifest['event_count']}",
+        (
+            f"from_ts={manifest['from_ts']} to_ts={manifest['to_ts']} sample_count={manifest['sample_count']} "
+            f"raw_event_count={manifest['raw_event_count']} dedup_destination_event_count={manifest['dedup_destination_event_count']}"
+        ),
         "",
-        "--- summary by confidence ---",
+        "--- raw summary by confidence ---",
     ]
-    for row in summary_by_confidence:
+    for row in raw_summary_by_confidence:
+        lines.append(
+            "  "
+            f"{row['label']} count={row['event_count']} clean={row['clean_actionable_count']} "
+            f"avg_24h={row['avg_return_24h']} median_24h={row['median_return_24h']} "
+            f"positive_24h={row['positive_rate_24h']} mae24={row['avg_max_adverse_excursion_24h']} "
+            f"mfe24={row['avg_max_favorable_excursion_24h']}"
+        )
+    lines.append("")
+    lines.append("--- dedup summary by confidence ---")
+    for row in dedup_summary_by_confidence:
         lines.append(
             "  "
             f"{row['label']} count={row['event_count']} clean={row['clean_actionable_count']} "
@@ -1006,7 +1074,8 @@ def build_manifest(
     from_ts: datetime,
     to_ts: datetime,
     sample_count: int,
-    event_count: int,
+    raw_event_count: int,
+    dedup_destination_event_count: int,
     paths: OutputPaths,
     wrote_files: bool,
     run_started_at: datetime,
@@ -1031,13 +1100,20 @@ def build_manifest(
         "sample_step_hours": int(args.sample_step_hours),
         "max_events": int(args.max_events),
         "sample_count": int(sample_count),
-        "event_count": int(event_count),
+        "event_count": int(raw_event_count),
+        "raw_event_count": int(raw_event_count),
+        "dedup_destination_event_count": int(dedup_destination_event_count),
         "wrote_files": bool(wrote_files),
         "output_paths": {
             "event_table_csv": str(paths.event_csv),
             "event_table_jsonl": str(paths.event_jsonl),
+            "event_table_dedup_destination_csv": str(paths.event_dedup_destination_csv),
+            "event_table_dedup_destination_jsonl": str(paths.event_dedup_destination_jsonl),
             "summary_by_confidence_csv": str(paths.summary_by_confidence_csv),
             "summary_by_reason_csv": str(paths.summary_by_reason_csv),
+            "summary_by_confidence_dedup_csv": str(paths.summary_by_confidence_dedup_csv),
+            "summary_by_reason_dedup_csv": str(paths.summary_by_reason_dedup_csv),
+            "summary_by_curve_sanity_dedup_csv": str(paths.summary_by_curve_sanity_dedup_csv),
             "manifest_json": str(paths.manifest_json),
             "report_md": str(paths.report_md),
         },
@@ -1104,8 +1180,15 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
 
+    dedup_destination_events_rows = dedup_destination_events(events)
     summary_by_confidence = build_summary_by_confidence(events)
     summary_by_reason = build_summary_by_reason(events)
+    summary_by_confidence_dedup = build_summary_by_confidence(dedup_destination_events_rows)
+    summary_by_reason_dedup = build_summary_by_reason(dedup_destination_events_rows)
+    summary_by_curve_sanity_dedup = build_summary_by_field(
+        dedup_destination_events_rows,
+        "curve_sanity_label",
+    )
     run_finished_at = datetime.now(UTC)
     manifest = build_manifest(
         args=args,
@@ -1114,7 +1197,8 @@ def main(argv: list[str] | None = None) -> int:
         from_ts=from_ts,
         to_ts=to_ts,
         sample_count=len(asof_samples),
-        event_count=len(events),
+        raw_event_count=len(events),
+        dedup_destination_event_count=len(dedup_destination_events_rows),
         paths=paths,
         wrote_files=bool(args.write_files),
         run_started_at=run_started_at,
@@ -1126,15 +1210,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.write_files:
         write_csv(paths.event_csv, events, EVENT_COLUMNS)
         write_jsonl(paths.event_jsonl, events)
+        write_csv(paths.event_dedup_destination_csv, dedup_destination_events_rows, EVENT_COLUMNS)
+        write_jsonl(paths.event_dedup_destination_jsonl, dedup_destination_events_rows)
         summary_fields = list(summary_row("FIELDNAMES", []).keys())
         write_csv(paths.summary_by_confidence_csv, summary_by_confidence, summary_fields)
         write_csv(paths.summary_by_reason_csv, summary_by_reason, summary_fields)
+        write_csv(paths.summary_by_confidence_dedup_csv, summary_by_confidence_dedup, summary_fields)
+        write_csv(paths.summary_by_reason_dedup_csv, summary_by_reason_dedup, summary_fields)
+        write_csv(paths.summary_by_curve_sanity_dedup_csv, summary_by_curve_sanity_dedup, summary_fields)
         write_json(paths.manifest_json, manifest)
         paths.report_md.write_text(
             render_report(
                 manifest=manifest,
-                summary_by_confidence=summary_by_confidence,
-                summary_by_reason=summary_by_reason,
+                raw_summary_by_confidence=summary_by_confidence,
+                dedup_summary_by_confidence=summary_by_confidence_dedup,
             ),
             encoding="utf-8",
         )
@@ -1147,7 +1236,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"wrote_file[{key}]={value}")
         print(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=True, default=json_default))
     else:
-        print(render_table(manifest, summary_by_confidence))
+        print(render_table(manifest, summary_by_confidence, summary_by_confidence_dedup))
     return 0
 
 
