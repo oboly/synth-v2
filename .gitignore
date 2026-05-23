@@ -93,3 +93,6 @@ data/research/aplus_table1_regime_gate_validation_v1/
 # Derived A+ research outputs; canonical normalized A+ data lives in DB.
 data/research/aplus_table1_table2_normalized_v1/
 data/research/aplus_table2_harmonic_overlay_v1/
+
+# Rotation destination outcome audit generated outputs
+data/research/rotation_destination_outcome_audit_v1/
