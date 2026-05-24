@@ -77,6 +77,22 @@ For each historical sample timestamp:
    - tie-breaker `source_symbol` ascending
 7. Emit summaries and leakage guard report.
 
+## Confidence Terminology Note
+
+`market_breath_confidence` in the underlying observation rows means coverage or measurement availability only.
+
+It is:
+
+- not trend probability
+- not phase stability
+- not forward-return confidence
+
+To make this less ambiguous in v2 outputs, the event tables also expose:
+
+- `measurement_coverage_score`
+
+The existing `confidence_bucket` labels remain unchanged for backward compatibility, even though names such as `HIGH_CONFIDENCE_DESTINATION` should not be read as predictive certainty.
+
 ## Output Files
 
 - `manifest_v2.json`
@@ -96,6 +112,10 @@ For each historical sample timestamp:
 - `summary_by_rank_bucket_historical_replay_v2.csv`
 - `leakage_guard_report_v2.json`
 
+Event-table additive alias field:
+
+- `measurement_coverage_score`
+
 ## Manifest And Leakage Guard
 
 `manifest_v2.json` and `leakage_guard_report_v2.json` include:
@@ -106,6 +126,11 @@ For each historical sample timestamp:
 - `account_tables_used=false`
 - `paper_advice_snapshots_used=false`
 - `max_input_ts_gt_sample_ts_rows=0` (required pass condition)
+
+`manifest_v2.json` also includes terminology alias metadata so downstream readers can distinguish:
+
+- coverage or measurement availability
+- bucket naming kept for backward compatibility
 
 ## Smoke Examples
 

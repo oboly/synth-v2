@@ -45,6 +45,11 @@ Optional comparison only after clustering:
 
 Those existing labels are joined only after clustering to produce comparison files. They are not used as discovery inputs.
 
+Terminology note:
+
+- if downstream comparison work references `market_breath_confidence`, treat it as coverage or measurement availability only
+- do not interpret it as trend probability, phase stability, or forward-return confidence
+
 ## Discovery Outline
 
 For each sampled timestamp:

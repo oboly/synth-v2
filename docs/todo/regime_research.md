@@ -73,6 +73,15 @@ Tasks:
 - Define required inputs, sampling, and output schema before implementation.
 - Keep this as research-only characterization, not ranking logic.
 
+Future measurement design note:
+
+- add `phase_stability_score`
+- add `symbol_breath_coherence_score`
+- add `phase_lag_vs_anchor`
+- add `trend_continuation_score`
+
+These must remain separate from coverage or measurement-availability fields.
+
 ## P2 — Regime interaction audit design
 
 Status: design next.

@@ -86,6 +86,7 @@ EVENT_COLUMNS = [
     "destination_setup_state",
     "destination_setup_reason",
     "destination_policy_preview_state",
+    "measurement_coverage_score",
     "confidence_bucket",
     "confidence_reason",
     "curve_sanity_state",
@@ -551,6 +552,7 @@ def build_sample_events(
                 setup_reason_value=setup_reason_value,
                 confidence_bucket_value=confidence_bucket,
             )
+            measurement_coverage_score = as_float(dest_obs.get("market_breath_confidence"))
             phase = str(dest_obs.get("market_breath_phase") or "").upper()
             state = str(dest_obs.get("market_breath_state") or "").upper()
             market_regime_state = f"{phase}:{state}" if phase or state else "UNKNOWN:UNKNOWN"
@@ -600,6 +602,7 @@ def build_sample_events(
                 "destination_setup_state": setup_state_value,
                 "destination_setup_reason": setup_reason_value,
                 "destination_policy_preview_state": policy_state,
+                "measurement_coverage_score": format_number(measurement_coverage_score),
                 "confidence_bucket": confidence_bucket,
                 "confidence_reason": confidence_reason,
                 "curve_sanity_state": curve_state,
@@ -878,6 +881,16 @@ def build_manifest(
         "sample_count": int(sample_count),
         "raw_event_count": int(raw_event_count),
         "dedup_destination_event_count": int(dedup_destination_event_count),
+        "terminology_aliases": {
+            "measurement_coverage_score": "Alias for the current market_breath_confidence field used inside replay inputs.",
+            "confidence_bucket": "Backward-compatible bucket label retained from v2 outputs.",
+        },
+        "confidence_terminology_notes": [
+            "market_breath_confidence is a coverage or measurement-availability score.",
+            "market_breath_confidence is not trend probability.",
+            "market_breath_confidence is not phase stability.",
+            "market_breath_confidence is not forward-return confidence.",
+        ],
         "source_mode": "MARKET_WEAK_TO_STRONG_REPLAY",
         "paper_advice_snapshots_used": False,
         "account_tables_used": False,
