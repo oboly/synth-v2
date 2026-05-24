@@ -34,6 +34,15 @@ PROFILE_FIELDS = [
     "dominant_confidence_bucket",
     "dominant_included_state",
     "regime_count",
+    "best_context_key",
+    "best_context_event_count",
+    "best_context_avg_return_24h_pct",
+    "best_context_positive_rate_24h_pct",
+    "worst_context_key",
+    "worst_context_event_count",
+    "worst_context_avg_return_24h_pct",
+    "worst_context_positive_rate_24h_pct",
+    "profile_strength_score",
     "profile_reason",
 ]
 
@@ -41,6 +50,8 @@ EVIDENCE_FIELDS = [
     "destination_symbol",
     "evidence_type",
     "evidence_key",
+    "discovered_regime_id",
+    "discovered_regime_label_auto",
     "event_count",
     "avg_measurement_coverage_score",
     "avg_destination_return_24h_pct",
@@ -172,69 +183,168 @@ def dominant_key(rows: list[dict[str, str]], field: str) -> str:
     return best_key
 
 
+def regime_id_value(row: dict[str, str]) -> int:
+    try:
+        return int(str(row.get("discovered_regime_id") or "0"))
+    except Exception:
+        return 0
+
+
+def context_avg_return(row: dict[str, str]) -> float:
+    return as_float(row.get("avg_destination_return_24h_pct")) or 0.0
+
+
+def context_positive_rate(row: dict[str, str]) -> float:
+    return as_float(row.get("positive_rate_destination_return_24h_pct")) or 0.0
+
+
+def context_event_count(row: dict[str, str]) -> int:
+    return as_int(row.get("event_count"))
+
+
+def build_evidence_key(prefix: str, row: dict[str, str]) -> str:
+    regime_id = regime_id_value(row)
+    regime_label = str(row.get("discovered_regime_label_auto") or "")
+    return f"{prefix}|R{regime_id}|{regime_label}"
+
+
+def context_sort_key_best(row: dict[str, str]) -> tuple[float, float, int, str]:
+    return (
+        context_avg_return(row),
+        context_positive_rate(row),
+        context_event_count(row),
+        str(row.get("evidence_key") or ""),
+    )
+
+
+def context_sort_key_worst(row: dict[str, str]) -> tuple[float, float, int, str]:
+    return (
+        -context_avg_return(row),
+        -context_positive_rate(row),
+        context_event_count(row),
+        str(row.get("evidence_key") or ""),
+    )
+
+
+def choose_best_context(rows: list[dict[str, str]]) -> dict[str, str] | None:
+    if not rows:
+        return None
+    return max(rows, key=context_sort_key_best)
+
+
+def choose_worst_context(rows: list[dict[str, str]]) -> dict[str, str] | None:
+    if not rows:
+        return None
+    return max(rows, key=context_sort_key_worst)
+
+
+def profile_strength_score(best_context: dict[str, str] | None, worst_context: dict[str, str] | None) -> float | None:
+    if best_context is None or worst_context is None:
+        return None
+    best_return = context_avg_return(best_context)
+    worst_return = context_avg_return(worst_context)
+    best_positive = context_positive_rate(best_context)
+    worst_positive = context_positive_rate(worst_context)
+    best_events = context_event_count(best_context)
+    worst_events = context_event_count(worst_context)
+    score = (best_return - worst_return) + 0.02 * (best_positive - worst_positive) + 0.05 * min(best_events, worst_events)
+    return round(score, 6)
+
+
+def context_matches_any(row: dict[str, str], *, curve_states: set[str] | None = None, confidence_buckets: set[str] | None = None) -> bool:
+    curve_ok = not curve_states or str(row.get("curve_sanity_state") or "") in curve_states
+    confidence_ok = not confidence_buckets or str(row.get("confidence_bucket") or "") in confidence_buckets
+    return curve_ok and confidence_ok
+
+
 def classify_profile(
     *,
     total_events: int,
     curve_rows: list[dict[str, str]],
     confidence_rows: list[dict[str, str]],
     included_rows: list[dict[str, str]],
+    evidence_rows: list[dict[str, str]],
+    min_events: int,
 ) -> tuple[str, str]:
     if total_events <= 0:
         return "INSUFFICIENT_SAMPLE", "NO_EVENTS"
 
-    avg_return_24h = summarize_weighted(curve_rows, "avg_destination_return_24h_pct")
-    avg_return_48h = summarize_weighted(curve_rows, "avg_destination_return_48h_pct")
-    included_return = summarize_weighted(
-        [row for row in included_rows if str(row.get("included_state") or "") == "INCLUDED"],
-        "avg_destination_return_24h_pct",
-    )
-    excluded_return = summarize_weighted(
-        [row for row in included_rows if str(row.get("included_state") or "") == "EXCLUDED"],
-        "avg_destination_return_24h_pct",
-    )
-
-    dominant_curve = dominant_key(curve_rows, "curve_sanity_state")
-    dominant_confidence = dominant_key(confidence_rows, "confidence_bucket")
-    regime_ids = {
-        str(row.get("discovered_regime_id") or "")
-        for row in curve_rows + confidence_rows + included_rows
-        if str(row.get("discovered_regime_id") or "")
-    }
-
-    if total_events < 10:
+    if total_events < min_events:
         return "INSUFFICIENT_SAMPLE", "EVENT_COUNT_BELOW_MIN_EVENTS"
 
-    if len(regime_ids) >= 3 and included_return is not None and excluded_return is not None:
-        if abs(included_return - excluded_return) >= 1.0:
-            return "REGIME_SENSITIVE", "INCLUDED_EXCLUDED_SPLIT_ACROSS_MULTIPLE_REGIMES"
+    best_context = choose_best_context(evidence_rows)
+    worst_context = choose_worst_context(evidence_rows)
+    if best_context is None or worst_context is None:
+        return "INCOHERENT", "NO_CONTEXT_ROWS"
 
-    if dominant_curve == "CURVE_DOWN_PRESSURE" and avg_return_24h is not None and avg_return_24h > 0.75:
-        return "DAMAGE_REBOUND_RESPONDER", "POSITIVE_RESPONSE_DURING_CURVE_DOWN_PRESSURE"
+    best_regime_id = regime_id_value(best_context)
+    best_return = context_avg_return(best_context)
+    best_positive = context_positive_rate(best_context)
+    best_key = str(best_context.get("evidence_key") or "")
+    worst_regime_id = regime_id_value(worst_context)
+    worst_return = context_avg_return(worst_context)
+    worst_positive = context_positive_rate(worst_context)
+    worst_key = str(worst_context.get("evidence_key") or "")
+    strength = profile_strength_score(best_context, worst_context) or 0.0
 
-    if dominant_curve == "CURVE_WEAK" and avg_return_24h is not None and avg_return_24h > 0.75:
-        return "REBOUND_RESPONDER", "POSITIVE_RESPONSE_DURING_CURVE_WEAK"
+    if best_regime_id in {4, 5, 6} and best_return > 0.75 and best_positive >= 60.0:
+        if "CURVE_DOWN_PRESSURE" in best_key or "CURVE_WEAK" in best_key:
+            return "REBOUND_RESPONDER", "BEST_CONTEXT_WEAK_OR_DOWN_PRESSURE_IN_REGIME_4_5_6"
+        if "LOW_CONFIDENCE_DESTINATION" in best_key or "MARKET_ONLY_DESTINATION" in best_key:
+            return "REBOUND_RESPONDER", "BEST_CONTEXT_LOW_OR_MARKET_ONLY_IN_REGIME_4_5_6"
 
-    if dominant_curve == "CURVE_UP_CONFIRMED" and dominant_confidence in {
-        "HIGH_CONFIDENCE_DESTINATION",
-        "MEDIUM_CONFIDENCE_DESTINATION",
-    }:
-        if avg_return_24h is not None and avg_return_24h > 0.75 and avg_return_48h is not None and avg_return_48h > 1.0:
-            return "CONFIRMED_CONTINUATION", "UP_CONFIRMED_WITH_POSITIVE_24H_AND_48H"
+    damage_rows = [
+        row
+        for row in evidence_rows
+        if regime_id_value(row) in {4, 5, 6} and "CURVE_DOWN_PRESSURE" in str(row.get("evidence_key") or "")
+    ]
+    if damage_rows:
+        damage_best = choose_best_context(damage_rows)
+        if damage_best is not None and context_avg_return(damage_best) > 0.75 and context_positive_rate(damage_best) >= 50.0:
+            return "DAMAGE_REBOUND_RESPONDER", "POSITIVE_DAMAGE_REGIME_DOWN_PRESSURE_CONTEXT"
 
-    if dominant_confidence == "HIGH_CONFIDENCE_DESTINATION" and avg_return_24h is not None and avg_return_24h < 0.25:
-        return "LATE_EXPANSION_TRAP", "HIGH_CONFIDENCE_LABEL_WITH_WEAK_24H_OUTCOME"
+    trap_rows = [
+        row
+        for row in evidence_rows
+        if regime_id_value(row) == 1
+        and "CURVE_UP_CONFIRMED" in str(row.get("evidence_key") or "")
+        and "HIGH_CONFIDENCE_DESTINATION" in str(row.get("evidence_key") or "")
+    ]
+    if trap_rows:
+        trap_worst = choose_worst_context(trap_rows)
+        if trap_worst is not None and context_avg_return(trap_worst) <= -0.5 and context_positive_rate(trap_worst) <= 40.0:
+            return "LATE_EXPANSION_TRAP", "NEGATIVE_REGIME_1_UP_CONFIRMED_HIGH_CONTEXT"
 
-    if len(regime_ids) >= 3:
-        positive_rows = sum(
-            1 for row in curve_rows if (as_float(row.get("avg_destination_return_24h_pct")) or 0.0) > 0.5
+    continuation_rows = [
+        row
+        for row in evidence_rows
+        if regime_id_value(row) != 1
+        and "CURVE_UP_CONFIRMED" in str(row.get("evidence_key") or "")
+        and (
+            "HIGH_CONFIDENCE_DESTINATION" in str(row.get("evidence_key") or "")
+            or "MEDIUM_CONFIDENCE_DESTINATION" in str(row.get("evidence_key") or "")
         )
-        negative_rows = sum(
-            1 for row in curve_rows if (as_float(row.get("avg_destination_return_24h_pct")) or 0.0) < -0.25
-        )
-        if positive_rows and negative_rows:
-            return "REGIME_SENSITIVE", "MIXED_CURVE_OUTCOMES_ACROSS_MULTIPLE_REGIMES"
+    ]
+    if continuation_rows:
+        continuation_best = choose_best_context(continuation_rows)
+        if (
+            continuation_best is not None
+            and context_event_count(continuation_best) >= min_events
+            and context_avg_return(continuation_best) > 0.75
+            and context_positive_rate(continuation_best) >= 60.0
+        ):
+            return "CONFIRMED_CONTINUATION", "POSITIVE_UP_CONFIRMED_CONTEXT_OUTSIDE_REGIME_1"
 
-    return "INCOHERENT", "NO_CLEAR_REPEATABLE_PROFILE_PATTERN"
+    if strength >= 2.5 and best_return - worst_return >= 1.5 and best_positive - worst_positive >= 20.0:
+        return "REGIME_SENSITIVE", "BEST_AND_WORST_CONTEXTS_MATERIALLY_DIVERGE"
+
+    if best_return > 0.5 and best_positive >= 55.0:
+        return "REBOUND_RESPONDER", "POSITIVE_CONTEXT_EXISTS_BUT_NOT_DAMAGE_SPECIFIC"
+
+    if worst_return < -0.5 and worst_positive <= 40.0:
+        return "INCOHERENT", "NEGATIVE_CONTEXT_EXISTS_WITHOUT_REPEATABLE_POSITIVE_PATTERN"
+
+    return "INCOHERENT", "NO_REPEATABLE_POSITIVE_OR_NEGATIVE_CONTEXT"
 
 
 def build_manifest(
@@ -353,15 +463,78 @@ def main(argv: list[str] | None = None) -> int:
             sum(as_int(row.get("event_count")) for row in symbol_included_rows),
         )
 
+        symbol_evidence_rows: list[dict[str, str]] = []
+        for row in symbol_curve_rows:
+            symbol_evidence_rows.append(
+                {
+                    "destination_symbol": symbol,
+                    "evidence_type": "CURVE_REGIME",
+                    "curve_sanity_state": str(row.get("curve_sanity_state") or ""),
+                    "confidence_bucket": "",
+                    "included_state": "",
+                    "discovered_regime_id": str(row.get("discovered_regime_id") or ""),
+                    "discovered_regime_label_auto": str(row.get("discovered_regime_label_auto") or ""),
+                    "evidence_key": build_evidence_key(str(row.get("curve_sanity_state") or ""), row),
+                    "event_count": str(row.get("event_count") or ""),
+                    "avg_measurement_coverage_score": str(row.get("avg_measurement_coverage_score") or ""),
+                    "avg_destination_return_24h_pct": str(row.get("avg_destination_return_24h_pct") or ""),
+                    "avg_destination_return_48h_pct": str(row.get("avg_destination_return_48h_pct") or ""),
+                    "positive_rate_destination_return_24h_pct": str(row.get("positive_rate_destination_return_24h_pct") or ""),
+                    "avg_destination_forward_max_24h_pct": str(row.get("avg_destination_forward_max_24h_pct") or ""),
+                    "avg_destination_forward_min_24h_pct": str(row.get("avg_destination_forward_min_24h_pct") or ""),
+                }
+            )
+        for row in symbol_confidence_rows:
+            symbol_evidence_rows.append(
+                {
+                    "destination_symbol": symbol,
+                    "evidence_type": "CONFIDENCE_REGIME",
+                    "curve_sanity_state": "",
+                    "confidence_bucket": str(row.get("confidence_bucket") or ""),
+                    "included_state": "",
+                    "discovered_regime_id": str(row.get("discovered_regime_id") or ""),
+                    "discovered_regime_label_auto": str(row.get("discovered_regime_label_auto") or ""),
+                    "evidence_key": build_evidence_key(str(row.get("confidence_bucket") or ""), row),
+                    "event_count": str(row.get("event_count") or ""),
+                    "avg_measurement_coverage_score": str(row.get("avg_measurement_coverage_score") or ""),
+                    "avg_destination_return_24h_pct": str(row.get("avg_destination_return_24h_pct") or ""),
+                    "avg_destination_return_48h_pct": str(row.get("avg_destination_return_48h_pct") or ""),
+                    "positive_rate_destination_return_24h_pct": str(row.get("positive_rate_destination_return_24h_pct") or ""),
+                    "avg_destination_forward_max_24h_pct": str(row.get("avg_destination_forward_max_24h_pct") or ""),
+                    "avg_destination_forward_min_24h_pct": str(row.get("avg_destination_forward_min_24h_pct") or ""),
+                }
+            )
+        for row in symbol_included_rows:
+            symbol_evidence_rows.append(
+                {
+                    "destination_symbol": symbol,
+                    "evidence_type": "INCLUDED_REGIME",
+                    "curve_sanity_state": "",
+                    "confidence_bucket": "",
+                    "included_state": str(row.get("included_state") or ""),
+                    "discovered_regime_id": str(row.get("discovered_regime_id") or ""),
+                    "discovered_regime_label_auto": str(row.get("discovered_regime_label_auto") or ""),
+                    "evidence_key": build_evidence_key(str(row.get("included_state") or ""), row),
+                    "event_count": str(row.get("event_count") or ""),
+                    "avg_measurement_coverage_score": str(row.get("avg_measurement_coverage_score") or ""),
+                    "avg_destination_return_24h_pct": str(row.get("avg_destination_return_24h_pct") or ""),
+                    "avg_destination_return_48h_pct": str(row.get("avg_destination_return_48h_pct") or ""),
+                    "positive_rate_destination_return_24h_pct": str(row.get("positive_rate_destination_return_24h_pct") or ""),
+                    "avg_destination_forward_max_24h_pct": str(row.get("avg_destination_forward_max_24h_pct") or ""),
+                    "avg_destination_forward_min_24h_pct": str(row.get("avg_destination_forward_min_24h_pct") or ""),
+                }
+            )
+
         label, reason = classify_profile(
             total_events=total_events,
             curve_rows=symbol_curve_rows,
             confidence_rows=symbol_confidence_rows,
             included_rows=symbol_included_rows,
+            evidence_rows=symbol_evidence_rows,
+            min_events=int(args.min_events),
         )
-        if total_events < args.min_events:
-            label = "INSUFFICIENT_SAMPLE"
-            reason = "EVENT_COUNT_BELOW_MIN_EVENTS"
+        best_context = choose_best_context(symbol_evidence_rows)
+        worst_context = choose_worst_context(symbol_evidence_rows)
 
         profile_rows.append(
             {
@@ -387,55 +560,19 @@ def main(argv: list[str] | None = None) -> int:
                         if str(row.get("discovered_regime_id") or "")
                     }
                 ),
+                "best_context_key": "" if best_context is None else str(best_context.get("evidence_key") or ""),
+                "best_context_event_count": "" if best_context is None else str(best_context.get("event_count") or ""),
+                "best_context_avg_return_24h_pct": "" if best_context is None else str(best_context.get("avg_destination_return_24h_pct") or ""),
+                "best_context_positive_rate_24h_pct": "" if best_context is None else str(best_context.get("positive_rate_destination_return_24h_pct") or ""),
+                "worst_context_key": "" if worst_context is None else str(worst_context.get("evidence_key") or ""),
+                "worst_context_event_count": "" if worst_context is None else str(worst_context.get("event_count") or ""),
+                "worst_context_avg_return_24h_pct": "" if worst_context is None else str(worst_context.get("avg_destination_return_24h_pct") or ""),
+                "worst_context_positive_rate_24h_pct": "" if worst_context is None else str(worst_context.get("positive_rate_destination_return_24h_pct") or ""),
+                "profile_strength_score": format_number(profile_strength_score(best_context, worst_context)),
                 "profile_reason": reason,
             }
         )
-
-        for row in symbol_curve_rows:
-            evidence_rows.append(
-                {
-                    "destination_symbol": symbol,
-                    "evidence_type": "CURVE_REGIME",
-                    "evidence_key": f"{row.get('curve_sanity_state','')}|{row.get('discovered_regime_label_auto','')}",
-                    "event_count": row.get("event_count", ""),
-                    "avg_measurement_coverage_score": row.get("avg_measurement_coverage_score", ""),
-                    "avg_destination_return_24h_pct": row.get("avg_destination_return_24h_pct", ""),
-                    "avg_destination_return_48h_pct": row.get("avg_destination_return_48h_pct", ""),
-                    "positive_rate_destination_return_24h_pct": row.get("positive_rate_destination_return_24h_pct", ""),
-                    "avg_destination_forward_max_24h_pct": row.get("avg_destination_forward_max_24h_pct", ""),
-                    "avg_destination_forward_min_24h_pct": row.get("avg_destination_forward_min_24h_pct", ""),
-                }
-            )
-        for row in symbol_confidence_rows:
-            evidence_rows.append(
-                {
-                    "destination_symbol": symbol,
-                    "evidence_type": "CONFIDENCE_REGIME",
-                    "evidence_key": f"{row.get('confidence_bucket','')}|{row.get('discovered_regime_label_auto','')}",
-                    "event_count": row.get("event_count", ""),
-                    "avg_measurement_coverage_score": row.get("avg_measurement_coverage_score", ""),
-                    "avg_destination_return_24h_pct": row.get("avg_destination_return_24h_pct", ""),
-                    "avg_destination_return_48h_pct": row.get("avg_destination_return_48h_pct", ""),
-                    "positive_rate_destination_return_24h_pct": row.get("positive_rate_destination_return_24h_pct", ""),
-                    "avg_destination_forward_max_24h_pct": row.get("avg_destination_forward_max_24h_pct", ""),
-                    "avg_destination_forward_min_24h_pct": row.get("avg_destination_forward_min_24h_pct", ""),
-                }
-            )
-        for row in symbol_included_rows:
-            evidence_rows.append(
-                {
-                    "destination_symbol": symbol,
-                    "evidence_type": "INCLUDED_REGIME",
-                    "evidence_key": f"{row.get('included_state','')}|{row.get('discovered_regime_label_auto','')}",
-                    "event_count": row.get("event_count", ""),
-                    "avg_measurement_coverage_score": row.get("avg_measurement_coverage_score", ""),
-                    "avg_destination_return_24h_pct": row.get("avg_destination_return_24h_pct", ""),
-                    "avg_destination_return_48h_pct": row.get("avg_destination_return_48h_pct", ""),
-                    "positive_rate_destination_return_24h_pct": row.get("positive_rate_destination_return_24h_pct", ""),
-                    "avg_destination_forward_max_24h_pct": row.get("avg_destination_forward_max_24h_pct", ""),
-                    "avg_destination_forward_min_24h_pct": row.get("avg_destination_forward_min_24h_pct", ""),
-                }
-            )
+        evidence_rows.extend(symbol_evidence_rows)
 
     run_finished_at = datetime.now(UTC)
     manifest = build_manifest(
