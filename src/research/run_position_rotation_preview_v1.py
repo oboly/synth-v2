@@ -56,6 +56,12 @@ class RotationRow:
     add_permission_state: str
     add_block_reason: str | None
     hold_context_label: str | None
+    entry_alignment_label: str | None
+    entry_fib_distance_pct: Decimal | None
+    tp_alignment_label: str | None
+    tp_fib_distance_pct: Decimal | None
+    tp_is_fib_extension_band: int
+    entry_is_fib_band: int
     rotation_pressure_score: int
     reason_codes: list[str]
 
@@ -102,6 +108,107 @@ def midpoint_or_edge(low: Decimal | None, high: Decimal | None) -> Decimal | Non
     if low is not None:
         return low
     return high
+
+
+def table_exists(conn: Any, table_name: str) -> bool:
+    with conn.cursor() as cur:
+        cur.execute("SHOW TABLES LIKE %s", (table_name,))
+        return cur.fetchone() is not None
+
+
+def fib_table_name(conn: Any) -> str:
+    for name in ("fib_observation_v2", "fib_observation"):
+        if table_exists(conn, name):
+            return name
+    raise RuntimeError("No fib observation table found")
+
+
+def pct_distance(reference_price: Decimal | None, target_price: Decimal | None) -> Decimal | None:
+    if reference_price is None or target_price is None or reference_price <= 0:
+        return None
+    return abs(target_price - reference_price) / reference_price * Decimal("100")
+
+
+def band_overlap(
+    low_a: Decimal | None,
+    high_a: Decimal | None,
+    low_b: Decimal | None,
+    high_b: Decimal | None,
+) -> bool:
+    if None in {low_a, high_a, low_b, high_b}:
+        return False
+    return max(low_a, low_b) <= min(high_a, high_b)
+
+
+def nearest_level_distance(
+    zone_mid: Decimal | None,
+    levels: list[Decimal | None],
+) -> Decimal | None:
+    if zone_mid is None:
+        return None
+    distances = [
+        pct_distance(level_price, zone_mid)
+        for level_price in levels
+        if level_price is not None
+    ]
+    distances = [distance for distance in distances if distance is not None]
+    if not distances:
+        return None
+    return min(distances)
+
+
+def classify_entry_alignment(
+    *,
+    entry_type: str | None,
+    zone_low: Decimal | None,
+    zone_high: Decimal | None,
+    fib_0500: Decimal | None,
+    fib_0618: Decimal | None,
+    fib_0786: Decimal | None,
+) -> tuple[str, Decimal | None, int]:
+    entry_type_up = str(entry_type or "").upper()
+    zone_mid = midpoint_or_edge(zone_low, zone_high)
+    nearest_distance = nearest_level_distance(zone_mid, [fib_0500, fib_0618, fib_0786])
+
+    primary_low = min(fib_0500, fib_0618) if fib_0500 is not None and fib_0618 is not None else None
+    primary_high = max(fib_0500, fib_0618) if fib_0500 is not None and fib_0618 is not None else None
+    deep_low = min(fib_0618, fib_0786) if fib_0618 is not None and fib_0786 is not None else None
+    deep_high = max(fib_0618, fib_0786) if fib_0618 is not None and fib_0786 is not None else None
+
+    if (
+        entry_type_up == "FIB_RETRACEMENT"
+        or band_overlap(zone_low, zone_high, primary_low, primary_high)
+    ):
+        return "ENTRY_FIB_PRIMARY_0500_0618", nearest_distance, 1
+    if entry_type_up == "FIB_DEEP" or band_overlap(zone_low, zone_high, deep_low, deep_high):
+        return "ENTRY_FIB_DEEP_0618_0786", nearest_distance, 1
+    if entry_type_up or zone_low is not None or zone_high is not None:
+        return "ENTRY_SR_ONLY", nearest_distance, 0
+    return "ENTRY_UNKNOWN", nearest_distance, 0
+
+
+def classify_tp_alignment(
+    *,
+    tp_type: str | None,
+    zone_low: Decimal | None,
+    zone_high: Decimal | None,
+    ext_1272: Decimal | None,
+    ext_1618: Decimal | None,
+    near_threshold_pct: Decimal = Decimal("1.0"),
+) -> tuple[str, Decimal | None, int]:
+    tp_type_up = str(tp_type or "").upper()
+    zone_mid = midpoint_or_edge(zone_low, zone_high)
+    nearest_distance = nearest_level_distance(zone_mid, [ext_1272, ext_1618])
+    ext_low = min(ext_1272, ext_1618) if ext_1272 is not None and ext_1618 is not None else None
+    ext_high = max(ext_1272, ext_1618) if ext_1272 is not None and ext_1618 is not None else None
+
+    if tp_type_up == "FIB_EXTENSION" or band_overlap(zone_low, zone_high, ext_low, ext_high):
+        return "TP_FIB_EXTENSION_1272_1618", nearest_distance, 1
+    if nearest_distance is not None and nearest_distance <= near_threshold_pct:
+        return "TP_NEAR_FIB_EXTENSION", nearest_distance, 0
+    if tp_type_up or zone_low is not None or zone_high is not None:
+        return "TP_SR_ONLY", nearest_distance, 0
+    return "TP_UNKNOWN", nearest_distance, 0
 
 
 def target_state_for_advice(
@@ -228,6 +335,138 @@ def fetch_latest_paper_advice_rows(
         cur.execute(sql, {"venue": venue, "interval": interval})
         rows = list(cur.fetchall())
     return {str(row["symbol"]).upper(): row for row in rows}
+
+
+def fetch_latest_zone_fib_context_for_symbol(
+    conn: Any,
+    *,
+    symbol: str,
+    venue: str,
+    interval: str,
+    asof_ts_utc: datetime | None,
+) -> dict[str, Any] | None:
+    fib_table = fib_table_name(conn)
+    reference_ts = asof_ts_utc or datetime.now(UTC).replace(tzinfo=None)
+
+    zone_sql = """
+    SELECT
+        e.asset_id,
+        e.asof_ts_utc,
+        e.expected_entry_zone_type AS entry_zone_type,
+        e.expected_entry_zone_low AS entry_zone_low,
+        e.expected_entry_zone_high AS entry_zone_high,
+        e.expected_take_profit_zone_type AS tp_zone_type,
+        e.expected_take_profit_zone_low AS tp_zone_low,
+        e.expected_take_profit_zone_high AS tp_zone_high
+    FROM execution_zone_context e
+    JOIN asset a
+      ON a.asset_id = e.asset_id
+    WHERE a.symbol = %(symbol)s
+      AND e.venue = %(venue)s
+      AND e.interval_code = %(interval)s
+      AND e.asof_ts_utc <= %(reference_ts)s
+    ORDER BY e.asof_ts_utc DESC
+    LIMIT 1
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            zone_sql,
+            {
+                "symbol": symbol,
+                "venue": venue,
+                "interval": interval,
+                "reference_ts": reference_ts,
+            },
+        )
+        zone_row = cur.fetchone()
+
+    if not zone_row:
+        return None
+
+    fib_sql = f"""
+    SELECT
+        asof_ts_utc,
+        fib_0500_price,
+        fib_0618_price,
+        fib_0786_price,
+        ext_1272_price,
+        ext_1618_price
+    FROM {fib_table}
+    WHERE asset_id = %(asset_id)s
+      AND venue = %(venue)s
+      AND interval_code = %(interval)s
+      AND asof_ts_utc <= %(reference_ts)s
+    ORDER BY asof_ts_utc DESC
+    LIMIT 1
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            fib_sql,
+            {
+                "asset_id": zone_row["asset_id"],
+                "venue": venue,
+                "interval": interval,
+                "reference_ts": reference_ts,
+            },
+        )
+        fib_row = cur.fetchone()
+
+    entry_label = "ENTRY_UNKNOWN"
+    entry_distance = None
+    entry_is_fib_band = 0
+    tp_label = "TP_UNKNOWN"
+    tp_distance = None
+    tp_is_fib_extension_band = 0
+
+    if fib_row:
+        entry_label, entry_distance, entry_is_fib_band = classify_entry_alignment(
+            entry_type=zone_row.get("entry_zone_type"),
+            zone_low=dec(zone_row.get("entry_zone_low")),
+            zone_high=dec(zone_row.get("entry_zone_high")),
+            fib_0500=dec(fib_row.get("fib_0500_price")),
+            fib_0618=dec(fib_row.get("fib_0618_price")),
+            fib_0786=dec(fib_row.get("fib_0786_price")),
+        )
+        tp_label, tp_distance, tp_is_fib_extension_band = classify_tp_alignment(
+            tp_type=zone_row.get("tp_zone_type"),
+            zone_low=dec(zone_row.get("tp_zone_low")),
+            zone_high=dec(zone_row.get("tp_zone_high")),
+            ext_1272=dec(fib_row.get("ext_1272_price")),
+            ext_1618=dec(fib_row.get("ext_1618_price")),
+        )
+
+    return {
+        "entry_alignment_label": entry_label,
+        "entry_fib_distance_pct": entry_distance,
+        "tp_alignment_label": tp_label,
+        "tp_fib_distance_pct": tp_distance,
+        "tp_is_fib_extension_band": tp_is_fib_extension_band,
+        "entry_is_fib_band": entry_is_fib_band,
+    }
+
+
+def fetch_zone_fib_context_by_symbol(
+    conn: Any,
+    *,
+    position_rows: list[dict[str, Any]],
+    advice_by_symbol: dict[str, dict[str, Any]],
+    venue: str,
+    interval: str,
+) -> dict[str, dict[str, Any]]:
+    context_by_symbol: dict[str, dict[str, Any]] = {}
+    for position in position_rows:
+        symbol = str(position["symbol"]).upper()
+        advice = advice_by_symbol.get(symbol)
+        context = fetch_latest_zone_fib_context_for_symbol(
+            conn,
+            symbol=symbol,
+            venue=venue,
+            interval=interval,
+            asof_ts_utc=None if not advice else advice.get("asof_ts_utc"),
+        )
+        if context is not None:
+            context_by_symbol[symbol] = context
+    return context_by_symbol
 
 
 def classify_position_source(
@@ -568,9 +807,11 @@ def build_rows(
     *,
     stale_days: Decimal,
     current_price_by_symbol: dict[str, Decimal] | None = None,
+    zone_fib_context_by_symbol: dict[str, dict[str, Any]] | None = None,
 ) -> list[RotationRow]:
     out: list[RotationRow] = []
     prices = current_price_by_symbol or {}
+    zone_fib_context = zone_fib_context_by_symbol or {}
     ranked_candidates = rank_market_candidates(advice_by_symbol, prices)
 
     for position in position_rows:
@@ -617,6 +858,7 @@ def build_rows(
             reason_codes.append("ROTATION_DESTINATION_CANDIDATES_AVAILABLE")
         else:
             reason_codes.append("NO_ROTATION_DESTINATION_CANDIDATES_FOUND")
+        alignment_context = zone_fib_context.get(symbol, {})
 
         out.append(
             RotationRow(
@@ -662,6 +904,12 @@ def build_rows(
                 add_permission_state=add_permission_state,
                 add_block_reason=add_block_reason,
                 hold_context_label=hold_context_label,
+                entry_alignment_label=alignment_context.get("entry_alignment_label"),
+                entry_fib_distance_pct=alignment_context.get("entry_fib_distance_pct"),
+                tp_alignment_label=alignment_context.get("tp_alignment_label"),
+                tp_fib_distance_pct=alignment_context.get("tp_fib_distance_pct"),
+                tp_is_fib_extension_band=int(alignment_context.get("tp_is_fib_extension_band") or 0),
+                entry_is_fib_band=int(alignment_context.get("entry_is_fib_band") or 0),
                 rotation_pressure_score=pressure_score,
                 reason_codes=reason_codes,
             )
@@ -696,6 +944,8 @@ def print_table(rows: list[RotationRow]) -> None:
         "position_mgmt",
         "add_permission",
         "hold_context",
+        "entry_align",
+        "tp_align",
         "tp_zone",
         "rotation",
         "score",
@@ -724,6 +974,8 @@ def print_table(rows: list[RotationRow]) -> None:
                 row.position_management_state,
                 row.add_permission_state,
                 row.hold_context_label or "",
+                row.entry_alignment_label or "",
+                row.tp_alignment_label or "",
                 tp_zone,
                 row.rotation_state,
                 str(row.rotation_pressure_score),
@@ -762,6 +1014,13 @@ def main() -> int:
             venue=args.venue,
             interval=args.interval,
         )
+        zone_fib_context_by_symbol = fetch_zone_fib_context_by_symbol(
+            conn,
+            position_rows=position_rows,
+            advice_by_symbol=advice_by_symbol,
+            venue=args.venue,
+            interval=args.interval,
+        )
     finally:
         conn.close()
 
@@ -769,6 +1028,7 @@ def main() -> int:
         position_rows,
         advice_by_symbol,
         stale_days=args.stale_days,
+        zone_fib_context_by_symbol=zone_fib_context_by_symbol,
     )
 
     state_counts: dict[str, int] = {}
