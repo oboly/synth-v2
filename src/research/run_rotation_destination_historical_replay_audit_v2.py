@@ -33,9 +33,13 @@ RAW_EVENT_JSONL = "event_table_raw_historical_replay_v2.jsonl"
 DEDUP_EVENT_CSV = "event_table_dedup_destination_historical_replay_v2.csv"
 DEDUP_EVENT_JSONL = "event_table_dedup_destination_historical_replay_v2.jsonl"
 SUMMARY_BY_CONFIDENCE_CSV = "summary_by_confidence_historical_replay_v2.csv"
+SUMMARY_BY_CONFIDENCE_INCLUDED_ONLY_CSV = "summary_by_confidence_included_only_v2.csv"
+SUMMARY_BY_CONFIDENCE_EXCLUDED_ONLY_CSV = "summary_by_confidence_excluded_only_v2.csv"
 SUMMARY_BY_REASON_CSV = "summary_by_reason_historical_replay_v2.csv"
 SUMMARY_BY_DESTINATION_SYMBOL_CSV = "summary_by_destination_symbol_historical_replay_v2.csv"
+SUMMARY_BY_SYMBOL_AND_CONFIDENCE_CSV = "summary_by_symbol_and_confidence_v2.csv"
 SUMMARY_BY_CURVE_SANITY_CSV = "summary_by_curve_sanity_historical_replay_v2.csv"
+SUMMARY_BY_SYMBOL_AND_CURVE_SANITY_CSV = "summary_by_symbol_and_curve_sanity_v2.csv"
 SUMMARY_BY_MARKET_REGIME_CSV = "summary_by_market_regime_historical_replay_v2.csv"
 SUMMARY_BY_RANK_BUCKET_CSV = "summary_by_rank_bucket_historical_replay_v2.csv"
 MANIFEST_JSON = "manifest_v2.json"
@@ -112,9 +116,13 @@ class OutputPaths:
     dedup_event_csv: Path
     dedup_event_jsonl: Path
     summary_by_confidence_csv: Path
+    summary_by_confidence_included_only_csv: Path
+    summary_by_confidence_excluded_only_csv: Path
     summary_by_reason_csv: Path
     summary_by_destination_symbol_csv: Path
+    summary_by_symbol_and_confidence_csv: Path
     summary_by_curve_sanity_csv: Path
+    summary_by_symbol_and_curve_sanity_csv: Path
     summary_by_market_regime_csv: Path
     summary_by_rank_bucket_csv: Path
     manifest_json: Path
@@ -142,9 +150,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start-ts", default=None)
     parser.add_argument("--end-ts", default=None)
     parser.add_argument("--sample-every-n", type=int, default=6)
-    parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Maximum sampled timestamps to replay. Use 0 for unlimited.",
+    )
     parser.add_argument("--top-n-destinations", type=int, default=10)
-    parser.add_argument("--horizons-hours", nargs="+", type=int, default=DEFAULT_HORIZONS_HOURS)
+    parser.add_argument(
+        "--horizons-hours",
+        nargs="+",
+        default=[str(value) for value in DEFAULT_HORIZONS_HOURS],
+        help="Forward horizons in hours. Accepts either spaced values or comma-separated groups.",
+    )
     parser.add_argument("--output-root", default=None)
     parser.add_argument("--write-files", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--output", choices=("table", "json"), default="table")
@@ -181,6 +199,30 @@ def to_decimal(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except Exception:
         return None
+
+
+def parse_horizons_hours(values: list[Any] | None) -> list[int]:
+    if not values:
+        raise ValueError("--horizons-hours must not be empty")
+    horizons: list[int] = []
+    for value in values:
+        raw = str(value).strip()
+        if not raw:
+            continue
+        for piece in raw.split(","):
+            token = piece.strip()
+            if not token:
+                continue
+            try:
+                parsed = int(token)
+            except Exception as exc:
+                raise ValueError(f"Invalid --horizons-hours value: {token}") from exc
+            if parsed <= 0:
+                raise ValueError("--horizons-hours values must be > 0")
+            horizons.append(parsed)
+    if not horizons:
+        raise ValueError("--horizons-hours must not be empty")
+    return horizons
 
 
 def as_float(value: Any) -> float:
@@ -644,6 +686,43 @@ def summary_label_rows(rows: list[dict[str, Any]], label_field: str) -> list[dic
     return output
 
 
+def summary_label_rows_from_labels(
+    rows: list[dict[str, Any]],
+    label_builder: Any,
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        label = str(label_builder(row) or "")
+        if label:
+            grouped[label].append(row)
+
+    output: list[dict[str, Any]] = []
+    for label in sorted(grouped):
+        label_rows = grouped[label]
+        return_24 = numeric_values(label_rows, "destination_return_24h_pct")
+        return_48 = numeric_values(label_rows, "destination_return_48h_pct")
+        output.append(
+            {
+                "label": label,
+                "event_count": len(label_rows),
+                "included_count": sum(1 for row in label_rows if not str(row.get("excluded_reason") or "")),
+                "excluded_count": sum(1 for row in label_rows if str(row.get("excluded_reason") or "")),
+                "avg_return_4h_pct": avg(numeric_values(label_rows, "destination_return_4h_pct")),
+                "avg_return_8h_pct": avg(numeric_values(label_rows, "destination_return_8h_pct")),
+                "avg_return_12h_pct": avg(numeric_values(label_rows, "destination_return_12h_pct")),
+                "avg_return_24h_pct": avg(return_24),
+                "median_return_24h_pct": median_or_none(return_24),
+                "positive_rate_24h_pct": positive_rate(return_24),
+                "avg_return_48h_pct": avg(return_48),
+                "median_return_48h_pct": median_or_none(return_48),
+                "positive_rate_48h_pct": positive_rate(return_48),
+                "avg_forward_max_24h_pct": avg(numeric_values(label_rows, "destination_forward_max_24h_pct")),
+                "avg_forward_min_24h_pct": avg(numeric_values(label_rows, "destination_forward_min_24h_pct")),
+            }
+        )
+    return output
+
+
 def rank_bucket(value: str) -> str:
     try:
         rank = int(value)
@@ -705,9 +784,13 @@ def output_paths(output_dir: Path) -> OutputPaths:
         dedup_event_csv=output_dir / DEDUP_EVENT_CSV,
         dedup_event_jsonl=output_dir / DEDUP_EVENT_JSONL,
         summary_by_confidence_csv=output_dir / SUMMARY_BY_CONFIDENCE_CSV,
+        summary_by_confidence_included_only_csv=output_dir / SUMMARY_BY_CONFIDENCE_INCLUDED_ONLY_CSV,
+        summary_by_confidence_excluded_only_csv=output_dir / SUMMARY_BY_CONFIDENCE_EXCLUDED_ONLY_CSV,
         summary_by_reason_csv=output_dir / SUMMARY_BY_REASON_CSV,
         summary_by_destination_symbol_csv=output_dir / SUMMARY_BY_DESTINATION_SYMBOL_CSV,
+        summary_by_symbol_and_confidence_csv=output_dir / SUMMARY_BY_SYMBOL_AND_CONFIDENCE_CSV,
         summary_by_curve_sanity_csv=output_dir / SUMMARY_BY_CURVE_SANITY_CSV,
+        summary_by_symbol_and_curve_sanity_csv=output_dir / SUMMARY_BY_SYMBOL_AND_CURVE_SANITY_CSV,
         summary_by_market_regime_csv=output_dir / SUMMARY_BY_MARKET_REGIME_CSV,
         summary_by_rank_bucket_csv=output_dir / SUMMARY_BY_RANK_BUCKET_CSV,
         manifest_json=output_dir / MANIFEST_JSON,
@@ -806,9 +889,13 @@ def build_manifest(
             "dedup_event_csv": str(output_paths_map.dedup_event_csv),
             "dedup_event_jsonl": str(output_paths_map.dedup_event_jsonl),
             "summary_by_confidence_csv": str(output_paths_map.summary_by_confidence_csv),
+            "summary_by_confidence_included_only_csv": str(output_paths_map.summary_by_confidence_included_only_csv),
+            "summary_by_confidence_excluded_only_csv": str(output_paths_map.summary_by_confidence_excluded_only_csv),
             "summary_by_reason_csv": str(output_paths_map.summary_by_reason_csv),
             "summary_by_destination_symbol_csv": str(output_paths_map.summary_by_destination_symbol_csv),
+            "summary_by_symbol_and_confidence_csv": str(output_paths_map.summary_by_symbol_and_confidence_csv),
             "summary_by_curve_sanity_csv": str(output_paths_map.summary_by_curve_sanity_csv),
+            "summary_by_symbol_and_curve_sanity_csv": str(output_paths_map.summary_by_symbol_and_curve_sanity_csv),
             "summary_by_market_regime_csv": str(output_paths_map.summary_by_market_regime_csv),
             "summary_by_rank_bucket_csv": str(output_paths_map.summary_by_rank_bucket_csv),
             "manifest_json": str(output_paths_map.manifest_json),
@@ -922,18 +1009,17 @@ def render_table(
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    args.horizons_hours = parse_horizons_hours(args.horizons_hours)
+    if args.max_samples == 0:
+        args.max_samples = None
     if args.interval not in INTERVAL_SECONDS:
         raise ValueError(f"Unsupported interval: {args.interval}")
     if args.sample_every_n <= 0:
         raise ValueError("--sample-every-n must be > 0")
     if args.top_n_destinations <= 0:
         raise ValueError("--top-n-destinations must be > 0")
-    if not args.horizons_hours:
-        raise ValueError("--horizons-hours must not be empty")
-    if any(value <= 0 for value in args.horizons_hours):
-        raise ValueError("--horizons-hours values must be > 0")
-    if args.max_samples is not None and args.max_samples <= 0:
-        raise ValueError("--max-samples must be > 0 when provided")
+    if args.max_samples is not None and args.max_samples < 0:
+        raise ValueError("--max-samples must be >= 0 when provided")
 
     run_started_at = datetime.now(UTC)
     run_id = utc_run_id(run_started_at)
@@ -997,9 +1083,21 @@ def main(argv: list[str] | None = None) -> int:
     dedup_events = dedup_destination_rows(raw_events)
     dedup_with_rank = with_rank_bucket(dedup_events)
     summary_confidence = summary_label_rows(dedup_events, "confidence_bucket")
+    included_only_events = [row for row in dedup_events if not str(row.get("excluded_reason") or "")]
+    excluded_only_events = [row for row in dedup_events if str(row.get("excluded_reason") or "")]
+    summary_confidence_included_only = summary_label_rows(included_only_events, "confidence_bucket")
+    summary_confidence_excluded_only = summary_label_rows(excluded_only_events, "confidence_bucket")
     summary_reason = summary_label_rows(dedup_events, "confidence_reason")
     summary_destination = summary_label_rows(dedup_events, "destination_symbol")
+    summary_symbol_and_confidence = summary_label_rows_from_labels(
+        dedup_events,
+        lambda row: f"{str(row.get('destination_symbol') or '')}|{str(row.get('confidence_bucket') or '')}",
+    )
     summary_curve = summary_label_rows(dedup_events, "curve_sanity_state")
+    summary_symbol_and_curve = summary_label_rows_from_labels(
+        dedup_events,
+        lambda row: f"{str(row.get('destination_symbol') or '')}|{str(row.get('curve_sanity_state') or '')}",
+    )
     summary_regime = summary_label_rows(dedup_events, "market_regime_state")
     summary_rank = summary_label_rows(dedup_with_rank, "rank_bucket")
 
@@ -1039,9 +1137,13 @@ def main(argv: list[str] | None = None) -> int:
         write_jsonl(paths.dedup_event_jsonl, dedup_events)
         fields = summary_fields()
         write_csv(paths.summary_by_confidence_csv, summary_confidence, fields)
+        write_csv(paths.summary_by_confidence_included_only_csv, summary_confidence_included_only, fields)
+        write_csv(paths.summary_by_confidence_excluded_only_csv, summary_confidence_excluded_only, fields)
         write_csv(paths.summary_by_reason_csv, summary_reason, fields)
         write_csv(paths.summary_by_destination_symbol_csv, summary_destination, fields)
+        write_csv(paths.summary_by_symbol_and_confidence_csv, summary_symbol_and_confidence, fields)
         write_csv(paths.summary_by_curve_sanity_csv, summary_curve, fields)
+        write_csv(paths.summary_by_symbol_and_curve_sanity_csv, summary_symbol_and_curve, fields)
         write_csv(paths.summary_by_market_regime_csv, summary_regime, fields)
         write_csv(paths.summary_by_rank_bucket_csv, summary_rank, fields)
         write_json(paths.manifest_json, manifest)

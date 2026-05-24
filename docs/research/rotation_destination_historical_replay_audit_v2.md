@@ -45,6 +45,8 @@ data/research/rotation_destination_historical_replay_audit_v2/run_<YYYYMMDDTHHMM
 
 Use `--output-root` to override the root; run subdirectories remain `run_<UTC_RUN_ID>/`.
 
+Generated output directories under this root are ignored by git.
+
 ## CLI
 
 - `--venue`
@@ -53,8 +55,11 @@ Use `--output-root` to override the root; run subdirectories remain `run_<UTC_RU
 - `--end-ts`
 - `--sample-every-n`
 - `--max-samples`
+  - `0` means unlimited
 - `--top-n-destinations`
 - `--horizons-hours`
+  - accepts either spaced values like `4 8 12 24 48`
+  - or comma-separated input like `4,8,12,24,48`
 - `--write-files` / `--no-write-files`
 - `--output-root`
 
@@ -80,9 +85,13 @@ For each historical sample timestamp:
 - `event_table_dedup_destination_historical_replay_v2.csv`
 - `event_table_dedup_destination_historical_replay_v2.jsonl`
 - `summary_by_confidence_historical_replay_v2.csv`
+- `summary_by_confidence_included_only_v2.csv`
+- `summary_by_confidence_excluded_only_v2.csv`
 - `summary_by_reason_historical_replay_v2.csv`
 - `summary_by_destination_symbol_historical_replay_v2.csv`
+- `summary_by_symbol_and_confidence_v2.csv`
 - `summary_by_curve_sanity_historical_replay_v2.csv`
+- `summary_by_symbol_and_curve_sanity_v2.csv`
 - `summary_by_market_regime_historical_replay_v2.csv`
 - `summary_by_rank_bucket_historical_replay_v2.csv`
 - `leakage_guard_report_v2.json`
@@ -98,7 +107,25 @@ For each historical sample timestamp:
 - `paper_advice_snapshots_used=false`
 - `max_input_ts_gt_sample_ts_rows=0` (required pass condition)
 
-## Smoke Example
+## Smoke Examples
+
+Comma-separated horizons with unlimited samples:
+
+```bash
+python -m src.research.run_rotation_destination_historical_replay_audit_v2 \
+  --venue bitvavo \
+  --interval 4h \
+  --start-ts 2026-05-01T00:00:00Z \
+  --end-ts 2026-05-31T23:59:59Z \
+  --sample-every-n 6 \
+  --max-samples 0 \
+  --top-n-destinations 10 \
+  --horizons-hours 4,8,12,24,48 \
+  --write-files \
+  --output table
+```
+
+Spaced horizons:
 
 ```bash
 python -m src.research.run_rotation_destination_historical_replay_audit_v2 \
