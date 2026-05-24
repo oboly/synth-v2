@@ -52,6 +52,10 @@ class RotationRow:
     rotation_destination_candidates: list[str]
     better_candidates: list[str]
     rotation_state: str
+    position_management_state: str
+    add_permission_state: str
+    add_block_reason: str | None
+    hold_context_label: str | None
     rotation_pressure_score: int
     reason_codes: list[str]
 
@@ -505,6 +509,58 @@ def choose_better_candidates(
     return review_references[:max_items], destinations[:max_items]
 
 
+def derive_position_management_fields(
+    *,
+    advice_row: dict[str, Any] | None,
+    rotation_state: str,
+    target_state: str,
+    risk_state: str,
+) -> tuple[str, str, str | None, str | None]:
+    if rotation_state == "HOLD":
+        position_management_state = "HOLD_EXISTING"
+    else:
+        position_management_state = rotation_state
+
+    if not advice_row:
+        add_permission_state = "DO_NOT_ADD"
+        add_block_reason = "PAPER_ADVICE_MISSING"
+    else:
+        selection_state = str(advice_row.get("selection_state") or "").upper()
+        setup_state = str(advice_row.get("setup_filter_state") or "").upper()
+        advice_action = str(advice_row.get("advice_action") or "").upper()
+        aplus_bucket = str(advice_row.get("aplus_bucket") or "").upper()
+
+        if risk_state == "RECLAIM_CONFIRMED":
+            add_permission_state = "ADD_REVIEW_AFTER_RECOMPUTE"
+            add_block_reason = "RECLAIM_CONFIRMED"
+        elif aplus_bucket == "APLUS_AVOID":
+            add_permission_state = "DO_NOT_ADD"
+            add_block_reason = "APLUS_AVOID"
+        elif setup_state == "FAIL":
+            add_permission_state = "DO_NOT_ADD"
+            add_block_reason = "SETUP_FAIL"
+        elif selection_state == "AVOID":
+            add_permission_state = "DO_NOT_ADD"
+            add_block_reason = "SELECTION_AVOID"
+        elif advice_action in {"DO_NOT_ADD", "AVOID_NO_NEW_BUY", "WATCH_ONLY", "WAIT"}:
+            add_permission_state = "DO_NOT_ADD"
+            add_block_reason = advice_action or "ADVICE_BLOCKED"
+        elif advice_action in {"BUY_READY", "ACCUMULATE", "BUY"} and setup_state == "PASS" and selection_state != "AVOID":
+            add_permission_state = "ADD_REVIEW"
+            add_block_reason = None
+        else:
+            add_permission_state = "DO_NOT_ADD"
+            add_block_reason = "ADVICE_NOT_ADD_READY"
+
+    hold_context_label: str | None = None
+    if target_state == "TARGET_REACHED":
+        hold_context_label = "TARGET_REACHED_REVIEW"
+    elif target_state == "TARGET_PENDING":
+        hold_context_label = "HOLD_WITH_REACTION_TARGET_PENDING"
+
+    return position_management_state, add_permission_state, add_block_reason, hold_context_label
+
+
 
 def build_rows(
     position_rows: list[dict[str, Any]],
@@ -541,6 +597,17 @@ def build_rows(
             ranked_candidates=ranked_candidates,
             advice_by_symbol=advice_by_symbol,
             current_price_by_symbol=prices,
+        )
+        (
+            position_management_state,
+            add_permission_state,
+            add_block_reason,
+            hold_context_label,
+        ) = derive_position_management_fields(
+            advice_row=advice,
+            rotation_state=rotation_state,
+            target_state=target_state,
+            risk_state=risk_state,
         )
         if review_references:
             reason_codes.append("REVIEW_REFERENCES_AVAILABLE")
@@ -591,6 +658,10 @@ def build_rows(
                 rotation_destination_candidates=rotation_destination_candidates,
                 better_candidates=review_references,
                 rotation_state=rotation_state,
+                position_management_state=position_management_state,
+                add_permission_state=add_permission_state,
+                add_block_reason=add_block_reason,
+                hold_context_label=hold_context_label,
                 rotation_pressure_score=pressure_score,
                 reason_codes=reason_codes,
             )
@@ -622,6 +693,9 @@ def print_table(rows: list[RotationRow]) -> None:
         "action",
         "target_state",
         "risk_state",
+        "position_mgmt",
+        "add_permission",
+        "hold_context",
         "tp_zone",
         "rotation",
         "score",
@@ -647,6 +721,9 @@ def print_table(rows: list[RotationRow]) -> None:
                 row.advice_action or "",
                 row.target_state,
                 row.risk_state,
+                row.position_management_state,
+                row.add_permission_state,
+                row.hold_context_label or "",
                 tp_zone,
                 row.rotation_state,
                 str(row.rotation_pressure_score),
