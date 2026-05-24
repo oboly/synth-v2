@@ -272,8 +272,14 @@ def classify_profile(
     if total_events < min_events:
         return "INSUFFICIENT_SAMPLE", "EVENT_COUNT_BELOW_MIN_EVENTS"
 
-    best_context = choose_best_context(evidence_rows)
-    worst_context = choose_worst_context(evidence_rows)
+    signal_evidence_rows = [
+        row
+        for row in evidence_rows
+        if str(row.get("evidence_type") or "") in {"CURVE_REGIME", "CONFIDENCE_REGIME"}
+    ]
+    context_pool = signal_evidence_rows or evidence_rows
+    best_context = choose_best_context(context_pool)
+    worst_context = choose_worst_context(context_pool)
     if best_context is None or worst_context is None:
         return "INCOHERENT", "NO_CONTEXT_ROWS"
 
@@ -287,25 +293,25 @@ def classify_profile(
     worst_key = str(worst_context.get("evidence_key") or "")
     strength = profile_strength_score(best_context, worst_context) or 0.0
 
-    if best_regime_id in {4, 5, 6} and best_return > 0.75 and best_positive >= 60.0:
-        if "CURVE_DOWN_PRESSURE" in best_key or "CURVE_WEAK" in best_key:
-            return "REBOUND_RESPONDER", "BEST_CONTEXT_WEAK_OR_DOWN_PRESSURE_IN_REGIME_4_5_6"
-        if "LOW_CONFIDENCE_DESTINATION" in best_key or "MARKET_ONLY_DESTINATION" in best_key:
-            return "REBOUND_RESPONDER", "BEST_CONTEXT_LOW_OR_MARKET_ONLY_IN_REGIME_4_5_6"
+    if best_regime_id in {4, 5, 6} and best_return > 0.50 and best_positive >= 60.0:
+        if "CURVE_DOWN_PRESSURE" in best_key:
+            return "DAMAGE_REBOUND_RESPONDER", "BEST_CONTEXT_DAMAGE_DOWN_PRESSURE_IN_REGIME_4_5_6"
+        if "CURVE_WEAK" in best_key or "LOW_CONFIDENCE_DESTINATION" in best_key or "MARKET_ONLY_DESTINATION" in best_key:
+            return "REBOUND_RESPONDER", "BEST_CONTEXT_WEAK_LOW_OR_MARKET_ONLY_IN_REGIME_4_5_6"
 
     damage_rows = [
         row
-        for row in evidence_rows
+        for row in context_pool
         if regime_id_value(row) in {4, 5, 6} and "CURVE_DOWN_PRESSURE" in str(row.get("evidence_key") or "")
     ]
     if damage_rows:
         damage_best = choose_best_context(damage_rows)
-        if damage_best is not None and context_avg_return(damage_best) > 0.75 and context_positive_rate(damage_best) >= 50.0:
+        if damage_best is not None and context_avg_return(damage_best) > 0.50 and context_positive_rate(damage_best) >= 50.0:
             return "DAMAGE_REBOUND_RESPONDER", "POSITIVE_DAMAGE_REGIME_DOWN_PRESSURE_CONTEXT"
 
     trap_rows = [
         row
-        for row in evidence_rows
+        for row in context_pool
         if regime_id_value(row) == 1
         and "CURVE_UP_CONFIRMED" in str(row.get("evidence_key") or "")
         and "HIGH_CONFIDENCE_DESTINATION" in str(row.get("evidence_key") or "")
@@ -317,7 +323,7 @@ def classify_profile(
 
     continuation_rows = [
         row
-        for row in evidence_rows
+        for row in context_pool
         if regime_id_value(row) != 1
         and "CURVE_UP_CONFIRMED" in str(row.get("evidence_key") or "")
         and (
@@ -329,17 +335,13 @@ def classify_profile(
         continuation_best = choose_best_context(continuation_rows)
         if (
             continuation_best is not None
-            and context_event_count(continuation_best) >= min_events
             and context_avg_return(continuation_best) > 0.75
             and context_positive_rate(continuation_best) >= 60.0
         ):
             return "CONFIRMED_CONTINUATION", "POSITIVE_UP_CONFIRMED_CONTEXT_OUTSIDE_REGIME_1"
 
-    if strength >= 2.5 and best_return - worst_return >= 1.5 and best_positive - worst_positive >= 20.0:
+    if strength >= 3.0 and best_return - worst_return >= 2.0 and best_positive - worst_positive >= 25.0:
         return "REGIME_SENSITIVE", "BEST_AND_WORST_CONTEXTS_MATERIALLY_DIVERGE"
-
-    if best_return > 0.5 and best_positive >= 55.0:
-        return "REBOUND_RESPONDER", "POSITIVE_CONTEXT_EXISTS_BUT_NOT_DAMAGE_SPECIFIC"
 
     if worst_return < -0.5 and worst_positive <= 40.0:
         return "INCOHERENT", "NEGATIVE_CONTEXT_EXISTS_WITHOUT_REPEATABLE_POSITIVE_PATTERN"
