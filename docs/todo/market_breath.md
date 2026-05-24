@@ -196,7 +196,13 @@ Add:
 Language rule:
 
 - Use `Market Breath` spelling for breath rhythm/phase context.
+- Use `participation` where possible for cross-asset participation context.
 - Use `breadth` only where it explicitly means market breadth participation/alignment.
+
+Current downstream candidates, if reopened later:
+
+- `symbol_breath_profile_v1`
+- `regime_interaction_audit_v1`
 
 Per-asset display:
 

@@ -68,11 +68,13 @@ No decision_gate, execution_planner, executor, broker, or order changes.
 
 ## P1 — Long-term regime classifier and dual-bucket research
 
-Status: open research.
+Status: open research, but not next.
 
 Long-term regime classifier:
 
-- Build and validate a regime classifier before strategy promotion.
+- `market_regime_discovery_v1` is now the exploratory clustering baseline.
+- Next readout belongs in `docs/todo/regime_research.md`.
+- Build and validate a replay-safe regime classifier only after the discovered-regime review and follow-up profile/audit designs are complete.
 - Regime labels to backtest:
   - `SIDEWAYS_MARKET`
   - `BULL_MARKET`
@@ -104,6 +106,12 @@ Boundary:
 - Research/backtest only.
 - Validated candidates may feed market-only candidate ranking later.
 - User/account permissions still belong in user strategy profiles, decision_gate, and execution_planner.
+
+Terminology rule:
+
+- Use `breath` for rhythm / phase / waveform / cycle.
+- Use `participation` for cross-asset participation.
+- Use `breadth` only where a field name or prior artifact already uses it.
 
 ## Boundary
 

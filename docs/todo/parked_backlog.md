@@ -82,3 +82,40 @@ Not:
 ```text
 external note -> buy/sell/order logic
 ```
+
+---
+
+## Parked — Astro context interaction backlog
+
+Sources:
+
+```text
+docs/research/astro_cycle_context_v1.md
+src/research/run_astro_cycle_context_v1.py
+```
+
+Status: parked.
+
+Current direction:
+
+```text
+astro_cycle = external lunar/solar context only
+```
+
+Parked items:
+
+- `astro_regime_interaction_audit_v1`
+- deeper lunar/solar correlation research
+
+Reopen only after:
+
+- discovered regime review is complete
+- `symbol_breath_profile_v1` exists as a design or implementation baseline
+
+Boundary:
+
+```text
+No astro use in market decision logic.
+No selection, decision, execution, broker, account, or dashboard use.
+Research joins only.
+```

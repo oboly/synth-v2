@@ -14,7 +14,7 @@ The MVP cockpit path, Odroid render orchestration, public current-price snapshot
 display, and deterministic distance semantics are now implemented. This TODO
 remains as the parking place for account-aware review refinements only; strategy
 and backtest work belongs in `docs/research/current_strategy_audit_v1.md` and
-`docs/todo/strategy_candidates.md`.
+`docs/todo/regime_research.md` and `docs/todo/strategy_candidates.md`.
 
 ## Current trigger
 
@@ -164,20 +164,35 @@ Status: MVP implemented; future refinements only.
 
 Use market-only candidates only. Do not move capital to a symbol purely because it is less bad than the current holding.
 
+## Completed research baseline
+
+Status: completed in separate market-only research lanes.
+
+Completed follow-up baselines:
+
+- `rotation_destination_outcome_audit_v1`
+- `rotation_destination_historical_replay_audit_v2`
+- v2 extra summary and CLI/docs cleanup work
+
+These runs belong to research validation, not cockpit behavior changes.
+
 ## Next Strategy Work
 
 Status: separate research lane.
 
-The next work is not more cockpit plumbing. It is forward-return validation:
+The next work is not more cockpit plumbing. It is research validation and regime follow-up:
 
-- same-window buy-and-hold baseline
-- `selection_state` forward returns
-- `trade_setup_filter_v1` pass/fail/reason forward returns
-- `paper_advice_policy_v1` labels only after point-in-time A+ and zone replay
-  sources exist
+- rerun `rotation_destination_historical_replay_audit_v2` full-ish
+- inspect symbol-by-confidence outcomes
+- inspect symbol-by-curve-sanity outcomes
+- run `market_regime_discovery_v1` full-ish
+- compare discovered regimes with existing labels only after clustering
 
-Operational `execution_zone_context` must not be historically backfilled for
-this work.
+See:
+
+```text
+docs/todo/regime_research.md
+```
 
 ## Parked
 
