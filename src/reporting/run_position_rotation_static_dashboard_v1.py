@@ -58,6 +58,7 @@ from src.research.run_position_rotation_preview_v1 import (
     dec,
     fetch_latest_paper_advice_rows,
     fetch_latest_position_rows,
+    fetch_zone_fib_context_by_symbol,
     market_candidate_quality_score,
     rank_market_candidates,
     risk_state_for_advice,
@@ -692,6 +693,27 @@ def intrabar_html(row: Any | None) -> str:
     )
 
 
+def alignment_html(
+    *,
+    label: str | None,
+    distance_pct: Decimal | None,
+    band_flag: bool,
+    note: str,
+) -> str:
+    if not label:
+        return "<span class='muted small'>unknown</span>"
+    details: list[str] = []
+    if distance_pct is not None:
+        details.append(f"fib dist {dec_text(distance_pct, '0.01')}%")
+    if band_flag:
+        details.append("band match")
+    details.append(note)
+    detail_html = ""
+    if details:
+        detail_html = f"<div class='muted small'>{esc(' · '.join(details))}</div>"
+    return f"<span class='pill {pill_class(label)}'>{esc(label)}</span>{detail_html}"
+
+
 def fetch_latest_eur_balance_snapshot(
     conn: Any,
     *,
@@ -1197,6 +1219,11 @@ def render_html(
                 f"<td>{lifecycle_badges_for_symbol(row.position_symbol, lifecycle.lifecycle_state, fresh_badge)}</td>"
                 f"<td><span class='pill {pill_class(recompute_label_for_symbol(row.position_symbol, lifecycle))}'>{esc(recompute_label_for_symbol(row.position_symbol, lifecycle))}</span></td>"
                 f"<td class='small'>{esc(effective_recompute_reason)}</td>"
+                f"<td><span class='pill {pill_class(row.position_management_state)}'>{esc(row.position_management_state)}</span></td>"
+                f"<td><span class='pill {pill_class(row.add_permission_state)}'>{esc(row.add_permission_state)}</span><div class='muted small'>{esc(row.add_block_reason or '')}</div></td>"
+                f"<td><span class='pill {pill_class(row.hold_context_label)}'>{esc(row.hold_context_label or 'NONE')}</span></td>"
+                f"<td>{alignment_html(label=row.entry_alignment_label, distance_pct=row.entry_fib_distance_pct, band_flag=bool(row.entry_is_fib_band), note='fib-based entry zone' if row.entry_alignment_label == 'ENTRY_FIB_PRIMARY_0500_0618' else 'entry context')}</td>"
+                f"<td>{alignment_html(label=row.tp_alignment_label, distance_pct=row.tp_fib_distance_pct, band_flag=bool(row.tp_is_fib_extension_band), note='reaction/support-resistance target, not fib-extension magnet' if row.tp_alignment_label == 'TP_SR_ONLY' else 'tp context')}</td>"
                 f"<td>{next_zone_html(next_preview)}</td>"
                 f"{entry_distance_cell(leg_direction=row.leg_direction, entry_zone_low=row.entry_zone_low, entry_zone_high=row.entry_zone_high, current_price=current_price)}"
                 f"{pct_cell(delta_tp_pct, target_pct_class(delta_tp_pct, context))}"
@@ -1481,6 +1508,11 @@ def render_html(
                   <th>Lifecycle state</th>
                   <th>Recompute needed</th>
                   <th>Recompute reason</th>
+                  <th>Position mgmt</th>
+                  <th>Add permission</th>
+                  <th>Hold context</th>
+                  <th>Entry align</th>
+                  <th>TP align</th>
                   <th>Next zones</th>
                   <th>Entry distance</th>
                   <th>Δ target %</th>
@@ -1685,6 +1717,13 @@ def main() -> int:
             symbols=price_symbols,
         )
         intrabar_by_symbol = intrabar_rows_by_symbol(intrabar_rows)
+        zone_fib_context_by_symbol = fetch_zone_fib_context_by_symbol(
+            conn,
+            position_rows=position_rows,
+            advice_by_symbol=advice_by_symbol,
+            venue=args.venue,
+            interval=args.interval,
+        )
         eur_balance = fetch_latest_eur_balance_snapshot(
             conn,
             trading_account_id=args.trading_account_id,
@@ -1700,6 +1739,7 @@ def main() -> int:
             symbol: snapshot.price
             for symbol, snapshot in price_by_symbol.items()
         },
+        zone_fib_context_by_symbol=zone_fib_context_by_symbol,
     )
 
     output_path = Path(args.output_html)
