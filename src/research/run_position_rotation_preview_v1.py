@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -998,6 +999,24 @@ def print_table(rows: list[RotationRow]) -> None:
         print(fmt(row))
 
 
+def emit_report_header(*, rows: list[RotationRow], args: argparse.Namespace) -> None:
+    state_counts: dict[str, int] = {}
+    for row in rows:
+        state_counts[row.rotation_state] = state_counts.get(row.rotation_state, 0) + 1
+
+    print(f"report={REPORT_NAME} version={REPORT_VERSION}", file=sys.stderr)
+    print("scope=read-only account-aware rotation preview", file=sys.stderr)
+    print(
+        "broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0 db_writes=0",
+        file=sys.stderr,
+    )
+    print("decision_gate=none execution_planner=none executor=none", file=sys.stderr)
+    print(f"venue={args.venue} interval={args.interval}", file=sys.stderr)
+    print(f"rows={len(rows)} stale_days={args.stale_days}", file=sys.stderr)
+    print(f"state_counts={json.dumps(state_counts, sort_keys=True)}", file=sys.stderr)
+    print(file=sys.stderr)
+
+
 def main() -> int:
     args = parse_args()
 
@@ -1031,22 +1050,10 @@ def main() -> int:
         zone_fib_context_by_symbol=zone_fib_context_by_symbol,
     )
 
-    state_counts: dict[str, int] = {}
-    for row in rows:
-        state_counts[row.rotation_state] = state_counts.get(row.rotation_state, 0) + 1
-
-    print(f"report={REPORT_NAME} version={REPORT_VERSION}")
-    print("scope=read-only account-aware rotation preview")
-    print("broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0 db_writes=0")
-    print("decision_gate=none execution_planner=none executor=none")
-    print(f"venue={args.venue} interval={args.interval}")
-    print(f"rows={len(rows)} stale_days={args.stale_days}")
-    print(f"state_counts={json.dumps(state_counts, sort_keys=True)}")
-    print()
-
     if args.output == "json":
         print(json.dumps([serialize_row(row) for row in rows], indent=2, sort_keys=True))
     else:
+        emit_report_header(rows=rows, args=args)
         print_table(rows)
 
     return 0
