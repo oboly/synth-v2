@@ -28,6 +28,8 @@ from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 from src.reporting.label_registry_v1 import (
     get_label_aria_label,
     get_label_description,
+    get_label_axis_value,
+    get_label_human_label,
 )
 from src.reporting.next_zone_preview_v1 import (
     NextZonePreview,
@@ -46,9 +48,14 @@ REPORT_VERSION = "0.1"
 DEFAULT_OUTPUT_HTML = "/var/www/html/synth/entry-candidates.html"
 
 CANDIDATE_GROUPS = [
-    "PAPER_BUY_READY",
+    "BUY_READY",
+    "ENTRY_CANDIDATE",
+    "BUY_CANDIDATE",
     "WATCH_FOR_CONFIRMATION",
-    "RECLAIM_NEAR",
+    "CORE_CONTEXT",
+    "WAIT",
+    "CAUTION",
+    "AVOID",
     "BLOCKED_NO_NEW_BUY",
     "CONTEXT_ONLY",
     "INSUFFICIENT_SAMPLE",
@@ -497,22 +504,25 @@ def classify_candidate(row: dict[str, Any]) -> tuple[str, list[str]]:
             reasons.append("MISSING_REQUIRED_ZONE_DATA")
         return "INSUFFICIENT_SAMPLE", reasons
 
-    hard_blocks = []
-    if aplus_bucket == "APLUS_AVOID":
-        hard_blocks.append("APLUS_AVOID")
-    if advice_action in {"DO_NOT_ADD", "AVOID_NO_NEW_BUY"}:
-        hard_blocks.append(advice_action)
-    if setup_reason == "MARKET_DAMAGE_RISK":
-        hard_blocks.append("MARKET_DAMAGE_RISK")
     if selection_state == "AVOID":
-        hard_blocks.append("SELECTION_AVOID")
+        return "AVOID", ["SELECTION_AVOID"]
+
+    if aplus_bucket == "APLUS_AVOID":
+        return "BLOCKED_NO_NEW_BUY", ["APLUS_AVOID"]
+    if advice_action in {"DO_NOT_ADD", "AVOID_NO_NEW_BUY"}:
+        return "BLOCKED_NO_NEW_BUY", [advice_action]
+    if setup_reason == "MARKET_DAMAGE_RISK":
+        return "BLOCKED_NO_NEW_BUY", ["MARKET_DAMAGE_RISK"]
+    if setup_reason == "MARKET_DAMAGE_CAUTION" or risk_label in {"MODERATE", "ELEVATED"}:
+        return "CAUTION", [setup_reason or risk_label or "CAUTION"]
     if setup_state == "FAIL":
-        hard_blocks.append("SETUP_FAIL")
-    if hard_blocks:
-        return "BLOCKED_NO_NEW_BUY", hard_blocks
+        return "AVOID", ["SETUP_FAIL"]
 
     if advice_action == "CONTEXT_ONLY_WAIT_FOR_MARKET_SETUP" or advice_state in {"CORE_CONTEXT", "CONTEXT"}:
-        return "CONTEXT_ONLY", ["CONTEXT_ONLY"]
+        return "CORE_CONTEXT", ["CONTEXT_ONLY"]
+
+    if advice_action in {"WAIT", "NO_ACTION"} or advice_state in {"WAIT"}:
+        return "WAIT", [advice_action or advice_state or "WAIT"]
 
     allowed = allowed_now == "YES" or policy_decision in {"ALLOW", "BUY_READY", "BUY", "WATCH_CORE"}
     action_allows = advice_action in {"BUY_READY", "ACCUMULATE", "BUY"}
@@ -525,7 +535,7 @@ def classify_candidate(row: dict[str, Any]) -> tuple[str, list[str]]:
         and setup_reason != "MARKET_DAMAGE_RISK"
         and leg_direction == "UP"
     ):
-        return "PAPER_BUY_READY", ["SETUP_PASS", "MARKET_ONLY_READY"]
+        return "BUY_READY", ["SETUP_PASS", "MARKET_ONLY_READY"]
 
     if (
         leg_direction == "DOWN"
@@ -533,7 +543,7 @@ def classify_candidate(row: dict[str, Any]) -> tuple[str, list[str]]:
         and advice_action in {"WAIT_FOR_MARKET_RECLAIM", "WATCH_FOR_SETUP_CONFIRMATION", "WATCH_ONLY"}
         and risk_label in {"HIGH", "ELEVATED", "MODERATE", "RISK_NEAR"}
     ):
-        return "RECLAIM_NEAR", ["DOWN_LEG_RECLAIM_WATCH"]
+        return "CAUTION", ["DOWN_LEG_RECLAIM_WATCH"]
 
     if (
         setup_state == "PASS"
@@ -544,10 +554,13 @@ def classify_candidate(row: dict[str, Any]) -> tuple[str, list[str]]:
     ):
         return "WATCH_FOR_CONFIRMATION", ["SETUP_PASS_WAITING_CONFIRMATION"]
 
-    if setup_state == "PASS":
-        return "WATCH_FOR_CONFIRMATION", ["SETUP_PASS_NOT_BUY_READY"]
+    if setup_state == "PASS" and selection_state in {"WATCHLIST", "WATCH_CORE", "STRONG_WATCHLIST"}:
+        return "ENTRY_CANDIDATE", ["SETUP_PASS_NOT_BUY_READY"]
 
-    return "CONTEXT_ONLY", ["NOT_ACTIONABLE"]
+    if selection_state in {"WATCHLIST", "WATCH_CORE", "STRONG_WATCHLIST", "NEUTRAL"}:
+        return "BUY_CANDIDATE", ["POSITIVE_CONTEXT_NOT_READY"]
+
+    return "WAIT", ["NOT_ACTIONABLE"]
 
 
 def enriched_rows(
@@ -569,8 +582,8 @@ def enriched_rows(
             tp_zone_high=row.get("tp_zone_high"),
             invalidation_price=row.get("invalidation_price"),
         )
-        if group == "RECLAIM_NEAR" and lifecycle.lifecycle_state == "RECLAIM_CONFIRMED":
-            group = "CONTEXT_ONLY"
+        if group == "CAUTION" and lifecycle.lifecycle_state == "RECLAIM_CONFIRMED":
+            group = "WAIT"
             reasons = reasons + ["RECLAIM_CONFIRMED", "DOWN_MAP_INVALIDATED_BY_RECLAIM"]
         enriched = dict(row)
         enriched["candidate_group"] = group
@@ -632,7 +645,7 @@ def enriched_rows(
             target_state=enriched["target_state"],
             price_progress_state=price_progress.progress_state,
         )
-        if str(enriched["entry_state"]).endswith("_REACHED") and group != "PAPER_BUY_READY":
+        if str(enriched["entry_state"]).endswith("_REACHED") and group != "BUY_READY":
             enriched["promotion_blockers"] = promotion_blockers(
                 enriched,
                 candidate_group=group,
@@ -797,10 +810,13 @@ def render_table(rows: list[dict[str, Any]]) -> str:
 
 def render_group_section(group: str, rows: list[dict[str, Any]]) -> str:
     group_rows = [row for row in rows if row.get("candidate_group") == group]
-    priority_class = " priority" if group in {"PAPER_BUY_READY", "RECLAIM_NEAR"} else ""
+    priority_class = " priority" if group in {"BUY_READY", "ENTRY_CANDIDATE"} else ""
+    axis_value = get_label_axis_value(group, "candidate_readiness_pressure")
+    axis_note = "" if axis_value is None else f" <span class=\"muted\">({axis_value:+d})</span>"
     return f"""
     <section class="card{priority_class}">
-      <h2>{esc(group)} <span class="muted">({len(group_rows)})</span></h2>
+      <h2>{esc(get_label_human_label(group) or group)}{axis_note} <span class="muted">({len(group_rows)})</span></h2>
+      <div class="muted small">{esc(get_label_description(group))}</div>
       {render_table(group_rows)}
     </section>
     """
@@ -820,7 +836,7 @@ def render_html(
         for group in CANDIDATE_GROUPS
     }
     counts_html = "".join(
-        f"<span class='pill {css_class(group)}'>{esc(group)}: {count}</span>"
+        f"{badge_html(group)}<span class='muted small'> {esc(get_label_human_label(group) or group)}: {count}</span> "
         for group, count in counts.items()
     )
     sections = "\n".join(render_group_section(group, rows) for group in CANDIDATE_GROUPS)
@@ -843,12 +859,17 @@ def render_html(
     <div class="muted">latest advice snapshot: {esc(latest_text)} · venue={esc(venue)} · interval={esc(interval)}</div>
     {cockpit_nav()}
     <div class="legend">
+      <div><strong>Candidate readiness</strong> is market/setup context, not order permission.</div>
       <div><strong>Labels are context/review states, not order instructions.</strong></div>
       <div><strong>Review labels do not grant sell/buy permission.</strong></div>
       <div><strong>Hover/tap a badge for label description.</strong></div>
+      <div><strong>CORE_CONTEXT</strong> is positive context, not an entry trigger.</div>
+      <div><strong>WAIT</strong> is neutral/no setup, not blocked.</div>
+      <div><strong>BUY_READY</strong> still requires decision_gate and execution_planner.</div>
+      <div><strong>INSUFFICIENT_SAMPLE</strong> means data unknown, not bearish.</div>
       <div><strong>Entry candidates</strong> are market-only and account-agnostic.</div>
-      <div><strong>PAPER_BUY_READY</strong> is not an order.</div>
-      <div><strong>RECLAIM_NEAR</strong> means watch for map invalidation/reclaim, not automatic buy.</div>
+      <div><strong>BUY_READY</strong> is not an order.</div>
+      <div><strong>CAUTION</strong> means limited setup/risk context, not automatic buy.</div>
       <div><strong>ENTRY_ZONE_REACHED</strong> means price is in the entry/reaction zone; it is separate from target state and is not buy permission.</div>
       <div><strong>Entry state precedence</strong>: target touched, post-entry progress, and entry-window-passed labels take precedence over near-entry labels.</div>
       <div><strong>CONFIRMATION_PENDING</strong> means setup is in-zone but still waiting for policy/advice confirmation.</div>
@@ -866,7 +887,7 @@ def render_html(
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
-      <div class="metric"><div class="muted">Candidate groups</div>{counts_html}</div>
+      <div class="metric"><div class="muted">Candidate readiness</div>{counts_html}</div>
       <div class="metric"><div class="muted">Safety</div><span class="pill ok">broker_private_calls=0</span><span class="pill ok">broker_writes=0</span><span class="pill ok">order_submission=0</span><span class="pill ok">executor=none</span><span class="pill ok">account_awareness=0</span></div>
     </div>
   </header>
