@@ -25,6 +25,10 @@ from src.reporting.entry_zone_state_v1 import (
     semantic_entry_display_state,
 )
 from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
+from src.reporting.label_registry_v1 import (
+    get_label_aria_label,
+    get_label_description,
+)
 from src.reporting.next_zone_preview_v1 import (
     NextZonePreview,
     format_zone,
@@ -83,6 +87,15 @@ def esc(value: Any) -> str:
     if value is None:
         return ""
     return html.escape(str(value))
+
+
+def badge_html(label: Any, css_name: str | None = None) -> str:
+    label_text = "" if label is None else str(label)
+    css = css_name or css_class(label_text)
+    return (
+        f"<span class='pill {css}' title='{esc(get_label_description(label_text))}' "
+        f"aria-label='{esc(get_label_aria_label(label_text))}'>{esc(label_text)}</span>"
+    )
 
 
 def to_decimal(value: Any) -> Decimal | None:
@@ -291,29 +304,27 @@ def workflow_row_class(
 
 
 def lifecycle_badges_html(lifecycle_state: str, fresh_badge: str) -> str:
-    badges = [
-        f"<span class='pill {css_class(lifecycle_state)}'>{esc(lifecycle_state)}</span>"
-    ]
+    badges = [badge_html(lifecycle_state)]
     if fresh_badge:
-        badges.append(f"<span class='pill ok'>{esc(fresh_badge)}</span>")
+        badges.append(badge_html(fresh_badge, "ok"))
     return "".join(badges)
 
 
 def next_zone_html(preview: NextZonePreview) -> str:
     parts = [
-        f"<span class='pill {css_class(preview.next_zone_state)}'>{esc(preview.next_zone_state)}</span>"
+        badge_html(preview.next_zone_state)
     ]
     if preview.next_reaction_zone_label and preview.next_reaction_zone:
         parts.append(
             "<div class='small'>"
-            f"<span class='pill {css_class(preview.next_reaction_zone_label)}'>{esc(preview.next_reaction_zone_label)}</span> "
+            f"{badge_html(preview.next_reaction_zone_label)} "
             f"<span class='zone-value'>{esc(format_zone(preview.next_reaction_zone))}</span>"
             "</div>"
         )
     if preview.next_target_zone_label and preview.next_target_zone:
         parts.append(
             "<div class='small'>"
-            f"<span class='pill {css_class(preview.next_target_zone_label)}'>{esc(preview.next_target_zone_label)}</span> "
+            f"{badge_html(preview.next_target_zone_label)} "
             f"<span class='zone-value'>{esc(format_zone(preview.next_target_zone))}</span>"
             "</div>"
         )
@@ -356,7 +367,7 @@ def relevant_target_html(row: dict[str, Any], preview: NextZonePreview) -> str:
     distance = _target_distance_text(target_mid, row.get("current_price"))
     distance_html = "" if not distance else f"<div class='muted small'>distance: {esc(distance)}</div>"
     return (
-        f"<div><span class='pill {css_class(label)}'>{esc(label)}</span></div>"
+        f"<div>{badge_html(label)}</div>"
         f"<div class='zone-value'>{esc(zone_text)}</div>"
         f"{distance_html}"
     )
@@ -668,11 +679,11 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             else "<span class='muted'>—</span>"
         )
         progress_labels = "".join(
-            f"<span class='pill {css_class(str(label))}'>{esc(label)}</span>"
+            badge_html(label)
             for label in row.get("price_progress_labels", [])
         )
         progress_html = (
-            f"<span class='pill {css_class(row.get('price_progress_state'))}'>{esc(row.get('price_progress_state'))}</span>"
+            f"{badge_html(row.get('price_progress_state'))}"
             f"{progress_labels}"
         )
         row_class = workflow_row_class(
@@ -694,7 +705,7 @@ def render_table(rows: list[dict[str, Any]]) -> str:
         policy_html = f"{esc(row.get('policy_decision'))}"
         if block_display is not None:
             policy_html = (
-                f"<span class='pill {css_class(block_display.display_policy_label)}'>{esc(block_display.display_policy_label)}</span>"
+                f"{badge_html(block_display.display_policy_label)}"
                 f"<div class='muted small'>raw: {esc(block_display.raw_policy_state)}</div>"
                 f"<div class='muted small'>cause: {esc(block_display.block_primary_reason)}</div>"
                 f"<div class='muted small'>unblock: {esc(block_display.unblock_condition_label)}</div>"
@@ -710,27 +721,27 @@ def render_table(rows: list[dict[str, Any]]) -> str:
             f"<tr class='{row_class}'>"
             f"<td class='num'>{esc(rank_text)}</td>"
             f"<td class='sticky-symbol'><strong>{esc(row.get('symbol'))}</strong></td>"
-            f"<td><span class='pill {css_class(group)}'>{esc(group)}</span></td>"
+            f"<td>{badge_html(group)}</td>"
             f"<td>{esc(row.get('selection_state'))}</td>"
             f"<td class='num'>{esc(dec_text(row.get('selection_score'), '0.0000'))}</td>"
-            f"<td><span class='pill {css_class(row.get('setup_filter_state'))}'>{esc(row.get('setup_filter_state'))}</span></td>"
-            f"<td><span class='pill {css_class(row.get('setup_filter_reason'))}'>{esc(row.get('setup_filter_reason'))}</span></td>"
+            f"<td>{badge_html(row.get('setup_filter_state'))}</td>"
+            f"<td>{badge_html(row.get('setup_filter_reason'))}</td>"
             f"<td>{policy_html}</td>"
-            f"<td><span class='pill {css_class(allowed_now)}'>{esc(allowed_now)}</span></td>"
+            f"<td>{badge_html(allowed_now)}</td>"
             f"<td>{esc(row.get('advice_state'))}</td>"
-            f"<td><span class='pill {action_class}'>{esc(action_label)}</span><div class='muted small'>{esc(action_detail)}</div></td>"
-            f"<td><span class='pill {css_class(row.get('leg_direction'))}'>{esc(row.get('leg_direction'))}</span></td>"
-            f"<td><span class='pill {css_class(row.get('aplus_bucket'))}'>{esc(row.get('aplus_bucket'))}</span></td>"
+            f"<td>{badge_html(action_label, action_class)}<div class='muted small'>{esc(action_detail)}</div></td>"
+            f"<td>{badge_html(row.get('leg_direction'))}</td>"
+            f"<td>{badge_html(row.get('aplus_bucket'))}</td>"
             f"<td class='num'>{esc(pct_text(row.get('confidence_score')))}</td>"
-            f"<td><span class='pill {css_class(row.get('risk_label'))}'>{esc(row.get('risk_label'))}</span></td>"
+            f"<td>{badge_html(row.get('risk_label'))}</td>"
             f"<td class='num sticky-price'>{esc(dec_text(row.get('current_price')))}</td>"
-            f"<td><span class='pill {css_class(row.get('entry_display_state'))}'>{esc(row.get('entry_display_state'))}</span><div class='muted small'>raw: {esc(row.get('entry_state'))}</div></td>"
+            f"<td>{badge_html(row.get('entry_display_state'))}<div class='muted small'>raw: {esc(row.get('entry_state'))}</div></td>"
             f"<td>{progress_html}</td>"
-            f"<td><span class='pill {css_class(row.get('target_state'))}'>{esc(row.get('target_state'))}</span></td>"
-            f"<td><span class='pill {css_class(row.get('confirmation_state'))}'>{esc(row.get('confirmation_state'))}</span></td>"
+            f"<td>{badge_html(row.get('target_state'))}</td>"
+            f"<td>{badge_html(row.get('confirmation_state'))}</td>"
             f"<td class='small'>{esc(blockers)}</td>"
             f"<td>{lifecycle_badges_html(str(row.get('lifecycle_state') or ''), str(row.get('fresh_map_badge') or ''))}</td>"
-            f"<td><span class='pill {css_class('MAP_RECOMPUTE_NEEDED' if row.get('recompute_needed') else 'ACTIVE_MAP')}'>{'YES' if row.get('recompute_needed') else 'NO'}</span></td>"
+            f"<td>{badge_html('YES' if row.get('recompute_needed') else 'NO', css_class('MAP_RECOMPUTE_NEEDED' if row.get('recompute_needed') else 'ACTIVE_MAP'))}</td>"
             f"<td class='small'>{esc(row.get('recompute_reason'))}</td>"
             f"<td>{next_preview_html}</td>"
             f"<td class='num zone-value'>{esc(fmt_zone(row.get('entry_zone_low'), row.get('entry_zone_high')))}</td>"
@@ -832,6 +843,9 @@ def render_html(
     <div class="muted">latest advice snapshot: {esc(latest_text)} · venue={esc(venue)} · interval={esc(interval)}</div>
     {cockpit_nav()}
     <div class="legend">
+      <div><strong>Labels are context/review states, not order instructions.</strong></div>
+      <div><strong>Review labels do not grant sell/buy permission.</strong></div>
+      <div><strong>Hover/tap a badge for label description.</strong></div>
       <div><strong>Entry candidates</strong> are market-only and account-agnostic.</div>
       <div><strong>PAPER_BUY_READY</strong> is not an order.</div>
       <div><strong>RECLAIM_NEAR</strong> means watch for map invalidation/reclaim, not automatic buy.</div>

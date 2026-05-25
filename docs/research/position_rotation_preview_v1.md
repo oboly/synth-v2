@@ -45,6 +45,27 @@ The preview now includes additive semantics fields:
 
 These do not replace `rotation_state`. They clarify how to read it.
 
+## Label Registry
+
+The dashboards now use a display-only label registry.
+
+Behavior:
+
+- canonical label codes remain unchanged
+- badge hover/tap shows a short description when registered
+- unknown labels still render unchanged
+- unknown labels use the fallback text:
+  `No description registered yet.`
+
+This registry does not change:
+
+- strategy logic
+- selection logic
+- advice logic
+- decision/execution permission
+
+It is display-only help for interpreting review/context labels.
+
 ## Dashboard UI Wording
 
 The static dashboard now applies UI-only display wording on top of the raw

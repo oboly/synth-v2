@@ -36,6 +36,10 @@ from src.reporting.market_breath_context_bridge_v1 import (
     build_market_breath_context_rows,
     rows_by_symbol as market_breath_rows_by_symbol,
 )
+from src.reporting.label_registry_v1 import (
+    get_label_aria_label,
+    get_label_description,
+)
 from src.reporting.next_zone_preview_v1 import (
     NextZonePreview,
     format_zone,
@@ -164,6 +168,15 @@ def esc(value: Any) -> str:
     if isinstance(value, datetime):
         return html.escape(value.isoformat(sep=" ", timespec="seconds"))
     return html.escape(str(value))
+
+
+def badge_html(label: Any, css_name: str | None = None) -> str:
+    label_text = "" if label is None else str(label)
+    css = css_name or css_class(label_text)
+    return (
+        f'<span class="pill {css}" title="{esc(get_label_description(label_text))}" '
+        f'aria-label="{esc(get_label_aria_label(label_text))}">{esc(label_text)}</span>'
+    )
 
 
 def parse_ts(value: Any) -> datetime | None:
@@ -411,19 +424,19 @@ def zone_display_cells(row: dict[str, Any]) -> tuple[tuple[str, str], tuple[str,
 
 def next_zone_html(preview: NextZonePreview) -> str:
     parts = [
-        f'<span class="pill {css_class(preview.next_zone_state)}">{esc(preview.next_zone_state)}</span>'
+        badge_html(preview.next_zone_state)
     ]
     if preview.next_reaction_zone_label and preview.next_reaction_zone:
         parts.append(
             '<div class="small">'
-            f'<span class="pill {css_class(preview.next_reaction_zone_label)}">{esc(preview.next_reaction_zone_label)}</span> '
+            f'{badge_html(preview.next_reaction_zone_label)} '
             f'<span class="zone-value">{esc(format_zone(preview.next_reaction_zone))}</span>'
             "</div>"
         )
     if preview.next_target_zone_label and preview.next_target_zone:
         parts.append(
             '<div class="small">'
-            f'<span class="pill {css_class(preview.next_target_zone_label)}">{esc(preview.next_target_zone_label)}</span> '
+            f'{badge_html(preview.next_target_zone_label)} '
             f'<span class="zone-value">{esc(format_zone(preview.next_target_zone))}</span>'
             "</div>"
         )
@@ -467,7 +480,7 @@ def relevant_target_html(row: dict[str, Any], preview: NextZonePreview) -> str:
     distance = _target_distance_text(target_mid, row.get("current_price"))
     distance_html = "" if not distance else f'<div class="muted small">distance: {esc(distance)}</div>'
     return (
-        f'<div><span class="pill {css_class(label)}">{esc(label)}</span></div>'
+        f'<div>{badge_html(label)}</div>'
         f'<div class="zone-value">{esc(zone_text)}</div>'
         f"{distance_html}"
     )
@@ -487,11 +500,10 @@ def market_breath_context_html(row: dict[str, Any] | None) -> str:
     suggested_context = f"{freshness}_{bias_label} + {context_state}"
 
     return (
-        f'<div><span class="pill {css_class(phase)}">{esc(phase)}</span> '
-        f'<span class="pill {css_class(state)}">{esc(state)}</span></div>'
-        f'<div class="small"><span class="pill {css_class(context_state)}">{esc(context_state)}</span></div>'
+        f'<div>{badge_html(phase)} {badge_html(state)}</div>'
+        f'<div class="small">{badge_html(context_state)}</div>'
         f'<div class="muted small">A+ legacy age: <span class="mono">{esc(age)}</span>h '
-        f'<span class="pill {css_class(freshness)}">{esc(freshness)}</span></div>'
+        f'{badge_html(freshness)}</div>'
         f'<div class="muted small">{esc(suggested_context)}</div>'
     )
 
@@ -501,13 +513,13 @@ def advice_severity_html(severity: Any) -> str:
     policy_html = ""
     if policy_block is not None:
         policy_html = (
-            f'<div><span class="pill {css_class(policy_block.display_policy_label)}">{esc(policy_block.display_policy_label)}</span></div>'
+            f'<div>{badge_html(policy_block.display_policy_label)}</div>'
             f'<div class="muted small">Cause: {esc(policy_block.block_primary_reason)}</div>'
             f'<div class="muted small">Unblock: {esc(policy_block.unblock_condition_label)}</div>'
         )
     return (
-        f'<div><span class="pill {css_class(severity.advice_severity)}">{esc(severity.advice_severity)}</span></div>'
-        f'<div><span class="pill {css_class(severity.advice_substate)}">{esc(severity.advice_substate)}</span></div>'
+        f'<div>{badge_html(severity.advice_severity)}</div>'
+        f'<div>{badge_html(severity.advice_substate)}</div>'
         f"{policy_html}"
         f'<div class="muted small">{esc(severity.display_note)}</div>'
     )
@@ -517,13 +529,13 @@ def intrabar_context_html(row: Any | None) -> str:
     if not row:
         return '<span class="muted small">not available</span>'
     quality_labels = "".join(
-        f'<span class="pill {css_class(part)}">{esc(part)}</span>'
+        badge_html(part)
         for part in str(row.data_quality_state or "").split(";")
         if part
     )
     return (
-        f'<div><span class="pill {css_class(row.intrabar_lifecycle_state)}">{esc(row.intrabar_lifecycle_state)}</span></div>'
-        f'<div><span class="pill {css_class(row.intrabar_recompute_hint)}">{esc(row.intrabar_recompute_hint)}</span></div>'
+        f'<div>{badge_html(row.intrabar_lifecycle_state)}</div>'
+        f'<div>{badge_html(row.intrabar_recompute_hint)}</div>'
         f'<div class="muted small">source={esc(row.price_source)} · 15m={esc(row.latest_15m_close_ts_utc or "missing")}</div>'
         f'<div class="badge-row">{quality_labels}</div>'
         '<div class="muted small">Intrabar context, not trade advice.</div>'
@@ -1184,7 +1196,7 @@ def render_table(
             action_class = css_class(block_display.display_policy_label)
             action_detail = block_reason_summary_text(block_display)
             policy_html = (
-                f'<span class="pill {css_class(block_display.display_policy_label)}">{esc(block_display.display_policy_label)}</span>'
+                f'{badge_html(block_display.display_policy_label)}'
                 f'<div class="muted small">raw: {esc(block_display.raw_policy_state)}</div>'
                 f'<div class="muted small">cause: {esc(block_display.block_primary_reason)}</div>'
                 f'<div class="muted small">unblock: {esc(block_display.unblock_condition_label)}</div>'
@@ -1205,12 +1217,12 @@ def render_table(
                 badges.append((reason, css_class(reason)))
         if "fresh-map" in row_classes:
             badges.append(("FRESH_MAP", "good"))
-        badge_html = ""
+        badges_html = ""
         if badges:
-            badge_html = "".join(
-                f'<span class="pill {esc(css_name)}">{esc(label)}</span>' for label, css_name in badges
+            badges_html = "".join(
+                badge_html(label, css_name) for label, css_name in badges
             )
-            badge_html = f'<div class="badge-row">{badge_html}</div>'
+            badges_html = f'<div class="badge-row">{badges_html}</div>'
 
         body.append(
             f"""
@@ -1218,20 +1230,20 @@ def render_table(
                 <td class="mono center">{esc(rank_text)}</td>
                 <td class="symbol sticky-symbol">
                     {esc(row.get("symbol"))}
-                    <div><span class="pill {css_class(leg_direction)}">{esc(leg_direction or "—")}</span></div>
-                    {badge_html}
+                    <div>{badge_html(leg_direction or "—")}</div>
+                    {badges_html}
                 </td>
-                <td><span class="pill {css_class(advice_state)}">{esc(advice_state)}</span></td>
-                <td><span class="pill {action_class}">{esc(action_label)}</span><div class="muted small">{esc(action_detail)}</div></td>
+                <td>{badge_html(advice_state)}</td>
+                <td>{badge_html(action_label, action_class)}<div class="muted small">{esc(action_detail)}</div></td>
                 <td class="mono right">{fmt_score(row.get("confidence_score"))}</td>
-                <td><span class="pill {css_class(risk_label)}">{esc(risk_label)}</span></td>
+                <td>{badge_html(risk_label)}</td>
                 <td class="mono right sticky-price">{esc(fmt_snapshot_price(current_price))}</td>
                 <td class="mono right">{fmt_decimal(row.get("price_age_min"), places=1)}</td>
-                <td><span class="pill {css_class(entry_display_state)}">{esc(entry_display_state)}</span><div class="muted small">raw: {esc(entry_state)}</div></td>
+                <td>{badge_html(entry_display_state)}<div class="muted small">raw: {esc(entry_state)}</div></td>
                 <td>{progress_html}</td>
-                <td><span class="pill {css_class(target_state)}">{esc(target_state)}</span></td>
+                <td>{badge_html(target_state)}</td>
                 <td class="mono sticky-target">{target_html}</td>
-                <td><span class="pill {css_class(confirm_state)}">{esc(confirm_state)}</span></td>
+                <td>{badge_html(confirm_state)}</td>
                 <td class="muted small">{esc(", ".join(blockers))}</td>
                 <td>{next_zone_html(next_preview)}</td>
                 <td class="mono">
@@ -1249,7 +1261,7 @@ def render_table(
                 <td>{esc(row.get("selection_state"))}</td>
                 <td>{esc(row.get("setup_filter_state"))}{setup_reason_html}</td>
                 <td>{policy_html}</td>
-                <td>{esc(row.get("aplus_bucket"))}</td>
+                <td>{badge_html(row.get("aplus_bucket"))}</td>
                 <td>{market_breath_context_html(market_breath_row)}</td>
                 <td>{intrabar_context_html(intrabar_row)}</td>
                 <td>{advice_severity_html(severity)}</td>
@@ -1557,6 +1569,10 @@ def render_html(
                 </div>
                 {cockpit_nav()}
                 <div class="legend">
+                    <div><strong>Labels are context/review states, not order instructions.</strong></div>
+                    <div><strong>Review labels do not grant sell/buy permission.</strong></div>
+                    <div><strong>Score is a heuristic review/comparison pressure score.</strong></div>
+                    <div><strong>Hover/tap a badge for label description.</strong></div>
                     <div><strong>ENTRY_ZONE_REACHED</strong> means price is in the entry/reaction zone; it is separate from target state and is not buy permission.</div>
                     <div><strong>Entry state precedence</strong>: target touched, post-entry progress, and entry-window-passed labels take precedence over near-entry labels.</div>
                     <div><strong>CONFIRMATION_PENDING</strong> means price/setup still needs policy or advice confirmation.</div>

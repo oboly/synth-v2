@@ -23,6 +23,10 @@ from src.reporting.intrabar_lifecycle_context_v1 import (
     build_intrabar_lifecycle_context_rows,
     rows_by_symbol as intrabar_rows_by_symbol,
 )
+from src.reporting.label_registry_v1 import (
+    get_label_aria_label,
+    get_label_description,
+)
 from src.reporting.run_fast_recompute_lifecycle_v1 import (
     build_recompute_rows,
     render_rows_table as render_recompute_rows_table,
@@ -141,6 +145,15 @@ def esc(value: Any) -> str:
     if value is None:
         return ""
     return html.escape(str(value))
+
+
+def badge_html(label: Any, css_name: str | None = None) -> str:
+    label_text = "" if label is None else str(label)
+    css = css_name or pill_class(label_text)
+    return (
+        f"<span class='pill {css}' title='{esc(get_label_description(label_text))}' "
+        f"aria-label='{esc(get_label_aria_label(label_text))}'>{esc(label_text)}</span>"
+    )
 
 
 def dec_text(value: Decimal | None, places: str = "0.01") -> str:
@@ -279,7 +292,7 @@ def pct_cell(value: Decimal | None, class_name: str | None = None) -> str:
     if not text:
         return "<td class='num'></td>"
     pill_class_name = class_name or pct_class(value)
-    return f"<td class='num'><span class='pill {pill_class_name}'>{esc(text)}</span></td>"
+    return f"<td class='num'>{badge_html(text, pill_class_name)}</td>"
 
 
 def entry_distance_cell(
@@ -307,22 +320,18 @@ def entry_distance_cell(
     zone_name = "reaction" if leg == "DOWN" else "entry"
 
     if reference_low <= current_price <= reference_high:
-        return f"<td class='num'><span class='pill ok'>inside {zone_name}</span></td>"
+        return f"<td class='num'>{badge_html(f'inside {zone_name}', 'ok')}</td>"
 
     if current_price > reference_high:
         pct = ((current_price / reference_high) - Decimal("1")) * Decimal("100")
         css = "muted" if leg == "DOWN" else "warn"
         return (
-            f"<td class='num'><span class='pill {css}'>"
-            f"above {zone_name} {esc(signed_pct_text(pct))}</span></td>"
+            f"<td class='num'>{badge_html(f'above {zone_name} {signed_pct_text(pct)}', css)}</td>"
         )
 
     pct = ((current_price / reference_low) - Decimal("1")) * Decimal("100")
     css = "warn" if leg == "DOWN" else "muted"
-    return (
-        f"<td class='num'><span class='pill {css}'>"
-        f"below {zone_name} {esc(signed_pct_text(pct))}</span></td>"
-    )
+    return f"<td class='num'>{badge_html(f'below {zone_name} {signed_pct_text(pct)}', css)}</td>"
 
 
 def price_age_min(snapshot: MarketPriceSnapshot | None, *, now_utc: datetime) -> Decimal | None:
@@ -618,11 +627,9 @@ def workflow_row_class(
 
 
 def lifecycle_badges_html(lifecycle_state: str, fresh_badge: str) -> str:
-    badges = [
-        f"<span class='pill {pill_class(lifecycle_state)}'>{esc(lifecycle_state)}</span>"
-    ]
+    badges = [badge_html(lifecycle_state)]
     if fresh_badge:
-        badges.append(f"<span class='pill ok'>{esc(fresh_badge)}</span>")
+        badges.append(badge_html(fresh_badge, "ok"))
     return "".join(badges)
 
 
@@ -633,19 +640,19 @@ def next_zone_html(preview: NextZonePreview) -> str:
         display_state = "WAIT_RECOMPUTE"
         display_reason = "old map invalidated; wait for fresh map/advice"
     parts = [
-        f"<span class='pill {pill_class(display_state)}'>{esc(display_state)}</span>"
+        badge_html(display_state)
     ]
     if preview.next_reaction_zone_label and preview.next_reaction_zone:
         parts.append(
             "<div class='small'>"
-            f"<span class='pill {pill_class(preview.next_reaction_zone_label)}'>{esc(preview.next_reaction_zone_label)}</span> "
+            f"{badge_html(preview.next_reaction_zone_label)} "
             f"<span class='zone-value'>{esc(format_zone(preview.next_reaction_zone))}</span>"
             "</div>"
         )
     if preview.next_target_zone_label and preview.next_target_zone:
         parts.append(
             "<div class='small'>"
-            f"<span class='pill {pill_class(preview.next_target_zone_label)}'>{esc(preview.next_target_zone_label)}</span> "
+            f"{badge_html(preview.next_target_zone_label)} "
             f"<span class='zone-value'>{esc(format_zone(preview.next_target_zone))}</span>"
             "</div>"
         )
@@ -876,16 +883,16 @@ def relevant_target_html(
 ) -> str:
     if next_preview.next_zone_state in {"RECLAIM_NEXT_ZONE_PREVIEW", "BREAKDOWN_NEXT_ZONE_PREVIEW"}:
         return (
-            "<div><span class='pill warn'>WAIT_RECOMPUTE</span></div>"
+            f"<div>{badge_html('WAIT_RECOMPUTE', 'warn')}</div>"
             "<div class='muted small'>old map invalidated; wait for fresh map/advice</div>"
         )
     if intrabar_target_touch_active(intrabar_row):
         details: list[str] = [
-            "<div><span class='pill warn'>TARGET_TOUCHED_RECENTLY</span></div>",
-            "<div><span class='pill warn'>EXTENSION_TOUCHED_INTRABAR</span></div>",
+            f"<div>{badge_html('TARGET_TOUCHED_RECENTLY', 'warn')}</div>",
+            f"<div>{badge_html('EXTENSION_TOUCHED_INTRABAR', 'warn')}</div>",
         ]
         if intrabar_pullback_after_touch(intrabar_row):
-            details.append("<div><span class='pill warn'>PULLBACK_AFTER_TARGET_TOUCH</span></div>")
+            details.append(f"<div>{badge_html('PULLBACK_AFTER_TARGET_TOUCH', 'warn')}</div>")
         touched_value = None if intrabar_row is None else intrabar_row.touched_high_or_low
         touch_age = None if intrabar_row is None else intrabar_row.target_touch_age_minutes
         meta_parts: list[str] = []
@@ -924,7 +931,7 @@ def relevant_target_html(
 
     distance_html = "" if not distance_text else f"<div class='muted small'>distance: {esc(distance_text)}</div>"
     return (
-        f"<div><span class='pill {pill_class(label)}'>{esc(label)}</span></div>"
+        f"<div>{badge_html(label)}</div>"
         f"<div class='zone-value'>{esc(zone_text)}</div>"
         f"<div class='muted small'>{esc(helper)}</div>"
         f"{distance_html}"
@@ -933,8 +940,8 @@ def relevant_target_html(
 
 def severity_html(severity: Any) -> str:
     return (
-        f"<div><span class='pill {pill_class(severity.advice_severity)}'>{esc(severity.advice_severity)}</span></div>"
-        f"<div><span class='pill {pill_class(severity.advice_substate)}'>{esc(severity.advice_substate)}</span></div>"
+        f"<div>{badge_html(severity.advice_severity)}</div>"
+        f"<div>{badge_html(severity.advice_substate)}</div>"
         f"<div class='muted small'>{esc(severity.display_note)}</div>"
     )
 
@@ -943,15 +950,15 @@ def intrabar_html(row: Any | None) -> str:
     if row is None:
         return "<span class='muted small'>not available</span>"
     quality = "".join(
-        f"<span class='pill {pill_class(part)}'>{esc(part)}</span>"
+        badge_html(part)
         for part in str(row.data_quality_state or "").split(";")
         if part
     )
     touch = ""
     if row.target_touch_label:
-        touch += f"<div><span class='pill {pill_class(row.target_touch_label)}'>{esc(row.target_touch_label)}</span></div>"
+        touch += f"<div>{badge_html(row.target_touch_label)}</div>"
     if row.target_touch_context_label:
-        touch += f"<div><span class='pill {pill_class(row.target_touch_context_label)}'>{esc(row.target_touch_context_label)}</span></div>"
+        touch += f"<div>{badge_html(row.target_touch_context_label)}</div>"
     if row.touched_high_or_low is not None or row.target_touch_age_minutes is not None:
         meta_parts: list[str] = []
         if row.touched_high_or_low is not None:
@@ -960,8 +967,8 @@ def intrabar_html(row: Any | None) -> str:
             meta_parts.append(f"touch age={dec_text(row.target_touch_age_minutes, '0.1')}m")
         touch += f"<div class='muted small'>{esc(' · '.join(meta_parts))}</div>"
     return (
-        f"<div><span class='pill {pill_class(row.intrabar_lifecycle_state)}'>{esc(row.intrabar_lifecycle_state)}</span></div>"
-        f"<div><span class='pill {pill_class(row.intrabar_recompute_hint)}'>{esc(row.intrabar_recompute_hint)}</span></div>"
+        f"<div>{badge_html(row.intrabar_lifecycle_state)}</div>"
+        f"<div>{badge_html(row.intrabar_recompute_hint)}</div>"
         f"{touch}"
         f"<div class='muted small'>source={esc(row.price_source)} · 15m={esc(row.latest_15m_close_ts_utc or 'missing')}</div>"
         f"<div>{quality}</div>"
@@ -987,7 +994,7 @@ def alignment_html(
     detail_html = ""
     if details:
         detail_html = f"<div class='muted small'>{esc(' · '.join(details))}</div>"
-    return f"<span class='pill {pill_class(label)}'>{esc(label)}</span>{detail_html}"
+    return f"{badge_html(label)}{detail_html}"
 
 
 def fetch_latest_eur_balance_snapshot(
@@ -1126,8 +1133,7 @@ def render_html(
         badges = lifecycle_badges_html(lifecycle_state, fresh_badge)
         if refresh_row is not None:
             badges += (
-                f"<div><span class='pill {pill_class(refresh_row.post_refresh_state)}'>"
-                f"{esc(refresh_row.post_refresh_state)}</span></div>"
+                f"<div>{badge_html(refresh_row.post_refresh_state)}</div>"
             )
         return badges
 
@@ -1369,15 +1375,13 @@ def render_html(
 
     def destination_confidence_html(confidence: DestinationConfidence) -> str:
         evidence = "".join(
-            f"<span class='pill {pill_class(label)}'>{esc(label)}</span>"
+            badge_html(label)
             for label in confidence.evidence_labels
         )
         return (
-            f"<span class='pill {pill_class(confidence.confidence_label)}'>"
-            f"{esc(confidence.confidence_label)}</span>"
+            f"{badge_html(confidence.confidence_label)}"
             "<div class='small'>"
-            f"<span class='pill {pill_class(confidence.curve_sanity_label)}'>"
-            f"{esc(confidence.curve_sanity_label)}</span>"
+            f"{badge_html(confidence.curve_sanity_label)}"
             "</div>"
             f"<div>{evidence}</div>"
         )
@@ -1448,11 +1452,11 @@ def render_html(
             )
             entry_display_state = display_state.entry_display_state
             progress_labels = "".join(
-                f"<span class='pill {pill_class(label)}'>{esc(label)}</span>"
+                badge_html(label)
                 for label in price_progress.labels
             )
             progress_html = (
-                f"<span class='pill {pill_class(price_progress.progress_state)}'>{esc(price_progress.progress_state)}</span>"
+                f"{badge_html(price_progress.progress_state)}"
                 f"{progress_labels}"
             )
             next_preview = display_state.next_preview
@@ -1516,28 +1520,28 @@ def render_html(
                 f"<tr class='{row_class}'>"
                 f"<td class='sticky-symbol'><strong>{esc(row.position_symbol)}</strong></td>"
                 f"<td class='num'>{esc(dec_text(valuation.value_eur, '0.01'))}</td>"
-                f"<td><span class='pill {pill_class(valuation.source)}'>{esc(valuation.source)}</span></td>"
+                f"<td>{badge_html(valuation.source)}</td>"
                 f"<td class='num'>{esc(dec_text(row.quantity_base, '0.000000'))}</td>"
-                f"<td><span class='pill {pill_class(row.position_source_state)}'>{esc(row.position_source_state)}</span></td>"
+                f"<td>{badge_html(row.position_source_state)}</td>"
                 f"<td class='num'>{esc(dec_text(row.position_source_age_days, '0.01'))}</td>"
                 f"<td>{esc(row.selection_state)}</td>"
-                f"<td><span class='pill {pill_class(row.setup_filter_reason)}'>{esc(row.setup_filter_reason)}</span></td>"
+                f"<td>{badge_html(row.setup_filter_reason)}</td>"
                 f"<td>{esc(row.leg_direction)}</td>"
-                f"<td><span class='pill {action_class}'>{esc(action_label)}</span><div class='muted small'>{esc(action_detail)}</div></td>"
-                f"<td><span class='pill {pill_class(row.aplus_bucket)}'>{esc(row.aplus_bucket)}</span></td>"
+                f"<td>{badge_html(action_label, action_class)}<div class='muted small'>{esc(action_detail)}</div></td>"
+                f"<td>{badge_html(row.aplus_bucket)}</td>"
                 f"<td>{severity_html(severity)}</td>"
                 f"<td>{intrabar_html(intrabar_row)}</td>"
                 f"<td class='num sticky-price'>{esc(dec_text(current_price, '0.000000'))}</td>"
                 f"<td class='num'>{esc(dec_text(latest_price_age_min, '0.1'))}</td>"
-                f"<td><span class='pill {pill_class(entry_display_state)}'>{esc(entry_display_state)}</span><div>{progress_html}</div></td>"
-                f"<td><span class='pill {pill_class(row.target_state)}'>{esc(row.target_state)}</span></td>"
-                f"<td><span class='pill {pill_class(row.risk_state)}'>{esc(row.risk_state)}</span></td>"
+                f"<td>{badge_html(entry_display_state)}<div>{progress_html}</div></td>"
+                f"<td>{badge_html(row.target_state)}</td>"
+                f"<td>{badge_html(row.risk_state)}</td>"
                 f"<td>{lifecycle_badges_for_symbol(row.position_symbol, lifecycle.lifecycle_state, fresh_badge)}</td>"
-                f"<td><span class='pill {pill_class(recompute_label_for_symbol(row.position_symbol, lifecycle))}'>{esc(recompute_label_for_symbol(row.position_symbol, lifecycle))}</span></td>"
+                f"<td>{badge_html(recompute_label_for_symbol(row.position_symbol, lifecycle))}</td>"
                 f"<td class='small'>{esc(effective_recompute_reason)}</td>"
-                f"<td><span class='pill {pill_class(display_state.action_label)}'>{esc(display_state.action_label)}</span><div class='muted small'>{esc(display_state.action_helper)}</div><div class='muted small'>{esc(raw_action_detail)}</div></td>"
-                f"<td><span class='pill {pill_class(display_state.increase_label)}'>{esc(display_state.increase_label)}</span><div class='muted small'>{esc(display_state.increase_helper)}</div><div class='muted small'>{esc(raw_increase_detail)}</div></td>"
-                f"<td><span class='pill {pill_class(display_state.context_label)}'>{esc(display_state.context_label)}</span><div class='muted small'>{esc(display_state.context_helper)}</div><div class='muted small'>{esc(raw_context_detail)}</div></td>"
+                f"<td>{badge_html(display_state.action_label)}<div class='muted small'>{esc(display_state.action_helper)}</div><div class='muted small'>{esc(raw_action_detail)}</div></td>"
+                f"<td>{badge_html(display_state.increase_label)}<div class='muted small'>{esc(display_state.increase_helper)}</div><div class='muted small'>{esc(raw_increase_detail)}</div></td>"
+                f"<td>{badge_html(display_state.context_label)}<div class='muted small'>{esc(display_state.context_helper)}</div><div class='muted small'>{esc(raw_context_detail)}</div></td>"
                 f"<td>{alignment_html(label=row.entry_alignment_label, distance_pct=row.entry_fib_distance_pct, band_flag=bool(row.entry_is_fib_band), note='fib-based entry zone' if row.entry_alignment_label == 'ENTRY_FIB_PRIMARY_0500_0618' else 'entry context')}</td>"
                 f"<td>{alignment_html(label=target_alignment_label, distance_pct=row.tp_fib_distance_pct, band_flag=bool(row.tp_is_fib_extension_band), note=target_alignment_note)}</td>"
                 f"<td>{next_zone_html(next_preview)}</td>"
@@ -1545,7 +1549,7 @@ def render_html(
                 f"{pct_cell(delta_tp_pct, target_pct_class(delta_tp_pct, context))}"
                 f"{pct_cell(delta_invalidation_pct, risk_pct_class(delta_invalidation_pct, context))}"
                 f"<td class='zone-value sticky-target'>{target_html}</td>"
-                f"<td><span class='pill {pill_class(display_state.group_label)}'>{esc(display_state.group_label)}</span><div class='muted small'>raw: {esc(row.rotation_state)}</div></td>"
+                f"<td>{badge_html(display_state.group_label)}<div class='muted small'>raw: {esc(row.rotation_state)}</div></td>"
                 f"<td class='num'>{esc(row.rotation_pressure_score)}</td>"
                 f"<td class='small'>{esc(review_refs)}</td>"
                 f"<td class='small'>{destinations_html}</td>"
@@ -1578,11 +1582,11 @@ def render_html(
                 in_position_context=held_row is not None,
             )
             progress_labels = "".join(
-                f"<span class='pill {pill_class(label)}'>{esc(label)}</span>"
+                badge_html(label)
                 for label in price_progress.labels
             )
             progress_html = (
-                f"<span class='pill {pill_class(price_progress.progress_state)}'>{esc(price_progress.progress_state)}</span>"
+                f"{badge_html(price_progress.progress_state)}"
                 f"{progress_labels}"
             )
             entry_display_state = semantic_entry_display_state(
@@ -1683,7 +1687,7 @@ def render_html(
                 candidate_action_class = pill_class(candidate_block_display.display_policy_label)
                 candidate_action_detail = block_reason_summary_text(candidate_block_display)
                 candidate_policy_html = (
-                    f"<span class='pill {pill_class(candidate_block_display.display_policy_label)}'>{esc(candidate_block_display.display_policy_label)}</span>"
+                    f"{badge_html(candidate_block_display.display_policy_label)}"
                     f"<div class='muted small'>raw: {esc(candidate_block_display.raw_policy_state)}</div>"
                     f"<div class='muted small'>cause: {esc(candidate_block_display.block_primary_reason)}</div>"
                     f"<div class='muted small'>unblock: {esc(candidate_block_display.unblock_condition_label)}</div>"
@@ -1709,32 +1713,32 @@ def render_html(
                 f"<td class='num'>{rank}</td>"
                 f"<td class='sticky-symbol'><strong>{esc(symbol)}</strong></td>"
                 f"<td class='num'>{esc(dec_text(candidate_score, '0.01'))}</td>"
-                f"<td><span class='pill {'ok' if eligible else 'bad'}'>{'YES' if eligible else 'NO'}</span></td>"
+                f"<td>{badge_html('YES' if eligible else 'NO', 'ok' if eligible else 'bad')}</td>"
                 f"<td>{destination_confidence_html(confidence)}</td>"
                 f"<td class='small'>{esc(', '.join(exclusions))}</td>"
                 f"<td>{esc(None if not advice else advice.get('selection_state'))}</td>"
                 f"<td>{esc(None if not advice else advice.get('setup_filter_state'))}</td>"
-                f"<td><span class='pill {pill_class(None if not advice else advice.get('setup_filter_reason'))}'>{esc(None if not advice else advice.get('setup_filter_reason'))}</span></td>"
+                f"<td>{badge_html(None if not advice else advice.get('setup_filter_reason'))}</td>"
                 f"<td>{candidate_policy_html}</td>"
-                f"<td><span class='pill {candidate_action_class}'>{esc(candidate_action_label)}</span><div class='muted small'>{esc(candidate_action_detail)}</div></td>"
+                f"<td>{badge_html(candidate_action_label, candidate_action_class)}<div class='muted small'>{esc(candidate_action_detail)}</div></td>"
                 f"<td>{severity_html(severity)}</td>"
                 f"<td>{intrabar_html(intrabar_row)}</td>"
                 f"<td>{esc(None if not advice else advice.get('leg_direction'))}</td>"
-                f"<td><span class='pill {pill_class(entry_display_state)}'>{esc(entry_display_state)}</span><div class='muted small'>raw: {esc(entry_state)}</div></td>"
+                f"<td>{badge_html(entry_display_state)}<div class='muted small'>raw: {esc(entry_state)}</div></td>"
                 f"<td>{progress_html}</td>"
-                f"<td><span class='pill {pill_class(confirm_state)}'>{esc(confirm_state)}</span></td>"
-                f"<td><span class='pill {pill_class(target_state)}'>{esc(target_state)}</span></td>"
-                f"<td><span class='pill {pill_class(risk_state)}'>{esc(risk_state)}</span></td>"
+                f"<td>{badge_html(confirm_state)}</td>"
+                f"<td>{badge_html(target_state)}</td>"
+                f"<td>{badge_html(risk_state)}</td>"
                 f"<td class='num sticky-price'>{esc(dec_text(current_price, '0.000000'))}</td>"
                 f"<td>{lifecycle_badges_for_symbol(symbol, lifecycle.lifecycle_state, fresh_badge)}</td>"
-                f"<td><span class='pill {pill_class(recompute_label_for_symbol(symbol, lifecycle))}'>{esc(recompute_label_for_symbol(symbol, lifecycle))}</span></td>"
+                f"<td>{badge_html(recompute_label_for_symbol(symbol, lifecycle))}</td>"
                 f"<td class='small'>{esc(effective_recompute_reason)}</td>"
                 f"<td>{next_zone_html(next_preview)}</td>"
                 f"<td class='zone-value sticky-target'>{candidate_target_html}</td>"
                 f"<td class='num zone-value'>{esc(dec_text(invalidation_price, '0.000000'))}</td>"
-                f"<td><span class='pill {'ok' if held_row is not None else 'muted'}'>{'YES' if held_row is not None else 'NO'}</span></td>"
+                f"<td>{badge_html('YES' if held_row is not None else 'NO', 'ok' if held_row is not None else 'muted')}</td>"
                 f"<td class='num'>{esc(dec_text(held_value, '0.01'))}</td>"
-                f"<td><span class='pill {pill_class(held_rotation_state)}'>{esc(held_rotation_state)}</span></td>"
+                f"<td>{badge_html(held_rotation_state)}</td>"
                 "</tr>"
             )
         return "\n".join(out)
@@ -1882,6 +1886,12 @@ def render_html(
     {cockpit_nav()}
     <div class="legend">
       <div><strong>Read-only dashboard. No row is an order instruction. Sell/increase requires downstream permission. MANUAL CHECK means user decision needed; HOLD/WAIT means no manual trade action implied.</strong></div>
+      <div><strong>Labels are context/review states, not order instructions.</strong></div>
+      <div><strong>Review labels do not grant sell/buy permission.</strong></div>
+      <div><strong>Score is a heuristic review/comparison pressure score.</strong></div>
+      <div><strong>Destinations are stricter filtered rotation candidates.</strong></div>
+      <div><strong>Review refs are broad comparison references.</strong></div>
+      <div><strong>Hover/tap a badge for label description.</strong></div>
       <div><strong>HOLD_DEFENSIVE</strong> = keep existing position, defensive context</div>
       <div><strong>HOLD_MONITOR_TARGET</strong> = hold and monitor reaction/target context</div>
       <div><strong>TARGET_TOUCHED_RECENTLY</strong> = latest 15m wick touched the target zone; current price may no longer be at the touch level.</div>
