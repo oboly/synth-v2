@@ -119,3 +119,7 @@ No astro use in market decision logic.
 No selection, decision, execution, broker, account, or dashboard use.
 Research joins only.
 ```
+
+Priority note:
+
+- Do not reopen this lane while `rotation_destination_historical_replay_audit_v2` reruns, discovered regime readout, `symbol_breath_profile_v1`, or `regime_interaction_audit_v1` are still pending.

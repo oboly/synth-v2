@@ -173,13 +173,13 @@ Use market-only candidates only. Do not move capital to a symbol purely because 
 
 Status: completed in separate market-only research lanes.
 
-Completed follow-up baselines:
+Completed market-only research baselines:
 
 - `rotation_destination_outcome_audit_v1`
 - `rotation_destination_historical_replay_audit_v2`
 - v2 extra summary and CLI/docs cleanup work
 
-These runs belong to research validation, not cockpit behavior changes.
+These runs belong to research validation, not cockpit behavior changes. Treat them as baseline-complete before any new cockpit follow-up is proposed.
 
 ## Next Strategy Work
 
@@ -192,6 +192,8 @@ The next work is not more cockpit plumbing. It is research validation and regime
 - inspect symbol-by-curve-sanity outcomes
 - run `market_regime_discovery_v1` full-ish
 - compare discovered regimes with existing labels only after clustering
+- design `symbol_breath_profile_v1`
+- design `regime_interaction_audit_v1`
 
 See:
 
@@ -201,4 +203,4 @@ docs/todo/regime_research.md
 
 ## Parked
 
-A+ Table 2 / breath rhythm module is explicitly parked for now.
+A+ Table 2 / breath rhythm module is explicitly parked for now. Astro context is also parked until the regime review and symbol breath profile path exists.

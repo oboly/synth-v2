@@ -47,8 +47,8 @@ Do not bypass layers.
 | File | Status | Purpose |
 |---|---:|---|
 | `workflow_standard.md` | standard | TODO creation, update, closure, priority, boundary, and commit rules |
-| `market_breath.md` | characterized/parked | Market Breath V1 characterization as a regime-dependent state/risk-timing sensor |
-| `regime_research.md` | active next research | Rotation replay follow-up, discovered regime review, symbol breath profile design, regime interaction audit design, and later replay-safe classifier path |
+| `market_breath.md` | characterized/parked | Market Breath V1 characterized as a regime-dependent rhythm/phase sensor; reopen only for downstream regime/profile use-cases |
+| `regime_research.md` | active next research | Rotation replay rerun/readout, discovered regime full-ish review, symbol breath profile design, regime interaction audit design, and later replay-safe classifier path |
 | `watchlist_candidates.md` | open intake | User-thesis watchlist candidates such as KITE before validation/promotion |
 | `deploy_runtime.md` | MVP cockpit implemented / ops follow-up | Odroid read-only cockpit runner, dashboard render path, and related operational follow-ups |
 | `fibo_zones.md` | open research | Fib target maps, leak-free zone/fib touch evaluation, zone context guardrails, exit ladder profiles, and zone UI overlays |
@@ -63,14 +63,15 @@ Do not bypass layers.
 ## Active next-step recommendation
 
 ```text
-1. Treat the read-only cockpit, rotation preview semantics, and committed research runners as completed baseline work.
+1. Treat the read-only cockpit, rotation preview semantics, and the committed research runners as completed baseline work.
 2. Next research priority is `docs/todo/regime_research.md`:
-   rerun `rotation_destination_historical_replay_audit_v2` full-ish, inspect symbol-by-confidence and symbol-by-curve-sanity summaries, then run `market_regime_discovery_v1` full-ish.
+   rerun `rotation_destination_historical_replay_audit_v2` full-ish with the newer summaries, inspect symbol-by-confidence and symbol-by-curve-sanity outputs, then run `market_regime_discovery_v1` full-ish.
 3. Keep discovered regime comparisons diagnostic only; existing labels may be joined after clustering but must not become clustering input.
-4. Keep first paper strategy candidate selection blocked until the regime-research readout and follow-up profile/audit designs exist.
-5. Keep Market Breath characterized and parked until a downstream regime-aware or symbol-profile use-case explicitly needs it.
-6. Keep astro context parked as external context only; no astro interaction work before discovered regimes and symbol breath profiles exist.
-7. Keep A+, PRO, execution, broker, account, and live/paper lanes parked unless directly needed by an explicit task.
+4. After those reads, design `symbol_breath_profile_v1` and `regime_interaction_audit_v1` before any replay-safe classifier work.
+5. Keep first paper strategy candidate selection blocked until the regime-research readout and follow-up profile/audit designs exist.
+6. Keep Market Breath characterized and parked until a downstream regime-aware or symbol-profile use-case explicitly needs it.
+7. Keep astro context parked as external lunar/solar context only; no astro interaction work before discovered regime review and symbol breath profile design exist.
+8. Keep A+, PRO, execution, broker, account, and live/paper lanes parked unless directly needed by an explicit task.
 ```
 
 ## 2026-05-19 Product/Cockpit/Strategy bundle

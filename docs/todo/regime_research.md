@@ -6,7 +6,7 @@ Active next research lane.
 
 ## Purpose
 
-Track the next market-only research sequence after the committed rotation replay, discovered regime clustering, and astro context baseline work.
+Track the next market-only research sequence after the committed rotation replay, discovered regime clustering baseline, and astro context dataset baseline work.
 
 This lane exists to keep the next measurements explicit before any classifier or tuning discussion:
 
@@ -27,7 +27,7 @@ Committed baseline work already done:
 - `market_regime_discovery_v1`
 - `astro_cycle_context_v1`
 
-These are research baselines, not tuning approvals.
+These are committed research baselines, not tuning approvals.
 
 ## P1 — Immediate reruns and reads
 
@@ -118,7 +118,7 @@ Parked items:
 Rule:
 
 ```text
-no astro use before discovered regimes and symbol_breath_profile_v1 exist
+no astro use before discovered regime review and symbol_breath_profile_v1 design exist
 ```
 
 ## Boundary

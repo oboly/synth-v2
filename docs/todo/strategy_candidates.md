@@ -74,7 +74,7 @@ Long-term regime classifier:
 
 - `market_regime_discovery_v1` is now the exploratory clustering baseline.
 - Next readout belongs in `docs/todo/regime_research.md`.
-- Build and validate a replay-safe regime classifier only after the discovered-regime review and follow-up profile/audit designs are complete.
+- Build and validate a replay-safe regime classifier only after the discovered-regime review, symbol breath profile design, and regime interaction audit design are complete.
 - Regime labels to backtest:
   - `SIDEWAYS_MARKET`
   - `BULL_MARKET`
@@ -111,7 +111,7 @@ Terminology rule:
 
 - Use `breath` for rhythm / phase / waveform / cycle.
 - Use `participation` for cross-asset participation.
-- Use `breadth` only where a field name or prior artifact already uses it.
+- Avoid `breadth` unless a field name or prior artifact already uses it.
 
 ## Boundary
 
