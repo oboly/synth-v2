@@ -45,6 +45,39 @@ The preview now includes additive semantics fields:
 
 These do not replace `rotation_state`. They clarify how to read it.
 
+## Dashboard UI Wording
+
+The static dashboard now applies UI-only display wording on top of the raw
+read-only fields. Raw values remain unchanged in Python row objects and JSON
+outputs.
+
+Display groups:
+
+- `HOLD`
+- `WAIT`
+- `MANUAL CHECK`
+- `INCREASE CANDIDATES`
+- `EXIT CANDIDATES`
+
+Primary dashboard labels:
+
+- `REDUCE_CANDIDATE` -> `HOLD_DEFENSIVE` by default for existing holdings.
+- `REDUCE_CANDIDATE` -> `MANUAL_REDUCE_CHECK` only when explicit reduce context
+  exists.
+- `EXIT_CANDIDATE` -> `HOLD_DEFENSIVE` by default for existing holdings.
+- `EXIT_CANDIDATE` -> `MANUAL_EXIT_CHECK` only when explicit exit context
+  exists.
+- `RECLAIM_CONFIRMED_REVIEW` -> `WAIT_RECOMPUTE`
+- `DO_NOT_ADD` -> `NO_INCREASE`
+- `ADD_REVIEW_AFTER_RECOMPUTE` -> `WAIT_RECOMPUTE_FOR_INCREASE`
+- `HOLD_WITH_REACTION_TARGET_PENDING` -> `HOLD_MONITOR_TARGET`
+
+Interpretation rule:
+
+- `MANUAL_*` labels mean user decision is required.
+- `HOLD_*` and `WAIT_*` labels do not imply manual trade action.
+- Sell or increase still requires downstream permission.
+
 ### Mapping
 
 - `rotation_state = HOLD` -> `position_management_state = HOLD_EXISTING`
@@ -83,6 +116,21 @@ These fields are descriptive only. They do not change `rotation_state`, `positio
 - `TP_NEAR_FIB_EXTENSION`
 - `TP_SR_ONLY`
 - `TP_UNKNOWN`
+
+## Zone Wording
+
+Dashboard wording treats below-price zones on existing long holdings as support
+or retest context, not TP.
+
+- below current price -> `SUPPORT_BELOW` or `RETEST_ZONE_BELOW`
+- above current price -> `UPSIDE_REACTION_TARGET`
+- reclaimed/invalidated old map -> `WAIT_RECOMPUTE`
+
+Helper rule:
+
+```text
+below-price support/retest context, not TP
+```
 
 ## Boundary
 

@@ -105,6 +105,23 @@ class CandidateDestinationContext:
     confirmation_state: str
 
 
+@dataclass(frozen=True)
+class HoldingDisplayState:
+    action_label: str
+    action_helper: str
+    increase_label: str
+    increase_helper: str
+    context_label: str
+    context_helper: str
+    group_label: str
+    entry_display_state: str
+    next_preview: NextZonePreview
+    lifecycle_state: str
+    recompute_needed: bool
+    recompute_reason: str
+    fresh_badge: str
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Render static HTML dashboard for read-only position rotation preview."
@@ -610,8 +627,13 @@ def lifecycle_badges_html(lifecycle_state: str, fresh_badge: str) -> str:
 
 
 def next_zone_html(preview: NextZonePreview) -> str:
+    display_state = preview.next_zone_state
+    display_reason = preview.next_zone_reason
+    if preview.next_zone_state in {"RECLAIM_NEXT_ZONE_PREVIEW", "BREAKDOWN_NEXT_ZONE_PREVIEW"}:
+        display_state = "WAIT_RECOMPUTE"
+        display_reason = "old map invalidated; wait for fresh map/advice"
     parts = [
-        f"<span class='pill {pill_class(preview.next_zone_state)}'>{esc(preview.next_zone_state)}</span>"
+        f"<span class='pill {pill_class(display_state)}'>{esc(display_state)}</span>"
     ]
     if preview.next_reaction_zone_label and preview.next_reaction_zone:
         parts.append(
@@ -627,11 +649,166 @@ def next_zone_html(preview: NextZonePreview) -> str:
             f"<span class='zone-value'>{esc(format_zone(preview.next_target_zone))}</span>"
             "</div>"
         )
-    if preview.next_zone_reason:
-        parts.append(f"<div class='muted small'>{esc(preview.next_zone_reason)}</div>")
+    if display_reason:
+        parts.append(f"<div class='muted small'>{esc(display_reason)}</div>")
     if preview.next_zone_state in {"RECLAIM_NEXT_ZONE_PREVIEW", "BREAKDOWN_NEXT_ZONE_PREVIEW"}:
         parts.append("<div class='muted small'>Market context, not permission.</div>")
     return "".join(parts)
+
+
+def has_retest_word(*values: str | None) -> bool:
+    text = " ".join(str(value or "").upper() for value in values)
+    return "RETEST" in text or "SUPPORT" in text
+
+
+def explicit_reduce_context(
+    *,
+    row: Any,
+    lifecycle_state: str,
+    next_preview: NextZonePreview,
+) -> bool:
+    reason_codes = {str(code or "").upper() for code in getattr(row, "reason_codes", [])}
+    rotation_state = str(row.rotation_state or "").upper()
+    hold_context = str(row.hold_context_label or "").upper()
+    return (
+        str(row.target_state or "").upper() == "TARGET_REACHED"
+        or str(row.risk_state or "").upper() in {"RISK_NEAR", "RECLAIM_CONFIRMED"}
+        or lifecycle_state.upper() in {"TARGET_REACHED", "TARGET_REACHED_STALE", "TARGET_OVERSHOT", "INVALIDATION_NEAR"}
+        or next_preview.next_zone_state == "UPSIDE_EXTENSION_PREVIEW"
+        or rotation_state in TP_HARVEST_REVIEW_STATES
+        or hold_context == "TARGET_REACHED_REVIEW"
+        or "TARGET_REACHED" in reason_codes
+    )
+
+
+def explicit_exit_context(
+    *,
+    row: Any,
+    lifecycle_state: str,
+    next_preview: NextZonePreview,
+) -> bool:
+    reason_codes = {str(code or "").upper() for code in getattr(row, "reason_codes", [])}
+    return (
+        str(row.risk_state or "").upper() == "RECLAIM_CONFIRMED"
+        or lifecycle_state.upper() == "INVALIDATION_TOUCHED"
+        or next_preview.next_zone_state in {"RECLAIM_NEXT_ZONE_PREVIEW", "BREAKDOWN_NEXT_ZONE_PREVIEW"}
+        or "DOWN_MAP_INVALIDATED_BY_RECLAIM" in reason_codes
+        or "UP_MAP_INVALIDATED_BY_BREAKDOWN" in reason_codes
+    )
+
+
+def display_context_state(raw_context: str | None) -> tuple[str, str]:
+    value = str(raw_context or "").upper()
+    if value == "HOLD_WITH_REACTION_TARGET_PENDING":
+        return "HOLD_MONITOR_TARGET", "hold and monitor reaction/target context"
+    if value == "TARGET_REACHED_REVIEW":
+        return "TARGET_REACHED_CONTEXT", "target reached context; downstream permission still required"
+    if not value:
+        return "NONE", ""
+    return value, ""
+
+
+def display_increase_state(
+    *,
+    add_permission_state: str | None,
+    add_block_reason: str | None,
+    entry_display_state: str,
+) -> tuple[str, str]:
+    raw_state = str(add_permission_state or "").upper()
+    entry_state = str(entry_display_state or "").upper()
+    if raw_state == "DO_NOT_ADD":
+        return "NO_INCREASE", "do not increase this position"
+    if raw_state == "ADD_REVIEW_AFTER_RECOMPUTE":
+        return "WAIT_RECOMPUTE_FOR_INCREASE", "wait for fresh map/advice"
+    if raw_state == "ADD_REVIEW":
+        if entry_state in {"IN_ENTRY_ZONE", "IN_REACTION_ZONE", "ENTRY_ZONE_NEAR", "REACTION_ZONE_NEAR"}:
+            return "INCREASE_CANDIDATE", "increase requires downstream permission"
+        return "WAIT_RETEST", "wait for price to return to support/entry zone"
+    if str(add_block_reason or "").upper() == "RECLAIM_CONFIRMED":
+        return "WAIT_RECOMPUTE_FOR_INCREASE", "wait for fresh map/advice"
+    return "NO_INCREASE", "do not increase this position"
+
+
+def display_action_state(
+    *,
+    row: Any,
+    lifecycle_state: str,
+    next_preview: NextZonePreview,
+) -> tuple[str, str]:
+    raw_state = str(row.rotation_state or "").upper()
+    if raw_state == "RECLAIM_CONFIRMED_REVIEW" or next_preview.next_zone_state in {
+        "RECLAIM_NEXT_ZONE_PREVIEW",
+        "BREAKDOWN_NEXT_ZONE_PREVIEW",
+    }:
+        return "WAIT_RECOMPUTE", "wait for fresh map/advice"
+    if raw_state == "EXIT_CANDIDATE":
+        if explicit_exit_context(row=row, lifecycle_state=lifecycle_state, next_preview=next_preview):
+            return "MANUAL_EXIT_CHECK", "manual decision required, not automatic sell"
+        if explicit_reduce_context(row=row, lifecycle_state=lifecycle_state, next_preview=next_preview):
+            return "MANUAL_REDUCE_CHECK", "manual decision required, not automatic sell"
+        return "HOLD_DEFENSIVE", "keep existing position, defensive context"
+    if raw_state == "REDUCE_CANDIDATE":
+        if explicit_reduce_context(row=row, lifecycle_state=lifecycle_state, next_preview=next_preview):
+            return "MANUAL_REDUCE_CHECK", "manual decision required, not automatic sell"
+        return "HOLD_DEFENSIVE", "keep existing position, defensive context"
+    if raw_state in TP_HARVEST_REVIEW_STATES:
+        return "MANUAL_REDUCE_CHECK", "manual decision required, not automatic sell"
+    if raw_state in {"HOLD_REVIEW_STALE_SOURCE", "REDUCE_REVIEW_CANDIDATE_STALE_SOURCE", "NO_POSITION_CONTEXT"}:
+        return "WAIT_RECOMPUTE", "wait for fresh map/advice"
+    if "REVIEW" in raw_state:
+        return "HOLD_DEFENSIVE", "keep existing position, defensive context"
+    return "HOLD_DEFENSIVE", "keep existing position, defensive context"
+
+
+def display_group_label(*, action_label: str, increase_label: str) -> str:
+    if action_label == "MANUAL_EXIT_CHECK":
+        return "EXIT CANDIDATES"
+    if action_label == "MANUAL_REDUCE_CHECK":
+        return "MANUAL CHECK"
+    if action_label.startswith("WAIT_") or increase_label.startswith("WAIT_"):
+        return "WAIT"
+    if increase_label == "INCREASE_CANDIDATE":
+        return "INCREASE CANDIDATES"
+    return "HOLD"
+
+
+def target_display_label(
+    *,
+    current_price: Decimal | None,
+    zone: tuple[Decimal, Decimal] | None,
+    next_preview: NextZonePreview,
+) -> tuple[str, str]:
+    if next_preview.next_zone_state in {"RECLAIM_NEXT_ZONE_PREVIEW", "BREAKDOWN_NEXT_ZONE_PREVIEW"}:
+        return "WAIT_RECOMPUTE", "old map invalidated; wait for fresh map/advice"
+    if zone is None or current_price is None:
+        return "TARGET", ""
+    midpoint = (zone[0] + zone[1]) / Decimal("2")
+    if midpoint <= current_price:
+        label = (
+            "RETEST_ZONE_BELOW"
+            if has_retest_word(next_preview.next_reaction_zone_label, next_preview.next_target_zone_label)
+            else "SUPPORT_BELOW"
+        )
+        return label, "below-price support/retest context, not TP"
+    return "UPSIDE_REACTION_TARGET", "above-price reaction target context"
+
+
+def target_alignment_display_label(
+    *,
+    alignment_label: str | None,
+    current_price: Decimal | None,
+    zone_low: Decimal | None,
+    zone_high: Decimal | None,
+    next_preview: NextZonePreview,
+) -> tuple[str, str]:
+    zone_values = [value for value in (zone_low, zone_high) if value is not None]
+    if not zone_values:
+        return str(alignment_label or "TARGET_UNKNOWN"), "target context"
+    zone = (
+        min(zone_values),
+        max(zone_values),
+    )
+    return target_display_label(current_price=current_price, zone=zone, next_preview=next_preview)
 
 
 def relevant_target_html(
@@ -643,27 +820,39 @@ def relevant_target_html(
     next_preview: NextZonePreview,
     delta_target_pct: Decimal | None,
 ) -> str:
+    if next_preview.next_zone_state in {"RECLAIM_NEXT_ZONE_PREVIEW", "BREAKDOWN_NEXT_ZONE_PREVIEW"}:
+        return (
+            "<div><span class='pill warn'>WAIT_RECOMPUTE</span></div>"
+            "<div class='muted small'>old map invalidated; wait for fresh map/advice</div>"
+        )
+
     if next_preview.next_target_zone_label and next_preview.next_target_zone:
-        label = next_preview.next_target_zone_label
-        zone_text = format_zone(next_preview.next_target_zone)
+        zone = next_preview.next_target_zone
         distance_text = signed_pct_text(
             pct_delta(
-                (next_preview.next_target_zone[0] + next_preview.next_target_zone[1]) / Decimal("2"),
+                (zone[0] + zone[1]) / Decimal("2"),
                 current_price,
             )
         )
     else:
+        zone_values = [value for value in (tp_zone_low, tp_zone_high) if value is not None]
         zone_text = tp_zone_text({"tp_zone_low": tp_zone_low, "tp_zone_high": tp_zone_high})
         if not zone_text:
             return "<span class='muted'>—</span>"
-        leg = str(leg_direction or "").upper()
-        label = "TP / upside target" if leg == "UP" else "Downside target" if leg == "DOWN" else "Target"
+        zone = None if not zone_values else (min(zone_values), max(zone_values))
         distance_text = signed_pct_text(delta_target_pct)
+    zone_text = format_zone(zone) if zone is not None else zone_text
+    label, helper = target_display_label(
+        current_price=current_price,
+        zone=zone,
+        next_preview=next_preview,
+    )
 
     distance_html = "" if not distance_text else f"<div class='muted small'>distance: {esc(distance_text)}</div>"
     return (
         f"<div><span class='pill {pill_class(label)}'>{esc(label)}</span></div>"
         f"<div class='zone-value'>{esc(zone_text)}</div>"
+        f"<div class='muted small'>{esc(helper)}</div>"
         f"{distance_html}"
     )
 
@@ -760,10 +949,6 @@ def render_html(
     local_ts = now_local_label()
     now_utc = datetime.now(UTC)
 
-    state_counts: dict[str, int] = {}
-    for row in rows:
-        state_counts[row.rotation_state] = state_counts.get(row.rotation_state, 0) + 1
-
     current_price_by_symbol = {
         symbol: snapshot.price
         for symbol, snapshot in price_by_symbol.items()
@@ -808,45 +993,6 @@ def render_html(
             invalidation_price=row.invalidation_price,
         )
 
-    lifecycle_state_by_symbol = {
-        row.position_symbol: lifecycle_for_row(row).lifecycle_state
-        for row in rows
-    }
-
-    tp_harvest_rows = [
-        r for r in rows
-        if is_up_target_review_row(r, lifecycle_state_by_symbol.get(r.position_symbol, ""))
-    ]
-    downside_target_rows = [
-        r for r in rows
-        if (
-            r not in tp_harvest_rows
-            and is_downside_target_review_row(r, lifecycle_state_by_symbol.get(r.position_symbol, ""))
-        )
-    ]
-    reduce_rows = [
-        r for r in rows
-        if r not in tp_harvest_rows and r not in downside_target_rows and is_reduce_exit_row(r)
-    ]
-    review_rows = [
-        r for r in rows
-        if (
-            r not in tp_harvest_rows
-            and r not in downside_target_rows
-            and r not in reduce_rows
-            and "REVIEW" in str(r.rotation_state or "").upper()
-            and str(r.target_state or "").upper() != "TARGET_REACHED"
-        )
-    ]
-    hold_rows = [
-        r for r in rows
-        if (
-            r not in tp_harvest_rows
-            and r not in downside_target_rows
-            and r not in reduce_rows
-            and r not in review_rows
-        )
-    ]
     held_row_by_symbol = {row.position_symbol: row for row in rows}
     ranked_candidates = rank_market_candidates(advice_by_symbol, current_price_by_symbol)
     recompute_rows = build_recompute_rows(
@@ -897,6 +1043,100 @@ def render_html(
                 f"{esc(refresh_row.post_refresh_state)}</span></div>"
             )
         return badges
+
+    def display_state_for_row(row: Any) -> HoldingDisplayState:
+        current_price = current_price_by_symbol.get(row.position_symbol)
+        lifecycle = lifecycle_for_row(row)
+        effective_lifecycle_state, effective_recompute_needed, effective_recompute_reason = effective_recompute_context(
+            row.position_symbol, lifecycle
+        )
+        fresh_badge = fresh_map_badge(
+            row.paper_asof_ts_utc,
+            now_utc=now_utc,
+            lifecycle_state=effective_lifecycle_state,
+        )
+        price_progress = classify_price_progress_state(
+            leg_direction=row.leg_direction,
+            current_price=current_price,
+            entry_zone_low=row.entry_zone_low,
+            entry_zone_high=row.entry_zone_high,
+            tp_zone_low=row.tp_zone_low,
+            tp_zone_high=row.tp_zone_high,
+            in_position_context=True,
+        )
+        entry_display_state = semantic_entry_display_state(
+            entry_state=classify_entry_zone_state(
+                leg_direction=row.leg_direction,
+                current_price=current_price,
+                entry_zone_low=row.entry_zone_low,
+                entry_zone_high=row.entry_zone_high,
+            ),
+            price_progress_state=price_progress.progress_state,
+            price_progress_labels=price_progress.labels,
+        )
+        next_preview = preview_next_zones(
+            symbol=row.position_symbol,
+            leg_direction=row.leg_direction,
+            current_price=current_price,
+            entry_zone_low=row.entry_zone_low,
+            entry_zone_high=row.entry_zone_high,
+            tp_zone_low=row.tp_zone_low,
+            tp_zone_high=row.tp_zone_high,
+            invalidation_price=row.invalidation_price,
+            lifecycle_state=lifecycle.lifecycle_state,
+            lifecycle_reason=lifecycle.recompute_reason,
+            target_state=row.target_state,
+            price_progress_state=price_progress.progress_state,
+        )
+        action_label, action_helper = display_action_state(
+            row=row,
+            lifecycle_state=effective_lifecycle_state,
+            next_preview=next_preview,
+        )
+        increase_label, increase_helper = display_increase_state(
+            add_permission_state=row.add_permission_state,
+            add_block_reason=row.add_block_reason,
+            entry_display_state=entry_display_state,
+        )
+        context_label, context_helper = display_context_state(row.hold_context_label)
+        group_label = display_group_label(
+            action_label=action_label,
+            increase_label=increase_label,
+        )
+        return HoldingDisplayState(
+            action_label=action_label,
+            action_helper=action_helper,
+            increase_label=increase_label,
+            increase_helper=increase_helper,
+            context_label=context_label,
+            context_helper=context_helper,
+            group_label=group_label,
+            entry_display_state=entry_display_state,
+            next_preview=next_preview,
+            lifecycle_state=effective_lifecycle_state,
+            recompute_needed=effective_recompute_needed,
+            recompute_reason=effective_recompute_reason,
+            fresh_badge=fresh_badge,
+        )
+
+    display_state_by_symbol = {
+        row.position_symbol: display_state_for_row(row)
+        for row in rows
+    }
+    group_counts: dict[str, int] = {}
+    for row in rows:
+        group = display_state_by_symbol[row.position_symbol].group_label
+        group_counts[group] = group_counts.get(group, 0) + 1
+
+    hold_rows = [r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "HOLD"]
+    wait_rows = [r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "WAIT"]
+    manual_rows = [r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "MANUAL CHECK"]
+    increase_rows = [
+        r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "INCREASE CANDIDATES"
+    ]
+    exit_rows = [
+        r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "EXIT CANDIDATES"
+    ]
 
     def destination_eligibility_for_candidate(symbol: str) -> DestinationEligibility:
         context = candidate_destination_context(symbol)
@@ -1075,8 +1315,6 @@ def render_html(
     def table_rows(table_rows: list[Any]) -> str:
         out = []
         for row in table_rows:
-            tp_zone = tp_zone_text(row)
-
             review_refs = ", ".join(row.review_references[:3]) if row.review_references else ""
             strict_destinations = strict_rotation_destinations_for_row(row)
             destinations = ", ".join(strict_destinations) if strict_destinations else ""
@@ -1098,15 +1336,12 @@ def render_html(
             )
             delta_invalidation_pct = pct_delta(row.invalidation_price, current_price)
             context = distance_context(row)
+            display_state = display_state_by_symbol[row.position_symbol]
             lifecycle = lifecycle_for_row(row)
-            effective_lifecycle_state, effective_recompute_needed, effective_recompute_reason = effective_recompute_context(
-                row.position_symbol, lifecycle
-            )
-            fresh_badge = fresh_map_badge(
-                row.paper_asof_ts_utc,
-                now_utc=now_utc,
-                lifecycle_state=effective_lifecycle_state,
-            )
+            effective_lifecycle_state = display_state.lifecycle_state
+            effective_recompute_needed = display_state.recompute_needed
+            effective_recompute_reason = display_state.recompute_reason
+            fresh_badge = display_state.fresh_badge
             row_class = workflow_row_class(
                 lifecycle_state=effective_lifecycle_state,
                 recompute_needed=effective_recompute_needed,
@@ -1121,16 +1356,7 @@ def render_html(
                 tp_zone_high=row.tp_zone_high,
                 in_position_context=True,
             )
-            entry_display_state = semantic_entry_display_state(
-                entry_state=classify_entry_zone_state(
-                    leg_direction=row.leg_direction,
-                    current_price=current_price,
-                    entry_zone_low=row.entry_zone_low,
-                    entry_zone_high=row.entry_zone_high,
-                ),
-                price_progress_state=price_progress.progress_state,
-                price_progress_labels=price_progress.labels,
-            )
+            entry_display_state = display_state.entry_display_state
             progress_labels = "".join(
                 f"<span class='pill {pill_class(label)}'>{esc(label)}</span>"
                 for label in price_progress.labels
@@ -1139,20 +1365,7 @@ def render_html(
                 f"<span class='pill {pill_class(price_progress.progress_state)}'>{esc(price_progress.progress_state)}</span>"
                 f"{progress_labels}"
             )
-            next_preview = preview_next_zones(
-                symbol=row.position_symbol,
-                leg_direction=row.leg_direction,
-                current_price=current_price,
-                entry_zone_low=row.entry_zone_low,
-                entry_zone_high=row.entry_zone_high,
-                tp_zone_low=row.tp_zone_low,
-                tp_zone_high=row.tp_zone_high,
-                invalidation_price=row.invalidation_price,
-                lifecycle_state=lifecycle.lifecycle_state,
-                lifecycle_reason=lifecycle.recompute_reason,
-                target_state=row.target_state,
-                price_progress_state=price_progress.progress_state,
-            )
+            next_preview = display_state.next_preview
             severity = calibrate_paper_advice_severity(
                 row,
                 market_breath_row=(market_breath_by_symbol or {}).get(row.position_symbol),
@@ -1195,6 +1408,18 @@ def render_html(
                 next_preview=next_preview,
                 delta_target_pct=delta_tp_pct,
             )
+            target_alignment_label, target_alignment_note = target_alignment_display_label(
+                alignment_label=row.tp_alignment_label,
+                current_price=current_price,
+                zone_low=row.tp_zone_low,
+                zone_high=row.tp_zone_high,
+                next_preview=next_preview,
+            )
+            raw_action_detail = f"raw: {row.position_management_state} / {row.rotation_state}"
+            raw_increase_detail = f"raw: {row.add_permission_state}"
+            if row.add_block_reason:
+                raw_increase_detail += f" · {row.add_block_reason}"
+            raw_context_detail = f"raw: {row.hold_context_label or 'NONE'}"
 
             out.append(
                 f"<tr class='{row_class}'>"
@@ -1219,17 +1444,17 @@ def render_html(
                 f"<td>{lifecycle_badges_for_symbol(row.position_symbol, lifecycle.lifecycle_state, fresh_badge)}</td>"
                 f"<td><span class='pill {pill_class(recompute_label_for_symbol(row.position_symbol, lifecycle))}'>{esc(recompute_label_for_symbol(row.position_symbol, lifecycle))}</span></td>"
                 f"<td class='small'>{esc(effective_recompute_reason)}</td>"
-                f"<td><span class='pill {pill_class(row.position_management_state)}'>{esc(row.position_management_state)}</span></td>"
-                f"<td><span class='pill {pill_class(row.add_permission_state)}'>{esc(row.add_permission_state)}</span><div class='muted small'>{esc(row.add_block_reason or '')}</div></td>"
-                f"<td><span class='pill {pill_class(row.hold_context_label)}'>{esc(row.hold_context_label or 'NONE')}</span></td>"
+                f"<td><span class='pill {pill_class(display_state.action_label)}'>{esc(display_state.action_label)}</span><div class='muted small'>{esc(display_state.action_helper)}</div><div class='muted small'>{esc(raw_action_detail)}</div></td>"
+                f"<td><span class='pill {pill_class(display_state.increase_label)}'>{esc(display_state.increase_label)}</span><div class='muted small'>{esc(display_state.increase_helper)}</div><div class='muted small'>{esc(raw_increase_detail)}</div></td>"
+                f"<td><span class='pill {pill_class(display_state.context_label)}'>{esc(display_state.context_label)}</span><div class='muted small'>{esc(display_state.context_helper)}</div><div class='muted small'>{esc(raw_context_detail)}</div></td>"
                 f"<td>{alignment_html(label=row.entry_alignment_label, distance_pct=row.entry_fib_distance_pct, band_flag=bool(row.entry_is_fib_band), note='fib-based entry zone' if row.entry_alignment_label == 'ENTRY_FIB_PRIMARY_0500_0618' else 'entry context')}</td>"
-                f"<td>{alignment_html(label=row.tp_alignment_label, distance_pct=row.tp_fib_distance_pct, band_flag=bool(row.tp_is_fib_extension_band), note='reaction/support-resistance target, not fib-extension magnet' if row.tp_alignment_label == 'TP_SR_ONLY' else 'tp context')}</td>"
+                f"<td>{alignment_html(label=target_alignment_label, distance_pct=row.tp_fib_distance_pct, band_flag=bool(row.tp_is_fib_extension_band), note=target_alignment_note)}</td>"
                 f"<td>{next_zone_html(next_preview)}</td>"
                 f"{entry_distance_cell(leg_direction=row.leg_direction, entry_zone_low=row.entry_zone_low, entry_zone_high=row.entry_zone_high, current_price=current_price)}"
                 f"{pct_cell(delta_tp_pct, target_pct_class(delta_tp_pct, context))}"
                 f"{pct_cell(delta_invalidation_pct, risk_pct_class(delta_invalidation_pct, context))}"
                 f"<td class='zone-value sticky-target'>{target_html}</td>"
-                f"<td><span class='pill {pill_class(row.rotation_state)}'>{esc(row.rotation_state)}</span></td>"
+                f"<td><span class='pill {pill_class(display_state.group_label)}'>{esc(display_state.group_label)}</span><div class='muted small'>raw: {esc(row.rotation_state)}</div></td>"
                 f"<td class='num'>{esc(row.rotation_pressure_score)}</td>"
                 f"<td class='small'>{esc(review_refs)}</td>"
                 f"<td class='small'>{destinations_html}</td>"
@@ -1440,7 +1665,7 @@ def render_html(
                   <th>Setup</th>
                   <th>Setup reason</th>
                   <th>Policy</th>
-                  <th>Action</th>
+                  <th>Status</th>
                   <th>Severity / Substate</th>
                   <th>Intrabar lifecycle</th>
                   <th>Leg</th>
@@ -1496,7 +1721,7 @@ def render_html(
                   <th>Selection</th>
                   <th>Setup reason</th>
                   <th>Leg</th>
-                  <th>Action</th>
+                  <th>Policy</th>
                   <th>A+</th>
                   <th>Severity / Substate</th>
                   <th>Intrabar lifecycle</th>
@@ -1508,17 +1733,17 @@ def render_html(
                   <th>Lifecycle state</th>
                   <th>Recompute needed</th>
                   <th>Recompute reason</th>
-                  <th>Position mgmt</th>
-                  <th>Add permission</th>
-                  <th>Hold context</th>
+                  <th>Status</th>
+                  <th>Increase</th>
+                  <th>Context</th>
                   <th>Entry align</th>
-                  <th>TP align</th>
+                  <th>Target align</th>
                   <th>Next zones</th>
                   <th>Entry distance</th>
                   <th>Δ target %</th>
                   <th>Δ risk %</th>
                   <th class="sticky-target">Relevant target</th>
-                  <th>Rotation</th>
+                  <th>Group</th>
                   <th>Rotation score</th>
                   <th>Market review refs</th>
                   <th>Rotation destinations</th>
@@ -1534,7 +1759,7 @@ def render_html(
 
     counts_html = "".join(
         f"<span class='pill {pill_class(k)}'>{esc(k)}: {v}</span>"
-        for k, v in sorted(state_counts.items())
+        for k, v in sorted(group_counts.items())
     )
     post_refresh_counts_html = "".join(
         f"<span class='pill {pill_class(k)}'>{esc(k)}: {v}</span>"
@@ -1564,7 +1789,16 @@ def render_html(
     <div class="muted">venue={esc(venue)} · quote={esc(quote_currency)} · interval={esc(interval)} · trading_account_id={esc(account_id)}</div>
     {cockpit_nav()}
     <div class="legend">
-      <div><strong>UP target reached</strong> = TP / harvest / reduce review for existing long/upside maps.</div>
+      <div><strong>Read-only dashboard. No row is an order instruction. Sell/increase requires downstream permission. MANUAL CHECK means user decision needed; HOLD/WAIT means no manual trade action implied.</strong></div>
+      <div><strong>HOLD_DEFENSIVE</strong> = keep existing position, defensive context</div>
+      <div><strong>HOLD_MONITOR_TARGET</strong> = hold and monitor reaction/target context</div>
+      <div><strong>NO_INCREASE</strong> = do not increase this position</div>
+      <div><strong>WAIT_RECOMPUTE</strong> = wait for fresh map/advice</div>
+      <div><strong>WAIT_RETEST</strong> = wait for price to return to support/entry zone</div>
+      <div><strong>SUPPORT_BELOW / RETEST_ZONE_BELOW</strong> = below-price support/retest context, not TP</div>
+      <div><strong>MANUAL_REDUCE_CHECK</strong> = manual decision required, not automatic sell</div>
+      <div><strong>MANUAL_EXIT_CHECK</strong> = manual decision required, not automatic sell</div>
+      <div><strong>UP target reached</strong> = upside target context for existing long/upside maps.</div>
       <div><strong>DOWN target reached</strong> = downside target/support reached; not long TP.</div>
       <div><strong>Rotation score</strong> = account-position review pressure score.</div>
       <div><strong>Market review refs</strong> = market-only comparison scores, not buy advice.</div>
@@ -1600,7 +1834,7 @@ def render_html(
       <div class="metric"><div class="muted">Reserved EUR cash</div><h2>{eur_html(None if eur_balance is None else eur_balance.reserved_amount)}</h2></div>
       <div class="metric"><div class="muted">Total EUR cash</div><h2>{eur_html(total_eur_cash)}</h2></div>
       <div class="metric"><div class="muted">Indicative account value</div><h2>{eur_html(indicative_account_value)}</h2><div class="muted small">Positions value + Total EUR cash when EUR balance is known.</div></div>
-      <div class="metric"><div class="muted">State counts</div>{counts_html}</div>
+      <div class="metric"><div class="muted">Display groups</div>{counts_html}</div>
       <div class="metric"><div class="muted">Recompute state counts</div><h2>{len(recompute_rows)}</h2><div>{post_refresh_counts_html}</div><div class="muted small">{display_severity_counts_html}</div></div>
       <div class="metric"><div class="muted">Safety</div><span class="pill ok">broker_private_calls=0</span><span class="pill ok">broker_writes=0</span><span class="pill ok">order_submission=0</span><span class="pill ok">executor=none</span></div>
     </div>
@@ -1608,11 +1842,11 @@ def render_html(
   <main>
     {recompute_lifecycle_section()}
     {candidate_diagnostics_section()}
-    {section("TP / harvest / reduce review", tp_harvest_rows, "harvest")}
-    {section("Downside target / support / recompute review", downside_target_rows, "downside")}
-    {section("Reduce / exit review candidates", reduce_rows)}
-    {section("Hold review", review_rows)}
-    {section("Hold / other", hold_rows)}
+    {section("EXIT CANDIDATES", exit_rows)}
+    {section("MANUAL CHECK", manual_rows)}
+    {section("WAIT", wait_rows, "downside")}
+    {section("INCREASE CANDIDATES", increase_rows, "priority")}
+    {section("HOLD", hold_rows, "harvest")}
   </main>
 </body>
 </html>
@@ -1662,7 +1896,7 @@ def write_index(output_dir: Path) -> Path:
       </div>
       <div class="card">
         <a href="/synth/rotation-preview.html">Rotation Preview</a>
-        <p class="muted">Account-aware read-only HOLD / REDUCE review dashboard.</p>
+        <p class="muted">Account-aware read-only HOLD / WAIT / manual-check dashboard.</p>
       </div>
     </div>
   </main>

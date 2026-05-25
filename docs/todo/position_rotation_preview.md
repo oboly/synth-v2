@@ -141,6 +141,11 @@ Implemented behavior:
   distance, and risk distance
 - distance semantics are display/review context only and do not change scoring
   or better-candidate logic
+- dashboard wording/grouping is UI-only:
+  - `Status`, `Increase`, `Context`
+  - `HOLD`, `WAIT`, `MANUAL CHECK`, `INCREASE CANDIDATES`, `EXIT CANDIDATES`
+  - below-price zones on existing long holdings are shown as
+    `SUPPORT_BELOW` / `RETEST_ZONE_BELOW`, not TP
 
 ## P1 — Target/risk-aware rotation classification
 
