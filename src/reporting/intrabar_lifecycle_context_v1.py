@@ -25,6 +25,7 @@ DEFAULT_STRUCTURAL_INTERVAL = "4h"
 DEFAULT_LIFECYCLE_INTERVAL = "15m"
 PRICE_SNAPSHOT_FRESH_AFTER = timedelta(minutes=10)
 LTF_FRESH_AFTER = timedelta(minutes=30)
+INTRABAR_DECISION_FRESH_AFTER = timedelta(minutes=5)
 MIN_LTF_HISTORY = 4
 
 
@@ -38,6 +39,8 @@ class IntrabarLifecycleContext:
     latest_15m_close_ts_utc: str | None
     current_price: Decimal | None
     price_source: str
+    latest_15m_high: Decimal | None
+    latest_15m_low: Decimal | None
     leg_direction: str | None
     entry_zone_low: Decimal | None
     entry_zone_high: Decimal | None
@@ -48,6 +51,10 @@ class IntrabarLifecycleContext:
     intrabar_progress_state: str
     intrabar_recompute_hint: str
     intrabar_reason: str
+    target_touch_label: str | None
+    target_touch_context_label: str | None
+    touched_high_or_low: Decimal | None
+    target_touch_age_minutes: Decimal | None
     data_quality_state: str
 
 
@@ -107,6 +114,8 @@ def _freshness(
             parts.append("LTF_CANDLES_FRESH")
         else:
             parts.append("LTF_CANDLES_STALE")
+        if ltf_age is None or ltf_age > INTRABAR_DECISION_FRESH_AFTER:
+            parts.append("STALE_FOR_INTRABAR_DECISION")
 
     return ";".join(parts) if parts else "LTF_MISSING"
 
@@ -198,6 +207,8 @@ def fetch_latest_ltf_candles(
             a.symbol,
             c.close_ts_utc,
             c.close_price,
+            c.high_price,
+            c.low_price,
             ROW_NUMBER() OVER (
                 PARTITION BY c.asset_id
                 ORDER BY c.close_ts_utc DESC
@@ -217,6 +228,16 @@ def fetch_latest_ltf_candles(
             ',',
             1
         ) AS latest_close_price,
+        SUBSTRING_INDEX(
+            GROUP_CONCAT(CAST(high_price AS CHAR) ORDER BY close_ts_utc DESC),
+            ',',
+            1
+        ) AS latest_high_price,
+        SUBSTRING_INDEX(
+            GROUP_CONCAT(CAST(low_price AS CHAR) ORDER BY close_ts_utc DESC),
+            ',',
+            1
+        ) AS latest_low_price,
         COUNT(*) AS candle_count
     FROM ranked_candles
     WHERE rn <= %(limit_per_asset)s
@@ -272,9 +293,72 @@ def _recompute_hint(intrabar_state: str, lifecycle_recompute_needed: bool) -> st
         return "INTRABAR_RECOMPUTE_REVIEW"
     if intrabar_state in {"INTRABAR_TARGET_TOUCHED", "INTRABAR_RECLAIM_TOUCHED"}:
         return "INTRABAR_MONITOR_RECOMPUTE"
+    if intrabar_state == "TARGET_TOUCHED_RECENTLY":
+        return "INTRABAR_TARGET_TOUCH_REVIEW"
     if lifecycle_recompute_needed:
         return "INTRABAR_RECOMPUTE_REVIEW"
     return "NO_INTRABAR_RECOMPUTE_HINT"
+
+
+def _touch_age_minutes(
+    latest_15m_close_ts: datetime | None,
+    *,
+    now_utc: datetime,
+) -> Decimal | None:
+    age = _age(latest_15m_close_ts, now_utc=now_utc)
+    if age is None:
+        return None
+    return Decimal(str(age.total_seconds())) / Decimal("60")
+
+
+def _intrabar_target_touch_overlay(
+    *,
+    leg_direction: str | None,
+    current_price: Decimal | None,
+    tp_zone_low: Decimal | None,
+    tp_zone_high: Decimal | None,
+    latest_15m_high: Decimal | None,
+    latest_15m_low: Decimal | None,
+    latest_15m_close_ts: datetime | None,
+    now_utc: datetime,
+) -> tuple[str | None, str | None, Decimal | None, Decimal | None]:
+    leg = str(leg_direction or "").upper()
+    if leg not in {"UP", "DOWN"} or current_price is None:
+        return None, None, None, None
+
+    touch_age_minutes = _touch_age_minutes(latest_15m_close_ts, now_utc=now_utc)
+    if leg == "UP":
+        if tp_zone_low is None or latest_15m_high is None or latest_15m_high < tp_zone_low:
+            return None, None, None, None
+        if current_price < tp_zone_low:
+            return (
+                "EXTENSION_TOUCHED_INTRABAR",
+                "PULLBACK_AFTER_TARGET_TOUCH",
+                latest_15m_high,
+                touch_age_minutes,
+            )
+        return (
+            "EXTENSION_TOUCHED_INTRABAR",
+            "TARGET_TOUCHED_RECENTLY",
+            latest_15m_high,
+            touch_age_minutes,
+        )
+
+    if tp_zone_high is None or latest_15m_low is None or latest_15m_low > tp_zone_high:
+        return None, None, None, None
+    if current_price > tp_zone_high:
+        return (
+            "EXTENSION_TOUCHED_INTRABAR",
+            "PULLBACK_AFTER_TARGET_TOUCH",
+            latest_15m_low,
+            touch_age_minutes,
+        )
+    return (
+        "EXTENSION_TOUCHED_INTRABAR",
+        "TARGET_TOUCHED_RECENTLY",
+        latest_15m_low,
+        touch_age_minutes,
+    )
 
 
 def build_intrabar_lifecycle_context_rows(
@@ -320,6 +404,8 @@ def build_intrabar_lifecycle_context_rows(
         ltf_row = ltf_by_symbol.get(symbol)
         latest_15m_close_ts = None if not ltf_row else ltf_row.get("latest_close_ts_utc")
         ltf_count = 0 if not ltf_row else int(ltf_row.get("candle_count") or 0)
+        latest_15m_high = None if not ltf_row else _dec(ltf_row.get("latest_high_price"))
+        latest_15m_low = None if not ltf_row else _dec(ltf_row.get("latest_low_price"))
         price, price_source = _price_for_symbol(
             symbol=symbol,
             price_by_symbol=price_by_symbol,
@@ -343,6 +429,8 @@ def build_intrabar_lifecycle_context_rows(
                     latest_15m_close_ts_utc=_fmt_ts(latest_15m_close_ts),
                     current_price=price,
                     price_source=price_source,
+                    latest_15m_high=latest_15m_high,
+                    latest_15m_low=latest_15m_low,
                     leg_direction=None,
                     entry_zone_low=None,
                     entry_zone_high=None,
@@ -353,6 +441,10 @@ def build_intrabar_lifecycle_context_rows(
                     intrabar_progress_state="PRICE_PROGRESS_UNKNOWN",
                     intrabar_recompute_hint="NO_STRUCTURAL_MAP",
                     intrabar_reason="STRUCTURAL_MAP_MISSING",
+                    target_touch_label=None,
+                    target_touch_context_label=None,
+                    touched_high_or_low=None,
+                    target_touch_age_minutes=None,
                     data_quality_state=f"STRUCTURAL_MAP_MISSING;{data_quality}",
                 )
             )
@@ -371,6 +463,16 @@ def build_intrabar_lifecycle_context_rows(
             tp_zone_high=tp_zone_high,
             invalidation_price=invalidation_price,
         )
+        target_touch_label, target_touch_context_label, touched_high_or_low, target_touch_age_minutes = _intrabar_target_touch_overlay(
+            leg_direction=leg_direction,
+            current_price=price,
+            tp_zone_low=tp_zone_low,
+            tp_zone_high=tp_zone_high,
+            latest_15m_high=latest_15m_high,
+            latest_15m_low=latest_15m_low,
+            latest_15m_close_ts=latest_15m_close_ts,
+            now_utc=now,
+        )
         progress = classify_price_progress_state(
             leg_direction=leg_direction,
             current_price=price,
@@ -379,7 +481,11 @@ def build_intrabar_lifecycle_context_rows(
             tp_zone_low=tp_zone_low,
             tp_zone_high=tp_zone_high,
         )
-        intrabar_state = _intrabar_lifecycle_state(lifecycle.lifecycle_state, lifecycle.recompute_reason)
+        intrabar_state = (
+            "TARGET_TOUCHED_RECENTLY"
+            if target_touch_label is not None
+            else _intrabar_lifecycle_state(lifecycle.lifecycle_state, lifecycle.recompute_reason)
+        )
         data_quality = _freshness(
             price_snapshot=price_by_symbol.get(symbol),
             latest_15m_close_ts=latest_15m_close_ts,
@@ -396,6 +502,8 @@ def build_intrabar_lifecycle_context_rows(
                 latest_15m_close_ts_utc=_fmt_ts(latest_15m_close_ts),
                 current_price=price,
                 price_source=price_source,
+                latest_15m_high=latest_15m_high,
+                latest_15m_low=latest_15m_low,
                 leg_direction=None if leg_direction is None else str(leg_direction).upper(),
                 entry_zone_low=entry_zone_low,
                 entry_zone_high=entry_zone_high,
@@ -405,7 +513,23 @@ def build_intrabar_lifecycle_context_rows(
                 intrabar_lifecycle_state=intrabar_state,
                 intrabar_progress_state=progress.progress_state,
                 intrabar_recompute_hint=_recompute_hint(intrabar_state, lifecycle.recompute_needed),
-                intrabar_reason=lifecycle.recompute_reason,
+                intrabar_reason=(
+                    ",".join(
+                        part
+                        for part in [
+                            target_touch_label,
+                            target_touch_context_label,
+                            lifecycle.recompute_reason,
+                        ]
+                        if part
+                    )
+                    if target_touch_label is not None
+                    else lifecycle.recompute_reason
+                ),
+                target_touch_label=target_touch_label,
+                target_touch_context_label=target_touch_context_label,
+                touched_high_or_low=touched_high_or_low,
+                target_touch_age_minutes=target_touch_age_minutes,
                 data_quality_state=data_quality,
             )
         )

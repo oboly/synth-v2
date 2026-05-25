@@ -666,15 +666,18 @@ def explicit_reduce_context(
     row: Any,
     lifecycle_state: str,
     next_preview: NextZonePreview,
+    intrabar_row: Any | None = None,
 ) -> bool:
     reason_codes = {str(code or "").upper() for code in getattr(row, "reason_codes", [])}
     rotation_state = str(row.rotation_state or "").upper()
     hold_context = str(row.hold_context_label or "").upper()
+    intrabar_state = "" if intrabar_row is None else str(intrabar_row.intrabar_lifecycle_state or "").upper()
     return (
         str(row.target_state or "").upper() == "TARGET_REACHED"
         or str(row.risk_state or "").upper() in {"RISK_NEAR", "RECLAIM_CONFIRMED"}
         or lifecycle_state.upper() in {"TARGET_REACHED", "TARGET_REACHED_STALE", "TARGET_OVERSHOT", "INVALIDATION_NEAR"}
         or next_preview.next_zone_state == "UPSIDE_EXTENSION_PREVIEW"
+        or intrabar_state == "TARGET_TOUCHED_RECENTLY"
         or rotation_state in TP_HARVEST_REVIEW_STATES
         or hold_context == "TARGET_REACHED_REVIEW"
         or "TARGET_REACHED" in reason_codes
@@ -697,7 +700,35 @@ def explicit_exit_context(
     )
 
 
-def display_context_state(raw_context: str | None) -> tuple[str, str]:
+def intrabar_target_touch_active(intrabar_row: Any | None) -> bool:
+    if intrabar_row is None:
+        return False
+    return str(intrabar_row.intrabar_lifecycle_state or "").upper() == "TARGET_TOUCHED_RECENTLY"
+
+
+def intrabar_pullback_after_touch(intrabar_row: Any | None) -> bool:
+    if intrabar_row is None:
+        return False
+    return str(intrabar_row.target_touch_context_label or "").upper() == "PULLBACK_AFTER_TARGET_TOUCH"
+
+
+def intrabar_stale_for_decision(intrabar_row: Any | None) -> bool:
+    if intrabar_row is None:
+        return False
+    return "STALE_FOR_INTRABAR_DECISION" in str(intrabar_row.data_quality_state or "").upper()
+
+
+def display_context_state(raw_context: str | None, intrabar_row: Any | None = None) -> tuple[str, str]:
+    if intrabar_target_touch_active(intrabar_row):
+        if intrabar_pullback_after_touch(intrabar_row):
+            helper = "target touched intrabar; current price may already have pulled back"
+            if intrabar_stale_for_decision(intrabar_row):
+                helper += " · stale for intrabar decision"
+            return "PULLBACK_AFTER_TARGET_TOUCH", helper
+        helper = "target touched intrabar on latest 15m candle"
+        if intrabar_stale_for_decision(intrabar_row):
+            helper += " · stale for intrabar decision"
+        return "TARGET_TOUCHED_RECENTLY", helper
     value = str(raw_context or "").upper()
     if value == "HOLD_WITH_REACTION_TARGET_PENDING":
         return "HOLD_MONITOR_TARGET", "hold and monitor reaction/target context"
@@ -713,7 +744,13 @@ def display_increase_state(
     add_permission_state: str | None,
     add_block_reason: str | None,
     entry_display_state: str,
+    intrabar_row: Any | None = None,
 ) -> tuple[str, str]:
+    if intrabar_target_touch_active(intrabar_row):
+        helper = "target touched intrabar; current price may already have pulled back"
+        if intrabar_stale_for_decision(intrabar_row):
+            helper += " · stale for intrabar decision"
+        return "NO_INCREASE", helper
     raw_state = str(add_permission_state or "").upper()
     entry_state = str(entry_display_state or "").upper()
     if raw_state == "DO_NOT_ADD":
@@ -734,8 +771,14 @@ def display_action_state(
     row: Any,
     lifecycle_state: str,
     next_preview: NextZonePreview,
+    intrabar_row: Any | None = None,
 ) -> tuple[str, str]:
     raw_state = str(row.rotation_state or "").upper()
+    if intrabar_target_touch_active(intrabar_row):
+        helper = "target touched intrabar; current price may already have pulled back"
+        if intrabar_stale_for_decision(intrabar_row):
+            helper += " · stale for intrabar decision"
+        return "MANUAL_REDUCE_CHECK", helper
     if raw_state == "RECLAIM_CONFIRMED_REVIEW" or next_preview.next_zone_state in {
         "RECLAIM_NEXT_ZONE_PREVIEW",
         "BREAKDOWN_NEXT_ZONE_PREVIEW",
@@ -744,11 +787,21 @@ def display_action_state(
     if raw_state == "EXIT_CANDIDATE":
         if explicit_exit_context(row=row, lifecycle_state=lifecycle_state, next_preview=next_preview):
             return "MANUAL_EXIT_CHECK", "manual decision required, not automatic sell"
-        if explicit_reduce_context(row=row, lifecycle_state=lifecycle_state, next_preview=next_preview):
+        if explicit_reduce_context(
+            row=row,
+            lifecycle_state=lifecycle_state,
+            next_preview=next_preview,
+            intrabar_row=intrabar_row,
+        ):
             return "MANUAL_REDUCE_CHECK", "manual decision required, not automatic sell"
         return "HOLD_DEFENSIVE", "keep existing position, defensive context"
     if raw_state == "REDUCE_CANDIDATE":
-        if explicit_reduce_context(row=row, lifecycle_state=lifecycle_state, next_preview=next_preview):
+        if explicit_reduce_context(
+            row=row,
+            lifecycle_state=lifecycle_state,
+            next_preview=next_preview,
+            intrabar_row=intrabar_row,
+        ):
             return "MANUAL_REDUCE_CHECK", "manual decision required, not automatic sell"
         return "HOLD_DEFENSIVE", "keep existing position, defensive context"
     if raw_state in TP_HARVEST_REVIEW_STATES:
@@ -819,12 +872,33 @@ def relevant_target_html(
     current_price: Decimal | None,
     next_preview: NextZonePreview,
     delta_target_pct: Decimal | None,
+    intrabar_row: Any | None = None,
 ) -> str:
     if next_preview.next_zone_state in {"RECLAIM_NEXT_ZONE_PREVIEW", "BREAKDOWN_NEXT_ZONE_PREVIEW"}:
         return (
             "<div><span class='pill warn'>WAIT_RECOMPUTE</span></div>"
             "<div class='muted small'>old map invalidated; wait for fresh map/advice</div>"
         )
+    if intrabar_target_touch_active(intrabar_row):
+        details: list[str] = [
+            "<div><span class='pill warn'>TARGET_TOUCHED_RECENTLY</span></div>",
+            "<div><span class='pill warn'>EXTENSION_TOUCHED_INTRABAR</span></div>",
+        ]
+        if intrabar_pullback_after_touch(intrabar_row):
+            details.append("<div><span class='pill warn'>PULLBACK_AFTER_TARGET_TOUCH</span></div>")
+        touched_value = None if intrabar_row is None else intrabar_row.touched_high_or_low
+        touch_age = None if intrabar_row is None else intrabar_row.target_touch_age_minutes
+        meta_parts: list[str] = []
+        if touched_value is not None:
+            meta_parts.append(f"touched high/low {dec_text(touched_value, '0.000000')}")
+        if touch_age is not None:
+            meta_parts.append(f"age {dec_text(touch_age, '0.1')} min")
+        if intrabar_stale_for_decision(intrabar_row):
+            meta_parts.append("STALE_FOR_INTRABAR_DECISION")
+        details.append("<div class='muted small'>target touched intrabar; current price may already have pulled back</div>")
+        if meta_parts:
+            details.append(f"<div class='muted small'>{esc(' · '.join(meta_parts))}</div>")
+        return "".join(details)
 
     if next_preview.next_target_zone_label and next_preview.next_target_zone:
         zone = next_preview.next_target_zone
@@ -873,9 +947,22 @@ def intrabar_html(row: Any | None) -> str:
         for part in str(row.data_quality_state or "").split(";")
         if part
     )
+    touch = ""
+    if row.target_touch_label:
+        touch += f"<div><span class='pill {pill_class(row.target_touch_label)}'>{esc(row.target_touch_label)}</span></div>"
+    if row.target_touch_context_label:
+        touch += f"<div><span class='pill {pill_class(row.target_touch_context_label)}'>{esc(row.target_touch_context_label)}</span></div>"
+    if row.touched_high_or_low is not None or row.target_touch_age_minutes is not None:
+        meta_parts: list[str] = []
+        if row.touched_high_or_low is not None:
+            meta_parts.append(f"touched high/low={dec_text(row.touched_high_or_low, '0.000000')}")
+        if row.target_touch_age_minutes is not None:
+            meta_parts.append(f"touch age={dec_text(row.target_touch_age_minutes, '0.1')}m")
+        touch += f"<div class='muted small'>{esc(' · '.join(meta_parts))}</div>"
     return (
         f"<div><span class='pill {pill_class(row.intrabar_lifecycle_state)}'>{esc(row.intrabar_lifecycle_state)}</span></div>"
         f"<div><span class='pill {pill_class(row.intrabar_recompute_hint)}'>{esc(row.intrabar_recompute_hint)}</span></div>"
+        f"{touch}"
         f"<div class='muted small'>source={esc(row.price_source)} · 15m={esc(row.latest_15m_close_ts_utc or 'missing')}</div>"
         f"<div>{quality}</div>"
         "<div class='muted small'>Intrabar context, not trade advice.</div>"
@@ -1046,6 +1133,7 @@ def render_html(
 
     def display_state_for_row(row: Any) -> HoldingDisplayState:
         current_price = current_price_by_symbol.get(row.position_symbol)
+        intrabar_row = (intrabar_by_symbol or {}).get(row.position_symbol)
         lifecycle = lifecycle_for_row(row)
         effective_lifecycle_state, effective_recompute_needed, effective_recompute_reason = effective_recompute_context(
             row.position_symbol, lifecycle
@@ -1092,13 +1180,15 @@ def render_html(
             row=row,
             lifecycle_state=effective_lifecycle_state,
             next_preview=next_preview,
+            intrabar_row=intrabar_row,
         )
         increase_label, increase_helper = display_increase_state(
             add_permission_state=row.add_permission_state,
             add_block_reason=row.add_block_reason,
             entry_display_state=entry_display_state,
+            intrabar_row=intrabar_row,
         )
-        context_label, context_helper = display_context_state(row.hold_context_label)
+        context_label, context_helper = display_context_state(row.hold_context_label, intrabar_row)
         group_label = display_group_label(
             action_label=action_label,
             increase_label=increase_label,
@@ -1407,6 +1497,7 @@ def render_html(
                 current_price=current_price,
                 next_preview=next_preview,
                 delta_target_pct=delta_tp_pct,
+                intrabar_row=intrabar_row,
             )
             target_alignment_label, target_alignment_note = target_alignment_display_label(
                 alignment_label=row.tp_alignment_label,
@@ -1610,6 +1701,7 @@ def render_html(
                     ),
                     current_price,
                 ),
+                intrabar_row=intrabar_row,
             )
 
             out.append(
@@ -1792,6 +1884,10 @@ def render_html(
       <div><strong>Read-only dashboard. No row is an order instruction. Sell/increase requires downstream permission. MANUAL CHECK means user decision needed; HOLD/WAIT means no manual trade action implied.</strong></div>
       <div><strong>HOLD_DEFENSIVE</strong> = keep existing position, defensive context</div>
       <div><strong>HOLD_MONITOR_TARGET</strong> = hold and monitor reaction/target context</div>
+      <div><strong>TARGET_TOUCHED_RECENTLY</strong> = latest 15m wick touched the target zone; current price may no longer be at the touch level.</div>
+      <div><strong>PULLBACK_AFTER_TARGET_TOUCH</strong> = latest 15m wick touched the target zone and current price is back away from it.</div>
+      <div><strong>EXTENSION_TOUCHED_INTRABAR</strong> = intrabar wick reached the mapped extension/target zone.</div>
+      <div><strong>STALE_FOR_INTRABAR_DECISION</strong> = latest 15m target-touch context is older than 5 minutes and should be treated cautiously.</div>
       <div><strong>NO_INCREASE</strong> = do not increase this position</div>
       <div><strong>WAIT_RECOMPUTE</strong> = wait for fresh map/advice</div>
       <div><strong>WAIT_RETEST</strong> = wait for price to return to support/entry zone</div>

@@ -71,6 +71,10 @@ Primary dashboard labels:
 - `DO_NOT_ADD` -> `NO_INCREASE`
 - `ADD_REVIEW_AFTER_RECOMPUTE` -> `WAIT_RECOMPUTE_FOR_INCREASE`
 - `HOLD_WITH_REACTION_TARGET_PENDING` -> `HOLD_MONITOR_TARGET`
+- intrabar target touch can override plain hold-monitor display with:
+  - `TARGET_TOUCHED_RECENTLY`
+  - `PULLBACK_AFTER_TARGET_TOUCH`
+  - `MANUAL_REDUCE_CHECK` as a read-only review grouping
 
 Interpretation rule:
 
@@ -131,6 +135,41 @@ Helper rule:
 ```text
 below-price support/retest context, not TP
 ```
+
+## Intrabar Target-Touch Overlay
+
+The static dashboard also applies a read-only intrabar overlay from the latest
+closed 15m candle.
+
+Important rule:
+
+- target-touch context must not rely only on current price or close
+- latest 15m high/low is used for wick-touch detection
+- the touch context persists until recompute or the next 15m candle closes
+
+For `UP` legs:
+
+- latest 15m high `>= tp_zone_low` -> intrabar target touch
+- if current price is back below the target zone, show
+  `PULLBACK_AFTER_TARGET_TOUCH`
+
+For `DOWN` legs:
+
+- latest 15m low `<= tp_zone_high` -> intrabar target touch
+
+UI-only labels that may appear:
+
+- `EXTENSION_TOUCHED_INTRABAR`
+- `TARGET_TOUCHED_RECENTLY`
+- `PULLBACK_AFTER_TARGET_TOUCH`
+- `STALE_FOR_INTRABAR_DECISION`
+
+This is still context only:
+
+- no order instruction
+- no increase permission
+- no change to `rotation_state`
+- no change to `add_permission_state`
 
 ## Boundary
 
