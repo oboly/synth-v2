@@ -986,6 +986,136 @@ def intrabar_html(row: Any | None) -> str:
     )
 
 
+def dedup_labels(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(str(value) for value in values if str(value or "").strip()))
+
+
+def lifecycle_preview_state(
+    *,
+    row: Any,
+    current_price: Decimal | None,
+    intrabar_row: Any | None,
+) -> tuple[str, str, list[str], list[str], Decimal | None]:
+    action = str(row.position_lifecycle_action or "NO_POSITION_LIFECYCLE_EDGE").upper()
+    reason = str(row.position_lifecycle_reason or "").strip() or "no explicit lifecycle edge"
+    source_modules = dedup_labels(list(row.position_lifecycle_source_modules or []))
+    missing_inputs = dedup_labels(list(row.position_lifecycle_missing_inputs or []))
+    reload_distance_pct = entry_delta_pct(
+        entry_zone_low=row.entry_zone_low,
+        entry_zone_high=row.entry_zone_high,
+        current_price=current_price,
+    )
+
+    if intrabar_row is None:
+        return action, reason, source_modules, missing_inputs, reload_distance_pct
+
+    source_modules = dedup_labels(source_modules + ["intrabar_lifecycle_context_v1"])
+    if action in {"MISSING_POSITION", "MISSING_PRICE", "STALE_POSITION_SOURCE", "REDUCE_REVIEW"}:
+        return action, reason, source_modules, missing_inputs, reload_distance_pct
+
+    if intrabar_target_touch_active(intrabar_row):
+        if (
+            intrabar_pullback_after_touch(intrabar_row)
+            and str(row.leg_direction or "").upper() == "UP"
+            and reload_distance_pct is not None
+            and reload_distance_pct <= Decimal("2.0")
+        ):
+            return (
+                "RELOAD_REVIEW",
+                "target touched intrabar and price pulled back toward the mapped entry/reaction zone",
+                source_modules,
+                missing_inputs,
+                reload_distance_pct,
+            )
+        if row.position_lifecycle_price_vs_entry_pct is not None and row.position_lifecycle_price_vs_entry_pct > 0:
+            return (
+                "TRIM_REVIEW",
+                "target touched intrabar and position remains in profit; review spike-harvest trim context",
+                source_modules,
+                missing_inputs,
+                reload_distance_pct,
+            )
+
+    return action, reason, source_modules, missing_inputs, reload_distance_pct
+
+
+def lifecycle_source_modules_html(source_modules: list[str]) -> str:
+    if not source_modules:
+        return "<span class='muted small'>source modules: none</span>"
+    return (
+        "<div class='muted small'>source modules: "
+        f"{esc(', '.join(source_modules))}"
+        "</div>"
+    )
+
+
+def lifecycle_missing_inputs_html(missing_inputs: list[str]) -> str:
+    if not missing_inputs:
+        return "<div class='muted small'>missing inputs: none</div>"
+    badges = "".join(badge_html(label) for label in missing_inputs)
+    return f"<div>{badges}</div>"
+
+
+def lifecycle_detail_html(
+    *,
+    action: str,
+    reason: str,
+    source_modules: list[str],
+    missing_inputs: list[str],
+    row: Any,
+    current_price: Decimal | None,
+    latest_price_age_min: Decimal | None,
+    reload_distance_pct: Decimal | None,
+    fresh_badge: str,
+    now_utc: datetime,
+) -> tuple[str, str]:
+    action_html = f"<div>{badge_html(action)}</div><div class='muted small'>{esc(reason)}</div>"
+
+    freshness_parts: list[str] = []
+    if row.position_source_state:
+        freshness_parts.append(str(row.position_source_state))
+    if fresh_badge:
+        freshness_parts.append(fresh_badge)
+    paper_age_min = age_minutes(row.paper_asof_ts_utc, now_utc=now_utc)
+    freshness_text_parts: list[str] = []
+    if latest_price_age_min is not None:
+        freshness_text_parts.append(f"price age {dec_text(latest_price_age_min, '0.1')}m")
+    if paper_age_min is not None:
+        freshness_text_parts.append(f"paper age {dec_text(paper_age_min, '0.1')}m")
+    if row.position_source_age_days is not None:
+        freshness_text_parts.append(f"position age {dec_text(row.position_source_age_days, '0.01')}d")
+
+    metrics: list[str] = []
+    if row.quantity_base is not None:
+        metrics.append(f"qty {dec_text(row.quantity_base, '0.000000')}")
+    if row.position_value_eur is not None:
+        metrics.append(f"value {eur_text(row.position_value_eur)}")
+    if row.average_entry_price_eur is not None:
+        metrics.append(f"entry {dec_text(row.average_entry_price_eur, '0.000000')}")
+    if row.position_lifecycle_price_vs_entry_pct is not None:
+        metrics.append(f"vs entry {signed_pct_text(row.position_lifecycle_price_vs_entry_pct)}")
+    if reload_distance_pct is not None:
+        metrics.append(f"vs reaction {signed_pct_text(reload_distance_pct)}")
+    if row.position_lifecycle_target_distance_pct is not None:
+        metrics.append(f"vs target {signed_pct_text(row.position_lifecycle_target_distance_pct)}")
+    if row.position_lifecycle_invalidation_distance_pct is not None:
+        metrics.append(f"vs invalidation {signed_pct_text(row.position_lifecycle_invalidation_distance_pct)}")
+    if current_price is not None:
+        metrics.append(f"price {dec_text(current_price, '0.000000')}")
+
+    freshness_html = "".join(badge_html(label) for label in freshness_parts)
+    freshness_note = "" if not freshness_text_parts else f"<div class='muted small'>{esc(' · '.join(freshness_text_parts))}</div>"
+    metrics_html = "" if not metrics else f"<div class='muted small'>{esc(' · '.join(metrics))}</div>"
+    detail_html = (
+        f"{freshness_html}"
+        f"{freshness_note}"
+        f"{lifecycle_source_modules_html(source_modules)}"
+        f"{lifecycle_missing_inputs_html(missing_inputs)}"
+        f"{metrics_html}"
+    )
+    return action_html, detail_html
+
+
 def alignment_html(
     *,
     label: str | None,
@@ -1263,11 +1393,21 @@ def render_html(
     }
     group_counts: dict[str, int] = {}
     entry_readiness_counts: dict[str, int] = {}
+    lifecycle_action_counts: dict[str, int] = {}
     for row in rows:
         group = display_state_by_symbol[row.position_symbol].group_label
         group_counts[group] = group_counts.get(group, 0) + 1
         entry_group = entry_readiness_by_symbol[row.position_symbol]
         entry_readiness_counts[entry_group] = entry_readiness_counts.get(entry_group, 0) + 1
+        intrabar_row = (intrabar_by_symbol or {}).get(row.position_symbol)
+        latest_price = price_by_symbol.get(row.position_symbol)
+        current_price = None if latest_price is None else latest_price.price
+        lifecycle_action, _, _, _, _ = lifecycle_preview_state(
+            row=row,
+            current_price=current_price,
+            intrabar_row=intrabar_row,
+        )
+        lifecycle_action_counts[lifecycle_action] = lifecycle_action_counts.get(lifecycle_action, 0) + 1
 
     hold_rows = [r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "POSITION_HOLD_REVIEW"]
     wait_rows = [r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "POSITION_WAIT_FRESH_MAP"]
@@ -1517,6 +1657,29 @@ def render_html(
                 price_progress_state=price_progress.progress_state,
             )
             intrabar_row = (intrabar_by_symbol or {}).get(row.position_symbol)
+            (
+                lifecycle_action,
+                lifecycle_reason,
+                lifecycle_source_modules,
+                lifecycle_missing_inputs,
+                reload_distance_pct,
+            ) = lifecycle_preview_state(
+                row=row,
+                current_price=current_price,
+                intrabar_row=intrabar_row,
+            )
+            lifecycle_preview_html, lifecycle_detail = lifecycle_detail_html(
+                action=lifecycle_action,
+                reason=lifecycle_reason,
+                source_modules=lifecycle_source_modules,
+                missing_inputs=lifecycle_missing_inputs,
+                row=row,
+                current_price=current_price,
+                latest_price_age_min=latest_price_age_min,
+                reload_distance_pct=reload_distance_pct,
+                fresh_badge=fresh_badge,
+                now_utc=now_utc,
+            )
             action_display = semantic_advice_action_display(
                 advice_action=row.advice_action,
                 lifecycle_state=lifecycle.lifecycle_state,
@@ -1588,6 +1751,8 @@ def render_html(
                 f"<td>{badge_html(display_state.action_label)}<div class='muted small'>{esc(display_state.action_helper)}</div><div class='muted small'>{esc(raw_action_detail)}</div></td>"
                 f"<td>{badge_html(display_state.increase_label)}<div class='muted small'>{esc(display_state.increase_helper)}</div><div class='muted small'>{esc(raw_increase_detail)}</div></td>"
                 f"<td>{badge_html(display_state.context_label)}<div class='muted small'>{esc(display_state.context_helper)}</div><div class='muted small'>{esc(raw_context_detail)}</div></td>"
+                f"<td>{lifecycle_preview_html}</td>"
+                f"<td>{lifecycle_detail}</td>"
                 f"<td>{alignment_html(label=row.entry_alignment_label, distance_pct=row.entry_fib_distance_pct, band_flag=bool(row.entry_is_fib_band), note='fib-based entry zone' if row.entry_alignment_label == 'ENTRY_FIB_PRIMARY_0500_0618' else 'entry context')}</td>"
                 f"<td>{alignment_html(label=target_alignment_label, distance_pct=row.tp_fib_distance_pct, band_flag=bool(row.tp_is_fib_extension_band), note=target_alignment_note)}</td>"
                 f"<td>{next_zone_html(next_preview)}</td>"
@@ -1879,6 +2044,8 @@ def render_html(
                   <th>Status</th>
                   <th>Increase</th>
                   <th>Context</th>
+                  <th>Lifecycle preview</th>
+                  <th>Lifecycle detail</th>
                   <th>Entry align</th>
                   <th>Target align</th>
                   <th>Next zones</th>
@@ -1909,6 +2076,10 @@ def render_html(
         badge_with_axis_html(k, text=f"{get_label_human_label(k)}: {v}", css_name=pill_class(k))
         for k, v in sorted(entry_readiness_counts.items())
     )
+    lifecycle_action_counts_html = "".join(
+        badge_html(k, text=f"{get_label_human_label(k)}: {v}", css_name=pill_class(k))
+        for k, v in sorted(lifecycle_action_counts.items())
+    )
     post_refresh_counts_html = "".join(
         badge_html(k, text=f"{k}: {v}", css_name=pill_class(k))
         for k, v in sorted(post_refresh_counts.items())
@@ -1924,6 +2095,8 @@ def render_html(
             "broker_writes=0",
             "order_submission=0",
             "executor=none",
+            "live_trading=false",
+            "paper/manual only",
         )
     )
 
@@ -1962,6 +2135,7 @@ def render_html(
       <div class="metric"><div class="muted">Total EUR cash</div><h2>{eur_html(total_eur_cash)}</h2></div>
       <div class="metric"><div class="muted">Indicative account value</div><h2>{eur_html(indicative_account_value)}</h2><div class="muted small">Positions value + Total EUR cash when EUR balance is known.</div></div>
       <div class="metric"><div class="muted">Position review counts</div>{position_review_counts_html}</div>
+      <div class="metric"><div class="muted">Lifecycle preview counts</div>{lifecycle_action_counts_html}</div>
       <div class="metric"><div class="muted">Entry readiness counts among held assets</div>{entry_readiness_counts_html}</div>
       <div class="metric"><div class="muted">Recompute state counts</div><h2>{len(recompute_rows)}</h2><div>{post_refresh_counts_html}</div><div class="muted small">{display_severity_counts_html}</div></div>
       <div class="metric"><div class="muted">Safety</div>{safety_html}</div>

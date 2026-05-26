@@ -30,6 +30,7 @@ class RotationRow:
     quantity_base: Decimal | None
     available_quantity_base: Decimal | None
     reserved_quantity_base: Decimal | None
+    average_entry_price_eur: Decimal | None
     position_mark_price_eur: Decimal | None
     position_value_eur: Decimal | None
     paper_asof_ts_utc: datetime | None
@@ -63,6 +64,13 @@ class RotationRow:
     tp_fib_distance_pct: Decimal | None
     tp_is_fib_extension_band: int
     entry_is_fib_band: int
+    position_lifecycle_action: str
+    position_lifecycle_reason: str
+    position_lifecycle_source_modules: list[str]
+    position_lifecycle_missing_inputs: list[str]
+    position_lifecycle_price_vs_entry_pct: Decimal | None
+    position_lifecycle_target_distance_pct: Decimal | None
+    position_lifecycle_invalidation_distance_pct: Decimal | None
     rotation_pressure_score: int
     reason_codes: list[str]
 
@@ -229,6 +237,165 @@ def target_state_for_advice(
     if leg_direction == "DOWN" and current_price <= target:
         return "TARGET_REACHED"
     return "TARGET_PENDING"
+
+
+def pct_return_from_entry(
+    average_entry_price_eur: Decimal | None,
+    current_price: Decimal | None,
+) -> Decimal | None:
+    if (
+        average_entry_price_eur is None
+        or current_price is None
+        or average_entry_price_eur <= 0
+        or current_price <= 0
+    ):
+        return None
+    return ((current_price / average_entry_price_eur) - Decimal("1")) * Decimal("100")
+
+
+def pct_distance_to_zone(
+    zone_low: Decimal | None,
+    zone_high: Decimal | None,
+    current_price: Decimal | None,
+) -> Decimal | None:
+    if current_price is None or current_price <= 0:
+        return None
+    if zone_low is None and zone_high is None:
+        return None
+    if zone_low is not None and zone_high is not None:
+        low = min(zone_low, zone_high)
+        high = max(zone_low, zone_high)
+        if low <= current_price <= high:
+            return Decimal("0")
+        reference = low if current_price < low else high
+        return abs((current_price / reference) - Decimal("1")) * Decimal("100")
+    reference = zone_low if zone_low is not None else zone_high
+    if reference is None or reference <= 0:
+        return None
+    return abs((current_price / reference) - Decimal("1")) * Decimal("100")
+
+
+def classify_position_lifecycle(
+    *,
+    position_row: dict[str, Any],
+    advice_row: dict[str, Any] | None,
+    position_source_state: str,
+    current_price: Decimal | None,
+    target_state: str,
+    risk_state: str,
+) -> tuple[str, str, list[str], list[str], Decimal | None, Decimal | None, Decimal | None]:
+    source_modules: list[str] = ["account_position_snapshot"]
+    missing_inputs: list[str] = []
+
+    quantity = dec(position_row.get("quantity_base"))
+    average_entry = dec(position_row.get("average_entry_price_eur"))
+    if quantity is None or quantity <= 0:
+        missing_inputs.append("MISSING_POSITION")
+        return "MISSING_POSITION", "position quantity is missing", source_modules, missing_inputs, None, None, None
+
+    if position_source_state == "STALE":
+        return "STALE_POSITION_SOURCE", "position snapshot is stale", source_modules, missing_inputs, None, None, None
+
+    if current_price is None or current_price <= 0:
+        missing_inputs.append("MISSING_PRICE")
+        return "MISSING_PRICE", "current price is missing", source_modules, missing_inputs, None, None, None
+
+    source_modules.append("market_price_snapshot")
+
+    if advice_row is None:
+        missing_inputs.append("MISSING_PAPER_ADVICE")
+        return "NO_POSITION_LIFECYCLE_EDGE", "paper advice context is missing", source_modules, missing_inputs, None, None, None
+
+    source_modules.extend(["paper_advice_observation", "execution_zone_context"])
+
+    leg_direction = str(advice_row.get("leg_direction") or "").upper()
+    advice_state = str(advice_row.get("advice_state") or "").upper()
+    advice_action = str(advice_row.get("advice_action") or "").upper()
+    selection_state = str(advice_row.get("selection_state") or "").upper()
+    setup_reason = str(advice_row.get("setup_filter_reason") or "").upper()
+
+    entry_zone_low = dec(advice_row.get("entry_zone_low"))
+    entry_zone_high = dec(advice_row.get("entry_zone_high"))
+    tp_zone_low = dec(advice_row.get("tp_zone_low"))
+    tp_zone_high = dec(advice_row.get("tp_zone_high"))
+    invalidation_price = dec(advice_row.get("invalidation_price"))
+
+    if average_entry is None or average_entry <= 0:
+        missing_inputs.append("MISSING_ENTRY_PRICE")
+    if tp_zone_low is None and tp_zone_high is None:
+        missing_inputs.append("MISSING_TARGET_ZONE")
+    if invalidation_price is None or invalidation_price <= 0:
+        missing_inputs.append("MISSING_INVALIDATION")
+
+    price_vs_entry_pct = pct_return_from_entry(average_entry, current_price)
+    target_distance_pct = pct_distance_to_zone(tp_zone_low, tp_zone_high, current_price)
+    reload_distance_pct = pct_distance_to_zone(entry_zone_low, entry_zone_high, current_price)
+    invalidation_distance_pct = pct_distance(reference_price=invalidation_price, target_price=current_price)
+
+    in_profit = price_vs_entry_pct is not None and price_vs_entry_pct > 0
+    near_target = target_distance_pct is not None and target_distance_pct <= Decimal("2.0")
+    near_reload_zone = reload_distance_pct is not None and reload_distance_pct <= Decimal("2.0")
+    blocked_context = (
+        advice_state in {"AVOID", "NO_NEW_BUY", "BLOCK_24H"}
+        or advice_action in {"DO_NOT_ADD", "AVOID_NO_NEW_BUY", "BLOCK_NEW_24H_ENTRY"}
+        or selection_state == "AVOID"
+        or setup_reason == "MARKET_DAMAGE_RISK"
+    )
+    poor_risk = risk_state in {"RECLAIM_CONFIRMED", "RISK_NEAR"} or leg_direction == "DOWN"
+
+    if blocked_context and poor_risk:
+        return (
+            "REDUCE_REVIEW",
+            "position context is defensive and paper advice risk is poor",
+            source_modules,
+            missing_inputs,
+            price_vs_entry_pct,
+            target_distance_pct,
+            invalidation_distance_pct,
+        )
+
+    if in_profit and (target_state == "TARGET_REACHED" or near_target):
+        return (
+            "TRIM_REVIEW",
+            "position is in profit and price is near or inside target context",
+            source_modules,
+            missing_inputs,
+            price_vs_entry_pct,
+            target_distance_pct,
+            invalidation_distance_pct,
+        )
+
+    if leg_direction == "UP" and target_state == "TARGET_PENDING" and near_reload_zone and not blocked_context:
+        return (
+            "RELOAD_REVIEW",
+            "price is back near the mapped reload or reaction zone",
+            source_modules,
+            missing_inputs,
+            price_vs_entry_pct,
+            target_distance_pct,
+            invalidation_distance_pct,
+        )
+
+    if missing_inputs and target_state == "TARGET_UNKNOWN" and risk_state == "RISK_UNKNOWN":
+        return (
+            "NO_POSITION_LIFECYCLE_EDGE",
+            "position exists but current lifecycle context is incomplete",
+            source_modules,
+            missing_inputs,
+            price_vs_entry_pct,
+            target_distance_pct,
+            invalidation_distance_pct,
+        )
+
+    return (
+        "HOLD",
+        "position exists but no trim, reload, or reduce edge is visible",
+        source_modules,
+        missing_inputs,
+        price_vs_entry_pct,
+        target_distance_pct,
+        invalidation_distance_pct,
+    )
 
 
 def risk_state_for_advice(
@@ -851,6 +1018,22 @@ def build_rows(
             target_state=target_state,
             risk_state=risk_state,
         )
+        (
+            position_lifecycle_action,
+            position_lifecycle_reason,
+            position_lifecycle_source_modules,
+            position_lifecycle_missing_inputs,
+            position_lifecycle_price_vs_entry_pct,
+            position_lifecycle_target_distance_pct,
+            position_lifecycle_invalidation_distance_pct,
+        ) = classify_position_lifecycle(
+            position_row=position,
+            advice_row=advice,
+            position_source_state=source_state,
+            current_price=current_price,
+            target_state=target_state,
+            risk_state=risk_state,
+        )
         if review_references:
             reason_codes.append("REVIEW_REFERENCES_AVAILABLE")
         else:
@@ -876,6 +1059,7 @@ def build_rows(
                 quantity_base=dec(position.get("quantity_base")),
                 available_quantity_base=dec(position.get("available_quantity_base")),
                 reserved_quantity_base=dec(position.get("reserved_quantity_base")),
+                average_entry_price_eur=dec(position.get("average_entry_price_eur")),
                 position_mark_price_eur=dec(position.get("mark_price_eur")),
                 position_value_eur=dec(position.get("position_value_eur")),
                 paper_asof_ts_utc=None if not advice else advice.get("asof_ts_utc"),
@@ -911,6 +1095,13 @@ def build_rows(
                 tp_fib_distance_pct=alignment_context.get("tp_fib_distance_pct"),
                 tp_is_fib_extension_band=int(alignment_context.get("tp_is_fib_extension_band") or 0),
                 entry_is_fib_band=int(alignment_context.get("entry_is_fib_band") or 0),
+                position_lifecycle_action=position_lifecycle_action,
+                position_lifecycle_reason=position_lifecycle_reason,
+                position_lifecycle_source_modules=position_lifecycle_source_modules,
+                position_lifecycle_missing_inputs=position_lifecycle_missing_inputs,
+                position_lifecycle_price_vs_entry_pct=position_lifecycle_price_vs_entry_pct,
+                position_lifecycle_target_distance_pct=position_lifecycle_target_distance_pct,
+                position_lifecycle_invalidation_distance_pct=position_lifecycle_invalidation_distance_pct,
                 rotation_pressure_score=pressure_score,
                 reason_codes=reason_codes,
             )
@@ -934,6 +1125,7 @@ def print_table(rows: list[RotationRow]) -> None:
         "symbol",
         "value_eur",
         "qty",
+        "entry_px",
         "src",
         "age_d",
         "selection",
@@ -945,6 +1137,7 @@ def print_table(rows: list[RotationRow]) -> None:
         "position_mgmt",
         "add_permission",
         "hold_context",
+        "lifecycle",
         "entry_align",
         "tp_align",
         "tp_zone",
@@ -964,6 +1157,7 @@ def print_table(rows: list[RotationRow]) -> None:
                 row.position_symbol,
                 dec_text(row.position_value_eur, "0.01"),
                 dec_text(row.quantity_base, "0.000000"),
+                dec_text(row.average_entry_price_eur, "0.000000"),
                 row.position_source_state,
                 dec_text(row.position_source_age_days, "0.01"),
                 row.selection_state or "",
@@ -975,6 +1169,7 @@ def print_table(rows: list[RotationRow]) -> None:
                 row.position_management_state,
                 row.add_permission_state,
                 row.hold_context_label or "",
+                row.position_lifecycle_action,
                 row.entry_alignment_label or "",
                 row.tp_alignment_label or "",
                 tp_zone,
