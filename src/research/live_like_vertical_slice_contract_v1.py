@@ -84,7 +84,7 @@ class ShadowEvent:
     candidate_state: str
     decision_state: str
     execution_plan_state: str
-    observed_price: float
+    observed_price: float | None
     event_ts_utc: str
     no_order_submitted: bool = True
 
