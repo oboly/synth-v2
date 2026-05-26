@@ -2004,6 +2004,10 @@ def write_index(output_dir: Path) -> Path:
         <a href="/synth/rotation-preview.html">Rotation Preview</a>
         <p class="muted">Account-aware read-only HOLD / WAIT / manual-check dashboard.</p>
       </div>
+      <div class="card">
+        <a href="/synth/live-like-shadow-chain.html">Live-like Shadow Chain</a>
+        <p class="muted">Shadow preview only. No paper/live trading. No order submitted.</p>
+      </div>
     </div>
   </main>
 </body>
