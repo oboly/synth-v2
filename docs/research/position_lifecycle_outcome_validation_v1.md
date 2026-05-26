@@ -174,6 +174,7 @@ Additional diagnostic summaries:
 - by symbol
 - by action + symbol
 - optional market-leg and freshness buckets
+- promotion-diagnostic bucket report on action + reason only
 
 ## Sampling Modes
 
@@ -258,6 +259,71 @@ Adjusted usefulness is diagnostic, not a promotion rule.
   opportunity cost.
 - A high upside-capture score for hold/reload context can still hide large
   adverse-move risk.
+- Promotion diagnostics must still pass later baseline, symbol-concentration, and
+  regime checks before any separate research lane considers promotion.
+
+## Lifecycle Bucket Promotion Diagnostics
+
+The runner also emits a read-only diagnostic report that flags promising and
+dangerous `action + reason_bucket` combinations using action-adjusted metrics.
+
+This is not strategy promotion.
+
+It does not:
+
+- change `selection_engine`
+- change `decision_gate`
+- change `execution_planner`
+- change dashboards
+- enable paper trading
+- enable live trading
+
+Default minimum bucket size is `20`, configurable with:
+
+- `--min-bucket-count 20`
+
+The report includes:
+
+- `promotion_candidate_buckets`
+- `strong_promotion_candidate_buckets`
+- `rejection_candidate_buckets`
+- `needs_more_sample_buckets`
+- `high_opportunity_cost_buckets`
+- `high_protection_buckets`
+- `high_reload_upside_buckets`
+
+Current criteria:
+
+- promotion candidate:
+  - `avg_adjusted_score_4h > 0`
+  - `avg_adjusted_score_24h >= 0` or missing
+  - `count >= min_bucket_count`
+- strong promotion candidate:
+  - `avg_adjusted_score_4h >= 0.5`
+  - `count >= min_bucket_count`
+- rejection candidate:
+  - `avg_adjusted_score_4h < 0`
+  - `count >= min_bucket_count`
+- high opportunity cost:
+  - trim/reduce buckets ranked by `avg_opportunity_cost_4h`
+- high protection:
+  - trim/reduce buckets ranked by `avg_avoided_drawdown_4h`
+- high reload upside:
+  - `HOLD` / `RELOAD_REVIEW` buckets ranked by `avg_upside_capture_4h`
+
+Interpretation warnings:
+
+- These buckets are research diagnostics only.
+- They are not approval to promote a lifecycle bucket into runtime logic.
+- A bucket can look strong because one symbol dominates it.
+- A bucket can look protective while still imposing large opportunity cost.
+- Any later promotion review still needs bucket-vs-baseline, symbol-level, and
+  regime-level checks.
+
+When `--write-files` is enabled, the runner now also writes:
+
+- `lifecycle_bucket_promotion_candidates_v1.csv`
+- `lifecycle_bucket_promotion_candidates_v1.json`
 - `TRIM_REVIEW` and `REDUCE_REVIEW` remain review labels, not sell orders.
 
 Do not promote these labels into strategy logic or execution behavior without

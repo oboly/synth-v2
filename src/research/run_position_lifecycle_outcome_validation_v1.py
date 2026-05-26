@@ -35,6 +35,7 @@ DEFAULT_TRADING_ACCOUNT_ID = 2
 DEFAULT_MAX_EVENTS = 1000
 DEFAULT_EVENT_MODE = "all"
 DEFAULT_COOLDOWN_MINUTES = 30
+DEFAULT_MIN_BUCKET_COUNT = 20
 DEFAULT_OUTPUT_DIR = Path("data/research/position_lifecycle_outcome_validation_v1")
 
 OUTPUT_ROWS = "outcome_rows_v1.jsonl"
@@ -44,6 +45,8 @@ OUTPUT_BUCKET_ACTION_REASON_CSV = "bucket_summary_by_action_reason_v1.csv"
 OUTPUT_BUCKET_SYMBOL_CSV = "bucket_summary_by_symbol_v1.csv"
 OUTPUT_BUCKET_ACTION_REASON_ADJUSTED_CSV = "bucket_summary_by_action_reason_adjusted_v1.csv"
 OUTPUT_BUCKET_SYMBOL_ADJUSTED_CSV = "bucket_summary_by_symbol_adjusted_v1.csv"
+OUTPUT_PROMOTION_CANDIDATES_CSV = "lifecycle_bucket_promotion_candidates_v1.csv"
+OUTPUT_PROMOTION_CANDIDATES_JSON = "lifecycle_bucket_promotion_candidates_v1.json"
 
 EVENT_MODES = ("all", "transition-only", "cooldown")
 HORIZON_LABELS: list[tuple[str, timedelta]] = [
@@ -145,6 +148,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-events", type=int, default=DEFAULT_MAX_EVENTS)
     parser.add_argument("--event-mode", choices=EVENT_MODES, default=DEFAULT_EVENT_MODE)
     parser.add_argument("--cooldown-minutes", type=int, default=DEFAULT_COOLDOWN_MINUTES)
+    parser.add_argument("--min-bucket-count", type=int, default=DEFAULT_MIN_BUCKET_COUNT)
     parser.add_argument("--write-files", action="store_true")
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
@@ -1176,6 +1180,99 @@ def adjusted_csv_rows_for_symbol(summary: dict[str, Any]) -> list[dict[str, Any]
     return flatten_summary_to_csv_rows(summary["symbol_summary"], key_name="symbol")
 
 
+def promotion_candidate_rows(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for bucket, metrics in summary.get("action_reason_bucket_summary", {}).items():
+        row = {"action_reason_bucket": bucket}
+        row.update(metrics)
+        rows.append(row)
+    return rows
+
+
+def action_from_bucket_name(bucket_name: str) -> str:
+    return str(bucket_name.split("|", 1)[0] if "|" in bucket_name else bucket_name).upper()
+
+
+def classify_bucket_diagnostics(
+    action_reason_summary: dict[str, dict[str, Any]],
+    *,
+    min_bucket_count: int,
+) -> dict[str, Any]:
+    eligible: list[tuple[str, dict[str, Any]]] = [
+        (bucket, metrics)
+        for bucket, metrics in action_reason_summary.items()
+        if int(metrics.get("count") or 0) >= int(min_bucket_count)
+    ]
+    promotion_candidate_buckets: list[dict[str, Any]] = []
+    strong_promotion_candidate_buckets: list[dict[str, Any]] = []
+    rejection_candidate_buckets: list[dict[str, Any]] = []
+    needs_more_sample_buckets: list[dict[str, Any]] = []
+    high_opportunity_cost_buckets: list[dict[str, Any]] = []
+    high_protection_buckets: list[dict[str, Any]] = []
+    high_reload_upside_buckets: list[dict[str, Any]] = []
+
+    for bucket, metrics in action_reason_summary.items():
+        row = {"action_reason_bucket": bucket}
+        row.update(metrics)
+        count = int(metrics.get("count") or 0)
+        avg_adjusted_4h = metrics.get("avg_adjusted_score_4h")
+        avg_adjusted_24h = metrics.get("avg_adjusted_score_24h")
+        action = action_from_bucket_name(bucket)
+        if count < int(min_bucket_count):
+            needs_more_sample_buckets.append(row)
+            continue
+        if avg_adjusted_4h is not None and avg_adjusted_4h > 0 and (avg_adjusted_24h is None or avg_adjusted_24h >= 0):
+            promotion_candidate_buckets.append(row)
+            if avg_adjusted_4h >= 0.5:
+                strong_promotion_candidate_buckets.append(row)
+        if avg_adjusted_4h is not None and avg_adjusted_4h < 0:
+            rejection_candidate_buckets.append(row)
+        if action in REDUCE_ACTIONS and metrics.get("avg_opportunity_cost_4h") is not None:
+            high_opportunity_cost_buckets.append(row)
+        if action in REDUCE_ACTIONS and metrics.get("avg_avoided_drawdown_4h") is not None:
+            high_protection_buckets.append(row)
+        if action in LONG_ACTIONS and metrics.get("avg_upside_capture_4h") is not None:
+            high_reload_upside_buckets.append(row)
+
+    return {
+        "min_bucket_count": int(min_bucket_count),
+        "promotion_candidate_buckets": sorted(
+            promotion_candidate_buckets,
+            key=lambda row: (float(row.get("avg_adjusted_score_4h") or 0.0), int(row.get("count") or 0), row["action_reason_bucket"]),
+            reverse=True,
+        ),
+        "strong_promotion_candidate_buckets": sorted(
+            strong_promotion_candidate_buckets,
+            key=lambda row: (float(row.get("avg_adjusted_score_4h") or 0.0), int(row.get("count") or 0), row["action_reason_bucket"]),
+            reverse=True,
+        ),
+        "rejection_candidate_buckets": sorted(
+            rejection_candidate_buckets,
+            key=lambda row: (float(row.get("avg_adjusted_score_4h") or 0.0), int(row.get("count") or 0), row["action_reason_bucket"]),
+        ),
+        "needs_more_sample_buckets": sorted(
+            needs_more_sample_buckets,
+            key=lambda row: (int(row.get("count") or 0), row["action_reason_bucket"]),
+            reverse=True,
+        ),
+        "high_opportunity_cost_buckets": sorted(
+            high_opportunity_cost_buckets,
+            key=lambda row: (float(row.get("avg_opportunity_cost_4h") or 0.0), int(row.get("count") or 0), row["action_reason_bucket"]),
+            reverse=True,
+        ),
+        "high_protection_buckets": sorted(
+            high_protection_buckets,
+            key=lambda row: (float(row.get("avg_avoided_drawdown_4h") or 0.0), int(row.get("count") or 0), row["action_reason_bucket"]),
+            reverse=True,
+        ),
+        "high_reload_upside_buckets": sorted(
+            high_reload_upside_buckets,
+            key=lambda row: (float(row.get("avg_upside_capture_4h") or 0.0), int(row.get("count") or 0), row["action_reason_bucket"]),
+            reverse=True,
+        ),
+    }
+
+
 def build_action_summary(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     actions = sorted({str(row.get("position_lifecycle_action") or "") for row in rows if row.get("position_lifecycle_action")})
     out: dict[str, dict[str, Any]] = {}
@@ -1254,6 +1351,12 @@ def build_summary(
             "live_trading": False,
         },
     }
+    summary.update(
+        classify_bucket_diagnostics(
+            summary["action_reason_bucket_summary"],
+            min_bucket_count=int(args.min_bucket_count),
+        )
+    )
     if rows:
         summary["first_event_ts"] = rows[0]["event_ts_utc"]
         summary["latest_event_ts"] = rows[-1]["event_ts_utc"]
@@ -1375,6 +1478,48 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         reverse=True,
     )[:10]
     print("top_hold_reload_by_upside_capture4h " + " ; ".join(f"{k}:{v['avg_upside_capture_4h']}" for k, v in top_upside_capture))
+    print(
+        "promotion_candidate_buckets "
+        + " ; ".join(
+            f"{row['action_reason_bucket']}:{row['avg_adjusted_score_4h']}"
+            for row in summary["promotion_candidate_buckets"][:10]
+        )
+    )
+    print(
+        "strong_promotion_candidate_buckets "
+        + " ; ".join(
+            f"{row['action_reason_bucket']}:{row['avg_adjusted_score_4h']}"
+            for row in summary["strong_promotion_candidate_buckets"][:10]
+        )
+    )
+    print(
+        "rejection_candidate_buckets "
+        + " ; ".join(
+            f"{row['action_reason_bucket']}:{row['avg_adjusted_score_4h']}"
+            for row in summary["rejection_candidate_buckets"][:10]
+        )
+    )
+    print(
+        "high_opportunity_cost_buckets "
+        + " ; ".join(
+            f"{row['action_reason_bucket']}:{row['avg_opportunity_cost_4h']}"
+            for row in summary["high_opportunity_cost_buckets"][:10]
+        )
+    )
+    print(
+        "high_protection_buckets "
+        + " ; ".join(
+            f"{row['action_reason_bucket']}:{row['avg_avoided_drawdown_4h']}"
+            for row in summary["high_protection_buckets"][:10]
+        )
+    )
+    print(
+        "high_reload_upside_buckets "
+        + " ; ".join(
+            f"{row['action_reason_bucket']}:{row['avg_upside_capture_4h']}"
+            for row in summary["high_reload_upside_buckets"][:10]
+        )
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1493,6 +1638,22 @@ def main(argv: list[str] | None = None) -> int:
         write_csv(output_dir / OUTPUT_BUCKET_SYMBOL_CSV, top_csv_rows_for_symbol(summary))
         write_csv(output_dir / OUTPUT_BUCKET_ACTION_REASON_ADJUSTED_CSV, adjusted_csv_rows_for_action_reason(summary))
         write_csv(output_dir / OUTPUT_BUCKET_SYMBOL_ADJUSTED_CSV, adjusted_csv_rows_for_symbol(summary))
+        write_csv(output_dir / OUTPUT_PROMOTION_CANDIDATES_CSV, promotion_candidate_rows(summary))
+        write_json(
+            output_dir / OUTPUT_PROMOTION_CANDIDATES_JSON,
+            {
+                "report": REPORT_NAME,
+                "version": REPORT_VERSION,
+                "min_bucket_count": int(args.min_bucket_count),
+                "promotion_candidate_buckets": summary["promotion_candidate_buckets"],
+                "strong_promotion_candidate_buckets": summary["strong_promotion_candidate_buckets"],
+                "rejection_candidate_buckets": summary["rejection_candidate_buckets"],
+                "needs_more_sample_buckets": summary["needs_more_sample_buckets"],
+                "high_opportunity_cost_buckets": summary["high_opportunity_cost_buckets"],
+                "high_protection_buckets": summary["high_protection_buckets"],
+                "high_reload_upside_buckets": summary["high_reload_upside_buckets"],
+            },
+        )
         write_json(
             output_dir / OUTPUT_MANIFEST,
             {
@@ -1505,6 +1666,8 @@ def main(argv: list[str] | None = None) -> int:
                 "bucket_summary_by_symbol_v1_csv": str(output_dir / OUTPUT_BUCKET_SYMBOL_CSV),
                 "bucket_summary_by_action_reason_adjusted_v1_csv": str(output_dir / OUTPUT_BUCKET_ACTION_REASON_ADJUSTED_CSV),
                 "bucket_summary_by_symbol_adjusted_v1_csv": str(output_dir / OUTPUT_BUCKET_SYMBOL_ADJUSTED_CSV),
+                "lifecycle_bucket_promotion_candidates_v1_csv": str(output_dir / OUTPUT_PROMOTION_CANDIDATES_CSV),
+                "lifecycle_bucket_promotion_candidates_v1_json": str(output_dir / OUTPUT_PROMOTION_CANDIDATES_JSON),
                 "audit_status": audit["status"],
                 "reconstruction_mode": audit["reconstruction_mode"],
             },
