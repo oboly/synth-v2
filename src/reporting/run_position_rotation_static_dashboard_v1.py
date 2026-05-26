@@ -2005,6 +2005,10 @@ def write_index(output_dir: Path) -> Path:
         <p class="muted">Account-aware read-only HOLD / WAIT / manual-check dashboard.</p>
       </div>
       <div class="card">
+        <a href="/synth/recompute-lifecycle.html">Recompute lifecycle</a>
+        <p class="muted">Maps needing refresh, cooldown, and post-refresh state.</p>
+      </div>
+      <div class="card">
         <a href="/synth/live-like-shadow-chain.html">Live-like Shadow Chain</a>
         <p class="muted">Shadow preview only. No paper/live trading. No order submitted.</p>
       </div>
