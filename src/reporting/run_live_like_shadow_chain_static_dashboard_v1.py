@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from src.reporting.badge_html_v1 import badge_html as shared_badge_html
 from src.reporting.dashboard_style_v1 import cockpit_base_css, pill_classes
 
 
@@ -112,7 +113,7 @@ def pill_class(value: Any) -> str:
 
 
 def badge_html(value: Any) -> str:
-    return f"<span class='pill {pill_class(value)}'>{esc(value)}</span>"
+    return shared_badge_html(value, css_name=pill_class(value))
 
 
 def fmt_bool(value: Any) -> str:

@@ -10,6 +10,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.common.db import get_connection
+from src.reporting.badge_html_v1 import badge_html as shared_badge_html
 from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav, pill_classes
 from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
@@ -22,10 +23,6 @@ from src.reporting.fast_lifecycle_recompute_v1 import classify_fast_lifecycle
 from src.reporting.intrabar_lifecycle_context_v1 import (
     build_intrabar_lifecycle_context_rows,
     rows_by_symbol as intrabar_rows_by_symbol,
-)
-from src.reporting.label_registry_v1 import (
-    get_label_aria_label,
-    get_label_description,
 )
 from src.reporting.run_fast_recompute_lifecycle_v1 import (
     build_recompute_rows,
@@ -147,12 +144,11 @@ def esc(value: Any) -> str:
     return html.escape(str(value))
 
 
-def badge_html(label: Any, css_name: str | None = None) -> str:
-    label_text = "" if label is None else str(label)
-    css = css_name or pill_class(label_text)
-    return (
-        f"<span class='pill {css}' title='{esc(get_label_description(label_text))}' "
-        f"aria-label='{esc(get_label_aria_label(label_text))}'>{esc(label_text)}</span>"
+def badge_html(label: Any, css_name: str | None = None, text: Any | None = None) -> str:
+    return shared_badge_html(
+        label,
+        css_name=css_name or pill_class("" if label is None else str(label)),
+        text=text,
     )
 
 
@@ -1854,16 +1850,25 @@ def render_html(
         """
 
     counts_html = "".join(
-        f"<span class='pill {pill_class(k)}'>{esc(k)}: {v}</span>"
+        badge_html(k, text=f"{k}: {v}", css_name=pill_class(k))
         for k, v in sorted(group_counts.items())
     )
     post_refresh_counts_html = "".join(
-        f"<span class='pill {pill_class(k)}'>{esc(k)}: {v}</span>"
+        badge_html(k, text=f"{k}: {v}", css_name=pill_class(k))
         for k, v in sorted(post_refresh_counts.items())
     )
     display_severity_counts_html = "".join(
-        f"<span class='pill {pill_class(k)}'>{esc(k)}: {v}</span>"
+        badge_html(k, text=f"{k}: {v}", css_name=pill_class(k))
         for k, v in sorted(display_severity_counts.items())
+    )
+    safety_html = "".join(
+        badge_html(label, css_name="ok")
+        for label in (
+            "broker_private_calls=0",
+            "broker_writes=0",
+            "order_submission=0",
+            "executor=none",
+        )
     )
 
     return f"""<!doctype html>
@@ -1885,53 +1890,12 @@ def render_html(
     <div class="muted">venue={esc(venue)} · quote={esc(quote_currency)} · interval={esc(interval)} · trading_account_id={esc(account_id)}</div>
     {cockpit_nav()}
     <div class="legend">
-      <div><strong>Read-only dashboard. No row is an order instruction. Sell/increase requires downstream permission. MANUAL CHECK means user decision needed; HOLD/WAIT means no manual trade action implied.</strong></div>
-      <div><strong>Labels are context/review states, not order instructions.</strong></div>
-      <div><strong>Review labels do not grant sell/buy permission.</strong></div>
-      <div><strong>Score is a heuristic review/comparison pressure score.</strong></div>
-      <div><strong>Destinations are stricter filtered rotation candidates.</strong></div>
-      <div><strong>Review refs are broad comparison references.</strong></div>
+      <div><strong>Read-only review context.</strong> No row is an order instruction; sell/increase still requires downstream permission.</div>
       <div><strong>Hover/tap a badge for label description.</strong></div>
-      <div><strong>HOLD_DEFENSIVE</strong> = keep existing position, defensive context</div>
-      <div><strong>HOLD_MONITOR_TARGET</strong> = hold and monitor reaction/target context</div>
-      <div><strong>TARGET_TOUCHED_RECENTLY</strong> = latest 15m wick touched the target zone; current price may no longer be at the touch level.</div>
-      <div><strong>PULLBACK_AFTER_TARGET_TOUCH</strong> = latest 15m wick touched the target zone and current price is back away from it.</div>
-      <div><strong>EXTENSION_TOUCHED_INTRABAR</strong> = intrabar wick reached the mapped extension/target zone.</div>
-      <div><strong>STALE_FOR_INTRABAR_DECISION</strong> = latest 15m target-touch context is older than 5 minutes and should be treated cautiously.</div>
-      <div><strong>NO_INCREASE</strong> = do not increase this position</div>
-      <div><strong>WAIT_RECOMPUTE</strong> = wait for fresh map/advice</div>
-      <div><strong>WAIT_RETEST</strong> = wait for price to return to support/entry zone</div>
-      <div><strong>SUPPORT_BELOW / RETEST_ZONE_BELOW</strong> = below-price support/retest context, not TP</div>
-      <div><strong>MANUAL_REDUCE_CHECK</strong> = manual decision required, not automatic sell</div>
-      <div><strong>MANUAL_EXIT_CHECK</strong> = manual decision required, not automatic sell</div>
-      <div><strong>UP target reached</strong> = upside target context for existing long/upside maps.</div>
-      <div><strong>DOWN target reached</strong> = downside target/support reached; not long TP.</div>
-      <div><strong>Rotation score</strong> = account-position review pressure score.</div>
-      <div><strong>Market review refs</strong> = market-only comparison scores, not buy advice.</div>
-      <div><strong>Rotation destinations</strong> = stricter filtered candidates.</div>
-      <div><strong>Market review refs are broad comparison assets. Rotation destinations are stricter actionable-review candidates, not trade advice.</strong></div>
-      <div><strong>Rotation destination confidence includes market structure plus available A+/curve context. Missing A+ lowers confidence; it is not trade advice.</strong></div>
-      <div><strong>Curve sanity checks whether the destination has visible up-confirmation. Weak/down-pressure curves lower destination confidence; not trade advice.</strong></div>
-      <div><strong>Market ref score</strong> = market-only comparison score.</div>
-      <div><strong>Destination eligible</strong> = strict candidate after paper/setup/risk/account-position filters.</div>
-      <div><strong>Exclusion reasons</strong> explain why a strong reference is not a destination.</div>
-      <div><strong>Target reached rows</strong> are harvest/review candidates, not automatic sell orders.</div>
-      <div><strong>ENTRY_ZONE_REACHED</strong> is separate from target state and is not buy permission.</div>
-      <div><strong>Entry distance</strong> is leg-aware display context. Above-entry BUY gaps are warnings, not green opportunity labels.</div>
-      <div><strong>Price progress</strong> shows where current price sits between entry/reaction zone and target. TARGET_PENDING can still be true while TARGET_NEAR is shown.</div>
-      <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
-      <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
-      <div><strong>Recompute needed</strong> means the existing map may be stale. It is not a trade instruction, does not imply buy/sell, and indicates the strategy/advice map should be refreshed.</div>
-      <div><strong>Fresh green rows</strong> = newly updated/fresh map context.</div>
-      <div><strong>Red rows</strong> = stale, invalidated, or recompute-needed map context.</div>
-      <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
-      <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
-      <div><strong>Market context is not trade permission.</strong> Policy blocks and next-zone previews can coexist.</div>
-      <div><strong>Positions value</strong> uses latest market_price_snapshot when available, with ACCOUNT_POSITION_MARK_FALLBACK only when current market price is missing. Asset positions only; excludes EUR cash.</div>
-      <div><strong>Maps needing refresh</strong> are refresh candidates, not trade advice.</div>
-      <div><strong>Post-refresh state</strong> separates old trigger labels from current display state. Refreshed and cooldown rows stay visible as context/watch, while failed, stale, and still-triggering rows remain critical.</div>
-      <div><strong>Severity / Substate</strong> separates hard blocks, stale A+ context, reclaim review, wait-for-reclaim, and momentum-extension review. These labels are review context, not trade advice.</div>
-      <div><strong>Intrabar lifecycle</strong> is a 15m/current-price overlay against the current 4h structural map. It is context only and does not change decisions or execution.</div>
+      <div><strong>Rotation destinations</strong> are stricter filtered review candidates; market refs stay comparison-only.</div>
+      <div><strong>Post-refresh state</strong> is effective dashboard state; raw lifecycle reasons remain visible as context.</div>
+      <div><strong>Intrabar / curve overlays</strong> are review context only and do not change execution permissions.</div>
+      <div><strong>No broker/order path</strong>: broker/order/executor remain disabled here.</div>
     </div>
     <div class="grid">
       <div class="metric"><div class="muted">Rows</div><h2>{len(rows)}</h2></div>
@@ -1942,7 +1906,7 @@ def render_html(
       <div class="metric"><div class="muted">Indicative account value</div><h2>{eur_html(indicative_account_value)}</h2><div class="muted small">Positions value + Total EUR cash when EUR balance is known.</div></div>
       <div class="metric"><div class="muted">Display groups</div>{counts_html}</div>
       <div class="metric"><div class="muted">Recompute state counts</div><h2>{len(recompute_rows)}</h2><div>{post_refresh_counts_html}</div><div class="muted small">{display_severity_counts_html}</div></div>
-      <div class="metric"><div class="muted">Safety</div><span class="pill ok">broker_private_calls=0</span><span class="pill ok">broker_writes=0</span><span class="pill ok">order_submission=0</span><span class="pill ok">executor=none</span></div>
+      <div class="metric"><div class="muted">Safety</div>{safety_html}</div>
     </div>
   </header>
   <main>
@@ -1990,7 +1954,7 @@ def write_index(output_dir: Path) -> Path:
     <h1>Synth MVP Read-only Cockpit</h1>
     <p class="muted">Rendered {esc(local_ts)} Amsterdam time</p>
     {cockpit_nav()}
-    <p><span class="pill">broker_private_calls=0</span><span class="pill">broker_writes=0</span><span class="pill">order_submission=0</span><span class="pill">executor=none</span></p>
+    <p>{badge_html("broker_private_calls=0", css_name="ok")}{badge_html("broker_writes=0", css_name="ok")}{badge_html("order_submission=0", css_name="ok")}{badge_html("executor=none", css_name="ok")}</p>
     <div class="grid">
       <div class="card">
         <a href="/synth/paper-advice.html">Paper Advice</a>

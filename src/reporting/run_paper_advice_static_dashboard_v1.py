@@ -17,6 +17,7 @@ from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
     fetch_latest_prices_by_symbol,
 )
+from src.reporting.badge_html_v1 import badge_html as shared_badge_html
 from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav, pill_classes
 from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
@@ -35,10 +36,6 @@ from src.reporting.intrabar_lifecycle_context_v1 import (
 from src.reporting.market_breath_context_bridge_v1 import (
     build_market_breath_context_rows,
     rows_by_symbol as market_breath_rows_by_symbol,
-)
-from src.reporting.label_registry_v1 import (
-    get_label_aria_label,
-    get_label_description,
 )
 from src.reporting.next_zone_preview_v1 import (
     NextZonePreview,
@@ -171,12 +168,7 @@ def esc(value: Any) -> str:
 
 
 def badge_html(label: Any, css_name: str | None = None) -> str:
-    label_text = "" if label is None else str(label)
-    css = css_name or css_class(label_text)
-    return (
-        f'<span class="pill {css}" title="{esc(get_label_description(label_text))}" '
-        f'aria-label="{esc(get_label_aria_label(label_text))}">{esc(label_text)}</span>'
-    )
+    return shared_badge_html(label, css_name=css_name or css_class("" if label is None else str(label)))
 
 
 def parse_ts(value: Any) -> datetime | None:
@@ -1129,11 +1121,11 @@ def render_table(
         )
         target_html = relevant_target_html(row, next_preview)
         progress_labels = "".join(
-            f'<span class="pill {css_class(label)}">{esc(label)}</span>'
+            badge_html(label, css_name=css_class(label))
             for label in price_progress.labels
         )
         progress_html = (
-            f'<span class="pill {css_class(price_progress.progress_state)}">{esc(price_progress.progress_state)}</span>'
+            f'{badge_html(price_progress.progress_state, css_name=css_class(price_progress.progress_state))}'
             f"{progress_labels}"
         )
         entry_display_state = semantic_entry_display_state(
@@ -1220,7 +1212,7 @@ def render_table(
         badges_html = ""
         if badges:
             badges_html = "".join(
-                badge_html(label, css_name) for label, css_name in badges
+                badge_html(label, css_name=css_name) for label, css_name in badges
             )
             badges_html = f'<div class="badge-row">{badges_html}</div>'
 
@@ -1234,7 +1226,7 @@ def render_table(
                     {badges_html}
                 </td>
                 <td>{badge_html(advice_state)}</td>
-                <td>{badge_html(action_label, action_class)}<div class="muted small">{esc(action_detail)}</div></td>
+                <td>{badge_html(action_label, css_name=action_class)}<div class="muted small">{esc(action_detail)}</div></td>
                 <td class="mono right">{fmt_score(row.get("confidence_score"))}</td>
                 <td>{badge_html(risk_label)}</td>
                 <td class="mono right sticky-price">{esc(fmt_snapshot_price(current_price))}</td>
@@ -1569,24 +1561,14 @@ def render_html(
                 </div>
                 {cockpit_nav()}
                 <div class="legend">
-                    <div><strong>Labels are context/review states, not order instructions.</strong></div>
-                    <div><strong>Review labels do not grant sell/buy permission.</strong></div>
-                    <div><strong>Score is a heuristic review/comparison pressure score.</strong></div>
+                    <div><strong>Read-only review context.</strong> This page is not trade advice or order permission.</div>
                     <div><strong>Hover/tap a badge for label description.</strong></div>
-                    <div><strong>ENTRY_ZONE_REACHED</strong> means price is in the entry/reaction zone; it is separate from target state and is not buy permission.</div>
-                    <div><strong>Entry state precedence</strong>: target touched, post-entry progress, and entry-window-passed labels take precedence over near-entry labels.</div>
-                    <div><strong>CONFIRMATION_PENDING</strong> means price/setup still needs policy or advice confirmation.</div>
-                    <div><strong>Price progress</strong> shows where current price sits between entry/reaction zone and target. TARGET_PENDING can still be true while TARGET_NEAR is shown.</div>
-                    <div><strong>ACTIVE_MAP</strong> means the map is still valid, not that entry or target was reached.</div>
-                    <div><strong>Fast lifecycle candles</strong> check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.</div>
-                    <div><strong>Dimmed labels</strong> in red/stale rows are old-map context; bright red/orange labels are the current lifecycle/recompute reason.</div>
-                    <div><strong>Next zones</strong>: Next zones are market-only preview zones after a map is stale, reclaimed, invalidated, or target-finished. They are not orders, allocation advice, or execution intent.</div>
-                    <div><strong>Market context is not trade permission.</strong> Policy blocks and next-zone previews can coexist.</div>
-                    <div><strong>Severity / Substate</strong>: Review context, not trade advice. Soft caution is not permission; stale A+ context is not a hard current veto by itself.</div>
-                    <div><strong>Intrabar lifecycle</strong>: 15m/current-price overlay against the 4h structural map. It is context only and does not change paper advice permission.</div>
+                    <div><strong>Raw lifecycle/recompute reasons</strong> stay visible as review context.</div>
+                    <div><strong>Fast lifecycle / intrabar overlays</strong> are context only and do not create a new strategy map.</div>
+                    <div><strong>No broker/order path</strong>: broker/order/executor remain disabled here.</div>
                 </div>
             </div>
-            <div class="badge">broker_private_calls=0 · broker_calls=0 · broker_writes=0 · order_submission=0 · executor=none · account_awareness=0</div>
+            <div>{badge_html("broker_private_calls=0", css_name="ok")}{badge_html("broker_calls=0", css_name="ok")}{badge_html("broker_writes=0", css_name="ok")}{badge_html("order_submission=0", css_name="ok")}{badge_html("executor=none", css_name="ok")}{badge_html("account_awareness=0", css_name="ok")}</div>
         </section>
 
         <section class="grid">
