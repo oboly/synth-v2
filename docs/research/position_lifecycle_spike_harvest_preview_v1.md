@@ -119,6 +119,9 @@ Use when:
 - position is in profit and price is near or inside mapped target/reaction or
   extension context
 - or a recent fast move looks extended from current intrabar context
+- or the latest intrabar target-touch context is stale enough that the user
+  should verify the live chart before acting, but the row should still stay in
+  manual trim review rather than falling back to plain hold
 
 ### `RELOAD_REVIEW`
 
@@ -140,7 +143,7 @@ Use when:
 
 - a position exists
 - current data is fresh enough
-- no stronger trim/reload/reduce edge is visible
+- no stronger trim/reload/reduce/manual-review edge is visible
 
 ### `REDUCE_REVIEW`
 

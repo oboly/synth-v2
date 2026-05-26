@@ -302,7 +302,11 @@ def pct_cell(value: Decimal | None, class_name: str | None = None) -> str:
     if not text:
         return "<td class='num'></td>"
     pill_class_name = class_name or pct_class(value)
-    return f"<td class='num'>{badge_html(text, pill_class_name)}</td>"
+    return (
+        f"<td class='num'>"
+        f"<span class='pill {esc(pill_class_name)}' title='distance from current reference'>{esc(text)}</span>"
+        f"</td>"
+    )
 
 
 def entry_distance_cell(
@@ -330,18 +334,32 @@ def entry_distance_cell(
     zone_name = "reaction" if leg == "DOWN" else "entry"
 
     if reference_low <= current_price <= reference_high:
-        return f"<td class='num'>{badge_html(f'inside {zone_name}', 'ok')}</td>"
+        return (
+            f"<td class='num'>"
+            f"<span class='pill ok' title='current price is inside the mapped {esc(zone_name)} zone'>inside {esc(zone_name)}</span>"
+            f"</td>"
+        )
 
     if current_price > reference_high:
         pct = ((current_price / reference_high) - Decimal("1")) * Decimal("100")
         css = "muted" if leg == "DOWN" else "warn"
         return (
-            f"<td class='num'>{badge_html(f'above {zone_name} {signed_pct_text(pct)}', css)}</td>"
+            f"<td class='num'>"
+            f"<span class='pill {esc(css)}' title='current price is above the mapped {esc(zone_name)} zone'>"
+            f"above {esc(zone_name)} {esc(signed_pct_text(pct))}"
+            f"</span>"
+            f"</td>"
         )
 
     pct = ((current_price / reference_low) - Decimal("1")) * Decimal("100")
     css = "warn" if leg == "DOWN" else "muted"
-    return f"<td class='num'>{badge_html(f'below {zone_name} {signed_pct_text(pct)}', css)}</td>"
+    return (
+        f"<td class='num'>"
+        f"<span class='pill {esc(css)}' title='current price is below the mapped {esc(zone_name)} zone'>"
+        f"below {esc(zone_name)} {esc(signed_pct_text(pct))}"
+        f"</span>"
+        f"</td>"
+    )
 
 
 def price_age_min(snapshot: MarketPriceSnapshot | None, *, now_utc: datetime) -> Decimal | None:
@@ -1005,8 +1023,17 @@ def lifecycle_preview_state(
         entry_zone_high=row.entry_zone_high,
         current_price=current_price,
     )
+    rotation_state = str(row.rotation_state or "").upper()
 
     if intrabar_row is None:
+        if action == "HOLD" and rotation_state in TP_HARVEST_REVIEW_STATES:
+            return (
+                "TRIM_REVIEW",
+                "target or extension review context is already visible on the active map",
+                source_modules,
+                missing_inputs,
+                reload_distance_pct,
+            )
         return action, reason, source_modules, missing_inputs, reload_distance_pct
 
     source_modules = dedup_labels(source_modules + ["intrabar_lifecycle_context_v1"])
@@ -1014,6 +1041,14 @@ def lifecycle_preview_state(
         return action, reason, source_modules, missing_inputs, reload_distance_pct
 
     if intrabar_target_touch_active(intrabar_row):
+        if intrabar_stale_for_decision(intrabar_row):
+            return (
+                "TRIM_REVIEW",
+                "target touched intrabar; verify live chart before acting",
+                source_modules,
+                missing_inputs,
+                reload_distance_pct,
+            )
         if (
             intrabar_pullback_after_touch(intrabar_row)
             and str(row.leg_direction or "").upper() == "UP"
@@ -1027,14 +1062,22 @@ def lifecycle_preview_state(
                 missing_inputs,
                 reload_distance_pct,
             )
-        if row.position_lifecycle_price_vs_entry_pct is not None and row.position_lifecycle_price_vs_entry_pct > 0:
-            return (
-                "TRIM_REVIEW",
-                "target touched intrabar and position remains in profit; review spike-harvest trim context",
-                source_modules,
-                missing_inputs,
-                reload_distance_pct,
-            )
+        return (
+            "TRIM_REVIEW",
+            "target touched intrabar; review spike-harvest trim context manually",
+            source_modules,
+            missing_inputs,
+            reload_distance_pct,
+        )
+
+    if action == "HOLD" and rotation_state in TP_HARVEST_REVIEW_STATES:
+        return (
+            "TRIM_REVIEW",
+            "target or extension review context is already visible on the active map",
+            source_modules,
+            missing_inputs,
+            reload_distance_pct,
+        )
 
     return action, reason, source_modules, missing_inputs, reload_distance_pct
 

@@ -335,6 +335,7 @@ def classify_position_lifecycle(
     in_profit = price_vs_entry_pct is not None and price_vs_entry_pct > 0
     near_target = target_distance_pct is not None and target_distance_pct <= Decimal("2.0")
     near_reload_zone = reload_distance_pct is not None and reload_distance_pct <= Decimal("2.0")
+    target_touch_context = target_state == "TARGET_REACHED" or near_target
     blocked_context = (
         advice_state in {"AVOID", "NO_NEW_BUY", "BLOCK_24H"}
         or advice_action in {"DO_NOT_ADD", "AVOID_NO_NEW_BUY", "BLOCK_NEW_24H_ENTRY"}
@@ -354,10 +355,10 @@ def classify_position_lifecycle(
             invalidation_distance_pct,
         )
 
-    if in_profit and (target_state == "TARGET_REACHED" or near_target):
+    if target_touch_context and (in_profit or average_entry is None or average_entry <= 0):
         return (
             "TRIM_REVIEW",
-            "position is in profit and price is near or inside target context",
+            "price is near or inside target context; review spike-harvest trim manually",
             source_modules,
             missing_inputs,
             price_vs_entry_pct,

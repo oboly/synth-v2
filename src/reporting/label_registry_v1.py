@@ -89,6 +89,7 @@ _REGISTRY: dict[str, LabelDescription] = {
         _entry("STALE_FOR_INTRABAR_DECISION", "Intrabar decision context is older than the freshness threshold; verify live chart before acting.", category="target_lifecycle"),
         _entry("TARGET_RETEST_SUPPORT", "Target retest/support context after an upside move. Market structure context only.", category="target_lifecycle"),
         _entry("POST_ENTRY_PROGRESS", "Price moved beyond the entry/reaction zone and is progressing toward the mapped target.", category="target_lifecycle"),
+        _entry("REACTION_PROGRESS", "Price is interacting with the mapped reaction zone but has not resolved into a stronger lifecycle state yet.", category="target_lifecycle"),
         _entry("ENTRY_WINDOW_PASSED", "Price has moved beyond the preferred entry window for the current map.", category="target_lifecycle"),
         _entry("PRICE_PROGRESS_PENDING", "Price has not progressed materially beyond the entry/reaction zone yet.", category="target_lifecycle"),
         _entry("DOWNSIDE_TARGET_APPROACHING", "Price is approaching the mapped downside target/support zone.", category="target_lifecycle"),
