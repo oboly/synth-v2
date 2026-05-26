@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -10,7 +11,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from src.common.db import get_connection
-from src.reporting.badge_html_v1 import badge_html as shared_badge_html
+from src.reporting.badge_html_v1 import (
+    badge_html as shared_badge_html,
+    badge_with_axis_html as shared_badge_with_axis_html,
+)
 from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav, pill_classes
 from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
@@ -24,6 +28,8 @@ from src.reporting.intrabar_lifecycle_context_v1 import (
     build_intrabar_lifecycle_context_rows,
     rows_by_symbol as intrabar_rows_by_symbol,
 )
+from src.reporting.label_registry_v1 import get_label_human_label
+from src.reporting.run_entry_candidate_static_dashboard_v1 import classify_candidate
 from src.reporting.run_fast_recompute_lifecycle_v1 import (
     build_recompute_rows,
     render_rows_table as render_recompute_rows_table,
@@ -146,6 +152,14 @@ def esc(value: Any) -> str:
 
 def badge_html(label: Any, css_name: str | None = None, text: Any | None = None) -> str:
     return shared_badge_html(
+        label,
+        css_name=css_name or pill_class("" if label is None else str(label)),
+        text=text,
+    )
+
+
+def badge_with_axis_html(label: Any, css_name: str | None = None, text: Any | None = None) -> str:
+    return shared_badge_with_axis_html(
         label,
         css_name=css_name or pill_class("" if label is None else str(label)),
         text=text,
@@ -818,14 +832,14 @@ def display_action_state(
 
 def display_group_label(*, action_label: str, increase_label: str) -> str:
     if action_label == "MANUAL_EXIT_CHECK":
-        return "EXIT CANDIDATES"
-    if action_label == "MANUAL_REDUCE_CHECK":
-        return "MANUAL CHECK"
+        return "POSITION_EXIT_REVIEW"
+    if action_label in {"MANUAL_REDUCE_CHECK", "MANUAL_CHECK"}:
+        return "POSITION_MANUAL_REVIEW"
     if action_label.startswith("WAIT_") or increase_label.startswith("WAIT_"):
-        return "WAIT"
+        return "POSITION_WAIT_FRESH_MAP"
     if increase_label == "INCREASE_CANDIDATE":
-        return "INCREASE CANDIDATES"
-    return "HOLD"
+        return "POSITION_INCREASE_REVIEW"
+    return "POSITION_HOLD_REVIEW"
 
 
 def target_display_label(
@@ -1133,6 +1147,34 @@ def render_html(
             )
         return badges
 
+    def held_entry_readiness_label(symbol: str) -> str:
+        advice = advice_by_symbol.get(symbol)
+        if not advice:
+            return "INSUFFICIENT_SAMPLE"
+        reason_codes = advice.get("reason_codes_json")
+        if reason_codes is None:
+            reason_codes = advice.get("reason_codes")
+        candidate_row = {
+            "selection_state": advice.get("selection_state"),
+            "setup_filter_state": advice.get("setup_filter_state"),
+            "setup_filter_reason": advice.get("setup_filter_reason"),
+            "policy_decision": advice.get("policy_decision"),
+            "allowed_now": advice.get("allowed_now"),
+            "advice_state": advice.get("advice_state"),
+            "advice_action": advice.get("advice_action"),
+            "leg_direction": advice.get("leg_direction"),
+            "aplus_bucket": advice.get("aplus_bucket"),
+            "risk_label": advice.get("risk_label"),
+            "entry_zone_low": advice.get("entry_zone_low"),
+            "entry_zone_high": advice.get("entry_zone_high"),
+            "tp_zone_low": advice.get("tp_zone_low"),
+            "tp_zone_high": advice.get("tp_zone_high"),
+            "invalidation_price": advice.get("invalidation_price"),
+            "reason_codes_json": json.dumps(reason_codes or []),
+        }
+        label, _ = classify_candidate(candidate_row)
+        return label
+
     def display_state_for_row(row: Any) -> HoldingDisplayState:
         current_price = current_price_by_symbol.get(row.position_symbol)
         intrabar_row = (intrabar_by_symbol or {}).get(row.position_symbol)
@@ -1215,19 +1257,26 @@ def render_html(
         row.position_symbol: display_state_for_row(row)
         for row in rows
     }
+    entry_readiness_by_symbol = {
+        row.position_symbol: held_entry_readiness_label(row.position_symbol)
+        for row in rows
+    }
     group_counts: dict[str, int] = {}
+    entry_readiness_counts: dict[str, int] = {}
     for row in rows:
         group = display_state_by_symbol[row.position_symbol].group_label
         group_counts[group] = group_counts.get(group, 0) + 1
+        entry_group = entry_readiness_by_symbol[row.position_symbol]
+        entry_readiness_counts[entry_group] = entry_readiness_counts.get(entry_group, 0) + 1
 
-    hold_rows = [r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "HOLD"]
-    wait_rows = [r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "WAIT"]
-    manual_rows = [r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "MANUAL CHECK"]
+    hold_rows = [r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "POSITION_HOLD_REVIEW"]
+    wait_rows = [r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "POSITION_WAIT_FRESH_MAP"]
+    manual_rows = [r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "POSITION_MANUAL_REVIEW"]
     increase_rows = [
-        r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "INCREASE CANDIDATES"
+        r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "POSITION_INCREASE_REVIEW"
     ]
     exit_rows = [
-        r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "EXIT CANDIDATES"
+        r for r in rows if display_state_by_symbol[r.position_symbol].group_label == "POSITION_EXIT_REVIEW"
     ]
 
     def destination_eligibility_for_candidate(symbol: str) -> DestinationEligibility:
@@ -1427,6 +1476,7 @@ def render_html(
             delta_invalidation_pct = pct_delta(row.invalidation_price, current_price)
             context = distance_context(row)
             display_state = display_state_by_symbol[row.position_symbol]
+            entry_readiness_label = entry_readiness_by_symbol[row.position_symbol]
             lifecycle = lifecycle_for_row(row)
             effective_lifecycle_state = display_state.lifecycle_state
             effective_recompute_needed = display_state.recompute_needed
@@ -1545,7 +1595,8 @@ def render_html(
                 f"{pct_cell(delta_tp_pct, target_pct_class(delta_tp_pct, context))}"
                 f"{pct_cell(delta_invalidation_pct, risk_pct_class(delta_invalidation_pct, context))}"
                 f"<td class='zone-value sticky-target'>{target_html}</td>"
-                f"<td>{badge_html(display_state.group_label)}<div class='muted small'>raw: {esc(row.rotation_state)}</div></td>"
+                f"<td>{badge_html(display_state.group_label, text=get_label_human_label(display_state.group_label))}<div class='muted small'>raw: {esc(row.rotation_state)}</div></td>"
+                f"<td>{badge_with_axis_html(entry_readiness_label, text=get_label_human_label(entry_readiness_label))}</td>"
                 f"<td class='num'>{esc(row.rotation_pressure_score)}</td>"
                 f"<td class='small'>{esc(review_refs)}</td>"
                 f"<td class='small'>{destinations_html}</td>"
@@ -1835,7 +1886,8 @@ def render_html(
                   <th>Δ target %</th>
                   <th>Δ risk %</th>
                   <th class="sticky-target">Relevant target</th>
-                  <th>Group</th>
+                  <th>Position review</th>
+                  <th>Entry readiness</th>
                   <th>Rotation score</th>
                   <th>Market review refs</th>
                   <th>Rotation destinations</th>
@@ -1849,9 +1901,13 @@ def render_html(
         </section>
         """
 
-    counts_html = "".join(
-        badge_html(k, text=f"{k}: {v}", css_name=pill_class(k))
+    position_review_counts_html = "".join(
+        badge_html(k, text=f"{get_label_human_label(k)}: {v}", css_name=pill_class(k))
         for k, v in sorted(group_counts.items())
+    )
+    entry_readiness_counts_html = "".join(
+        badge_with_axis_html(k, text=f"{get_label_human_label(k)}: {v}", css_name=pill_class(k))
+        for k, v in sorted(entry_readiness_counts.items())
     )
     post_refresh_counts_html = "".join(
         badge_html(k, text=f"{k}: {v}", css_name=pill_class(k))
@@ -1892,6 +1948,7 @@ def render_html(
     <div class="legend">
       <div><strong>Read-only review context.</strong> No row is an order instruction; sell/increase still requires downstream permission.</div>
       <div><strong>Hover/tap a badge for label description.</strong></div>
+      <div><strong>Position review</strong> is account-aware existing-holding context. <strong>Entry readiness</strong> is market-only new-entry context. These counts are intentionally different.</div>
       <div><strong>Rotation destinations</strong> are stricter filtered review candidates; market refs stay comparison-only.</div>
       <div><strong>Post-refresh state</strong> is effective dashboard state; raw lifecycle reasons remain visible as context.</div>
       <div><strong>Intrabar / curve overlays</strong> are review context only and do not change execution permissions.</div>
@@ -1904,7 +1961,8 @@ def render_html(
       <div class="metric"><div class="muted">Reserved EUR cash</div><h2>{eur_html(None if eur_balance is None else eur_balance.reserved_amount)}</h2></div>
       <div class="metric"><div class="muted">Total EUR cash</div><h2>{eur_html(total_eur_cash)}</h2></div>
       <div class="metric"><div class="muted">Indicative account value</div><h2>{eur_html(indicative_account_value)}</h2><div class="muted small">Positions value + Total EUR cash when EUR balance is known.</div></div>
-      <div class="metric"><div class="muted">Display groups</div>{counts_html}</div>
+      <div class="metric"><div class="muted">Position review counts</div>{position_review_counts_html}</div>
+      <div class="metric"><div class="muted">Entry readiness counts among held assets</div>{entry_readiness_counts_html}</div>
       <div class="metric"><div class="muted">Recompute state counts</div><h2>{len(recompute_rows)}</h2><div>{post_refresh_counts_html}</div><div class="muted small">{display_severity_counts_html}</div></div>
       <div class="metric"><div class="muted">Safety</div>{safety_html}</div>
     </div>
@@ -1912,11 +1970,11 @@ def render_html(
   <main>
     {recompute_lifecycle_section()}
     {candidate_diagnostics_section()}
-    {section("EXIT CANDIDATES", exit_rows)}
-    {section("MANUAL CHECK", manual_rows)}
-    {section("WAIT", wait_rows, "downside")}
-    {section("INCREASE CANDIDATES", increase_rows, "priority")}
-    {section("HOLD", hold_rows, "harvest")}
+    {section("Exit review", exit_rows)}
+    {section("Manual review", manual_rows)}
+    {section("Wait fresh map", wait_rows, "downside")}
+    {section("Increase review", increase_rows, "priority")}
+    {section("Hold review", hold_rows, "harvest")}
   </main>
 </body>
 </html>
@@ -1966,7 +2024,7 @@ def write_index(output_dir: Path) -> Path:
       </div>
       <div class="card">
         <a href="/synth/rotation-preview.html">Rotation Preview</a>
-        <p class="muted">Account-aware read-only HOLD / WAIT / manual-check dashboard.</p>
+        <p class="muted">Account-aware read-only position-review dashboard for existing holdings, with separate market-only entry readiness context.</p>
       </div>
       <div class="card">
         <a href="/synth/recompute-lifecycle.html">Recompute lifecycle</a>
