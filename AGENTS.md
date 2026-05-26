@@ -45,13 +45,27 @@ Blockers:
 
 Rules:
 
+- Default final response must use only:
+
+```text
+Files:
+Checks:
+Result:
+Status:
+Blockers:
+```
+
 - Max 20 lines unless explicitly asked for a handoff or explanation.
 - Do not paste full diffs.
+- Do not paste inline diff hunks.
+- Do not paste edited-line previews.
+- Do not paste line-number snippets.
 - Do not paste full file contents.
 - Do not repeat code already written to the repository.
 - Do not include long implementation narratives.
 - Do not paste full command logs unless there is an error.
 - Do not use markdown tables in final status unless explicitly requested.
+- If the user asks for details, provide a short summary first and offer the exact diff command instead of pasting the diff by default.
 - Architecture explanations are required only when a boundary is touched, clarified, or violated.
 - For commit tasks, include branch and commit hash.
 
@@ -66,7 +80,7 @@ Status:
 Blockers:
 ```
 
-For handoff tasks, a longer summary is allowed, but keep it structured and avoid duplicating code or generated artifacts.
+For handoff tasks, a longer summary is allowed only when explicitly requested, but keep it structured and avoid duplicating code or generated artifacts.
 
 ## Project Structure & Module Organization
 
