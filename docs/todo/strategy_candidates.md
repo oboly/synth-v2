@@ -113,6 +113,72 @@ Terminology rule:
 - Use `participation` for cross-asset participation.
 - Avoid `breadth` unless a field name or prior artifact already uses it.
 
+## P2 — `MACRO_DIP_BUDGET_MODE_V1`
+
+Status: future portfolio/research lane. No runtime change.
+
+Concept:
+
+- Keep roughly `2/3` as long-cycle survivor exposure.
+- Reserve roughly `1/3` as staged dip budget.
+- Dip budget is not deployed across all `40+` assets.
+- Deploy only into strongest survivor/reclaim candidates after a liquidity shock.
+
+Staged tranches:
+
+- early dip / first reclaim
+- deeper real dip
+- panic/liquidation dip
+- reclaim reserve after higher low
+
+Entry rule:
+
+```text
+flush -> reclaim -> retest holds
+```
+
+Execution discipline:
+
+- do not buy first freefall
+- do not wait only for perfect bottom
+- do not chase vertical extension
+
+Research use:
+
+- external macro scenario only
+- relative strength watch
+- market-only validation
+- no direct `BUY_READY`
+- no runtime change
+- no `selection_engine` change
+- no `decision_gate` change
+- no execution change
+
+Candidate priority examples:
+
+- tier 1: `BTC`, `ETH`, `LINK`, `ONDO`, `CC`, `SOL`
+- tier 2: `HYPE`, `NEAR`, `WLD`, `SUI`, `PLUME`, `RED`, `QNT`, `XDC`, `HBAR`
+
+Architecture boundary:
+
+- macro scenario can inform dashboard/context only
+- strategy layer may later measure relative strength and reclaim candidates
+- `decision_gate` later decides whether dip budget may be used
+- `execution_planner` later creates passive/retest plan
+- `executor` remains disabled unless separately enabled
+
+Boundary:
+
+```text
+external macro scenario -> dashboard/context/research watch only
+```
+
+Not:
+
+```text
+external macro scenario -> direct BUY_READY -> runtime deployment
+```
+
 ## Boundary
 
 ```text

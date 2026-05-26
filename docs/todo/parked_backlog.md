@@ -123,3 +123,57 @@ Research joins only.
 Priority note:
 
 - Do not reopen this lane while `rotation_destination_historical_replay_audit_v2` reruns, discovered regime readout, `symbol_breath_profile_v1`, or `regime_interaction_audit_v1` are still pending.
+
+---
+
+## P3 — `MACRO_DIP_BUDGET_MODE_V1` parked deployment-context backlog
+
+Status: parked future lane.
+
+Concept:
+
+- keep roughly `2/3` as long-cycle survivor exposure
+- reserve roughly `1/3` as staged dip budget
+- do not spread dip budget across all `40+` assets
+- deploy only into strongest survivor/reclaim candidates after a liquidity shock
+
+Staged tranches:
+
+- early dip / first reclaim
+- deeper real dip
+- panic/liquidation dip
+- reclaim reserve after higher low
+
+Entry discipline:
+
+```text
+flush -> reclaim -> retest holds
+```
+
+Guardrails:
+
+- do not buy first freefall
+- do not wait only for perfect bottom
+- do not chase vertical extension
+
+Priority examples:
+
+- tier 1: `BTC`, `ETH`, `LINK`, `ONDO`, `CC`, `SOL`
+- tier 2: `HYPE`, `NEAR`, `WLD`, `SUI`, `PLUME`, `RED`, `QNT`, `XDC`, `HBAR`
+
+Boundary:
+
+```text
+macro scenario may inform dashboard/context only
+later strategy work may measure relative strength and reclaim quality
+later decision_gate may decide whether dip budget can be used
+later execution_planner may create passive/retest intent
+executor remains disabled unless separately enabled
+```
+
+Not:
+
+```text
+No direct BUY_READY from macro narrative.
+No runtime selection, decision, execution, broker, or order changes from this TODO.
+```

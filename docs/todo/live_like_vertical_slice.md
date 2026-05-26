@@ -50,5 +50,40 @@ After NEAR shadow mode is stable:
 - strategy promotion
 - broker connectivity
 - executor enablement
+- `MACRO_DIP_BUDGET_MODE_V1`
 
 Those remain blocked until the shadow path is clear, replayable, and safe.
+
+## Later Research Note — `MACRO_DIP_BUDGET_MODE_V1`
+
+This vertical slice stays narrow and shadow-only.
+
+`MACRO_DIP_BUDGET_MODE_V1` is a separate future portfolio/research lane, not part of the current live-like shadow chain.
+
+Future concept:
+
+- keep roughly `2/3` survivor exposure
+- reserve roughly `1/3` as staged dip budget
+- deploy dip budget only into strongest survivor/reclaim candidates after a liquidity shock
+- use staged tranches:
+  - early dip / first reclaim
+  - deeper real dip
+  - panic/liquidation dip
+  - reclaim reserve after higher low
+
+Discipline:
+
+- `flush -> reclaim -> retest holds`
+- do not buy first freefall
+- do not wait only for perfect bottom
+- do not chase vertical extension
+
+Boundary for this vertical slice:
+
+- no runtime behavior change
+- no `selection_engine` change
+- no `decision_gate` change
+- no `execution_planner` runtime change
+- no executor path
+
+If revisited later, macro shock scenario remains dashboard/context/research input only until there is a separate reviewed task for strategy measurement, account permissioning, and passive execution planning.
