@@ -42,6 +42,8 @@ OUTPUT_SUMMARY = "outcome_summary_v1.json"
 OUTPUT_MANIFEST = "manifest_v1.json"
 OUTPUT_BUCKET_ACTION_REASON_CSV = "bucket_summary_by_action_reason_v1.csv"
 OUTPUT_BUCKET_SYMBOL_CSV = "bucket_summary_by_symbol_v1.csv"
+OUTPUT_BUCKET_ACTION_REASON_ADJUSTED_CSV = "bucket_summary_by_action_reason_adjusted_v1.csv"
+OUTPUT_BUCKET_SYMBOL_ADJUSTED_CSV = "bucket_summary_by_symbol_adjusted_v1.csv"
 
 EVENT_MODES = ("all", "transition-only", "cooldown")
 HORIZON_LABELS: list[tuple[str, timedelta]] = [
@@ -55,6 +57,9 @@ HORIZON_LABELS: list[tuple[str, timedelta]] = [
 ]
 MAX_HORIZON = HORIZON_LABELS[-1][1]
 INTRABAR_DECISION_FRESH_AFTER = timedelta(minutes=5)
+REDUCE_ACTIONS = {"TRIM_REVIEW", "REDUCE_REVIEW"}
+LONG_ACTIONS = {"HOLD", "RELOAD_REVIEW"}
+NEUTRAL_ACTIONS = {"NO_POSITION_LIFECYCLE_EDGE"}
 
 
 @dataclass(frozen=True)
@@ -850,6 +855,8 @@ def event_to_row(event: LifecycleEvent, outcomes: dict[str, Any]) -> dict[str, A
     row["secondary_reason_buckets"] = secondary_reason_buckets
     row["market_leg_bucket"] = derive_market_leg_bucket(row)
     row["freshness_bucket"] = derive_freshness_bucket(row)
+    row["action_intent_polarity"] = action_intent_polarity(row)
+    add_adjusted_metrics(row)
     return row
 
 
@@ -1020,6 +1027,61 @@ def derive_freshness_bucket(row: dict[str, Any]) -> str:
     return "UNKNOWN"
 
 
+def action_intent_polarity(row: dict[str, Any]) -> str:
+    action = str(row.get("position_lifecycle_action") or "").upper()
+    if action in LONG_ACTIONS:
+        return "long_exposure_keep" if action == "HOLD" else "long_exposure_add_or_restore"
+    if action in REDUCE_ACTIONS:
+        return "reduce_exposure_review"
+    return "neutral"
+
+
+def positive_part(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return max(0.0, value)
+
+
+def negative_part_magnitude(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return max(0.0, -value)
+
+
+def adjusted_score_for_action(action: str, forward_return: float | None) -> float | None:
+    if forward_return is None:
+        return None
+    normalized = str(action or "").upper()
+    if normalized in LONG_ACTIONS:
+        return forward_return
+    if normalized in REDUCE_ACTIONS:
+        return -forward_return
+    return None
+
+
+def add_adjusted_metrics(row: dict[str, Any]) -> None:
+    action = str(row.get("position_lifecycle_action") or "").upper()
+    forward_returns = row.get("forward_returns") or {}
+    for label, _ in HORIZON_LABELS:
+        raw = forward_returns.get(label)
+        row[f"adjusted_return_score_{label}"] = adjusted_score_for_action(action, raw)
+        if action in REDUCE_ACTIONS:
+            row[f"avoided_drawdown_score_{label}"] = negative_part_magnitude(raw)
+            row[f"opportunity_cost_{label}"] = positive_part(raw)
+            row[f"upside_capture_score_{label}"] = None
+            row[f"adverse_move_score_{label}"] = None
+        elif action in LONG_ACTIONS:
+            row[f"avoided_drawdown_score_{label}"] = None
+            row[f"opportunity_cost_{label}"] = None
+            row[f"upside_capture_score_{label}"] = positive_part(raw)
+            row[f"adverse_move_score_{label}"] = negative_part_magnitude(raw)
+        else:
+            row[f"avoided_drawdown_score_{label}"] = None
+            row[f"opportunity_cost_{label}"] = None
+            row[f"upside_capture_score_{label}"] = None
+            row[f"adverse_move_score_{label}"] = None
+
+
 def group_metrics(rows: list[dict[str, Any]], *, match: callable) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "count": sum(1 for row in rows if match(row)),
@@ -1039,6 +1101,22 @@ def group_metrics(rows: list[dict[str, Any]], *, match: callable) -> dict[str, A
         )
         summary[f"avg_return_pct_{label}"] = average_or_none(values)
         summary[f"median_return_pct_{label}"] = median_or_none(values)
+        adjusted_values = values_for_group(rows, match=match, value_key=f"adjusted_return_score_{label}")
+        summary[f"avg_adjusted_score_{label}"] = average_or_none(adjusted_values)
+        summary[f"median_adjusted_score_{label}"] = median_or_none(adjusted_values)
+    for label in ("4h", "24h"):
+        summary[f"avg_avoided_drawdown_{label}"] = average_or_none(
+            values_for_group(rows, match=match, value_key=f"avoided_drawdown_score_{label}")
+        )
+        summary[f"avg_opportunity_cost_{label}"] = average_or_none(
+            values_for_group(rows, match=match, value_key=f"opportunity_cost_{label}")
+        )
+        summary[f"avg_upside_capture_{label}"] = average_or_none(
+            values_for_group(rows, match=match, value_key=f"upside_capture_score_{label}")
+        )
+        summary[f"avg_adverse_move_{label}"] = average_or_none(
+            values_for_group(rows, match=match, value_key=f"adverse_move_score_{label}")
+        )
     return summary
 
 
@@ -1087,6 +1165,14 @@ def top_csv_rows_for_action_reason(summary: dict[str, Any]) -> list[dict[str, An
 
 
 def top_csv_rows_for_symbol(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    return flatten_summary_to_csv_rows(summary["symbol_summary"], key_name="symbol")
+
+
+def adjusted_csv_rows_for_action_reason(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    return flatten_summary_to_csv_rows(summary["action_reason_bucket_summary"], key_name="action_reason_bucket")
+
+
+def adjusted_csv_rows_for_symbol(summary: dict[str, Any]) -> list[dict[str, Any]]:
     return flatten_summary_to_csv_rows(summary["symbol_summary"], key_name="symbol")
 
 
@@ -1228,6 +1314,7 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
             f"avg1h={item['avg_return_pct_1h']} med1h={item['median_return_pct_1h']} "
             f"avg4h={item['avg_return_pct_4h']} med4h={item['median_return_pct_4h']} "
             f"avg24h={item['avg_return_pct_24h']} med24h={item['median_return_pct_24h']} "
+            f"adj4h={item['avg_adjusted_score_4h']} adj24h={item['avg_adjusted_score_24h']} "
             f"avg_mfe={item['avg_mfe_pct']} avg_mae={item['avg_mae_pct']}"
         )
     top_count = sorted(
@@ -1253,6 +1340,41 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         reverse=True,
     )[:10]
     print("top_symbols " + " ; ".join(f"{k}:{v['count']}" for k, v in top_symbols))
+    adjusted_top = sorted(
+        [(k, v) for k, v in summary["action_reason_bucket_summary"].items() if v["count"] >= 20 and v["avg_adjusted_score_4h"] is not None],
+        key=lambda item: item[1]["avg_adjusted_score_4h"],
+        reverse=True,
+    )[:10]
+    print("top_action_reason_by_adjusted4h " + " ; ".join(f"{k}:{v['avg_adjusted_score_4h']}" for k, v in adjusted_top))
+    adjusted_worst = sorted(
+        [(k, v) for k, v in summary["action_reason_bucket_summary"].items() if v["count"] >= 20 and v["avg_adjusted_score_4h"] is not None],
+        key=lambda item: item[1]["avg_adjusted_score_4h"],
+    )[:10]
+    print("worst_action_reason_by_adjusted4h " + " ; ".join(f"{k}:{v['avg_adjusted_score_4h']}" for k, v in adjusted_worst))
+    top_avoided = sorted(
+        [(k, v) for k, v in summary["action_reason_bucket_summary"].items() if v["count"] >= 20 and v["avg_avoided_drawdown_4h"] is not None],
+        key=lambda item: item[1]["avg_avoided_drawdown_4h"],
+        reverse=True,
+    )[:10]
+    print("top_action_reason_by_avoided_drawdown4h " + " ; ".join(f"{k}:{v['avg_avoided_drawdown_4h']}" for k, v in top_avoided))
+    top_opportunity_cost = sorted(
+        [(k, v) for k, v in summary["action_reason_bucket_summary"].items() if v["count"] >= 20 and v["avg_opportunity_cost_4h"] is not None],
+        key=lambda item: item[1]["avg_opportunity_cost_4h"],
+        reverse=True,
+    )[:10]
+    print("top_action_reason_by_opportunity_cost4h " + " ; ".join(f"{k}:{v['avg_opportunity_cost_4h']}" for k, v in top_opportunity_cost))
+    top_upside_capture = sorted(
+        [
+            (k, v)
+            for k, v in summary["action_reason_bucket_summary"].items()
+            if v["count"] >= 20
+            and v["avg_upside_capture_4h"] is not None
+            and (k.startswith("HOLD|") or k.startswith("RELOAD_REVIEW|"))
+        ],
+        key=lambda item: item[1]["avg_upside_capture_4h"],
+        reverse=True,
+    )[:10]
+    print("top_hold_reload_by_upside_capture4h " + " ; ".join(f"{k}:{v['avg_upside_capture_4h']}" for k, v in top_upside_capture))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1369,6 +1491,8 @@ def main(argv: list[str] | None = None) -> int:
         write_json(output_dir / OUTPUT_SUMMARY, summary)
         write_csv(output_dir / OUTPUT_BUCKET_ACTION_REASON_CSV, top_csv_rows_for_action_reason(summary))
         write_csv(output_dir / OUTPUT_BUCKET_SYMBOL_CSV, top_csv_rows_for_symbol(summary))
+        write_csv(output_dir / OUTPUT_BUCKET_ACTION_REASON_ADJUSTED_CSV, adjusted_csv_rows_for_action_reason(summary))
+        write_csv(output_dir / OUTPUT_BUCKET_SYMBOL_ADJUSTED_CSV, adjusted_csv_rows_for_symbol(summary))
         write_json(
             output_dir / OUTPUT_MANIFEST,
             {
@@ -1379,6 +1503,8 @@ def main(argv: list[str] | None = None) -> int:
                 "output_summary_v1_json": str(output_dir / OUTPUT_SUMMARY),
                 "bucket_summary_by_action_reason_v1_csv": str(output_dir / OUTPUT_BUCKET_ACTION_REASON_CSV),
                 "bucket_summary_by_symbol_v1_csv": str(output_dir / OUTPUT_BUCKET_SYMBOL_CSV),
+                "bucket_summary_by_action_reason_adjusted_v1_csv": str(output_dir / OUTPUT_BUCKET_ACTION_REASON_ADJUSTED_CSV),
+                "bucket_summary_by_symbol_adjusted_v1_csv": str(output_dir / OUTPUT_BUCKET_SYMBOL_ADJUSTED_CSV),
                 "audit_status": audit["status"],
                 "reconstruction_mode": audit["reconstruction_mode"],
             },

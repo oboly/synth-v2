@@ -120,6 +120,7 @@ separate 30m table is absent, that is reported as a warning, not a blocker.
 Per event:
 
 - forward return per horizon
+- action-adjusted return score per horizon
 - `max_favorable_excursion_pct`
 - `max_adverse_excursion_pct`
 - `drawdown_after_event_pct`
@@ -127,11 +128,42 @@ Per event:
 - `broke_invalidation_like_move`
 - per-horizon completeness flags
 
+Action intent polarity:
+
+- `HOLD` -> long exposure keep
+- `RELOAD_REVIEW` -> long exposure add or restore
+- `TRIM_REVIEW` -> reduce exposure review
+- `REDUCE_REVIEW` -> reduce exposure review
+- `NO_POSITION_LIFECYCLE_EDGE` -> neutral
+
+Raw forward return and action-adjusted usefulness are different.
+
+- For `HOLD` and `RELOAD_REVIEW`, positive forward return is favorable.
+- For `TRIM_REVIEW` and `REDUCE_REVIEW`, negative forward return after the event
+  can be favorable because the review would have reduced exposure before
+  drawdown.
+
+Therefore the runner also computes:
+
+- `adjusted_return_score_h`
+- `avoided_drawdown_score_h`
+- `opportunity_cost_h`
+- `upside_capture_score_h`
+- `adverse_move_score_h`
+
+For neutral actions, adjusted score is left `null`, not zero, so the metric does
+not imply usefulness where no directional intent existed.
+
 Per lifecycle action summary:
 
 - count
 - complete horizon counts
 - average and median forward return by horizon
+- average and median adjusted score by horizon
+- average avoided drawdown at `4h` / `24h`
+- average opportunity cost at `4h` / `24h`
+- average upside capture at `4h` / `24h`
+- average adverse move at `4h` / `24h`
 - average and median MFE / MAE
 
 Additional diagnostic summaries:
@@ -219,6 +251,15 @@ Interpret results narrowly.
 - `RELOAD_REVIEW` means reload/support review context only, not proof that a
   prior trim happened.
 
+Adjusted usefulness is diagnostic, not a promotion rule.
+
+- A positive adjusted score does not prove a deployable edge.
+- A high avoided-drawdown score for reduce/trim review can still come with high
+  opportunity cost.
+- A high upside-capture score for hold/reload context can still hide large
+  adverse-move risk.
+- `TRIM_REVIEW` and `REDUCE_REVIEW` remain review labels, not sell orders.
+
 Do not promote these labels into strategy logic or execution behavior without
 validation.
 
@@ -253,4 +294,6 @@ data/research/position_lifecycle_outcome_validation_v1/outcome_summary_v1.json
 data/research/position_lifecycle_outcome_validation_v1/manifest_v1.json
 data/research/position_lifecycle_outcome_validation_v1/bucket_summary_by_action_reason_v1.csv
 data/research/position_lifecycle_outcome_validation_v1/bucket_summary_by_symbol_v1.csv
+data/research/position_lifecycle_outcome_validation_v1/bucket_summary_by_action_reason_adjusted_v1.csv
+data/research/position_lifecycle_outcome_validation_v1/bucket_summary_by_symbol_adjusted_v1.csv
 ```
