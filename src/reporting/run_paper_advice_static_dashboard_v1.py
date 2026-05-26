@@ -92,11 +92,15 @@ TRIM_REVIEW_STATES = {
 class ManualSupportContext:
     manual_action_label: str
     direction_label: str
+    strategy_family: str
+    horizon_bucket: str
     why_lines: tuple[str, ...]
+    strongest_reasons: tuple[str, ...]
     invalidation_line: str
     target_line_html: str
     trim_reload_hint: str
     freshness_line: str
+    source_modules: tuple[str, ...]
     missing_lines: tuple[str, ...]
 
 
@@ -398,6 +402,15 @@ def css_class(value: str | None) -> str:
         "MISSING_INVALIDATION": "watch",
         "MISSING_MARKET_BREATH_CONTEXT": "watch",
         "MISSING_INTRABAR_CONTEXT": "muted",
+        "FIBO_ZONE_RECLAIM_V1": "context",
+        "REGIME_CONTEXT_V1": "context",
+        "BREATHLINE_CONTEXT_V1": "watch",
+        "ROTATION_REVIEW_V1": "watch",
+        "UNKNOWN_STRATEGY_CONTEXT": "muted",
+        "SHORT_TERM_SPIKE": "watch",
+        "MEDIUM_TERM_SWING": "context",
+        "LONG_TERM_CYCLE": "good",
+        "UNKNOWN_HORIZON": "muted",
         "OPPORTUNITY_REVIEW": "watch",
         "MOMENTUM_EXTENSION_REVIEW": "watch",
         "RECLAIM_REVIEW": "watch",
@@ -605,6 +618,131 @@ def market_breath_context_code(row: dict[str, Any] | None) -> str:
     return str((row or {}).get("market_breath_context_state") or "").strip().upper()
 
 
+def normalized_blob(*values: Any) -> str:
+    parts: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, dict):
+            parts.extend(normalized_blob(k, v) for k, v in value.items())
+            continue
+        if isinstance(value, (list, tuple, set)):
+            parts.extend(normalized_blob(item) for item in value)
+            continue
+        parts.append(str(value).strip().upper())
+    return " ".join(part for part in parts if part)
+
+
+def has_zone_map(row: dict[str, Any]) -> bool:
+    return any(
+        to_decimal(row.get(field)) is not None
+        for field in (
+            "entry_zone_low",
+            "entry_zone_high",
+            "tp_zone_low",
+            "tp_zone_high",
+            "invalidation_price",
+        )
+    )
+
+
+def infer_strategy_family(
+    row: dict[str, Any],
+    *,
+    lifecycle: Any,
+    next_preview: NextZonePreview,
+    market_breath_row: dict[str, Any] | None,
+) -> str:
+    source_blob = normalized_blob(
+        row.get("source_ref_json"),
+        row.get("reason_codes_json"),
+        row.get("setup_filter_reason"),
+        row.get("policy_decision"),
+        row.get("suggested_horizon"),
+    )
+    next_zone_state = str(next_preview.next_zone_state or "").strip().upper()
+    lifecycle_state = str(lifecycle.lifecycle_state or "").strip().upper()
+    zone_reclaim_context = has_zone_map(row) and (
+        next_zone_state in {
+            "RECLAIM_NEXT_ZONE_PREVIEW",
+            "RECLAIM_RETEST_SUPPORT",
+            "BREAKDOWN_RETEST_RESISTANCE",
+        }
+        or lifecycle_state in {"RECLAIM_NEAR", "RECLAIM_CONFIRMED"}
+        or str(row.get("leg_direction") or "").strip().upper() in {"UP", "DOWN"}
+    )
+
+    if "ROTATION" in source_blob:
+        return "ROTATION_REVIEW_V1"
+    if "BREATHLINE" in source_blob:
+        return "BREATHLINE_CONTEXT_V1"
+    if zone_reclaim_context:
+        return "FIBO_ZONE_RECLAIM_V1"
+    if market_breath_row is not None:
+        return "REGIME_CONTEXT_V1"
+    return "UNKNOWN_STRATEGY_CONTEXT"
+
+
+def infer_horizon_bucket(
+    row: dict[str, Any],
+    *,
+    lifecycle: Any,
+    next_preview: NextZonePreview,
+    intrabar_row: Any | None,
+) -> str:
+    suggested_horizon = str(row.get("suggested_horizon") or "").strip().upper()
+    policy_decision = str(row.get("policy_decision") or "").strip().upper()
+    intrabar_state = "" if intrabar_row is None else str(intrabar_row.intrabar_lifecycle_state or "").strip().upper()
+    next_zone_state = str(next_preview.next_zone_state or "").strip().upper()
+    lifecycle_state = str(lifecycle.lifecycle_state or "").strip().upper()
+
+    if "LONG" in suggested_horizon or policy_decision == "LONG_HORIZON_ONLY":
+        return "LONG_TERM_CYCLE"
+    if intrabar_state in {
+        "INTRABAR_TARGET_OVERSHOT",
+        "INTRABAR_EXTENSION_CONTINUING",
+        "INTRABAR_TARGET_TOUCHED",
+    }:
+        return "SHORT_TERM_SPIKE"
+    if (
+        has_zone_map(row)
+        and (
+            next_zone_state in {
+                "RECLAIM_NEXT_ZONE_PREVIEW",
+                "RECLAIM_RETEST_SUPPORT",
+                "BREAKDOWN_RETEST_RESISTANCE",
+            }
+            or lifecycle_state in {"RECLAIM_NEAR", "RECLAIM_CONFIRMED"}
+            or str(row.get("leg_direction") or "").strip().upper() in {"UP", "DOWN"}
+        )
+    ):
+        return "MEDIUM_TERM_SWING"
+    return "UNKNOWN_HORIZON"
+
+
+def infer_source_modules(
+    row: dict[str, Any],
+    *,
+    current_price: Any,
+    market_breath_row: dict[str, Any] | None,
+    intrabar_row: Any | None,
+) -> tuple[str, ...]:
+    modules: list[str] = ["paper_advice_observation", "paper_advice_policy_v1"]
+    if row.get("selection_state") is not None or row.get("setup_filter_state") is not None:
+        modules.append("trade_setup_filter_observation")
+    if has_zone_map(row):
+        modules.append("execution_zone_context")
+    if to_decimal(current_price) is not None:
+        modules.append("market_price_snapshot_v1")
+    if market_breath_row is not None:
+        modules.append("market_breath_context_bridge_v1")
+    if intrabar_row is not None:
+        modules.append("intrabar_lifecycle_context_v1")
+    if row.get("aplus_bucket") is not None:
+        modules.append("aplus_table1_row")
+    return tuple(dict.fromkeys(modules))
+
+
 def manual_missing_lines(
     row: dict[str, Any],
     *,
@@ -714,6 +852,19 @@ def manual_support_context(
     else:
         direction = "NEUTRAL_WAIT"
 
+    strategy_family = infer_strategy_family(
+        row,
+        lifecycle=lifecycle,
+        next_preview=next_preview,
+        market_breath_row=market_breath_row,
+    )
+    horizon_bucket = infer_horizon_bucket(
+        row,
+        lifecycle=lifecycle,
+        next_preview=next_preview,
+        intrabar_row=intrabar_row,
+    )
+
     why_lines: list[str] = []
     if entry_ready:
         why_lines.append(
@@ -797,15 +948,26 @@ def manual_support_context(
     if market_context:
         freshness_parts.append(f"market_context={market_context}")
     freshness_line = "Freshness: " + " · ".join(freshness_parts)
+    source_modules = infer_source_modules(
+        row,
+        current_price=current_price,
+        market_breath_row=market_breath_row,
+        intrabar_row=intrabar_row,
+    )
+    strongest_reasons = tuple(why_lines[:4]) if why_lines else ("Current paper context only.",)
 
     return ManualSupportContext(
         manual_action_label=manual_action,
         direction_label=direction,
+        strategy_family=strategy_family,
+        horizon_bucket=horizon_bucket,
         why_lines=tuple(why_lines),
+        strongest_reasons=strongest_reasons,
         invalidation_line=invalidation_line,
         target_line_html=target_line_html,
         trim_reload_hint=trim_reload_hint,
         freshness_line=freshness_line,
+        source_modules=source_modules,
         missing_lines=manual_missing_lines(
             row,
             market_breath_row=market_breath_row,
@@ -817,18 +979,30 @@ def manual_support_context(
 
 def manual_support_html(context: ManualSupportContext) -> str:
     why_html = "".join(f"<div>{esc(line)}</div>" for line in context.why_lines)
+    reason_html = "".join(f"<div>{esc(line)}</div>" for line in context.strongest_reasons)
     missing_html = "".join(
         badge_text_html(label) for label in context.missing_lines
     )
-    missing_block = "" if not missing_html else f"<div class='badge-row'>{missing_html}</div>"
+    missing_block = (
+        "<span class='muted'>none</span>"
+        if not missing_html
+        else f"<div class='badge-row'>{missing_html}</div>"
+    )
+    source_modules_text = ", ".join(context.source_modules) if context.source_modules else "missing"
     return (
-        f"<div>{badge_text_html(context.manual_action_label)} {badge_text_html(context.direction_label)}</div>"
-        f"<div class='small'>{why_html}</div>"
-        f"<div class='muted small'>{esc(context.invalidation_line)}</div>"
-        f"<div class='small'>{context.target_line_html}</div>"
-        f"<div class='muted small'>{esc(context.trim_reload_hint)}</div>"
-        f"<div class='muted small'>{esc(context.freshness_line)}</div>"
-        f"{missing_block}"
+        f"<div class='badge-row'>{badge_text_html(context.manual_action_label)} {badge_text_html(context.direction_label)}</div>"
+        f"<div class='small'><strong>strategy_family</strong>: {badge_text_html(context.strategy_family)}</div>"
+        f"<div class='small'><strong>horizon_bucket</strong>: {badge_text_html(context.horizon_bucket)}</div>"
+        f"<div class='small'><strong>paper_action</strong>: {badge_text_html(context.manual_action_label)}</div>"
+        f"<div class='small'><strong>direction_label</strong>: {badge_text_html(context.direction_label)}</div>"
+        f"<div class='small'><strong>strongest_reasons</strong>:{reason_html}</div>"
+        f"<div class='muted small'><strong>risk/invalidation</strong>: {esc(context.invalidation_line)}</div>"
+        f"<div class='small'><strong>target/reaction_zone</strong>: {context.target_line_html}</div>"
+        f"<div class='muted small'><strong>freshness</strong>: {esc(context.freshness_line)}</div>"
+        f"<div class='muted small'><strong>source_modules</strong>: <span class='mono'>{esc(source_modules_text)}</span></div>"
+        f"<div class='muted small'><strong>trim/reload_hint</strong>: {esc(context.trim_reload_hint)}</div>"
+        f"<div class='small'><strong>why</strong>:{why_html}</div>"
+        f"<div class='small'><strong>missing_inputs</strong>: {missing_block}</div>"
     )
 
 
@@ -1641,6 +1815,8 @@ def render_table(
                 <td>{badge_html(action_label, css_name=action_class)}<div class="muted small">{esc(action_detail)}</div></td>
                 <td>{badge_text_html(manual_support.manual_action_label)}</td>
                 <td>{badge_text_html(manual_support.direction_label)}</td>
+                <td>{badge_text_html(manual_support.strategy_family)}</td>
+                <td>{badge_text_html(manual_support.horizon_bucket)}</td>
                 <td class="mono right">{fmt_score(row.get("confidence_score"))}</td>
                 <td>{badge_html(risk_label)}</td>
                 <td class="mono right sticky-price">{esc(fmt_snapshot_price(current_price))}</td>
@@ -1686,8 +1862,10 @@ def render_table(
                     <th class="sticky-symbol">Symbol / Leg</th>
                     <th>Advice</th>
                     <th>Action</th>
-                    <th>Manual action</th>
-                    <th>Direction</th>
+                    <th>paper_action</th>
+                    <th>direction_label</th>
+                    <th>strategy_family</th>
+                    <th>horizon_bucket</th>
                     <th>Conf</th>
                     <th>Risk</th>
                     <th class="sticky-price">Current price</th>
@@ -1709,7 +1887,7 @@ def render_table(
                     <th>Market Breath Context</th>
                     <th>Intrabar Lifecycle</th>
                     <th>Severity / Substate</th>
-                    <th>Manual support</th>
+                    <th>candidate_inbox</th>
                     <th>Reasons</th>
                 </tr>
             </thead>
@@ -2014,7 +2192,8 @@ def render_html(
         <section class="panel">
             <h2>Manual trade support</h2>
             <div class="subtitle">
-                Read-only manual-decision support. Labels are display-only overlays on current paper advice, zone/fib context, market breath context, and fast lifecycle freshness.<br>
+                Read-only manual-decision support and strategy-candidate inbox. Labels are display-only overlays on current paper advice, zone/fib context, market breath context, and fast lifecycle freshness.<br>
+                Candidate rows surface explicit strategy_family, horizon_bucket, paper_action, direction_label, strongest_reasons, source_modules, and missing_inputs.<br>
                 Missing context is shown explicitly and must be treated as missing, not neutral.
             </div>
             {render_manual_support_section(primary_rows + expired_rows + defensive_rows, market_breath_by_symbol=market_breath_by_symbol, intrabar_by_symbol=intrabar_by_symbol)}
