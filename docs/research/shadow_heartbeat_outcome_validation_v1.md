@@ -83,12 +83,28 @@ Each event row includes:
 The summary groups rows by cohort state and shows:
 
 - count
-- complete count
+- horizon-specific completeness counts:
+  - `complete_15m`
+  - `complete_30m`
+  - `complete_1h`
+  - `complete_2h`
+  - `complete_4h`
+  - `complete_8h`
+  - `complete_24h`
 - average and median returns per horizon
 - average and median `mfe_pct`
 - average and median `mae_pct`
 - hit rates for `+0.5%`, `+1.0%`, `-0.5%`, `-1.0%`
 - transition-aware counts when heartbeat history contains state changes
+- discovery/usage diagnostics:
+  - input runs discovered
+  - events discovered
+  - events used
+  - events skipped by reason
+
+Older output exposed only a single `complete` count, which meant `complete_24h`. On a fresh 15m heartbeat lane that often stays at `0` even when shorter horizons already have usable samples.
+
+For this lane, shorter windows such as `15m`, `30m`, `1h`, and `2h` are expected to become informative first. The 24h window remains useful, but it should not hide earlier completeness.
 
 ## Safety guarantees
 
@@ -117,6 +133,16 @@ Interpret these cohorts narrowly:
 - `WAIT_RETEST`: measures setup maturation only
 - `NO_CANDIDATE`: measures baseline/noise only
 - `BLOCKED`: measures safety/control behavior only
+
+The cohort mapping is derived from raw heartbeat states:
+
+- `candidate_state=ENTRY_CANDIDATE` -> `ENTRY_CANDIDATE`
+- `candidate_state` in `WAIT_RETEST`, `SHALLOW_RETEST_ACTIVE`, `NORMAL_RETEST_ACTIVE`, `DEEP_RETEST_ACTIVE`, `IMPULSE_ACTIVE` -> `WAIT_RETEST`
+- `candidate_state=NO_CANDIDATE` -> `NO_CANDIDATE`
+- `candidate_state` in `INVALIDATED`, `STALE`, or raw `decision_state=BLOCKED`, or raw `execution_plan_state=BLOCKED` -> `BLOCKED`
+- everything else currently falls back to `NO_CANDIDATE`
+
+This mapping is for research cohorting only. It is not decision permission, not execution intent, and not a change to runtime policy.
 
 Do not convert the results into strategy rules yet.
 

@@ -89,6 +89,14 @@ class HeartbeatEvent:
     transition_changed: bool
 
 
+@dataclass(frozen=True)
+class EventLoadResult:
+    events: list[HeartbeatEvent]
+    run_dirs_discovered: int
+    events_discovered: int
+    skip_counts: dict[str, int]
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -268,14 +276,17 @@ def load_heartbeat_events(
     venue_override: str | None,
     interval_override: str | None,
     max_events: int | None,
-) -> list[HeartbeatEvent]:
+ ) -> EventLoadResult:
     run_dirs = sorted(path for path in chain_root.glob("run_*") if path.is_dir())
     previous_state_by_symbol: dict[str, str] = {}
     events: list[HeartbeatEvent] = []
+    skip_counts: dict[str, int] = {}
+    events_discovered = 0
     for run_dir in run_dirs:
         summary_path = run_dir / CHAIN_SUMMARY_JSON
         manifest_path = run_dir / MANIFEST_JSON
         if not summary_path.exists() or not manifest_path.exists():
+            increment_count(skip_counts, "missing_chain_summary_or_manifest")
             continue
         chain_summary = read_json(summary_path)
         manifest = read_json(manifest_path)
@@ -293,9 +304,12 @@ def load_heartbeat_events(
             or manifest.get("symbol")
             or (None if candidate_payload is None else candidate_payload.get("symbol"))
         )
-        if symbol_filter and symbol != normalize_symbol(symbol_filter):
-            continue
         if not symbol:
+            increment_count(skip_counts, "missing_symbol")
+            continue
+        events_discovered += 1
+        if symbol_filter and symbol != normalize_symbol(symbol_filter):
+            increment_count(skip_counts, "symbol_filter_mismatch")
             continue
 
         event_ts = find_event_timestamp(chain_summary, manifest, shadow_payload)
@@ -416,7 +430,12 @@ def load_heartbeat_events(
             )
         )
         previous_state_by_symbol[event.symbol] = event.validation_state
-    return rebased
+    return EventLoadResult(
+        events=rebased,
+        run_dirs_discovered=len(run_dirs),
+        events_discovered=events_discovered,
+        skip_counts=dict(sorted(skip_counts.items())),
+    )
 
 
 def infer_global_value(events: list[HeartbeatEvent], attr: str, fallback: str) -> str:
@@ -535,6 +554,10 @@ def hit_rate(values: list[bool]) -> float | None:
     return round(sum(1 for value in values if value) / len(values) * 100.0, 6)
 
 
+def increment_count(counts: dict[str, int], key: str) -> None:
+    counts[key] = counts.get(key, 0) + 1
+
+
 def build_event_row(event: HeartbeatEvent, candles: list[Candle]) -> dict[str, Any]:
     base_candle = find_latest_candle_before_or_at(candles, event.event_ts_utc)
     reference_price = event.reference_price
@@ -648,7 +671,6 @@ def build_state_summary(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
         state_rows = [row for row in rows if row["state"] == state]
         summary: dict[str, Any] = {
             "count": len(state_rows),
-            "complete_count": sum(1 for row in state_rows if row.get("sample_complete_24h")),
             "transition_changed_count": sum(1 for row in state_rows if row.get("transition_changed")),
             "transition_from_counts": {},
             "avg_mfe_pct": average_or_none(values_for_state(rows, state, "mfe_pct")),
@@ -666,8 +688,12 @@ def build_state_summary(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]
             transition_from_counts[prev] = transition_from_counts.get(prev, 0) + 1
         summary["transition_from_counts"] = dict(sorted(transition_from_counts.items()))
         for label, _delta in HORIZON_LABELS:
+            complete_key = f"complete_{label}"
             field = f"return_pct_{label}"
             values = values_for_state(rows, state, field)
+            summary[complete_key] = sum(
+                1 for row in state_rows if bool(((row.get("sample_completeness_flags") or {}).get(complete_key)))
+            )
             summary[f"avg_return_pct_{label}"] = average_or_none(values)
             summary[f"median_return_pct_{label}"] = median_or_none(values)
         output[state] = summary
@@ -691,6 +717,9 @@ def build_summary(
     chain_root: Path,
     output_paths: OutputPaths,
     wrote_files: bool,
+    run_dirs_discovered: int,
+    events_discovered: int,
+    skip_counts: dict[str, int],
 ) -> dict[str, Any]:
     if not events:
         raise ValueError("No heartbeat events available for validation")
@@ -705,8 +734,18 @@ def build_summary(
         "symbol_scope": symbols,
         "venue_scope": venues,
         "interval_scope": intervals,
+        "run_dirs_discovered": run_dirs_discovered,
+        "events_discovered": events_discovered,
         "event_count": len(events),
-        "complete_count": sum(1 for row in rows if row.get("sample_complete_24h")),
+        "events_used": len(rows),
+        "events_skipped_by_reason": skip_counts,
+        "complete_15m": sum(1 for row in rows if bool(((row.get("sample_completeness_flags") or {}).get("complete_15m")))),
+        "complete_30m": sum(1 for row in rows if bool(((row.get("sample_completeness_flags") or {}).get("complete_30m")))),
+        "complete_1h": sum(1 for row in rows if bool(((row.get("sample_completeness_flags") or {}).get("complete_1h")))),
+        "complete_2h": sum(1 for row in rows if bool(((row.get("sample_completeness_flags") or {}).get("complete_2h")))),
+        "complete_4h": sum(1 for row in rows if bool(((row.get("sample_completeness_flags") or {}).get("complete_4h")))),
+        "complete_8h": sum(1 for row in rows if bool(((row.get("sample_completeness_flags") or {}).get("complete_8h")))),
+        "complete_24h": sum(1 for row in rows if bool(((row.get("sample_completeness_flags") or {}).get("complete_24h")))),
         "first_event_ts": fmt_ts(events[0].event_ts_utc),
         "latest_event_ts": fmt_ts(events[-1].event_ts_utc),
         "state_counts": {state: sum(1 for row in rows if row["state"] == state) for state in COHORT_STATES},
@@ -756,18 +795,60 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         return
     print(f"report={summary['report']} version={summary['version']}")
     print(
-        f"events={summary['event_count']} complete={summary['complete_count']} "
+        f"runs_discovered={summary['run_dirs_discovered']} events_discovered={summary['events_discovered']} "
+        f"events_used={summary['events_used']} "
         f"symbols={','.join(summary['symbol_scope'])} "
         f"venue={','.join(summary['venue_scope'])} interval={','.join(summary['interval_scope'])}"
     )
+    print(
+        " ".join(
+            [
+                f"complete_15m={summary['complete_15m']}",
+                f"complete_30m={summary['complete_30m']}",
+                f"complete_1h={summary['complete_1h']}",
+                f"complete_2h={summary['complete_2h']}",
+                f"complete_4h={summary['complete_4h']}",
+                f"complete_8h={summary['complete_8h']}",
+                f"complete_24h={summary['complete_24h']}",
+            ]
+        )
+    )
+    if summary["events_skipped_by_reason"]:
+        skipped = " ".join(f"{key}={value}" for key, value in summary["events_skipped_by_reason"].items())
+        print(f"events_skipped_by_reason {skipped}")
     print(f"first_event_ts={summary['first_event_ts']} latest_event_ts={summary['latest_event_ts']}")
     for state in COHORT_STATES:
         state_summary = summary["state_summary"][state]
         print(
-            f"state={state} count={state_summary['count']} complete={state_summary['complete_count']} "
-            f"avg_return_pct_24h={state_summary['avg_return_pct_24h']} "
-            f"median_return_pct_24h={state_summary['median_return_pct_24h']} "
-            f"avg_mfe_pct={state_summary['avg_mfe_pct']} avg_mae_pct={state_summary['avg_mae_pct']}"
+            " ".join(
+                [
+                    f"state={state}",
+                    f"count={state_summary['count']}",
+                    f"complete_15m={state_summary['complete_15m']}",
+                    f"complete_30m={state_summary['complete_30m']}",
+                    f"complete_1h={state_summary['complete_1h']}",
+                    f"complete_2h={state_summary['complete_2h']}",
+                    f"complete_4h={state_summary['complete_4h']}",
+                    f"complete_8h={state_summary['complete_8h']}",
+                    f"complete_24h={state_summary['complete_24h']}",
+                    f"avg_return_pct_15m={state_summary['avg_return_pct_15m']}",
+                    f"median_return_pct_15m={state_summary['median_return_pct_15m']}",
+                    f"avg_return_pct_30m={state_summary['avg_return_pct_30m']}",
+                    f"median_return_pct_30m={state_summary['median_return_pct_30m']}",
+                    f"avg_return_pct_1h={state_summary['avg_return_pct_1h']}",
+                    f"median_return_pct_1h={state_summary['median_return_pct_1h']}",
+                    f"avg_return_pct_2h={state_summary['avg_return_pct_2h']}",
+                    f"median_return_pct_2h={state_summary['median_return_pct_2h']}",
+                    f"avg_return_pct_4h={state_summary['avg_return_pct_4h']}",
+                    f"median_return_pct_4h={state_summary['median_return_pct_4h']}",
+                    f"avg_return_pct_8h={state_summary['avg_return_pct_8h']}",
+                    f"median_return_pct_8h={state_summary['median_return_pct_8h']}",
+                    f"avg_return_pct_24h={state_summary['avg_return_pct_24h']}",
+                    f"median_return_pct_24h={state_summary['median_return_pct_24h']}",
+                    f"avg_mfe_pct={state_summary['avg_mfe_pct']}",
+                    f"avg_mae_pct={state_summary['avg_mae_pct']}",
+                ]
+            )
         )
     print("broker_calls=0 broker_writes=0 order_submission=0 executor=none account_awareness=0")
 
@@ -778,13 +859,14 @@ def main(argv: list[str] | None = None) -> int:
     output_dir = Path(args.output_dir)
     output_paths = build_output_paths(output_dir)
 
-    events = load_heartbeat_events(
+    load_result = load_heartbeat_events(
         chain_root=chain_root,
         symbol_filter=args.symbol,
         venue_override=args.venue,
         interval_override=args.interval,
         max_events=args.max_events,
     )
+    events = load_result.events
     if not events:
         raise FileNotFoundError(f"No heartbeat events found under {chain_root}")
 
@@ -839,6 +921,9 @@ def main(argv: list[str] | None = None) -> int:
         chain_root=chain_root,
         output_paths=output_paths,
         wrote_files=args.write_files,
+        run_dirs_discovered=load_result.run_dirs_discovered,
+        events_discovered=load_result.events_discovered,
+        skip_counts=load_result.skip_counts,
     )
 
     if args.write_files:
