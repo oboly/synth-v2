@@ -4,6 +4,7 @@ import argparse
 import html
 import json
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -33,6 +34,7 @@ from src.reporting.intrabar_lifecycle_context_v1 import (
     build_intrabar_lifecycle_context_rows,
     rows_by_symbol as intrabar_rows_by_symbol,
 )
+from src.reporting.label_registry_v1 import get_label_human_label
 from src.reporting.market_breath_context_bridge_v1 import (
     build_market_breath_context_rows,
     rows_by_symbol as market_breath_rows_by_symbol,
@@ -67,6 +69,35 @@ ADVICE_ORDER = {
 }
 
 FRESH_MAP_THRESHOLD = timedelta(hours=6)
+
+CONSTRUCTIVE_MARKET_BREATH_CONTEXTS = {
+    "MARKET_BREATH_EXPANSION_CONTEXT",
+    "MARKET_BREATH_ACCUMULATION_CONTEXT",
+}
+
+NEUTRAL_MARKET_BREATH_CONTEXTS = {
+    "MARKET_BREATH_NEUTRAL_CONTEXT",
+    "MARKET_BREATH_COMPRESSION_CONTEXT",
+}
+
+TRIM_REVIEW_STATES = {
+    "TARGET_REACHED",
+    "TARGET_REACHED_STALE",
+    "TARGET_OVERSHOT",
+    "DOWNSIDE_TARGET_REACHED",
+}
+
+
+@dataclass(frozen=True)
+class ManualSupportContext:
+    manual_action_label: str
+    direction_label: str
+    why_lines: tuple[str, ...]
+    invalidation_line: str
+    target_line_html: str
+    trim_reload_hint: str
+    freshness_line: str
+    missing_lines: tuple[str, ...]
 
 
 def parse_args() -> argparse.Namespace:
@@ -167,8 +198,16 @@ def esc(value: Any) -> str:
     return html.escape(str(value))
 
 
-def badge_html(label: Any, css_name: str | None = None) -> str:
-    return shared_badge_html(label, css_name=css_name or css_class("" if label is None else str(label)))
+def badge_html(label: Any, css_name: str | None = None, text: Any | None = None) -> str:
+    return shared_badge_html(
+        label,
+        css_name=css_name or css_class("" if label is None else str(label)),
+        text=text,
+    )
+
+
+def badge_text_html(label: str) -> str:
+    return badge_html(label, css_name=css_class(label), text=get_label_human_label(label))
 
 
 def parse_ts(value: Any) -> datetime | None:
@@ -344,6 +383,21 @@ def css_class(value: str | None) -> str:
         "READ_ONLY_APLUS_AVOID": "block",
         "HARD_BLOCK": "danger",
         "SOFT_BLOCK": "block",
+        "BUY_REVIEW": "good",
+        "RELOAD_REVIEW": "watch",
+        "TRIM_REVIEW": "watch",
+        "INVALIDATED": "danger",
+        "BULLISH_SHORT_TERM": "good",
+        "BULLISH_MEDIUM_TERM": "context",
+        "NEUTRAL_WAIT": "wait",
+        "BEARISH_RISK": "danger",
+        "TRIM_CANDIDATE": "watch",
+        "RELOAD_CANDIDATE": "watch",
+        "MISSING_ZONE_MAP": "danger",
+        "MISSING_CURRENT_PRICE": "danger",
+        "MISSING_INVALIDATION": "watch",
+        "MISSING_MARKET_BREATH_CONTEXT": "watch",
+        "MISSING_INTRABAR_CONTEXT": "muted",
         "OPPORTUNITY_REVIEW": "watch",
         "MOMENTUM_EXTENSION_REVIEW": "watch",
         "RECLAIM_REVIEW": "watch",
@@ -531,6 +585,250 @@ def intrabar_context_html(row: Any | None) -> str:
         f'<div class="muted small">source={esc(row.price_source)} · 15m={esc(row.latest_15m_close_ts_utc or "missing")}</div>'
         f'<div class="badge-row">{quality_labels}</div>'
         '<div class="muted small">Intrabar context, not trade advice.</div>'
+    )
+
+
+def bool_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "YES" if value else "NO"
+    text = str(value).strip().upper()
+    if text in {"1", "TRUE", "YES", "Y", "ALLOW", "ALLOWED"}:
+        return "YES"
+    if text in {"0", "FALSE", "NO", "N"}:
+        return "NO"
+    return text
+
+
+def market_breath_context_code(row: dict[str, Any] | None) -> str:
+    return str((row or {}).get("market_breath_context_state") or "").strip().upper()
+
+
+def manual_missing_lines(
+    row: dict[str, Any],
+    *,
+    market_breath_row: dict[str, Any] | None,
+    intrabar_row: Any | None,
+    current_price: Any,
+) -> tuple[str, ...]:
+    missing: list[str] = []
+    if to_decimal(current_price) is None:
+        missing.append("MISSING_CURRENT_PRICE")
+    if (
+        to_decimal(row.get("entry_zone_low")) is None
+        and to_decimal(row.get("entry_zone_high")) is None
+        and to_decimal(row.get("tp_zone_low")) is None
+        and to_decimal(row.get("tp_zone_high")) is None
+    ):
+        missing.append("MISSING_ZONE_MAP")
+    if to_decimal(row.get("invalidation_price")) is None:
+        missing.append("MISSING_INVALIDATION")
+    if market_breath_row is None:
+        missing.append("MISSING_MARKET_BREATH_CONTEXT")
+    if intrabar_row is None:
+        missing.append("MISSING_INTRABAR_CONTEXT")
+    return tuple(missing)
+
+
+def manual_support_context(
+    row: dict[str, Any],
+    *,
+    current_price: Any,
+    entry_state: str,
+    target_state: str,
+    price_progress_state: str,
+    lifecycle: Any,
+    next_preview: NextZonePreview,
+    market_breath_row: dict[str, Any] | None,
+    intrabar_row: Any | None,
+    block_display: Any,
+    action_label: str,
+) -> ManualSupportContext:
+    leg_direction = str(row.get("leg_direction") or "").strip().upper()
+    setup_state = str(row.get("setup_filter_state") or "").strip().upper()
+    setup_reason = str(row.get("setup_filter_reason") or "").strip().upper()
+    selection_state = str(row.get("selection_state") or "").strip().upper()
+    advice_state = str(row.get("advice_state") or "").strip().upper()
+    advice_action = str(row.get("advice_action") or "").strip().upper()
+    market_context = market_breath_context_code(market_breath_row)
+    allowed_now = bool_text(row.get("allowed_now"))
+    invalidated = lifecycle.recompute_needed or is_pullback_invalidated(row)
+    target_reached = (
+        target_state in TRIM_REVIEW_STATES
+        or str(lifecycle.lifecycle_state or "").strip().upper() in TRIM_REVIEW_STATES
+    )
+    entry_ready = entry_state in {
+        "ENTRY_ZONE_REACHED",
+        "ENTRY_ZONE_NEAR",
+        "REACTION_ZONE_REACHED",
+        "REACTION_ZONE_NEAR",
+    }
+    constructive_market = market_context in CONSTRUCTIVE_MARKET_BREATH_CONTEXTS
+    neutral_market = market_context in NEUTRAL_MARKET_BREATH_CONTEXTS
+
+    if invalidated:
+        manual_action = "INVALIDATED"
+    elif target_reached:
+        manual_action = "TRIM_REVIEW"
+    elif (
+        block_display is not None
+        or advice_state in {"AVOID", "NO_NEW_BUY", "BLOCK_24H"}
+        or advice_action in {"DO_NOT_ADD", "AVOID_NO_NEW_BUY", "BLOCK_NEW_24H_ENTRY"}
+        or selection_state == "AVOID"
+        or setup_reason == "MARKET_DAMAGE_RISK"
+    ):
+        manual_action = "AVOID"
+    elif (
+        leg_direction == "UP"
+        and advice_state == "PAPER_READY"
+        and advice_action == "PAPER_TEST_ALLOWED"
+        and setup_state == "PASS"
+        and entry_ready
+        and not invalidated
+    ):
+        manual_action = "BUY_REVIEW"
+    elif (
+        leg_direction == "UP"
+        and entry_ready
+        and setup_state == "PASS"
+        and not invalidated
+        and market_context in (CONSTRUCTIVE_MARKET_BREATH_CONTEXTS | NEUTRAL_MARKET_BREATH_CONTEXTS)
+    ):
+        manual_action = "RELOAD_REVIEW"
+    elif setup_state == "PASS" and not invalidated and target_state == "TARGET_PENDING":
+        manual_action = "HOLD"
+    else:
+        manual_action = "WAIT"
+
+    if manual_action == "TRIM_REVIEW":
+        direction = "TRIM_CANDIDATE"
+    elif manual_action == "RELOAD_REVIEW":
+        direction = "RELOAD_CANDIDATE"
+    elif manual_action == "BUY_REVIEW":
+        direction = "BULLISH_SHORT_TERM"
+    elif manual_action in {"AVOID", "INVALIDATED"} or leg_direction == "DOWN":
+        direction = "BEARISH_RISK"
+    elif constructive_market:
+        direction = "BULLISH_MEDIUM_TERM" if not entry_ready else "BULLISH_SHORT_TERM"
+    else:
+        direction = "NEUTRAL_WAIT"
+
+    why_lines: list[str] = []
+    if entry_ready:
+        why_lines.append(
+            f"Zone context: {get_label_human_label(entry_state)} around {fmt_range(row.get('entry_zone_low'), row.get('entry_zone_high'))}."
+        )
+    elif leg_direction:
+        why_lines.append(
+            f"Zone context: {leg_direction} leg with {get_label_human_label(action_label)} display."
+        )
+
+    if str(next_preview.next_zone_state or "").upper() in {
+        "RECLAIM_NEXT_ZONE_PREVIEW",
+        "RECLAIM_RETEST_SUPPORT",
+        "BREAKDOWN_RETEST_RESISTANCE",
+    }:
+        why_lines.append(
+            f"Reclaim/retest context: {get_label_human_label(str(next_preview.next_zone_state))}."
+        )
+    elif str(lifecycle.lifecycle_state or "").upper() in {"RECLAIM_NEAR", "RECLAIM_CONFIRMED"}:
+        why_lines.append(
+            f"Reclaim/retest context: {get_label_human_label(str(lifecycle.lifecycle_state))}."
+        )
+
+    if market_breath_row is None:
+        why_lines.append("Market breath / context overlay: missing.")
+    else:
+        phase = str(market_breath_row.get("market_breath_phase") or "UNKNOWN")
+        why_lines.append(
+            f"Regime / breath context: {phase} -> {get_label_human_label(market_context or 'UNKNOWN')}."
+        )
+
+    if setup_state == "FAIL":
+        why_lines.append(
+            f"Setup fail reason: {get_label_human_label(setup_reason or 'SETUP_FAIL')}."
+        )
+    elif setup_state:
+        why_lines.append(f"Setup state: {setup_state}.")
+
+    if intrabar_row is None:
+        why_lines.append("Fast lifecycle / intrabar context: missing.")
+    else:
+        why_lines.append(
+            f"Fast lifecycle: {get_label_human_label(str(lifecycle.lifecycle_state or 'UNKNOWN'))}; intrabar: {get_label_human_label(str(intrabar_row.intrabar_lifecycle_state or 'UNKNOWN'))}."
+        )
+
+    invalidation_line = (
+        f"{zone_labels(leg_direction)[2]}: {fmt_decimal(row.get('invalidation_price'))}"
+        if to_decimal(row.get("invalidation_price")) is not None
+        else "Invalidation / risk reason: missing."
+    )
+    if invalidated:
+        invalidation_line = (
+            f"Invalidation / risk reason: {get_label_human_label(str(lifecycle.lifecycle_state or 'INVALIDATED'))}; {lifecycle.recompute_reason or 'fresh map required'}."
+        )
+    elif block_display is not None:
+        invalidation_line = (
+            f"Invalidation / risk reason: {block_display.block_primary_reason}; unblock: {block_display.unblock_condition_label}."
+        )
+
+    target_line_html = (
+        f"Target / reaction zone: {relevant_target_html(row, next_preview)}"
+        if to_decimal(current_price) is not None
+        else "Target / reaction zone: missing current price."
+    )
+
+    if manual_action == "TRIM_REVIEW":
+        trim_reload_hint = "Trim / reload hint: trim candidate near mapped target or extension; do not chase a fresh add."
+    elif manual_action in {"BUY_REVIEW", "RELOAD_REVIEW"}:
+        trim_reload_hint = "Trim / reload hint: reload/buy review only if the reaction-entry context still holds on the chart."
+    elif manual_action == "HOLD":
+        trim_reload_hint = "Trim / reload hint: hold and monitor until target, invalidation, or a fresh remap changes context."
+    else:
+        trim_reload_hint = "Trim / reload hint: no trim/reload edge shown from current paper inputs."
+
+    freshness_parts = [
+        f"paper_asof={fmt_ts_local_first(row.get('asof_ts_utc'))}",
+        f"price_age_min={fmt_decimal(row.get('price_age_min'), places=1)}",
+    ]
+    if allowed_now:
+        freshness_parts.append(f"allowed_now={allowed_now}")
+    if market_context:
+        freshness_parts.append(f"market_context={market_context}")
+    freshness_line = "Freshness: " + " · ".join(freshness_parts)
+
+    return ManualSupportContext(
+        manual_action_label=manual_action,
+        direction_label=direction,
+        why_lines=tuple(why_lines),
+        invalidation_line=invalidation_line,
+        target_line_html=target_line_html,
+        trim_reload_hint=trim_reload_hint,
+        freshness_line=freshness_line,
+        missing_lines=manual_missing_lines(
+            row,
+            market_breath_row=market_breath_row,
+            intrabar_row=intrabar_row,
+            current_price=current_price,
+        ),
+    )
+
+
+def manual_support_html(context: ManualSupportContext) -> str:
+    why_html = "".join(f"<div>{esc(line)}</div>" for line in context.why_lines)
+    missing_html = "".join(
+        badge_text_html(label) for label in context.missing_lines
+    )
+    missing_block = "" if not missing_html else f"<div class='badge-row'>{missing_html}</div>"
+    return (
+        f"<div>{badge_text_html(context.manual_action_label)} {badge_text_html(context.direction_label)}</div>"
+        f"<div class='small'>{why_html}</div>"
+        f"<div class='muted small'>{esc(context.invalidation_line)}</div>"
+        f"<div class='small'>{context.target_line_html}</div>"
+        f"<div class='muted small'>{esc(context.trim_reload_hint)}</div>"
+        f"<div class='muted small'>{esc(context.freshness_line)}</div>"
+        f"{missing_block}"
     )
 
 
@@ -1047,6 +1345,107 @@ def render_count_cards(counts: list[dict[str, Any]]) -> str:
     return "\n".join(cards)
 
 
+def render_manual_support_section(
+    rows: list[dict[str, Any]],
+    *,
+    market_breath_by_symbol: dict[str, dict[str, Any]] | None = None,
+    intrabar_by_symbol: dict[str, Any] | None = None,
+    limit: int = 10,
+) -> str:
+    if not rows:
+        return '<div class="empty">No rows.</div>'
+
+    cards: list[str] = []
+    for row in rows[:limit]:
+        symbol = str(row.get("symbol") or "").upper()
+        current_price = row.get("current_price")
+        market_breath_row = (market_breath_by_symbol or {}).get(symbol)
+        intrabar_row = (intrabar_by_symbol or {}).get(symbol)
+        entry_state = classify_entry_zone_state(
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            entry_zone_low=row.get("entry_zone_low"),
+            entry_zone_high=row.get("entry_zone_high"),
+        )
+        target_state = classify_target_state(
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            tp_zone_low=row.get("tp_zone_low"),
+            tp_zone_high=row.get("tp_zone_high"),
+        )
+        price_progress = classify_price_progress_state(
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            entry_zone_low=row.get("entry_zone_low"),
+            entry_zone_high=row.get("entry_zone_high"),
+            tp_zone_low=row.get("tp_zone_low"),
+            tp_zone_high=row.get("tp_zone_high"),
+            in_position_context=False,
+        )
+        lifecycle = classify_fast_lifecycle(
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            tp_zone_low=row.get("tp_zone_low"),
+            tp_zone_high=row.get("tp_zone_high"),
+            invalidation_price=row.get("invalidation_price"),
+        )
+        next_preview = preview_next_zones(
+            symbol=row.get("symbol"),
+            leg_direction=row.get("leg_direction"),
+            current_price=current_price,
+            entry_zone_low=row.get("entry_zone_low"),
+            entry_zone_high=row.get("entry_zone_high"),
+            tp_zone_low=row.get("tp_zone_low"),
+            tp_zone_high=row.get("tp_zone_high"),
+            invalidation_price=row.get("invalidation_price"),
+            lifecycle_state=lifecycle.lifecycle_state,
+            lifecycle_reason=lifecycle.recompute_reason,
+            target_state=target_state,
+            price_progress_state=price_progress.progress_state,
+        )
+        action_display = semantic_advice_action_display(
+            advice_action=row.get("advice_action"),
+            lifecycle_state=lifecycle.lifecycle_state,
+            intrabar_state=None if intrabar_row is None else intrabar_row.intrabar_lifecycle_state,
+        )
+        block_display = classify_policy_block_display(
+            row,
+            lifecycle_state=lifecycle.lifecycle_state,
+            recompute_needed=lifecycle.recompute_needed,
+            recompute_reason=lifecycle.recompute_reason,
+            target_state=target_state,
+            entry_state=entry_state,
+            price_progress_state=price_progress.progress_state,
+            market_breath_row=market_breath_row,
+        )
+        support = manual_support_context(
+            row,
+            current_price=current_price,
+            entry_state=entry_state,
+            target_state=target_state,
+            price_progress_state=price_progress.progress_state,
+            lifecycle=lifecycle,
+            next_preview=next_preview,
+            market_breath_row=market_breath_row,
+            intrabar_row=intrabar_row,
+            block_display=block_display,
+            action_label=action_display,
+        )
+        cards.append(
+            f"""
+            <article class="manual-card">
+                <div class="manual-card-head">
+                    <div class="symbol">{esc(symbol)}</div>
+                    <div>{badge_html(str(row.get("leg_direction") or "—"))}</div>
+                </div>
+                {manual_support_html(support)}
+            </article>
+            """
+        )
+
+    return f"<div class='manual-grid'>{''.join(cards)}</div>"
+
+
 def render_table(
     rows: list[dict[str, Any]],
     market_breath_by_symbol: dict[str, dict[str, Any]] | None = None,
@@ -1215,6 +1614,19 @@ def render_table(
                 badge_html(label, css_name=css_name) for label, css_name in badges
             )
             badges_html = f'<div class="badge-row">{badges_html}</div>'
+        manual_support = manual_support_context(
+            row,
+            current_price=current_price,
+            entry_state=entry_state,
+            target_state=target_state,
+            price_progress_state=price_progress.progress_state,
+            lifecycle=lifecycle,
+            next_preview=next_preview,
+            market_breath_row=market_breath_row,
+            intrabar_row=intrabar_row,
+            block_display=block_display,
+            action_label=action_label,
+        )
 
         body.append(
             f"""
@@ -1227,6 +1639,8 @@ def render_table(
                 </td>
                 <td>{badge_html(advice_state)}</td>
                 <td>{badge_html(action_label, css_name=action_class)}<div class="muted small">{esc(action_detail)}</div></td>
+                <td>{badge_text_html(manual_support.manual_action_label)}</td>
+                <td>{badge_text_html(manual_support.direction_label)}</td>
                 <td class="mono right">{fmt_score(row.get("confidence_score"))}</td>
                 <td>{badge_html(risk_label)}</td>
                 <td class="mono right sticky-price">{esc(fmt_snapshot_price(current_price))}</td>
@@ -1257,6 +1671,7 @@ def render_table(
                 <td>{market_breath_context_html(market_breath_row)}</td>
                 <td>{intrabar_context_html(intrabar_row)}</td>
                 <td>{advice_severity_html(severity)}</td>
+                <td>{manual_support_html(manual_support)}</td>
                 <td class="muted small">{esc(reason_codes)}</td>
             </tr>
             """
@@ -1271,6 +1686,8 @@ def render_table(
                     <th class="sticky-symbol">Symbol / Leg</th>
                     <th>Advice</th>
                     <th>Action</th>
+                    <th>Manual action</th>
+                    <th>Direction</th>
                     <th>Conf</th>
                     <th>Risk</th>
                     <th class="sticky-price">Current price</th>
@@ -1292,6 +1709,7 @@ def render_table(
                     <th>Market Breath Context</th>
                     <th>Intrabar Lifecycle</th>
                     <th>Severity / Substate</th>
+                    <th>Manual support</th>
                     <th>Reasons</th>
                 </tr>
             </thead>
@@ -1348,7 +1766,7 @@ def render_html(
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{esc(title)}</title>
     <style>
-        {cockpit_base_css(min_table_width=2050)}
+        {cockpit_base_css(min_table_width=2400)}
         :root {{
             --bg: #0b1020;
             --panel: #121a2f;
@@ -1453,13 +1871,31 @@ def render_html(
             margin-top: 16px;
             box-shadow: 0 18px 50px rgba(0,0,0,0.26);
         }}
+        .manual-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 12px;
+        }}
+        .manual-card {{
+            border: 1px solid rgba(42, 54, 89, 0.7);
+            background: rgba(10, 16, 32, 0.82);
+            border-radius: 18px;
+            padding: 14px;
+        }}
+        .manual-card-head {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+        }}
         .table-wrap {{
             width: 100%;
             overflow-x: auto;
         }}
         table {{
             width: 100%;
-            min-width: 2250px;
+            min-width: 2550px;
             border-collapse: collapse;
             font-size: 13px;
         }}
@@ -1568,11 +2004,20 @@ def render_html(
                     <div><strong>No broker/order path</strong>: broker/order/executor remain disabled here.</div>
                 </div>
             </div>
-            <div>{badge_html("broker_private_calls=0", css_name="ok")}{badge_html("broker_calls=0", css_name="ok")}{badge_html("broker_writes=0", css_name="ok")}{badge_html("order_submission=0", css_name="ok")}{badge_html("executor=none", css_name="ok")}{badge_html("account_awareness=0", css_name="ok")}</div>
+                <div>{badge_html("broker_private_calls=0", css_name="ok")}{badge_html("broker_calls=0", css_name="ok")}{badge_html("broker_writes=0", css_name="ok")}{badge_html("order_submission=0", css_name="ok")}{badge_html("executor=none", css_name="ok")}{badge_html("live_trading=false", css_name="ok")}{badge_html("paper/manual only", css_name="ok")}{badge_html("account_awareness=0", css_name="ok")}</div>
         </section>
 
         <section class="grid">
             {render_count_cards(counts)}
+        </section>
+
+        <section class="panel">
+            <h2>Manual trade support</h2>
+            <div class="subtitle">
+                Read-only manual-decision support. Labels are display-only overlays on current paper advice, zone/fib context, market breath context, and fast lifecycle freshness.<br>
+                Missing context is shown explicitly and must be treated as missing, not neutral.
+            </div>
+            {render_manual_support_section(primary_rows + expired_rows + defensive_rows, market_breath_by_symbol=market_breath_by_symbol, intrabar_by_symbol=intrabar_by_symbol)}
         </section>
 
         <section class="panel">
@@ -1594,6 +2039,7 @@ def render_html(
             Generated: {esc(generated_text)}<br>
             Runtime: {esc(runtime_text)}<br>
             Runtime flags: {esc(runtime_flags)}<br>
+            Safety: broker_writes=0 · order_submission=0 · executor=none · live_trading=false · paper/manual only<br>
             Setup-fail reasons are read from paper_advice_observation / trade_setup_filter observations when available.<br>
             Boundary: this page is display-only. It does not call the broker, decision_gate, execution_planner, executor, or order APIs.
         </section>
@@ -1621,7 +2067,11 @@ def print_table(
 ) -> None:
     print(f"report={POLICY_NAME} version={POLICY_VERSION}")
     print("scope=static-readonly paper-advice")
-    print("broker_private_calls=0 broker_calls=0 broker_writes=0 order_submission=0 live_orders=0 executor=none account_awareness=0")
+    print(
+        "broker_private_calls=0 broker_calls=0 broker_writes=0 "
+        "order_submission=0 live_orders=0 executor=none live_trading=false "
+        "paper/manual_only=true account_awareness=0"
+    )
     selected_min_asof, selected_max_asof = selected_asof_bounds(rows)
     print("row_mode=latest_per_asset")
     print(f"latest_asof={latest_asof}")
