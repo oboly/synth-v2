@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from bisect import bisect_right
 from collections import Counter
@@ -39,6 +40,8 @@ DEFAULT_OUTPUT_DIR = Path("data/research/position_lifecycle_outcome_validation_v
 OUTPUT_ROWS = "outcome_rows_v1.jsonl"
 OUTPUT_SUMMARY = "outcome_summary_v1.json"
 OUTPUT_MANIFEST = "manifest_v1.json"
+OUTPUT_BUCKET_ACTION_REASON_CSV = "bucket_summary_by_action_reason_v1.csv"
+OUTPUT_BUCKET_SYMBOL_CSV = "bucket_summary_by_symbol_v1.csv"
 
 EVENT_MODES = ("all", "transition-only", "cooldown")
 HORIZON_LABELS: list[tuple[str, timedelta]] = [
@@ -96,6 +99,7 @@ class LifecycleEvent:
     policy_action: str | None
     position_review_state: str | None
     setup_fail_reason: str | None
+    aplus_bucket: str | None
     leg_direction: str | None
     target_state: str
     risk_state: str
@@ -387,6 +391,7 @@ def fetch_historical_advice(conn: Any, *, venue: str, interval: str, symbols: se
         priority_rank,
         setup_filter_state,
         setup_filter_reason,
+        aplus_bucket,
         policy_decision,
         advice_state,
         advice_action,
@@ -659,6 +664,7 @@ def reconstruct_events(
                 policy_action=str(advice_row.get("policy_decision") or "") or None,
                 position_review_state=rotation_state,
                 setup_fail_reason=str(advice_row.get("setup_filter_reason") or "") or None,
+                aplus_bucket=str(advice_row.get("aplus_bucket") or "") or None,
                 leg_direction=str(advice_row.get("leg_direction") or "") or None,
                 target_state=target_state,
                 risk_state=risk_state,
@@ -823,47 +829,196 @@ def event_to_row(event: LifecycleEvent, outcomes: dict[str, Any]) -> dict[str, A
     row["invalidation_price"] = dec_to_float(event.invalidation_price)
     row["intrabar_target_touch_age_minutes"] = dec_to_float(event.intrabar_target_touch_age_minutes)
     row.update(outcomes)
+    row["reason_bucket"] = derive_reason_bucket(row)
+    row["market_leg_bucket"] = derive_market_leg_bucket(row)
+    row["freshness_bucket"] = derive_freshness_bucket(row)
     return row
 
 
-def values_for_action(rows: list[dict[str, Any]], action: str, key: str) -> list[float]:
+def values_for_key(rows: list[dict[str, Any]], *, match_key: str, match_value: str, value_key: str) -> list[float]:
     out: list[float] = []
     for row in rows:
-        if row.get("position_lifecycle_action") != action:
+        if str(row.get(match_key) or "") != match_value:
             continue
-        value = row.get(key)
+        value = row.get(value_key)
         if isinstance(value, (int, float)):
             out.append(float(value))
     return out
+
+
+def midpoint(low: float | None, high: float | None) -> float | None:
+    if low is not None and high is not None:
+        return (low + high) / 2.0
+    return low if low is not None else high
+
+
+def near_zone_pct(current_price: float | None, low: float | None, high: float | None) -> float | None:
+    if current_price is None or current_price <= 0:
+        return None
+    if low is None and high is None:
+        return None
+    if low is not None and high is not None:
+        lo, hi = min(low, high), max(low, high)
+        if lo <= current_price <= hi:
+            return 0.0
+        reference = lo if current_price < lo else hi
+        return abs((current_price / reference) - 1.0) * 100.0
+    reference = low if low is not None else high
+    if reference is None or reference <= 0:
+        return None
+    return abs((current_price / reference) - 1.0) * 100.0
+
+
+def derive_reason_bucket(row: dict[str, Any]) -> str:
+    intrabar_context = str(row.get("intrabar_target_touch_context") or "").upper()
+    intrabar_label = str(row.get("intrabar_target_touch_label") or "").upper()
+    reason_text = str(row.get("position_lifecycle_reason") or "").upper()
+    risk_state = str(row.get("risk_state") or "").upper()
+    target_state = str(row.get("target_state") or "").upper()
+    setup_fail_reason = str(row.get("setup_fail_reason") or "").upper()
+    policy_action = str(row.get("policy_action") or "").upper()
+    paper_action = str(row.get("paper_action") or "").upper()
+    aplus_bucket = str(row.get("aplus_bucket") or "").upper()
+    leg = str(row.get("leg_direction") or "").upper()
+
+    current_price = row.get("current_price")
+    entry_zone_low = row.get("entry_zone_low")
+    entry_zone_high = row.get("entry_zone_high")
+    tp_zone_low = row.get("tp_zone_low")
+    tp_zone_high = row.get("tp_zone_high")
+
+    if "VERIFY LIVE CHART" in reason_text or (row.get("intrabar_stale_for_decision") and intrabar_label == "EXTENSION_TOUCHED_INTRABAR"):
+        return "TARGET_REACHED_STALE"
+    if intrabar_context == "TARGET_TOUCHED_RECENTLY":
+        return "TARGET_TOUCH_INTRABAR"
+    if intrabar_label == "EXTENSION_TOUCHED_INTRABAR":
+        return "EXTENSION_TOUCH_INTRABAR"
+    if "INVALIDATION_TOUCHED" in reason_text:
+        return "INVALIDATION_TOUCHED"
+    if risk_state == "RECLAIM_CONFIRMED":
+        return "RECLAIM_CONFIRMED"
+    if risk_state == "RISK_NEAR":
+        return "INVALIDATION_NEAR"
+    if policy_action.startswith("WAIT_") or "RECOMPUTE" in policy_action or "RECOMPUTE" in reason_text:
+        return "RECOMPUTE_PENDING"
+    if "CHASE" in policy_action or "CHASE" in setup_fail_reason or "CHASE" in reason_text:
+        return "CHASE_RISK"
+    if setup_fail_reason:
+        return "SETUP_FAIL"
+    if aplus_bucket == "APLUS_AVOID":
+        return "APLUS_AVOID"
+    if aplus_bucket.startswith("APLUS_"):
+        return "APLUS_CONTEXT"
+
+    entry_distance = near_zone_pct(current_price, entry_zone_low, entry_zone_high)
+    if entry_distance is not None and entry_distance <= 2.0:
+        if leg == "DOWN":
+            return "REACTION_ZONE_NEAR"
+        return "REACTION_ZONE_NEAR"
+
+    target_mid = midpoint(tp_zone_low, tp_zone_high)
+    if (
+        leg == "UP"
+        and target_state == "TARGET_PENDING"
+        and current_price is not None
+        and target_mid is not None
+        and target_mid < current_price
+    ):
+        return "SUPPORT_RETEST_BELOW"
+
+    if paper_action == "WAIT_FOR_MARKET_RECLAIM":
+        return "RECOMPUTE_PENDING"
+    return "UNKNOWN_REASON_BUCKET"
+
+
+def derive_market_leg_bucket(row: dict[str, Any]) -> str:
+    leg = str(row.get("leg_direction") or "").upper()
+    return leg if leg in {"UP", "DOWN"} else "UNKNOWN"
+
+
+def derive_freshness_bucket(row: dict[str, Any]) -> str:
+    if row.get("intrabar_stale_for_decision"):
+        return "STALE"
+    if str(row.get("current_price_source") or "").upper() != "MISSING":
+        return "FRESH"
+    return "UNKNOWN"
+
+
+def group_metrics(rows: list[dict[str, Any]], *, match: callable) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "count": sum(1 for row in rows if match(row)),
+        "avg_mfe_pct": average_or_none(values_for_group(rows, match=match, value_key="max_favorable_excursion_pct")),
+        "median_mfe_pct": median_or_none(values_for_group(rows, match=match, value_key="max_favorable_excursion_pct")),
+        "avg_mae_pct": average_or_none(values_for_group(rows, match=match, value_key="max_adverse_excursion_pct")),
+        "median_mae_pct": median_or_none(values_for_group(rows, match=match, value_key="max_adverse_excursion_pct")),
+    }
+    for label, _ in HORIZON_LABELS:
+        values = [
+            float((row.get("forward_returns") or {}).get(label))
+            for row in rows
+            if match(row) and (row.get("forward_returns") or {}).get(label) is not None
+        ]
+        summary[f"complete_{label}"] = sum(
+            1 for row in rows if match(row) and bool((row.get("sample_completeness_flags") or {}).get(f"complete_{label}"))
+        )
+        summary[f"avg_return_pct_{label}"] = average_or_none(values)
+        summary[f"median_return_pct_{label}"] = median_or_none(values)
+    return summary
+
+
+def values_for_group(rows: list[dict[str, Any]], *, match: callable, value_key: str) -> list[float]:
+    out: list[float] = []
+    for row in rows:
+        if not match(row):
+            continue
+        value = row.get(value_key)
+        if isinstance(value, (int, float)):
+            out.append(float(value))
+    return out
+
+
+def build_group_summary(rows: list[dict[str, Any]], *, key_name: str, key_fn: callable) -> dict[str, dict[str, Any]]:
+    keys = sorted({str(key_fn(row) or "") for row in rows if str(key_fn(row) or "")})
+    out: dict[str, dict[str, Any]] = {}
+    for key in keys:
+        out[key] = group_metrics(rows, match=lambda row, key=key: str(key_fn(row) or "") == key)
+    return out
+
+
+def flatten_summary_to_csv_rows(summary: dict[str, dict[str, Any]], *, key_name: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for key, metrics in summary.items():
+        row = {key_name: key}
+        row.update(metrics)
+        rows.append(row)
+    return rows
+
+
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    fieldnames = list(rows[0].keys())
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def top_csv_rows_for_action_reason(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    return flatten_summary_to_csv_rows(summary["action_reason_bucket_summary"], key_name="action_reason_bucket")
+
+
+def top_csv_rows_for_symbol(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    return flatten_summary_to_csv_rows(summary["symbol_summary"], key_name="symbol")
 
 
 def build_action_summary(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     actions = sorted({str(row.get("position_lifecycle_action") or "") for row in rows if row.get("position_lifecycle_action")})
     out: dict[str, dict[str, Any]] = {}
     for action in actions:
-        summary: dict[str, Any] = {
-            "count": sum(1 for row in rows if row.get("position_lifecycle_action") == action),
-            "avg_mfe_pct": average_or_none(values_for_action(rows, action, "max_favorable_excursion_pct")),
-            "median_mfe_pct": median_or_none(values_for_action(rows, action, "max_favorable_excursion_pct")),
-            "avg_mae_pct": average_or_none(values_for_action(rows, action, "max_adverse_excursion_pct")),
-            "median_mae_pct": median_or_none(values_for_action(rows, action, "max_adverse_excursion_pct")),
-        }
-        for label, _ in HORIZON_LABELS:
-            values = [
-                float((row.get("forward_returns") or {}).get(label))
-                for row in rows
-                if row.get("position_lifecycle_action") == action
-                and (row.get("forward_returns") or {}).get(label) is not None
-            ]
-            summary[f"complete_{label}"] = sum(
-                1
-                for row in rows
-                if row.get("position_lifecycle_action") == action
-                and bool((row.get("sample_completeness_flags") or {}).get(f"complete_{label}"))
-            )
-            summary[f"avg_return_pct_{label}"] = average_or_none(values)
-            summary[f"median_return_pct_{label}"] = median_or_none(values)
-        out[action] = summary
+        out[action] = group_metrics(rows, match=lambda row, action=action: str(row.get("position_lifecycle_action") or "") == action)
     return out
 
 
@@ -901,6 +1056,20 @@ def build_summary(
         "complete_8h": sum(1 for row in rows if bool((row.get("sample_completeness_flags") or {}).get("complete_8h"))),
         "complete_24h": sum(1 for row in rows if bool((row.get("sample_completeness_flags") or {}).get("complete_24h"))),
         "action_summary": build_action_summary(rows),
+        "reason_bucket_summary": build_group_summary(rows, key_name="reason_bucket", key_fn=lambda row: row.get("reason_bucket")),
+        "action_reason_bucket_summary": build_group_summary(
+            rows,
+            key_name="action_reason_bucket",
+            key_fn=lambda row: f"{row.get('position_lifecycle_action')}|{row.get('reason_bucket')}",
+        ),
+        "symbol_summary": build_group_summary(rows, key_name="symbol", key_fn=lambda row: row.get("symbol")),
+        "action_symbol_summary": build_group_summary(
+            rows,
+            key_name="action_symbol",
+            key_fn=lambda row: f"{row.get('position_lifecycle_action')}|{row.get('symbol')}",
+        ),
+        "market_leg_summary": build_group_summary(rows, key_name="market_leg_bucket", key_fn=lambda row: row.get("market_leg_bucket")),
+        "freshness_bucket_summary": build_group_summary(rows, key_name="freshness_bucket", key_fn=lambda row: row.get("freshness_bucket")),
         "safety": {
             "broker_calls": 0,
             "broker_writes": 0,
@@ -961,6 +1130,29 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
             f"avg24h={item['avg_return_pct_24h']} med24h={item['median_return_pct_24h']} "
             f"avg_mfe={item['avg_mfe_pct']} avg_mae={item['avg_mae_pct']}"
         )
+    top_count = sorted(
+        summary["action_reason_bucket_summary"].items(),
+        key=lambda item: (item[1]["count"], item[0]),
+        reverse=True,
+    )[:10]
+    print("top_action_reason_by_count " + " ; ".join(f"{k}:{v['count']}" for k, v in top_count))
+    top_avg4h = sorted(
+        [(k, v) for k, v in summary["action_reason_bucket_summary"].items() if v["count"] >= 20 and v["avg_return_pct_4h"] is not None],
+        key=lambda item: item[1]["avg_return_pct_4h"],
+        reverse=True,
+    )[:10]
+    print("top_action_reason_by_avg4h " + " ; ".join(f"{k}:{v['avg_return_pct_4h']}" for k, v in top_avg4h))
+    worst_avg4h = sorted(
+        [(k, v) for k, v in summary["action_reason_bucket_summary"].items() if v["count"] >= 20 and v["avg_return_pct_4h"] is not None],
+        key=lambda item: item[1]["avg_return_pct_4h"],
+    )[:10]
+    print("worst_action_reason_by_avg4h " + " ; ".join(f"{k}:{v['avg_return_pct_4h']}" for k, v in worst_avg4h))
+    top_symbols = sorted(
+        summary["symbol_summary"].items(),
+        key=lambda item: (item[1]["count"], item[0]),
+        reverse=True,
+    )[:10]
+    print("top_symbols " + " ; ".join(f"{k}:{v['count']}" for k, v in top_symbols))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1075,6 +1267,8 @@ def main(argv: list[str] | None = None) -> int:
         output_dir = Path(args.output_dir)
         write_jsonl(output_dir / OUTPUT_ROWS, rows)
         write_json(output_dir / OUTPUT_SUMMARY, summary)
+        write_csv(output_dir / OUTPUT_BUCKET_ACTION_REASON_CSV, top_csv_rows_for_action_reason(summary))
+        write_csv(output_dir / OUTPUT_BUCKET_SYMBOL_CSV, top_csv_rows_for_symbol(summary))
         write_json(
             output_dir / OUTPUT_MANIFEST,
             {
@@ -1083,6 +1277,8 @@ def main(argv: list[str] | None = None) -> int:
                 "generated_at_utc": fmt_ts(datetime.now(UTC)),
                 "output_rows_v1_jsonl": str(output_dir / OUTPUT_ROWS),
                 "output_summary_v1_json": str(output_dir / OUTPUT_SUMMARY),
+                "bucket_summary_by_action_reason_v1_csv": str(output_dir / OUTPUT_BUCKET_ACTION_REASON_CSV),
+                "bucket_summary_by_symbol_v1_csv": str(output_dir / OUTPUT_BUCKET_SYMBOL_CSV),
                 "audit_status": audit["status"],
                 "reconstruction_mode": audit["reconstruction_mode"],
             },

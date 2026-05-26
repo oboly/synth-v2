@@ -134,6 +134,15 @@ Per lifecycle action summary:
 - average and median forward return by horizon
 - average and median MFE / MAE
 
+Additional diagnostic summaries:
+
+- by lifecycle action
+- by normalized reason bucket
+- by action + reason bucket
+- by symbol
+- by action + symbol
+- optional market-leg and freshness buckets
+
 ## Sampling Modes
 
 Repeated lifecycle rows can be highly autocorrelated.
@@ -150,6 +159,41 @@ Supported modes:
     `--cooldown-minutes` has elapsed
 
 This does not make the study causal. It only reduces repeated-state inflation.
+
+`transition-only` should be the first interpretation view because repeated
+position rows can otherwise overstate the apparent sample size of a lifecycle
+state.
+
+## Diagnostic Buckets
+
+Reason buckets are diagnostic summaries, not strategy rules.
+
+Current conservative normalized buckets can include:
+
+- `TARGET_TOUCH_INTRABAR`
+- `EXTENSION_TOUCH_INTRABAR`
+- `TARGET_REACHED_STALE`
+- `INVALIDATION_NEAR`
+- `INVALIDATION_TOUCHED`
+- `RECLAIM_CONFIRMED`
+- `RECOMPUTE_PENDING`
+- `CHASE_RISK`
+- `SETUP_FAIL`
+- `APLUS_AVOID`
+- `APLUS_CONTEXT`
+- `SUPPORT_RETEST_BELOW`
+- `REACTION_ZONE_NEAR`
+- `UNKNOWN_REASON_BUCKET`
+
+These buckets are inferred from currently available event fields and reason
+context. They are not canonical runtime states.
+
+Interpretation warnings:
+
+- bucket inference is approximate and downstream of the original review label
+- one symbol can dominate a bucket and create a false sense of generality
+- symbol concentration must be checked before treating a bucket as reusable edge
+- action + reason is usually more informative than action alone
 
 ## Interpretation Rules
 
@@ -193,4 +237,6 @@ When `--write-files` is enabled:
 data/research/position_lifecycle_outcome_validation_v1/outcome_rows_v1.jsonl
 data/research/position_lifecycle_outcome_validation_v1/outcome_summary_v1.json
 data/research/position_lifecycle_outcome_validation_v1/manifest_v1.json
+data/research/position_lifecycle_outcome_validation_v1/bucket_summary_by_action_reason_v1.csv
+data/research/position_lifecycle_outcome_validation_v1/bucket_summary_by_symbol_v1.csv
 ```
