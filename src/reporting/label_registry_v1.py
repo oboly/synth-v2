@@ -185,9 +185,49 @@ _REGISTRY: dict[str, LabelDescription] = {
         _entry("RETEST_ZONE_BELOW", "Below-price retest/support context. Not a take-profit target.", category="zone_labels"),
         _entry("UPSIDE_REACTION_TARGET", "Above-price reaction target context. Not trade permission.", category="zone_labels"),
         _entry("UPSIDE_EXTENSION_PREVIEW", "Possible upside extension context. Requires fresh map/advice before action.", category="zone_labels"),
+        _entry("DOWNSIDE_EXTENSION_PREVIEW", "Possible downside extension context after breakdown/continuation. Requires fresh map/advice before action.", category="zone_labels"),
+        _entry("RECLAIM_NEXT_ZONE_PREVIEW", "Next-zone preview after reclaim/invalidation context. Market-only map preview, not trade permission.", category="zone_labels"),
+        _entry("BREAKDOWN_NEXT_ZONE_PREVIEW", "Next-zone preview after breakdown/invalidation context. Market-only map preview, not trade permission.", category="zone_labels"),
         _entry("ENTRY_FIB_PRIMARY_0500_0618", "Entry zone aligns with primary Fibonacci retracement band.", category="zone_labels"),
         _entry("TP_SR_ONLY", "Target is support/resistance only; historically weaker than near-fib extension context.", category="zone_labels"),
         _entry("TP_NEAR_FIB_EXTENSION", "Target is near a Fibonacci extension band; research scoreboard shows stronger separation than SR-only.", category="zone_labels"),
+        _entry("DISPLAY_CRITICAL", "Highest review severity on the dashboard. The row still needs action now.", category="dashboard_display"),
+        _entry("DISPLAY_WATCH", "Watch/cooldown severity on the dashboard. Refresh happened, but the row still needs monitoring.", category="dashboard_display"),
+        _entry("DISPLAY_MUTED", "Muted display severity. Context is retained, but no active refresh action is implied now.", category="dashboard_display"),
+        _entry("DISPLAY_CONTEXT", "Context-only dashboard severity. The row is shown for background reference.", category="dashboard_display"),
+        _entry("ZONE_AND_ADVICE_RECOMPUTE", "Both the structural zone map and advice context should be refreshed.", category="recompute_lifecycle"),
+        _entry("ADVICE_ONLY_REVIEW", "Advice context should be reviewed while structural zones can remain reference context.", category="recompute_lifecycle"),
+        _entry("COOLDOWN_MONITOR", "This candle was already refreshed. Keep watching until the next 4h map can form.", category="recompute_lifecycle"),
+        _entry("COOLDOWN_ALREADY_REFRESHED_THIS_CANDLE", "Refresh already ran for the current candle; do not treat age alone as a fresh action signal.", category="recompute_lifecycle"),
+        _entry("RECOMPUTE_TRIGGER", "A lifecycle trigger requires a fresh recompute now.", category="recompute_lifecycle"),
+        _entry("RECLAIM_OR_INVALIDATION_TRIGGER", "Reclaim or invalidation was touched, so a fresh zone/advice recompute is needed.", category="recompute_lifecycle"),
+        _entry("TARGET_REACHED_STALE_TRIGGER", "Target reached on an old map; refresh before relying on any follow-through.", category="recompute_lifecycle"),
+        _entry("TARGET_FINISHED_REVIEW", "Target was already finished; review context may still matter, but it is not a fresh entry map.", category="recompute_lifecycle"),
+        _entry("FRESH_TARGET_REVIEW", "Target finished on a still-fresh map. Wait for the next candle before refreshing again.", category="recompute_lifecycle"),
+        _entry("REFRESH_NEEDED", "Raw post-refresh classification: the row still needs refresh action.", category="recompute_lifecycle"),
+        _entry("REFRESH_NEEDED_NOW", "Effective dashboard state: refresh action is still needed now.", category="recompute_lifecycle"),
+        _entry("REFRESHED_RECENTLY", "A recent refresh was recorded; shown as background context unless the row is still triggering.", category="recompute_lifecycle"),
+        _entry("REFRESHED_THIS_RUN", "The refresh pipeline updated this row in the current run.", category="recompute_lifecycle"),
+        _entry("RECOMPUTED_BUT_STILL_TRIGGERING", "Refresh ran, but the row still immediately triggers the same recompute condition.", category="recompute_lifecycle"),
+        _entry("STILL_TRIGGERING_AFTER_REFRESH", "Effective dashboard state: refresh already ran, but the trigger is still active.", category="recompute_lifecycle"),
+        _entry("CURRENT_MAP_ACTIVE", "The current structural map is still active.", category="recompute_lifecycle"),
+        _entry("ACTIVE_MAP", "Structural map remains active without recompute requirement.", category="recompute_lifecycle"),
+        _entry("SKIP_ACTIVE_MAP", "No recompute work is needed because the current map is still active.", category="recompute_lifecycle"),
+        _entry("NO_REFRESH_NEEDED", "Raw post-refresh classification: no refresh action is needed now.", category="recompute_lifecycle"),
+        _entry("WAIT_FOR_NEXT_CANDLE", "Wait for the next candle before requesting another refresh.", category="recompute_lifecycle"),
+        _entry("WAIT_NEXT_4H_MAP", "Effective dashboard state: this candle is already refreshed, so wait for the next 4h map.", category="recompute_lifecycle"),
+        _entry("ALREADY_REFRESHED_THIS_CANDLE", "Effective dashboard state: this candle already has a refresh record.", category="recompute_lifecycle"),
+        _entry("DOWN_MAP_INVALIDATED_BY_RECLAIM", "A down-leg map was invalidated by reclaim, so the map should be refreshed.", category="recompute_lifecycle"),
+        _entry("MAP_RECOMPUTE_NEEDED", "Lifecycle context says the current map needs recompute.", category="recompute_lifecycle"),
+        _entry("TARGET_OVERSHOT", "Price moved through the mapped target enough that the map should be reviewed/refreshed.", category="recompute_lifecycle"),
+        _entry("INVALIDATION_TOUCHED", "Price touched the mapped invalidation boundary.", category="recompute_lifecycle"),
+        _entry("UP_MAP_INVALIDATED_BY_BREAKDOWN", "An up-leg map was invalidated by breakdown.", category="recompute_lifecycle"),
+        _entry("SKIP_UNKNOWN_DATA", "The row is skipped from refresh action because key context is unknown or missing.", category="recompute_lifecycle"),
+        _entry("UNKNOWN_DATA", "Key map or price context is unknown.", category="recompute_lifecycle"),
+        _entry("NO_REFRESH_TRIGGER", "No refresh trigger was found in the current row context.", category="recompute_lifecycle"),
+        _entry("REFRESH_FAILED_OR_STALE", "Refresh did not land cleanly or the refreshed result is already stale.", category="recompute_lifecycle"),
+        _entry("RECLAIM_CONFIRMED", "Reclaim condition was confirmed against the current map.", category="recompute_lifecycle"),
+        _entry("DOWNSIDE_TARGET_REACHED", "Downside target/support was reached on the mapped move.", category="recompute_lifecycle"),
     ]
 }
 
@@ -220,3 +260,8 @@ def get_label_axis_value(label: str, axis_name: str) -> int | None:
     if metadata.axis_name != axis_name:
         return None
     return metadata.axis_value
+
+
+def is_label_registered(label: str) -> bool:
+    normalized = str(label or "").strip().upper()
+    return bool(normalized) and normalized in _REGISTRY
