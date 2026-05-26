@@ -18,6 +18,8 @@ DEFAULT_CHAIN_ROOT = Path("data/research/live_like_shadow_chain_v1")
 DEFAULT_OUTPUT_DIR = Path("data/research/shadow_heartbeat_outcome_validation_v1")
 DEFAULT_INTERVAL = "15m"
 DEFAULT_VENUE = "bitvavo"
+DEFAULT_EVENT_MODE = "all"
+DEFAULT_COOLDOWN_MINUTES = 30
 
 CHAIN_SUMMARY_JSON = "chain_summary_v1.json"
 MANIFEST_JSON = "manifest_v1.json"
@@ -48,6 +50,7 @@ WAIT_RETEST_COHORT_STATES = {
 }
 BLOCKED_CANDIDATE_STATES = {"INVALIDATED", "STALE"}
 COHORT_STATES = ("ENTRY_CANDIDATE", "WAIT_RETEST", "NO_CANDIDATE", "BLOCKED")
+EVENT_MODES = ("all", "transition-only", "cooldown")
 
 THRESHOLDS = (0.5, 1.0)
 
@@ -97,6 +100,12 @@ class EventLoadResult:
     skip_counts: dict[str, int]
 
 
+@dataclass(frozen=True)
+class EventFilterResult:
+    events: list[HeartbeatEvent]
+    skip_counts: dict[str, int]
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -110,6 +119,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--interval", default=None)
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--max-events", type=int, default=None)
+    parser.add_argument("--event-mode", choices=EVENT_MODES, default=DEFAULT_EVENT_MODE)
+    parser.add_argument("--cooldown-minutes", type=int, default=DEFAULT_COOLDOWN_MINUTES)
     parser.add_argument("--write-files", action="store_true")
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
     return parser.parse_args(argv)
@@ -558,6 +569,56 @@ def increment_count(counts: dict[str, int], key: str) -> None:
     counts[key] = counts.get(key, 0) + 1
 
 
+def merge_counts(*count_maps: dict[str, int]) -> dict[str, int]:
+    merged: dict[str, int] = {}
+    for count_map in count_maps:
+        for key, value in count_map.items():
+            merged[key] = merged.get(key, 0) + int(value)
+    return dict(sorted(merged.items()))
+
+
+def filter_events(
+    events: list[HeartbeatEvent],
+    *,
+    event_mode: str,
+    cooldown_minutes: int,
+) -> EventFilterResult:
+    normalized_mode = str(event_mode or DEFAULT_EVENT_MODE).strip().lower()
+    if normalized_mode not in EVENT_MODES:
+        raise ValueError(f"Unsupported event mode: {event_mode}")
+    if cooldown_minutes <= 0:
+        raise ValueError("--cooldown-minutes must be greater than zero")
+    if normalized_mode == "all":
+        return EventFilterResult(events=list(events), skip_counts={})
+
+    filtered: list[HeartbeatEvent] = []
+    skip_counts: dict[str, int] = {}
+    previous_state_by_symbol: dict[str, str] = {}
+    next_allowed_ts_by_symbol_state: dict[tuple[str, str], datetime] = {}
+    cooldown_delta = timedelta(minutes=cooldown_minutes)
+
+    for event in events:
+        state = event.validation_state
+        if normalized_mode == "transition-only":
+            previous_state = previous_state_by_symbol.get(event.symbol)
+            previous_state_by_symbol[event.symbol] = state
+            if previous_state == state:
+                increment_count(skip_counts, "skipped_transition_duplicate")
+                continue
+            filtered.append(event)
+            continue
+
+        key = (event.symbol, state)
+        next_allowed_ts = next_allowed_ts_by_symbol_state.get(key)
+        if next_allowed_ts is not None and event.event_ts_utc < next_allowed_ts:
+            increment_count(skip_counts, "skipped_cooldown")
+            continue
+        filtered.append(event)
+        next_allowed_ts_by_symbol_state[key] = event.event_ts_utc + cooldown_delta
+
+    return EventFilterResult(events=filtered, skip_counts=dict(sorted(skip_counts.items())))
+
+
 def build_event_row(event: HeartbeatEvent, candles: list[Candle]) -> dict[str, Any]:
     base_candle = find_latest_candle_before_or_at(candles, event.event_ts_utc)
     reference_price = event.reference_price
@@ -720,6 +781,8 @@ def build_summary(
     run_dirs_discovered: int,
     events_discovered: int,
     skip_counts: dict[str, int],
+    event_mode: str,
+    cooldown_minutes: int,
 ) -> dict[str, Any]:
     if not events:
         raise ValueError("No heartbeat events available for validation")
@@ -731,6 +794,8 @@ def build_summary(
         "version": REPORT_VERSION,
         "scope": "research-only market-only read-only heartbeat outcome validation no paper trading no live trading no executor",
         "chain_root": str(chain_root),
+        "event_mode": event_mode,
+        "cooldown_minutes": cooldown_minutes,
         "symbol_scope": symbols,
         "venue_scope": venues,
         "interval_scope": intervals,
@@ -752,6 +817,7 @@ def build_summary(
         "state_summary": build_state_summary(rows),
         "transition_counts": build_transition_counts(rows),
         "transition_changed_count": sum(1 for row in rows if row.get("transition_changed")),
+        "state_transition_count": sum(1 for row in rows if row.get("transition_changed")),
         "cohort_interpretation": {
             "ENTRY_CANDIDATE": "candidate-quality cohort",
             "WAIT_RETEST": "setup-maturation cohort",
@@ -795,8 +861,9 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         return
     print(f"report={summary['report']} version={summary['version']}")
     print(
+        f"event_mode={summary['event_mode']} cooldown_minutes={summary['cooldown_minutes']} "
         f"runs_discovered={summary['run_dirs_discovered']} events_discovered={summary['events_discovered']} "
-        f"events_used={summary['events_used']} "
+        f"events_used={summary['events_used']} state_transition_count={summary['state_transition_count']} "
         f"symbols={','.join(summary['symbol_scope'])} "
         f"venue={','.join(summary['venue_scope'])} interval={','.join(summary['interval_scope'])}"
     )
@@ -855,6 +922,8 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.cooldown_minutes <= 0:
+        raise ValueError("--cooldown-minutes must be greater than zero")
     chain_root = Path(args.chain_root)
     output_dir = Path(args.output_dir)
     output_paths = build_output_paths(output_dir)
@@ -866,7 +935,12 @@ def main(argv: list[str] | None = None) -> int:
         interval_override=args.interval,
         max_events=args.max_events,
     )
-    events = load_result.events
+    filter_result = filter_events(
+        load_result.events,
+        event_mode=args.event_mode,
+        cooldown_minutes=args.cooldown_minutes,
+    )
+    events = filter_result.events
     if not events:
         raise FileNotFoundError(f"No heartbeat events found under {chain_root}")
 
@@ -923,7 +997,9 @@ def main(argv: list[str] | None = None) -> int:
         wrote_files=args.write_files,
         run_dirs_discovered=load_result.run_dirs_discovered,
         events_discovered=load_result.events_discovered,
-        skip_counts=load_result.skip_counts,
+        skip_counts=merge_counts(load_result.skip_counts, filter_result.skip_counts),
+        event_mode=args.event_mode,
+        cooldown_minutes=args.cooldown_minutes,
     )
 
     if args.write_files:

@@ -32,6 +32,8 @@ Defaults:
 
 - `--chain-root`: `data/research/live_like_shadow_chain_v1`
 - `--output-dir`: `data/research/shadow_heartbeat_outcome_validation_v1`
+- `--event-mode`: `all`
+- `--cooldown-minutes`: `30`
 - inferred `--symbol` from heartbeat history unless passed explicitly
 - inferred `--venue` from heartbeat artifacts unless passed explicitly
 - inferred `--interval` from heartbeat artifacts unless passed explicitly
@@ -78,10 +80,40 @@ Each event row includes:
 - sample completeness flags
 - transition metadata from the prior heartbeat cohort for the same symbol
 
+The primary cohort state for filtering is the normalized research cohort `state`, not the raw `candidate_state`, `decision_state`, or `execution_plan_state` fields. Those raw fields remain visible for inspection, but event filtering uses the derived cohort label:
+
+- `ENTRY_CANDIDATE`
+- `WAIT_RETEST`
+- `NO_CANDIDATE`
+- `BLOCKED`
+
+This keeps cohort semantics stable across all event modes.
+
+## Event overlap and modes
+
+The shadow heartbeat can run every 5 minutes while the market context is still based on a 15m lane. That means many adjacent heartbeat rows can represent nearly the same market window, which creates autocorrelation and pseudo-sample-size inflation if every repeated row is treated as independent.
+
+The validator now supports three sampling modes:
+
+- `--event-mode all`
+  - current behavior
+  - every discovered event is used
+- `--event-mode transition-only`
+  - uses only events where the normalized cohort `state` changes versus the previous event for the same symbol
+  - repeated same-state rows are skipped and reported as `skipped_transition_duplicate`
+- `--event-mode cooldown`
+  - keeps the first event for a given `symbol + state`
+  - skips repeated rows of that same `symbol + state` until `--cooldown-minutes` has elapsed
+  - skipped rows are reported as `skipped_cooldown`
+
+Use `all` for raw heartbeat frequency diagnostics. Use `transition-only` or `cooldown` when you want more independent or semi-independent cohort samples.
+
 ## Summary output
 
 The summary groups rows by cohort state and shows:
 
+- `event_mode`
+- `cooldown_minutes`
 - count
 - horizon-specific completeness counts:
   - `complete_15m`
@@ -101,6 +133,7 @@ The summary groups rows by cohort state and shows:
   - events discovered
   - events used
   - events skipped by reason
+- state transition count after filtering
 
 Older output exposed only a single `complete` count, which meant `complete_24h`. On a fresh 15m heartbeat lane that often stays at `0` even when shorter horizons already have usable samples.
 
@@ -147,6 +180,8 @@ This mapping is for research cohorting only. It is not decision permission, not 
 Do not convert the results into strategy rules yet.
 
 This runner is not performance validation in the execution sense. It does not model fills, fees, slippage, sizing, or account constraints.
+
+Non-overlap filtering does not make the study causal or execution-realistic. It only reduces repeated-state overlap in research sampling. This remains research-only and does not enable paper trading, live trading, execution, or executor behavior.
 
 ## CLI
 
