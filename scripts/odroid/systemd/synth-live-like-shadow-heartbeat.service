@@ -1,0 +1,9 @@
+[Unit]
+Description=Synth live-like shadow heartbeat render
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/theone/projects/synth-v2
+Environment=SYNTH_LIVE_LIKE_SHADOW_DASHBOARD_HTML=/var/www/html/synth/live-like-shadow-chain.html
+ExecStart=/home/theone/projects/synth-v2/scripts/odroid/run_live_like_shadow_heartbeat_once.sh
