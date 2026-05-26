@@ -11,7 +11,7 @@ This lane tracks deployment of Synth runtime components to the Odroid and schedu
 ```text
 Recent chat TODO: deploy Synth on Odroid and add runners for candle ingestion and webview data refresh.
 Known infra context: Odroid C4 targeted for 24/7 runtime agents; MariaDB host is gurkdb.
-Recent chat TODO: after Odroid runners are stable, select the first strategy candidate and develop Synth toward paper execution support.
+Recent chat TODO: after Odroid runners are stable, the next step is manual paper advice cockpit / strategy candidate inbox work before any paper execution or simulated fills.
 docs/ops/synth_runtime_runners_v1.md
 docs/architecture/market_trigger_engine_v1.md
 ```
@@ -266,6 +266,12 @@ No runtime promotion.
 ## P2 — First paper strategy lane after Odroid runners
 
 Status: open / blocked until runtime stability is observed and first strategy candidate is reviewed.
+
+Immediate sequencing note:
+
+- before paper execution intent or simulated fills, finish the manual paper advice cockpit / strategy candidate inbox path
+- keep that step read-only and review-only
+- do not treat dashboard completion as paper trading enablement
 
 Goal:
 

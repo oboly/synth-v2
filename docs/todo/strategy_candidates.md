@@ -32,6 +32,12 @@ candidate = (
 
 Status: open.
 
+Near-term sequencing note:
+
+- before any paper execution or simulated-fill lane, the next implementation step is manual paper advice cockpit / strategy candidate inbox work
+- candidate review should surface read-only `paper_action`, direction, reasons, risk/invalidation, zone context, freshness, and missing inputs
+- keep this step upstream of `decision_gate`
+
 Tasks:
 
 - Decide whether selection_engine should rank per horizon bucket independently.
