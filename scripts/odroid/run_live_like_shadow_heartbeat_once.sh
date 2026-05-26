@@ -3,6 +3,7 @@
 REPO_DIR="${SYNTH_REPO_DIR:-$HOME/projects/synth-v2}"
 CHAIN_OUTPUT_ROOT="${SYNTH_LIVE_LIKE_SHADOW_CHAIN_OUTPUT_ROOT:-data/research/live_like_shadow_chain_v1}"
 OUTPUT_HTML="${SYNTH_LIVE_LIKE_SHADOW_DASHBOARD_HTML:-/var/www/html/synth/live-like-shadow-chain.html}"
+HISTORY_OUTPUT_HTML="${SYNTH_LIVE_LIKE_SHADOW_HISTORY_HTML:-/var/www/html/synth/live-like-shadow-history.html}"
 MARKET="${SYNTH_LIVE_LIKE_SHADOW_MARKET:-NEAR-EUR}"
 SYMBOL="${SYNTH_LIVE_LIKE_SHADOW_SYMBOL:-NEAR}"
 
@@ -11,6 +12,7 @@ echo "repo_dir=${REPO_DIR}"
 echo "market=${MARKET}"
 echo "symbol=${SYMBOL}"
 echo "output_html=${OUTPUT_HTML}"
+echo "history_output_html=${HISTORY_OUTPUT_HTML}"
 echo "broker_private_calls=0 broker_writes=0 order_submission=0"
 echo "decision_gate_changes=0 execution_planner_changes=0 executor=none"
 
@@ -76,14 +78,30 @@ run_step python -m src.reporting.run_live_like_shadow_chain_static_dashboard_v1 
   --output-html "${OUTPUT_HTML}" \
   --output table
 
+run_step python -m src.reporting.run_live_like_shadow_heartbeat_history_v1 \
+  --chain-root "${CHAIN_OUTPUT_ROOT}" \
+  --max-runs 100 \
+  --output-html "${HISTORY_OUTPUT_HTML}" \
+  --output table
+
 if [ ! -f "${OUTPUT_HTML}" ]; then
   echo "FAIL missing_output_html=${OUTPUT_HTML}" >&2
   exit 1
 fi
 
+if [ ! -f "${HISTORY_OUTPUT_HTML}" ]; then
+  echo "FAIL missing_history_output_html=${HISTORY_OUTPUT_HTML}" >&2
+  exit 1
+fi
+
+echo "broker_writes=0"
+echo "order_submission=0"
+echo "executor=none"
+
 echo
 echo "live_like_shadow_heartbeat_once finished $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "dashboard_html=${OUTPUT_HTML}"
+echo "history_html=${HISTORY_OUTPUT_HTML}"
 echo "broker_writes=0"
 echo "order_submission=0"
 echo "executor=none"

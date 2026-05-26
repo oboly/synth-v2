@@ -2008,6 +2008,10 @@ def write_index(output_dir: Path) -> Path:
         <a href="/synth/live-like-shadow-chain.html">Live-like Shadow Chain</a>
         <p class="muted">Shadow preview only. No paper/live trading. No order submitted.</p>
       </div>
+      <div class="card">
+        <a href="/synth/live-like-shadow-history.html">Live-like Shadow History</a>
+        <p class="muted">Shadow heartbeat state history. Stability/readout only. No paper/live trading.</p>
+      </div>
     </div>
   </main>
 </body>

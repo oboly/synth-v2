@@ -1,6 +1,6 @@
 ## Live-Like Shadow Heartbeat V1
 
-`run_live_like_shadow_heartbeat_once.sh` is an Odroid-oriented one-shot wrapper that runs the live-like shadow chain and renders the static shadow dashboard.
+`run_live_like_shadow_heartbeat_once.sh` is an Odroid-oriented one-shot wrapper that runs the live-like shadow chain and renders the static shadow dashboard plus the shadow heartbeat history dashboard.
 
 This lane is ops/read-only only.
 
@@ -19,11 +19,18 @@ Safety boundary:
 
 The runner does not enable any timer automatically.
 
-Dashboard path:
+Dashboard paths:
 
 ```text
 /var/www/html/synth/live-like-shadow-chain.html
+/var/www/html/synth/live-like-shadow-history.html
 ```
+
+The history page measures state stability only across recent shadow heartbeat runs.
+
+It is not performance validation.
+
+It is not executor enablement.
 
 ## One-shot command
 
@@ -39,6 +46,11 @@ python -m src.research.run_live_like_shadow_chain_v1 --market NEAR-EUR --symbol 
 python -m src.reporting.run_live_like_shadow_chain_static_dashboard_v1 \
   --chain-run-dir "$LATEST" \
   --output-html /var/www/html/synth/live-like-shadow-chain.html \
+  --output table
+python -m src.reporting.run_live_like_shadow_heartbeat_history_v1 \
+  --chain-root data/research/live_like_shadow_chain_v1 \
+  --max-runs 100 \
+  --output-html /var/www/html/synth/live-like-shadow-history.html \
   --output table
 ```
 
