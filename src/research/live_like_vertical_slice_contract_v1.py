@@ -63,6 +63,7 @@ class DecisionPreview:
 @dataclass(frozen=True)
 class ExecutionPlanPreview:
     decision_preview_id: str
+    execution_plan_state: str
     execution_profile: str
     side: str
     symbol: str
@@ -74,6 +75,7 @@ class ExecutionPlanPreview:
     cancel_conditions: tuple[str, ...]
     mode: str
     executor_enabled: bool = False
+    no_order_submission: bool = True
 
 
 @dataclass(frozen=True)
