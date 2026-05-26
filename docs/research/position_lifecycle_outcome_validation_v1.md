@@ -188,12 +188,26 @@ Current conservative normalized buckets can include:
 These buckets are inferred from currently available event fields and reason
 context. They are not canonical runtime states.
 
+Primary bucket priority is intentional:
+
+- target / intrabar / extension context outranks generic setup failure
+- invalidation / reclaim context outranks generic setup failure
+- chase-risk and market-damage context outrank generic setup failure
+- recompute / wait-fresh-map context outranks generic setup failure
+- `APLUS_AVOID` outranks generic `APLUS_CONTEXT`
+- `SETUP_FAIL` is fallback only when no more specific bucket is available
+
+If available, `secondary_reason_buckets` retain all matched contexts while the
+summary tables continue to use one primary bucket for grouping.
+
 Interpretation warnings:
 
 - bucket inference is approximate and downstream of the original review label
 - one symbol can dominate a bucket and create a false sense of generality
 - symbol concentration must be checked before treating a bucket as reusable edge
 - action + reason is usually more informative than action alone
+- `SETUP_FAIL` should be treated as unresolved leftover context, not as a useful
+  edge bucket by itself
 
 ## Interpretation Rules
 

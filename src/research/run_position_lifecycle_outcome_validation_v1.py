@@ -98,8 +98,11 @@ class LifecycleEvent:
     paper_action: str | None
     policy_action: str | None
     position_review_state: str | None
+    selection_state: str | None
+    setup_filter_state: str | None
     setup_fail_reason: str | None
     aplus_bucket: str | None
+    advice_reason_codes: list[str]
     leg_direction: str | None
     target_state: str
     risk_state: str
@@ -648,6 +651,16 @@ def reconstruct_events(
             intrabar_row=intrabar_row,
         )
 
+        raw_reason_codes = advice_row.get("reason_codes_json")
+        parsed_reason_codes: list[str] = []
+        if isinstance(raw_reason_codes, str) and raw_reason_codes.strip():
+            try:
+                parsed = json.loads(raw_reason_codes)
+                if isinstance(parsed, list):
+                    parsed_reason_codes = [str(item).upper() for item in parsed if str(item).strip()]
+            except Exception:
+                parsed_reason_codes = []
+
         previous_action = previous_action_by_symbol.get(position.symbol)
         transition_changed = previous_action is not None and previous_action != final_action
         events.append(
@@ -663,8 +676,11 @@ def reconstruct_events(
                 paper_action=str(advice_row.get("advice_action") or "") or None,
                 policy_action=str(advice_row.get("policy_decision") or "") or None,
                 position_review_state=rotation_state,
+                selection_state=str(advice_row.get("selection_state") or "") or None,
+                setup_filter_state=str(advice_row.get("setup_filter_state") or "") or None,
                 setup_fail_reason=str(advice_row.get("setup_filter_reason") or "") or None,
                 aplus_bucket=str(advice_row.get("aplus_bucket") or "") or None,
+                advice_reason_codes=parsed_reason_codes,
                 leg_direction=str(advice_row.get("leg_direction") or "") or None,
                 target_state=target_state,
                 risk_state=risk_state,
@@ -829,7 +845,9 @@ def event_to_row(event: LifecycleEvent, outcomes: dict[str, Any]) -> dict[str, A
     row["invalidation_price"] = dec_to_float(event.invalidation_price)
     row["intrabar_target_touch_age_minutes"] = dec_to_float(event.intrabar_target_touch_age_minutes)
     row.update(outcomes)
-    row["reason_bucket"] = derive_reason_bucket(row)
+    primary_reason_bucket, secondary_reason_buckets = derive_reason_buckets(row)
+    row["reason_bucket"] = primary_reason_bucket
+    row["secondary_reason_buckets"] = secondary_reason_buckets
     row["market_leg_bucket"] = derive_market_leg_bucket(row)
     row["freshness_bucket"] = derive_freshness_bucket(row)
     return row
@@ -869,52 +887,82 @@ def near_zone_pct(current_price: float | None, low: float | None, high: float | 
     return abs((current_price / reference) - 1.0) * 100.0
 
 
-def derive_reason_bucket(row: dict[str, Any]) -> str:
+def has_any_text(*values: str) -> bool:
+    return any(str(value or "").strip() for value in values)
+
+
+def unique_labels(labels: list[str]) -> list[str]:
+    return list(dict.fromkeys(label for label in labels if label))
+
+
+def derive_reason_buckets(row: dict[str, Any]) -> tuple[str, list[str]]:
     intrabar_context = str(row.get("intrabar_target_touch_context") or "").upper()
     intrabar_label = str(row.get("intrabar_target_touch_label") or "").upper()
     reason_text = str(row.get("position_lifecycle_reason") or "").upper()
     risk_state = str(row.get("risk_state") or "").upper()
     target_state = str(row.get("target_state") or "").upper()
+    selection_state = str(row.get("selection_state") or "").upper()
+    setup_filter_state = str(row.get("setup_filter_state") or "").upper()
     setup_fail_reason = str(row.get("setup_fail_reason") or "").upper()
     policy_action = str(row.get("policy_action") or "").upper()
     paper_action = str(row.get("paper_action") or "").upper()
     aplus_bucket = str(row.get("aplus_bucket") or "").upper()
     leg = str(row.get("leg_direction") or "").upper()
+    advice_reason_codes = [str(code or "").upper() for code in (row.get("advice_reason_codes") or [])]
+    joined_reason_codes = " ".join(advice_reason_codes)
 
     current_price = row.get("current_price")
     entry_zone_low = row.get("entry_zone_low")
     entry_zone_high = row.get("entry_zone_high")
     tp_zone_low = row.get("tp_zone_low")
     tp_zone_high = row.get("tp_zone_high")
+    secondary: list[str] = []
 
     if "VERIFY LIVE CHART" in reason_text or (row.get("intrabar_stale_for_decision") and intrabar_label == "EXTENSION_TOUCHED_INTRABAR"):
-        return "TARGET_REACHED_STALE"
+        secondary.append("TARGET_REACHED_STALE")
+    elif target_state == "TARGET_REACHED" and intrabar_label == "EXTENSION_TOUCHED_INTRABAR":
+        secondary.append("TARGET_REACHED_FRESH")
     if intrabar_context == "TARGET_TOUCHED_RECENTLY":
-        return "TARGET_TOUCH_INTRABAR"
+        secondary.append("TARGET_TOUCH_INTRABAR")
     if intrabar_label == "EXTENSION_TOUCHED_INTRABAR":
-        return "EXTENSION_TOUCH_INTRABAR"
-    if "INVALIDATION_TOUCHED" in reason_text:
-        return "INVALIDATION_TOUCHED"
-    if risk_state == "RECLAIM_CONFIRMED":
-        return "RECLAIM_CONFIRMED"
+        secondary.append("EXTENSION_TOUCH_INTRABAR")
+
+    if "INVALIDATION_TOUCHED" in reason_text or "INVALIDATION_TOUCHED" in joined_reason_codes:
+        secondary.append("INVALIDATION_TOUCHED")
+    if "RECLAIM_NEAR" in reason_text or "RECLAIM_NEAR" in joined_reason_codes or paper_action == "WAIT_FOR_MARKET_RECLAIM":
+        secondary.append("RECLAIM_NEAR")
+    if risk_state == "RECLAIM_CONFIRMED" or "RECLAIM_CONFIRMED" in joined_reason_codes:
+        secondary.append("RECLAIM_CONFIRMED")
     if risk_state == "RISK_NEAR":
-        return "INVALIDATION_NEAR"
-    if policy_action.startswith("WAIT_") or "RECOMPUTE" in policy_action or "RECOMPUTE" in reason_text:
-        return "RECOMPUTE_PENDING"
-    if "CHASE" in policy_action or "CHASE" in setup_fail_reason or "CHASE" in reason_text:
-        return "CHASE_RISK"
-    if setup_fail_reason:
-        return "SETUP_FAIL"
+        secondary.append("INVALIDATION_NEAR")
+
+    if policy_action.startswith("WAIT_") or "WAIT_RECOMPUTE" in paper_action or "WAIT_RECOMPUTE" in reason_text:
+        secondary.append("WAIT_RECOMPUTE")
+    if "RECOMPUTE" in policy_action or "RECOMPUTE" in reason_text or "MAP_RECOMPUTE_NEEDED" in joined_reason_codes:
+        secondary.append("RECOMPUTE_PENDING")
+
+    if "CHASE" in policy_action or "CHASE" in setup_fail_reason or "CHASE" in reason_text or "ENTRY_WINDOW_PASSED" in joined_reason_codes:
+        secondary.append("CHASE_RISK")
+    if setup_fail_reason == "MARKET_DAMAGE_RISK":
+        secondary.append("MARKET_DAMAGE_RISK")
+    if setup_fail_reason == "MARKET_DAMAGE_CAUTION":
+        secondary.append("MARKET_DAMAGE_CAUTION")
+    if setup_fail_reason == "SELECTION_STATE_NOT_ELIGIBLE" or selection_state == "AVOID":
+        secondary.append("SELECTION_STATE_NOT_ELIGIBLE")
+
     if aplus_bucket == "APLUS_AVOID":
-        return "APLUS_AVOID"
-    if aplus_bucket.startswith("APLUS_"):
-        return "APLUS_CONTEXT"
+        secondary.append("APLUS_AVOID")
+    if "STALE_APLUS_CONTEXT" in reason_text or "STALE_APLUS_CONTEXT" in joined_reason_codes:
+        secondary.append("STALE_APLUS_CONTEXT")
+    if aplus_bucket.startswith("APLUS_") and aplus_bucket != "APLUS_AVOID":
+        secondary.append("APLUS_CONTEXT")
 
     entry_distance = near_zone_pct(current_price, entry_zone_low, entry_zone_high)
     if entry_distance is not None and entry_distance <= 2.0:
         if leg == "DOWN":
-            return "REACTION_ZONE_NEAR"
-        return "REACTION_ZONE_NEAR"
+            secondary.append("REACTION_ZONE_NEAR")
+        else:
+            secondary.append("ENTRY_ZONE_NEAR")
 
     target_mid = midpoint(tp_zone_low, tp_zone_high)
     if (
@@ -924,11 +972,39 @@ def derive_reason_bucket(row: dict[str, Any]) -> str:
         and target_mid is not None
         and target_mid < current_price
     ):
-        return "SUPPORT_RETEST_BELOW"
+        secondary.append("SUPPORT_RETEST_BELOW")
 
-    if paper_action == "WAIT_FOR_MARKET_RECLAIM":
-        return "RECOMPUTE_PENDING"
-    return "UNKNOWN_REASON_BUCKET"
+    priority = [
+        "TARGET_REACHED_STALE",
+        "TARGET_TOUCH_INTRABAR",
+        "EXTENSION_TOUCH_INTRABAR",
+        "TARGET_REACHED_FRESH",
+        "INVALIDATION_TOUCHED",
+        "RECLAIM_CONFIRMED",
+        "RECLAIM_NEAR",
+        "INVALIDATION_NEAR",
+        "CHASE_RISK",
+        "MARKET_DAMAGE_RISK",
+        "MARKET_DAMAGE_CAUTION",
+        "WAIT_RECOMPUTE",
+        "RECOMPUTE_PENDING",
+        "APLUS_AVOID",
+        "STALE_APLUS_CONTEXT",
+        "APLUS_CONTEXT",
+        "SUPPORT_RETEST_BELOW",
+        "REACTION_ZONE_NEAR",
+        "ENTRY_ZONE_NEAR",
+        "SELECTION_STATE_NOT_ELIGIBLE",
+    ]
+    secondary = unique_labels(secondary)
+    for bucket in priority:
+        if bucket in secondary:
+            return bucket, secondary
+
+    if setup_fail_reason or has_any_text(setup_filter_state):
+        secondary.append("SETUP_FAIL")
+        return "SETUP_FAIL", unique_labels(secondary)
+    return "UNKNOWN_REASON_BUCKET", secondary
 
 
 def derive_market_leg_bucket(row: dict[str, Any]) -> str:
@@ -1032,6 +1108,11 @@ def build_summary(
     rows: list[dict[str, Any]],
 ) -> dict[str, Any]:
     action_counts = Counter(str(row.get("position_lifecycle_action") or "") for row in rows)
+    primary_reason_counts = Counter(str(row.get("reason_bucket") or "") for row in rows if row.get("reason_bucket"))
+    secondary_reason_counts: Counter[str] = Counter()
+    for row in rows:
+        for bucket in row.get("secondary_reason_buckets") or []:
+            secondary_reason_counts[str(bucket)] += 1
     summary = {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
@@ -1048,6 +1129,15 @@ def build_summary(
         "symbols_count": len(sorted({str(row.get("symbol") or "") for row in rows if row.get("symbol")})),
         "symbols": sorted({str(row.get("symbol") or "") for row in rows if row.get("symbol")}),
         "lifecycle_action_counts": dict(sorted(action_counts.items())),
+        "top_primary_reason_buckets": [
+            {"bucket": bucket, "count": count}
+            for bucket, count in primary_reason_counts.most_common(10)
+        ],
+        "top_secondary_reason_buckets": [
+            {"bucket": bucket, "count": count}
+            for bucket, count in secondary_reason_counts.most_common(10)
+        ],
+        "setup_fail_fallback_count": int(primary_reason_counts.get("SETUP_FAIL", 0)),
         "complete_15m": sum(1 for row in rows if bool((row.get("sample_completeness_flags") or {}).get("complete_15m"))),
         "complete_30m": sum(1 for row in rows if bool((row.get("sample_completeness_flags") or {}).get("complete_30m"))),
         "complete_1h": sum(1 for row in rows if bool((row.get("sample_completeness_flags") or {}).get("complete_1h"))),
@@ -1121,6 +1211,16 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         f"executor={summary['safety']['executor']} "
         f"live_trading={str(summary['safety']['live_trading']).lower()}"
     )
+    print(
+        "primary_reason_buckets "
+        + " ; ".join(f"{item['bucket']}:{item['count']}" for item in summary["top_primary_reason_buckets"])
+    )
+    if summary["top_secondary_reason_buckets"]:
+        print(
+            "secondary_reason_buckets "
+            + " ; ".join(f"{item['bucket']}:{item['count']}" for item in summary["top_secondary_reason_buckets"])
+        )
+    print(f"setup_fail_fallback_count={summary['setup_fail_fallback_count']}")
     for action, item in summary["action_summary"].items():
         print(
             f"{action} count={item['count']} "
