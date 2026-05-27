@@ -181,6 +181,9 @@ Initial `target_status` values:
 - `BETWEEN_1618_2618`
 - `EXTENDED`
 - `MOONBAG_ZONE`
+- `TARGETS_EXCEEDED`
+- `INSUFFICIENT_SWING`
+- `NOT_IMPLEMENTED`
 
 Notes:
 
@@ -189,6 +192,49 @@ Notes:
 - `current_target_band` should describe where price currently sits in the ladder
 - `next_target_level` should expose the next higher unresolved target in the
   active leg direction
+- V1 also emits `local_reaction_tp_price`, `anchor_quality`,
+  `bars_since_anchor_end`, and `anchor_reason` for research/debug review
+
+## V1 Runner Scope
+
+Initial implementation target:
+
+- `src/research/run_fibo_target_map_v1.py`
+
+V1 runner behavior:
+
+- reads `obs_market_candle` and `asset`
+- defaults to `1d`
+- supports `1w` as the same anchor-style lane
+- detects a recent confirmed `swing_low -> later swing_high` for `UP` legs
+- calculates fib ladder prices from the anchored swing range only
+- marks `DOWN` leg mapping as `NOT_IMPLEMENTED` when that is the latest
+  confirmed structure
+
+Hard implementation rule:
+
+- no `current_price * fib` shortcut
+- all extension prices must come from anchored swing range
+
+## Swing Detection Notes
+
+V1 uses a conservative pivot-window approach:
+
+- detect pivot lows
+- detect later pivot highs
+- choose a recent meaningful `UP` swing pair
+- score recency and move size conservatively
+
+If no reliable `UP` swing exists:
+
+- emit `INSUFFICIENT_SWING`
+
+If the latest confirmed structure is a `DOWN` leg:
+
+- emit `NOT_IMPLEMENTED`
+
+This is intentional.
+V1 does not fake down-leg ladder logic before that path is designed properly.
 
 ## Validation Ideas
 
@@ -240,6 +286,65 @@ Chart UI should make the distinction visible:
 
 This lane is intended to support visual review before any promotion into a
 stronger validation or runtime context.
+
+## CLI
+
+Planned / implemented V1 CLI:
+
+```bash
+python -m src.research.run_fibo_target_map_v1 --help
+```
+
+Primary args:
+
+- `--venue bitvavo`
+- `--interval 1d`
+- `--quote EUR`
+- `--symbols`
+- `--lookback-candles 180`
+- `--swing-window 5`
+- `--max-symbols 0`
+- `--write-files`
+- `--output summary|json`
+- `--output-dir data/research/fibo_target_map_v1`
+
+Smoke example:
+
+```bash
+python -m src.research.run_fibo_target_map_v1 \
+  --venue bitvavo \
+  --interval 1d \
+  --symbols NEAR,RENDER \
+  --lookback-candles 180 \
+  --swing-window 5 \
+  --output summary
+```
+
+## Output Files
+
+V1 runner output files:
+
+- `fibo_target_map_rows_v1.csv`
+- `fibo_target_map_rows_v1.jsonl`
+- `summary_by_target_status_v1.csv`
+- `summary_by_anchor_quality_v1.csv`
+- `manifest_v1.json`
+
+Default output root:
+
+- `data/research/fibo_target_map_v1`
+
+## Safety
+
+Manifest markers:
+
+- `db_writes=0`
+- `broker_calls=0`
+- `broker_writes=0`
+- `order_submission=0`
+- `account_tables_used=false`
+- `executor=none`
+- `research_only=true`
 
 ## Relation To Later Lanes
 
