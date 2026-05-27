@@ -32,6 +32,15 @@ That suggests a hypothesis:
 
 This runner tests that hypothesis repeatedly across a parameter grid.
 
+Current first-read finding:
+
+- Reload Reaction Scalp currently looks more like a `15m/30m` reaction lane
+  than a `24h` hold lane
+- the top raw edge candidate is `LINK`-heavy
+- a broader `entry_low` variant with lower symbol concentration currently looks
+  like the better initial research candidate
+- this remains a research proxy result, not real fills
+
 ## Inputs
 
 Primary input:
@@ -154,7 +163,16 @@ execution result.
 
 Per parameter set:
 
+- `parameter_key`
 - `sample_count`
+- `events_considered`
+- `events_selected`
+- `events_rejected_by_zone_part`
+- `events_rejected_by_threshold`
+- `events_rejected_by_aplus`
+- `events_rejected_by_missing_zone`
+- `events_rejected_by_missing_return`
+- `max_late_filter_effect_count`
 - `avg_strategy_return_pct`
 - `median_strategy_return_pct`
 - `avg_hold_return_pct`
@@ -168,6 +186,7 @@ Per parameter set:
 - `avg_drawdown_improvement_vs_hold_pct`
 - `symbol_count`
 - `top_symbol_concentration_pct`
+- `robust_candidate_rank`
 
 ## HOLD Baseline Rule
 
@@ -196,6 +215,13 @@ Additional warnings:
 - flag overfit risk if one symbol is more than `30%` of the sample
 - prefer transition-only lifecycle input rows when available/generated that way
 
+Current interpretation:
+
+- the best raw `15m` candidate can still be too concentrated to treat as the
+  first promotion candidate
+- lower concentration and less negative `MAE` may matter more than absolute raw
+  excess return when selecting the next research variant
+
 This runner does not assume broad validity from one symbol-dominated bucket.
 
 ## Current Fibo Guard
@@ -222,6 +248,8 @@ When `--write-files` is enabled:
 - `reload_reaction_scalp_parameter_sweep_rows_v1.jsonl`
 - `reload_reaction_scalp_top_candidates_v1.csv`
 - `reload_reaction_scalp_rejected_candidates_v1.csv`
+- `reload_reaction_scalp_by_symbol_v1.csv`
+- `reload_reaction_scalp_selected_events_v1.jsonl`
 - `manifest_v1.json`
 
 Default output root:
@@ -236,10 +264,19 @@ Summary output includes:
 - events loaded
 - events eligible
 - parameter sets tested
+- `best_raw_edge_candidate`
+- `best_robust_candidate`
+- `best_low_mae_candidate`
+- `best_aplus_candidate`
+- warning when top raw edge has `SYMBOL_CONCENTRATION_HIGH`
 - top candidates by `excess_return_vs_hold_pct`
 - top candidates by drawdown improvement
 - rejected variants with negative excess return
+- selected-variant parameter keys for event export
 - safety markers
+
+The terminal summary is deduplicated by full `parameter_key`, so variants that
+only looked identical in the earlier abbreviated printout now stay explicit.
 
 ## Safety
 

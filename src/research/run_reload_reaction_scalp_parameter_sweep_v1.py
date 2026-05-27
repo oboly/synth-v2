@@ -26,6 +26,8 @@ ROWS_CSV = "reload_reaction_scalp_parameter_sweep_rows_v1.csv"
 ROWS_JSONL = "reload_reaction_scalp_parameter_sweep_rows_v1.jsonl"
 TOP_CANDIDATES_CSV = "reload_reaction_scalp_top_candidates_v1.csv"
 REJECTED_CANDIDATES_CSV = "reload_reaction_scalp_rejected_candidates_v1.csv"
+BY_SYMBOL_CSV = "reload_reaction_scalp_by_symbol_v1.csv"
+SELECTED_EVENTS_JSONL = "reload_reaction_scalp_selected_events_v1.jsonl"
 MANIFEST_JSON = "manifest_v1.json"
 
 RELOAD_ZONE_PARTS = ("entry_low", "entry_mid", "entry_high")
@@ -144,6 +146,33 @@ def point_in_time_fibo_available(fibo_rows: list[dict[str, str]]) -> tuple[bool,
     return False, "latest_symbol_level_fibo_map_not_point_in_time_safe"
 
 
+def normalize_key_part(value: Any) -> str:
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
+
+
+def build_parameter_key(row: dict[str, Any]) -> str:
+    fields = (
+        "target_mode",
+        "max_hold_horizon",
+        "trigger_basis",
+        "reload_zone_part",
+        "near_zone_threshold_pct",
+        "max_late_distance_above_zone_pct",
+        "require_aplus_context",
+    )
+    return "|".join(normalize_key_part(row.get(field)) for field in fields)
+
+
+def build_effective_summary_key(row: dict[str, Any]) -> str:
+    if str(row.get("trigger_basis")) != "current_price_above_entry_high_max_late":
+        clone = dict(row)
+        clone["max_late_distance_above_zone_pct"] = "na"
+        return build_parameter_key(clone)
+    return str(row.get("parameter_key") or build_parameter_key(row))
+
+
 def load_events(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     rows = read_jsonl(Path(args.input_rows))
     fibo_rows = read_csv_rows(Path(args.fibo_rows)) if Path(args.fibo_rows).exists() else []
@@ -250,12 +279,20 @@ def evaluate_trigger(
     part_value = {"entry_low": low, "entry_mid": mid, "entry_high": high}[reload_zone_part]
     if trigger_basis == "current_price_near_zone":
         distance = pct_distance(current, part_value)
-        return bool(distance is not None and distance <= near_zone_threshold_pct), "near_zone_distance_check"
+        if distance is None:
+            return False, "missing_zone_reference"
+        if distance <= near_zone_threshold_pct:
+            return True, "near_zone_threshold_met"
+        return False, "near_zone_threshold_exceeded"
     if trigger_basis == "current_price_inside_zone":
-        return current_inside_zone(row), "inside_zone_check"
+        return (True, "inside_zone_met") if current_inside_zone(row) else (False, "inside_zone_not_met")
     if trigger_basis == "current_price_above_entry_high_max_late":
         above_pct = current_above_entry_high_pct(row)
-        return bool(above_pct is not None and above_pct <= max_late_distance_above_zone_pct), "late_above_zone_check"
+        if above_pct is None:
+            return False, "late_above_zone_not_met"
+        if above_pct <= max_late_distance_above_zone_pct:
+            return True, "max_late_distance_met"
+        return False, "max_late_distance_exceeded"
     return False, "unknown_trigger_basis"
 
 
@@ -307,7 +344,7 @@ def evaluate_parameter_set(
     *,
     fib_guard_safe: bool,
     min_samples: int,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     strategy_returns: list[float] = []
     hold_returns: list[float] = []
     mfes: list[float] = []
@@ -316,10 +353,18 @@ def evaluate_parameter_set(
     hold_drawdowns: list[float] = []
     strategy_drawdowns: list[float] = []
     symbol_counts: Counter[str] = Counter()
+    symbol_buckets: dict[str, dict[str, list[float]]] = {}
     eligible_count = 0
     target_hit_count = 0
     evaluation_status = "OK"
     skip_reasons: Counter[str] = Counter()
+    events_considered = len(events)
+    events_rejected_by_zone_part = 0
+    events_rejected_by_threshold = 0
+    events_rejected_by_aplus = 0
+    events_rejected_by_missing_zone = 0
+    events_rejected_by_missing_return = 0
+    max_late_filter_effect_count = 0
 
     for row in events:
         triggered, trigger_reason = evaluate_trigger(
@@ -332,19 +377,37 @@ def evaluate_parameter_set(
         )
         if not triggered:
             skip_reasons[trigger_reason] += 1
+            if trigger_reason == "require_aplus_context_not_met":
+                events_rejected_by_aplus += 1
+            if trigger_reason in {"near_zone_threshold_exceeded", "max_late_distance_exceeded"}:
+                events_rejected_by_threshold += 1
+            if trigger_reason in {
+                "near_zone_threshold_exceeded",
+                "late_above_zone_not_met",
+                "max_late_distance_exceeded",
+                "inside_zone_not_met",
+            }:
+                events_rejected_by_zone_part += 1
+            if trigger_reason in {"missing_current_price", "missing_zone_reference"}:
+                events_rejected_by_missing_zone += 1
+            if trigger_reason == "max_late_distance_exceeded":
+                max_late_filter_effect_count += 1
             continue
         target_return, target_reason = target_return_pct(row, params["target_mode"], fib_guard_safe)
         if target_reason == "fibo_target_not_point_in_time_safe":
             evaluation_status = "SKIPPED_FIB_TARGET_NOT_POINT_IN_TIME_SAFE"
             skip_reasons[target_reason] += 1
+            events_rejected_by_missing_return += 1
             continue
         if target_return is None:
             skip_reasons[target_reason] += 1
+            events_rejected_by_missing_return += 1
             continue
         strategy_return, target_hit = policy_proxy_return(row=row, horizon=params["max_hold_horizon"], target_return=target_return)
         hold_return = forward_return_for_horizon(row, params["max_hold_horizon"])
         if strategy_return is None or hold_return is None:
             skip_reasons["incomplete_horizon"] += 1
+            events_rejected_by_missing_return += 1
             continue
         eligible_count += 1
         if target_hit:
@@ -362,7 +425,23 @@ def evaluate_parameter_set(
         strategy_drawdown = 0.0 if target_hit else hold_drawdown
         hold_drawdowns.append(hold_drawdown)
         strategy_drawdowns.append(strategy_drawdown)
-        symbol_counts[str(row.get("symbol") or "")] += 1
+        symbol = str(row.get("symbol") or "")
+        symbol_counts[symbol] += 1
+        bucket = symbol_buckets.setdefault(
+            symbol,
+            {
+                "strategy_returns": [],
+                "hold_returns": [],
+                "mfes": [],
+                "maes": [],
+            },
+        )
+        bucket["strategy_returns"].append(strategy_return)
+        bucket["hold_returns"].append(hold_return)
+        if mfe is not None:
+            bucket["mfes"].append(mfe)
+        if mae is not None:
+            bucket["maes"].append(mae)
 
     sample_count = len(strategy_returns)
     top_symbol_count = max(symbol_counts.values()) if symbol_counts else 0
@@ -379,13 +458,22 @@ def evaluate_parameter_set(
     elif average_or_none(excess_values) is not None and average_or_none(excess_values) < 0 and evaluation_status == "OK":
         evaluation_status = "NEGATIVE_EXCESS_RETURN"
 
-    return {
+    row_result = {
         "strategy_candidate": STRATEGY_CANDIDATE,
         "return_metric_label": RETURN_LABEL,
         "evaluation_status": evaluation_status,
+        "parameter_key": build_parameter_key(params),
         **params,
         "sample_count": sample_count,
         "events_eligible": eligible_count,
+        "events_considered": events_considered,
+        "events_selected": sample_count,
+        "events_rejected_by_zone_part": events_rejected_by_zone_part,
+        "events_rejected_by_threshold": events_rejected_by_threshold,
+        "events_rejected_by_aplus": events_rejected_by_aplus,
+        "events_rejected_by_missing_zone": events_rejected_by_missing_zone,
+        "events_rejected_by_missing_return": events_rejected_by_missing_return,
+        "max_late_filter_effect_count": max_late_filter_effect_count,
         "target_hit_count": target_hit_count,
         "avg_strategy_return_pct": average_or_none(strategy_returns),
         "median_strategy_return_pct": median_or_none(strategy_returns),
@@ -408,6 +496,26 @@ def evaluate_parameter_set(
             "the sweep assumes target hit within horizon; otherwise it falls back to same-horizon close return."
         ),
     }
+    by_symbol_rows: list[dict[str, Any]] = []
+    for symbol in sorted(symbol_buckets):
+        bucket = symbol_buckets[symbol]
+        strategy_values = bucket["strategy_returns"]
+        hold_values = bucket["hold_returns"]
+        by_symbol_rows.append(
+            {
+                "parameter_key": row_result["parameter_key"],
+                "symbol": symbol,
+                "sample_count": len(strategy_values),
+                "avg_strategy_return_pct": average_or_none(strategy_values),
+                "avg_hold_return_pct": average_or_none(hold_values),
+                "excess_return_vs_hold_pct": average_or_none(
+                    [strategy - hold for strategy, hold in zip(strategy_values, hold_values, strict=True)]
+                ),
+                "avg_mfe_pct": average_or_none(bucket["mfes"]),
+                "avg_mae_pct": average_or_none(bucket["maes"]),
+            }
+        )
+    return row_result, by_symbol_rows
 
 
 def top_rows(rows: list[dict[str, Any]], field: str, *, min_samples: int, reverse: bool = True, limit: int = 15) -> list[dict[str, Any]]:
@@ -423,15 +531,191 @@ def top_rows(rows: list[dict[str, Any]], field: str, *, min_samples: int, revers
     )[:limit]
 
 
-def summarize(rows: list[dict[str, Any]], meta: dict[str, Any], args: argparse.Namespace, paths: dict[str, Path]) -> dict[str, Any]:
-    top_excess = top_rows(rows, "excess_return_vs_hold_pct", min_samples=args.min_samples, reverse=True)
-    top_drawdown = top_rows(rows, "avg_drawdown_improvement_vs_hold_pct", min_samples=args.min_samples, reverse=True)
-    rejected = [
+def rank_robust_candidates(rows: list[dict[str, Any]], *, min_samples: int) -> list[dict[str, Any]]:
+    def sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+        sample_count = int(row.get("sample_count") or 0)
+        concentration = as_float(row.get("top_symbol_concentration_pct"))
+        excess = as_float(row.get("excess_return_vs_hold_pct"))
+        avg_mae = as_float(row.get("avg_mae_pct"))
+        return (
+            sample_count >= min_samples,
+            concentration is not None and concentration <= 30.0,
+            excess is not None and excess > 0,
+            avg_mae is not None,
+            avg_mae if avg_mae is not None else -999999.0,
+            int(row.get("symbol_count") or 0),
+            sample_count,
+            excess if excess is not None else -999999.0,
+        )
+
+    ranked = sorted(rows, key=sort_key, reverse=True)
+    ranked_with_index: list[dict[str, Any]] = []
+    for index, row in enumerate(ranked, start=1):
+        enriched = dict(row)
+        enriched["robust_candidate_rank"] = index
+        ranked_with_index.append(enriched)
+    return ranked_with_index
+
+
+def dedupe_by_parameter_key(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return dedupe_rows(rows, key_func=lambda row: str(row.get("parameter_key") or ""))
+
+
+def dedupe_rows(rows: list[dict[str, Any]], *, key_func: Any) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    deduped: list[dict[str, Any]] = []
+    for row in rows:
+        key = str(key_func(row))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
+def top_positive_rows(rows: list[dict[str, Any]], field: str, *, min_samples: int, limit: int = 15) -> list[dict[str, Any]]:
+    filtered = [
         row for row in rows
+        if int(row.get("sample_count") or 0) >= int(min_samples)
+        and as_float(row.get(field)) is not None
+        and (as_float(row.get(field)) or 0.0) > 0
+    ]
+    return sorted(
+        filtered,
+        key=lambda row: (as_float(row.get(field)) or 0.0, int(row.get("sample_count") or 0)),
+        reverse=True,
+    )[:limit]
+
+
+def build_selected_event_rows(
+    events: list[dict[str, Any]],
+    selected_variants: list[tuple[str, dict[str, Any]]],
+    *,
+    fib_guard_safe: bool,
+) -> list[dict[str, Any]]:
+    selected_rows: list[dict[str, Any]] = []
+    for variant_label, variant in selected_variants:
+        if not variant:
+            continue
+        params = {
+            "reload_zone_part": variant["reload_zone_part"],
+            "near_zone_threshold_pct": variant["near_zone_threshold_pct"],
+            "trigger_basis": variant["trigger_basis"],
+            "max_late_distance_above_zone_pct": variant["max_late_distance_above_zone_pct"],
+            "target_mode": variant["target_mode"],
+            "max_hold_horizon": variant["max_hold_horizon"],
+            "require_aplus_context": variant["require_aplus_context"],
+        }
+        parameter_key = str(variant["parameter_key"])
+        for row in events:
+            triggered, _ = evaluate_trigger(
+                row,
+                reload_zone_part=params["reload_zone_part"],
+                near_zone_threshold_pct=params["near_zone_threshold_pct"],
+                trigger_basis=params["trigger_basis"],
+                max_late_distance_above_zone_pct=params["max_late_distance_above_zone_pct"],
+                require_aplus_context=params["require_aplus_context"],
+            )
+            if not triggered:
+                continue
+            target_return, target_reason = target_return_pct(row, params["target_mode"], fib_guard_safe)
+            if target_return is None:
+                continue
+            strategy_return, target_hit = policy_proxy_return(
+                row=row,
+                horizon=params["max_hold_horizon"],
+                target_return=target_return,
+            )
+            hold_return = forward_return_for_horizon(row, params["max_hold_horizon"])
+            if strategy_return is None or hold_return is None:
+                continue
+            selected_rows.append(
+                {
+                    "variant_label": variant_label,
+                    "parameter_key": parameter_key,
+                    "symbol": row.get("symbol"),
+                    "event_ts_utc": row.get("event_ts_utc"),
+                    "reason_bucket": row.get("reason_bucket"),
+                    "strategy_return_pct": round(strategy_return, 6),
+                    "hold_return_pct": round(hold_return, 6),
+                    "excess_return_vs_hold_pct": round(strategy_return - hold_return, 6),
+                    "max_favorable_excursion_pct": as_float(row.get("max_favorable_excursion_pct")),
+                    "max_adverse_excursion_pct": as_float(row.get("max_adverse_excursion_pct")),
+                    "target_mode": params["target_mode"],
+                    "max_hold_horizon": params["max_hold_horizon"],
+                    "trigger_basis": params["trigger_basis"],
+                    "reload_zone_part": params["reload_zone_part"],
+                    "near_zone_threshold_pct": params["near_zone_threshold_pct"],
+                    "max_late_distance_above_zone_pct": params["max_late_distance_above_zone_pct"],
+                    "require_aplus_context": params["require_aplus_context"],
+                    "target_reason": target_reason,
+                    "target_hit_proxy": target_hit,
+                }
+            )
+    return sorted(selected_rows, key=lambda row: (str(row["variant_label"]), str(row["symbol"]), str(row["event_ts_utc"])))
+
+
+def summarize(
+    rows: list[dict[str, Any]],
+    meta: dict[str, Any],
+    args: argparse.Namespace,
+    paths: dict[str, Path],
+) -> dict[str, Any]:
+    ranked_rows = rank_robust_candidates(rows, min_samples=int(args.min_samples))
+    top_excess = dedupe_rows(
+        top_rows(ranked_rows, "excess_return_vs_hold_pct", min_samples=args.min_samples, reverse=True),
+        key_func=build_effective_summary_key,
+    )
+    top_drawdown = dedupe_rows(
+        top_rows(ranked_rows, "avg_drawdown_improvement_vs_hold_pct", min_samples=args.min_samples, reverse=True),
+        key_func=build_effective_summary_key,
+    )
+    rejected = [
+        row for row in ranked_rows
         if int(row.get("sample_count") or 0) >= int(args.min_samples)
         and as_float(row.get("excess_return_vs_hold_pct")) is not None
         and as_float(row.get("excess_return_vs_hold_pct")) < 0
     ]
+    best_raw = top_excess[0] if top_excess else None
+    robust_eligible = [
+        row for row in ranked_rows
+        if int(row.get("sample_count") or 0) >= int(args.min_samples)
+        and (as_float(row.get("excess_return_vs_hold_pct")) or 0.0) > 0
+        and (as_float(row.get("top_symbol_concentration_pct")) or 999999.0) <= 30.0
+    ]
+    best_robust = robust_eligible[0] if robust_eligible else (top_excess[0] if top_excess else None)
+    low_mae_candidates = [
+        row for row in ranked_rows
+        if int(row.get("sample_count") or 0) >= int(args.min_samples)
+        and (as_float(row.get("excess_return_vs_hold_pct")) or 0.0) > 0
+        and as_float(row.get("avg_mae_pct")) is not None
+    ]
+    best_low_mae = sorted(
+        low_mae_candidates,
+        key=lambda row: (
+            as_float(row.get("avg_mae_pct")) or -999999.0,
+            as_float(row.get("excess_return_vs_hold_pct")) or -999999.0,
+        ),
+        reverse=True,
+    )[0] if low_mae_candidates else None
+    aplus_candidates = [
+        row for row in ranked_rows
+        if bool(row.get("require_aplus_context"))
+        and int(row.get("sample_count") or 0) >= int(args.min_samples)
+        and (as_float(row.get("excess_return_vs_hold_pct")) or 0.0) > 0
+    ]
+    best_aplus = sorted(
+        aplus_candidates,
+        key=lambda row: (
+            as_float(row.get("excess_return_vs_hold_pct")) or -999999.0,
+            int(row.get("sample_count") or 0),
+        ),
+        reverse=True,
+    )[0] if aplus_candidates else None
+    best_drawdown = top_drawdown[0] if top_drawdown else None
+    best_raw_warning = None
+    if best_raw and bool(best_raw.get("overfit_risk_flag")):
+        best_raw_warning = "SYMBOL_CONCENTRATION_HIGH"
     summary = {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
@@ -439,17 +723,40 @@ def summarize(rows: list[dict[str, Any]], meta: dict[str, Any], args: argparse.N
         "return_metric_label": RETURN_LABEL,
         "events_loaded": meta["events_loaded"],
         "events_eligible": meta["events_eligible"],
-        "parameter_sets_tested": len(rows),
+        "parameter_sets_tested": len(ranked_rows),
+        "best_raw_edge_candidate": best_raw,
+        "best_robust_candidate": best_robust,
+        "best_low_mae_candidate": best_low_mae,
+        "best_aplus_candidate": best_aplus,
+        "best_raw_edge_warning": best_raw_warning,
         "top_excess_return_candidates": top_excess,
         "top_drawdown_improvement_candidates": top_drawdown,
-        "rejected_variants_negative_excess": sorted(
+        "rejected_variants_negative_excess": dedupe_rows(sorted(
             rejected,
             key=lambda row: (as_float(row.get("excess_return_vs_hold_pct")) or 0.0, int(row.get("sample_count") or 0)),
-        )[:15],
+        ), key_func=build_effective_summary_key)[:15],
+        "ranked_rows_preview": ranked_rows[:25],
         "fibo_target_map_present": meta["fibo_target_map_present"],
         "fibo_target_modes_point_in_time_safe": meta["fibo_target_modes_point_in_time_safe"],
         "fibo_target_guard_reason": meta["fibo_target_guard_reason"],
         "events_skipped_by_reason": meta["events_skipped_by_reason"],
+        "top_by_symbol_concentration": top_rows(ranked_rows, "top_symbol_concentration_pct", min_samples=args.min_samples, reverse=True),
+        "top_by_low_mae": dedupe_rows(
+            sorted(
+                [
+                    row for row in ranked_rows
+                    if int(row.get("sample_count") or 0) >= int(args.min_samples)
+                    and (as_float(row.get("excess_return_vs_hold_pct")) or 0.0) > 0
+                    and as_float(row.get("avg_mae_pct")) is not None
+                ],
+                key=lambda row: (
+                    as_float(row.get("avg_mae_pct")) or -999999.0,
+                    as_float(row.get("excess_return_vs_hold_pct")) or -999999.0,
+                ),
+                reverse=True,
+            ),
+            key_func=build_effective_summary_key,
+        )[:15],
         "parameters": {
             "action": args.action,
             "primary_bucket": args.primary_bucket,
@@ -472,24 +779,59 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         f"events_loaded={summary['events_loaded']} events_eligible={summary['events_eligible']} "
         f"parameter_sets_tested={summary['parameter_sets_tested']} strategy_candidate={summary['strategy_candidate']}"
     )
+    best_raw = summary.get("best_raw_edge_candidate") or {}
+    best_robust = summary.get("best_robust_candidate") or {}
+    best_low_mae = summary.get("best_low_mae_candidate") or {}
+    best_aplus = summary.get("best_aplus_candidate") or {}
+    print(
+        "best_raw_edge_candidate "
+        f"{best_raw.get('parameter_key', 'none')} excess={best_raw.get('excess_return_vs_hold_pct')} "
+        f"sample_count={best_raw.get('sample_count')} top_symbol={best_raw.get('top_symbol')} "
+        f"top_symbol_concentration_pct={best_raw.get('top_symbol_concentration_pct')}"
+    )
+    print(
+        "best_robust_candidate "
+        f"{best_robust.get('parameter_key', 'none')} excess={best_robust.get('excess_return_vs_hold_pct')} "
+        f"sample_count={best_robust.get('sample_count')} symbol_count={best_robust.get('symbol_count')} "
+        f"top_symbol_concentration_pct={best_robust.get('top_symbol_concentration_pct')}"
+    )
+    print(
+        "best_low_mae_candidate "
+        f"{best_low_mae.get('parameter_key', 'none')} avg_mae_pct={best_low_mae.get('avg_mae_pct')} "
+        f"excess={best_low_mae.get('excess_return_vs_hold_pct')}"
+    )
+    print(
+        "best_aplus_candidate "
+        f"{best_aplus.get('parameter_key', 'none')} excess={best_aplus.get('excess_return_vs_hold_pct')} "
+        f"sample_count={best_aplus.get('sample_count')}"
+    )
+    if summary.get("best_raw_edge_warning"):
+        print(f"warning best_raw_edge_candidate={summary['best_raw_edge_warning']}")
     print(
         "top_excess_return "
         + " ; ".join(
-            f"{row['target_mode']}|{row['max_hold_horizon']}|{row['trigger_basis']}:{row['excess_return_vs_hold_pct']}"
+            f"{row['parameter_key']}:{row['excess_return_vs_hold_pct']}"
             for row in summary["top_excess_return_candidates"][:15]
         )
     )
     print(
         "top_drawdown_improvement "
         + " ; ".join(
-            f"{row['target_mode']}|{row['max_hold_horizon']}|{row['trigger_basis']}:{row['avg_drawdown_improvement_vs_hold_pct']}"
+            f"{row['parameter_key']}:{row['avg_drawdown_improvement_vs_hold_pct']}"
             for row in summary["top_drawdown_improvement_candidates"][:15]
+        )
+    )
+    print(
+        "top_low_mae "
+        + " ; ".join(
+            f"{row['parameter_key']}:{row['avg_mae_pct']}"
+            for row in summary["top_by_low_mae"][:15]
         )
     )
     print(
         "rejected_negative_excess "
         + " ; ".join(
-            f"{row['target_mode']}|{row['max_hold_horizon']}|{row['trigger_basis']}:{row['excess_return_vs_hold_pct']}"
+            f"{row['parameter_key']}:{row['excess_return_vs_hold_pct']}"
             for row in summary["rejected_variants_negative_excess"][:15]
         )
     )
@@ -508,6 +850,7 @@ def main(argv: list[str] | None = None) -> int:
 
     events, meta = load_events(args)
     parameter_rows: list[dict[str, Any]] = []
+    by_symbol_rows: list[dict[str, Any]] = []
     for reload_zone_part, near_zone_threshold_pct, trigger_basis, max_late_distance_above_zone_pct, target_mode, max_hold_horizon, require_aplus_context in itertools.product(
         RELOAD_ZONE_PARTS,
         NEAR_ZONE_THRESHOLD_PCTS,
@@ -517,22 +860,23 @@ def main(argv: list[str] | None = None) -> int:
         MAX_HOLD_HORIZONS,
         REQUIRE_APLUS_CONTEXT_OPTIONS,
     ):
-        parameter_rows.append(
-            evaluate_parameter_set(
-                events,
-                {
-                    "reload_zone_part": reload_zone_part,
-                    "near_zone_threshold_pct": near_zone_threshold_pct,
-                    "trigger_basis": trigger_basis,
-                    "max_late_distance_above_zone_pct": max_late_distance_above_zone_pct,
-                    "target_mode": target_mode,
-                    "max_hold_horizon": max_hold_horizon,
-                    "require_aplus_context": require_aplus_context,
-                },
-                fib_guard_safe=bool(meta["fibo_target_modes_point_in_time_safe"]),
-                min_samples=int(args.min_samples),
-            )
+        parameter_row, symbol_rows = evaluate_parameter_set(
+            events,
+            {
+                "reload_zone_part": reload_zone_part,
+                "near_zone_threshold_pct": near_zone_threshold_pct,
+                "trigger_basis": trigger_basis,
+                "max_late_distance_above_zone_pct": max_late_distance_above_zone_pct,
+                "target_mode": target_mode,
+                "max_hold_horizon": max_hold_horizon,
+                "require_aplus_context": require_aplus_context,
+            },
+            fib_guard_safe=bool(meta["fibo_target_modes_point_in_time_safe"]),
+            min_samples=int(args.min_samples),
         )
+        parameter_rows.append(parameter_row)
+        by_symbol_rows.extend(symbol_rows)
+    parameter_rows = rank_robust_candidates(parameter_rows, min_samples=int(args.min_samples))
 
     output_dir = Path(args.output_dir)
     paths = {
@@ -540,15 +884,41 @@ def main(argv: list[str] | None = None) -> int:
         "rows_jsonl": output_dir / ROWS_JSONL,
         "top_candidates_csv": output_dir / TOP_CANDIDATES_CSV,
         "rejected_candidates_csv": output_dir / REJECTED_CANDIDATES_CSV,
+        "by_symbol_csv": output_dir / BY_SYMBOL_CSV,
+        "selected_events_jsonl": output_dir / SELECTED_EVENTS_JSONL,
         "manifest_json": output_dir / MANIFEST_JSON,
     }
     summary = summarize(parameter_rows, meta, args, paths)
+    selected_variants = dedupe_by_parameter_key(
+        [
+            row
+            for row in [
+                summary.get("best_raw_edge_candidate"),
+                summary.get("best_robust_candidate"),
+                summary.get("top_drawdown_improvement_candidates", [None])[0],
+            ]
+            if row
+        ]
+    )
+    selected_event_rows = build_selected_event_rows(
+        events,
+        [
+            ("best_raw_edge_candidate", summary.get("best_raw_edge_candidate")),
+            ("best_robust_candidate", summary.get("best_robust_candidate")),
+            ("best_drawdown_improvement_candidate", summary.get("top_drawdown_improvement_candidates", [None])[0]),
+        ],
+        fib_guard_safe=bool(meta["fibo_target_modes_point_in_time_safe"]),
+    )
+    summary["selected_variant_parameter_keys"] = [row["parameter_key"] for row in selected_variants]
+    summary["selected_event_export_count"] = len(selected_event_rows)
 
     if args.write_files:
         write_csv(paths["rows_csv"], parameter_rows)
         write_jsonl(paths["rows_jsonl"], parameter_rows)
         write_csv(paths["top_candidates_csv"], summary["top_excess_return_candidates"])
         write_csv(paths["rejected_candidates_csv"], summary["rejected_variants_negative_excess"])
+        write_csv(paths["by_symbol_csv"], by_symbol_rows)
+        write_jsonl(paths["selected_events_jsonl"], selected_event_rows)
         write_json(paths["manifest_json"], summary)
 
     print_summary(summary, args.output)
