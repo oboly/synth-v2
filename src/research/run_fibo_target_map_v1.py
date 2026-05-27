@@ -36,13 +36,20 @@ FIB_LEVELS = {
     "fib_3618_price": 3.618,
     "fib_4236_price": 4.236,
 }
+FIB_TARGET_LABELS = {
+    "fib_1272_price": "FIB_1272_TP",
+    "fib_1618_price": "FIB_1618_MAIN_TP",
+    "fib_2618_price": "FIB_2618_STRETCH_TP",
+    "fib_3618_price": "FIB_3618_BULL_TARGET",
+    "fib_4236_price": "FIB_4236_MOONBAG_TP",
+}
 TARGET_STATUS_ORDER = [
-    "LOCAL_ONLY",
+    "BELOW_LOCAL_REACTION",
     "APPROACHING_1272",
     "BETWEEN_1272_1618",
     "BETWEEN_1618_2618",
-    "EXTENDED",
-    "MOONBAG_ZONE",
+    "BETWEEN_2618_3618",
+    "BETWEEN_3618_4236",
     "TARGETS_EXCEEDED",
     "INSUFFICIENT_SWING",
     "NOT_IMPLEMENTED",
@@ -63,6 +70,10 @@ SAFETY_MARKERS = {
     "executor": "none",
     "research_only": True,
 }
+VALIDATION_BASELINE_NOTE = (
+    "Every future strategy/backtest must compare strategy profit against HOLD / "
+    "buy-and-hold baseline and report excess return plus drawdown improvement."
+)
 
 
 @dataclass(frozen=True)
@@ -260,6 +271,18 @@ def pct_move(low_price: float, high_price: float) -> float:
     return ((high_price / low_price) - 1.0) * 100.0
 
 
+def upward_distance_pct(current_price: float | None, target_price: float | None) -> float | None:
+    if current_price is None or target_price is None or current_price <= 0:
+        return None
+    return round(((target_price / current_price) - 1.0) * 100.0, 6)
+
+
+def downward_distance_pct(current_price: float | None, support_price: float | None) -> float | None:
+    if current_price is None or support_price is None or current_price <= 0:
+        return None
+    return round(((current_price / support_price) - 1.0) * 100.0, 6)
+
+
 def is_pivot_low(candles: list[Candle], index: int, window: int) -> bool:
     low = candles[index].low_price
     start = max(0, index - window)
@@ -335,36 +358,151 @@ def classify_anchor_quality(*, range_pct: float, bars_since_anchor_end: int) -> 
     return "LOW_QUALITY"
 
 
-def classify_target_status(
+def reentry_zone_label(distance_pct: float | None) -> str:
+    if distance_pct is None:
+        return "UNKNOWN_RELOAD"
+    if distance_pct <= 3.0:
+        return "EASY_RELOAD"
+    if distance_pct <= 8.0:
+        return "NORMAL_RELOAD"
+    if distance_pct <= 15.0:
+        return "DEEP_RELOAD"
+    return "HARD_RELOAD"
+
+
+def tp_reentry_risk_label(
+    *,
+    distance_to_next_extension_pct: float | None,
+    distance_to_next_fibo_support_pct: float | None,
+) -> str:
+    if distance_to_next_extension_pct is None or distance_to_next_fibo_support_pct is None:
+        return "UNKNOWN_TP_REENTRY"
+    if distance_to_next_fibo_support_pct <= 0:
+        return "UNKNOWN_TP_REENTRY"
+    ratio = distance_to_next_extension_pct / distance_to_next_fibo_support_pct
+    if ratio >= 2.0:
+        return "FAVORABLE_TP_VS_REENTRY"
+    if ratio >= 1.0:
+        return "BALANCED_TP_VS_REENTRY"
+    return "POOR_TP_VS_REENTRY"
+
+
+def classify_target_ladder(
     *,
     current_price: float,
-    local_reaction_tp_price: float,
+    swing_low_price: float,
+    local_reaction_price: float,
     fib_1272_price: float,
     fib_1618_price: float,
     fib_2618_price: float,
     fib_3618_price: float,
     fib_4236_price: float,
-) -> tuple[str, str, str | None, float | None]:
-    if current_price <= local_reaction_tp_price:
-        next_target = "LOCAL_REACTION_TP"
-        next_price = local_reaction_tp_price
-        return "LOCAL_ONLY", "BELOW_LOCAL_REACTION_TP", next_target, round(((next_price / current_price) - 1.0) * 100.0, 6)
-    if current_price < fib_1272_price:
-        next_target = "FIB_1272_TP"
-        return "APPROACHING_1272", "LOCAL_REACTION_TO_1272", next_target, round(((fib_1272_price / current_price) - 1.0) * 100.0, 6)
-    if current_price < fib_1618_price:
-        next_target = "FIB_1618_MAIN_TP"
-        return "BETWEEN_1272_1618", "BETWEEN_1272_AND_1618", next_target, round(((fib_1618_price / current_price) - 1.0) * 100.0, 6)
-    if current_price < fib_2618_price:
-        next_target = "FIB_2618_STRETCH_TP"
-        return "BETWEEN_1618_2618", "BETWEEN_1618_AND_2618", next_target, round(((fib_2618_price / current_price) - 1.0) * 100.0, 6)
-    if current_price < fib_3618_price:
-        next_target = "FIB_3618_MANIA_TP"
-        return "EXTENDED", "BETWEEN_2618_AND_3618", next_target, round(((fib_3618_price / current_price) - 1.0) * 100.0, 6)
-    if current_price < fib_4236_price:
-        next_target = "FIB_4236_MOONBAG_TP"
-        return "MOONBAG_ZONE", "BETWEEN_3618_AND_4236", next_target, round(((fib_4236_price / current_price) - 1.0) * 100.0, 6)
-    return "TARGETS_EXCEEDED", "ABOVE_4236", None, None
+) -> dict[str, Any]:
+    main_extension_target_level = "FIB_1618_MAIN_TP"
+    stretch_target_level = "FIB_2618_STRETCH_TP"
+    bull_target_level = "FIB_3618_BULL_TARGET"
+    moonbag_target_level = "FIB_4236_MOONBAG_TP"
+    if current_price < local_reaction_price:
+        target_status = "BELOW_LOCAL_REACTION"
+        current_target_band = "BELOW_LOCAL_REACTION"
+        next_extension_target_level = "FIB_1272_TP"
+        next_extension_target_price = fib_1272_price
+        next_fibo_support_level = "SWING_LOW_SUPPORT"
+        next_fibo_support_price = swing_low_price
+        secondary_fibo_support_level = None
+        secondary_fibo_support_price = None
+    elif current_price < fib_1272_price:
+        target_status = "APPROACHING_1272"
+        current_target_band = "BETWEEN_LOCAL_AND_1272"
+        next_extension_target_level = "FIB_1272_TP"
+        next_extension_target_price = fib_1272_price
+        next_fibo_support_level = "LOCAL_REACTION_SUPPORT"
+        next_fibo_support_price = local_reaction_price
+        secondary_fibo_support_level = "SWING_LOW_SUPPORT"
+        secondary_fibo_support_price = None
+    elif current_price < fib_1618_price:
+        target_status = "BETWEEN_1272_1618"
+        current_target_band = "BETWEEN_1272_AND_1618"
+        next_extension_target_level = "FIB_1618_MAIN_TP"
+        next_extension_target_price = fib_1618_price
+        next_fibo_support_level = "FIB_1272_SUPPORT"
+        next_fibo_support_price = fib_1272_price
+        secondary_fibo_support_level = "LOCAL_REACTION_SUPPORT"
+        secondary_fibo_support_price = local_reaction_price
+    elif current_price < fib_2618_price:
+        target_status = "BETWEEN_1618_2618"
+        current_target_band = "BETWEEN_1618_AND_2618"
+        next_extension_target_level = "FIB_2618_STRETCH_TP"
+        next_extension_target_price = fib_2618_price
+        next_fibo_support_level = "FIB_1618_SUPPORT"
+        next_fibo_support_price = fib_1618_price
+        secondary_fibo_support_level = "FIB_1272_SUPPORT"
+        secondary_fibo_support_price = fib_1272_price
+    elif current_price < fib_3618_price:
+        target_status = "BETWEEN_2618_3618"
+        current_target_band = "BETWEEN_2618_AND_3618"
+        next_extension_target_level = "FIB_3618_BULL_TARGET"
+        next_extension_target_price = fib_3618_price
+        next_fibo_support_level = "FIB_2618_SUPPORT"
+        next_fibo_support_price = fib_2618_price
+        secondary_fibo_support_level = "FIB_1618_SUPPORT"
+        secondary_fibo_support_price = fib_1618_price
+    elif current_price < fib_4236_price:
+        target_status = "BETWEEN_3618_4236"
+        current_target_band = "BETWEEN_3618_AND_4236"
+        next_extension_target_level = "FIB_4236_MOONBAG_TP"
+        next_extension_target_price = fib_4236_price
+        next_fibo_support_level = "FIB_3618_SUPPORT"
+        next_fibo_support_price = fib_3618_price
+        secondary_fibo_support_level = "FIB_2618_SUPPORT"
+        secondary_fibo_support_price = fib_2618_price
+    else:
+        target_status = "TARGETS_EXCEEDED"
+        current_target_band = "ABOVE_4236"
+        next_extension_target_level = None
+        next_extension_target_price = None
+        next_fibo_support_level = "FIB_4236_SUPPORT"
+        next_fibo_support_price = fib_4236_price
+        secondary_fibo_support_level = "FIB_3618_SUPPORT"
+        secondary_fibo_support_price = fib_3618_price
+
+    distance_to_local_reaction_pct = upward_distance_pct(current_price, local_reaction_price) if current_price < local_reaction_price else 0.0
+    distance_to_next_extension_pct = upward_distance_pct(current_price, next_extension_target_price)
+    distance_to_next_fibo_support_pct = downward_distance_pct(current_price, next_fibo_support_price)
+    distance_to_secondary_fibo_support_pct = downward_distance_pct(current_price, secondary_fibo_support_price)
+    reload_label = reentry_zone_label(distance_to_next_fibo_support_pct)
+    return {
+        "target_status": target_status,
+        "current_target_band": current_target_band,
+        "local_reaction_price": round(local_reaction_price, 8),
+        "distance_to_local_reaction_pct": distance_to_local_reaction_pct,
+        "next_extension_target_level": next_extension_target_level,
+        "next_extension_target_price": None if next_extension_target_price is None else round(next_extension_target_price, 8),
+        "distance_to_next_extension_pct": distance_to_next_extension_pct,
+        "main_extension_target_level": main_extension_target_level,
+        "main_extension_target_price": round(fib_1618_price, 8),
+        "stretch_target_level": stretch_target_level,
+        "stretch_target_price": round(fib_2618_price, 8),
+        "bull_target_level": bull_target_level,
+        "bull_target_price": round(fib_3618_price, 8),
+        "moonbag_target_level": moonbag_target_level,
+        "moonbag_target_price": round(fib_4236_price, 8),
+        "next_fibo_support_level": next_fibo_support_level,
+        "next_fibo_support_price": None if next_fibo_support_price is None else round(next_fibo_support_price, 8),
+        "distance_to_next_fibo_support_pct": distance_to_next_fibo_support_pct,
+        "secondary_fibo_support_level": secondary_fibo_support_level,
+        "secondary_fibo_support_price": None if secondary_fibo_support_price is None else round(secondary_fibo_support_price, 8),
+        "distance_to_secondary_fibo_support_pct": distance_to_secondary_fibo_support_pct,
+        "reentry_zone_label": reload_label,
+        "reentry_distance_pct": distance_to_next_fibo_support_pct,
+        "tp_reentry_risk_label": tp_reentry_risk_label(
+            distance_to_next_extension_pct=distance_to_next_extension_pct,
+            distance_to_next_fibo_support_pct=distance_to_next_fibo_support_pct,
+        ),
+        "next_target_level": next_extension_target_level,
+        "next_target_price": None if next_extension_target_price is None else round(next_extension_target_price, 8),
+        "distance_to_next_target_pct": distance_to_next_extension_pct,
+    }
 
 
 def insufficient_row(symbol: str, venue: str, interval: str, current_price: float | None, reason: str, status: str) -> dict[str, Any]:
@@ -378,7 +516,8 @@ def insufficient_row(symbol: str, venue: str, interval: str, current_price: floa
         "swing_high_price": None,
         "leg_direction": "UP" if status == "INSUFFICIENT_SWING" else "DOWN",
         "range_pct": None,
-        "local_reaction_tp_price": None,
+        "local_reaction_price": None,
+        "distance_to_local_reaction_pct": None,
         "fib_1272_price": None,
         "fib_1618_price": None,
         "fib_2618_price": None,
@@ -386,7 +525,28 @@ def insufficient_row(symbol: str, venue: str, interval: str, current_price: floa
         "fib_4236_price": None,
         "current_price": current_price,
         "current_target_band": status,
+        "next_extension_target_level": None,
+        "next_extension_target_price": None,
+        "distance_to_next_extension_pct": None,
+        "main_extension_target_level": "FIB_1618_MAIN_TP",
+        "main_extension_target_price": None,
+        "stretch_target_level": "FIB_2618_STRETCH_TP",
+        "stretch_target_price": None,
+        "bull_target_level": "FIB_3618_BULL_TARGET",
+        "bull_target_price": None,
+        "moonbag_target_level": "FIB_4236_MOONBAG_TP",
+        "moonbag_target_price": None,
+        "next_fibo_support_level": None,
+        "next_fibo_support_price": None,
+        "distance_to_next_fibo_support_pct": None,
+        "secondary_fibo_support_level": None,
+        "secondary_fibo_support_price": None,
+        "distance_to_secondary_fibo_support_pct": None,
+        "reentry_zone_label": "UNKNOWN_RELOAD",
+        "reentry_distance_pct": None,
+        "tp_reentry_risk_label": "UNKNOWN_TP_REENTRY",
         "next_target_level": None,
+        "next_target_price": None,
         "distance_to_next_target_pct": None,
         "target_status": status,
         "anchor_quality": status,
@@ -420,16 +580,17 @@ def build_row_for_symbol(symbol: str, candles: list[Candle], *, venue: str, inte
         label: extension_price(swing_low.low_price, swing_high.high_price, level)
         for label, level in FIB_LEVELS.items()
     }
-    target_status, current_target_band, next_target_level, distance_to_next_target_pct = classify_target_status(
+    ladder = classify_target_ladder(
         current_price=current_price if current_price is not None else swing_high.high_price,
-        local_reaction_tp_price=swing_high.high_price,
+        swing_low_price=swing_low.low_price,
+        local_reaction_price=swing_high.high_price,
         fib_1272_price=fib_prices["fib_1272_price"],
         fib_1618_price=fib_prices["fib_1618_price"],
         fib_2618_price=fib_prices["fib_2618_price"],
         fib_3618_price=fib_prices["fib_3618_price"],
         fib_4236_price=fib_prices["fib_4236_price"],
     )
-    return {
+    row = {
         "symbol": symbol,
         "venue": venue,
         "interval": interval,
@@ -439,22 +600,20 @@ def build_row_for_symbol(symbol: str, candles: list[Candle], *, venue: str, inte
         "swing_high_price": round(swing_high.high_price, 8),
         "leg_direction": "UP",
         "range_pct": range_pct,
-        "local_reaction_tp_price": round(swing_high.high_price, 8),
+        "local_reaction_price": round(swing_high.high_price, 8),
         "fib_1272_price": fib_prices["fib_1272_price"],
         "fib_1618_price": fib_prices["fib_1618_price"],
         "fib_2618_price": fib_prices["fib_2618_price"],
         "fib_3618_price": fib_prices["fib_3618_price"],
         "fib_4236_price": fib_prices["fib_4236_price"],
         "current_price": round(current_price, 8) if current_price is not None else None,
-        "current_target_band": current_target_band,
-        "next_target_level": next_target_level,
-        "distance_to_next_target_pct": distance_to_next_target_pct,
-        "target_status": target_status,
         "anchor_quality": classify_anchor_quality(range_pct=range_pct, bars_since_anchor_end=bars_since_anchor_end),
         "bars_since_anchor_end": bars_since_anchor_end,
         "swing_window": int(swing_window),
         "anchor_reason": "anchored_up_swing_from_confirmed_pivot_low_to_later_pivot_high",
     }
+    row.update(ladder)
+    return row
 
 
 def summary_rows(rows: list[dict[str, Any]], field: str, ordered_values: list[str]) -> list[dict[str, Any]]:
@@ -464,15 +623,15 @@ def summary_rows(rows: list[dict[str, Any]], field: str, ordered_values: list[st
         if not matching:
             continue
         range_values = [float(row["range_pct"]) for row in matching if row.get("range_pct") is not None]
-        distance_values = [float(row["distance_to_next_target_pct"]) for row in matching if row.get("distance_to_next_target_pct") is not None]
+        distance_values = [float(row["distance_to_next_extension_pct"]) for row in matching if row.get("distance_to_next_extension_pct") is not None]
         output.append(
             {
                 field: value,
                 "count": len(matching),
                 "avg_range_pct": average_or_none(range_values),
                 "median_range_pct": median_or_none(range_values),
-                "avg_distance_to_next_target_pct": average_or_none(distance_values),
-                "median_distance_to_next_target_pct": median_or_none(distance_values),
+                "avg_distance_to_next_extension_pct": average_or_none(distance_values),
+                "median_distance_to_next_extension_pct": median_or_none(distance_values),
             }
         )
     return output
@@ -494,6 +653,7 @@ def build_manifest(*, args: argparse.Namespace, rows: list[dict[str, Any]], path
         "row_count": len(rows),
         "symbols_processed": sorted({str(row.get("symbol") or "") for row in rows if row.get("symbol")}),
         "files": {key: str(value) for key, value in paths.items()},
+        "validation_baseline_rule": VALIDATION_BASELINE_NOTE,
         **SAFETY_MARKERS,
     }
 
@@ -506,6 +666,7 @@ def print_summary(*, rows: list[dict[str, Any]], target_status_summary: list[dic
         "target_status_counts": {row["target_status"]: row["count"] for row in target_status_summary},
         "anchor_quality_counts": {row["anchor_quality"]: row["count"] for row in anchor_quality_summary},
         "symbols_processed": manifest["symbols_processed"],
+        "validation_baseline_rule": manifest["validation_baseline_rule"],
         "safety": SAFETY_MARKERS,
         "files": {key: str(value) for key, value in manifest["files"].items()},
     }
@@ -521,6 +682,7 @@ def print_summary(*, rows: list[dict[str, Any]], target_status_summary: list[dic
         print("target_status " + " ; ".join(f"{row['target_status']}:{row['count']}" for row in target_status_summary))
     if anchor_quality_summary:
         print("anchor_quality " + " ; ".join(f"{row['anchor_quality']}:{row['count']}" for row in anchor_quality_summary))
+    print(f"validation_baseline_rule={manifest['validation_baseline_rule']}")
     print(
         "safety "
         "db_writes=0 broker_calls=0 broker_writes=0 order_submission=0 account_tables_used=false executor=none research_only=true"

@@ -70,7 +70,7 @@ Initial target ladder labels:
 - `FIB_1272_TP`
 - `FIB_1618_MAIN_TP`
 - `FIB_2618_STRETCH_TP`
-- `FIB_3618_MANIA_TP`
+- `FIB_3618_BULL_TARGET`
 - `FIB_4236_MOONBAG_TP`
 
 Interpretation:
@@ -87,8 +87,8 @@ Interpretation:
   - default “larger curve” target in many cases
 - `FIB_2618_STRETCH_TP`
   - strong continuation / stretch objective
-- `FIB_3618_MANIA_TP`
-  - high-extension / mania-style objective
+- `FIB_3618_BULL_TARGET`
+  - high-extension bull / mania-style objective
 - `FIB_4236_MOONBAG_TP`
   - extreme extension / moonbag ladder target
 
@@ -169,30 +169,59 @@ Canonical output fields for a future runner/table:
 - `fib_4236_price`
 - `current_price`
 - `current_target_band`
-- `next_target_level`
-- `distance_to_next_target_pct`
+- `local_reaction_price`
+- `distance_to_local_reaction_pct`
+- `next_extension_target_level`
+- `next_extension_target_price`
+- `distance_to_next_extension_pct`
+- `main_extension_target_level`
+- `main_extension_target_price`
+- `stretch_target_level`
+- `stretch_target_price`
+- `bull_target_level`
+- `bull_target_price`
+- `moonbag_target_level`
+- `moonbag_target_price`
+- `next_fibo_support_level`
+- `next_fibo_support_price`
+- `distance_to_next_fibo_support_pct`
+- `secondary_fibo_support_level`
+- `secondary_fibo_support_price`
+- `distance_to_secondary_fibo_support_pct`
+- `reentry_zone_label`
+- `reentry_distance_pct`
+- `tp_reentry_risk_label`
 - `target_status`
 
 Initial `target_status` values:
 
-- `LOCAL_ONLY`
+- `BELOW_LOCAL_REACTION`
 - `APPROACHING_1272`
 - `BETWEEN_1272_1618`
 - `BETWEEN_1618_2618`
-- `EXTENDED`
-- `MOONBAG_ZONE`
+- `BETWEEN_2618_3618`
+- `BETWEEN_3618_4236`
 - `TARGETS_EXCEEDED`
 - `INSUFFICIENT_SWING`
 - `NOT_IMPLEMENTED`
 
 Notes:
 
-- `LOCAL_REACTION_TP` may exist alongside the fib ladder but is conceptually
-  separate from the extension ladder fields
+- `LOCAL_REACTION_TP` is not the main bull TP
+- local reaction target and next fib extension target must always be shown
+  separately
+- `FIB_1618_MAIN_TP` is the main bull TP
+- `FIB_2618_STRETCH_TP` is the stretch target
+- `FIB_3618_BULL_TARGET` is the bull / mania target
+- `FIB_4236_MOONBAG_TP` is the moonbag / blow-off map
 - `current_target_band` should describe where price currently sits in the ladder
-- `next_target_level` should expose the next higher unresolved target in the
-  active leg direction
-- V1 also emits `local_reaction_tp_price`, `anchor_quality`,
+- `next_extension_target_level` should expose the next higher unresolved fib
+  extension target in the active leg direction
+- support/reentry ladder fields should expose likely reload bands below current
+  price
+- support/reentry ladder helps decide TP sizing by comparing upside target vs
+  expected re-entry zone
+- V1 also emits `anchor_quality`,
   `bars_since_anchor_end`, and `anchor_reason` for research/debug review
 
 ## V1 Runner Scope
@@ -210,6 +239,7 @@ V1 runner behavior:
 - calculates fib ladder prices from the anchored swing range only
 - marks `DOWN` leg mapping as `NOT_IMPLEMENTED` when that is the latest
   confirmed structure
+- emits separate local-reaction, extension, and support/reentry ladder fields
 
 Hard implementation rule:
 
@@ -235,6 +265,52 @@ If the latest confirmed structure is a `DOWN` leg:
 
 This is intentional.
 V1 does not fake down-leg ladder logic before that path is designed properly.
+
+## UP Leg Ladder Semantics
+
+For `UP` legs:
+
+- `local_reaction_price = swing_high_price`
+- local reaction remains useful, but it is not the same as the next fib
+  extension target
+- extension ladder determines the larger bull map
+- support ladder determines likely fibo re-entry / reload bands below current
+  price
+
+V1 status intent:
+
+- `BELOW_LOCAL_REACTION`
+  - current price is still below the local reaction high
+  - next fib extension target is still `FIB_1272_TP`
+- `APPROACHING_1272`
+  - current price is above local reaction but below `1.272`
+- `BETWEEN_1272_1618`
+  - next extension target is `FIB_1618_MAIN_TP`
+- `BETWEEN_1618_2618`
+  - next extension target is `FIB_2618_STRETCH_TP`
+- `BETWEEN_2618_3618`
+  - next extension target is `FIB_3618_BULL_TARGET`
+- `BETWEEN_3618_4236`
+  - next extension target is `FIB_4236_MOONBAG_TP`
+- `TARGETS_EXCEEDED`
+  - current price is already above the documented ladder
+
+Support/reentry mapping:
+
+- below local reaction:
+  - next support = `SWING_LOW_SUPPORT`
+- above local reaction but below `1.272`:
+  - next support = `LOCAL_REACTION_SUPPORT`
+- above `1.272`:
+  - next support steps down one fib ladder level at a time
+
+Reload labels:
+
+- `EASY_RELOAD`
+- `NORMAL_RELOAD`
+- `DEEP_RELOAD`
+- `HARD_RELOAD`
+- `UNKNOWN_RELOAD`
 
 ## Validation Ideas
 
@@ -264,6 +340,14 @@ Interpretation notes:
 - symbol-level consistency matters before treating a ladder target as generally
   useful
 
+Global validation rule:
+
+- every future strategy/backtest must compare strategy profit against
+  `HOLD` / buy-and-hold baseline
+- profit alone is not enough
+- excess return versus `HOLD` must be reported
+- drawdown improvement versus `HOLD` must be reported
+
 ## Chart Integration
 
 Primary first integration target:
@@ -275,7 +359,8 @@ Expected chart behavior:
 - overlay fib ladder levels on the chart
 - label local TP separately from fib targets
 - highlight `1.618` as the main larger target
-- show `2.618` and `4.236` as stretch / moonbag ladder levels
+- show `2.618`, `3.618`, and `4.236` as stretch / bull / moonbag ladder levels
+- show support/reentry ladder separately from upside ladder
 - support visual user review
 
 Chart UI should make the distinction visible:
