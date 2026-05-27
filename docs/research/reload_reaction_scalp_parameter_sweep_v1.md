@@ -252,6 +252,55 @@ When `--write-files` is enabled:
 - `reload_reaction_scalp_selected_events_v1.jsonl`
 - `manifest_v1.json`
 
+`reload_reaction_scalp_selected_events_v1.jsonl` is a visual chart-review
+export, not a thin summary row dump.
+
+It keeps chart-usable lifecycle fields such as:
+
+- `symbol`
+- `event_ts_utc`
+- `position_lifecycle_action`
+- `position_lifecycle_reason`
+- `reason_bucket`
+- `secondary_reason_buckets`
+- `current_price`
+- `entry_zone_low`
+- `entry_zone_high`
+- `tp_zone_low`
+- `tp_zone_high`
+- `invalidation_price`
+- forward returns for `15m/30m/1h/2h/4h/24h`
+- adjusted return scores for `15m/30m/1h/4h/24h`
+- `max_favorable_excursion_pct`
+- `max_adverse_excursion_pct`
+- `source_modules`
+- `missing_inputs`
+
+It also adds candidate metadata for chart review:
+
+- `selected_candidate_label`
+- `parameter_key`
+- `candidate_role`
+- `robust_candidate_rank`
+- `overfit_risk_flag`
+- `sample_count`
+- `symbol_count`
+- `top_symbol_concentration_pct`
+
+Candidate roles are:
+
+- `RAW_EDGE`
+- `ROBUST`
+- `LOW_MAE`
+- `APLUS`
+
+The export is capped by:
+
+- `--selected-events-per-candidate 30`
+
+and fails closed on chart-useless rows with missing `current_price`,
+missing entry zone, or fully missing forward returns.
+
 Default output root:
 
 - `data/research/reload_reaction_scalp_parameter_sweep_v1`
@@ -269,6 +318,7 @@ Summary output includes:
 - `best_low_mae_candidate`
 - `best_aplus_candidate`
 - warning when top raw edge has `SYMBOL_CONCENTRATION_HIGH`
+- selected event export validation counts
 - top candidates by `excess_return_vs_hold_pct`
 - top candidates by drawdown improvement
 - rejected variants with negative excess return
