@@ -21,6 +21,7 @@ DEFAULT_OUTPUT_DIR = Path("data/research/reload_reaction_scalp_parameter_sweep_v
 DEFAULT_ACTION = "RELOAD_REVIEW"
 DEFAULT_MIN_SAMPLES = 20
 DEFAULT_MAX_EVENTS = 5000
+DEFAULT_SELECTED_EVENTS_PER_CANDIDATE = 30
 
 ROWS_CSV = "reload_reaction_scalp_parameter_sweep_rows_v1.csv"
 ROWS_JSONL = "reload_reaction_scalp_parameter_sweep_rows_v1.jsonl"
@@ -66,6 +67,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--symbols", default=None)
     parser.add_argument("--max-events", type=int, default=DEFAULT_MAX_EVENTS)
     parser.add_argument("--min-samples", type=int, default=DEFAULT_MIN_SAMPLES)
+    parser.add_argument("--selected-events-per-candidate", type=int, default=DEFAULT_SELECTED_EVENTS_PER_CANDIDATE)
     parser.add_argument("--write-files", action="store_true")
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
@@ -315,6 +317,11 @@ def target_return_pct(row: dict[str, Any], target_mode: str, fib_guard_safe: boo
 def forward_return_for_horizon(row: dict[str, Any], horizon: str) -> float | None:
     returns = row.get("forward_returns") or {}
     return as_float(returns.get(horizon))
+
+
+def adjusted_return_score_for_horizon(row: dict[str, Any], horizon: str) -> float | None:
+    adjusted = row.get("adjusted_return_scores") or {}
+    return as_float(adjusted.get(horizon))
 
 
 def complete_horizon(row: dict[str, Any], horizon: str) -> bool:
@@ -592,10 +599,25 @@ def build_selected_event_rows(
     selected_variants: list[tuple[str, dict[str, Any]]],
     *,
     fib_guard_safe: bool,
-) -> list[dict[str, Any]]:
+    selected_events_per_candidate: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     selected_rows: list[dict[str, Any]] = []
+    roles_written: set[str] = set()
+    missing_current_price = 0
+    missing_entry_zone = 0
+    missing_forward_returns = 0
+    selected_row_keys: set[tuple[str, str, str]] = set()
+    candidate_role_map = {
+        "best_raw_edge_candidate": "RAW_EDGE",
+        "best_robust_candidate": "ROBUST",
+        "best_low_mae_candidate": "LOW_MAE",
+        "best_aplus_candidate": "APLUS",
+    }
     for variant_label, variant in selected_variants:
         if not variant:
+            continue
+        candidate_role = candidate_role_map.get(variant_label)
+        if not candidate_role:
             continue
         params = {
             "reload_zone_part": variant["reload_zone_part"],
@@ -607,6 +629,7 @@ def build_selected_event_rows(
             "require_aplus_context": variant["require_aplus_context"],
         }
         parameter_key = str(variant["parameter_key"])
+        role_rows: list[dict[str, Any]] = []
         for row in events:
             triggered, _ = evaluate_trigger(
                 row,
@@ -629,18 +652,40 @@ def build_selected_event_rows(
             hold_return = forward_return_for_horizon(row, params["max_hold_horizon"])
             if strategy_return is None or hold_return is None:
                 continue
-            selected_rows.append(
+            current_price = as_float(row.get("current_price"))
+            entry_zone_low = as_float(row.get("entry_zone_low"))
+            entry_zone_high = as_float(row.get("entry_zone_high"))
+            if current_price is None:
+                missing_current_price += 1
+                continue
+            if entry_zone_low is None and entry_zone_high is None:
+                missing_entry_zone += 1
+                continue
+            forward_15m = forward_return_for_horizon(row, "15m")
+            forward_30m = forward_return_for_horizon(row, "30m")
+            forward_1h = forward_return_for_horizon(row, "1h")
+            forward_2h = forward_return_for_horizon(row, "2h")
+            forward_4h = forward_return_for_horizon(row, "4h")
+            forward_24h = forward_return_for_horizon(row, "24h")
+            if all(value is None for value in [forward_15m, forward_30m, forward_1h, forward_2h, forward_4h, forward_24h]):
+                missing_forward_returns += 1
+                continue
+            unique_key = (candidate_role, str(row.get("symbol") or ""), str(row.get("event_ts_utc") or ""))
+            if unique_key in selected_row_keys:
+                continue
+            selected_row_keys.add(unique_key)
+            role_rows.append(
                 {
-                    "variant_label": variant_label,
+                    "selected_candidate_label": variant_label,
                     "parameter_key": parameter_key,
-                    "symbol": row.get("symbol"),
-                    "event_ts_utc": row.get("event_ts_utc"),
-                    "reason_bucket": row.get("reason_bucket"),
-                    "strategy_return_pct": round(strategy_return, 6),
-                    "hold_return_pct": round(hold_return, 6),
-                    "excess_return_vs_hold_pct": round(strategy_return - hold_return, 6),
-                    "max_favorable_excursion_pct": as_float(row.get("max_favorable_excursion_pct")),
-                    "max_adverse_excursion_pct": as_float(row.get("max_adverse_excursion_pct")),
+                    "candidate_role": candidate_role,
+                    "robust_candidate_rank": variant.get("robust_candidate_rank"),
+                    "overfit_risk_flag": variant.get("overfit_risk_flag"),
+                    "sample_count": variant.get("sample_count"),
+                    "symbol_count": variant.get("symbol_count"),
+                    "top_symbol_concentration_pct": variant.get("top_symbol_concentration_pct"),
+                    "strategy_candidate": STRATEGY_CANDIDATE,
+                    "return_metric_label": RETURN_LABEL,
                     "target_mode": params["target_mode"],
                     "max_hold_horizon": params["max_hold_horizon"],
                     "trigger_basis": params["trigger_basis"],
@@ -650,9 +695,57 @@ def build_selected_event_rows(
                     "require_aplus_context": params["require_aplus_context"],
                     "target_reason": target_reason,
                     "target_hit_proxy": target_hit,
+                    "strategy_return_pct": round(strategy_return, 6),
+                    "hold_return_pct": round(hold_return, 6),
+                    "excess_return_vs_hold_pct": round(strategy_return - hold_return, 6),
+                    "symbol": row.get("symbol"),
+                    "event_ts_utc": row.get("event_ts_utc"),
+                    "position_lifecycle_action": row.get("position_lifecycle_action"),
+                    "position_lifecycle_reason": row.get("position_lifecycle_reason"),
+                    "reason_bucket": row.get("reason_bucket"),
+                    "secondary_reason_buckets": row.get("secondary_reason_buckets"),
+                    "current_price": current_price,
+                    "entry_zone_low": entry_zone_low,
+                    "entry_zone_high": entry_zone_high,
+                    "tp_zone_low": as_float(row.get("tp_zone_low")),
+                    "tp_zone_high": as_float(row.get("tp_zone_high")),
+                    "invalidation_price": as_float(row.get("invalidation_price")),
+                    "forward_return_15m_pct": forward_15m,
+                    "forward_return_30m_pct": forward_30m,
+                    "forward_return_1h_pct": forward_1h,
+                    "forward_return_2h_pct": forward_2h,
+                    "forward_return_4h_pct": forward_4h,
+                    "forward_return_24h_pct": forward_24h,
+                    "adjusted_return_score_15m": adjusted_return_score_for_horizon(row, "15m"),
+                    "adjusted_return_score_30m": adjusted_return_score_for_horizon(row, "30m"),
+                    "adjusted_return_score_1h": adjusted_return_score_for_horizon(row, "1h"),
+                    "adjusted_return_score_4h": adjusted_return_score_for_horizon(row, "4h"),
+                    "adjusted_return_score_24h": adjusted_return_score_for_horizon(row, "24h"),
+                    "max_favorable_excursion_pct": as_float(row.get("max_favorable_excursion_pct")),
+                    "max_adverse_excursion_pct": as_float(row.get("max_adverse_excursion_pct")),
+                    "source_modules": row.get("source_modules"),
+                    "missing_inputs": row.get("missing_inputs"),
                 }
             )
-    return sorted(selected_rows, key=lambda row: (str(row["variant_label"]), str(row["symbol"]), str(row["event_ts_utc"])))
+        role_rows = sorted(
+            role_rows,
+            key=lambda export_row: (
+                -(as_float(export_row.get("excess_return_vs_hold_pct")) or -999999.0),
+                str(export_row.get("symbol") or ""),
+                str(export_row.get("event_ts_utc") or ""),
+            ),
+        )[:selected_events_per_candidate]
+        if role_rows:
+            roles_written.add(candidate_role)
+            selected_rows.extend(role_rows)
+    validation = {
+        "selected_events_written": len(selected_rows),
+        "selected_events_missing_current_price": missing_current_price,
+        "selected_events_missing_entry_zone": missing_entry_zone,
+        "selected_events_missing_forward_returns": missing_forward_returns,
+        "selected_candidate_roles_written": sorted(roles_written),
+    }
+    return sorted(selected_rows, key=lambda row: (str(row["candidate_role"]), str(row["symbol"]), str(row["event_ts_utc"]))), validation
 
 
 def summarize(
@@ -763,6 +856,7 @@ def summarize(
             "symbols": sorted(parse_symbols_arg(args.symbols) or []),
             "max_events": int(args.max_events),
             "min_samples": int(args.min_samples),
+            "selected_events_per_candidate": int(args.selected_events_per_candidate),
         },
         "files": {key: str(value) for key, value in paths.items()},
         **SAFETY,
@@ -807,6 +901,17 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
     )
     if summary.get("best_raw_edge_warning"):
         print(f"warning best_raw_edge_candidate={summary['best_raw_edge_warning']}")
+    if (
+        int(summary.get("selected_events_missing_current_price") or 0) > 0
+        or int(summary.get("selected_events_missing_entry_zone") or 0) > 0
+        or int(summary.get("selected_events_missing_forward_returns") or 0) > 0
+    ):
+        print(
+            "warning selected_event_export_incomplete "
+            f"missing_current_price={summary.get('selected_events_missing_current_price')} "
+            f"missing_entry_zone={summary.get('selected_events_missing_entry_zone')} "
+            f"missing_forward_returns={summary.get('selected_events_missing_forward_returns')}"
+        )
     print(
         "top_excess_return "
         + " ; ".join(
@@ -836,6 +941,11 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         )
     )
     print(
+        "selected_event_export "
+        f"selected_events_written={summary.get('selected_events_written')} "
+        f"selected_candidate_roles_written={','.join(summary.get('selected_candidate_roles_written') or [])}"
+    )
+    print(
         "safety "
         "broker_calls=0 broker_writes=0 order_submission=0 executor=none live_trading=false research_only=true"
     )
@@ -847,6 +957,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--max-events must be greater than zero")
     if args.min_samples <= 0:
         raise ValueError("--min-samples must be greater than zero")
+    if args.selected_events_per_candidate <= 0:
+        raise ValueError("--selected-events-per-candidate must be greater than zero")
 
     events, meta = load_events(args)
     parameter_rows: list[dict[str, Any]] = []
@@ -895,22 +1007,26 @@ def main(argv: list[str] | None = None) -> int:
             for row in [
                 summary.get("best_raw_edge_candidate"),
                 summary.get("best_robust_candidate"),
-                summary.get("top_drawdown_improvement_candidates", [None])[0],
+                summary.get("best_low_mae_candidate"),
+                summary.get("best_aplus_candidate"),
             ]
             if row
         ]
     )
-    selected_event_rows = build_selected_event_rows(
+    selected_event_rows, selected_event_validation = build_selected_event_rows(
         events,
         [
             ("best_raw_edge_candidate", summary.get("best_raw_edge_candidate")),
             ("best_robust_candidate", summary.get("best_robust_candidate")),
-            ("best_drawdown_improvement_candidate", summary.get("top_drawdown_improvement_candidates", [None])[0]),
+            ("best_low_mae_candidate", summary.get("best_low_mae_candidate")),
+            ("best_aplus_candidate", summary.get("best_aplus_candidate")),
         ],
         fib_guard_safe=bool(meta["fibo_target_modes_point_in_time_safe"]),
+        selected_events_per_candidate=int(args.selected_events_per_candidate),
     )
     summary["selected_variant_parameter_keys"] = [row["parameter_key"] for row in selected_variants]
     summary["selected_event_export_count"] = len(selected_event_rows)
+    summary.update(selected_event_validation)
 
     if args.write_files:
         write_csv(paths["rows_csv"], parameter_rows)
