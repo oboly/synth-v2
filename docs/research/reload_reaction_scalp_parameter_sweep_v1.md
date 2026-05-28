@@ -299,13 +299,25 @@ And it preserves canonical regime review fields when available:
 
 - `regime_source`
 - `regime_asof`
+- `regime_source_candle_ts_utc`
+- `regime_asset_class`
+- `regime_global`
+- `regime_global_version`
+- `regime_asset_class_state`
+- `regime_asset_class_version`
 - `regime_bucket`
+- `regime_validation_status`
+- `regime_validated_hypothesis_tags_json`
 - `regime_state`
 - `regime_freshness`
 - `regime_lookup_status`
 - canonical `global_regime`
 - canonical `asset_class_regime`
 - canonical `global_class_regime`
+
+These are copied through from lifecycle outcome rows without reinterpretation.
+If `active_regime_observation` has no usable point-in-time row, the export keeps
+`UNKNOWN` or `SOURCE_MISSING` rather than inventing substitute regime labels.
 
 Candidate roles are:
 

@@ -374,6 +374,13 @@ def build_data_availability_audit(conn: Any, *, venue: str, quote: str, interval
     regime_exists = table_exists(conn, "active_regime_observation")
     audit["canonical_regime_source"]["table_exists"] = regime_exists
     audit["canonical_regime_source"]["columns"] = table_columns(conn, "active_regime_observation") if regime_exists else []
+    audit["active_regime_observation"] = table_coverage(
+        conn,
+        table_name="active_regime_observation",
+        ts_col="asof_ts_utc",
+        where_sql="WHERE venue = %s AND interval_code = %s",
+        params=(venue, interval),
+    )
 
     advice_cols = set(table_columns(conn, "paper_advice_observation"))
     required_advice_cols = {
@@ -412,6 +419,10 @@ def build_data_availability_audit(conn: Any, *, venue: str, quote: str, interval
         audit["warnings"].append("no_stored_position_rotation_history_table_reconstructing_events")
     if not regime_exists:
         audit["warnings"].append("canonical_regime_table_missing_regime_fields_will_be_unknown")
+        audit["canonical_regime_source"]["status"] = "SOURCE_MISSING"
+    elif audit["active_regime_observation"]["row_count"] == 0:
+        audit["warnings"].append("canonical_regime_rows_missing_regime_fields_will_be_unknown")
+        audit["canonical_regime_source"]["status"] = "SOURCE_MISSING"
 
     if audit["blockers"]:
         audit["status"] = "blocked"
@@ -731,6 +742,7 @@ def reconstruct_events(
     price_history_by_symbol: dict[str, list[PricePoint]],
     candles_by_symbol: dict[str, list[Candle]],
     regime_history_by_asset_class: dict[str, list[RegimeObservation]],
+    regime_source_available: bool,
     quote: str,
     interval: str,
 ) -> tuple[list[LifecycleEvent], dict[str, int]]:
@@ -824,7 +836,7 @@ def reconstruct_events(
             regime_asof = None
             regime_state = "UNKNOWN"
             regime_bucket = "UNKNOWN"
-            regime_lookup_status = "UNKNOWN"
+            regime_lookup_status = "UNKNOWN" if regime_source_available else "SOURCE_MISSING"
             source_candle_ts_utc = None
             global_regime = "UNKNOWN"
             global_regime_version = None
@@ -1048,6 +1060,14 @@ def event_to_row(event: LifecycleEvent, outcomes: dict[str, Any]) -> dict[str, A
     row["tp_zone_high"] = dec_to_float(event.tp_zone_high)
     row["invalidation_price"] = dec_to_float(event.invalidation_price)
     row["intrabar_target_touch_age_minutes"] = dec_to_float(event.intrabar_target_touch_age_minutes)
+    row["regime_source_candle_ts_utc"] = row["source_candle_ts_utc"]
+    row["regime_asset_class"] = row["asset_class"]
+    row["regime_global"] = row["global_regime"]
+    row["regime_global_version"] = row["global_regime_version"]
+    row["regime_asset_class_state"] = row["asset_class_regime"]
+    row["regime_asset_class_version"] = row["asset_class_regime_version"]
+    row["regime_validation_status"] = row["validation_status"]
+    row["regime_validated_hypothesis_tags_json"] = list(row.get("validated_hypothesis_tags") or [])
     row.update(outcomes)
     primary_reason_bucket, secondary_reason_buckets = derive_reason_buckets(row)
     row["reason_bucket"] = primary_reason_bucket
@@ -1690,6 +1710,15 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         f"executor={summary['safety']['executor']} "
         f"live_trading={str(summary['safety']['live_trading']).lower()}"
     )
+    if (
+        str(
+            summary.get("data_availability_audit", {})
+            .get("canonical_regime_source", {})
+            .get("status", "")
+        ).upper()
+        == "SOURCE_MISSING"
+    ):
+        print("CANONICAL_REGIME_SOURCE_NOT_AVAILABLE")
     print(
         "primary_reason_buckets "
         + " ; ".join(f"{item['bucket']}:{item['count']}" for item in summary["top_primary_reason_buckets"])
@@ -1903,6 +1932,10 @@ def main(argv: list[str] | None = None) -> int:
             interval=args.interval,
             to_ts=max_ts,
         )
+        regime_source_available = bool(
+            table_exists(conn, "active_regime_observation")
+            and audit.get("active_regime_observation", {}).get("row_count", 0) > 0
+        )
     finally:
         conn.close()
 
@@ -1912,6 +1945,7 @@ def main(argv: list[str] | None = None) -> int:
         price_history_by_symbol=price_history_by_symbol,
         candles_by_symbol=candles_by_symbol,
         regime_history_by_asset_class=regime_history_by_asset_class,
+        regime_source_available=regime_source_available,
         quote=args.quote,
         interval=args.interval,
     )

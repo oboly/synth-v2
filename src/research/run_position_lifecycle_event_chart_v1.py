@@ -414,8 +414,16 @@ def chart_svg(row: dict[str, Any], candles: list[Candle], *, before_hours: int, 
             24,
             170,
             f"regime_source={str(row.get('regime_source') or 'UNKNOWN')} "
+            f"regime_global={str(row.get('regime_global') or row.get('global_regime') or 'UNKNOWN')} "
+            f"regime_asset_class_state={str(row.get('regime_asset_class_state') or row.get('asset_class_regime') or 'UNKNOWN')}",
+            fill="#d3c4ff",
+            size=14,
+        ),
+        text_line(
+            24,
+            196,
             f"regime_bucket={str(row.get('regime_bucket') or 'UNKNOWN')} "
-            f"regime_state={str(row.get('regime_state') or 'UNKNOWN')}",
+            f"regime_lookup_status={str(row.get('regime_lookup_status') or 'UNKNOWN')}",
             fill="#d3c4ff",
             size=14,
         ),
@@ -470,6 +478,7 @@ def chart_svg(row: dict[str, Any], candles: list[Candle], *, before_hours: int, 
             24,
             height - 56,
             f"regime_asof={str(row.get('regime_asof') or 'UNKNOWN')} "
+            f"regime_source_candle_ts_utc={str(row.get('regime_source_candle_ts_utc') or 'UNKNOWN')} "
             f"regime_freshness={str(row.get('regime_freshness') or 'UNKNOWN')} "
             f"regime_lookup_status={str(row.get('regime_lookup_status') or 'UNKNOWN')}",
             fill="#8ea0bf",
@@ -509,6 +518,8 @@ def render_index_html(
             f"<td>{pill_html(str(row.get('reason_bucket') or ''), 'muted')}</td>"
             f"<td>{pill_html(str(row.get('regime_bucket') or 'UNKNOWN'), 'muted')}</td>"
             f"<td>{pill_html(str(row.get('regime_lookup_status') or 'UNKNOWN'), 'muted')}</td>"
+            f"<td>{pill_html(str(row.get('regime_global') or row.get('global_regime') or 'UNKNOWN'), 'muted')}</td>"
+            f"<td>{pill_html(str(row.get('regime_asset_class_state') or row.get('asset_class_regime') or 'UNKNOWN'), 'muted')}</td>"
             f"<td class='right'>{esc(format_pct(row.get('adjusted_return_score_4h')))}</td>"
             f"<td class='right'>{esc(format_pct(row.get('adjusted_return_score_24h')))}</td>"
             f"<td class='right'>{esc(format_pct((row.get('forward_returns') or {}).get('4h')))}</td>"
@@ -526,7 +537,7 @@ def render_index_html(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Position Lifecycle Event Chart V1</title>
   <style>
-  {cockpit_base_css(min_table_width=1320)}
+  {cockpit_base_css(min_table_width=1520)}
   .banner {{ background: #121a2f; border: 1px solid #273657; border-radius: 12px; padding: 16px; }}
   .kv {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px 14px; color: #8ea0bf; }}
   .kv strong {{ color: #e7edf8; }}
@@ -586,6 +597,8 @@ def render_index_html(
                 <th>primary_reason_bucket</th>
                 <th>regime_bucket</th>
                 <th>regime_status</th>
+                <th>regime_global</th>
+                <th>regime_asset_class_state</th>
                 <th class="right">adjusted4h</th>
                 <th class="right">adjusted24h</th>
                 <th class="right">raw4h</th>

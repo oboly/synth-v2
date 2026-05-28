@@ -128,13 +128,33 @@ Each reconstructed event row can include:
 - `asset_class`
 - `regime_source`
 - `regime_asof`
-- `regime_state`
+- `regime_source_candle_ts_utc`
+- `regime_asset_class`
+- `regime_global`
+- `regime_global_version`
+- `regime_asset_class_state`
+- `regime_asset_class_version`
 - `regime_bucket`
+- `regime_validation_status`
+- `regime_validated_hypothesis_tags_json`
 - `regime_freshness`
 - `regime_lookup_status`
 - canonical `global_regime`
 - canonical `asset_class_regime`
 - canonical `global_class_regime`
+
+Canonical lookup behavior:
+
+- source is `active_regime_observation` only
+- join is point-in-time on `venue`, `interval`, mapped `asset_class`, and latest
+  `asof_ts_utc <= event_ts_utc`
+- `regime_lookup_status=FOUND` when a canonical row is found
+- `regime_lookup_status=UNKNOWN` when the source exists but no eligible row exists
+- `regime_lookup_status=SOURCE_MISSING` when the canonical source table is absent
+  or has no usable rows
+- `regime_freshness=UNKNOWN` unless canonical freshness rules are defined
+- if the source is missing, summary output prints
+  `CANONICAL_REGIME_SOURCE_NOT_AVAILABLE`
 
 ## Outcome Horizons
 

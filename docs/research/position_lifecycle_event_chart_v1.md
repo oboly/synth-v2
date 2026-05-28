@@ -85,14 +85,19 @@ Each chart shows:
 - canonical regime fields when available:
   - `regime_source`
   - `regime_asof`
+  - `regime_source_candle_ts_utc`
+  - `regime_global`
+  - `regime_asset_class_state`
   - `regime_bucket`
-  - `regime_state`
   - `regime_freshness`
   - `regime_lookup_status`
 - source modules and missing inputs when available
 
 This lane uses existing row fields when available. It does not invent new
 signals or recalculate lifecycle states.
+
+If canonical `active_regime_observation` context is missing, charts show
+`UNKNOWN` clearly and do not substitute non-canonical regime labels.
 
 ## Index Page
 
