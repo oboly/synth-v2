@@ -82,6 +82,13 @@ Each chart shows:
 - adjusted score at `4h` and `24h`
 - `MFE` / `MAE`
 - entry / target / invalidation lines when available in the outcome row
+- canonical regime fields when available:
+  - `regime_source`
+  - `regime_asof`
+  - `regime_bucket`
+  - `regime_state`
+  - `regime_freshness`
+  - `regime_lookup_status`
 - source modules and missing inputs when available
 
 This lane uses existing row fields when available. It does not invent new
@@ -106,6 +113,8 @@ The index page shows:
   - `event_ts_utc`
   - `action`
   - `primary_reason_bucket`
+  - `regime_bucket`
+  - `regime_status`
   - `adjusted4h`
   - `adjusted24h`
   - `raw4h`

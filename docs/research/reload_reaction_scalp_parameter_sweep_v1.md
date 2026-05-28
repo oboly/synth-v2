@@ -60,6 +60,14 @@ Current safety guard:
 
 The runner does not create fills and does not claim real execution PnL.
 
+Lifecycle rows may also carry canonical regime enrichment from:
+
+- `docs/research/canonical_regime_context_source_v1.md`
+- `active_regime_observation`
+
+This runner reuses those existing regime fields when present.
+It does not define a new regime model.
+
 ## Scope
 
 This lane is:
@@ -287,6 +295,18 @@ It also adds candidate metadata for chart review:
 - `symbol_count`
 - `top_symbol_concentration_pct`
 
+And it preserves canonical regime review fields when available:
+
+- `regime_source`
+- `regime_asof`
+- `regime_bucket`
+- `regime_state`
+- `regime_freshness`
+- `regime_lookup_status`
+- canonical `global_regime`
+- canonical `asset_class_regime`
+- canonical `global_class_regime`
+
 Candidate roles are:
 
 - `RAW_EDGE`
@@ -319,6 +339,8 @@ Summary output includes:
 - `best_aplus_candidate`
 - warning when top raw edge has `SYMBOL_CONCENTRATION_HIGH`
 - selected event export validation counts
+- regime-split summaries for selected candidate roles when canonical regime
+  fields are present
 - top candidates by `excess_return_vs_hold_pct`
 - top candidates by drawdown improvement
 - rejected variants with negative excess return

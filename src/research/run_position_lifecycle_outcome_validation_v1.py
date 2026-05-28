@@ -15,6 +15,7 @@ from typing import Any
 
 from src.common.db import get_connection
 from src.reporting.run_position_rotation_static_dashboard_v1 import lifecycle_preview_state
+from src.regime.run_active_regime_observation_v1 import classify_asset_class
 from src.research.run_position_rotation_preview_v1 import (
     classify_position_lifecycle,
     classify_rotation,
@@ -47,6 +48,13 @@ OUTPUT_BUCKET_ACTION_REASON_ADJUSTED_CSV = "bucket_summary_by_action_reason_adju
 OUTPUT_BUCKET_SYMBOL_ADJUSTED_CSV = "bucket_summary_by_symbol_adjusted_v1.csv"
 OUTPUT_PROMOTION_CANDIDATES_CSV = "lifecycle_bucket_promotion_candidates_v1.csv"
 OUTPUT_PROMOTION_CANDIDATES_JSON = "lifecycle_bucket_promotion_candidates_v1.json"
+
+CANONICAL_REGIME_SOURCE = "active_regime_observation"
+CANONICAL_REGIME_DOCS = [
+    "docs/research/active_regime_observation_preview_v1.md",
+    "docs/research/active_regime_observation_design_v1.md",
+    "docs/research/regime_selector_backtest_v1.md",
+]
 
 EVENT_MODES = ("all", "transition-only", "cooldown")
 HORIZON_LABELS: list[tuple[str, timedelta]] = [
@@ -94,6 +102,20 @@ class Candle:
 
 
 @dataclass(frozen=True)
+class RegimeObservation:
+    asof_ts_utc: datetime
+    source_candle_ts_utc: datetime | None
+    asset_class: str
+    global_regime: str
+    global_regime_version: str | None
+    asset_class_regime: str
+    asset_class_regime_version: str | None
+    global_class_regime: str
+    validation_status: str | None
+    validated_hypothesis_tags: list[str]
+
+
+@dataclass(frozen=True)
 class LifecycleEvent:
     event_ts_utc: datetime
     symbol: str
@@ -132,6 +154,21 @@ class LifecycleEvent:
     intrabar_target_touch_context: str | None
     intrabar_target_touch_age_minutes: Decimal | None
     intrabar_stale_for_decision: bool
+    asset_class: str
+    regime_source: str
+    regime_asof: datetime | None
+    regime_state: str
+    regime_bucket: str
+    regime_freshness: str
+    regime_lookup_status: str
+    source_candle_ts_utc: datetime | None
+    global_regime: str
+    global_regime_version: str | None
+    asset_class_regime: str
+    asset_class_regime_version: str | None
+    global_class_regime: str
+    validation_status: str | None
+    validated_hypothesis_tags: list[str]
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -242,6 +279,21 @@ def table_coverage(conn: Any, *, table_name: str, ts_col: str, where_sql: str = 
     }
 
 
+def parse_json_list(value: Any) -> list[str]:
+    if value in (None, "", []):
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return []
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed if str(item).strip()]
+    return []
+
+
 def build_data_availability_audit(conn: Any, *, venue: str, quote: str, interval: str, trading_account_id: int) -> dict[str, Any]:
     audit: dict[str, Any] = {
         "status": "ok",
@@ -249,6 +301,28 @@ def build_data_availability_audit(conn: Any, *, venue: str, quote: str, interval
         "blockers": [],
         "reconstruction_mode": "paper_advice_history_plus_position_snapshots_plus_15m_candles",
         "stored_lifecycle_history_available": False,
+        "canonical_regime_source": {
+            "status": "FOUND",
+            "source_name": CANONICAL_REGIME_SOURCE,
+            "docs": list(CANONICAL_REGIME_DOCS),
+            "source_code": "src/regime/run_active_regime_observation_v1.py",
+            "table": "active_regime_observation",
+            "fields": [
+                "asof_ts_utc",
+                "source_candle_ts_utc",
+                "asset_class",
+                "global_regime",
+                "global_regime_version",
+                "asset_class_regime",
+                "asset_class_regime_version",
+                "global_class_regime",
+                "validation_status",
+                "validated_hypothesis_tags_json",
+            ],
+            "market_scope": "market-wide plus asset-class row per snapshot",
+            "interval_scope": interval,
+            "freshness_rule": "UNKNOWN",
+        },
     }
     audit["account_position_snapshot"] = table_coverage(
         conn,
@@ -297,6 +371,10 @@ def build_data_availability_audit(conn: Any, *, venue: str, quote: str, interval
         cur.execute("SHOW TABLES LIKE 'position_rotation%'")
         audit["position_rotation_history_tables"] = [list(row.values())[0] for row in cur.fetchall()]
 
+    regime_exists = table_exists(conn, "active_regime_observation")
+    audit["canonical_regime_source"]["table_exists"] = regime_exists
+    audit["canonical_regime_source"]["columns"] = table_columns(conn, "active_regime_observation") if regime_exists else []
+
     advice_cols = set(table_columns(conn, "paper_advice_observation"))
     required_advice_cols = {
         "symbol",
@@ -332,6 +410,8 @@ def build_data_availability_audit(conn: Any, *, venue: str, quote: str, interval
         audit["warnings"].append("obs_market_candle_30m_missing_derived_from_15m")
     if not audit["position_rotation_history_tables"]:
         audit["warnings"].append("no_stored_position_rotation_history_table_reconstructing_events")
+    if not regime_exists:
+        audit["warnings"].append("canonical_regime_table_missing_regime_fields_will_be_unknown")
 
     if audit["blockers"]:
         audit["status"] = "blocked"
@@ -518,6 +598,66 @@ def fetch_15m_candle_history(
     return out
 
 
+def fetch_regime_history(
+    conn: Any,
+    *,
+    venue: str,
+    interval: str,
+    to_ts: datetime,
+) -> dict[str, list[RegimeObservation]]:
+    if not table_exists(conn, "active_regime_observation"):
+        return {}
+    sql = """
+    SELECT
+        asof_ts_utc,
+        source_candle_ts_utc,
+        asset_class,
+        global_regime,
+        global_regime_version,
+        asset_class_regime,
+        asset_class_regime_version,
+        global_class_regime,
+        validation_status,
+        validated_hypothesis_tags_json
+    FROM active_regime_observation
+    WHERE venue = %(venue)s
+      AND interval_code = %(interval)s
+      AND asof_ts_utc <= %(to_ts)s
+    ORDER BY asset_class ASC, asof_ts_utc ASC, updated_ts_utc ASC
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            sql,
+            {
+                "venue": venue,
+                "interval": interval,
+                "to_ts": to_ts.replace(tzinfo=None),
+            },
+        )
+        rows = list(cur.fetchall())
+    out: dict[str, list[RegimeObservation]] = {}
+    for row in rows:
+        asof_ts = row["asof_ts_utc"].replace(tzinfo=UTC)
+        source_candle_ts = row.get("source_candle_ts_utc")
+        if source_candle_ts is not None:
+            source_candle_ts = source_candle_ts.replace(tzinfo=UTC)
+        out.setdefault(str(row["asset_class"]).upper(), []).append(
+            RegimeObservation(
+                asof_ts_utc=asof_ts,
+                source_candle_ts_utc=source_candle_ts,
+                asset_class=str(row["asset_class"]).upper(),
+                global_regime=str(row.get("global_regime") or "GLOBAL_UNKNOWN"),
+                global_regime_version=str(row.get("global_regime_version") or "") or None,
+                asset_class_regime=str(row.get("asset_class_regime") or "CLASS_UNKNOWN"),
+                asset_class_regime_version=str(row.get("asset_class_regime_version") or "") or None,
+                global_class_regime=str(row.get("global_class_regime") or "GLOBAL_UNKNOWN|CLASS_UNKNOWN"),
+                validation_status=str(row.get("validation_status") or "") or None,
+                validated_hypothesis_tags=parse_json_list(row.get("validated_hypothesis_tags_json")),
+            )
+        )
+    return out
+
+
 def latest_row_at_or_before(rows: list[Any], ts_values: list[datetime], event_ts: datetime) -> Any | None:
     idx = bisect_right(ts_values, event_ts) - 1
     if idx < 0:
@@ -590,6 +730,7 @@ def reconstruct_events(
     advice_history_by_symbol: dict[str, list[dict[str, Any]]],
     price_history_by_symbol: dict[str, list[PricePoint]],
     candles_by_symbol: dict[str, list[Candle]],
+    regime_history_by_asset_class: dict[str, list[RegimeObservation]],
     quote: str,
     interval: str,
 ) -> tuple[list[LifecycleEvent], dict[str, int]]:
@@ -601,8 +742,13 @@ def reconstruct_events(
         symbol: [row["asof_ts_utc"] for row in rows]
         for symbol, rows in advice_history_by_symbol.items()
     }
+    regime_ts_cache: dict[str, list[datetime]] = {
+        asset_class: [row.asof_ts_utc for row in rows]
+        for asset_class, rows in regime_history_by_asset_class.items()
+    }
 
     for position in positions:
+        asset_class = classify_asset_class(position.symbol)
         advice_rows = advice_history_by_symbol.get(position.symbol, [])
         advice_ts_values = advice_ts_cache.get(position.symbol, [])
         advice_row = latest_row_at_or_before(advice_rows, advice_ts_values, position.event_ts_utc)
@@ -670,6 +816,38 @@ def reconstruct_events(
             except Exception:
                 parsed_reason_codes = []
 
+        regime_rows = regime_history_by_asset_class.get(asset_class, [])
+        regime_ts_values = regime_ts_cache.get(asset_class, [])
+        regime_row = latest_row_at_or_before(regime_rows, regime_ts_values, position.event_ts_utc)
+        if regime_row is None:
+            regime_source = CANONICAL_REGIME_SOURCE
+            regime_asof = None
+            regime_state = "UNKNOWN"
+            regime_bucket = "UNKNOWN"
+            regime_lookup_status = "UNKNOWN"
+            source_candle_ts_utc = None
+            global_regime = "UNKNOWN"
+            global_regime_version = None
+            asset_class_regime = "UNKNOWN"
+            asset_class_regime_version = None
+            global_class_regime = "UNKNOWN"
+            validation_status = None
+            validated_hypothesis_tags: list[str] = []
+        else:
+            regime_source = CANONICAL_REGIME_SOURCE
+            regime_asof = regime_row.asof_ts_utc
+            regime_state = regime_row.global_regime
+            regime_bucket = regime_row.global_class_regime
+            regime_lookup_status = "FOUND"
+            source_candle_ts_utc = regime_row.source_candle_ts_utc
+            global_regime = regime_row.global_regime
+            global_regime_version = regime_row.global_regime_version
+            asset_class_regime = regime_row.asset_class_regime
+            asset_class_regime_version = regime_row.asset_class_regime_version
+            global_class_regime = regime_row.global_class_regime
+            validation_status = regime_row.validation_status
+            validated_hypothesis_tags = list(regime_row.validated_hypothesis_tags)
+
         previous_action = previous_action_by_symbol.get(position.symbol)
         transition_changed = previous_action is not None and previous_action != final_action
         events.append(
@@ -711,6 +889,21 @@ def reconstruct_events(
                 intrabar_target_touch_context=None if intrabar_row is None else intrabar_row.target_touch_context_label,
                 intrabar_target_touch_age_minutes=None if intrabar_row is None else intrabar_row.target_touch_age_minutes,
                 intrabar_stale_for_decision=False if intrabar_row is None else ("STALE_FOR_INTRABAR_DECISION" in str(intrabar_row.data_quality_state or "")),
+                asset_class=asset_class,
+                regime_source=regime_source,
+                regime_asof=regime_asof,
+                regime_state=regime_state,
+                regime_bucket=regime_bucket,
+                regime_freshness="UNKNOWN",
+                regime_lookup_status=regime_lookup_status,
+                source_candle_ts_utc=source_candle_ts_utc,
+                global_regime=global_regime,
+                global_regime_version=global_regime_version,
+                asset_class_regime=asset_class_regime,
+                asset_class_regime_version=asset_class_regime_version,
+                global_class_regime=global_class_regime,
+                validation_status=validation_status,
+                validated_hypothesis_tags=validated_hypothesis_tags,
             )
         )
         previous_action_by_symbol[position.symbol] = final_action
@@ -843,6 +1036,8 @@ def truncate_events_for_max(
 def event_to_row(event: LifecycleEvent, outcomes: dict[str, Any]) -> dict[str, Any]:
     row = asdict(event)
     row["event_ts_utc"] = fmt_ts(event.event_ts_utc)
+    row["regime_asof"] = fmt_ts(event.regime_asof)
+    row["source_candle_ts_utc"] = fmt_ts(event.source_candle_ts_utc)
     row["current_price"] = dec_to_float(event.current_price)
     row["position_qty"] = dec_to_float(event.position_qty)
     row["position_value"] = dec_to_float(event.position_value)
@@ -1143,6 +1338,33 @@ def build_group_summary(rows: list[dict[str, Any]], *, key_name: str, key_fn: ca
     return out
 
 
+def build_regime_group_summary(
+    rows: list[dict[str, Any]],
+    *,
+    key_name: str,
+    key_fn: callable,
+    filter_fn: callable | None = None,
+) -> dict[str, dict[str, Any]]:
+    scoped_rows = [row for row in rows if filter_fn is None or filter_fn(row)]
+    keys = sorted({str(key_fn(row) or "UNKNOWN") for row in scoped_rows})
+    out: dict[str, dict[str, Any]] = {}
+    for key in keys:
+        matched_rows = [row for row in scoped_rows if str(key_fn(row) or "UNKNOWN") == key]
+        metrics = group_metrics(matched_rows, match=lambda row: True)
+        metrics["sample_count"] = metrics["count"]
+        metrics["regime_unknown_count"] = sum(
+            1
+            for row in matched_rows
+            if str(row.get("regime_lookup_status") or "").upper() != "FOUND"
+            or str(row.get("regime_bucket") or "UNKNOWN").upper() == "UNKNOWN"
+            or str(row.get("regime_state") or "UNKNOWN").upper() == "UNKNOWN"
+        )
+        metrics["regime_source"] = str(matched_rows[0].get("regime_source") or CANONICAL_REGIME_SOURCE) if matched_rows else CANONICAL_REGIME_SOURCE
+        metrics[key_name] = key
+        out[key] = metrics
+    return out
+
+
 def flatten_summary_to_csv_rows(summary: dict[str, dict[str, Any]], *, key_name: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for key, metrics in summary.items():
@@ -1341,6 +1563,74 @@ def build_summary(
             key_name="action_symbol",
             key_fn=lambda row: f"{row.get('position_lifecycle_action')}|{row.get('symbol')}",
         ),
+        "regime_bucket_summary": build_regime_group_summary(rows, key_name="regime_bucket", key_fn=lambda row: row.get("regime_bucket") or "UNKNOWN"),
+        "regime_state_summary": build_regime_group_summary(rows, key_name="regime_state", key_fn=lambda row: row.get("regime_state") or "UNKNOWN"),
+        "reload_review_by_regime_bucket": build_regime_group_summary(
+            rows,
+            key_name="regime_bucket",
+            key_fn=lambda row: row.get("regime_bucket") or "UNKNOWN",
+            filter_fn=lambda row: str(row.get("position_lifecycle_action") or "").upper() == "RELOAD_REVIEW",
+        ),
+        "reload_review_by_regime_state": build_regime_group_summary(
+            rows,
+            key_name="regime_state",
+            key_fn=lambda row: row.get("regime_state") or "UNKNOWN",
+            filter_fn=lambda row: str(row.get("position_lifecycle_action") or "").upper() == "RELOAD_REVIEW",
+        ),
+        "reload_review_aplus_context_by_regime_bucket": build_regime_group_summary(
+            rows,
+            key_name="regime_bucket",
+            key_fn=lambda row: row.get("regime_bucket") or "UNKNOWN",
+            filter_fn=lambda row: (
+                str(row.get("position_lifecycle_action") or "").upper() == "RELOAD_REVIEW"
+                and str(row.get("reason_bucket") or "").upper() == "APLUS_CONTEXT"
+            ),
+        ),
+        "reload_review_aplus_context_by_regime_state": build_regime_group_summary(
+            rows,
+            key_name="regime_state",
+            key_fn=lambda row: row.get("regime_state") or "UNKNOWN",
+            filter_fn=lambda row: (
+                str(row.get("position_lifecycle_action") or "").upper() == "RELOAD_REVIEW"
+                and str(row.get("reason_bucket") or "").upper() == "APLUS_CONTEXT"
+            ),
+        ),
+        "hold_by_regime_bucket": build_regime_group_summary(
+            rows,
+            key_name="regime_bucket",
+            key_fn=lambda row: row.get("regime_bucket") or "UNKNOWN",
+            filter_fn=lambda row: str(row.get("position_lifecycle_action") or "").upper() == "HOLD",
+        ),
+        "hold_by_regime_state": build_regime_group_summary(
+            rows,
+            key_name="regime_state",
+            key_fn=lambda row: row.get("regime_state") or "UNKNOWN",
+            filter_fn=lambda row: str(row.get("position_lifecycle_action") or "").upper() == "HOLD",
+        ),
+        "trim_review_by_regime_bucket": build_regime_group_summary(
+            rows,
+            key_name="regime_bucket",
+            key_fn=lambda row: row.get("regime_bucket") or "UNKNOWN",
+            filter_fn=lambda row: str(row.get("position_lifecycle_action") or "").upper() == "TRIM_REVIEW",
+        ),
+        "trim_review_by_regime_state": build_regime_group_summary(
+            rows,
+            key_name="regime_state",
+            key_fn=lambda row: row.get("regime_state") or "UNKNOWN",
+            filter_fn=lambda row: str(row.get("position_lifecycle_action") or "").upper() == "TRIM_REVIEW",
+        ),
+        "reduce_review_by_regime_bucket": build_regime_group_summary(
+            rows,
+            key_name="regime_bucket",
+            key_fn=lambda row: row.get("regime_bucket") or "UNKNOWN",
+            filter_fn=lambda row: str(row.get("position_lifecycle_action") or "").upper() == "REDUCE_REVIEW",
+        ),
+        "reduce_review_by_regime_state": build_regime_group_summary(
+            rows,
+            key_name="regime_state",
+            key_fn=lambda row: row.get("regime_state") or "UNKNOWN",
+            filter_fn=lambda row: str(row.get("position_lifecycle_action") or "").upper() == "REDUCE_REVIEW",
+        ),
         "market_leg_summary": build_group_summary(rows, key_name="market_leg_bucket", key_fn=lambda row: row.get("market_leg_bucket")),
         "freshness_bucket_summary": build_group_summary(rows, key_name="freshness_bucket", key_fn=lambda row: row.get("freshness_bucket")),
         "safety": {
@@ -1410,6 +1700,20 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
             + " ; ".join(f"{item['bucket']}:{item['count']}" for item in summary["top_secondary_reason_buckets"])
         )
     print(f"setup_fail_fallback_count={summary['setup_fail_fallback_count']}")
+    print(
+        "reload_review_by_regime_bucket "
+        + " ; ".join(
+            f"{bucket}:{metrics['sample_count']}:{metrics['avg_return_pct_15m']}"
+            for bucket, metrics in list(summary["reload_review_by_regime_bucket"].items())[:10]
+        )
+    )
+    print(
+        "reload_review_aplus_context_by_regime_bucket "
+        + " ; ".join(
+            f"{bucket}:{metrics['sample_count']}:{metrics['avg_return_pct_15m']}"
+            for bucket, metrics in list(summary["reload_review_aplus_context_by_regime_bucket"].items())[:10]
+        )
+    )
     for action, item in summary["action_summary"].items():
         print(
             f"{action} count={item['count']} "
@@ -1593,6 +1897,12 @@ def main(argv: list[str] | None = None) -> int:
             from_ts=min_ts,
             to_ts=max_ts,
         )
+        regime_history_by_asset_class = fetch_regime_history(
+            conn,
+            venue=args.venue,
+            interval=args.interval,
+            to_ts=max_ts,
+        )
     finally:
         conn.close()
 
@@ -1601,6 +1911,7 @@ def main(argv: list[str] | None = None) -> int:
         advice_history_by_symbol=advice_history_by_symbol,
         price_history_by_symbol=price_history_by_symbol,
         candles_by_symbol=candles_by_symbol,
+        regime_history_by_asset_class=regime_history_by_asset_class,
         quote=args.quote,
         interval=args.interval,
     )

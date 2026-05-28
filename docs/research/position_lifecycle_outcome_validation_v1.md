@@ -76,6 +76,32 @@ Therefore the runner reconstructs historical lifecycle review events from:
 If this reconstruction is not possible because required history is missing, the
 runner fails closed and reports exact blockers.
 
+## Canonical Regime Source
+
+Lifecycle outcome validation reuses the existing canonical regime lane only:
+
+- `docs/research/canonical_regime_context_source_v1.md`
+- `docs/research/active_regime_observation_preview_v1.md`
+- `src/regime/run_active_regime_observation_v1.py`
+- DB table: `active_regime_observation`
+
+It does not define a new regime model.
+It does not invent new regime categories.
+It does not invent new regime thresholds.
+
+Point-in-time lookup rule:
+
+- map each symbol to canonical `asset_class`
+- read `active_regime_observation` for the same `venue` and `interval`
+- use the latest row at or before `event_ts_utc`
+
+Because canonical downstream freshness rules are not separately documented yet,
+historical lifecycle enrichment exposes:
+
+- `regime_asof`
+- `source_candle_ts_utc`
+- `regime_freshness=UNKNOWN`
+
 ## Event Fields
 
 Each reconstructed event row can include:
@@ -99,6 +125,16 @@ Each reconstructed event row can include:
 - `source_modules`
 - `missing_inputs`
 - intrabar target-touch context when available
+- `asset_class`
+- `regime_source`
+- `regime_asof`
+- `regime_state`
+- `regime_bucket`
+- `regime_freshness`
+- `regime_lookup_status`
+- canonical `global_regime`
+- canonical `asset_class_regime`
+- canonical `global_class_regime`
 
 ## Outcome Horizons
 
@@ -175,6 +211,12 @@ Additional diagnostic summaries:
 - by action + symbol
 - optional market-leg and freshness buckets
 - promotion-diagnostic bucket report on action + reason only
+- by canonical regime bucket and state
+- `RELOAD_REVIEW` by canonical regime bucket and state
+- `RELOAD_REVIEW|APLUS_CONTEXT` by canonical regime bucket and state
+- `HOLD` by canonical regime bucket and state
+- `TRIM_REVIEW` by canonical regime bucket and state
+- `REDUCE_REVIEW` by canonical regime bucket and state
 
 ## Sampling Modes
 

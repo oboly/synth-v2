@@ -410,6 +410,15 @@ def chart_svg(row: dict[str, Any], candles: list[Candle], *, before_hours: int, 
             fill="#55d6a7",
             size=14,
         ),
+        text_line(
+            24,
+            170,
+            f"regime_source={str(row.get('regime_source') or 'UNKNOWN')} "
+            f"regime_bucket={str(row.get('regime_bucket') or 'UNKNOWN')} "
+            f"regime_state={str(row.get('regime_state') or 'UNKNOWN')}",
+            fill="#d3c4ff",
+            size=14,
+        ),
     ]
 
     for idx in range(5):
@@ -455,7 +464,18 @@ def chart_svg(row: dict[str, Any], candles: list[Candle], *, before_hours: int, 
     secondary = ", ".join(str(item) for item in (row.get("secondary_reason_buckets") or [])[:6]) or "NA"
     source_modules = ", ".join(str(item) for item in (row.get("source_modules") or [])[:5]) or "NA"
     missing_inputs = ", ".join(str(item) for item in (row.get("missing_inputs") or [])[:5]) or "none"
-    pieces.append(text_line(24, height - 56, f"secondary={secondary}", fill="#8ea0bf", size=12))
+    pieces.append(text_line(24, height - 76, f"secondary={secondary}", fill="#8ea0bf", size=12))
+    pieces.append(
+        text_line(
+            24,
+            height - 56,
+            f"regime_asof={str(row.get('regime_asof') or 'UNKNOWN')} "
+            f"regime_freshness={str(row.get('regime_freshness') or 'UNKNOWN')} "
+            f"regime_lookup_status={str(row.get('regime_lookup_status') or 'UNKNOWN')}",
+            fill="#8ea0bf",
+            size=12,
+        )
+    )
     pieces.append(text_line(24, height - 36, f"source_modules={source_modules}", fill="#8ea0bf", size=12))
     pieces.append(text_line(24, height - 16, f"missing_inputs={missing_inputs}", fill="#8ea0bf", size=12))
     pieces.append("</svg>")
@@ -487,6 +507,8 @@ def render_index_html(
             f"<td>{esc(row.get('event_ts_utc'))}</td>"
             f"<td>{pill_html(str(row.get('position_lifecycle_action') or ''), 'context')}</td>"
             f"<td>{pill_html(str(row.get('reason_bucket') or ''), 'muted')}</td>"
+            f"<td>{pill_html(str(row.get('regime_bucket') or 'UNKNOWN'), 'muted')}</td>"
+            f"<td>{pill_html(str(row.get('regime_lookup_status') or 'UNKNOWN'), 'muted')}</td>"
             f"<td class='right'>{esc(format_pct(row.get('adjusted_return_score_4h')))}</td>"
             f"<td class='right'>{esc(format_pct(row.get('adjusted_return_score_24h')))}</td>"
             f"<td class='right'>{esc(format_pct((row.get('forward_returns') or {}).get('4h')))}</td>"
@@ -562,6 +584,8 @@ def render_index_html(
                 <th>event_ts_utc</th>
                 <th>action</th>
                 <th>primary_reason_bucket</th>
+                <th>regime_bucket</th>
+                <th>regime_status</th>
                 <th class="right">adjusted4h</th>
                 <th class="right">adjusted24h</th>
                 <th class="right">raw4h</th>
