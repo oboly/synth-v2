@@ -73,6 +73,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--bucket", default=None)
     parser.add_argument("--action", default=None)
     parser.add_argument("--symbol", default=None)
+    parser.add_argument("--parameter-key", default=None)
+    parser.add_argument("--candidate-role", default=None)
     parser.add_argument("--sort", choices=SORT_CHOICES, default="adjusted4h_desc")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--write-files", action="store_true")
@@ -150,6 +152,25 @@ def bucket_name(row: dict[str, Any]) -> str:
     return f"{row.get('position_lifecycle_action')}|{row.get('reason_bucket')}"
 
 
+def normalized_row(row: dict[str, Any], *, venue: str, quote: str) -> dict[str, Any]:
+    out = dict(row)
+    out.setdefault("venue", venue)
+    out.setdefault("quote", quote)
+    out.setdefault("reason_bucket", out.get("primary_reason_bucket"))
+    out.setdefault("regime_global", out.get("global_regime"))
+    out.setdefault("regime_asset_class_state", out.get("asset_class_regime"))
+    if not isinstance(out.get("forward_returns"), dict):
+        out["forward_returns"] = {
+            "15m": as_float(out.get("forward_return_15m_pct")),
+            "30m": as_float(out.get("forward_return_30m_pct")),
+            "1h": as_float(out.get("forward_return_1h_pct")),
+            "2h": as_float(out.get("forward_return_2h_pct")),
+            "4h": as_float(out.get("forward_return_4h_pct")),
+            "24h": as_float(out.get("forward_return_24h_pct")),
+        }
+    return out
+
+
 def load_selected_rows(
     *,
     input_rows: Path,
@@ -158,23 +179,32 @@ def load_selected_rows(
     bucket: str | None,
     action: str | None,
     symbol: str | None,
+    parameter_key: str | None,
+    candidate_role: str | None,
     sort_name: str,
     max_charts: int,
 ) -> list[dict[str, Any]]:
     rows = read_jsonl(input_rows)
     selected: list[dict[str, Any]] = []
     for row in rows:
-        if str(row.get("venue") or "").lower() != venue.lower():
+        candidate = normalized_row(row, venue=venue, quote=quote)
+        row_venue = str(candidate.get("venue") or "").lower()
+        if row_venue and row_venue != venue.lower():
             continue
-        if str(row.get("quote") or "").upper() != quote.upper():
+        row_quote = str(candidate.get("quote") or "").upper()
+        if row_quote and row_quote != quote.upper():
             continue
-        if bucket and bucket_name(row) != bucket:
+        if bucket and bucket_name(candidate) != bucket:
             continue
-        if action and str(row.get("position_lifecycle_action") or "").upper() != str(action).upper():
+        if action and str(candidate.get("position_lifecycle_action") or "").upper() != str(action).upper():
             continue
-        if symbol and str(row.get("symbol") or "").upper() != str(symbol).upper():
+        if symbol and str(candidate.get("symbol") or "").upper() != str(symbol).upper():
             continue
-        selected.append(row)
+        if parameter_key and str(candidate.get("parameter_key") or "") != str(parameter_key):
+            continue
+        if candidate_role and str(candidate.get("candidate_role") or "").upper() != str(candidate_role).upper():
+            continue
+        selected.append(candidate)
     selected.sort(key=sort_key(sort_name))
     if max_charts <= 0:
         raise ValueError("--max-charts must be greater than zero")
@@ -387,7 +417,14 @@ def chart_svg(row: dict[str, Any], candles: list[Candle], *, before_hours: int, 
         f"<rect width='{width}' height='{height}' fill='#0b1020'/>",
         f"<rect x='{left:.1f}' y='{top:.1f}' width='{plot_width:.1f}' height='{plot_height:.1f}' rx='10' fill='#121a2f' stroke='#273657'/>",
         text_line(24, 38, f"{row.get('symbol')} {row.get('position_lifecycle_action')} {row.get('reason_bucket')}", size=24, weight="700"),
-        text_line(24, 66, f"event_ts={row.get('event_ts_utc')}  guidance={guidance_label(row)}", fill="#8ea0bf", size=14),
+        text_line(
+            24,
+            66,
+            f"event_ts={row.get('event_ts_utc')}  guidance={guidance_label(row)}  "
+            f"candidate_role={str(row.get('candidate_role') or 'NA')}",
+            fill="#8ea0bf",
+            size=14,
+        ),
         text_line(24, 92, f"reason={str(row.get('position_lifecycle_reason') or 'NA')[:150]}", fill="#e7edf8", size=14),
         text_line(
             24,
@@ -472,21 +509,37 @@ def chart_svg(row: dict[str, Any], candles: list[Candle], *, before_hours: int, 
     secondary = ", ".join(str(item) for item in (row.get("secondary_reason_buckets") or [])[:6]) or "NA"
     source_modules = ", ".join(str(item) for item in (row.get("source_modules") or [])[:5]) or "NA"
     missing_inputs = ", ".join(str(item) for item in (row.get("missing_inputs") or [])[:5]) or "none"
-    pieces.append(text_line(24, height - 76, f"secondary={secondary}", fill="#8ea0bf", size=12))
+    pieces.append(
+        text_line(
+            24,
+            height - 76,
+            f"secondary={secondary} selected_candidate_label={str(row.get('selected_candidate_label') or 'NA')[:64]}",
+            fill="#8ea0bf",
+            size=12,
+        )
+    )
     pieces.append(
         text_line(
             24,
             height - 56,
+            f"parameter_key={str(row.get('parameter_key') or 'NA')[:120]} "
             f"regime_asof={str(row.get('regime_asof') or 'UNKNOWN')} "
-            f"regime_source_candle_ts_utc={str(row.get('regime_source_candle_ts_utc') or 'UNKNOWN')} "
+            f"regime_source_candle_ts_utc={str(row.get('regime_source_candle_ts_utc') or 'UNKNOWN')}",
+            fill="#8ea0bf",
+            size=12,
+        )
+    )
+    pieces.append(
+        text_line(
+            24,
+            height - 36,
             f"regime_freshness={str(row.get('regime_freshness') or 'UNKNOWN')} "
             f"regime_lookup_status={str(row.get('regime_lookup_status') or 'UNKNOWN')}",
             fill="#8ea0bf",
             size=12,
         )
     )
-    pieces.append(text_line(24, height - 36, f"source_modules={source_modules}", fill="#8ea0bf", size=12))
-    pieces.append(text_line(24, height - 16, f"missing_inputs={missing_inputs}", fill="#8ea0bf", size=12))
+    pieces.append(text_line(24, height - 16, f"source_modules={source_modules} missing_inputs={missing_inputs}", fill="#8ea0bf", size=12))
     pieces.append("</svg>")
     return "".join(pieces)
 
@@ -516,6 +569,8 @@ def render_index_html(
             f"<td>{esc(row.get('event_ts_utc'))}</td>"
             f"<td>{pill_html(str(row.get('position_lifecycle_action') or ''), 'context')}</td>"
             f"<td>{pill_html(str(row.get('reason_bucket') or ''), 'muted')}</td>"
+            f"<td>{pill_html(str(row.get('candidate_role') or 'NA'), 'muted')}</td>"
+            f"<td>{esc(str(row.get('parameter_key') or 'NA'))}</td>"
             f"<td>{pill_html(str(row.get('regime_bucket') or 'UNKNOWN'), 'muted')}</td>"
             f"<td>{pill_html(str(row.get('regime_lookup_status') or 'UNKNOWN'), 'muted')}</td>"
             f"<td>{pill_html(str(row.get('regime_global') or row.get('global_regime') or 'UNKNOWN'), 'muted')}</td>"
@@ -565,6 +620,8 @@ def render_index_html(
           <div><strong>bucket</strong> {esc(args.bucket or 'ALL')}</div>
           <div><strong>action</strong> {esc(args.action or 'ALL')}</div>
           <div><strong>symbol</strong> {esc(args.symbol or 'ALL')}</div>
+          <div><strong>parameter_key</strong> {esc(args.parameter_key or 'ALL')}</div>
+          <div><strong>candidate_role</strong> {esc(args.candidate_role or 'ALL')}</div>
           <div><strong>sort</strong> {esc(args.sort)}</div>
           <div><strong>selected_events</strong> <a href="{esc(selected_events_path.name)}">{esc(selected_events_path.name)}</a></div>
         </div>
@@ -595,6 +652,8 @@ def render_index_html(
                 <th>event_ts_utc</th>
                 <th>action</th>
                 <th>primary_reason_bucket</th>
+                <th>candidate_role</th>
+                <th>parameter_key</th>
                 <th>regime_bucket</th>
                 <th>regime_status</th>
                 <th>regime_global</th>
@@ -637,6 +696,8 @@ def build_manifest(*, args: argparse.Namespace, rows: list[dict[str, Any]], outp
         "bucket_filter": args.bucket,
         "action_filter": args.action,
         "symbol_filter": args.symbol,
+        "parameter_key_filter": args.parameter_key,
+        "candidate_role_filter": args.candidate_role,
         "sort": args.sort,
         "symbols": sorted({str(row.get("symbol") or "") for row in rows if row.get("symbol")}),
         "first_event_ts": None if not event_timestamps else fmt_ts(min(event_timestamps)),
@@ -666,7 +727,9 @@ def print_summary(summary: dict[str, Any], *, output_mode: str) -> None:
     print(f"report={summary['report']} version={summary['version']}")
     print(
         f"selected_count={summary['selected_count']} sort={summary['sort']} "
-        f"bucket={summary['bucket_filter'] or 'ALL'} action={summary['action_filter'] or 'ALL'} symbol={summary['symbol_filter'] or 'ALL'}"
+        f"bucket={summary['bucket_filter'] or 'ALL'} action={summary['action_filter'] or 'ALL'} "
+        f"symbol={summary['symbol_filter'] or 'ALL'} parameter_key={summary.get('parameter_key_filter') or 'ALL'} "
+        f"candidate_role={summary.get('candidate_role_filter') or 'ALL'}"
     )
     print(
         f"chart_interval={summary['chart_interval']} before_hours={summary['before_hours']} after_hours={summary['after_hours']} "
@@ -694,11 +757,13 @@ def main(argv: list[str] | None = None) -> int:
         bucket=args.bucket,
         action=args.action,
         symbol=args.symbol,
+        parameter_key=args.parameter_key,
+        candidate_role=args.candidate_role,
         sort_name=args.sort,
         max_charts=args.max_charts,
     )
     if not selected_rows:
-        raise FileNotFoundError(f"No lifecycle outcome rows matched filters in {input_rows}")
+        raise FileNotFoundError(f"No lifecycle or reload selected-event rows matched filters in {input_rows}")
 
     event_timestamps = [parse_ts(row["event_ts_utc"]) for row in selected_rows]
     start_ts = min(event_timestamps) - timedelta(hours=int(args.before_hours))

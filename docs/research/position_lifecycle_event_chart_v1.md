@@ -3,7 +3,7 @@
 ## Purpose
 
 `run_position_lifecycle_event_chart_v1.py` renders research-only visual review
-charts for selected lifecycle outcome rows.
+charts for selected lifecycle outcome rows or reload scalp selected-event rows.
 
 It adds the missing visual inspection layer on top of:
 
@@ -26,6 +26,10 @@ It is not:
 Primary input:
 
 - `data/research/position_lifecycle_outcome_validation_v1/outcome_rows_v1.jsonl`
+
+Also supported:
+
+- `data/research/reload_reaction_scalp_parameter_sweep_v1/reload_reaction_scalp_selected_events_v1.jsonl`
 
 The runner reuses existing event rows directly and does not recalculate
 lifecycle labels.
@@ -50,6 +54,8 @@ Optional filters:
 - `--bucket "RELOAD_REVIEW|APLUS_CONTEXT"`
 - `--action RELOAD_REVIEW`
 - `--symbol NEAR`
+- `--parameter-key "local_reaction|15m|current_price_near_zone|entry_low|2.0|0.25|false"`
+- `--candidate-role ROBUST`
 
 Sort choices:
 
@@ -78,6 +84,9 @@ Each chart shows:
 - `primary_reason_bucket`
 - `secondary_reason_buckets` when available
 - lifecycle trigger text when available
+- `candidate_role` when available
+- `parameter_key` when available
+- `selected_candidate_label` when available
 - raw forward returns at `15m`, `1h`, `4h`, `24h`
 - adjusted score at `4h` and `24h`
 - `MFE` / `MAE`
@@ -118,6 +127,8 @@ The index page shows:
   - `event_ts_utc`
   - `action`
   - `primary_reason_bucket`
+  - `candidate_role`
+  - `parameter_key`
   - `regime_bucket`
   - `regime_status`
   - `adjusted4h`
@@ -179,6 +190,19 @@ Help:
 
 ```bash
 python -m src.research.run_position_lifecycle_event_chart_v1 --help
+```
+
+Reload selected-event example:
+
+```bash
+python -m src.research.run_position_lifecycle_event_chart_v1 \
+  --input-rows data/research/reload_reaction_scalp_parameter_sweep_v1/reload_reaction_scalp_selected_events_v1.jsonl \
+  --parameter-key "local_reaction|15m|current_price_near_zone|entry_low|2.0|0.25|false" \
+  --candidate-role ROBUST \
+  --max-charts 30 \
+  --write-files \
+  --output-dir data/research/position_lifecycle_event_chart_v1/reload_scalp_robust_v1 \
+  --output summary
 ```
 
 Smoke summary:
