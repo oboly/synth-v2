@@ -50,6 +50,40 @@ Additional visual finding:
 - close is better treated as confirmation than as the only reload touch signal
 - NEAR / XRP-style invalidation-triggered examples are not valid reload scalp
   samples and must be excluded from `RELOAD_REACTION_SCALP_V1` by default
+- target zones inside the entry zone are invalid for this lane and must be
+  rejected by default
+
+## Trigger Family Default
+
+Default CLI:
+
+- `--trigger-family wick_touch`
+
+Allowed families:
+
+- `wick_touch`
+- `close_reference`
+- `all`
+
+Behavior:
+
+- `wick_touch` allows only:
+  - `wick_touch_zone`
+  - `wick_touch_entry_low`
+  - `close_confirm_after_touch`
+- `close_reference` allows only:
+  - `current_price_near_zone`
+  - `current_price_inside_zone`
+  - `current_price_above_entry_high_max_late`
+- `all` allows both families and must be treated as mixed-mode diagnostics
+
+Hard rule:
+
+- when `--trigger-family wick_touch`, a close/reference candidate must not be
+  promoted as `ROBUST`
+- if no wick-touch candidate clears the robust gates, the runner reports:
+  - `NO_VALID_WICK_TOUCH_CANDIDATE`
+- it must not silently fall back to close/reference as the robust default
 
 ## Inputs
 
@@ -174,6 +208,11 @@ Swept families:
 - `false`
 - `true`
 
+Additional gating controls:
+
+- `--min-target-distance-pct 0.5`
+- `--allow-target-inside-entry-zone` default false
+
 ## Return Model
 
 This runner uses:
@@ -218,16 +257,24 @@ Per parameter set:
 - `events_rejected_by_missing_return`
 - `events_rejected_by_missing_intrabar_touch_input`
 - `events_rejected_by_invalidation_near`
+- `events_rejected_by_target_inside_entry_zone`
+- `events_rejected_by_target_too_close`
 - `max_late_filter_effect_count`
 - `events_selected_by_wick_touch`
 - `events_selected_by_close_only`
 - `close_only_late_trigger_count`
 - `selected_events_with_invalidation_near`
+- `selected_events_with_wrong_trigger_family`
+- `selected_events_with_target_inside_entry_zone`
 - `invalidation_near_ratio_pct`
 - `invalidation_distance_pct`
 - `invalidation_filter_reason`
 - `avg_distance_from_entry_low_pct`
 - `avg_distance_from_entry_high_pct`
+- `target_distance_pct`
+- `target_integrity_status`
+- `target_integrity_reason`
+- `target_inside_entry_zone_flag`
 - `avg_strategy_return_pct`
 - `median_strategy_return_pct`
 - `avg_hold_return_pct`
@@ -242,6 +289,27 @@ Per parameter set:
 - `symbol_count`
 - `top_symbol_concentration_pct`
 - `robust_candidate_rank`
+- `trigger_family`
+- `trigger_family_candidate_count`
+- `no_valid_trigger_family_candidate`
+- `close_reference_fallback_blocked`
+
+Robust candidate gates:
+
+- `sample_count >= min_samples`
+- `excess_return_vs_hold_pct > 0`
+- `top_symbol_concentration_pct <= 30`
+- `overfit_risk_flag == false`
+- `selected_events_with_invalidation_near == 0`
+- `selected_events_with_wrong_trigger_family == 0`
+- `selected_events_with_target_inside_entry_zone == 0`
+- `target_integrity_status in {OK, PASS}`
+
+If no candidate clears these gates:
+
+- report `NO_ROBUST_CANDIDATE`
+- keep diagnostics and rejected variants
+- do not export any `ROBUST` selected-event rows
 
 ## HOLD Baseline Rule
 
@@ -345,6 +413,9 @@ It also adds candidate metadata for chart review:
 And trigger-review fields:
 
 - `trigger_basis`
+- `trigger_family`
+- `trigger_family_status`
+- `trigger_family_reason`
 - `trigger_price_basis`
 - `zone_touch_detected`
 - `entry_low_touch_detected`
@@ -355,6 +426,10 @@ And trigger-review fields:
 - `invalidation_near_flag`
 - `invalidation_distance_pct`
 - `invalidation_filter_reason`
+- `target_integrity_status`
+- `target_integrity_reason`
+- `target_distance_pct`
+- `target_inside_entry_zone_flag`
 
 And it preserves canonical regime review fields when available:
 
@@ -413,6 +488,10 @@ Summary output includes:
 - `best_low_mae_candidate`
 - `best_aplus_candidate`
 - `best_wick_touch_candidate`
+- `best_close_reference_candidate`
+- requested `trigger_family`
+- `NO_VALID_WICK_TOUCH_CANDIDATE` when wick-touch mode has no valid candidate
+- `NO_ROBUST_CANDIDATE` when no variant clears the robust gates
 - warning when top raw edge has `SYMBOL_CONCENTRATION_HIGH`
 - invalidation exclusion counts and default-vs-contaminated mode
 - `trigger_basis_summary` for close-vs-touch cohort comparison

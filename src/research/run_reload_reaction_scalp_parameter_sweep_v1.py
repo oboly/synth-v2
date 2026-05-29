@@ -26,6 +26,8 @@ DEFAULT_ACTION = "RELOAD_REVIEW"
 DEFAULT_MIN_SAMPLES = 20
 DEFAULT_MAX_EVENTS = 5000
 DEFAULT_SELECTED_EVENTS_PER_CANDIDATE = 30
+DEFAULT_TRIGGER_FAMILY = "wick_touch"
+DEFAULT_MIN_TARGET_DISTANCE_PCT = 0.5
 INVALIDATION_NEAR_THRESHOLD_PCT = 3.0
 
 ROWS_CSV = "reload_reaction_scalp_parameter_sweep_rows_v1.csv"
@@ -50,6 +52,13 @@ MAX_LATE_DISTANCE_ABOVE_ZONE_PCTS = (0.25, 0.5, 1.0)
 TARGET_MODES = ("local_reaction", "fib_1272_if_available", "fib_1618_if_available")
 MAX_HOLD_HORIZONS = ("15m", "30m", "1h", "2h", "4h", "24h")
 REQUIRE_APLUS_CONTEXT_OPTIONS = (False, True)
+TRIGGER_FAMILIES = ("wick_touch", "close_reference", "all")
+WICK_TOUCH_TRIGGER_BASES = {"wick_touch_zone", "wick_touch_entry_low", "close_confirm_after_touch"}
+CLOSE_REFERENCE_TRIGGER_BASES = {
+    "current_price_near_zone",
+    "current_price_inside_zone",
+    "current_price_above_entry_high_max_late",
+}
 
 SAFETY = {
     "broker_calls": 0,
@@ -76,6 +85,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-events", type=int, default=DEFAULT_MAX_EVENTS)
     parser.add_argument("--min-samples", type=int, default=DEFAULT_MIN_SAMPLES)
     parser.add_argument("--selected-events-per-candidate", type=int, default=DEFAULT_SELECTED_EVENTS_PER_CANDIDATE)
+    parser.add_argument("--trigger-family", choices=TRIGGER_FAMILIES, default=DEFAULT_TRIGGER_FAMILY)
+    parser.add_argument("--min-target-distance-pct", type=float, default=DEFAULT_MIN_TARGET_DISTANCE_PCT)
+    parser.add_argument("--allow-target-inside-entry-zone", action="store_true")
     parser.add_argument("--include-invalidation-near", action="store_true")
     parser.add_argument("--write-files", action="store_true")
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
@@ -203,6 +215,20 @@ def build_effective_summary_key(row: dict[str, Any]) -> str:
         clone["max_late_distance_above_zone_pct"] = "na"
         return build_parameter_key(clone)
     return str(row.get("parameter_key") or build_parameter_key(row))
+
+
+def trigger_family_for_basis(trigger_basis: str) -> str:
+    if trigger_basis in WICK_TOUCH_TRIGGER_BASES:
+        return "wick_touch"
+    if trigger_basis in CLOSE_REFERENCE_TRIGGER_BASES:
+        return "close_reference"
+    return "unknown"
+
+
+def trigger_basis_allowed_for_family(trigger_basis: str, trigger_family: str) -> bool:
+    if trigger_family == "all":
+        return True
+    return trigger_family_for_basis(trigger_basis) == trigger_family
 
 
 def fetch_asset_id_map(conn: Any, symbols: list[str]) -> dict[str, int]:
@@ -520,6 +546,116 @@ def local_reaction_target_price(row: dict[str, Any]) -> float | None:
     return min(candidates)
 
 
+def resolve_target_price(row: dict[str, Any], target_mode: str, fib_guard_safe: bool) -> tuple[float | None, str]:
+    if target_mode == "local_reaction":
+        target_price = local_reaction_target_price(row)
+        if target_price is None:
+            return None, "missing_local_reaction_target"
+        return target_price, "local_reaction_target"
+    if target_mode in {"fib_1272_if_available", "fib_1618_if_available"}:
+        if not fib_guard_safe:
+            return None, "fibo_target_not_point_in_time_safe"
+        return None, "fibo_target_mode_not_implemented"
+    return None, "unknown_target_mode"
+
+
+def target_distance_pct(row: dict[str, Any], *, target_price: float | None) -> float | None:
+    current = as_float(row.get("current_price"))
+    reference = as_float(row.get("reference_price"))
+    base_price = current if current is not None else reference
+    if base_price is None or target_price is None or base_price <= 0:
+        return None
+    return ((target_price / base_price) - 1.0) * 100.0
+
+
+def evaluate_target_integrity(
+    row: dict[str, Any],
+    *,
+    target_price: float | None,
+    min_target_distance_pct: float,
+    allow_target_inside_entry_zone: bool,
+) -> tuple[bool, dict[str, Any]]:
+    entry_low = as_float(row.get("entry_zone_low"))
+    entry_high = as_float(row.get("entry_zone_high"))
+    tp_zone_low = as_float(row.get("tp_zone_low"))
+    tp_zone_high = as_float(row.get("tp_zone_high"))
+    zone_high = None
+    if entry_low is not None or entry_high is not None:
+        zone_high = max(value for value in [entry_low, entry_high] if value is not None)
+    target_inside_entry_zone = False
+    if zone_high is not None:
+        if tp_zone_low is not None and tp_zone_low <= zone_high:
+            target_inside_entry_zone = True
+        if tp_zone_high is not None and tp_zone_high <= zone_high:
+            target_inside_entry_zone = True
+    distance_pct = target_distance_pct(row, target_price=target_price)
+    if target_price is None:
+        return False, {
+            "target_integrity_status": "FAIL",
+            "target_integrity_reason": "missing_target_price",
+            "target_inside_entry_zone_flag": target_inside_entry_zone,
+            "target_distance_pct": distance_pct,
+        }
+    if target_inside_entry_zone and not allow_target_inside_entry_zone:
+        return False, {
+            "target_integrity_status": "FAIL",
+            "target_integrity_reason": "target_inside_entry_zone",
+            "target_inside_entry_zone_flag": True,
+            "target_distance_pct": distance_pct,
+        }
+    if distance_pct is None:
+        return False, {
+            "target_integrity_status": "FAIL",
+            "target_integrity_reason": "missing_target_distance_reference",
+            "target_inside_entry_zone_flag": target_inside_entry_zone,
+            "target_distance_pct": distance_pct,
+        }
+    if distance_pct <= 0:
+        return False, {
+            "target_integrity_status": "FAIL",
+            "target_integrity_reason": "target_not_above_reference",
+            "target_inside_entry_zone_flag": target_inside_entry_zone,
+            "target_distance_pct": distance_pct,
+        }
+    if distance_pct < min_target_distance_pct:
+        return False, {
+            "target_integrity_status": "FAIL",
+            "target_integrity_reason": f"target_distance_below_min_{min_target_distance_pct}",
+            "target_inside_entry_zone_flag": target_inside_entry_zone,
+            "target_distance_pct": distance_pct,
+        }
+    return True, {
+        "target_integrity_status": "PASS",
+        "target_integrity_reason": "target_above_entry_zone_and_min_distance_met",
+        "target_inside_entry_zone_flag": target_inside_entry_zone,
+        "target_distance_pct": distance_pct,
+    }
+
+
+def evaluate_trigger_family_status(
+    *,
+    trigger_family: str,
+    trigger_basis: str,
+    trigger_meta: dict[str, Any],
+) -> tuple[bool, str, str]:
+    actual_family = trigger_family_for_basis(trigger_basis)
+    if trigger_family == "all":
+        return True, "PASS", "mixed_trigger_family_allowed"
+    if actual_family != trigger_family:
+        return False, "FAIL", "trigger_basis_outside_requested_family"
+    if trigger_family == "wick_touch":
+        if str(trigger_meta.get("trigger_price_basis") or "") == "CLOSE_OR_REFERENCE":
+            return False, "FAIL", "close_reference_basis_not_allowed"
+        if trigger_meta.get("entry_low_touch_detected") is not True:
+            return False, "FAIL", "entry_low_touch_not_detected"
+        return True, "PASS", "wick_touch_family_confirmed"
+    if trigger_family == "close_reference":
+        if str(trigger_meta.get("trigger_price_basis") or "") != "CLOSE_OR_REFERENCE":
+            return False, "FAIL", "non_close_reference_basis_not_allowed"
+        return True, "PASS", "close_reference_family_confirmed"
+    return False, "FAIL", "unknown_trigger_family"
+
+
 def evaluate_trigger(
     row: dict[str, Any],
     *,
@@ -592,16 +728,10 @@ def target_return_pct(row: dict[str, Any], target_mode: str, fib_guard_safe: boo
     current = as_float(row.get("current_price"))
     if current is None or current <= 0:
         return None, "missing_current_price"
-    if target_mode == "local_reaction":
-        target_price = local_reaction_target_price(row)
-        if target_price is None:
-            return None, "missing_local_reaction_target"
-        return ((target_price / current) - 1.0) * 100.0, "local_reaction_target"
-    if target_mode in {"fib_1272_if_available", "fib_1618_if_available"}:
-        if not fib_guard_safe:
-            return None, "fibo_target_not_point_in_time_safe"
-        return None, "fibo_target_mode_not_implemented"
-    return None, "unknown_target_mode"
+    target_price, target_reason = resolve_target_price(row, target_mode, fib_guard_safe)
+    if target_price is None:
+        return None, target_reason
+    return ((target_price / current) - 1.0) * 100.0, target_reason
 
 
 def forward_return_for_horizon(row: dict[str, Any], horizon: str) -> float | None:
@@ -673,6 +803,79 @@ def evaluate_parameter_set(
     distance_from_entry_low_values: list[float] = []
     distance_from_entry_high_values: list[float] = []
     invalidation_distance_values: list[float] = []
+    target_distance_values: list[float] = []
+    events_rejected_by_target_inside_entry_zone = 0
+    events_rejected_by_target_too_close = 0
+    selected_events_with_wrong_trigger_family = 0
+    selected_events_with_target_inside_entry_zone = 0
+    trigger_family = str(params.get("trigger_family") or "all")
+    trigger_basis = str(params.get("trigger_basis") or "")
+    allowed_for_family = trigger_basis_allowed_for_family(trigger_basis, trigger_family)
+
+    if not allowed_for_family:
+        evaluation_status = "TRIGGER_FAMILY_EXCLUDED"
+        row_result = {
+            "strategy_candidate": STRATEGY_CANDIDATE,
+            "return_metric_label": RETURN_LABEL,
+            "trigger_confirmation_mode": POLICY_PROXY_CONFIRMATION if trigger_basis == "close_confirm_after_touch" else "",
+            "evaluation_status": evaluation_status,
+            "parameter_key": build_parameter_key(params),
+            **params,
+            "trigger_family": trigger_family,
+            "trigger_family_candidate_count": 0,
+            "no_valid_trigger_family_candidate": False,
+            "close_reference_fallback_blocked": trigger_family == "wick_touch" and trigger_family_for_basis(trigger_basis) == "close_reference",
+            "sample_count": 0,
+            "events_eligible": 0,
+            "events_considered": events_considered,
+            "events_selected": 0,
+            "events_rejected_by_zone_part": 0,
+            "events_rejected_by_threshold": 0,
+            "events_rejected_by_aplus": 0,
+            "events_rejected_by_missing_zone": 0,
+            "events_rejected_by_missing_return": 0,
+            "events_rejected_by_missing_intrabar_touch_input": 0,
+            "events_rejected_by_target_inside_entry_zone": 0,
+            "events_rejected_by_target_too_close": 0,
+            "max_late_filter_effect_count": 0,
+            "events_selected_by_wick_touch": 0,
+            "events_selected_by_close_only": 0,
+            "close_only_late_trigger_count": 0,
+            "selected_events_with_invalidation_near": 0,
+            "selected_events_with_wrong_trigger_family": 0,
+            "selected_events_with_target_inside_entry_zone": 0,
+            "invalidation_near_ratio_pct": None,
+            "invalidation_distance_pct": None,
+            "invalidation_filter_reason": "excluded_by_default",
+            "avg_distance_from_entry_low_pct": None,
+            "avg_distance_from_entry_high_pct": None,
+            "target_distance_pct": None,
+            "target_integrity_status": "FAIL",
+            "target_integrity_reason": "trigger_family_excluded",
+            "target_inside_entry_zone_flag": False,
+            "target_hit_count": 0,
+            "avg_strategy_return_pct": None,
+            "median_strategy_return_pct": None,
+            "avg_hold_return_pct": None,
+            "median_hold_return_pct": None,
+            "excess_return_vs_hold_pct": None,
+            "winrate_pct": None,
+            "avg_mfe_pct": None,
+            "avg_mae_pct": None,
+            "avg_opportunity_missed_pct": None,
+            "max_drawdown_proxy_pct": None,
+            "avg_drawdown_improvement_vs_hold_pct": None,
+            "symbol_count": 0,
+            "top_symbol": "",
+            "top_symbol_concentration_pct": None,
+            "overfit_risk_flag": False,
+            "skip_reasons": {"trigger_family_excluded": events_considered},
+            "policy_proxy_notes": (
+                "Target exit is a POLICY_PROXY_RETURN: if target_return_pct <= max_favorable_excursion_pct, "
+                "the sweep assumes target hit within horizon; otherwise it falls back to same-horizon close return."
+            ),
+        }
+        return row_result, []
 
     for row in events:
         triggered, trigger_reason, trigger_meta = evaluate_trigger(
@@ -707,12 +910,38 @@ def evaluate_parameter_set(
             if trigger_reason == "max_late_distance_exceeded":
                 max_late_filter_effect_count += 1
             continue
-        target_return, target_reason = target_return_pct(row, params["target_mode"], fib_guard_safe)
+        trigger_family_ok, trigger_family_status, trigger_family_reason = evaluate_trigger_family_status(
+            trigger_family=trigger_family,
+            trigger_basis=trigger_basis,
+            trigger_meta=trigger_meta,
+        )
+        if not trigger_family_ok:
+            skip_reasons[trigger_family_reason] += 1
+            selected_events_with_wrong_trigger_family += 1
+            continue
+        target_price, target_reason = resolve_target_price(row, params["target_mode"], fib_guard_safe)
         if target_reason == "fibo_target_not_point_in_time_safe":
             evaluation_status = "SKIPPED_FIB_TARGET_NOT_POINT_IN_TIME_SAFE"
             skip_reasons[target_reason] += 1
             events_rejected_by_missing_return += 1
             continue
+        target_ok, target_meta = evaluate_target_integrity(
+            row,
+            target_price=target_price,
+            min_target_distance_pct=float(params["min_target_distance_pct"]),
+            allow_target_inside_entry_zone=bool(params["allow_target_inside_entry_zone"]),
+        )
+        if not target_ok:
+            skip_reasons[str(target_meta["target_integrity_reason"])] += 1
+            if bool(target_meta["target_inside_entry_zone_flag"]):
+                events_rejected_by_target_inside_entry_zone += 1
+                selected_events_with_target_inside_entry_zone += 1
+            else:
+                events_rejected_by_target_too_close += 1
+            continue
+        target_return = None if target_price is None else float(target_meta["target_distance_pct"] or 0.0)
+        if target_return is None or target_reason not in {"local_reaction_target"}:
+            target_return, target_reason = target_return_pct(row, params["target_mode"], fib_guard_safe)
         if target_return is None:
             skip_reasons[target_reason] += 1
             events_rejected_by_missing_return += 1
@@ -733,6 +962,8 @@ def evaluate_parameter_set(
             distance_from_entry_low_values.append(float(trigger_meta["distance_from_entry_low_pct"]))
         if trigger_meta["distance_from_entry_high_pct"] is not None:
             distance_from_entry_high_values.append(float(trigger_meta["distance_from_entry_high_pct"]))
+        if target_meta["target_distance_pct"] is not None:
+            target_distance_values.append(float(target_meta["target_distance_pct"]))
         if bool(row.get("invalidation_near_flag")):
             selected_events_with_invalidation_near += 1
         if row.get("invalidation_distance_pct") is not None:
@@ -793,6 +1024,10 @@ def evaluate_parameter_set(
         "evaluation_status": evaluation_status,
         "parameter_key": build_parameter_key(params),
         **params,
+        "trigger_family": trigger_family,
+        "trigger_family_candidate_count": sample_count,
+        "no_valid_trigger_family_candidate": sample_count < min_samples,
+        "close_reference_fallback_blocked": False,
         "sample_count": sample_count,
         "events_eligible": eligible_count,
         "events_considered": events_considered,
@@ -803,11 +1038,15 @@ def evaluate_parameter_set(
         "events_rejected_by_missing_zone": events_rejected_by_missing_zone,
         "events_rejected_by_missing_return": events_rejected_by_missing_return,
         "events_rejected_by_missing_intrabar_touch_input": events_rejected_by_missing_intrabar_touch_input,
+        "events_rejected_by_target_inside_entry_zone": events_rejected_by_target_inside_entry_zone,
+        "events_rejected_by_target_too_close": events_rejected_by_target_too_close,
         "max_late_filter_effect_count": max_late_filter_effect_count,
         "events_selected_by_wick_touch": events_selected_by_wick_touch,
         "events_selected_by_close_only": events_selected_by_close_only,
         "close_only_late_trigger_count": close_only_late_trigger_count,
         "selected_events_with_invalidation_near": selected_events_with_invalidation_near,
+        "selected_events_with_wrong_trigger_family": selected_events_with_wrong_trigger_family,
+        "selected_events_with_target_inside_entry_zone": selected_events_with_target_inside_entry_zone,
         "invalidation_near_ratio_pct": None if sample_count == 0 else round((selected_events_with_invalidation_near / sample_count) * 100.0, 6),
         "invalidation_distance_pct": average_or_none(invalidation_distance_values),
         "invalidation_filter_reason": (
@@ -815,6 +1054,14 @@ def evaluate_parameter_set(
         ),
         "avg_distance_from_entry_low_pct": average_or_none(distance_from_entry_low_values),
         "avg_distance_from_entry_high_pct": average_or_none(distance_from_entry_high_values),
+        "target_distance_pct": average_or_none(target_distance_values),
+        "target_integrity_status": "PASS" if sample_count > 0 else "FAIL",
+        "target_integrity_reason": (
+            "target_above_entry_zone_and_min_distance_met"
+            if sample_count > 0
+            else "no_target_passing_integrity_gate"
+        ),
+        "target_inside_entry_zone_flag": selected_events_with_target_inside_entry_zone > 0,
         "target_hit_count": target_hit_count,
         "avg_strategy_return_pct": average_or_none(strategy_returns),
         "median_strategy_return_pct": median_or_none(strategy_returns),
@@ -896,6 +1143,30 @@ def rank_robust_candidates(rows: list[dict[str, Any]], *, min_samples: int) -> l
         enriched["robust_candidate_rank"] = index
         ranked_with_index.append(enriched)
     return ranked_with_index
+
+
+def row_passes_robust_gates(row: dict[str, Any], *, min_samples: int) -> bool:
+    sample_count = int(row.get("sample_count") or 0)
+    concentration = as_float(row.get("top_symbol_concentration_pct"))
+    excess = as_float(row.get("excess_return_vs_hold_pct"))
+    target_integrity_status = str(row.get("target_integrity_status") or "").upper()
+    return bool(
+        sample_count >= min_samples
+        and (excess or 0.0) > 0
+        and concentration is not None
+        and concentration <= 30.0
+        and not bool(row.get("overfit_risk_flag"))
+        and int(row.get("selected_events_with_invalidation_near") or 0) == 0
+        and int(row.get("selected_events_with_wrong_trigger_family") or 0) == 0
+        and int(row.get("selected_events_with_target_inside_entry_zone") or 0) == 0
+        and target_integrity_status in {"OK", "PASS"}
+    )
+
+
+def rows_for_trigger_family(rows: list[dict[str, Any]], trigger_family: str) -> list[dict[str, Any]]:
+    if trigger_family == "all":
+        return rows
+    return [row for row in rows if str(row.get("trigger_family") or "") == trigger_family]
 
 
 def dedupe_by_parameter_key(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1019,6 +1290,9 @@ def build_selected_event_rows(
     *,
     fib_guard_safe: bool,
     selected_events_per_candidate: int,
+    trigger_family: str,
+    min_target_distance_pct: float,
+    allow_target_inside_entry_zone: bool,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, list[dict[str, Any]]]]:
     selected_rows: list[dict[str, Any]] = []
     role_regime_summaries: dict[str, list[dict[str, Any]]] = {}
@@ -1027,6 +1301,8 @@ def build_selected_event_rows(
     missing_entry_zone = 0
     missing_forward_returns = 0
     selected_events_with_invalidation_near = 0
+    selected_events_with_wrong_trigger_family = 0
+    selected_events_with_target_inside_entry_zone = 0
     selected_row_keys: set[tuple[str, str, str]] = set()
     candidate_role_map = {
         "best_raw_edge_candidate": "RAW_EDGE",
@@ -1063,6 +1339,25 @@ def build_selected_event_rows(
                 require_aplus_context=params["require_aplus_context"],
             )
             if not triggered:
+                continue
+            trigger_family_ok, trigger_family_status, trigger_family_reason = evaluate_trigger_family_status(
+                trigger_family=trigger_family,
+                trigger_basis=params["trigger_basis"],
+                trigger_meta=trigger_meta,
+            )
+            if not trigger_family_ok:
+                selected_events_with_wrong_trigger_family += 1
+                continue
+            target_price, target_reason = resolve_target_price(row, params["target_mode"], fib_guard_safe)
+            target_ok, target_meta = evaluate_target_integrity(
+                row,
+                target_price=target_price,
+                min_target_distance_pct=min_target_distance_pct,
+                allow_target_inside_entry_zone=allow_target_inside_entry_zone,
+            )
+            if not target_ok:
+                if bool(target_meta["target_inside_entry_zone_flag"]):
+                    selected_events_with_target_inside_entry_zone += 1
                 continue
             target_return, target_reason = target_return_pct(row, params["target_mode"], fib_guard_safe)
             if target_return is None:
@@ -1114,6 +1409,9 @@ def build_selected_event_rows(
                 "target_mode": params["target_mode"],
                 "max_hold_horizon": params["max_hold_horizon"],
                 "trigger_basis": params["trigger_basis"],
+                "trigger_family": trigger_family,
+                "trigger_family_status": trigger_family_status,
+                "trigger_family_reason": trigger_family_reason,
                 "trigger_price_basis": trigger_meta["trigger_price_basis"],
                 "reload_zone_part": params["reload_zone_part"],
                 "near_zone_threshold_pct": params["near_zone_threshold_pct"],
@@ -1142,6 +1440,10 @@ def build_selected_event_rows(
                 "invalidation_near_flag": bool(row.get("invalidation_near_flag")),
                 "invalidation_distance_pct": row.get("invalidation_distance_pct"),
                 "invalidation_filter_reason": row.get("invalidation_filter_reason"),
+                "target_integrity_status": target_meta["target_integrity_status"],
+                "target_integrity_reason": target_meta["target_integrity_reason"],
+                "target_distance_pct": target_meta["target_distance_pct"],
+                "target_inside_entry_zone_flag": target_meta["target_inside_entry_zone_flag"],
                 "tp_zone_low": as_float(row.get("tp_zone_low")),
                 "tp_zone_high": as_float(row.get("tp_zone_high")),
                 "invalidation_price": as_float(row.get("invalidation_price")),
@@ -1198,6 +1500,8 @@ def build_selected_event_rows(
         "selected_events_missing_entry_zone": missing_entry_zone,
         "selected_events_missing_forward_returns": missing_forward_returns,
         "selected_events_with_invalidation_near": selected_events_with_invalidation_near,
+        "selected_events_with_wrong_trigger_family": selected_events_with_wrong_trigger_family,
+        "selected_events_with_target_inside_entry_zone": selected_events_with_target_inside_entry_zone,
         "selected_candidate_roles_written": sorted(roles_written),
     }
     return (
@@ -1214,30 +1518,26 @@ def summarize(
     paths: dict[str, Path],
 ) -> dict[str, Any]:
     ranked_rows = rank_robust_candidates(rows, min_samples=int(args.min_samples))
+    active_rows = rows_for_trigger_family(ranked_rows, str(args.trigger_family))
     top_excess = dedupe_rows(
-        top_rows(ranked_rows, "excess_return_vs_hold_pct", min_samples=args.min_samples, reverse=True),
+        top_rows(active_rows, "excess_return_vs_hold_pct", min_samples=args.min_samples, reverse=True),
         key_func=build_effective_summary_key,
     )
     top_drawdown = dedupe_rows(
-        top_rows(ranked_rows, "avg_drawdown_improvement_vs_hold_pct", min_samples=args.min_samples, reverse=True),
+        top_rows(active_rows, "avg_drawdown_improvement_vs_hold_pct", min_samples=args.min_samples, reverse=True),
         key_func=build_effective_summary_key,
     )
     rejected = [
-        row for row in ranked_rows
+        row for row in active_rows
         if int(row.get("sample_count") or 0) >= int(args.min_samples)
         and as_float(row.get("excess_return_vs_hold_pct")) is not None
         and as_float(row.get("excess_return_vs_hold_pct")) < 0
     ]
     best_raw = top_excess[0] if top_excess else None
-    robust_eligible = [
-        row for row in ranked_rows
-        if int(row.get("sample_count") or 0) >= int(args.min_samples)
-        and (as_float(row.get("excess_return_vs_hold_pct")) or 0.0) > 0
-        and (as_float(row.get("top_symbol_concentration_pct")) or 999999.0) <= 30.0
-    ]
-    best_robust = robust_eligible[0] if robust_eligible else (top_excess[0] if top_excess else None)
+    robust_eligible = [row for row in active_rows if row_passes_robust_gates(row, min_samples=int(args.min_samples))]
+    best_robust = robust_eligible[0] if robust_eligible else None
     low_mae_candidates = [
-        row for row in ranked_rows
+        row for row in active_rows
         if int(row.get("sample_count") or 0) >= int(args.min_samples)
         and (as_float(row.get("excess_return_vs_hold_pct")) or 0.0) > 0
         and as_float(row.get("avg_mae_pct")) is not None
@@ -1251,7 +1551,7 @@ def summarize(
         reverse=True,
     )[0] if low_mae_candidates else None
     aplus_candidates = [
-        row for row in ranked_rows
+        row for row in active_rows
         if bool(row.get("require_aplus_context"))
         and int(row.get("sample_count") or 0) >= int(args.min_samples)
         and (as_float(row.get("excess_return_vs_hold_pct")) or 0.0) > 0
@@ -1264,25 +1564,14 @@ def summarize(
         ),
         reverse=True,
     )[0] if aplus_candidates else None
-    best_drawdown = top_drawdown[0] if top_drawdown else None
-    wick_touch_candidates = [
-        row for row in ranked_rows
-        if str(row.get("trigger_basis") or "") in {"wick_touch_zone", "wick_touch_entry_low", "close_confirm_after_touch"}
-        and int(row.get("sample_count") or 0) >= int(args.min_samples)
-        and (as_float(row.get("excess_return_vs_hold_pct")) or 0.0) > 0
-    ]
-    best_wick_touch = sorted(
-        wick_touch_candidates,
-        key=lambda row: (
-            as_float(row.get("excess_return_vs_hold_pct")) or -999999.0,
-            int(row.get("sample_count") or 0),
-            -((as_float(row.get("top_symbol_concentration_pct")) or 999999.0)),
-        ),
-        reverse=True,
-    )[0] if wick_touch_candidates else None
+    wick_touch_candidates = [row for row in rows_for_trigger_family(ranked_rows, "wick_touch") if row_passes_robust_gates(row, min_samples=int(args.min_samples))]
+    best_wick_touch = wick_touch_candidates[0] if wick_touch_candidates else None
+    close_reference_candidates = [row for row in rows_for_trigger_family(ranked_rows, "close_reference") if row_passes_robust_gates(row, min_samples=int(args.min_samples))]
+    best_close_reference = close_reference_candidates[0] if close_reference_candidates else None
     best_raw_warning = None
     if best_raw and bool(best_raw.get("overfit_risk_flag")):
         best_raw_warning = "SYMBOL_CONCENTRATION_HIGH"
+    no_valid_trigger_family_candidate = len(robust_eligible) == 0
     summary = {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
@@ -1293,12 +1582,17 @@ def summarize(
         "events_rejected_by_invalidation_near": meta.get("events_rejected_by_invalidation_near", 0),
         "include_invalidation_near": bool(meta.get("include_invalidation_near")),
         "contaminated_mode": bool(meta.get("contaminated_mode")),
-        "parameter_sets_tested": len(ranked_rows),
+        "trigger_family": str(args.trigger_family),
+        "trigger_family_candidate_count": len(active_rows),
+        "no_valid_trigger_family_candidate": no_valid_trigger_family_candidate,
+        "close_reference_fallback_blocked": str(args.trigger_family) == "wick_touch" and no_valid_trigger_family_candidate,
+        "parameter_sets_tested": len(active_rows),
         "best_raw_edge_candidate": best_raw,
         "best_robust_candidate": best_robust,
         "best_low_mae_candidate": best_low_mae,
         "best_aplus_candidate": best_aplus,
         "best_wick_touch_candidate": best_wick_touch,
+        "best_close_reference_candidate": best_close_reference,
         "best_raw_edge_warning": best_raw_warning,
         "top_excess_return_candidates": top_excess,
         "top_drawdown_improvement_candidates": top_drawdown,
@@ -1306,7 +1600,7 @@ def summarize(
             rejected,
             key=lambda row: (as_float(row.get("excess_return_vs_hold_pct")) or 0.0, int(row.get("sample_count") or 0)),
         ), key_func=build_effective_summary_key)[:15],
-        "ranked_rows_preview": ranked_rows[:25],
+        "ranked_rows_preview": active_rows[:25],
         "fibo_target_map_present": meta["fibo_target_map_present"],
         "fibo_target_modes_point_in_time_safe": meta["fibo_target_modes_point_in_time_safe"],
         "fibo_target_guard_reason": meta["fibo_target_guard_reason"],
@@ -1317,11 +1611,11 @@ def summarize(
         "events_with_intrabar_touch_input": meta.get("events_with_intrabar_touch_input"),
         "events_missing_intrabar_touch_input": meta.get("events_missing_intrabar_touch_input"),
         "events_skipped_by_reason": meta["events_skipped_by_reason"],
-        "top_by_symbol_concentration": top_rows(ranked_rows, "top_symbol_concentration_pct", min_samples=args.min_samples, reverse=True),
+        "top_by_symbol_concentration": top_rows(active_rows, "top_symbol_concentration_pct", min_samples=args.min_samples, reverse=True),
         "top_by_low_mae": dedupe_rows(
             sorted(
                 [
-                    row for row in ranked_rows
+                    row for row in active_rows
                     if int(row.get("sample_count") or 0) >= int(args.min_samples)
                     and (as_float(row.get("excess_return_vs_hold_pct")) or 0.0) > 0
                     and as_float(row.get("avg_mae_pct")) is not None
@@ -1334,7 +1628,7 @@ def summarize(
             ),
             key_func=build_effective_summary_key,
         )[:15],
-        "trigger_basis_summary": trigger_basis_summary(ranked_rows, min_samples=int(args.min_samples)),
+        "trigger_basis_summary": trigger_basis_summary(active_rows, min_samples=int(args.min_samples)),
         "parameters": {
             "action": args.action,
             "primary_bucket": args.primary_bucket,
@@ -1342,6 +1636,9 @@ def summarize(
             "max_events": int(args.max_events),
             "min_samples": int(args.min_samples),
             "selected_events_per_candidate": int(args.selected_events_per_candidate),
+            "trigger_family": str(args.trigger_family),
+            "min_target_distance_pct": float(args.min_target_distance_pct),
+            "allow_target_inside_entry_zone": bool(args.allow_target_inside_entry_zone),
             "include_invalidation_near": bool(args.include_invalidation_near),
         },
         "files": {key: str(value) for key, value in paths.items()},
@@ -1365,6 +1662,12 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         f"events_rejected_by_invalidation_near={summary.get('events_rejected_by_invalidation_near')}"
     )
     print(
+        f"trigger_family={summary.get('trigger_family')} "
+        f"trigger_family_candidate_count={summary.get('trigger_family_candidate_count')} "
+        f"no_valid_trigger_family_candidate={str(bool(summary.get('no_valid_trigger_family_candidate'))).lower()} "
+        f"close_reference_fallback_blocked={str(bool(summary.get('close_reference_fallback_blocked'))).lower()}"
+    )
+    print(
         f"intrabar_touch_context_loaded={str(bool(summary.get('intrabar_touch_context_loaded'))).lower()} "
         f"source={summary.get('intrabar_touch_context_source')} interval={summary.get('intrabar_touch_context_interval')} "
         f"events_with_intrabar_touch_input={summary.get('events_with_intrabar_touch_input')} "
@@ -1377,6 +1680,7 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
     best_low_mae = summary.get("best_low_mae_candidate") or {}
     best_aplus = summary.get("best_aplus_candidate") or {}
     best_wick_touch = summary.get("best_wick_touch_candidate") or {}
+    best_close_reference = summary.get("best_close_reference_candidate") or {}
     print(
         "best_raw_edge_candidate "
         f"{best_raw.get('parameter_key', 'none')} excess={best_raw.get('excess_return_vs_hold_pct')} "
@@ -1406,6 +1710,15 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         f"{best_wick_touch.get('parameter_key', 'none')} excess={best_wick_touch.get('excess_return_vs_hold_pct')} "
         f"sample_count={best_wick_touch.get('sample_count')}"
     )
+    print(
+        "best_close_reference_candidate "
+        f"{best_close_reference.get('parameter_key', 'none')} excess={best_close_reference.get('excess_return_vs_hold_pct')} "
+        f"sample_count={best_close_reference.get('sample_count')}"
+    )
+    if str(summary.get("trigger_family")) == "wick_touch" and bool(summary.get("no_valid_trigger_family_candidate")):
+        print("NO_VALID_WICK_TOUCH_CANDIDATE")
+    if not summary.get("best_robust_candidate"):
+        print("NO_ROBUST_CANDIDATE")
     if summary.get("best_raw_edge_warning"):
         print(f"warning best_raw_edge_candidate={summary['best_raw_edge_warning']}")
     if (
@@ -1453,6 +1766,11 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
             "warning robust_candidate_invalidation_leak "
             f"selected_events_with_invalidation_near={best_robust.get('selected_events_with_invalidation_near')}"
         )
+    if str(summary.get("trigger_family")) == "wick_touch" and int(best_robust.get("selected_events_with_wrong_trigger_family") or 0) > 0:
+        print(
+            "warning robust_candidate_wrong_trigger_family "
+            f"selected_events_with_wrong_trigger_family={best_robust.get('selected_events_with_wrong_trigger_family')}"
+        )
     if bool(summary.get("include_invalidation_near")):
         print("warning contaminated_mode=include_invalidation_near")
     print(
@@ -1466,7 +1784,9 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         "selected_event_export "
         f"selected_events_written={summary.get('selected_events_written')} "
         f"selected_candidate_roles_written={','.join(summary.get('selected_candidate_roles_written') or [])} "
-        f"selected_events_with_invalidation_near={summary.get('selected_events_with_invalidation_near')}"
+        f"selected_events_with_invalidation_near={summary.get('selected_events_with_invalidation_near')} "
+        f"selected_events_with_wrong_trigger_family={summary.get('selected_events_with_wrong_trigger_family')} "
+        f"selected_events_with_target_inside_entry_zone={summary.get('selected_events_with_target_inside_entry_zone')}"
     )
     robust_regimes = summary.get("candidate_regime_summaries", {}).get("ROBUST", [])
     if robust_regimes:
@@ -1514,6 +1834,9 @@ def main(argv: list[str] | None = None) -> int:
                 "target_mode": target_mode,
                 "max_hold_horizon": max_hold_horizon,
                 "require_aplus_context": require_aplus_context,
+                "trigger_family": str(args.trigger_family),
+                "min_target_distance_pct": float(args.min_target_distance_pct),
+                "allow_target_inside_entry_zone": bool(args.allow_target_inside_entry_zone),
                 "include_invalidation_near": bool(args.include_invalidation_near),
             },
             fib_guard_safe=bool(meta["fibo_target_modes_point_in_time_safe"]),
@@ -1565,6 +1888,9 @@ def main(argv: list[str] | None = None) -> int:
         selected_variant_labels,
         fib_guard_safe=bool(meta["fibo_target_modes_point_in_time_safe"]),
         selected_events_per_candidate=int(args.selected_events_per_candidate),
+        trigger_family=str(args.trigger_family),
+        min_target_distance_pct=float(args.min_target_distance_pct),
+        allow_target_inside_entry_zone=bool(args.allow_target_inside_entry_zone),
     )
     summary["selected_variant_parameter_keys"] = [row["parameter_key"] for row in selected_variants]
     summary["selected_event_export_count"] = len(selected_event_rows)
