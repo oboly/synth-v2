@@ -406,6 +406,7 @@ _REGISTRY: dict[str, LabelDescription] = {
         _entry("MISSING_ENTRY_PRICE", "Average entry price is missing for this position row.", category="data_quality", human_label="missing entry price"),
         _entry("MISSING_TARGET_ZONE", "Target or reaction zone is missing for this row.", category="data_quality", human_label="missing target zone"),
         _entry("MISSING_ZONE_MAP", "Entry/target zone map is missing for this row.", category="data_quality", human_label="missing zone map"),
+        _entry("FIB_MAP_UNKNOWN", "No fib target map research row was found for this symbol, so fib target context is missing.", category="data_quality", human_label="fib map unknown"),
         _entry("MISSING_INVALIDATION", "Invalidation/risk level is missing for this row.", category="data_quality", human_label="missing invalidation"),
         _entry("MISSING_MARKET_BREATH_CONTEXT", "Market breath/context overlay is missing for this row.", category="data_quality", human_label="missing breath/context"),
         _entry("MISSING_INTRABAR_CONTEXT", "Lower-timeframe lifecycle overlay is missing for this row.", category="data_quality", human_label="missing intrabar context"),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import html
 import json
 import os
@@ -57,6 +58,7 @@ POLICY_NAME = "paper_advice_static_dashboard_v1"
 POLICY_VERSION = "0.1"
 
 DEFAULT_OUTPUT_HTML = "data/reporting/paper_advice_dashboard_v1.html"
+DEFAULT_FIB_MAP_ROWS = Path("data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv")
 
 ADVICE_ORDER = {
     "WATCH_CORE": 1,
@@ -99,6 +101,7 @@ class ManualSupportContext:
     invalidation_line: str
     target_line_html: str
     trim_reload_hint: str
+    fib_context_html: str
     freshness_line: str
     source_modules: tuple[str, ...]
     missing_lines: tuple[str, ...]
@@ -200,6 +203,37 @@ def esc(value: Any) -> str:
     if isinstance(value, datetime):
         return html.escape(value.isoformat(sep=" ", timespec="seconds"))
     return html.escape(str(value))
+
+
+def load_fib_target_map_rows(path: Path) -> dict[str, dict[str, Any]]:
+    if not path.exists():
+        return {}
+
+    rows_by_symbol: dict[str, dict[str, Any]] = {}
+    with path.open(encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if not symbol:
+                continue
+            rows_by_symbol[symbol] = row
+    return rows_by_symbol
+
+
+def attach_fib_map_context(row: dict[str, Any], fib_row: dict[str, Any] | None) -> None:
+    if not fib_row:
+        row["fib_map_lookup_status"] = "UNKNOWN"
+        return
+
+    row["fib_map_lookup_status"] = "FOUND"
+    for key, value in fib_row.items():
+        row[f"fib_map_{key}"] = value
+
+
+def fmt_percent_text(value: Any, *, places: int = 1) -> str:
+    dec = to_decimal(value)
+    if dec is None:
+        return "—"
+    return f"{fmt_decimal(dec, places=places)}%"
 
 
 def badge_html(label: Any, css_name: str | None = None, text: Any | None = None) -> str:
@@ -740,6 +774,8 @@ def infer_source_modules(
         modules.append("intrabar_lifecycle_context_v1")
     if row.get("aplus_bucket") is not None:
         modules.append("aplus_table1_row")
+    if str(row.get("fib_map_lookup_status") or "").strip().upper() == "FOUND":
+        modules.append("fibo_target_map_v1")
     return tuple(dict.fromkeys(modules))
 
 
@@ -766,7 +802,80 @@ def manual_missing_lines(
         missing.append("MISSING_MARKET_BREATH_CONTEXT")
     if intrabar_row is None:
         missing.append("MISSING_INTRABAR_CONTEXT")
+    if str(row.get("fib_map_lookup_status") or "").strip().upper() != "FOUND":
+        missing.append("FIB_MAP_UNKNOWN")
     return tuple(missing)
+
+
+def fib_context_html(
+    row: dict[str, Any],
+    *,
+    current_price: Any,
+    next_preview: NextZonePreview,
+    entry_blocked: bool,
+    selection_state: str,
+    setup_state: str,
+    policy_decision: str,
+    advice_action: str,
+    allowed_now: str,
+) -> str:
+    fib_status = str(row.get("fib_map_lookup_status") or "UNKNOWN").strip().upper()
+    invalidation_text = fmt_snapshot_price(row.get("invalidation_price"))
+    fallback_target_mid = _target_midpoint(row.get("tp_zone_low"), row.get("tp_zone_high"))
+    fallback_target_price = fmt_snapshot_price(fallback_target_mid)
+    fallback_target_distance = _target_distance_text(fallback_target_mid, current_price)
+    block_reasons = [
+        f"selection_state={selection_state or 'UNKNOWN'}",
+        f"setup_filter_state={setup_state or 'UNKNOWN'}",
+        f"policy/action={(policy_decision or 'UNKNOWN')}/{(advice_action or 'UNKNOWN')}",
+        f"edge_permission={allowed_now or 'UNKNOWN'}",
+    ]
+    block_html = ""
+    if entry_blocked:
+        block_html = (
+            "<div class='small'><strong>entry_block</strong>: Map target visible, entry blocked.</div>"
+            f"<div class='muted small'>{esc(' · '.join(block_reasons))}</div>"
+        )
+
+    if fib_status != "FOUND":
+        return (
+            "<div class='small'><strong>fib_map_state</strong>: <span class='pill'>FIB_MAP_UNKNOWN</span></div>"
+            f"<div class='small'><strong>current_price</strong>: <span class='mono'>{esc(fmt_snapshot_price(current_price))}</span></div>"
+            f"<div class='small'><strong>current mapped target</strong>: MAP_TARGET @ <span class='mono'>{esc(fallback_target_price)}</span> · distance={esc(fallback_target_distance or '—')}</div>"
+            f"<div class='muted small'>{relevant_target_html(row, next_preview)}</div>"
+            f"<div class='small'><strong>invalidation</strong>: <span class='mono'>{esc(invalidation_text)}</span></div>"
+            f"{block_html}"
+            "<div class='muted small'>No fib target map row was found for this symbol in data/research/fibo_target_map_v1.</div>"
+        )
+
+    current_price_text = fmt_snapshot_price(current_price)
+    interval = str(row.get("fib_map_interval") or "unknown")
+    target_status = str(row.get("fib_map_target_status") or "UNKNOWN")
+    anchor_quality = str(row.get("fib_map_anchor_quality") or "UNKNOWN")
+    anchor_end = fmt_ts_local_first(row.get("fib_map_anchor_end_ts"))
+    bars_since_anchor = fmt_decimal(row.get("fib_map_bars_since_anchor_end"))
+    reaction_text = fmt_snapshot_price(row.get("fib_map_local_reaction_price"))
+    support_level = str(row.get("fib_map_next_fibo_support_level") or "UNKNOWN")
+    support_price = fmt_snapshot_price(row.get("fib_map_next_fibo_support_price"))
+    support_distance = fmt_percent_text(row.get("fib_map_distance_to_next_fibo_support_pct"))
+    target_level = str(row.get("fib_map_next_extension_target_level") or "UNKNOWN")
+    target_price = fmt_snapshot_price(row.get("fib_map_next_extension_target_price"))
+    target_distance = fmt_percent_text(row.get("fib_map_distance_to_next_extension_pct"))
+    main_level = str(row.get("fib_map_main_extension_target_level") or "UNKNOWN")
+    main_price = fmt_snapshot_price(row.get("fib_map_main_extension_target_price"))
+    reentry_label = str(row.get("fib_map_reentry_zone_label") or "UNKNOWN")
+
+    return (
+        f"<div class='small'><strong>fib_map_state</strong>: {esc(target_status)} · interval={esc(interval)} · anchor_quality={esc(anchor_quality)}</div>"
+        f"<div class='small'><strong>current price</strong>: <span class='mono'>{esc(current_price_text)}</span></div>"
+        f"<div class='small'><strong>invalidation</strong>: <span class='mono'>{esc(invalidation_text)}</span></div>"
+        f"<div class='small'><strong>support/retest zone</strong>: {esc(support_level)} @ <span class='mono'>{esc(support_price)}</span> · distance={esc(support_distance)} · reload={esc(reentry_label)}</div>"
+        f"<div class='small'><strong>next reaction zone</strong>: local_reaction @ <span class='mono'>{esc(reaction_text)}</span></div>"
+        f"<div class='small'><strong>upside map target</strong>: {esc(target_level)} @ <span class='mono'>{esc(target_price)}</span> · target distance={esc(target_distance)}</div>"
+        f"<div class='small'><strong>main bull target</strong>: {esc(main_level)} @ <span class='mono'>{esc(main_price)}</span></div>"
+        f"{block_html}"
+        f"<div class='muted small'><strong>map freshness</strong>: anchor_end={esc(anchor_end)} · bars_since_anchor_end={esc(bars_since_anchor)}</div>"
+    )
 
 
 def manual_support_context(
@@ -955,6 +1064,24 @@ def manual_support_context(
         intrabar_row=intrabar_row,
     )
     strongest_reasons = tuple(why_lines[:4]) if why_lines else ("Current paper context only.",)
+    entry_blocked = bool(
+        block_display is not None
+        or allowed_now == "NO"
+        or selection_state == "AVOID"
+        or setup_state == "FAIL"
+        or advice_state in {"AVOID", "NO_NEW_BUY", "BLOCK_24H", "WAIT"}
+    )
+    fib_html = fib_context_html(
+        row,
+        current_price=current_price,
+        next_preview=next_preview,
+        entry_blocked=entry_blocked,
+        selection_state=selection_state,
+        setup_state=setup_state,
+        policy_decision=str(row.get("policy_decision") or "").strip().upper(),
+        advice_action=advice_action,
+        allowed_now=allowed_now,
+    )
 
     return ManualSupportContext(
         manual_action_label=manual_action,
@@ -966,6 +1093,7 @@ def manual_support_context(
         invalidation_line=invalidation_line,
         target_line_html=target_line_html,
         trim_reload_hint=trim_reload_hint,
+        fib_context_html=fib_html,
         freshness_line=freshness_line,
         source_modules=source_modules,
         missing_lines=manual_missing_lines(
@@ -998,6 +1126,7 @@ def manual_support_html(context: ManualSupportContext) -> str:
         f"<div class='small'><strong>strongest_reasons</strong>:{reason_html}</div>"
         f"<div class='muted small'><strong>risk/invalidation</strong>: {esc(context.invalidation_line)}</div>"
         f"<div class='small'><strong>target/reaction_zone</strong>: {context.target_line_html}</div>"
+        f"<div class='small'><strong>fib_target_map</strong>: {context.fib_context_html}</div>"
         f"<div class='muted small'><strong>freshness</strong>: {esc(context.freshness_line)}</div>"
         f"<div class='muted small'><strong>source_modules</strong>: <span class='mono'>{esc(source_modules_text)}</span></div>"
         f"<div class='muted small'><strong>trim/reload_hint</strong>: {esc(context.trim_reload_hint)}</div>"
@@ -2269,6 +2398,7 @@ def print_table(
 def main() -> int:
     args = parse_args()
     output_path = Path(args.output_html)
+    fib_map_by_symbol = load_fib_target_map_rows(DEFAULT_FIB_MAP_ROWS)
 
     conn = get_connection()
     try:
@@ -2305,9 +2435,11 @@ def main() -> int:
 
     now_utc = datetime.now(UTC)
     for row in rows:
-        snapshot = price_by_symbol.get(str(row.get("symbol") or "").upper())
+        symbol = str(row.get("symbol") or "").upper()
+        snapshot = price_by_symbol.get(symbol)
         row["current_price"] = None if snapshot is None else snapshot.price
         row["price_age_min"] = price_age_min(snapshot, now_utc=now_utc)
+        attach_fib_map_context(row, fib_map_by_symbol.get(symbol))
     selected_min_asof, selected_max_asof = selected_asof_bounds(rows)
 
     html_content = render_html(
