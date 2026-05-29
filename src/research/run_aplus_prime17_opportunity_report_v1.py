@@ -457,11 +457,27 @@ def selection_is_constructive(selection_row: dict[str, Any] | None) -> bool:
     return state in SELECTION_CONSTRUCTIVE_STATES or (bias in SELECTION_CONSTRUCTIVE_BIASES and score_ok)
 
 
-def zone_supportive(zone_summary: str) -> bool:
-    return zone_summary != "unavailable" and "fail=" not in zone_summary
+def selection_confirmed(selection_row: dict[str, Any] | None) -> bool:
+    if not selection_row:
+        return False
+    state = str(selection_row.get("selection_state") or "").upper()
+    return state != "AVOID" and selection_is_constructive(selection_row)
 
 
-def volume_supportive(volume_row: dict[str, Any] | None) -> bool:
+def zone_valid(zone_summary: str) -> bool:
+    normalized = zone_summary.strip().lower()
+    if normalized == "unavailable":
+        return False
+    if normalized.startswith("invalid="):
+        return False
+    if "invalid=" in normalized:
+        return False
+    if "fail=" in normalized:
+        return False
+    return True
+
+
+def volume_confirmed(volume_row: dict[str, Any] | None) -> bool:
     if not volume_row:
         return False
     ret_value = volume_row.get("return_1_interval_pct")
@@ -494,40 +510,41 @@ def classify_bucket(
         or t2.quality == "dirty"
         or t2.extension_risk == "high"
     )
+    selection_yes = selection_confirmed(selection_row)
+    zone_yes = zone_valid(zone_summary)
+    volume_yes = volume_confirmed(volume_row)
+    synth_confirmation = selection_yes or zone_yes or volume_yes
     harmonic_safe = (
         t2.quality in {"clean", "mixed"}
         and t2.extension_risk in {"low", "moderate"}
         and t2.harmonic_phase not in {"late_extension", "reset", "unclear"}
         and t2.phase_state not in {"late", "exhausted"}
     )
-    synth_confirmed = (
-        selection_is_constructive(selection_row)
-        or zone_supportive(zone_summary)
-        or volume_supportive(volume_row)
-    )
     if deterioration:
         return "CAUTION_DETERIORATION", (
             f"phase={t1.aplus_phase}; bias={t1.aplus_bias}; harmonic={t2.harmonic_phase}; "
             f"risk={t2.extension_risk}; quality={t2.quality}"
         )
-    if constructive and harmonic_safe and synth_confirmed:
+    if constructive and harmonic_safe and synth_confirmation:
         return "A_PLUS_CORE_CONTINUATION", (
             f"constructive_a_plus; harmonic_safe; "
-            f"selection={'yes' if selection_is_constructive(selection_row) else 'no'}; "
-            f"zone={'yes' if zone_supportive(zone_summary) else 'no'}; "
-            f"volume={'yes' if volume_supportive(volume_row) else 'no'}"
+            f"selection={'yes' if selection_yes else 'no'}; "
+            f"zone_valid={'yes' if zone_yes else 'no'}; "
+            f"volume_confirmed={'yes' if volume_yes else 'no'}"
         )
-    if token in ANOMALY_TOKENS and (
+    if token in ANOMALY_TOKENS and (zone_yes or volume_yes) and (
         t2.extension_risk == "high"
         or t2.quality in {"mixed", "dirty"}
         or t1.aplus_role in {"speculative"}
     ):
         return "FIB_EXPLOSION_CANDIDATE", (
-            f"anomaly_candidate; role={t1.aplus_role}; harmonic={t2.harmonic_phase}; risk={t2.extension_risk}"
+            f"anomaly_candidate; role={t1.aplus_role}; harmonic={t2.harmonic_phase}; risk={t2.extension_risk}; "
+            f"zone_valid={'yes' if zone_yes else 'no'}; volume_confirmed={'yes' if volume_yes else 'no'}"
         )
     if constructive and harmonic_safe:
         return "WATCH_ONLY_NEEDS_SYNTH_CONFIRMATION", (
-            f"constructive_a_plus_without_synth_confirmation; selection={'available' if selection_row else 'unavailable'}; "
+            f"constructive_a_plus_without_synth_confirmation; selection={'yes' if selection_yes else 'no'}; "
+            f"zone_valid={'yes' if zone_yes else 'no'}; volume_confirmed={'yes' if volume_yes else 'no'}; "
             f"zone={zone_summary}; volume={format_volume_summary(volume_row)}"
         )
     return "NO_SETUP", "insufficient_data_or_no_constructive_alignment"

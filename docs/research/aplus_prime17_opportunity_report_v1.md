@@ -115,15 +115,25 @@ Initial deterministic rules:
   - not `late`
   - not `exhausted`
 - and at least one Synth-side confirmation exists:
-  - constructive latest selection context
-  - or usable zone context without obvious fail marker
-  - or positive recent return / elevated volume context
+  - constructive latest selection context with `selection_state != AVOID`
+  - or `zone_valid=yes`
+  - or `volume_confirmed=yes`
+
+`zone_valid=no` when:
+
+- `zone_context_summary=unavailable`
+- `zone_context_summary` starts with `invalid=`
+- `zone_context_summary` contains `invalid=`
+- `zone_context_summary` contains `fail=`
 
 `WATCH_ONLY_NEEDS_SYNTH_CONFIRMATION`
 
 - A+ constructive
 - harmonic state acceptable
-- but Synth/zone/volume confirmation is missing or weak
+- but Synth confirmation is missing:
+  - `selection=no`
+  - `zone_valid=no`
+  - `volume_confirmed=no`
 
 `FIB_EXPLOSION_CANDIDATE`
 
@@ -134,6 +144,9 @@ Initial deterministic rules:
   - `SUI`
   - `RENDER`
 - and A+ / harmonic context is unstable, speculative, or high-risk
+- and at least one watch support exists:
+  - `zone_valid=yes`
+  - or `volume_confirmed=yes`
 
 `CAUTION_DETERIORATION`
 
@@ -159,10 +172,12 @@ Selection context:
 - latest available `selection_state`
 - latest available `selection_bias`
 - latest available `selection_score`
+- `selection_state=AVOID` is never counted as constructive confirmation
 
 Zone context summary:
 
 - renders latest available entry / tp / invalidation / reclaim / retest fields
+- values starting with `invalid=` are explicitly treated as `zone_valid=no`
 - if the `execution_zone_context` table or columns are missing, renders
   `unavailable`
 
@@ -171,6 +186,7 @@ Volume context summary:
 - recent `1d` default close-to-close return
 - latest candle volume ratio versus recent history when available
 - latest candle timestamp
+- positive return or elevated volume can count as `volume_confirmed=yes`
 
 ## Safety
 
