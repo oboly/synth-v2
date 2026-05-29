@@ -5,15 +5,19 @@ import csv
 import itertools
 import json
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from statistics import median
 from typing import Any
 
+from src.common.db import get_connection
 
 REPORT_NAME = "reload_reaction_scalp_parameter_sweep_v1"
 REPORT_VERSION = "1.0"
 STRATEGY_CANDIDATE = "RELOAD_REACTION_SCALP_V1"
 RETURN_LABEL = "POLICY_PROXY_RETURN"
+EVENT_CANDLE_INTERVAL = "15m"
+POLICY_PROXY_CONFIRMATION = "POLICY_PROXY_CONFIRMATION"
 
 DEFAULT_INPUT_ROWS = Path("data/research/position_lifecycle_outcome_validation_v1/outcome_rows_v1.jsonl")
 DEFAULT_FIBO_ROWS = Path("data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv")
@@ -36,6 +40,9 @@ NEAR_ZONE_THRESHOLD_PCTS = (0.5, 1.0, 1.5, 2.0, 3.0)
 TRIGGER_BASES = (
     "current_price_near_zone",
     "current_price_inside_zone",
+    "wick_touch_zone",
+    "wick_touch_entry_low",
+    "close_confirm_after_touch",
     "current_price_above_entry_high_max_late",
 )
 MAX_LATE_DISTANCE_ABOVE_ZONE_PCTS = (0.25, 0.5, 1.0)
@@ -148,6 +155,18 @@ def point_in_time_fibo_available(fibo_rows: list[dict[str, str]]) -> tuple[bool,
     return False, "latest_symbol_level_fibo_map_not_point_in_time_safe"
 
 
+def parse_ts(value: Any) -> datetime:
+    text = str(value or "").strip()
+    parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def to_naive_utc(value: datetime) -> datetime:
+    return value.astimezone(UTC).replace(tzinfo=None)
+
+
 def normalize_key_part(value: Any) -> str:
     if isinstance(value, bool):
         return str(value).lower()
@@ -173,6 +192,149 @@ def build_effective_summary_key(row: dict[str, Any]) -> str:
         clone["max_late_distance_above_zone_pct"] = "na"
         return build_parameter_key(clone)
     return str(row.get("parameter_key") or build_parameter_key(row))
+
+
+def fetch_asset_id_map(conn: Any, symbols: list[str]) -> dict[str, int]:
+    if not symbols:
+        return {}
+    placeholders = ", ".join(["%s"] * len(symbols))
+    sql = f"SELECT asset_id, symbol FROM asset WHERE symbol IN ({placeholders})"
+    with conn.cursor() as cur:
+        cur.execute(sql, tuple(symbols))
+        rows = cur.fetchall()
+    return {str(row["symbol"]).upper(): int(row["asset_id"]) for row in rows}
+
+
+def fetch_event_candle_rows(
+    conn: Any,
+    *,
+    venue: str,
+    asset_ids: dict[str, int],
+    start_ts: datetime,
+    end_ts: datetime,
+) -> dict[str, list[dict[str, Any]]]:
+    if not asset_ids:
+        return {}
+    placeholders = ", ".join(["%s"] * len(asset_ids))
+    sql = f"""
+        SELECT asset_id, close_ts_utc, open_price, high_price, low_price, close_price
+        FROM obs_market_candle
+        WHERE venue = %s
+          AND interval_code = %s
+          AND close_ts_utc >= %s
+          AND close_ts_utc <= %s
+          AND asset_id IN ({placeholders})
+        ORDER BY asset_id ASC, close_ts_utc ASC
+    """
+    params: list[Any] = [
+        venue,
+        EVENT_CANDLE_INTERVAL,
+        to_naive_utc(start_ts),
+        to_naive_utc(end_ts),
+        *asset_ids.values(),
+    ]
+    reverse_asset = {asset_id: symbol for symbol, asset_id in asset_ids.items()}
+    grouped: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in asset_ids}
+    with conn.cursor() as cur:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+    for row in rows:
+        symbol = reverse_asset.get(int(row["asset_id"]))
+        if symbol is None:
+            continue
+        close_ts = row["close_ts_utc"]
+        if close_ts.tzinfo is None:
+            close_ts = close_ts.replace(tzinfo=UTC)
+        else:
+            close_ts = close_ts.astimezone(UTC)
+        grouped[symbol].append(
+            {
+                "close_ts_utc": close_ts,
+                "open_price": float(row["open_price"]),
+                "high_price": float(row["high_price"]),
+                "low_price": float(row["low_price"]),
+                "close_price": float(row["close_price"]),
+            }
+        )
+    return grouped
+
+
+def attach_intrabar_touch_context(events: list[dict[str, Any]]) -> dict[str, Any]:
+    meta = {
+        "intrabar_touch_context_source": "obs_market_candle",
+        "intrabar_touch_context_interval": EVENT_CANDLE_INTERVAL,
+        "intrabar_touch_context_loaded": False,
+        "intrabar_touch_context_warning": None,
+        "events_with_intrabar_touch_input": 0,
+        "events_missing_intrabar_touch_input": 0,
+    }
+    if not events:
+        return meta
+    venues = {str(row.get("venue") or "").lower() for row in events if row.get("venue")}
+    if len(venues) != 1:
+        for row in events:
+            row["intrabar_touch_input_available"] = False
+            row["event_candle_lookup_status"] = "UNAVAILABLE"
+        meta["events_missing_intrabar_touch_input"] = len(events)
+        meta["intrabar_touch_context_warning"] = "mixed_or_missing_venue"
+        return meta
+    venue = str(events[0].get("venue") or "")
+    symbols = sorted({str(row.get("symbol") or "").upper() for row in events if row.get("symbol")})
+    event_times = [parse_ts(row["event_ts_utc"]) for row in events if row.get("event_ts_utc")]
+    if not symbols or not event_times:
+        for row in events:
+            row["intrabar_touch_input_available"] = False
+            row["event_candle_lookup_status"] = "UNAVAILABLE"
+        meta["events_missing_intrabar_touch_input"] = len(events)
+        meta["intrabar_touch_context_warning"] = "missing_symbol_or_event_ts"
+        return meta
+    try:
+        conn = get_connection()
+        try:
+            asset_ids = fetch_asset_id_map(conn, symbols)
+            candle_rows = fetch_event_candle_rows(
+                conn,
+                venue=venue,
+                asset_ids=asset_ids,
+                start_ts=min(event_times) - timedelta(minutes=15),
+                end_ts=max(event_times) + timedelta(minutes=15),
+            )
+        finally:
+            conn.close()
+    except Exception as exc:
+        for row in events:
+            row["intrabar_touch_input_available"] = False
+            row["event_candle_lookup_status"] = "UNAVAILABLE"
+        meta["events_missing_intrabar_touch_input"] = len(events)
+        meta["intrabar_touch_context_warning"] = f"event_candle_lookup_failed:{type(exc).__name__}"
+        return meta
+
+    interval_delta = timedelta(minutes=15)
+    for row in events:
+        symbol = str(row.get("symbol") or "").upper()
+        event_ts = parse_ts(row["event_ts_utc"])
+        matched = None
+        for candle in candle_rows.get(symbol, []):
+            close_ts = candle["close_ts_utc"]
+            open_ts = close_ts - interval_delta
+            if open_ts <= event_ts <= close_ts:
+                matched = candle
+                break
+        if matched is None:
+            row["intrabar_touch_input_available"] = False
+            row["event_candle_lookup_status"] = "UNKNOWN"
+            meta["events_missing_intrabar_touch_input"] += 1
+            continue
+        row["intrabar_touch_input_available"] = True
+        row["event_candle_lookup_status"] = "FOUND"
+        row["event_candle_close_ts_utc"] = matched["close_ts_utc"].isoformat().replace("+00:00", "Z")
+        row["event_candle_open_price"] = matched["open_price"]
+        row["event_candle_high_price"] = matched["high_price"]
+        row["event_candle_low_price"] = matched["low_price"]
+        row["event_candle_close_price"] = matched["close_price"]
+        meta["events_with_intrabar_touch_input"] += 1
+    meta["intrabar_touch_context_loaded"] = meta["events_with_intrabar_touch_input"] > 0
+    return meta
 
 
 def load_events(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -205,6 +367,7 @@ def load_events(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[st
             skip_counts["missing_price_input"] += 1
             continue
         selected.append(row)
+    intrabar_meta = attach_intrabar_touch_context(selected)
     meta = {
         "events_loaded": len(rows),
         "events_eligible": len(selected),
@@ -212,6 +375,7 @@ def load_events(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[st
         "fibo_target_map_present": bool(fibo_rows),
         "fibo_target_modes_point_in_time_safe": fibo_safe,
         "fibo_target_guard_reason": fibo_reason,
+        **intrabar_meta,
     }
     return selected, meta
 
@@ -253,6 +417,55 @@ def current_above_entry_high_pct(row: dict[str, Any]) -> float | None:
     return ((current / zone_high) - 1.0) * 100.0
 
 
+def distance_from_entry_low_pct(row: dict[str, Any]) -> float | None:
+    return pct_distance(as_float(row.get("current_price")), as_float(row.get("entry_zone_low")))
+
+
+def distance_from_entry_high_pct(row: dict[str, Any]) -> float | None:
+    return pct_distance(as_float(row.get("current_price")), as_float(row.get("entry_zone_high")))
+
+
+def zone_touch_detected(row: dict[str, Any]) -> bool | None:
+    if not bool(row.get("intrabar_touch_input_available")):
+        return None
+    low_price = as_float(row.get("event_candle_low_price"))
+    high_price = as_float(row.get("event_candle_high_price"))
+    entry_low = as_float(row.get("entry_zone_low"))
+    entry_high = as_float(row.get("entry_zone_high"))
+    if low_price is None or high_price is None or entry_low is None or entry_high is None:
+        return None
+    zone_low = min(entry_low, entry_high)
+    zone_high = max(entry_low, entry_high)
+    return low_price <= zone_high and high_price >= zone_low
+
+
+def entry_low_touch_detected(row: dict[str, Any], *, near_zone_threshold_pct: float) -> bool | None:
+    if not bool(row.get("intrabar_touch_input_available")):
+        return None
+    low_price = as_float(row.get("event_candle_low_price"))
+    entry_low = as_float(row.get("entry_zone_low"))
+    if low_price is None or entry_low is None:
+        return None
+    threshold_price = entry_low * (1.0 + (near_zone_threshold_pct / 100.0))
+    return low_price <= threshold_price
+
+
+def close_confirm_detected(row: dict[str, Any]) -> bool | None:
+    close_value = as_float(row.get("event_candle_close_price"))
+    if close_value is None:
+        close_value = as_float(row.get("current_price"))
+    entry_low, entry_mid, entry_high = zone_levels(row)
+    if close_value is None:
+        return None
+    confirm_level = entry_mid if entry_mid is not None else entry_high
+    return close_value >= confirm_level
+
+
+def close_only_late_trigger(row: dict[str, Any]) -> bool:
+    touch = zone_touch_detected(row)
+    return bool(touch) and current_above_entry_high_pct(row) is not None
+
+
 def local_reaction_target_price(row: dict[str, Any]) -> float | None:
     current = as_float(row.get("current_price"))
     target_low = as_float(row.get("tp_zone_low"))
@@ -271,31 +484,64 @@ def evaluate_trigger(
     trigger_basis: str,
     max_late_distance_above_zone_pct: float,
     require_aplus_context: bool,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, dict[str, Any]]:
+    trigger_meta = {
+        "trigger_price_basis": "UNKNOWN",
+        "zone_touch_detected": zone_touch_detected(row),
+        "entry_low_touch_detected": entry_low_touch_detected(row, near_zone_threshold_pct=near_zone_threshold_pct),
+        "close_confirm_detected": close_confirm_detected(row),
+        "close_only_late_trigger": close_only_late_trigger(row),
+        "distance_from_entry_low_pct": distance_from_entry_low_pct(row),
+        "distance_from_entry_high_pct": distance_from_entry_high_pct(row),
+    }
     if require_aplus_context and str(row.get("reason_bucket") or "").upper() != "APLUS_CONTEXT":
-        return False, "require_aplus_context_not_met"
+        return False, "require_aplus_context_not_met", trigger_meta
     low, mid, high = zone_levels(row)
     current = as_float(row.get("current_price"))
     if current is None:
-        return False, "missing_current_price"
+        return False, "missing_current_price", trigger_meta
     part_value = {"entry_low": low, "entry_mid": mid, "entry_high": high}[reload_zone_part]
     if trigger_basis == "current_price_near_zone":
+        trigger_meta["trigger_price_basis"] = "CLOSE_OR_REFERENCE"
         distance = pct_distance(current, part_value)
         if distance is None:
-            return False, "missing_zone_reference"
+            return False, "missing_zone_reference", trigger_meta
         if distance <= near_zone_threshold_pct:
-            return True, "near_zone_threshold_met"
-        return False, "near_zone_threshold_exceeded"
+            return True, "near_zone_threshold_met", trigger_meta
+        return False, "near_zone_threshold_exceeded", trigger_meta
     if trigger_basis == "current_price_inside_zone":
-        return (True, "inside_zone_met") if current_inside_zone(row) else (False, "inside_zone_not_met")
+        trigger_meta["trigger_price_basis"] = "CLOSE_OR_REFERENCE"
+        return (True, "inside_zone_met", trigger_meta) if current_inside_zone(row) else (False, "inside_zone_not_met", trigger_meta)
+    if trigger_basis == "wick_touch_zone":
+        trigger_meta["trigger_price_basis"] = "WICK_TOUCH"
+        if trigger_meta["zone_touch_detected"] is None:
+            return False, "missing_intrabar_touch_input", trigger_meta
+        return (True, "wick_touch_zone_met", trigger_meta) if trigger_meta["zone_touch_detected"] else (False, "wick_touch_zone_not_met", trigger_meta)
+    if trigger_basis == "wick_touch_entry_low":
+        trigger_meta["trigger_price_basis"] = "WICK_TOUCH"
+        if trigger_meta["entry_low_touch_detected"] is None:
+            return False, "missing_intrabar_touch_input", trigger_meta
+        return (True, "wick_touch_entry_low_met", trigger_meta) if trigger_meta["entry_low_touch_detected"] else (False, "wick_touch_entry_low_not_met", trigger_meta)
+    if trigger_basis == "close_confirm_after_touch":
+        trigger_meta["trigger_price_basis"] = "CONFIRM_AFTER_TOUCH"
+        if trigger_meta["zone_touch_detected"] is None:
+            return False, "missing_intrabar_touch_input", trigger_meta
+        if not trigger_meta["zone_touch_detected"]:
+            return False, "close_confirm_after_touch_missing_touch", trigger_meta
+        if trigger_meta["close_confirm_detected"] is None:
+            return False, "missing_close_confirm_reference", trigger_meta
+        if trigger_meta["close_confirm_detected"]:
+            return True, "close_confirm_after_touch_met", trigger_meta
+        return False, "close_confirm_after_touch_not_met", trigger_meta
     if trigger_basis == "current_price_above_entry_high_max_late":
+        trigger_meta["trigger_price_basis"] = "CLOSE_OR_REFERENCE"
         above_pct = current_above_entry_high_pct(row)
         if above_pct is None:
-            return False, "late_above_zone_not_met"
+            return False, "late_above_zone_not_met", trigger_meta
         if above_pct <= max_late_distance_above_zone_pct:
-            return True, "max_late_distance_met"
-        return False, "max_late_distance_exceeded"
-    return False, "unknown_trigger_basis"
+            return True, "max_late_distance_met", trigger_meta
+        return False, "max_late_distance_exceeded", trigger_meta
+    return False, "unknown_trigger_basis", trigger_meta
 
 
 def target_return_pct(row: dict[str, Any], target_mode: str, fib_guard_safe: bool) -> tuple[float | None, str]:
@@ -374,10 +620,16 @@ def evaluate_parameter_set(
     events_rejected_by_aplus = 0
     events_rejected_by_missing_zone = 0
     events_rejected_by_missing_return = 0
+    events_rejected_by_missing_intrabar_touch_input = 0
     max_late_filter_effect_count = 0
+    events_selected_by_wick_touch = 0
+    events_selected_by_close_only = 0
+    close_only_late_trigger_count = 0
+    distance_from_entry_low_values: list[float] = []
+    distance_from_entry_high_values: list[float] = []
 
     for row in events:
-        triggered, trigger_reason = evaluate_trigger(
+        triggered, trigger_reason, trigger_meta = evaluate_trigger(
             row,
             reload_zone_part=params["reload_zone_part"],
             near_zone_threshold_pct=params["near_zone_threshold_pct"],
@@ -396,10 +648,16 @@ def evaluate_parameter_set(
                 "late_above_zone_not_met",
                 "max_late_distance_exceeded",
                 "inside_zone_not_met",
+                "wick_touch_zone_not_met",
+                "wick_touch_entry_low_not_met",
+                "close_confirm_after_touch_missing_touch",
+                "close_confirm_after_touch_not_met",
             }:
                 events_rejected_by_zone_part += 1
             if trigger_reason in {"missing_current_price", "missing_zone_reference"}:
                 events_rejected_by_missing_zone += 1
+            if trigger_reason == "missing_intrabar_touch_input":
+                events_rejected_by_missing_intrabar_touch_input += 1
             if trigger_reason == "max_late_distance_exceeded":
                 max_late_filter_effect_count += 1
             continue
@@ -419,6 +677,16 @@ def evaluate_parameter_set(
             skip_reasons["incomplete_horizon"] += 1
             events_rejected_by_missing_return += 1
             continue
+        if trigger_meta["trigger_price_basis"] in {"WICK_TOUCH", "CONFIRM_AFTER_TOUCH"}:
+            events_selected_by_wick_touch += 1
+        if trigger_meta["trigger_price_basis"] == "CLOSE_OR_REFERENCE":
+            events_selected_by_close_only += 1
+            if bool(trigger_meta["close_only_late_trigger"]):
+                close_only_late_trigger_count += 1
+        if trigger_meta["distance_from_entry_low_pct"] is not None:
+            distance_from_entry_low_values.append(float(trigger_meta["distance_from_entry_low_pct"]))
+        if trigger_meta["distance_from_entry_high_pct"] is not None:
+            distance_from_entry_high_values.append(float(trigger_meta["distance_from_entry_high_pct"]))
         eligible_count += 1
         if target_hit:
             target_hit_count += 1
@@ -471,6 +739,7 @@ def evaluate_parameter_set(
     row_result = {
         "strategy_candidate": STRATEGY_CANDIDATE,
         "return_metric_label": RETURN_LABEL,
+        "trigger_confirmation_mode": POLICY_PROXY_CONFIRMATION if params["trigger_basis"] == "close_confirm_after_touch" else "",
         "evaluation_status": evaluation_status,
         "parameter_key": build_parameter_key(params),
         **params,
@@ -483,7 +752,13 @@ def evaluate_parameter_set(
         "events_rejected_by_aplus": events_rejected_by_aplus,
         "events_rejected_by_missing_zone": events_rejected_by_missing_zone,
         "events_rejected_by_missing_return": events_rejected_by_missing_return,
+        "events_rejected_by_missing_intrabar_touch_input": events_rejected_by_missing_intrabar_touch_input,
         "max_late_filter_effect_count": max_late_filter_effect_count,
+        "events_selected_by_wick_touch": events_selected_by_wick_touch,
+        "events_selected_by_close_only": events_selected_by_close_only,
+        "close_only_late_trigger_count": close_only_late_trigger_count,
+        "avg_distance_from_entry_low_pct": average_or_none(distance_from_entry_low_values),
+        "avg_distance_from_entry_high_pct": average_or_none(distance_from_entry_high_values),
         "target_hit_count": target_hit_count,
         "avg_strategy_return_pct": average_or_none(strategy_returns),
         "median_strategy_return_pct": median_or_none(strategy_returns),
@@ -603,6 +878,44 @@ def average_rows(rows: list[dict[str, Any]], key: str) -> float | None:
     return average_or_none(valid)
 
 
+def weighted_average_rows(rows: list[dict[str, Any]], key: str, *, weight_key: str = "sample_count") -> float | None:
+    weighted_sum = 0.0
+    total_weight = 0
+    for row in rows:
+        value = as_float(row.get(key))
+        weight = int(row.get(weight_key) or 0)
+        if value is None or weight <= 0:
+            continue
+        weighted_sum += value * weight
+        total_weight += weight
+    if total_weight <= 0:
+        return None
+    return round(weighted_sum / total_weight, 6)
+
+
+def trigger_basis_summary(rows: list[dict[str, Any]], *, min_samples: int) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if int(row.get("sample_count") or 0) < int(min_samples):
+            continue
+        grouped.setdefault(str(row.get("trigger_basis") or "UNKNOWN"), []).append(row)
+    out: list[dict[str, Any]] = []
+    for trigger_basis, bucket_rows in sorted(grouped.items()):
+        out.append(
+            {
+                "trigger_basis": trigger_basis,
+                "variant_count": len(bucket_rows),
+                "sample_count": sum(int(row.get("sample_count") or 0) for row in bucket_rows),
+                "avg_strategy_return_pct": weighted_average_rows(bucket_rows, "avg_strategy_return_pct"),
+                "avg_hold_return_pct": weighted_average_rows(bucket_rows, "avg_hold_return_pct"),
+                "excess_return_vs_hold_pct": weighted_average_rows(bucket_rows, "excess_return_vs_hold_pct"),
+                "avg_mfe_pct": weighted_average_rows(bucket_rows, "avg_mfe_pct"),
+                "avg_mae_pct": weighted_average_rows(bucket_rows, "avg_mae_pct"),
+            }
+        )
+    return out
+
+
 def candidate_regime_summary(candidate_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     for row in candidate_rows:
@@ -663,6 +976,7 @@ def build_selected_event_rows(
         "best_robust_candidate": "ROBUST",
         "best_low_mae_candidate": "LOW_MAE",
         "best_aplus_candidate": "APLUS",
+        "best_wick_touch_candidate": "WICK_TOUCH",
     }
     for variant_label, variant in selected_variants:
         if not variant:
@@ -683,7 +997,7 @@ def build_selected_event_rows(
         role_rows: list[dict[str, Any]] = []
         role_all_rows: list[dict[str, Any]] = []
         for row in events:
-            triggered, _ = evaluate_trigger(
+            triggered, _, trigger_meta = evaluate_trigger(
                 row,
                 reload_zone_part=params["reload_zone_part"],
                 near_zone_threshold_pct=params["near_zone_threshold_pct"],
@@ -737,9 +1051,11 @@ def build_selected_event_rows(
                 "top_symbol_concentration_pct": variant.get("top_symbol_concentration_pct"),
                 "strategy_candidate": STRATEGY_CANDIDATE,
                 "return_metric_label": RETURN_LABEL,
+                "trigger_confirmation_mode": POLICY_PROXY_CONFIRMATION if params["trigger_basis"] == "close_confirm_after_touch" else "",
                 "target_mode": params["target_mode"],
                 "max_hold_horizon": params["max_hold_horizon"],
                 "trigger_basis": params["trigger_basis"],
+                "trigger_price_basis": trigger_meta["trigger_price_basis"],
                 "reload_zone_part": params["reload_zone_part"],
                 "near_zone_threshold_pct": params["near_zone_threshold_pct"],
                 "max_late_distance_above_zone_pct": params["max_late_distance_above_zone_pct"],
@@ -758,6 +1074,12 @@ def build_selected_event_rows(
                 "current_price": current_price,
                 "entry_zone_low": entry_zone_low,
                 "entry_zone_high": entry_zone_high,
+                "zone_touch_detected": trigger_meta["zone_touch_detected"],
+                "entry_low_touch_detected": trigger_meta["entry_low_touch_detected"],
+                "close_confirm_detected": trigger_meta["close_confirm_detected"],
+                "close_only_late_trigger": trigger_meta["close_only_late_trigger"],
+                "distance_from_entry_low_pct": trigger_meta["distance_from_entry_low_pct"],
+                "distance_from_entry_high_pct": trigger_meta["distance_from_entry_high_pct"],
                 "tp_zone_low": as_float(row.get("tp_zone_low")),
                 "tp_zone_high": as_float(row.get("tp_zone_high")),
                 "invalidation_price": as_float(row.get("invalidation_price")),
@@ -880,6 +1202,21 @@ def summarize(
         reverse=True,
     )[0] if aplus_candidates else None
     best_drawdown = top_drawdown[0] if top_drawdown else None
+    wick_touch_candidates = [
+        row for row in ranked_rows
+        if str(row.get("trigger_basis") or "") in {"wick_touch_zone", "wick_touch_entry_low", "close_confirm_after_touch"}
+        and int(row.get("sample_count") or 0) >= int(args.min_samples)
+        and (as_float(row.get("excess_return_vs_hold_pct")) or 0.0) > 0
+    ]
+    best_wick_touch = sorted(
+        wick_touch_candidates,
+        key=lambda row: (
+            as_float(row.get("excess_return_vs_hold_pct")) or -999999.0,
+            int(row.get("sample_count") or 0),
+            -((as_float(row.get("top_symbol_concentration_pct")) or 999999.0)),
+        ),
+        reverse=True,
+    )[0] if wick_touch_candidates else None
     best_raw_warning = None
     if best_raw and bool(best_raw.get("overfit_risk_flag")):
         best_raw_warning = "SYMBOL_CONCENTRATION_HIGH"
@@ -895,6 +1232,7 @@ def summarize(
         "best_robust_candidate": best_robust,
         "best_low_mae_candidate": best_low_mae,
         "best_aplus_candidate": best_aplus,
+        "best_wick_touch_candidate": best_wick_touch,
         "best_raw_edge_warning": best_raw_warning,
         "top_excess_return_candidates": top_excess,
         "top_drawdown_improvement_candidates": top_drawdown,
@@ -906,6 +1244,12 @@ def summarize(
         "fibo_target_map_present": meta["fibo_target_map_present"],
         "fibo_target_modes_point_in_time_safe": meta["fibo_target_modes_point_in_time_safe"],
         "fibo_target_guard_reason": meta["fibo_target_guard_reason"],
+        "intrabar_touch_context_source": meta.get("intrabar_touch_context_source"),
+        "intrabar_touch_context_interval": meta.get("intrabar_touch_context_interval"),
+        "intrabar_touch_context_loaded": meta.get("intrabar_touch_context_loaded"),
+        "intrabar_touch_context_warning": meta.get("intrabar_touch_context_warning"),
+        "events_with_intrabar_touch_input": meta.get("events_with_intrabar_touch_input"),
+        "events_missing_intrabar_touch_input": meta.get("events_missing_intrabar_touch_input"),
         "events_skipped_by_reason": meta["events_skipped_by_reason"],
         "top_by_symbol_concentration": top_rows(ranked_rows, "top_symbol_concentration_pct", min_samples=args.min_samples, reverse=True),
         "top_by_low_mae": dedupe_rows(
@@ -924,6 +1268,7 @@ def summarize(
             ),
             key_func=build_effective_summary_key,
         )[:15],
+        "trigger_basis_summary": trigger_basis_summary(ranked_rows, min_samples=int(args.min_samples)),
         "parameters": {
             "action": args.action,
             "primary_bucket": args.primary_bucket,
@@ -947,10 +1292,19 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         f"events_loaded={summary['events_loaded']} events_eligible={summary['events_eligible']} "
         f"parameter_sets_tested={summary['parameter_sets_tested']} strategy_candidate={summary['strategy_candidate']}"
     )
+    print(
+        f"intrabar_touch_context_loaded={str(bool(summary.get('intrabar_touch_context_loaded'))).lower()} "
+        f"source={summary.get('intrabar_touch_context_source')} interval={summary.get('intrabar_touch_context_interval')} "
+        f"events_with_intrabar_touch_input={summary.get('events_with_intrabar_touch_input')} "
+        f"events_missing_intrabar_touch_input={summary.get('events_missing_intrabar_touch_input')}"
+    )
+    if summary.get("intrabar_touch_context_warning"):
+        print(f"warning intrabar_touch_context={summary['intrabar_touch_context_warning']}")
     best_raw = summary.get("best_raw_edge_candidate") or {}
     best_robust = summary.get("best_robust_candidate") or {}
     best_low_mae = summary.get("best_low_mae_candidate") or {}
     best_aplus = summary.get("best_aplus_candidate") or {}
+    best_wick_touch = summary.get("best_wick_touch_candidate") or {}
     print(
         "best_raw_edge_candidate "
         f"{best_raw.get('parameter_key', 'none')} excess={best_raw.get('excess_return_vs_hold_pct')} "
@@ -972,6 +1326,11 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         "best_aplus_candidate "
         f"{best_aplus.get('parameter_key', 'none')} excess={best_aplus.get('excess_return_vs_hold_pct')} "
         f"sample_count={best_aplus.get('sample_count')}"
+    )
+    print(
+        "best_wick_touch_candidate "
+        f"{best_wick_touch.get('parameter_key', 'none')} excess={best_wick_touch.get('excess_return_vs_hold_pct')} "
+        f"sample_count={best_wick_touch.get('sample_count')}"
     )
     if summary.get("best_raw_edge_warning"):
         print(f"warning best_raw_edge_candidate={summary['best_raw_edge_warning']}")
@@ -1007,6 +1366,14 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
             for row in summary["top_by_low_mae"][:15]
         )
     )
+    if summary.get("trigger_basis_summary"):
+        print(
+            "trigger_basis_summary "
+            + " ; ".join(
+                f"{row['trigger_basis']}:{row['sample_count']}:{row['excess_return_vs_hold_pct']}"
+                for row in summary["trigger_basis_summary"][:10]
+            )
+        )
     print(
         "rejected_negative_excess "
         + " ; ".join(
@@ -1092,18 +1459,27 @@ def main(argv: list[str] | None = None) -> int:
                 summary.get("best_robust_candidate"),
                 summary.get("best_low_mae_candidate"),
                 summary.get("best_aplus_candidate"),
+                summary.get("best_wick_touch_candidate"),
             ]
             if row
         ]
     )
+    selected_variant_labels = [
+        ("best_raw_edge_candidate", summary.get("best_raw_edge_candidate")),
+        ("best_robust_candidate", summary.get("best_robust_candidate")),
+        ("best_low_mae_candidate", summary.get("best_low_mae_candidate")),
+        ("best_aplus_candidate", summary.get("best_aplus_candidate")),
+    ]
+    wick_touch_candidate = summary.get("best_wick_touch_candidate")
+    robust_candidate = summary.get("best_robust_candidate")
+    if wick_touch_candidate and (
+        robust_candidate is None
+        or str(wick_touch_candidate.get("parameter_key") or "") != str(robust_candidate.get("parameter_key") or "")
+    ):
+        selected_variant_labels.append(("best_wick_touch_candidate", wick_touch_candidate))
     selected_event_rows, selected_event_validation, selected_event_regime_summaries = build_selected_event_rows(
         events,
-        [
-            ("best_raw_edge_candidate", summary.get("best_raw_edge_candidate")),
-            ("best_robust_candidate", summary.get("best_robust_candidate")),
-            ("best_low_mae_candidate", summary.get("best_low_mae_candidate")),
-            ("best_aplus_candidate", summary.get("best_aplus_candidate")),
-        ],
+        selected_variant_labels,
         fib_guard_safe=bool(meta["fibo_target_modes_point_in_time_safe"]),
         selected_events_per_candidate=int(args.selected_events_per_candidate),
     )

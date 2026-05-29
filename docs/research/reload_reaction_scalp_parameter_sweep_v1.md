@@ -41,6 +41,14 @@ Current first-read finding:
   like the better initial research candidate
 - this remains a research proxy result, not real fills
 
+Additional visual finding:
+
+- XRP-like weak examples suggest close-only reference checks can be too late or
+  wrong for reload scalps
+- reload touch should prefer wick / intrabar zone interaction when public event
+  candle OHLC is available
+- close is better treated as confirmation than as the only reload touch signal
+
 ## Inputs
 
 Primary input:
@@ -121,6 +129,9 @@ Swept families:
 3. `trigger_basis`
 - `current_price_near_zone`
 - `current_price_inside_zone`
+- `wick_touch_zone`
+- `wick_touch_entry_low`
+- `close_confirm_after_touch`
 - `current_price_above_entry_high_max_late`
 
 4. `max_late_distance_above_zone_pct`
@@ -167,6 +178,13 @@ This is intentionally labeled:
 because it is not a fill engine, not a live strategy result, and not a paper
 execution result.
 
+For `close_confirm_after_touch`, the runner also labels the trigger as:
+
+- `POLICY_PROXY_CONFIRMATION`
+
+because true intrabar sequencing is still approximated from public event-candle
+OHLC rather than a fill model.
+
 ## Metrics
 
 Per parameter set:
@@ -180,7 +198,13 @@ Per parameter set:
 - `events_rejected_by_aplus`
 - `events_rejected_by_missing_zone`
 - `events_rejected_by_missing_return`
+- `events_rejected_by_missing_intrabar_touch_input`
 - `max_late_filter_effect_count`
+- `events_selected_by_wick_touch`
+- `events_selected_by_close_only`
+- `close_only_late_trigger_count`
+- `avg_distance_from_entry_low_pct`
+- `avg_distance_from_entry_high_pct`
 - `avg_strategy_return_pct`
 - `median_strategy_return_pct`
 - `avg_hold_return_pct`
@@ -295,6 +319,17 @@ It also adds candidate metadata for chart review:
 - `symbol_count`
 - `top_symbol_concentration_pct`
 
+And trigger-review fields:
+
+- `trigger_basis`
+- `trigger_price_basis`
+- `zone_touch_detected`
+- `entry_low_touch_detected`
+- `close_confirm_detected`
+- `close_only_late_trigger`
+- `distance_from_entry_low_pct`
+- `distance_from_entry_high_pct`
+
 And it preserves canonical regime review fields when available:
 
 - `regime_source`
@@ -325,6 +360,8 @@ Candidate roles are:
 - `ROBUST`
 - `LOW_MAE`
 - `APLUS`
+- `WICK_TOUCH` when the best wick/touch candidate differs from the robust
+  close-based candidate
 
 The export is capped by:
 
@@ -349,7 +386,9 @@ Summary output includes:
 - `best_robust_candidate`
 - `best_low_mae_candidate`
 - `best_aplus_candidate`
+- `best_wick_touch_candidate`
 - warning when top raw edge has `SYMBOL_CONCENTRATION_HIGH`
+- `trigger_basis_summary` for close-vs-touch cohort comparison
 - selected event export validation counts
 - regime-split summaries for selected candidate roles when canonical regime
   fields are present
