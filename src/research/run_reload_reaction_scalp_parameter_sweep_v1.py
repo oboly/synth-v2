@@ -26,6 +26,7 @@ DEFAULT_ACTION = "RELOAD_REVIEW"
 DEFAULT_MIN_SAMPLES = 20
 DEFAULT_MAX_EVENTS = 5000
 DEFAULT_SELECTED_EVENTS_PER_CANDIDATE = 30
+INVALIDATION_NEAR_THRESHOLD_PCT = 3.0
 
 ROWS_CSV = "reload_reaction_scalp_parameter_sweep_rows_v1.csv"
 ROWS_JSONL = "reload_reaction_scalp_parameter_sweep_rows_v1.jsonl"
@@ -75,6 +76,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-events", type=int, default=DEFAULT_MAX_EVENTS)
     parser.add_argument("--min-samples", type=int, default=DEFAULT_MIN_SAMPLES)
     parser.add_argument("--selected-events-per-candidate", type=int, default=DEFAULT_SELECTED_EVENTS_PER_CANDIDATE)
+    parser.add_argument("--include-invalidation-near", action="store_true")
     parser.add_argument("--write-files", action="store_true")
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
@@ -120,6 +122,15 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def output_name(name: str, *, include_invalidation_near: bool) -> str:
+    if not include_invalidation_near:
+        return name
+    stem, dot, suffix = name.partition(".")
+    if dot:
+        return f"{stem}_include_invalidation_near.{suffix}"
+    return f"{name}_include_invalidation_near"
 
 
 def as_float(value: Any) -> float | None:
@@ -344,6 +355,7 @@ def load_events(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[st
     symbols_filter = parse_symbols_arg(args.symbols)
     selected: list[dict[str, Any]] = []
     skip_counts: Counter[str] = Counter()
+    invalidation_excluded = 0
     for row in rows[-int(args.max_events):]:
         if str(row.get("position_lifecycle_action") or "").upper() != str(args.action).upper():
             skip_counts["action_mismatch"] += 1
@@ -366,6 +378,14 @@ def load_events(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[st
         if "MISSING_PRICE" in " ".join(str(item) for item in (row.get("missing_inputs") or [])):
             skip_counts["missing_price_input"] += 1
             continue
+        invalidation_flag, invalidation_reason = invalidation_near_context(row)
+        row["invalidation_near_flag"] = invalidation_flag
+        row["invalidation_distance_pct"] = invalidation_distance_pct(row)
+        row["invalidation_filter_reason"] = invalidation_reason
+        if invalidation_flag and not bool(args.include_invalidation_near):
+            invalidation_excluded += 1
+            skip_counts["invalidation_near_excluded"] += 1
+            continue
         selected.append(row)
     intrabar_meta = attach_intrabar_touch_context(selected)
     meta = {
@@ -375,6 +395,9 @@ def load_events(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[st
         "fibo_target_map_present": bool(fibo_rows),
         "fibo_target_modes_point_in_time_safe": fibo_safe,
         "fibo_target_guard_reason": fibo_reason,
+        "include_invalidation_near": bool(args.include_invalidation_near),
+        "contaminated_mode": bool(args.include_invalidation_near),
+        "events_rejected_by_invalidation_near": invalidation_excluded,
         **intrabar_meta,
     }
     return selected, meta
@@ -415,6 +438,27 @@ def current_above_entry_high_pct(row: dict[str, Any]) -> float | None:
     if current < zone_high or zone_high <= 0:
         return None
     return ((current / zone_high) - 1.0) * 100.0
+
+
+def invalidation_distance_pct(row: dict[str, Any]) -> float | None:
+    return pct_distance(as_float(row.get("current_price")), as_float(row.get("invalidation_price")))
+
+
+def invalidation_near_context(row: dict[str, Any]) -> tuple[bool, str]:
+    reasons: list[str] = []
+    if str(row.get("reason_bucket") or "").upper() == "INVALIDATION_NEAR":
+        reasons.append("reason_bucket_INVALIDATION_NEAR")
+    if "INVALIDATION" in str(row.get("position_lifecycle_reason") or "").upper():
+        reasons.append("position_lifecycle_reason_INVALIDATION")
+    secondary = [str(item).upper() for item in (row.get("secondary_reason_buckets") or [])]
+    if "INVALIDATION_NEAR" in secondary:
+        reasons.append("secondary_reason_bucket_INVALIDATION_NEAR")
+    distance = invalidation_distance_pct(row)
+    if distance is not None and distance <= INVALIDATION_NEAR_THRESHOLD_PCT:
+        reasons.append(f"invalidation_distance_le_{INVALIDATION_NEAR_THRESHOLD_PCT}")
+    if reasons:
+        return True, ",".join(reasons)
+    return False, "not_invalidation_near"
 
 
 def distance_from_entry_low_pct(row: dict[str, Any]) -> float | None:
@@ -625,8 +669,10 @@ def evaluate_parameter_set(
     events_selected_by_wick_touch = 0
     events_selected_by_close_only = 0
     close_only_late_trigger_count = 0
+    selected_events_with_invalidation_near = 0
     distance_from_entry_low_values: list[float] = []
     distance_from_entry_high_values: list[float] = []
+    invalidation_distance_values: list[float] = []
 
     for row in events:
         triggered, trigger_reason, trigger_meta = evaluate_trigger(
@@ -687,6 +733,10 @@ def evaluate_parameter_set(
             distance_from_entry_low_values.append(float(trigger_meta["distance_from_entry_low_pct"]))
         if trigger_meta["distance_from_entry_high_pct"] is not None:
             distance_from_entry_high_values.append(float(trigger_meta["distance_from_entry_high_pct"]))
+        if bool(row.get("invalidation_near_flag")):
+            selected_events_with_invalidation_near += 1
+        if row.get("invalidation_distance_pct") is not None:
+            invalidation_distance_values.append(float(row["invalidation_distance_pct"]))
         eligible_count += 1
         if target_hit:
             target_hit_count += 1
@@ -757,6 +807,12 @@ def evaluate_parameter_set(
         "events_selected_by_wick_touch": events_selected_by_wick_touch,
         "events_selected_by_close_only": events_selected_by_close_only,
         "close_only_late_trigger_count": close_only_late_trigger_count,
+        "selected_events_with_invalidation_near": selected_events_with_invalidation_near,
+        "invalidation_near_ratio_pct": None if sample_count == 0 else round((selected_events_with_invalidation_near / sample_count) * 100.0, 6),
+        "invalidation_distance_pct": average_or_none(invalidation_distance_values),
+        "invalidation_filter_reason": (
+            "included_by_flag" if params.get("include_invalidation_near") else "excluded_by_default"
+        ),
         "avg_distance_from_entry_low_pct": average_or_none(distance_from_entry_low_values),
         "avg_distance_from_entry_high_pct": average_or_none(distance_from_entry_high_values),
         "target_hit_count": target_hit_count,
@@ -970,6 +1026,7 @@ def build_selected_event_rows(
     missing_current_price = 0
     missing_entry_zone = 0
     missing_forward_returns = 0
+    selected_events_with_invalidation_near = 0
     selected_row_keys: set[tuple[str, str, str]] = set()
     candidate_role_map = {
         "best_raw_edge_candidate": "RAW_EDGE",
@@ -1040,6 +1097,8 @@ def build_selected_event_rows(
             if unique_key in selected_row_keys:
                 continue
             selected_row_keys.add(unique_key)
+            if bool(row.get("invalidation_near_flag")):
+                selected_events_with_invalidation_near += 1
             hydrated_row = {
                 "selected_candidate_label": variant_label,
                 "parameter_key": parameter_key,
@@ -1080,6 +1139,9 @@ def build_selected_event_rows(
                 "close_only_late_trigger": trigger_meta["close_only_late_trigger"],
                 "distance_from_entry_low_pct": trigger_meta["distance_from_entry_low_pct"],
                 "distance_from_entry_high_pct": trigger_meta["distance_from_entry_high_pct"],
+                "invalidation_near_flag": bool(row.get("invalidation_near_flag")),
+                "invalidation_distance_pct": row.get("invalidation_distance_pct"),
+                "invalidation_filter_reason": row.get("invalidation_filter_reason"),
                 "tp_zone_low": as_float(row.get("tp_zone_low")),
                 "tp_zone_high": as_float(row.get("tp_zone_high")),
                 "invalidation_price": as_float(row.get("invalidation_price")),
@@ -1135,6 +1197,7 @@ def build_selected_event_rows(
         "selected_events_missing_current_price": missing_current_price,
         "selected_events_missing_entry_zone": missing_entry_zone,
         "selected_events_missing_forward_returns": missing_forward_returns,
+        "selected_events_with_invalidation_near": selected_events_with_invalidation_near,
         "selected_candidate_roles_written": sorted(roles_written),
     }
     return (
@@ -1227,6 +1290,9 @@ def summarize(
         "return_metric_label": RETURN_LABEL,
         "events_loaded": meta["events_loaded"],
         "events_eligible": meta["events_eligible"],
+        "events_rejected_by_invalidation_near": meta.get("events_rejected_by_invalidation_near", 0),
+        "include_invalidation_near": bool(meta.get("include_invalidation_near")),
+        "contaminated_mode": bool(meta.get("contaminated_mode")),
         "parameter_sets_tested": len(ranked_rows),
         "best_raw_edge_candidate": best_raw,
         "best_robust_candidate": best_robust,
@@ -1276,6 +1342,7 @@ def summarize(
             "max_events": int(args.max_events),
             "min_samples": int(args.min_samples),
             "selected_events_per_candidate": int(args.selected_events_per_candidate),
+            "include_invalidation_near": bool(args.include_invalidation_near),
         },
         "files": {key: str(value) for key, value in paths.items()},
         **SAFETY,
@@ -1291,6 +1358,11 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
     print(
         f"events_loaded={summary['events_loaded']} events_eligible={summary['events_eligible']} "
         f"parameter_sets_tested={summary['parameter_sets_tested']} strategy_candidate={summary['strategy_candidate']}"
+    )
+    print(
+        f"include_invalidation_near={str(bool(summary.get('include_invalidation_near'))).lower()} "
+        f"contaminated_mode={str(bool(summary.get('contaminated_mode'))).lower()} "
+        f"events_rejected_by_invalidation_near={summary.get('events_rejected_by_invalidation_near')}"
     )
     print(
         f"intrabar_touch_context_loaded={str(bool(summary.get('intrabar_touch_context_loaded'))).lower()} "
@@ -1315,7 +1387,9 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         "best_robust_candidate "
         f"{best_robust.get('parameter_key', 'none')} excess={best_robust.get('excess_return_vs_hold_pct')} "
         f"sample_count={best_robust.get('sample_count')} symbol_count={best_robust.get('symbol_count')} "
-        f"top_symbol_concentration_pct={best_robust.get('top_symbol_concentration_pct')}"
+        f"top_symbol_concentration_pct={best_robust.get('top_symbol_concentration_pct')} "
+        f"selected_events_with_invalidation_near={best_robust.get('selected_events_with_invalidation_near')} "
+        f"invalidation_near_ratio_pct={best_robust.get('invalidation_near_ratio_pct')}"
     )
     print(
         "best_low_mae_candidate "
@@ -1374,6 +1448,13 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
                 for row in summary["trigger_basis_summary"][:10]
             )
         )
+    if not bool(summary.get("include_invalidation_near")) and int(best_robust.get("selected_events_with_invalidation_near") or 0) > 0:
+        print(
+            "warning robust_candidate_invalidation_leak "
+            f"selected_events_with_invalidation_near={best_robust.get('selected_events_with_invalidation_near')}"
+        )
+    if bool(summary.get("include_invalidation_near")):
+        print("warning contaminated_mode=include_invalidation_near")
     print(
         "rejected_negative_excess "
         + " ; ".join(
@@ -1384,7 +1465,8 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
     print(
         "selected_event_export "
         f"selected_events_written={summary.get('selected_events_written')} "
-        f"selected_candidate_roles_written={','.join(summary.get('selected_candidate_roles_written') or [])}"
+        f"selected_candidate_roles_written={','.join(summary.get('selected_candidate_roles_written') or [])} "
+        f"selected_events_with_invalidation_near={summary.get('selected_events_with_invalidation_near')}"
     )
     robust_regimes = summary.get("candidate_regime_summaries", {}).get("ROBUST", [])
     if robust_regimes:
@@ -1432,6 +1514,7 @@ def main(argv: list[str] | None = None) -> int:
                 "target_mode": target_mode,
                 "max_hold_horizon": max_hold_horizon,
                 "require_aplus_context": require_aplus_context,
+                "include_invalidation_near": bool(args.include_invalidation_near),
             },
             fib_guard_safe=bool(meta["fibo_target_modes_point_in_time_safe"]),
             min_samples=int(args.min_samples),
@@ -1442,13 +1525,13 @@ def main(argv: list[str] | None = None) -> int:
 
     output_dir = Path(args.output_dir)
     paths = {
-        "rows_csv": output_dir / ROWS_CSV,
-        "rows_jsonl": output_dir / ROWS_JSONL,
-        "top_candidates_csv": output_dir / TOP_CANDIDATES_CSV,
-        "rejected_candidates_csv": output_dir / REJECTED_CANDIDATES_CSV,
-        "by_symbol_csv": output_dir / BY_SYMBOL_CSV,
-        "selected_events_jsonl": output_dir / SELECTED_EVENTS_JSONL,
-        "manifest_json": output_dir / MANIFEST_JSON,
+        "rows_csv": output_dir / output_name(ROWS_CSV, include_invalidation_near=bool(args.include_invalidation_near)),
+        "rows_jsonl": output_dir / output_name(ROWS_JSONL, include_invalidation_near=bool(args.include_invalidation_near)),
+        "top_candidates_csv": output_dir / output_name(TOP_CANDIDATES_CSV, include_invalidation_near=bool(args.include_invalidation_near)),
+        "rejected_candidates_csv": output_dir / output_name(REJECTED_CANDIDATES_CSV, include_invalidation_near=bool(args.include_invalidation_near)),
+        "by_symbol_csv": output_dir / output_name(BY_SYMBOL_CSV, include_invalidation_near=bool(args.include_invalidation_near)),
+        "selected_events_jsonl": output_dir / output_name(SELECTED_EVENTS_JSONL, include_invalidation_near=bool(args.include_invalidation_near)),
+        "manifest_json": output_dir / output_name(MANIFEST_JSON, include_invalidation_near=bool(args.include_invalidation_near)),
     }
     summary = summarize(parameter_rows, meta, args, paths)
     selected_variants = dedupe_by_parameter_key(

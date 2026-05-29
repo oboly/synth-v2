@@ -48,6 +48,8 @@ Additional visual finding:
 - reload touch should prefer wick / intrabar zone interaction when public event
   candle OHLC is available
 - close is better treated as confirmation than as the only reload touch signal
+- NEAR / XRP-style invalidation-triggered examples are not valid reload scalp
+  samples and must be excluded from `RELOAD_REACTION_SCALP_V1` by default
 
 ## Inputs
 
@@ -103,6 +105,22 @@ Base event universe:
 - `entry_zone_low` and `entry_zone_high` present
 - prefer `leg_direction == UP`
 - skip stale or missing critical inputs as needed
+- exclude invalidation-near events by default
+
+Default invalidation exclusion:
+
+- `reason_bucket == INVALIDATION_NEAR`
+- or `position_lifecycle_reason` contains `INVALIDATION`
+- or `secondary_reason_buckets` contains `INVALIDATION_NEAR`
+- or `current_price` is within the default invalidation-near distance threshold
+  of `invalidation_price`
+
+Optional contaminated comparison mode:
+
+- `--include-invalidation-near`
+
+This is diagnostic only. It allows comparison against the contaminated sample
+set and should not be treated as the default strategy lane.
 
 CLI filters:
 
@@ -199,10 +217,15 @@ Per parameter set:
 - `events_rejected_by_missing_zone`
 - `events_rejected_by_missing_return`
 - `events_rejected_by_missing_intrabar_touch_input`
+- `events_rejected_by_invalidation_near`
 - `max_late_filter_effect_count`
 - `events_selected_by_wick_touch`
 - `events_selected_by_close_only`
 - `close_only_late_trigger_count`
+- `selected_events_with_invalidation_near`
+- `invalidation_near_ratio_pct`
+- `invalidation_distance_pct`
+- `invalidation_filter_reason`
 - `avg_distance_from_entry_low_pct`
 - `avg_distance_from_entry_high_pct`
 - `avg_strategy_return_pct`
@@ -329,6 +352,9 @@ And trigger-review fields:
 - `close_only_late_trigger`
 - `distance_from_entry_low_pct`
 - `distance_from_entry_high_pct`
+- `invalidation_near_flag`
+- `invalidation_distance_pct`
+- `invalidation_filter_reason`
 
 And it preserves canonical regime review fields when available:
 
@@ -388,6 +414,7 @@ Summary output includes:
 - `best_aplus_candidate`
 - `best_wick_touch_candidate`
 - warning when top raw edge has `SYMBOL_CONCENTRATION_HIGH`
+- invalidation exclusion counts and default-vs-contaminated mode
 - `trigger_basis_summary` for close-vs-touch cohort comparison
 - selected event export validation counts
 - regime-split summaries for selected candidate roles when canonical regime
@@ -413,6 +440,13 @@ This runner must remain:
 - `research_only=true`
 
 It does not create order intents.
+
+Future lane note:
+
+- `INVALIDATION_BOUNCE_SCALP_V1` is a possible separate strategy later
+- it is not implemented here
+- invalidation-near events are excluded from `RELOAD_REACTION_SCALP_V1` by
+  default to avoid cross-strategy contamination
 
 ## CLI
 
