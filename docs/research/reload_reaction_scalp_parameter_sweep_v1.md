@@ -53,6 +53,72 @@ Additional visual finding:
 - target zones inside the entry zone are invalid for this lane and must be
   rejected by default
 
+## Current Verdict
+
+Current status:
+
+- `RESEARCH_ONLY`
+- `NOT_PROMOTABLE`
+
+Current reason:
+
+- clean default `wick_touch` mode has no robust candidate
+- `close_reference` fallback is intentionally blocked in default mode
+- invalidation-near contamination is excluded by default
+- target-integrity gates are active by default
+
+Current default outcome with `--min-samples 20`:
+
+- `NO_VALID_WICK_TOUCH_CANDIDATE`
+- `NO_ROBUST_CANDIDATE`
+
+Interpretation:
+
+- `RELOAD_REACTION_SCALP_V1` is still a research lane only
+- it must not be promoted into runtime, paper execution, or live execution
+- it must not be treated as a validated strategy candidate yet
+
+## Diagnostic Finding
+
+Lower-threshold diagnostic runs can still be useful as case-study evidence.
+
+Current diagnostic finding with lower sample threshold:
+
+- `local_reaction|15m|wick_touch_entry_low|entry_low|1.5|0.25|false`
+- `sample_count=9`
+- `excess_return_vs_hold_pct` about `+2.95%`
+- `avg_mae_pct` about `-0.73%`
+- `top_symbol_concentration_pct` about `66.67%`
+- dominant symbol concentration is `LINK`
+
+Interpretation:
+
+- this looks like a promising `wick_touch_entry_low` micro-pattern
+- but it is not robust enough for promotion
+- sample count is too low
+- symbol concentration is too high
+- treat it as a `LINK`-heavy watch-pattern / case study only
+- do not promote
+
+## Next Research Steps
+
+- expand the lifecycle event window and accumulate more clean history
+- keep the same invalidation, trigger-family, and target-integrity gates
+- keep event dedup / cooldown behavior active when comparing repeated rows
+- generate separate `LINK`-heavy case-study chart packs for manual review
+- compare `local_reaction` target behavior against fib targets only after a
+  larger clean wick-touch sample exists
+
+## Architecture Boundary
+
+- no `selection_engine` change
+- no `decision_gate` change
+- no `execution_planner` change
+- no `executor` change
+- no paper trading
+- no live trading
+- strategy remains research-only
+
 ## Trigger Family Default
 
 Default CLI:
