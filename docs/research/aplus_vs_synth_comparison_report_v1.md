@@ -75,7 +75,10 @@ It renders `unavailable` for that context.
 - `setup_reason`
 - `zone_context_summary`
 - `reload_context_summary`
+- `reload_context_role`
+- `reload_context_promotable`
 - `volume_context_summary`
+- `synth_confirmation_strength`
 - `synth_bucket`
 - `comparison_bucket`
 - `reason`
@@ -103,18 +106,39 @@ Current deterministic Synth buckets:
 
 - `SYNTH_CONFIRMED_UP`
 - `SYNTH_REVIEW_UP`
+- `SYNTH_RAW_EDGE_CONTEXT`
 - `SYNTH_AVOID_OR_FAIL`
 - `SYNTH_UNAVAILABLE`
 - `SYNTH_MIXED_WAIT`
 
-Current inputs that can support Synth-side confirmation:
+Current confirmation-strength states:
+
+- `HARD_CONFIRM`
+- `SOFT_CONTEXT`
+- `RAW_EDGE_ONLY`
+- `NO_CONFIRM`
+
+Current inputs that can support hard Synth confirmation:
 
 - constructive latest `selection_state`
 - `trade_setup_filter_observation.setup_filter_state == PASS`
+- valid `execution_zone_context` combined with promotable reload context
+
+Current inputs that may support soft Synth context only:
+
 - valid `execution_zone_context`
-- positive reload-review context from selected reload scalp events or latest
-  paper advice
 - recent positive/elevated volume context
+
+Reload-specific rule:
+
+- `RAW_EDGE` reload context is diagnostic only
+- non-promotable reload roles must not produce `SYNTH_CONFIRMED_UP` by
+  themselves
+- current Reload Reaction Scalp V1 verdict is `RESEARCH_ONLY / NOT_PROMOTABLE`
+- therefore `RAW_EDGE`, `LOW_MAE`, `APLUS`, and `WICK_TOUCH` reload roles are
+  treated as weaker context, not hard confirmation
+- `reload_context_promotable=true` is reserved for promotable reload context,
+  currently only `ROBUST`
 
 Current inputs that can support Synth-side caution:
 
@@ -129,14 +153,26 @@ Current inputs that can support Synth-side caution:
 These are explicit report heuristics only.
 They are not runtime trading rules.
 
+Important guard:
+
+- volume context is supporting context only
+- volume alone must not create `HARD_CONFIRM`
+- if `selection_state=AVOID`, `setup_state=FAIL`, and zone context is invalid
+  or absent, reload raw-edge context may stay visible only as:
+  - `SYNTH_REVIEW_UP`
+  - or `SYNTH_RAW_EDGE_CONTEXT`
+- it must not become `SYNTH_CONFIRMED_UP`
+
 ## Comparison Buckets
 
 - `BOTH_AGREE_UP`
 - `A_PLUS_ONLY_WAIT`
+- `APLUS_CONSTRUCTIVE_SYNTH_RAW_CONTEXT`
+- `APLUS_CONSTRUCTIVE_SYNTH_BLOCKED`
 - `SYNTH_ONLY_REVIEW`
 - `BOTH_CAUTION`
-- `CONFLICT_A_PLUS_BULL_SYNTH_BEAR`
 - `CONFLICT_SYNTH_BULL_A_PLUS_BEAR`
+- `SYNTH_RAW_CONTEXT_A_PLUS_CAUTION`
 - `INSUFFICIENT_CONTEXT`
 
 Rules:
@@ -144,7 +180,17 @@ Rules:
 `BOTH_AGREE_UP`
 
 - A+ constructive
-- Synth confirms via selection/setup/zone/reload/volume
+- Synth confirms via hard-confirm context
+
+`APLUS_CONSTRUCTIVE_SYNTH_RAW_CONTEXT`
+
+- A+ constructive
+- Synth only has reload raw-edge context or similarly weak confirmation
+
+`APLUS_CONSTRUCTIVE_SYNTH_BLOCKED`
+
+- A+ constructive
+- Synth side is explicitly blocked / avoid / fail
 
 `A_PLUS_ONLY_WAIT`
 
@@ -163,14 +209,14 @@ Rules:
 - A+ caution/deterioration
 - Synth weak, unavailable, or explicitly cautionary
 
-`CONFLICT_A_PLUS_BULL_SYNTH_BEAR`
-
-- A+ constructive
-- Synth explicitly bearish/avoid/fail
-
 `CONFLICT_SYNTH_BULL_A_PLUS_BEAR`
 
 - Synth strongly constructive
+- A+ is caution/deterioration
+
+`SYNTH_RAW_CONTEXT_A_PLUS_CAUTION`
+
+- Synth has only raw-edge / weak context
 - A+ is caution/deterioration
 
 `INSUFFICIENT_CONTEXT`

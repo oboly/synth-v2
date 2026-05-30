@@ -66,7 +66,10 @@ class ComparisonRow:
     setup_reason: str
     zone_context_summary: str
     reload_context_summary: str
+    reload_context_role: str
+    reload_context_promotable: str
     volume_context_summary: str
+    synth_confirmation_strength: str
     synth_bucket: str
     comparison_bucket: str
     reason: str
@@ -255,6 +258,16 @@ def format_reload_summary(selected_event: dict[str, Any] | None, paper_advice_ro
     return "unavailable"
 
 
+def parse_reload_context(selected_event: dict[str, Any] | None, paper_advice_row: dict[str, Any] | None) -> tuple[str, str]:
+    if selected_event:
+        role = str(selected_event.get("candidate_role") or "UNKNOWN").upper()
+        promotable = "true" if role == "ROBUST" else "false"
+        return role, promotable
+    if paper_advice_row:
+        return "UNKNOWN", "unknown"
+    return "UNAVAILABLE", "unknown"
+
+
 def aplus_constructive_state(t1: Table1FocusRecord, t2: Table2FocusRecord) -> tuple[bool, bool]:
     constructive = (
         t1.aplus_phase in {"forming", "confirmed"}
@@ -294,14 +307,45 @@ def synth_flags(
     setup_yes = setup_state == "PASS"
     zone_yes = zone_valid(zone_summary)
     volume_yes = volume_confirmed(volume_row)
-    reload_yes = reload_summary != "unavailable" and (
-        "ROLE=ROBUST" in reload_summary.upper()
-        or "ROLE=RAW_EDGE" in reload_summary.upper()
-        or "ADVICE_ACTION=RELOAD_REVIEW" in reload_summary.upper()
-        or "ADVICE_ACTION=BUY_REVIEW" in reload_summary.upper()
-    )
-    synth_any_positive = selection_yes or setup_yes or zone_yes or volume_yes or reload_yes
-    synth_strong = selection_yes or setup_yes or reload_yes
+    reload_role = "UNAVAILABLE"
+    reload_promotable = "unknown"
+    reload_yes = False
+    reload_hard = False
+    reload_raw_only = False
+    upper_reload_summary = reload_summary.upper()
+    if reload_summary != "unavailable":
+        reload_yes = (
+            "ROLE=" in upper_reload_summary
+            or "ADVICE_ACTION=RELOAD_REVIEW" in upper_reload_summary
+            or "ADVICE_ACTION=BUY_REVIEW" in upper_reload_summary
+        )
+        if "ROLE=ROBUST" in upper_reload_summary:
+            reload_role = "ROBUST"
+            reload_promotable = "true"
+            reload_hard = True
+        elif "ROLE=RAW_EDGE" in upper_reload_summary:
+            reload_role = "RAW_EDGE"
+            reload_promotable = "false"
+            reload_raw_only = True
+        elif "ROLE=LOW_MAE" in upper_reload_summary:
+            reload_role = "LOW_MAE"
+            reload_promotable = "false"
+            reload_raw_only = True
+        elif "ROLE=APLUS" in upper_reload_summary:
+            reload_role = "APLUS"
+            reload_promotable = "false"
+            reload_raw_only = True
+        elif "ROLE=WICK_TOUCH" in upper_reload_summary:
+            reload_role = "WICK_TOUCH"
+            reload_promotable = "false"
+            reload_raw_only = True
+        elif "ADVICE_ACTION=RELOAD_REVIEW" in upper_reload_summary or "ADVICE_ACTION=BUY_REVIEW" in upper_reload_summary:
+            reload_role = "UNKNOWN"
+            reload_promotable = "unknown"
+    hard_confirm = selection_yes or setup_yes or (zone_yes and reload_hard)
+    soft_context = zone_yes or volume_yes
+    raw_edge_only = reload_raw_only and not hard_confirm
+    synth_any_positive = hard_confirm or soft_context or reload_yes
     synth_bear = (
         selection_state == "AVOID"
         or (setup_state == "FAIL" and setup_reason in SETUP_FAIL_BEARISH_REASONS)
@@ -319,8 +363,14 @@ def synth_flags(
         "zone_yes": zone_yes,
         "volume_yes": volume_yes,
         "reload_yes": reload_yes,
+        "reload_role": reload_role,
+        "reload_promotable": reload_promotable,
+        "reload_hard": reload_hard,
+        "reload_raw_only": reload_raw_only,
+        "hard_confirm": hard_confirm,
+        "soft_context": soft_context,
+        "raw_edge_only": raw_edge_only,
         "synth_any_positive": synth_any_positive,
-        "synth_strong": synth_strong,
         "synth_bear": synth_bear,
         "mostly_unavailable": unavailable_count >= 2 and zone_summary == "unavailable" and reload_summary == "unavailable",
     }
@@ -343,8 +393,10 @@ def classify_synth_bucket(
         volume_row=volume_row,
         paper_advice_row=paper_advice_row,
     )
-    if flags["synth_strong"]:
+    if flags["hard_confirm"]:
         return "SYNTH_CONFIRMED_UP", flags
+    if flags["raw_edge_only"]:
+        return "SYNTH_RAW_EDGE_CONTEXT", flags
     if flags["synth_any_positive"]:
         return "SYNTH_REVIEW_UP", flags
     if flags["synth_bear"]:
@@ -362,14 +414,19 @@ def classify_comparison_bucket(
 ) -> tuple[str, str]:
     synth_constructive = synth_bucket in {"SYNTH_CONFIRMED_UP", "SYNTH_REVIEW_UP"}
     synth_bear = synth_bucket == "SYNTH_AVOID_OR_FAIL"
+    synth_raw = synth_bucket == "SYNTH_RAW_EDGE_CONTEXT"
     if aplus_constructive and synth_constructive:
         return "BOTH_AGREE_UP", "aplus_constructive_and_synth_confirms"
+    if aplus_constructive and synth_raw:
+        return "APLUS_CONSTRUCTIVE_SYNTH_RAW_CONTEXT", "aplus_constructive_but_synth_only_has_raw_edge_context"
     if aplus_constructive and synth_bear:
-        return "CONFLICT_A_PLUS_BULL_SYNTH_BEAR", "aplus_constructive_but_synth_explicitly_bearish"
+        return "APLUS_CONSTRUCTIVE_SYNTH_BLOCKED", "aplus_constructive_but_synth_is_explicitly_blocked"
     if aplus_constructive:
         return "A_PLUS_ONLY_WAIT", "aplus_constructive_but_synth_confirmation_missing"
     if aplus_caution and synth_bucket == "SYNTH_CONFIRMED_UP":
         return "CONFLICT_SYNTH_BULL_A_PLUS_BEAR", "synth_strong_but_aplus_caution"
+    if aplus_caution and synth_raw:
+        return "SYNTH_RAW_CONTEXT_A_PLUS_CAUTION", "synth_has_only_raw_edge_context_while_aplus_is_caution"
     if aplus_caution:
         return "BOTH_CAUTION", "aplus_caution_and_synth_weak_or_bearish"
     if synth_constructive:
@@ -397,7 +454,10 @@ def build_rows(
         setup_row = setup_map.get(token)
         zone_summary = format_zone_summary(zone_map.get(token))
         volume_summary = format_volume_summary(volume_map.get(token))
-        reload_summary = format_reload_summary(reload_selected_map.get(token), paper_advice_map.get(token))
+        paper_advice_row = paper_advice_map.get(token)
+        reload_selected_row = reload_selected_map.get(token)
+        reload_summary = format_reload_summary(reload_selected_row, paper_advice_row)
+        reload_context_role, reload_context_promotable = parse_reload_context(reload_selected_row, paper_advice_row)
         aplus_bucket, _ = classify_bucket(
             token=token,
             t1=t1,
@@ -412,7 +472,7 @@ def build_rows(
             zone_summary=zone_summary,
             reload_summary=reload_summary,
             volume_row=volume_map.get(token),
-            paper_advice_row=paper_advice_map.get(token),
+            paper_advice_row=paper_advice_row,
         )
         aplus_constructive, aplus_caution = aplus_constructive_state(t1, t2)
         comparison_bucket, comparison_reason = classify_comparison_bucket(
@@ -422,10 +482,13 @@ def build_rows(
         )
         reason = (
             f"{comparison_reason}; aplus_bucket={aplus_bucket}; synth_bucket={synth_bucket}; "
+            f"confirmation_strength={'HARD_CONFIRM' if flags['hard_confirm'] else 'RAW_EDGE_ONLY' if flags['raw_edge_only'] else 'SOFT_CONTEXT' if flags['soft_context'] else 'NO_CONFIRM'}; "
             f"selection={'yes' if flags['selection_yes'] else 'no'}; "
             f"setup={'yes' if flags['setup_yes'] else 'no'}; "
             f"zone={'yes' if flags['zone_yes'] else 'no'}; "
             f"reload={'yes' if flags['reload_yes'] else 'no'}; "
+            f"reload_role={reload_context_role}; "
+            f"reload_promotable={reload_context_promotable}; "
             f"volume={'yes' if flags['volume_yes'] else 'no'}"
         )
         rows.append(
@@ -449,7 +512,18 @@ def build_rows(
                 setup_reason=str(setup_row.get("setup_filter_reason")) if setup_row else "unavailable",
                 zone_context_summary=zone_summary,
                 reload_context_summary=reload_summary,
+                reload_context_role=reload_context_role,
+                reload_context_promotable=reload_context_promotable,
                 volume_context_summary=volume_summary,
+                synth_confirmation_strength=(
+                    "HARD_CONFIRM"
+                    if flags["hard_confirm"]
+                    else "RAW_EDGE_ONLY"
+                    if flags["raw_edge_only"]
+                    else "SOFT_CONTEXT"
+                    if flags["soft_context"]
+                    else "NO_CONFIRM"
+                ),
                 synth_bucket=synth_bucket,
                 comparison_bucket=comparison_bucket,
                 reason=reason,
@@ -479,7 +553,10 @@ def print_table(rows: list[ComparisonRow]) -> None:
         "setup_reason",
         "zone_context_summary",
         "reload_context_summary",
+        "reload_context_role",
+        "reload_context_promotable",
         "volume_context_summary",
+        "synth_confirmation_strength",
         "synth_bucket",
         "comparison_bucket",
         "reason",
