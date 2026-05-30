@@ -4,26 +4,20 @@ set -euo pipefail
 REPO_DIR="${SYNTH_REPO_DIR:-$HOME/projects/synth-v2}"
 LOCK_FILE="${SYNTH_MARKET_CANDLE_FRESHNESS_LOCK:-/tmp/synth-market-candle-freshness.lock}"
 CONFIG_PATH="${SYNTH_MARKET_CANDLE_FRESHNESS_CONFIG:-configs/etl_bitvavo_candles.yaml}"
+PYTHON_BIN="${REPO_DIR}/venv/bin/python"
 ASSET_ARGS=("$@")
 
 echo "market_candle_freshness_once starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-echo "broker_private_calls=0 broker_writes=0 order_submission=0 db_writes=0"
+echo "broker_private_calls=0 broker_writes=0 order_submission=0 market_db_writes=enabled"
 echo "decision_gate_changes=0 execution_planner_changes=0 executor=none account_awareness=0"
 echo "repo_dir=${REPO_DIR}"
 echo "config_path=${CONFIG_PATH}"
+echo "python_bin=${PYTHON_BIN}"
 
 cd "${REPO_DIR}"
 
-if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-  echo "Using active virtualenv: ${VIRTUAL_ENV}"
-elif [[ -d ".venv" ]]; then
-  # shellcheck disable=SC1091
-  source ".venv/bin/activate"
-elif [[ -d "venv" ]]; then
-  # shellcheck disable=SC1091
-  source "venv/bin/activate"
-else
-  echo "No .venv or venv found under ${REPO_DIR}" >&2
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "Repo-local python not executable: ${PYTHON_BIN}" >&2
   exit 1
 fi
 
@@ -59,7 +53,7 @@ run_interval() {
   local start_ts
   start_ts="$(build_window_start "${lookback_hours}")"
   echo "interval=${interval_code} lookback_hours=${lookback_hours} start=${start_ts}"
-  run_step python -m src.etl.bitvavo.run_candles_etl \
+  run_step "${PYTHON_BIN}" -m src.etl.bitvavo.run_candles_etl \
     --config "${CONFIG_PATH}" \
     --interval "${interval_code}" \
     --start "${start_ts}" \
@@ -72,7 +66,7 @@ run_interval "4h" 720
 run_interval "1d" 2160
 
 echo "--- latest candle freshness snapshot ---"
-python - <<'PY'
+"${PYTHON_BIN}" - <<'PY'
 from __future__ import annotations
 
 from dotenv import load_dotenv
