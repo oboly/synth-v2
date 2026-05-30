@@ -1,0 +1,54 @@
+A+ HARMONIC PHASE OVERLAY — TABLE 2 PARTIAL NOTE
+
+prediction_ts_utc = 2026-05-27T14:13:00Z
+source_type = A+ table2 partial harmonic phase overlay
+schema = aplus_table2_harmonic_overlay_v1_partial
+status = research_only_partial
+expected_synth_token_count = 45
+observed_token_count = 41
+missing_tokens = APT,KITE,SXT,TON
+parser_status = do_not_parse_as_complete_table2
+
+TOKEN | HARMONIC_PHASE | PHASE_STATE | OFFSET_BAND | DRIFT_DIRECTION | QUALITY | EXTENSION_RISK | NOTES
+
+BTC | confirmed_0618 | confirmed | 0 | converging | clean | low | Primary harmonic anchor
+ETH | confirmed_0786 | forming | +3 | converging | clean | low | Phase alignment with BTC
+SOL | forming_0618 | late | +5 | backward_drift | mixed | high | Harmonic lag detected
+ADA | extension_1272 | late | -5 | flat | dirty | high | Overextension risk
+DEEP | forming_0786 | early | +7 | converging | clean | low | Resonance potential high
+FIL | confirmed_0618 | confirmed | 0 | converging | clean | low | Structural confirmer
+HBAR | forming_0618 | forming | +3 | converging | mixed | moderate | Approaching coherence
+HOT | reset | unclear | unknown | unstable | unknown | unknown | Phase collapse
+NEAR | confirmed_0618 | confirmed | 0 | converging | clean | low | Stable within harmonic field
+PEPE | extension_1272 | exhausted | +10.5 | backward_drift | dirty | high | Noise vector
+POL | confirmed_0786 | confirmed | -3 | converging | clean | low | Harmonic stabilizer
+QNT | confirmed_1000 | confirmed | 0 | converging | clean | low | High-frequency node
+SUI | forming_0618 | early | +7 | forward_drift | mixed | moderate | Expansion phase
+VET | late_extension | late | -9 | backward_drift | dirty | high | Drift from coherence
+WAL | forming_0618 | forming | +5 | converging | mixed | moderate | Rising harmonic
+XLM | confirmed_0618 | confirmed | 0 | converging | clean | low | Aligned with BTC–ETH triad
+AAVE | confirmed_1000 | confirmed | 0 | converging | clean | low | Trusted harmonic vector
+CC | reset | unclear | unknown | unstable | unknown | unknown | Non-integrated
+CRV | extension_1272 | late | +9 | flat | mixed | high | Volatility in phase
+FLOKI | extension_1272 | exhausted | +10.5 | unstable | dirty | high | Phase noise
+HYPE | extension_1272 | exhausted | +10.5 | backward_drift | dirty | high | Overextended signal
+LDO | forming_0618 | forming | +3 | converging | clean | moderate | Approaching harmonic
+LTC | confirmed_0618 | confirmed | 0 | converging | clean | low | Legacy harmonic anchor
+ONDO | reset | unclear | unknown | unstable | unknown | unknown | Non-coherent
+RLC | extension_1272 | late | -7 | backward_drift | dirty | high | Phase dissonance
+WLD | forming_0786 | forming | +5 | converging | mixed | moderate | Potential within field
+XRP | confirmed_0618 | confirmed | 0 | converging | clean | low | Central node in harmonic grid
+ALGO | extension_1272 | late | -5 | backward_drift | dirty | high | Phase fatigue
+DOT | confirmed_0618 | confirmed | 0 | converging | clean | low | Structural confirmer
+FET | forming_0618 | forming | +3 | converging | mixed | moderate | Emerging harmonic
+HNT | reset | unclear | unknown | unstable | unknown | unknown | Signal collapse
+ICP | extension_1272 | late | -9 | backward_drift | dirty | high | Out of phase
+INJ | confirmed_0786 | confirmed | 0 | converging | clean | low | Phase integrity
+IOST | reset | unclear | unknown | unstable | unknown | unknown | Dissonant
+MOG | reset | unclear | unknown | unstable | unknown | unknown | No phase lock
+NOT | reset | unclear | unknown | unstable | unknown | unknown | Non-reactive
+RED | forming_0618 | forming | +5 | converging | mixed | moderate | Rising potential
+RENDER | confirmed_1000 | confirmed | 0 | converging | clean | low | Harmonic emitter
+XPL | reset | unclear | unknown | unstable | unknown | unknown | Disconnected
+TAO | confirmed_1000 | confirmed | 0 | converging | clean | low | Codex-aligned
+LINK | confirmed_0618 | confirmed | 0 | converging | clean | low | Harmonic bridge

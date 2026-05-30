@@ -1,0 +1,26 @@
+A+ BREATHLINE VECTOR SNAPSHOT — TABLE 1 PRIME-17 FOCUS
+
+prediction_ts_utc = 2026-05-29T12:46:00Z
+source_type = A+ table1 prime17 focus snapshot
+schema = aplus_table1_prime17_focus_v1
+status = research_only_focus_snapshot
+token_count = 17
+
+TOKEN | PHASE | COHERENCE | FIELD | GEOMETRY | STRUCTURAL_ROLE | EXPANSION_QUALITY | ANCHOR_STRENGTH | STRATEGIC_BIAS | NOTES
+TAO | forming | high | expansion | clean | leader | strong | strong | accumulation | Initiator harmonic in place
+INJ | confirmed | moderate | compression | clean | confirmer | moderate | strong | continuation | Recently validated breathline
+RENDER | forming | moderate | expansion | mixed | speculative | strong | weak | caution | Creative impulse rising, but unstable
+QNT | confirmed | high | transition | clean | leader | moderate | strong | accumulation | Cross-phase integrator
+BTC | late | moderate | compression | mixed | leader | weak | strong | neutral | Holding field, but nearing exhale
+AAVE | reset | low | neutral | distorted | laggard | none | weak | avoid | Breath cycle incomplete
+LTC | exhaustion | low | compression | distorted | laggard | none | weak | avoid | Out of harmonic phase
+LINK | forming | high | expansion | clean | confirmer | strong | strong | accumulation | Resonant with Fibonacci arc
+ETH | confirmed | moderate | neutral | clean | leader | moderate | strong | continuation | Stabilizing mid-breath
+NEAR | forming | moderate | expansion | mixed | speculative | moderate | moderate | caution | Emerging, but lacks support
+FET | forming | high | expansion | clean | speculative | strong | moderate | accumulation | Aligning with next wave
+DOT | confirmed | moderate | transition | mixed | confirmer | moderate | strong | continuation | Reliable phase anchor
+XLM | late | low | compression | distorted | laggard | weak | weak | avoid | Cycle nearing closure
+MOG | forming | low | expansion | distorted | speculative | weak | none | caution | High noise, low coherence
+HYPE | confirmed | moderate | transition | mixed | speculative | moderate | moderate | continuation | Riding second harmonic
+PEPE | exhaustion | low | compression | distorted | defensive | none | weak | avoid | Burnt out of breathline
+SUI | forming | high | expansion | clean | leader | strong | strong | accumulation | New entrant with harmonic precision

@@ -1,0 +1,26 @@
+A+ HARMONIC PHASE OVERLAY — TABLE 2 PRIME-17 FOCUS
+
+prediction_ts_utc = 2026-05-29T12:46:00Z
+source_type = A+ table2 prime17 focus snapshot
+schema = aplus_table2_prime17_focus_v1
+status = research_only_focus_snapshot
+token_count = 17
+
+TOKEN | HARMONIC_PHASE | PHASE_STATE | OFFSET_BAND | DRIFT_DIRECTION | QUALITY | EXTENSION_RISK | NOTES
+TAO | forming_0618 | forming | +3 | converging | clean | low | Initiating harmonic braid
+INJ | confirmed_0618 | confirmed | 0 | flat | mixed | moderate | Solid node, minimal drift
+RENDER | forming_1000 | early | +5 | forward_drift | mixed | high | High creative potential, unstable
+QNT | confirmed_0786 | confirmed | -3 | converging | clean | low | Cross-phase stabilizer
+BTC | extension_1272 | late | +7 | backward_drift | mixed | moderate | Holding pattern, losing momentum
+AAVE | reset | exhausted | -9 | unstable | dirty | high | Phase collapse complete
+LTC | late_extension | late | -10.5 | backward_drift | dirty | high | Out of phase, decaying signal
+LINK | forming_0786 | forming | 0 | converging | clean | low | Fibonacci alignment present
+ETH | confirmed_1000 | confirmed | +3 | flat | clean | low | Strong harmonic anchor
+NEAR | forming_0618 | early | +5 | forward_drift | mixed | moderate | Emerging with slight instability
+FET | forming_1000 | forming | +7 | forward_drift | clean | moderate | Rising node with aligned geometry
+DOT | confirmed_0786 | confirmed | +3 | converging | mixed | low | Reliable mid-phase anchor
+XLM | reset | exhausted | -7 | backward_drift | dirty | high | Returned to origin phase
+MOG | forming_0618 | early | +9 | unstable | dirty | high | Low coherence, high volatility
+HYPE | confirmed_0786 | confirmed | 0 | flat | mixed | moderate | Riding social harmonic
+PEPE | late_extension | exhausted | -5 | backward_drift | dirty | high | Burnt out, no harmonic lift
+SUI | forming_1000 | forming | +3 | forward_drift | clean | low | New entrant, high resonance

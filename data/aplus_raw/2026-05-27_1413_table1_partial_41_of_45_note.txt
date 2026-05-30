@@ -1,0 +1,57 @@
+A+ BREATHLINE VECTOR SNAPSHOT — TABLE 1 PARTIAL NOTE
+
+prediction_ts_utc = 2026-05-27T14:13:00Z
+source_type = A+ table1 partial canonical breathline snapshot
+schema = aplus_table1_canonical_v1_partial
+status = research_only_partial
+expected_synth_token_count = 45
+observed_token_count = 41
+missing_tokens = APT,KITE,SXT,TON
+parser_status = do_not_parse_as_complete_table1
+
+Token set returned:
+AAVE, ADA, ALGO, BTC, CC, CRV, DEEP, DOT, ETH, FET, FIL, FLOKI, HBAR, HNT, HOT, HYPE, ICP, INJ, IOST, LDO, LINK, LTC, MOG, NEAR, NOT, ONDO, PEPE, POL, QNT, RED, RENDER, RLC, SOL, SUI, TAO, VET, WAL, WLD, XLM, XPL, XRP
+
+TOKEN | PHASE | COHERENCE | FIELD | GEOMETRY | STRUCTURAL_ROLE | EXPANSION_QUALITY | ANCHOR_STRENGTH | STRATEGIC_BIAS | NOTES
+
+BTC | confirmed | high | expansion | clean | leader | strong | strong | continuation | Harmonic anchor
+ETH | confirmed | high | expansion | clean | confirmer | strong | strong | accumulation | Fibonacci resonance
+SOL | late | low | compression | mixed | laggard | weak | weak | caution | Phase misalignment
+ADA | exhaustion | low | compression | distorted | laggard | none | none | avoid | Harmonic fatigue
+DEEP | forming | moderate | transition | clean | speculative | moderate | moderate | accumulation | Resonance developing
+FIL | confirmed | high | transition | clean | confirmer | moderate | strong | neutral | Harmonic stability
+HBAR | forming | moderate | expansion | mixed | confirmer | moderate | moderate | neutral | Approaching coherence
+HOT | reset | low | neutral | distorted | unknown | none | none | avoid | Phase disruption
+NEAR | confirmed | high | expansion | clean | confirmer | strong | strong | continuation | Aligned with primary wave
+PEPE | exhaustion | low | compression | distorted | speculative | none | none | avoid | Signal noise high
+POL | confirmed | moderate | expansion | clean | defensive | moderate | strong | neutral | Holds harmonic line
+QNT | confirmed | high | expansion | clean | leader | strong | strong | continuation | Harmonic backbone
+SUI | forming | moderate | transition | mixed | speculative | moderate | moderate | neutral | Potential rising
+VET | late | low | compression | distorted | laggard | weak | weak | avoid | Out of phase
+WAL | forming | moderate | neutral | mixed | speculative | moderate | moderate | neutral | Torsion potential
+XLM | confirmed | high | expansion | clean | confirmer | strong | strong | accumulation | Resonates with BTC
+AAVE | confirmed | high | expansion | clean | leader | strong | strong | continuation | Harmonic integrator
+CC | reset | low | neutral | distorted | unknown | none | none | avoid | Disconnected
+CRV | exhaustion | low | compression | mixed | speculative | weak | none | avoid | Phase collapse
+FLOKI | exhaustion | low | compression | distorted | speculative | none | none | avoid | Signal distortion
+HYPE | exhaustion | low | compression | distorted | speculative | none | none | avoid | Field noise
+LDO | forming | moderate | transition | mixed | confirmer | moderate | moderate | neutral | Phase alignment underway
+LTC | confirmed | high | expansion | clean | defensive | strong | strong | continuation | Legacy harmonic
+ONDO | reset | low | neutral | distorted | unknown | none | none | avoid | Non-reactive
+RLC | late | low | compression | mixed | laggard | weak | weak | avoid | Out of resonance
+WLD | forming | moderate | transition | mixed | speculative | moderate | moderate | neutral | Field emergence
+XRP | confirmed | high | expansion | clean | leader | strong | strong | continuation | Central harmonic node
+ALGO | exhaustion | low | compression | distorted | laggard | none | none | avoid | Phase fatigue
+DOT | confirmed | high | expansion | clean | confirmer | strong | strong | accumulation | Stable harmonic
+FET | forming | moderate | transition | mixed | speculative | moderate | moderate | neutral | Harmonic growth
+HNT | reset | low | neutral | distorted | unknown | none | none | avoid | Phase reset
+ICP | late | low | compression | distorted | laggard | weak | weak | avoid | Harmonic decay
+INJ | confirmed | high | expansion | clean | leader | strong | strong | continuation | Aligned with harmonic top
+IOST | reset | low | neutral | distorted | unknown | none | none | avoid | Disconnected
+MOG | reset | low | neutral | distorted | unknown | none | none | avoid | Phase void
+NOT | reset | low | neutral | distorted | unknown | none | none | avoid | Non-active
+RED | forming | moderate | transition | clean | speculative | moderate | moderate | accumulation | Resonance emerging
+RENDER | confirmed | high | expansion | clean | leader | strong | strong | continuation | Visual harmonic emitter
+XPL | reset | low | neutral | distorted | unknown | none | none | avoid | Non-resonant
+TAO | confirmed | high | expansion | clean | leader | strong | strong | continuation | Codex-aligned
+LINK | confirmed | high | expansion | clean | leader | strong | strong | continuation | Harmonic bridge

@@ -1,0 +1,43 @@
+A+ JUNE 2026 BREATHLINE REFLECTION MAP — SUBSET NOTE
+
+prediction_ts_utc = 2026-05-27T21:49:00Z
+source_type = A+ june breathline reflection subset
+schema = june_reflection_subset_free_text
+status = research_only_partial
+expected_synth_token_count = 45
+observed_token_count = 8
+tokens = XRP,RENDER,SUI,RED,ONDO,QNT,CC,NEAR
+parser_status = do_not_parse_as_complete_june_map
+
+TABLE 1 SUBSET
+
+TOKEN | PHASE | COHERENCE | FIELD | GEOMETRY | STRUCTURAL_ROLE | EXPANSION_QUALITY | ANCHOR_STRENGTH | STRATEGIC_BIAS | NOTES
+XRP | late | moderate | compression | mixed | confirmer | weak | moderate | caution | Approaching harmonic exhaustion
+RENDER | forming | high | expansion | clean | speculative leader | strong | weak | accumulation | Rising creative impulse
+SUI | early | moderate | transition | mixed | speculative | moderate | weak | neutral | Emerging but unstable
+RED | reset | low | neutral | distorted | unknown | none | none | avoid | No harmonic signal
+ONDO | forming | moderate | expansion | mixed | laggard | moderate | moderate | neutral | Potential for reversal
+QNT | confirmed | high | expansion | clean | leader | strong | strong | continuation | Primary harmonic anchor
+Canton (CC) | exhaustion | low | compression | distorted | defensive | weak | moderate | avoid | Declining breathline support
+NEAR | confirmed | high | expansion | clean | confirmer | strong | strong | accumulation | Aligned with harmonic wave
+
+TABLE 2 SUBSET
+
+TOKEN | OFFSET_BAND | DRIFT_DIRECTION | QUALITY | EXTENSION_RISK | ANCHOR_WINDOW_UTC | FIRST_LIFT_WINDOW_UTC | FIRST_DIP_WINDOW_UTC | RETEST_WINDOW_UTC | COMPRESSION_WINDOW_UTC | IGNITION_WINDOW_UTC | MAIN_PULSE_WINDOW_UTC | EXTENSION_WINDOW_UTC | NOTES
+XRP | -5 | backward drift | mixed | high | 06-02..06-04 | 06-10..06-12 | 06-16..06-17 | 06-21..06-22 | 06-26..06-28 | 06-30 | unknown | unknown | Compression phase nearing
+RENDER | +3 | forward drift | clean | low | 06-05..06-06 | 06-14 | 06-18 | 06-20 | 06-24 | 06-28 | unknown | 06-30 | Watch for ignition
+SUI | 0 | unstable | mixed | moderate | 06-03 | 06-09 | 06-15 | 06-22 | 06-27 | unknown | unknown | unknown | Phase still forming
+RED | unknown | unknown | dirty | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | unknown | Not in breathline
+ONDO | +5 | converging | mixed | low | 06-04 | 06-12 | 06-17 | 06-23 | 06-29 | 06-30 | unknown | unknown | Potential lift
+QNT | 0 | converging | clean | low | 06-01 | 06-08 | 06-12 | 06-19 | 06-25 | 06-27 | 06-30 | 06-30 | Stable anchor
+Canton (CC) | -7 | backward drift | dirty | high | 06-01 | 06-07 | 06-14 | 06-20 | 06-26 | unknown | unknown | unknown | Weakening support
+NEAR | +3 | converging | clean | low | 06-02 | 06-09 | 06-13 | 06-18 | 06-24 | 06-29 | unknown | unknown | Harmonic alignment strong
+
+TABLE 3 SUBSET
+
+WINDOW | DATE_RANGE_UTC | MARKET_BREATH_STATE | BTC_ROLE | ALT_ROLE | RISK_STATE | NOTES
+Anchor Phase | 06-01..06-04 | anchor | anchor | neutral | low | Stability window
+First Lift | 06-09..06-12 | first_lift | confirmer | leader | moderate | Altcoins may surge
+First Dip | 06-16..06-17 | first_dip | neutral | laggard | high | Caution advised
+Compression | 06-26..06-28 | compression | drag | compression | high | Volatility expected
+Ignition Point | 06-30 | ignition | leader | rotation | moderate | Potential breakout
