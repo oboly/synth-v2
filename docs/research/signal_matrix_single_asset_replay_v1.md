@@ -217,28 +217,36 @@ oracle zone
 
 ## Primitive Signals To Inspect
 
-The study must inspect at least these primitive signals:
+The first replay runner must inspect only directly measurable primitive signals:
 
-- `fibo_position`
-- `support_touch`
-- `support_hold`
-- `resistance_touch`
-- `target_touch`
-- `bullflag_candidate`
-- `impulse_candidate`
-- `compression_candidate`
-- `failed_breakout`
+- `candle_return`
+- `rolling_return`
 - `volume_expansion`
+- `range_expansion`
+- `local_high_break`
+- `local_low_break`
+- `distance_to_rolling_high`
+- `distance_to_rolling_low`
 - `relative_strength_vs_btc`
-- `relative_strength_vs_theme`
-- `macro_regime_context`
-- `catalyst_active`
-- `dirty_squeeze_active`
-- `distance_to_target`
-- `distance_to_invalidation`
+- `timeframe`
+- `candle_timestamp`
+- `source/freshness fields`
 
 These must stay primitive fields.
 Do not collapse them into one hidden verdict in the study.
+This runner does not implement derived pattern detectors.
+
+## Future Derived Pattern Candidates / P6
+
+The following are later pattern-layer candidates, not part of the primitive
+replay runner:
+
+- `bullflag_candidate`
+- `impulse_candidate`
+- `compression_candidate`
+
+They belong in a later derived-pattern study after the primitive signal
+inventory is stable and replay-validated.
 
 ## Suggested Replay Window
 
@@ -265,8 +273,8 @@ For each oracle zone, ask:
 
 - did `support_touch` appear on multiple timeframes?
 - did `support_hold` confirm only on LTF or also on HTF?
-- did `compression_candidate` appear before the move?
-- did `impulse_candidate` appear too late or early?
+- did the primitive return/range/volume structure strengthen before the move?
+- did local high/low break context appear too late or early?
 - did `distance_to_invalidation` stay favorable?
 
 ### Sell zone questions
@@ -280,7 +288,7 @@ For each oracle zone, ask:
 
 - was the retest visible as `support_hold` or reclaim?
 - did `failed_breakout` help identify a bad chase?
-- did `compression_candidate` or `bullflag_candidate` reappear?
+- did the primitive return/range/volume structure reappear?
 - did LTF recover while HTF stayed cautious?
 
 ### Dirty squeeze / catalyst questions
