@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh Synth public market candle coverage every 15 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+Unit=synth-market-candle-freshness.service
+
+[Install]
+WantedBy=timers.target
