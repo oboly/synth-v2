@@ -17,7 +17,7 @@ echo "python_bin=${PYTHON_BIN}"
 cd "${REPO_DIR}"
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
-  echo "Repo-local python not executable: ${PYTHON_BIN}" >&2
+  echo "Repo-local ${PYTHON_BIN} not executable: ${PYTHON_BIN}" >&2
   exit 1
 fi
 
@@ -34,7 +34,7 @@ run_step() {
 
 build_window_start() {
   local lookback_hours="$1"
-  python - "${lookback_hours}" <<'PY'
+  ${PYTHON_BIN} - "${lookback_hours}" <<'PY'
 from __future__ import annotations
 
 import sys
