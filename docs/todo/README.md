@@ -53,6 +53,7 @@ Do not bypass layers.
 | `deploy_runtime.md` | MVP cockpit implemented / ops follow-up | Odroid read-only cockpit runner, dashboard render path, and related operational follow-ups |
 | `fibo_zones.md` | open research | Fib target maps, leak-free zone/fib touch evaluation, zone context guardrails, exit ladder profiles, and zone UI overlays |
 | `ui_webview.md` | active/open | Read-only chart/UI/Webview upgrades, cockpit sticky columns, reading-flow split, and simplified dashboard design |
+| `signal_matrix_dashboard.md` | active next dashboard lane | Transparent per-asset/per-timeframe primitive signal inventory for Synth v2.14, upstream of manual ladder/dashboard composition |
 | `breath_curve.md` | parked/open | Breath Curve baseline, non-overlap follow-up, partial-cycle, and regime-gated validation continuation |
 | `strategy_candidates.md` | active/open research | Current strategy audit follow-up, horizon bucket design, later classifier/policy research, and research-lead follow-ups |
 | `position_rotation_preview.md` | MVP implemented / parked follow-up | Account-aware read-only cockpit/rotation preview with current price and distance semantics; strategy/backtests remain separate |
@@ -64,14 +65,15 @@ Do not bypass layers.
 
 ```text
 1. Treat the read-only cockpit, rotation preview semantics, and the committed research runners as completed baseline work.
-2. Next research priority is `docs/todo/regime_research.md`:
-   rerun `rotation_destination_historical_replay_audit_v2` full-ish with the newer summaries, inspect symbol-by-confidence and symbol-by-curve-sanity outputs, then run `market_regime_discovery_v1` full-ish.
-3. Keep discovered regime comparisons diagnostic only; existing labels may be joined after clustering but must not become clustering input.
-4. After those reads, design `symbol_breath_profile_v1` and `regime_interaction_audit_v1` before any replay-safe classifier work.
-5. Keep first paper strategy candidate selection blocked until the regime-research readout and follow-up profile/audit designs exist.
-6. Keep Market Breath characterized and parked until a downstream regime-aware or symbol-profile use-case explicitly needs it.
-7. Keep astro context parked as external lunar/solar context only; no astro interaction work before discovered regime review and symbol breath profile design exist.
-8. Keep A+, PRO, execution, broker, account, and live/paper lanes parked unless directly needed by an explicit task.
+2. For Synth v2.14 dashboard direction, start with `docs/todo/signal_matrix_dashboard.md`:
+   build the transparent primitive signal inventory before more manual ladder/dashboard composition work.
+3. Keep `docs/todo/manual_ladder_dashboard.md` downstream from the future signal matrix; do not keep tuning it as the first truth surface.
+4. Keep discovered regime comparisons diagnostic only; existing labels may be joined after clustering but must not become clustering input.
+5. After the signal-matrix direction is clear, continue `docs/todo/regime_research.md` follow-up work for symbol/profile/regime interaction research.
+6. Keep first paper strategy candidate selection blocked until regime/profile research and transparent signal inventory work are in place.
+7. Keep Market Breath characterized and parked until a downstream regime-aware or symbol-profile use-case explicitly needs it.
+8. Keep astro context parked as external lunar/solar context only; no astro interaction work before discovered regime review and symbol breath profile design exist.
+9. Keep A+, PRO, execution, broker, account, and live/paper lanes parked unless directly needed by an explicit task.
 ```
 
 ## 2026-05-19 Product/Cockpit/Strategy bundle
