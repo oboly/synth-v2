@@ -166,6 +166,7 @@ Important guard:
 ## Comparison Buckets
 
 - `BOTH_AGREE_UP`
+- `APLUS_CONSTRUCTIVE_SYNTH_SOFT_CONTEXT`
 - `A_PLUS_ONLY_WAIT`
 - `APLUS_CONSTRUCTIVE_SYNTH_RAW_CONTEXT`
 - `APLUS_CONSTRUCTIVE_SYNTH_BLOCKED`
@@ -180,7 +181,14 @@ Rules:
 `BOTH_AGREE_UP`
 
 - A+ constructive
-- Synth confirms via hard-confirm context
+- `synth_confirmation_strength == HARD_CONFIRM`
+
+`APLUS_CONSTRUCTIVE_SYNTH_SOFT_CONTEXT`
+
+- A+ constructive
+- Synth has only `SOFT_CONTEXT`
+- this is weaker than hard agreement and must not be grouped into
+  `BOTH_AGREE_UP`
 
 `APLUS_CONSTRUCTIVE_SYNTH_RAW_CONTEXT`
 

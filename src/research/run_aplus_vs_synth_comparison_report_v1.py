@@ -411,15 +411,18 @@ def classify_comparison_bucket(
     aplus_constructive: bool,
     aplus_caution: bool,
     synth_bucket: str,
+    synth_confirmation_strength: str,
 ) -> tuple[str, str]:
     synth_constructive = synth_bucket in {"SYNTH_CONFIRMED_UP", "SYNTH_REVIEW_UP"}
     synth_bear = synth_bucket == "SYNTH_AVOID_OR_FAIL"
     synth_raw = synth_bucket == "SYNTH_RAW_EDGE_CONTEXT"
-    if aplus_constructive and synth_constructive:
+    if aplus_constructive and synth_confirmation_strength == "HARD_CONFIRM":
         return "BOTH_AGREE_UP", "aplus_constructive_and_synth_confirms"
+    if aplus_constructive and synth_confirmation_strength == "SOFT_CONTEXT":
+        return "APLUS_CONSTRUCTIVE_SYNTH_SOFT_CONTEXT", "aplus_constructive_but_synth_only_has_soft_context"
     if aplus_constructive and synth_raw:
         return "APLUS_CONSTRUCTIVE_SYNTH_RAW_CONTEXT", "aplus_constructive_but_synth_only_has_raw_edge_context"
-    if aplus_constructive and synth_bear:
+    if aplus_constructive and (synth_bear or synth_confirmation_strength == "NO_CONFIRM"):
         return "APLUS_CONSTRUCTIVE_SYNTH_BLOCKED", "aplus_constructive_but_synth_is_explicitly_blocked"
     if aplus_constructive:
         return "A_PLUS_ONLY_WAIT", "aplus_constructive_but_synth_confirmation_missing"
@@ -474,15 +477,25 @@ def build_rows(
             volume_row=volume_map.get(token),
             paper_advice_row=paper_advice_row,
         )
+        synth_confirmation_strength = (
+            "HARD_CONFIRM"
+            if flags["hard_confirm"]
+            else "RAW_EDGE_ONLY"
+            if flags["raw_edge_only"]
+            else "SOFT_CONTEXT"
+            if flags["soft_context"]
+            else "NO_CONFIRM"
+        )
         aplus_constructive, aplus_caution = aplus_constructive_state(t1, t2)
         comparison_bucket, comparison_reason = classify_comparison_bucket(
             aplus_constructive=aplus_constructive,
             aplus_caution=aplus_caution,
             synth_bucket=synth_bucket,
+            synth_confirmation_strength=synth_confirmation_strength,
         )
         reason = (
             f"{comparison_reason}; aplus_bucket={aplus_bucket}; synth_bucket={synth_bucket}; "
-            f"confirmation_strength={'HARD_CONFIRM' if flags['hard_confirm'] else 'RAW_EDGE_ONLY' if flags['raw_edge_only'] else 'SOFT_CONTEXT' if flags['soft_context'] else 'NO_CONFIRM'}; "
+            f"confirmation_strength={synth_confirmation_strength}; "
             f"selection={'yes' if flags['selection_yes'] else 'no'}; "
             f"setup={'yes' if flags['setup_yes'] else 'no'}; "
             f"zone={'yes' if flags['zone_yes'] else 'no'}; "
@@ -515,15 +528,7 @@ def build_rows(
                 reload_context_role=reload_context_role,
                 reload_context_promotable=reload_context_promotable,
                 volume_context_summary=volume_summary,
-                synth_confirmation_strength=(
-                    "HARD_CONFIRM"
-                    if flags["hard_confirm"]
-                    else "RAW_EDGE_ONLY"
-                    if flags["raw_edge_only"]
-                    else "SOFT_CONTEXT"
-                    if flags["soft_context"]
-                    else "NO_CONFIRM"
-                ),
+                synth_confirmation_strength=synth_confirmation_strength,
                 synth_bucket=synth_bucket,
                 comparison_bucket=comparison_bucket,
                 reason=reason,
