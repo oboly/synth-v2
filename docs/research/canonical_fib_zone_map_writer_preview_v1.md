@@ -226,6 +226,47 @@ which records:
 - anchor indices
 - bars since anchor end
 - target/retrace multipliers
+- optional `swing_pct_band`
+
+## Swing Percentage
+
+`swing_range_pct` is the canonical swing-size field.
+
+This exact measured percentage is the field that should be used for:
+
+- validation
+- backtests
+- optimization
+- later threshold research
+
+No swing category labels are used in v1.
+
+V1 may also emit:
+
+- `swing_pct`
+- `swing_pct_band`
+
+but these are derived display helpers only.
+
+### `swing_pct_band`
+
+If present, `swing_pct_band` is optional display metadata only:
+
+- `<8`
+- `8-25`
+- `25-60`
+- `>=60`
+- `UNKNOWN`
+
+It does not alter:
+
+- Entry Zone
+- Targets
+- Invalidation
+- `map_quality`
+
+Any future banding must remain derived display metadata only and must not
+replace raw measurement or drive strategy logic.
 
 ## Map Status
 
