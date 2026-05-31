@@ -197,6 +197,66 @@ V1 supports:
 - uses close prices consistently for candidate tracking and reversal confirmation
 - emits alternating pivots after deterministic percent reversals
 
+## Raw Pivots Versus Refined Anchors
+
+Raw pivots remain the detector output.
+
+Refined anchors are a later visual-review layer applied only after:
+
+1. raw pivots are detected
+2. major pivots are optionally filtered
+3. the selected review sequence is chosen
+
+This separation matters because a local pivot can be technically valid while
+still not being the best candle extreme for use as a wave anchor.
+
+## Anchor Refinement
+
+V1 supports:
+
+- `anchor_refinement=none`
+- `anchor_refinement=segment_extreme`
+
+### `anchor_refinement=none`
+
+Keep the selected sequence anchors unchanged.
+
+### `anchor_refinement=segment_extreme`
+
+For each selected anchor `B` after `P0`:
+
+- let `A` be the previous selected anchor
+- search candles between `A.ts` and `B.ts`, inclusive
+- if `B` is `HIGH`, refine `B` to the candle with the highest high in that
+  segment
+- if `B` is `LOW`, refine `B` to the candle with the lowest low in that segment
+
+The raw detector pivots stay unchanged.
+The major pivot filtering logic stays unchanged.
+Only the selected review sequence anchors are refined.
+
+### P0 Limitation
+
+`P0` is intentionally not refined in v1.
+
+Reason:
+
+- refining `P0` cleanly requires explicit previous-context handling
+- that is outside the current narrow visual-review scope
+
+## Why Refinement Exists
+
+Visual review of WLD `15m` showed that:
+
+- `local_pivot_window=10`
+- `major_filter=relative_move`
+- `min_leg_vs_previous_ratio=0.382`
+
+follows the micro-curve well, but still benefits from anchor refinement to
+capture better segment extremes.
+
+That is exactly the role of `segment_extreme` in v1.
+
 ## Weekly Aggregation Support
 
 When `--interval` is `1w`, the runner does not require native weekly candles in
@@ -342,6 +402,7 @@ The preview remains measurement-first because it only does the following:
 - reads public candles
 - selects pivots with one chosen detector
 - selects a review sequence from the already-built pivot stream
+- optionally refines selected anchors from candle segment extremes
 - measures move sizes and ratios from those pivots
 - renders a static visual review page
 

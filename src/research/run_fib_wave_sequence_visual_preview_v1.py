@@ -27,6 +27,7 @@ DEFAULT_MIN_LEG_VS_PREVIOUS_RATIO = 0.0
 DEFAULT_MIN_LEG_DURATION_CANDLES = 0
 DEFAULT_SEQUENCE_MODE = "latest"
 DEFAULT_SEQUENCE_LENGTH = 9
+DEFAULT_ANCHOR_REFINEMENT = "none"
 DEFAULT_OUTPUT_HTML = "/tmp/fib_wave_sequence_BTC_1d.html"
 
 SVG_WIDTH = 1120
@@ -74,6 +75,13 @@ class SequenceCandidate:
     has_complete_sequence: bool
 
 
+@dataclass(frozen=True)
+class RefinedAnchor:
+    raw_pivot: Pivot
+    refined_pivot: Pivot
+    changed: bool
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -114,6 +122,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--sequence-start-index", type=int, default=None)
     parser.add_argument("--sequence-length", type=int, default=DEFAULT_SEQUENCE_LENGTH)
+    parser.add_argument(
+        "--anchor-refinement",
+        choices=("none", "segment_extreme"),
+        default=DEFAULT_ANCHOR_REFINEMENT,
+    )
     parser.add_argument("--output-html", default=DEFAULT_OUTPUT_HTML)
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
     return parser.parse_args(argv)
@@ -510,6 +523,78 @@ def build_major_pivots(
     return compress_same_type_pivots(accepted)
 
 
+def segment_extreme_pivot(
+    candles: list[Candle],
+    *,
+    start_ts_utc: datetime,
+    finish_ts_utc: datetime,
+    pivot_kind: str,
+) -> Pivot | None:
+    segment = [
+        candle
+        for candle in candles
+        if start_ts_utc <= candle.close_ts_utc <= finish_ts_utc
+    ]
+    if not segment:
+        return None
+    if pivot_kind == "HIGH":
+        selected = max(segment, key=lambda candle: (candle.high_price, candle.close_ts_utc))
+        return Pivot(
+            candle_index=selected.candle_index,
+            pivot_kind="HIGH",
+            ts_utc=selected.close_ts_utc,
+            price=selected.high_price,
+        )
+    selected = min(segment, key=lambda candle: (candle.low_price, candle.close_ts_utc))
+    return Pivot(
+        candle_index=selected.candle_index,
+        pivot_kind="LOW",
+        ts_utc=selected.close_ts_utc,
+        price=selected.low_price,
+    )
+
+
+def refine_selected_sequence(
+    candles: list[Candle],
+    sequence: list[Pivot],
+    *,
+    anchor_refinement: str,
+) -> list[RefinedAnchor]:
+    if not sequence:
+        return []
+    refined: list[RefinedAnchor] = [
+        RefinedAnchor(raw_pivot=sequence[0], refined_pivot=sequence[0], changed=False)
+    ]
+    if anchor_refinement == "none":
+        for pivot in sequence[1:]:
+            refined.append(RefinedAnchor(raw_pivot=pivot, refined_pivot=pivot, changed=False))
+        return refined
+    if anchor_refinement != "segment_extreme":
+        raise ValueError(f"Unsupported anchor_refinement={anchor_refinement}")
+
+    for index in range(1, len(sequence)):
+        previous_raw = sequence[index - 1]
+        current_raw = sequence[index]
+        candidate = segment_extreme_pivot(
+            candles,
+            start_ts_utc=previous_raw.ts_utc,
+            finish_ts_utc=current_raw.ts_utc,
+            pivot_kind=current_raw.pivot_kind,
+        )
+        refined_pivot = candidate if candidate is not None else current_raw
+        refined.append(
+            RefinedAnchor(
+                raw_pivot=current_raw,
+                refined_pivot=refined_pivot,
+                changed=(
+                    refined_pivot.ts_utc != current_raw.ts_utc
+                    or refined_pivot.price != current_raw.price
+                ),
+            )
+        )
+    return refined
+
+
 def move_abs(sequence: list[Pivot], start_idx: int, finish_idx: int) -> float | None:
     if len(sequence) <= finish_idx:
         return None
@@ -540,6 +625,7 @@ def chart_svg(
     candles: list[Candle],
     raw_pivots: list[Pivot],
     major_pivots: list[Pivot],
+    refined_anchors: list[RefinedAnchor],
     sequence: list[Pivot],
 ) -> str:
     prices = [candle.close_price for candle in candles] + [pivot.price for pivot in raw_pivots]
@@ -578,6 +664,13 @@ def chart_svg(
         color = "#c4513d" if pivot.pivot_kind == "HIGH" else "#23845a"
         major_markers.append(
             f"<circle cx='{x:.2f}' cy='{y:.2f}' r='5.2' fill='{color}' stroke='#ffffff' stroke-width='1.3'></circle>"
+        )
+    refined_markers: list[str] = []
+    for anchor in refined_anchors:
+        x = x_for_index(anchor.refined_pivot.candle_index, len(candles))
+        y = y_for_price(anchor.refined_pivot.price, min_price, max_price)
+        refined_markers.append(
+            f"<circle cx='{x:.2f}' cy='{y:.2f}' r='6.4' fill='none' stroke='#111111' stroke-width='1.6'></circle>"
         )
 
     p_labels: list[str] = []
@@ -624,6 +717,7 @@ def chart_svg(
   <polyline points="{sequence_points}" class="sequence-line"></polyline>
   {''.join(raw_markers)}
   {''.join(major_markers)}
+  {''.join(refined_markers)}
   {''.join(pivot_index_labels)}
   {''.join(p_labels)}
   {''.join(wave_labels)}
@@ -681,6 +775,8 @@ def detail_table(
     sequence_mode: str,
     sequence_start_index: int | None,
     sequence_length: int,
+    anchor_refinement: str,
+    refined_anchors: list[RefinedAnchor],
     sequence: list[Pivot],
 ) -> str:
     rows: list[tuple[str, str]] = [
@@ -699,15 +795,23 @@ def detail_table(
         ("sequence_start_index", "" if sequence_start_index is None else str(sequence_start_index)),
         ("sequence_length", str(sequence_length)),
         ("selected_sequence_length", str(len(sequence))),
+        ("anchor_refinement", anchor_refinement),
+        ("refined_anchor_changed_count", str(sum(1 for anchor in refined_anchors if anchor.changed))),
         ("pivot_count", str(len(major_pivots))),
         ("has_complete_sequence", "1" if len(sequence) == sequence_length else "0"),
     ]
     for idx in range(sequence_length):
         pivot = sequence[idx] if len(sequence) > idx else None
-        rows.append((f"P{idx} major_pivot_index", str(major_pivots.index(pivot)) if pivot in major_pivots else ""))
-        rows.append((f"P{idx} timestamp", fmt_ts(pivot.ts_utc) if pivot else ""))
-        rows.append((f"P{idx} price", fmt_price(pivot.price) if pivot else ""))
-        rows.append((f"P{idx} type", pivot.pivot_kind if pivot else ""))
+        refined = refined_anchors[idx] if len(refined_anchors) > idx else None
+        raw_pivot = refined.raw_pivot if refined else None
+        rows.append((f"P{idx} major_pivot_index", str(major_pivots.index(raw_pivot)) if raw_pivot in major_pivots else ""))
+        rows.append((f"P{idx} raw_ts", fmt_ts(raw_pivot.ts_utc) if raw_pivot else ""))
+        rows.append((f"P{idx} raw_price", fmt_price(raw_pivot.price) if raw_pivot else ""))
+        rows.append((f"P{idx} raw_type", raw_pivot.pivot_kind if raw_pivot else ""))
+        rows.append((f"P{idx} refined_ts", fmt_ts(pivot.ts_utc) if pivot else ""))
+        rows.append((f"P{idx} refined_price", fmt_price(pivot.price) if pivot else ""))
+        rows.append((f"P{idx} refined_type", pivot.pivot_kind if pivot else ""))
+        rows.append((f"P{idx} refined_changed", "1" if refined and refined.changed else "0"))
 
     metrics = sequence_metrics(sequence) if len(sequence) >= 2 else {}
     for key in (
@@ -752,6 +856,8 @@ def render_html(
     sequence_start_index: int | None,
     sequence_length: int,
     sequence_candidates: list[SequenceCandidate],
+    anchor_refinement: str,
+    refined_anchors: list[RefinedAnchor],
     sequence: list[Pivot],
 ) -> str:
     generated_at_utc = fmt_ts(datetime.now(UTC))
@@ -940,14 +1046,14 @@ def render_html(
     </section>
     <section class="panel">
       <h2>Selected Candidate Sequence</h2>
-      <p class="foot">Source table: {esc(SOURCE_TABLE)}. Source interval: {esc(source_interval)}. Aggregated interval: {esc(aggregated_interval)}. Detector params: {esc(detector_params_value)}. Major filter: {esc(major_filter)}. Sequence mode: {esc(sequence_mode)}.</p>
-      {chart_svg(candles, raw_pivots, major_pivots, sequence)}
+      <p class="foot">Source table: {esc(SOURCE_TABLE)}. Source interval: {esc(source_interval)}. Aggregated interval: {esc(aggregated_interval)}. Detector params: {esc(detector_params_value)}. Major filter: {esc(major_filter)}. Sequence mode: {esc(sequence_mode)}. Anchor refinement: {esc(anchor_refinement)}.</p>
+      {chart_svg(candles, raw_pivots, major_pivots, refined_anchors, sequence)}
       <table class="detail-table">
         <tbody>
-          {detail_table(symbol=symbol, interval=interval, detector=detector, detector_params_value=detector_params_value, lookback_candles=lookback_candles, raw_pivots=raw_pivots, major_pivots=major_pivots, major_filter=major_filter, min_leg_vs_previous_ratio=min_leg_vs_previous_ratio, min_leg_duration_candles=min_leg_duration_candles, sequence_mode=sequence_mode, sequence_start_index=sequence_start_index, sequence_length=sequence_length, sequence=sequence)}
+          {detail_table(symbol=symbol, interval=interval, detector=detector, detector_params_value=detector_params_value, lookback_candles=lookback_candles, raw_pivots=raw_pivots, major_pivots=major_pivots, major_filter=major_filter, min_leg_vs_previous_ratio=min_leg_vs_previous_ratio, min_leg_duration_candles=min_leg_duration_candles, sequence_mode=sequence_mode, sequence_start_index=sequence_start_index, sequence_length=sequence_length, anchor_refinement=anchor_refinement, refined_anchors=refined_anchors, sequence=sequence)}
         </tbody>
       </table>
-      <div class="foot">Raw pivots are shown with smaller markers. Major pivots are shown with larger markers. P0-P8 and W1/W2/W3/W4/W5/A/B/C remain candidate visual labels only for inspection.</div>
+      <div class="foot">Raw pivots are shown with smaller markers. Major pivots are shown with larger markers. Refined anchors are shown with dark outlined markers. P0-P8 and W1/W2/W3/W4/W5/A/B/C remain candidate visual labels only for inspection.</div>
       {rolling_table_html}
     </section>
   </div>
@@ -970,6 +1076,8 @@ def build_summary(
     sequence_mode: str,
     sequence_start_index: int | None,
     sequence_length: int,
+    anchor_refinement: str,
+    refined_anchor_changed_count: int,
     selected_sequence: list[Pivot],
     has_complete_sequence: bool,
     output_html: Path,
@@ -985,6 +1093,7 @@ def build_summary(
         "sequence_mode": sequence_mode,
         "sequence_start_index": sequence_start_index,
         "sequence_length": sequence_length,
+        "anchor_refinement": anchor_refinement,
         "rows": rows,
         "aggregated_rows": aggregated_rows,
         "pivot_count": major_pivot_count,
@@ -992,6 +1101,7 @@ def build_summary(
         "major_pivot_count": major_pivot_count,
         "removed_minor_pivot_count": max(0, raw_pivot_count - major_pivot_count),
         "selected_sequence_length": len(selected_sequence),
+        "refined_anchor_changed_count": refined_anchor_changed_count,
         "has_complete_sequence": 1 if has_complete_sequence else 0,
         "selected_sequence_start_ts_utc": fmt_ts(selected_sequence[0].ts_utc) if selected_sequence else "",
         "selected_sequence_end_ts_utc": fmt_ts(selected_sequence[-1].ts_utc) if selected_sequence else "",
@@ -1019,6 +1129,7 @@ def print_summary(summary: dict[str, Any]) -> None:
         "sequence_mode",
         "sequence_start_index",
         "sequence_length",
+        "anchor_refinement",
         "rows",
         "aggregated_rows",
         "pivot_count",
@@ -1026,6 +1137,7 @@ def print_summary(summary: dict[str, Any]) -> None:
         "major_pivot_count",
         "removed_minor_pivot_count",
         "selected_sequence_length",
+        "refined_anchor_changed_count",
         "has_complete_sequence",
         "selected_sequence_start_ts_utc",
         "selected_sequence_end_ts_utc",
@@ -1133,7 +1245,12 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         selected_candidate = select_sequence_latest(major_pivots, args.sequence_length)
-    sequence = selected_candidate.pivots
+    refined_anchors = refine_selected_sequence(
+        candles,
+        selected_candidate.pivots,
+        anchor_refinement=args.anchor_refinement,
+    )
+    sequence = [anchor.refined_pivot for anchor in refined_anchors]
     output_html = Path(args.output_html)
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(
@@ -1156,6 +1273,8 @@ def main(argv: list[str] | None = None) -> int:
             sequence_start_index=args.sequence_start_index,
             sequence_length=args.sequence_length,
             sequence_candidates=sequence_candidates,
+            anchor_refinement=args.anchor_refinement,
+            refined_anchors=refined_anchors,
             sequence=sequence,
         ),
         encoding="utf-8",
@@ -1170,10 +1289,12 @@ def main(argv: list[str] | None = None) -> int:
         sequence_mode=args.sequence_mode,
         sequence_start_index=args.sequence_start_index,
         sequence_length=args.sequence_length,
+        anchor_refinement=args.anchor_refinement,
         rows=len(candles),
         aggregated_rows=len(candles) if args.interval == "1w" else len(candles),
         raw_pivot_count=len(raw_pivots),
         major_pivot_count=len(major_pivots),
+        refined_anchor_changed_count=sum(1 for anchor in refined_anchors if anchor.changed),
         selected_sequence=sequence,
         has_complete_sequence=selected_candidate.has_complete_sequence,
         output_html=output_html,
