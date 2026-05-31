@@ -1,0 +1,102 @@
+-- Migration: research_label_registry_v1
+-- Boundary: metadata only · research/display only · no strategy/execution usage
+
+CREATE TABLE IF NOT EXISTS research_label_registry_v1 (
+    label_key VARCHAR(128) NOT NULL PRIMARY KEY,
+    label_type VARCHAR(64) NOT NULL,
+    category VARCHAR(64) NOT NULL,
+    family VARCHAR(64) NOT NULL,
+    display_name VARCHAR(128) NOT NULL,
+    short_description TEXT NOT NULL,
+    long_description TEXT NOT NULL,
+    ui_tone VARCHAR(32) NOT NULL,
+    severity_rank INT NOT NULL DEFAULT 0,
+    research_status VARCHAR(64) NOT NULL DEFAULT 'DISPLAY_ONLY',
+    allowed_context TEXT NOT NULL,
+    forbidden_context TEXT NOT NULL,
+    is_terminal TINYINT(1) NOT NULL DEFAULT 0,
+    is_actionable TINYINT(1) NOT NULL DEFAULT 0,
+    is_enabled TINYINT(1) NOT NULL DEFAULT 1,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at_utc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    INDEX idx_research_label_registry_v1_type (label_type, category, family, sort_order),
+    INDEX idx_research_label_registry_v1_enabled (is_enabled, research_status, sort_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='Research/display-only registry for canonical ALL CAPS labels, badge metadata, and tooltip descriptions.';
+
+INSERT INTO research_label_registry_v1 (
+    label_key,
+    label_type,
+    category,
+    family,
+    display_name,
+    short_description,
+    long_description,
+    ui_tone,
+    severity_rank,
+    research_status,
+    allowed_context,
+    forbidden_context,
+    is_terminal,
+    is_actionable,
+    is_enabled,
+    sort_order
+) VALUES
+    ('ENTRY_ZONE_NEAR', 'STRATEGY_STATE', 'MARKET_STRATEGY', 'ENTRY_ZONE', 'Entry Zone Near', 'Price is near the Entry Zone.', 'Market-only strategy hypothesis that price is near the Entry Zone where a support, retest, reclaim, or add-back hypothesis may be investigated manually. This is display context only and not a signal, permission, or order.', 'ok', 40, 'DISPLAY_ONLY', 'Static market-only dashboards, strategy hypothesis tables, research chart annotations.', 'Decision permission, sizing logic, broker orders, account-aware execution, hidden buy commands.', 0, 0, 1, 10),
+    ('INVALIDATION_NEAR', 'STRATEGY_STATE', 'MARKET_STRATEGY', 'RISK', 'Invalidation Near', 'Price is near the invalidation level.', 'Market-only strategy hypothesis that price is close to the map invalidation level. It highlights fade or breakdown risk in the current map and must remain descriptive only.', 'bad', 90, 'DISPLAY_ONLY', 'Strategy maps, research dashboards, level-review reports.', 'Execution permission, forced exits, automatic risk orders.', 0, 0, 1, 20),
+    ('TARGET_TOUCHED_TP_REVIEW', 'STRATEGY_STATE', 'MARKET_STRATEGY', 'TARGET', 'Target Touched / TP Review', 'Nearest mapped target has been touched.', 'Market-only state showing that the nearest target or T1 has been touched and the map should be reviewed for TP, runner, or next-target interpretation. It is not a sell order.', 'warn', 70, 'DISPLAY_ONLY', 'Target ladders, strategy map dashboards, manual review tables.', 'Automatic TP execution, account-aware harvesting logic.', 0, 0, 1, 30),
+    ('FAILED_RECLAIM_FADE_RISK', 'STRATEGY_STATE', 'MARKET_STRATEGY', 'RECLAIM', 'Failed Reclaim / Fade Risk', 'Price failed to hold the reclaim area.', 'Market-only state used when price loses the intended reclaim or Entry Zone structure and fade risk becomes visible. It is a map warning, not an execution command.', 'bad', 80, 'DISPLAY_ONLY', 'Market-only risk/map dashboards and research replays.', 'Automatic reduction, forced exits, broker actions.', 0, 0, 1, 40),
+    ('WAIT_RETEST', 'STRATEGY_STATE', 'MARKET_STRATEGY', 'RETEST', 'Wait Retest', 'Price moved beyond Entry Zone; wait for retest.', 'Market-only strategy state indicating that price has moved away from the Entry Zone or first reaction area and the dashboard is waiting for a retest rather than a chase. It does not block or permit anything downstream.', 'warn', 50, 'DISPLAY_ONLY', 'Strategy context dashboards, chart review notes, replay summaries.', 'Hidden veto logic, advice labels, order intent.', 0, 0, 1, 50),
+    ('SUPPORT_REACTION_CANDIDATE', 'STRATEGY_STATE', 'MARKET_STRATEGY', 'SUPPORT', 'Support Reaction Candidate', 'Price is reacting inside support / Entry Zone.', 'Market-only strategy hypothesis that price is sitting in a mapped support or Entry Zone where a reaction may matter. It is not an entry command and must remain separate from account or execution logic.', 'ok', 35, 'DISPLAY_ONLY', 'Strategy dashboards, support/reaction studies, chart annotations.', 'Automatic long entries, hidden approval logic.', 0, 0, 1, 60),
+    ('FIB_RETEST_CONTINUATION_CANDIDATE', 'STRATEGY_STATE', 'MARKET_STRATEGY', 'CONTINUATION', 'Fib Retest Continuation Candidate', 'Map still points to continuation after fib retest.', 'Market-only strategy hypothesis that the fib/Entry Zone map remains intact between support and target and may still describe continuation. It is display context only and not evidence of permission or executable edge.', 'ok', 45, 'DISPLAY_ONLY', 'Fibo strategy dashboards, continuation review tables, replay studies.', 'Advice promotion, decision gating, order creation.', 0, 0, 1, 70),
+    ('MAP_INCOMPLETE', 'STRATEGY_STATE', 'MARKET_STRATEGY', 'DATA_QUALITY', 'Map Incomplete', 'Strategy map is incomplete.', 'Display state used when one or more key map fields such as target, Entry Zone, or invalidation are missing. It signals incomplete context only and must not be treated as a trade conclusion.', 'warn', 60, 'DISPLAY_ONLY', 'Dashboard data-quality surfaces, research table status columns.', 'Execution logic, hidden fallback strategy decisions.', 0, 0, 1, 80),
+    ('CONTEXT_ONLY', 'STRATEGY_STATE', 'MARKET_STRATEGY', 'NEUTRAL', 'Context Only', 'Map context is visible but no stronger hypothesis is near price.', 'Neutral market-only display state indicating that a map exists but no stronger strategy hypothesis is currently close to price. It is context, not an advice label.', 'context', 20, 'DISPLAY_ONLY', 'Strategy dashboards, map summaries, research reports.', 'Advice promotion, blocking logic, execution semantics.', 0, 0, 1, 90),
+    ('NO_STRATEGY_CONTEXT', 'STRATEGY_STATE', 'MARKET_STRATEGY', 'MISSING', 'No Strategy Context', 'No strategy map/context is available.', 'Display state used when the dashboard cannot assemble a usable market-only strategy map from the available public sources. It represents missing context only.', 'muted', 10, 'DISPLAY_ONLY', 'Missing-context rows, research dashboard fallbacks.', 'Synthetic signals, invented map states, hidden defaults.', 0, 0, 1, 100),
+
+    ('MISSING_SOURCE', 'SOURCE_STATUS', 'SOURCE', 'LOOKUP', 'Missing Source', 'Required source was not found.', 'Canonical source-status label indicating that a required table, file, or row was missing for this display context. It is metadata only and not a strategy verdict.', 'bad', 70, 'DISPLAY_ONLY', 'Source status fields, debug panels, missing-data summaries.', 'Strategy decisions, order logic, hidden fallback assumptions.', 0, 0, 1, 210),
+    ('FOUND', 'SOURCE_STATUS', 'SOURCE', 'LOOKUP', 'Found', 'Source was found successfully.', 'Canonical source-status label indicating that the requested source table/file/row was found and usable for display. It says nothing about edge quality or tradeability.', 'ok', 20, 'DISPLAY_ONLY', 'Source status fields, debug panels, diagnostics.', 'Trade permission, ranking promotion, execution logic.', 0, 0, 1, 220),
+    ('UNKNOWN', 'SOURCE_STATUS', 'SOURCE', 'LOOKUP', 'Unknown', 'Source status is unknown.', 'Canonical source-status label for situations where provenance or source resolution is unknown. This is display metadata only.', 'muted', 40, 'DISPLAY_ONLY', 'Source/debug fields, partial provenance cases.', 'Strategy inference, hidden defaults, broker logic.', 0, 0, 1, 230),
+
+    ('FRESH', 'FRESHNESS_STATE', 'FRESHNESS', 'MARKET_DATA', 'Fresh', 'Latest source appears fresh.', 'Canonical freshness label indicating the latest source timestamp is within the expected freshness window for the relevant interval. It describes data age only.', 'ok', 20, 'DISPLAY_ONLY', 'Freshness badges, data recency diagnostics, replay coverage summaries.', 'Trade permission, hidden timing triggers, signal generation.', 0, 0, 1, 310),
+    ('DELAYED', 'FRESHNESS_STATE', 'FRESHNESS', 'MARKET_DATA', 'Delayed', 'Source is present but delayed.', 'Canonical freshness label indicating data exists but is older than the normal freshness window while still being usable for display with caution.', 'warn', 50, 'DISPLAY_ONLY', 'Freshness badges, market-data diagnostics, dashboard headers.', 'Automatic blocking or permission logic without explicit downstream design.', 0, 0, 1, 320),
+    ('STALE', 'FRESHNESS_STATE', 'FRESHNESS', 'MARKET_DATA', 'Stale', 'Source is stale.', 'Canonical freshness label indicating data is older than the stale threshold for the relevant interval and should be treated as degraded display context only.', 'bad', 80, 'DISPLAY_ONLY', 'Freshness/status columns, stale-map diagnostics, research outputs.', 'Automatic order risk logic, strategy promotion, hidden recalculation rules.', 0, 0, 1, 330),
+    ('MISSING_CANDLE', 'FRESHNESS_STATE', 'FRESHNESS', 'MARKET_DATA', 'Missing Candle', 'Latest candle is missing.', 'Canonical freshness/data label indicating no current candle was available for the requested interval or symbol. It is a data-quality marker only.', 'bad', 90, 'DISPLAY_ONLY', 'Freshness/status columns, data coverage diagnostics.', 'Synthetic market state creation, execution logic, order suppression logic.', 0, 0, 1, 340),
+
+    ('FIB_MAP_UNKNOWN', 'MAP_STATE', 'MAP', 'MAP_AVAILABILITY', 'Fib Map Unknown', 'No fib map row is available.', 'Canonical map-state label indicating that no fib map row was found for the symbol in the current display context. It is a missing-map marker only.', 'muted', 40, 'DISPLAY_ONLY', 'Fib map status fields, dashboard rows, research map coverage reports.', 'Synthetic map reconstruction inside display-only layers.', 0, 0, 1, 410),
+    ('FIB_MAP_FOUND', 'MAP_STATE', 'MAP', 'MAP_AVAILABILITY', 'Fib Map Found', 'Fib map row is available.', 'Canonical map-state label indicating that a fib map row exists and can be used for display context. It does not imply that the map is complete or valid for strategy promotion.', 'ok', 20, 'DISPLAY_ONLY', 'Fib map availability badges, debug panels.', 'Execution logic, hidden confidence scoring.', 0, 0, 1, 420),
+    ('MISSING_INVALIDATION', 'MAP_STATE', 'MAP', 'MAP_COMPLETENESS', 'Missing Invalidation', 'Map has no invalidation level.', 'Canonical map-state label indicating that a strategy/map context is missing its invalidation level. It is a completeness marker only.', 'warn', 70, 'DISPLAY_ONLY', 'Map completeness summaries, research dashboards.', 'Order logic, forced exits, hidden invalidation defaults.', 0, 0, 1, 430),
+    ('MISSING_TARGET', 'MAP_STATE', 'MAP', 'MAP_COMPLETENESS', 'Missing Target', 'Map has no target level.', 'Canonical map-state label indicating that a strategy/map context is missing its target/T1 definition. It is a completeness marker only.', 'warn', 65, 'DISPLAY_ONLY', 'Map completeness summaries, research dashboards.', 'Synthetic target creation, advice logic.', 0, 0, 1, 440),
+    ('MISSING_ENTRY_ZONE', 'MAP_STATE', 'MAP', 'MAP_COMPLETENESS', 'Missing Entry Zone', 'Map has no Entry Zone.', 'Canonical map-state label indicating that a strategy/map context is missing its Entry Zone. It is a completeness marker only.', 'warn', 60, 'DISPLAY_ONLY', 'Map completeness summaries, strategy dashboards.', 'Automatic chase/entry logic, synthetic zone creation.', 0, 0, 1, 450),
+
+    ('FIBO_EXPLAINED', 'VALIDATION_STATE', 'VALIDATION', 'RESIDUAL_ANALYSIS', 'Fibo Explained', 'Reaction is explained by standard fibo.', 'Validation-state label for later research use when a reaction is adequately explained by standard fibo baselines. This is not a trade label.', 'ok', 20, 'DISPLAY_ONLY', 'Residual validation reports, reaction-zone analysis, research dashboards.', 'Runtime signals, strategy permission, execution logic.', 0, 0, 1, 510),
+    ('FIBO_NEAR_MISS', 'VALIDATION_STATE', 'VALIDATION', 'RESIDUAL_ANALYSIS', 'Fibo Near Miss', 'Reaction is near but not cleanly explained by fibo.', 'Validation-state label for later residual analysis when price reaction lands near standard fibo levels but not close enough to count as clearly explained.', 'warn', 40, 'DISPLAY_ONLY', 'Residual sets, attractor-comparison studies, research dashboards.', 'Strategy promotion without null/random comparisons.', 0, 0, 1, 520),
+    ('NON_FIBO_REACTION', 'VALIDATION_STATE', 'VALIDATION', 'RESIDUAL_ANALYSIS', 'Non-Fibo Reaction', 'Reaction is not explained by standard fibo.', 'Validation-state label for later residual analysis when standard fibo does not explain the reaction zone well enough and residual sets should be tested.', 'context', 50, 'DISPLAY_ONLY', 'Residual analysis pipelines, attractor-comparison dashboards.', 'Direct non-fibo signal generation.', 0, 0, 1, 530),
+    ('NATURAL_EXPLAINED_RESIDUAL', 'VALIDATION_STATE', 'VALIDATION', 'RESIDUAL_ANALYSIS', 'Natural Explained Residual', 'Residual reaction is better explained by a natural constant hypothesis.', 'Validation-state label for later research use when a residual reaction aligns better with a natural-constant attractor than with standard fibo. It remains research-only until baseline tests are passed.', 'context', 45, 'DISPLAY_ONLY', 'Residual validation reports only.', 'Strategy input, direct runtime level selection.', 0, 0, 1, 540),
+    ('PRIME_EXPLAINED_RESIDUAL', 'VALIDATION_STATE', 'VALIDATION', 'RESIDUAL_ANALYSIS', 'Prime Explained Residual', 'Residual reaction is better explained by a prime-derived hypothesis.', 'Validation-state label for later research use when a residual reaction aligns better with a prime-derived attractor than with standard fibo. It remains research-only until baseline tests are passed.', 'context', 45, 'DISPLAY_ONLY', 'Residual validation reports only.', 'Strategy input, direct runtime level selection.', 0, 0, 1, 550),
+    ('RANDOM_EQUIVALENT', 'VALIDATION_STATE', 'VALIDATION', 'BASELINE_CHECK', 'Random Equivalent', 'Observed fit is no better than random/null baselines.', 'Validation-state label used when a tested attractor or label family performs no better than null/random baselines. It is an anti-pareidolia safeguard.', 'bad', 85, 'DISPLAY_ONLY', 'Validation reports, baseline comparison dashboards, research summaries.', 'Promotion into runtime logic, hidden scoring upgrades.', 0, 0, 1, 560),
+    ('UNEXPLAINED', 'VALIDATION_STATE', 'VALIDATION', 'RESIDUAL_ANALYSIS', 'Unexplained', 'No tested attractor explains the reaction well yet.', 'Validation-state label indicating that no current tested family adequately explains the reaction or residual set. It is a placeholder for further research only.', 'muted', 55, 'DISPLAY_ONLY', 'Residual analysis dashboards, research reports.', 'Invented runtime logic, hidden fallback categories.', 0, 0, 1, 570),
+
+    ('TARGET_MAGNET', 'REACTION_ROLE', 'REACTION', 'ROLE', 'Target Magnet', 'Level acts as a target magnet.', 'Reaction-role label for later research use when a level appears to attract price as a target rather than defend as support/resistance. It is descriptive only.', 'context', 30, 'DISPLAY_ONLY', 'Reaction-zone studies, chart overlays, residual validation tables.', 'Trade permission, target execution logic.', 0, 0, 1, 610),
+    ('SUPPORT_REACTION', 'REACTION_ROLE', 'REACTION', 'ROLE', 'Support Reaction', 'Level acts as support/reaction area.', 'Reaction-role label for later research use when price reacts from a level as support. It is a descriptive research tag only.', 'ok', 35, 'DISPLAY_ONLY', 'Reaction-zone studies, chart overlays, replay labels.', 'Entry permission, hidden support signals.', 0, 0, 1, 620),
+    ('RESISTANCE_REACTION', 'REACTION_ROLE', 'REACTION', 'ROLE', 'Resistance Reaction', 'Level acts as resistance/reaction area.', 'Reaction-role label for later research use when price reacts from a level as resistance. It is a descriptive research tag only.', 'warn', 35, 'DISPLAY_ONLY', 'Reaction-zone studies, chart overlays, replay labels.', 'Automatic exits, hidden resistance signals.', 0, 0, 1, 630),
+    ('ENTRY_ZONE', 'REACTION_ROLE', 'REACTION', 'ROLE', 'Entry Zone', 'Level cluster acts as Entry Zone.', 'Reaction-role label for later research use when a price zone is investigated as an Entry Zone for support, retest, reclaim, or add-back hypotheses. It is descriptive only.', 'ok', 40, 'DISPLAY_ONLY', 'Strategy maps, reaction-zone studies, dashboards.', 'Direct buy signals, execution intent.', 0, 0, 1, 640),
+    ('RETEST_ZONE', 'REACTION_ROLE', 'REACTION', 'ROLE', 'Retest Zone', 'Level/zone acts as retest area.', 'Reaction-role label for later research use when price returns to test a prior breakout or reaction zone. It is descriptive only.', 'context', 30, 'DISPLAY_ONLY', 'Retest studies, chart overlays, replay reports.', 'Automatic trade triggers, hidden veto logic.', 0, 0, 1, 650),
+    ('FAKEOUT_ZONE', 'REACTION_ROLE', 'REACTION', 'ROLE', 'Fakeout Zone', 'Level/zone may host fakeout behavior.', 'Reaction-role label for later research use when price briefly overshoots or undercuts a level before reversing. It is descriptive only.', 'warn', 55, 'DISPLAY_ONLY', 'Fakeout studies, residual analysis, chart overlays.', 'Execution commands, broker logic.', 0, 0, 1, 660),
+    ('OVERSHOOT_MARGIN', 'REACTION_ROLE', 'REACTION', 'ROLE', 'Overshoot Margin', 'Offset used to test overshoot behavior around a level.', 'Reaction-role label for later research use when a margin around a target or support is tested as an overshoot band. It is descriptive only.', 'context', 45, 'DISPLAY_ONLY', 'Residual margin studies, target overshoot analysis.', 'Automatic tolerance bands in runtime logic.', 0, 0, 1, 670),
+    ('NO_REACTION', 'REACTION_ROLE', 'REACTION', 'ROLE', 'No Reaction', 'No meaningful reaction was observed.', 'Reaction-role label for later research use when a tested level or zone did not produce a meaningful reaction. It is a negative research tag only.', 'muted', 25, 'DISPLAY_ONLY', 'Validation reports, reaction-zone studies, residual dashboards.', 'Trade blocking or permission logic.', 0, 0, 1, 680)
+ON DUPLICATE KEY UPDATE
+    label_type = VALUES(label_type),
+    category = VALUES(category),
+    family = VALUES(family),
+    display_name = VALUES(display_name),
+    short_description = VALUES(short_description),
+    long_description = VALUES(long_description),
+    ui_tone = VALUES(ui_tone),
+    severity_rank = VALUES(severity_rank),
+    research_status = VALUES(research_status),
+    allowed_context = VALUES(allowed_context),
+    forbidden_context = VALUES(forbidden_context),
+    is_terminal = VALUES(is_terminal),
+    is_actionable = VALUES(is_actionable),
+    is_enabled = VALUES(is_enabled),
+    sort_order = VALUES(sort_order);
