@@ -1,0 +1,202 @@
+# Breath Fibo Strategy Static Dashboard V1
+
+## Purpose
+
+`breath_fibo_strategy_static_dashboard_v1` is the first Synth v2.14
+strategy-oriented market-only dashboard.
+
+It is not:
+
+- an advice dashboard
+- a decision surface
+- an execution surface
+- an account-aware cockpit
+
+It exists to show research strategy hypotheses built from:
+
+- Breath/Fibo frame
+- canonical regime context
+- public market price and level position
+- best-effort reusable manual ladder / paper context
+
+Core principle:
+
+```text
+Breath/Fibo gives the frame.
+Regime gives the first Synth layer.
+Fibo/zone levels give TP/reload/invalidation map.
+Primitive market context gives evidence.
+Strategy candidate gives a research hypothesis.
+Nothing executes.
+```
+
+## Architecture Boundary
+
+This dashboard is:
+
+- reporting-only
+- market-only
+- account-agnostic
+- static HTML
+
+It must not:
+
+- emit `BUY_READY`
+- emit `SELL_NOW`
+- emit final `AVOID` advice
+- emit final `WATCH_ONLY` advice
+- hide HTF/LTF conflicts
+- create decision permission
+- create execution intent
+
+Hard boundaries:
+
+```text
+No selection_engine changes
+No decision_gate changes
+No execution_planner changes
+No executor changes
+No broker calls
+No broker writes
+No orders
+No account-aware logic
+```
+
+## Data Sources Used
+
+V1 uses only existing public/reporting-safe sources:
+
+- `obs_market_candle`
+  - latest per-symbol price
+  - latest per-symbol candle timestamp
+  - candle freshness state
+- `paper_advice_observation`
+  - best-effort zone / invalidation / target / legacy paper context
+  - display/debug source only, not active strategy-state gating
+- `active_regime_observation`
+  - canonical regime layer by asset class
+- `data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv`
+  - fib target / support / reentry map
+
+If a source is missing, the dashboard shows `MISSING_SOURCE` or `UNKNOWN`
+explicitly.
+
+## Required Row Fields
+
+Each row shows:
+
+- `asset`
+- `current_price`
+- `interval`
+- `latest_candle_ts_utc`
+- `candle_freshness_state`
+- `regime_context`
+- `fibo_map_state`
+- `current_leg`
+- `nearest_support_or_reaction_zone`
+- `nearest_target_or_t1`
+- `reload_or_rebuy_zone`
+- `invalidation_zone`
+- `distance_to_target_pct`
+- `distance_to_reload_pct`
+- `distance_to_invalidation_pct`
+- `manual_ladder_context`
+- `primitive_signal_context`
+- `strategy_candidate_state`
+- `strategy_candidate_reason`
+- `source_status`
+
+## Candidate States
+
+V1 uses research/dashboard candidate states only:
+
+- `NO_STRATEGY_CONTEXT`
+- `MAP_INCOMPLETE`
+- `SUPPORT_REACTION_CANDIDATE`
+- `FIB_RETEST_CONTINUATION_CANDIDATE`
+- `TARGET_TOUCHED_TP_REVIEW`
+- `RELOAD_ZONE_NEAR`
+- `INVALIDATION_NEAR`
+- `FAILED_RECLAIM_FADE_RISK`
+- `WAIT_RETEST`
+- `CONTEXT_ONLY`
+
+These are not orders.
+They are not permission.
+They are not hidden advice.
+
+## Missing-Source Handling
+
+V1 fails open for display and fails closed for meaning:
+
+- if `obs_market_candle` is missing:
+  - show missing price / missing freshness
+- if fib map CSV is missing for a symbol:
+  - show `FIB_MAP_UNKNOWN`
+- if canonical regime row is missing:
+  - show `UNKNOWN`
+- if no reusable primitive/legacy context exists:
+  - show `primitive_signal_context=unavailable`
+
+The dashboard must not invent unavailable data.
+
+## Legacy Paper Context Rule
+
+If `paper_advice_observation` is present, V1 may display:
+
+- `selection_state`
+- `setup_filter_state`
+- `policy/action`
+- `edge_permission`
+
+only as legacy/source context.
+
+These old paper/advice labels must not actively determine
+`strategy_candidate_state`.
+
+Forbidden as active gates:
+
+- `AVOID`
+- `WATCH_ONLY`
+- `BUY_READY`
+- `SELL_NOW`
+
+## Relationship To Manual Ladder Dashboard V1
+
+Correct relationship:
+
+```text
+breath_fibo_strategy_static_dashboard_v1
+-> strategy-oriented market-only hypothesis surface
+
+manual_ladder_dashboard_v1
+-> downstream manual level-reading surface
+```
+
+Interpretation:
+
+- strategy dashboard = strategy frame first
+- manual ladder dashboard = manual level review first
+- neither surface executes
+
+## Why This Is Not Advice / Execution
+
+This dashboard does not resolve strategy context into:
+
+- buy permission
+- sell permission
+- position sizing
+- account-aware rotation
+- broker intent
+
+It only shows:
+
+- frame
+- map
+- regime
+- reusable context
+- explicit missing sources
+- explicit conflicts
+
+The user or later research still has to validate whether a visible hypothesis
+has any edge.
