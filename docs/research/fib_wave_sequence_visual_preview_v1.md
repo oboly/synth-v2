@@ -210,6 +210,54 @@ Refined anchors are a later visual-review layer applied only after:
 This separation matters because a local pivot can be technically valid while
 still not being the best candle extreme for use as a wave anchor.
 
+## Pivot Diagnostics
+
+V1 now exposes a pivot diagnostics table for visual inspection before any
+structural filtering changes are made.
+
+The diagnostics table includes:
+
+- `pivot_index`
+- `source_layer`
+- `ts_utc`
+- `type`
+- `price`
+- `previous_pivot_index`
+- `previous_type`
+- `previous_price`
+- `move_from_previous_abs`
+- `move_from_previous_pct`
+- `direction_from_previous`
+- `structural_note`
+
+`source_layer` is one of:
+
+- `RAW`
+- `MAJOR`
+- `SELECTED`
+
+This is diagnostics only.
+It does not change detector behavior, major filtering, or anchor refinement.
+
+### Structural Notes
+
+The diagnostics table uses simple descriptive notes:
+
+- `FIRST_PIVOT`
+- `OK`
+- `LOW_ABOVE_PREVIOUS_HIGH`
+- `HIGH_BELOW_PREVIOUS_LOW`
+- `SAME_TYPE_AS_PREVIOUS`
+- `ZERO_OR_INVALID_MOVE`
+
+These notes are intended to explain why a pivot may be structurally
+questionable without introducing new strategy or filtering logic yet.
+
+### CSV Export
+
+If `--write-pivot-diagnostics PATH` is provided, the same diagnostics table is
+also written to CSV.
+
 ## Anchor Refinement
 
 V1 supports:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import html
 import json
 from dataclasses import dataclass
@@ -82,6 +83,22 @@ class RefinedAnchor:
     changed: bool
 
 
+@dataclass(frozen=True)
+class PivotDiagnosticRow:
+    pivot_index: int
+    source_layer: str
+    ts_utc: str
+    type: str
+    price: str
+    previous_pivot_index: str
+    previous_type: str
+    previous_price: str
+    move_from_previous_abs: str
+    move_from_previous_pct: str
+    direction_from_previous: str
+    structural_note: str
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -127,6 +144,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("none", "segment_extreme"),
         default=DEFAULT_ANCHOR_REFINEMENT,
     )
+    parser.add_argument("--write-pivot-diagnostics", default=None)
     parser.add_argument("--output-html", default=DEFAULT_OUTPUT_HTML)
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
     return parser.parse_args(argv)
@@ -149,6 +167,17 @@ def fmt_number(value: float | None, digits: int = 6) -> str:
     if value is None:
         return ""
     return f"{value:.{digits}f}"
+
+
+def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def esc(value: Any) -> str:
@@ -607,6 +636,68 @@ def ratio(numerator: float | None, denominator: float | None) -> float | None:
     return numerator / denominator
 
 
+def direction_between(previous: Pivot, current: Pivot) -> str:
+    if current.price > previous.price:
+        return "UP"
+    if current.price < previous.price:
+        return "DOWN"
+    return "FLAT"
+
+
+def structural_note(previous: Pivot | None, current: Pivot) -> str:
+    if previous is None:
+        return "FIRST_PIVOT"
+    if previous.pivot_kind == current.pivot_kind:
+        return "SAME_TYPE_AS_PREVIOUS"
+    move_abs = abs(current.price - previous.price)
+    if move_abs <= 0:
+        return "ZERO_OR_INVALID_MOVE"
+    if current.pivot_kind == "LOW" and current.price > previous.price:
+        return "LOW_ABOVE_PREVIOUS_HIGH"
+    if current.pivot_kind == "HIGH" and current.price < previous.price:
+        return "HIGH_BELOW_PREVIOUS_LOW"
+    return "OK"
+
+
+def build_pivot_diagnostic_rows(
+    *,
+    raw_pivots: list[Pivot],
+    major_pivots: list[Pivot],
+    selected_sequence: list[Pivot],
+) -> list[PivotDiagnosticRow]:
+    rows: list[PivotDiagnosticRow] = []
+
+    def append_rows(pivots: list[Pivot], source_layer: str) -> None:
+        previous: Pivot | None = None
+        for index, pivot in enumerate(pivots):
+            move_abs = abs(pivot.price - previous.price) if previous is not None else None
+            move_pct = None
+            if previous is not None and previous.price != 0:
+                move_pct = (abs(pivot.price - previous.price) / abs(previous.price)) * 100.0
+            rows.append(
+                PivotDiagnosticRow(
+                    pivot_index=index,
+                    source_layer=source_layer,
+                    ts_utc=fmt_ts(pivot.ts_utc),
+                    type=pivot.pivot_kind,
+                    price=fmt_price(pivot.price),
+                    previous_pivot_index="" if previous is None else str(index - 1),
+                    previous_type="" if previous is None else previous.pivot_kind,
+                    previous_price="" if previous is None else fmt_price(previous.price),
+                    move_from_previous_abs=fmt_number(move_abs, digits=10),
+                    move_from_previous_pct=fmt_number(move_pct),
+                    direction_from_previous="" if previous is None else direction_between(previous, pivot),
+                    structural_note=structural_note(previous, pivot),
+                )
+            )
+            previous = pivot
+
+    append_rows(raw_pivots, "RAW")
+    append_rows(major_pivots, "MAJOR")
+    append_rows(selected_sequence, "SELECTED")
+    return rows
+
+
 def x_for_index(candle_index: int, total: int) -> float:
     usable = SVG_WIDTH - SVG_PAD_LEFT - SVG_PAD_RIGHT
     if total <= 1:
@@ -858,6 +949,7 @@ def render_html(
     sequence_candidates: list[SequenceCandidate],
     anchor_refinement: str,
     refined_anchors: list[RefinedAnchor],
+    pivot_diagnostics: list[PivotDiagnosticRow],
     sequence: list[Pivot],
 ) -> str:
     generated_at_utc = fmt_ts(datetime.now(UTC))
@@ -898,6 +990,23 @@ def render_html(
         </tbody>
       </table>
 """
+    pivot_diag_rows = "".join(
+        "<tr>"
+        f"<td>{row.pivot_index}</td>"
+        f"<td>{esc(row.source_layer)}</td>"
+        f"<td>{esc(row.ts_utc)}</td>"
+        f"<td>{esc(row.type)}</td>"
+        f"<td>{esc(row.price)}</td>"
+        f"<td>{esc(row.previous_pivot_index)}</td>"
+        f"<td>{esc(row.previous_type)}</td>"
+        f"<td>{esc(row.previous_price)}</td>"
+        f"<td>{esc(row.move_from_previous_abs)}</td>"
+        f"<td>{esc(row.move_from_previous_pct)}</td>"
+        f"<td>{esc(row.direction_from_previous)}</td>"
+        f"<td>{esc(row.structural_note)}</td>"
+        "</tr>"
+        for row in pivot_diagnostics
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1055,6 +1164,17 @@ def render_html(
       </table>
       <div class="foot">Raw pivots are shown with smaller markers. Major pivots are shown with larger markers. Refined anchors are shown with dark outlined markers. P0-P8 and W1/W2/W3/W4/W5/A/B/C remain candidate visual labels only for inspection.</div>
       {rolling_table_html}
+      <h2>Pivot Diagnostics</h2>
+      <table class="detail-table all-seq-table">
+        <thead>
+          <tr>
+            <th>pivot_index</th><th>source_layer</th><th>ts_utc</th><th>type</th><th>price</th><th>previous_pivot_index</th><th>previous_type</th><th>previous_price</th><th>move_from_previous_abs</th><th>move_from_previous_pct</th><th>direction_from_previous</th><th>structural_note</th>
+          </tr>
+        </thead>
+        <tbody>
+          {pivot_diag_rows}
+        </tbody>
+      </table>
     </section>
   </div>
 </body>
@@ -1251,6 +1371,16 @@ def main(argv: list[str] | None = None) -> int:
         anchor_refinement=args.anchor_refinement,
     )
     sequence = [anchor.refined_pivot for anchor in refined_anchors]
+    pivot_diagnostics = build_pivot_diagnostic_rows(
+        raw_pivots=raw_pivots,
+        major_pivots=major_pivots,
+        selected_sequence=sequence,
+    )
+    if args.write_pivot_diagnostics:
+        write_csv(
+            Path(args.write_pivot_diagnostics),
+            [row.__dict__ for row in pivot_diagnostics],
+        )
     output_html = Path(args.output_html)
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(
@@ -1275,6 +1405,7 @@ def main(argv: list[str] | None = None) -> int:
             sequence_candidates=sequence_candidates,
             anchor_refinement=args.anchor_refinement,
             refined_anchors=refined_anchors,
+            pivot_diagnostics=pivot_diagnostics,
             sequence=sequence,
         ),
         encoding="utf-8",
