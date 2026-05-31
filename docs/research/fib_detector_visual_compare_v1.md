@@ -175,3 +175,22 @@ It does not use:
 - `executor`
 
 That keeps the lane aligned with the measurement-first fib research direction.
+
+##############################################
+RESULTS
+
+Initial visual review notes:
+
+- BTC 1d:
+  - ZIGZAG_PERCENT_20 visually appears to capture the macro swing structure best in the first review.
+  - This is useful for long-swing / macro-wave context.
+  - This is only a visual observation, not validated.
+
+- WLD 4h:
+  - LOCAL_PIVOT_WINDOW_10 captures more full Elliott-like context, including preceding ABC-like structure.
+  - LOCAL_PIVOT_WINDOW_20 filters harder and captures a coarser 1-2-3-4-like structure.
+  - ZigZag percent detectors compress the structure too much for primary Elliott/Fibo context, but may still be useful for coarse comparison.
+
+Rule:
+Detector choice is not global.
+Detector choice must be evaluated per symbol, interval, and research purpose.
