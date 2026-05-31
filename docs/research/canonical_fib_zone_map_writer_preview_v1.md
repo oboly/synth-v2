@@ -226,11 +226,14 @@ which records:
 - anchor indices
 - bars since anchor end
 - target/retrace multipliers
-- optional `swing_pct_band`
+- optional exact `anchor_move_pct` in provenance
 
 ## Swing Percentage
 
-`swing_range_pct` is the canonical swing-size field.
+`anchor_move_pct` is the canonical swing-scale field.
+
+It is the exact percentage move between `anchor_low_price` and
+`anchor_high_price`.
 
 This exact measured percentage is the field that should be used for:
 
@@ -241,32 +244,15 @@ This exact measured percentage is the field that should be used for:
 
 No swing category labels are used in v1.
 
-V1 may also emit:
+Any future bucketing or banding must be derived outside the writer by
+validation/dashboard config or report parameters.
 
-- `swing_pct`
-- `swing_pct_band`
+It must not:
 
-but these are derived display helpers only.
-
-### `swing_pct_band`
-
-If present, `swing_pct_band` is optional display metadata only:
-
-- `<8`
-- `8-25`
-- `25-60`
-- `>=60`
-- `UNKNOWN`
-
-It does not alter:
-
-- Entry Zone
-- Targets
-- Invalidation
-- `map_quality`
-
-Any future banding must remain derived display metadata only and must not
-replace raw measurement or drive strategy logic.
+- replace raw measurement
+- live as a concrete writer rule
+- drive strategy logic
+- change `map_quality`
 
 ## Map Status
 

@@ -120,14 +120,22 @@ Interpretation:
 - `anchor_high_ts_utc`
 - `anchor_high_price`
 - `swing_range_abs`
-- `swing_range_pct`
+- `anchor_move_pct`
 - `anchor_method`
 - `anchor_quality`
 
 Interpretation:
 
 - identifies the anchor pair used to derive the map
+- `anchor_move_pct` means the exact percentage move between
+  `anchor_low_price` and `anchor_high_price`
 - makes the map inspectable instead of blackbox
+
+Current note:
+
+- the initial migration draft may still show `swing_range_pct`
+- prefer `anchor_move_pct` as the canonical field name before DB application
+- treat `swing_range_pct` as legacy/deprecated wording before application
 
 ### Entry Zone
 

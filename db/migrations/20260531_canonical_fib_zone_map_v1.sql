@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS canonical_fib_zone_map_v1 (
     anchor_high_ts_utc  DATETIME(6)    NULL,
     anchor_high_price   DECIMAL(30,12) NULL,
     swing_range_abs     DECIMAL(30,12) NULL,
-    swing_range_pct     DECIMAL(18,8)  NULL,
+    anchor_move_pct     DECIMAL(18,8)  NULL,
     anchor_method       VARCHAR(64)    NOT NULL,
     anchor_quality      VARCHAR(32)    NOT NULL DEFAULT 'UNKNOWN',
 

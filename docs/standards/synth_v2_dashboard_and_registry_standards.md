@@ -36,10 +36,9 @@ Never replace measurement with category.
 
 Examples:
 
-- use `swing_range_pct` as the canonical field
-- do not replace `swing_range_pct` with lossy category labels
-- if a display band is needed, it must be clearly derived from
-  `swing_range_pct`
+- use `anchor_move_pct` as the canonical field example
+- do not replace `anchor_move_pct` with lossy category labels
+- any future grouping/bucketing must be derived outside the writer
 - derived display helpers must not drive strategy logic
 
 ## No Unrequested Abstraction
@@ -163,7 +162,7 @@ Dashboard states must remain descriptive strategy/research hypotheses only.
 
 ## Swing Percentage Standard
 
-`swing_range_pct` is the canonical swing-size field.
+`anchor_move_pct` is the canonical raw swing-scale example.
 
 Raw measured percentages should be used for:
 
@@ -172,18 +171,11 @@ Raw measured percentages should be used for:
 - optimization
 - threshold research
 
-If a display helper is needed, `swing_pct_band` may be used as optional
-derived metadata only:
+Bucketing/grouping thresholds are analysis parameters.
+They belong in validation/dashboard config or report parameters, not
+registries, schemas, or preview writers.
 
-- `<8`
-- `8-25`
-- `25-60`
-- `>=60`
-- `UNKNOWN`
-
-This helper must not change strategy logic or map-quality logic.
-
-It must not replace the canonical measured field.
+Raw numeric measurements must remain canonical.
 
 ## Registry Standards
 
@@ -220,8 +212,7 @@ For `canonical_fib_zone_map_writer_preview_v1`:
 - keep `swing_range_pct`
 - do not add `map_horizon_bucket`
 - do not add `dirty_swing_candidate`
-- do not add lossy swing category labels unless they are explicitly requested
-  later as derived display metadata only
+- do not embed bucketing thresholds in the writer
 
 ## Boundary
 
