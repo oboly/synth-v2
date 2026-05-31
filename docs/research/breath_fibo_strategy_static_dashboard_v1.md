@@ -17,7 +17,7 @@ It exists to show research strategy hypotheses built from:
 - Breath/Fibo frame
 - canonical regime context
 - public market price and level position
-- best-effort reusable manual ladder / paper context
+- canonical fib/zone map context first
 
 Core principle:
 
@@ -71,12 +71,20 @@ V1 uses only existing public/reporting-safe sources:
   - latest per-symbol candle timestamp
   - candle freshness state
 - `paper_advice_observation`
-  - best-effort zone / invalidation / target / legacy paper context
-  - display/debug source only, not active strategy-state gating
+  - legacy blackbox advice context only
+  - debug/display source only
+  - not a valid primary source for target, Entry Zone, invalidation, current leg, or strategy state
 - `active_regime_observation`
   - canonical regime layer by asset class
 - `data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv`
   - fib target / support / reentry map
+
+Allowed primary strategy-map sources in V1:
+
+- canonical fib/zone map rows
+- public candle/price data
+- `active_regime_observation`
+- future primitive signal matrix attachments when added later
 
 If a source is missing, the dashboard shows `MISSING_SOURCE` or `UNKNOWN`
 explicitly.
@@ -156,12 +164,7 @@ V1 resolves invalidation provenance explicitly with this priority:
    - `fib_invalidation_price`
    - `fib_invalidation`
    - method=`FIBO_MAP_INVALIDATION`
-2. `paper_advice_observation` legacy context fields:
-   - `invalidation_price`
-   - `fib_invalidation_price`
-   - `fib_invalidation`
-   - method=`LEGACY_CONTEXT_INVALIDATION`
-3. missing:
+2. missing:
    - method=`MISSING_INVALIDATION`
    - source=`UNKNOWN`
 
@@ -205,6 +208,15 @@ If `paper_advice_observation` is present, V1 may display:
 - `edge_permission`
 
 only as legacy/source context.
+
+It is explicitly `LEGACY_CONTEXT_ONLY`.
+It must not supply:
+
+- target
+- Entry Zone
+- invalidation
+- current leg
+- strategy candidate state
 
 These old paper/advice labels must not actively determine
 `strategy_candidate_state`.

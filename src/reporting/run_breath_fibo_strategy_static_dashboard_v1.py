@@ -167,6 +167,8 @@ def resolve_invalidation_level(
     fib_row: dict[str, Any] | None,
     merged_source: dict[str, Any],
 ) -> InvalidationResolution:
+    _ = paper_row
+    _ = merged_source
     for field in ("invalidation_price", "fib_invalidation_price", "fib_invalidation"):
         if fib_row:
             level = to_decimal(fib_row.get(field))
@@ -179,35 +181,13 @@ def resolve_invalidation_level(
                     invalidation_source_status="FOUND",
                     invalidation_note="Invalidation resolved from fibo target map row.",
                 )
-    for field in ("invalidation_price", "fib_invalidation_price", "fib_invalidation"):
-        if paper_row:
-            level = to_decimal(paper_row.get(field))
-            if level is not None:
-                return InvalidationResolution(
-                    invalidation_level=level,
-                    invalidation_source_module="paper_advice_observation",
-                    invalidation_source_field=field,
-                    invalidation_method="LEGACY_CONTEXT_INVALIDATION",
-                    invalidation_source_status="FOUND",
-                    invalidation_note="Invalidation resolved from legacy paper context row.",
-                )
-    level = first_decimal(merged_source, ("invalidation_price", "fib_invalidation_price", "fib_invalidation"))
-    if level is not None:
-        return InvalidationResolution(
-            invalidation_level=level,
-            invalidation_source_module="UNKNOWN",
-            invalidation_source_field="UNKNOWN",
-            invalidation_method="UNKNOWN_PROVENANCE",
-            invalidation_source_status="UNKNOWN",
-            invalidation_note="Invalidation exists on merged source, but provenance is not explicit.",
-        )
     return InvalidationResolution(
         invalidation_level=None,
         invalidation_source_module="UNKNOWN",
         invalidation_source_field="UNKNOWN",
         invalidation_method="MISSING_INVALIDATION",
         invalidation_source_status="MISSING_SOURCE",
-        invalidation_note="No invalidation level is available from fib map or legacy paper context.",
+        invalidation_note="No canonical fib-map invalidation level is available.",
     )
 
 
@@ -479,12 +459,12 @@ def build_row(
     regime_row: dict[str, Any] | None,
 ) -> DashboardRow:
     source: dict[str, Any] = {}
-    if paper_row:
-        source.update(paper_row)
     if fib_row:
         source.update({f"fib_{k}": v for k, v in fib_row.items()})
+    if paper_row:
+        source["legacy_paper_context_present"] = True
 
-    current_price = price_row.current_price if price_row else first_decimal(source, ("current_price", "close_price"))
+    current_price = price_row.current_price if price_row else None
     latest_candle_ts_utc = price_row.latest_candle_ts_utc if price_row else None
     candle_state = freshness_state(interval, latest_candle_ts_utc)
 
@@ -500,22 +480,18 @@ def build_row(
             if part
         ) or "FIB_MAP_FOUND"
 
-    current_leg = first_text(
-        source,
-        ("fib_leg_direction", "leg_direction", "direction_label"),
-        default="UNKNOWN",
-    ).upper()
+    current_leg = first_text(source, ("fib_leg_direction",), default="UNKNOWN").upper()
 
-    entry_low = first_decimal(source, ("entry_zone_low",))
-    entry_high = first_decimal(source, ("entry_zone_high",))
+    entry_low = first_decimal(source, ("fib_entry_zone_low",))
+    entry_high = first_decimal(source, ("fib_entry_zone_high",))
     fib_support = first_decimal(source, ("fib_next_fibo_support_price",))
     fib_support_2 = first_decimal(source, ("fib_secondary_fibo_support_price",))
     entry_zone_mid = midpoint(entry_low, entry_high) or fib_support
     entry_zone = zone_text(entry_low or fib_support_2, entry_high or fib_support)
     nearest_support = zone_text(entry_low or fib_support_2, entry_high or fib_support)
 
-    local_reaction = first_decimal(source, ("fib_local_reaction_price", "tp_zone_low"))
-    next_extension = first_decimal(source, ("fib_next_extension_target_price", "tp_zone_high"))
+    local_reaction = first_decimal(source, ("fib_local_reaction_price",))
+    next_extension = first_decimal(source, ("fib_next_extension_target_price",))
     nearest_target = local_reaction
     if current_price is not None and local_reaction is not None and current_price >= local_reaction:
         nearest_target = next_extension or local_reaction
@@ -534,32 +510,23 @@ def build_row(
             f"T1={fmt_price(local_reaction)} · entry_zone={entry_zone} · next={fmt_price(next_extension)}"
         )
     if paper_row:
-        manual_ladder_context = f"{manual_ladder_context} · legacy={' | '.join(legacy_context_bits(source))}"
+        manual_ladder_context = f"{manual_ladder_context} · legacy_context_present=yes"
 
-    strongest_reasons = str(source.get("strongest_reasons") or "").strip()
     primitive_signal_context = "unavailable"
-    if strongest_reasons:
-        primitive_signal_context = strongest_reasons
-    else:
-        direction_label = str(source.get("direction_label") or "").strip()
-        if direction_label:
-            primitive_signal_context = direction_label
 
     source_modules: list[str] = []
     if price_row:
         source_modules.append("obs_market_candle")
-    if paper_row:
-        source_modules.append("paper_advice_observation")
     if fib_row:
         source_modules.append("fibo_target_map_v1")
     if regime_row:
         source_modules.append("active_regime_observation")
+    if paper_row:
+        source_modules.append("paper_advice_observation(legacy_only)")
 
     missing_sources: list[str] = []
     if not price_row:
         missing_sources.append("MISSING_PRICE_SOURCE")
-    if not paper_row:
-        missing_sources.append("MISSING_PAPER_CONTEXT")
     if not fib_row:
         missing_sources.append("FIB_MAP_UNKNOWN")
     if not regime_row:
@@ -597,12 +564,12 @@ def build_row(
         and not support_candidate
     )
 
-    if not fib_row and not paper_row:
+    if not fib_row:
         state = "NO_STRATEGY_CONTEXT"
-        reason = "No fib map or paper context row is available."
+        reason = "No canonical fib map row is available."
     elif nearest_target is None or entry_zone_mid is None or invalidation is None:
         state = "MAP_INCOMPLETE"
-        reason = "Strategy map is incomplete: target, reload, or invalidation is missing."
+        reason = "Canonical fib map is incomplete: target, Entry Zone, or invalidation is missing."
     elif invalidation_near:
         state = "INVALIDATION_NEAR"
         reason = f"Price is near invalidation {fmt_price(invalidation)}; fade/break risk is elevated."
@@ -632,8 +599,8 @@ def build_row(
     source_status = "; ".join(
         [
             f"price={'FOUND' if price_row else 'MISSING_SOURCE'}",
-            f"paper={'FOUND' if paper_row else 'MISSING_SOURCE'}",
-            f"fib={'FOUND' if fib_row else 'MISSING_SOURCE'}",
+            f"canonical_fib_map={'FOUND' if fib_row else 'MISSING_SOURCE'}",
+            f"legacy_paper_context={'FOUND_NOT_USED_FOR_STATE' if paper_row else 'MISSING_SOURCE'}",
             f"regime={'FOUND' if regime_row else 'MISSING_SOURCE'}",
             f"primitive={'FOUND' if primitive_signal_context != 'unavailable' else 'MISSING_SOURCE'}",
             f"invalidation_source={invalidation_resolution.invalidation_source_module}",
@@ -686,7 +653,8 @@ def build_rows(
     regime_by_class: dict[str, dict[str, Any]],
     limit: int,
 ) -> list[DashboardRow]:
-    symbols = sorted(set(price_rows) | set(paper_rows) | set(fib_rows))
+    _ = paper_rows
+    symbols = sorted(set(price_rows) | set(fib_rows))
     rows = []
     for symbol in symbols[:limit]:
         asset_class = classify_asset_class(symbol)
@@ -814,13 +782,15 @@ def print_summary(
     invalidation_source_counts: dict[str, int] = {}
     invalidation_method_counts: dict[str, int] = {}
     missing_counts = {
-        "fib_missing": 0,
+        "canonical_fib_map_missing": 0,
         "regime_missing": 0,
-        "paper_missing": 0,
+        "legacy_paper_context_missing": 0,
         "primitive_missing": 0,
         "price_missing": 0,
     }
     entry_zone_state_count = 0
+    canonical_fib_map_rows = 0
+    legacy_context_rows = 0
     latest_ts: datetime | None = None
     for row in rows:
         state_counts[row.strategy_candidate_state] = state_counts.get(row.strategy_candidate_state, 0) + 1
@@ -828,12 +798,16 @@ def print_summary(
         invalidation_method_counts[row.invalidation_method] = invalidation_method_counts.get(row.invalidation_method, 0) + 1
         if row.strategy_candidate_state == "ENTRY_ZONE_NEAR":
             entry_zone_state_count += 1
-        if "fib=MISSING_SOURCE" in row.source_status:
-            missing_counts["fib_missing"] += 1
+        if "canonical_fib_map=FOUND" in row.source_status:
+            canonical_fib_map_rows += 1
+        else:
+            missing_counts["canonical_fib_map_missing"] += 1
         if "regime=MISSING_SOURCE" in row.source_status:
             missing_counts["regime_missing"] += 1
-        if "paper=MISSING_SOURCE" in row.source_status:
-            missing_counts["paper_missing"] += 1
+        if "legacy_paper_context=FOUND_NOT_USED_FOR_STATE" in row.source_status:
+            legacy_context_rows += 1
+        else:
+            missing_counts["legacy_paper_context_missing"] += 1
         if "primitive=MISSING_SOURCE" in row.source_status:
             missing_counts["primitive_missing"] += 1
         if "price=MISSING_SOURCE" in row.source_status:
@@ -846,6 +820,9 @@ def print_summary(
     print(f"output_html={output_html}")
     print("broker_private_calls=0 broker_writes=0 order_submission=0 decision_gate_changes=0 execution_planner_changes=0 executor=none account_awareness=0")
     print(f"latest_candle_ts_utc[{interval}]={fmt_ts(latest_ts)}")
+    print(f"canonical_fib_map_rows={canonical_fib_map_rows}")
+    print(f"legacy_context_rows={legacy_context_rows}")
+    print("strategy_states_from_legacy_context=0")
     print("--- strategy_candidate_state counts ---")
     for key, value in sorted(state_counts.items()):
         print(f"{key}={value}")
