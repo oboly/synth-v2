@@ -40,6 +40,7 @@ FRESHNESS_MULTIPLIERS = {
     "1d": (Decimal("1.5"), Decimal("4.0")),
     "1w": (Decimal("1.5"), Decimal("4.0")),
 }
+SWING_PCT_BAND_ORDER = ("<8", "8-25", "25-60", ">=60", "UNKNOWN")
 
 
 @dataclass(frozen=True)
@@ -330,6 +331,18 @@ def classify_quality(range_pct: Decimal | None, bars_since_anchor_end: int | Non
     return "LOW"
 
 
+def classify_swing_pct_band(range_pct: Decimal | None) -> str:
+    if range_pct is None:
+        return "UNKNOWN"
+    if range_pct < Decimal("8"):
+        return "<8"
+    if range_pct < Decimal("25"):
+        return "8-25"
+    if range_pct < Decimal("60"):
+        return "25-60"
+    return ">=60"
+
+
 def choose_up_pair(candles: list[Candle], lows: list[int], highs: list[int]) -> tuple[int, int] | None:
     if not lows or not highs or highs[-1] <= lows[-1]:
         return None
@@ -432,6 +445,8 @@ def build_incomplete_row(
         "anchor_high_price": None,
         "swing_range_abs": None,
         "swing_range_pct": None,
+        "swing_pct": None,
+        "swing_pct_band": "UNKNOWN",
         "anchor_method": "PIVOT_SWING_V1",
         "anchor_quality": "UNKNOWN",
         "entry_zone_low": None,
@@ -479,6 +494,7 @@ def build_complete_row(
     anchor_high_price = high_candle.high_price
     range_abs = anchor_high_price - anchor_low_price
     range_pct = pct_move(anchor_low_price, anchor_high_price)
+    swing_pct_band = classify_swing_pct_band(range_pct)
     anchor_end_index = high_idx if current_leg == "UP" else low_idx
     bars_since_anchor_end = len(candles) - 1 - anchor_end_index
     map_quality = classify_quality(range_pct, bars_since_anchor_end)
@@ -526,6 +542,8 @@ def build_complete_row(
         "swing_window": int(swing_window),
         "anchor_indices": {"low_idx": low_idx, "high_idx": high_idx},
         "bars_since_anchor_end": bars_since_anchor_end,
+        "swing_pct": q_pct(range_pct),
+        "swing_pct_band": swing_pct_band,
         "buffer_pct_of_range": str(BUFFER_PCT),
         "entry_zone_retrace": ["0.382", "0.618"],
         "support_reaction_retrace": ["0.618", "0.786"],
@@ -551,6 +569,8 @@ def build_complete_row(
         "anchor_high_price": q_price(anchor_high_price),
         "swing_range_abs": q_price(range_abs),
         "swing_range_pct": q_pct(range_pct),
+        "swing_pct": q_pct(range_pct),
+        "swing_pct_band": swing_pct_band,
         "anchor_method": "PIVOT_SWING_V1",
         "anchor_quality": map_quality,
         "entry_zone_low": q_price(entry_zone_low),
@@ -694,6 +714,10 @@ def build_summary(rows: list[dict[str, Any]], output_dir: Path) -> dict[str, Any
     up_leg_rows = sum(1 for row in rows if row["current_leg"] == "UP")
     down_leg_rows = sum(1 for row in rows if row["current_leg"] == "DOWN")
     range_unknown_rows = sum(1 for row in rows if row["current_leg"] in {"RANGE", "UNKNOWN"})
+    swing_pct_band_counts = {band: 0 for band in SWING_PCT_BAND_ORDER}
+    for row in rows:
+        band = str(row.get("swing_pct_band") or "UNKNOWN")
+        swing_pct_band_counts[band] = swing_pct_band_counts.get(band, 0) + 1
     return {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
@@ -703,6 +727,7 @@ def build_summary(rows: list[dict[str, Any]], output_dir: Path) -> dict[str, Any
         "up_leg_rows": up_leg_rows,
         "down_leg_rows": down_leg_rows,
         "range_unknown_rows": range_unknown_rows,
+        "swing_pct_band_counts": swing_pct_band_counts,
         "output_dir": str(output_dir),
         "db_writes": 0,
         "broker_private_calls": 0,
@@ -739,6 +764,13 @@ def print_summary(summary: dict[str, Any], output_mode: str) -> None:
         "account_awareness",
     ):
         print(f"{key}={summary[key]}")
+    print(
+        "swing_pct_band: "
+        + " ".join(
+            f"{band}={summary['swing_pct_band_counts'].get(band, 0)}"
+            for band in SWING_PCT_BAND_ORDER
+        )
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
