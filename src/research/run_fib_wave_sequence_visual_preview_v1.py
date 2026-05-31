@@ -26,6 +26,7 @@ DEFAULT_ZIGZAG_PERCENT = 20.0
 DEFAULT_MAJOR_FILTER = "none"
 DEFAULT_MIN_LEG_VS_PREVIOUS_RATIO = 0.0
 DEFAULT_MIN_LEG_DURATION_CANDLES = 0
+DEFAULT_STRUCTURAL_FILTER = "none"
 DEFAULT_SEQUENCE_MODE = "latest"
 DEFAULT_SEQUENCE_LENGTH = 9
 DEFAULT_ANCHOR_REFINEMENT = "none"
@@ -121,6 +122,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--major-filter",
         choices=("none", "relative_move", "duration", "relative_move_and_duration"),
         default=DEFAULT_MAJOR_FILTER,
+    )
+    parser.add_argument(
+        "--structural-filter",
+        choices=("none", "strict_progression"),
+        default=DEFAULT_STRUCTURAL_FILTER,
     )
     parser.add_argument(
         "--min-leg-vs-previous-ratio",
@@ -662,6 +668,7 @@ def structural_note(previous: Pivot | None, current: Pivot) -> str:
 def build_pivot_diagnostic_rows(
     *,
     raw_pivots: list[Pivot],
+    structural_pivots: list[Pivot],
     major_pivots: list[Pivot],
     selected_sequence: list[Pivot],
 ) -> list[PivotDiagnosticRow]:
@@ -693,9 +700,31 @@ def build_pivot_diagnostic_rows(
             previous = pivot
 
     append_rows(raw_pivots, "RAW")
+    append_rows(structural_pivots, "STRUCTURAL")
     append_rows(major_pivots, "MAJOR")
     append_rows(selected_sequence, "SELECTED")
     return rows
+
+
+def build_structural_pivots(
+    raw_pivots: list[Pivot],
+    *,
+    structural_filter: str,
+) -> list[Pivot]:
+    if not raw_pivots:
+        return []
+    if structural_filter == "none":
+        return list(raw_pivots)
+    if structural_filter != "strict_progression":
+        raise ValueError(f"Unsupported structural_filter={structural_filter}")
+
+    accepted: list[Pivot] = [raw_pivots[0]]
+    for candidate in raw_pivots[1:]:
+        note = structural_note(accepted[-1], candidate)
+        if note in {"LOW_ABOVE_PREVIOUS_HIGH", "HIGH_BELOW_PREVIOUS_LOW", "SAME_TYPE_AS_PREVIOUS", "ZERO_OR_INVALID_MOVE"}:
+            continue
+        accepted.append(candidate)
+    return accepted
 
 
 def x_for_index(candle_index: int, total: int) -> float:
@@ -715,6 +744,7 @@ def y_for_price(price: float, min_price: float, max_price: float) -> float:
 def chart_svg(
     candles: list[Candle],
     raw_pivots: list[Pivot],
+    structural_pivots: list[Pivot],
     major_pivots: list[Pivot],
     refined_anchors: list[RefinedAnchor],
     sequence: list[Pivot],
@@ -730,6 +760,10 @@ def chart_svg(
     pivot_line_points = " ".join(
         f"{x_for_index(pivot.candle_index, len(candles)):.2f},{y_for_price(pivot.price, min_price, max_price):.2f}"
         for pivot in raw_pivots
+    )
+    structural_line_points = " ".join(
+        f"{x_for_index(pivot.candle_index, len(candles)):.2f},{y_for_price(pivot.price, min_price, max_price):.2f}"
+        for pivot in structural_pivots
     )
     major_line_points = " ".join(
         f"{x_for_index(pivot.candle_index, len(candles)):.2f},{y_for_price(pivot.price, min_price, max_price):.2f}"
@@ -747,6 +781,14 @@ def chart_svg(
         color = "#c4513d" if pivot.pivot_kind == "HIGH" else "#23845a"
         raw_markers.append(
             f"<circle cx='{x:.2f}' cy='{y:.2f}' r='2.8' fill='{color}' fill-opacity='0.55' stroke='none'></circle>"
+        )
+    structural_markers: list[str] = []
+    for pivot in structural_pivots:
+        x = x_for_index(pivot.candle_index, len(candles))
+        y = y_for_price(pivot.price, min_price, max_price)
+        color = "#8a6a44"
+        structural_markers.append(
+            f"<circle cx='{x:.2f}' cy='{y:.2f}' r='4.2' fill='{color}' fill-opacity='0.8' stroke='#ffffff' stroke-width='1.0'></circle>"
         )
     major_markers: list[str] = []
     for pivot in major_pivots:
@@ -804,9 +846,11 @@ def chart_svg(
   <line x1="{SVG_PAD_LEFT}" y1="{SVG_PAD_TOP}" x2="{SVG_PAD_LEFT}" y2="{SVG_HEIGHT - SVG_PAD_BOTTOM}" class="axis"></line>
   <polyline points="{close_points}" class="close-line"></polyline>
   <polyline points="{pivot_line_points}" class="raw-pivot-line"></polyline>
+  <polyline points="{structural_line_points}" class="structural-pivot-line"></polyline>
   <polyline points="{major_line_points}" class="major-pivot-line"></polyline>
   <polyline points="{sequence_points}" class="sequence-line"></polyline>
   {''.join(raw_markers)}
+  {''.join(structural_markers)}
   {''.join(major_markers)}
   {''.join(refined_markers)}
   {''.join(pivot_index_labels)}
@@ -859,7 +903,9 @@ def detail_table(
     detector_params_value: str,
     lookback_candles: int,
     raw_pivots: list[Pivot],
+    structural_pivots: list[Pivot],
     major_pivots: list[Pivot],
+    structural_filter: str,
     major_filter: str,
     min_leg_vs_previous_ratio: float,
     min_leg_duration_candles: int,
@@ -877,8 +923,11 @@ def detail_table(
         ("detector_params", detector_params_value),
         ("lookback_candles", str(lookback_candles)),
         ("raw_pivot_count", str(len(raw_pivots))),
+        ("structural_filtered_pivot_count", str(len(structural_pivots))),
+        ("removed_structural_pivot_count", str(max(0, len(raw_pivots) - len(structural_pivots)))),
         ("major_pivot_count", str(len(major_pivots))),
-        ("removed_minor_pivot_count", str(max(0, len(raw_pivots) - len(major_pivots)))),
+        ("removed_minor_pivot_count", str(max(0, len(structural_pivots) - len(major_pivots)))),
+        ("structural_filter", structural_filter),
         ("major_filter", major_filter),
         ("min_leg_vs_previous_ratio", fmt_number(min_leg_vs_previous_ratio)),
         ("min_leg_duration_candles", str(min_leg_duration_candles)),
@@ -939,7 +988,9 @@ def render_html(
     aggregated_interval: str,
     candles: list[Candle],
     raw_pivots: list[Pivot],
+    structural_pivots: list[Pivot],
     major_pivots: list[Pivot],
+    structural_filter: str,
     major_filter: str,
     min_leg_vs_previous_ratio: float,
     min_leg_duration_candles: int,
@@ -1022,6 +1073,7 @@ def render_html(
       --line: #d8cec2;
       --close: #2b3442;
       --raw-pivot: #b9a48a;
+      --structural-pivot: #8a6a44;
       --major-pivot: #8a6a44;
       --sequence: #d14d41;
       --axis: #b7aa9a;
@@ -1095,6 +1147,12 @@ def render_html(
       stroke: var(--major-pivot);
       stroke-width: 1.8;
     }}
+    .structural-pivot-line {{
+      fill: none;
+      stroke: var(--structural-pivot);
+      stroke-width: 1.4;
+      stroke-dasharray: 3 3;
+    }}
     .sequence-line {{
       fill: none;
       stroke: var(--sequence);
@@ -1150,19 +1208,19 @@ def render_html(
   <div class="wrap">
     <section class="hero">
       <h1>Fib Wave Sequence Visual Preview V1</h1>
-      <p>venue={esc(venue)} symbol={esc(symbol)} interval={esc(interval)} source_interval={esc(source_interval)} aggregated_interval={esc(aggregated_interval)} detector={esc(detector)} rows={len(candles)} raw_pivot_count={len(raw_pivots)} major_pivot_count={len(major_pivots)} generated_at_utc={esc(generated_at_utc)}</p>
+      <p>venue={esc(venue)} symbol={esc(symbol)} interval={esc(interval)} source_interval={esc(source_interval)} aggregated_interval={esc(aggregated_interval)} detector={esc(detector)} rows={len(candles)} raw_pivot_count={len(raw_pivots)} structural_filtered_pivot_count={len(structural_pivots)} major_pivot_count={len(major_pivots)} generated_at_utc={esc(generated_at_utc)}</p>
       <p>Candidate labels only. This does not claim a correct Elliott count. No targets. No fib-level tests. No DB writes.</p>
     </section>
     <section class="panel">
       <h2>Selected Candidate Sequence</h2>
-      <p class="foot">Source table: {esc(SOURCE_TABLE)}. Source interval: {esc(source_interval)}. Aggregated interval: {esc(aggregated_interval)}. Detector params: {esc(detector_params_value)}. Major filter: {esc(major_filter)}. Sequence mode: {esc(sequence_mode)}. Anchor refinement: {esc(anchor_refinement)}.</p>
-      {chart_svg(candles, raw_pivots, major_pivots, refined_anchors, sequence)}
+      <p class="foot">Source table: {esc(SOURCE_TABLE)}. Source interval: {esc(source_interval)}. Aggregated interval: {esc(aggregated_interval)}. Detector params: {esc(detector_params_value)}. Structural filter: {esc(structural_filter)}. Major filter: {esc(major_filter)}. Sequence mode: {esc(sequence_mode)}. Anchor refinement: {esc(anchor_refinement)}.</p>
+      {chart_svg(candles, raw_pivots, structural_pivots, major_pivots, refined_anchors, sequence)}
       <table class="detail-table">
         <tbody>
-          {detail_table(symbol=symbol, interval=interval, detector=detector, detector_params_value=detector_params_value, lookback_candles=lookback_candles, raw_pivots=raw_pivots, major_pivots=major_pivots, major_filter=major_filter, min_leg_vs_previous_ratio=min_leg_vs_previous_ratio, min_leg_duration_candles=min_leg_duration_candles, sequence_mode=sequence_mode, sequence_start_index=sequence_start_index, sequence_length=sequence_length, anchor_refinement=anchor_refinement, refined_anchors=refined_anchors, sequence=sequence)}
+          {detail_table(symbol=symbol, interval=interval, detector=detector, detector_params_value=detector_params_value, lookback_candles=lookback_candles, raw_pivots=raw_pivots, structural_pivots=structural_pivots, major_pivots=major_pivots, structural_filter=structural_filter, major_filter=major_filter, min_leg_vs_previous_ratio=min_leg_vs_previous_ratio, min_leg_duration_candles=min_leg_duration_candles, sequence_mode=sequence_mode, sequence_start_index=sequence_start_index, sequence_length=sequence_length, anchor_refinement=anchor_refinement, refined_anchors=refined_anchors, sequence=sequence)}
         </tbody>
       </table>
-      <div class="foot">Raw pivots are shown with smaller markers. Major pivots are shown with larger markers. Refined anchors are shown with dark outlined markers. P0-P8 and W1/W2/W3/W4/W5/A/B/C remain candidate visual labels only for inspection.</div>
+      <div class="foot">Raw pivots are shown with smaller markers. Structural pivots and major pivots are shown with larger markers. Refined anchors are shown with dark outlined markers. P0-P8 and W1/W2/W3/W4/W5/A/B/C remain candidate visual labels only for inspection.</div>
       {rolling_table_html}
       <h2>Pivot Diagnostics</h2>
       <table class="detail-table all-seq-table">
@@ -1192,7 +1250,9 @@ def build_summary(
     aggregated_interval: str,
     aggregated_rows: int,
     raw_pivot_count: int,
+    structural_filtered_pivot_count: int,
     major_pivot_count: int,
+    structural_filter: str,
     sequence_mode: str,
     sequence_start_index: int | None,
     sequence_length: int,
@@ -1210,6 +1270,7 @@ def build_summary(
         "source_interval": source_interval,
         "aggregated_interval": aggregated_interval,
         "detector": detector,
+        "structural_filter": structural_filter,
         "sequence_mode": sequence_mode,
         "sequence_start_index": sequence_start_index,
         "sequence_length": sequence_length,
@@ -1218,8 +1279,10 @@ def build_summary(
         "aggregated_rows": aggregated_rows,
         "pivot_count": major_pivot_count,
         "raw_pivot_count": raw_pivot_count,
+        "structural_filtered_pivot_count": structural_filtered_pivot_count,
+        "removed_structural_pivot_count": max(0, raw_pivot_count - structural_filtered_pivot_count),
         "major_pivot_count": major_pivot_count,
-        "removed_minor_pivot_count": max(0, raw_pivot_count - major_pivot_count),
+        "removed_minor_pivot_count": max(0, structural_filtered_pivot_count - major_pivot_count),
         "selected_sequence_length": len(selected_sequence),
         "refined_anchor_changed_count": refined_anchor_changed_count,
         "has_complete_sequence": 1 if has_complete_sequence else 0,
@@ -1246,6 +1309,7 @@ def print_summary(summary: dict[str, Any]) -> None:
         "source_interval",
         "aggregated_interval",
         "detector",
+        "structural_filter",
         "sequence_mode",
         "sequence_start_index",
         "sequence_length",
@@ -1254,6 +1318,8 @@ def print_summary(summary: dict[str, Any]) -> None:
         "aggregated_rows",
         "pivot_count",
         "raw_pivot_count",
+        "structural_filtered_pivot_count",
+        "removed_structural_pivot_count",
         "major_pivot_count",
         "removed_minor_pivot_count",
         "selected_sequence_length",
@@ -1348,8 +1414,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         raw_pivots = detect_zigzag_percent(candles, args.zigzag_percent)
 
-    major_pivots = build_major_pivots(
+    structural_pivots = build_structural_pivots(
         raw_pivots,
+        structural_filter=args.structural_filter,
+    )
+    major_pivots = build_major_pivots(
+        structural_pivots,
         major_filter=args.major_filter,
         min_leg_vs_previous_ratio=args.min_leg_vs_previous_ratio,
         min_leg_duration_candles=args.min_leg_duration_candles,
@@ -1373,6 +1443,7 @@ def main(argv: list[str] | None = None) -> int:
     sequence = [anchor.refined_pivot for anchor in refined_anchors]
     pivot_diagnostics = build_pivot_diagnostic_rows(
         raw_pivots=raw_pivots,
+        structural_pivots=structural_pivots,
         major_pivots=major_pivots,
         selected_sequence=sequence,
     )
@@ -1395,7 +1466,9 @@ def main(argv: list[str] | None = None) -> int:
             aggregated_interval=aggregated_interval,
             candles=candles,
             raw_pivots=raw_pivots,
+            structural_pivots=structural_pivots,
             major_pivots=major_pivots,
+            structural_filter=args.structural_filter,
             major_filter=args.major_filter,
             min_leg_vs_previous_ratio=args.min_leg_vs_previous_ratio,
             min_leg_duration_candles=args.min_leg_duration_candles,
@@ -1424,7 +1497,9 @@ def main(argv: list[str] | None = None) -> int:
         rows=len(candles),
         aggregated_rows=len(candles) if args.interval == "1w" else len(candles),
         raw_pivot_count=len(raw_pivots),
+        structural_filtered_pivot_count=len(structural_pivots),
         major_pivot_count=len(major_pivots),
+        structural_filter=args.structural_filter,
         refined_anchor_changed_count=sum(1 for anchor in refined_anchors if anchor.changed),
         selected_sequence=sequence,
         has_complete_sequence=selected_candidate.has_complete_sequence,

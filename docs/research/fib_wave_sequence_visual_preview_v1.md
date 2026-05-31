@@ -233,11 +233,56 @@ The diagnostics table includes:
 `source_layer` is one of:
 
 - `RAW`
+- `STRUCTURAL`
 - `MAJOR`
 - `SELECTED`
 
 This is diagnostics only.
 It does not change detector behavior, major filtering, or anchor refinement.
+
+## Structural Pivot Filtering
+
+V1 now supports an optional structural filter between raw pivot detection and
+major filtering.
+
+Modes:
+
+- `structural_filter=none`
+- `structural_filter=strict_progression`
+
+### `structural_filter=none`
+
+No structural filtering.
+
+The major filter receives the raw pivot sequence.
+
+### `structural_filter=strict_progression`
+
+The structural filter keeps raw pivots visible for audit, but removes pivots
+from the downstream structural/major/selected layers when they are
+structurally invalid as progression anchors.
+
+Pivots are removed when their note is:
+
+- `LOW_ABOVE_PREVIOUS_HIGH`
+- `HIGH_BELOW_PREVIOUS_LOW`
+- `SAME_TYPE_AS_PREVIOUS`
+- `ZERO_OR_INVALID_MOVE`
+
+This filter is applied:
+
+1. after raw pivot detection
+2. before major filtering
+3. before sequence selection
+
+That creates the layer flow:
+
+- `RAW`
+- `STRUCTURAL`
+- `MAJOR`
+- `SELECTED`
+
+The raw layer remains unchanged and visible in the chart and diagnostics table.
 
 ### Structural Notes
 
