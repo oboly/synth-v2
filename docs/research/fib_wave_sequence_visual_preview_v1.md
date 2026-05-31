@@ -38,8 +38,27 @@ What does the latest candidate P0-P8 sequence look like under this detector?
 
 ## P0-P8 Candidate Model
 
-The runner highlights the latest complete sequence of nine pivots if at least
-nine pivots exist:
+The runner can highlight a selected sequence of pivots rather than always
+forcing the latest complete nine-pivot block.
+
+This matters because visual review showed that the latest complete `P0-P8`
+window is not always the most useful one.
+
+Examples from review:
+
+- BTC `1w` `zigzag_percent=20` likely starts the relevant macro sequence at
+  current pivot index `2`, while earlier pivots belong to prior downtrend or
+  `ABC` context
+- WLD `1w` `zigzag_percent=20` has a useful latest complete sequence, but also
+  an earlier complete candidate worth reviewing
+- BTC `1w` `zigzag_percent=15` appears more sensitive and inserts extra pivots
+
+Because of that, sequence selection is now a visual-review tool.
+
+Future batch research should evaluate rolling candidates automatically rather
+than assuming the latest block is always the correct one.
+
+When `sequence_length=9`, the labels are:
 
 - `P0`
 - `P1`
@@ -55,9 +74,60 @@ These are candidate labels only.
 
 The runner does not claim they are the correct count.
 
+If fewer pivots are selected than the requested `sequence_length`, the sequence
+is treated as active or incomplete.
+
+## Sequence Selection Modes
+
+The runner supports:
+
+### `sequence-mode latest`
+
+Default behavior.
+
+- use the latest available sequence of `sequence_length` pivots
+- if fewer pivots exist, use all available pivots
+- mark `has_complete_sequence=0` when the requested length is not available
+
+### `sequence-mode start-index`
+
+Visual review helper.
+
+- use `pivots[sequence_start_index : sequence_start_index + sequence_length]`
+- if fewer pivots exist after the chosen start index, use the available trailing
+  pivots
+- mark `has_complete_sequence=0` when the requested length is not available
+
+This is useful when the reviewer wants to skip earlier context and inspect a
+later macro sequence candidate directly.
+
+### `sequence-mode all`
+
+Rolling candidate review mode.
+
+- render the latest selected sequence on the chart
+- also render a table of all rolling sequence candidates for the chosen
+  `sequence_length`
+- each row includes start/end index, timestamps, completeness, basis direction,
+  and available ratios
+
+This is still visual review only.
+
+## Sequence Length
+
+`sequence_length` is configurable.
+
+Default:
+
+- `sequence_length=9`
+
+Shorter lengths are allowed when the reviewer wants to inspect partial or
+active structures instead of forcing a full `P0-P8` candidate.
+
 ## Candidate 1-2-3-4-5-A-B-C Interpretation
 
-For visual review, the segment labels are:
+For visual review, the segment labels are shown only when the required points
+exist:
 
 - `P0 -> P1 = W1`
 - `P1 -> P2 = W2`
@@ -96,6 +166,16 @@ Ratios:
 - `waveC_vs_waveA = waveC_move_abs / waveA_move_abs`
 
 These are descriptive measurements only.
+
+Only available ratios are computed:
+
+- `wave2_vs_wave1` if `P0-P2` exists
+- `wave3_vs_wave1` if `P0-P3` exists
+- `wave4_vs_wave3` if `P0-P4` exists
+- `wave5_vs_wave1` if `P0-P5` exists
+- `wave5_vs_wave3` if `P0-P5` exists
+- `waveB_vs_waveA` if `P5-P7` exists
+- `waveC_vs_waveA` if `P5-P8` exists
 
 ## Detector Support
 
@@ -261,6 +341,7 @@ The preview remains measurement-first because it only does the following:
 
 - reads public candles
 - selects pivots with one chosen detector
+- selects a review sequence from the already-built pivot stream
 - measures move sizes and ratios from those pivots
 - renders a static visual review page
 

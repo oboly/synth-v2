@@ -25,6 +25,8 @@ DEFAULT_ZIGZAG_PERCENT = 20.0
 DEFAULT_MAJOR_FILTER = "none"
 DEFAULT_MIN_LEG_VS_PREVIOUS_RATIO = 0.0
 DEFAULT_MIN_LEG_DURATION_CANDLES = 0
+DEFAULT_SEQUENCE_MODE = "latest"
+DEFAULT_SEQUENCE_LENGTH = 9
 DEFAULT_OUTPUT_HTML = "/tmp/fib_wave_sequence_BTC_1d.html"
 
 SVG_WIDTH = 1120
@@ -63,6 +65,15 @@ class Pivot:
     price: float
 
 
+@dataclass(frozen=True)
+class SequenceCandidate:
+    sequence_id: int
+    start_index: int
+    end_index: int
+    pivots: list[Pivot]
+    has_complete_sequence: bool
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -96,6 +107,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         type=int,
         default=DEFAULT_MIN_LEG_DURATION_CANDLES,
     )
+    parser.add_argument(
+        "--sequence-mode",
+        choices=("latest", "start-index", "all"),
+        default=DEFAULT_SEQUENCE_MODE,
+    )
+    parser.add_argument("--sequence-start-index", type=int, default=None)
+    parser.add_argument("--sequence-length", type=int, default=DEFAULT_SEQUENCE_LENGTH)
     parser.add_argument("--output-html", default=DEFAULT_OUTPUT_HTML)
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
     return parser.parse_args(argv)
@@ -367,10 +385,75 @@ def detect_zigzag_percent(candles: list[Candle], percent_threshold: float) -> li
     return compress_same_type_pivots(pivots)
 
 
-def latest_sequence(pivots: list[Pivot]) -> list[Pivot]:
-    if len(pivots) < 9:
+def basis_direction(sequence: list[Pivot]) -> str:
+    if len(sequence) < 2:
+        return ""
+    return "UP" if sequence[1].price > sequence[0].price else "DOWN"
+
+
+def select_sequence_latest(pivots: list[Pivot], sequence_length: int) -> SequenceCandidate:
+    if not pivots:
+        return SequenceCandidate(0, 0, -1, [], False)
+    if len(pivots) >= sequence_length:
+        start_index = len(pivots) - sequence_length
+    else:
+        start_index = 0
+    selected = pivots[start_index : start_index + sequence_length]
+    return SequenceCandidate(
+        sequence_id=0,
+        start_index=start_index,
+        end_index=start_index + len(selected) - 1,
+        pivots=selected,
+        has_complete_sequence=len(selected) == sequence_length,
+    )
+
+
+def select_sequence_start_index(
+    pivots: list[Pivot],
+    *,
+    sequence_start_index: int,
+    sequence_length: int,
+) -> SequenceCandidate:
+    if not pivots:
+        return SequenceCandidate(0, sequence_start_index, sequence_start_index - 1, [], False)
+    if sequence_start_index >= len(pivots):
+        return SequenceCandidate(0, sequence_start_index, len(pivots) - 1, [], False)
+    selected = pivots[sequence_start_index : sequence_start_index + sequence_length]
+    return SequenceCandidate(
+        sequence_id=0,
+        start_index=sequence_start_index,
+        end_index=sequence_start_index + len(selected) - 1,
+        pivots=selected,
+        has_complete_sequence=len(selected) == sequence_length,
+    )
+
+
+def build_sequence_candidates(pivots: list[Pivot], sequence_length: int) -> list[SequenceCandidate]:
+    if not pivots:
         return []
-    return pivots[-9:]
+    if len(pivots) < sequence_length:
+        return [
+            SequenceCandidate(
+                sequence_id=0,
+                start_index=0,
+                end_index=len(pivots) - 1,
+                pivots=list(pivots),
+                has_complete_sequence=False,
+            )
+        ]
+    candidates: list[SequenceCandidate] = []
+    for start_index in range(0, len(pivots) - sequence_length + 1):
+        selected = pivots[start_index : start_index + sequence_length]
+        candidates.append(
+            SequenceCandidate(
+                sequence_id=len(candidates),
+                start_index=start_index,
+                end_index=start_index + len(selected) - 1,
+                pivots=selected,
+                has_complete_sequence=len(selected) == sequence_length,
+            )
+        )
+    return candidates
 
 
 def more_extreme_pivot(first: Pivot, second: Pivot) -> Pivot:
@@ -498,7 +581,15 @@ def chart_svg(
         )
 
     p_labels: list[str] = []
+    pivot_index_labels: list[str] = []
     wave_labels: list[str] = []
+    for pivot_index, pivot in enumerate(major_pivots):
+        x = x_for_index(pivot.candle_index, len(candles))
+        y = y_for_price(pivot.price, min_price, max_price)
+        y_offset = -24 if pivot.pivot_kind == "HIGH" else 30
+        pivot_index_labels.append(
+            f"<text x='{x:.2f}' y='{y + y_offset:.2f}' class='index-label'>#{pivot_index}</text>"
+        )
     for idx, pivot in enumerate(sequence):
         x = x_for_index(pivot.candle_index, len(candles))
         y = y_for_price(pivot.price, min_price, max_price)
@@ -533,6 +624,7 @@ def chart_svg(
   <polyline points="{sequence_points}" class="sequence-line"></polyline>
   {''.join(raw_markers)}
   {''.join(major_markers)}
+  {''.join(pivot_index_labels)}
   {''.join(p_labels)}
   {''.join(wave_labels)}
   {''.join(f"<text x='8' y='{y:.2f}' class='axis-label'>{esc(fmt_price(price))}</text>" for price, y in axis_labels)}
@@ -564,13 +656,13 @@ def sequence_metrics(sequence: list[Pivot]) -> dict[str, float | None]:
         "waveA_move_abs": wave_a,
         "waveB_move_abs": wave_b,
         "waveC_move_abs": wave_c,
-        "wave2_vs_wave1": ratio(wave2, wave1),
-        "wave3_vs_wave1": ratio(wave3, wave1),
-        "wave4_vs_wave3": ratio(wave4, wave3),
-        "wave5_vs_wave1": ratio(wave5, wave1),
-        "wave5_vs_wave3": ratio(wave5, wave3),
-        "waveB_vs_waveA": ratio(wave_b, wave_a),
-        "waveC_vs_waveA": ratio(wave_c, wave_a),
+        "wave2_vs_wave1": ratio(wave2, wave1) if len(sequence) >= 3 else None,
+        "wave3_vs_wave1": ratio(wave3, wave1) if len(sequence) >= 4 else None,
+        "wave4_vs_wave3": ratio(wave4, wave3) if len(sequence) >= 5 else None,
+        "wave5_vs_wave1": ratio(wave5, wave1) if len(sequence) >= 6 else None,
+        "wave5_vs_wave3": ratio(wave5, wave3) if len(sequence) >= 6 else None,
+        "waveB_vs_waveA": ratio(wave_b, wave_a) if len(sequence) >= 8 else None,
+        "waveC_vs_waveA": ratio(wave_c, wave_a) if len(sequence) >= 9 else None,
     }
 
 
@@ -586,6 +678,9 @@ def detail_table(
     major_filter: str,
     min_leg_vs_previous_ratio: float,
     min_leg_duration_candles: int,
+    sequence_mode: str,
+    sequence_start_index: int | None,
+    sequence_length: int,
     sequence: list[Pivot],
 ) -> str:
     rows: list[tuple[str, str]] = [
@@ -600,16 +695,21 @@ def detail_table(
         ("major_filter", major_filter),
         ("min_leg_vs_previous_ratio", fmt_number(min_leg_vs_previous_ratio)),
         ("min_leg_duration_candles", str(min_leg_duration_candles)),
+        ("sequence_mode", sequence_mode),
+        ("sequence_start_index", "" if sequence_start_index is None else str(sequence_start_index)),
+        ("sequence_length", str(sequence_length)),
+        ("selected_sequence_length", str(len(sequence))),
         ("pivot_count", str(len(major_pivots))),
-        ("has_complete_p0_p8_sequence", "1" if len(sequence) == 9 else "0"),
+        ("has_complete_sequence", "1" if len(sequence) == sequence_length else "0"),
     ]
-    for idx in range(9):
+    for idx in range(sequence_length):
         pivot = sequence[idx] if len(sequence) > idx else None
+        rows.append((f"P{idx} major_pivot_index", str(major_pivots.index(pivot)) if pivot in major_pivots else ""))
         rows.append((f"P{idx} timestamp", fmt_ts(pivot.ts_utc) if pivot else ""))
         rows.append((f"P{idx} price", fmt_price(pivot.price) if pivot else ""))
         rows.append((f"P{idx} type", pivot.pivot_kind if pivot else ""))
 
-    metrics = sequence_metrics(sequence) if len(sequence) == 9 else {}
+    metrics = sequence_metrics(sequence) if len(sequence) >= 2 else {}
     for key in (
         "wave1_move_abs",
         "wave2_move_abs",
@@ -648,9 +748,50 @@ def render_html(
     major_filter: str,
     min_leg_vs_previous_ratio: float,
     min_leg_duration_candles: int,
+    sequence_mode: str,
+    sequence_start_index: int | None,
+    sequence_length: int,
+    sequence_candidates: list[SequenceCandidate],
     sequence: list[Pivot],
 ) -> str:
     generated_at_utc = fmt_ts(datetime.now(UTC))
+    rolling_table_html = ""
+    if sequence_mode == "all":
+        rolling_rows: list[str] = []
+        for candidate in sequence_candidates:
+            metrics = sequence_metrics(candidate.pivots) if len(candidate.pivots) >= 2 else {}
+            rolling_rows.append(
+                "<tr>"
+                f"<td>{candidate.sequence_id}</td>"
+                f"<td>{candidate.start_index}</td>"
+                f"<td>{candidate.end_index}</td>"
+                f"<td>{esc(fmt_ts(candidate.pivots[0].ts_utc) if candidate.pivots else '')}</td>"
+                f"<td>{esc(fmt_ts(candidate.pivots[-1].ts_utc) if candidate.pivots else '')}</td>"
+                f"<td>{len(candidate.pivots)}</td>"
+                f"<td>{1 if candidate.has_complete_sequence else 0}</td>"
+                f"<td>{esc(basis_direction(candidate.pivots))}</td>"
+                f"<td>{esc(fmt_number(metrics.get('wave2_vs_wave1')))}</td>"
+                f"<td>{esc(fmt_number(metrics.get('wave3_vs_wave1')))}</td>"
+                f"<td>{esc(fmt_number(metrics.get('wave4_vs_wave3')))}</td>"
+                f"<td>{esc(fmt_number(metrics.get('wave5_vs_wave1')))}</td>"
+                f"<td>{esc(fmt_number(metrics.get('wave5_vs_wave3')))}</td>"
+                f"<td>{esc(fmt_number(metrics.get('waveB_vs_waveA')))}</td>"
+                f"<td>{esc(fmt_number(metrics.get('waveC_vs_waveA')))}</td>"
+                "</tr>"
+            )
+        rolling_table_html = f"""
+      <h2>Rolling Sequence Candidates</h2>
+      <table class="detail-table all-seq-table">
+        <thead>
+          <tr>
+            <th>sequence_id</th><th>start_index</th><th>end_index</th><th>start_ts</th><th>end_ts</th><th>length</th><th>has_complete_sequence</th><th>basis_direction</th><th>wave2_vs_wave1</th><th>wave3_vs_wave1</th><th>wave4_vs_wave3</th><th>wave5_vs_wave1</th><th>wave5_vs_wave3</th><th>waveB_vs_waveA</th><th>waveC_vs_waveA</th>
+          </tr>
+        </thead>
+        <tbody>
+          {''.join(rolling_rows)}
+        </tbody>
+      </table>
+"""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -758,6 +899,12 @@ def render_html(
       text-anchor: middle;
       font-family: "IBM Plex Mono", monospace;
     }}
+    .index-label {{
+      fill: var(--muted);
+      font-size: 11px;
+      text-anchor: middle;
+      font-family: "IBM Plex Mono", monospace;
+    }}
     .detail-table {{
       width: 100%;
       border-collapse: collapse;
@@ -792,15 +939,16 @@ def render_html(
       <p>Candidate labels only. This does not claim a correct Elliott count. No targets. No fib-level tests. No DB writes.</p>
     </section>
     <section class="panel">
-      <h2>Latest Candidate P0-P8 Sequence</h2>
-      <p class="foot">Source table: {esc(SOURCE_TABLE)}. Source interval: {esc(source_interval)}. Aggregated interval: {esc(aggregated_interval)}. Detector params: {esc(detector_params_value)}. Major filter: {esc(major_filter)}.</p>
+      <h2>Selected Candidate Sequence</h2>
+      <p class="foot">Source table: {esc(SOURCE_TABLE)}. Source interval: {esc(source_interval)}. Aggregated interval: {esc(aggregated_interval)}. Detector params: {esc(detector_params_value)}. Major filter: {esc(major_filter)}. Sequence mode: {esc(sequence_mode)}.</p>
       {chart_svg(candles, raw_pivots, major_pivots, sequence)}
       <table class="detail-table">
         <tbody>
-          {detail_table(symbol=symbol, interval=interval, detector=detector, detector_params_value=detector_params_value, lookback_candles=lookback_candles, raw_pivots=raw_pivots, major_pivots=major_pivots, major_filter=major_filter, min_leg_vs_previous_ratio=min_leg_vs_previous_ratio, min_leg_duration_candles=min_leg_duration_candles, sequence=sequence)}
+          {detail_table(symbol=symbol, interval=interval, detector=detector, detector_params_value=detector_params_value, lookback_candles=lookback_candles, raw_pivots=raw_pivots, major_pivots=major_pivots, major_filter=major_filter, min_leg_vs_previous_ratio=min_leg_vs_previous_ratio, min_leg_duration_candles=min_leg_duration_candles, sequence_mode=sequence_mode, sequence_start_index=sequence_start_index, sequence_length=sequence_length, sequence=sequence)}
         </tbody>
       </table>
       <div class="foot">Raw pivots are shown with smaller markers. Major pivots are shown with larger markers. P0-P8 and W1/W2/W3/W4/W5/A/B/C remain candidate visual labels only for inspection.</div>
+      {rolling_table_html}
     </section>
   </div>
 </body>
@@ -819,6 +967,10 @@ def build_summary(
     aggregated_rows: int,
     raw_pivot_count: int,
     major_pivot_count: int,
+    sequence_mode: str,
+    sequence_start_index: int | None,
+    sequence_length: int,
+    selected_sequence: list[Pivot],
     has_complete_sequence: bool,
     output_html: Path,
 ) -> dict[str, Any]:
@@ -830,13 +982,19 @@ def build_summary(
         "source_interval": source_interval,
         "aggregated_interval": aggregated_interval,
         "detector": detector,
+        "sequence_mode": sequence_mode,
+        "sequence_start_index": sequence_start_index,
+        "sequence_length": sequence_length,
         "rows": rows,
         "aggregated_rows": aggregated_rows,
         "pivot_count": major_pivot_count,
         "raw_pivot_count": raw_pivot_count,
         "major_pivot_count": major_pivot_count,
         "removed_minor_pivot_count": max(0, raw_pivot_count - major_pivot_count),
-        "has_complete_p0_p8_sequence": 1 if has_complete_sequence else 0,
+        "selected_sequence_length": len(selected_sequence),
+        "has_complete_sequence": 1 if has_complete_sequence else 0,
+        "selected_sequence_start_ts_utc": fmt_ts(selected_sequence[0].ts_utc) if selected_sequence else "",
+        "selected_sequence_end_ts_utc": fmt_ts(selected_sequence[-1].ts_utc) if selected_sequence else "",
         "output_html": str(output_html),
         "db_writes": 0,
         "broker_private_calls": 0,
@@ -858,13 +1016,19 @@ def print_summary(summary: dict[str, Any]) -> None:
         "source_interval",
         "aggregated_interval",
         "detector",
+        "sequence_mode",
+        "sequence_start_index",
+        "sequence_length",
         "rows",
         "aggregated_rows",
         "pivot_count",
         "raw_pivot_count",
         "major_pivot_count",
         "removed_minor_pivot_count",
-        "has_complete_p0_p8_sequence",
+        "selected_sequence_length",
+        "has_complete_sequence",
+        "selected_sequence_start_ts_utc",
+        "selected_sequence_end_ts_utc",
         "output_html",
         "db_writes",
         "broker_private_calls",
@@ -890,6 +1054,12 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--min-leg-vs-previous-ratio must be >= 0")
     if args.min_leg_duration_candles < 0:
         raise ValueError("--min-leg-duration-candles must be >= 0")
+    if args.sequence_length <= 0:
+        raise ValueError("--sequence-length must be > 0")
+    if args.sequence_mode == "start-index" and args.sequence_start_index is None:
+        raise ValueError("--sequence-start-index is required when --sequence-mode start-index")
+    if args.sequence_start_index is not None and args.sequence_start_index < 0:
+        raise ValueError("--sequence-start-index must be >= 0")
 
     source_interval = args.interval
     aggregated_interval = args.interval
@@ -952,7 +1122,18 @@ def main(argv: list[str] | None = None) -> int:
         min_leg_vs_previous_ratio=args.min_leg_vs_previous_ratio,
         min_leg_duration_candles=args.min_leg_duration_candles,
     )
-    sequence = latest_sequence(major_pivots)
+    sequence_candidates = build_sequence_candidates(major_pivots, args.sequence_length)
+    if args.sequence_mode == "latest":
+        selected_candidate = select_sequence_latest(major_pivots, args.sequence_length)
+    elif args.sequence_mode == "start-index":
+        selected_candidate = select_sequence_start_index(
+            major_pivots,
+            sequence_start_index=args.sequence_start_index or 0,
+            sequence_length=args.sequence_length,
+        )
+    else:
+        selected_candidate = select_sequence_latest(major_pivots, args.sequence_length)
+    sequence = selected_candidate.pivots
     output_html = Path(args.output_html)
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(
@@ -971,6 +1152,10 @@ def main(argv: list[str] | None = None) -> int:
             major_filter=args.major_filter,
             min_leg_vs_previous_ratio=args.min_leg_vs_previous_ratio,
             min_leg_duration_candles=args.min_leg_duration_candles,
+            sequence_mode=args.sequence_mode,
+            sequence_start_index=args.sequence_start_index,
+            sequence_length=args.sequence_length,
+            sequence_candidates=sequence_candidates,
             sequence=sequence,
         ),
         encoding="utf-8",
@@ -982,11 +1167,15 @@ def main(argv: list[str] | None = None) -> int:
         source_interval=source_interval,
         aggregated_interval=aggregated_interval,
         detector=args.detector,
+        sequence_mode=args.sequence_mode,
+        sequence_start_index=args.sequence_start_index,
+        sequence_length=args.sequence_length,
         rows=len(candles),
         aggregated_rows=len(candles) if args.interval == "1w" else len(candles),
         raw_pivot_count=len(raw_pivots),
         major_pivot_count=len(major_pivots),
-        has_complete_sequence=len(sequence) == 9,
+        selected_sequence=sequence,
+        has_complete_sequence=selected_candidate.has_complete_sequence,
         output_html=output_html,
     )
     if args.output == "json":
