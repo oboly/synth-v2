@@ -209,7 +209,7 @@ This document does not include:
 
 This document also does not change:
 
-- `canonical_fib_zone_map_v1.`
+- `canonical_fib_zone_map_v1`.
 - `selection_engine`
 - `decision_gate`
 - `execution_planner`
