@@ -117,6 +117,123 @@ V1 supports:
 - uses close prices consistently for candidate tracking and reversal confirmation
 - emits alternating pivots after deterministic percent reversals
 
+## Weekly Aggregation Support
+
+When `--interval` is `1w`, the runner does not require native weekly candles in
+`obs_market_candle`.
+
+Instead it:
+
+1. reads `1d` candles from `obs_market_candle`
+2. aggregates them into deterministic UTC weekly candles in memory
+3. runs the selected detector on that aggregated weekly series
+4. renders the chart normally
+
+No aggregated candles are written to the database.
+
+This keeps the lane read-only while still supporting macro visual review.
+
+### Deterministic UTC Weekly Aggregation
+
+Weekly grouping uses UTC calendar weeks.
+
+For each weekly group:
+
+- `open = first daily open in the week`
+- `high = max daily high in the week`
+- `low = min daily low in the week`
+- `close = last daily close in the week`
+- `volume = sum daily volume in the week`
+- `close_ts_utc = last daily close_ts_utc in the week`
+
+Ordering stays by `close_ts_utc`.
+
+If a weekly group has fewer than 3 daily candles, it is skipped by default to
+avoid tiny partial-week artifacts.
+
+### Why Weekly Exists Here
+
+Weekly candles are intended for macro Elliott/Fibo visual review.
+
+Daily and `4h` remain useful for:
+
+- substructure inspection
+- internal wave cleanup
+- nearer-term timing context
+
+## Major Pivot Filtering
+
+V1 now supports an optional major-pivot filtering step after raw detector pivots
+are built.
+
+Flow:
+
+1. detect raw pivots
+2. preserve the raw pivot sequence
+3. optionally derive a major pivot sequence from the raw pivots
+4. use the major pivot sequence for `P0-P8` labels when a major filter is
+   enabled
+
+The filter is deterministic and uses only the already-available pivot sequence.
+
+Supported modes:
+
+- `none`
+- `relative_move`
+- `duration`
+- `relative_move_and_duration`
+
+### `none`
+
+No extra filtering.
+
+The major pivot sequence is the raw pivot sequence.
+
+### `relative_move`
+
+The filter walks the raw pivots from left to right.
+
+For each candidate leg from the latest accepted major pivot:
+
+- compute the candidate leg absolute move
+- compare it against the previous accepted major leg absolute move
+- accept the candidate if there is no previous major leg yet, or if:
+
+```text
+candidate_leg_abs >= previous_major_leg_abs * min_leg_vs_previous_ratio
+```
+
+If a candidate is rejected as too small, scanning continues.
+
+If same-type major pivots appear after skipped pivots:
+
+- `HIGH` keeps the higher high
+- `LOW` keeps the lower low
+
+### `duration`
+
+Accept a candidate leg only if:
+
+```text
+duration_from_previous_accepted_major_pivot >= min_leg_duration_candles
+```
+
+### `relative_move_and_duration`
+
+Apply both rules at the same time.
+
+The candidate leg must pass the relative-move rule and the duration rule.
+
+## Raw Versus Major Pivots In The Chart
+
+The chart now renders both pivot layers:
+
+- raw pivots as small markers
+- major pivots as larger markers
+
+This makes it possible to inspect what the filter removed without hiding the
+underlying detector output.
+
 ## Why Labels Are Candidate-Only
 
 Wave labeling is highly detector-sensitive.
@@ -133,6 +250,11 @@ Because of that, v1 keeps the language strict:
 - visual review only
 - no claim of correctness
 
+The same rule applies after major-pivot filtering.
+
+The filter is a research convenience for visual structure cleanup.
+It is not a claim that the resulting count is the correct Elliott count.
+
 ## Why This Remains Measurement-First
 
 The preview remains measurement-first because it only does the following:
@@ -148,6 +270,11 @@ It does not:
 - test fib hits
 - create trade logic
 - create execution logic
+- use symbol-specific exceptions
+- use manual skip lists
+
+The major-pivot filter is still measurement-first because it is derived only
+from the pivot geometry already observed in the selected detector output.
 
 ## Boundaries
 

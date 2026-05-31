@@ -4,7 +4,7 @@ import argparse
 import html
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +22,9 @@ DEFAULT_LOOKBACK_CANDLES = 900
 DEFAULT_DETECTOR = "zigzag_percent"
 DEFAULT_SWING_WINDOW = 10
 DEFAULT_ZIGZAG_PERCENT = 20.0
+DEFAULT_MAJOR_FILTER = "none"
+DEFAULT_MIN_LEG_VS_PREVIOUS_RATIO = 0.0
+DEFAULT_MIN_LEG_DURATION_CANDLES = 0
 DEFAULT_OUTPUT_HTML = "/tmp/fib_wave_sequence_BTC_1d.html"
 
 SVG_WIDTH = 1120
@@ -43,10 +46,13 @@ class AssetRef:
 @dataclass(frozen=True)
 class Candle:
     candle_index: int
+    open_ts_utc: datetime
     close_ts_utc: datetime
+    open_price: float
     close_price: float
     high_price: float
     low_price: float
+    volume: float
 
 
 @dataclass(frozen=True)
@@ -75,6 +81,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--swing-window", type=int, default=DEFAULT_SWING_WINDOW)
     parser.add_argument("--zigzag-percent", type=float, default=DEFAULT_ZIGZAG_PERCENT)
+    parser.add_argument(
+        "--major-filter",
+        choices=("none", "relative_move", "duration", "relative_move_and_duration"),
+        default=DEFAULT_MAJOR_FILTER,
+    )
+    parser.add_argument(
+        "--min-leg-vs-previous-ratio",
+        type=float,
+        default=DEFAULT_MIN_LEG_VS_PREVIOUS_RATIO,
+    )
+    parser.add_argument(
+        "--min-leg-duration-candles",
+        type=int,
+        default=DEFAULT_MIN_LEG_DURATION_CANDLES,
+    )
     parser.add_argument("--output-html", default=DEFAULT_OUTPUT_HTML)
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
     return parser.parse_args(argv)
@@ -129,7 +150,14 @@ def fetch_recent_candles(
     lookback_candles: int,
 ) -> list[Candle]:
     sql = """
-        SELECT close_ts_utc, close_price, high_price, low_price
+        SELECT
+            open_ts_utc,
+            close_ts_utc,
+            open_price,
+            close_price,
+            high_price,
+            low_price,
+            COALESCE(volume_quote_eur, volume_base, 0) AS volume
         FROM obs_market_candle
         WHERE venue = %s
           AND interval_code = %s
@@ -143,7 +171,12 @@ def fetch_recent_candles(
 
     candles: list[Candle] = []
     for idx, row in enumerate(reversed(rows)):
+        open_ts = row["open_ts_utc"]
         close_ts = row["close_ts_utc"]
+        if open_ts.tzinfo is None:
+            open_ts = open_ts.replace(tzinfo=UTC)
+        else:
+            open_ts = open_ts.astimezone(UTC)
         if close_ts.tzinfo is None:
             close_ts = close_ts.replace(tzinfo=UTC)
         else:
@@ -151,13 +184,72 @@ def fetch_recent_candles(
         candles.append(
             Candle(
                 candle_index=idx,
+                open_ts_utc=open_ts,
                 close_ts_utc=close_ts,
+                open_price=float(row["open_price"]),
                 close_price=float(row["close_price"]),
                 high_price=float(row["high_price"]),
                 low_price=float(row["low_price"]),
+                volume=float(row["volume"]),
             )
         )
     return candles
+
+
+def start_of_utc_week(value: datetime) -> datetime:
+    normalized = value.astimezone(UTC)
+    week_start_date = (normalized - timedelta(days=normalized.weekday())).date()
+    return datetime(
+        week_start_date.year,
+        week_start_date.month,
+        week_start_date.day,
+        tzinfo=UTC,
+    )
+
+
+def aggregate_daily_to_weekly(
+    daily_candles: list[Candle],
+    *,
+    min_daily_candles_per_week: int = 3,
+) -> list[Candle]:
+    if not daily_candles:
+        return []
+
+    grouped: list[list[Candle]] = []
+    current_group: list[Candle] = []
+    current_week_start: datetime | None = None
+
+    for candle in daily_candles:
+        week_start = start_of_utc_week(candle.close_ts_utc)
+        if current_week_start is None or week_start != current_week_start:
+            if current_group:
+                grouped.append(current_group)
+            current_group = [candle]
+            current_week_start = week_start
+        else:
+            current_group.append(candle)
+    if current_group:
+        grouped.append(current_group)
+
+    weekly: list[Candle] = []
+    for group in grouped:
+        if len(group) < min_daily_candles_per_week:
+            continue
+        first = group[0]
+        last = group[-1]
+        weekly.append(
+            Candle(
+                candle_index=len(weekly),
+                open_ts_utc=first.open_ts_utc,
+                close_ts_utc=last.close_ts_utc,
+                open_price=first.open_price,
+                close_price=last.close_price,
+                high_price=max(candle.high_price for candle in group),
+                low_price=min(candle.low_price for candle in group),
+                volume=sum(candle.volume for candle in group),
+            )
+        )
+    return weekly
 
 
 def compress_same_type_pivots(pivots: list[Pivot]) -> list[Pivot]:
@@ -281,6 +373,60 @@ def latest_sequence(pivots: list[Pivot]) -> list[Pivot]:
     return pivots[-9:]
 
 
+def more_extreme_pivot(first: Pivot, second: Pivot) -> Pivot:
+    if first.pivot_kind != second.pivot_kind:
+        raise ValueError("Cannot compare pivots of different types")
+    if first.pivot_kind == "HIGH":
+        return second if second.price > first.price else first
+    return second if second.price < first.price else first
+
+
+def build_major_pivots(
+    raw_pivots: list[Pivot],
+    *,
+    major_filter: str,
+    min_leg_vs_previous_ratio: float,
+    min_leg_duration_candles: int,
+) -> list[Pivot]:
+    if not raw_pivots:
+        return []
+    if major_filter == "none":
+        return list(raw_pivots)
+
+    accepted: list[Pivot] = [raw_pivots[0]]
+    previous_major_leg_abs: float | None = None
+
+    for candidate in raw_pivots[1:]:
+        previous = accepted[-1]
+        if candidate.pivot_kind == previous.pivot_kind:
+            accepted[-1] = more_extreme_pivot(previous, candidate)
+            continue
+
+        candidate_leg_abs = abs(candidate.price - previous.price)
+        candidate_leg_duration = candidate.candle_index - previous.candle_index
+
+        passes_move = (
+            previous_major_leg_abs is None
+            or candidate_leg_abs >= previous_major_leg_abs * min_leg_vs_previous_ratio
+        )
+        passes_duration = candidate_leg_duration >= min_leg_duration_candles
+
+        if major_filter == "relative_move":
+            should_accept = passes_move
+        elif major_filter == "duration":
+            should_accept = passes_duration
+        elif major_filter == "relative_move_and_duration":
+            should_accept = passes_move and passes_duration
+        else:
+            raise ValueError(f"Unsupported major_filter={major_filter}")
+
+        if should_accept:
+            accepted.append(candidate)
+            previous_major_leg_abs = candidate_leg_abs
+
+    return compress_same_type_pivots(accepted)
+
+
 def move_abs(sequence: list[Pivot], start_idx: int, finish_idx: int) -> float | None:
     if len(sequence) <= finish_idx:
         return None
@@ -307,8 +453,13 @@ def y_for_price(price: float, min_price: float, max_price: float) -> float:
     return SVG_PAD_TOP + ((max_price - price) / (max_price - min_price)) * usable
 
 
-def chart_svg(candles: list[Candle], pivots: list[Pivot], sequence: list[Pivot]) -> str:
-    prices = [candle.close_price for candle in candles] + [pivot.price for pivot in pivots]
+def chart_svg(
+    candles: list[Candle],
+    raw_pivots: list[Pivot],
+    major_pivots: list[Pivot],
+    sequence: list[Pivot],
+) -> str:
+    prices = [candle.close_price for candle in candles] + [pivot.price for pivot in raw_pivots]
     min_price = min(prices)
     max_price = max(prices)
 
@@ -318,20 +469,32 @@ def chart_svg(candles: list[Candle], pivots: list[Pivot], sequence: list[Pivot])
     )
     pivot_line_points = " ".join(
         f"{x_for_index(pivot.candle_index, len(candles)):.2f},{y_for_price(pivot.price, min_price, max_price):.2f}"
-        for pivot in pivots
+        for pivot in raw_pivots
+    )
+    major_line_points = " ".join(
+        f"{x_for_index(pivot.candle_index, len(candles)):.2f},{y_for_price(pivot.price, min_price, max_price):.2f}"
+        for pivot in major_pivots
     )
     sequence_points = " ".join(
         f"{x_for_index(pivot.candle_index, len(candles)):.2f},{y_for_price(pivot.price, min_price, max_price):.2f}"
         for pivot in sequence
     )
 
-    markers: list[str] = []
-    for pivot in pivots:
+    raw_markers: list[str] = []
+    for pivot in raw_pivots:
         x = x_for_index(pivot.candle_index, len(candles))
         y = y_for_price(pivot.price, min_price, max_price)
         color = "#c4513d" if pivot.pivot_kind == "HIGH" else "#23845a"
-        markers.append(
-            f"<circle cx='{x:.2f}' cy='{y:.2f}' r='4.1' fill='{color}' stroke='#ffffff' stroke-width='1.2'></circle>"
+        raw_markers.append(
+            f"<circle cx='{x:.2f}' cy='{y:.2f}' r='2.8' fill='{color}' fill-opacity='0.55' stroke='none'></circle>"
+        )
+    major_markers: list[str] = []
+    for pivot in major_pivots:
+        x = x_for_index(pivot.candle_index, len(candles))
+        y = y_for_price(pivot.price, min_price, max_price)
+        color = "#c4513d" if pivot.pivot_kind == "HIGH" else "#23845a"
+        major_markers.append(
+            f"<circle cx='{x:.2f}' cy='{y:.2f}' r='5.2' fill='{color}' stroke='#ffffff' stroke-width='1.3'></circle>"
         )
 
     p_labels: list[str] = []
@@ -365,9 +528,11 @@ def chart_svg(candles: list[Candle], pivots: list[Pivot], sequence: list[Pivot])
   <line x1="{SVG_PAD_LEFT}" y1="{SVG_HEIGHT - SVG_PAD_BOTTOM}" x2="{SVG_WIDTH - SVG_PAD_RIGHT}" y2="{SVG_HEIGHT - SVG_PAD_BOTTOM}" class="axis"></line>
   <line x1="{SVG_PAD_LEFT}" y1="{SVG_PAD_TOP}" x2="{SVG_PAD_LEFT}" y2="{SVG_HEIGHT - SVG_PAD_BOTTOM}" class="axis"></line>
   <polyline points="{close_points}" class="close-line"></polyline>
-  <polyline points="{pivot_line_points}" class="pivot-line"></polyline>
+  <polyline points="{pivot_line_points}" class="raw-pivot-line"></polyline>
+  <polyline points="{major_line_points}" class="major-pivot-line"></polyline>
   <polyline points="{sequence_points}" class="sequence-line"></polyline>
-  {''.join(markers)}
+  {''.join(raw_markers)}
+  {''.join(major_markers)}
   {''.join(p_labels)}
   {''.join(wave_labels)}
   {''.join(f"<text x='8' y='{y:.2f}' class='axis-label'>{esc(fmt_price(price))}</text>" for price, y in axis_labels)}
@@ -416,7 +581,11 @@ def detail_table(
     detector: str,
     detector_params_value: str,
     lookback_candles: int,
-    pivots: list[Pivot],
+    raw_pivots: list[Pivot],
+    major_pivots: list[Pivot],
+    major_filter: str,
+    min_leg_vs_previous_ratio: float,
+    min_leg_duration_candles: int,
     sequence: list[Pivot],
 ) -> str:
     rows: list[tuple[str, str]] = [
@@ -425,7 +594,13 @@ def detail_table(
         ("detector", detector),
         ("detector_params", detector_params_value),
         ("lookback_candles", str(lookback_candles)),
-        ("pivot_count", str(len(pivots))),
+        ("raw_pivot_count", str(len(raw_pivots))),
+        ("major_pivot_count", str(len(major_pivots))),
+        ("removed_minor_pivot_count", str(max(0, len(raw_pivots) - len(major_pivots)))),
+        ("major_filter", major_filter),
+        ("min_leg_vs_previous_ratio", fmt_number(min_leg_vs_previous_ratio)),
+        ("min_leg_duration_candles", str(min_leg_duration_candles)),
+        ("pivot_count", str(len(major_pivots))),
         ("has_complete_p0_p8_sequence", "1" if len(sequence) == 9 else "0"),
     ]
     for idx in range(9):
@@ -465,8 +640,14 @@ def render_html(
     detector: str,
     detector_params_value: str,
     lookback_candles: int,
+    source_interval: str,
+    aggregated_interval: str,
     candles: list[Candle],
-    pivots: list[Pivot],
+    raw_pivots: list[Pivot],
+    major_pivots: list[Pivot],
+    major_filter: str,
+    min_leg_vs_previous_ratio: float,
+    min_leg_duration_candles: int,
     sequence: list[Pivot],
 ) -> str:
     generated_at_utc = fmt_ts(datetime.now(UTC))
@@ -484,7 +665,8 @@ def render_html(
       --muted: #6f675d;
       --line: #d8cec2;
       --close: #2b3442;
-      --pivot: #8a6a44;
+      --raw-pivot: #b9a48a;
+      --major-pivot: #8a6a44;
       --sequence: #d14d41;
       --axis: #b7aa9a;
       --table-head: #f0e6d9;
@@ -546,11 +728,16 @@ def render_html(
       stroke: var(--close);
       stroke-width: 1.8;
     }}
-    .pivot-line {{
+    .raw-pivot-line {{
       fill: none;
-      stroke: var(--pivot);
+      stroke: var(--raw-pivot);
       stroke-width: 1.5;
       stroke-dasharray: 5 4;
+    }}
+    .major-pivot-line {{
+      fill: none;
+      stroke: var(--major-pivot);
+      stroke-width: 1.8;
     }}
     .sequence-line {{
       fill: none;
@@ -601,19 +788,19 @@ def render_html(
   <div class="wrap">
     <section class="hero">
       <h1>Fib Wave Sequence Visual Preview V1</h1>
-      <p>venue={esc(venue)} symbol={esc(symbol)} interval={esc(interval)} detector={esc(detector)} rows={len(candles)} pivot_count={len(pivots)} generated_at_utc={esc(generated_at_utc)}</p>
+      <p>venue={esc(venue)} symbol={esc(symbol)} interval={esc(interval)} source_interval={esc(source_interval)} aggregated_interval={esc(aggregated_interval)} detector={esc(detector)} rows={len(candles)} raw_pivot_count={len(raw_pivots)} major_pivot_count={len(major_pivots)} generated_at_utc={esc(generated_at_utc)}</p>
       <p>Candidate labels only. This does not claim a correct Elliott count. No targets. No fib-level tests. No DB writes.</p>
     </section>
     <section class="panel">
       <h2>Latest Candidate P0-P8 Sequence</h2>
-      <p class="foot">Source table: {esc(SOURCE_TABLE)}. Detector params: {esc(detector_params_value)}.</p>
-      {chart_svg(candles, pivots, sequence)}
+      <p class="foot">Source table: {esc(SOURCE_TABLE)}. Source interval: {esc(source_interval)}. Aggregated interval: {esc(aggregated_interval)}. Detector params: {esc(detector_params_value)}. Major filter: {esc(major_filter)}.</p>
+      {chart_svg(candles, raw_pivots, major_pivots, sequence)}
       <table class="detail-table">
         <tbody>
-          {detail_table(symbol=symbol, interval=interval, detector=detector, detector_params_value=detector_params_value, lookback_candles=lookback_candles, pivots=pivots, sequence=sequence)}
+          {detail_table(symbol=symbol, interval=interval, detector=detector, detector_params_value=detector_params_value, lookback_candles=lookback_candles, raw_pivots=raw_pivots, major_pivots=major_pivots, major_filter=major_filter, min_leg_vs_previous_ratio=min_leg_vs_previous_ratio, min_leg_duration_candles=min_leg_duration_candles, sequence=sequence)}
         </tbody>
       </table>
-      <div class="foot">P0-P8 and W1/W2/W3/W4/W5/A/B/C are candidate visual labels only for inspection.</div>
+      <div class="foot">Raw pivots are shown with smaller markers. Major pivots are shown with larger markers. P0-P8 and W1/W2/W3/W4/W5/A/B/C remain candidate visual labels only for inspection.</div>
     </section>
   </div>
 </body>
@@ -627,7 +814,11 @@ def build_summary(
     interval: str,
     detector: str,
     rows: int,
-    pivot_count: int,
+    source_interval: str,
+    aggregated_interval: str,
+    aggregated_rows: int,
+    raw_pivot_count: int,
+    major_pivot_count: int,
     has_complete_sequence: bool,
     output_html: Path,
 ) -> dict[str, Any]:
@@ -636,9 +827,15 @@ def build_summary(
         "version": REPORT_VERSION,
         "symbol": symbol,
         "interval": interval,
+        "source_interval": source_interval,
+        "aggregated_interval": aggregated_interval,
         "detector": detector,
         "rows": rows,
-        "pivot_count": pivot_count,
+        "aggregated_rows": aggregated_rows,
+        "pivot_count": major_pivot_count,
+        "raw_pivot_count": raw_pivot_count,
+        "major_pivot_count": major_pivot_count,
+        "removed_minor_pivot_count": max(0, raw_pivot_count - major_pivot_count),
         "has_complete_p0_p8_sequence": 1 if has_complete_sequence else 0,
         "output_html": str(output_html),
         "db_writes": 0,
@@ -658,9 +855,15 @@ def print_summary(summary: dict[str, Any]) -> None:
         "version",
         "symbol",
         "interval",
+        "source_interval",
+        "aggregated_interval",
         "detector",
         "rows",
+        "aggregated_rows",
         "pivot_count",
+        "raw_pivot_count",
+        "major_pivot_count",
+        "removed_minor_pivot_count",
         "has_complete_p0_p8_sequence",
         "output_html",
         "db_writes",
@@ -683,6 +886,20 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--swing-window must be > 0")
     if args.detector == "zigzag_percent" and args.zigzag_percent <= 0:
         raise ValueError("--zigzag-percent must be > 0")
+    if args.min_leg_vs_previous_ratio < 0:
+        raise ValueError("--min-leg-vs-previous-ratio must be >= 0")
+    if args.min_leg_duration_candles < 0:
+        raise ValueError("--min-leg-duration-candles must be >= 0")
+
+    source_interval = args.interval
+    aggregated_interval = args.interval
+    fetch_interval = args.interval
+    fetch_lookback_candles = args.lookback_candles
+    if args.interval == "1w":
+        source_interval = "1d"
+        aggregated_interval = "1w"
+        fetch_interval = "1d"
+        fetch_lookback_candles = max(args.lookback_candles * 8, args.lookback_candles)
 
     conn = get_connection()
     try:
@@ -691,23 +908,51 @@ def main(argv: list[str] | None = None) -> int:
             conn,
             asset=asset,
             venue=args.venue,
-            interval_code=args.interval,
-            lookback_candles=args.lookback_candles,
+            interval_code=fetch_interval,
+            lookback_candles=fetch_lookback_candles,
         )
     finally:
         conn.close()
 
     if not candles:
         raise ValueError(
-            f"No candles found for venue={args.venue} symbol={asset.symbol} interval={args.interval}"
+            f"No candles found for venue={args.venue} symbol={asset.symbol} interval={fetch_interval}"
         )
 
-    if args.detector == "local_pivot_window":
-        pivots = detect_local_pivots(candles, args.swing_window)
-    else:
-        pivots = detect_zigzag_percent(candles, args.zigzag_percent)
+    if args.interval == "1w":
+        candles = aggregate_daily_to_weekly(candles)
+        if args.lookback_candles > 0 and len(candles) > args.lookback_candles:
+            candles = candles[-args.lookback_candles :]
+            candles = [
+                Candle(
+                    candle_index=index,
+                    open_ts_utc=candle.open_ts_utc,
+                    close_ts_utc=candle.close_ts_utc,
+                    open_price=candle.open_price,
+                    close_price=candle.close_price,
+                    high_price=candle.high_price,
+                    low_price=candle.low_price,
+                    volume=candle.volume,
+                )
+                for index, candle in enumerate(candles)
+            ]
+        if not candles:
+            raise ValueError(
+                f"No aggregated weekly candles available for venue={args.venue} symbol={asset.symbol}"
+            )
 
-    sequence = latest_sequence(pivots)
+    if args.detector == "local_pivot_window":
+        raw_pivots = detect_local_pivots(candles, args.swing_window)
+    else:
+        raw_pivots = detect_zigzag_percent(candles, args.zigzag_percent)
+
+    major_pivots = build_major_pivots(
+        raw_pivots,
+        major_filter=args.major_filter,
+        min_leg_vs_previous_ratio=args.min_leg_vs_previous_ratio,
+        min_leg_duration_candles=args.min_leg_duration_candles,
+    )
+    sequence = latest_sequence(major_pivots)
     output_html = Path(args.output_html)
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(
@@ -718,8 +963,14 @@ def main(argv: list[str] | None = None) -> int:
             detector=args.detector,
             detector_params_value=detector_params(args),
             lookback_candles=args.lookback_candles,
+            source_interval=source_interval,
+            aggregated_interval=aggregated_interval,
             candles=candles,
-            pivots=pivots,
+            raw_pivots=raw_pivots,
+            major_pivots=major_pivots,
+            major_filter=args.major_filter,
+            min_leg_vs_previous_ratio=args.min_leg_vs_previous_ratio,
+            min_leg_duration_candles=args.min_leg_duration_candles,
             sequence=sequence,
         ),
         encoding="utf-8",
@@ -728,9 +979,13 @@ def main(argv: list[str] | None = None) -> int:
     summary = build_summary(
         symbol=asset.symbol,
         interval=args.interval,
+        source_interval=source_interval,
+        aggregated_interval=aggregated_interval,
         detector=args.detector,
         rows=len(candles),
-        pivot_count=len(pivots),
+        aggregated_rows=len(candles) if args.interval == "1w" else len(candles),
+        raw_pivot_count=len(raw_pivots),
+        major_pivot_count=len(major_pivots),
         has_complete_sequence=len(sequence) == 9,
         output_html=output_html,
     )
