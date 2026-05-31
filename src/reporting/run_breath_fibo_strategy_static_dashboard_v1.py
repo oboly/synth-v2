@@ -34,7 +34,7 @@ INTERVAL_DELTAS = {
 STRATEGY_STATE_ORDER = {
     "INVALIDATION_NEAR": 0,
     "TARGET_TOUCHED_TP_REVIEW": 1,
-    "RELOAD_ZONE_NEAR": 2,
+    "ENTRY_ZONE_NEAR": 2,
     "SUPPORT_REACTION_CANDIDATE": 3,
     "FIB_RETEST_CONTINUATION_CANDIDATE": 4,
     "WAIT_RETEST": 5,
@@ -63,12 +63,14 @@ class DashboardRow:
     regime_context: str
     fibo_map_state: str
     current_leg: str
-    nearest_support_or_reaction_zone: str
+    nearest_support_or_entry_zone: str
     nearest_target_or_t1: str
-    reload_or_rebuy_zone: str
+    entry_zone: str
     invalidation_zone: str
+    invalidation_source: str
+    invalidation_method: str
     distance_to_target_pct: Decimal | None
-    distance_to_reload_pct: Decimal | None
+    distance_to_entry_zone_pct: Decimal | None
     distance_to_invalidation_pct: Decimal | None
     manual_ladder_context: str
     primitive_signal_context: str
@@ -77,6 +79,16 @@ class DashboardRow:
     source_status: str
     source_modules: tuple[str, ...]
     debug_payload: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class InvalidationResolution:
+    invalidation_level: Decimal | None
+    invalidation_source_module: str
+    invalidation_source_field: str
+    invalidation_method: str
+    invalidation_source_status: str
+    invalidation_note: str
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -109,7 +121,7 @@ def state_tone(label: str) -> str:
         return "bad"
     if value in {"TARGET_TOUCHED_TP_REVIEW", "WAIT_RETEST", "MAP_INCOMPLETE"}:
         return "warn"
-    if value in {"SUPPORT_REACTION_CANDIDATE", "FIB_RETEST_CONTINUATION_CANDIDATE", "RELOAD_ZONE_NEAR"}:
+    if value in {"SUPPORT_REACTION_CANDIDATE", "FIB_RETEST_CONTINUATION_CANDIDATE", "ENTRY_ZONE_NEAR"}:
         return "ok"
     if value in {"CONTEXT_ONLY", "NO_STRATEGY_CONTEXT"}:
         return "context"
@@ -148,6 +160,55 @@ def first_text(source: dict[str, Any], keys: tuple[str, ...], default: str = "UN
         if text:
             return text
     return default
+
+
+def resolve_invalidation_level(
+    paper_row: dict[str, Any] | None,
+    fib_row: dict[str, Any] | None,
+    merged_source: dict[str, Any],
+) -> InvalidationResolution:
+    for field in ("invalidation_price", "fib_invalidation_price", "fib_invalidation"):
+        if fib_row:
+            level = to_decimal(fib_row.get(field))
+            if level is not None:
+                return InvalidationResolution(
+                    invalidation_level=level,
+                    invalidation_source_module="fibo_target_map_v1",
+                    invalidation_source_field=field,
+                    invalidation_method="FIBO_MAP_INVALIDATION",
+                    invalidation_source_status="FOUND",
+                    invalidation_note="Invalidation resolved from fibo target map row.",
+                )
+    for field in ("invalidation_price", "fib_invalidation_price", "fib_invalidation"):
+        if paper_row:
+            level = to_decimal(paper_row.get(field))
+            if level is not None:
+                return InvalidationResolution(
+                    invalidation_level=level,
+                    invalidation_source_module="paper_advice_observation",
+                    invalidation_source_field=field,
+                    invalidation_method="LEGACY_CONTEXT_INVALIDATION",
+                    invalidation_source_status="FOUND",
+                    invalidation_note="Invalidation resolved from legacy paper context row.",
+                )
+    level = first_decimal(merged_source, ("invalidation_price", "fib_invalidation_price", "fib_invalidation"))
+    if level is not None:
+        return InvalidationResolution(
+            invalidation_level=level,
+            invalidation_source_module="UNKNOWN",
+            invalidation_source_field="UNKNOWN",
+            invalidation_method="UNKNOWN_PROVENANCE",
+            invalidation_source_status="UNKNOWN",
+            invalidation_note="Invalidation exists on merged source, but provenance is not explicit.",
+        )
+    return InvalidationResolution(
+        invalidation_level=None,
+        invalidation_source_module="UNKNOWN",
+        invalidation_source_field="UNKNOWN",
+        invalidation_method="MISSING_INVALIDATION",
+        invalidation_source_status="MISSING_SOURCE",
+        invalidation_note="No invalidation level is available from fib map or legacy paper context.",
+    )
 
 
 def fmt_price(value: Decimal | None) -> str:
@@ -449,8 +510,8 @@ def build_row(
     entry_high = first_decimal(source, ("entry_zone_high",))
     fib_support = first_decimal(source, ("fib_next_fibo_support_price",))
     fib_support_2 = first_decimal(source, ("fib_secondary_fibo_support_price",))
-    reload_mid = midpoint(entry_low, entry_high) or fib_support
-    reload_zone = zone_text(entry_low or fib_support_2, entry_high or fib_support)
+    entry_zone_mid = midpoint(entry_low, entry_high) or fib_support
+    entry_zone = zone_text(entry_low or fib_support_2, entry_high or fib_support)
     nearest_support = zone_text(entry_low or fib_support_2, entry_high or fib_support)
 
     local_reaction = first_decimal(source, ("fib_local_reaction_price", "tp_zone_low"))
@@ -460,16 +521,17 @@ def build_row(
         nearest_target = next_extension or local_reaction
     elif nearest_target is None:
         nearest_target = next_extension
-    invalidation = first_decimal(source, ("invalidation_price", "fib_invalidation_price", "fib_invalidation"))
+    invalidation_resolution = resolve_invalidation_level(paper_row, fib_row, source)
+    invalidation = invalidation_resolution.invalidation_level
 
     distance_to_target_pct = pct_distance(nearest_target, current_price)
-    distance_to_reload_pct = pct_distance(reload_mid, current_price)
+    distance_to_entry_zone_pct = pct_distance(entry_zone_mid, current_price)
     distance_to_invalidation_pct = pct_distance(invalidation, current_price)
 
     manual_ladder_context = "unavailable"
-    if local_reaction is not None or reload_mid is not None or next_extension is not None:
+    if local_reaction is not None or entry_zone_mid is not None or next_extension is not None:
         manual_ladder_context = (
-            f"T1={fmt_price(local_reaction)} · reload={reload_zone} · next={fmt_price(next_extension)}"
+            f"T1={fmt_price(local_reaction)} · entry_zone={entry_zone} · next={fmt_price(next_extension)}"
         )
     if paper_row:
         manual_ladder_context = f"{manual_ladder_context} · legacy={' | '.join(legacy_context_bits(source))}"
@@ -509,7 +571,7 @@ def build_row(
     invalidation_near = (
         distance_to_invalidation_pct is not None and distance_to_invalidation_pct <= 0 and abs(distance_to_invalidation_pct) <= Decimal("3.0")
     )
-    reload_near = distance_to_reload_pct is not None and abs(distance_to_reload_pct) <= Decimal("3.0")
+    entry_zone_near = distance_to_entry_zone_pct is not None and abs(distance_to_entry_zone_pct) <= Decimal("3.0")
     support_candidate = (
         current_price is not None
         and entry_low is not None
@@ -531,14 +593,14 @@ def build_row(
         and current_price > entry_high
         and nearest_target is not None
         and current_price < nearest_target
-        and not reload_near
+        and not entry_zone_near
         and not support_candidate
     )
 
     if not fib_row and not paper_row:
         state = "NO_STRATEGY_CONTEXT"
         reason = "No fib map or paper context row is available."
-    elif nearest_target is None or reload_mid is None or invalidation is None:
+    elif nearest_target is None or entry_zone_mid is None or invalidation is None:
         state = "MAP_INCOMPLETE"
         reason = "Strategy map is incomplete: target, reload, or invalidation is missing."
     elif invalidation_near:
@@ -550,18 +612,18 @@ def build_row(
     elif target_touched:
         state = "TARGET_TOUCHED_TP_REVIEW"
         reason = f"Nearest mapped target {fmt_price(nearest_target)} has been touched; review TP / runner map manually."
-    elif reload_near:
-        state = "RELOAD_ZONE_NEAR"
-        reason = f"Price is near reload/rebuy zone {reload_zone}; check hold/retest behavior before acting manually."
+    elif entry_zone_near:
+        state = "ENTRY_ZONE_NEAR"
+        reason = f"Price is near Entry Zone {entry_zone}; check hold/retest behavior before acting manually."
     elif support_candidate and current_leg == "UP":
         state = "SUPPORT_REACTION_CANDIDATE"
-        reason = f"Price is inside support/reaction zone {reload_zone} with upside map still visible."
+        reason = f"Price is inside Entry Zone {entry_zone} with upside map still visible."
     elif wait_retest:
         state = "WAIT_RETEST"
-        reason = f"Price is above reload zone {reload_zone} but below target {fmt_price(nearest_target)}; wait for retest rather than chase."
+        reason = f"Price is above Entry Zone {entry_zone} but below target {fmt_price(nearest_target)}; wait for retest rather than chase."
     elif current_leg == "UP" and distance_to_target_pct is not None and distance_to_target_pct > 0:
         state = "FIB_RETEST_CONTINUATION_CANDIDATE"
-        reason = "Up-leg map remains intact between reload zone and next target; continuation is a research hypothesis only."
+        reason = "Up-leg map remains intact between Entry Zone and next target; continuation is a research hypothesis only."
     else:
         state = "CONTEXT_ONLY"
         reason = "Map context is visible, but no stronger strategy hypothesis is near current price."
@@ -574,6 +636,8 @@ def build_row(
             f"fib={'FOUND' if fib_row else 'MISSING_SOURCE'}",
             f"regime={'FOUND' if regime_row else 'MISSING_SOURCE'}",
             f"primitive={'FOUND' if primitive_signal_context != 'unavailable' else 'MISSING_SOURCE'}",
+            f"invalidation_source={invalidation_resolution.invalidation_source_module}",
+            f"invalidation_method={invalidation_resolution.invalidation_method}",
         ]
     )
 
@@ -581,6 +645,7 @@ def build_row(
         "paper_row": paper_row or {},
         "fib_row": fib_row or {},
         "regime_row": regime_row or {},
+        "invalidation_resolution": asdict(invalidation_resolution),
         "legacy_context_bits": legacy_context_bits(source) if paper_row else [],
         "missing_sources": missing_sources,
     }
@@ -593,12 +658,14 @@ def build_row(
         regime_context=regime_context,
         fibo_map_state=fib_state,
         current_leg=current_leg,
-        nearest_support_or_reaction_zone=nearest_support,
+        nearest_support_or_entry_zone=nearest_support,
         nearest_target_or_t1=fmt_price(nearest_target),
-        reload_or_rebuy_zone=reload_zone,
+        entry_zone=entry_zone,
         invalidation_zone=fmt_price(invalidation),
+        invalidation_source=f"{invalidation_resolution.invalidation_source_module}.{invalidation_resolution.invalidation_source_field}",
+        invalidation_method=invalidation_resolution.invalidation_method,
         distance_to_target_pct=distance_to_target_pct,
-        distance_to_reload_pct=distance_to_reload_pct,
+        distance_to_entry_zone_pct=distance_to_entry_zone_pct,
         distance_to_invalidation_pct=distance_to_invalidation_pct,
         manual_ladder_context=manual_ladder_context,
         primitive_signal_context=primitive_signal_context,
@@ -647,12 +714,14 @@ def render_html(rows: list[DashboardRow], *, venue: str, quote: str, interval: s
         "regime_context",
         "fibo_map_state",
         "current_leg",
-        "nearest_support_or_reaction_zone",
+        "nearest_support_or_entry_zone",
         "nearest_target_or_t1",
-        "reload_or_rebuy_zone",
+        "entry_zone",
         "invalidation_zone",
+        "invalidation_source",
+        "invalidation_method",
         "distance_to_target_pct",
-        "distance_to_reload_pct",
+        "distance_to_entry_zone_pct",
         "distance_to_invalidation_pct",
         "manual_ladder_context",
         "primitive_signal_context",
@@ -673,12 +742,14 @@ def render_html(rows: list[DashboardRow], *, venue: str, quote: str, interval: s
               <td>{esc(row.regime_context)}</td>
               <td>{esc(row.fibo_map_state)}</td>
               <td>{esc(row.current_leg)}</td>
-              <td class="mono">{esc(row.nearest_support_or_reaction_zone)}</td>
+              <td class="mono">{esc(row.nearest_support_or_entry_zone)}</td>
               <td class="mono">{esc(row.nearest_target_or_t1)}</td>
-              <td class="mono">{esc(row.reload_or_rebuy_zone)}</td>
+              <td class="mono">{esc(row.entry_zone)}</td>
               <td class="mono">{esc(row.invalidation_zone)}</td>
+              <td>{esc(row.invalidation_source)}</td>
+              <td>{esc(row.invalidation_method)}</td>
               <td class="num">{esc(fmt_pct(row.distance_to_target_pct))}</td>
-              <td class="num">{esc(fmt_pct(row.distance_to_reload_pct))}</td>
+              <td class="num">{esc(fmt_pct(row.distance_to_entry_zone_pct))}</td>
               <td class="num">{esc(fmt_pct(row.distance_to_invalidation_pct))}</td>
               <td>{esc(row.manual_ladder_context)}</td>
               <td>{esc(row.primitive_signal_context)}</td>
@@ -740,6 +811,8 @@ def print_summary(
     interval: str,
 ) -> None:
     state_counts: dict[str, int] = {}
+    invalidation_source_counts: dict[str, int] = {}
+    invalidation_method_counts: dict[str, int] = {}
     missing_counts = {
         "fib_missing": 0,
         "regime_missing": 0,
@@ -747,9 +820,14 @@ def print_summary(
         "primitive_missing": 0,
         "price_missing": 0,
     }
+    entry_zone_state_count = 0
     latest_ts: datetime | None = None
     for row in rows:
         state_counts[row.strategy_candidate_state] = state_counts.get(row.strategy_candidate_state, 0) + 1
+        invalidation_source_counts[row.invalidation_source] = invalidation_source_counts.get(row.invalidation_source, 0) + 1
+        invalidation_method_counts[row.invalidation_method] = invalidation_method_counts.get(row.invalidation_method, 0) + 1
+        if row.strategy_candidate_state == "ENTRY_ZONE_NEAR":
+            entry_zone_state_count += 1
         if "fib=MISSING_SOURCE" in row.source_status:
             missing_counts["fib_missing"] += 1
         if "regime=MISSING_SOURCE" in row.source_status:
@@ -774,6 +852,13 @@ def print_summary(
     print("--- missing source counts ---")
     for key, value in missing_counts.items():
         print(f"{key}={value}")
+    print("--- invalidation_source counts ---")
+    for key, value in sorted(invalidation_source_counts.items()):
+        print(f"{key}={value}")
+    print("--- invalidation_method counts ---")
+    for key, value in sorted(invalidation_method_counts.items()):
+        print(f"{key}={value}")
+    print(f"entry_zone_state_count={entry_zone_state_count}")
 
 
 def main(argv: list[str] | None = None) -> int:

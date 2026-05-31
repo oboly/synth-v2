@@ -95,10 +95,12 @@ Each row shows:
 - `current_leg`
 - `nearest_support_or_reaction_zone`
 - `nearest_target_or_t1`
-- `reload_or_rebuy_zone`
+- `entry_zone`
 - `invalidation_zone`
+- `invalidation_source`
+- `invalidation_method`
 - `distance_to_target_pct`
-- `distance_to_reload_pct`
+- `distance_to_entry_zone_pct`
 - `distance_to_invalidation_pct`
 - `manual_ladder_context`
 - `primitive_signal_context`
@@ -115,7 +117,7 @@ V1 uses research/dashboard candidate states only:
 - `SUPPORT_REACTION_CANDIDATE`
 - `FIB_RETEST_CONTINUATION_CANDIDATE`
 - `TARGET_TOUCHED_TP_REVIEW`
-- `RELOAD_ZONE_NEAR`
+- `ENTRY_ZONE_NEAR`
 - `INVALIDATION_NEAR`
 - `FAILED_RECLAIM_FADE_RISK`
 - `WAIT_RETEST`
@@ -139,6 +141,59 @@ V1 fails open for display and fails closed for meaning:
   - show `primitive_signal_context=unavailable`
 
 The dashboard must not invent unavailable data.
+
+## Invalidation Level
+
+Invalidation Level:
+
+The price level below or above which the current market-only strategy
+hypothesis is considered invalid.
+
+V1 resolves invalidation provenance explicitly with this priority:
+
+1. `fibo_target_map_v1` row fields:
+   - `invalidation_price`
+   - `fib_invalidation_price`
+   - `fib_invalidation`
+   - method=`FIBO_MAP_INVALIDATION`
+2. `paper_advice_observation` legacy context fields:
+   - `invalidation_price`
+   - `fib_invalidation_price`
+   - `fib_invalidation`
+   - method=`LEGACY_CONTEXT_INVALIDATION`
+3. missing:
+   - method=`MISSING_INVALIDATION`
+   - source=`UNKNOWN`
+
+## Invalidation Source
+
+Invalidation Source:
+
+The table/file/field that supplied the invalidation level.
+
+V1 shows both:
+
+- source module / field
+- invalidation method
+
+This keeps `INVALIDATION_NEAR` explainable as a map fact rather than a hidden
+label.
+
+## Entry Zone
+
+Entry Zone:
+
+The price zone where a long / re-entry / add-back hypothesis is investigated.
+
+The zone may represent:
+
+- support reaction
+- retest
+- reload-after-TP
+- fib pullback
+- reclaim area
+
+It is not a buy command.
 
 ## Legacy Paper Context Rule
 
