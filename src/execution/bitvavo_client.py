@@ -273,17 +273,28 @@ class BitvavoClient:
     def cancel_order(self, market: str, order_id: str) -> dict[str, Any]:
         self._require_private_write_permission("cancel_order")
 
-        path = f"/{market}/order"
+        path = "/order"
         url = f"{self.rest_url}{path}"
-
-        body = json.dumps({"orderId": order_id}, separators=(",", ":"))
-        headers = self._headers("DELETE", path, body)
+        params = {
+            "market": market,
+            "orderId": order_id,
+            "operatorId": 1,
+        }
+        query_string = urlencode(params)
+        signed_path = f"{path}?{query_string}"
+        headers = self._headers("DELETE", signed_path, "")
 
         response = requests.delete(
             url,
             headers=headers,
-            data=body,
+            params=params,
             timeout=self.timeout_seconds,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            raise RuntimeError(
+                "Bitvavo cancel_order failed. "
+                f"status_code={response.status_code} response_text={response.text}"
+            ) from exc
         return response.json()
