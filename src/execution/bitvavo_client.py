@@ -229,6 +229,7 @@ class BitvavoClient:
             "side": order.side,
             "orderType": order.order_type,
             "amount": order.amount,
+            "operatorId": 1,
         }
 
         if order.price is not None:
