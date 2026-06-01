@@ -58,6 +58,17 @@ Because of that, sequence selection is now a visual-review tool.
 Future batch research should evaluate rolling candidates automatically rather
 than assuming the latest block is always the correct one.
 
+That issue also appears inside one pivot stream.
+
+Visual review showed that fibo-like ratios can appear even when `P0` starts in
+the wrong context.
+
+If `P0` starts too early or too late:
+
+- the measured ratios can still look superficially fibo-like
+- the shape can still resemble a wave candidate
+- but the sequence can describe the wrong structure
+
 When `sequence_length=9`, the labels are:
 
 - `P0`
@@ -112,6 +123,37 @@ Rolling candidate review mode.
   and available ratios
 
 This is still visual review only.
+
+## Wave Start Candidate Scan
+
+V1 now supports a research-only candidate scan:
+
+- `candidate_scan=none`
+- `candidate_scan=all-starts`
+
+### `candidate_scan=all-starts`
+
+This mode keeps the selected chart sequence unchanged, but evaluates every
+possible start index on the final pivot stream after:
+
+1. detector selection
+2. structural filtering
+3. major filtering
+4. anchor refinement for each scanned candidate
+
+Rules:
+
+- scan every possible `start_index`
+- use up to `candidate_scan_length` pivots from each start
+- allow incomplete or active candidates when at least 4 pivots exist
+- compute only available ratios
+- do not auto-select the highest-ranked candidate for the chart
+
+The HTML adds a `Wave start candidate scan` table ranked by
+`combined_candidate_score`.
+
+This is visual and research-only.
+It does not claim Elliott truth and does not create a trading signal.
 
 ## Sequence Length
 
@@ -176,6 +218,68 @@ Only available ratios are computed:
 - `wave5_vs_wave3` if `P0-P5` exists
 - `waveB_vs_waveA` if `P5-P7` exists
 - `waveC_vs_waveA` if `P5-P8` exists
+
+## Candidate Scores
+
+The candidate scan adds two simple research-only scores plus a combined rank.
+
+### `fibo_magnet_score`
+
+Reference set:
+
+- `0.236`
+- `0.382`
+- `0.500`
+- `0.618`
+- `0.786`
+- `1.000`
+- `1.272`
+- `1.414`
+- `1.618`
+- `2.000`
+- `2.618`
+- `3.618`
+- `4.236`
+
+For each available ratio:
+
+- find the nearest fibo reference
+- measure the absolute delta to that reference
+
+Then:
+
+- `fibo_magnet_score = average delta across available ratios`
+- lower is better
+
+The scan also reports:
+
+- `fibo_magnet_hit_count`
+- `fibo_magnet_ratio_count`
+
+### `elliott_shape_score`
+
+This is a research-only heuristic score.
+
+Start at `0` and subtract penalties:
+
+- missing `W2/W1`: `-1`
+- missing `W3/W1`: `-1`
+- `W2/W1 < 0.236` or `W2/W1 > 0.90`: `-1`
+- `W3/W1 < 1.0`: `-1`
+- `W4/W3 > 0.786` when available: `-1`
+- full `W1-W5` exists and `W3` is shortest of `W1/W3/W5`: `-2`
+- fewer than 4 pivots: `-2`
+
+Higher is better because fewer penalties were triggered.
+
+### `combined_candidate_score`
+
+`combined_candidate_score = elliott_shape_score - fibo_magnet_score`
+
+Higher is better.
+
+This score is only a research ranking aid.
+It must not be treated as automatic best-candidate truth or trading logic.
 
 ## Detector Support
 
@@ -262,12 +366,19 @@ The structural filter keeps raw pivots visible for audit, but removes pivots
 from the downstream structural/major/selected layers when they are
 structurally invalid as progression anchors.
 
-Pivots are removed when their note is:
+After the WLD `15m` visual review, this mode is intentionally conservative.
+
+It removes pivots only when their note is:
+
+- `SAME_TYPE_AS_PREVIOUS`
+- `ZERO_OR_INVALID_MOVE`
+
+It does not automatically remove:
 
 - `LOW_ABOVE_PREVIOUS_HIGH`
 - `HIGH_BELOW_PREVIOUS_LOW`
-- `SAME_TYPE_AS_PREVIOUS`
-- `ZERO_OR_INVALID_MOVE`
+
+Those two notes remain warnings, not automatic invalidation.
 
 This filter is applied:
 
@@ -284,6 +395,13 @@ That creates the layer flow:
 
 The raw layer remains unchanged and visible in the chart and diagnostics table.
 
+WLD `15m` visual review showed that harsher removal skipped a useful small
+Elliott-like internal structure inside the `A` area.
+
+Because of that, warning-style progression anomalies remain visible in
+`STRUCTURAL`, `MAJOR`, and `SELECTED` unless a later explicit harsher filter is
+added.
+
 ### Structural Notes
 
 The diagnostics table uses simple descriptive notes:
@@ -297,6 +415,11 @@ The diagnostics table uses simple descriptive notes:
 
 These notes are intended to explain why a pivot may be structurally
 questionable without introducing new strategy or filtering logic yet.
+
+`LOW_ABOVE_PREVIOUS_HIGH` and `HIGH_BELOW_PREVIOUS_LOW` should be read as
+warnings.
+They can still represent bullish or bearish stair-step continuation or
+gap-like structure, especially on `15m`.
 
 ### CSV Export
 
@@ -495,6 +618,7 @@ The preview remains measurement-first because it only does the following:
 - reads public candles
 - selects pivots with one chosen detector
 - selects a review sequence from the already-built pivot stream
+- can scan start-index candidates without mutating the selected chart sequence
 - optionally refines selected anchors from candle segment extremes
 - measures move sizes and ratios from those pivots
 - renders a static visual review page

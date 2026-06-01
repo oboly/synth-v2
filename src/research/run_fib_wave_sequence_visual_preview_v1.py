@@ -30,6 +30,9 @@ DEFAULT_STRUCTURAL_FILTER = "none"
 DEFAULT_SEQUENCE_MODE = "latest"
 DEFAULT_SEQUENCE_LENGTH = 9
 DEFAULT_ANCHOR_REFINEMENT = "none"
+DEFAULT_CANDIDATE_SCAN = "none"
+DEFAULT_CANDIDATE_SCAN_LENGTH = 9
+DEFAULT_CANDIDATE_TOP_N = 10
 DEFAULT_OUTPUT_HTML = "/tmp/fib_wave_sequence_BTC_1d.html"
 
 SVG_WIDTH = 1120
@@ -40,6 +43,7 @@ SVG_PAD_TOP = 22
 SVG_PAD_BOTTOM = 44
 
 WAVE_NAMES = ["W1", "W2", "W3", "W4", "W5", "A", "B", "C"]
+FIBO_REFERENCES = [0.236, 0.382, 0.500, 0.618, 0.786, 1.000, 1.272, 1.414, 1.618, 2.000, 2.618, 3.618, 4.236]
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,30 @@ class PivotDiagnosticRow:
     structural_note: str
 
 
+@dataclass(frozen=True)
+class CandidateScanRow:
+    candidate_rank: int
+    start_index: int
+    end_index: int
+    candidate_length: int
+    p0_ts: str
+    p0_price: str
+    p0_type: str
+    basis_direction: str
+    wave2_vs_wave1: float | None
+    wave3_vs_wave1: float | None
+    wave4_vs_wave3: float | None
+    wave5_vs_wave1: float | None
+    wave5_vs_wave3: float | None
+    b_vs_a: float | None
+    c_vs_a: float | None
+    fibo_magnet_score: float | None
+    fibo_magnet_hit_count: int
+    fibo_magnet_ratio_count: int
+    elliott_shape_score: float
+    combined_candidate_score: float | None
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -149,6 +177,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--anchor-refinement",
         choices=("none", "segment_extreme"),
         default=DEFAULT_ANCHOR_REFINEMENT,
+    )
+    parser.add_argument(
+        "--candidate-scan",
+        choices=("none", "all-starts"),
+        default=DEFAULT_CANDIDATE_SCAN,
+    )
+    parser.add_argument(
+        "--candidate-scan-length",
+        type=int,
+        default=DEFAULT_CANDIDATE_SCAN_LENGTH,
+    )
+    parser.add_argument(
+        "--candidate-top-n",
+        type=int,
+        default=DEFAULT_CANDIDATE_TOP_N,
     )
     parser.add_argument("--write-pivot-diagnostics", default=None)
     parser.add_argument("--output-html", default=DEFAULT_OUTPUT_HTML)
@@ -721,10 +764,23 @@ def build_structural_pivots(
     accepted: list[Pivot] = [raw_pivots[0]]
     for candidate in raw_pivots[1:]:
         note = structural_note(accepted[-1], candidate)
-        if note in {"LOW_ABOVE_PREVIOUS_HIGH", "HIGH_BELOW_PREVIOUS_LOW", "SAME_TYPE_AS_PREVIOUS", "ZERO_OR_INVALID_MOVE"}:
+        if note in {"SAME_TYPE_AS_PREVIOUS", "ZERO_OR_INVALID_MOVE"}:
             continue
         accepted.append(candidate)
     return accepted
+
+
+def structural_warning_count(pivots: list[Pivot]) -> int:
+    if not pivots:
+        return 0
+    previous: Pivot | None = None
+    count = 0
+    for pivot in pivots:
+        note = structural_note(previous, pivot)
+        if note in {"LOW_ABOVE_PREVIOUS_HIGH", "HIGH_BELOW_PREVIOUS_LOW"}:
+            count += 1
+        previous = pivot
+    return count
 
 
 def x_for_index(candle_index: int, total: int) -> float:
@@ -895,6 +951,149 @@ def sequence_metrics(sequence: list[Pivot]) -> dict[str, float | None]:
     }
 
 
+def fibo_magnet_score(metrics: dict[str, float | None]) -> tuple[float | None, int, int]:
+    ratios = [
+        metrics.get("wave2_vs_wave1"),
+        metrics.get("wave3_vs_wave1"),
+        metrics.get("wave4_vs_wave3"),
+        metrics.get("wave5_vs_wave1"),
+        metrics.get("wave5_vs_wave3"),
+        metrics.get("waveB_vs_waveA"),
+        metrics.get("waveC_vs_waveA"),
+    ]
+    deltas: list[float] = []
+    hit_count = 0
+    for value in ratios:
+        if value is None:
+            continue
+        nearest = min(FIBO_REFERENCES, key=lambda reference: abs(value - reference))
+        delta = abs(value - nearest)
+        deltas.append(delta)
+        if delta <= 0.05:
+            hit_count += 1
+    if not deltas:
+        return None, 0, 0
+    return sum(deltas) / len(deltas), hit_count, len(deltas)
+
+
+def elliott_shape_score(sequence: list[Pivot], metrics: dict[str, float | None]) -> float:
+    score = 0.0
+    if len(sequence) < 4:
+        score -= 2.0
+    if metrics.get("wave2_vs_wave1") is None:
+        score -= 1.0
+    if metrics.get("wave3_vs_wave1") is None:
+        score -= 1.0
+    wave2_vs_wave1 = metrics.get("wave2_vs_wave1")
+    if wave2_vs_wave1 is not None and (wave2_vs_wave1 < 0.236 or wave2_vs_wave1 > 0.90):
+        score -= 1.0
+    wave3_vs_wave1 = metrics.get("wave3_vs_wave1")
+    if wave3_vs_wave1 is not None and wave3_vs_wave1 < 1.0:
+        score -= 1.0
+    wave4_vs_wave3 = metrics.get("wave4_vs_wave3")
+    if wave4_vs_wave3 is not None and wave4_vs_wave3 > 0.786:
+        score -= 1.0
+    if len(sequence) >= 6:
+        wave1 = metrics.get("wave1_move_abs")
+        wave3 = metrics.get("wave3_move_abs")
+        wave5 = metrics.get("wave5_move_abs")
+        if wave1 is not None and wave3 is not None and wave5 is not None:
+            if wave3 <= wave1 and wave3 <= wave5:
+                score -= 2.0
+    return score
+
+
+def build_candidate_scan_rows(
+    *,
+    candles: list[Candle],
+    major_pivots: list[Pivot],
+    anchor_refinement: str,
+    candidate_scan: str,
+    candidate_scan_length: int,
+) -> list[CandidateScanRow]:
+    if candidate_scan == "none" or not major_pivots:
+        return []
+    if candidate_scan != "all-starts":
+        raise ValueError(f"Unsupported candidate_scan={candidate_scan}")
+
+    rows: list[CandidateScanRow] = []
+    for start_index in range(len(major_pivots)):
+        selected = major_pivots[start_index : start_index + candidate_scan_length]
+        if len(selected) < 4:
+            continue
+        refined = refine_selected_sequence(
+            candles,
+            selected,
+            anchor_refinement=anchor_refinement,
+        )
+        sequence = [anchor.refined_pivot for anchor in refined]
+        metrics = sequence_metrics(sequence)
+        magnet_score, hit_count, ratio_count = fibo_magnet_score(metrics)
+        shape_score = elliott_shape_score(sequence, metrics)
+        combined_score = None if magnet_score is None else shape_score - magnet_score
+        rows.append(
+            CandidateScanRow(
+                candidate_rank=0,
+                start_index=start_index,
+                end_index=start_index + len(sequence) - 1,
+                candidate_length=len(sequence),
+                p0_ts=fmt_ts(sequence[0].ts_utc),
+                p0_price=fmt_price(sequence[0].price),
+                p0_type=sequence[0].pivot_kind,
+                basis_direction=basis_direction(sequence),
+                wave2_vs_wave1=metrics.get("wave2_vs_wave1"),
+                wave3_vs_wave1=metrics.get("wave3_vs_wave1"),
+                wave4_vs_wave3=metrics.get("wave4_vs_wave3"),
+                wave5_vs_wave1=metrics.get("wave5_vs_wave1"),
+                wave5_vs_wave3=metrics.get("wave5_vs_wave3"),
+                b_vs_a=metrics.get("waveB_vs_waveA"),
+                c_vs_a=metrics.get("waveC_vs_waveA"),
+                fibo_magnet_score=magnet_score,
+                fibo_magnet_hit_count=hit_count,
+                fibo_magnet_ratio_count=ratio_count,
+                elliott_shape_score=shape_score,
+                combined_candidate_score=combined_score,
+            )
+        )
+
+    sorted_rows = sorted(
+        rows,
+        key=lambda row: (
+            -(row.combined_candidate_score if row.combined_candidate_score is not None else -999999.0),
+            row.fibo_magnet_score if row.fibo_magnet_score is not None else 999999.0,
+            -row.candidate_length,
+            row.start_index,
+        ),
+    )
+    ranked: list[CandidateScanRow] = []
+    for rank, row in enumerate(sorted_rows, start=1):
+        ranked.append(
+            CandidateScanRow(
+                candidate_rank=rank,
+                start_index=row.start_index,
+                end_index=row.end_index,
+                candidate_length=row.candidate_length,
+                p0_ts=row.p0_ts,
+                p0_price=row.p0_price,
+                p0_type=row.p0_type,
+                basis_direction=row.basis_direction,
+                wave2_vs_wave1=row.wave2_vs_wave1,
+                wave3_vs_wave1=row.wave3_vs_wave1,
+                wave4_vs_wave3=row.wave4_vs_wave3,
+                wave5_vs_wave1=row.wave5_vs_wave1,
+                wave5_vs_wave3=row.wave5_vs_wave3,
+                b_vs_a=row.b_vs_a,
+                c_vs_a=row.c_vs_a,
+                fibo_magnet_score=row.fibo_magnet_score,
+                fibo_magnet_hit_count=row.fibo_magnet_hit_count,
+                fibo_magnet_ratio_count=row.fibo_magnet_ratio_count,
+                elliott_shape_score=row.elliott_shape_score,
+                combined_candidate_score=row.combined_candidate_score,
+            )
+        )
+    return ranked
+
+
 def detail_table(
     *,
     symbol: str,
@@ -999,6 +1198,10 @@ def render_html(
     sequence_length: int,
     sequence_candidates: list[SequenceCandidate],
     anchor_refinement: str,
+    candidate_scan: str,
+    candidate_scan_length: int,
+    candidate_top_n: int,
+    candidate_scan_rows: list[CandidateScanRow],
     refined_anchors: list[RefinedAnchor],
     pivot_diagnostics: list[PivotDiagnosticRow],
     sequence: list[Pivot],
@@ -1038,6 +1241,48 @@ def render_html(
         </thead>
         <tbody>
           {''.join(rolling_rows)}
+        </tbody>
+      </table>
+"""
+    candidate_scan_html = ""
+    if candidate_scan == "all-starts":
+        top_rows = candidate_scan_rows[:candidate_top_n]
+        candidate_rows_html = "".join(
+            "<tr>"
+            f"<td>{row.candidate_rank}</td>"
+            f"<td>{row.start_index}</td>"
+            f"<td>{row.end_index}</td>"
+            f"<td>{row.candidate_length}</td>"
+            f"<td>{esc(row.p0_ts)}</td>"
+            f"<td>{esc(row.p0_price)}</td>"
+            f"<td>{esc(row.p0_type)}</td>"
+            f"<td>{esc(row.basis_direction)}</td>"
+            f"<td>{esc(fmt_number(row.wave2_vs_wave1))}</td>"
+            f"<td>{esc(fmt_number(row.wave3_vs_wave1))}</td>"
+            f"<td>{esc(fmt_number(row.wave4_vs_wave3))}</td>"
+            f"<td>{esc(fmt_number(row.wave5_vs_wave1))}</td>"
+            f"<td>{esc(fmt_number(row.wave5_vs_wave3))}</td>"
+            f"<td>{esc(fmt_number(row.b_vs_a))}</td>"
+            f"<td>{esc(fmt_number(row.c_vs_a))}</td>"
+            f"<td>{esc(fmt_number(row.fibo_magnet_score))}</td>"
+            f"<td>{row.fibo_magnet_hit_count}</td>"
+            f"<td>{row.fibo_magnet_ratio_count}</td>"
+            f"<td>{esc(fmt_number(row.elliott_shape_score))}</td>"
+            f"<td>{esc(fmt_number(row.combined_candidate_score))}</td>"
+            "</tr>"
+            for row in top_rows
+        )
+        candidate_scan_html = f"""
+      <h2>Wave Start Candidate Scan</h2>
+      <p class="foot">Candidate ranking is research-only and does not auto-select anchors. candidate_scan={esc(candidate_scan)} candidate_scan_length={candidate_scan_length} candidate_top_n={candidate_top_n} candidate_count={len(candidate_scan_rows)}</p>
+      <table class="detail-table all-seq-table">
+        <thead>
+          <tr>
+            <th>candidate_rank</th><th>start_index</th><th>end_index</th><th>candidate_length</th><th>P0_ts</th><th>P0_price</th><th>P0_type</th><th>basis_direction</th><th>wave2_vs_wave1</th><th>wave3_vs_wave1</th><th>wave4_vs_wave3</th><th>wave5_vs_wave1</th><th>wave5_vs_wave3</th><th>B_vs_A</th><th>C_vs_A</th><th>fibo_magnet_score</th><th>fibo_magnet_hit_count</th><th>fibo_magnet_ratio_count</th><th>elliott_shape_score</th><th>combined_candidate_score</th>
+          </tr>
+        </thead>
+        <tbody>
+          {candidate_rows_html}
         </tbody>
       </table>
 """
@@ -1222,6 +1467,7 @@ def render_html(
       </table>
       <div class="foot">Raw pivots are shown with smaller markers. Structural pivots and major pivots are shown with larger markers. Refined anchors are shown with dark outlined markers. P0-P8 and W1/W2/W3/W4/W5/A/B/C remain candidate visual labels only for inspection.</div>
       {rolling_table_html}
+      {candidate_scan_html}
       <h2>Pivot Diagnostics</h2>
       <table class="detail-table all-seq-table">
         <thead>
@@ -1253,10 +1499,14 @@ def build_summary(
     structural_filtered_pivot_count: int,
     major_pivot_count: int,
     structural_filter: str,
+    structural_warning_count_value: int,
     sequence_mode: str,
     sequence_start_index: int | None,
     sequence_length: int,
     anchor_refinement: str,
+    candidate_scan: str,
+    candidate_scan_length: int,
+    candidate_scan_rows: list[CandidateScanRow],
     refined_anchor_changed_count: int,
     selected_sequence: list[Pivot],
     has_complete_sequence: bool,
@@ -1275,15 +1525,25 @@ def build_summary(
         "sequence_start_index": sequence_start_index,
         "sequence_length": sequence_length,
         "anchor_refinement": anchor_refinement,
+        "candidate_scan": candidate_scan,
+        "candidate_scan_length": candidate_scan_length,
         "rows": rows,
         "aggregated_rows": aggregated_rows,
         "pivot_count": major_pivot_count,
         "raw_pivot_count": raw_pivot_count,
         "structural_filtered_pivot_count": structural_filtered_pivot_count,
         "removed_structural_pivot_count": max(0, raw_pivot_count - structural_filtered_pivot_count),
+        "structural_warning_count": structural_warning_count_value,
         "major_pivot_count": major_pivot_count,
         "removed_minor_pivot_count": max(0, structural_filtered_pivot_count - major_pivot_count),
         "selected_sequence_length": len(selected_sequence),
+        "candidate_count": len(candidate_scan_rows),
+        "candidate_top_start_index": candidate_scan_rows[0].start_index if candidate_scan_rows else "",
+        "candidate_top_combined_score": (
+            fmt_number(candidate_scan_rows[0].combined_candidate_score)
+            if candidate_scan_rows and candidate_scan_rows[0].combined_candidate_score is not None
+            else ""
+        ),
         "refined_anchor_changed_count": refined_anchor_changed_count,
         "has_complete_sequence": 1 if has_complete_sequence else 0,
         "selected_sequence_start_ts_utc": fmt_ts(selected_sequence[0].ts_utc) if selected_sequence else "",
@@ -1314,15 +1574,21 @@ def print_summary(summary: dict[str, Any]) -> None:
         "sequence_start_index",
         "sequence_length",
         "anchor_refinement",
+        "candidate_scan",
+        "candidate_scan_length",
         "rows",
         "aggregated_rows",
         "pivot_count",
         "raw_pivot_count",
         "structural_filtered_pivot_count",
         "removed_structural_pivot_count",
+        "structural_warning_count",
         "major_pivot_count",
         "removed_minor_pivot_count",
         "selected_sequence_length",
+        "candidate_count",
+        "candidate_top_start_index",
+        "candidate_top_combined_score",
         "refined_anchor_changed_count",
         "has_complete_sequence",
         "selected_sequence_start_ts_utc",
@@ -1354,6 +1620,10 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--min-leg-duration-candles must be >= 0")
     if args.sequence_length <= 0:
         raise ValueError("--sequence-length must be > 0")
+    if args.candidate_scan_length <= 0:
+        raise ValueError("--candidate-scan-length must be > 0")
+    if args.candidate_top_n <= 0:
+        raise ValueError("--candidate-top-n must be > 0")
     if args.sequence_mode == "start-index" and args.sequence_start_index is None:
         raise ValueError("--sequence-start-index is required when --sequence-mode start-index")
     if args.sequence_start_index is not None and args.sequence_start_index < 0:
@@ -1441,6 +1711,13 @@ def main(argv: list[str] | None = None) -> int:
         anchor_refinement=args.anchor_refinement,
     )
     sequence = [anchor.refined_pivot for anchor in refined_anchors]
+    candidate_scan_rows = build_candidate_scan_rows(
+        candles=candles,
+        major_pivots=major_pivots,
+        anchor_refinement=args.anchor_refinement,
+        candidate_scan=args.candidate_scan,
+        candidate_scan_length=args.candidate_scan_length,
+    )
     pivot_diagnostics = build_pivot_diagnostic_rows(
         raw_pivots=raw_pivots,
         structural_pivots=structural_pivots,
@@ -1477,6 +1754,10 @@ def main(argv: list[str] | None = None) -> int:
             sequence_length=args.sequence_length,
             sequence_candidates=sequence_candidates,
             anchor_refinement=args.anchor_refinement,
+            candidate_scan=args.candidate_scan,
+            candidate_scan_length=args.candidate_scan_length,
+            candidate_top_n=args.candidate_top_n,
+            candidate_scan_rows=candidate_scan_rows,
             refined_anchors=refined_anchors,
             pivot_diagnostics=pivot_diagnostics,
             sequence=sequence,
@@ -1490,16 +1771,20 @@ def main(argv: list[str] | None = None) -> int:
         source_interval=source_interval,
         aggregated_interval=aggregated_interval,
         detector=args.detector,
+        structural_filter=args.structural_filter,
+        structural_warning_count_value=structural_warning_count(structural_pivots),
         sequence_mode=args.sequence_mode,
         sequence_start_index=args.sequence_start_index,
         sequence_length=args.sequence_length,
         anchor_refinement=args.anchor_refinement,
+        candidate_scan=args.candidate_scan,
+        candidate_scan_length=args.candidate_scan_length,
+        candidate_scan_rows=candidate_scan_rows,
         rows=len(candles),
         aggregated_rows=len(candles) if args.interval == "1w" else len(candles),
         raw_pivot_count=len(raw_pivots),
         structural_filtered_pivot_count=len(structural_pivots),
         major_pivot_count=len(major_pivots),
-        structural_filter=args.structural_filter,
         refined_anchor_changed_count=sum(1 for anchor in refined_anchors if anchor.changed),
         selected_sequence=sequence,
         has_complete_sequence=selected_candidate.has_complete_sequence,
