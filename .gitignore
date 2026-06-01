@@ -113,3 +113,14 @@ data/research/live_like_execution_plan_preview_v1/
 data/research/live_like_shadow_event_v1/
 data/research/live_like_shadow_chain_v1/
 data/research/position_lifecycle_outcome_validation_v1/
+
+# Generated research/dashboard outputs - local artifacts only
+/breath_fibo_strategy_dashboard_v1.html
+/data/research/canonical_fib_map_source_audit_v1/
+/data/research/canonical_fib_zone_map_writer_preview_v1/
+/data/research/fib_leg_pair_observation_preview_v1/
+/data/research/fibo_target_map_v1/
+/data/research/position_lifecycle_event_chart_v1/
+/data/research/reload_reaction_scalp_parameter_sweep_v1/
+/data/research/shadow_heartbeat_outcome_validation_v1/
+/data/research/signal_matrix_single_asset_replay_v1/
