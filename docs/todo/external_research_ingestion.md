@@ -1,7 +1,7 @@
 # External Research Ingestion TODO
 
-Status: TODO  
-Scope: research-only  
+Status: TODO
+Scope: research-only
 Runtime impact: none
 
 ## Purpose
@@ -407,3 +407,163 @@ Japan JGB stress
 → liquidity response
 → dollar credibility bleed
 → BTC/gold/tokenized rails bid
+
+## Elliott Wave External Research TODO
+
+Status: TODO
+Scope: research-only
+Runtime impact: none
+
+### Purpose
+
+Investigate whether external Elliott Wave claims from PRO/Martee/media notes can be converted into structured, testable research inputs.
+
+The goal is not to trust Elliott labels blindly, but to test whether externally supplied wave structures improve:
+
+- target-zone quality
+- pullback/retest timing
+- trend-continuation recognition
+- invalidation detection
+- TP review timing
+
+### Source examples
+
+Current trigger:
+
+- XRP article / media forecast mentions Elliott-style target context.
+- Existing PRO notes already include Elliott/Fib structures for:
+  - ENJ
+  - VET
+  - KITE
+  - SOL
+  - SUI
+  - ADA
+  - LINK
+  - HYPE
+  - DOGE
+  - BTC
+
+### Proposed research lane
+
+`external_elliott_wave_claim_validation_v1`
+
+### Extracted fields
+
+Required fields:
+
+- asset
+- source_name
+- source_date
+- source_type
+- timeframe
+- wave_structure_type
+- wave_label
+- current_wave_state
+- correction_type
+- impulse_start_price
+- impulse_end_price
+- correction_low
+- shoulder_line
+- confirmation_level
+- invalidation_level
+- target_1
+- target_2
+- target_zone_low
+- target_zone_high
+- fib_level
+- source_quote_currency
+- runtime_quote_currency
+- fx_conversion_required
+- notes
+
+### Allowed wave_structure_type
+
+- IMPULSE_12345
+- ABC_CORRECTION
+- WAVE_1_SETUP
+- WAVE_2_PULLBACK
+- WAVE_3_EXTENSION
+- WAVE_4_CONSOLIDATION
+- WAVE_5_COMPLETION
+- GRAND_FIB_EXTENSION
+- SHOULDER_LINE_RECLAIM
+- UNKNOWN_EXTERNAL_LABEL
+
+### Validation metrics
+
+For each external Elliott claim:
+
+- was_confirmation_level_reclaimed
+- was_invalidation_hit_first
+- did_target_1_hit
+- did_target_2_hit
+- max_drawdown_before_target
+- time_to_target
+- reaction_at_shoulder_line
+- reaction_at_fib_target
+- false_breakout_detected
+- wave_label_quality_score
+- manual_review_notes
+
+### Important rules
+
+- Do not treat external Elliott labels as truth.
+- Treat them as external structural hypotheses.
+- Validate against real OHLCV pivots.
+- Do not promote to selection_engine until measured.
+- Do not create buy/sell signals.
+- Do not bypass decision_gate.
+- Do not alter execution_planner.
+- Do not create orders.
+
+### Key research questions
+
+- Are PRO Elliott shoulder lines useful confirmation levels?
+- Are ABC correction zones useful entry/retest zones?
+- Do 1.618 / 2.618 / 4.764 targets outperform random Fib extensions?
+- Do external Elliott labels work better on majors or small alts?
+- Are Elliott claims mainly useful for TP zones rather than entries?
+- Does volume confirmation materially improve Elliott target reliability?
+- Do wide Elliott macro targets need separate long-horizon scoring?
+
+### First manual candidates
+
+XRP:
+- Article/media context mentions end-2026 targets.
+- Add to external target extraction, but treat AI/media forecast as low-to-medium confidence.
+- Compare with existing PRO XRP C-wave / settlement-rail thesis.
+
+VET:
+- Shoulder zone: $0.07-$0.09
+- Targets: $0.11 / $0.16 / $0.41-$0.45 / $0.72-$0.91
+- Treat as legacy final-cycle Elliott/Fib candidate.
+
+KITE:
+- Early wave / genesis structure.
+- Pullback: $0.18-$0.20
+- First wave target: $0.47
+- Targets: $1.00 / $1.00-$1.26
+
+ENJ:
+- Existing PRO note: completed shorter-timeframe 1-2-3-4-5.
+- Structural trigger around $0.31.
+- Targets: $1.04 / $1.80.
+
+BTC:
+- Existing external thesis: incomplete monthly ABC correction.
+- B-wave around 0.618 / ~$100K range.
+- Rotation thesis only actionable if volume confirms B-wave top.
+
+### Output
+
+Create a research report later:
+
+`docs/research/external_elliott_wave_claim_validation_v1.md`
+
+Optional later runner:
+
+`src/research/run_external_elliott_wave_claim_validation_v1.py`
+
+Data target later:
+
+`data/research/external_elliott_wave_claims/`
