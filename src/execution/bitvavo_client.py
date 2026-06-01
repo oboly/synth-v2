@@ -221,7 +221,7 @@ class BitvavoClient:
     def place_order(self, order: BitvavoOrderRequest) -> dict[str, Any]:
         self._require_private_write_permission("place_order")
 
-        path = f"/{order.market}/order"
+        path = "/order"
         url = f"{self.rest_url}{path}"
 
         payload: dict[str, Any] = {
@@ -247,7 +247,13 @@ class BitvavoClient:
             data=body,
             timeout=self.timeout_seconds,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            raise RuntimeError(
+                "Bitvavo place_order failed. "
+                f"status_code={response.status_code} response_text={response.text}"
+            ) from exc
         return response.json()
 
     def get_order(self, market: str, order_id: str) -> dict[str, Any]:
