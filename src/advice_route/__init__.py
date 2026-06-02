@@ -19,6 +19,14 @@ from .serialization_v1 import (
     from_dict_synth_confirmation_context,
     to_dict,
 )
+from .schema_v1 import (
+    ROUTE_VERSION,
+    SCHEMA_VERSION,
+    SUPPORTED_PAYLOAD_TYPES,
+    SUPPORTED_ROUTE_VERSIONS,
+    SUPPORTED_SCHEMA_VERSIONS,
+    validate_envelope,
+)
 
 __all__ = [
     "Action",
@@ -38,4 +46,10 @@ __all__ = [
     "from_dict_strategy_proposal",
     "from_dict_synth_confirmation_context",
     "to_dict",
+    "ROUTE_VERSION",
+    "SCHEMA_VERSION",
+    "SUPPORTED_PAYLOAD_TYPES",
+    "SUPPORTED_ROUTE_VERSIONS",
+    "SUPPORTED_SCHEMA_VERSIONS",
+    "validate_envelope",
 ]
