@@ -12,6 +12,13 @@ from .interfaces_v1 import (
     SynthConfirmationContext,
     validate_forbidden_fields_absent,
 )
+from .serialization_v1 import (
+    from_dict_framework_context,
+    from_dict_strategy_interpretation,
+    from_dict_strategy_proposal,
+    from_dict_synth_confirmation_context,
+    to_dict,
+)
 
 __all__ = [
     "Action",
@@ -26,4 +33,9 @@ __all__ = [
     "StrengthBucket",
     "SynthConfirmationContext",
     "validate_forbidden_fields_absent",
+    "from_dict_framework_context",
+    "from_dict_strategy_interpretation",
+    "from_dict_strategy_proposal",
+    "from_dict_synth_confirmation_context",
+    "to_dict",
 ]
