@@ -63,6 +63,9 @@ Phase 4: feature/signal refresh runner.
 - Refresh `feat_candle`.
 - Refresh `signal_engine_state`.
 - Keep the runner market-only and account-agnostic.
+- Treat `signal_engine_state` as the canonical live signal output table.
+- Treat legacy `signal_state` as non-canonical unless a separate reviewed lane
+  explicitly revives it.
 
 Phase 5: freshness/reporting runner.
 
@@ -97,6 +100,7 @@ Allowed initial runners:
 - sparse candle diagnostics / freshness checks
 - read-only webview data support
 - read-only static paper advice dashboard lifecycle refresh
+- separated refresh-vs-render ownership for dashboard support
 
 Not initially allowed:
 
@@ -117,8 +121,9 @@ Suggested cadence:
 - `4h` refresh: every 4 hours after close with buffer.
 - `1d` refresh: daily after UTC daily close with buffer.
 - freshness check: after each runner.
-- paper advice dashboard lifecycle refresh: frequent static HTML render after lifecycle candle data is fresh.
-- fast paper advice lifecycle refresh: bounded public candle ETL for `15m` followed by static HTML render; `5m` only after ETL/API smoke test.
+- paper advice lifecycle market refresh: bounded public candle ETL for `15m`; `5m` only after ETL/API smoke test.
+- paper advice dashboard render: frequent static HTML render after lifecycle candle data is fresh.
+- MVP market context refresh: market-price snapshot plus bounded market-only lifecycle refresh before cockpit render.
 - log rotation: daily or weekly depending on volume.
 
 Initial timers should use conservative buffers. A late run is safer than a duplicate or partial candle run.
@@ -128,6 +133,8 @@ Template files for review:
 ```text
 docs/ops/systemd/synth-paper-advice-lifecycle-refresh.service
 docs/ops/systemd/synth-paper-advice-lifecycle-refresh.timer
+docs/ops/systemd/synth-paper-advice-dashboard-render.service
+docs/ops/systemd/synth-paper-advice-dashboard-render.timer
 docs/ops/systemd/synth-4h-market-chain.service
 docs/ops/systemd/synth-4h-market-chain.timer
 ```
@@ -143,13 +150,34 @@ WorkingDirectory=/home/theone/projects/synth-v2
 
 Review the host user, repo path, venv path, `.env` location, and web output directory before copying any unit to `/etc/systemd/system`.
 
-Paper advice lifecycle refresh:
+Paper advice lifecycle market refresh:
 
 - timer cadence: every 5 minutes
 - service command: `scripts/odroid/run_paper_advice_lifecycle_refresh_once.sh`
 - lifecycle candle interval: `SYNTH_PAPER_ADVICE_LIFECYCLE_INTERVAL=15m`
+- scope: public candle ETL only
+- excluded: dashboard render, features, signals, selection, advice, policy, decision, execution, orders
+
+Paper advice dashboard render:
+
+- timer cadence: every 5 minutes, offset from market refresh
+- service command: `scripts/odroid/run_paper_advice_dashboard_refresh_once.sh`
 - output: `/var/www/html/synth/paper-advice.html`
-- scope: public candle ETL plus static dashboard render
+- scope: static dashboard render only
+- excluded: candle ETL, features, signals, selection, advice, policy, decision, execution, orders
+
+MVP market context refresh:
+
+- timer cadence: every 5 minutes, offset before cockpit render
+- service command: `scripts/odroid/run_mvp_market_context_refresh_once.sh`
+- scope: `market_price_snapshot` plus bounded market-only structural/lifecycle refresh writes
+- excluded: HTML render, broker private calls, broker writes, decision, execution, orders
+
+MVP cockpit render:
+
+- timer cadence: every 5 minutes after market context refresh
+- service command: `scripts/odroid/run_mvp_dashboard_render_once.sh`
+- scope: static cockpit render only
 - excluded: features, signals, selection, advice, policy, decision, execution, orders
 
 4h market chain:
@@ -205,6 +233,9 @@ Secrets rule:
 
 ## Freshness Checks
 
+For the hard ownership boundary between canonical runtime chains and dashboard
+rendering, see `docs/ops/runtime_chain_ownership_v1.md`.
+
 Minimum checks:
 
 - `obs_market_candle` max `close_ts_utc` by interval
@@ -212,12 +243,30 @@ Minimum checks:
 - `signal_engine_state` max `signal_ts_utc` by interval
 - `strategy_runtime_snapshot` only if a guarded full market-only chain is later allowed
 
+4h freshness interpretation:
+
+- judge freshness against the latest completed eligible 4h snapshot, not against
+  the still-forming current wall-clock 4h bucket
+- `signal_engine_state` is only expected to advance after `feat_candle` has a
+  sufficiently complete snapshot for enabled assets
+- a 4h market candle at `12:00Z` does not by itself guarantee that the
+  canonical live signal snapshot should already be `12:00Z`
+- treat 4h signal freshness as `WARN` or `FAIL` only when the chain misses a
+  completed eligible cycle, not merely because candle ETL reached a newer raw
+  boundary first
+
 Paper advice monitoring checks:
 
 - latest `paper_advice_observation` snapshot timestamp
 - latest `obs_market_candle.close_ts_utc` for `15m`
 - dashboard rendered timestamp in `/var/www/html/synth/paper-advice.html`
 - latest `strategy_runtime_snapshot` for the 4h chain when the chain timer is enabled
+
+MVP cockpit monitoring checks:
+
+- latest `market_price_snapshot.snapshot_ts_utc`
+- latest `execution_zone_context` and `paper_advice_observation` timestamps used by the lifecycle refresh consumers
+- dashboard rendered timestamp in the cockpit HTML outputs
 
 Watchlist note:
 
