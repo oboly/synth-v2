@@ -97,6 +97,15 @@ def test_strategy_proposal_rejects_order_submission() -> None:
     raise AssertionError("Expected ValueError for order_submission=True")
 
 
+def test_strategy_proposal_requires_downstream_decision() -> None:
+    try:
+        _make_strategy_proposal(decision_required=False)
+    except ValueError as exc:
+        assert "decision permission" in str(exc)
+        return
+    raise AssertionError("Expected ValueError for decision_required=False")
+
+
 def test_forbidden_fields_absent() -> None:
     validate_forbidden_fields_absent(
         FrameworkContext,
@@ -145,6 +154,16 @@ def test_module_has_no_forbidden_runtime_imports() -> None:
 
 def test_setup_id_format() -> None:
     _make_strategy_proposal(setup_id="SELL_SHORT_SPIKE")
+    _make_strategy_proposal(
+        action=Action.BUY,
+        horizon=Horizon.MID,
+        setup_id="BUY_MID_RECLAIM",
+    )
+    _make_strategy_proposal(
+        action=Action.HOLD,
+        horizon=Horizon.LONG,
+        setup_id="HOLD_LONG_CORE_TREND",
+    )
     try:
         _make_strategy_proposal(setup_id="SPIKE_SHORT_SELL")
     except ValueError as exc:
@@ -202,6 +221,7 @@ def main() -> None:
         test_strategy_proposal_rejects_account_awareness,
         test_strategy_proposal_rejects_broker_write_permission,
         test_strategy_proposal_rejects_order_submission,
+        test_strategy_proposal_requires_downstream_decision,
         test_forbidden_fields_absent,
         test_module_has_no_forbidden_runtime_imports,
         test_setup_id_format,
