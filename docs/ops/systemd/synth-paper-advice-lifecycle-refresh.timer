@@ -1,5 +1,5 @@
 [Unit]
-Description=Synth paper advice lifecycle refresh timer (every 5 minutes)
+Description=Synth paper advice lifecycle market refresh timer (every 5 minutes)
 Documentation=docs/ops/synth_runtime_runners_v1.md
 Requires=synth-paper-advice-lifecycle-refresh.service
 

@@ -1,0 +1,8 @@
+[Unit]
+Description=Refresh Synth MVP market context snapshots and market-only lifecycle writes
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/theone/projects/synth-v2
+ExecStart=/home/theone/projects/synth-v2/scripts/odroid/run_mvp_market_context_refresh_once.sh

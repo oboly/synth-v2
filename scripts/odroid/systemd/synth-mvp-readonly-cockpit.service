@@ -1,5 +1,5 @@
 [Unit]
-Description=Synth MVP read-only cockpit dashboard render
+Description=Synth MVP read-only cockpit dashboard render (render-only)
 After=network-online.target
 
 [Service]

@@ -10,7 +10,7 @@ LIFECYCLE_CANDLE_INTERVAL="${SYNTH_PAPER_ADVICE_LIFECYCLE_INTERVAL:-1h}"
 LIMIT="${SYNTH_PAPER_ADVICE_LIMIT:-40}"
 
 echo "paper_advice_dashboard_refresh_once starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-echo "broker_calls=0 broker_writes=0 order_submission=0 live_orders=0"
+echo "broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0"
 echo "repo_dir=${REPO_DIR}"
 echo "output_html=${OUTPUT_HTML}"
 echo "advice_interval=${ADVICE_INTERVAL}"

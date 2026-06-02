@@ -1,5 +1,5 @@
 [Unit]
-Description=Synth paper advice lifecycle market refresh (public candles only)
+Description=Synth paper advice dashboard render (static HTML only)
 Documentation=docs/ops/synth_runtime_runners_v1.md
 After=network-online.target
 Wants=network-online.target
@@ -10,22 +10,25 @@ Type=oneshot
 User=theone
 WorkingDirectory=/home/theone/projects/synth-v2
 Environment=SYNTH_PAPER_ADVICE_LIFECYCLE_INTERVAL=15m
+Environment=SYNTH_PAPER_ADVICE_DASHBOARD_HTML=/var/www/html/synth/paper-advice.html
+Environment=SYNTH_PAPER_ADVICE_INTERVAL=4h
+Environment=SYNTH_PAPER_ADVICE_LIMIT=40
 Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
 Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
-ExecStart=/bin/bash -lc 'scripts/odroid/run_paper_advice_lifecycle_refresh_once.sh'
+ExecStart=/bin/bash -lc 'scripts/odroid/run_paper_advice_dashboard_refresh_once.sh'
 Restart=no
 Nice=5
 
 # Safety boundary:
-# - public market-data candle ETL only
-# - no dashboard render
-# - no strategy/policy/decision/execution changes
+# - static dashboard render only
+# - reads latest DB state and snapshots only
+# - no candle ETL
 # - no broker private calls/writes
 # - no order submission
 
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=synth-paper-advice-lifecycle-refresh
+SyslogIdentifier=synth-paper-advice-dashboard-render
 
 [Install]
 WantedBy=multi-user.target

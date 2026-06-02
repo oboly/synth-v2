@@ -2,19 +2,14 @@
 set -euo pipefail
 
 REPO_DIR="${SYNTH_REPO_DIR:-$HOME/projects/synth-v2}"
-OUTPUT_HTML="${SYNTH_PAPER_ADVICE_DASHBOARD_HTML:-/var/www/html/synth/paper-advice.html}"
 LOCK_FILE="${SYNTH_PAPER_ADVICE_LIFECYCLE_LOCK:-/tmp/synth-paper-advice-lifecycle-refresh.lock}"
 VENUE="${SYNTH_PAPER_ADVICE_VENUE:-bitvavo}"
-ADVICE_INTERVAL="${SYNTH_PAPER_ADVICE_INTERVAL:-4h}"
 LIFECYCLE_CANDLE_INTERVAL="${SYNTH_PAPER_ADVICE_LIFECYCLE_INTERVAL:-15m}"
-LIMIT="${SYNTH_PAPER_ADVICE_LIMIT:-40}"
 
 echo "paper_advice_lifecycle_refresh_once starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0"
 echo "decision_gate_changes=0 execution_planner_changes=0 executor_changes=0"
 echo "repo_dir=${REPO_DIR}"
-echo "output_html=${OUTPUT_HTML}"
-echo "advice_interval=${ADVICE_INTERVAL}"
 echo "lifecycle_candle_interval=${LIFECYCLE_CANDLE_INTERVAL}"
 
 cd "${REPO_DIR}"
@@ -66,14 +61,6 @@ python -m src.etl.bitvavo.run_candles_etl \
   --interval "${LIFECYCLE_CANDLE_INTERVAL}" \
   --start "${START}" \
   --end "${END}"
-
-python -m src.reporting.run_paper_advice_static_dashboard_v1 \
-  --venue "${VENUE}" \
-  --interval "${ADVICE_INTERVAL}" \
-  --limit "${LIMIT}" \
-  --lifecycle-candle-interval "${LIFECYCLE_CANDLE_INTERVAL}" \
-  --output-html "${OUTPUT_HTML}" \
-  --output table
 
 echo "--- lifecycle candle freshness ---"
 python - "${VENUE}" "${LIFECYCLE_CANDLE_INTERVAL}" <<'PY'
@@ -128,8 +115,5 @@ try:
 finally:
     conn.close()
 PY
-
-echo "--- lifecycle badge sample ---"
-grep -n -E "lifecycle candles=${LIFECYCLE_CANDLE_INTERVAL}|latest lifecycle candle|REACTION RETEST AFTER ENTRY|POST-ENTRY BOUNCE|DOWNSIDE ENTRY REACHED|RECOMPUTE NEEDED|INVALIDATED|SETUP FAILED|NO EDGE" "${OUTPUT_HTML}" | head -80 || true
 
 echo "paper_advice_lifecycle_refresh_once finished $(date -u +%Y-%m-%dT%H:%M:%SZ)"

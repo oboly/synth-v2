@@ -65,7 +65,7 @@ Output scopes include:
 
 ## Odroid Runtime
 
-`scripts/odroid/run_mvp_dashboard_render_once.sh` runs structural missing refresh after the market price snapshot and before fast recompute.
+`scripts/odroid/run_mvp_market_context_refresh_once.sh` runs structural missing refresh after the market price snapshot and before fast recompute.
 
 Runtime knobs:
 
@@ -76,7 +76,7 @@ Disable it while preserving the rest of dashboard rendering:
 
 ```bash
 SYNTH_STRUCTURAL_MISSING_REFRESH_ENABLED=0 \
-scripts/odroid/run_mvp_dashboard_render_once.sh
+scripts/odroid/run_mvp_market_context_refresh_once.sh
 ```
 
 ## Safety Marker

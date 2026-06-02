@@ -1,0 +1,13 @@
+[Unit]
+Description=Synth paper advice dashboard render timer (every 5 minutes)
+Documentation=docs/ops/synth_runtime_runners_v1.md
+Requires=synth-paper-advice-dashboard-render.service
+
+[Timer]
+OnCalendar=*:1/5
+Persistent=true
+RandomizedDelaySec=20
+Unit=synth-paper-advice-dashboard-render.service
+
+[Install]
+WantedBy=timers.target

@@ -4,7 +4,7 @@ P0-a is `src/reporting/run_fast_recompute_lifecycle_v1.py`. It is a read-only, m
 
 P0-b is `src/advice/run_fast_recompute_lifecycle_refresh_v1.py`. It consumes the P0-a worklist and can refresh market-only zone context plus paper advice for eligible assets.
 
-P0-c is `scripts/odroid/run_mvp_dashboard_render_once.sh`. It wires the P0-b consumer into the Odroid read-only cockpit lifecycle before dashboard render, so stale/reclaimed/target-hit maps can be refreshed between normal 4h baseline runs.
+P0-c is `scripts/odroid/run_mvp_market_context_refresh_once.sh`. It wires the P0-b consumer into the Odroid market-context refresh lane before cockpit render, so stale/reclaimed/target-hit maps can be refreshed between normal 4h baseline runs.
 
 Cooldown/fairness v1 adds a same-advice-asof cooldown marker to refreshed `paper_advice_observation.source_ref_json`. A symbol successfully refreshed by this consumer is skipped on later cockpit renders while the latest paper-advice row still carries the same marker. The `--max-assets` throttle is then applied to the remaining eligible candidates, so the selected set advances instead of repeatedly refreshing the same top rows.
 
@@ -73,7 +73,7 @@ python -m src.advice.run_fast_recompute_lifecycle_refresh_v1 \
 
 ## Odroid Runtime Wiring
 
-`scripts/odroid/run_mvp_dashboard_render_once.sh` runs the refresh consumer after the market price snapshot refresh and before dashboard rendering:
+`scripts/odroid/run_mvp_market_context_refresh_once.sh` runs the refresh consumer after the market price snapshot refresh and before cockpit rendering:
 
 ```bash
 python -m src.advice.run_fast_recompute_lifecycle_refresh_v1 \
@@ -94,9 +94,9 @@ Runtime knobs:
 - `SYNTH_FAST_RECOMPUTE_ALLOW_INTRABAR_REPEAT`, default `1`
 - `SYNTH_FAST_RECOMPUTE_MAX_PER_ASSET_PER_4H`, default `3`
 
-When `SYNTH_FAST_RECOMPUTE_REFRESH_ENABLED=0`, the runner skips the consumer and renders dashboards as before.
+When `SYNTH_FAST_RECOMPUTE_REFRESH_ENABLED=0`, the refresh runner skips the consumer and leaves cockpit rendering to the separate render-only script.
 
-When enabled, the runner fails closed: if the market-only refresh consumer fails, the script exits non-zero before rendering dashboards. This prevents stale or ambiguous cockpit output after a failed refresh attempt.
+When enabled, the refresh runner fails closed: if the market-only refresh consumer fails, the script exits non-zero before any later cockpit render timer sees partially refreshed context.
 
 Default runtime is still throttled: only up to eight eligible assets are refreshed per run unless `SYNTH_FAST_RECOMPUTE_MAX_ASSETS` is explicitly changed.
 
@@ -106,14 +106,14 @@ Manual Odroid verification command:
 SYNTH_FAST_RECOMPUTE_REFRESH_ENABLED=1 \
 SYNTH_FAST_RECOMPUTE_MAX_ASSETS=8 \
 SYNTH_FAST_RECOMPUTE_INTERVAL=4h \
-scripts/odroid/run_mvp_dashboard_render_once.sh
+scripts/odroid/run_mvp_market_context_refresh_once.sh
 ```
 
-Disable refresh wiring while preserving dashboard rendering:
+Disable refresh wiring while preserving the separate cockpit render:
 
 ```bash
 SYNTH_FAST_RECOMPUTE_REFRESH_ENABLED=0 \
-scripts/odroid/run_mvp_dashboard_render_once.sh
+scripts/odroid/run_mvp_market_context_refresh_once.sh
 ```
 
 ## Per-Asset Zone Context Requirement
@@ -128,4 +128,4 @@ The consumer prints:
 broker_private_calls=0 broker_calls=0 broker_writes=0 order_submission=0 live_orders=0 decision_gate_changes=0 execution_planner_changes=0 executor=none account_awareness=0
 ```
 
-The Odroid dashboard runner also prints these safety markers before invoking the consumer.
+The Odroid market-context refresh runner also prints these safety markers before invoking the consumer.

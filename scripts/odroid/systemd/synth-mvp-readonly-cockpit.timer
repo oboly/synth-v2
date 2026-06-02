@@ -1,5 +1,5 @@
 [Unit]
-Description=Render Synth MVP read-only cockpit dashboard every 5 minutes
+Description=Render Synth MVP read-only cockpit dashboard every 5 minutes (render-only)
 
 [Timer]
 OnBootSec=2min

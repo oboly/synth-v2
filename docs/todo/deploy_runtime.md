@@ -144,8 +144,11 @@ Script:
 ```text
 scripts/odroid/run_paper_advice_dashboard_refresh_once.sh
 scripts/odroid/run_paper_advice_lifecycle_refresh_once.sh
+scripts/odroid/run_mvp_market_context_refresh_once.sh
 docs/ops/systemd/synth-paper-advice-lifecycle-refresh.service
 docs/ops/systemd/synth-paper-advice-lifecycle-refresh.timer
+docs/ops/systemd/synth-paper-advice-dashboard-render.service
+docs/ops/systemd/synth-paper-advice-dashboard-render.timer
 ```
 
 Tasks:
@@ -165,8 +168,9 @@ Tasks:
 Boundary:
 
 ```text
-Display-only.
-Public candle ETL plus static HTML render only.
+Separated ownership.
+Lifecycle market refresh is public candle ETL only.
+Dashboard render is static HTML only.
 No strategy/policy/decision/execution changes.
 No broker/private calls.
 No broker writes.

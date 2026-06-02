@@ -75,25 +75,9 @@ else
   echo "[MVP][SKIP] paper advice dashboard render skipped; lifecycle runner owns paper-advice.html by default"
 fi
 
-run_step python -m src.market_data.run_market_price_snapshot_v1 \
-  --venue bitvavo \
-  --quote "${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE}" \
-  --write-db \
-  --output none
+run_step bash scripts/odroid/run_mvp_market_context_refresh_once.sh
 
-run_step python -m src.reporting.run_position_rotation_static_dashboard_v1 \
-  --venue bitvavo \
-  --quote "${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE}" \
-  --interval 4h \
-  --trading-account-id 2 \
-  --output-html "${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML}" \
-  --output summary
-
-run_step python -m src.reporting.run_entry_candidate_static_dashboard_v1 \
-  --venue bitvavo \
-  --interval 4h \
-  --output-html "${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML}" \
-  --output summary
+run_step bash scripts/odroid/run_mvp_dashboard_render_once.sh
 
 echo
 echo "[MVP][DONE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
