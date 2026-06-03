@@ -1,0 +1,16 @@
+[Unit]
+Description=Refresh Synth account wallet snapshots for %i every 5 minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=synth-account-wallet-refresh@%i.service
+
+[Install]
+WantedBy=timers.target
+
+# Example instances:
+#   synth-account-wallet-refresh@joost.timer
+#   synth-account-wallet-refresh@hugo.timer

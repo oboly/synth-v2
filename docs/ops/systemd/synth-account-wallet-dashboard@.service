@@ -1,0 +1,12 @@
+[Unit]
+Description=Synth account wallet dashboard render for %i
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/theone/projects/synth-v2
+ExecStart=/home/theone/projects/synth-v2/scripts/odroid/run_account_wallet_dashboard_render_once.sh %i
+
+# Example instances:
+#   synth-account-wallet-dashboard@joost.service
+#   synth-account-wallet-dashboard@hugo.service

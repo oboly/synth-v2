@@ -1,0 +1,16 @@
+[Unit]
+Description=Render Synth account wallet dashboard for %i every 5 minutes
+
+[Timer]
+OnBootSec=120s
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=synth-account-wallet-dashboard@%i.service
+
+[Install]
+WantedBy=timers.target
+
+# Example instances:
+#   synth-account-wallet-dashboard@joost.timer
+#   synth-account-wallet-dashboard@hugo.timer
