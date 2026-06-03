@@ -59,6 +59,28 @@ Default outputs:
   - proposal enabled
   - hidden / disabled
 - warning for stale or missing market data
+- management / settings UI-prep sections:
+  - addable markets
+  - relevant assets
+  - all/settings assets
+  - disabled action controls for `Add asset`, `Hide`, `Disable`, `Pause 24h`, `Re-enable`
+
+## Management payload
+
+Wallet JSON now includes a read-only `management` section:
+
+- `management.relevant_assets`
+- `management.all_assets`
+- `management.addable_markets`
+- `management.open_orders_monitor`
+- `management.actions`
+
+All actions are UI-prep only:
+
+- `enabled=false`
+- `reason=UI_PREP_ONLY_NO_AUTH_LAYER`
+
+No public mutation endpoint is enabled by the dashboard render.
 
 Refresh button behavior:
 

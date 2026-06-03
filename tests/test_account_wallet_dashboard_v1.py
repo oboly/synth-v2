@@ -32,6 +32,38 @@ def _settings() -> AccountAssetSettingsSummary:
     )
 
 
+def _management_account_assets() -> list[dict]:
+    return [
+        {
+            "market": "WLD-EUR",
+            "source": "WALLET_DISCOVERY",
+            "is_visible": 1,
+            "is_candidate_enabled": 0,
+            "is_order_proposal_enabled": 0,
+            "is_hidden": 0,
+            "has_wallet_balance": True,
+        },
+        {
+            "market": "XRP-EUR",
+            "source": "MANUAL_ADD",
+            "is_visible": 0,
+            "is_candidate_enabled": 0,
+            "is_order_proposal_enabled": 0,
+            "is_hidden": 1,
+            "has_wallet_balance": False,
+        },
+    ]
+
+
+def _management_venue_markets() -> list[dict]:
+    return [
+        {"market": "BTC-USDT", "quote_currency": "USDT", "is_tradeable": 1, "asset_symbol": "BTC"},
+        {"market": "FET-EUR", "quote_currency": "EUR", "is_tradeable": 1, "asset_symbol": "FET"},
+        {"market": "WLD-EUR", "quote_currency": "EUR", "is_tradeable": 1, "asset_symbol": "WLD"},
+        {"market": "XRP-EUR", "quote_currency": "EUR", "is_tradeable": 1, "asset_symbol": "XRP"},
+    ]
+
+
 def _price(symbol: str, price: str, observed_minutes_ago: int = 3) -> MarketPriceSnapshot:
     now = _base_now()
     observed = (now - timedelta(minutes=observed_minutes_ago)).replace(tzinfo=None)
@@ -66,6 +98,8 @@ def test_empty_wallet_render():
         open_order_count_rows=[],
         account_asset_settings=_settings(),
         price_by_symbol={},
+        account_asset_rows=[],
+        venue_market_rows=[],
         now_utc=now,
     )
     html = render_wallet_html(payload)
@@ -94,6 +128,8 @@ def test_unknown_asset_render():
         open_order_count_rows=[],
         account_asset_settings=_settings(),
         price_by_symbol={},
+        account_asset_rows=[],
+        venue_market_rows=[],
         now_utc=now,
     )
     html = render_wallet_html(payload)
@@ -123,6 +159,8 @@ def test_joost_hugo_isolation():
         open_order_count_rows=[{"market": "BTC-EUR", "order_count": 1}],
         account_asset_settings=_settings(),
         price_by_symbol={"BTC": _price("BTC", "100000")},
+        account_asset_rows=[],
+        venue_market_rows=[],
         now_utc=now,
     )
     hugo = build_wallet_dashboard_payload(
@@ -143,6 +181,8 @@ def test_joost_hugo_isolation():
         open_order_count_rows=[{"market": "ETH-EUR", "order_count": 3}],
         account_asset_settings=_settings(),
         price_by_symbol={"ETH": _price("ETH", "2000")},
+        account_asset_rows=[],
+        venue_market_rows=[],
         now_utc=now,
     )
     joost_json = payload_to_json_dict(joost)
@@ -174,6 +214,8 @@ def test_no_secrets_in_html_json():
         open_order_count_rows=[],
         account_asset_settings=_settings(),
         price_by_symbol={},
+        account_asset_rows=[],
+        venue_market_rows=[],
         now_utc=now,
     )
     html = render_wallet_html(payload)
@@ -204,6 +246,8 @@ def test_write_wallet_dashboard_outputs_accounts_profile_files():
         open_order_count_rows=[],
         account_asset_settings=_settings(),
         price_by_symbol={},
+        account_asset_rows=[],
+        venue_market_rows=[],
         now_utc=now,
     )
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -218,6 +262,86 @@ def test_write_wallet_dashboard_outputs_accounts_profile_files():
         assert "/accounts/joost/wallet.json" in json_path.as_posix()
         assert html_path.exists()
         assert json_path.exists()
+
+
+def test_wallet_json_contains_management_payload():
+    now = _base_now()
+    payload = build_wallet_dashboard_payload(
+        profile="joost",
+        account_code="bitvavo_joost_read",
+        trading_account_id=1,
+        venue="bitvavo",
+        latest_balance_snapshot_ts_utc=now.replace(tzinfo=None),
+        latest_order_snapshot_ts_utc=now.replace(tzinfo=None),
+        balance_rows=[
+            {
+                "currency_code": "WLD",
+                "available_amount": Decimal("5"),
+                "reserved_amount": Decimal("0"),
+                "total_amount": Decimal("5"),
+            }
+        ],
+        open_order_count_rows=[{"market": "WLD-EUR", "order_count": 2}],
+        account_asset_settings=_settings(),
+        price_by_symbol={"WLD": _price("WLD", "1.25")},
+        account_asset_rows=_management_account_assets(),
+        venue_market_rows=_management_venue_markets(),
+        now_utc=now,
+    )
+    payload_json = payload_to_json_dict(payload)
+    assert "management" in payload_json
+    assert sorted(payload_json["management"].keys()) == [
+        "actions",
+        "addable_markets",
+        "all_assets",
+        "open_orders_monitor",
+        "profile",
+        "relevant_assets",
+        "safety_markers",
+    ]
+    assert all(action.get("enabled") is False for action in payload_json["management"]["actions"])
+
+
+def test_wallet_html_includes_management_sections():
+    now = _base_now()
+    payload = build_wallet_dashboard_payload(
+        profile="joost",
+        account_code="bitvavo_joost_read",
+        trading_account_id=1,
+        venue="bitvavo",
+        latest_balance_snapshot_ts_utc=now.replace(tzinfo=None),
+        latest_order_snapshot_ts_utc=now.replace(tzinfo=None),
+        balance_rows=[
+            {
+                "currency_code": "WLD",
+                "available_amount": Decimal("5"),
+                "reserved_amount": Decimal("0"),
+                "total_amount": Decimal("5"),
+            }
+        ],
+        open_order_count_rows=[{"market": "WLD-EUR", "order_count": 2}],
+        account_asset_settings=_settings(),
+        price_by_symbol={"WLD": _price("WLD", "1.25")},
+        account_asset_rows=_management_account_assets(),
+        venue_market_rows=_management_venue_markets(),
+        now_utc=now,
+    )
+    html = render_wallet_html(payload)
+    assert "Management" in html
+    assert "Add asset" in html
+    assert "Hide selected" in html
+    assert "Pause selected for 24h" in html
+    assert "UI_PREP_ONLY_NO_AUTH_LAYER" in html
+
+
+def test_wallet_dashboard_source_has_no_decision_execution_imports():
+    src = Path("src/reporting/account_wallet_dashboard_v1.py").read_text()
+    assert "from src.decision_gate" not in src
+    assert "import src.decision_gate" not in src
+    assert "from src.execution_planner" not in src
+    assert "import src.execution_planner" not in src
+    assert "from src.executor" not in src
+    assert "import src.executor" not in src
 
 
 def test_source_no_broker_writes_or_order_submission():
@@ -247,6 +371,9 @@ def main():
     test_joost_hugo_isolation()
     test_no_secrets_in_html_json()
     test_write_wallet_dashboard_outputs_accounts_profile_files()
+    test_wallet_json_contains_management_payload()
+    test_wallet_html_includes_management_sections()
+    test_wallet_dashboard_source_has_no_decision_execution_imports()
     test_source_no_broker_writes_or_order_submission()
     test_source_ast_no_broker_calls()
     print("ok")

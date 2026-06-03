@@ -10,6 +10,11 @@ from typing import Any
 
 from src.common.db import get_connection
 from src.market_data.market_price_snapshot_v1 import MarketPriceSnapshot, fetch_latest_prices_by_symbol
+from src.reporting.account_asset_management_v1 import (
+    UI_PREP_REASON,
+    build_account_asset_management_payload,
+    build_ui_prep_actions,
+)
 
 
 REPORT_NAME = "account_wallet_dashboard_v1"
@@ -68,6 +73,7 @@ class WalletDashboardPayload:
     account_asset_settings: AccountAssetSettingsSummary
     balances: tuple[BalanceDashboardRow, ...]
     open_order_counts: tuple[OpenOrderCountRow, ...]
+    management: dict[str, Any]
 
 
 def to_decimal(value: Any) -> Decimal | None:
@@ -287,6 +293,76 @@ def _fetch_account_asset_settings(
     )
 
 
+def _fetch_account_asset_rows(
+    conn: Any,
+    *,
+    trading_account_id: int,
+    venue: str,
+    balance_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    balance_by_market: dict[str, bool] = {}
+    for row in balance_rows:
+        currency_code = str(row.get("currency_code") or "").upper()
+        if not currency_code or currency_code == QUOTE_CURRENCY:
+            continue
+        total_amount = to_decimal(row.get("total_amount")) or Decimal("0")
+        if total_amount > Decimal("0"):
+            balance_by_market[f"{currency_code}-{QUOTE_CURRENCY}"] = True
+    sql = """
+    SELECT
+        vm.market,
+        vm.quote_currency,
+        a.symbol AS asset_symbol,
+        aa.source,
+        aa.is_visible,
+        aa.is_candidate_enabled,
+        aa.is_order_proposal_enabled,
+        aa.is_hidden,
+        aa.disabled_until_utc
+    FROM account_asset aa
+    JOIN venue_market vm
+      ON vm.venue_market_id = aa.venue_market_id
+    JOIN asset a
+      ON a.asset_id = vm.base_asset_id
+    WHERE aa.trading_account_id = %s
+      AND vm.venue = %s
+    ORDER BY vm.market
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (trading_account_id, venue))
+        rows = list(cur.fetchall())
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        market = str(item.get("market") or "").upper()
+        item["market"] = market
+        item["has_wallet_balance"] = bool(balance_by_market.get(market, False))
+        out.append(item)
+    return out
+
+
+def _fetch_venue_market_rows(
+    conn: Any,
+    *,
+    venue: str,
+) -> list[dict[str, Any]]:
+    sql = """
+    SELECT
+        vm.market,
+        vm.quote_currency,
+        vm.is_tradeable,
+        a.symbol AS asset_symbol
+    FROM venue_market vm
+    JOIN asset a
+      ON a.asset_id = vm.base_asset_id
+    WHERE vm.venue = %s
+    ORDER BY vm.market
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (venue,))
+        return [dict(row) for row in cur.fetchall()]
+
+
 def build_wallet_dashboard_payload(
     *,
     profile: str,
@@ -299,11 +375,15 @@ def build_wallet_dashboard_payload(
     open_order_count_rows: list[dict[str, Any]],
     account_asset_settings: AccountAssetSettingsSummary,
     price_by_symbol: dict[str, MarketPriceSnapshot],
+    account_asset_rows: list[dict[str, Any]] | None = None,
+    venue_market_rows: list[dict[str, Any]] | None = None,
     now_utc: datetime | None = None,
     fresh_after: timedelta = DEFAULT_FRESH_AFTER,
     price_fresh_after: timedelta = DEFAULT_PRICE_FRESH_AFTER,
 ) -> WalletDashboardPayload:
     now_utc = now_utc or datetime.now(UTC)
+    account_asset_rows = account_asset_rows or []
+    venue_market_rows = venue_market_rows or []
     latest_wallet_refresh_ts_utc = _max_ts(latest_balance_snapshot_ts_utc, latest_order_snapshot_ts_utc)
     freshness = classify_wallet_freshness(
         latest_wallet_refresh_ts_utc,
@@ -378,6 +458,21 @@ def build_wallet_dashboard_payload(
             f"Market data warning: missing_prices={missing_market_data_count} "
             f"stale_prices={stale_market_data_count}"
         )
+    open_order_count_by_market = {
+        row.market: row.order_count
+        for row in order_counts
+    }
+    management = build_account_asset_management_payload(
+        profile=profile,
+        venue_market_rows=venue_market_rows,
+        account_asset_rows=account_asset_rows,
+        open_order_count_by_market=open_order_count_by_market,
+    )
+    management["relevant_assets"] = management.pop("relevant_rows")
+    management["all_assets"] = management.pop("settings_rows")
+    management["addable_markets"] = management.pop("manual_add_rows")
+    management["open_orders_monitor"] = management.pop("open_order_rows")
+    management["actions"] = build_ui_prep_actions(profile=profile, market="*")
 
     return WalletDashboardPayload(
         profile=profile,
@@ -401,6 +496,7 @@ def build_wallet_dashboard_payload(
         account_asset_settings=account_asset_settings,
         balances=tuple(balances),
         open_order_counts=order_counts,
+        management=management,
     )
 
 
@@ -445,6 +541,13 @@ def load_wallet_dashboard_payload(
         venue=venue,
         now_utc=now_utc,
     )
+    account_asset_rows = _fetch_account_asset_rows(
+        conn,
+        trading_account_id=trading_account_id,
+        venue=venue,
+        balance_rows=balance_rows,
+    )
+    venue_market_rows = _fetch_venue_market_rows(conn, venue=venue)
     price_symbols = [
         str(row.get("currency_code") or "").upper()
         for row in balance_rows
@@ -467,6 +570,8 @@ def load_wallet_dashboard_payload(
         open_order_count_rows=open_order_count_rows,
         account_asset_settings=account_asset_settings,
         price_by_symbol=price_by_symbol,
+        account_asset_rows=account_asset_rows,
+        venue_market_rows=venue_market_rows,
         now_utc=now_utc,
         fresh_after=fresh_after,
         price_fresh_after=price_fresh_after,
@@ -508,6 +613,7 @@ def payload_to_json_dict(payload: WalletDashboardPayload) -> dict[str, Any]:
             else str(payload.total_estimated_portfolio_value_eur)
         ),
         "account_asset_settings": asdict(payload.account_asset_settings),
+        "management": payload.management,
         "balances": [
             {
                 "asset": row.asset,
@@ -579,6 +685,61 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
         order_counts_html = (
             "<tr><td colspan='2' class='muted'>No open orders found for the latest snapshot.</td></tr>"
         )
+    addable_rows = payload.management.get("addable_markets", [])
+    relevant_rows = payload.management.get("relevant_assets", [])
+    all_rows = payload.management.get("all_assets", [])
+    top_actions = payload.management.get("actions", [])
+    action_bar_html = "".join(
+        (
+            f"<button type='button' disabled title='{esc(action.get('reason'))}'>"
+            f"{esc(action.get('label'))}</button>"
+        )
+        for action in top_actions
+    )
+    addable_html = "".join(
+        (
+            "<tr>"
+            f"<td>{esc(row.get('market'))}</td>"
+            f"<td>{esc(row.get('asset_symbol') or '')}</td>"
+            f"<td>{esc(row.get('source') or 'NOT_ADDED')}</td>"
+            f"<td>{'YES' if row.get('already_added') else 'NO'}</td>"
+            f"<td>{'YES' if row.get('is_account_active') else 'NO'}</td>"
+            f"<td>{esc(row.get('actions', [{}])[0].get('reason') or UI_PREP_REASON)}</td>"
+            "</tr>"
+        )
+        for row in addable_rows
+    )
+    if not addable_html:
+        addable_html = "<tr><td colspan='6' class='muted'>No addable markets available for this account.</td></tr>"
+    relevant_html = "".join(
+        (
+            "<tr>"
+            f"<td>{esc(row.get('market'))}</td>"
+            f"<td>{esc(row.get('source') or '')}</td>"
+            f"<td>{'YES' if row.get('is_candidate_enabled') else 'NO'}</td>"
+            f"<td>{esc(row.get('open_order_count') or 0)}</td>"
+            f"<td>{esc(row.get('actions', [{}])[1].get('reason') or UI_PREP_REASON)}</td>"
+            "</tr>"
+        )
+        for row in relevant_rows
+    )
+    if not relevant_html:
+        relevant_html = "<tr><td colspan='5' class='muted'>No relevant account assets available.</td></tr>"
+    all_assets_html = "".join(
+        (
+            "<tr>"
+            f"<td>{esc(row.get('market'))}</td>"
+            f"<td>{esc(row.get('source') or 'NOT_ADDED')}</td>"
+            f"<td>{'YES' if row.get('is_hidden') else 'NO'}</td>"
+            f"<td>{'YES' if row.get('is_candidate_enabled') else 'NO'}</td>"
+            f"<td>{'YES' if row.get('already_added') else 'NO'}</td>"
+            f"<td>{esc(row.get('actions', [{}])[-1].get('reason') or UI_PREP_REASON)}</td>"
+            "</tr>"
+        )
+        for row in all_rows
+    )
+    if not all_assets_html:
+        all_assets_html = "<tr><td colspan='6' class='muted'>No settings rows available.</td></tr>"
 
     return f"""<!doctype html>
 <html lang="en">
@@ -604,6 +765,7 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
     .section {{ margin-top: 22px; }}
     button[disabled] {{ border: 1px solid #bbb; background: #eee; color: #666; border-radius: 10px; padding: 10px 14px; cursor: not-allowed; }}
     .footnote {{ margin-top: 18px; font-size: 12px; color: #555; }}
+    .actionbar {{ display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }}
   </style>
 </head>
 <body>
@@ -675,6 +837,68 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
         </thead>
         <tbody>
           {order_counts_html}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <h2>Management</h2>
+      <div class="muted">UI-prep only. No public mutation endpoint. All actions remain disabled until an authenticated account mutation layer exists.</div>
+      <div class="actionbar">{action_bar_html}</div>
+    </div>
+
+    <div class="section">
+      <h2>Addable Markets</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Market</th>
+            <th>Asset</th>
+            <th>Source</th>
+            <th>Already Added</th>
+            <th>Active Coin</th>
+            <th>Action State</th>
+          </tr>
+        </thead>
+        <tbody>
+          {addable_html}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <h2>Relevant Assets</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Market</th>
+            <th>Source</th>
+            <th>Candidate Enabled</th>
+            <th>Open Orders</th>
+            <th>Action State</th>
+          </tr>
+        </thead>
+        <tbody>
+          {relevant_html}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <h2>All / Settings</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Market</th>
+            <th>Source</th>
+            <th>Hidden</th>
+            <th>Candidate Enabled</th>
+            <th>Already Added</th>
+            <th>Action State</th>
+          </tr>
+        </thead>
+        <tbody>
+          {all_assets_html}
         </tbody>
       </table>
     </div>

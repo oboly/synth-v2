@@ -142,6 +142,9 @@ The renderer exposes prepared action metadata only:
 
 These are dashboard/UI-prep descriptors only, not live public mutation handlers.
 
+The wallet dashboard render exposes these datasets inside `wallet.json` and as
+disabled controls/sections in `wallet.html`.
+
 ## Filtering semantics
 
 ### Relevant view
