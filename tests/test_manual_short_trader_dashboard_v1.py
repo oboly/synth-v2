@@ -10,6 +10,7 @@ from src.reporting.manual_short_trader_dashboard_v1 import (
     assign_order_labels,
     build_all_sections,
     build_json_snapshot,
+    collect_unpriced_markets,
     compute_distance_pct,
     compute_quote_value,
     normalize_broker_balance,
@@ -499,6 +500,72 @@ def test_build_json_snapshot_order_fields_present() -> None:
 
 
 # ---------------------------------------------------------------------------
+# collect_unpriced_markets
+# ---------------------------------------------------------------------------
+
+def test_collect_unpriced_markets_returns_discovered_markets() -> None:
+    """Markets in orders but absent from prices dict must be returned."""
+    orders = [
+        normalize_broker_order(_raw_order("o-1", "WLD-EUR", "buy", "0.35", "100")),
+        normalize_broker_order(_raw_order("o-2", "ALGO-EUR", "sell", "0.11", "500")),
+        normalize_broker_order(_raw_order("o-3", "NEAR-EUR", "buy", "2.50", "200")),
+    ]
+    prices: dict[str, Decimal] = {"WLD-EUR": Decimal("0.68")}
+    result = collect_unpriced_markets(orders, prices)
+    assert "ALGO-EUR" in result
+    assert "NEAR-EUR" in result
+    assert "WLD-EUR" not in result
+
+
+def test_collect_unpriced_markets_empty_when_all_priced() -> None:
+    orders = [
+        normalize_broker_order(_raw_order("o-1", "WLD-EUR", "buy", "0.35", "100")),
+        normalize_broker_order(_raw_order("o-2", "ONDO-EUR", "sell", "0.90", "50")),
+    ]
+    prices: dict[str, Decimal] = {
+        "WLD-EUR": Decimal("0.68"),
+        "ONDO-EUR": Decimal("0.90"),
+    }
+    assert collect_unpriced_markets(orders, prices) == []
+
+
+def test_collect_unpriced_markets_empty_when_no_orders() -> None:
+    assert collect_unpriced_markets([], {"WLD-EUR": Decimal("0.68")}) == []
+
+
+def test_collect_unpriced_markets_result_is_sorted() -> None:
+    orders = [
+        normalize_broker_order(_raw_order("o-1", "ZRX-EUR", "buy", "0.30", "100")),
+        normalize_broker_order(_raw_order("o-2", "ALGO-EUR", "buy", "0.11", "200")),
+    ]
+    result = collect_unpriced_markets(orders, {})
+    assert result == sorted(result)
+
+
+def test_build_all_sections_uses_discovered_price() -> None:
+    """
+    Simulate what the runner does: orders contain a market (ALGO-EUR) not in
+    the initial prices dict. After collect_unpriced_markets + price lookup the
+    section should carry the discovered price and non-None distance values.
+    """
+    orders = [
+        normalize_broker_order(_raw_order("o-1", "ALGO-EUR", "buy", "0.10", "300")),
+    ]
+    # Initial prices missing ALGO-EUR — simulates the old bug
+    prices_initial: dict[str, Decimal] = {}
+    assert collect_unpriced_markets(orders, prices_initial) == ["ALGO-EUR"]
+
+    # Runner fetches the missing price and merges it
+    discovered_price = Decimal("0.113")
+    prices_full = {**prices_initial, "ALGO-EUR": discovered_price}
+
+    sections = build_all_sections(orders, [], prices_full)
+    algo = sections[0]
+    assert algo.current_price == discovered_price
+    assert algo.buy_orders[0].distance_pct is not None
+
+
+# ---------------------------------------------------------------------------
 # Boundary: no forbidden imports in the pure module
 # ---------------------------------------------------------------------------
 
@@ -596,6 +663,11 @@ def main() -> None:
         test_build_json_snapshot_is_json_serializable,
         test_build_json_snapshot_buy_sell_structure,
         test_build_json_snapshot_order_fields_present,
+        test_collect_unpriced_markets_returns_discovered_markets,
+        test_collect_unpriced_markets_empty_when_all_priced,
+        test_collect_unpriced_markets_empty_when_no_orders,
+        test_collect_unpriced_markets_result_is_sorted,
+        test_build_all_sections_uses_discovered_price,
         test_pure_module_has_no_forbidden_imports,
         test_runner_has_no_broker_write_calls,
     ]

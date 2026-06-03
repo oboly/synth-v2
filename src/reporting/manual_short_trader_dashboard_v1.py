@@ -195,6 +195,14 @@ def _build_ladder_order_row(
     )
 
 
+def collect_unpriced_markets(
+    orders: list[BrokerOrderRow],
+    prices: dict[str, Decimal],
+) -> list[str]:
+    """Return sorted list of markets present in orders but absent from prices."""
+    return sorted({o.market for o in orders} - set(prices.keys()))
+
+
 def build_all_sections(
     orders: list[BrokerOrderRow],
     balances: list[BrokerBalanceRow],

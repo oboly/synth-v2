@@ -15,6 +15,7 @@ from src.reporting.manual_short_trader_dashboard_v1 import (
     LadderSymbolSection,
     build_all_sections,
     build_json_snapshot,
+    collect_unpriced_markets,
     fmt_price,
     normalize_broker_balance,
     normalize_broker_order,
@@ -164,6 +165,12 @@ def main() -> int:
         except Exception as exc:
             print(f"[error] Broker snapshot failed: {exc}", file=sys.stderr)
             return 1
+
+    # Fetch public ticker prices for any markets discovered from open orders
+    # that were not included in the initial --markets list.
+    extra = collect_unpriced_markets(orders, prices)
+    if extra:
+        prices = {**prices, **fetch_ticker_prices(client, extra)}
 
     fib_rows = load_fib_rows(Path(args.fib_map_rows))
     sections = build_all_sections(orders, balances, prices, fib_rows=fib_rows)
