@@ -74,7 +74,7 @@ Render Joost:
 python -m src.reporting.run_account_wallet_dashboard_v1 \
   --account-profile joost \
   --venue bitvavo \
-  --output-root /var/www/html/synth/accounts \
+  --output-root /var/www/html/synth \
   --output summary
 ```
 
@@ -84,7 +84,7 @@ Render Hugo:
 python -m src.reporting.run_account_wallet_dashboard_v1 \
   --account-profile hugo \
   --venue bitvavo \
-  --output-root /var/www/html/synth/accounts \
+  --output-root /var/www/html/synth \
   --output summary
 ```
 

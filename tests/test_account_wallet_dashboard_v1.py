@@ -187,9 +187,9 @@ def test_no_secrets_in_html_json():
 def test_write_wallet_dashboard_outputs_accounts_profile_files():
     now = _base_now()
     payload = build_wallet_dashboard_payload(
-        profile="hugo",
-        account_code="bitvavo_hugo_read",
-        trading_account_id=2,
+        profile="joost",
+        account_code="bitvavo_joost_read",
+        trading_account_id=1,
         venue="bitvavo",
         latest_balance_snapshot_ts_utc=now.replace(tzinfo=None),
         latest_order_snapshot_ts_utc=now.replace(tzinfo=None),
@@ -210,8 +210,12 @@ def test_write_wallet_dashboard_outputs_accounts_profile_files():
         html_path, json_path = write_wallet_dashboard(payload, output_root=Path(tmpdir))
         assert html_path.name == "wallet.html"
         assert json_path.name == "wallet.json"
-        assert html_path.parent.name == "hugo"
-        assert json_path.parent.name == "hugo"
+        assert html_path.parent.name == "joost"
+        assert json_path.parent.name == "joost"
+        assert html_path.parent.parent.name == "accounts"
+        assert json_path.parent.parent.name == "accounts"
+        assert "/accounts/joost/wallet.html" in html_path.as_posix()
+        assert "/accounts/joost/wallet.json" in json_path.as_posix()
         assert html_path.exists()
         assert json_path.exists()
 

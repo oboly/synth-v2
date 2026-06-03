@@ -14,7 +14,7 @@ from src.market_data.market_price_snapshot_v1 import MarketPriceSnapshot, fetch_
 
 REPORT_NAME = "account_wallet_dashboard_v1"
 REPORT_VERSION = "0.1"
-DEFAULT_OUTPUT_ROOT = Path("/var/www/html/synth/accounts")
+DEFAULT_OUTPUT_ROOT = Path("/var/www/html/synth")
 DEFAULT_FRESH_AFTER = timedelta(minutes=15)
 DEFAULT_PRICE_FRESH_AFTER = timedelta(minutes=15)
 QUOTE_CURRENCY = "EUR"
@@ -692,7 +692,7 @@ def write_wallet_dashboard(
     *,
     output_root: Path,
 ) -> tuple[Path, Path]:
-    profile_dir = output_root / payload.profile
+    profile_dir = output_root / "accounts" / payload.profile
     profile_dir.mkdir(parents=True, exist_ok=True)
     html_path = profile_dir / "wallet.html"
     json_path = profile_dir / "wallet.json"

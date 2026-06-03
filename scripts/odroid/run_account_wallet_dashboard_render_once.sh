@@ -8,7 +8,7 @@ if [[ -z "${PROFILE}" ]]; then
 fi
 
 REPO_DIR="${SYNTH_REPO_DIR:-$HOME/projects/synth-v2}"
-OUTPUT_ROOT="${SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT:-/var/www/html/synth/accounts}"
+OUTPUT_ROOT="${SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT:-/var/www/html/synth}"
 LOCK_FILE="${SYNTH_ACCOUNT_WALLET_DASHBOARD_LOCK:-/tmp/synth-account-wallet-dashboard-${PROFILE}.lock}"
 VENUE="${SYNTH_ACCOUNT_WALLET_VENUE:-bitvavo}"
 

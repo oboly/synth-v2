@@ -47,7 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-root",
         default=str(DEFAULT_OUTPUT_ROOT),
-        help="Root directory for accounts/<profile>/wallet.html and wallet.json.",
+        help="Synth web root. Outputs are written under accounts/<profile>/wallet.html and wallet.json.",
     )
     parser.add_argument(
         "--fresh-after-minutes",
