@@ -2244,6 +2244,14 @@ def write_index(output_dir: Path) -> Path:
         <p class="muted">Account-aware read-only position-review dashboard for existing holdings, with separate market-only entry readiness context.</p>
       </div>
       <div class="card">
+        <a href="/synth/profit-plan.html">Profit Plan</a>
+        <p class="muted">Human-readable manual planning states for open short-trader markets. Read-only only.</p>
+      </div>
+      <div class="card">
+        <a href="/synth/open-orders-monitor.html">Open Orders Monitor</a>
+        <p class="muted">Technical open-order audit view. Read-only visibility only.</p>
+      </div>
+      <div class="card">
         <a href="/synth/recompute-lifecycle.html">Recompute lifecycle</a>
         <p class="muted">Maps needing refresh, cooldown, and post-refresh state.</p>
       </div>

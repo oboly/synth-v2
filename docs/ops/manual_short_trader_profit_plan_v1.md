@@ -13,6 +13,14 @@ It shows *what to watch next* per symbol, not a raw order dump.
 The existing **Open Orders Monitor** (`manual_short_trader_dashboard_v1`) remains
 the technical audit view. Profit Plan links back to Open Orders Monitor.
 
+Cockpit integration:
+
+- the read-only cockpit render refreshes `fibo_target_map_v1` before Profit Plan
+  render
+- the cockpit publishes Profit Plan at `/var/www/html/synth/profit-plan.html`
+- the cockpit may also publish `/var/www/html/synth/profit-plan.json` for the
+  read-only snapshot payload
+
 It does not:
 
 - submit orders
@@ -203,6 +211,16 @@ python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
   --fib-map-rows data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv \
   --output-html /tmp/profit_plan_v1.html \
   --output summary
+```
+
+Cockpit render prerequisite for the default WLD/ONDO page:
+
+```bash
+python -m src.research.run_fibo_target_map_v1 \
+  --symbols WLD,ONDO \
+  --write-files \
+  --output summary \
+  --output-dir data/research/fibo_target_map_v1
 ```
 
 Manual anchors remain supported and override missing source context for the named symbol:

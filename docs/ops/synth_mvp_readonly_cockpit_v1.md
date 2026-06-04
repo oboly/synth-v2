@@ -9,6 +9,8 @@ Render a read-only online cockpit for paper advice, A+ Table 1 DB context, fresh
 - /var/www/html/synth/index.html
 - /var/www/html/synth/paper-advice.html
 - /var/www/html/synth/rotation-preview.html
+- /var/www/html/synth/profit-plan.html
+- /var/www/html/synth/profit-plan.json
 
 ## Runner
 
@@ -17,6 +19,13 @@ Render a read-only online cockpit for paper advice, A+ Table 1 DB context, fresh
 ## Safety boundary
 
 Allowed: public market reads, private broker balance read, local DB snapshot writes, paper advice observation writes, static HTML writes.
+
+Profit Plan integration stays read-only:
+
+- refresh canonical `fibo_target_map_v1` before Profit Plan render
+- render `/var/www/html/synth/profit-plan.html`
+- render `/var/www/html/synth/profit-plan.json`
+- no broker writes, no order submission, no executor path
 
 Forbidden: broker writes, order submission, execution_planner activation, executor activation, decision_gate permission changes, live trading.
 
