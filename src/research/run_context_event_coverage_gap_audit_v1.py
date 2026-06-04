@@ -10,7 +10,7 @@ from typing import Any
 
 
 REPORT_NAME = "context_event_coverage_gap_audit_v1"
-REPORT_VERSION = "1.0"
+REPORT_VERSION = "1.1"
 
 DEFAULT_EVENT_LEVEL_ROWS = Path(
     "data/research/event_level_symbol_reaction_profile_by_context_v1"
@@ -31,12 +31,32 @@ MANIFEST_JSON = "manifest_v1.json"
 
 MAX_STALENESS = timedelta(days=7)
 
-CONTEXT_VALUE_FIELDS = (
-    "breath_phase",
-    "breath_alignment",
-    "market_regime",
-    "btc_context",
-    "symbol_regime",
+# ── Event-level coverage labels (primary, from embedded fields) ────────────────
+# Mutually exclusive, priority: BREATH > SYMBOL_REGIME > MARKET_ONLY > UNKNOWN
+BREATH_CONTEXT = "BREATH_CONTEXT"
+SYMBOL_REGIME_CONTEXT = "SYMBOL_REGIME_CONTEXT"
+MARKET_ONLY_CONTEXT = "MARKET_ONLY_CONTEXT"
+UNKNOWN_CONTEXT = "UNKNOWN_CONTEXT"
+
+# ── Context-range coverage labels (secondary, from staleness lookup) ───────────
+USABLE_CONTEXT = "USABLE_CONTEXT"
+CONTEXT_ROW_UNKNOWN = "CONTEXT_ROW_UNKNOWN"
+STALE_CONTEXT = "STALE_CONTEXT"
+PROFILE_EVENT_OUTSIDE_CONTEXT_RANGE = "PROFILE_EVENT_OUTSIDE_CONTEXT_RANGE"
+MISSING_CONTEXT_ROW = "MISSING_CONTEXT_ROW"
+INTERVAL_MISMATCH = "INTERVAL_MISMATCH"
+SYMBOL_MISMATCH = "SYMBOL_MISMATCH"
+UNKNOWN = "UNKNOWN"
+
+# ── Field groups ───────────────────────────────────────────────────────────────
+ANY_CONTEXT_FIELDS = (
+    "market_regime", "btc_context", "symbol_regime",
+    "breath_phase", "breath_alignment", "fibo_context",
+)
+MATERIAL_FIELDS = ("breath_phase", "breath_alignment", "symbol_regime")
+BREATH_FIELDS = ("breath_phase", "breath_alignment")
+RANGE_CHECK_FIELDS = (
+    "breath_phase", "breath_alignment", "market_regime", "btc_context", "symbol_regime",
 )
 
 SAFETY_MARKERS: dict[str, Any] = {
@@ -48,22 +68,14 @@ SAFETY_MARKERS: dict[str, Any] = {
     "db_writes": 0,
 }
 
-# Issue classification values (ordered from most informative to least)
-USABLE_CONTEXT = "USABLE_CONTEXT"
-CONTEXT_ROW_UNKNOWN = "CONTEXT_ROW_UNKNOWN"
-STALE_CONTEXT = "STALE_CONTEXT"
-PROFILE_EVENT_OUTSIDE_CONTEXT_RANGE = "PROFILE_EVENT_OUTSIDE_CONTEXT_RANGE"
-MISSING_CONTEXT_ROW = "MISSING_CONTEXT_ROW"
-INTERVAL_MISMATCH = "INTERVAL_MISMATCH"
-SYMBOL_MISMATCH = "SYMBOL_MISMATCH"
-UNKNOWN = "UNKNOWN"
-
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Audit why event-level reaction rows have low historical context coverage "
-            "(research-only, no DB writes, no broker calls)."
+            "Audit event-level context coverage and explain gaps "
+            "(research-only, no DB writes, no broker calls). "
+            "Primary classification reads embedded event-level fields; "
+            "--context-rows used only for staleness/range diagnostics."
         )
     )
     parser.add_argument("--event-level-rows", default=str(DEFAULT_EVENT_LEVEL_ROWS))
@@ -115,7 +127,11 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     for row in rows:
         conv: dict[str, Any] = {}
         for key, value in row.items():
-            conv[key] = json.dumps(value, sort_keys=True, ensure_ascii=True) if isinstance(value, (list, dict)) else value
+            conv[key] = (
+                json.dumps(value, sort_keys=True, ensure_ascii=True)
+                if isinstance(value, (list, dict))
+                else value
+            )
         converted.append(conv)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(converted[0].keys()))
@@ -125,7 +141,10 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def load_event_level_rows(path: Path) -> list[dict[str, Any]]:
@@ -183,12 +202,53 @@ def nearest_at_or_before(
     return matched
 
 
-def context_range_for_symbol(lookup: dict[str, list[dict[str, Any]]], symbol: str) -> tuple[datetime | None, datetime | None]:
+def context_range_for_symbol(
+    lookup: dict[str, list[dict[str, Any]]], symbol: str
+) -> tuple[datetime | None, datetime | None]:
     rows = lookup.get(symbol, [])
     if not rows:
         return None, None
     return rows[0]["_asof_ts_dt"], rows[-1]["_asof_ts_dt"]
 
+
+# ── Primary: classify from embedded event-level fields ────────────────────────
+
+def classify_from_event_level_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Read context fields already embedded on the event-level row.
+
+    Never re-does a context-row lookup. Intended as the primary coverage signal
+    so that event-range rows are not incorrectly classified as outside range.
+    """
+    has_breath = any(not is_unknown(row.get(f)) for f in BREATH_FIELDS)
+    has_symbol_regime = not is_unknown(row.get("symbol_regime"))
+    has_market = any(
+        not is_unknown(row.get(f)) for f in ("market_regime", "btc_context")
+    )
+    has_any = any(not is_unknown(row.get(f)) for f in ANY_CONTEXT_FIELDS)
+
+    known_fields = [f for f in ANY_CONTEXT_FIELDS if not is_unknown(row.get(f))]
+    unknown_fields = [f for f in ANY_CONTEXT_FIELDS if is_unknown(row.get(f))]
+
+    # Mutually exclusive — most specific wins
+    if has_breath:
+        coverage = BREATH_CONTEXT
+    elif has_symbol_regime:
+        coverage = SYMBOL_REGIME_CONTEXT
+    elif has_market:
+        coverage = MARKET_ONLY_CONTEXT
+    else:
+        coverage = UNKNOWN_CONTEXT
+
+    return {
+        "issue_classification": coverage,
+        "is_any_context": has_any,
+        "is_material_context": has_breath or has_symbol_regime,
+        "event_level_known_fields": known_fields,
+        "event_level_unknown_fields": unknown_fields,
+    }
+
+
+# ── Secondary: classify from context-row staleness/range lookup ───────────────
 
 def classify_event(
     *,
@@ -198,7 +258,11 @@ def classify_event(
     context_lookup: dict[str, list[dict[str, Any]]],
     recompute_lookup: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
-    # Nearest context row
+    """Context-range staleness/gap diagnostic. Secondary field only.
+
+    Does NOT override event-level coverage when embedded context fields are present.
+    Used for range-gap analysis: staleness, missing rows, interval mismatches.
+    """
     ctx_row = nearest_at_or_before(context_lookup, symbol=symbol, event_ts=event_ts)
     recomp_row = nearest_at_or_before(recompute_lookup, symbol=symbol, event_ts=event_ts)
 
@@ -222,11 +286,10 @@ def classify_event(
         "recompute_range_end": fmt_ts(recomp_range_end),
     }
 
-    # Determine which context fields are known
     known_fields: list[str] = []
     unknown_fields: list[str] = []
     if ctx_row:
-        for field in CONTEXT_VALUE_FIELDS:
+        for field in RANGE_CHECK_FIELDS:
             if is_unknown(ctx_row.get(field)):
                 unknown_fields.append(field)
             else:
@@ -234,64 +297,58 @@ def classify_event(
     result["context_known_fields"] = known_fields
     result["context_unknown_fields"] = unknown_fields
 
-    # Classify
     if symbol not in context_lookup:
         result["issue_classification"] = MISSING_CONTEXT_ROW
         result["issue_detail"] = "no context rows for this symbol"
         return result
 
     if ctx_row is None:
-        # Symbol has rows but all are after the event
         result["issue_classification"] = PROFILE_EVENT_OUTSIDE_CONTEXT_RANGE
         result["issue_detail"] = f"event is before context range start {fmt_ts(ctx_range_start)}"
         return result
 
     if ctx_age_h is not None and ctx_age_h > MAX_STALENESS.total_seconds() / 3600.0:
-        # Context row found but too old
         if ctx_range_end is not None and event_ts > ctx_range_end + MAX_STALENESS:
             result["issue_classification"] = PROFILE_EVENT_OUTSIDE_CONTEXT_RANGE
             result["issue_detail"] = (
                 f"event {fmt_ts(event_ts)} is {ctx_age_h:.1f}h after nearest context "
-                f"(context ends {fmt_ts(ctx_range_end)}, staleness limit {int(MAX_STALENESS.total_seconds() // 3600)}h)"
+                f"(context ends {fmt_ts(ctx_range_end)}, "
+                f"staleness limit {int(MAX_STALENESS.total_seconds() // 3600)}h)"
             )
         else:
             result["issue_classification"] = STALE_CONTEXT
-            result["issue_detail"] = f"nearest context is {ctx_age_h:.1f}h old (limit {int(MAX_STALENESS.total_seconds() // 3600)}h)"
+            result["issue_detail"] = (
+                f"nearest context is {ctx_age_h:.1f}h old "
+                f"(limit {int(MAX_STALENESS.total_seconds() // 3600)}h)"
+            )
         return result
 
-    # Context found and within staleness — check interval
     ctx_interval = str(ctx_row.get("interval") or "").strip()
-    if ctx_interval and event_interval and ctx_interval != event_interval and event_interval not in {"UNKNOWN", ""}:
+    if (
+        ctx_interval
+        and event_interval
+        and ctx_interval != event_interval
+        and event_interval not in {"UNKNOWN", ""}
+    ):
         result["issue_classification"] = INTERVAL_MISMATCH
-        result["issue_detail"] = f"event interval {event_interval!r} != context interval {ctx_interval!r}"
+        result["issue_detail"] = (
+            f"event interval {event_interval!r} != context interval {ctx_interval!r}"
+        )
         return result
 
-    # Context found and within staleness — check if all fields are UNKNOWN
     if not known_fields and unknown_fields:
         result["issue_classification"] = CONTEXT_ROW_UNKNOWN
         result["issue_detail"] = "nearest context row has all UNKNOWN values for context fields"
         return result
 
     result["issue_classification"] = USABLE_CONTEXT
-    result["issue_detail"] = f"context found {ctx_age_h:.1f}h before event, {len(known_fields)} known fields"
+    result["issue_detail"] = (
+        f"context found {ctx_age_h:.1f}h before event, {len(known_fields)} known fields"
+    )
     return result
 
 
-def recommend_next_action(issue_counts: Counter[str], total: int) -> str:
-    if total == 0:
-        return "no_action"
-    outside_pct = (issue_counts.get(PROFILE_EVENT_OUTSIDE_CONTEXT_RANGE, 0) + issue_counts.get(STALE_CONTEXT, 0)) / total
-    if outside_pct >= 0.5:
-        return "rerun_context_builder_with_wider_date_range"
-    if issue_counts.get(MISSING_CONTEXT_ROW, 0) / total >= 0.5:
-        return "fix_symbol_interval_join_or_extend_context_builder"
-    if issue_counts.get(CONTEXT_ROW_UNKNOWN, 0) / total >= 0.5:
-        return "rerun_recompute_with_wider_date_range_or_accept_unknown"
-    usable_pct = issue_counts.get(USABLE_CONTEXT, 0) / total
-    if usable_pct >= 0.9:
-        return "no_action"
-    return "rerun_context_builder_with_wider_date_range"
-
+# ── Build rows ─────────────────────────────────────────────────────────────────
 
 def build_audit_rows(
     *,
@@ -305,7 +362,11 @@ def build_audit_rows(
         event_ts = row["_event_ts_dt"]
         event_interval = str(row.get("interval") or "").strip()
 
-        classification = classify_event(
+        # Primary: from embedded event-level context fields
+        el = classify_from_event_level_fields(row)
+
+        # Secondary: staleness/range diagnostic from context-row lookup
+        rng = classify_event(
             symbol=symbol,
             event_ts=event_ts,
             event_interval=event_interval,
@@ -317,10 +378,73 @@ def build_audit_rows(
             "symbol": symbol,
             "event_ts_utc": fmt_ts(event_ts),
             "event_interval": event_interval,
-            **classification,
+            # Primary classification (event-level embedded fields)
+            "issue_classification": el["issue_classification"],
+            "is_any_context": el["is_any_context"],
+            "is_material_context": el["is_material_context"],
+            "event_level_known_fields": el["event_level_known_fields"],
+            "event_level_unknown_fields": el["event_level_unknown_fields"],
+            # Secondary (context-row range diagnostics)
+            "context_range_issue": rng["issue_classification"],
+            "context_range_detail": rng.get("issue_detail", ""),
+            "nearest_context_asof_ts_utc": rng["nearest_context_asof_ts_utc"],
+            "nearest_context_age_hours": rng["nearest_context_age_hours"],
+            "nearest_recompute_asof_ts_utc": rng["nearest_recompute_asof_ts_utc"],
+            "nearest_recompute_age_hours": rng["nearest_recompute_age_hours"],
+            "context_range_start": rng["context_range_start"],
+            "context_range_end": rng["context_range_end"],
+            "context_known_fields": rng["context_known_fields"],
+            "context_unknown_fields": rng["context_unknown_fields"],
             "research_only": True,
         })
     return output
+
+
+# ── Manifest & summary ─────────────────────────────────────────────────────────
+
+def _event_level_coverage_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    total = len(rows)
+    return {
+        "total_events": total,
+        "any_context_events": sum(1 for r in rows if r.get("is_any_context")),
+        "material_context_events": sum(1 for r in rows if r.get("is_material_context")),
+        "breath_context_events": sum(
+            1 for r in rows if r.get("issue_classification") == BREATH_CONTEXT
+        ),
+        "symbol_regime_context_events": sum(
+            1 for r in rows if r.get("issue_classification") == SYMBOL_REGIME_CONTEXT
+        ),
+        "market_only_context_events": sum(
+            1 for r in rows if r.get("issue_classification") == MARKET_ONLY_CONTEXT
+        ),
+        "unknown_context_events": sum(
+            1 for r in rows if r.get("issue_classification") == UNKNOWN_CONTEXT
+        ),
+        "issue_distribution": dict(Counter(str(r["issue_classification"]) for r in rows)),
+    }
+
+
+def recommend_next_action(
+    el_counts: dict[str, int],
+    range_issue_counts: Counter[str],
+    total: int,
+) -> str:
+    if total == 0:
+        return "no_action"
+    unknown_pct = el_counts.get("unknown_context_events", 0) / total
+    any_pct = el_counts.get("any_context_events", 0) / total
+    material_pct = el_counts.get("material_context_events", 0) / total
+    breath_pct = el_counts.get("breath_context_events", 0) / total
+
+    if unknown_pct >= 0.5 or any_pct < 0.5:
+        return "rerun_context_builder_with_wider_date_range"
+    if material_pct >= 0.9 and breath_pct >= 0.5:
+        return "no_action"
+    if material_pct >= 0.5 and breath_pct < 0.5:
+        return "expand_breath_phase_context"
+    if any_pct >= 0.9 and material_pct < 0.5:
+        return "expand_symbol_regime_and_breath_context"
+    return "expand_context_coverage"
 
 
 def build_manifest(
@@ -331,23 +455,30 @@ def build_manifest(
     context_lookup: dict[str, list[dict[str, Any]]],
     recompute_lookup: dict[str, list[dict[str, Any]]],
 ) -> dict[str, Any]:
-    issue_counts: Counter[str] = Counter(str(row["issue_classification"]) for row in rows)
-    usable = issue_counts.get(USABLE_CONTEXT, 0)
     total = len(rows)
+    el_counts = _event_level_coverage_counts(rows)
+    range_issue_counts: Counter[str] = Counter(
+        str(r.get("context_range_issue", UNKNOWN)) for r in rows
+    )
 
-    # Per-symbol issue distribution
-    by_symbol: dict[str, dict[str, Any]] = {}
+    # Per-symbol summary
     sym_rows: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         sym_rows[row["symbol"]].append(row)
+    by_symbol: dict[str, dict[str, Any]] = {}
     for sym, sym_list in sorted(sym_rows.items()):
-        sym_issues: Counter[str] = Counter(str(r["issue_classification"]) for r in sym_list)
         event_ts_list = [r["event_ts_utc"] for r in sym_list if r.get("event_ts_utc")]
         ctx_rows = context_lookup.get(sym, [])
         recomp_rows = recompute_lookup.get(sym, [])
+        sym_el = _event_level_coverage_counts(sym_list)
         by_symbol[sym] = {
             "event_count": len(sym_list),
-            "issue_distribution": dict(sym_issues),
+            "event_level_coverage": {
+                k: v for k, v in sym_el.items() if k != "total_events"
+            },
+            "context_range_issue_distribution": dict(
+                Counter(str(r.get("context_range_issue", UNKNOWN)) for r in sym_list)
+            ),
             "event_ts_range": [min(event_ts_list), max(event_ts_list)] if event_ts_list else [],
             "context_ts_range": (
                 [fmt_ts(ctx_rows[0]["_asof_ts_dt"]), fmt_ts(ctx_rows[-1]["_asof_ts_dt"])]
@@ -359,14 +490,19 @@ def build_manifest(
             ),
         }
 
-    recommended = recommend_next_action(issue_counts, total)
+    recommended = recommend_next_action(el_counts, range_issue_counts, total)
 
     return {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
-        "total_events": total,
-        "usable_context_events": usable,
-        "issue_distribution": dict(issue_counts),
+        "event_level_coverage": el_counts,
+        "context_range_coverage": {
+            "issue_distribution": dict(range_issue_counts),
+            "note": (
+                "secondary diagnostic — staleness/range lookup against --context-rows; "
+                "does not override event-level coverage"
+            ),
+        },
         "recommended_next_action": recommended,
         "by_symbol": by_symbol,
         "event_level_rows": str(args.event_level_rows),
@@ -379,19 +515,44 @@ def build_manifest(
 
 
 def print_summary(rows: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
+    el = manifest["event_level_coverage"]
+    rng = manifest["context_range_coverage"]
     print(f"report={REPORT_NAME} version={REPORT_VERSION}")
-    print(f"total_events={manifest['total_events']}")
-    print(f"usable_context_events={manifest['usable_context_events']}")
-    issue_dist = manifest["issue_distribution"]
+    print(f"total_events={el['total_events']}")
+    print(f"any_context_events={el['any_context_events']}")
+    print(f"material_context_events={el['material_context_events']}")
+    print(f"breath_context_events={el['breath_context_events']}")
+    print(f"symbol_regime_context_events={el['symbol_regime_context_events']}")
+    print(f"market_only_context_events={el['market_only_context_events']}")
+    print(f"unknown_context_events={el['unknown_context_events']}")
+    issue_dist = el["issue_distribution"]
     print(
-        "issue_distribution "
-        + " ; ".join(f"{k}:{issue_dist[k]}" for k in sorted(issue_dist, key=lambda k: -issue_dist[k]))
+        "event_level_issue_distribution "
+        + " ; ".join(
+            f"{k}:{issue_dist[k]}"
+            for k in sorted(issue_dist, key=lambda k: -issue_dist[k])
+        )
+    )
+    range_dist = rng["issue_distribution"]
+    print(
+        "context_range_issue_distribution "
+        + " ; ".join(
+            f"{k}:{range_dist[k]}"
+            for k in sorted(range_dist, key=lambda k: -range_dist[k])
+        )
     )
     print(f"recommended_next_action={manifest['recommended_next_action']}")
-    print("per_symbol_issue_distribution:")
+    print("per_symbol_event_level_coverage:")
     for sym, data in sorted(manifest["by_symbol"].items()):
-        issues = " ".join(f"{k}:{v}" for k, v in sorted(data["issue_distribution"].items(), key=lambda kv: -kv[1]))
-        print(f"  {sym}: {issues}")
+        el_sym = data["event_level_coverage"]
+        print(
+            f"  {sym}: any={el_sym.get('any_context_events',0)}"
+            f" material={el_sym.get('material_context_events',0)}"
+            f" breath={el_sym.get('breath_context_events',0)}"
+            f" sym_regime={el_sym.get('symbol_regime_context_events',0)}"
+            f" market_only={el_sym.get('market_only_context_events',0)}"
+            f" unknown={el_sym.get('unknown_context_events',0)}"
+        )
     print(
         "safety "
         + " ".join(f"{key}={value}" for key, value in SAFETY_MARKERS.items())
@@ -402,12 +563,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     event_level_rows_path = Path(args.event_level_rows)
     context_rows_path = Path(args.context_rows)
-    recompute_rows_path = Path(args.recompute_rows) if args.recompute_rows else DEFAULT_RECOMPUTE_ROWS
+    recompute_rows_path = (
+        Path(args.recompute_rows) if args.recompute_rows else DEFAULT_RECOMPUTE_ROWS
+    )
     output_dir = Path(args.output_dir)
 
     event_rows = load_event_level_rows(event_level_rows_path)
     context_rows = load_context_rows(context_rows_path)
-    recompute_rows = load_context_rows(recompute_rows_path) if recompute_rows_path.exists() else []
+    recompute_rows = (
+        load_context_rows(recompute_rows_path) if recompute_rows_path.exists() else []
+    )
 
     context_lookup = build_lookup(context_rows)
     recompute_lookup = build_lookup(recompute_rows)
@@ -431,7 +596,14 @@ def main(argv: list[str] | None = None) -> int:
         write_json(output_dir / MANIFEST_JSON, manifest)
 
     if args.output == "json":
-        print(json.dumps({"rows": audit_rows, "manifest": manifest}, indent=2, sort_keys=True, ensure_ascii=True))
+        print(
+            json.dumps(
+                {"rows": audit_rows, "manifest": manifest},
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=True,
+            )
+        )
     else:
         print_summary(audit_rows, manifest)
     return 0
