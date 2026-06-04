@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import json
+import tempfile
 from decimal import Decimal
 from pathlib import Path
 
@@ -170,6 +171,72 @@ def test_load_open_order_inputs_uses_live_broker_only_when_snapshot_missing_and_
     finally:
         profit_plan_runner.fetch_open_orders_from_snapshot = original_snapshot
         profit_plan_runner.fetch_broker_snapshot = original_broker
+
+
+def test_load_zone_contexts_uses_source_rows_without_manual_cli() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "\n".join([
+                "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price",
+                "WLD,0.48,0.30,0.38,0.38,0.33",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("0.48")},
+            swing_anchors={},
+            recent_lows={},
+            fib_map_rows_path=fib_rows,
+        )
+        assert result.input_status_by_symbol["WLD"] == "HAS_ZONE_CONTEXT"
+        assert "WLD" in result.fib_ext_by_symbol
+        assert "WLD" in result.reentry_by_symbol
+
+
+def test_load_zone_contexts_manual_cli_overrides_missing_source() -> None:
+    result = profit_plan_runner.load_zone_contexts(
+        markets=["WLD-EUR"],
+        prices={"WLD-EUR": Decimal("0.48")},
+        swing_anchors={"WLD": ["0.30", "0.38"]},
+        recent_lows={"WLD": ["0.33"]},
+        fib_map_rows_path=Path("/tmp/does-not-exist-profit-plan-zones.csv"),
+    )
+    assert result.input_status_by_symbol["WLD"] == "MANUAL_ZONE_CONTEXT_USED"
+    assert "WLD" in result.fib_ext_by_symbol
+    assert "WLD" in result.reentry_by_symbol
+
+
+def test_load_zone_contexts_missing_source_fails_closed() -> None:
+    result = profit_plan_runner.load_zone_contexts(
+        markets=["WLD-EUR"],
+        prices={"WLD-EUR": Decimal("0.48")},
+        swing_anchors={},
+        recent_lows={},
+        fib_map_rows_path=Path("/tmp/does-not-exist-profit-plan-zones.csv"),
+    )
+    assert result.input_status_by_symbol["WLD"] == "ZONE_SOURCE_MISSING"
+
+
+def test_load_zone_contexts_symbol_missing_in_source_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "\n".join([
+                "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price",
+                "ONDO,0.90,0.70,1.05,1.05,0.82",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("0.48")},
+            swing_anchors={},
+            recent_lows={},
+            fib_map_rows_path=fib_rows,
+        )
+        assert result.input_status_by_symbol["WLD"] == "ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING"
 
 
 # ---------------------------------------------------------------------------
@@ -618,6 +685,10 @@ def main() -> None:
     test_json_snapshot_safety_markers()
     test_load_open_order_inputs_prefers_snapshot_source()
     test_load_open_order_inputs_uses_live_broker_only_when_snapshot_missing_and_allowed()
+    test_load_zone_contexts_uses_source_rows_without_manual_cli()
+    test_load_zone_contexts_manual_cli_overrides_missing_source()
+    test_load_zone_contexts_missing_source_fails_closed()
+    test_load_zone_contexts_symbol_missing_in_source_fails_closed()
     test_wld_scenario_extension_runner()
     test_wld_action_take_profit_near_between_1272_1618()
     test_wld_sell_zone_includes_1618_ext()

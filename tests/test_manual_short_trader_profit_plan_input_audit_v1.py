@@ -63,6 +63,8 @@ def _build_rows_for_card(
     sell_orders: tuple[_FakeOrder, ...] = (),
     include_price: bool = True,
     include_raw_order_metadata: bool = False,
+    zone_context_input_status: str = "HAS_ZONE_CONTEXT",
+    open_order_source_missing: bool = False,
 ) -> list[ProfitPlanInputAuditRow]:
     card = build_profit_plan_card(
         symbol=market.split("-")[0],
@@ -88,7 +90,8 @@ def _build_rows_for_card(
         reentry_by_symbol={market.split("-")[0]: reentry} if reentry is not None else {},
         orders_by_symbol=orders_by_symbol,
         raw_orders_by_symbol=raw_orders_by_symbol,
-        open_order_source_missing=False,
+        open_order_source_missing=open_order_source_missing,
+        zone_context_status_by_symbol={market.split("-")[0]: zone_context_input_status},
     )
 
 
@@ -106,7 +109,18 @@ def test_missing_zone_context_reports_missing_zone_context() -> None:
 def test_no_open_orders_reports_no_open_orders() -> None:
     row = _build_rows_for_card(fib_ext=_fib_ext())[0]
     assert row.open_order_input_status == "NO_OPEN_ORDERS"
-    assert "NO_OPEN_ORDERS" in row.all_missing_reasons
+    assert "NO_OPEN_ORDERS" not in row.all_missing_reasons
+    assert row.primary_missing_reason == "NO_STALE_ORDER_METADATA"
+
+
+def test_valid_zone_context_without_open_orders_can_still_render_visible_card() -> None:
+    row = _build_rows_for_card(
+        fib_ext=_fib_ext(),
+        include_raw_order_metadata=True,
+    )[0]
+    assert row.open_order_input_status == "NO_OPEN_ORDERS"
+    assert row.primary_missing_reason == "READY_FOR_PROFIT_PLAN"
+    assert row.filtered_by_profit_plan is False
 
 
 def test_open_order_source_missing_is_distinguished() -> None:
@@ -125,9 +139,47 @@ def test_open_order_source_missing_is_distinguished() -> None:
         orders_by_symbol={"WLD": ((), ())},
         raw_orders_by_symbol={"WLD": ()},
         open_order_source_missing=True,
+        zone_context_status_by_symbol={"WLD": "HAS_ZONE_CONTEXT"},
     )[0]
     assert row.open_order_input_status == "OPEN_ORDER_SOURCE_MISSING"
     assert "OPEN_ORDER_SOURCE_MISSING" in row.all_missing_reasons
+
+
+def test_valid_open_order_fixture_reports_has_open_orders() -> None:
+    row = _build_rows_for_card(
+        fib_ext=_fib_ext(),
+        sell_orders=(_FakeOrder("0.6500", side="sell"),),
+        include_raw_order_metadata=True,
+    )[0]
+    assert row.open_order_input_status == "HAS_OPEN_ORDERS"
+
+
+def test_missing_zone_source_is_distinguished() -> None:
+    row = _build_rows_for_card(
+        zone_context_input_status="ZONE_SOURCE_MISSING",
+    )[0]
+    assert row.zone_context_input_status == "ZONE_SOURCE_MISSING"
+    assert "ZONE_SOURCE_MISSING" in row.all_missing_reasons
+    assert "MISSING_ZONE_CONTEXT" in row.all_missing_reasons
+
+
+def test_symbol_missing_in_zone_source_is_distinguished() -> None:
+    row = _build_rows_for_card(
+        zone_context_input_status="ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING",
+    )[0]
+    assert row.zone_context_input_status == "ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING"
+    assert "ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING" in row.all_missing_reasons
+    assert "MISSING_ZONE_CONTEXT" in row.all_missing_reasons
+
+
+def test_manual_zone_context_is_reported() -> None:
+    row = _build_rows_for_card(
+        fib_ext=_fib_ext(),
+        zone_context_input_status="MANUAL_ZONE_CONTEXT_USED",
+        include_raw_order_metadata=True,
+    )[0]
+    assert row.zone_context_input_status == "MANUAL_ZONE_CONTEXT_USED"
+    assert row.primary_missing_reason == "READY_FOR_PROFIT_PLAN"
 
 
 def test_valid_fixture_reports_ready_for_profit_plan() -> None:
@@ -198,7 +250,12 @@ def main() -> None:
     test_missing_price_reports_missing_current_price()
     test_missing_zone_context_reports_missing_zone_context()
     test_no_open_orders_reports_no_open_orders()
+    test_valid_zone_context_without_open_orders_can_still_render_visible_card()
     test_open_order_source_missing_is_distinguished()
+    test_valid_open_order_fixture_reports_has_open_orders()
+    test_missing_zone_source_is_distinguished()
+    test_symbol_missing_in_zone_source_is_distinguished()
+    test_manual_zone_context_is_reported()
     test_valid_fixture_reports_ready_for_profit_plan()
     test_json_snapshot_structure()
     test_summary_contains_ready_state()

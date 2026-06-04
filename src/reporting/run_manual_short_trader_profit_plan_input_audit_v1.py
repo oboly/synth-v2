@@ -18,10 +18,9 @@ from src.reporting.manual_short_trader_dashboard_v1 import (
 from src.reporting.run_manual_short_trader_profit_plan_v1 import (
     _parse_kv_list,
     build_cards,
-    build_fib_ext_contexts,
-    build_reentry_contexts,
     fetch_ticker_prices,
     load_open_order_inputs,
+    load_zone_contexts,
 )
 
 
@@ -38,6 +37,7 @@ class ProfitPlanInputAuditRow:
     has_existing_open_orders: bool
     open_order_count: int
     open_order_input_status: str
+    zone_context_input_status: str
     has_target_exit_zone: bool
     has_reload_reentry_zone: bool
     has_invalidation_zone: bool
@@ -86,6 +86,11 @@ def parse_args() -> argparse.Namespace:
         help="Venue for DB-backed read-only open-order snapshots.",
     )
     parser.add_argument(
+        "--fib-map-rows",
+        default="data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv",
+        help="Optional: path to fibo_target_map_rows_v1.csv for read-only zone context.",
+    )
+    parser.add_argument(
         "--swing-anchors",
         nargs="+",
         default=[],
@@ -126,6 +131,7 @@ def build_profit_plan_input_audit_rows(
     orders_by_symbol: dict[str, tuple[tuple[LadderOrderRow, ...], tuple[LadderOrderRow, ...]]],
     raw_orders_by_symbol: dict[str, tuple[BrokerOrderRow, ...]],
     open_order_source_missing: bool,
+    zone_context_status_by_symbol: dict[str, str],
 ) -> list[ProfitPlanInputAuditRow]:
     card_by_market = {card.market: card for card in cards}
     rows: list[ProfitPlanInputAuditRow] = []
@@ -142,6 +148,7 @@ def build_profit_plan_input_audit_rows(
             open_order_input_status = "HAS_OPEN_ORDERS"
         else:
             open_order_input_status = "NO_OPEN_ORDERS"
+        zone_context_input_status = zone_context_status_by_symbol.get(symbol, "MISSING_ZONE_CONTEXT")
 
         has_current_price = market in prices and prices[market] is not None
         has_existing_open_orders = open_order_input_status == "HAS_OPEN_ORDERS"
@@ -155,12 +162,14 @@ def build_profit_plan_input_audit_rows(
         missing_reasons: list[str] = []
         if not has_current_price:
             missing_reasons.append("MISSING_CURRENT_PRICE")
+        if zone_context_input_status == "ZONE_SOURCE_MISSING":
+            missing_reasons.append("ZONE_SOURCE_MISSING")
+        elif zone_context_input_status == "ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING":
+            missing_reasons.append("ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING")
         if not (has_target_exit_zone or has_reload_reentry_zone or has_invalidation_zone):
             missing_reasons.append("MISSING_ZONE_CONTEXT")
         if open_order_input_status == "OPEN_ORDER_SOURCE_MISSING":
             missing_reasons.append("OPEN_ORDER_SOURCE_MISSING")
-        elif open_order_input_status == "NO_OPEN_ORDERS":
-            missing_reasons.append("NO_OPEN_ORDERS")
         if not has_stale_order_metadata:
             missing_reasons.append("NO_STALE_ORDER_METADATA")
 
@@ -174,6 +183,7 @@ def build_profit_plan_input_audit_rows(
                 has_existing_open_orders=has_existing_open_orders,
                 open_order_count=open_order_count,
                 open_order_input_status=open_order_input_status,
+                zone_context_input_status=zone_context_input_status,
                 has_target_exit_zone=has_target_exit_zone,
                 has_reload_reentry_zone=has_reload_reentry_zone,
                 has_invalidation_zone=has_invalidation_zone,
@@ -225,6 +235,7 @@ def format_summary(rows: list[ProfitPlanInputAuditRow], *, broker_mode: str) -> 
         status = "filtered" if row.filtered_by_profit_plan else "visible"
         lines.append(
             f"{row.symbol}: open_order_input_status={row.open_order_input_status} "
+            f"zone_context_input_status={row.zone_context_input_status} "
             f"would_render_state={row.would_render_state} "
             f"primary_missing_reason={row.primary_missing_reason} "
             f"missing={reasons} [{status}]"
@@ -278,8 +289,15 @@ def main() -> int:
 
     swing_anchors = _parse_kv_list(args.swing_anchors, 3)
     recent_lows = _parse_kv_list(args.recent_lows, 2)
-    fib_ext_by_symbol = build_fib_ext_contexts(swing_anchors, prices, args.markets)
-    reentry_by_symbol = build_reentry_contexts(swing_anchors, recent_lows, prices, args.markets)
+    zone_contexts = load_zone_contexts(
+        markets=args.markets,
+        prices=prices,
+        swing_anchors=swing_anchors,
+        recent_lows=recent_lows,
+        fib_map_rows_path=Path(args.fib_map_rows),
+    )
+    fib_ext_by_symbol = zone_contexts.fib_ext_by_symbol
+    reentry_by_symbol = zone_contexts.reentry_by_symbol
 
     sections = build_all_sections(orders, balances, prices)
     orders_by_symbol: dict[str, tuple[tuple[LadderOrderRow, ...], tuple[LadderOrderRow, ...]]] = {
@@ -308,6 +326,7 @@ def main() -> int:
         orders_by_symbol=orders_by_symbol,
         raw_orders_by_symbol=raw_orders_by_symbol,
         open_order_source_missing=open_order_inputs.source_missing,
+        zone_context_status_by_symbol=zone_contexts.input_status_by_symbol,
     )
 
     snapshot = build_json_snapshot(rows, broker_mode=broker_mode)

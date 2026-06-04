@@ -98,6 +98,15 @@ Rules:
 `run_manual_short_trader_profit_plan_input_audit_v1.py` audits whether each market
 has enough read-only inputs to show a useful Profit Plan card before cockpit wiring.
 
+Zone-context input preference:
+
+- first per symbol: manual CLI anchors via `--swing-anchors` and optional `--recent-lows`
+- otherwise: existing read-only `data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv`
+- if the zone source is absent or the symbol is not present, Profit Plan fails closed and reports the exact reason
+
+Open orders are enrichment only. A card can remain visible without open orders when
+current price and zone context exist.
+
 Open-order input preference:
 
 - first: existing DB-backed `account_open_order_snapshot` read-only snapshot source
@@ -109,6 +118,7 @@ Per market it reports:
 - `has_current_price`
 - `has_existing_open_orders`
 - `open_order_count`
+- `zone_context_input_status`
 - `has_target_exit_zone`
 - `has_reload_reentry_zone`
 - `has_invalidation_zone`
@@ -124,10 +134,19 @@ Common missing reasons:
 
 - `MISSING_CURRENT_PRICE`
 - `MISSING_ZONE_CONTEXT`
-- `NO_OPEN_ORDERS`
+- `ZONE_SOURCE_MISSING`
+- `ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING`
 - `OPEN_ORDER_SOURCE_MISSING`
 - `NO_STALE_ORDER_METADATA`
 - `READY_FOR_PROFIT_PLAN`
+
+Zone-context status values:
+
+- `HAS_ZONE_CONTEXT`
+- `MISSING_ZONE_CONTEXT`
+- `ZONE_SOURCE_MISSING`
+- `ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING`
+- `MANUAL_ZONE_CONTEXT_USED`
 
 Open-order status values:
 
@@ -181,6 +200,17 @@ Offline mode (no broker orders, public prices only):
 ```bash
 python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
   --markets WLD-EUR ONDO-EUR FET-EUR \
+  --fib-map-rows data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv \
+  --output-html /tmp/profit_plan_v1.html \
+  --output summary
+```
+
+Manual anchors remain supported and override missing source context for the named symbol:
+
+```bash
+python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
+  --markets WLD-EUR ONDO-EUR FET-EUR \
+  --fib-map-rows data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv \
   --swing-anchors WLD:0.30:0.38 FET:0.166:0.244 \
   --recent-lows FET:0.209 \
   --output-html /tmp/profit_plan_v1.html \
@@ -193,8 +223,7 @@ Live read-only mode (requires `SYNTH_BROKER_PRIVATE_READ_PERMISSION`):
 SYNTH_BROKER_PRIVATE_READ_PERMISSION=I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA \
 python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
   --markets WLD-EUR ONDO-EUR FET-EUR \
-  --swing-anchors WLD:0.30:0.38 FET:0.166:0.244 \
-  --recent-lows FET:0.209 \
+  --fib-map-rows data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv \
   --live-broker \
   --output-html /tmp/profit_plan_v1.html \
   --output-json /tmp/profit_plan_snapshot.json \

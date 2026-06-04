@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from dataclasses import dataclass
@@ -43,6 +44,7 @@ DEFAULT_MONITOR_HTML = "/tmp/manual_short_trader_dashboard_v1.html"
 DEFAULT_OUTPUT_JSON: str | None = None
 DEFAULT_ACCOUNT_CODE = "bitvavo_synth_read"
 DEFAULT_VENUE = "bitvavo"
+DEFAULT_FIB_MAP_ROWS = Path("data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv")
 
 REPORT_NAME = "run_manual_short_trader_profit_plan_v1"
 REPORT_VERSION = "0.1"
@@ -52,6 +54,15 @@ REPORT_VERSION = "0.1"
 class OpenOrderInputLoadResult:
     orders: list[BrokerOrderRow]
     balances: list[BrokerBalanceRow]
+    source_name: str
+    source_missing: bool
+
+
+@dataclass(frozen=True)
+class ZoneContextLoadResult:
+    fib_ext_by_symbol: dict[str, FibExtContext]
+    reentry_by_symbol: dict[str, ReentryContext]
+    input_status_by_symbol: dict[str, str]
     source_name: str
     source_missing: bool
 
@@ -93,6 +104,11 @@ def parse_args() -> argparse.Namespace:
         "--venue",
         default=DEFAULT_VENUE,
         help="Venue for DB-backed read-only open-order snapshots.",
+    )
+    parser.add_argument(
+        "--fib-map-rows",
+        default=str(DEFAULT_FIB_MAP_ROWS),
+        help="Optional: path to fibo_target_map_rows_v1.csv for read-only zone context.",
     )
     parser.add_argument(
         "--live-broker",
@@ -158,6 +174,30 @@ def fetch_broker_snapshot(
     orders = [normalize_broker_order(r) for r in raw_orders]
     balances = [normalize_broker_balance(r) for r in raw_balances]
     return orders, balances
+
+
+def _parse_decimal(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except Exception:
+        return None
+
+
+def load_fib_map_rows(path: Path) -> tuple[dict[str, dict[str, str]], bool]:
+    if not path.exists():
+        return {}, True
+    rows_by_symbol: dict[str, dict[str, str]] = {}
+    with path.open(encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            symbol = str(row.get("symbol") or "").strip().upper()
+            if symbol:
+                rows_by_symbol[symbol] = {str(key): str(value or "") for key, value in row.items()}
+    return rows_by_symbol, False
 
 
 def _resolve_trading_account_id(
@@ -403,6 +443,168 @@ def build_reentry_contexts(
     return contexts
 
 
+def _build_fib_ext_context(
+    *,
+    symbol: str,
+    swing_low: Decimal,
+    swing_high: Decimal,
+    current_price: Decimal,
+) -> FibExtContext | None:
+    try:
+        ext_map = build_htf_extension_map(
+            HtfSwingInput(
+                symbol=symbol,
+                interval_code="1d",
+                swing_low=swing_low,
+                swing_high=swing_high,
+                current_price=current_price,
+            )
+        )
+    except Exception as exc:
+        print(f"[warn] fib ext map failed for {symbol}: {exc}", file=sys.stderr)
+        return None
+    target_by_label = {target.label: target.price for target in ext_map.targets}
+    return FibExtContext(
+        ext_1_272=target_by_label.get("ext_1_272", swing_high),
+        ext_1_618=target_by_label.get("ext_1_618", swing_high),
+        ext_2_000=target_by_label.get("ext_2_000", swing_high),
+        breakout_gate=ext_map.breakout_gate,
+        price_band=ext_map.price_band,
+        ext_1_272_touched_and_rejected=ext_map.ext_1_272_touched_and_rejected,
+        retesting_breakout_gate=ext_map.retesting_breakout_gate,
+    )
+
+
+def _build_reentry_context(
+    *,
+    symbol: str,
+    swing_low: Decimal,
+    swing_high: Decimal,
+    current_price: Decimal,
+    recent_low: Decimal | None,
+) -> ReentryContext | None:
+    try:
+        ladder = build_fib_retrace_ladder(
+            HtfReentryInput(
+                symbol=symbol,
+                interval_code="1d",
+                swing_low=swing_low,
+                swing_high=swing_high,
+                current_price=current_price,
+                recent_low_price=recent_low,
+            )
+        )
+    except Exception as exc:
+        print(f"[warn] reentry ladder failed for {symbol}: {exc}", file=sys.stderr)
+        return None
+    level_by_label = {row.label: row.price for row in ladder.levels}
+    return ReentryContext(
+        r382_price=level_by_label.get("retrace_0_382", swing_high),
+        r500_price=level_by_label.get("retrace_0_500", swing_high),
+        r618_price=level_by_label.get("retrace_0_618", swing_high),
+        r786_price=level_by_label.get("retrace_0_786", swing_low),
+        deepest_touched_label=ladder.deepest_touched_label,
+        missed_main_rebuy_by_pct=ladder.missed_main_rebuy_by_pct,
+    )
+
+
+def load_zone_contexts(
+    *,
+    markets: list[str],
+    prices: dict[str, Decimal],
+    swing_anchors: dict[str, list[str]],
+    recent_lows: dict[str, list[str]],
+    fib_map_rows_path: Path,
+) -> ZoneContextLoadResult:
+    fib_rows_by_symbol, source_missing = load_fib_map_rows(fib_map_rows_path)
+    fib_ext_by_symbol: dict[str, FibExtContext] = {}
+    reentry_by_symbol: dict[str, ReentryContext] = {}
+    input_status_by_symbol: dict[str, str] = {}
+
+    for market in markets:
+        symbol = market.split("-")[0].upper()
+        manual_anchor = swing_anchors.get(symbol)
+        if manual_anchor is not None:
+            swing_low = _parse_decimal(manual_anchor[0] if len(manual_anchor) > 0 else None)
+            swing_high = _parse_decimal(manual_anchor[1] if len(manual_anchor) > 1 else None)
+            current_price = prices.get(market)
+            recent_low_parts = recent_lows.get(symbol)
+            recent_low = _parse_decimal(recent_low_parts[0]) if recent_low_parts else None
+            if swing_low is not None and swing_high is not None and current_price is not None:
+                fib_ext = _build_fib_ext_context(
+                    symbol=symbol,
+                    swing_low=swing_low,
+                    swing_high=swing_high,
+                    current_price=current_price,
+                )
+                reentry = _build_reentry_context(
+                    symbol=symbol,
+                    swing_low=swing_low,
+                    swing_high=swing_high,
+                    current_price=current_price,
+                    recent_low=recent_low,
+                )
+                if fib_ext is not None:
+                    fib_ext_by_symbol[symbol] = fib_ext
+                if reentry is not None:
+                    reentry_by_symbol[symbol] = reentry
+                input_status_by_symbol[symbol] = (
+                    "MANUAL_ZONE_CONTEXT_USED"
+                    if fib_ext is not None or reentry is not None
+                    else "MISSING_ZONE_CONTEXT"
+                )
+            else:
+                input_status_by_symbol[symbol] = "MISSING_ZONE_CONTEXT"
+            continue
+
+        if source_missing:
+            input_status_by_symbol[symbol] = "ZONE_SOURCE_MISSING"
+            continue
+
+        fib_row = fib_rows_by_symbol.get(symbol)
+        if fib_row is None:
+            input_status_by_symbol[symbol] = "ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING"
+            continue
+
+        swing_low = _parse_decimal(fib_row.get("swing_low_price"))
+        swing_high = _parse_decimal(fib_row.get("local_reaction_price")) or _parse_decimal(fib_row.get("swing_high_price"))
+        current_price = prices.get(market) or _parse_decimal(fib_row.get("current_price"))
+        if swing_low is None or swing_high is None or current_price is None:
+            input_status_by_symbol[symbol] = "MISSING_ZONE_CONTEXT"
+            continue
+
+        fib_ext = _build_fib_ext_context(
+            symbol=symbol,
+            swing_low=swing_low,
+            swing_high=swing_high,
+            current_price=current_price,
+        )
+        reentry = _build_reentry_context(
+            symbol=symbol,
+            swing_low=swing_low,
+            swing_high=swing_high,
+            current_price=current_price,
+            recent_low=None,
+        )
+        if fib_ext is not None:
+            fib_ext_by_symbol[symbol] = fib_ext
+        if reentry is not None:
+            reentry_by_symbol[symbol] = reentry
+        input_status_by_symbol[symbol] = (
+            "HAS_ZONE_CONTEXT"
+            if fib_ext is not None or reentry is not None
+            else "MISSING_ZONE_CONTEXT"
+        )
+
+    return ZoneContextLoadResult(
+        fib_ext_by_symbol=fib_ext_by_symbol,
+        reentry_by_symbol=reentry_by_symbol,
+        input_status_by_symbol=input_status_by_symbol,
+        source_name="fibo_target_map_rows_v1.csv",
+        source_missing=source_missing,
+    )
+
+
 def build_cards(
     markets: list[str],
     prices: dict[str, Decimal],
@@ -476,9 +678,15 @@ def main() -> int:
 
     swing_anchors = _parse_kv_list(args.swing_anchors, 3)
     recent_lows = _parse_kv_list(args.recent_lows, 2)
-
-    fib_ext_by_symbol = build_fib_ext_contexts(swing_anchors, prices, args.markets)
-    reentry_by_symbol = build_reentry_contexts(swing_anchors, recent_lows, prices, args.markets)
+    zone_contexts = load_zone_contexts(
+        markets=args.markets,
+        prices=prices,
+        swing_anchors=swing_anchors,
+        recent_lows=recent_lows,
+        fib_map_rows_path=Path(args.fib_map_rows),
+    )
+    fib_ext_by_symbol = zone_contexts.fib_ext_by_symbol
+    reentry_by_symbol = zone_contexts.reentry_by_symbol
 
     # Build order lookup from existing dashboard sections
     sections = build_all_sections(orders, balances, prices)
