@@ -88,6 +88,7 @@ def _build_rows_for_card(
         reentry_by_symbol={market.split("-")[0]: reentry} if reentry is not None else {},
         orders_by_symbol=orders_by_symbol,
         raw_orders_by_symbol=raw_orders_by_symbol,
+        open_order_source_missing=False,
     )
 
 
@@ -104,7 +105,29 @@ def test_missing_zone_context_reports_missing_zone_context() -> None:
 
 def test_no_open_orders_reports_no_open_orders() -> None:
     row = _build_rows_for_card(fib_ext=_fib_ext())[0]
+    assert row.open_order_input_status == "NO_OPEN_ORDERS"
     assert "NO_OPEN_ORDERS" in row.all_missing_reasons
+
+
+def test_open_order_source_missing_is_distinguished() -> None:
+    card = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.48"),
+        fib_ext=_fib_ext(),
+    )
+    row = build_profit_plan_input_audit_rows(
+        markets=["WLD-EUR"],
+        prices={"WLD-EUR": Decimal("0.48")},
+        cards=[card],
+        fib_ext_by_symbol={"WLD": _fib_ext()},
+        reentry_by_symbol={},
+        orders_by_symbol={"WLD": ((), ())},
+        raw_orders_by_symbol={"WLD": ()},
+        open_order_source_missing=True,
+    )[0]
+    assert row.open_order_input_status == "OPEN_ORDER_SOURCE_MISSING"
+    assert "OPEN_ORDER_SOURCE_MISSING" in row.all_missing_reasons
 
 
 def test_valid_fixture_reports_ready_for_profit_plan() -> None:
@@ -113,6 +136,7 @@ def test_valid_fixture_reports_ready_for_profit_plan() -> None:
         sell_orders=(_FakeOrder("0.6500", side="sell"),),
         include_raw_order_metadata=True,
     )[0]
+    assert row.open_order_input_status == "HAS_OPEN_ORDERS"
     assert row.primary_missing_reason == "READY_FOR_PROFIT_PLAN"
     assert row.filtered_by_profit_plan is False
 
@@ -174,6 +198,7 @@ def main() -> None:
     test_missing_price_reports_missing_current_price()
     test_missing_zone_context_reports_missing_zone_context()
     test_no_open_orders_reports_no_open_orders()
+    test_open_order_source_missing_is_distinguished()
     test_valid_fixture_reports_ready_for_profit_plan()
     test_json_snapshot_structure()
     test_summary_contains_ready_state()

@@ -5,6 +5,7 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
+import src.reporting.run_manual_short_trader_profit_plan_v1 as profit_plan_runner
 from src.reporting.manual_short_trader_profit_plan_v1 import (
     RELEVANT_STATES,
     ActiveOrderSummary,
@@ -16,6 +17,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     build_profit_plan_card,
     render_full_html,
 )
+from src.reporting.run_manual_short_trader_profit_plan_v1 import OpenOrderInputLoadResult
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +109,67 @@ def test_json_snapshot_safety_markers() -> None:
     assert snap["broker_writes"] == 0
     assert snap["order_submission"] == 0
     assert snap["executor"] == "none"
+
+
+def test_load_open_order_inputs_prefers_snapshot_source() -> None:
+    original_snapshot = profit_plan_runner.fetch_open_orders_from_snapshot
+    original_broker = profit_plan_runner.fetch_broker_snapshot
+    try:
+        profit_plan_runner.fetch_open_orders_from_snapshot = lambda **_: OpenOrderInputLoadResult(
+            orders=[],
+            balances=[],
+            source_name="account_open_order_snapshot",
+            source_missing=False,
+        )
+        profit_plan_runner.fetch_broker_snapshot = lambda client: (_ for _ in ()).throw(
+            AssertionError("broker fallback should not be used when snapshot exists")
+        )
+        result = profit_plan_runner.load_open_order_inputs(
+            client=object(),
+            account_code="bitvavo_synth_read",
+            venue="bitvavo",
+            allow_live_broker=True,
+        )
+        assert result.source_name == "account_open_order_snapshot"
+    finally:
+        profit_plan_runner.fetch_open_orders_from_snapshot = original_snapshot
+        profit_plan_runner.fetch_broker_snapshot = original_broker
+
+
+def test_load_open_order_inputs_uses_live_broker_only_when_snapshot_missing_and_allowed() -> None:
+    original_snapshot = profit_plan_runner.fetch_open_orders_from_snapshot
+    original_broker = profit_plan_runner.fetch_broker_snapshot
+    try:
+        expected_order = profit_plan_runner.BrokerOrderRow(
+            order_id="o-1",
+            market="WLD-EUR",
+            side="sell",
+            order_type="limit",
+            limit_price=Decimal("0.6500"),
+            amount=Decimal("10"),
+            filled_amount=Decimal("0"),
+            remaining_amount=Decimal("10"),
+            status="new",
+            created_at_ms=123,
+        )
+        profit_plan_runner.fetch_open_orders_from_snapshot = lambda **_: OpenOrderInputLoadResult(
+            orders=[],
+            balances=[],
+            source_name="account_open_order_snapshot",
+            source_missing=True,
+        )
+        profit_plan_runner.fetch_broker_snapshot = lambda client: ([expected_order], [])
+        result = profit_plan_runner.load_open_order_inputs(
+            client=object(),
+            account_code="bitvavo_synth_read",
+            venue="bitvavo",
+            allow_live_broker=True,
+        )
+        assert result.source_name == "live_broker_private_read"
+        assert len(result.orders) == 1
+    finally:
+        profit_plan_runner.fetch_open_orders_from_snapshot = original_snapshot
+        profit_plan_runner.fetch_broker_snapshot = original_broker
 
 
 # ---------------------------------------------------------------------------
@@ -553,6 +616,8 @@ def main() -> None:
     test_pure_module_has_no_forbidden_imports()
     test_runner_has_no_broker_write_calls()
     test_json_snapshot_safety_markers()
+    test_load_open_order_inputs_prefers_snapshot_source()
+    test_load_open_order_inputs_uses_live_broker_only_when_snapshot_missing_and_allowed()
     test_wld_scenario_extension_runner()
     test_wld_action_take_profit_near_between_1272_1618()
     test_wld_sell_zone_includes_1618_ext()

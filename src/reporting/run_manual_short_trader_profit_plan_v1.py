@@ -3,15 +3,20 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from src.common.db import get_connection
 from src.execution.bitvavo_client import BitvavoClient
 from src.reporting.manual_short_trader_dashboard_v1 import (
+    BrokerBalanceRow,
     BrokerOrderRow,
     LadderOrderRow,
     build_all_sections,
+    collect_unpriced_markets,
     normalize_broker_balance,
     normalize_broker_order,
 )
@@ -36,9 +41,19 @@ from src.research.htf_fib_reentry_ladder_v1 import (
 DEFAULT_OUTPUT_HTML = "/tmp/manual_short_trader_profit_plan_v1.html"
 DEFAULT_MONITOR_HTML = "/tmp/manual_short_trader_dashboard_v1.html"
 DEFAULT_OUTPUT_JSON: str | None = None
+DEFAULT_ACCOUNT_CODE = "bitvavo_synth_read"
+DEFAULT_VENUE = "bitvavo"
 
 REPORT_NAME = "run_manual_short_trader_profit_plan_v1"
 REPORT_VERSION = "0.1"
+
+
+@dataclass(frozen=True)
+class OpenOrderInputLoadResult:
+    orders: list[BrokerOrderRow]
+    balances: list[BrokerBalanceRow]
+    source_name: str
+    source_missing: bool
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,6 +83,16 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MONITOR_HTML,
         metavar="PATH",
         help="Path to the Open Orders Monitor HTML (linked from each card).",
+    )
+    parser.add_argument(
+        "--account-code",
+        default=DEFAULT_ACCOUNT_CODE,
+        help="Trading account code for DB-backed read-only open-order snapshots.",
+    )
+    parser.add_argument(
+        "--venue",
+        default=DEFAULT_VENUE,
+        help="Venue for DB-backed read-only open-order snapshots.",
     )
     parser.add_argument(
         "--live-broker",
@@ -123,6 +148,161 @@ def fetch_ticker_prices(
         except Exception as exc:
             print(f"[warn] ticker fetch failed for {market}: {exc}", file=sys.stderr)
     return prices
+
+
+def fetch_broker_snapshot(
+    client: BitvavoClient,
+) -> tuple[list[BrokerOrderRow], list[BrokerBalanceRow]]:
+    raw_orders: list[dict[str, Any]] = client.get_open_orders()
+    raw_balances: list[dict[str, Any]] = client.get_balance()
+    orders = [normalize_broker_order(r) for r in raw_orders]
+    balances = [normalize_broker_balance(r) for r in raw_balances]
+    return orders, balances
+
+
+def _resolve_trading_account_id(
+    conn: Any,
+    *,
+    account_code: str,
+    venue: str,
+) -> int | None:
+    sql = """
+    SELECT trading_account_id
+    FROM trading_account
+    WHERE account_code = %s
+      AND venue = %s
+    LIMIT 1
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (account_code, venue))
+        row = cur.fetchone()
+    if not row:
+        return None
+    return int(row["trading_account_id"])
+
+
+def _fetch_latest_open_order_snapshot_ts(
+    conn: Any,
+    *,
+    trading_account_id: int,
+    venue: str,
+) -> datetime | None:
+    sql = """
+    SELECT MAX(snapshot_ts_utc) AS latest_snapshot_ts_utc
+    FROM account_open_order_snapshot
+    WHERE trading_account_id = %s
+      AND venue = %s
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (trading_account_id, venue))
+        row = cur.fetchone()
+    return None if not row else row.get("latest_snapshot_ts_utc")
+
+
+def _dt_to_ms(value: datetime | None) -> int | None:
+    if value is None:
+        return None
+    return int(value.timestamp() * 1000)
+
+
+def fetch_open_orders_from_snapshot(
+    *,
+    account_code: str,
+    venue: str,
+) -> OpenOrderInputLoadResult:
+    try:
+        conn = get_connection()
+    except Exception:
+        return OpenOrderInputLoadResult([], [], "account_open_order_snapshot", True)
+
+    try:
+        trading_account_id = _resolve_trading_account_id(
+            conn,
+            account_code=account_code,
+            venue=venue,
+        )
+        if trading_account_id is None:
+            return OpenOrderInputLoadResult([], [], "account_open_order_snapshot", True)
+
+        latest_snapshot_ts = _fetch_latest_open_order_snapshot_ts(
+            conn,
+            trading_account_id=trading_account_id,
+            venue=venue,
+        )
+        if latest_snapshot_ts is None:
+            return OpenOrderInputLoadResult([], [], "account_open_order_snapshot", False)
+
+        sql = """
+        SELECT
+            market,
+            broker_order_id,
+            side,
+            order_type,
+            limit_price,
+            quantity,
+            filled_quantity,
+            remaining_quantity,
+            broker_status,
+            created_ts
+        FROM account_open_order_snapshot
+        WHERE trading_account_id = %s
+          AND venue = %s
+          AND snapshot_ts_utc = %s
+        ORDER BY market, side, limit_price
+        """
+        with conn.cursor() as cur:
+            cur.execute(sql, (trading_account_id, venue, latest_snapshot_ts))
+            rows = list(cur.fetchall())
+
+        orders = [
+            BrokerOrderRow(
+                order_id=str(row.get("broker_order_id") or ""),
+                market=str(row.get("market") or ""),
+                side=str(row.get("side") or "").lower(),
+                order_type=str(row.get("order_type") or "limit").lower(),
+                limit_price=Decimal(str(row.get("limit_price") or "0")),
+                amount=Decimal(str(row.get("quantity") or "0")),
+                filled_amount=Decimal(str(row.get("filled_quantity") or "0")),
+                remaining_amount=Decimal(str(row.get("remaining_quantity") or "0")),
+                status=str(row.get("broker_status") or ""),
+                created_at_ms=_dt_to_ms(row.get("created_ts")),
+            )
+            for row in rows
+        ]
+        return OpenOrderInputLoadResult(orders, [], "account_open_order_snapshot", False)
+    except Exception:
+        return OpenOrderInputLoadResult([], [], "account_open_order_snapshot", True)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def load_open_order_inputs(
+    *,
+    client: BitvavoClient,
+    account_code: str,
+    venue: str,
+    allow_live_broker: bool,
+) -> OpenOrderInputLoadResult:
+    snapshot_result = fetch_open_orders_from_snapshot(
+        account_code=account_code,
+        venue=venue,
+    )
+    if not snapshot_result.source_missing:
+        return snapshot_result
+
+    if not allow_live_broker:
+        return snapshot_result
+
+    orders, balances = fetch_broker_snapshot(client)
+    return OpenOrderInputLoadResult(
+        orders=orders,
+        balances=balances,
+        source_name="live_broker_private_read",
+        source_missing=False,
+    )
 
 
 def build_fib_ext_contexts(
@@ -272,29 +452,27 @@ def main() -> int:
     client = BitvavoClient()
     prices = fetch_ticker_prices(client, args.markets)
 
-    orders: list[BrokerOrderRow] = []
-    broker_mode = "offline"
-    if args.live_broker:
-        try:
-            raw_orders: list[dict[str, Any]] = client.get_open_orders()
-            raw_balances: list[dict[str, Any]] = client.get_balance()
-            orders = [normalize_broker_order(r) for r in raw_orders]
-            balances = [normalize_broker_balance(r) for r in raw_balances]
-            # fetch prices for any extra markets from open orders
-            extra_markets = sorted(
-                {o.market for o in orders} - set(prices.keys())
-            )
-            if extra_markets:
-                prices = {**prices, **fetch_ticker_prices(client, extra_markets)}
-            broker_mode = "live_read_only"
-        except PermissionError as exc:
-            print(f"[error] Broker private read blocked: {exc}", file=sys.stderr)
-            return 1
-        except Exception as exc:
-            print(f"[error] Broker snapshot failed: {exc}", file=sys.stderr)
-            return 1
-    else:
-        balances = []
+    try:
+        open_order_inputs = load_open_order_inputs(
+            client=client,
+            account_code=args.account_code,
+            venue=args.venue,
+            allow_live_broker=args.live_broker,
+        )
+    except PermissionError as exc:
+        print(f"[error] Broker private read blocked: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"[error] Open-order input load failed: {exc}", file=sys.stderr)
+        return 1
+
+    orders = open_order_inputs.orders
+    balances = open_order_inputs.balances
+    broker_mode = "live_read_only" if open_order_inputs.source_name == "live_broker_private_read" else "offline"
+
+    extra_markets = collect_unpriced_markets(orders, prices)
+    if extra_markets:
+        prices = {**prices, **fetch_ticker_prices(client, extra_markets)}
 
     swing_anchors = _parse_kv_list(args.swing_anchors, 3)
     recent_lows = _parse_kv_list(args.recent_lows, 2)

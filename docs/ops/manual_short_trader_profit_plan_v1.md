@@ -98,6 +98,12 @@ Rules:
 `run_manual_short_trader_profit_plan_input_audit_v1.py` audits whether each market
 has enough read-only inputs to show a useful Profit Plan card before cockpit wiring.
 
+Open-order input preference:
+
+- first: existing DB-backed `account_open_order_snapshot` read-only snapshot source
+- fallback: existing private broker read path only when the runner is explicitly started with `--live-broker`
+- no broker write path is introduced
+
 Per market it reports:
 
 - `has_current_price`
@@ -119,8 +125,15 @@ Common missing reasons:
 - `MISSING_CURRENT_PRICE`
 - `MISSING_ZONE_CONTEXT`
 - `NO_OPEN_ORDERS`
+- `OPEN_ORDER_SOURCE_MISSING`
 - `NO_STALE_ORDER_METADATA`
 - `READY_FOR_PROFIT_PLAN`
+
+Open-order status values:
+
+- `HAS_OPEN_ORDERS`
+- `NO_OPEN_ORDERS`
+- `OPEN_ORDER_SOURCE_MISSING`
 
 This audit is read-only only. It reuses the same input sources as the Profit Plan
 runner where possible and does not change Profit Plan behavior by itself.
