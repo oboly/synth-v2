@@ -94,3 +94,32 @@ python -m src.research.run_context_touch_fakeout_robustness_audit_v1 \
   --output summary \
   --output-dir data/research/context_touch_fakeout_robustness_audit_v1
 ```
+
+## Conclusion
+
+Current conclusion from `context_touch_fakeout_robustness_audit_v1`:
+
+- the target shape stays **research-only**
+- it is **not robust enough for strategy/advice promotion**
+- it must **not** be used downstream in runtime, selection, advice, decision, execution, or dashboard actioning
+
+Reason:
+
+- the apparent positive edge is too concentrated in one symbol and one short date cluster
+- excluding `XLM` drops `avg_return_24h_pct` materially
+- excluding the `2026-05-25` 3-day bucket drops `avg_return_24h_pct` materially
+- `XLM` contributes roughly `79.7%` of target-shape return contribution
+- the `2026-05-25` bucket contributes roughly `75.6%` of target-shape return contribution
+
+Interpretation:
+
+- the observed shape is still useful as a diagnostic research lead
+- it is **not** eligible for promotion into strategy logic
+- it is **not** eligible for promotion into advice logic
+- it is **not** eligible for paper-routing shortcuts or runtime policy
+
+Optional future work:
+
+- widen the event window and rerun the same robustness audit
+- run an `XLM`-specific explanatory audit to understand why the target shape clusters there
+- keep any follow-up strictly research-only until concentration risk is reduced materially

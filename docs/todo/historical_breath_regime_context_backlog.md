@@ -49,6 +49,8 @@
 - Add strict vs default join modes for later backtests.
 - Add context freshness and staleness audit summaries.
 - Add row-level quality labels for missing/partial source coverage.
+- Keep `MARKET_ONLY_CONTEXT + touch=TRUE + fakeout=FALSE` parked as research-only until symbol/time concentration is materially reduced.
+  Current conclusion: not robust enough for strategy/advice promotion because `XLM` and the `2026-05-25` 3-day bucket dominate return contribution.
 
 ### P3
 
@@ -82,3 +84,4 @@
 - No public dashboard actioning
 - No using external narrative labels as executable signals
 - No direct strategy recommendations from context labels alone
+- No downstream runtime use of the current touch/fakeout shape lead while robustness remains `NOT_ROBUST`
