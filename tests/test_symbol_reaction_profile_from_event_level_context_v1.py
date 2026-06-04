@@ -6,9 +6,14 @@ from pathlib import Path
 
 from src.research.run_symbol_reaction_profile_from_event_level_context_v1 import (
     SAFETY_MARKERS,
+    TIER_BREATH,
+    TIER_SYMBOL_REGIME,
+    TIER_MARKET_ONLY,
+    TIER_UNKNOWN,
     build_aggregate_rows,
     build_manifest,
     context_bucket_key,
+    context_quality_tier,
 )
 
 
@@ -144,6 +149,60 @@ class AggregateFromEventLevelContextV1Tests(unittest.TestCase):
         self.assertNotIn("executor", joined)
         self.assertNotIn("BitvavoClient", joined)
         self.assertNotIn("common.db", joined)
+
+
+class ContextQualityTierAggregateTests(unittest.TestCase):
+    def test_breath_known_row_has_breath_tier(self) -> None:
+        rows = build_aggregate_rows(event_rows=[_known_event()], min_events=1)
+        self.assertEqual(rows[0]["context_quality_tier"], TIER_BREATH)
+
+    def test_symbol_regime_only_row_has_symbol_regime_tier(self) -> None:
+        event = {**_known_event(), "breath_phase": "UNKNOWN", "breath_alignment": "UNKNOWN"}
+        rows = build_aggregate_rows(event_rows=[event], min_events=1)
+        self.assertEqual(rows[0]["context_quality_tier"], TIER_SYMBOL_REGIME)
+
+    def test_market_only_row_has_market_only_tier(self) -> None:
+        event = {
+            **_unknown_event(),
+            "market_regime": "RISK_ON",
+            "btc_context": "BTC_OK",
+        }
+        rows = build_aggregate_rows(event_rows=[event], min_events=1)
+        self.assertEqual(rows[0]["context_quality_tier"], TIER_MARKET_ONLY)
+
+    def test_all_unknown_row_has_unknown_tier(self) -> None:
+        all_unknown = {
+            **_unknown_event(),
+            "market_regime": "UNKNOWN",
+            "btc_context": "UNKNOWN",
+        }
+        rows = build_aggregate_rows(event_rows=[all_unknown], min_events=1)
+        self.assertEqual(rows[0]["context_quality_tier"], TIER_UNKNOWN)
+
+    def test_aggregate_groups_preserve_tiers_separately(self) -> None:
+        events = [_known_event(), _unknown_event()]
+        rows = build_aggregate_rows(event_rows=events, min_events=1)
+        tiers = {r["context_quality_tier"] for r in rows}
+        self.assertIn(TIER_BREATH, tiers)
+        # UNKNOWN_CONTEXT: all fields UNKNOWN (btc_context also unknown in _unknown_event)
+        unknown_rows = [r for r in rows if r["context_quality_tier"] == TIER_UNKNOWN]
+        known_rows = [r for r in rows if r["context_quality_tier"] != TIER_UNKNOWN]
+        self.assertTrue(len(known_rows) >= 1)
+        # Tiers must not be merged
+        self.assertFalse(any(r["context_quality_tier"] == TIER_BREATH for r in unknown_rows))
+
+    def test_manifest_contains_tier_distribution(self) -> None:
+        rows = build_aggregate_rows(
+            event_rows=[_known_event(), _unknown_event()], min_events=1
+        )
+        manifest = build_manifest(
+            args=type("Args", (), {"event_level_rows": "events.csv", "symbols": None})(),
+            output_dir=Path("/tmp/out"),
+            rows=rows,
+            event_row_count=2,
+        )
+        self.assertIn("tier_distribution", manifest)
+        self.assertIn(TIER_BREATH, manifest["tier_distribution"])
 
 
 if __name__ == "__main__":

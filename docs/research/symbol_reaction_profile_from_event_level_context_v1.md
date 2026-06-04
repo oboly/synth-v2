@@ -60,6 +60,7 @@ Known values are never merged into UNKNOWN-keyed buckets.
 | `fibo_context` | Bucket key |
 | `context_quality_state` | Bucket key |
 | `event_count` | Events in this bucket |
+| `context_quality_tier` | `BREATH_CONTEXT` / `SYMBOL_REGIME_CONTEXT` / `MARKET_ONLY_CONTEXT` / `UNKNOWN_CONTEXT` |
 | `known_context` | True if any of breath_phase / breath_alignment / symbol_regime is non-UNKNOWN |
 | `avg_mfe_pct` | Average max favorable excursion |
 | `median_mfe_pct` | Median max favorable excursion |

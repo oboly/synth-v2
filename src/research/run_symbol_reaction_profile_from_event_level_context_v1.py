@@ -77,6 +77,22 @@ def is_unknown(value: Any) -> bool:
     return str(value or "").strip().upper() in {"", "UNKNOWN"}
 
 
+TIER_BREATH = "BREATH_CONTEXT"
+TIER_SYMBOL_REGIME = "SYMBOL_REGIME_CONTEXT"
+TIER_MARKET_ONLY = "MARKET_ONLY_CONTEXT"
+TIER_UNKNOWN = "UNKNOWN_CONTEXT"
+
+
+def context_quality_tier(row: dict[str, Any]) -> str:
+    if not is_unknown(row.get("breath_phase")) or not is_unknown(row.get("breath_alignment")):
+        return TIER_BREATH
+    if not is_unknown(row.get("symbol_regime")):
+        return TIER_SYMBOL_REGIME
+    if not is_unknown(row.get("market_regime")) or not is_unknown(row.get("btc_context")):
+        return TIER_MARKET_ONLY
+    return TIER_UNKNOWN
+
+
 def context_bucket_key(row: dict[str, Any]) -> tuple[str, ...]:
     symbol = str(row.get("symbol") or "UNKNOWN").strip().upper()
     return (symbol,) + tuple(
@@ -142,6 +158,7 @@ def build_aggregate_rows(
         context_values = dict(zip(CONTEXT_KEY_FIELDS, key[1:]))
 
         known_context = any(not is_unknown(context_values.get(f)) for f in ("breath_phase", "breath_alignment", "symbol_regime"))
+        tier = context_quality_tier(context_values)
 
         avg_mfe = average_or_none(_float_col(rows, "max_favorable_excursion_pct"))
         avg_mae = average_or_none(_float_col(rows, "max_adverse_excursion_pct"))
@@ -152,6 +169,7 @@ def build_aggregate_rows(
             "symbol": symbol,
             **context_values,
             "event_count": len(rows),
+            "context_quality_tier": tier,
             "known_context": known_context,
             "avg_mfe_pct": avg_mfe,
             "median_mfe_pct": median_or_none(_float_col(rows, "max_favorable_excursion_pct")),
@@ -185,6 +203,7 @@ def build_manifest(
 ) -> dict[str, Any]:
     known_context_rows = sum(1 for row in rows if row.get("known_context"))
     unknown_rows = sum(1 for row in rows if not row.get("known_context"))
+    tier_dist = Counter(str(row.get("context_quality_tier") or TIER_UNKNOWN) for row in rows)
     return {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
@@ -192,6 +211,7 @@ def build_manifest(
         "aggregate_row_count": len(rows),
         "known_context_aggregate_rows": known_context_rows,
         "unknown_aggregate_rows": unknown_rows,
+        "tier_distribution": dict(tier_dist),
         "source_event_row_count": event_row_count,
         "event_level_rows": str(args.event_level_rows),
         "output_dir": str(output_dir),
@@ -208,6 +228,14 @@ def print_summary(rows: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
     print(f"source_event_row_count={manifest['source_event_row_count']}")
     symbols = sorted({str(row.get("symbol") or "") for row in rows})
     print(f"symbols={','.join(symbols)}")
+    tier_dist = manifest.get("tier_distribution", {})
+    print(
+        "tier_distribution "
+        + " ; ".join(
+            f"{k}:{tier_dist[k]}"
+            for k in sorted(tier_dist, key=lambda k: -tier_dist[k])
+        )
+    )
     phase_counts: Counter[str] = Counter()
     for row in rows:
         phase_counts[str(row.get("breath_phase") or "UNKNOWN").upper()] += 1

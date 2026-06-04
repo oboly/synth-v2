@@ -6,8 +6,13 @@ from pathlib import Path
 
 from src.research.run_event_level_symbol_reaction_profile_by_context_v1 import (
     SAFETY_MARKERS,
+    TIER_BREATH,
+    TIER_SYMBOL_REGIME,
+    TIER_MARKET_ONLY,
+    TIER_UNKNOWN,
     build_event_level_rows,
     build_manifest,
+    context_quality_tier,
     parse_ts,
 )
 
@@ -157,6 +162,74 @@ class EventLevelSymbolReactionProfileByContextV1Tests(unittest.TestCase):
         self.assertNotIn("executor", joined)
         self.assertNotIn("BitvavoClient", joined)
         self.assertNotIn("common.db", joined)
+
+
+class ContextQualityTierTests(unittest.TestCase):
+    def test_breath_known_gives_breath_context(self) -> None:
+        self.assertEqual(
+            context_quality_tier({"breath_phase": "EXPANSION", "breath_alignment": "UNKNOWN",
+                                   "symbol_regime": "UNKNOWN", "market_regime": "UNKNOWN", "btc_context": "UNKNOWN"}),
+            TIER_BREATH,
+        )
+
+    def test_symbol_regime_without_breath_gives_symbol_regime_context(self) -> None:
+        self.assertEqual(
+            context_quality_tier({"breath_phase": "UNKNOWN", "breath_alignment": "UNKNOWN",
+                                   "symbol_regime": "REL_STRENGTH", "market_regime": "UNKNOWN", "btc_context": "UNKNOWN"}),
+            TIER_SYMBOL_REGIME,
+        )
+
+    def test_market_only_context_when_no_breath_or_symbol(self) -> None:
+        self.assertEqual(
+            context_quality_tier({"breath_phase": "UNKNOWN", "breath_alignment": "UNKNOWN",
+                                   "symbol_regime": "UNKNOWN", "market_regime": "RISK_ON", "btc_context": "UNKNOWN"}),
+            TIER_MARKET_ONLY,
+        )
+
+    def test_all_unknown_gives_unknown_context(self) -> None:
+        self.assertEqual(
+            context_quality_tier({"breath_phase": "UNKNOWN", "breath_alignment": "UNKNOWN",
+                                   "symbol_regime": "UNKNOWN", "market_regime": "UNKNOWN", "btc_context": "UNKNOWN"}),
+            TIER_UNKNOWN,
+        )
+
+    def test_event_level_rows_carry_context_quality_tier(self) -> None:
+        rows = build_event_level_rows(
+            event_rows=_event_rows(),
+            context_rows=_context_known(),
+            recompute_rows=[],
+            fibo_by_symbol={},
+        )
+        self.assertIn("context_quality_tier", rows[0])
+        self.assertEqual(rows[0]["context_quality_tier"], TIER_BREATH)
+
+    def test_unknown_context_event_gets_unknown_tier(self) -> None:
+        rows = build_event_level_rows(
+            event_rows=_event_rows(),
+            context_rows=_context_unknown(),
+            recompute_rows=[],
+            fibo_by_symbol={},
+        )
+        self.assertEqual(rows[0]["context_quality_tier"], TIER_UNKNOWN)
+
+    def test_manifest_contains_tier_distribution(self) -> None:
+        rows = build_event_level_rows(
+            event_rows=_event_rows(),
+            context_rows=_context_known(),
+            recompute_rows=[],
+            fibo_by_symbol={},
+        )
+        manifest = build_manifest(
+            args=type(
+                "Args", (),
+                {"symbols": "XLM", "input_rows": "events.jsonl", "context_rows": "context.csv",
+                 "recompute_rows": "recompute.csv", "fibo_rows": "fibo.csv"},
+            )(),
+            output_dir=Path("/tmp/out"),
+            rows=rows,
+        )
+        self.assertIn("tier_distribution", manifest)
+        self.assertIn(TIER_BREATH, manifest["tier_distribution"])
 
 
 if __name__ == "__main__":

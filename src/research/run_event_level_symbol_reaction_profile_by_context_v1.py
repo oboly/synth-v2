@@ -102,6 +102,22 @@ def is_unknown(value: Any) -> bool:
     return str(value or "").strip().upper() in {"", "UNKNOWN"}
 
 
+TIER_BREATH = "BREATH_CONTEXT"
+TIER_SYMBOL_REGIME = "SYMBOL_REGIME_CONTEXT"
+TIER_MARKET_ONLY = "MARKET_ONLY_CONTEXT"
+TIER_UNKNOWN = "UNKNOWN_CONTEXT"
+
+
+def context_quality_tier(row: dict[str, Any]) -> str:
+    if not is_unknown(row.get("breath_phase")) or not is_unknown(row.get("breath_alignment")):
+        return TIER_BREATH
+    if not is_unknown(row.get("symbol_regime")):
+        return TIER_SYMBOL_REGIME
+    if not is_unknown(row.get("market_regime")) or not is_unknown(row.get("btc_context")):
+        return TIER_MARKET_ONLY
+    return TIER_UNKNOWN
+
+
 def load_context_like_rows(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         raise FileNotFoundError(f"Context rows file not found: {path}")
@@ -315,6 +331,7 @@ def build_event_level_rows(
             "source_refs": source_refs,
             "research_only": True,
         }
+        row_out["context_quality_tier"] = context_quality_tier(row_out)
 
         forward_returns = row.get("forward_returns") or {}
         if not isinstance(forward_returns, dict):
@@ -337,12 +354,14 @@ def build_manifest(
         for row in rows
         if any(not is_unknown(row.get(field)) for field in ("breath_phase", "breath_alignment", "symbol_regime"))
     )
+    tier_dist = Counter(str(row.get("context_quality_tier") or TIER_UNKNOWN) for row in rows)
     return {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
         "symbols": sorted({str(row.get("symbol") or "") for row in rows}),
         "row_count": len(rows),
         "known_context_event_count": known_context_event_count,
+        "tier_distribution": dict(tier_dist),
         "input_rows": str(args.input_rows),
         "context_rows": str(args.context_rows),
         "recompute_rows": str(args.recompute_rows) if args.recompute_rows else None,
@@ -361,6 +380,14 @@ def print_summary(rows: list[dict[str, Any]], manifest: dict[str, Any]) -> None:
     print(
         "breath_phase_distribution "
         + " ; ".join(f"{key}:{phase_counts[key]}" for key in sorted(phase_counts))
+    )
+    tier_dist = manifest.get("tier_distribution", {})
+    print(
+        "tier_distribution "
+        + " ; ".join(
+            f"{k}:{tier_dist[k]}"
+            for k in sorted(tier_dist, key=lambda k: -tier_dist[k])
+        )
     )
     print(
         "safety "

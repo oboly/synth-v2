@@ -79,10 +79,24 @@ Fields:
 - `forward_return_24h`
 - `reaction_zone_touch`
 - `fakeout_flag`
+- `context_quality_tier` — one of `BREATH_CONTEXT`, `SYMBOL_REGIME_CONTEXT`, `MARKET_ONLY_CONTEXT`, `UNKNOWN_CONTEXT`
 - `source_refs`
 - `research_only=true`
 
 If the event source does not carry a metric, the field stays blank / `UNKNOWN` rather than being invented.
+
+## Context Quality Tier
+
+Each event row carries a `context_quality_tier` derived from its embedded context fields:
+
+| Tier | Condition |
+|---|---|
+| `BREATH_CONTEXT` | `breath_phase` or `breath_alignment` is known |
+| `SYMBOL_REGIME_CONTEXT` | `symbol_regime` known; breath fields UNKNOWN |
+| `MARKET_ONLY_CONTEXT` | `market_regime` or `btc_context` known; breath and symbol_regime UNKNOWN |
+| `UNKNOWN_CONTEXT` | all context fields UNKNOWN |
+
+Tier assignment is deterministic from field values. UNKNOWN remains UNKNOWN — tiers are never invented or upgraded.
 
 ## Why This Exists
 
