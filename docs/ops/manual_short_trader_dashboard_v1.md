@@ -79,6 +79,13 @@ python -m src.reporting.run_manual_short_trader_dashboard_v1 \
   --output summary
 ```
 
+Cockpit integration:
+
+- the read-only cockpit publishes Open Orders Monitor at
+  `/var/www/html/synth/open-orders-monitor.html`
+- the cockpit may also publish `/var/www/html/synth/open-orders-monitor.json`
+- Profit Plan links back to this cockpit Open Orders Monitor page
+
 Live read-only mode (requires `SYNTH_BROKER_PRIVATE_READ_PERMISSION` env):
 
 ```bash

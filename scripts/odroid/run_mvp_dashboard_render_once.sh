@@ -16,6 +16,7 @@ export SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML="${SYNTH_ENTRY_CANDIDATE_DASHBOARD_H
 export SYNTH_PROFIT_PLAN_DASHBOARD_HTML="${SYNTH_PROFIT_PLAN_DASHBOARD_HTML:-/var/www/html/synth/profit-plan.html}"
 export SYNTH_PROFIT_PLAN_DASHBOARD_JSON="${SYNTH_PROFIT_PLAN_DASHBOARD_JSON:-/var/www/html/synth/profit-plan.json}"
 export SYNTH_OPEN_ORDERS_MONITOR_HTML="${SYNTH_OPEN_ORDERS_MONITOR_HTML:-/var/www/html/synth/open-orders-monitor.html}"
+export SYNTH_OPEN_ORDERS_MONITOR_JSON="${SYNTH_OPEN_ORDERS_MONITOR_JSON:-/var/www/html/synth/open-orders-monitor.json}"
 export SYNTH_MVP_PROFIT_PLAN_SYMBOLS="${SYNTH_MVP_PROFIT_PLAN_SYMBOLS:-WLD,ONDO}"
 export SYNTH_MVP_PROFIT_PLAN_MARKETS="${SYNTH_MVP_PROFIT_PLAN_MARKETS:-WLD-EUR ONDO-EUR}"
 export SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR="${SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR:-data/research/fibo_target_map_v1}"
@@ -54,6 +55,13 @@ run_step python -m src.reporting.run_entry_candidate_static_dashboard_v1 \
   --output-html "${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML}" \
   --output summary
 
+run_step python -m src.reporting.run_manual_short_trader_dashboard_v1 \
+  --markets ${SYNTH_MVP_PROFIT_PLAN_MARKETS} \
+  --fib-map-rows "${SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR}/fibo_target_map_rows_v1.csv" \
+  --output-html "${SYNTH_OPEN_ORDERS_MONITOR_HTML}" \
+  --output-json "${SYNTH_OPEN_ORDERS_MONITOR_JSON}" \
+  --output summary
+
 run_step python -m src.research.run_fibo_target_map_v1 \
   --symbols "${SYNTH_MVP_PROFIT_PLAN_SYMBOLS}" \
   --write-files \
@@ -72,6 +80,8 @@ echo
 echo "[MVP_DASHBOARD_RENDER][DONE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML}"
+echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_OPEN_ORDERS_MONITOR_HTML}"
+echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_OPEN_ORDERS_MONITOR_JSON}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_PROFIT_PLAN_DASHBOARD_HTML}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_PROFIT_PLAN_DASHBOARD_JSON}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] $(dirname "${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML}")/index.html"

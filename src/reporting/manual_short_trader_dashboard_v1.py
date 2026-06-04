@@ -549,6 +549,7 @@ def build_json_snapshot(
         "snapshot_ts": snapshot_ts or datetime.now(UTC).isoformat(),
         "broker_writes": 0,
         "order_submission": 0,
+        "executor": "none",
         "symbols": [
             {
                 "symbol": s.symbol,

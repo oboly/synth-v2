@@ -9,6 +9,8 @@ Render a read-only online cockpit for paper advice, A+ Table 1 DB context, fresh
 - /var/www/html/synth/index.html
 - /var/www/html/synth/paper-advice.html
 - /var/www/html/synth/rotation-preview.html
+- /var/www/html/synth/open-orders-monitor.html
+- /var/www/html/synth/open-orders-monitor.json
 - /var/www/html/synth/profit-plan.html
 - /var/www/html/synth/profit-plan.json
 
@@ -22,6 +24,8 @@ Allowed: public market reads, private broker balance read, local DB snapshot wri
 
 Profit Plan integration stays read-only:
 
+- render `/var/www/html/synth/open-orders-monitor.html`
+- render `/var/www/html/synth/open-orders-monitor.json`
 - refresh canonical `fibo_target_map_v1` before Profit Plan render
 - render `/var/www/html/synth/profit-plan.html`
 - render `/var/www/html/synth/profit-plan.json`
