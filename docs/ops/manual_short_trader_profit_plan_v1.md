@@ -20,6 +20,8 @@ Cockpit integration:
 - the cockpit publishes Profit Plan at `/var/www/html/synth/profit-plan.html`
 - the cockpit may also publish `/var/www/html/synth/profit-plan.json` for the
   read-only snapshot payload
+- browser links must use the public href `/synth/open-orders-monitor.html`
+  rather than the filesystem output path
 
 It does not:
 
@@ -100,6 +102,8 @@ Rules:
 - No order creation, cancellation, or modification happens here.
 - Missing usable zone data resolves to `INSUFFICIENT_DATA`.
 - Cards always link back to **Open Orders Monitor** when the linked HTML exists.
+- `--monitor-html` is a filesystem output path only; `--monitor-href` is the
+  public browser href used in rendered anchor tags.
 
 ## Input Coverage Audit
 
@@ -209,6 +213,7 @@ Offline mode (no broker orders, public prices only):
 python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
   --markets WLD-EUR ONDO-EUR FET-EUR \
   --fib-map-rows data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv \
+  --monitor-href /synth/open-orders-monitor.html \
   --output-html /tmp/profit_plan_v1.html \
   --output summary
 ```
@@ -231,6 +236,7 @@ python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
   --fib-map-rows data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv \
   --swing-anchors WLD:0.30:0.38 FET:0.166:0.244 \
   --recent-lows FET:0.209 \
+  --monitor-href /synth/open-orders-monitor.html \
   --output-html /tmp/profit_plan_v1.html \
   --output summary
 ```
@@ -246,6 +252,7 @@ python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
   --output-html /tmp/profit_plan_v1.html \
   --output-json /tmp/profit_plan_snapshot.json \
   --monitor-html /tmp/manual_short_trader_dashboard_v1.html \
+  --monitor-href /synth/open-orders-monitor.html \
   --output summary
 ```
 

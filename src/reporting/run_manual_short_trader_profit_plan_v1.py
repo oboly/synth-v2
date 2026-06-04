@@ -41,6 +41,7 @@ from src.research.htf_fib_reentry_ladder_v1 import (
 
 DEFAULT_OUTPUT_HTML = "/tmp/manual_short_trader_profit_plan_v1.html"
 DEFAULT_MONITOR_HTML = "/tmp/manual_short_trader_dashboard_v1.html"
+DEFAULT_MONITOR_HREF = "/synth/open-orders-monitor.html"
 DEFAULT_OUTPUT_JSON: str | None = None
 DEFAULT_ACCOUNT_CODE = "bitvavo_synth_read"
 DEFAULT_VENUE = "bitvavo"
@@ -93,7 +94,13 @@ def parse_args() -> argparse.Namespace:
         "--monitor-html",
         default=DEFAULT_MONITOR_HTML,
         metavar="PATH",
-        help="Path to the Open Orders Monitor HTML (linked from each card).",
+        help="Filesystem path to the Open Orders Monitor HTML output.",
+    )
+    parser.add_argument(
+        "--monitor-href",
+        default=DEFAULT_MONITOR_HREF,
+        metavar="HREF",
+        help="Public browser href for the Open Orders Monitor page.",
     )
     parser.add_argument(
         "--account-code",
@@ -630,6 +637,16 @@ def build_cards(
     return cards
 
 
+def resolve_monitor_link(*, monitor_html: str | None, monitor_href: str | None) -> str | None:
+    href = (monitor_href or "").strip()
+    if href:
+        return href
+    html_path = (monitor_html or "").strip()
+    if html_path and Path(html_path).exists():
+        return html_path
+    return None
+
+
 def print_summary(cards: list[ProfitPlanCard]) -> None:
     print(f"report={REPORT_NAME}")
     print(f"version={REPORT_VERSION}")
@@ -694,7 +711,10 @@ def main() -> int:
         s.symbol: (s.buy_orders, s.sell_orders) for s in sections
     }
 
-    monitor_link = args.monitor_html if Path(args.monitor_html).exists() else None
+    monitor_link = resolve_monitor_link(
+        monitor_html=args.monitor_html,
+        monitor_href=args.monitor_href,
+    )
 
     cards = build_cards(
         args.markets,

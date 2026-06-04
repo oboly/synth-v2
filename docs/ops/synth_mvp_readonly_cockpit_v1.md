@@ -29,6 +29,8 @@ Profit Plan integration stays read-only:
 - refresh canonical `fibo_target_map_v1` before Profit Plan render
 - render `/var/www/html/synth/profit-plan.html`
 - render `/var/www/html/synth/profit-plan.json`
+- keep public browser hrefs separate from filesystem output paths, e.g.
+  `/synth/open-orders-monitor.html` vs `/var/www/html/synth/open-orders-monitor.html`
 - no broker writes, no order submission, no executor path
 
 Forbidden: broker writes, order submission, execution_planner activation, executor activation, decision_gate permission changes, live trading.

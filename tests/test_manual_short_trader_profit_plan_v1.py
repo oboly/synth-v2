@@ -607,6 +607,13 @@ def test_render_full_html_includes_manual_state_labels_and_fields() -> None:
     assert "Distance to target" in html
 
 
+def test_profit_plan_uses_public_monitor_href_not_filesystem_path() -> None:
+    card = build_profit_plan_card("WLD", "WLD-EUR", Decimal("0.48"), fib_ext=_wld_fib_ext())
+    html = render_full_html([card], monitor_link="/synth/open-orders-monitor.html")
+    assert 'href="/synth/open-orders-monitor.html"' in html or "href='/synth/open-orders-monitor.html'" in html
+    assert "/var/www/html/synth/open-orders-monitor.html" not in html
+
+
 def test_render_full_html_data_relevant_attribute() -> None:
     card = build_profit_plan_card("WLD", "WLD-EUR", Decimal("0.48"), fib_ext=_wld_fib_ext())
     html = render_full_html([card])
@@ -642,6 +649,13 @@ def test_profit_plan_links_to_open_orders_monitor() -> None:
     card = build_profit_plan_card("WLD", "WLD-EUR", Decimal("0.48"), fib_ext=_wld_fib_ext())
     html = render_full_html([card], monitor_link="/tmp/manual_short_trader_dashboard_v1.html")
     assert "Open Orders Monitor" in html
+
+
+def test_resolve_monitor_link_prefers_public_href() -> None:
+    assert profit_plan_runner.resolve_monitor_link(
+        monitor_html="/var/www/html/synth/open-orders-monitor.html",
+        monitor_href="/synth/open-orders-monitor.html",
+    ) == "/synth/open-orders-monitor.html"
 
 
 def test_profit_plan_sources_do_not_introduce_order_mutation_strings() -> None:
@@ -728,12 +742,14 @@ def main() -> None:
     test_render_full_html_contains_toggle_buttons()
     test_render_full_html_uses_profit_plan_title()
     test_render_full_html_includes_manual_state_labels_and_fields()
+    test_profit_plan_uses_public_monitor_href_not_filesystem_path()
     test_render_full_html_data_relevant_attribute()
     test_render_full_html_not_relevant_card_present()
     test_render_full_html_safety_marker()
     test_render_full_html_javascript_setview()
     test_render_full_html_no_raw_order_dump()
     test_profit_plan_links_to_open_orders_monitor()
+    test_resolve_monitor_link_prefers_public_href()
     test_profit_plan_sources_do_not_introduce_order_mutation_strings()
     test_json_snapshot_structure()
     test_json_snapshot_is_valid_json()

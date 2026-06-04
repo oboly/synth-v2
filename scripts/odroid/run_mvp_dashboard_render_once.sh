@@ -17,6 +17,7 @@ export SYNTH_PROFIT_PLAN_DASHBOARD_HTML="${SYNTH_PROFIT_PLAN_DASHBOARD_HTML:-/va
 export SYNTH_PROFIT_PLAN_DASHBOARD_JSON="${SYNTH_PROFIT_PLAN_DASHBOARD_JSON:-/var/www/html/synth/profit-plan.json}"
 export SYNTH_OPEN_ORDERS_MONITOR_HTML="${SYNTH_OPEN_ORDERS_MONITOR_HTML:-/var/www/html/synth/open-orders-monitor.html}"
 export SYNTH_OPEN_ORDERS_MONITOR_JSON="${SYNTH_OPEN_ORDERS_MONITOR_JSON:-/var/www/html/synth/open-orders-monitor.json}"
+export SYNTH_OPEN_ORDERS_MONITOR_HREF="${SYNTH_OPEN_ORDERS_MONITOR_HREF:-/synth/open-orders-monitor.html}"
 export SYNTH_MVP_PROFIT_PLAN_SYMBOLS="${SYNTH_MVP_PROFIT_PLAN_SYMBOLS:-WLD,ONDO}"
 export SYNTH_MVP_PROFIT_PLAN_MARKETS="${SYNTH_MVP_PROFIT_PLAN_MARKETS:-WLD-EUR ONDO-EUR}"
 export SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR="${SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR:-data/research/fibo_target_map_v1}"
@@ -72,6 +73,7 @@ run_step python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
   --markets ${SYNTH_MVP_PROFIT_PLAN_MARKETS} \
   --fib-map-rows "${SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR}/fibo_target_map_rows_v1.csv" \
   --monitor-html "${SYNTH_OPEN_ORDERS_MONITOR_HTML}" \
+  --monitor-href "${SYNTH_OPEN_ORDERS_MONITOR_HREF}" \
   --output-html "${SYNTH_PROFIT_PLAN_DASHBOARD_HTML}" \
   --output-json "${SYNTH_PROFIT_PLAN_DASHBOARD_JSON}" \
   --output summary
