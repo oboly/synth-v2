@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from src.research.run_historical_breath_regime_context_builder_v1 import (
     SAFETY_MARKERS,
     build_context_rows,
     build_manifest,
+    load_enriched_market_breath_rows,
+    main as builder_main,
     parse_ts,
 )
 
@@ -82,6 +85,58 @@ def _aplus_rows() -> list[dict]:
     ]
 
 
+def _enriched_rows() -> list[dict]:
+    return [
+        {
+            "source_name": "historical_market_breath_source_enrichment_v1",
+            "symbol": "WLD",
+            "venue": "bitvavo",
+            "interval": "4h",
+            "asof_ts_utc": parse_ts("2026-05-01T00:00:00Z"),
+            "source_event_ts_utc": parse_ts("2026-05-01T00:00:00Z"),
+            "breath_phase": "EXPANSION",
+            "breath_alignment": "EARLY",
+            "market_regime": "RISK_ON",
+            "btc_context": "BTC_OK",
+            "symbol_regime": "HIGH_BETA",
+            "fibo_context": "UNKNOWN",
+            "aplus_context_state": "UNKNOWN",
+            "martee_context_state": "UNKNOWN",
+            "relative_strength_bucket": "LEADER",
+            "momentum_bucket": "MOMENTUM_HIGH",
+            "quality_state": "HIGH",
+            "confidence_bucket": "HIGH",
+            "source_refs": [{"source": "fixture_enriched", "path": "enriched.csv"}],
+        }
+    ]
+
+
+def _enriched_unknown_rows() -> list[dict]:
+    return [
+        {
+            "source_name": "historical_market_breath_source_enrichment_v1",
+            "symbol": "WLD",
+            "venue": "bitvavo",
+            "interval": "4h",
+            "asof_ts_utc": parse_ts("2026-05-01T00:00:00Z"),
+            "source_event_ts_utc": parse_ts("2026-05-01T00:00:00Z"),
+            "breath_phase": "UNKNOWN",
+            "breath_alignment": "UNKNOWN",
+            "market_regime": "UNKNOWN",
+            "btc_context": "UNKNOWN",
+            "symbol_regime": "UNKNOWN",
+            "fibo_context": "UNKNOWN",
+            "aplus_context_state": "UNKNOWN",
+            "martee_context_state": "UNKNOWN",
+            "relative_strength_bucket": "UNKNOWN",
+            "momentum_bucket": "UNKNOWN",
+            "quality_state": "LOW",
+            "confidence_bucket": "UNKNOWN",
+            "source_refs": [{"source": "fixture_enriched", "path": "enriched.csv"}],
+        }
+    ]
+
+
 def test_builder_emits_one_row_per_symbol_time_fixture():
     rows = build_context_rows(
         breath_rows=_breath_rows(),
@@ -126,6 +181,37 @@ def test_symbol_specific_context_is_preserved():
     assert row["aplus_context_state"] == "ACCUMULATION_LEADER_CONFIRMED"
 
 
+def test_enriched_row_fills_breath_phase_into_context_builder_output():
+    rows = build_context_rows(
+        breath_rows=[],
+        enriched_breath_rows=_enriched_rows(),
+        symbols=["WLD"],
+        venue="bitvavo",
+        interval="4h",
+        start_ts=parse_ts("2026-05-01T00:00:00Z"),
+        end_ts=parse_ts("2026-05-01T00:00:00Z"),
+    )
+    row = rows[0]
+    assert row["breath_phase"] == "EXPANSION"
+    assert row["symbol_regime"] == "HIGH_BETA"
+    assert any(ref["source"] == "fixture_enriched" for ref in row["source_refs"])
+
+
+def test_enriched_unknown_does_not_overwrite_existing_known_context():
+    rows = build_context_rows(
+        breath_rows=_breath_rows(),
+        enriched_breath_rows=_enriched_unknown_rows(),
+        symbols=["WLD"],
+        venue="bitvavo",
+        interval="4h",
+    )
+    row = rows[0]
+    assert row["breath_phase"] == "RELOAD"
+    assert row["breath_alignment"] == "ALIGNED"
+    assert row["market_regime"] == "ALT_STRENGTH"
+    assert row["symbol_regime"] == "REL_STRENGTH"
+
+
 def test_market_wide_context_can_be_applied_to_symbols_with_source_refs():
     rows = build_context_rows(
         breath_rows=[],
@@ -140,6 +226,16 @@ def test_market_wide_context_can_be_applied_to_symbols_with_source_refs():
     assert row["market_regime"] == "RISK_ON"
     assert row["btc_context"] == "BTC_OK"
     assert any(ref["source"] == "fixture_market_wide" for ref in row["source_refs"])
+
+
+def test_missing_enriched_file_fails_cleanly():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        missing = Path(tmpdir) / "missing.csv"
+        try:
+            load_enriched_market_breath_rows(missing)
+        except FileNotFoundError:
+            return
+        raise AssertionError("Expected FileNotFoundError for missing enriched source")
 
 
 def test_manifest_contains_research_only_and_safety_markers():
@@ -165,6 +261,28 @@ def test_no_db_writes_broker_decision_execution_imports():
     assert "BitvavoClient" not in src
 
 
+def test_main_ignores_optional_enriched_source_when_absent():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        outdir = Path(tmpdir) / "out"
+        rc = builder_main(
+            [
+                "--symbols",
+                "ALGO",
+                "--interval",
+                "4h",
+                "--start-ts",
+                "2026-05-01T00:00:00Z",
+                "--end-ts",
+                "2026-05-01T00:00:00Z",
+                "--output-dir",
+                str(outdir),
+                "--output",
+                "summary",
+            ]
+        )
+        assert rc == 0
+
+
 def test_no_broker_like_ast_calls():
     src = Path("src/research/run_historical_breath_regime_context_builder_v1.py").read_text()
     tree = ast.parse(src)
@@ -178,9 +296,13 @@ def main():
     test_builder_emits_one_row_per_symbol_time_fixture()
     test_missing_context_becomes_unknown()
     test_symbol_specific_context_is_preserved()
+    test_enriched_row_fills_breath_phase_into_context_builder_output()
+    test_enriched_unknown_does_not_overwrite_existing_known_context()
     test_market_wide_context_can_be_applied_to_symbols_with_source_refs()
+    test_missing_enriched_file_fails_cleanly()
     test_manifest_contains_research_only_and_safety_markers()
     test_no_db_writes_broker_decision_execution_imports()
+    test_main_ignores_optional_enriched_source_when_absent()
     test_no_broker_like_ast_calls()
     print("ok")
 

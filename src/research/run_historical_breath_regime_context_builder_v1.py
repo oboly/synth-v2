@@ -16,6 +16,9 @@ DEFAULT_VENUE = "bitvavo"
 DEFAULT_INTERVAL = "4h"
 DEFAULT_OUTPUT_DIR = Path("data/research/historical_breath_regime_context_builder_v1")
 DEFAULT_MARKET_BREATH_ROWS = Path("data/research/market_breath_outcome_validation_v1/outcome_rows_v1.jsonl")
+DEFAULT_ENRICHED_MARKET_BREATH_ROWS = Path(
+    "data/research/historical_market_breath_source_enrichment_v1/historical_market_breath_source_enriched_rows_v1.csv"
+)
 DEFAULT_APLUS_GLOB = "data/research/aplus_canonical_table1_v1/*.jsonl"
 
 ROWS_CSV = "historical_breath_regime_context_rows_v1.csv"
@@ -73,6 +76,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--interval", default=DEFAULT_INTERVAL)
     parser.add_argument("--start-ts", default=None)
     parser.add_argument("--end-ts", default=None)
+    parser.add_argument("--enriched-market-breath-rows", default=None)
     parser.add_argument("--max-rows", type=int, default=0)
     parser.add_argument("--write-files", action="store_true")
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
@@ -368,6 +372,73 @@ def load_market_breath_rows(path: Path | None) -> list[dict[str, Any]]:
     return out
 
 
+def parse_json_field(value: Any) -> Any:
+    if value in (None, ""):
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(str(value))
+    except json.JSONDecodeError:
+        return None
+
+
+def load_enriched_market_breath_rows(path: Path | None) -> list[dict[str, Any]]:
+    if path is None:
+        return []
+    if not path.exists():
+        raise FileNotFoundError(f"Enriched market breath rows file not found: {path}")
+
+    rows: list[dict[str, Any]]
+    if path.suffix.lower() == ".jsonl":
+        rows = read_jsonl(path)
+    elif path.suffix.lower() == ".csv":
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    else:
+        raise ValueError(f"Unsupported enriched market breath rows format: {path}")
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        asof_ts = parse_ts(row.get("asof_ts_utc"))
+        symbol = str(row.get("symbol") or "").strip().upper()
+        if asof_ts is None or not symbol:
+            continue
+        source_event_ts = parse_ts(row.get("source_event_ts_utc")) or asof_ts
+        source_refs = parse_json_field(row.get("source_refs"))
+        out.append(
+            {
+                "source_name": "historical_market_breath_source_enrichment_v1",
+                "symbol": symbol,
+                "venue": str(row.get("venue") or DEFAULT_VENUE).strip().lower(),
+                "interval": str(row.get("interval") or DEFAULT_INTERVAL).strip(),
+                "asof_ts_utc": asof_ts,
+                "source_event_ts_utc": source_event_ts,
+                "breath_phase": str(row.get("breath_phase") or "UNKNOWN").strip().upper(),
+                "breath_alignment": str(row.get("breath_alignment") or "UNKNOWN").strip().upper(),
+                "market_regime": str(row.get("market_regime") or "UNKNOWN").strip().upper(),
+                "btc_context": str(row.get("btc_context") or "UNKNOWN").strip().upper(),
+                "symbol_regime": str(row.get("symbol_regime") or "UNKNOWN").strip().upper(),
+                "fibo_context": "UNKNOWN",
+                "aplus_context_state": "UNKNOWN",
+                "martee_context_state": "UNKNOWN",
+                "relative_strength_bucket": str(row.get("relative_strength_bucket") or "UNKNOWN").strip().upper(),
+                "momentum_bucket": str(row.get("momentum_bucket") or "UNKNOWN").strip().upper(),
+                "quality_state": str(row.get("quality_state") or "UNKNOWN").strip().upper(),
+                "confidence_bucket": str(row.get("confidence_bucket") or "UNKNOWN").strip().upper(),
+                "source_refs": list(source_refs) if isinstance(source_refs, list) else [
+                    {
+                        "source": "historical_market_breath_source_enrichment_v1",
+                        "path": str(path),
+                        "asof_ts_utc": fmt_ts(asof_ts),
+                    }
+                ],
+                "raw_row": row,
+            }
+        )
+    return out
+
+
 def load_aplus_rows(path: Path | None) -> list[dict[str, Any]]:
     if path is None or not path.exists():
         return []
@@ -453,6 +524,30 @@ def nearest_row_at_or_before(
     return matched
 
 
+def matching_rows_at_or_before(
+    rows_by_symbol: dict[str, list[dict[str, Any]]],
+    *,
+    symbol: str,
+    asof_ts_utc: datetime,
+    max_staleness: timedelta,
+) -> list[dict[str, Any]]:
+    candidates = rows_by_symbol.get(symbol.upper(), [])
+    matched: list[dict[str, Any]] = []
+    latest_ts: datetime | None = None
+    for row in candidates:
+        row_ts = row["asof_ts_utc"]
+        if row_ts > asof_ts_utc:
+            break
+        if latest_ts is None or row_ts > latest_ts:
+            latest_ts = row_ts
+            matched = [row]
+        elif row_ts == latest_ts:
+            matched.append(row)
+    if latest_ts is None or asof_ts_utc - latest_ts > max_staleness:
+        return []
+    return matched
+
+
 def build_lookup(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in sorted(rows, key=lambda item: (str(item.get("symbol") or "").upper(), item["asof_ts_utc"])):
@@ -464,6 +559,7 @@ def merge_context_row(
     spine_row: dict[str, Any],
     *,
     symbol_lookup: dict[str, list[dict[str, Any]]],
+    enriched_symbol_lookup: dict[str, list[dict[str, Any]]] | None,
     market_lookup: dict[str, list[dict[str, Any]]],
     aplus_lookup: dict[str, list[dict[str, Any]]],
     max_staleness: timedelta,
@@ -508,6 +604,37 @@ def merge_context_row(
         merged["source_event_ts_utc"] = fmt_ts(symbol_row.get("source_event_ts_utc") or symbol_row.get("asof_ts_utc"))
         merged["source_refs"].extend(list(symbol_row.get("source_refs") or []))
 
+    if enriched_symbol_lookup:
+        enriched_rows = matching_rows_at_or_before(
+            enriched_symbol_lookup,
+            symbol=symbol,
+            asof_ts_utc=asof_ts,
+            max_staleness=max_staleness,
+        )
+        for enriched_row in enriched_rows:
+            for key in (
+                "breath_phase",
+                "breath_alignment",
+                "market_regime",
+                "btc_context",
+                "symbol_regime",
+                "relative_strength_bucket",
+                "momentum_bucket",
+                "quality_state",
+                "confidence_bucket",
+                "source_refs",
+            ):
+                if key == "source_refs":
+                    merged["source_refs"].extend(list(enriched_row.get("source_refs") or []))
+                    continue
+                value = enriched_row.get(key)
+                if value not in (None, "", "UNKNOWN"):
+                    merged[key] = value
+            if enriched_row.get("source_event_ts_utc") is not None:
+                merged["source_event_ts_utc"] = fmt_ts(
+                    enriched_row.get("source_event_ts_utc") or enriched_row.get("asof_ts_utc")
+                )
+
     market_row = nearest_row_at_or_before(
         market_lookup,
         symbol="*",
@@ -537,6 +664,7 @@ def merge_context_row(
 def build_context_rows(
     *,
     breath_rows: list[dict[str, Any]],
+    enriched_breath_rows: list[dict[str, Any]] | None = None,
     aplus_rows: list[dict[str, Any]] | None = None,
     market_context_rows: list[dict[str, Any]] | None = None,
     symbols: list[str] | None = None,
@@ -575,6 +703,7 @@ def build_context_rows(
         spine_rows = spine_rows[:max_rows]
 
     symbol_lookup = build_lookup(filtered_breath)
+    enriched_symbol_lookup = build_lookup(list(enriched_breath_rows or []))
     market_lookup = build_lookup(list(market_context_rows or []))
     aplus_lookup = build_lookup(list(aplus_rows or []))
     max_staleness = MAX_STALENESS.get(interval, timedelta(days=2))
@@ -583,6 +712,7 @@ def build_context_rows(
         merge_context_row(
             row,
             symbol_lookup=symbol_lookup,
+            enriched_symbol_lookup=enriched_symbol_lookup,
             market_lookup=market_lookup,
             aplus_lookup=aplus_lookup,
             max_staleness=max_staleness,
@@ -647,12 +777,19 @@ def main(argv: list[str] | None = None) -> int:
     end_ts = parse_ts(args.end_ts)
 
     market_breath_path = DEFAULT_MARKET_BREATH_ROWS if DEFAULT_MARKET_BREATH_ROWS.exists() else None
+    enriched_market_breath_path = (
+        Path(args.enriched_market_breath_rows)
+        if args.enriched_market_breath_rows
+        else None
+    )
     aplus_path = latest_matching(DEFAULT_APLUS_GLOB)
 
     breath_rows = load_market_breath_rows(market_breath_path)
+    enriched_breath_rows = load_enriched_market_breath_rows(enriched_market_breath_path)
     aplus_rows = load_aplus_rows(aplus_path)
     rows = build_context_rows(
         breath_rows=breath_rows,
+        enriched_breath_rows=enriched_breath_rows,
         aplus_rows=aplus_rows,
         symbols=symbols,
         venue=venue,
@@ -667,6 +804,9 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=output_dir,
         source_paths={
             "market_breath_rows": None if market_breath_path is None else str(market_breath_path),
+            "enriched_market_breath_rows": (
+                None if enriched_market_breath_path is None else str(enriched_market_breath_path)
+            ),
             "aplus_rows": None if aplus_path is None else str(aplus_path),
         },
     )

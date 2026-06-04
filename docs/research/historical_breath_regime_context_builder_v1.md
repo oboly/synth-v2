@@ -63,6 +63,14 @@ Primary source:
 
 `data/research/market_breath_outcome_validation_v1/outcome_rows_v1.jsonl`
 
+Optional preferred source when explicitly provided:
+
+`data/research/historical_market_breath_source_enrichment_v1/historical_market_breath_source_enriched_rows_v1.csv`
+
+or
+
+`data/research/historical_market_breath_source_enrichment_v1/historical_market_breath_source_enriched_rows_v1.jsonl`
+
 Used fields:
 
 - `symbol`
@@ -76,6 +84,25 @@ Used fields:
 - `relative_strength_score`
 - `btc_alignment_score`
 - `breadth_alignment_score`
+
+When `--enriched-market-breath-rows` is provided, the builder prefers enriched rows for:
+
+- `breath_phase`
+- `breath_alignment`
+- `market_regime`
+- `btc_context`
+- `symbol_regime`
+- `relative_strength_bucket`
+- `momentum_bucket`
+- `quality_state`
+- `confidence_bucket`
+- `source_refs`
+
+Priority rule:
+
+- keep existing market-breath fallback behavior when the arg is absent
+- do not override a known value with `UNKNOWN` from the enriched source
+- prefer conservative `UNKNOWN` over invented values
 
 ### 2. Optional A+ enrichment
 
@@ -166,6 +193,7 @@ python -m src.research.run_historical_breath_regime_context_builder_v1 \
   --symbols WLD,NEAR,HYPE,TAO,FET,ALGO,XLM \
   --venue bitvavo \
   --interval 4h \
+  --enriched-market-breath-rows data/research/historical_market_breath_source_enrichment_v1/historical_market_breath_source_enriched_rows_v1.csv \
   --write-files \
   --output summary
 ```
@@ -201,6 +229,7 @@ V1 is intentionally conservative:
 - it keeps provenance visible in `source_refs`
 - it emits `UNKNOWN` instead of fabricating missing context
 - it does not treat context labels as executable signals
+- it reuses the live-semantics-compatible canonical mappings from the builder/enrichment helpers
 
 ## Recommended next batch
 

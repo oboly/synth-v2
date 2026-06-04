@@ -376,6 +376,17 @@ So the next correct batch after this source enrichment is:
 - rerun coverage audit
 - rerun symbol reaction profile by context
 
+Current downstream consumer:
+
+- `historical_breath_regime_context_builder_v1` can optionally consume:
+  - `historical_market_breath_source_enriched_rows_v1.csv`
+  - `historical_market_breath_source_enriched_rows_v1.jsonl`
+
+Consumption rule:
+
+- enriched rows are preferred only for supported canonical fields
+- enriched `UNKNOWN` values do not overwrite known fallback values from the legacy market-breath source
+
 ## Safety boundary
 
 ```text
