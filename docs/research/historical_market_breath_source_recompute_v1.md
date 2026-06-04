@@ -235,13 +235,13 @@ Also must remain `UNKNOWN` when raw replay yields no supported label:
 - `breath_alignment` when raw state is unsupported or `UNKNOWN`
 - `market_regime`, `btc_context`, `symbol_regime` when required score inputs are missing or do not meet existing helper rules
 
-## Recommended next runner
+## Implemented runner
 
-Build:
+Files:
 
 - `src/research/run_historical_market_breath_source_recompute_v1.py`
 - `tests/test_historical_market_breath_source_recompute_v1.py`
-- doc already defined here
+- `docs/research/historical_market_breath_source_recompute_v1.md`
 
 Output dir:
 
@@ -249,11 +249,11 @@ Output dir:
 
 Output files:
 
-- `historical_market_breath_source_recompute_rows_v1.csv`
-- `historical_market_breath_source_recompute_rows_v1.jsonl`
+- `historical_market_breath_source_recomputed_rows_v1.csv`
+- `historical_market_breath_source_recomputed_rows_v1.jsonl`
 - `manifest_v1.json`
 
-## Recommended runner design
+## Runner design
 
 ### Purpose
 
@@ -264,32 +264,28 @@ Replay the live market-breath classifier over historical as-of timestamps chosen
 #### Primary replay inputs
 
 - historical `obs_market_candle` rows
-- `asset` universe
+- `asset` universe from `fetch_assets()`
 - BTC historical candle rows as the reference series
 
 #### Timestamp spine inputs
 
 The runner should not depend only on sparse validation sample dates.
 
-Preferred timestamp sources:
+Preferred timestamp source in V1:
 
-- lifecycle/reaction/profile event timestamps
-- symbols requested by the user
-- optional bounded historical range and interval
+- available `obs_market_candle.close_ts_utc` values for the requested symbols
+- optional bounded `--start-ts` / `--end-ts`
 
-Useful secondary timestamp sources:
-
-- existing `market_breath_outcome_validation_v1` rows
-- existing context builder rows
+This keeps the replay deterministic and aligned to available market data.
 
 ### Replay flow
 
-1. Resolve requested symbol set.
-2. Resolve requested as-of timestamps.
-3. For each symbol + as-of timestamp:
-   - fetch candle window
-   - compute BTC reference returns
-   - call `build_base_observation()`
+1. Resolve requested symbol set plus BTC anchor.
+2. Resolve available as-of timestamps from `obs_market_candle`.
+3. For each as-of timestamp:
+   - fetch candle windows with `fetch_candles()`
+   - compute BTC reference returns with `safe_return()`
+   - call `build_base_observation()` for each selected symbol
    - call `add_breadth_and_scores()`
 4. Convert raw phase/state to canonical labels using existing pure helpers.
 5. Derive:
@@ -308,15 +304,21 @@ Useful secondary timestamp sources:
 - `venue`
 - `interval`
 - `asof_ts_utc`
+- `compression_score`
+- `expansion_score`
+- `momentum_score`
+- `reversal_pressure_score`
+- `relative_strength_score`
+- `btc_alignment_score`
+- `breadth_alignment_score`
 - `market_breath_phase_raw`
 - `market_breath_state_raw`
+- `market_breath_confidence`
 - `breath_phase`
 - `breath_alignment`
 - `market_regime`
 - `btc_context`
 - `symbol_regime`
-- `relative_strength_score`
-- `momentum_score`
 - `relative_strength_bucket`
 - `momentum_bucket`
 - `quality_state`
@@ -333,12 +335,12 @@ Useful secondary timestamp sources:
 
 ### Source refs
 
-Each row should show:
+Each row shows:
 
 - replay source runner name
 - as-of timestamp
 - interval
-- whether the row came from event-spine replay, validation-spine replay, or mixed-spine replay
+- `obs_market_candle` provenance
 
 ## Why this runner is the correct next batch
 
@@ -351,6 +353,18 @@ The repo already proved:
 The remaining deficiency is timestamp coverage and raw phase/state richness at those timestamps.
 
 Only a replay runner that uses the original candle-level market-breath classifier can change that.
+
+## CLI
+
+```bash
+python -m src.research.run_historical_market_breath_source_recompute_v1 \
+  --symbols WLD,NEAR,HYPE,TAO,FET,ALGO,XLM \
+  --venue bitvavo \
+  --interval 4h \
+  --max-rows 500 \
+  --write-files \
+  --output summary
+```
 
 ## Non-goals
 
