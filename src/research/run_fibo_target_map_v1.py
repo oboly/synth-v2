@@ -44,6 +44,7 @@ FIB_TARGET_LABELS = {
     "fib_4236_price": "FIB_4236_MOONBAG_TP",
 }
 TARGET_STATUS_ORDER = [
+    "MISSING_MARKET_DATA",
     "BELOW_LOCAL_REACTION",
     "APPROACHING_1272",
     "BETWEEN_1272_1618",
@@ -55,6 +56,7 @@ TARGET_STATUS_ORDER = [
     "NOT_IMPLEMENTED",
 ]
 ANCHOR_QUALITY_ORDER = [
+    "MISSING_MARKET_DATA",
     "HIGH_QUALITY",
     "MEDIUM_QUALITY",
     "LOW_QUALITY",
@@ -141,6 +143,13 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def read_csv_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))
 
 
 def table_columns(conn: Any, table_name: str) -> set[str]:
@@ -556,6 +565,17 @@ def insufficient_row(symbol: str, venue: str, interval: str, current_price: floa
     }
 
 
+def missing_market_data_row(symbol: str, venue: str, interval: str, reason: str) -> dict[str, Any]:
+    return insufficient_row(
+        symbol,
+        venue,
+        interval,
+        None,
+        reason,
+        "MISSING_MARKET_DATA",
+    )
+
+
 def build_row_for_symbol(symbol: str, candles: list[Candle], *, venue: str, interval: str, swing_window: int) -> dict[str, Any]:
     current_price = None if not candles else candles[-1].close_price
     if len(candles) < (swing_window * 2 + 3):
@@ -614,6 +634,73 @@ def build_row_for_symbol(symbol: str, candles: list[Candle], *, venue: str, inte
     }
     row.update(ladder)
     return row
+
+
+def build_rows(
+    *,
+    assets: list[AssetRef],
+    requested_symbols: list[str] | None,
+    candles_by_symbol: dict[str, list[Candle]],
+    venue: str,
+    interval: str,
+    swing_window: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    asset_symbols = {asset.symbol for asset in assets}
+    symbols_to_process = (
+        list(requested_symbols)
+        if requested_symbols is not None
+        else sorted(candles_by_symbol.keys())
+    )
+    for symbol in sorted(symbols_to_process):
+        if requested_symbols is not None and symbol not in asset_symbols:
+            rows.append(
+                missing_market_data_row(
+                    symbol,
+                    venue,
+                    interval,
+                    "symbol_not_found_in_asset_universe",
+                )
+            )
+            continue
+        candles = candles_by_symbol.get(symbol, [])
+        if not candles:
+            rows.append(
+                missing_market_data_row(
+                    symbol,
+                    venue,
+                    interval,
+                    "no_market_candles_found_for_symbol",
+                )
+            )
+            continue
+        rows.append(
+            build_row_for_symbol(
+                symbol,
+                candles,
+                venue=venue,
+                interval=interval,
+                swing_window=swing_window,
+            )
+        )
+    return rows
+
+
+def is_partial_scope(*, requested_symbols: list[str] | None, max_symbols: int) -> bool:
+    return requested_symbols is not None or max_symbols > 0
+
+
+def merge_rows_by_symbol(existing_rows: list[dict[str, Any]], new_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for row in existing_rows:
+        symbol = str(row.get("symbol") or "").upper()
+        if symbol:
+            merged[symbol] = row
+    for row in new_rows:
+        symbol = str(row.get("symbol") or "").upper()
+        if symbol:
+            merged[symbol] = row
+    return [merged[symbol] for symbol in sorted(merged.keys())]
 
 
 def summary_rows(rows: list[dict[str, Any]], field: str, ordered_values: list[str]) -> list[dict[str, Any]]:
@@ -717,10 +804,14 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
 
-    rows = [
-        build_row_for_symbol(symbol, candles_by_symbol.get(symbol, []), venue=args.venue, interval=args.interval, swing_window=int(args.swing_window))
-        for symbol in sorted(candles_by_symbol.keys())
-    ]
+    rows = build_rows(
+        assets=assets,
+        requested_symbols=symbols,
+        candles_by_symbol=candles_by_symbol,
+        venue=args.venue,
+        interval=args.interval,
+        swing_window=int(args.swing_window),
+    )
     target_status_summary = summary_rows(rows, "target_status", TARGET_STATUS_ORDER)
     anchor_quality_summary = summary_rows(rows, "anchor_quality", ANCHOR_QUALITY_ORDER)
 
@@ -732,13 +823,16 @@ def main(argv: list[str] | None = None) -> int:
         "summary_by_anchor_quality_csv": output_dir / SUMMARY_BY_ANCHOR_QUALITY_CSV,
         "manifest_json": output_dir / MANIFEST_JSON,
     }
-    manifest = build_manifest(args=args, rows=rows, paths=paths)
+    rows_to_write = rows
+    if args.write_files and is_partial_scope(requested_symbols=symbols, max_symbols=int(args.max_symbols)):
+        rows_to_write = merge_rows_by_symbol(read_csv_rows(paths["rows_csv"]), rows)
+    manifest = build_manifest(args=args, rows=rows_to_write, paths=paths)
 
     if args.write_files:
-        write_csv(paths["rows_csv"], rows)
-        write_jsonl(paths["rows_jsonl"], rows)
-        write_csv(paths["summary_by_target_status_csv"], target_status_summary)
-        write_csv(paths["summary_by_anchor_quality_csv"], anchor_quality_summary)
+        write_csv(paths["rows_csv"], rows_to_write)
+        write_jsonl(paths["rows_jsonl"], rows_to_write)
+        write_csv(paths["summary_by_target_status_csv"], summary_rows(rows_to_write, "target_status", TARGET_STATUS_ORDER))
+        write_csv(paths["summary_by_anchor_quality_csv"], summary_rows(rows_to_write, "anchor_quality", ANCHOR_QUALITY_ORDER))
         write_json(paths["manifest_json"], manifest)
 
     print_summary(

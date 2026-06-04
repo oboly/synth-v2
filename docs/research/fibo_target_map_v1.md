@@ -240,6 +240,9 @@ V1 runner behavior:
 - marks `DOWN` leg mapping as `NOT_IMPLEMENTED` when that is the latest
   confirmed structure
 - emits separate local-reaction, extension, and support/reentry ladder fields
+- when `--symbols` is provided, emits one row per requested symbol
+- requested symbols are not silently dropped; missing inputs resolve to explicit
+  skip rows
 
 Hard implementation rule:
 
@@ -258,6 +261,13 @@ V1 uses a conservative pivot-window approach:
 If no reliable `UP` swing exists:
 
 - emit `INSUFFICIENT_SWING`
+
+If requested market data is missing:
+
+- emit `MISSING_MARKET_DATA`
+- set `anchor_reason` to a concrete skip reason such as
+  `no_market_candles_found_for_symbol`
+  or `symbol_not_found_in_asset_universe`
 
 If the latest confirmed structure is a `DOWN` leg:
 
@@ -418,6 +428,13 @@ V1 runner output files:
 Default output root:
 
 - `data/research/fibo_target_map_v1`
+
+Scoped write behavior:
+
+- full-universe runs replace the canonical output set
+- scoped runs using `--symbols` or `--max-symbols` merge the updated symbol rows
+  into the existing canonical CSV/JSONL so a narrow smoke does not erase
+  unrelated symbols from `fibo_target_map_rows_v1.csv`
 
 ## Safety
 
