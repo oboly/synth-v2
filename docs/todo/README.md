@@ -57,6 +57,7 @@ Do not bypass layers.
 | `breath_curve.md` | parked/open | Breath Curve baseline, non-overlap follow-up, partial-cycle, and regime-gated validation continuation |
 | `strategy_candidates.md` | active/open research | Current strategy audit follow-up, horizon bucket design, later classifier/policy research, and research-lead follow-ups |
 | `position_rotation_preview.md` | MVP implemented / parked follow-up | Account-aware read-only cockpit/rotation preview with current price and distance semantics; strategy/backtests remain separate |
+| `multi_horizon_fib_dashboard_backlog.md` | parked/foundation follow-up | Read-only dashboard backlog that depends on the new multi-horizon fib research foundation outputs and checkpoint coverage |
 | `paper_candidate_contract.md` | future design | Safe adapter path from research candidates to decision_gate |
 | `dev_ops_hygiene.md` | mostly parked | Codex smoke state, DBeaver/MariaDB access recovery, MariaDB backup/export hygiene, local untracked-file hygiene |
 | `parked_backlog.md` | parked/backlog | A+ archive state and external PRO narrative backlog |
