@@ -93,6 +93,38 @@ Rules:
 - Missing usable zone data resolves to `INSUFFICIENT_DATA`.
 - Cards always link back to **Open Orders Monitor** when the linked HTML exists.
 
+## Input Coverage Audit
+
+`run_manual_short_trader_profit_plan_input_audit_v1.py` audits whether each market
+has enough read-only inputs to show a useful Profit Plan card before cockpit wiring.
+
+Per market it reports:
+
+- `has_current_price`
+- `has_existing_open_orders`
+- `open_order_count`
+- `has_target_exit_zone`
+- `has_reload_reentry_zone`
+- `has_invalidation_zone`
+- `has_fib_extension_context`
+- `has_reentry_ladder_context`
+- `has_stale_order_metadata`
+- `primary_missing_reason`
+- `all_missing_reasons`
+- `would_render_state`
+- `filtered_by_profit_plan`
+
+Common missing reasons:
+
+- `MISSING_CURRENT_PRICE`
+- `MISSING_ZONE_CONTEXT`
+- `NO_OPEN_ORDERS`
+- `NO_STALE_ORDER_METADATA`
+- `READY_FOR_PROFIT_PLAN`
+
+This audit is read-only only. It reuses the same input sources as the Profit Plan
+runner where possible and does not change Profit Plan behavior by itself.
+
 ## Acceptance Examples
 
 ### WLD-like (EXTENSION_RUNNER / TAKE_PROFIT_NEAR)
