@@ -237,48 +237,55 @@ Recommended V1 upstream change:
 - persist `relative_strength_bucket`
 - persist `momentum_bucket`
 
-## Recommended implementation batch
+## Implemented runner
 
-Implement a new research-only runner:
+Research-only runner:
 
 `historical_market_breath_source_enrichment_v1`
 
-Proposed future files:
+Files:
 
 - `src/research/run_historical_market_breath_source_enrichment_v1.py`
 - `docs/research/historical_market_breath_source_enrichment_v1.md`
 - `tests/test_historical_market_breath_source_enrichment_v1.py`
 
-### Proposed purpose
+### Purpose
 
-Replay historical market-breath observations at denser, event-relevant as-of timestamps and emit an enriched file-first source that downstream context builders can trust more than the current validation-only rows.
+Normalize the current historical market-breath source into a canonical file-first source that downstream context builders can consume directly, without re-deriving the same labels each time.
 
-### Proposed inputs
+V1 is file-only. It does not replay candles or query DB.
+
+### Inputs
+
+Primary:
 
 - `data/research/market_breath_outcome_validation_v1/outcome_rows_v1.jsonl`
-- lifecycle/reaction event timestamps used by reload/reaction research
-- `obs_market_candle` via existing research DB helper patterns
-- optional `signal_engine_state` / `selection_state` timestamps as extra anchor candidates
 
-### Proposed outputs
+Optional path references for downstream audit context:
+
+- `data/research/historical_breath_regime_context_builder_v1/historical_breath_regime_context_rows_v1.csv`
+- `data/research/symbol_reaction_profile_by_context_v1/symbol_reaction_profile_by_context_rows_v1.csv`
+
+### Outputs
 
 File-output only, no DB writes:
 
 ```text
 data/research/historical_market_breath_source_enrichment_v1/
-  historical_market_breath_source_rows_v1.csv
-  historical_market_breath_source_rows_v1.jsonl
+  historical_market_breath_source_enriched_rows_v1.csv
+  historical_market_breath_source_enriched_rows_v1.jsonl
   manifest_v1.json
 ```
 
-### Required output fields
+### Output fields
 
 - `symbol`
 - `venue`
 - `interval`
 - `asof_ts_utc`
-- `market_breath_phase`
-- `market_breath_state`
+- `source_event_ts_utc`
+- `market_breath_phase_raw`
+- `market_breath_state_raw`
 - `breath_phase`
 - `breath_alignment`
 - `market_regime`
@@ -286,28 +293,71 @@ data/research/historical_market_breath_source_enrichment_v1/
 - `symbol_regime`
 - `relative_strength_score`
 - `momentum_score`
-- `btc_alignment_score`
-- `breadth_alignment_score`
-- `compression_score`
-- `expansion_score`
-- `reversal_pressure_score`
 - `relative_strength_bucket`
 - `momentum_bucket`
-- `market_breath_confidence`
-- `confidence_bucket`
 - `quality_state`
+- `confidence_bucket`
 - `source_refs`
 - `research_only=true`
 
-### V1 rules
+### Derivation rules
 
-- build event-aligned historical rows, not just sparse audit samples
-- preserve symbol identity
-- preserve as-of timestamps
-- keep replay-safe point-in-time construction
-- explicitly persist normalized canonical fields, not only raw market-breath labels
-- do not invent `ALIGNED` or non-`UNKNOWN` phase/state without classifier support
-- prefer `UNKNOWN` over guessed context
+- live/reporting consistency rule:
+  - reuse the pure canonical mapping helpers already used by `historical_breath_regime_context_builder_v1`
+  - do not create alternate label semantics in this runner
+  - if a comparable live/reporting label is not explicitly supported, emit `UNKNOWN`
+- `breath_phase` derives from `market_breath_phase_raw`
+- `breath_alignment` derives from `market_breath_state_raw`
+- `market_regime` reuses the score-band logic from `historical_breath_regime_context_builder_v1`
+- `btc_context` reuses the score-band logic from `historical_breath_regime_context_builder_v1`
+- `symbol_regime` derives from `relative_strength_score` and `momentum_score`
+- `quality_state` is:
+  - `HIGH` when `breath_phase` is known and at least one of `symbol_regime`, `market_regime`, or `btc_context` is known
+  - `MEDIUM` when one of `symbol_regime`, `market_regime`, or `btc_context` is known but `breath_phase` is unknown
+  - `LOW` otherwise
+- `source_refs` preserves path/source/as-of provenance
+- V1 does not invent alignment precision when the raw upstream state is `UNKNOWN`
+
+Inspected consistency sources:
+
+- `src/reporting/market_breath_context_bridge_v1.py`
+- `src/reporting/run_breath_fibo_strategy_static_dashboard_v1.py`
+- `src/reporting/rotation_destination_eligibility_v1.py`
+- `src/research/run_market_breath_analysis_v1.py`
+- `src/research/run_historical_breath_regime_context_builder_v1.py`
+
+Result:
+
+- live/reporting code does not expose a richer canonical `breath_phase`, `breath_alignment`, `market_regime`, `btc_context`, `symbol_regime`, or `fibo_context` mapping than the builder already uses
+- therefore V1 enrichment remains intentionally conservative and emits `UNKNOWN` for unsupported or ambiguous raw values
+
+### CLI
+
+```bash
+python -m src.research.run_historical_market_breath_source_enrichment_v1 \
+  --symbols WLD,NEAR,HYPE,TAO,FET,ALGO,XLM \
+  --max-rows 500 \
+  --write-files \
+  --output summary
+```
+
+### Measures
+
+The runner reports:
+
+- `input_rows`
+- `output_rows`
+- `raw_phase_known_before`
+- `breath_phase_known_after`
+- `raw_alignment_known_before`
+- `breath_alignment_known_after`
+- `symbol_regime_known_before`
+- `symbol_regime_known_after`
+- `breath_phase_unknown_after`
+- `breath_alignment_unknown_after`
+- `symbol_regime_unknown_after`
+- `quality_state_distribution`
+- `source_coverage`
 
 ## Why this runner is the right next step
 
@@ -320,12 +370,11 @@ The current chain is:
 
 That chain cannot recover coverage if the first historical source is already weak.
 
-So the next correct batch is:
+So the next correct batch after this source enrichment is:
 
-- strengthen the upstream historical market-breath source itself
-- then rebuild context rows
-- then rerun coverage audit
-- then rerun symbol reaction profile by context
+- rebuild context rows from the enriched source
+- rerun coverage audit
+- rerun symbol reaction profile by context
 
 ## Safety boundary
 
