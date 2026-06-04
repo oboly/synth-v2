@@ -44,7 +44,7 @@ REPORT_VERSION = "0.1"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Render the Synth v2 short-trader profit-plan dashboard. "
+            "Render the Synth v2 Profit Plan with manual planning states. "
             "Read-only snapshot. No broker writes, no order submission."
         )
     )
@@ -261,6 +261,7 @@ def print_summary(cards: list[ProfitPlanCard]) -> None:
         print(
             f"{card.symbol}: scenario={card.scenario_type}"
             f" action={card.action_label}"
+            f" primary_state={card.primary_state}"
             f" [{rel_flag}]"
         )
 

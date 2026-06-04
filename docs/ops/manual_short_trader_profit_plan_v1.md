@@ -57,33 +57,41 @@ Each card shows:
 | `scenario_type` | EXTENSION_RUNNER, REENTRY_WAIT, RANGE_BOUNCE, BREAKOUT_RETEST, NO_CLEAR_PLAN |
 | `action_label` | TAKE_PROFIT_NEAR, REBUY_ZONE_NEAR, BUY_DIP, BREAKOUT_WATCH, WAIT, FAR_MOONBAG_ONLY, DO_NOT_TOUCH |
 | `timeframe_label` | "15m scalp", "4h bounce", "1d swing" |
-| `buy_zone` | Fib retrace levels where to place buy orders |
-| `sell_zone` | Fib extension targets |
-| `invalidation_level` | Level where the scenario is invalid |
+| `market` | Bitvavo market code shown on the card |
+| `current_price` | Current public price snapshot |
+| `existing_open_orders summary` | Read-only summary of open buys / sells already present |
+| `target_exit_zone` | Fib extension targets |
+| `reload_reentry_zone` | Fib retrace levels used for manual reload planning |
+| `invalidation_risk_zone` | Risk / invalidation level for the current setup |
+| `distance_to_target_pct` | Signed percent distance from current price to nearest target |
+| `distance_to_reload_pct` | Signed percent distance from current price to nearest reload zone |
+| `distance_to_invalidation_pct` | Signed percent distance from current price to invalidation / risk zone |
+| `primary_state` | Main display-only manual planning state |
+| `secondary_state` | Optional second display-only state when another condition also matters |
+| `suggested_manual_attention_label` | Clear user-facing label derived from `primary_state` |
 | `reasons` | Up to 3 plain-language explanations |
 | `order_summary` | Matching active orders + missing suggested orders |
 
 All cards carry: `MANUAL_ONLY — read-only snapshot, no automatic placement`
 
-## Future Profit Plan Cards Backlog
+## Manual Planning States
 
-Future Profit Plan cards should explicitly surface:
+Profit Plan v1.1 adds deterministic display-only states:
 
-- Position / market
-- Current price
-- Existing open orders
-- Target/exit zones
-- Reload/re-entry zones
-- Invalidated / risk zone
-- “Do nothing” state
-- “Take profit already waiting” state
-- “Price ran away” state
-- “Reload zone approaching” state
-- “Order too far / stale” state
-- Link back to Open Orders Monitor
-- Safety note: manual-only, no order creation/cancellation
+- `TAKE_PROFIT_WAITING` → `Take profit already waiting`
+- `RELOAD_ZONE_APPROACHING` → `Reload zone approaching`
+- `PRICE_RAN_AWAY` → `Price ran away`
+- `INVALIDATION_NEAR` → `Invalidation / risk zone near`
+- `ORDER_TOO_FAR_OR_STALE` → `Order too far or stale`
+- `DO_NOTHING` → `Do nothing`
+- `INSUFFICIENT_DATA` → `Insufficient data`
 
-These additions stay display-only. They do not create, cancel, or modify orders.
+Rules:
+
+- These states are display-only. They are not order instructions.
+- No order creation, cancellation, or modification happens here.
+- Missing usable zone data resolves to `INSUFFICIENT_DATA`.
+- Cards always link back to **Open Orders Monitor** when the linked HTML exists.
 
 ## Acceptance Examples
 

@@ -11,6 +11,21 @@ REPORT_NAME = "manual_short_trader_profit_plan_v1"
 REPORT_VERSION = "0.1"
 
 ORDER_MATCH_TOLERANCE_PCT = Decimal("3")
+TAKE_PROFIT_WAITING_THRESHOLD_PCT = Decimal("3")
+RELOAD_ZONE_APPROACHING_THRESHOLD_PCT = Decimal("3")
+INVALIDATION_NEAR_THRESHOLD_PCT = Decimal("3")
+PRICE_RAN_AWAY_THRESHOLD_PCT = Decimal("12")
+ORDER_STALE_DISTANCE_PCT = Decimal("12")
+
+STATE_LABELS: dict[str, str] = {
+    "TAKE_PROFIT_WAITING": "Take profit already waiting",
+    "RELOAD_ZONE_APPROACHING": "Reload zone approaching",
+    "PRICE_RAN_AWAY": "Price ran away",
+    "INVALIDATION_NEAR": "Invalidation / risk zone near",
+    "ORDER_TOO_FAR_OR_STALE": "Order too far or stale",
+    "DO_NOTHING": "Do nothing",
+    "INSUFFICIENT_DATA": "Insufficient data",
+}
 
 RELEVANT_STATES: frozenset[str] = frozenset({
     "TAKE_PROFIT_NEAR",
@@ -20,6 +35,11 @@ RELEVANT_STATES: frozenset[str] = frozenset({
     "REENTRY_WAIT",
     "RANGE_BOUNCE",
     "BREAKOUT_RETEST",
+    "TAKE_PROFIT_WAITING",
+    "RELOAD_ZONE_APPROACHING",
+    "PRICE_RAN_AWAY",
+    "INVALIDATION_NEAR",
+    "ORDER_TOO_FAR_OR_STALE",
 })
 
 
@@ -52,13 +72,19 @@ class ReentryContext:
 
 @dataclass(frozen=True)
 class ActiveOrderSummary:
+    open_buy_orders: int
+    open_sell_orders: int
     matching_buys: int
     matching_sells: int
     nearest_buy_price: Decimal | None
     nearest_sell_price: Decimal | None
     nearest_buy_distance_pct: Decimal | None
     nearest_sell_distance_pct: Decimal | None
+    nearest_open_buy_distance_pct: Decimal | None
+    nearest_open_sell_distance_pct: Decimal | None
+    max_open_order_distance_pct: Decimal | None
     missing_suggested: tuple[str, ...]
+    existing_open_orders_summary: str
 
 
 @dataclass(frozen=True)
@@ -74,6 +100,15 @@ class ProfitPlanCard:
     invalidation_level: Decimal | None
     reasons: tuple[str, ...]
     order_summary: ActiveOrderSummary
+    target_exit_zone: tuple[Decimal, ...]
+    reload_reentry_zone: tuple[Decimal, ...]
+    invalidation_risk_zone: Decimal | None
+    distance_to_target_pct: Decimal | None
+    distance_to_reload_pct: Decimal | None
+    distance_to_invalidation_pct: Decimal | None
+    primary_state: str
+    secondary_state: str | None
+    suggested_manual_attention_label: str
     is_relevant: bool
 
 
@@ -93,6 +128,22 @@ def _pct(v: Decimal | None) -> str:
     if v is None:
         return "?"
     return f"{v.quantize(Decimal('0.01'))}%"
+
+
+def _distance_to_level_pct(current_price: Decimal | None, level: Decimal | None) -> Decimal | None:
+    if current_price is None or current_price <= 0 or level is None or level <= 0:
+        return None
+    return (level - current_price) / current_price * Decimal("100")
+
+
+def _distance_to_zone_pct(current_price: Decimal | None, levels: tuple[Decimal, ...]) -> Decimal | None:
+    if current_price is None or current_price <= 0 or not levels:
+        return None
+    distances = [_distance_to_level_pct(current_price, level) for level in levels]
+    valid = [dist for dist in distances if dist is not None]
+    if not valid:
+        return None
+    return min(valid, key=lambda dist: abs(dist))
 
 
 def _classify_scenario(
@@ -359,6 +410,28 @@ def build_order_summary(
     buy_orders: tuple[Any, ...],
     sell_orders: tuple[Any, ...],
 ) -> ActiveOrderSummary:
+    def _nearest_open_distance(orders: tuple[Any, ...]) -> Decimal | None:
+        if current_price is None or current_price <= 0:
+            return None
+        distances = [
+            (o.limit_price - current_price) / current_price * Decimal("100")
+            for o in orders
+        ]
+        if not distances:
+            return None
+        return min(distances, key=lambda dist: abs(dist))
+
+    def _max_open_distance(orders: tuple[Any, ...]) -> Decimal | None:
+        if current_price is None or current_price <= 0:
+            return None
+        distances = [
+            abs((o.limit_price - current_price) / current_price * Decimal("100"))
+            for o in orders
+        ]
+        if not distances:
+            return None
+        return max(distances)
+
     def _nearest(orders: tuple[Any, ...], zone_prices: tuple[Decimal, ...]) -> tuple[int, Decimal | None, Decimal | None]:
         matching = 0
         nearest_price: Decimal | None = None
@@ -386,14 +459,99 @@ def build_order_summary(
         if not any(_near(o.limit_price, zone_p, ORDER_MATCH_TOLERANCE_PCT) for o in sell_orders):
             missing.append(f"sell @ {_fmt_p(zone_p)}")
 
+    open_buy_orders = len(buy_orders)
+    open_sell_orders = len(sell_orders)
+    open_parts: list[str] = []
+    if open_buy_orders:
+        open_parts.append(f"{open_buy_orders} buy open")
+    if open_sell_orders:
+        open_parts.append(f"{open_sell_orders} sell open")
+    existing_open_orders_summary = " · ".join(open_parts) if open_parts else "No open orders linked"
+
     return ActiveOrderSummary(
+        open_buy_orders=open_buy_orders,
+        open_sell_orders=open_sell_orders,
         matching_buys=buy_matching,
         matching_sells=sell_matching,
         nearest_buy_price=nearest_buy,
         nearest_sell_price=nearest_sell,
         nearest_buy_distance_pct=nearest_buy_dist,
         nearest_sell_distance_pct=nearest_sell_dist,
+        nearest_open_buy_distance_pct=_nearest_open_distance(buy_orders),
+        nearest_open_sell_distance_pct=_nearest_open_distance(sell_orders),
+        max_open_order_distance_pct=_max_open_distance(buy_orders + sell_orders),
         missing_suggested=tuple(missing),
+        existing_open_orders_summary=existing_open_orders_summary,
+    )
+
+
+def _evaluate_display_states(
+    *,
+    current_price: Decimal | None,
+    target_exit_zone: tuple[Decimal, ...],
+    reload_reentry_zone: tuple[Decimal, ...],
+    invalidation_risk_zone: Decimal | None,
+    order_summary: ActiveOrderSummary,
+) -> tuple[str, str | None, str, Decimal | None, Decimal | None, Decimal | None]:
+    distance_to_target_pct = _distance_to_zone_pct(current_price, target_exit_zone)
+    distance_to_reload_pct = _distance_to_zone_pct(current_price, reload_reentry_zone)
+    distance_to_invalidation_pct = _distance_to_level_pct(current_price, invalidation_risk_zone)
+
+    if current_price is None or (
+        not target_exit_zone and not reload_reentry_zone and invalidation_risk_zone is None
+    ):
+        primary_state = "INSUFFICIENT_DATA"
+        return (
+            primary_state,
+            None,
+            STATE_LABELS[primary_state],
+            distance_to_target_pct,
+            distance_to_reload_pct,
+            distance_to_invalidation_pct,
+        )
+
+    state_candidates: list[str] = []
+
+    if (
+        distance_to_target_pct is not None
+        and abs(distance_to_target_pct) <= TAKE_PROFIT_WAITING_THRESHOLD_PCT
+        and order_summary.matching_sells > 0
+    ):
+        state_candidates.append("TAKE_PROFIT_WAITING")
+
+    if (
+        distance_to_invalidation_pct is not None
+        and abs(distance_to_invalidation_pct) <= INVALIDATION_NEAR_THRESHOLD_PCT
+    ):
+        state_candidates.append("INVALIDATION_NEAR")
+
+    if (
+        distance_to_reload_pct is not None
+        and abs(distance_to_reload_pct) <= RELOAD_ZONE_APPROACHING_THRESHOLD_PCT
+    ):
+        state_candidates.append("RELOAD_ZONE_APPROACHING")
+
+    if target_exit_zone and distance_to_target_pct is not None and distance_to_target_pct <= -PRICE_RAN_AWAY_THRESHOLD_PCT:
+        state_candidates.append("PRICE_RAN_AWAY")
+
+    if (
+        order_summary.max_open_order_distance_pct is not None
+        and order_summary.max_open_order_distance_pct >= ORDER_STALE_DISTANCE_PCT
+    ):
+        state_candidates.append("ORDER_TOO_FAR_OR_STALE")
+
+    if not state_candidates:
+        state_candidates.append("DO_NOTHING")
+
+    primary_state = state_candidates[0]
+    secondary_state = next((state for state in state_candidates[1:] if state != primary_state), None)
+    return (
+        primary_state,
+        secondary_state,
+        STATE_LABELS[primary_state],
+        distance_to_target_pct,
+        distance_to_reload_pct,
+        distance_to_invalidation_pct,
     )
 
 
@@ -437,8 +595,25 @@ def build_profit_plan_card(
         sell_orders,
     )
 
+    (
+        primary_state,
+        secondary_state,
+        suggested_manual_attention_label,
+        distance_to_target_pct,
+        distance_to_reload_pct,
+        distance_to_invalidation_pct,
+    ) = _evaluate_display_states(
+        current_price=current_price,
+        target_exit_zone=sell_zone,
+        reload_reentry_zone=buy_zone,
+        invalidation_risk_zone=invalidation_level,
+        order_summary=order_summary,
+    )
+
     is_relevant = (
-        action_label in RELEVANT_STATES or scenario_type in RELEVANT_STATES
+        primary_state in RELEVANT_STATES
+        or action_label in RELEVANT_STATES
+        or scenario_type in RELEVANT_STATES
     )
 
     return ProfitPlanCard(
@@ -453,6 +628,15 @@ def build_profit_plan_card(
         invalidation_level=invalidation_level,
         reasons=reasons,
         order_summary=order_summary,
+        target_exit_zone=sell_zone,
+        reload_reentry_zone=buy_zone,
+        invalidation_risk_zone=invalidation_level,
+        distance_to_target_pct=distance_to_target_pct,
+        distance_to_reload_pct=distance_to_reload_pct,
+        distance_to_invalidation_pct=distance_to_invalidation_pct,
+        primary_state=primary_state,
+        secondary_state=secondary_state,
+        suggested_manual_attention_label=suggested_manual_attention_label,
         is_relevant=is_relevant,
     )
 
@@ -519,6 +703,21 @@ _CSS = """
     .action-wait { color: var(--muted); }
     .action-dont { color: var(--bad); }
     .tf-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .state-label { margin-top: 6px; font-size: 14px; font-weight: 700; }
+    .state-secondary { margin-top: 3px; font-size: 11px; color: var(--muted); }
+    .field-grid {
+      display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+      margin: 10px 0;
+    }
+    .field-block {
+      background: rgba(0,0,0,.16); border: 1px solid var(--line);
+      border-radius: 10px; padding: 8px 10px;
+    }
+    .field-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted);
+      margin-bottom: 3px;
+    }
+    .field-value { font-size: 13px; color: var(--text); }
     .zones {
       display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
       margin: 10px 0;
@@ -610,6 +809,16 @@ def _action_class(action_label: str) -> str:
     return "action-wait"
 
 
+def _state_class(state: str) -> str:
+    if state in {"TAKE_PROFIT_WAITING", "RELOAD_ZONE_APPROACHING"}:
+        return "action-tp"
+    if state in {"INVALIDATION_NEAR", "ORDER_TOO_FAR_OR_STALE"}:
+        return "action-dont"
+    if state == "PRICE_RAN_AWAY":
+        return "action-watch"
+    return "action-wait"
+
+
 def _zone_html(prices: tuple[Decimal, ...], side: str) -> str:
     if not prices:
         return "<div class='zone-empty'>No levels loaded</div>"
@@ -623,6 +832,7 @@ def _zone_html(prices: tuple[Decimal, ...], side: str) -> str:
 
 def _order_summary_html(summary: ActiveOrderSummary, monitor_link: str | None) -> str:
     parts: list[str] = []
+    parts.append(f"<span class='order-chip muted'>{esc(summary.existing_open_orders_summary)}</span>")
     if summary.matching_buys > 0:
         parts.append(f"<span class='order-chip ok'>{summary.matching_buys} buy order{'s' if summary.matching_buys != 1 else ''} near zone</span>")
     if summary.matching_sells > 0:
@@ -637,10 +847,19 @@ def _order_summary_html(summary: ActiveOrderSummary, monitor_link: str | None) -
         link_html = f"<div class='monitor-link'><a href='{esc(monitor_link)}' style='color:inherit'>→ Open Orders Monitor</a></div>"
     return (
         f"<div class='order-summary'>"
-        f"<div style='margin-bottom:4px'>Active orders:</div>"
+        f"<div style='margin-bottom:4px'>Existing open orders:</div>"
         f"<div class='order-row'>{chips}</div>"
         f"{link_html}"
         f"</div>"
+    )
+
+
+def _metric_block(label: str, value: str) -> str:
+    return (
+        "<div class='field-block'>"
+        f"<div class='field-label'>{esc(label)}</div>"
+        f"<div class='field-value mono'>{esc(value)}</div>"
+        "</div>"
     )
 
 
@@ -653,6 +872,23 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
     if card.invalidation_level is not None:
         invalidation_html = f"<div class='invalidation'>✕ Invalidates below {esc(_fmt_p(card.invalidation_level))}</div>"
 
+    metrics_html = "".join((
+        _metric_block("Market", card.market),
+        _metric_block("Current price", f"{price_str} {quote}".strip()),
+        _metric_block("Target / exit zone", ", ".join(_fmt_p(v) for v in card.target_exit_zone) or "No levels loaded"),
+        _metric_block("Reload / re-entry zone", ", ".join(_fmt_p(v) for v in card.reload_reentry_zone) or "No levels loaded"),
+        _metric_block("Invalidation / risk zone", _fmt_p(card.invalidation_risk_zone)),
+        _metric_block("Distance to target", _pct(card.distance_to_target_pct)),
+        _metric_block("Distance to reload", _pct(card.distance_to_reload_pct)),
+        _metric_block("Distance to invalidation", _pct(card.distance_to_invalidation_pct)),
+    ))
+
+    secondary_state_html = ""
+    if card.secondary_state is not None:
+        secondary_state_html = (
+            f"<div class='state-secondary'>Secondary state: {esc(STATE_LABELS.get(card.secondary_state, card.secondary_state))}</div>"
+        )
+
     return (
         f"<section class='card plan-card' data-relevant='{str(card.is_relevant).lower()}'>"
         "<div class='card-head'>"
@@ -663,10 +899,13 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
         f"</div>"
         f"<div style='text-align:right'>"
         f"{_scenario_badge(card.scenario_type)}"
+        f"<div class='state-label {_state_class(card.primary_state)}'>{esc(card.suggested_manual_attention_label)}</div>"
+        f"{secondary_state_html}"
         f"<div class='action-label {_action_class(card.action_label)}'>{esc(card.action_label.replace('_', ' '))}</div>"
         f"<div class='tf-label'>{esc(card.timeframe_label)}</div>"
         f"</div>"
         "</div>"
+        f"<div class='field-grid'>{metrics_html}</div>"
         "<div class='zones'>"
         f"<div><h3 style='color:var(--ok)'>Buy Zone</h3>{_zone_html(card.buy_zone, 'buy')}</div>"
         f"<div><h3 style='color:var(--warn)'>Sell Zone</h3>{_zone_html(card.sell_zone, 'sell')}</div>"
@@ -752,11 +991,26 @@ def build_json_snapshot(
                 "buy_zone": [str(p) for p in c.buy_zone],
                 "sell_zone": [str(p) for p in c.sell_zone],
                 "invalidation_level": str(c.invalidation_level) if c.invalidation_level is not None else None,
+                "target_exit_zone": [str(p) for p in c.target_exit_zone],
+                "reload_reentry_zone": [str(p) for p in c.reload_reentry_zone],
+                "invalidation_risk_zone": str(c.invalidation_risk_zone) if c.invalidation_risk_zone is not None else None,
+                "distance_to_target_pct": str(c.distance_to_target_pct) if c.distance_to_target_pct is not None else None,
+                "distance_to_reload_pct": str(c.distance_to_reload_pct) if c.distance_to_reload_pct is not None else None,
+                "distance_to_invalidation_pct": str(c.distance_to_invalidation_pct) if c.distance_to_invalidation_pct is not None else None,
+                "primary_state": c.primary_state,
+                "secondary_state": c.secondary_state,
+                "suggested_manual_attention_label": c.suggested_manual_attention_label,
                 "reasons": list(c.reasons),
                 "is_relevant": c.is_relevant,
                 "order_summary": {
+                    "open_buy_orders": c.order_summary.open_buy_orders,
+                    "open_sell_orders": c.order_summary.open_sell_orders,
                     "matching_buys": c.order_summary.matching_buys,
                     "matching_sells": c.order_summary.matching_sells,
+                    "nearest_open_buy_distance_pct": str(c.order_summary.nearest_open_buy_distance_pct) if c.order_summary.nearest_open_buy_distance_pct is not None else None,
+                    "nearest_open_sell_distance_pct": str(c.order_summary.nearest_open_sell_distance_pct) if c.order_summary.nearest_open_sell_distance_pct is not None else None,
+                    "max_open_order_distance_pct": str(c.order_summary.max_open_order_distance_pct) if c.order_summary.max_open_order_distance_pct is not None else None,
+                    "existing_open_orders_summary": c.order_summary.existing_open_orders_summary,
                     "missing_suggested": list(c.order_summary.missing_suggested),
                 },
             }

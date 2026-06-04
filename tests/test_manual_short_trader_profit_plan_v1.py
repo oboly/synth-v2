@@ -62,6 +62,25 @@ class _FakeOrder:
         self.side = side
 
 
+def _make_card_with_manual_states(
+    *,
+    current_price: str | None,
+    fib_ext: FibExtContext | None = None,
+    reentry: ReentryContext | None = None,
+    buy_orders: tuple[_FakeOrder, ...] = (),
+    sell_orders: tuple[_FakeOrder, ...] = (),
+) -> ProfitPlanCard:
+    return build_profit_plan_card(
+        "WLD",
+        "WLD-EUR",
+        Decimal(current_price) if current_price is not None else None,
+        fib_ext=fib_ext,
+        reentry=reentry,
+        buy_orders=buy_orders,
+        sell_orders=sell_orders,
+    )
+
+
 # ---------------------------------------------------------------------------
 # AST / safety
 # ---------------------------------------------------------------------------
@@ -319,6 +338,8 @@ def test_order_summary_matching_buy_near_zone() -> None:
         sell_orders,
     )
     assert summary.matching_buys == 1
+    assert summary.open_buy_orders == 1
+    assert "1 buy open" in summary.existing_open_orders_summary
 
 
 def test_order_summary_no_match_when_far() -> None:
@@ -347,6 +368,85 @@ def test_order_summary_missing_suggested() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Manual planning display states
+# ---------------------------------------------------------------------------
+
+def test_take_profit_waiting_when_target_is_near_and_sell_order_exists() -> None:
+    card = _make_card_with_manual_states(
+        current_price="0.6400",
+        fib_ext=_wld_fib_ext(),
+        sell_orders=(_FakeOrder("0.6500", side="sell"),),
+    )
+    assert card.primary_state == "TAKE_PROFIT_WAITING"
+    assert card.suggested_manual_attention_label == "Take profit already waiting"
+
+
+def test_reload_zone_approaching_when_price_is_near_reload_zone() -> None:
+    card = _make_card_with_manual_states(
+        current_price="0.2100",
+        reentry=_fet_reentry(),
+    )
+    assert card.primary_state == "RELOAD_ZONE_APPROACHING"
+    assert card.suggested_manual_attention_label == "Reload zone approaching"
+
+
+def test_price_ran_away_when_price_is_far_above_target_assumptions() -> None:
+    card = _make_card_with_manual_states(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext(),
+    )
+    assert card.primary_state == "PRICE_RAN_AWAY"
+    assert card.suggested_manual_attention_label == "Price ran away"
+
+
+def test_invalidation_near_when_price_approaches_risk_zone() -> None:
+    fib = FibExtContext(
+        ext_1_272=Decimal("0.49"),
+        ext_1_618=Decimal("0.65"),
+        ext_2_000=Decimal("0.80"),
+        breakout_gate=Decimal("0.38"),
+        price_band="BELOW_BREAKOUT_GATE",
+        ext_1_272_touched_and_rejected=False,
+        retesting_breakout_gate=True,
+    )
+    card = _make_card_with_manual_states(
+        current_price="0.3600",
+        fib_ext=fib,
+    )
+    assert card.primary_state == "INVALIDATION_NEAR"
+    assert card.suggested_manual_attention_label == "Invalidation / risk zone near"
+
+
+def test_order_too_far_or_stale_when_open_orders_are_far_from_current_price() -> None:
+    card = _make_card_with_manual_states(
+        current_price="0.3000",
+        reentry=_fet_reentry(),
+        buy_orders=(_FakeOrder("0.1000"),),
+    )
+    assert card.primary_state == "ORDER_TOO_FAR_OR_STALE"
+    assert card.suggested_manual_attention_label == "Order too far or stale"
+
+
+def test_do_nothing_for_neutral_valid_state() -> None:
+    card = _make_card_with_manual_states(
+        current_price="0.2500",
+        reentry=_fet_reentry(),
+    )
+    assert card.primary_state == "DO_NOTHING"
+    assert card.suggested_manual_attention_label == "Do nothing"
+
+
+def test_insufficient_data_when_zones_are_missing() -> None:
+    card = _make_card_with_manual_states(
+        current_price=None,
+        fib_ext=None,
+        reentry=None,
+    )
+    assert card.primary_state == "INSUFFICIENT_DATA"
+    assert card.suggested_manual_attention_label == "Insufficient data"
+
+
+# ---------------------------------------------------------------------------
 # HTML rendering
 # ---------------------------------------------------------------------------
 
@@ -363,6 +463,18 @@ def test_render_full_html_uses_profit_plan_title() -> None:
     html = render_full_html([])
     assert "Profit Plan" in html
     assert "Short Trader Profit Plan" not in html
+
+
+def test_render_full_html_includes_manual_state_labels_and_fields() -> None:
+    card = _make_card_with_manual_states(
+        current_price="0.6400",
+        fib_ext=_wld_fib_ext(),
+        sell_orders=(_FakeOrder("0.6500", side="sell"),),
+    )
+    html = render_full_html([card], monitor_link="/tmp/manual_short_trader_dashboard_v1.html")
+    assert "Take profit already waiting" in html
+    assert "Existing open orders" in html
+    assert "Distance to target" in html
 
 
 def test_render_full_html_data_relevant_attribute() -> None:
@@ -424,6 +536,8 @@ def test_json_snapshot_structure() -> None:
     sym = snap["symbols"][0]
     assert sym["symbol"] == "WLD"
     assert sym["scenario_type"] == "EXTENSION_RUNNER"
+    assert "primary_state" in sym
+    assert "suggested_manual_attention_label" in sym
     assert "broker_writes" in snap
     assert snap["broker_writes"] == 0
 
@@ -468,8 +582,16 @@ def main() -> None:
     test_order_summary_matching_buy_near_zone()
     test_order_summary_no_match_when_far()
     test_order_summary_missing_suggested()
+    test_take_profit_waiting_when_target_is_near_and_sell_order_exists()
+    test_reload_zone_approaching_when_price_is_near_reload_zone()
+    test_price_ran_away_when_price_is_far_above_target_assumptions()
+    test_invalidation_near_when_price_approaches_risk_zone()
+    test_order_too_far_or_stale_when_open_orders_are_far_from_current_price()
+    test_do_nothing_for_neutral_valid_state()
+    test_insufficient_data_when_zones_are_missing()
     test_render_full_html_contains_toggle_buttons()
     test_render_full_html_uses_profit_plan_title()
+    test_render_full_html_includes_manual_state_labels_and_fields()
     test_render_full_html_data_relevant_attribute()
     test_render_full_html_not_relevant_card_present()
     test_render_full_html_safety_marker()
