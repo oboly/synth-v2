@@ -33,7 +33,7 @@ REPORT_VERSION = "0.1"
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Render the Synth v2 manual short trader open-orders dashboard. "
+            "Render the Synth v2 Open Orders Monitor. "
             "Read-only snapshot only. No broker writes, no order submission."
         )
     )

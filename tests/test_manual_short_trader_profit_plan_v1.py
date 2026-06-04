@@ -359,6 +359,12 @@ def test_render_full_html_contains_toggle_buttons() -> None:
     assert "All candidates" in html
 
 
+def test_render_full_html_uses_profit_plan_title() -> None:
+    html = render_full_html([])
+    assert "Profit Plan" in html
+    assert "Short Trader Profit Plan" not in html
+
+
 def test_render_full_html_data_relevant_attribute() -> None:
     card = build_profit_plan_card("WLD", "WLD-EUR", Decimal("0.48"), fib_ext=_wld_fib_ext())
     html = render_full_html([card])
@@ -388,6 +394,23 @@ def test_render_full_html_no_raw_order_dump() -> None:
     html = render_full_html([])
     assert "Order ID" not in html
     assert "amountRemaining" not in html
+
+
+def test_profit_plan_links_to_open_orders_monitor() -> None:
+    card = build_profit_plan_card("WLD", "WLD-EUR", Decimal("0.48"), fib_ext=_wld_fib_ext())
+    html = render_full_html([card], monitor_link="/tmp/manual_short_trader_dashboard_v1.html")
+    assert "Open Orders Monitor" in html
+
+
+def test_profit_plan_sources_do_not_introduce_order_mutation_strings() -> None:
+    for path in (
+        "src/reporting/manual_short_trader_profit_plan_v1.py",
+        "src/reporting/run_manual_short_trader_profit_plan_v1.py",
+    ):
+        source = Path(path).read_text(encoding="utf-8")
+        assert "placeOrder" not in source
+        assert "cancelOrder" not in source
+        assert "create order" not in source.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -446,11 +469,14 @@ def main() -> None:
     test_order_summary_no_match_when_far()
     test_order_summary_missing_suggested()
     test_render_full_html_contains_toggle_buttons()
+    test_render_full_html_uses_profit_plan_title()
     test_render_full_html_data_relevant_attribute()
     test_render_full_html_not_relevant_card_present()
     test_render_full_html_safety_marker()
     test_render_full_html_javascript_setview()
     test_render_full_html_no_raw_order_dump()
+    test_profit_plan_links_to_open_orders_monitor()
+    test_profit_plan_sources_do_not_introduce_order_mutation_strings()
     test_json_snapshot_structure()
     test_json_snapshot_is_valid_json()
     print("ok")

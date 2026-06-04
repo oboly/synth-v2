@@ -1,10 +1,17 @@
 # Manual Short Trader Dashboard V1
 
+Legacy/internal name: `manual_short_trader_dashboard_v1`
+
+User-facing page title: **Open Orders Monitor**
+
 ## Purpose
 
-`manual_short_trader_dashboard_v1` provides a read-only HTML snapshot of open
-broker orders and balances, enriched with price-distance metrics and review
-labels, grouped per symbol with BUY and SELL ladders displayed separately.
+`manual_short_trader_dashboard_v1` provides the read-only HTML behind the user-facing
+**Open Orders Monitor**. It shows open broker orders and balances, enriched with
+price-distance metrics and review labels, grouped per symbol with BUY and SELL
+ladders displayed separately.
+
+Open Orders Monitor is the technical audit view. It is not the scenario/planning page.
 
 It does not:
 
@@ -24,6 +31,16 @@ It does not:
 | `src/reporting/run_manual_short_trader_dashboard_v1.py` | Runner — only file that imports `BitvavoClient` and makes private read calls |
 
 ## Layer boundary
+
+Open Orders Monitor:
+
+- is audit/read-only open-order visibility
+- does not submit or cancel orders
+- does not bypass `decision_gate`, `execution_planner`, or `executor`
+- remains separate from the Profit Plan scenario page
+
+Any future mutation/action must live in an explicit authenticated UI layer and
+must not bypass decision or execution boundaries.
 
 `manual_short_trader_dashboard_v1.py` (pure module):
 

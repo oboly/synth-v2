@@ -436,6 +436,12 @@ def test_render_full_html_contains_symbol_names() -> None:
     assert "ONDO" in html
 
 
+def test_render_full_html_contains_open_orders_monitor_title() -> None:
+    html = render_full_html(_make_sections(), broker_mode="offline")
+    assert "Open Orders Monitor" in html
+    assert "Manual Short Trader Dashboard" not in html
+
+
 def test_render_full_html_contains_safety_note() -> None:
     sections = _make_sections()
     html = render_full_html(sections, broker_mode="offline")
@@ -459,6 +465,17 @@ def test_render_full_html_buy_sell_headings_present() -> None:
     html = render_full_html(sections, broker_mode="offline")
     assert "BUY Orders" in html
     assert "SELL Orders" in html
+
+
+def test_dashboard_sources_do_not_introduce_order_mutation_strings() -> None:
+    for path in (
+        "src/reporting/manual_short_trader_dashboard_v1.py",
+        "src/reporting/run_manual_short_trader_dashboard_v1.py",
+    ):
+        source = Path(path).read_text(encoding="utf-8")
+        assert "placeOrder" not in source
+        assert "cancelOrder" not in source
+        assert "create order" not in source.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -654,10 +671,12 @@ def main() -> None:
         test_build_all_sections_buy_orders_sorted_descending_by_price,
         test_build_all_sections_sell_orders_sorted_ascending_by_price,
         test_render_full_html_contains_symbol_names,
+        test_render_full_html_contains_open_orders_monitor_title,
         test_render_full_html_contains_safety_note,
         test_render_full_html_contains_current_price,
         test_render_full_html_empty_sections_shows_no_orders_note,
         test_render_full_html_buy_sell_headings_present,
+        test_dashboard_sources_do_not_introduce_order_mutation_strings,
         test_build_json_snapshot_safety_markers,
         test_build_json_snapshot_symbol_count,
         test_build_json_snapshot_is_json_serializable,

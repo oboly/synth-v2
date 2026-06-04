@@ -1,13 +1,17 @@
 # Manual Short Trader Profit Plan Dashboard V1
 
+Legacy/internal name: `manual_short_trader_profit_plan_v1`
+
+User-facing page title: **Profit Plan**
+
 ## Purpose
 
-`manual_short_trader_profit_plan_v1` renders a non-technical, scenario-based
-HTML dashboard for manual short trading decisions. It shows *what to do next*
-per symbol — not a raw order dump.
+`manual_short_trader_profit_plan_v1` renders the user-facing **Profit Plan**:
+a non-technical, scenario-based HTML dashboard for manual short trading review.
+It shows *what to watch next* per symbol, not a raw order dump.
 
-The existing **Open Orders Monitor** (`manual_short_trader_dashboard_v1`) is
-kept unchanged as a technical audit view. The profit-plan page links to it.
+The existing **Open Orders Monitor** (`manual_short_trader_dashboard_v1`) remains
+the technical audit view. Profit Plan links back to Open Orders Monitor.
 
 It does not:
 
@@ -37,6 +41,13 @@ The dashboard has a client-side toggle at the top:
 
 The selected view is saved to `localStorage` and restored on page reload.
 
+## Separation
+
+- Open Orders Monitor = audit/read-only open-order visibility
+- Profit Plan = human-readable scenario planning
+- Neither page submits or cancels orders
+- Any future mutation/action requires an explicit authenticated UI layer and must not bypass `decision_gate`, `execution_planner`, or `executor`
+
 ## Per-Symbol Card
 
 Each card shows:
@@ -53,6 +64,26 @@ Each card shows:
 | `order_summary` | Matching active orders + missing suggested orders |
 
 All cards carry: `MANUAL_ONLY — read-only snapshot, no automatic placement`
+
+## Future Profit Plan Cards Backlog
+
+Future Profit Plan cards should explicitly surface:
+
+- Position / market
+- Current price
+- Existing open orders
+- Target/exit zones
+- Reload/re-entry zones
+- Invalidated / risk zone
+- “Do nothing” state
+- “Take profit already waiting” state
+- “Price ran away” state
+- “Reload zone approaching” state
+- “Order too far / stale” state
+- Link back to Open Orders Monitor
+- Safety note: manual-only, no order creation/cancellation
+
+These additions stay display-only. They do not create, cancel, or modify orders.
 
 ## Acceptance Examples
 
