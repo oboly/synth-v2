@@ -424,6 +424,22 @@ When a command reads the DB or external services:
 
 Do not invent test success. If checks were not run, say so briefly.
 
+## Long-Running Runner Observability
+
+Any runner that may take longer than a few seconds must:
+
+- print a `STARTED` line immediately, including runner name, mode, scope, and worker count
+- flush startup and progress output immediately
+- print phase start/end messages with elapsed time
+- report query row counts and query elapsed time
+- emit periodic heartbeat/progress during long phases
+- report checkpoint/output writes when they occur
+- finish with exactly one `FINISHED`, `INTERRUPTED`, or `FAILED` summary
+- handle `SIGINT`/`SIGTERM` cleanly without repeated tracebacks
+- preserve completed checkpoints and resumable work after interruption
+
+A silent long-running process is considered an implementation defect.
+
 ## Coding Style & Naming Conventions
 
 Use Python 3 with:
