@@ -11,6 +11,7 @@ etl:
     1h: 120d
     4h: 365d
     1d: 1500d
+    1w: 208w
 
 quote_asset: EUR
 
@@ -18,3 +19,4 @@ intervals:
   - 1h
   - 4h
   - 1d
+  - 1w

@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import importlib
 import inspect
+import signal
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -41,7 +43,13 @@ class EtlConfig:
     raw: dict[str, Any]
 
 
-def parse_args() -> argparse.Namespace:
+@dataclass
+class RunControl:
+    interrupted: bool = False
+    signal_name: str | None = None
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Bitvavo candles ETL")
     parser.add_argument(
         "--config",
@@ -75,7 +83,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional interval filter, e.g. --interval 1h --interval 4h",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def load_config(path: str) -> EtlConfig:
@@ -226,6 +234,40 @@ def load_assets(
     return assets
 
 
+def emit(message: str) -> None:
+    print(message, flush=True)
+
+
+def iso_now() -> str:
+    return utc_now().astimezone(UTC).isoformat()
+
+
+def install_signal_handlers(control: RunControl) -> tuple[Any, Any]:
+    def _handler(signum: int, _frame: Any) -> None:
+        if control.interrupted:
+            return
+        control.interrupted = True
+        try:
+            control.signal_name = signal.Signals(signum).name
+        except ValueError:
+            control.signal_name = str(signum)
+        emit(
+            f"INTERRUPT_SIGNAL run_candles_etl signal={control.signal_name} "
+            f"ts={iso_now()}"
+        )
+
+    previous_int = signal.getsignal(signal.SIGINT)
+    previous_term = signal.getsignal(signal.SIGTERM)
+    signal.signal(signal.SIGINT, _handler)
+    signal.signal(signal.SIGTERM, _handler)
+    return previous_int, previous_term
+
+
+def restore_signal_handlers(previous_int: Any, previous_term: Any) -> None:
+    signal.signal(signal.SIGINT, previous_int)
+    signal.signal(signal.SIGTERM, previous_term)
+
+
 def resolve_etl_module() -> Any:
     return importlib.import_module("src.etl.bitvavo.etl_bitvavo_candles")
 
@@ -333,31 +375,65 @@ def extract_written_rows(result: Any) -> int | None:
     return None
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     load_dotenv()
-    args = parse_args()
+    started_at = time.perf_counter()
+    control = RunControl()
+    previous_int, previous_term = install_signal_handlers(control)
+    args = parse_args(argv)
 
-    config = load_config(args.config)
-
-    wanted_symbols = None
-    if args.asset:
-        wanted_symbols = {value.upper() for value in args.asset}
-
-    intervals = config.intervals
-    if args.interval:
-        intervals = [value.strip() for value in args.interval]
-
-    conn = get_db_connection()
+    wanted_symbols = {value.upper() for value in args.asset} if args.asset else None
+    scope = ",".join(sorted(wanted_symbols)) if wanted_symbols else "ALL_ENABLED"
+    requested_intervals = [value.strip() for value in args.interval] if args.interval else None
+    emit(
+        "STARTED run_candles_etl "
+        f"ts={iso_now()} mode={'dry_run' if args.dry_run else 'write'} "
+        f"scope={scope} intervals={','.join(requested_intervals or ['FROM_CONFIG'])} "
+        "workers=1 broker_private_calls=0 broker_writes=0 order_submission=0 "
+        "live_orders=0 decision_gate=none execution_planner=none executor=none"
+    )
 
     try:
+        phase_started = time.perf_counter()
+        emit(f"PHASE_STARTED load_config path={args.config}")
+        config = load_config(args.config)
+        emit(
+            f"PHASE_FINISHED load_config elapsed_s={time.perf_counter() - phase_started:.3f} "
+            f"interval_count={len(config.intervals)}"
+        )
+
+        intervals = requested_intervals or config.intervals
+        conn = get_db_connection()
+    except Exception as exc:
+        elapsed = time.perf_counter() - started_at
+        emit(
+            f"FAILED run_candles_etl elapsed_s={elapsed:.3f} "
+            f"error={exc.__class__.__name__}:{exc}"
+        )
+        restore_signal_handlers(previous_int, previous_term)
+        return 1
+
+    try:
+        phase_started = time.perf_counter()
+        emit(
+            f"PHASE_STARTED load_assets quote_asset={config.quote_asset} "
+            f"symbol_filter_count={len(wanted_symbols) if wanted_symbols else 0}"
+        )
         assets = load_assets(
             conn,
             quote_asset=config.quote_asset,
             wanted_symbols=wanted_symbols,
         )
+        emit(
+            f"QUERY_RESULT name=load_assets rows={len(assets)} "
+            f"elapsed_s={time.perf_counter() - phase_started:.3f}"
+        )
 
         if not assets:
-            print("[WARN] No enabled assets found after filtering.")
+            emit(
+                f"FINISHED run_candles_etl elapsed_s={time.perf_counter() - started_at:.3f} "
+                "task_count=0 total_rows=0 skipped=0"
+            )
             return 0
 
         module = resolve_etl_module()
@@ -365,9 +441,15 @@ def main() -> int:
         session = build_session(module)
 
         total_written = 0
+        total_tasks = len(assets) * len(intervals)
+        completed_tasks = 0
+        skipped_tasks = 0
 
         for asset in assets:
             for interval_code in intervals:
+                if control.interrupted:
+                    raise KeyboardInterrupt(control.signal_name or "SIGINT")
+
                 start_dt, end_dt = resolve_window(
                     interval_code=interval_code,
                     start_override=args.start,
@@ -375,8 +457,9 @@ def main() -> int:
                     default_lookback=config.default_lookback,
                 )
 
-                print(
-                    f"[RUN] venue={config.venue} "
+                phase_started = time.perf_counter()
+                emit(
+                    f"PHASE_STARTED market_interval venue={config.venue} "
                     f"market={asset.market} "
                     f"interval={interval_code} "
                     f"asset_id={asset.asset_id} "
@@ -401,30 +484,54 @@ def main() -> int:
                 written = extract_written_rows(result)
                 if written is not None:
                     total_written += written
-                    print(
-                        f"[DONE] market={asset.market} "
-                        f"interval={interval_code} "
-                        f"rows={written}"
-                    )
+                    if written == 0:
+                        skipped_tasks += 1
                 else:
-                    print(
-                        f"[DONE] market={asset.market} "
-                        f"interval={interval_code}"
+                    written = -1
+                if not args.dry_run:
+                    conn.commit()
+                    emit(
+                        f"CHECKPOINT_WRITTEN market={asset.market} interval={interval_code} "
+                        f"rows={written if written >= 0 else 'unknown'}"
                     )
 
-        if not args.dry_run:
-            conn.commit()
+                completed_tasks += 1
+                emit(
+                    f"PHASE_FINISHED market_interval market={asset.market} interval={interval_code} "
+                    f"elapsed_s={time.perf_counter() - phase_started:.3f} "
+                    f"rows={written if written >= 0 else 'unknown'}"
+                )
+                emit(
+                    f"PROGRESS run_candles_etl completed={completed_tasks}/{total_tasks} "
+                    f"skipped={skipped_tasks} total_rows={total_written} "
+                    f"elapsed_s={time.perf_counter() - started_at:.3f}"
+                )
 
-        print(f"[DONE] total_rows={total_written}")
+        emit(
+            f"FINISHED run_candles_etl elapsed_s={time.perf_counter() - started_at:.3f} "
+            f"task_count={completed_tasks} total_rows={total_written} skipped={skipped_tasks}"
+        )
         return 0
+
+    except KeyboardInterrupt:
+        conn.rollback()
+        emit(
+            f"INTERRUPTED run_candles_etl elapsed_s={time.perf_counter() - started_at:.3f} "
+            f"signal={control.signal_name or 'SIGINT'}"
+        )
+        return 130
 
     except Exception as exc:
         conn.rollback()
-        print(f"[ERROR] {exc}", file=sys.stderr)
+        emit(
+            f"FAILED run_candles_etl elapsed_s={time.perf_counter() - started_at:.3f} "
+            f"error={exc.__class__.__name__}:{exc}"
+        )
         return 1
 
     finally:
         conn.close()
+        restore_signal_handlers(previous_int, previous_term)
 
 
 if __name__ == "__main__":

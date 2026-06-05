@@ -64,6 +64,7 @@ run_interval "15m" 72
 run_interval "1h" 168
 run_interval "4h" 720
 run_interval "1d" 2160
+run_interval "1w" 2016
 
 echo "--- latest candle freshness snapshot ---"
 "${PYTHON_BIN}" - <<'PY'
@@ -77,7 +78,7 @@ load_dotenv(dotenv_path=".env")
 conn = get_db_connection()
 try:
     with conn.cursor() as cur:
-        for interval_code in ("15m", "1h", "4h", "1d"):
+        for interval_code in ("15m", "1h", "4h", "1d", "1w"):
             cur.execute(
                 """
                 SELECT MAX(close_ts_utc) AS latest_close_ts_utc

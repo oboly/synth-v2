@@ -20,6 +20,7 @@ INTERVAL_TO_MS: dict[str, int] = {
     "1h": 60 * 60_000,
     "4h": 4 * 60 * 60_000,
     "1d": 24 * 60 * 60_000,
+    "1w": 7 * 24 * 60 * 60_000,
 }
 
 INTERVAL_TO_DELTA: dict[str, timedelta] = {
@@ -30,6 +31,7 @@ INTERVAL_TO_DELTA: dict[str, timedelta] = {
     "1h": timedelta(hours=1),
     "4h": timedelta(hours=4),
     "1d": timedelta(days=1),
+    "1w": timedelta(weeks=1),
 }
 
 
@@ -59,13 +61,30 @@ def ensure_utc(dt: datetime) -> datetime:
     return dt.astimezone(UTC)
 
 
+def normalize_interval_code(interval_code: str) -> str:
+    value = str(interval_code).strip()
+    lower = value.lower()
+    if lower == "1w":
+        return "1w"
+    return lower
+
+
+def to_bitvavo_interval_code(interval_code: str) -> str:
+    normalized = normalize_interval_code(interval_code)
+    if normalized == "1w":
+        return "1W"
+    return normalized
+
+
 def interval_to_ms(interval_code: str) -> int:
+    interval_code = normalize_interval_code(interval_code)
     if interval_code not in INTERVAL_TO_MS:
         raise ValueError(f"Unsupported interval_code: {interval_code}")
     return INTERVAL_TO_MS[interval_code]
 
 
 def interval_to_delta(interval_code: str) -> timedelta:
+    interval_code = normalize_interval_code(interval_code)
     if interval_code not in INTERVAL_TO_DELTA:
         raise ValueError(f"Unsupported interval_code: {interval_code}")
     return INTERVAL_TO_DELTA[interval_code]
@@ -73,6 +92,7 @@ def interval_to_delta(interval_code: str) -> timedelta:
 
 def floor_to_interval(dt: datetime, interval_code: str) -> datetime:
     dt = ensure_utc(dt)
+    interval_code = normalize_interval_code(interval_code)
 
     if interval_code == "1m":
         return dt.replace(second=0, microsecond=0)
@@ -99,6 +119,10 @@ def floor_to_interval(dt: datetime, interval_code: str) -> datetime:
     if interval_code == "1d":
         return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
+    if interval_code == "1w":
+        day_start = dt.replace(hour=0, minute=0, second=0, microsecond=0)
+        return day_start - timedelta(days=day_start.weekday())
+
     raise ValueError(f"Unsupported interval_code: {interval_code}")
 
 
@@ -122,7 +146,7 @@ def fetch_bitvavo_candles(
 ) -> list[list[Any]]:
     url = f"{BITVAVO_BASE_URL}/{market}/candles"
     params = {
-        "interval": interval_code,
+        "interval": to_bitvavo_interval_code(interval_code),
         "start": start_ms,
         "end": end_ms,
         "limit": min(limit, BITVAVO_MAX_LIMIT),
@@ -145,6 +169,7 @@ def parse_bitvavo_payload(
     interval_code: str,
     payload: list[list[Any]],
 ) -> list[CandleRow]:
+    interval_code = normalize_interval_code(interval_code)
     delta = interval_to_delta(interval_code)
     rows: list[CandleRow] = []
 
@@ -357,6 +382,7 @@ def run_market_interval(
     **_: Any,
 ) -> dict[str, int]:
     del sleep_seconds
+    interval_code = normalize_interval_code(interval_code)
 
     start_dt = floor_to_interval(start_dt, interval_code)
     end_dt = floor_to_interval(end_dt, interval_code)

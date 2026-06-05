@@ -7,6 +7,7 @@ runner for keeping `obs_market_candle` fresh across:
 - `1h`
 - `4h`
 - `1d`
+- `1w`
 
 This lane is ops-only and market-only.
 
@@ -81,6 +82,7 @@ The runner:
 - activates `.venv` or `venv`
 - takes a lock to prevent overlap
 - runs `src.etl.bitvavo.run_candles_etl` separately for `15m`, `1h`, `4h`, and `1d`
+- runs `src.etl.bitvavo.run_candles_etl` separately for `15m`, `1h`, `4h`, `1d`, and `1w`
 - uses only supported ETL arguments:
   - `--config`
   - `--asset`
@@ -96,8 +98,17 @@ Current lookback windows are conservative:
 - `1h` -> `168h`
 - `4h` -> `720h`
 - `1d` -> `2160h`
+- `1w` -> `2016h`
 
 These are freshness windows, not backfill-history policy.
+
+Weekly semantics are native Bitvavo closed-week candles.
+
+- interval code in Synth remains canonical `1w`
+- upstream API request uses Bitvavo-native `1W`
+- week alignment is UTC Monday `00:00:00`
+- incomplete current week is not written as a closed candle
+- writes remain idempotent through canonical `obs_market_candle` upserts
 
 ## Systemd User Timer Templates
 
