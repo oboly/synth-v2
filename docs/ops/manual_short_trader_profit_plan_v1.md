@@ -63,7 +63,13 @@ The dashboard has a client-side toggle at the top:
 | **Relevant candidates** (default) | Symbols with TAKE_PROFIT_NEAR, REBUY_ZONE_NEAR, BUY_DIP, BREAKOUT_WATCH, REENTRY_WAIT, RANGE_BOUNCE, BREAKOUT_RETEST |
 | **All candidates** | Every symbol with a loaded plan, including FAR_MOONBAG_ONLY, DO_NOT_TOUCH, NO_CLEAR_PLAN |
 
-The selected view is saved to `localStorage` and restored on page reload.
+When **All candidates** is selected, a sticky client-side search field appears.
+It filters instantly and case-insensitively across symbol, market, scenario,
+primary state, action, horizon, and context statuses.
+
+The selected view and search query are saved to profile-scoped `localStorage`
+keys and restored on page reload so Joost/Hugo UI state does not bleed across
+profiles.
 
 ## Separation
 
@@ -80,6 +86,10 @@ Each card shows:
 |-------|--------|
 | `scenario_type` | EXTENSION_RUNNER, REENTRY_WAIT, RANGE_BOUNCE, BREAKOUT_RETEST, NO_CLEAR_PLAN |
 | `action_label` | TAKE_PROFIT_NEAR, REBUY_ZONE_NEAR, BUY_DIP, BREAKOUT_WATCH, WAIT, FAR_MOONBAG_ONLY, DO_NOT_TOUCH |
+| `fib_trading_horizon` | currently `SHORT` for the Profit Plan surface |
+| `short_context_input_status` | raw source/input state such as `HAS_ZONE_CONTEXT` or `ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING` |
+| `short_context_coverage_status` | explicit truth state such as `LEGACY_1D_CONTEXT_ONLY` or `FIB_MAP_SYMBOL_MISSING` |
+| `short_context_display_state` | human-facing SHORT-context warning state |
 | `timeframe_label` | "15m scalp", "4h bounce", "1d swing" |
 | `market` | Bitvavo market code shown on the card |
 | `current_price` | Current public price snapshot |
@@ -112,13 +122,17 @@ Profit Plan v1.1 adds deterministic display-only states:
 - `POST_EXTENSION_PULLBACK` → `Post-extension pullback`
 - `MAP_RECOMPUTE_NEEDED` → `Map recompute needed`
 - `DO_NOTHING` → `Do nothing`
+- `NO_NATIVE_SHORT_FIB_CONTEXT` → `No native SHORT fib context`
+- `MARKET_DATA_MISSING` → `Market data missing`
+- `CONTEXT_INVALID_OR_STALE` → `Context invalid or stale`
 - `INSUFFICIENT_DATA` → `Insufficient data`
 
 Rules:
 
 - These states are display-only. They are not order instructions.
 - No order creation, cancellation, or modification happens here.
-- Missing usable zone data resolves to `INSUFFICIENT_DATA`.
+- Missing usable zone data no longer collapses automatically into generic
+  `INSUFFICIENT_DATA` when a fresher truth state is known.
 - Cards always link back to **Open Orders Monitor** when the linked HTML exists.
 - `--monitor-html` is a filesystem output path only; `--monitor-href` is the
   public browser href used in rendered anchor tags.
@@ -152,6 +166,15 @@ The full sell zone remains visible, but Profit Plan distinguishes:
 
 `run_manual_short_trader_profit_plan_input_audit_v1.py` audits whether each market
 has enough read-only inputs to show a useful Profit Plan card before cockpit wiring.
+
+SHORT fib-context truth rule:
+
+- canonical SHORT is `4h` primary with `1h` support
+- the current Profit Plan bridge is still a legacy `1d` fib-map lane
+- therefore an existing `1d` fib-map row must never be reported as native SHORT
+  context
+- native SHORT coverage remains `0` until a separate market-only `4h` + `1h`
+  bridge exists
 
 Zone-context input preference:
 
@@ -194,7 +217,7 @@ Common missing reasons:
 - `NO_STALE_ORDER_METADATA`
 - `READY_FOR_PROFIT_PLAN`
 
-Zone-context status values:
+Zone-context input status values:
 
 - `HAS_ZONE_CONTEXT`
 - `MISSING_ZONE_CONTEXT`
@@ -210,6 +233,22 @@ Open-order status values:
 
 This audit is read-only only. It reuses the same input sources as the Profit Plan
 runner where possible and does not change Profit Plan behavior by itself.
+
+SHORT coverage status values:
+
+- `NATIVE_SHORT_CONTEXT_AVAILABLE`
+- `LEGACY_1D_CONTEXT_ONLY`
+- `FIB_MAP_SYMBOL_MISSING`
+- `FIB_MAP_SOURCE_MISSING`
+- `MARKET_DATA_MISSING`
+- `CONTEXT_INVALID_OR_STALE`
+
+Expected examples:
+
+- `PLUME` with fresh price but no fib row → `FIB_MAP_SYMBOL_MISSING` /
+  `NO_NATIVE_SHORT_FIB_CONTEXT`
+- symbol with a valid current `1d` fib-map row → `LEGACY_1D_CONTEXT_ONLY` /
+  `NO_NATIVE_SHORT_FIB_CONTEXT`
 
 ## Acceptance Examples
 

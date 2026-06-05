@@ -58,6 +58,8 @@ class ZoneContextLoadResult:
     reentry_by_symbol: dict[str, ReentryContext]
     activation_ts_by_symbol: dict[str, datetime | None]
     input_status_by_symbol: dict[str, str]
+    coverage_status_by_symbol: dict[str, str]
+    display_state_by_symbol: dict[str, str]
     source_name: str
     source_missing: bool
 
@@ -158,6 +160,38 @@ def _parse_iso_ts(value: Any) -> datetime | None:
         return None
 
 
+def _short_context_gap_from_row(row: dict[str, str] | None) -> tuple[str, str]:
+    if row is None:
+        return "FIB_MAP_SYMBOL_MISSING", "NO_NATIVE_SHORT_FIB_CONTEXT"
+    target_status = str(row.get("target_status") or "").strip().upper()
+    anchor_reason = str(row.get("anchor_reason") or "").strip().lower()
+    if target_status == "MISSING_MARKET_DATA" or "no_market_candles" in anchor_reason or "symbol_not_found_in_asset_universe" in anchor_reason:
+        return "MARKET_DATA_MISSING", "MARKET_DATA_MISSING"
+    if target_status in {"INSUFFICIENT_SWING", "NOT_IMPLEMENTED"}:
+        return "CONTEXT_INVALID_OR_STALE", "CONTEXT_INVALID_OR_STALE"
+    return "LEGACY_1D_CONTEXT_ONLY", "NO_NATIVE_SHORT_FIB_CONTEXT"
+
+
+def summarize_short_context_coverage(
+    *,
+    markets: list[str],
+    coverage_status_by_symbol: dict[str, str],
+) -> dict[str, int]:
+    summary = {
+        "NATIVE_SHORT_CONTEXT_AVAILABLE": 0,
+        "LEGACY_1D_CONTEXT_ONLY": 0,
+        "FIB_MAP_SYMBOL_MISSING": 0,
+        "FIB_MAP_SOURCE_MISSING": 0,
+        "MARKET_DATA_MISSING": 0,
+        "CONTEXT_INVALID_OR_STALE": 0,
+    }
+    for market in markets:
+        symbol = market.split("-")[0].upper()
+        status = coverage_status_by_symbol.get(symbol, "CONTEXT_INVALID_OR_STALE")
+        summary[status] = summary.get(status, 0) + 1
+    return summary
+
+
 def load_fib_map_rows(path: Path) -> tuple[dict[str, dict[str, str]], bool]:
     if not path.exists():
         return {}, True
@@ -252,6 +286,8 @@ def load_zone_contexts(
     reentry_by_symbol: dict[str, ReentryContext] = {}
     activation_ts_by_symbol: dict[str, datetime | None] = {}
     input_status_by_symbol: dict[str, str] = {}
+    coverage_status_by_symbol: dict[str, str] = {}
+    display_state_by_symbol: dict[str, str] = {}
 
     for market in markets:
         symbol = market.split("-")[0].upper()
@@ -288,18 +324,28 @@ def load_zone_contexts(
                     if fib_ext is not None or reentry is not None
                     else "MISSING_ZONE_CONTEXT"
                 )
+                coverage_status_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
+                display_state_by_symbol[symbol] = "NO_NATIVE_SHORT_FIB_CONTEXT"
             else:
                 input_status_by_symbol[symbol] = "MISSING_ZONE_CONTEXT"
+                coverage_status_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
+                display_state_by_symbol[symbol] = "NO_NATIVE_SHORT_FIB_CONTEXT"
             continue
 
         if source_missing:
             input_status_by_symbol[symbol] = "ZONE_SOURCE_MISSING"
+            coverage_status_by_symbol[symbol] = "FIB_MAP_SOURCE_MISSING"
+            display_state_by_symbol[symbol] = "NO_NATIVE_SHORT_FIB_CONTEXT"
             continue
 
         fib_row = fib_rows_by_symbol.get(symbol)
         if fib_row is None:
             input_status_by_symbol[symbol] = "ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING"
+            coverage_status_by_symbol[symbol] = "FIB_MAP_SYMBOL_MISSING"
+            display_state_by_symbol[symbol] = "NO_NATIVE_SHORT_FIB_CONTEXT"
             continue
+
+        coverage_status_by_symbol[symbol], display_state_by_symbol[symbol] = _short_context_gap_from_row(fib_row)
 
         activation_ts_by_symbol[symbol] = _parse_iso_ts(fib_row.get("anchor_end_ts"))
         swing_low = _parse_decimal(fib_row.get("swing_low_price"))
@@ -307,6 +353,9 @@ def load_zone_contexts(
         current_price = prices.get(market) or _parse_decimal(fib_row.get("current_price"))
         if swing_low is None or swing_high is None or current_price is None:
             input_status_by_symbol[symbol] = "MISSING_ZONE_CONTEXT"
+            if coverage_status_by_symbol[symbol] == "LEGACY_1D_CONTEXT_ONLY":
+                coverage_status_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
+                display_state_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
             continue
 
         fib_ext = _build_fib_ext_context(
@@ -333,12 +382,17 @@ def load_zone_contexts(
             if fib_ext is not None or reentry is not None
             else "MISSING_ZONE_CONTEXT"
         )
+        if fib_ext is None and reentry is None and coverage_status_by_symbol[symbol] == "LEGACY_1D_CONTEXT_ONLY":
+            coverage_status_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
+            display_state_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
 
     return ZoneContextLoadResult(
         fib_ext_by_symbol=fib_ext_by_symbol,
         reentry_by_symbol=reentry_by_symbol,
         activation_ts_by_symbol=activation_ts_by_symbol,
         input_status_by_symbol=input_status_by_symbol,
+        coverage_status_by_symbol=coverage_status_by_symbol,
+        display_state_by_symbol=display_state_by_symbol,
         source_name="fibo_target_map_rows_v1.csv",
         source_missing=source_missing,
     )
@@ -418,6 +472,9 @@ def build_cards(
     prices: dict[str, Decimal],
     price_status_by_market: dict[str, str],
     price_age_min_by_market: dict[str, Decimal | None],
+    input_status_by_symbol: dict[str, str],
+    coverage_status_by_symbol: dict[str, str],
+    display_state_by_symbol: dict[str, str],
     fib_ext_by_symbol: dict[str, FibExtContext],
     reentry_by_symbol: dict[str, ReentryContext],
     history_by_symbol: dict[str, MarketTargetHistory],
@@ -434,6 +491,10 @@ def build_cards(
                 symbol=symbol,
                 market=market,
                 current_price=current,
+                fib_trading_horizon="SHORT",
+                short_context_input_status=input_status_by_symbol.get(symbol, "MISSING_ZONE_CONTEXT"),
+                short_context_coverage_status=coverage_status_by_symbol.get(symbol, "CONTEXT_INVALID_OR_STALE"),
+                short_context_display_state=display_state_by_symbol.get(symbol, "NO_NATIVE_SHORT_FIB_CONTEXT"),
                 current_price_status=price_status_by_market.get(market),
                 current_price_age_min=price_age_min_by_market.get(market),
                 fib_ext=fib_ext_by_symbol.get(symbol),
@@ -466,6 +527,22 @@ def print_summary(*, context, cards: list[ProfitPlanCard], output_html: Path, ou
     print("decision_gate=none")
     print("execution_planner=none")
     print("executor=none")
+    coverage_summary = summarize_short_context_coverage(
+        markets=list(context.markets),
+        coverage_status_by_symbol={card.symbol: card.short_context_coverage_status for card in cards},
+    )
+    print(f"short_context_bridge=legacy_1d_fib_map_bridge")
+    print(
+        "short_context_coverage="
+        + " ; ".join(f"{key}:{coverage_summary.get(key, 0)}" for key in (
+            "NATIVE_SHORT_CONTEXT_AVAILABLE",
+            "LEGACY_1D_CONTEXT_ONLY",
+            "FIB_MAP_SYMBOL_MISSING",
+            "FIB_MAP_SOURCE_MISSING",
+            "MARKET_DATA_MISSING",
+            "CONTEXT_INVALID_OR_STALE",
+        ))
+    )
     relevant = [card for card in cards if card.is_relevant]
     print(f"relevant={len(relevant)}/{len(cards)}")
     for card in cards:
@@ -474,6 +551,7 @@ def print_summary(*, context, cards: list[ProfitPlanCard], output_html: Path, ou
             f"{card.symbol}: scenario={card.scenario_type}"
             f" action={card.action_label}"
             f" primary_state={card.primary_state}"
+            f" short_context={card.short_context_coverage_status}"
             f" [{rel_flag}]"
         )
 
@@ -554,6 +632,9 @@ def main() -> int:
         prices,
         {market: display.status for market, display in price_display_by_market.items()},
         {market: display.age_min for market, display in price_display_by_market.items()},
+        zone_contexts.input_status_by_symbol,
+        zone_contexts.coverage_status_by_symbol,
+        zone_contexts.display_state_by_symbol,
         zone_contexts.fib_ext_by_symbol,
         zone_contexts.reentry_by_symbol,
         history_by_symbol,
@@ -567,6 +648,7 @@ def main() -> int:
             broker_mode="db_snapshot",
             monitor_link=monitor_link,
             nav_html=cockpit_nav(account_profile=args.account_profile).strip(),
+            storage_scope=args.account_profile,
         ),
         encoding="utf-8",
     )

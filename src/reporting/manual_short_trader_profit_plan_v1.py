@@ -22,6 +22,9 @@ TARGET_LEVEL_NEAR_THRESHOLD_PCT = Decimal("1")
 
 STATE_LABELS: dict[str, str] = {
     "STALE_CURRENT_PRICE": "Stale current price",
+    "NO_NATIVE_SHORT_FIB_CONTEXT": "No native SHORT fib context",
+    "MARKET_DATA_MISSING": "Market data missing",
+    "CONTEXT_INVALID_OR_STALE": "Context invalid or stale",
     "TAKE_PROFIT_WAITING": "Take profit already waiting",
     "RELOAD_ZONE_APPROACHING": "Reload zone approaching",
     "PRICE_RAN_AWAY": "Price ran away",
@@ -34,6 +37,9 @@ STATE_LABELS: dict[str, str] = {
 }
 
 RELEVANT_STATES: frozenset[str] = frozenset({
+    "NO_NATIVE_SHORT_FIB_CONTEXT",
+    "MARKET_DATA_MISSING",
+    "CONTEXT_INVALID_OR_STALE",
     "TAKE_PROFIT_NEAR",
     "REBUY_ZONE_NEAR",
     "BUY_DIP",
@@ -50,6 +56,12 @@ RELEVANT_STATES: frozenset[str] = frozenset({
     "MAP_RECOMPUTE_NEEDED",
     "MAP_COMPLETED",
 })
+
+SHORT_CONTEXT_DISPLAY_LABELS: dict[str, str] = {
+    "NO_NATIVE_SHORT_FIB_CONTEXT": "No native SHORT fib context",
+    "MARKET_DATA_MISSING": "Market data missing",
+    "CONTEXT_INVALID_OR_STALE": "Context invalid or stale",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +129,10 @@ class TargetLevelStatus:
 class ProfitPlanCard:
     symbol: str
     market: str
+    fib_trading_horizon: str
+    short_context_input_status: str
+    short_context_coverage_status: str
+    short_context_display_state: str
     current_price: Decimal | None
     current_price_status: str | None
     current_price_age_min: Decimal | None
@@ -184,6 +200,37 @@ def _distance_to_zone_pct(current_price: Decimal | None, levels: tuple[Decimal, 
     if not valid:
         return None
     return min(valid, key=lambda dist: abs(dist))
+
+
+def _short_context_display_label(state: str) -> str:
+    return SHORT_CONTEXT_DISPLAY_LABELS.get(state, state.replace("_", " "))
+
+
+def build_card_search_text(card: ProfitPlanCard) -> str:
+    parts = (
+        card.symbol,
+        card.market,
+        card.scenario_type,
+        card.primary_state,
+        card.action_label,
+        card.fib_trading_horizon,
+        card.short_context_input_status,
+        card.short_context_coverage_status,
+        card.short_context_display_state,
+    )
+    return " ".join(part.lower() for part in parts if part)
+
+
+def filter_cards_for_view(cards: list[ProfitPlanCard], *, mode: str, query: str) -> list[ProfitPlanCard]:
+    query_norm = query.strip().lower()
+    out: list[ProfitPlanCard] = []
+    for card in cards:
+        if mode != "all" and not card.is_relevant:
+            continue
+        if query_norm and query_norm not in build_card_search_text(card):
+            continue
+        out.append(card)
+    return out
 
 
 def _unique_levels(levels: tuple[Decimal | None, ...]) -> tuple[Decimal, ...]:
@@ -792,6 +839,75 @@ def _evaluate_display_states(
     )
 
 
+def _short_context_gap_card(
+    *,
+    symbol: str,
+    market: str,
+    fib_trading_horizon: str,
+    short_context_input_status: str,
+    short_context_coverage_status: str,
+    short_context_display_state: str,
+    current_price: Decimal | None,
+    current_price_status: str | None,
+    current_price_age_min: Decimal | None,
+    history_high_since_activation: Decimal | None,
+    history_low_since_activation: Decimal | None,
+) -> ProfitPlanCard:
+    order_summary = build_order_summary(
+        current_price,
+        (),
+        (),
+        (),
+        (),
+    )
+    reasons = [
+        f"SHORT context coverage: {short_context_coverage_status}.",
+        f"Profit Plan currently uses a legacy 1d fib-map bridge and cannot present native SHORT 4h/1h context for {symbol}.",
+    ]
+    if short_context_coverage_status == "FIB_MAP_SYMBOL_MISSING":
+        reasons.append("Market price exists, but this symbol has no fib-map row in the current source.")
+    elif short_context_coverage_status == "FIB_MAP_SOURCE_MISSING":
+        reasons.append("The fib-map source is unavailable, so native SHORT context cannot be audited.")
+    elif short_context_coverage_status == "MARKET_DATA_MISSING":
+        reasons.append("Market candle history is missing for this symbol in the current fib-map source.")
+    elif short_context_coverage_status == "CONTEXT_INVALID_OR_STALE":
+        reasons.append("The current source row exists but is not valid enough to expose as SHORT context.")
+    return ProfitPlanCard(
+        symbol=symbol,
+        market=market,
+        fib_trading_horizon=fib_trading_horizon,
+        short_context_input_status=short_context_input_status,
+        short_context_coverage_status=short_context_coverage_status,
+        short_context_display_state=short_context_display_state,
+        current_price=current_price,
+        current_price_status=current_price_status,
+        current_price_age_min=current_price_age_min,
+        history_high_since_activation=history_high_since_activation,
+        history_low_since_activation=history_low_since_activation,
+        all_sell_targets_completed=False,
+        scenario_type="NO_SHORT_FIB_CONTEXT",
+        action_label="WAIT_FOR_SHORT_CONTEXT",
+        timeframe_label="SHORT 4h/1h",
+        buy_zone=(),
+        sell_zone=(),
+        invalidation_level=None,
+        reasons=tuple(reasons),
+        order_summary=order_summary,
+        target_exit_zone=(),
+        active_target=None,
+        target_level_statuses=(),
+        reload_reentry_zone=(),
+        invalidation_risk_zone=None,
+        distance_to_target_pct=None,
+        distance_to_reload_pct=None,
+        distance_to_invalidation_pct=None,
+        primary_state=short_context_display_state,
+        secondary_state=None,
+        suggested_manual_attention_label=_short_context_display_label(short_context_display_state),
+        is_relevant=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Card builder
 # ---------------------------------------------------------------------------
@@ -801,6 +917,10 @@ def build_profit_plan_card(
     market: str,
     current_price: Decimal | None,
     *,
+    fib_trading_horizon: str = "SHORT",
+    short_context_input_status: str = "MISSING_ZONE_CONTEXT",
+    short_context_coverage_status: str = "CONTEXT_INVALID_OR_STALE",
+    short_context_display_state: str = "NO_NATIVE_SHORT_FIB_CONTEXT",
     fib_ext: FibExtContext | None = None,
     reentry: ReentryContext | None = None,
     profile_classification: str | None = None,
@@ -826,6 +946,10 @@ def build_profit_plan_card(
         return ProfitPlanCard(
             symbol=symbol,
             market=market,
+            fib_trading_horizon=fib_trading_horizon,
+            short_context_input_status=short_context_input_status,
+            short_context_coverage_status=short_context_coverage_status,
+            short_context_display_state=short_context_display_state,
             current_price=None,
             current_price_status=current_price_status,
             current_price_age_min=current_price_age_min,
@@ -855,6 +979,29 @@ def build_profit_plan_card(
             secondary_state=None,
             suggested_manual_attention_label=STATE_LABELS["STALE_CURRENT_PRICE"],
             is_relevant=False,
+        )
+    if (
+        fib_ext is None
+        and reentry is None
+        and short_context_display_state in {
+            "NO_NATIVE_SHORT_FIB_CONTEXT",
+            "MARKET_DATA_MISSING",
+            "CONTEXT_INVALID_OR_STALE",
+        }
+        and (current_price is not None or short_context_display_state == "MARKET_DATA_MISSING")
+    ):
+        return _short_context_gap_card(
+            symbol=symbol,
+            market=market,
+            fib_trading_horizon=fib_trading_horizon,
+            short_context_input_status=short_context_input_status,
+            short_context_coverage_status=short_context_coverage_status,
+            short_context_display_state=short_context_display_state,
+            current_price=current_price,
+            current_price_status=current_price_status,
+            current_price_age_min=current_price_age_min,
+            history_high_since_activation=history_high_since_activation,
+            history_low_since_activation=history_low_since_activation,
         )
     (
         scenario_type,
@@ -944,6 +1091,14 @@ def build_profit_plan_card(
         secondary_state = None
         suggested_manual_attention_label = completed_map_attention_label or suggested_manual_attention_label
 
+    if short_context_coverage_status == "LEGACY_1D_CONTEXT_ONLY":
+        legacy_reason = (
+            "Displayed levels come from the current legacy 1d fib-map bridge. "
+            "No native SHORT 4h/1h context is available yet."
+        )
+        if legacy_reason not in reasons:
+            reasons = tuple(list(reasons) + [legacy_reason])
+
     is_relevant = (
         primary_state in RELEVANT_STATES
         or action_label in RELEVANT_STATES
@@ -953,6 +1108,10 @@ def build_profit_plan_card(
     return ProfitPlanCard(
         symbol=symbol,
         market=market,
+        fib_trading_horizon=fib_trading_horizon,
+        short_context_input_status=short_context_input_status,
+        short_context_coverage_status=short_context_coverage_status,
+        short_context_display_state=short_context_display_state,
         current_price=current_price,
         current_price_status=current_price_status,
         current_price_age_min=current_price_age_min,
@@ -1096,7 +1255,21 @@ _CSS = """
     .monitor-link { font-size: 12px; color: var(--blue); margin-top: 6px; }
     .manual-only { font-size: 11px; color: var(--muted); margin-top: 4px; }
     .view-toggle {
-      display: flex; gap: 6px; margin-top: 10px;
+      display: flex; gap: 6px; margin-top: 10px; align-items: center; flex-wrap: wrap;
+    }
+    .sticky-controls {
+      position: sticky; top: 0; z-index: 4; background: rgba(9,12,18,.96);
+      backdrop-filter: blur(10px); padding: 10px 0 8px 0; margin-top: 6px;
+    }
+    .search-shell { display: none; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+    .search-input {
+      min-width: 260px; flex: 1 1 320px; background: rgba(255,255,255,.05); color: var(--text);
+      border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; font-size: 13px;
+    }
+    .search-meta { font-size: 12px; color: var(--muted); }
+    .no-results {
+      display: none; padding: 18px; border: 1px dashed var(--line); border-radius: 12px;
+      color: var(--muted); grid-column: 1 / -1;
     }
     .toggle-btn {
       background: rgba(255,255,255,.06); border: 1px solid var(--line);
@@ -1110,21 +1283,62 @@ _CSS = """
     .toggle-btn:hover:not(.active) { background: rgba(255,255,255,.1); color: var(--text); }
 """
 
-_JS = """
-  function setView(mode) {
+def _build_client_js(storage_scope: str) -> str:
+    storage_scope = esc(storage_scope or "default")
+    return f"""
+  var PP_VIEW_KEY = 'ppView:{storage_scope}';
+  var PP_QUERY_KEY = 'ppQuery:{storage_scope}';
+  function applyFilters(mode, query) {{
+    var total = 0;
+    var matches = 0;
+    document.querySelectorAll('.plan-card').forEach(function(card) {{
+      total += 1;
+      var rel = card.dataset.relevant === 'true';
+      var hay = (card.dataset.search || '').toLowerCase();
+      var queryMatch = !query || hay.indexOf(query) !== -1;
+      var visible = queryMatch && (mode === 'all' || rel);
+      card.style.display = visible ? '' : 'none';
+      if (visible) matches += 1;
+    }});
+    var matching = document.getElementById('matching-count');
+    if (matching) matching.textContent = 'Matching ' + matches + ' of ' + total;
+    var noResults = document.getElementById('no-results');
+    if (noResults) noResults.style.display = matches === 0 ? '' : 'none';
+  }}
+  function setView(mode) {{
     document.getElementById('btn-relevant').classList.toggle('active', mode === 'relevant');
     document.getElementById('btn-all').classList.toggle('active', mode === 'all');
-    document.querySelectorAll('.plan-card').forEach(function(card) {
-      var rel = card.dataset.relevant === 'true';
-      card.style.display = (mode === 'all' || rel) ? '' : 'none';
-    });
-    try { localStorage.setItem('ppView', mode); } catch(e) {}
-  }
-  document.addEventListener('DOMContentLoaded', function() {
-    var saved = '';
-    try { saved = localStorage.getItem('ppView') || ''; } catch(e) {}
-    setView(saved === 'all' ? 'all' : 'relevant');
-  });
+    var shell = document.getElementById('search-shell');
+    if (shell) shell.style.display = mode === 'all' ? 'flex' : 'none';
+    var queryInput = document.getElementById('candidate-search');
+    var query = mode === 'all' && queryInput ? (queryInput.value || '').trim().toLowerCase() : '';
+    applyFilters(mode, query);
+    try {{ localStorage.setItem(PP_VIEW_KEY, mode); }} catch(e) {{}}
+  }}
+  function updateSearch() {{
+    var mode = document.getElementById('btn-all').classList.contains('active') ? 'all' : 'relevant';
+    var queryInput = document.getElementById('candidate-search');
+    var query = queryInput ? (queryInput.value || '').trim().toLowerCase() : '';
+    try {{ localStorage.setItem(PP_QUERY_KEY, query); }} catch(e) {{}}
+    applyFilters(mode, mode === 'all' ? query : '');
+  }}
+  function clearSearch() {{
+    var queryInput = document.getElementById('candidate-search');
+    if (queryInput) queryInput.value = '';
+    updateSearch();
+  }}
+  document.addEventListener('DOMContentLoaded', function() {{
+    var savedMode = 'relevant';
+    var savedQuery = '';
+    try {{
+      savedMode = localStorage.getItem(PP_VIEW_KEY) || 'relevant';
+      savedQuery = localStorage.getItem(PP_QUERY_KEY) || '';
+    }} catch(e) {{}}
+    var queryInput = document.getElementById('candidate-search');
+    if (queryInput) queryInput.value = savedQuery;
+    setView(savedMode === 'all' ? 'all' : 'relevant');
+    updateSearch();
+  }});
 """
 
 
@@ -1233,6 +1447,7 @@ def _metric_block(label: str, value: str) -> str:
 def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -> str:
     price_str = _fmt_p(card.current_price) if card.current_price else "—"
     quote = card.market.split("-")[-1] if "-" in card.market else ""
+    search_text = build_card_search_text(card)
 
     reasons_html = "".join(f"<li>{esc(r)}</li>" for r in card.reasons)
     invalidation_html = ""
@@ -1241,9 +1456,13 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
 
     metrics_html = "".join((
         _metric_block("Market", card.market),
+        _metric_block("Horizon", card.fib_trading_horizon),
         _metric_block("Current price", f"{price_str} {quote}".strip()),
         _metric_block("Current price status", card.current_price_status or "FRESH_CURRENT_PRICE"),
         _metric_block("Price age (min)", "?" if card.current_price_age_min is None else _fmt_p(card.current_price_age_min)),
+        _metric_block("SHORT context input", card.short_context_input_status),
+        _metric_block("SHORT context coverage", card.short_context_coverage_status),
+        _metric_block("SHORT context state", _short_context_display_label(card.short_context_display_state)),
         _metric_block("Active target / exit zone", ", ".join(_fmt_p(v) for v in card.target_exit_zone) or "No upcoming levels"),
         _metric_block("Active target", _fmt_p(card.active_target)),
         _metric_block("Reload / re-entry zone", ", ".join(_fmt_p(v) for v in card.reload_reentry_zone) or "No levels loaded"),
@@ -1260,7 +1479,7 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
         )
 
     return (
-        f"<section class='card plan-card' data-relevant='{str(card.is_relevant).lower()}'>"
+        f"<section class='card plan-card' data-relevant='{str(card.is_relevant).lower()}' data-search='{esc(search_text)}'>"
         "<div class='card-head'>"
         f"<div>"
         f"<h2><span class='mono'>{esc(card.symbol)}</span> "
@@ -1296,6 +1515,7 @@ def render_full_html(
     broker_mode: str = "offline",
     monitor_link: str | None = None,
     nav_html: str | None = None,
+    storage_scope: str = "default",
 ) -> str:
     if rendered_at is None:
         rendered_at = format_ui_now()
@@ -1318,9 +1538,16 @@ def render_full_html(
         f"    <div class='muted'>Rendered: {esc(rendered_at)} · Mode: {esc(broker_mode)}</div>\n"
         f"    <div class='muted small'>Relevant: {relevant_count} · Total: {total_count}</div>\n"
         f"{'' if not nav_html else f'    {nav_html}\\n'}"
+        "    <div class='sticky-controls'>\n"
         "    <div class='view-toggle'>\n"
         "      <button id='btn-relevant' class='toggle-btn' onclick='setView(\"relevant\")'>Relevant candidates</button>\n"
         "      <button id='btn-all' class='toggle-btn' onclick='setView(\"all\")'>All candidates</button>\n"
+        "    </div>\n"
+        "    <div id='search-shell' class='search-shell'>\n"
+        "      <input id='candidate-search' class='search-input' type='search' placeholder='Search symbol, market, scenario, state, action, horizon, context…' oninput='updateSearch()'>\n"
+        "      <button class='toggle-btn' type='button' onclick='clearSearch()'>Clear</button>\n"
+        "      <div id='matching-count' class='search-meta'>Matching 0 of 0</div>\n"
+        "    </div>\n"
         "    </div>\n"
         "    <div class='muted small' style='margin-top:6px'>"
         "Human-readable scenario planning only. broker_writes=0. order_submission=0. No automatic placement."
@@ -1329,8 +1556,9 @@ def render_full_html(
         "  <main>\n"
         f"    {empty_note}\n"
         f"    {cards_html}\n"
+        "    <div id='no-results' class='no-results'>No candidates match the current search.</div>\n"
         "  </main>\n"
-        f"  <script>{_JS}</script>\n"
+        f"  <script>{_build_client_js(storage_scope)}</script>\n"
         "</body>\n</html>"
     )
 
@@ -1357,6 +1585,10 @@ def build_json_snapshot(
             {
                 "symbol": c.symbol,
                 "market": c.market,
+                "fib_trading_horizon": c.fib_trading_horizon,
+                "short_context_input_status": c.short_context_input_status,
+                "short_context_coverage_status": c.short_context_coverage_status,
+                "short_context_display_state": c.short_context_display_state,
                 "current_price": str(c.current_price) if c.current_price is not None else None,
                 "current_price_status": c.current_price_status,
                 "current_price_age_min": str(c.current_price_age_min) if c.current_price_age_min is not None else None,

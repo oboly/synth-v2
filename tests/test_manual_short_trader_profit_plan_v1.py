@@ -17,8 +17,10 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     ProfitPlanCard,
     ReentryContext,
     TargetHistoryCandle,
+    build_card_search_text,
     build_json_snapshot,
     build_profit_plan_card,
+    filter_cards_for_view,
     render_full_html,
 )
 
@@ -58,6 +60,9 @@ class _FakeOrder:
 def _make_card(
     *,
     current_price: str | None,
+    short_context_input_status: str = "HAS_ZONE_CONTEXT",
+    short_context_coverage_status: str = "LEGACY_1D_CONTEXT_ONLY",
+    short_context_display_state: str = "NO_NATIVE_SHORT_FIB_CONTEXT",
     fib_ext: FibExtContext | None = None,
     reentry: ReentryContext | None = None,
     buy_orders: tuple[_FakeOrder, ...] = (),
@@ -74,6 +79,10 @@ def _make_card(
         symbol=symbol,
         market=market,
         current_price=Decimal(current_price) if current_price is not None else None,
+        fib_trading_horizon="SHORT",
+        short_context_input_status=short_context_input_status,
+        short_context_coverage_status=short_context_coverage_status,
+        short_context_display_state=short_context_display_state,
         fib_ext=fib_ext,
         reentry=reentry,
         buy_orders=buy_orders,
@@ -180,6 +189,8 @@ def test_load_zone_contexts_uses_source_rows_without_manual_cli() -> None:
             fib_map_rows_path=fib_rows,
         )
         assert result.input_status_by_symbol["WLD"] == "HAS_ZONE_CONTEXT"
+        assert result.coverage_status_by_symbol["WLD"] == "LEGACY_1D_CONTEXT_ONLY"
+        assert result.display_state_by_symbol["WLD"] == "NO_NATIVE_SHORT_FIB_CONTEXT"
 
 
 def test_load_zone_contexts_manual_cli_overrides_missing_source() -> None:
@@ -191,6 +202,7 @@ def test_load_zone_contexts_manual_cli_overrides_missing_source() -> None:
         fib_map_rows_path=Path("/tmp/missing-fib-map.csv"),
     )
     assert result.input_status_by_symbol["WLD"] == "MANUAL_ZONE_CONTEXT_USED"
+    assert result.display_state_by_symbol["WLD"] == "NO_NATIVE_SHORT_FIB_CONTEXT"
 
 
 def test_load_zone_contexts_missing_source_fails_closed() -> None:
@@ -202,6 +214,7 @@ def test_load_zone_contexts_missing_source_fails_closed() -> None:
         fib_map_rows_path=Path("/tmp/missing-fib-map.csv"),
     )
     assert result.input_status_by_symbol["WLD"] == "ZONE_SOURCE_MISSING"
+    assert result.coverage_status_by_symbol["WLD"] == "FIB_MAP_SOURCE_MISSING"
 
 
 def test_load_zone_contexts_symbol_missing_fails_closed() -> None:
@@ -222,6 +235,45 @@ def test_load_zone_contexts_symbol_missing_fails_closed() -> None:
             fib_map_rows_path=fib_rows,
         )
         assert result.input_status_by_symbol["WLD"] == "ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING"
+        assert result.coverage_status_by_symbol["WLD"] == "FIB_MAP_SYMBOL_MISSING"
+
+
+def test_short_context_coverage_summary_counts_expected_buckets() -> None:
+    summary = profit_plan_runner.summarize_short_context_coverage(
+        markets=["WLD-EUR", "ONDO-EUR", "PLUME-EUR", "HOME-EUR"],
+        coverage_status_by_symbol={
+            "WLD": "LEGACY_1D_CONTEXT_ONLY",
+            "ONDO": "CONTEXT_INVALID_OR_STALE",
+            "PLUME": "FIB_MAP_SYMBOL_MISSING",
+            "HOME": "MARKET_DATA_MISSING",
+        },
+    )
+    assert summary["NATIVE_SHORT_CONTEXT_AVAILABLE"] == 0
+    assert summary["LEGACY_1D_CONTEXT_ONLY"] == 1
+    assert summary["FIB_MAP_SYMBOL_MISSING"] == 1
+    assert summary["MARKET_DATA_MISSING"] == 1
+    assert summary["CONTEXT_INVALID_OR_STALE"] == 1
+
+
+def test_load_zone_contexts_market_data_missing_is_truthful() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "\n".join([
+                "symbol,target_status,anchor_reason,current_price,swing_low_price,swing_high_price,local_reaction_price",
+                "PLUME,MISSING_MARKET_DATA,no_market_candles_found_for_symbol,,,,",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["PLUME-EUR"],
+            prices={"PLUME-EUR": Decimal("0.155")},
+            swing_anchors={},
+            recent_lows={},
+            fib_map_rows_path=fib_rows,
+        )
+        assert result.coverage_status_by_symbol["PLUME"] == "MARKET_DATA_MISSING"
+        assert result.display_state_by_symbol["PLUME"] == "MARKET_DATA_MISSING"
 
 
 def test_take_profit_waiting_when_target_is_near_and_sell_order_exists() -> None:
@@ -300,6 +352,42 @@ def test_insufficient_data_when_zones_are_missing() -> None:
     assert card.primary_state == "INSUFFICIENT_DATA"
 
 
+def test_plume_without_fib_row_shows_truthful_short_context_gap() -> None:
+    card = _make_card(
+        current_price="0.155000",
+        fib_ext=None,
+        reentry=None,
+        short_context_input_status="ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING",
+        short_context_coverage_status="FIB_MAP_SYMBOL_MISSING",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        symbol="PLUME",
+        market="PLUME-EUR",
+    )
+    assert card.primary_state == "NO_NATIVE_SHORT_FIB_CONTEXT"
+    assert card.primary_state != "INSUFFICIENT_DATA"
+    assert card.current_price == Decimal("0.155000")
+    assert card.short_context_coverage_status == "FIB_MAP_SYMBOL_MISSING"
+
+
+def test_all_candidates_search_matches_plu_to_plume_and_clear_restores_all() -> None:
+    plume = _make_card(
+        current_price="0.155000",
+        fib_ext=None,
+        reentry=None,
+        short_context_input_status="ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING",
+        short_context_coverage_status="FIB_MAP_SYMBOL_MISSING",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        symbol="PLUME",
+        market="PLUME-EUR",
+    )
+    wld = _make_card(current_price="0.48", fib_ext=_wld_fib_ext())
+    assert "plume" in build_card_search_text(plume)
+    filtered = filter_cards_for_view([plume, wld], mode="all", query="PLU")
+    assert [card.symbol for card in filtered] == ["PLUME"]
+    restored = filter_cards_for_view([plume, wld], mode="all", query="")
+    assert [card.symbol for card in restored] == ["PLUME", "WLD"]
+
+
 def test_stale_current_price_blocks_actionable_profit_plan_outputs() -> None:
     card = build_profit_plan_card(
         symbol="HOME",
@@ -320,6 +408,7 @@ def test_render_full_html_uses_profit_plan_title_and_public_monitor_href() -> No
     html = render_full_html(
         [card],
         monitor_link="/synth/accounts/joost/open-orders-monitor.html",
+        storage_scope="joost",
         nav_html=(
             "<nav class='cockpit-nav'>"
             "<a href='/synth/about.html'>About</a>"
@@ -336,6 +425,13 @@ def test_render_full_html_uses_profit_plan_title_and_public_monitor_href() -> No
     assert "/var/www/html/synth/" not in html
     assert "/synth/profit-plan.html" not in html
     assert "/synth/open-orders-monitor.html" not in html
+    assert "candidate-search" in html
+    assert "ppView:joost" in html
+    assert "ppQuery:joost" in html
+    assert "search-shell" in html
+    assert "no-results" in html
+    assert "Matching 0 of 0" in html
+    assert "shell.style.display = mode === 'all' ? 'flex' : 'none'" in html
 
 
 def test_json_snapshot_structure_and_safety_markers() -> None:
@@ -345,6 +441,8 @@ def test_json_snapshot_structure_and_safety_markers() -> None:
     assert snapshot["order_submission"] == 0
     assert snapshot["executor"] == "none"
     assert snapshot["symbols"][0]["primary_state"] == card.primary_state
+    assert snapshot["symbols"][0]["short_context_coverage_status"] == card.short_context_coverage_status
+    assert snapshot["symbols"][0]["fib_trading_horizon"] == "SHORT"
     assert "active_target" in snapshot["symbols"][0]
     assert "target_level_statuses" in snapshot["symbols"][0]
 
@@ -670,6 +768,8 @@ def main() -> None:
         test_load_zone_contexts_manual_cli_overrides_missing_source,
         test_load_zone_contexts_missing_source_fails_closed,
         test_load_zone_contexts_symbol_missing_fails_closed,
+        test_short_context_coverage_summary_counts_expected_buckets,
+        test_load_zone_contexts_market_data_missing_is_truthful,
         test_take_profit_waiting_when_target_is_near_and_sell_order_exists,
         test_reload_zone_approaching_when_price_is_near_reload_zone,
         test_map_recompute_needed_when_price_is_above_all_completed_targets,
@@ -677,6 +777,8 @@ def main() -> None:
         test_order_too_far_or_stale_when_open_orders_are_far,
         test_do_nothing_for_neutral_valid_state,
         test_insufficient_data_when_zones_are_missing,
+        test_plume_without_fib_row_shows_truthful_short_context_gap,
+        test_all_candidates_search_matches_plu_to_plume_and_clear_restores_all,
         test_stale_current_price_blocks_actionable_profit_plan_outputs,
         test_render_full_html_uses_profit_plan_title_and_public_monitor_href,
         test_json_snapshot_structure_and_safety_markers,
