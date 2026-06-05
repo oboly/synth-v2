@@ -42,4 +42,17 @@ python -m src.reporting.run_account_wallet_dashboard_v1 \
   --output-root "${OUTPUT_ROOT}" \
   --output summary
 
+python -m src.reporting.run_manual_short_trader_dashboard_v1 \
+  --account-profile "${PROFILE}" \
+  --venue "${VENUE}" \
+  --output-root "${OUTPUT_ROOT}" \
+  --output summary
+
+python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
+  --account-profile "${PROFILE}" \
+  --venue "${VENUE}" \
+  --output-root "${OUTPUT_ROOT}" \
+  --monitor-href "/synth/accounts/${PROFILE}/open-orders-monitor.html" \
+  --output summary
+
 echo "account_wallet_dashboard_render_once finished $(date -u +%Y-%m-%dT%H:%M:%SZ)"

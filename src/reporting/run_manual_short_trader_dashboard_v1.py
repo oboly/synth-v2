@@ -8,72 +8,66 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from src.execution.bitvavo_client import BitvavoClient
+from src.reporting.account_scoped_short_trader_dashboard_v1 import (
+    DEFAULT_OUTPUT_ROOT,
+    DEFAULT_VENUE,
+    default_account_code,
+    default_page_paths,
+    load_account_scoped_short_dashboard_context,
+    validate_profile_slug,
+)
 from src.reporting.manual_short_trader_dashboard_v1 import (
-    BrokerBalanceRow,
-    BrokerOrderRow,
     LadderSymbolSection,
     build_all_sections,
     build_json_snapshot,
-    collect_unpriced_markets,
     fmt_price,
-    normalize_broker_balance,
-    normalize_broker_order,
     render_full_html,
 )
 
 
-DEFAULT_OUTPUT_HTML = "/tmp/manual_short_trader_dashboard_v1.html"
 DEFAULT_FIB_MAP_ROWS = Path("data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv")
-
 REPORT_NAME = "run_manual_short_trader_dashboard_v1"
-REPORT_VERSION = "0.1"
+REPORT_VERSION = "0.2"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Render the Synth v2 Open Orders Monitor. "
-            "Read-only snapshot only. No broker writes, no order submission."
+            "Render the Synth v2 Open Orders Monitor for exactly one account profile. "
+            "Read-only DB snapshot only. No broker reads, no broker writes, no order submission."
         )
     )
+    parser.add_argument("--account-profile", required=True, metavar="PROFILE")
     parser.add_argument(
-        "--markets",
-        nargs="+",
-        default=["WLD-EUR", "ONDO-EUR"],
-        metavar="MARKET",
-        help="Bitvavo market codes to include (default: WLD-EUR ONDO-EUR)",
+        "--account-code",
+        default=None,
+        metavar="CODE",
+        help="trading_account.account_code. Defaults to bitvavo_<profile>_read.",
+    )
+    parser.add_argument("--venue", default=DEFAULT_VENUE)
+    parser.add_argument(
+        "--output-root",
+        default=str(DEFAULT_OUTPUT_ROOT),
+        help="Synth web root. Outputs are written under accounts/<profile>/open-orders-monitor.html/json.",
     )
     parser.add_argument(
         "--output-html",
-        default=DEFAULT_OUTPUT_HTML,
-        help="Output HTML path",
+        default=None,
+        metavar="PATH",
+        help="Optional explicit HTML output path. Defaults to accounts/<profile>/open-orders-monitor.html under output-root.",
     )
     parser.add_argument(
         "--output-json",
         default=None,
         metavar="PATH",
-        help="Optional: also write JSON snapshot artifact",
+        help="Optional explicit JSON output path. Defaults to accounts/<profile>/open-orders-monitor.json under output-root.",
     )
     parser.add_argument(
         "--fib-map-rows",
         default=str(DEFAULT_FIB_MAP_ROWS),
-        help="Optional: path to fibo_target_map_rows_v1.csv for merged fib context",
+        help="Optional: path to fibo_target_map_rows_v1.csv for merged fib context.",
     )
-    parser.add_argument(
-        "--live-broker",
-        action="store_true",
-        default=False,
-        help=(
-            "Enable broker private read calls (get_open_orders, get_balance). "
-            "Requires SYNTH_BROKER_PRIVATE_READ_PERMISSION env gate to be set."
-        ),
-    )
-    parser.add_argument(
-        "--output",
-        choices=("summary", "none"),
-        default="summary",
-    )
+    parser.add_argument("--output", choices=("summary", "none"), default="summary")
     return parser.parse_args()
 
 
@@ -89,46 +83,48 @@ def load_fib_rows(path: Path) -> dict[str, dict[str, Any]]:
     return rows_by_symbol
 
 
-def fetch_ticker_prices(
-    client: BitvavoClient,
-    markets: list[str],
-) -> dict[str, Decimal]:
-    prices: dict[str, Decimal] = {}
-    for market in markets:
-        try:
-            prices[market] = client.get_ticker_price(market)
-        except Exception as exc:
-            print(f"[warn] ticker price fetch failed for {market}: {exc}", file=sys.stderr)
-    return prices
-
-
-def fetch_broker_snapshot(
-    client: BitvavoClient,
-) -> tuple[list[BrokerOrderRow], list[BrokerBalanceRow]]:
-    raw_orders: list[dict[str, Any]] = client.get_open_orders()
-    raw_balances: list[dict[str, Any]] = client.get_balance()
-    orders = [normalize_broker_order(r) for r in raw_orders]
-    balances = [normalize_broker_balance(r) for r in raw_balances]
-    return orders, balances
+def _build_sections(
+    *,
+    context,
+    fib_rows: dict[str, dict[str, Any]],
+) -> list[LadderSymbolSection]:
+    prices = {
+        snapshot.market: snapshot.price
+        for snapshot in context.market_price_by_symbol.values()
+    }
+    return build_all_sections(
+        list(context.orders),
+        list(context.balances),
+        prices,
+        fib_rows=fib_rows,
+    )
 
 
 def print_summary(
-    sections: list[LadderSymbolSection],
     *,
+    context,
+    sections: list[LadderSymbolSection],
     output_html: Path,
-    output_json: Path | None,
-    broker_mode: str,
+    output_json: Path,
 ) -> None:
     print(f"report={REPORT_NAME}")
     print(f"version={REPORT_VERSION}")
-    print(f"output_html={output_html}")
-    if output_json:
-        print(f"output_json={output_json}")
-    print(f"broker_mode={broker_mode}")
+    print(f"profile={context.profile}")
+    print(f"account_code={context.account_code}")
+    print(f"trading_account_id={context.trading_account_id}")
+    print(f"venue={context.venue}")
+    print(f"market_count={len(context.markets)}")
+    print(f"open_order_count={len(context.orders)}")
+    print(f"open_order_market_count={len(context.open_order_count_by_market)}")
+    print(f"html_output={output_html}")
+    print(f"json_output={output_json}")
+    print("broker_private_calls=0")
     print("broker_writes=0")
     print("order_submission=0")
+    print("live_orders=0")
+    print("decision_gate=none")
+    print("execution_planner=none")
     print("executor=none")
-    print("account_awareness=read_only_snapshot")
     for section in sections:
         print(
             f"{section.symbol}: price={fmt_price(section.current_price)}"
@@ -137,71 +133,68 @@ def print_summary(
             f" labels={','.join(section.section_labels)}"
         )
     if not sections:
-        print("sections=0 (no open orders or offline mode without --live-broker)")
+        print("sections=0 (no open orders found for this account)")
 
 
 def main() -> int:
     args = parse_args()
+    try:
+        validate_profile_slug(args.account_profile)
+    except ValueError as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return 1
 
-    client = BitvavoClient()
-    prices = fetch_ticker_prices(client, args.markets)
+    account_code = args.account_code or default_account_code(
+        profile=args.account_profile,
+        venue=args.venue,
+    )
+    output_root = Path(args.output_root)
+    default_html, default_json = default_page_paths(
+        output_root=output_root,
+        profile=args.account_profile,
+        page_stem="open-orders-monitor",
+    )
+    output_html = Path(args.output_html) if args.output_html else default_html
+    output_json = Path(args.output_json) if args.output_json else default_json
 
-    orders: list[BrokerOrderRow] = []
-    balances: list[BrokerBalanceRow] = []
-    broker_mode = "offline"
-
-    if args.live_broker:
-        try:
-            orders, balances = fetch_broker_snapshot(client)
-            broker_mode = "live_read_only"
-        except PermissionError as exc:
-            print(f"[error] Broker private read blocked: {exc}", file=sys.stderr)
-            print(
-                "[info] Set SYNTH_BROKER_PRIVATE_READ_PERMISSION="
-                "I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA to enable.",
-                file=sys.stderr,
-            )
-            return 1
-        except Exception as exc:
-            print(f"[error] Broker snapshot failed: {exc}", file=sys.stderr)
-            return 1
-
-    # Fetch public ticker prices for any markets discovered from open orders
-    # that were not included in the initial --markets list.
-    extra = collect_unpriced_markets(orders, prices)
-    if extra:
-        prices = {**prices, **fetch_ticker_prices(client, extra)}
+    try:
+        context = load_account_scoped_short_dashboard_context(
+            profile=args.account_profile,
+            account_code=account_code,
+            venue=args.venue,
+        )
+    except RuntimeError as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        print(f"[error] account scope load failed: {exc}", file=sys.stderr)
+        return 1
 
     fib_rows = load_fib_rows(Path(args.fib_map_rows))
-    sections = build_all_sections(orders, balances, prices, fib_rows=fib_rows)
+    sections = _build_sections(context=context, fib_rows=fib_rows)
 
-    output_html = Path(args.output_html)
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(
-        render_full_html(sections, broker_mode=broker_mode),
+        render_full_html(sections, broker_mode="db_snapshot"),
+        encoding="utf-8",
+    )
+    output_json.parent.mkdir(parents=True, exist_ok=True)
+    output_json.write_text(
+        json.dumps(
+            build_json_snapshot(sections),
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
-    output_json: Path | None = None
-    if args.output_json:
-        output_json = Path(args.output_json)
-        output_json.parent.mkdir(parents=True, exist_ok=True)
-        output_json.write_text(
-            json.dumps(
-                build_json_snapshot(sections),
-                indent=2,
-                sort_keys=True,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-
     if args.output == "summary":
         print_summary(
-            sections,
+            context=context,
+            sections=sections,
             output_html=output_html,
             output_json=output_json,
-            broker_mode=broker_mode,
         )
 
     return 0

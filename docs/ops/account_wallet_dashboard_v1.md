@@ -34,16 +34,28 @@ This dashboard depends on `src/account/run_account_wallet_refresh_v1.py` already
 
 ## Output paths
 
-Default outputs:
+Default per-account outputs:
 
 - `/var/www/html/synth/accounts/hugo/wallet.html`
 - `/var/www/html/synth/accounts/hugo/wallet.json`
+- `/var/www/html/synth/accounts/hugo/profit-plan.html`
+- `/var/www/html/synth/accounts/hugo/profit-plan.json`
+- `/var/www/html/synth/accounts/hugo/open-orders-monitor.html`
+- `/var/www/html/synth/accounts/hugo/open-orders-monitor.json`
 - `/var/www/html/synth/accounts/joost/wallet.html`
 - `/var/www/html/synth/accounts/joost/wallet.json`
+- `/var/www/html/synth/accounts/joost/profit-plan.html`
+- `/var/www/html/synth/accounts/joost/profit-plan.json`
+- `/var/www/html/synth/accounts/joost/open-orders-monitor.html`
+- `/var/www/html/synth/accounts/joost/open-orders-monitor.json`
+
+The legacy global prototype pages `/synth/profit-plan.html` and
+`/synth/open-orders-monitor.html` are deprecated after per-account verification.
 
 ## What the page shows
 
 - account/profile name
+- links to the same account's Wallet, Profit Plan, and Open Orders Monitor pages
 - latest wallet refresh timestamp
 - freshness: `FRESH`, `STALE`, `NEVER_REFRESHED`
 - balances:
@@ -108,6 +120,13 @@ python -m src.reporting.run_account_wallet_dashboard_v1 \
   --venue bitvavo \
   --output-root /var/www/html/synth \
   --output summary
+```
+
+Render all per-account dashboard pages together:
+
+```bash
+scripts/odroid/run_account_wallet_dashboard_render_once.sh joost
+scripts/odroid/run_account_wallet_dashboard_render_once.sh hugo
 ```
 
 ## Safety

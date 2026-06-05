@@ -300,6 +300,9 @@ def test_wallet_json_contains_management_payload():
         "safety_markers",
     ]
     assert all(action.get("enabled") is False for action in payload_json["management"]["actions"])
+    assert payload_json["dashboard_links"]["wallet"] == "/synth/accounts/joost/wallet.html"
+    assert payload_json["dashboard_links"]["profit_plan"] == "/synth/accounts/joost/profit-plan.html"
+    assert payload_json["dashboard_links"]["open_orders_monitor"] == "/synth/accounts/joost/open-orders-monitor.html"
 
 
 def test_wallet_html_includes_management_sections():
@@ -332,6 +335,8 @@ def test_wallet_html_includes_management_sections():
     assert "Hide selected" in html
     assert "Pause selected for 24h" in html
     assert "UI_PREP_ONLY_NO_AUTH_LAYER" in html
+    assert "/synth/accounts/joost/profit-plan.html" in html
+    assert "/synth/accounts/joost/open-orders-monitor.html" in html
 
 
 def test_wallet_dashboard_source_has_no_decision_execution_imports():

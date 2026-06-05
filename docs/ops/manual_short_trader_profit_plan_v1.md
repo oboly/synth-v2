@@ -15,13 +15,16 @@ the technical audit view. Profit Plan links back to Open Orders Monitor.
 
 Cockpit integration:
 
-- the read-only cockpit render refreshes `fibo_target_map_v1` before Profit Plan
-  render
-- the cockpit publishes Profit Plan at `/var/www/html/synth/profit-plan.html`
-- the cockpit may also publish `/var/www/html/synth/profit-plan.json` for the
-  read-only snapshot payload
-- browser links must use the public href `/synth/open-orders-monitor.html`
-  rather than the filesystem output path
+- the per-account dashboard render refreshes or reuses shared fib-map context
+  before Profit Plan render
+- the canonical account-scoped outputs are:
+  - `/var/www/html/synth/accounts/<profile>/profit-plan.html`
+  - `/var/www/html/synth/accounts/<profile>/profit-plan.json`
+- browser links must use the public href
+  `/synth/accounts/<profile>/open-orders-monitor.html`
+  rather than a filesystem output path
+- the legacy global `/synth/profit-plan.html` prototype is deprecated after
+  account-scoped replacement verification
 
 It does not:
 
@@ -38,7 +41,7 @@ It does not:
 | File | Role |
 |------|------|
 | `src/reporting/manual_short_trader_profit_plan_v1.py` | Pure computation and HTML/JSON rendering — no broker/DB imports |
-| `src/reporting/run_manual_short_trader_profit_plan_v1.py` | Runner — imports BitvavoClient, htf_fib_extension_confluence_v1, htf_fib_reentry_ladder_v1 |
+| `src/reporting/run_manual_short_trader_profit_plan_v1.py` | Runner — account-scoped DB snapshot loader + shared fib context join |
 
 ## View Toggle
 
@@ -122,7 +125,6 @@ current price and zone context exist.
 Open-order input preference:
 
 - first: existing DB-backed `account_open_order_snapshot` read-only snapshot source
-- fallback: existing private broker read path only when the runner is explicitly started with `--live-broker`
 - no broker write path is introduced
 
 Per market it reports:
@@ -208,17 +210,18 @@ buy_zone      = [0.800, 0.730]  ← r618 and r786
 ## Usage
 
 Offline mode (no broker orders, public prices only):
+Account-scoped DB snapshot mode:
 
 ```bash
 python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
-  --markets WLD-EUR ONDO-EUR FET-EUR \
+  --account-profile joost \
+  --output-root /var/www/html/synth \
   --fib-map-rows data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv \
-  --monitor-href /synth/open-orders-monitor.html \
-  --output-html /tmp/profit_plan_v1.html \
+  --monitor-href /synth/accounts/joost/open-orders-monitor.html \
   --output summary
 ```
 
-Cockpit render prerequisite for the default WLD/ONDO page:
+Shared fib-map prerequisite example:
 
 ```bash
 python -m src.research.run_fibo_target_map_v1 \
@@ -232,27 +235,12 @@ Manual anchors remain supported and override missing source context for the name
 
 ```bash
 python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
-  --markets WLD-EUR ONDO-EUR FET-EUR \
+  --account-profile joost \
+  --output-root /var/www/html/synth \
   --fib-map-rows data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv \
   --swing-anchors WLD:0.30:0.38 FET:0.166:0.244 \
   --recent-lows FET:0.209 \
-  --monitor-href /synth/open-orders-monitor.html \
-  --output-html /tmp/profit_plan_v1.html \
-  --output summary
-```
-
-Live read-only mode (requires `SYNTH_BROKER_PRIVATE_READ_PERMISSION`):
-
-```bash
-SYNTH_BROKER_PRIVATE_READ_PERMISSION=I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA \
-python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
-  --markets WLD-EUR ONDO-EUR FET-EUR \
-  --fib-map-rows data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv \
-  --live-broker \
-  --output-html /tmp/profit_plan_v1.html \
-  --output-json /tmp/profit_plan_snapshot.json \
-  --monitor-html /tmp/manual_short_trader_dashboard_v1.html \
-  --monitor-href /synth/open-orders-monitor.html \
+  --monitor-href /synth/accounts/joost/open-orders-monitor.html \
   --output summary
 ```
 

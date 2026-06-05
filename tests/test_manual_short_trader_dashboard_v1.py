@@ -2,11 +2,20 @@ from __future__ import annotations
 
 import ast
 import json
+import tempfile
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import src.reporting.run_manual_short_trader_dashboard_v1 as dashboard_runner
+from src.market_data.market_price_snapshot_v1 import MarketPriceSnapshot
+from src.reporting.account_scoped_short_trader_dashboard_v1 import (
+    AccountScopedShortDashboardContext,
+    build_account_market_scope,
+)
 from src.reporting.manual_short_trader_dashboard_v1 import (
+    BrokerBalanceRow,
+    BrokerOrderRow,
     assign_order_labels,
     build_all_sections,
     build_json_snapshot,
@@ -626,6 +635,181 @@ def test_runner_has_no_broker_write_calls() -> None:
         assert forbidden not in source, f"Forbidden broker write reference in runner: {forbidden}"
 
 
+def _price_snapshot(symbol: str, market: str, price: str) -> MarketPriceSnapshot:
+    return MarketPriceSnapshot(
+        venue="bitvavo",
+        symbol=symbol,
+        market=market,
+        quote_currency="EUR",
+        price=Decimal(price),
+        source_name="market_price_snapshot_v1",
+        source_ts_utc=None,
+        observed_ts_utc=None,
+    )
+
+
+def _context(
+    *,
+    profile: str,
+    account_id: int,
+    markets: tuple[str, ...],
+    orders: tuple[BrokerOrderRow, ...],
+    balances: tuple[BrokerBalanceRow, ...],
+    prices: dict[str, str],
+) -> AccountScopedShortDashboardContext:
+    snapshots = {
+        market.split("-", 1)[0]: _price_snapshot(market.split("-", 1)[0], market, price)
+        for market, price in prices.items()
+    }
+    open_order_count_by_market: dict[str, int] = {}
+    for order in orders:
+        open_order_count_by_market[order.market] = open_order_count_by_market.get(order.market, 0) + 1
+    return AccountScopedShortDashboardContext(
+        profile=profile,
+        account_code=f"bitvavo_{profile}_read",
+        trading_account_id=account_id,
+        venue="bitvavo",
+        latest_balance_snapshot_ts_utc=None,
+        latest_order_snapshot_ts_utc=None,
+        balances=balances,
+        orders=orders,
+        account_asset_rows=(),
+        open_order_count_by_market=open_order_count_by_market,
+        market_price_by_symbol=snapshots,
+        markets=markets,
+    )
+
+
+def test_build_account_market_scope_excludes_hidden_asset_without_open_order() -> None:
+    markets = build_account_market_scope(
+        account_asset_rows=[
+            {
+                "market": "WLD-EUR",
+                "is_hidden": 1,
+                "is_visible": 1,
+                "source": "WALLET_DISCOVERY",
+            }
+        ],
+        balances=[],
+        orders=[],
+    )
+    assert markets == []
+
+
+def test_build_account_market_scope_keeps_disabled_asset_with_open_order_visible() -> None:
+    markets = build_account_market_scope(
+        account_asset_rows=[
+            {
+                "market": "ONDO-EUR",
+                "is_hidden": 1,
+                "is_visible": 0,
+                "source": "WALLET_DISCOVERY",
+                "disabled_until_utc": "2099-01-01 00:00:00",
+            }
+        ],
+        balances=[],
+        orders=[
+            BrokerOrderRow(
+                order_id="ord-1",
+                market="ONDO-EUR",
+                side="buy",
+                order_type="limit",
+                limit_price=Decimal("0.80"),
+                amount=Decimal("10"),
+                filled_amount=Decimal("0"),
+                remaining_amount=Decimal("10"),
+                status="new",
+                created_at_ms=1,
+            )
+        ],
+    )
+    assert markets == ["ONDO-EUR"]
+
+
+def test_dashboard_runner_writes_account_scoped_outputs() -> None:
+    original_parse_args = dashboard_runner.parse_args
+    original_load_context = dashboard_runner.load_account_scoped_short_dashboard_context
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_root = Path(tmpdir)
+            dashboard_runner.parse_args = lambda: type(
+                "Args",
+                (),
+                {
+                    "account_profile": "joost",
+                    "account_code": None,
+                    "venue": "bitvavo",
+                    "output_root": str(output_root),
+                    "output_html": None,
+                    "output_json": None,
+                    "fib_map_rows": str(output_root / "missing.csv"),
+                    "output": "none",
+                },
+            )()
+            dashboard_runner.load_account_scoped_short_dashboard_context = lambda **_: _context(
+                profile="joost",
+                account_id=11,
+                markets=("WLD-EUR",),
+                orders=(
+                    BrokerOrderRow(
+                        order_id="ord-1",
+                        market="WLD-EUR",
+                        side="buy",
+                        order_type="limit",
+                        limit_price=Decimal("0.35"),
+                        amount=Decimal("100"),
+                        filled_amount=Decimal("0"),
+                        remaining_amount=Decimal("100"),
+                        status="new",
+                        created_at_ms=1,
+                    ),
+                ),
+                balances=(BrokerBalanceRow(symbol="WLD", available=Decimal("5"), in_order=Decimal("0")),),
+                prices={"WLD-EUR": "0.40"},
+            )
+            assert dashboard_runner.main() == 0
+            html_path = output_root / "accounts" / "joost" / "open-orders-monitor.html"
+            json_path = output_root / "accounts" / "joost" / "open-orders-monitor.json"
+            assert html_path.exists()
+            assert json_path.exists()
+            html = html_path.read_text(encoding="utf-8")
+            payload = json.loads(json_path.read_text(encoding="utf-8"))
+            assert "Open Orders Monitor" in html
+            assert "WLD" in html
+            assert payload["broker_writes"] == 0
+            assert payload["order_submission"] == 0
+    finally:
+        dashboard_runner.parse_args = original_parse_args
+        dashboard_runner.load_account_scoped_short_dashboard_context = original_load_context
+
+
+def test_dashboard_runner_missing_account_fails_closed() -> None:
+    original_parse_args = dashboard_runner.parse_args
+    original_load_context = dashboard_runner.load_account_scoped_short_dashboard_context
+    try:
+        dashboard_runner.parse_args = lambda: type(
+            "Args",
+            (),
+            {
+                "account_profile": "joost",
+                "account_code": None,
+                "venue": "bitvavo",
+                "output_root": "/tmp",
+                "output_html": None,
+                "output_json": None,
+                "fib_map_rows": "/tmp/missing.csv",
+                "output": "none",
+            },
+        )()
+        dashboard_runner.load_account_scoped_short_dashboard_context = lambda **_: (_ for _ in ()).throw(
+            RuntimeError("trading_account missing")
+        )
+        assert dashboard_runner.main() == 1
+    finally:
+        dashboard_runner.parse_args = original_parse_args
+        dashboard_runner.load_account_scoped_short_dashboard_context = original_load_context
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -689,6 +873,10 @@ def main() -> None:
         test_build_all_sections_uses_discovered_price,
         test_pure_module_has_no_forbidden_imports,
         test_runner_has_no_broker_write_calls,
+        test_build_account_market_scope_excludes_hidden_asset_without_open_order,
+        test_build_account_market_scope_keeps_disabled_asset_with_open_order_visible,
+        test_dashboard_runner_writes_account_scoped_outputs,
+        test_dashboard_runner_missing_account_fails_closed,
     ]
     for test in tests:
         test()

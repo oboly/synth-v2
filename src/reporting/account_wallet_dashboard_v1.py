@@ -71,6 +71,7 @@ class WalletDashboardPayload:
     total_open_order_count: int
     total_estimated_portfolio_value_eur: Decimal | None
     account_asset_settings: AccountAssetSettingsSummary
+    dashboard_links: dict[str, str]
     balances: tuple[BalanceDashboardRow, ...]
     open_order_counts: tuple[OpenOrderCountRow, ...]
     management: dict[str, Any]
@@ -144,6 +145,14 @@ def _max_ts(*values: datetime | None) -> datetime | None:
     if not existing:
         return None
     return max(existing)
+
+
+def _account_dashboard_links(profile: str) -> dict[str, str]:
+    return {
+        "wallet": f"/synth/accounts/{profile}/wallet.html",
+        "profit_plan": f"/synth/accounts/{profile}/profit-plan.html",
+        "open_orders_monitor": f"/synth/accounts/{profile}/open-orders-monitor.html",
+    }
 
 
 def _fetch_trading_account(conn: Any, *, account_code: str, venue: str) -> dict[str, Any]:
@@ -494,6 +503,7 @@ def build_wallet_dashboard_payload(
             total_estimated_portfolio_value if any_estimated_value else None
         ),
         account_asset_settings=account_asset_settings,
+        dashboard_links=_account_dashboard_links(profile),
         balances=tuple(balances),
         open_order_counts=order_counts,
         management=management,
@@ -613,6 +623,7 @@ def payload_to_json_dict(payload: WalletDashboardPayload) -> dict[str, Any]:
             else str(payload.total_estimated_portfolio_value_eur)
         ),
         "account_asset_settings": asdict(payload.account_asset_settings),
+        "dashboard_links": payload.dashboard_links,
         "management": payload.management,
         "balances": [
             {
@@ -740,6 +751,13 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
     )
     if not all_assets_html:
         all_assets_html = "<tr><td colspan='6' class='muted'>No settings rows available.</td></tr>"
+    dashboard_nav_html = "".join(
+        (
+            f"<a href='{esc(payload.dashboard_links['wallet'])}'>Wallet</a>",
+            f"<a href='{esc(payload.dashboard_links['profit_plan'])}'>Profit Plan</a>",
+            f"<a href='{esc(payload.dashboard_links['open_orders_monitor'])}'>Open Orders Monitor</a>",
+        )
+    )
 
     return f"""<!doctype html>
 <html lang="en">
@@ -757,6 +775,8 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
     .bad {{ background: #ffd9d4; color: #8b1e12; }}
     .muted {{ color: #666; }}
     .warning {{ margin-top: 16px; padding: 12px; border-radius: 12px; background: #fff4d6; border: 1px solid #e0c36b; }}
+    .navlinks {{ display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }}
+    .navlinks a {{ color: #1d5f8c; text-decoration: none; font-weight: 600; }}
     .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-top: 18px; }}
     .card {{ background: white; border: 1px solid #d9cfbb; border-radius: 14px; padding: 16px; }}
     table {{ width: 100%; border-collapse: collapse; margin-top: 12px; background: white; border-radius: 14px; overflow: hidden; }}
@@ -782,6 +802,7 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
         latest balance snapshot: {esc(payload.latest_balance_snapshot_ts_utc or "none")} ·
         latest order snapshot: {esc(payload.latest_order_snapshot_ts_utc or "none")}
       </div>
+      <div class="navlinks">{dashboard_nav_html}</div>
       {warning_html}
       <div style="margin-top:16px;">
         <button type="button" disabled>Manual refresh requires authenticated account action.</button>

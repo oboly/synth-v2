@@ -28,7 +28,7 @@ It does not:
 | File | Role |
 |------|------|
 | `src/reporting/manual_short_trader_dashboard_v1.py` | Pure computation and HTML/JSON rendering — no broker imports |
-| `src/reporting/run_manual_short_trader_dashboard_v1.py` | Runner — only file that imports `BitvavoClient` and makes private read calls |
+| `src/reporting/run_manual_short_trader_dashboard_v1.py` | Runner — account-scoped DB snapshot loader + HTML/JSON writer |
 
 ## Layer boundary
 
@@ -52,12 +52,12 @@ must not bypass decision or execution boundaries.
 
 `run_manual_short_trader_dashboard_v1.py` (runner):
 
-- imports `BitvavoClient` for ticker price and optional private reads
-- calls `get_open_orders()` and `get_balance()` only when `--live-broker` is
-  passed
-- never calls `place_order`, `cancel_order`, or any write path
-- all broker private reads are still gated by the existing
-  `SYNTH_BROKER_PRIVATE_READ_PERMISSION` env variable in `BitvavoClient`
+- requires explicit `--account-profile`
+- resolves exactly one `trading_account_id`
+- reads only `trading_account_balance_snapshot`, `account_open_order_snapshot`,
+  `account_asset`, and shared market-price/fib-map context
+- fails closed on missing or ambiguous account resolution
+- never calls a broker client, `place_order`, `cancel_order`, or any write path
 
 ## Labels
 
@@ -70,34 +70,20 @@ must not bypass decision or execution boundaries.
 
 ## Usage
 
-Offline mode (public ticker prices only, no orders):
+Account-scoped render:
 
 ```bash
 python -m src.reporting.run_manual_short_trader_dashboard_v1 \
-  --markets WLD-EUR ONDO-EUR \
-  --output-html /tmp/short_trader_dashboard.html \
+  --account-profile joost \
+  --output-root /var/www/html/synth \
   --output summary
 ```
 
-Cockpit integration:
+Canonical per-account outputs:
 
-- the read-only cockpit publishes Open Orders Monitor at
-  `/var/www/html/synth/open-orders-monitor.html`
-- the cockpit may also publish `/var/www/html/synth/open-orders-monitor.json`
-- Profit Plan links back to this cockpit Open Orders Monitor page
-
-Live read-only mode (requires `SYNTH_BROKER_PRIVATE_READ_PERMISSION` env):
-
-```bash
-SYNTH_BROKER_PRIVATE_READ_PERMISSION=I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA \
-python -m src.reporting.run_manual_short_trader_dashboard_v1 \
-  --markets WLD-EUR ONDO-EUR \
-  --live-broker \
-  --output-html /tmp/short_trader_dashboard.html \
-  --output-json /tmp/short_trader_snapshot.json \
-  --fib-map-rows data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv \
-  --output summary
-```
+- `/var/www/html/synth/accounts/<profile>/open-orders-monitor.html`
+- `/var/www/html/synth/accounts/<profile>/open-orders-monitor.json`
+- Profit Plan links back via `/synth/accounts/<profile>/open-orders-monitor.html`
 
 ## Fib map merge
 
@@ -111,6 +97,6 @@ fib context row below each symbol's order tables.
 broker_writes=0
 order_submission=0
 db_writes=0
-db_reads=0
+db_reads=1
 executor=none
 ```
