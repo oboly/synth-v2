@@ -23,6 +23,18 @@ It exists so reporting surfaces such as Profit Plan can consume a stable native
 The supporting `1h` lane may confirm, conflict, or show a breakout-gate retest.
 It must not silently replace the active `4h` map.
 
+Canonical supporting `1h` states:
+
+- `ALIGNED_WITH_4H`
+- `RETEST_SUPPORTIVE`
+- `NEUTRAL_OR_NOT_CONFIRMING`
+- `CONFLICT_WITH_4H`
+
+`CONFLICT_WITH_4H` requires a genuine directional contradiction such as
+invalidation-pressure or a materially broken breakout after a confirmed `4h`
+map. It must not be used merely because the `1h` close is still below the
+authoritative `4h` breakout gate.
+
 ## Layer Ownership
 
 - market-only bridge builder: `src/market_data/native_short_fib_context_v1.py`
@@ -81,6 +93,16 @@ Canonical builder status values:
 - `INSUFFICIENT_1H_HISTORY`
 - `CONTEXT_INVALID_OR_STALE`
 - `SYMBOL_CONTEXT_MISSING`
+
+Representative primary `4h` lifecycle states:
+
+- `BELOW_BREAKOUT_GATE`
+- `BREAKOUT_CONFIRMED`
+- `TARGET_ACTIVE`
+- `TARGET_REACHED_OR_PASSED`
+- `POST_BREAKOUT_PULLBACK`
+- `MAP_COMPLETED`
+- `INVALIDATED`
 
 Rules:
 

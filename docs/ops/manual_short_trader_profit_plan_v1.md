@@ -256,6 +256,9 @@ Expected examples:
 
 - symbol with a valid native `4h` primary + `1h` support row →
   `NATIVE_SHORT_CONTEXT_AVAILABLE`
+- a native `1h` row may be `ALIGNED_WITH_4H`, `RETEST_SUPPORTIVE`,
+  `NEUTRAL_OR_NOT_CONFIRMING`, or `CONFLICT_WITH_4H`; only the last one implies
+  a genuine contradiction
 - `PLUME` with fresh price but no fib row → `FIB_MAP_SYMBOL_MISSING` /
   `NO_NATIVE_SHORT_FIB_CONTEXT`
 - symbol with a native row but missing canonical support window →

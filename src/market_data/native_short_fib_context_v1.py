@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -36,15 +36,19 @@ STATUS_INSUFFICIENT_1H = "INSUFFICIENT_1H_HISTORY"
 STATUS_STALE_OR_INVALID = "CONTEXT_INVALID_OR_STALE"
 STATUS_SYMBOL_MISSING = "SYMBOL_CONTEXT_MISSING"
 
-PRIMARY_LIFECYCLE_ACTIVE = "ACTIVE_4H_EXTENSION"
+PRIMARY_LIFECYCLE_BREAKOUT_CONFIRMED = "BREAKOUT_CONFIRMED"
+PRIMARY_LIFECYCLE_TARGET_ACTIVE = "TARGET_ACTIVE"
+PRIMARY_LIFECYCLE_TARGET_REACHED = "TARGET_REACHED_OR_PASSED"
 PRIMARY_LIFECYCLE_COMPLETED = "MAP_COMPLETED"
 PRIMARY_LIFECYCLE_PULLBACK = "POST_BREAKOUT_PULLBACK"
 PRIMARY_LIFECYCLE_BELOW_GATE = "BELOW_BREAKOUT_GATE"
+PRIMARY_LIFECYCLE_INVALIDATED = "INVALIDATED"
 
 SUPPORT_STATE_UNKNOWN = "UNKNOWN"
 SUPPORT_STATE_ALIGNED = "ALIGNED_WITH_4H"
+SUPPORT_STATE_NEUTRAL = "NEUTRAL_OR_NOT_CONFIRMING"
 SUPPORT_STATE_CONFLICT = "CONFLICT_WITH_4H"
-SUPPORT_STATE_RETEST = "RETESTING_BREAKOUT_GATE"
+SUPPORT_STATE_RETEST = "RETEST_SUPPORTIVE"
 
 FRESHNESS_FRESH = "FRESH"
 FRESHNESS_STALE_PRIMARY = "STALE_PRIMARY_4H"
@@ -58,6 +62,9 @@ DEFAULT_PIVOT_SPAN = 2
 DEFAULT_PRIMARY_STALE_HOURS = 12
 DEFAULT_SUPPORT_STALE_HOURS = 3
 BREAKOUT_RETEST_PROXIMITY_PCT = Decimal("1.50")
+BREAKOUT_CONFIRM_BUFFER_PCT = Decimal("1.00")
+SUPPORT_CONFLICT_BELOW_GATE_PCT = Decimal("1.00")
+INVALIDATION_BUFFER_PCT = Decimal("0.50")
 
 CSV_FIELDS = [
     "symbol",
@@ -194,6 +201,30 @@ class NativeShortContextRow:
         }
 
 
+@dataclass(frozen=True)
+class SwingCandidateContext:
+    anchor_start_ts_utc: datetime
+    anchor_end_ts_utc: datetime
+    anchor_low_price: Decimal
+    anchor_high_price: Decimal
+    breakout_gate_price: Decimal
+    latest_primary_close_ts_utc: datetime
+    latest_primary_close_price: Decimal
+    ext_1_272_price: Decimal
+    ext_1_618_price: Decimal
+    ext_2_000_price: Decimal
+    active_target_levels: tuple[Decimal, ...]
+    previous_target_levels: tuple[Decimal, ...]
+    reload_r382_price: Decimal
+    reload_r500_price: Decimal
+    reload_r618_price: Decimal
+    reload_r786_price: Decimal
+    invalidation_price: Decimal
+    primary_4h_lifecycle_state: str
+    max_primary_high_since_anchor: Decimal
+    min_primary_low_since_anchor: Decimal
+
+
 def _parse_decimal(value: Any) -> Decimal | None:
     text = str(value or "").strip()
     if not text:
@@ -270,6 +301,12 @@ def _pct_diff(a: Decimal, b: Decimal) -> Decimal:
     return abs(a - b) / b * Decimal("100")
 
 
+def _pct_above(value: Decimal, reference: Decimal) -> Decimal:
+    if reference == 0:
+        return Decimal("0")
+    return (value - reference) / reference * Decimal("100")
+
+
 def _base_row(
     *,
     symbol: str,
@@ -318,6 +355,185 @@ def _base_row(
     )
 
 
+def _classify_primary_lifecycle(
+    *,
+    breakout_gate: Decimal,
+    invalidation_price: Decimal,
+    current_price: Decimal,
+    max_high_since_anchor: Decimal,
+    min_low_since_anchor: Decimal,
+    ext_1_272: Decimal,
+    ext_1_618: Decimal,
+    ext_2_000: Decimal,
+) -> tuple[str, tuple[Decimal, ...], tuple[Decimal, ...]]:
+    target_levels = (ext_1_272, ext_1_618, ext_2_000)
+    previous_target_levels = tuple(level for level in target_levels if max_high_since_anchor >= level)
+    active_target_levels = tuple(level for level in target_levels if max_high_since_anchor < level)
+
+    invalidation_break = invalidation_price * (Decimal("1") - INVALIDATION_BUFFER_PCT / Decimal("100"))
+    breakout_confirm = breakout_gate * (Decimal("1") + BREAKOUT_CONFIRM_BUFFER_PCT / Decimal("100"))
+
+    if min_low_since_anchor <= invalidation_break:
+        return PRIMARY_LIFECYCLE_INVALIDATED, active_target_levels, previous_target_levels
+    if not active_target_levels:
+        return PRIMARY_LIFECYCLE_COMPLETED, (), previous_target_levels
+    if previous_target_levels:
+        if current_price < breakout_gate:
+            return PRIMARY_LIFECYCLE_PULLBACK, active_target_levels, previous_target_levels
+        return PRIMARY_LIFECYCLE_TARGET_REACHED, active_target_levels, previous_target_levels
+    if current_price >= active_target_levels[0]:
+        return PRIMARY_LIFECYCLE_TARGET_REACHED, active_target_levels[1:], previous_target_levels + (active_target_levels[0],)
+    if current_price >= breakout_confirm:
+        return PRIMARY_LIFECYCLE_TARGET_ACTIVE, active_target_levels, previous_target_levels
+    if max_high_since_anchor >= breakout_confirm:
+        return PRIMARY_LIFECYCLE_PULLBACK, active_target_levels, previous_target_levels
+    if current_price >= breakout_gate:
+        return PRIMARY_LIFECYCLE_BREAKOUT_CONFIRMED, active_target_levels, previous_target_levels
+    return PRIMARY_LIFECYCLE_BELOW_GATE, active_target_levels, previous_target_levels
+
+
+def _build_swing_candidate(
+    *,
+    symbol: str,
+    swing: dict[str, Any],
+    primary_candles: list[Candle],
+) -> SwingCandidateContext:
+    latest_primary = primary_candles[-1]
+    anchor_start_ts = swing["low_ts"]
+    anchor_end_ts = swing["high_ts"]
+    anchor_low = swing["swing_low"]
+    anchor_high = swing["swing_high"]
+    anchor_window = [c for c in primary_candles if c.close_ts_utc >= anchor_end_ts]
+    max_high_since_anchor = max((c.high_price for c in anchor_window), default=anchor_high)
+    min_low_since_anchor = min((c.low_price for c in anchor_window), default=anchor_low)
+    extension_map = build_htf_extension_map(
+        HtfSwingInput(
+            symbol=symbol,
+            interval_code=PRIMARY_INTERVAL,
+            swing_low=anchor_low,
+            swing_high=anchor_high,
+            current_price=latest_primary.close_price,
+            prior_high_price=anchor_high,
+        )
+    )
+    reentry_ladder = build_fib_retrace_ladder(
+        HtfReentryInput(
+            symbol=symbol,
+            interval_code=PRIMARY_INTERVAL,
+            swing_low=anchor_low,
+            swing_high=anchor_high,
+            current_price=latest_primary.close_price,
+            recent_low_price=min_low_since_anchor,
+        )
+    )
+    ext_1_272 = next(target.price for target in extension_map.targets if target.label == "ext_1_272")
+    ext_1_618 = next(target.price for target in extension_map.targets if target.label == "ext_1_618")
+    ext_2_000 = next(target.price for target in extension_map.targets if target.label == "ext_2_000")
+    lifecycle_state, active_target_levels, previous_target_levels = _classify_primary_lifecycle(
+        breakout_gate=extension_map.breakout_gate,
+        invalidation_price=anchor_low,
+        current_price=latest_primary.close_price,
+        max_high_since_anchor=max_high_since_anchor,
+        min_low_since_anchor=min_low_since_anchor,
+        ext_1_272=ext_1_272,
+        ext_1_618=ext_1_618,
+        ext_2_000=ext_2_000,
+    )
+    level_by_label = {row.label: row.price for row in reentry_ladder.levels}
+    return SwingCandidateContext(
+        anchor_start_ts_utc=anchor_start_ts,
+        anchor_end_ts_utc=anchor_end_ts,
+        anchor_low_price=anchor_low,
+        anchor_high_price=anchor_high,
+        breakout_gate_price=extension_map.breakout_gate,
+        latest_primary_close_ts_utc=latest_primary.close_ts_utc,
+        latest_primary_close_price=latest_primary.close_price,
+        ext_1_272_price=ext_1_272,
+        ext_1_618_price=ext_1_618,
+        ext_2_000_price=ext_2_000,
+        active_target_levels=active_target_levels,
+        previous_target_levels=previous_target_levels,
+        reload_r382_price=level_by_label["retrace_0_382"],
+        reload_r500_price=level_by_label["retrace_0_500"],
+        reload_r618_price=level_by_label["retrace_0_618"],
+        reload_r786_price=level_by_label["retrace_0_786"],
+        invalidation_price=anchor_low,
+        primary_4h_lifecycle_state=lifecycle_state,
+        max_primary_high_since_anchor=max_high_since_anchor,
+        min_primary_low_since_anchor=min_low_since_anchor,
+    )
+
+
+def _candidate_rank(candidate: SwingCandidateContext) -> tuple[int, datetime]:
+    state_rank = {
+        PRIMARY_LIFECYCLE_COMPLETED: 6,
+        PRIMARY_LIFECYCLE_TARGET_REACHED: 5,
+        PRIMARY_LIFECYCLE_TARGET_ACTIVE: 4,
+        PRIMARY_LIFECYCLE_BREAKOUT_CONFIRMED: 3,
+        PRIMARY_LIFECYCLE_PULLBACK: 2,
+        PRIMARY_LIFECYCLE_BELOW_GATE: 1,
+        PRIMARY_LIFECYCLE_INVALIDATED: 0,
+    }
+    return (
+        state_rank.get(candidate.primary_4h_lifecycle_state, -1),
+        candidate.anchor_end_ts_utc,
+    )
+
+
+def _select_best_candidate(*, symbol: str, primary_candles: list[Candle], swings: list[dict[str, Any]]) -> SwingCandidateContext:
+    candidates = [_build_swing_candidate(symbol=symbol, swing=swing, primary_candles=primary_candles) for swing in swings]
+    candidates.sort(key=_candidate_rank, reverse=True)
+    return candidates[0]
+
+
+def _classify_support_state(
+    *,
+    support_candles: list[Candle],
+    candidate: SwingCandidateContext,
+) -> str:
+    if not support_candles:
+        return SUPPORT_STATE_UNKNOWN
+    latest_support = support_candles[-1]
+    close_price = latest_support.close_price
+    low_price = latest_support.low_price
+    breakout_gate = candidate.breakout_gate_price
+    invalidation = candidate.invalidation_price
+    proximity = _pct_diff(close_price, breakout_gate)
+    conflict_below_gate = breakout_gate * (Decimal("1") - SUPPORT_CONFLICT_BELOW_GATE_PCT / Decimal("100"))
+    invalidation_break = invalidation * (Decimal("1") - INVALIDATION_BUFFER_PCT / Decimal("100"))
+
+    if low_price <= invalidation_break:
+        return SUPPORT_STATE_CONFLICT
+    if candidate.primary_4h_lifecycle_state in {
+        PRIMARY_LIFECYCLE_TARGET_ACTIVE,
+        PRIMARY_LIFECYCLE_TARGET_REACHED,
+        PRIMARY_LIFECYCLE_PULLBACK,
+        PRIMARY_LIFECYCLE_COMPLETED,
+    }:
+        if close_price < conflict_below_gate:
+            return SUPPORT_STATE_CONFLICT
+        if proximity <= BREAKOUT_RETEST_PROXIMITY_PCT:
+            return SUPPORT_STATE_RETEST
+        if close_price >= breakout_gate:
+            return SUPPORT_STATE_ALIGNED
+        return SUPPORT_STATE_NEUTRAL
+    if candidate.primary_4h_lifecycle_state == PRIMARY_LIFECYCLE_BREAKOUT_CONFIRMED:
+        if proximity <= BREAKOUT_RETEST_PROXIMITY_PCT:
+            return SUPPORT_STATE_RETEST
+        if close_price >= breakout_gate:
+            return SUPPORT_STATE_ALIGNED
+        return SUPPORT_STATE_NEUTRAL
+    if candidate.primary_4h_lifecycle_state == PRIMARY_LIFECYCLE_BELOW_GATE:
+        if close_price >= breakout_gate:
+            return SUPPORT_STATE_ALIGNED
+        if proximity <= BREAKOUT_RETEST_PROXIMITY_PCT:
+            return SUPPORT_STATE_NEUTRAL
+        return SUPPORT_STATE_NEUTRAL
+    if candidate.primary_4h_lifecycle_state == PRIMARY_LIFECYCLE_INVALIDATED:
+        return SUPPORT_STATE_CONFLICT
+    return SUPPORT_STATE_NEUTRAL
+
+
 def build_native_short_context_row(
     *,
     symbol: str,
@@ -349,45 +565,7 @@ def build_native_short_context_row(
             freshness_status=FRESHNESS_STALE_PRIMARY,
         )
 
-    swing = swings[-1]
-    anchor_start_ts = swing["low_ts"]
-    anchor_end_ts = swing["high_ts"]
-    anchor_low = swing["swing_low"]
-    anchor_high = swing["swing_high"]
-    anchor_window = [c for c in primary_candles if c.close_ts_utc >= anchor_end_ts]
-    max_high_since_anchor = max((c.high_price for c in anchor_window), default=anchor_high)
-    min_low_since_anchor = min((c.low_price for c in anchor_window), default=anchor_low)
-
-    extension_map = build_htf_extension_map(
-        HtfSwingInput(
-            symbol=symbol,
-            interval_code=PRIMARY_INTERVAL,
-            swing_low=anchor_low,
-            swing_high=anchor_high,
-            current_price=latest_primary.close_price,
-            prior_high_price=anchor_high,
-        )
-    )
-    reentry_ladder = build_fib_retrace_ladder(
-        HtfReentryInput(
-            symbol=symbol,
-            interval_code=PRIMARY_INTERVAL,
-            swing_low=anchor_low,
-            swing_high=anchor_high,
-            current_price=latest_primary.close_price,
-            recent_low_price=min_low_since_anchor,
-        )
-    )
-    target_levels = tuple(target.price for target in extension_map.targets)
-    previous_target_levels = tuple(level for level in target_levels if max_high_since_anchor >= level)
-    active_target_levels = tuple(level for level in target_levels if max_high_since_anchor < level)
-
-    if not active_target_levels:
-        primary_state = PRIMARY_LIFECYCLE_COMPLETED
-    elif latest_primary.close_price < extension_map.breakout_gate:
-        primary_state = PRIMARY_LIFECYCLE_PULLBACK if previous_target_levels else PRIMARY_LIFECYCLE_BELOW_GATE
-    else:
-        primary_state = PRIMARY_LIFECYCLE_ACTIVE
+    candidate = _select_best_candidate(symbol=symbol, primary_candles=primary_candles, swings=swings)
 
     support_state = SUPPORT_STATE_UNKNOWN
     status = STATUS_AVAILABLE
@@ -402,17 +580,13 @@ def build_native_short_context_row(
             status = STATUS_STALE_OR_INVALID
             freshness_status = FRESHNESS_STALE_SUPPORT
         else:
-            proximity = _pct_diff(latest_support.close_price, extension_map.breakout_gate)
-            if latest_support.low_price <= anchor_low:
-                support_state = SUPPORT_STATE_CONFLICT
-            elif proximity <= BREAKOUT_RETEST_PROXIMITY_PCT:
-                support_state = SUPPORT_STATE_RETEST
-            elif latest_support.close_price >= extension_map.breakout_gate:
-                support_state = SUPPORT_STATE_ALIGNED
-            else:
-                support_state = SUPPORT_STATE_CONFLICT
+            support_state = _classify_support_state(
+                support_candles=support_candles,
+                candidate=candidate,
+            )
+    if candidate.primary_4h_lifecycle_state == PRIMARY_LIFECYCLE_INVALIDATED:
+        status = STATUS_STALE_OR_INVALID
 
-    level_by_label = {row.label: row.price for row in reentry_ladder.levels}
     return NativeShortContextRow(
         symbol=symbol,
         venue=venue,
@@ -421,30 +595,30 @@ def build_native_short_context_row(
         primary_interval=PRIMARY_INTERVAL,
         supporting_interval=SUPPORTING_INTERVAL,
         context_status=status,
-        map_cycle_id=f"{symbol}|SHORT|4h|{anchor_start_ts.isoformat()}|{anchor_end_ts.isoformat()}",
-        anchor_start_ts_utc=anchor_start_ts,
-        anchor_end_ts_utc=anchor_end_ts,
-        anchor_low_price=anchor_low,
-        anchor_high_price=anchor_high,
-        breakout_gate_price=extension_map.breakout_gate,
-        latest_primary_close_ts_utc=latest_primary.close_ts_utc,
+        map_cycle_id=f"{symbol}|SHORT|4h|{candidate.anchor_start_ts_utc.isoformat()}|{candidate.anchor_end_ts_utc.isoformat()}",
+        anchor_start_ts_utc=candidate.anchor_start_ts_utc,
+        anchor_end_ts_utc=candidate.anchor_end_ts_utc,
+        anchor_low_price=candidate.anchor_low_price,
+        anchor_high_price=candidate.anchor_high_price,
+        breakout_gate_price=candidate.breakout_gate_price,
+        latest_primary_close_ts_utc=candidate.latest_primary_close_ts_utc,
         latest_support_close_ts_utc=latest_support_ts,
-        latest_primary_close_price=latest_primary.close_price,
-        ext_1_272_price=next((target.price for target in extension_map.targets if target.label == "ext_1_272"), None),
-        ext_1_618_price=next((target.price for target in extension_map.targets if target.label == "ext_1_618"), None),
-        ext_2_000_price=next((target.price for target in extension_map.targets if target.label == "ext_2_000"), None),
-        active_target_levels=active_target_levels,
-        previous_target_levels=previous_target_levels,
-        reload_r382_price=level_by_label.get("retrace_0_382"),
-        reload_r500_price=level_by_label.get("retrace_0_500"),
-        reload_r618_price=level_by_label.get("retrace_0_618"),
-        reload_r786_price=level_by_label.get("retrace_0_786"),
-        invalidation_price=anchor_low,
-        primary_4h_lifecycle_state=primary_state,
+        latest_primary_close_price=candidate.latest_primary_close_price,
+        ext_1_272_price=candidate.ext_1_272_price,
+        ext_1_618_price=candidate.ext_1_618_price,
+        ext_2_000_price=candidate.ext_2_000_price,
+        active_target_levels=candidate.active_target_levels,
+        previous_target_levels=candidate.previous_target_levels,
+        reload_r382_price=candidate.reload_r382_price,
+        reload_r500_price=candidate.reload_r500_price,
+        reload_r618_price=candidate.reload_r618_price,
+        reload_r786_price=candidate.reload_r786_price,
+        invalidation_price=candidate.invalidation_price,
+        primary_4h_lifecycle_state=candidate.primary_4h_lifecycle_state,
         supporting_1h_state=support_state,
         context_freshness_status=freshness_status,
-        max_primary_high_since_anchor=max_high_since_anchor,
-        min_primary_low_since_anchor=min_low_since_anchor,
+        max_primary_high_since_anchor=candidate.max_primary_high_since_anchor,
+        min_primary_low_since_anchor=candidate.min_primary_low_since_anchor,
         source_name=SHORT_CONTEXT_SOURCE_NAME,
         source_version=SHORT_CONTEXT_VERSION,
         source_primary_ref="obs_market_candle:4h",

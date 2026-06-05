@@ -17,6 +17,7 @@ from src.market_data.native_short_fib_context_v1 import (
     load_native_short_context_rows,
     write_context_rows,
 )
+import src.market_data.run_native_short_fib_context_v1 as native_runner
 
 
 def _candles(
@@ -69,6 +70,7 @@ def test_valid_4h_with_aligned_1h_is_native_short_available() -> None:
     assert row.supporting_1h_state == "ALIGNED_WITH_4H"
     assert row.anchor_low_price is not None
     assert row.anchor_high_price is not None
+    assert row.primary_4h_lifecycle_state in {"BREAKOUT_CONFIRMED", "TARGET_ACTIVE", "TARGET_REACHED_OR_PASSED"}
 
 
 def test_valid_4h_with_conflicting_1h_keeps_4h_authoritative() -> None:
@@ -180,6 +182,115 @@ def test_insufficient_4h_history_fails_closed() -> None:
     assert row.context_status == STATUS_INSUFFICIENT_4H
 
 
+def test_below_breakout_gate_state_is_available_without_forcing_support_conflict() -> None:
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=UTC)
+    primary = _candles(
+        ["1.10", "1.00", "0.90", "1.00", "1.08", "1.20", "1.12", "1.09", "1.08", "1.07"],
+        start=datetime(2026, 6, 3, 0, 0, tzinfo=UTC),
+        step_hours=4,
+    )
+    support = _candles(
+        ["1.05"] * 60,
+        start=datetime(2026, 6, 3, 0, 0, tzinfo=UTC),
+        step_hours=1,
+        wiggle="0.005",
+    )
+    row = build_native_short_context_row(
+        symbol="PLUME",
+        venue="bitvavo",
+        primary_candles=primary,
+        support_candles=support,
+        now_utc=now,
+    )
+    assert row.context_status == STATUS_AVAILABLE
+    assert row.primary_4h_lifecycle_state == "BELOW_BREAKOUT_GATE"
+    assert row.supporting_1h_state == "NEUTRAL_OR_NOT_CONFIRMING"
+
+
+def test_pullback_retest_state_after_target_reach() -> None:
+    now = datetime(2026, 6, 6, 12, 0, tzinfo=UTC)
+    primary = _candles(
+        ["1.05", "1.00", "0.95", "1.00", "1.05", "1.15", "1.10", "1.08", "1.26", "1.09"],
+        start=datetime(2026, 6, 4, 0, 0, tzinfo=UTC),
+        step_hours=4,
+    )
+    support = _candles(
+        ["1.14"] * 60,
+        start=datetime(2026, 6, 4, 0, 0, tzinfo=UTC),
+        step_hours=1,
+        wiggle="0.003",
+    )
+    row = build_native_short_context_row(
+        symbol="WLD",
+        venue="bitvavo",
+        primary_candles=primary,
+        support_candles=support,
+        now_utc=now,
+    )
+    assert row.context_status == STATUS_AVAILABLE
+    assert row.primary_4h_lifecycle_state in {"POST_BREAKOUT_PULLBACK", "TARGET_REACHED_OR_PASSED"}
+
+
+def test_invalidation_is_not_reported_as_native_available() -> None:
+    now = datetime(2026, 6, 6, 12, 0, tzinfo=UTC)
+    primary = _candles(
+        ["1.05", "1.00", "0.95", "1.00", "1.05", "1.15", "1.10", "1.08", "0.85", "0.82"],
+        start=datetime(2026, 6, 4, 0, 0, tzinfo=UTC),
+        step_hours=4,
+    )
+    support = _candles(
+        ["0.84"] * 60,
+        start=datetime(2026, 6, 4, 0, 0, tzinfo=UTC),
+        step_hours=1,
+        wiggle="0.003",
+    )
+    row = build_native_short_context_row(
+        symbol="WLD",
+        venue="bitvavo",
+        primary_candles=primary,
+        support_candles=support,
+        now_utc=now,
+    )
+    assert row.context_status == STATUS_STALE_OR_INVALID
+    assert row.primary_4h_lifecycle_state == "INVALIDATED"
+
+
+def test_distribution_fixtures_are_non_degenerate() -> None:
+    now = datetime(2026, 6, 6, 12, 0, tzinfo=UTC)
+    fixtures = [
+        (
+            ["1.10", "1.00", "0.90", "1.00", "1.08", "1.20", "1.12", "1.09", "1.08", "1.07"],
+            ["1.05"] * 60,
+        ),
+        (
+            ["1.05", "1.00", "0.95", "1.00", "1.05", "1.15", "1.10", "1.08", "1.12", "1.14"],
+            ["1.10"] * 60,
+        ),
+        (
+            ["1.05", "1.00", "0.95", "1.00", "1.05", "1.15", "1.10", "1.08", "1.26", "1.09"],
+            ["1.14"] * 60,
+        ),
+        (
+            ["1.05", "1.00", "0.95", "1.00", "1.05", "1.15", "1.10", "1.08", "1.32", "1.45"],
+            ["1.28"] * 60,
+        ),
+    ]
+    lifecycle_states: set[str] = set()
+    support_states: set[str] = set()
+    for index, (primary_prices, support_prices) in enumerate(fixtures):
+        row = build_native_short_context_row(
+            symbol=f"S{index}",
+            venue="bitvavo",
+            primary_candles=_candles(primary_prices, start=datetime(2026, 6, 4, 0, 0, tzinfo=UTC), step_hours=4),
+            support_candles=_candles(support_prices, start=datetime(2026, 6, 4, 0, 0, tzinfo=UTC), step_hours=1, wiggle="0.003"),
+            now_utc=now,
+        )
+        lifecycle_states.add(row.primary_4h_lifecycle_state)
+        support_states.add(row.supporting_1h_state)
+    assert len(lifecycle_states) >= 3
+    assert len(support_states) >= 2
+
+
 def test_rows_round_trip_from_csv() -> None:
     now = datetime(2026, 6, 5, 12, 0, tzinfo=UTC)
     primary = _candles(
@@ -228,3 +339,13 @@ def test_native_short_bridge_has_no_broker_or_execution_imports() -> None:
             assert "decision_gate" not in module_name
             assert "execution_planner" not in module_name
             assert "executor" not in module_name
+
+
+def test_explicit_symbol_scope_count_is_not_zero() -> None:
+    symbols, markets = native_runner._select_symbols(
+        explicit_symbols=["WLD", "PLUME"],
+        account_profile="",
+        venue="bitvavo",
+    )
+    assert symbols == ["PLUME", "WLD"]
+    assert markets == []

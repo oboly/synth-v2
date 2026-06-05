@@ -179,11 +179,11 @@ def build_rows_for_symbols(
     return rows
 
 
-def print_summary(*, rows: list[NativeShortContextRow], scoped_markets: list[str], output_dir: Path) -> None:
+def print_summary(*, rows: list[NativeShortContextRow], scope_market_count: int, output_dir: Path) -> None:
     summary = summarize_context_rows(rows)
     print(f"report={RUNNER_NAME}")
     print(f"version={RUNNER_VERSION}")
-    print(f"scope_market_count={len(scoped_markets)}")
+    print(f"scope_market_count={scope_market_count}")
     print(f"row_count={len(rows)}")
     print(f"output_dir={output_dir}")
     print("broker_private_calls=0")
@@ -234,7 +234,8 @@ def main() -> int:
     if args.write_files:
         write_context_rows(rows=rows, output_dir=output_dir)
     if args.output == "summary":
-        print_summary(rows=rows, scoped_markets=scoped_markets, output_dir=output_dir)
+        scope_market_count = len(scoped_markets) if scoped_markets else len(symbols)
+        print_summary(rows=rows, scope_market_count=scope_market_count, output_dir=output_dir)
     return 0
 
 
