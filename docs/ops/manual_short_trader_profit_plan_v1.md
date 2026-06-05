@@ -85,9 +85,11 @@ Each card shows:
 | `current_price` | Current public price snapshot |
 | `existing_open_orders summary` | Read-only summary of open buys / sells already present |
 | `target_exit_zone` | Fib extension targets |
+| `active_target` | Next still-upcoming target used for distance-to-target and state alignment |
+| `target_level_statuses` | Per-level lifecycle and order-coverage audit rows |
 | `reload_reentry_zone` | Fib retrace levels used for manual reload planning |
 | `invalidation_risk_zone` | Risk / invalidation level for the current setup |
-| `distance_to_target_pct` | Signed percent distance from current price to nearest target |
+| `distance_to_target_pct` | Signed percent distance from current price to the active upcoming target |
 | `distance_to_reload_pct` | Signed percent distance from current price to nearest reload zone |
 | `distance_to_invalidation_pct` | Signed percent distance from current price to invalidation / risk zone |
 | `primary_state` | Main display-only manual planning state |
@@ -118,6 +120,26 @@ Rules:
 - Cards always link back to **Open Orders Monitor** when the linked HTML exists.
 - `--monitor-html` is a filesystem output path only; `--monitor-href` is the
   public browser href used in rendered anchor tags.
+
+## Target Lifecycle And Order Coverage
+
+Profit Plan now treats each fib sell level as its own lifecycle item.
+
+Per target level:
+
+- market-only lifecycle is one of `UPCOMING`, `NEAR`, `REACHED`, `PASSED`, `COMPLETED`
+- account-aware coverage is audited separately per level
+- passed levels never remain the `active_target`
+- `distance_to_target_pct` always uses the next active upcoming target, never an already passed level
+- a passed level with no fill evidence is shown as `PASSED_UNFILLED` with human wording `missed sell level`
+- explicit fill evidence may show `REACHED_FILLED` or `COMPLETED`
+- open sell orders are matched per individual level using bounded tolerance; broad sell-zone proximity does not count as coverage for every level
+
+The full sell zone remains visible, but Profit Plan distinguishes:
+
+- previous / reached levels
+- the active next target
+- later targets still ahead
 
 ## Input Coverage Audit
 

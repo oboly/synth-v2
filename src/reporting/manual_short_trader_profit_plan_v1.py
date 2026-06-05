@@ -18,6 +18,7 @@ RELOAD_ZONE_APPROACHING_THRESHOLD_PCT = Decimal("3")
 INVALIDATION_NEAR_THRESHOLD_PCT = Decimal("3")
 PRICE_RAN_AWAY_THRESHOLD_PCT = Decimal("12")
 ORDER_STALE_DISTANCE_PCT = Decimal("12")
+TARGET_LEVEL_NEAR_THRESHOLD_PCT = Decimal("1")
 
 STATE_LABELS: dict[str, str] = {
     "STALE_CURRENT_PRICE": "Stale current price",
@@ -91,6 +92,19 @@ class ActiveOrderSummary:
 
 
 @dataclass(frozen=True)
+class TargetLevelStatus:
+    level: Decimal
+    lifecycle_state: str
+    coverage_state: str
+    human_label: str
+    distance_pct: Decimal | None
+    matching_open_sell_orders: int
+    nearest_open_sell_price: Decimal | None
+    nearest_open_sell_distance_pct: Decimal | None
+    is_active_target: bool
+
+
+@dataclass(frozen=True)
 class ProfitPlanCard:
     symbol: str
     market: str
@@ -106,6 +120,8 @@ class ProfitPlanCard:
     reasons: tuple[str, ...]
     order_summary: ActiveOrderSummary
     target_exit_zone: tuple[Decimal, ...]
+    active_target: Decimal | None
+    target_level_statuses: tuple[TargetLevelStatus, ...]
     reload_reentry_zone: tuple[Decimal, ...]
     invalidation_risk_zone: Decimal | None
     distance_to_target_pct: Decimal | None
@@ -201,11 +217,11 @@ def _classify_scenario(
                 "TAKE_PROFIT_NEAR",
                 "4h bounce",
                 (),
-                (fib_ext.ext_1_618,),
+                (fib_ext.ext_1_272, fib_ext.ext_1_618),
                 fib_ext.ext_1_272,
                 (
+                    f"First sell level at 1.272 extension ({_fmt_p(fib_ext.ext_1_272)}) is already in play.",
                     f"Main target at 1.618 extension ({_fmt_p(fib_ext.ext_1_618)}).",
-                    "Watch for round-number confluence near target — strong magnet.",
                     f"Momentum supports continuation toward the target / sell zone at {_fmt_p(fib_ext.ext_1_618)}.",
                 ),
             )
@@ -408,12 +424,102 @@ def _near(price_a: Decimal, price_b: Decimal, tolerance_pct: Decimal) -> bool:
     return dist <= tolerance_pct
 
 
+def _level_match_stats(
+    *,
+    current_price: Decimal | None,
+    level: Decimal,
+    sell_orders: tuple[Any, ...],
+) -> tuple[int, Decimal | None, Decimal | None]:
+    matching_prices = [
+        order.limit_price
+        for order in sell_orders
+        if _near(order.limit_price, level, ORDER_MATCH_TOLERANCE_PCT)
+    ]
+    if not matching_prices:
+        return 0, None, None
+    nearest_price = min(matching_prices, key=lambda price: abs(price - level))
+    nearest_dist = _distance_to_level_pct(current_price, nearest_price)
+    return len(matching_prices), nearest_price, nearest_dist
+
+
+def _build_target_level_statuses(
+    *,
+    current_price: Decimal | None,
+    target_exit_zone: tuple[Decimal, ...],
+    sell_orders: tuple[Any, ...],
+    filled_sell_levels: tuple[Decimal, ...] = (),
+    completed_sell_levels: tuple[Decimal, ...] = (),
+) -> tuple[tuple[TargetLevelStatus, ...], Decimal | None]:
+    statuses: list[TargetLevelStatus] = []
+    active_target: Decimal | None = None
+    for level in target_exit_zone:
+        distance_pct = _distance_to_level_pct(current_price, level)
+        matching_orders, nearest_open_sell_price, nearest_open_sell_distance_pct = _level_match_stats(
+            current_price=current_price,
+            level=level,
+            sell_orders=sell_orders,
+        )
+        if any(_near(filled_level, level, ORDER_MATCH_TOLERANCE_PCT) for filled_level in completed_sell_levels):
+            lifecycle_state = "COMPLETED"
+            coverage_state = "COMPLETED"
+            human_label = "completed sell level"
+        elif any(_near(filled_level, level, ORDER_MATCH_TOLERANCE_PCT) for filled_level in filled_sell_levels):
+            lifecycle_state = "REACHED_FILLED"
+            coverage_state = "REACHED_FILLED"
+            human_label = "filled sell level"
+        elif current_price is None:
+            lifecycle_state = "UPCOMING"
+            coverage_state = "ORDER_ABSENT" if matching_orders == 0 else "ORDER_WAITING"
+            human_label = "upcoming sell level"
+        elif current_price == level:
+            lifecycle_state = "REACHED"
+            coverage_state = "ORDER_WAITING" if matching_orders > 0 else "ORDER_ABSENT"
+            human_label = "reached sell level"
+        elif current_price > level:
+            lifecycle_state = "PASSED"
+            if matching_orders > 0:
+                coverage_state = "PASSED_OPEN_ORDER"
+                human_label = "passed sell level with open order"
+            else:
+                coverage_state = "PASSED_UNFILLED"
+                human_label = "missed sell level"
+        elif distance_pct is not None and abs(distance_pct) <= TARGET_LEVEL_NEAR_THRESHOLD_PCT:
+            lifecycle_state = "NEAR"
+            coverage_state = "ORDER_WAITING" if matching_orders > 0 else "ORDER_ABSENT"
+            human_label = "sell level near"
+        else:
+            lifecycle_state = "UPCOMING"
+            coverage_state = "ORDER_WAITING" if matching_orders > 0 else "ORDER_ABSENT"
+            human_label = "upcoming sell level"
+
+        is_active_target = lifecycle_state in {"UPCOMING", "NEAR"} and active_target is None
+        if is_active_target:
+            active_target = level
+
+        statuses.append(
+            TargetLevelStatus(
+                level=level,
+                lifecycle_state=lifecycle_state,
+                coverage_state=coverage_state,
+                human_label=human_label,
+                distance_pct=distance_pct,
+                matching_open_sell_orders=matching_orders,
+                nearest_open_sell_price=nearest_open_sell_price,
+                nearest_open_sell_distance_pct=nearest_open_sell_distance_pct,
+                is_active_target=is_active_target,
+            )
+        )
+    return tuple(statuses), active_target
+
+
 def build_order_summary(
     current_price: Decimal | None,
     buy_zone: tuple[Decimal, ...],
     sell_zone: tuple[Decimal, ...],
     buy_orders: tuple[Any, ...],
     sell_orders: tuple[Any, ...],
+    *,
+    target_level_statuses: tuple[TargetLevelStatus, ...] = (),
 ) -> ActiveOrderSummary:
     def _nearest_open_distance(orders: tuple[Any, ...]) -> Decimal | None:
         if current_price is None or current_price <= 0:
@@ -460,9 +566,18 @@ def build_order_summary(
     for zone_p in buy_zone:
         if not any(_near(o.limit_price, zone_p, ORDER_MATCH_TOLERANCE_PCT) for o in buy_orders):
             missing.append(f"buy @ {_fmt_p(zone_p)}")
-    for zone_p in sell_zone:
-        if not any(_near(o.limit_price, zone_p, ORDER_MATCH_TOLERANCE_PCT) for o in sell_orders):
-            missing.append(f"sell @ {_fmt_p(zone_p)}")
+    if target_level_statuses:
+        for level_status in target_level_statuses:
+            if level_status.lifecycle_state in {"PASSED", "REACHED_FILLED", "COMPLETED"}:
+                if level_status.coverage_state == "PASSED_UNFILLED":
+                    missing.append(f"missed sell level @ {_fmt_p(level_status.level)}")
+                continue
+            if level_status.matching_open_sell_orders == 0:
+                missing.append(f"sell @ {_fmt_p(level_status.level)}")
+    else:
+        for zone_p in sell_zone:
+            if not any(_near(o.limit_price, zone_p, ORDER_MATCH_TOLERANCE_PCT) for o in sell_orders):
+                missing.append(f"sell @ {_fmt_p(zone_p)}")
 
     open_buy_orders = len(buy_orders)
     open_sell_orders = len(sell_orders)
@@ -494,11 +609,13 @@ def _evaluate_display_states(
     *,
     current_price: Decimal | None,
     target_exit_zone: tuple[Decimal, ...],
+    active_target: Decimal | None,
+    target_level_statuses: tuple[TargetLevelStatus, ...],
     reload_reentry_zone: tuple[Decimal, ...],
     invalidation_risk_zone: Decimal | None,
     order_summary: ActiveOrderSummary,
 ) -> tuple[str, str | None, str, Decimal | None, Decimal | None, Decimal | None]:
-    distance_to_target_pct = _distance_to_zone_pct(current_price, target_exit_zone)
+    distance_to_target_pct = _distance_to_level_pct(current_price, active_target)
     distance_to_reload_pct = _distance_to_zone_pct(current_price, reload_reentry_zone)
     distance_to_invalidation_pct = _distance_to_level_pct(current_price, invalidation_risk_zone)
 
@@ -520,7 +637,7 @@ def _evaluate_display_states(
     if (
         distance_to_target_pct is not None
         and abs(distance_to_target_pct) <= TAKE_PROFIT_WAITING_THRESHOLD_PCT
-        and order_summary.matching_sells > 0
+        and any(level.is_active_target and level.matching_open_sell_orders > 0 for level in target_level_statuses)
     ):
         state_candidates.append("TAKE_PROFIT_WAITING")
 
@@ -536,7 +653,9 @@ def _evaluate_display_states(
     ):
         state_candidates.append("RELOAD_ZONE_APPROACHING")
 
-    if target_exit_zone and distance_to_target_pct is not None and distance_to_target_pct <= -PRICE_RAN_AWAY_THRESHOLD_PCT:
+    if active_target is None and target_exit_zone:
+        state_candidates.append("PRICE_RAN_AWAY")
+    elif target_exit_zone and distance_to_target_pct is not None and distance_to_target_pct <= -PRICE_RAN_AWAY_THRESHOLD_PCT:
         state_candidates.append("PRICE_RAN_AWAY")
 
     if (
@@ -575,6 +694,8 @@ def build_profit_plan_card(
     preferred_retrace_level: str | None = None,
     buy_orders: tuple[Any, ...] = (),
     sell_orders: tuple[Any, ...] = (),
+    filled_sell_levels: tuple[Decimal, ...] = (),
+    completed_sell_levels: tuple[Decimal, ...] = (),
     current_price_status: str | None = None,
     current_price_age_min: Decimal | None = None,
 ) -> ProfitPlanCard:
@@ -604,6 +725,8 @@ def build_profit_plan_card(
             ),
             order_summary=order_summary,
             target_exit_zone=(),
+            active_target=None,
+            target_level_statuses=(),
             reload_reentry_zone=(),
             invalidation_risk_zone=None,
             distance_to_target_pct=None,
@@ -630,12 +753,21 @@ def build_profit_plan_card(
         preferred_retrace_level,
     )
 
+    target_level_statuses, active_target = _build_target_level_statuses(
+        current_price=current_price,
+        target_exit_zone=sell_zone,
+        sell_orders=sell_orders,
+        filled_sell_levels=filled_sell_levels,
+        completed_sell_levels=completed_sell_levels,
+    )
+
     order_summary = build_order_summary(
         current_price,
         buy_zone,
         sell_zone,
         buy_orders,
         sell_orders,
+        target_level_statuses=target_level_statuses,
     )
 
     (
@@ -648,6 +780,8 @@ def build_profit_plan_card(
     ) = _evaluate_display_states(
         current_price=current_price,
         target_exit_zone=sell_zone,
+        active_target=active_target,
+        target_level_statuses=target_level_statuses,
         reload_reentry_zone=buy_zone,
         invalidation_risk_zone=invalidation_level,
         order_summary=order_summary,
@@ -674,6 +808,8 @@ def build_profit_plan_card(
         reasons=reasons,
         order_summary=order_summary,
         target_exit_zone=sell_zone,
+        active_target=active_target,
+        target_level_statuses=target_level_statuses,
         reload_reentry_zone=buy_zone,
         invalidation_risk_zone=invalidation_level,
         distance_to_target_pct=distance_to_target_pct,
@@ -882,6 +1018,20 @@ def _zone_html(prices: tuple[Decimal, ...], side: str) -> str:
     return f"<div class='zone-block {cls}'>{lines}</div>"
 
 
+def _target_lifecycle_html(target_levels: tuple[TargetLevelStatus, ...]) -> str:
+    if not target_levels:
+        return "<div class='zone-empty'>No target lifecycle loaded</div>"
+    lines = []
+    for level in target_levels:
+        active_marker = " · active next target" if level.is_active_target else ""
+        lines.append(
+            "<div class='zone-price mono'>"
+            f"{esc(_fmt_p(level.level))} — {esc(level.lifecycle_state)} / {esc(level.coverage_state)}{esc(active_marker)}"
+            "</div>"
+        )
+    return "<div class='zone-block zone-sell'>" + "".join(lines) + "</div>"
+
+
 def _order_summary_html(summary: ActiveOrderSummary, monitor_link: str | None) -> str:
     parts: list[str] = []
     parts.append(f"<span class='order-chip muted'>{esc(summary.existing_open_orders_summary)}</span>")
@@ -930,6 +1080,7 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
         _metric_block("Current price status", card.current_price_status or "FRESH_CURRENT_PRICE"),
         _metric_block("Price age (min)", "?" if card.current_price_age_min is None else _fmt_p(card.current_price_age_min)),
         _metric_block("Target / exit zone", ", ".join(_fmt_p(v) for v in card.target_exit_zone) or "No levels loaded"),
+        _metric_block("Active target", _fmt_p(card.active_target)),
         _metric_block("Reload / re-entry zone", ", ".join(_fmt_p(v) for v in card.reload_reentry_zone) or "No levels loaded"),
         _metric_block("Invalidation / risk zone", _fmt_p(card.invalidation_risk_zone)),
         _metric_block("Distance to target", _pct(card.distance_to_target_pct)),
@@ -963,6 +1114,7 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
         "<div class='zones'>"
         f"<div><h3 style='color:var(--ok)'>Buy Zone</h3>{_zone_html(card.buy_zone, 'buy')}</div>"
         f"<div><h3 style='color:var(--warn)'>Sell Zone</h3>{_zone_html(card.sell_zone, 'sell')}</div>"
+        f"<div><h3 style='color:var(--warn)'>Target Lifecycle</h3>{_target_lifecycle_html(card.target_level_statuses)}</div>"
         "</div>"
         f"<ul class='reasons'>{reasons_html}</ul>"
         f"{invalidation_html}"
@@ -1050,6 +1202,21 @@ def build_json_snapshot(
                 "sell_zone": [str(p) for p in c.sell_zone],
                 "invalidation_level": str(c.invalidation_level) if c.invalidation_level is not None else None,
                 "target_exit_zone": [str(p) for p in c.target_exit_zone],
+                "active_target": str(c.active_target) if c.active_target is not None else None,
+                "target_level_statuses": [
+                    {
+                        "level": str(level.level),
+                        "lifecycle_state": level.lifecycle_state,
+                        "coverage_state": level.coverage_state,
+                        "human_label": level.human_label,
+                        "distance_pct": str(level.distance_pct) if level.distance_pct is not None else None,
+                        "matching_open_sell_orders": level.matching_open_sell_orders,
+                        "nearest_open_sell_price": str(level.nearest_open_sell_price) if level.nearest_open_sell_price is not None else None,
+                        "nearest_open_sell_distance_pct": str(level.nearest_open_sell_distance_pct) if level.nearest_open_sell_distance_pct is not None else None,
+                        "is_active_target": level.is_active_target,
+                    }
+                    for level in c.target_level_statuses
+                ],
                 "reload_reentry_zone": [str(p) for p in c.reload_reentry_zone],
                 "invalidation_risk_zone": str(c.invalidation_risk_zone) if c.invalidation_risk_zone is not None else None,
                 "distance_to_target_pct": str(c.distance_to_target_pct) if c.distance_to_target_pct is not None else None,
