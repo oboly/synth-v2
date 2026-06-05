@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from src.reporting.dashboard_time_v1 import format_ui_now
+
 
 REPORT_NAME = "manual_short_trader_profit_plan_v1"
 REPORT_VERSION = "0.1"
@@ -979,7 +981,7 @@ def render_full_html(
     nav_html: str | None = None,
 ) -> str:
     if rendered_at is None:
-        rendered_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+        rendered_at = format_ui_now()
 
     relevant_count = sum(1 for c in cards if c.is_relevant)
     total_count = len(cards)

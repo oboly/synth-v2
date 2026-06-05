@@ -10,7 +10,6 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import pymysql
 from dotenv import load_dotenv
@@ -27,6 +26,7 @@ from src.reporting.dashboard_style_v1 import (
     cockpit_nav,
     pill_classes,
 )
+from src.reporting.dashboard_time_v1 import format_ui_timestamp
 from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
     classify_price_progress_state,
@@ -300,21 +300,12 @@ def fmt_ts(value: Any) -> str:
 
 def fmt_ts_local(value: Any, timezone: str = "Europe/Amsterdam") -> str:
     parsed = parse_ts(value)
-    if parsed is None:
-        return "not available"
-
-    utc_value = parsed.replace(tzinfo=UTC)
-    local_value = utc_value.astimezone(ZoneInfo(timezone))
-    return local_value.strftime("%Y-%m-%d %H:%M:%S %Z")
+    return format_ui_timestamp(parsed, timezone=timezone)
 
 
 def fmt_ts_local_first(value: Any, timezone: str = "Europe/Amsterdam") -> str:
     parsed = parse_ts(value)
-    if parsed is None:
-        return "not available"
-
-    local_text = fmt_ts_local(parsed, timezone=timezone)
-    return f"{local_text} Amsterdam time"
+    return fmt_ts_local(parsed, timezone=timezone)
 
 
 def latest_lifecycle_candle_ts(rows: list[dict[str, Any]]) -> datetime | None:

@@ -7,7 +7,6 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from src.common.db import get_connection
 from src.market_data.market_price_snapshot_v1 import (
@@ -24,6 +23,7 @@ from src.reporting.dashboard_style_v1 import (
     cockpit_nav,
     pill_classes,
 )
+from src.reporting.dashboard_time_v1 import format_ui_now, format_ui_timestamp
 from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
     classify_price_progress_state,
@@ -384,14 +384,11 @@ def relevant_target_html(row: dict[str, Any], preview: NextZonePreview) -> str:
 
 
 def local_label(value: datetime | None) -> str:
-    if value is None:
-        return "not available"
-    local = value.replace(tzinfo=UTC).astimezone(ZoneInfo("Europe/Amsterdam"))
-    return local.strftime("%Y-%m-%d %H:%M:%S %Z Amsterdam time")
+    return format_ui_timestamp(value)
 
 
 def now_local_label() -> str:
-    return local_label(datetime.now(UTC).replace(tzinfo=None))
+    return format_ui_now()
 
 
 def fetch_latest_rows(

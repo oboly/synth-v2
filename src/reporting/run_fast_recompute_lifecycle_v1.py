@@ -8,7 +8,6 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from src.common.db import get_connection
 from src.market_data.market_price_snapshot_v1 import (
@@ -22,6 +21,7 @@ from src.reporting.dashboard_style_v1 import (
     cockpit_nav,
     pill_classes,
 )
+from src.reporting.dashboard_time_v1 import format_ui_now
 from src.reporting.entry_zone_state_v1 import (
     classify_price_progress_state,
     classify_target_state,
@@ -127,9 +127,7 @@ def age_minutes(ts: datetime | None, *, now_utc: datetime) -> Decimal | None:
 
 
 def now_local_label() -> str:
-    return datetime.now(UTC).astimezone(ZoneInfo("Europe/Amsterdam")).strftime(
-        "%Y-%m-%d %H:%M:%S %Z Amsterdam time"
-    )
+    return format_ui_now()
 
 
 def labels_text(*values: Any) -> str:

@@ -11,6 +11,7 @@ class DashboardProfileAccess:
     account_profile: str
     venue: str
     trading_account_stable_ref: str
+    display_timezone: str
 
 
 # Explicit dashboard-profile access map.
@@ -22,6 +23,7 @@ CONFIGURED_DASHBOARD_PROFILE_ACCESS: tuple[DashboardProfileAccess, ...] = (
         account_profile="joost",
         venue="bitvavo",
         trading_account_stable_ref="bitvavo_joost_read",
+        display_timezone="Europe/Amsterdam",
     ),
 )
 

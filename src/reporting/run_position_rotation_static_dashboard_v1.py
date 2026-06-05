@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from src.common.db import get_connection
 from src.reporting.badge_html_v1 import (
@@ -21,6 +20,7 @@ from src.reporting.dashboard_style_v1 import (
     cockpit_nav,
     pill_classes,
 )
+from src.reporting.dashboard_time_v1 import format_ui_now
 from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
     classify_price_progress_state,
@@ -391,9 +391,7 @@ def position_valuation(row: Any, current_price: Decimal | None) -> PositionValua
 
 
 def now_local_label() -> str:
-    now_utc = datetime.now(UTC)
-    local = now_utc.astimezone(ZoneInfo("Europe/Amsterdam"))
-    return local.strftime("%Y-%m-%d %H:%M:%S %Z")
+    return format_ui_now()
 
 
 def pill_class(text: str | None) -> str:

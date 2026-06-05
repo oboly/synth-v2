@@ -34,6 +34,10 @@ def _settings() -> AccountAssetSettingsSummary:
     )
 
 
+def _display_timezone() -> str:
+    return "Europe/Amsterdam"
+
+
 def _management_account_assets() -> list[dict]:
     return [
         {
@@ -94,6 +98,7 @@ def test_empty_wallet_render():
         account_code="bitvavo_joost_read",
         trading_account_id=1,
         venue="bitvavo",
+        display_timezone=_display_timezone(),
         latest_balance_snapshot_ts_utc=None,
         latest_order_snapshot_ts_utc=None,
         balance_rows=[],
@@ -117,6 +122,7 @@ def test_unknown_asset_render():
         account_code="bitvavo_hugo_read",
         trading_account_id=2,
         venue="bitvavo",
+        display_timezone=_display_timezone(),
         latest_balance_snapshot_ts_utc=now.replace(tzinfo=None),
         latest_order_snapshot_ts_utc=now.replace(tzinfo=None),
         balance_rows=[
@@ -158,6 +164,7 @@ def test_stale_price_fails_closed_for_estimated_value() -> None:
         account_code="bitvavo_joost_read",
         trading_account_id=1,
         venue="bitvavo",
+        display_timezone=_display_timezone(),
         latest_balance_snapshot_ts_utc=now.replace(tzinfo=None),
         latest_order_snapshot_ts_utc=None,
         balance_rows=[
@@ -190,6 +197,7 @@ def test_joost_hugo_isolation():
         account_code="bitvavo_joost_read",
         trading_account_id=11,
         venue="bitvavo",
+        display_timezone=_display_timezone(),
         latest_balance_snapshot_ts_utc=now.replace(tzinfo=None),
         latest_order_snapshot_ts_utc=None,
         balance_rows=[
@@ -212,6 +220,7 @@ def test_joost_hugo_isolation():
         account_code="bitvavo_hugo_read",
         trading_account_id=22,
         venue="bitvavo",
+        display_timezone=_display_timezone(),
         latest_balance_snapshot_ts_utc=now.replace(tzinfo=None),
         latest_order_snapshot_ts_utc=None,
         balance_rows=[
@@ -245,6 +254,7 @@ def test_no_secrets_in_html_json():
         account_code="bitvavo_joost_read",
         trading_account_id=1,
         venue="bitvavo",
+        display_timezone=_display_timezone(),
         latest_balance_snapshot_ts_utc=now.replace(tzinfo=None),
         latest_order_snapshot_ts_utc=None,
         balance_rows=[
@@ -277,6 +287,7 @@ def test_write_wallet_dashboard_outputs_accounts_profile_files():
         account_code="bitvavo_joost_read",
         trading_account_id=1,
         venue="bitvavo",
+        display_timezone=_display_timezone(),
         latest_balance_snapshot_ts_utc=now.replace(tzinfo=None),
         latest_order_snapshot_ts_utc=now.replace(tzinfo=None),
         balance_rows=[
@@ -315,6 +326,7 @@ def test_wallet_json_contains_management_payload():
         account_code="bitvavo_joost_read",
         trading_account_id=1,
         venue="bitvavo",
+        display_timezone=_display_timezone(),
         latest_balance_snapshot_ts_utc=now.replace(tzinfo=None),
         latest_order_snapshot_ts_utc=now.replace(tzinfo=None),
         balance_rows=[
@@ -357,6 +369,7 @@ def test_wallet_html_includes_management_sections():
         account_code="bitvavo_joost_read",
         trading_account_id=1,
         venue="bitvavo",
+        display_timezone=_display_timezone(),
         latest_balance_snapshot_ts_utc=now.replace(tzinfo=None),
         latest_order_snapshot_ts_utc=now.replace(tzinfo=None),
         balance_rows=[
@@ -386,6 +399,7 @@ def test_wallet_html_includes_management_sections():
     assert "/synth/paper-advice.html" not in html
     assert "/synth/entry-candidates.html" not in html
     assert "/synth/rotation-preview.html" not in html
+    assert "2026-06-03 14:00:00 CEST" in html
 
 
 def test_wallet_dashboard_source_has_no_decision_execution_imports():

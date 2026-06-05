@@ -35,6 +35,12 @@ Current price policy:
 - stale prices do not contribute estimated EUR value, percentage delta, or
   action-style review text
 
+Time display policy:
+
+- DB and JSON timestamps remain UTC
+- human-facing dashboard timestamps render in the configured profile-local timezone
+- current configured dashboard profiles default to `Europe/Amsterdam`
+
 ## Dependency
 
 This dashboard depends on `src/account/run_account_wallet_refresh_v1.py` already existing and writing account-specific rows to:
@@ -52,6 +58,7 @@ Current configured access:
 - `account_profile=joost`
 - `venue=bitvavo`
 - `trading_account_stable_ref=bitvavo_joost_read`
+- `display_timezone=Europe/Amsterdam`
 
 This stable ref is accepted by the current DB through `trading_account.account_code`,
 but it is treated here only as a legacy stable trading-account reference. It is

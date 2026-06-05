@@ -79,6 +79,7 @@ def main() -> int:
             profile=args.account_profile,
             account_code=access.trading_account_stable_ref,
             venue=args.venue,
+            display_timezone=access.display_timezone,
             output_root=Path(args.output_root),
             fresh_after=timedelta(minutes=args.fresh_after_minutes),
             price_fresh_after=timedelta(minutes=args.price_fresh_after_minutes),

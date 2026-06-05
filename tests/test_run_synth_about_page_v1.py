@@ -51,6 +51,7 @@ def test_wallet_navigation_links_to_global_about() -> None:
         account_code="bitvavo_joost_read",
         trading_account_id=3,
         venue="bitvavo",
+        display_timezone="Europe/Amsterdam",
         latest_balance_snapshot_ts_utc=None,
         latest_order_snapshot_ts_utc=None,
         balance_rows=[],

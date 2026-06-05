@@ -19,6 +19,7 @@ from src.reporting.current_price_snapshot_v1 import (
     DEFAULT_CURRENT_PRICE_FRESH_AFTER,
     classify_current_price_snapshot,
 )
+from src.reporting.dashboard_time_v1 import format_ui_timestamp
 
 
 REPORT_NAME = "account_wallet_dashboard_v1"
@@ -63,6 +64,7 @@ class WalletDashboardPayload:
     account_code: str
     trading_account_id: int
     venue: str
+    display_timezone: str
     generated_ts_utc: datetime
     latest_wallet_refresh_ts_utc: datetime | None
     freshness: str
@@ -373,6 +375,7 @@ def build_wallet_dashboard_payload(
     account_code: str,
     trading_account_id: int,
     venue: str,
+    display_timezone: str,
     latest_balance_snapshot_ts_utc: datetime | None,
     latest_order_snapshot_ts_utc: datetime | None,
     balance_rows: list[dict[str, Any]],
@@ -489,6 +492,7 @@ def build_wallet_dashboard_payload(
         account_code=account_code,
         trading_account_id=trading_account_id,
         venue=venue,
+        display_timezone=display_timezone,
         generated_ts_utc=now_utc.replace(tzinfo=None),
         latest_wallet_refresh_ts_utc=latest_wallet_refresh_ts_utc,
         freshness=freshness,
@@ -517,6 +521,7 @@ def load_wallet_dashboard_payload(
     profile: str,
     account_code: str,
     venue: str,
+    display_timezone: str,
     now_utc: datetime | None = None,
     fresh_after: timedelta = DEFAULT_FRESH_AFTER,
     price_fresh_after: timedelta = DEFAULT_PRICE_FRESH_AFTER,
@@ -575,6 +580,7 @@ def load_wallet_dashboard_payload(
         account_code=account_code,
         trading_account_id=trading_account_id,
         venue=venue,
+        display_timezone=display_timezone,
         latest_balance_snapshot_ts_utc=latest_balance_snapshot_ts_utc,
         latest_order_snapshot_ts_utc=latest_order_snapshot_ts_utc,
         balance_rows=balance_rows,
@@ -595,6 +601,7 @@ def payload_to_json_dict(payload: WalletDashboardPayload) -> dict[str, Any]:
         "account_code": payload.account_code,
         "trading_account_id": payload.trading_account_id,
         "venue": payload.venue,
+        "display_timezone": payload.display_timezone,
         "generated_ts_utc": payload.generated_ts_utc.isoformat(sep=" "),
         "latest_wallet_refresh_ts_utc": (
             None
@@ -802,9 +809,9 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
         <span class="pill {fresh_class}">{esc(payload.freshness)}</span>
       </div>
       <div class="footnote">
-        latest wallet refresh: {esc(payload.latest_wallet_refresh_ts_utc or "never")} ·
-        latest balance snapshot: {esc(payload.latest_balance_snapshot_ts_utc or "none")} ·
-        latest order snapshot: {esc(payload.latest_order_snapshot_ts_utc or "none")}
+        latest wallet refresh: {esc(format_ui_timestamp(payload.latest_wallet_refresh_ts_utc, timezone=payload.display_timezone, missing_text="never"))} ·
+        latest balance snapshot: {esc(format_ui_timestamp(payload.latest_balance_snapshot_ts_utc, timezone=payload.display_timezone, missing_text="none"))} ·
+        latest order snapshot: {esc(format_ui_timestamp(payload.latest_order_snapshot_ts_utc, timezone=payload.display_timezone, missing_text="none"))}
       </div>
       <div class="navlinks">{dashboard_nav_html}</div>
       {warning_html}
@@ -959,6 +966,7 @@ def load_and_write_wallet_dashboard(
     profile: str,
     account_code: str,
     venue: str,
+    display_timezone: str,
     output_root: Path = DEFAULT_OUTPUT_ROOT,
     fresh_after: timedelta = DEFAULT_FRESH_AFTER,
     price_fresh_after: timedelta = DEFAULT_PRICE_FRESH_AFTER,
@@ -970,6 +978,7 @@ def load_and_write_wallet_dashboard(
             profile=profile,
             account_code=account_code,
             venue=venue,
+            display_timezone=display_timezone,
             fresh_after=fresh_after,
             price_fresh_after=price_fresh_after,
         )
