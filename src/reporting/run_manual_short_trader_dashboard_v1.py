@@ -22,6 +22,7 @@ from src.reporting.manual_short_trader_dashboard_v1 import (
     LadderSymbolSection,
     build_all_sections,
     build_json_snapshot,
+    derive_symbol_summary_counts,
     fmt_price,
     render_full_html,
 )
@@ -176,6 +177,19 @@ def main() -> int:
 
     fib_rows = load_fib_rows(Path(args.fib_map_rows))
     sections = _build_sections(context=context, fib_rows=fib_rows)
+    derived_counts = derive_symbol_summary_counts(sections)
+    if derived_counts["open_order_count"] != len(context.orders):
+        print(
+            "[error] open_order_count mismatch between rendered sections and account context",
+            file=sys.stderr,
+        )
+        return 1
+    if derived_counts["open_order_market_count"] != len(context.open_order_count_by_market):
+        print(
+            "[error] open_order_market_count mismatch between rendered sections and account context",
+            file=sys.stderr,
+        )
+        return 1
 
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(
@@ -189,7 +203,14 @@ def main() -> int:
     output_json.parent.mkdir(parents=True, exist_ok=True)
     output_json.write_text(
         json.dumps(
-            build_json_snapshot(sections),
+            build_json_snapshot(
+                sections,
+                profile=context.profile,
+                account_code=context.account_code,
+                trading_account_id=context.trading_account_id,
+                venue=context.venue,
+                market_count=len(context.markets),
+            ),
             indent=2,
             sort_keys=True,
             ensure_ascii=False,

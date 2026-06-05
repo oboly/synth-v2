@@ -23,6 +23,7 @@ from src.reporting.manual_short_trader_dashboard_v1 import (
     collect_unpriced_markets,
     compute_distance_pct,
     compute_quote_value,
+    derive_symbol_summary_counts,
     normalize_broker_balance,
     normalize_broker_order,
     parse_market,
@@ -527,8 +528,13 @@ def test_dashboard_sources_do_not_introduce_order_mutation_strings() -> None:
 
 def test_build_json_snapshot_safety_markers() -> None:
     snapshot = build_json_snapshot(_make_sections(), snapshot_ts="2026-06-03T00:00:00+00:00")
+    assert snapshot["broker_private_calls"] == 0
     assert snapshot["broker_writes"] == 0
     assert snapshot["order_submission"] == 0
+    assert snapshot["live_orders"] == 0
+    assert snapshot["decision_gate"] == "none"
+    assert snapshot["execution_planner"] == "none"
+    assert snapshot["executor"] == "none"
 
 
 def test_build_json_snapshot_symbol_count() -> None:
@@ -557,6 +563,56 @@ def test_build_json_snapshot_order_fields_present() -> None:
     for field in ("order_id", "market", "side", "limit_price", "amount",
                   "filled_amount", "quote_value", "distance_pct", "status", "labels"):
         assert field in order, f"Missing field: {field}"
+
+
+def test_build_json_snapshot_contains_required_top_level_fields() -> None:
+    snapshot = build_json_snapshot(
+        _make_sections(),
+        profile="joost",
+        account_code="bitvavo_joost_read",
+        trading_account_id=3,
+        venue="bitvavo",
+        market_count=44,
+        snapshot_ts="2026-06-03T00:00:00+00:00",
+    )
+    assert sorted(snapshot.keys()) == sorted([
+        "report",
+        "version",
+        "profile",
+        "account_code",
+        "trading_account_id",
+        "venue",
+        "snapshot_ts",
+        "market_count",
+        "open_order_count",
+        "open_order_market_count",
+        "symbols",
+        "broker_private_calls",
+        "broker_writes",
+        "order_submission",
+        "live_orders",
+        "decision_gate",
+        "execution_planner",
+        "executor",
+    ])
+    assert snapshot["profile"] == "joost"
+    assert snapshot["trading_account_id"] == 3
+    assert snapshot["market_count"] == 44
+
+
+def test_build_json_snapshot_order_counts_match_symbols_payload() -> None:
+    sections = _make_sections()
+    snapshot = build_json_snapshot(sections, market_count=44)
+    derived = derive_symbol_summary_counts(sections)
+    assert snapshot["open_order_count"] == derived["open_order_count"]
+    assert snapshot["open_order_market_count"] == derived["open_order_market_count"]
+
+
+def test_build_json_snapshot_zero_order_fixture_reports_zero_counts() -> None:
+    snapshot = build_json_snapshot([], profile="joost", trading_account_id=3, venue="bitvavo", market_count=0)
+    assert snapshot["market_count"] == 0
+    assert snapshot["open_order_count"] == 0
+    assert snapshot["open_order_market_count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -815,8 +871,28 @@ def test_dashboard_runner_writes_account_scoped_outputs() -> None:
             assert "/synth/accounts/joost/open-orders-monitor.html" in html
             assert "/synth/profit-plan.html" not in html
             assert "/synth/open-orders-monitor.html" not in html
+            assert payload["profile"] == "joost"
+            assert payload["trading_account_id"] == 11
+            assert payload["venue"] == "bitvavo"
+            assert payload["market_count"] == 1
+            assert payload["open_order_count"] == 1
+            assert payload["open_order_market_count"] == 1
+            assert payload["open_order_count"] == sum(
+                len(symbol["buy_orders"]) + len(symbol["sell_orders"])
+                for symbol in payload["symbols"]
+            )
+            assert payload["open_order_market_count"] == sum(
+                1
+                for symbol in payload["symbols"]
+                if symbol["buy_orders"] or symbol["sell_orders"]
+            )
+            assert payload["broker_private_calls"] == 0
             assert payload["broker_writes"] == 0
             assert payload["order_submission"] == 0
+            assert payload["live_orders"] == 0
+            assert payload["decision_gate"] == "none"
+            assert payload["execution_planner"] == "none"
+            assert payload["executor"] == "none"
     finally:
         dashboard_runner.parse_args = original_parse_args
         dashboard_runner.load_account_scoped_short_dashboard_context = original_load_context
@@ -916,6 +992,9 @@ def main() -> None:
         test_build_json_snapshot_is_json_serializable,
         test_build_json_snapshot_buy_sell_structure,
         test_build_json_snapshot_order_fields_present,
+        test_build_json_snapshot_contains_required_top_level_fields,
+        test_build_json_snapshot_order_counts_match_symbols_payload,
+        test_build_json_snapshot_zero_order_fixture_reports_zero_counts,
         test_collect_unpriced_markets_returns_discovered_markets,
         test_collect_unpriced_markets_empty_when_all_priced,
         test_collect_unpriced_markets_empty_when_no_orders,

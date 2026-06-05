@@ -97,6 +97,33 @@ Canonical per-account outputs:
 - `/var/www/html/synth/accounts/<profile>/open-orders-monitor.json`
 - Profit Plan links back via `/synth/accounts/<profile>/open-orders-monitor.html`
 
+Canonical JSON top-level contract:
+
+- `report`
+- `version`
+- `profile`
+- `account_code`
+- `trading_account_id`
+- `venue`
+- `snapshot_ts`
+- `market_count`
+- `open_order_count`
+- `open_order_market_count`
+- `symbols`
+- `broker_private_calls`
+- `broker_writes`
+- `order_submission`
+- `live_orders`
+- `decision_gate`
+- `execution_planner`
+- `executor`
+
+Count semantics:
+
+- `market_count` = account-universe market count from the scoped dashboard context
+- `open_order_count` = total individual open orders represented in `symbols`
+- `open_order_market_count` = number of `symbols` rows containing at least one open order
+
 ## Fib map merge
 
 When `--fib-map-rows` points to an existing `fibo_target_map_rows_v1.csv`, the

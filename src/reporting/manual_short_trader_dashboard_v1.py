@@ -570,17 +570,43 @@ def _order_to_dict(row: LadderOrderRow) -> dict[str, Any]:
     }
 
 
+def derive_symbol_summary_counts(sections: list[LadderSymbolSection]) -> dict[str, int]:
+    return {
+        "open_order_count": sum(len(section.buy_orders) + len(section.sell_orders) for section in sections),
+        "open_order_market_count": sum(
+            1 for section in sections if section.buy_orders or section.sell_orders
+        ),
+    }
+
+
 def build_json_snapshot(
     sections: list[LadderSymbolSection],
     *,
+    profile: str | None = None,
+    account_code: str | None = None,
+    trading_account_id: int | None = None,
+    venue: str | None = None,
+    market_count: int | None = None,
     snapshot_ts: str | None = None,
 ) -> dict[str, Any]:
+    summary_counts = derive_symbol_summary_counts(sections)
     return {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
+        "profile": profile,
+        "account_code": account_code,
+        "trading_account_id": trading_account_id,
+        "venue": venue,
         "snapshot_ts": snapshot_ts or datetime.now(UTC).isoformat(),
+        "market_count": market_count if market_count is not None else len(sections),
+        "open_order_count": summary_counts["open_order_count"],
+        "open_order_market_count": summary_counts["open_order_market_count"],
+        "broker_private_calls": 0,
         "broker_writes": 0,
         "order_submission": 0,
+        "live_orders": 0,
+        "decision_gate": "none",
+        "execution_planner": "none",
         "executor": "none",
         "symbols": [
             {
