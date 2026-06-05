@@ -249,6 +249,10 @@ Expected examples:
   `NO_NATIVE_SHORT_FIB_CONTEXT`
 - symbol with a valid current `1d` fib-map row → `LEGACY_1D_CONTEXT_ONLY` /
   `NO_NATIVE_SHORT_FIB_CONTEXT`
+- a `LEGACY_1D_CONTEXT_ONLY` card may still display ladder levels, completed-map
+  history, and order-audit coverage for reference, but it must render as
+  `scenario_type=LEGACY_CONTEXT_REFERENCE_ONLY` and `action_label=MANUAL_REVIEW`
+  instead of native SHORT action semantics
 
 ## Acceptance Examples
 

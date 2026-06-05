@@ -63,6 +63,9 @@ SHORT_CONTEXT_DISPLAY_LABELS: dict[str, str] = {
     "CONTEXT_INVALID_OR_STALE": "Context invalid or stale",
 }
 
+LEGACY_SHORT_REFERENCE_SCENARIO = "LEGACY_CONTEXT_REFERENCE_ONLY"
+LEGACY_SHORT_REFERENCE_ACTION = "MANUAL_REVIEW"
+
 
 # ---------------------------------------------------------------------------
 # Context inputs (populated by runner, no research/broker imports here)
@@ -908,6 +911,38 @@ def _short_context_gap_card(
     )
 
 
+def _legacy_short_reference_override(
+    *,
+    current_price: Decimal | None,
+    short_context_display_state: str,
+    scenario_type: str,
+    action_label: str,
+    reasons: tuple[str, ...],
+    target_level_statuses: tuple[TargetLevelStatus, ...],
+    active_target: Decimal | None,
+) -> tuple[str, str, str, str | None, tuple[str, ...], bool]:
+    notes = list(reasons)
+    notes.append(
+        "Legacy 1d fib-map levels are shown as reference only and must not be treated as native SHORT 4h/1h setup context."
+    )
+    if active_target is not None:
+        notes.append(f"Next legacy reference target remains visible at {_fmt_p(active_target)} for manual review only.")
+    if any(level.lifecycle_state in {"REACHED", "PASSED", "COMPLETED", "REACHED_FILLED"} for level in target_level_statuses):
+        notes.append("Target lifecycle and order coverage remain visible for audit/reference only.")
+    deduped: list[str] = []
+    for note in notes:
+        if note not in deduped:
+            deduped.append(note)
+    return (
+        LEGACY_SHORT_REFERENCE_SCENARIO,
+        LEGACY_SHORT_REFERENCE_ACTION,
+        short_context_display_state,
+        None,
+        tuple(deduped),
+        False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Card builder
 # ---------------------------------------------------------------------------
@@ -1098,12 +1133,29 @@ def build_profit_plan_card(
         )
         if legacy_reason not in reasons:
             reasons = tuple(list(reasons) + [legacy_reason])
-
-    is_relevant = (
-        primary_state in RELEVANT_STATES
-        or action_label in RELEVANT_STATES
-        or scenario_type in RELEVANT_STATES
-    )
+        (
+            scenario_type,
+            action_label,
+            primary_state,
+            secondary_state,
+            reasons,
+            is_relevant,
+        ) = _legacy_short_reference_override(
+            current_price=current_price,
+            short_context_display_state=short_context_display_state,
+            scenario_type=scenario_type,
+            action_label=action_label,
+            reasons=reasons,
+            target_level_statuses=target_level_statuses,
+            active_target=active_target,
+        )
+        suggested_manual_attention_label = _short_context_display_label(short_context_display_state)
+    else:
+        is_relevant = (
+            primary_state in RELEVANT_STATES
+            or action_label in RELEVANT_STATES
+            or scenario_type in RELEVANT_STATES
+        )
 
     return ProfitPlanCard(
         symbol=symbol,

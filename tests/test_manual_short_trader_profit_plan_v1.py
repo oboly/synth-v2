@@ -61,7 +61,7 @@ def _make_card(
     *,
     current_price: str | None,
     short_context_input_status: str = "HAS_ZONE_CONTEXT",
-    short_context_coverage_status: str = "LEGACY_1D_CONTEXT_ONLY",
+    short_context_coverage_status: str = "NATIVE_SHORT_CONTEXT_AVAILABLE",
     short_context_display_state: str = "NO_NATIVE_SHORT_FIB_CONTEXT",
     fib_ext: FibExtContext | None = None,
     reentry: ReentryContext | None = None,
@@ -369,6 +369,24 @@ def test_plume_without_fib_row_shows_truthful_short_context_gap() -> None:
     assert card.short_context_coverage_status == "FIB_MAP_SYMBOL_MISSING"
 
 
+def test_legacy_1d_context_cannot_masquerade_as_native_short_action() -> None:
+    card = _make_card(
+        current_price="0.48",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="HAS_ZONE_CONTEXT",
+        short_context_coverage_status="LEGACY_1D_CONTEXT_ONLY",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert card.scenario_type == "LEGACY_CONTEXT_REFERENCE_ONLY"
+    assert card.action_label == "MANUAL_REVIEW"
+    assert card.primary_state == "NO_NATIVE_SHORT_FIB_CONTEXT"
+    assert card.is_relevant is False
+    assert card.action_label not in {"TAKE_PROFIT_NEAR", "BUY_DIP", "WAIT_FOR_NEW_MAP"}
+    assert card.scenario_type != "EXTENSION_RUNNER"
+    assert any("reference only" in reason.lower() for reason in card.reasons)
+    assert card.target_level_statuses
+
+
 def test_all_candidates_search_matches_plu_to_plume_and_clear_restores_all() -> None:
     plume = _make_card(
         current_price="0.155000",
@@ -386,6 +404,20 @@ def test_all_candidates_search_matches_plu_to_plume_and_clear_restores_all() -> 
     assert [card.symbol for card in filtered] == ["PLUME"]
     restored = filter_cards_for_view([plume, wld], mode="all", query="")
     assert [card.symbol for card in restored] == ["PLUME", "WLD"]
+
+
+def test_legacy_1d_context_is_not_relevant_only_from_legacy_levels() -> None:
+    legacy = _make_card(
+        current_price="0.48",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="HAS_ZONE_CONTEXT",
+        short_context_coverage_status="LEGACY_1D_CONTEXT_ONLY",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    visible_all = filter_cards_for_view([legacy], mode="all", query="")
+    visible_relevant = filter_cards_for_view([legacy], mode="relevant", query="")
+    assert [card.symbol for card in visible_all] == ["WLD"]
+    assert visible_relevant == []
 
 
 def test_stale_current_price_blocks_actionable_profit_plan_outputs() -> None:
@@ -778,7 +810,9 @@ def main() -> None:
         test_do_nothing_for_neutral_valid_state,
         test_insufficient_data_when_zones_are_missing,
         test_plume_without_fib_row_shows_truthful_short_context_gap,
+        test_legacy_1d_context_cannot_masquerade_as_native_short_action,
         test_all_candidates_search_matches_plu_to_plume_and_clear_restores_all,
+        test_legacy_1d_context_is_not_relevant_only_from_legacy_levels,
         test_stale_current_price_blocks_actionable_profit_plan_outputs,
         test_render_full_html_uses_profit_plan_title_and_public_monitor_href,
         test_json_snapshot_structure_and_safety_markers,
