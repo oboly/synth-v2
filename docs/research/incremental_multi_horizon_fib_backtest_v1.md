@@ -22,7 +22,7 @@ It does not:
   - resume cleanly when outputs already exist
 - `incremental`
   - load checkpoint per `symbol x fib_trading_horizon`
-  - read new closed candles plus bounded overlap
+  - query only new closed candles plus bounded overlap
   - recompute tail deterministically
   - merge/dedupe by stable event keys
 - `rebuild`
@@ -53,6 +53,9 @@ Minimum fields:
 
 Version mismatch fails closed and requires `--mode rebuild`.
 
+Completed `symbol x horizon` checkpoints are written immediately so interrupted
+runs preserve resumable progress.
+
 ## Outputs
 
 When `--write-files` is passed:
@@ -70,6 +73,22 @@ When `--write-files` is passed:
 - `manifest_v1.json`
 
 Generated outputs are local artifacts and must not be committed.
+
+## Observability
+
+Long-running runs are expected to emit:
+
+- immediate `STARTED`
+- phase start/end with elapsed time
+- query row counts and elapsed time
+- periodic heartbeat during long fetch/compute phases
+- checkpoint write notifications
+- exactly one terminal `FINISHED`, `INTERRUPTED`, or `FAILED` summary
+
+Silent broad fetch/compute phases are considered defects.
+
+`SIGINT` / `SIGTERM` should end with one clean interrupted summary while keeping
+completed checkpoints usable for resume.
 
 ## Context Handling
 
@@ -120,3 +139,16 @@ python -m src.research.run_multi_horizon_fib_backtest_v1 \
   --output summary \
   --output-dir /tmp/multi_horizon_fib_backtest_v1_smoke
 ```
+
+## Smoke Order
+
+Run in this order:
+
+1. one symbol, one horizon, one worker
+2. incremental rerun on the same output
+3. several symbols across all horizons
+4. interrupt and resume proof
+5. worker benchmark (`1,2,4`)
+6. broad production/research run only after all earlier checks pass
+
+Do not advance to the next step after a failed or interrupted smoke step.

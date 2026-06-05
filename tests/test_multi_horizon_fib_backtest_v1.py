@@ -84,6 +84,7 @@ def _symbol_inputs(extra_daily: list[tuple[str, str, str]] | None = None) -> lis
 
 def test_bootstrap_creates_deterministic_events_and_checkpoints() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
+        events: list[tuple[str, str, dict[str, object]]] = []
         result = run_multi_horizon_backtest(
             mode="bootstrap",
             output_dir=Path(tmpdir),
@@ -94,11 +95,14 @@ def test_bootstrap_creates_deterministic_events_and_checkpoints() -> None:
             workers=1,
             pivot_span=1,
             write_files=True,
+            progress_callback=lambda status, message, **fields: events.append((status, message, fields)),
         )
         assert result["manifest"]["row_counts"]["swing_events"] > 0
         assert (Path(tmpdir) / "checkpoints" / "WLD_SHORT_checkpoint_v1.json").exists()
         assert (Path(tmpdir) / "checkpoints" / "WLD_MEDIUM_checkpoint_v1.json").exists()
         assert (Path(tmpdir) / "checkpoints" / "WLD_LONG_checkpoint_v1.json").exists()
+        assert any(status == "CHECKPOINT_WRITTEN" for status, _, _ in events)
+        assert any(status == "PROGRESS" for status, _, _ in events)
 
 
 def test_interrupted_bootstrap_resumes_without_duplicates() -> None:

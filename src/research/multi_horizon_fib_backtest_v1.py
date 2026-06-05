@@ -3,13 +3,13 @@ from __future__ import annotations
 import csv
 import json
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from statistics import median
-from typing import Any
+from time import monotonic
+from typing import Any, Callable
 
 from src.research.htf_fib_extension_confluence_v1 import HtfSwingInput, build_htf_extension_map
 from src.research.htf_fib_reentry_ladder_v1 import HtfReentryInput, build_fib_retrace_ladder
@@ -217,8 +217,9 @@ def _scan_level_outcome(
     invalidation_price: Decimal,
     next_extension_price: Decimal | None,
     direction: str,
+    lookahead_bars: int = DEFAULT_SUPPORT_LOOKAHEAD,
 ) -> dict[str, Any]:
-    window = candles[start_idx + 1 :]
+    window = candles[start_idx + 1 : start_idx + 1 + max(lookahead_bars, 1)]
     touch_offset: int | None = None
     next_ext_offset: int | None = None
     touched = False
@@ -278,6 +279,7 @@ def _build_series_rows(
     candles: list[Candle],
     context_rows_by_symbol: dict[str, list[ContextRow]],
     pivot_span: int,
+    progress_callback: Callable[..., None] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
     if len(candles) < pivot_span * 2 + 1:
         return [], [], [], None
@@ -287,7 +289,20 @@ def _build_series_rows(
     swing_events: list[dict[str, Any]] = []
     fib_outcomes: list[dict[str, Any]] = []
     active_swing_rows: list[dict[str, Any]] = []
+    last_heartbeat = monotonic()
     for swing_index, swing in enumerate(swings, start=1):
+        if progress_callback is not None and monotonic() - last_heartbeat >= 5.0:
+            progress_callback(
+                "HEARTBEAT",
+                "build_series_rows",
+                symbol=symbol,
+                horizon=horizon.fib_trading_horizon,
+                interval_code=interval_code,
+                interval_role=interval_role,
+                swing_index=swing_index,
+                total_swings=len(swings),
+            )
+            last_heartbeat = monotonic()
         current_price = candles[swing["high_idx"]].close_price
         next_extension_price = _extension_price(swing["swing_low"], swing["swing_high"], Decimal("1.618"))
         active_levels = build_active_fib_levels(
@@ -598,6 +613,15 @@ def _compute_task(task: dict[str, Any]) -> dict[str, Any]:
     support_candles = task["support_candles"]
     context_rows_by_symbol = task["context_rows_by_symbol"]
     pivot_span = task["pivot_span"]
+    progress_callback = task.get("progress_callback")
+    if progress_callback is not None:
+        progress_callback(
+            "TASK_STARTED",
+            "compute_symbol_horizon",
+            symbol=symbol,
+            horizon=horizon.fib_trading_horizon,
+            workers_scope="single_task",
+        )
     primary_events, primary_outcomes, primary_active, primary_last = _build_series_rows(
         symbol=symbol,
         venue=venue,
@@ -608,6 +632,7 @@ def _compute_task(task: dict[str, Any]) -> dict[str, Any]:
         candles=primary_candles,
         context_rows_by_symbol=context_rows_by_symbol,
         pivot_span=pivot_span,
+        progress_callback=progress_callback,
     )
     support_events: list[dict[str, Any]] = []
     support_outcomes: list[dict[str, Any]] = []
@@ -626,12 +651,13 @@ def _compute_task(task: dict[str, Any]) -> dict[str, Any]:
                 candles=rows,
                 context_rows_by_symbol=context_rows_by_symbol,
                 pivot_span=pivot_span,
+                progress_callback=progress_callback,
             )
             support_events.extend(ev)
             support_outcomes.extend(out)
             support_active.extend(active)
             support_last = last or support_last
-    return {
+    result = {
         "symbol": symbol,
         "horizon": horizon.fib_trading_horizon,
         "primary_events": primary_events,
@@ -643,6 +669,16 @@ def _compute_task(task: dict[str, Any]) -> dict[str, Any]:
         "support_active": support_active,
         "support_last": support_last,
     }
+    if progress_callback is not None:
+        progress_callback(
+            "TASK_FINISHED",
+            "compute_symbol_horizon",
+            symbol=symbol,
+            horizon=horizon.fib_trading_horizon,
+            primary_events=len(primary_events),
+            support_events=len(support_events),
+        )
+    return result
 
 
 def run_multi_horizon_backtest(
@@ -658,8 +694,12 @@ def run_multi_horizon_backtest(
     overlap_candles: int = DEFAULT_OVERLAP_CANDLES,
     pivot_span: int = DEFAULT_PIVOT_SPAN,
     write_files: bool = False,
+    checkpoint_cache: dict[tuple[str, str], FibCheckpoint] | None = None,
+    control: Any | None = None,
+    progress_callback: Callable[..., None] | None = None,
 ) -> dict[str, Any]:
     output_dir = Path(output_dir)
+    checkpoint_cache = checkpoint_cache or {}
     tasks: list[dict[str, Any]] = []
     coverage_rows: list[dict[str, Any]] = []
     failure_rows: list[dict[str, Any]] = []
@@ -669,7 +709,7 @@ def run_multi_horizon_backtest(
         context_rows_by_symbol = {symbol: symbol_payload.get("context_rows", [])}
         for horizon_name in horizons:
             horizon = get_horizon_definition(horizon_name)
-            checkpoint = None if mode == "rebuild" else _load_checkpoint(output_dir, symbol, horizon_name)
+            checkpoint = None if mode == "rebuild" else checkpoint_cache.get((symbol, horizon_name)) or _load_checkpoint(output_dir, symbol, horizon_name)
             if checkpoint is not None:
                 _validate_checkpoint(checkpoint, mode=mode)
             primary_all = candles_by_interval.get(horizon.primary_interval, [])
@@ -715,46 +755,12 @@ def run_multi_horizon_backtest(
                     "support_candles": support_candles,
                     "context_rows_by_symbol": context_rows_by_symbol,
                     "pivot_span": pivot_span,
+                    "progress_callback": progress_callback,
                 }
             )
     started_at = utc_now()
+    started_mono = monotonic()
     task_results: list[dict[str, Any]] = []
-    if workers > 1:
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_map = {
-                executor.submit(_compute_task, task): (
-                    str(task["symbol"]),
-                    str(task["horizon"].fib_trading_horizon),
-                )
-                for task in tasks
-            }
-            for future in as_completed(future_map):
-                symbol, horizon_name = future_map[future]
-                try:
-                    task_results.append(future.result())
-                except Exception as exc:
-                    failure_rows.append(
-                        {
-                            "symbol": symbol,
-                            "fib_trading_horizon": horizon_name,
-                            "status": STATUS_FAILED,
-                            "failure_reason": str(exc),
-                        }
-                    )
-    else:
-        for task in tasks:
-            try:
-                task_results.append(_compute_task(task))
-            except Exception as exc:
-                failure_rows.append(
-                    {
-                        "symbol": str(task["symbol"]),
-                        "fib_trading_horizon": str(task["horizon"].fib_trading_horizon),
-                        "status": STATUS_FAILED,
-                        "failure_reason": str(exc),
-                    }
-                )
-    task_results = sorted(task_results, key=lambda row: (row["symbol"], row["horizon"]))
     swing_events_path = output_dir / "swing_events_v1.csv"
     fib_outcomes_path = output_dir / "fib_level_outcomes_v1.csv"
     active_rows_path = output_dir / "active_swing_rows_v1.csv"
@@ -765,11 +771,19 @@ def run_multi_horizon_backtest(
     new_outcomes: list[dict[str, Any]] = []
     new_active: list[dict[str, Any]] = []
     checkpoint_index: list[dict[str, Any]] = []
-    total = len(task_results)
-    for index, result in enumerate(task_results, start=1):
+    total = len(tasks)
+    completed_count = 0
+
+    def _emit_progress(status: str, message: str, **fields: Any) -> None:
+        if progress_callback is not None:
+            progress_callback(status, message, **fields)
+
+    def _handle_result(result: dict[str, Any]) -> None:
+        nonlocal completed_count, new_events, new_outcomes, new_active, checkpoint_index
         symbol = result["symbol"]
         horizon_name = result["horizon"]
         horizon = get_horizon_definition(horizon_name)
+        completed_count += 1
         new_events.extend(result["primary_events"])
         new_events.extend(result["support_events"])
         new_outcomes.extend(result["primary_outcomes"])
@@ -814,6 +828,7 @@ def run_multi_horizon_backtest(
             source_refs={"mode": mode, "symbol": symbol, "fib_trading_horizon": horizon_name},
         )
         _write_checkpoint(output_dir, checkpoint)
+        checkpoint_cache[(symbol, horizon_name)] = checkpoint
         checkpoint_index.append(
             {
                 "symbol": symbol,
@@ -821,12 +836,101 @@ def run_multi_horizon_backtest(
                 "checkpoint_path": str(_checkpoint_path(output_dir, symbol, horizon_name)),
             }
         )
-        print(
-            f"completed={index}/{total} symbol={symbol} horizon={horizon_name} "
-            f"elapsed_seconds={(utc_now() - started_at).total_seconds():.2f} "
-            f"skipped={sum(1 for row in coverage_rows if row['coverage_status'] != STATUS_READY)} "
-            f"failed={len(failure_rows)}"
+        _emit_progress(
+            "CHECKPOINT_WRITTEN",
+            "symbol_horizon_checkpoint",
+            symbol=symbol,
+            horizon=horizon_name,
+            checkpoint_path=str(_checkpoint_path(output_dir, symbol, horizon_name)),
         )
+        _emit_progress(
+            "PROGRESS",
+            "symbol_horizon_complete",
+            completed=completed_count,
+            total=total,
+            symbol=symbol,
+            horizon=horizon_name,
+            elapsed_seconds=f"{monotonic() - started_mono:.2f}",
+            skipped=sum(1 for row in coverage_rows if row["coverage_status"] != STATUS_READY),
+            failed=len(failure_rows),
+        )
+
+    if workers > 1:
+        executor = ThreadPoolExecutor(max_workers=workers)
+        future_map = {
+            executor.submit(_compute_task, task): (
+                str(task["symbol"]),
+                str(task["horizon"].fib_trading_horizon),
+            )
+            for task in tasks
+        }
+        try:
+            pending = set(future_map)
+            last_heartbeat = monotonic()
+            while pending:
+                if control is not None and getattr(control, "interrupted", False):
+                    for future in pending:
+                        future.cancel()
+                    failure_rows.append(
+                        {
+                            "symbol": "",
+                            "fib_trading_horizon": "",
+                            "status": "INTERRUPTED",
+                            "failure_reason": "interrupted_by_signal",
+                        }
+                    )
+                    break
+                done, pending = wait(pending, timeout=1.0, return_when=FIRST_COMPLETED)
+                if not done and monotonic() - last_heartbeat >= 5.0:
+                    _emit_progress(
+                        "HEARTBEAT",
+                        "compute_backtest",
+                        completed=completed_count,
+                        total=total,
+                        pending=len(pending),
+                        elapsed_seconds=f"{monotonic() - started_mono:.2f}",
+                    )
+                    last_heartbeat = monotonic()
+                    continue
+                for future in sorted(done, key=lambda item: future_map[item]):
+                    symbol, horizon_name = future_map[future]
+                    try:
+                        _handle_result(future.result())
+                    except Exception as exc:
+                        failure_rows.append(
+                            {
+                                "symbol": symbol,
+                                "fib_trading_horizon": horizon_name,
+                                "status": STATUS_FAILED,
+                                "failure_reason": str(exc),
+                            }
+                        )
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
+    else:
+        for task in tasks:
+            if control is not None and getattr(control, "interrupted", False):
+                failure_rows.append(
+                    {
+                        "symbol": str(task["symbol"]),
+                        "fib_trading_horizon": str(task["horizon"].fib_trading_horizon),
+                        "status": "INTERRUPTED",
+                        "failure_reason": "interrupted_by_signal",
+                    }
+                )
+                break
+            try:
+                _handle_result(_compute_task(task))
+            except Exception as exc:
+                failure_rows.append(
+                    {
+                        "symbol": str(task["symbol"]),
+                        "fib_trading_horizon": str(task["horizon"].fib_trading_horizon),
+                        "status": STATUS_FAILED,
+                        "failure_reason": str(exc),
+                    }
+                )
+
     merged_events = _merge_rows(existing_events, new_events, ("event_id",))
     merged_outcomes = _merge_rows(existing_outcomes, new_outcomes, ("event_id", "fib_family", "fib_level"))
     merged_active = _merge_rows(existing_active, new_active, ("symbol", "fib_trading_horizon", "interval_code", "interval_role"))
