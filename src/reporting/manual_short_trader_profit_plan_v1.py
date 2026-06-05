@@ -58,6 +58,8 @@ class FibExtContext:
     ext_1_618: Decimal
     ext_2_000: Decimal
     breakout_gate: Decimal
+    local_reaction_price: Decimal | None
+    anchor_end_ts_utc: datetime | None
     price_band: str
     ext_1_272_touched_and_rejected: bool
     retesting_breakout_gate: bool
@@ -97,6 +99,7 @@ class TargetLevelStatus:
     lifecycle_state: str
     coverage_state: str
     human_label: str
+    retest_context: str | None
     distance_pct: Decimal | None
     matching_open_sell_orders: int
     nearest_open_sell_price: Decimal | None
@@ -111,6 +114,8 @@ class ProfitPlanCard:
     current_price: Decimal | None
     current_price_status: str | None
     current_price_age_min: Decimal | None
+    history_high_since_activation: Decimal | None
+    history_low_since_activation: Decimal | None
     scenario_type: str
     action_label: str
     timeframe_label: str
@@ -165,6 +170,19 @@ def _distance_to_zone_pct(current_price: Decimal | None, levels: tuple[Decimal, 
     if not valid:
         return None
     return min(valid, key=lambda dist: abs(dist))
+
+
+def _unique_levels(levels: tuple[Decimal | None, ...]) -> tuple[Decimal, ...]:
+    seen: set[Decimal] = set()
+    out: list[Decimal] = []
+    for level in levels:
+        if level is None:
+            continue
+        if level in seen:
+            continue
+        seen.add(level)
+        out.append(level)
+    return tuple(sorted(out))
 
 
 def _classify_scenario(
@@ -445,20 +463,23 @@ def _level_match_stats(
 def _build_target_level_statuses(
     *,
     current_price: Decimal | None,
-    target_exit_zone: tuple[Decimal, ...],
+    target_levels: tuple[Decimal, ...],
     sell_orders: tuple[Any, ...],
+    history_high_since_activation: Decimal | None,
+    history_low_since_activation: Decimal | None,
     filled_sell_levels: tuple[Decimal, ...] = (),
     completed_sell_levels: tuple[Decimal, ...] = (),
 ) -> tuple[tuple[TargetLevelStatus, ...], Decimal | None]:
     statuses: list[TargetLevelStatus] = []
     active_target: Decimal | None = None
-    for level in target_exit_zone:
+    for level in target_levels:
         distance_pct = _distance_to_level_pct(current_price, level)
         matching_orders, nearest_open_sell_price, nearest_open_sell_distance_pct = _level_match_stats(
             current_price=current_price,
             level=level,
             sell_orders=sell_orders,
         )
+        retest_context: str | None = None
         if any(_near(filled_level, level, ORDER_MATCH_TOLERANCE_PCT) for filled_level in completed_sell_levels):
             lifecycle_state = "COMPLETED"
             coverage_state = "COMPLETED"
@@ -471,6 +492,22 @@ def _build_target_level_statuses(
             lifecycle_state = "UPCOMING"
             coverage_state = "ORDER_ABSENT" if matching_orders == 0 else "ORDER_WAITING"
             human_label = "upcoming sell level"
+        elif history_high_since_activation is not None and history_high_since_activation > level:
+            lifecycle_state = "PASSED"
+            if matching_orders > 0:
+                coverage_state = "PASSED_OPEN_ORDER"
+                human_label = "passed sell level with open order"
+            else:
+                coverage_state = "PASSED_UNFILLED"
+                human_label = "missed sell level"
+            if current_price is not None and current_price < level:
+                retest_context = "PULLBACK_BELOW_PASSED_LEVEL"
+            elif current_price is not None and abs(current_price - level) <= (level * TARGET_LEVEL_NEAR_THRESHOLD_PCT / Decimal("100")):
+                retest_context = "RETEST_AT_PASSED_LEVEL"
+        elif history_high_since_activation is not None and history_high_since_activation == level:
+            lifecycle_state = "REACHED"
+            coverage_state = "ORDER_WAITING" if matching_orders > 0 else "ORDER_ABSENT"
+            human_label = "reached sell level"
         elif current_price == level:
             lifecycle_state = "REACHED"
             coverage_state = "ORDER_WAITING" if matching_orders > 0 else "ORDER_ABSENT"
@@ -502,6 +539,7 @@ def _build_target_level_statuses(
                 lifecycle_state=lifecycle_state,
                 coverage_state=coverage_state,
                 human_label=human_label,
+                retest_context=retest_context,
                 distance_pct=distance_pct,
                 matching_open_sell_orders=matching_orders,
                 nearest_open_sell_price=nearest_open_sell_price,
@@ -510,6 +548,16 @@ def _build_target_level_statuses(
             )
         )
     return tuple(statuses), active_target
+
+
+def _target_retest_notes(target_levels: tuple[TargetLevelStatus, ...]) -> tuple[str, ...]:
+    notes: list[str] = []
+    for level in target_levels:
+        if level.retest_context == "PULLBACK_BELOW_PASSED_LEVEL":
+            notes.append(f"Pullback below previously passed sell level {_fmt_p(level.level)}.")
+        elif level.retest_context == "RETEST_AT_PASSED_LEVEL":
+            notes.append(f"Retesting previously passed sell level {_fmt_p(level.level)}.")
+    return tuple(notes)
 
 
 def build_order_summary(
@@ -653,7 +701,7 @@ def _evaluate_display_states(
     ):
         state_candidates.append("RELOAD_ZONE_APPROACHING")
 
-    if active_target is None and target_exit_zone:
+    if active_target is None and target_level_statuses:
         state_candidates.append("PRICE_RAN_AWAY")
     elif target_exit_zone and distance_to_target_pct is not None and distance_to_target_pct <= -PRICE_RAN_AWAY_THRESHOLD_PCT:
         state_candidates.append("PRICE_RAN_AWAY")
@@ -696,6 +744,8 @@ def build_profit_plan_card(
     sell_orders: tuple[Any, ...] = (),
     filled_sell_levels: tuple[Decimal, ...] = (),
     completed_sell_levels: tuple[Decimal, ...] = (),
+    history_high_since_activation: Decimal | None = None,
+    history_low_since_activation: Decimal | None = None,
     current_price_status: str | None = None,
     current_price_age_min: Decimal | None = None,
 ) -> ProfitPlanCard:
@@ -713,6 +763,8 @@ def build_profit_plan_card(
             current_price=None,
             current_price_status=current_price_status,
             current_price_age_min=current_price_age_min,
+            history_high_since_activation=history_high_since_activation,
+            history_low_since_activation=history_low_since_activation,
             scenario_type="NO_CURRENT_PRICE",
             action_label="NO_CURRENT_PRICE",
             timeframe_label="review blocked",
@@ -753,18 +805,34 @@ def build_profit_plan_card(
         preferred_retrace_level,
     )
 
+    lifecycle_target_levels = _unique_levels(
+        (
+            fib_ext.local_reaction_price if fib_ext is not None else None,
+            *sell_zone,
+        )
+    )
+
     target_level_statuses, active_target = _build_target_level_statuses(
         current_price=current_price,
-        target_exit_zone=sell_zone,
+        target_levels=lifecycle_target_levels,
         sell_orders=sell_orders,
+        history_high_since_activation=history_high_since_activation,
+        history_low_since_activation=history_low_since_activation,
         filled_sell_levels=filled_sell_levels,
         completed_sell_levels=completed_sell_levels,
     )
+    active_target_exit_zone = tuple(
+        level.level
+        for level in target_level_statuses
+        if level.lifecycle_state in {"UPCOMING", "NEAR"}
+    )
+
+    retest_notes = _target_retest_notes(target_level_statuses)
 
     order_summary = build_order_summary(
         current_price,
         buy_zone,
-        sell_zone,
+        active_target_exit_zone,
         buy_orders,
         sell_orders,
         target_level_statuses=target_level_statuses,
@@ -779,7 +847,7 @@ def build_profit_plan_card(
         distance_to_invalidation_pct,
     ) = _evaluate_display_states(
         current_price=current_price,
-        target_exit_zone=sell_zone,
+        target_exit_zone=active_target_exit_zone,
         active_target=active_target,
         target_level_statuses=target_level_statuses,
         reload_reentry_zone=buy_zone,
@@ -799,15 +867,17 @@ def build_profit_plan_card(
         current_price=current_price,
         current_price_status=current_price_status,
         current_price_age_min=current_price_age_min,
+        history_high_since_activation=history_high_since_activation,
+        history_low_since_activation=history_low_since_activation,
         scenario_type=scenario_type,
         action_label=action_label,
         timeframe_label=timeframe_label,
         buy_zone=buy_zone,
         sell_zone=sell_zone,
         invalidation_level=invalidation_level,
-        reasons=reasons,
+        reasons=tuple(list(reasons) + [note for note in retest_notes if note not in reasons]),
         order_summary=order_summary,
-        target_exit_zone=sell_zone,
+        target_exit_zone=active_target_exit_zone,
         active_target=active_target,
         target_level_statuses=target_level_statuses,
         reload_reentry_zone=buy_zone,
@@ -1029,6 +1099,10 @@ def _target_lifecycle_html(target_levels: tuple[TargetLevelStatus, ...]) -> str:
             f"{esc(_fmt_p(level.level))} — {esc(level.lifecycle_state)} / {esc(level.coverage_state)}{esc(active_marker)}"
             "</div>"
         )
+        if level.retest_context:
+            lines.append(
+                f"<div class='small muted'>{esc(level.retest_context)}</div>"
+            )
     return "<div class='zone-block zone-sell'>" + "".join(lines) + "</div>"
 
 
@@ -1040,7 +1114,8 @@ def _order_summary_html(summary: ActiveOrderSummary, monitor_link: str | None) -
     if summary.matching_sells > 0:
         parts.append(f"<span class='order-chip warn'>{summary.matching_sells} sell order{'s' if summary.matching_sells != 1 else ''} near zone</span>")
     for missing in summary.missing_suggested:
-        parts.append(f"<span class='order-chip miss'>missing: {esc(missing)}</span>")
+        label = missing if missing.startswith("missed sell level @ ") else f"missing: {missing}"
+        parts.append(f"<span class='order-chip miss'>{esc(label)}</span>")
     if not parts:
         parts.append("<span class='order-chip muted'>No matching orders</span>")
     chips = " ".join(parts)
@@ -1079,7 +1154,7 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
         _metric_block("Current price", f"{price_str} {quote}".strip()),
         _metric_block("Current price status", card.current_price_status or "FRESH_CURRENT_PRICE"),
         _metric_block("Price age (min)", "?" if card.current_price_age_min is None else _fmt_p(card.current_price_age_min)),
-        _metric_block("Target / exit zone", ", ".join(_fmt_p(v) for v in card.target_exit_zone) or "No levels loaded"),
+        _metric_block("Active target / exit zone", ", ".join(_fmt_p(v) for v in card.target_exit_zone) or "No upcoming levels"),
         _metric_block("Active target", _fmt_p(card.active_target)),
         _metric_block("Reload / re-entry zone", ", ".join(_fmt_p(v) for v in card.reload_reentry_zone) or "No levels loaded"),
         _metric_block("Invalidation / risk zone", _fmt_p(card.invalidation_risk_zone)),
@@ -1195,6 +1270,8 @@ def build_json_snapshot(
                 "current_price": str(c.current_price) if c.current_price is not None else None,
                 "current_price_status": c.current_price_status,
                 "current_price_age_min": str(c.current_price_age_min) if c.current_price_age_min is not None else None,
+                "history_high_since_activation": str(c.history_high_since_activation) if c.history_high_since_activation is not None else None,
+                "history_low_since_activation": str(c.history_low_since_activation) if c.history_low_since_activation is not None else None,
                 "scenario_type": c.scenario_type,
                 "action_label": c.action_label,
                 "timeframe_label": c.timeframe_label,
@@ -1209,6 +1286,7 @@ def build_json_snapshot(
                         "lifecycle_state": level.lifecycle_state,
                         "coverage_state": level.coverage_state,
                         "human_label": level.human_label,
+                        "retest_context": level.retest_context,
                         "distance_pct": str(level.distance_pct) if level.distance_pct is not None else None,
                         "matching_open_sell_orders": level.matching_open_sell_orders,
                         "nearest_open_sell_price": str(level.nearest_open_sell_price) if level.nearest_open_sell_price is not None else None,

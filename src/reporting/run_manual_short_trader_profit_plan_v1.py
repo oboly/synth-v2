@@ -5,10 +5,12 @@ import csv
 import json
 import sys
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from src.common.db import get_connection
 from src.reporting.account_scoped_short_trader_dashboard_v1 import (
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_VENUE,
@@ -46,15 +48,23 @@ from src.research.htf_fib_reentry_ladder_v1 import (
 DEFAULT_FIB_MAP_ROWS = Path("data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv")
 REPORT_NAME = "run_manual_short_trader_profit_plan_v1"
 REPORT_VERSION = "0.2"
+TARGET_HISTORY_INTERVAL = "1h"
 
 
 @dataclass(frozen=True)
 class ZoneContextLoadResult:
     fib_ext_by_symbol: dict[str, FibExtContext]
     reentry_by_symbol: dict[str, ReentryContext]
+    activation_ts_by_symbol: dict[str, datetime | None]
     input_status_by_symbol: dict[str, str]
     source_name: str
     source_missing: bool
+
+
+@dataclass(frozen=True)
+class MarketTargetHistory:
+    high_since_activation: Decimal | None
+    low_since_activation: Decimal | None
 
 
 def parse_args() -> argparse.Namespace:
@@ -133,6 +143,19 @@ def _parse_decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _parse_iso_ts(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        if text.endswith("Z"):
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(UTC)
+        parsed = datetime.fromisoformat(text)
+        return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+    except Exception:
+        return None
+
+
 def load_fib_map_rows(path: Path) -> tuple[dict[str, dict[str, str]], bool]:
     if not path.exists():
         return {}, True
@@ -151,6 +174,8 @@ def _build_fib_ext_context(
     swing_low: Decimal,
     swing_high: Decimal,
     current_price: Decimal,
+    local_reaction_price: Decimal,
+    anchor_end_ts_utc: datetime | None,
 ) -> FibExtContext | None:
     try:
         ext_map = build_htf_extension_map(
@@ -171,6 +196,8 @@ def _build_fib_ext_context(
         ext_1_618=target_by_label.get("ext_1_618", swing_high),
         ext_2_000=target_by_label.get("ext_2_000", swing_high),
         breakout_gate=ext_map.breakout_gate,
+        local_reaction_price=local_reaction_price,
+        anchor_end_ts_utc=anchor_end_ts_utc,
         price_band=ext_map.price_band,
         ext_1_272_touched_and_rejected=ext_map.ext_1_272_touched_and_rejected,
         retesting_breakout_gate=ext_map.retesting_breakout_gate,
@@ -221,6 +248,7 @@ def load_zone_contexts(
     fib_rows_by_symbol, source_missing = load_fib_map_rows(fib_map_rows_path)
     fib_ext_by_symbol: dict[str, FibExtContext] = {}
     reentry_by_symbol: dict[str, ReentryContext] = {}
+    activation_ts_by_symbol: dict[str, datetime | None] = {}
     input_status_by_symbol: dict[str, str] = {}
 
     for market in markets:
@@ -238,6 +266,8 @@ def load_zone_contexts(
                     swing_low=swing_low,
                     swing_high=swing_high,
                     current_price=current_price,
+                    local_reaction_price=swing_high,
+                    anchor_end_ts_utc=None,
                 )
                 reentry = _build_reentry_context(
                     symbol=symbol,
@@ -250,6 +280,7 @@ def load_zone_contexts(
                     fib_ext_by_symbol[symbol] = fib_ext
                 if reentry is not None:
                     reentry_by_symbol[symbol] = reentry
+                activation_ts_by_symbol[symbol] = None
                 input_status_by_symbol[symbol] = (
                     "MANUAL_ZONE_CONTEXT_USED"
                     if fib_ext is not None or reentry is not None
@@ -268,6 +299,7 @@ def load_zone_contexts(
             input_status_by_symbol[symbol] = "ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING"
             continue
 
+        activation_ts_by_symbol[symbol] = _parse_iso_ts(fib_row.get("anchor_end_ts"))
         swing_low = _parse_decimal(fib_row.get("swing_low_price"))
         swing_high = _parse_decimal(fib_row.get("local_reaction_price")) or _parse_decimal(fib_row.get("swing_high_price"))
         current_price = prices.get(market) or _parse_decimal(fib_row.get("current_price"))
@@ -280,6 +312,8 @@ def load_zone_contexts(
             swing_low=swing_low,
             swing_high=swing_high,
             current_price=current_price,
+            local_reaction_price=_parse_decimal(fib_row.get("local_reaction_price")) or swing_high,
+            anchor_end_ts_utc=activation_ts_by_symbol[symbol],
         )
         reentry = _build_reentry_context(
             symbol=symbol,
@@ -301,10 +335,53 @@ def load_zone_contexts(
     return ZoneContextLoadResult(
         fib_ext_by_symbol=fib_ext_by_symbol,
         reentry_by_symbol=reentry_by_symbol,
+        activation_ts_by_symbol=activation_ts_by_symbol,
         input_status_by_symbol=input_status_by_symbol,
         source_name="fibo_target_map_rows_v1.csv",
         source_missing=source_missing,
     )
+
+
+def fetch_market_target_history_by_symbol(
+    *,
+    venue: str,
+    activation_ts_by_symbol: dict[str, datetime | None],
+    interval_code: str = TARGET_HISTORY_INTERVAL,
+) -> dict[str, MarketTargetHistory]:
+    symbols = sorted(symbol for symbol, activation_ts in activation_ts_by_symbol.items() if activation_ts is not None)
+    if not symbols:
+        return {}
+    conn = get_connection()
+    try:
+        out: dict[str, MarketTargetHistory] = {}
+        with conn.cursor() as cur:
+            for symbol in symbols:
+                activation_ts = activation_ts_by_symbol.get(symbol)
+                if activation_ts is None:
+                    continue
+                cur.execute(
+                    """
+                    SELECT
+                        MAX(c.high_price) AS max_high_price,
+                        MIN(c.low_price) AS min_low_price
+                    FROM obs_market_candle c
+                    JOIN asset a
+                      ON a.asset_id = c.asset_id
+                    WHERE c.venue = %s
+                      AND c.interval_code = %s
+                      AND a.symbol = %s
+                      AND c.close_ts_utc >= %s
+                    """,
+                    (venue, interval_code, symbol, activation_ts),
+                )
+                row = cur.fetchone() or {}
+                out[symbol] = MarketTargetHistory(
+                    high_since_activation=_parse_decimal(row.get("max_high_price")),
+                    low_since_activation=_parse_decimal(row.get("min_low_price")),
+                )
+        return out
+    finally:
+        conn.close()
 
 
 def build_cards(
@@ -314,6 +391,7 @@ def build_cards(
     price_age_min_by_market: dict[str, Decimal | None],
     fib_ext_by_symbol: dict[str, FibExtContext],
     reentry_by_symbol: dict[str, ReentryContext],
+    history_by_symbol: dict[str, MarketTargetHistory],
     orders_by_symbol: dict[str, tuple[tuple[LadderOrderRow, ...], tuple[LadderOrderRow, ...]]],
 ) -> list[ProfitPlanCard]:
     cards: list[ProfitPlanCard] = []
@@ -321,6 +399,7 @@ def build_cards(
         symbol = market.split("-")[0].upper()
         current = prices.get(market)
         buy_orders, sell_orders = orders_by_symbol.get(symbol, ((), ()))
+        history = history_by_symbol.get(symbol)
         cards.append(
             build_profit_plan_card(
                 symbol=symbol,
@@ -332,6 +411,8 @@ def build_cards(
                 reentry=reentry_by_symbol.get(symbol),
                 buy_orders=buy_orders,
                 sell_orders=sell_orders,
+                history_high_since_activation=None if history is None else history.high_since_activation,
+                history_low_since_activation=None if history is None else history.low_since_activation,
             )
         )
     return cards
@@ -430,6 +511,10 @@ def main() -> int:
         recent_lows=_parse_kv_list(args.recent_lows, 2),
         fib_map_rows_path=Path(args.fib_map_rows),
     )
+    history_by_symbol = fetch_market_target_history_by_symbol(
+        venue=args.venue,
+        activation_ts_by_symbol=zone_contexts.activation_ts_by_symbol,
+    )
     monitor_link = args.monitor_href or public_page_href(
         profile=args.account_profile,
         page_stem="open-orders-monitor",
@@ -441,6 +526,7 @@ def main() -> int:
         {market: display.age_min for market, display in price_display_by_market.items()},
         zone_contexts.fib_ext_by_symbol,
         zone_contexts.reentry_by_symbol,
+        history_by_symbol,
         orders_by_symbol,
     )
 

@@ -24,6 +24,8 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
 
 def _wld_fib_ext(price_band: str = "BETWEEN_1272_1618") -> FibExtContext:
     return FibExtContext(
+        local_reaction_price=Decimal("0.399040"),
+        anchor_end_ts_utc=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
         ext_1_272=Decimal("0.454438"),
         ext_1_618=Decimal("0.515600"),
         ext_2_000=Decimal("0.8000"),
@@ -60,6 +62,8 @@ def _make_card(
     sell_orders: tuple[_FakeOrder, ...] = (),
     filled_sell_levels: tuple[Decimal, ...] = (),
     completed_sell_levels: tuple[Decimal, ...] = (),
+    history_high_since_activation: Decimal | None = None,
+    history_low_since_activation: Decimal | None = None,
     symbol: str = "WLD",
     market: str = "WLD-EUR",
 ) -> ProfitPlanCard:
@@ -73,6 +77,8 @@ def _make_card(
         sell_orders=sell_orders,
         filled_sell_levels=filled_sell_levels,
         completed_sell_levels=completed_sell_levels,
+        history_high_since_activation=history_high_since_activation,
+        history_low_since_activation=history_low_since_activation,
     )
 
 
@@ -235,6 +241,8 @@ def test_price_ran_away_when_price_is_far_above_target_assumptions() -> None:
 
 def test_invalidation_near_when_price_approaches_risk_zone() -> None:
     fib = FibExtContext(
+        local_reaction_price=Decimal("0.399040"),
+        anchor_end_ts_utc=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
         ext_1_272=Decimal("0.49"),
         ext_1_618=Decimal("0.65"),
         ext_2_000=Decimal("0.80"),
@@ -323,6 +331,7 @@ def test_wld_fixture_advances_active_target_and_does_not_mark_passed_level_missi
             _FakeOrder("0.454438", side="sell"),
             _FakeOrder("0.515600", side="sell"),
         ),
+        history_high_since_activation=Decimal("0.470000"),
     )
     assert card.active_target == Decimal("0.515600")
     assert card.distance_to_target_pct is not None
@@ -330,41 +339,63 @@ def test_wld_fixture_advances_active_target_and_does_not_mark_passed_level_missi
     assert all("missing sell @ 0.454438" not in item for item in card.order_summary.missing_suggested)
     first_level = card.target_level_statuses[0]
     second_level = card.target_level_statuses[1]
-    assert first_level.level == Decimal("0.454438")
+    third_level = card.target_level_statuses[2]
+    assert first_level.level == Decimal("0.399040")
     assert first_level.lifecycle_state == "PASSED"
-    assert first_level.coverage_state == "PASSED_OPEN_ORDER"
-    assert second_level.level == Decimal("0.515600")
-    assert second_level.is_active_target is True
-    assert second_level.matching_open_sell_orders == 1
+    assert second_level.level == Decimal("0.454438")
+    assert second_level.lifecycle_state == "PASSED"
+    assert second_level.coverage_state == "PASSED_OPEN_ORDER"
+    assert third_level.level == Decimal("0.515600")
+    assert third_level.is_active_target is True
+    assert third_level.matching_open_sell_orders == 1
+    assert Decimal("0.399040") not in card.target_exit_zone
+    assert Decimal("0.454438") not in card.target_exit_zone
+    assert Decimal("0.515600") in card.target_exit_zone
 
 
-def test_price_below_first_target_keeps_first_target_active() -> None:
+def test_history_aware_wld_pullback_does_not_regress_target_lifecycle() -> None:
+    card = _make_card(
+        current_price="0.452410",
+        fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.470000"),
+    )
+    assert card.active_target == Decimal("0.515600")
+    assert card.target_level_statuses[1].level == Decimal("0.454438")
+    assert card.target_level_statuses[1].lifecycle_state == "PASSED"
+    assert card.target_level_statuses[1].retest_context == "PULLBACK_BELOW_PASSED_LEVEL"
+    assert Decimal("0.399040") not in card.target_exit_zone
+    assert Decimal("0.454438") not in card.target_exit_zone
+    assert tuple(card.target_exit_zone) == (Decimal("0.515600"),)
+    assert all("missing: missed sell level" not in item for item in card.order_summary.missing_suggested)
+
+
+def test_price_below_first_target_keeps_first_target_active_without_history_touch() -> None:
     card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
     assert card.active_target == Decimal("0.454438")
-    assert card.target_level_statuses[0].lifecycle_state in {"UPCOMING", "NEAR"}
-    assert card.target_level_statuses[1].lifecycle_state == "UPCOMING"
+    assert card.target_level_statuses[1].lifecycle_state in {"UPCOMING", "NEAR"}
+    assert card.target_level_statuses[2].lifecycle_state == "UPCOMING"
 
 
 def test_price_exactly_at_first_target_advances_to_second_target() -> None:
-    card = _make_card(current_price="0.454438", fib_ext=_wld_fib_ext())
+    card = _make_card(current_price="0.454438", fib_ext=_wld_fib_ext(), history_high_since_activation=Decimal("0.454438"))
     assert card.active_target == Decimal("0.515600")
-    assert card.target_level_statuses[0].lifecycle_state == "REACHED"
-    assert card.target_level_statuses[0].is_active_target is False
+    assert card.target_level_statuses[1].lifecycle_state == "REACHED"
+    assert card.target_level_statuses[1].is_active_target is False
 
 
 def test_price_between_targets_uses_second_target_distance() -> None:
-    card = _make_card(current_price="0.500000", fib_ext=_wld_fib_ext())
+    card = _make_card(current_price="0.500000", fib_ext=_wld_fib_ext(), history_high_since_activation=Decimal("0.500000"))
     assert card.active_target == Decimal("0.515600")
     assert card.distance_to_target_pct is not None
     assert card.distance_to_target_pct > 0
-    assert card.target_level_statuses[0].lifecycle_state == "PASSED"
+    assert card.target_level_statuses[1].lifecycle_state == "PASSED"
 
 
 def test_price_above_all_targets_has_no_active_target() -> None:
-    card = _make_card(current_price="0.530000", fib_ext=_wld_fib_ext())
+    card = _make_card(current_price="0.530000", fib_ext=_wld_fib_ext(), history_high_since_activation=Decimal("0.530000"))
     assert card.active_target is None
-    assert card.target_level_statuses[0].lifecycle_state == "PASSED"
     assert card.target_level_statuses[1].lifecycle_state == "PASSED"
+    assert card.target_level_statuses[2].lifecycle_state == "PASSED"
 
 
 def test_multiple_orders_near_only_one_target_are_scoped_per_level() -> None:
@@ -375,17 +406,22 @@ def test_multiple_orders_near_only_one_target_are_scoped_per_level() -> None:
             _FakeOrder("0.454500", side="sell"),
             _FakeOrder("0.454300", side="sell"),
         ),
+        history_high_since_activation=Decimal("0.470000"),
     )
-    first_level = card.target_level_statuses[0]
-    second_level = card.target_level_statuses[1]
+    first_level = card.target_level_statuses[1]
+    second_level = card.target_level_statuses[2]
     assert first_level.matching_open_sell_orders == 2
     assert second_level.matching_open_sell_orders == 0
     assert any("sell @ 0.515600" in item for item in card.order_summary.missing_suggested)
 
 
 def test_passed_level_without_fill_evidence_is_marked_missed() -> None:
-    card = _make_card(current_price="0.458790", fib_ext=_wld_fib_ext())
-    first_level = card.target_level_statuses[0]
+    card = _make_card(
+        current_price="0.452410",
+        fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.470000"),
+    )
+    first_level = card.target_level_statuses[1]
     assert first_level.lifecycle_state == "PASSED"
     assert first_level.coverage_state == "PASSED_UNFILLED"
     assert any("missed sell level @ 0.454438" in item for item in card.order_summary.missing_suggested)
@@ -396,14 +432,16 @@ def test_filled_and_completed_level_evidence_are_displayed() -> None:
         current_price="0.458790",
         fib_ext=_wld_fib_ext(),
         filled_sell_levels=(Decimal("0.454438"),),
+        history_high_since_activation=Decimal("0.470000"),
     )
     completed = _make_card(
         current_price="0.530000",
         fib_ext=_wld_fib_ext(),
         completed_sell_levels=(Decimal("0.454438"),),
+        history_high_since_activation=Decimal("0.530000"),
     )
-    assert filled.target_level_statuses[0].lifecycle_state == "REACHED_FILLED"
-    assert completed.target_level_statuses[0].lifecycle_state == "COMPLETED"
+    assert filled.target_level_statuses[1].lifecycle_state == "REACHED_FILLED"
+    assert completed.target_level_statuses[1].lifecycle_state == "COMPLETED"
 
 
 def test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account_leakage() -> None:
@@ -568,7 +606,8 @@ def main() -> None:
         test_render_full_html_uses_profit_plan_title_and_public_monitor_href,
         test_json_snapshot_structure_and_safety_markers,
         test_wld_fixture_advances_active_target_and_does_not_mark_passed_level_missing,
-        test_price_below_first_target_keeps_first_target_active,
+        test_history_aware_wld_pullback_does_not_regress_target_lifecycle,
+        test_price_below_first_target_keeps_first_target_active_without_history_touch,
         test_price_exactly_at_first_target_advances_to_second_target,
         test_price_between_targets_uses_second_target_distance,
         test_price_above_all_targets_has_no_active_target,
