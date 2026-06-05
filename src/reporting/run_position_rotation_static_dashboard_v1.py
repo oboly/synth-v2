@@ -2199,79 +2199,21 @@ def render_html(
 
 
 def write_index(output_dir: Path) -> Path:
-    local_ts = now_local_label()
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / "index.html"
     target.write_text(
-        f"""<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta http-equiv="refresh" content="300">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Synth Cockpit</title>
-  <style>
-    body {{ margin:0; background:#0b1020; color:#e7edf8; font-family:system-ui,-apple-system,Segoe UI,sans-serif; }}
-    main {{ padding:32px; max-width:1000px; margin:auto; }}
-    h1 {{ margin-top:0; }}
-    .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; }}
-    .card {{ background:#121a2f; border:1px solid #273657; border-radius:16px; padding:20px; box-shadow:0 12px 40px rgba(0,0,0,.22); }}
-    a {{ color:#7aa2ff; font-size:20px; text-decoration:none; }}
-    a:hover {{ text-decoration:underline; }}
-    .muted {{ color:#8ea0bf; }}
-    .pill {{ display:inline-block; border-radius:999px; padding:4px 9px; margin:4px 4px 0 0; border:1px solid #273657; color:#55d6a7; }}
-    .cockpit-nav {{ display:flex; flex-wrap:wrap; gap:14px; margin:14px 0 18px; }}
-    .cockpit-nav a {{ font-size:16px; }}
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Synth MVP Read-only Cockpit</h1>
-    <p class="muted">Rendered {esc(local_ts)} Amsterdam time</p>
-    {cockpit_nav()}
-    <p>{badge_html("broker_private_calls=0", css_name="ok")}{badge_html("broker_writes=0", css_name="ok")}{badge_html("order_submission=0", css_name="ok")}{badge_html("executor=none", css_name="ok")}</p>
-    <div class="grid">
-      <div class="card">
-        <a href="/synth/about.html">About</a>
-        <p class="muted">Global SYNTH brand, subtitle, and faction-lore overview. Read-only and account-agnostic.</p>
-      </div>
-      <div class="card">
-        <a href="/synth/paper-advice.html">Paper Advice</a>
-        <p class="muted">Market/setup/A+ context and paper navigation.</p>
-      </div>
-      <div class="card">
-        <a href="/synth/entry-candidates.html">Entry Candidates</a>
-        <p class="muted">Market-only setup candidates and readiness groups.</p>
-      </div>
-      <div class="card">
-        <a href="/synth/rotation-preview.html">Rotation Preview</a>
-        <p class="muted">Account-aware read-only position-review dashboard for existing holdings, with separate market-only entry readiness context.</p>
-      </div>
-      <div class="card">
-        <a href="/synth/profit-plan.html">Profit Plan</a>
-        <p class="muted">Human-readable manual planning states for open short-trader markets. Read-only only.</p>
-      </div>
-      <div class="card">
-        <a href="/synth/open-orders-monitor.html">Open Orders Monitor</a>
-        <p class="muted">Technical open-order audit view. Read-only visibility only.</p>
-      </div>
-      <div class="card">
-        <a href="/synth/recompute-lifecycle.html">Recompute lifecycle</a>
-        <p class="muted">Maps needing refresh, cooldown, and post-refresh state.</p>
-      </div>
-      <div class="card">
-        <a href="/synth/live-like-shadow-chain.html">Live-like Shadow Chain</a>
-        <p class="muted">Shadow preview only. No paper/live trading. No order submitted.</p>
-      </div>
-      <div class="card">
-        <a href="/synth/live-like-shadow-history.html">Live-like Shadow History</a>
-        <p class="muted">Shadow heartbeat state history. Stability/readout only. No paper/live trading.</p>
-      </div>
-    </div>
-  </main>
-</body>
-</html>
-""",
+        (
+            "<!doctype html>\n"
+            "<html lang=\"en\">\n"
+            "<head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"300\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            "<title>Synth Cockpit</title></head>\n"
+            "<body><main><h1>Synth MVP Read-only Cockpit</h1>"
+            "<p>This legacy index writer is deprecated. Render the global cockpit index through "
+            "run_synth_about_page_v1 and account dashboards through "
+            "scripts/odroid/run_account_wallet_dashboard_render_once.sh &lt;profile&gt;.</p>"
+            "</main></body></html>\n"
+        ),
         encoding="utf-8",
     )
     return target

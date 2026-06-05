@@ -2,17 +2,13 @@
 
 ## Goal
 
-Render a read-only online cockpit for paper advice, A+ Table 1 DB context, fresh account positions, and position rotation preview.
+Render a read-only online cockpit for global account-agnostic pages. Account dashboards render separately through the per-profile account wrapper.
 
 ## Outputs
 
 - /var/www/html/synth/index.html
 - /var/www/html/synth/paper-advice.html
-- /var/www/html/synth/rotation-preview.html
-- /var/www/html/synth/open-orders-monitor.html
-- /var/www/html/synth/open-orders-monitor.json
-- /var/www/html/synth/profit-plan.html
-- /var/www/html/synth/profit-plan.json
+- /var/www/html/synth/entry-candidates.html
 - /var/www/html/synth/about.html
 - /var/www/html/synth/assets/brand/synth-third-faction-triptych.png
 
@@ -24,17 +20,12 @@ Render a read-only online cockpit for paper advice, A+ Table 1 DB context, fresh
 
 Allowed: public market reads, private broker balance read, local DB snapshot writes, paper advice observation writes, static HTML writes.
 
-Profit Plan integration stays read-only:
+Global cockpit render stays read-only:
 
-- render `/var/www/html/synth/open-orders-monitor.html`
-- render `/var/www/html/synth/open-orders-monitor.json`
-- refresh canonical `fibo_target_map_v1` before Profit Plan render
-- render `/var/www/html/synth/profit-plan.html`
-- render `/var/www/html/synth/profit-plan.json`
+- render `/var/www/html/synth/index.html`
 - render `/var/www/html/synth/about.html`
+- render `/var/www/html/synth/entry-candidates.html`
 - copy `/var/www/html/synth/assets/brand/synth-third-faction-triptych.png`
-- keep public browser hrefs separate from filesystem output paths, e.g.
-  `/synth/open-orders-monitor.html` vs `/var/www/html/synth/open-orders-monitor.html`
 - keep public brand-asset hrefs separate from filesystem output paths, e.g.
   `/synth/assets/brand/synth-third-faction-triptych.png` vs
   `/var/www/html/synth/assets/brand/synth-third-faction-triptych.png`
@@ -55,8 +46,11 @@ Do not expose publicly without authentication. Preferred MVP access: Tailscale/V
 
 - The About page is global and account-agnostic. Do not duplicate it under
   `/synth/accounts/<profile>/`.
+- Profit Plan and Open Orders Monitor are account-scoped pages. Render them only
+  through `scripts/odroid/run_account_wallet_dashboard_render_once.sh <profile>`.
+- The global MVP cockpit must not render account-aware rotation preview, Profit
+  Plan, or Open Orders Monitor pages itself.
 - The large third-faction triptych is reserved for the About page and explicit
   brand surfaces, not normal operational dashboards.
 - Better candidates are heuristic review aids, not allocation instructions.
-- Rotation preview is not an executor and does not create orders.
 - A+ Table 2 / breath rhythm is parked.

@@ -11,20 +11,12 @@ fi
 
 export SYNTH_LIVE_EXECUTION_PERMISSION="${SYNTH_LIVE_EXECUTION_PERMISSION:-NOT_GRANTED}"
 export SYNTH_BROKER_WRITE_PERMISSION="${SYNTH_BROKER_WRITE_PERMISSION:-NOT_GRANTED}"
-export SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML="${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML:-/var/www/html/synth/rotation-preview.html}"
 export SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML="${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML:-/var/www/html/synth/entry-candidates.html}"
-export SYNTH_PROFIT_PLAN_DASHBOARD_HTML="${SYNTH_PROFIT_PLAN_DASHBOARD_HTML:-/var/www/html/synth/profit-plan.html}"
-export SYNTH_PROFIT_PLAN_DASHBOARD_JSON="${SYNTH_PROFIT_PLAN_DASHBOARD_JSON:-/var/www/html/synth/profit-plan.json}"
-export SYNTH_OPEN_ORDERS_MONITOR_HTML="${SYNTH_OPEN_ORDERS_MONITOR_HTML:-/var/www/html/synth/open-orders-monitor.html}"
-export SYNTH_OPEN_ORDERS_MONITOR_JSON="${SYNTH_OPEN_ORDERS_MONITOR_JSON:-/var/www/html/synth/open-orders-monitor.json}"
-export SYNTH_OPEN_ORDERS_MONITOR_HREF="${SYNTH_OPEN_ORDERS_MONITOR_HREF:-/synth/open-orders-monitor.html}"
+export SYNTH_COCKPIT_INDEX_HTML="${SYNTH_COCKPIT_INDEX_HTML:-/var/www/html/synth/index.html}"
 export SYNTH_ABOUT_PAGE_HTML="${SYNTH_ABOUT_PAGE_HTML:-/var/www/html/synth/about.html}"
 export SYNTH_ABOUT_HERO_ASSET_SOURCE="${SYNTH_ABOUT_HERO_ASSET_SOURCE:-assets/brand/synth/synth-third-faction-triptych.png}"
 export SYNTH_ABOUT_HERO_ASSET_OUTPUT="${SYNTH_ABOUT_HERO_ASSET_OUTPUT:-/var/www/html/synth/assets/brand/synth-third-faction-triptych.png}"
 export SYNTH_ABOUT_HERO_ASSET_HREF="${SYNTH_ABOUT_HERO_ASSET_HREF:-/synth/assets/brand/synth-third-faction-triptych.png}"
-export SYNTH_MVP_PROFIT_PLAN_SYMBOLS="${SYNTH_MVP_PROFIT_PLAN_SYMBOLS:-WLD,ONDO}"
-export SYNTH_MVP_PROFIT_PLAN_MARKETS="${SYNTH_MVP_PROFIT_PLAN_MARKETS:-WLD-EUR ONDO-EUR}"
-export SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR="${SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR:-data/research/fibo_target_map_v1}"
 VENUE="${SYNTH_MVP_DASHBOARD_VENUE:-bitvavo}"
 QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
 FAST_RECOMPUTE_INTERVAL="${SYNTH_FAST_RECOMPUTE_INTERVAL:-4h}"
@@ -33,7 +25,6 @@ echo "[MVP_DASHBOARD_RENDER][START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "[MVP_DASHBOARD][SAFETY] live_execution=${SYNTH_LIVE_EXECUTION_PERMISSION} broker_write=${SYNTH_BROKER_WRITE_PERMISSION}"
 echo "[MVP_DASHBOARD][SAFETY] broker_private_calls=0 broker_calls=0 broker_writes=0 order_submission=0 live_orders=0 decision_gate_changes=0 execution_planner_changes=0 executor=none account_awareness=0"
 echo "[MVP_DASHBOARD][CONFIG] venue=${VENUE} quote=${QUOTE} interval=${FAST_RECOMPUTE_INTERVAL}"
-echo "[MVP_DASHBOARD][CONFIG] profit_plan_symbols=${SYNTH_MVP_PROFIT_PLAN_SYMBOLS} profit_plan_markets=${SYNTH_MVP_PROFIT_PLAN_MARKETS}"
 
 run_step() {
   echo
@@ -46,14 +37,6 @@ run_step() {
   fi
 }
 
-run_step python -m src.reporting.run_position_rotation_static_dashboard_v1 \
-  --venue "${VENUE}" \
-  --quote "${QUOTE}" \
-  --interval "${FAST_RECOMPUTE_INTERVAL}" \
-  --trading-account-id 2 \
-  --output-html "${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML}" \
-  --output summary
-
 run_step python -m src.reporting.run_entry_candidate_static_dashboard_v1 \
   --venue "${VENUE}" \
   --interval "${FAST_RECOMPUTE_INTERVAL}" \
@@ -62,41 +45,15 @@ run_step python -m src.reporting.run_entry_candidate_static_dashboard_v1 \
 
 run_step python -m src.reporting.run_synth_about_page_v1 \
   --output-html "${SYNTH_ABOUT_PAGE_HTML}" \
+  --cockpit-index-html "${SYNTH_COCKPIT_INDEX_HTML}" \
   --hero-asset-source "${SYNTH_ABOUT_HERO_ASSET_SOURCE}" \
   --hero-asset-output "${SYNTH_ABOUT_HERO_ASSET_OUTPUT}" \
   --hero-asset-href "${SYNTH_ABOUT_HERO_ASSET_HREF}" \
   --output summary
 
-run_step python -m src.reporting.run_manual_short_trader_dashboard_v1 \
-  --markets ${SYNTH_MVP_PROFIT_PLAN_MARKETS} \
-  --fib-map-rows "${SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR}/fibo_target_map_rows_v1.csv" \
-  --output-html "${SYNTH_OPEN_ORDERS_MONITOR_HTML}" \
-  --output-json "${SYNTH_OPEN_ORDERS_MONITOR_JSON}" \
-  --output summary
-
-run_step python -m src.research.run_fibo_target_map_v1 \
-  --symbols "${SYNTH_MVP_PROFIT_PLAN_SYMBOLS}" \
-  --write-files \
-  --output summary \
-  --output-dir "${SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR}"
-
-run_step python -m src.reporting.run_manual_short_trader_profit_plan_v1 \
-  --markets ${SYNTH_MVP_PROFIT_PLAN_MARKETS} \
-  --fib-map-rows "${SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR}/fibo_target_map_rows_v1.csv" \
-  --monitor-html "${SYNTH_OPEN_ORDERS_MONITOR_HTML}" \
-  --monitor-href "${SYNTH_OPEN_ORDERS_MONITOR_HREF}" \
-  --output-html "${SYNTH_PROFIT_PLAN_DASHBOARD_HTML}" \
-  --output-json "${SYNTH_PROFIT_PLAN_DASHBOARD_JSON}" \
-  --output summary
-
 echo
 echo "[MVP_DASHBOARD_RENDER][DONE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
-echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ABOUT_PAGE_HTML}"
-echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_OPEN_ORDERS_MONITOR_HTML}"
-echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_OPEN_ORDERS_MONITOR_JSON}"
-echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_PROFIT_PLAN_DASHBOARD_HTML}"
-echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_PROFIT_PLAN_DASHBOARD_JSON}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ABOUT_HERO_ASSET_OUTPUT}"
-echo "[MVP_DASHBOARD_RENDER][OUTPUT] $(dirname "${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML}")/index.html"
+echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_COCKPIT_INDEX_HTML}"

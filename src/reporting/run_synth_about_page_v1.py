@@ -4,12 +4,16 @@ import argparse
 import shutil
 from pathlib import Path
 
+from src.reporting.account_dashboard_profile_access_v1 import (
+    CONFIGURED_DASHBOARD_PROFILE_ACCESS,
+)
 from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
 
 
 REPORT_NAME = "run_synth_about_page_v1"
 REPORT_VERSION = "0.1"
 DEFAULT_OUTPUT_HTML = Path("/var/www/html/synth/about.html")
+DEFAULT_INDEX_HTML = Path("/var/www/html/synth/index.html")
 DEFAULT_HERO_SOURCE = Path("assets/brand/synth/synth-third-faction-triptych.png")
 DEFAULT_HERO_OUTPUT = Path("/var/www/html/synth/assets/brand/synth-third-faction-triptych.png")
 DEFAULT_HERO_HREF = "/synth/assets/brand/synth-third-faction-triptych.png"
@@ -27,6 +31,7 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--output-html", default=str(DEFAULT_OUTPUT_HTML))
+    parser.add_argument("--cockpit-index-html", default=str(DEFAULT_INDEX_HTML))
     parser.add_argument("--hero-asset-source", default=str(DEFAULT_HERO_SOURCE))
     parser.add_argument("--hero-asset-output", default=str(DEFAULT_HERO_OUTPUT))
     parser.add_argument("--hero-asset-href", default=DEFAULT_HERO_HREF)
@@ -169,23 +174,89 @@ def render_about_html(*, hero_href: str) -> str:
 """
 
 
+def render_global_cockpit_index_html() -> str:
+    account_cards = []
+    for access in CONFIGURED_DASHBOARD_PROFILE_ACCESS:
+        href = f"/synth/accounts/{access.account_profile}/wallet.html"
+        account_cards.append(
+            f"""
+      <div class="card">
+        <a href="{href}">{access.account_profile.title()} Account</a>
+        <p class="muted">Per-account wallet, Profit Plan, and Open Orders Monitor render separately under <code>/synth/accounts/{access.account_profile}/</code>.</p>
+      </div>""".rstrip()
+        )
+    account_cards_html = "\n".join(account_cards)
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="300">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Synth Cockpit</title>
+  <style>
+    body {{ margin:0; background:#0b1020; color:#e7edf8; font-family:system-ui,-apple-system,Segoe UI,sans-serif; }}
+    code {{ color:#8ea0bf; }}
+    main {{ padding:32px; max-width:1000px; margin:auto; }}
+    h1 {{ margin-top:0; }}
+    .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; }}
+    .card {{ background:#121a2f; border:1px solid #273657; border-radius:16px; padding:20px; box-shadow:0 12px 40px rgba(0,0,0,.22); }}
+    a {{ color:#7aa2ff; font-size:20px; text-decoration:none; }}
+    a:hover {{ text-decoration:underline; }}
+    .muted {{ color:#8ea0bf; }}
+    .pill {{ display:inline-block; border-radius:999px; padding:4px 9px; margin:4px 4px 0 0; border:1px solid #273657; color:#55d6a7; }}
+    .cockpit-nav {{ display:flex; flex-wrap:wrap; gap:14px; margin:14px 0 18px; }}
+    .cockpit-nav a {{ font-size:16px; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Synth MVP Read-only Cockpit</h1>
+    <p class="muted">Global cockpit pages render only account-agnostic content. Account dashboards render separately under <code>/synth/accounts/&lt;profile&gt;/</code>.</p>
+    {cockpit_nav()}
+    <p><span class="pill">broker_private_calls=0</span><span class="pill">broker_writes=0</span><span class="pill">order_submission=0</span><span class="pill">executor=none</span></p>
+    <div class="grid">
+      <div class="card">
+        <a href="/synth/about.html">About</a>
+        <p class="muted">Global SYNTH brand, subtitle, and faction-lore overview. Read-only and account-agnostic.</p>
+      </div>
+      <div class="card">
+        <a href="/synth/paper-advice.html">Paper Advice</a>
+        <p class="muted">Market/setup/A+ context and paper navigation.</p>
+      </div>
+      <div class="card">
+        <a href="/synth/entry-candidates.html">Entry Candidates</a>
+        <p class="muted">Market-only setup candidates and readiness groups.</p>
+      </div>
+{account_cards_html}
+    </div>
+  </main>
+</body>
+</html>
+"""
+
+
 def main() -> int:
     args = parse_args()
     output_html = Path(args.output_html)
+    index_html = Path(args.cockpit_index_html)
     hero_source = Path(args.hero_asset_source)
     hero_output = Path(args.hero_asset_output)
     if not hero_source.exists():
         raise SystemExit(f"[error] hero asset missing: {hero_source}")
 
     output_html.parent.mkdir(parents=True, exist_ok=True)
+    index_html.parent.mkdir(parents=True, exist_ok=True)
     hero_output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(hero_source, hero_output)
     output_html.write_text(render_about_html(hero_href=args.hero_asset_href), encoding="utf-8")
+    index_html.write_text(render_global_cockpit_index_html(), encoding="utf-8")
 
     if args.output == "summary":
         print(f"report={REPORT_NAME}")
         print(f"version={REPORT_VERSION}")
         print(f"html_output={output_html}")
+        print(f"index_output={index_html}")
         print(f"hero_asset_output={hero_output}")
         print(f"hero_asset_href={args.hero_asset_href}")
         print("broker_private_calls=0")

@@ -54,9 +54,6 @@ def cockpit_nav() -> str:
       <a href="/synth/about.html">About</a>
       <a href="/synth/paper-advice.html">Paper Advice</a>
       <a href="/synth/entry-candidates.html">Entry Candidates</a>
-      <a href="/synth/rotation-preview.html">Rotation Preview</a>
-      <a href="/synth/profit-plan.html">Profit Plan</a>
-      <a href="/synth/open-orders-monitor.html">Open Orders Monitor</a>
     </nav>
     """
 

@@ -80,7 +80,9 @@ Default per-account outputs:
 - `/var/www/html/synth/accounts/joost/open-orders-monitor.json`
 
 The legacy global prototype pages `/synth/profit-plan.html` and
-`/synth/open-orders-monitor.html` are deprecated after per-account verification.
+`/synth/open-orders-monitor.html` are no longer rendered by the global MVP
+cockpit runner. Account-scoped dashboards render only through
+`scripts/odroid/run_account_wallet_dashboard_render_once.sh <profile>`.
 
 ## What the page shows
 
