@@ -17,6 +17,7 @@ def test_register_page_contains_required_fields() -> None:
     assert "Alias / profile code" in html
     assert "Password" in html
     assert "Proof-of-human response" in html
+    assert "/synth/web-auth/register" in html
     assert "/synth/accounts/" not in html
 
 
@@ -24,11 +25,21 @@ def test_login_page_contains_expected_copy() -> None:
     html = render_login_page()
     assert "Login" in html
     assert "Existing public dashboard pages remain public and unchanged" in html
+    assert "/synth/web-auth/login" in html
+    assert "/synth/web-auth/resend-verification" in html
 
 
 def test_onboarding_page_shows_no_exchange_state() -> None:
     html = render_onboarding_page()
     assert "NO_EXCHANGE_ACCOUNT_CONNECTED" in html
+    assert "/synth/web-auth/onboarding-status" in html
+    assert "/synth/web-auth/logout" in html
+
+
+def test_public_pages_include_register_and_login_navigation() -> None:
+    html = render_register_page()
+    assert "/synth/register.html" in html
+    assert "/synth/login.html" in html
 
 
 def test_pages_runner_outputs_only_new_public_pages() -> None:
@@ -55,6 +66,7 @@ def main() -> None:
     test_register_page_contains_required_fields()
     test_login_page_contains_expected_copy()
     test_onboarding_page_shows_no_exchange_state()
+    test_public_pages_include_register_and_login_navigation()
     test_pages_runner_outputs_only_new_public_pages()
     print("ok")
 

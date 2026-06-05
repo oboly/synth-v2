@@ -3,13 +3,20 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import os
 import re
 import secrets
+import smtplib
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Mapping, Protocol
+from email.message import EmailMessage
+from typing import Any, Callable, Mapping, Protocol
+
+import requests
+
+from src.common.db import get_connection
 
 
 PROFILE_ONBOARDING_NO_EXCHANGE = "NO_EXCHANGE_ACCOUNT_CONNECTED"
@@ -19,7 +26,10 @@ ACCESS_ROLE_OWNER = "OWNER"
 DEFAULT_PROFILE_TIMEZONE = "Europe/Amsterdam"
 DEFAULT_VERIFICATION_TTL = timedelta(hours=24)
 DEFAULT_SESSION_TTL = timedelta(days=14)
+DEFAULT_VERIFICATION_RESEND_COOLDOWN = timedelta(minutes=15)
 PROFILE_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
+TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+PRODUCTION_ENV_NAMES = {"prod", "production"}
 
 
 def utc_now() -> datetime:
@@ -29,6 +39,12 @@ def utc_now() -> datetime:
 def _utc_text(value: datetime) -> str:
     normalized = value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
     return normalized.replace(tzinfo=None).isoformat(sep=" ", timespec="seconds")
+
+
+def _as_utc_datetime(value: object) -> datetime:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return datetime.fromisoformat(str(value)).replace(tzinfo=UTC)
 
 
 def normalize_email(value: str) -> str:
@@ -58,7 +74,12 @@ def hash_password(password: str) -> str:
         p=1,
         dklen=64,
     )
-    return "scrypt$16384$8$1$" + base64.urlsafe_b64encode(salt).decode("ascii") + "$" + base64.urlsafe_b64encode(digest).decode("ascii")
+    return (
+        "scrypt$16384$8$1$"
+        + base64.urlsafe_b64encode(salt).decode("ascii")
+        + "$"
+        + base64.urlsafe_b64encode(digest).decode("ascii")
+    )
 
 
 def verify_password(password: str, password_hash: str) -> bool:
@@ -79,6 +100,10 @@ def verify_password(password: str, password_hash: str) -> bool:
         return hmac.compare_digest(actual, expected)
     except Exception:
         return False
+
+
+def is_production_env(env: Mapping[str, str]) -> bool:
+    return str(env.get("SYNTH_ENV", "")).strip().lower() in PRODUCTION_ENV_NAMES
 
 
 @dataclass(frozen=True)
@@ -104,6 +129,80 @@ class Mailer(Protocol):
         ...
 
 
+class WebsiteRegistrationRepository(Protocol):
+    def email_exists(self, email_normalized: str) -> bool:
+        ...
+
+    def profile_exists(self, profile_code: str) -> bool:
+        ...
+
+    def create_pending_registration(
+        self,
+        *,
+        email_normalized: str,
+        password_hash_text: str,
+        profile_code: str,
+        display_timezone: str,
+        created_ts_utc: datetime,
+    ) -> tuple[int, int]:
+        ...
+
+    def store_verification_token(
+        self,
+        *,
+        app_user_id: int,
+        app_profile_id: int,
+        token_hash: str,
+        created_ts_utc: datetime,
+        expires_ts_utc: datetime,
+    ) -> None:
+        ...
+
+    def lookup_verification_token(self, token_hash: str) -> Mapping[str, object] | None:
+        ...
+
+    def lookup_pending_profile(self, login_value: str) -> Mapping[str, object] | None:
+        ...
+
+    def lookup_latest_verification_token(
+        self,
+        *,
+        app_user_id: int,
+        app_profile_id: int,
+    ) -> Mapping[str, object] | None:
+        ...
+
+    def activate_verified_profile(
+        self,
+        *,
+        email_verification_token_id: int,
+        app_user_id: int,
+        app_profile_id: int,
+        verified_ts_utc: datetime,
+    ) -> None:
+        ...
+
+    def find_user_for_login(self, login_value: str) -> Mapping[str, object] | None:
+        ...
+
+    def create_session(
+        self,
+        *,
+        app_user_id: int,
+        app_profile_id: int,
+        session_hash: str,
+        created_ts_utc: datetime,
+        expires_ts_utc: datetime,
+    ) -> None:
+        ...
+
+    def lookup_active_session(self, session_hash: str) -> Mapping[str, object] | None:
+        ...
+
+    def invalidate_session(self, session_hash: str, invalidated_ts_utc: datetime) -> None:
+        ...
+
+
 @dataclass(frozen=True)
 class MockProofOfHumanProvider:
     accepted_response: str = "test-human-ok"
@@ -120,6 +219,36 @@ class DisabledProofOfHumanProvider:
 
     def validate(self, *, response: str, remote_ip: str | None = None) -> ProofValidationResult:
         return ProofValidationResult(valid=False, reason=self.reason)
+
+
+@dataclass(frozen=True)
+class TurnstileProofOfHumanProvider:
+    secret_key: str
+    verify_url: str = TURNSTILE_VERIFY_URL
+    timeout_seconds: int = 10
+
+    def validate(self, *, response: str, remote_ip: str | None = None) -> ProofValidationResult:
+        if not str(response or "").strip():
+            return ProofValidationResult(valid=False, reason="INVALID_PROOF_OF_HUMAN")
+        payload = {
+            "secret": self.secret_key,
+            "response": response,
+        }
+        if remote_ip:
+            payload["remoteip"] = remote_ip
+        try:
+            verify_response = requests.post(
+                self.verify_url,
+                data=payload,
+                timeout=self.timeout_seconds,
+            )
+            verify_response.raise_for_status()
+            data = verify_response.json()
+        except Exception:
+            return ProofValidationResult(valid=False, reason="PROOF_PROVIDER_UNAVAILABLE")
+        if bool(data.get("success")):
+            return ProofValidationResult(valid=True, reason="OK")
+        return ProofValidationResult(valid=False, reason="INVALID_PROOF_OF_HUMAN")
 
 
 @dataclass
@@ -144,14 +273,112 @@ class MemoryMailer:
         )
 
 
+@dataclass(frozen=True)
+class FileMailer:
+    output_path: str
+
+    def send_verification_email(
+        self,
+        *,
+        email: str,
+        profile_code: str,
+        verification_url: str,
+        expires_ts_utc: datetime,
+    ) -> None:
+        output = {
+            "email": email,
+            "profile_code": profile_code,
+            "verification_url": verification_url,
+            "expires_ts_utc": _utc_text(expires_ts_utc),
+        }
+        with open(self.output_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(output, sort_keys=True))
+            handle.write("\n")
+
+
+@dataclass(frozen=True)
+class SmtpMailer:
+    host: str
+    port: int
+    username: str | None
+    password: str | None
+    from_address: str
+    use_tls: bool = True
+    starttls: bool = True
+    timeout_seconds: int = 15
+
+    def send_verification_email(
+        self,
+        *,
+        email: str,
+        profile_code: str,
+        verification_url: str,
+        expires_ts_utc: datetime,
+    ) -> None:
+        message = EmailMessage()
+        message["Subject"] = "Verify your SYNTH profile"
+        message["From"] = self.from_address
+        message["To"] = email
+        message.set_content(
+            "\n".join(
+                [
+                    f"Profile: {profile_code}",
+                    "",
+                    "Complete your SYNTH email verification with the link below:",
+                    verification_url,
+                    "",
+                    f"Expires (UTC): {_utc_text(expires_ts_utc)}",
+                ]
+            )
+        )
+        with smtplib.SMTP(self.host, self.port, timeout=self.timeout_seconds) as client:
+            if self.starttls:
+                client.starttls()
+            if self.username:
+                client.login(self.username, self.password or "")
+            client.send_message(message)
+
+
 def build_proof_of_human_provider_from_env(env: Mapping[str, str]) -> ProofOfHumanProvider:
-    mode = str(env.get("SYNTH_ENV", "")).strip().lower()
     provider = str(env.get("SYNTH_PROOF_PROVIDER", "")).strip().lower()
-    if provider == "mock" and mode in {"dev", "test"}:
+    if provider == "mock":
+        if is_production_env(env):
+            return DisabledProofOfHumanProvider(reason="MOCK_PROOF_PROVIDER_FORBIDDEN")
         return MockProofOfHumanProvider()
-    if provider == "turnstile" and env.get("SYNTH_TURNSTILE_SECRET"):
-        return DisabledProofOfHumanProvider(reason="TURNSTILE_PROVIDER_NOT_IMPLEMENTED_IN_FOUNDATION")
+    if provider == "turnstile":
+        secret = str(env.get("SYNTH_TURNSTILE_SECRET", "")).strip()
+        if not secret:
+            return DisabledProofOfHumanProvider(reason="PROOF_PROVIDER_NOT_CONFIGURED")
+        return TurnstileProofOfHumanProvider(secret_key=secret)
     return DisabledProofOfHumanProvider(reason="PROOF_PROVIDER_NOT_CONFIGURED")
+
+
+def build_mailer_from_env(env: Mapping[str, str]) -> Mailer:
+    mailer_mode = str(env.get("SYNTH_MAILER", "")).strip().lower()
+    if mailer_mode == "memory":
+        if is_production_env(env):
+            raise ValueError("MEMORY_MAILER_FORBIDDEN")
+        return MemoryMailer(sent_messages=[])
+    if mailer_mode == "file":
+        if is_production_env(env):
+            raise ValueError("FILE_MAILER_FORBIDDEN")
+        output_path = str(env.get("SYNTH_FILE_MAILER_PATH", "")).strip()
+        if not output_path:
+            raise ValueError("FILE_MAILER_PATH_REQUIRED")
+        return FileMailer(output_path=output_path)
+    host = str(env.get("SYNTH_SMTP_HOST", "")).strip()
+    from_address = str(env.get("SYNTH_SMTP_FROM", "")).strip()
+    if not host or not from_address:
+        raise ValueError("SMTP_NOT_CONFIGURED")
+    return SmtpMailer(
+        host=host,
+        port=int(str(env.get("SYNTH_SMTP_PORT", "587"))),
+        username=str(env.get("SYNTH_SMTP_USER", "")).strip() or None,
+        password=str(env.get("SYNTH_SMTP_PASSWORD", "")).strip() or None,
+        from_address=from_address,
+        use_tls=True,
+        starttls=str(env.get("SYNTH_SMTP_STARTTLS", "1")).strip() not in {"0", "false", "False"},
+    )
 
 
 @dataclass(frozen=True)
@@ -163,6 +390,13 @@ class RegisterResult:
 
 @dataclass(frozen=True)
 class VerifyResult:
+    success: bool
+    error_code: str | None = None
+    profile_code: str | None = None
+
+
+@dataclass(frozen=True)
+class ResendResult:
     success: bool
     error_code: str | None = None
     profile_code: str | None = None
@@ -366,6 +600,48 @@ class SqliteWebsiteRegistrationRepository:
             (token_hash,),
         ).fetchone()
 
+    def lookup_pending_profile(self, login_value: str) -> sqlite3.Row | None:
+        normalized_email = normalize_email(login_value)
+        normalized_profile = str(login_value or "").strip().lower()
+        return self.conn.execute(
+            """
+            SELECT
+                au.app_user_id,
+                au.email_normalized,
+                au.status,
+                ap.app_profile_id,
+                ap.profile_code
+            FROM app_user au
+            JOIN app_user_profile_access aupa
+              ON aupa.app_user_id = au.app_user_id
+            JOIN app_profile ap
+              ON ap.app_profile_id = aupa.app_profile_id
+            WHERE (au.email_normalized = ? OR ap.profile_code = ?)
+              AND au.status = ?
+            ORDER BY au.app_user_id
+            LIMIT 1
+            """,
+            (normalized_email, normalized_profile, USER_STATUS_PENDING),
+        ).fetchone()
+
+    def lookup_latest_verification_token(
+        self,
+        *,
+        app_user_id: int,
+        app_profile_id: int,
+    ) -> sqlite3.Row | None:
+        return self.conn.execute(
+            """
+            SELECT created_ts_utc
+            FROM email_verification_token
+            WHERE app_user_id = ?
+              AND app_profile_id = ?
+            ORDER BY email_verification_token_id DESC
+            LIMIT 1
+            """,
+            (app_user_id, app_profile_id),
+        ).fetchone()
+
     def activate_verified_profile(
         self,
         *,
@@ -476,16 +752,331 @@ class SqliteWebsiteRegistrationRepository:
         self.conn.commit()
 
 
+class MariaDbWebsiteRegistrationRepository:
+    def __init__(self, connection_factory: Callable[[], Any] | None = None) -> None:
+        self._connection_factory = connection_factory or get_connection
+
+    def _with_conn(self, fn: Callable[[Any, Any], Any]) -> Any:
+        conn = self._connection_factory()
+        try:
+            with conn.cursor() as cur:
+                result = fn(conn, cur)
+            conn.commit()
+            return result
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def email_exists(self, email_normalized: str) -> bool:
+        def _run(_conn: Any, cur: Any) -> bool:
+            cur.execute("SELECT 1 FROM app_user WHERE email_normalized = %s", (email_normalized,))
+            return cur.fetchone() is not None
+        return bool(self._with_conn(_run))
+
+    def profile_exists(self, profile_code: str) -> bool:
+        def _run(_conn: Any, cur: Any) -> bool:
+            cur.execute("SELECT 1 FROM app_profile WHERE profile_code = %s", (profile_code,))
+            return cur.fetchone() is not None
+        return bool(self._with_conn(_run))
+
+    def create_pending_registration(
+        self,
+        *,
+        email_normalized: str,
+        password_hash_text: str,
+        profile_code: str,
+        display_timezone: str,
+        created_ts_utc: datetime,
+    ) -> tuple[int, int]:
+        def _run(_conn: Any, cur: Any) -> tuple[int, int]:
+            cur.execute(
+                """
+                INSERT INTO app_user (
+                    email_normalized,
+                    password_hash,
+                    status,
+                    created_ts_utc
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    email_normalized,
+                    password_hash_text,
+                    USER_STATUS_PENDING,
+                    _utc_text(created_ts_utc),
+                ),
+            )
+            app_user_id = int(cur.lastrowid)
+            cur.execute(
+                """
+                INSERT INTO app_profile (
+                    profile_code,
+                    display_timezone,
+                    onboarding_state,
+                    created_ts_utc
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    profile_code,
+                    display_timezone,
+                    PROFILE_ONBOARDING_NO_EXCHANGE,
+                    _utc_text(created_ts_utc),
+                ),
+            )
+            app_profile_id = int(cur.lastrowid)
+            cur.execute(
+                """
+                INSERT INTO app_user_profile_access (
+                    app_user_id,
+                    app_profile_id,
+                    access_role,
+                    created_ts_utc
+                ) VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    app_user_id,
+                    app_profile_id,
+                    ACCESS_ROLE_OWNER,
+                    _utc_text(created_ts_utc),
+                ),
+            )
+            return app_user_id, app_profile_id
+        return self._with_conn(_run)
+
+    def store_verification_token(
+        self,
+        *,
+        app_user_id: int,
+        app_profile_id: int,
+        token_hash: str,
+        created_ts_utc: datetime,
+        expires_ts_utc: datetime,
+    ) -> None:
+        def _run(_conn: Any, cur: Any) -> None:
+            cur.execute(
+                """
+                INSERT INTO email_verification_token (
+                    app_user_id,
+                    app_profile_id,
+                    token_hash,
+                    created_ts_utc,
+                    expires_ts_utc
+                ) VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    app_user_id,
+                    app_profile_id,
+                    token_hash,
+                    _utc_text(created_ts_utc),
+                    _utc_text(expires_ts_utc),
+                ),
+            )
+        self._with_conn(_run)
+
+    def lookup_verification_token(self, token_hash: str) -> Mapping[str, object] | None:
+        def _run(_conn: Any, cur: Any) -> Mapping[str, object] | None:
+            cur.execute(
+                """
+                SELECT
+                    evt.email_verification_token_id,
+                    evt.app_user_id,
+                    evt.app_profile_id,
+                    evt.created_ts_utc,
+                    evt.expires_ts_utc,
+                    evt.used_ts_utc,
+                    ap.profile_code
+                FROM email_verification_token evt
+                JOIN app_profile ap
+                  ON ap.app_profile_id = evt.app_profile_id
+                WHERE evt.token_hash = %s
+                """,
+                (token_hash,),
+            )
+            return cur.fetchone()
+        return self._with_conn(_run)
+
+    def lookup_pending_profile(self, login_value: str) -> Mapping[str, object] | None:
+        normalized_email = normalize_email(login_value)
+        normalized_profile = str(login_value or "").strip().lower()
+
+        def _run(_conn: Any, cur: Any) -> Mapping[str, object] | None:
+            cur.execute(
+                """
+                SELECT
+                    au.app_user_id,
+                    au.email_normalized,
+                    au.status,
+                    ap.app_profile_id,
+                    ap.profile_code
+                FROM app_user au
+                JOIN app_user_profile_access aupa
+                  ON aupa.app_user_id = au.app_user_id
+                JOIN app_profile ap
+                  ON ap.app_profile_id = aupa.app_profile_id
+                WHERE (au.email_normalized = %s OR ap.profile_code = %s)
+                  AND au.status = %s
+                ORDER BY au.app_user_id
+                LIMIT 1
+                """,
+                (normalized_email, normalized_profile, USER_STATUS_PENDING),
+            )
+            return cur.fetchone()
+        return self._with_conn(_run)
+
+    def lookup_latest_verification_token(
+        self,
+        *,
+        app_user_id: int,
+        app_profile_id: int,
+    ) -> Mapping[str, object] | None:
+        def _run(_conn: Any, cur: Any) -> Mapping[str, object] | None:
+            cur.execute(
+                """
+                SELECT created_ts_utc
+                FROM email_verification_token
+                WHERE app_user_id = %s
+                  AND app_profile_id = %s
+                ORDER BY email_verification_token_id DESC
+                LIMIT 1
+                """,
+                (app_user_id, app_profile_id),
+            )
+            return cur.fetchone()
+        return self._with_conn(_run)
+
+    def activate_verified_profile(
+        self,
+        *,
+        email_verification_token_id: int,
+        app_user_id: int,
+        app_profile_id: int,
+        verified_ts_utc: datetime,
+    ) -> None:
+        ts_text = _utc_text(verified_ts_utc)
+
+        def _run(_conn: Any, cur: Any) -> None:
+            cur.execute(
+                "UPDATE email_verification_token SET used_ts_utc = %s WHERE email_verification_token_id = %s",
+                (ts_text, email_verification_token_id),
+            )
+            cur.execute(
+                "UPDATE app_user SET status = %s, verified_ts_utc = %s WHERE app_user_id = %s",
+                (USER_STATUS_ACTIVE, ts_text, app_user_id),
+            )
+            cur.execute(
+                "UPDATE app_profile SET activated_ts_utc = %s WHERE app_profile_id = %s",
+                (ts_text, app_profile_id),
+            )
+        self._with_conn(_run)
+
+    def find_user_for_login(self, login_value: str) -> Mapping[str, object] | None:
+        normalized_email = normalize_email(login_value)
+        normalized_profile = str(login_value or "").strip().lower()
+
+        def _run(_conn: Any, cur: Any) -> Mapping[str, object] | None:
+            cur.execute(
+                """
+                SELECT
+                    au.app_user_id,
+                    au.email_normalized,
+                    au.password_hash,
+                    au.status,
+                    ap.app_profile_id,
+                    ap.profile_code,
+                    ap.onboarding_state
+                FROM app_user au
+                JOIN app_user_profile_access aupa
+                  ON aupa.app_user_id = au.app_user_id
+                JOIN app_profile ap
+                  ON ap.app_profile_id = aupa.app_profile_id
+                WHERE au.email_normalized = %s
+                   OR ap.profile_code = %s
+                ORDER BY au.app_user_id
+                LIMIT 1
+                """,
+                (normalized_email, normalized_profile),
+            )
+            return cur.fetchone()
+        return self._with_conn(_run)
+
+    def create_session(
+        self,
+        *,
+        app_user_id: int,
+        app_profile_id: int,
+        session_hash: str,
+        created_ts_utc: datetime,
+        expires_ts_utc: datetime,
+    ) -> None:
+        def _run(_conn: Any, cur: Any) -> None:
+            cur.execute(
+                """
+                INSERT INTO web_session (
+                    app_user_id,
+                    app_profile_id,
+                    session_hash,
+                    created_ts_utc,
+                    expires_ts_utc
+                ) VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    app_user_id,
+                    app_profile_id,
+                    session_hash,
+                    _utc_text(created_ts_utc),
+                    _utc_text(expires_ts_utc),
+                ),
+            )
+            cur.execute(
+                "UPDATE app_user SET last_login_ts_utc = %s WHERE app_user_id = %s",
+                (_utc_text(created_ts_utc), app_user_id),
+            )
+        self._with_conn(_run)
+
+    def lookup_active_session(self, session_hash: str) -> Mapping[str, object] | None:
+        def _run(_conn: Any, cur: Any) -> Mapping[str, object] | None:
+            cur.execute(
+                """
+                SELECT
+                    ws.web_session_id,
+                    ws.app_user_id,
+                    ws.app_profile_id,
+                    ws.created_ts_utc,
+                    ws.expires_ts_utc,
+                    ws.invalidated_ts_utc,
+                    ap.profile_code,
+                    ap.onboarding_state
+                FROM web_session ws
+                JOIN app_profile ap
+                  ON ap.app_profile_id = ws.app_profile_id
+                WHERE ws.session_hash = %s
+                """,
+                (session_hash,),
+            )
+            return cur.fetchone()
+        return self._with_conn(_run)
+
+    def invalidate_session(self, session_hash: str, invalidated_ts_utc: datetime) -> None:
+        def _run(_conn: Any, cur: Any) -> None:
+            cur.execute(
+                "UPDATE web_session SET invalidated_ts_utc = %s WHERE session_hash = %s AND invalidated_ts_utc IS NULL",
+                (_utc_text(invalidated_ts_utc), session_hash),
+            )
+        self._with_conn(_run)
+
+
 class WebsiteRegistrationService:
     def __init__(
         self,
         *,
-        repository: SqliteWebsiteRegistrationRepository,
+        repository: WebsiteRegistrationRepository,
         proof_provider: ProofOfHumanProvider,
         mailer: Mailer,
         base_url: str,
         verification_ttl: timedelta = DEFAULT_VERIFICATION_TTL,
         session_ttl: timedelta = DEFAULT_SESSION_TTL,
+        verification_resend_cooldown: timedelta = DEFAULT_VERIFICATION_RESEND_COOLDOWN,
         display_timezone: str = DEFAULT_PROFILE_TIMEZONE,
     ) -> None:
         self.repository = repository
@@ -494,6 +1085,7 @@ class WebsiteRegistrationService:
         self.base_url = base_url.rstrip("/")
         self.verification_ttl = verification_ttl
         self.session_ttl = session_ttl
+        self.verification_resend_cooldown = verification_resend_cooldown
         self.display_timezone = display_timezone
 
     def register(
@@ -503,10 +1095,11 @@ class WebsiteRegistrationService:
         profile_code: str,
         password: str,
         proof_response: str,
+        remote_ip: str | None = None,
         now_utc: datetime | None = None,
     ) -> RegisterResult:
         now = now_utc or utc_now()
-        proof = self.proof_provider.validate(response=proof_response)
+        proof = self.proof_provider.validate(response=proof_response, remote_ip=remote_ip)
         if not proof.valid:
             return RegisterResult(success=False, error_code=proof.reason)
         email_normalized = normalize_email(email)
@@ -525,23 +1118,67 @@ class WebsiteRegistrationService:
             display_timezone=self.display_timezone,
             created_ts_utc=now,
         )
+        self._issue_verification_token(
+            app_user_id=app_user_id,
+            app_profile_id=app_profile_id,
+            email=email_normalized,
+            profile_code=normalized_profile,
+            now_utc=now,
+        )
+        return RegisterResult(success=True, profile_code=normalized_profile)
+
+    def _issue_verification_token(
+        self,
+        *,
+        app_user_id: int,
+        app_profile_id: int,
+        email: str,
+        profile_code: str,
+        now_utc: datetime,
+    ) -> None:
         raw_token = secrets.token_urlsafe(32)
         token_hash = _hash_token(raw_token)
-        expires = now + self.verification_ttl
+        expires = now_utc + self.verification_ttl
         self.repository.store_verification_token(
             app_user_id=app_user_id,
             app_profile_id=app_profile_id,
             token_hash=token_hash,
-            created_ts_utc=now,
+            created_ts_utc=now_utc,
             expires_ts_utc=expires,
         )
         self.mailer.send_verification_email(
-            email=email_normalized,
-            profile_code=normalized_profile,
+            email=email,
+            profile_code=profile_code,
             verification_url=f"{self.base_url}/synth/verify-result.html?token={raw_token}",
             expires_ts_utc=expires,
         )
-        return RegisterResult(success=True, profile_code=normalized_profile)
+
+    def resend_verification(
+        self,
+        *,
+        login_value: str,
+        now_utc: datetime | None = None,
+    ) -> ResendResult:
+        now = now_utc or utc_now()
+        row = self.repository.lookup_pending_profile(login_value)
+        if row is None:
+            return ResendResult(success=True)
+        latest = self.repository.lookup_latest_verification_token(
+            app_user_id=int(row["app_user_id"]),
+            app_profile_id=int(row["app_profile_id"]),
+        )
+        if latest is not None:
+            latest_created = _as_utc_datetime(latest["created_ts_utc"])
+            if latest_created + self.verification_resend_cooldown > now.astimezone(UTC):
+                return ResendResult(success=False, error_code="VERIFICATION_RESEND_RATE_LIMITED")
+        self._issue_verification_token(
+            app_user_id=int(row["app_user_id"]),
+            app_profile_id=int(row["app_profile_id"]),
+            email=str(row["email_normalized"]),
+            profile_code=str(row["profile_code"]),
+            now_utc=now,
+        )
+        return ResendResult(success=True, profile_code=str(row["profile_code"]))
 
     def verify_email(self, *, raw_token: str, now_utc: datetime | None = None) -> VerifyResult:
         now = now_utc or utc_now()
@@ -550,7 +1187,7 @@ class WebsiteRegistrationService:
             return VerifyResult(success=False, error_code="INVALID_VERIFICATION_TOKEN")
         if row["used_ts_utc"] is not None:
             return VerifyResult(success=False, error_code="VERIFICATION_TOKEN_ALREADY_USED")
-        expires = datetime.fromisoformat(str(row["expires_ts_utc"])).replace(tzinfo=UTC)
+        expires = _as_utc_datetime(row["expires_ts_utc"])
         if expires < now.astimezone(UTC):
             return VerifyResult(success=False, error_code="VERIFICATION_TOKEN_EXPIRED")
         self.repository.activate_verified_profile(
@@ -607,7 +1244,7 @@ class WebsiteRegistrationService:
             return OnboardingAccessResult(success=False, error_code="UNAUTHORIZED")
         if row["invalidated_ts_utc"] is not None:
             return OnboardingAccessResult(success=False, error_code="UNAUTHORIZED")
-        expires = datetime.fromisoformat(str(row["expires_ts_utc"])).replace(tzinfo=UTC)
+        expires = _as_utc_datetime(row["expires_ts_utc"])
         if expires < now.astimezone(UTC):
             return OnboardingAccessResult(success=False, error_code="SESSION_EXPIRED")
         normalized_profile = normalize_profile_code(requested_profile_code)

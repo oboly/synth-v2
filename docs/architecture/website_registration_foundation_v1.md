@@ -21,6 +21,8 @@ Current scope:
 - existing public dashboard URLs remain unchanged
 - no nginx or reverse-proxy auth changes
 - no gating of `/synth/accounts/<profile>/...` in this batch
+- isolated POST routes live under `/synth/web-auth/`
+- public HTML shells remain static pages rendered under `/var/www/html/synth/`
 
 Registration flow:
 
@@ -34,6 +36,7 @@ Registration flow:
 8. activate the profile only after verification
 9. login creates a hashed server-side session
 10. onboarding shows `NO_EXCHANGE_ACCOUNT_CONNECTED`
+11. resend verification is rate-limited and must not leak whether an email/profile exists
 
 Data model:
 
@@ -50,6 +53,8 @@ Security rules:
 - token values must not be logged
 - proof-of-human fails closed when production config is absent
 - SMTP/proof-provider secrets come from environment only
+- production must not run the mock proof-of-human provider
+- health endpoints must expose no secrets, tokens, or user data
 
 Explicit non-goals in this batch:
 

@@ -37,6 +37,8 @@ def test_render_about_html_uses_public_asset_href() -> None:
     assert "The Weaver" in html
     assert "The Third Faction" in html
     assert "Cybernetic Zen Master with Market Data" in html
+    assert "/synth/register.html" in html
+    assert "/synth/login.html" in html
 
 
 def test_render_about_html_has_meaningful_alt_text() -> None:
@@ -80,9 +82,17 @@ def test_global_cockpit_navigation_links_to_about() -> None:
     assert "/synth/rotation-preview.html" not in nav_html
 
 
+def test_public_navigation_can_include_register_and_login() -> None:
+    nav_html = cockpit_nav(include_auth_links=True)
+    assert "/synth/register.html" in nav_html
+    assert "/synth/login.html" in nav_html
+
+
 def test_global_cockpit_index_links_global_pages_and_configured_account() -> None:
     html = render_global_cockpit_index_html(account_profile=DEFAULT_NAV_ACCOUNT_PROFILE)
     assert "/synth/about.html" in html
+    assert "/synth/register.html" in html
+    assert "/synth/login.html" in html
     assert "/synth/accounts/joost/wallet.html" in html
     assert "/synth/accounts/joost/profit-plan.html" in html
     assert "/synth/accounts/joost/open-orders-monitor.html" in html
@@ -124,6 +134,7 @@ def main() -> None:
         test_render_about_html_has_meaningful_alt_text,
         test_wallet_navigation_links_to_global_about,
         test_global_cockpit_navigation_links_to_about,
+        test_public_navigation_can_include_register_and_login,
         test_global_cockpit_index_links_global_pages_and_configured_account,
         test_about_runner_writes_html_and_copies_asset,
     ]

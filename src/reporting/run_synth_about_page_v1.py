@@ -106,7 +106,7 @@ def render_about_html(
 <body>
   <div class="page">
     <header class="header">
-      {cockpit_nav(account_profile=account_profile)}
+      {cockpit_nav(account_profile=account_profile, include_auth_links=True)}
       <div class="about-hero">
         <div>
           <div class="brand-kicker">SYNTH</div>
@@ -224,7 +224,7 @@ def render_global_cockpit_index_html(
   <main>
     <h1>Synth MVP Read-only Cockpit</h1>
     <p class="muted">Global cockpit pages render only account-agnostic content. Account dashboards render separately under <code>/synth/accounts/&lt;profile&gt;/</code>.</p>
-    {cockpit_nav(account_profile=account_profile)}
+    {cockpit_nav(account_profile=account_profile, include_auth_links=True)}
     <p><span class="pill">broker_private_calls=0</span><span class="pill">broker_writes=0</span><span class="pill">order_submission=0</span><span class="pill">executor=none</span></p>
     <div class="grid">
       <div class="card">

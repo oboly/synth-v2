@@ -61,10 +61,10 @@ def account_dashboard_links(profile: str) -> dict[str, str]:
     }
 
 
-def cockpit_nav(*, account_profile: str | None = None) -> str:
+def cockpit_nav(*, account_profile: str | None = None, include_auth_links: bool = False) -> str:
     if account_profile:
         links = account_dashboard_links(account_profile)
-        items = (
+        items: tuple[tuple[str, str], ...] = (
             ("About", links["about"]),
             ("Wallet", links["wallet"]),
             ("Profit Plan", links["profit_plan"]),
@@ -74,6 +74,11 @@ def cockpit_nav(*, account_profile: str | None = None) -> str:
         items = (
             ("Cockpit", "/synth/index.html"),
             ("About", "/synth/about.html"),
+        )
+    if include_auth_links:
+        items = items + (
+            ("Register", "/synth/register.html"),
+            ("Login", "/synth/login.html"),
         )
     links_html = "\n".join(f'      <a href="{href}">{label}</a>' for label, href in items)
     return (

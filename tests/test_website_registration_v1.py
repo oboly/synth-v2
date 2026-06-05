@@ -135,6 +135,30 @@ def test_verification_token_is_single_use_and_expires() -> None:
     assert expired.error_code == "VERIFICATION_TOKEN_EXPIRED"
 
 
+def test_resend_verification_is_rate_limited() -> None:
+    service, _, mailer = _service()
+    start = datetime(2026, 6, 5, 12, 0, tzinfo=UTC)
+    service.register(
+        email="hugo@example.com",
+        profile_code="hugo",
+        password="VerySecurePassword123",
+        proof_response="test-human-ok",
+        now_utc=start,
+    )
+    rate_limited = service.resend_verification(
+        login_value="hugo",
+        now_utc=start + timedelta(minutes=5),
+    )
+    later = service.resend_verification(
+        login_value="hugo",
+        now_utc=start + timedelta(minutes=20),
+    )
+    assert rate_limited.success is False
+    assert rate_limited.error_code == "VERIFICATION_RESEND_RATE_LIMITED"
+    assert later.success is True
+    assert len(mailer.sent_messages) == 2
+
+
 def test_verified_hugo_receives_no_exchange_onboarding() -> None:
     service, repo, mailer = _service()
     now = datetime(2026, 6, 5, 12, 0, tzinfo=UTC)
@@ -263,7 +287,7 @@ def test_mock_provider_allowed_only_in_test_mode() -> None:
     )
     result = prod_provider.validate(response="test-human-ok")
     assert result.valid is False
-    assert result.reason == "PROOF_PROVIDER_NOT_CONFIGURED"
+    assert result.reason == "MOCK_PROOF_PROVIDER_FORBIDDEN"
 
 
 def test_source_has_no_broker_or_execution_imports() -> None:
@@ -290,6 +314,7 @@ def main() -> None:
     test_invalid_proof_of_human_rejected()
     test_unverified_profile_cannot_log_in()
     test_verification_token_is_single_use_and_expires()
+    test_resend_verification_is_rate_limited()
     test_verified_hugo_receives_no_exchange_onboarding()
     test_exact_profile_access_and_cross_profile_denial()
     test_logout_invalidates_session()

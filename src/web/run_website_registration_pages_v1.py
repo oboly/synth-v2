@@ -3,16 +3,22 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.reporting.dashboard_style_v1 import cockpit_base_css
+from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
 
 
 DEFAULT_OUTPUT_ROOT = Path("/var/www/html/synth")
+REGISTER_ENDPOINT = "/synth/web-auth/register"
+VERIFY_ENDPOINT = "/synth/web-auth/verify-email"
+LOGIN_ENDPOINT = "/synth/web-auth/login"
+LOGOUT_ENDPOINT = "/synth/web-auth/logout"
+ONBOARDING_ENDPOINT = "/synth/web-auth/onboarding-status"
+RESEND_ENDPOINT = "/synth/web-auth/resend-verification"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Render minimal SYNTH registration foundation pages. "
+            "Render minimal SYNTH registration pages wired to the isolated website auth service. "
             "Static page render only; no dashboard URL changes, no broker calls."
         )
     )
@@ -21,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _page_shell(*, title: str, body_html: str) -> str:
+def _page_shell(*, title: str, body_html: str, script_html: str = "") -> str:
     css = cockpit_base_css(min_table_width=960) + """
     .auth-wrap { max-width: 780px; margin: 0 auto; }
     .auth-card { background: var(--panel); border: 1px solid var(--line); border-radius: 18px; padding: 22px; }
@@ -35,10 +41,15 @@ def _page_shell(*, title: str, body_html: str) -> str:
     .auth-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
     .auth-actions button, .auth-actions a {
       border-radius: 10px; border: 1px solid var(--line); padding: 10px 14px; text-decoration: none;
-      color: var(--text); background: rgba(255,255,255,.05);
+      color: var(--text); background: rgba(255,255,255,.05); cursor: pointer;
     }
     .auth-note { color: var(--muted); line-height: 1.55; }
     .status-pill { display: inline-block; margin-top: 8px; }
+    .auth-status {
+      margin-top: 14px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line);
+      background: rgba(255,255,255,.03); color: var(--muted); min-height: 46px;
+    }
+    code { color: var(--warn); }
     """
     return f"""<!doctype html>
 <html lang="en">
@@ -51,6 +62,7 @@ def _page_shell(*, title: str, body_html: str) -> str:
 <body>
   <div class="page auth-wrap">
     <header class="header">
+      {cockpit_nav(include_auth_links=True)}
       <h1>SYNTH</h1>
       <div class="muted">Cybernetic Zen Master with Market Data</div>
       <div class="small muted">Registration foundation only. Existing public dashboard URLs remain unchanged.</div>
@@ -61,62 +73,184 @@ def _page_shell(*, title: str, body_html: str) -> str:
       </section>
     </main>
   </div>
+  {script_html}
 </body>
 </html>"""
 
 
+def _json_fetch_script() -> str:
+    return """
+<script>
+async function synthPostJson(path, payload) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    credentials: "same-origin",
+    body: JSON.stringify(payload || {})
+  });
+  const text = await response.text();
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (_error) {
+    data = {"ok": false, "error": {"code": "INVALID_JSON_RESPONSE"}, "raw": text};
+  }
+  return {response, data};
+}
+</script>
+""".strip()
+
+
 def render_register_page() -> str:
-    return _page_shell(
-        title="SYNTH Register",
-        body_html="""
+    body = f"""
         <h2>Register</h2>
         <p class="auth-note">Create a SYNTH website profile. This does not create a trading account and does not collect exchange API credentials.</p>
-        <form class="auth-grid">
-          <div class="auth-field"><label>Email address</label><input type="email" name="email" autocomplete="email"></div>
-          <div class="auth-field"><label>Alias / profile code</label><input type="text" name="profile_code" autocomplete="username"></div>
-          <div class="auth-field"><label>Password</label><input type="password" name="password" autocomplete="new-password"></div>
-          <div class="auth-field"><label>Proof-of-human response</label><textarea name="proof_response" rows="3"></textarea></div>
-          <div class="auth-actions"><button type="button" disabled>Registration submits through the isolated auth service</button></div>
+        <form class="auth-grid" id="register-form">
+          <div class="auth-field"><label>Email address</label><input type="email" name="email" autocomplete="email" required></div>
+          <div class="auth-field"><label>Alias / profile code</label><input type="text" name="profile_code" autocomplete="username" required></div>
+          <div class="auth-field"><label>Password</label><input type="password" name="password" autocomplete="new-password" required></div>
+          <div class="auth-field"><label>Proof-of-human response</label><textarea name="proof_response" rows="3" required></textarea></div>
+          <div class="auth-actions">
+            <button type="submit">Register</button>
+            <a href="/synth/login.html">Already verified? Log in</a>
+          </div>
         </form>
-        """,
+        <div id="register-status" class="auth-status" aria-live="polite">Waiting for registration input.</div>
+        """
+    script = (
+        _json_fetch_script()
+        + f"""
+<script>
+document.getElementById("register-form").addEventListener("submit", async function(event) {{
+  event.preventDefault();
+  const form = event.currentTarget;
+  const status = document.getElementById("register-status");
+  const payload = Object.fromEntries(new FormData(form).entries());
+  status.textContent = "Submitting registration...";
+  const {{response, data}} = await synthPostJson("{REGISTER_ENDPOINT}", payload);
+  if (response.ok && data.ok) {{
+    status.textContent = "Registration accepted. Check your email for the verification link.";
+  }} else {{
+    status.textContent = "Registration failed: " + ((data.error && data.error.code) || "UNKNOWN_ERROR");
+  }}
+}});
+</script>
+"""
     )
+    return _page_shell(title="SYNTH Register", body_html=body, script_html=script)
 
 
 def render_login_page() -> str:
-    return _page_shell(
-        title="SYNTH Login",
-        body_html="""
+    body = f"""
         <h2>Login</h2>
-        <p class="auth-note">Use your verified email address or profile code. Existing public dashboard pages remain public and unchanged in this foundation batch.</p>
-        <form class="auth-grid">
-          <div class="auth-field"><label>Email or profile code</label><input type="text" name="login_value" autocomplete="username"></div>
-          <div class="auth-field"><label>Password</label><input type="password" name="password" autocomplete="current-password"></div>
-          <div class="auth-actions"><button type="button" disabled>Login submits through the isolated auth service</button></div>
+        <p class="auth-note">Use your verified email address or profile code. Existing public dashboard pages remain public and unchanged in this activation batch.</p>
+        <form class="auth-grid" id="login-form">
+          <div class="auth-field"><label>Email or profile code</label><input type="text" name="login_value" autocomplete="username" required></div>
+          <div class="auth-field"><label>Password</label><input type="password" name="password" autocomplete="current-password" required></div>
+          <div class="auth-actions">
+            <button type="submit">Login</button>
+            <button type="button" id="resend-button">Resend verification email</button>
+          </div>
         </form>
-        """,
+        <div id="login-status" class="auth-status" aria-live="polite">Waiting for login input.</div>
+        """
+    script = (
+        _json_fetch_script()
+        + f"""
+<script>
+const loginForm = document.getElementById("login-form");
+const loginStatus = document.getElementById("login-status");
+loginForm.addEventListener("submit", async function(event) {{
+  event.preventDefault();
+  loginStatus.textContent = "Signing in...";
+  const payload = Object.fromEntries(new FormData(loginForm).entries());
+  const {{response, data}} = await synthPostJson("{LOGIN_ENDPOINT}", payload);
+  if (response.ok && data.ok) {{
+    loginStatus.textContent = "Login complete. Redirecting to onboarding...";
+    window.location.assign("/synth/onboarding.html?profile=" + encodeURIComponent(data.profile_code || ""));
+  }} else {{
+    loginStatus.textContent = "Login failed: " + ((data.error && data.error.code) || "UNKNOWN_ERROR");
+  }}
+}});
+document.getElementById("resend-button").addEventListener("click", async function() {{
+  const payload = Object.fromEntries(new FormData(loginForm).entries());
+  loginStatus.textContent = "Requesting verification resend...";
+  const {{response, data}} = await synthPostJson("{RESEND_ENDPOINT}", {{login_value: payload.login_value || ""}});
+  if (response.ok && data.ok) {{
+    loginStatus.textContent = "If the profile is pending verification, a new verification email has been queued.";
+  }} else {{
+    loginStatus.textContent = "Resend failed: " + ((data.error && data.error.code) || "UNKNOWN_ERROR");
+  }}
+}});
+</script>
+"""
     )
+    return _page_shell(title="SYNTH Login", body_html=body, script_html=script)
 
 
 def render_verify_result_page() -> str:
-    return _page_shell(
-        title="SYNTH Verification",
-        body_html="""
+    body = """
         <h2>Email Verification</h2>
-        <p class="auth-note">Verification tokens are single-use and expire. This static page is the public shell; the isolated auth service determines the result state.</p>
-        <div class="pill ok status-pill">VERIFICATION_RESULT_PENDING_SERVICE_CHECK</div>
-        """,
+        <p class="auth-note">Verification tokens are single-use and expire. The verification result is resolved server-side through the isolated website auth service.</p>
+        <div id="verify-status" class="auth-status" aria-live="polite">Checking verification token...</div>
+        """
+    script = (
+        _json_fetch_script()
+        + f"""
+<script>
+(async function() {{
+  const status = document.getElementById("verify-status");
+  const token = new URLSearchParams(window.location.search).get("token") || "";
+  if (!token) {{
+    status.textContent = "Verification failed: MISSING_VERIFICATION_TOKEN";
+    return;
+  }}
+  const {{response, data}} = await synthPostJson("{VERIFY_ENDPOINT}", {{token}});
+  if (response.ok && data.ok) {{
+    status.textContent = "Verification complete for profile " + (data.profile_code || "") + ". You can now log in.";
+  }} else {{
+    status.textContent = "Verification failed: " + ((data.error && data.error.code) || "UNKNOWN_ERROR");
+  }}
+}})();
+</script>
+"""
     )
+    return _page_shell(title="SYNTH Verification", body_html=body, script_html=script)
 
 
 def render_onboarding_page() -> str:
-    return _page_shell(
-        title="SYNTH Onboarding",
-        body_html="""
+    body = f"""
         <h2>Onboarding</h2>
         <p class="auth-note">A verified website profile can exist before any exchange mapping is provisioned.</p>
         <div class="pill warn status-pill">NO_EXCHANGE_ACCOUNT_CONNECTED</div>
-        """,
+        <div id="onboarding-status" class="auth-status" aria-live="polite">Checking onboarding access...</div>
+        <div class="auth-actions">
+          <button type="button" id="logout-button">Logout</button>
+        </div>
+        """
+    script = (
+        _json_fetch_script()
+        + f"""
+<script>
+const onboardingStatus = document.getElementById("onboarding-status");
+async function refreshOnboardingStatus() {{
+  const requestedProfileCode = new URLSearchParams(window.location.search).get("profile") || "";
+  const {{response, data}} = await synthPostJson("{ONBOARDING_ENDPOINT}", {{requested_profile_code: requestedProfileCode}});
+  if (response.ok && data.ok) {{
+    onboardingStatus.textContent = "Onboarding state: " + (data.onboarding_state || "UNKNOWN");
+  }} else {{
+    onboardingStatus.textContent = "Onboarding access failed: " + ((data.error && data.error.code) || "UNKNOWN_ERROR");
+  }}
+}}
+document.getElementById("logout-button").addEventListener("click", async function() {{
+  await synthPostJson("{LOGOUT_ENDPOINT}", {{}});
+  onboardingStatus.textContent = "Logged out.";
+}});
+refreshOnboardingStatus();
+</script>
+"""
     )
+    return _page_shell(title="SYNTH Onboarding", body_html=body, script_html=script)
 
 
 def main() -> int:

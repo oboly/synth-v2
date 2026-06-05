@@ -1,0 +1,10 @@
+[Unit]
+Description=Synth isolated website registration service
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/theone/projects/synth-v2
+ExecStart=/home/theone/projects/synth-v2/scripts/odroid/run_website_registration_service_once.sh
+Restart=on-failure
+RestartSec=5
