@@ -53,6 +53,8 @@ It does not:
 |------|------|
 | `src/reporting/manual_short_trader_profit_plan_v1.py` | Pure computation and HTML/JSON rendering — no broker/DB imports |
 | `src/reporting/run_manual_short_trader_profit_plan_v1.py` | Runner — account-scoped DB snapshot loader + shared fib context join |
+| `src/market_data/native_short_fib_context_v1.py` | Canonical market-only native SHORT 4h/1h row contract |
+| `src/market_data/run_native_short_fib_context_v1.py` | Deterministic native SHORT bridge builder / coverage runner |
 
 ## View Toggle
 
@@ -87,8 +89,8 @@ Each card shows:
 | `scenario_type` | EXTENSION_RUNNER, REENTRY_WAIT, RANGE_BOUNCE, BREAKOUT_RETEST, NO_CLEAR_PLAN |
 | `action_label` | TAKE_PROFIT_NEAR, REBUY_ZONE_NEAR, BUY_DIP, BREAKOUT_WATCH, WAIT, FAR_MOONBAG_ONLY, DO_NOT_TOUCH |
 | `fib_trading_horizon` | currently `SHORT` for the Profit Plan surface |
-| `short_context_input_status` | raw source/input state such as `HAS_ZONE_CONTEXT` or `ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING` |
-| `short_context_coverage_status` | explicit truth state such as `LEGACY_1D_CONTEXT_ONLY` or `FIB_MAP_SYMBOL_MISSING` |
+| `short_context_input_status` | raw source/input state such as `NATIVE_SHORT_CONTEXT_AVAILABLE`, `INSUFFICIENT_4H_HISTORY`, or `ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING` |
+| `short_context_coverage_status` | explicit truth state such as `NATIVE_SHORT_CONTEXT_AVAILABLE`, `LEGACY_1D_CONTEXT_ONLY`, or `FIB_MAP_SYMBOL_MISSING` |
 | `short_context_display_state` | human-facing SHORT-context warning state |
 | `timeframe_label` | "15m scalp", "4h bounce", "1d swing" |
 | `market` | Bitvavo market code shown on the card |
@@ -170,16 +172,21 @@ has enough read-only inputs to show a useful Profit Plan card before cockpit wir
 SHORT fib-context truth rule:
 
 - canonical SHORT is `4h` primary with `1h` support
-- the current Profit Plan bridge is still a legacy `1d` fib-map lane
-- therefore an existing `1d` fib-map row must never be reported as native SHORT
-  context
-- native SHORT coverage remains `0` until a separate market-only `4h` + `1h`
-  bridge exists
+- Profit Plan now prefers the canonical market-only
+  `data/research/native_short_fib_context_v1/native_short_fib_context_rows_v1.csv`
+  bridge
+- native SHORT is available only when the row status is
+  `NATIVE_SHORT_CONTEXT_AVAILABLE`
+- an existing `1d` fib-map row must never be reported as native SHORT context
+- the `1d` fib-map remains reference-only fallback when native SHORT is absent
 
 Zone-context input preference:
 
 - first per symbol: manual CLI anchors via `--swing-anchors` and optional `--recent-lows`
-- otherwise: existing read-only `data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv`
+- otherwise: canonical native SHORT rows from
+  `data/research/native_short_fib_context_v1/native_short_fib_context_rows_v1.csv`
+- final fallback: existing read-only
+  `data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv`
 - if the zone source is absent or the symbol is not present, Profit Plan fails closed and reports the exact reason
 
 Open orders are enrichment only. A card can remain visible without open orders when
@@ -237,6 +244,8 @@ runner where possible and does not change Profit Plan behavior by itself.
 SHORT coverage status values:
 
 - `NATIVE_SHORT_CONTEXT_AVAILABLE`
+- `INSUFFICIENT_4H_HISTORY`
+- `INSUFFICIENT_1H_HISTORY`
 - `LEGACY_1D_CONTEXT_ONLY`
 - `FIB_MAP_SYMBOL_MISSING`
 - `FIB_MAP_SOURCE_MISSING`
@@ -245,8 +254,12 @@ SHORT coverage status values:
 
 Expected examples:
 
+- symbol with a valid native `4h` primary + `1h` support row →
+  `NATIVE_SHORT_CONTEXT_AVAILABLE`
 - `PLUME` with fresh price but no fib row → `FIB_MAP_SYMBOL_MISSING` /
   `NO_NATIVE_SHORT_FIB_CONTEXT`
+- symbol with a native row but missing canonical support window →
+  `INSUFFICIENT_1H_HISTORY` / `NO_NATIVE_SHORT_FIB_CONTEXT`
 - symbol with a valid current `1d` fib-map row → `LEGACY_1D_CONTEXT_ONLY` /
   `NO_NATIVE_SHORT_FIB_CONTEXT`
 - a `LEGACY_1D_CONTEXT_ONLY` card may still display ladder levels, completed-map

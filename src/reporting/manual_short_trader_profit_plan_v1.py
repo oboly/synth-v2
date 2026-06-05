@@ -23,6 +23,7 @@ TARGET_LEVEL_NEAR_THRESHOLD_PCT = Decimal("1")
 
 STATE_LABELS: dict[str, str] = {
     "STALE_CURRENT_PRICE": "Stale current price",
+    "HAS_NATIVE_SHORT_FIB_CONTEXT": "Native SHORT fib context available",
     "NO_NATIVE_SHORT_FIB_CONTEXT": "No native SHORT fib context",
     "MARKET_DATA_MISSING": "Market data missing",
     "CONTEXT_INVALID_OR_STALE": "Context invalid or stale",
@@ -59,6 +60,7 @@ RELEVANT_STATES: frozenset[str] = frozenset({
 })
 
 SHORT_CONTEXT_DISPLAY_LABELS: dict[str, str] = {
+    "HAS_NATIVE_SHORT_FIB_CONTEXT": "Native SHORT fib context available",
     "NO_NATIVE_SHORT_FIB_CONTEXT": "No native SHORT fib context",
     "MARKET_DATA_MISSING": "Market data missing",
     "CONTEXT_INVALID_OR_STALE": "Context invalid or stale",
@@ -866,9 +868,13 @@ def _short_context_gap_card(
     )
     reasons = [
         f"SHORT context coverage: {short_context_coverage_status}.",
-        f"Profit Plan currently uses a legacy 1d fib-map bridge and cannot present native SHORT 4h/1h context for {symbol}.",
+        f"Profit Plan does not currently have usable native SHORT 4h/1h context for {symbol}.",
     ]
-    if short_context_coverage_status == "FIB_MAP_SYMBOL_MISSING":
+    if short_context_coverage_status == "INSUFFICIENT_4H_HISTORY":
+        reasons.append("The native 4h candle window is insufficient to build a canonical SHORT map.")
+    elif short_context_coverage_status == "INSUFFICIENT_1H_HISTORY":
+        reasons.append("The native 1h supporting window is insufficient, so the canonical SHORT bridge remains unavailable.")
+    elif short_context_coverage_status == "FIB_MAP_SYMBOL_MISSING":
         reasons.append("Market price exists, but this symbol has no fib-map row in the current source.")
     elif short_context_coverage_status == "FIB_MAP_SOURCE_MISSING":
         reasons.append("The fib-map source is unavailable, so native SHORT context cannot be audited.")
@@ -1127,10 +1133,14 @@ def build_profit_plan_card(
         secondary_state = None
         suggested_manual_attention_label = completed_map_attention_label or suggested_manual_attention_label
 
-    if short_context_coverage_status == "LEGACY_1D_CONTEXT_ONLY":
+    if short_context_coverage_status in {
+        "LEGACY_1D_CONTEXT_ONLY",
+        "INSUFFICIENT_4H_HISTORY",
+        "INSUFFICIENT_1H_HISTORY",
+    }:
         legacy_reason = (
-            "Displayed levels come from the current legacy 1d fib-map bridge. "
-            "No native SHORT 4h/1h context is available yet."
+            "Displayed levels come from the current legacy 1d fib-map bridge or partial fallback context. "
+            "No usable native SHORT 4h/1h context is available yet."
         )
         if legacy_reason not in reasons:
             reasons = tuple(list(reasons) + [legacy_reason])

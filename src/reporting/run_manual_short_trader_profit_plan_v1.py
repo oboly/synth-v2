@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any
 
 from src.common.db import get_connection
+from src.market_data.native_short_fib_context_v1 import (
+    DEFAULT_ROWS_CSV as DEFAULT_NATIVE_SHORT_ROWS,
+    STATUS_AVAILABLE as NATIVE_SHORT_CONTEXT_AVAILABLE,
+    load_native_short_context_rows,
+)
 from src.reporting.account_scoped_short_trader_dashboard_v1 import (
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_VENUE,
@@ -104,6 +109,11 @@ def parse_args() -> argparse.Namespace:
         help="Public browser href for the Open Orders Monitor page. Defaults to /synth/accounts/<profile>/open-orders-monitor.html.",
     )
     parser.add_argument(
+        "--native-short-context-rows",
+        default=str(DEFAULT_NATIVE_SHORT_ROWS),
+        help="Canonical native SHORT context rows path. Native 4h+1h rows are preferred when available.",
+    )
+    parser.add_argument(
         "--fib-map-rows",
         default=str(DEFAULT_FIB_MAP_ROWS),
         help="Optional: path to fibo_target_map_rows_v1.csv for read-only zone context.",
@@ -160,6 +170,25 @@ def _parse_iso_ts(value: Any) -> datetime | None:
         return None
 
 
+def _native_price_band(
+    *,
+    current_price: Decimal,
+    breakout_gate: Decimal,
+    ext_1_272: Decimal,
+    ext_1_618: Decimal,
+    ext_2_000: Decimal,
+) -> str:
+    if current_price < breakout_gate:
+        return "BELOW_BREAKOUT_GATE"
+    if current_price < ext_1_272:
+        return "ABOVE_GATE_APPROACHING_1272"
+    if current_price < ext_1_618:
+        return "BETWEEN_1272_1618"
+    if current_price < ext_2_000:
+        return "BETWEEN_1618_2000"
+    return "ABOVE_2000"
+
+
 def _short_context_gap_from_row(row: dict[str, str] | None) -> tuple[str, str]:
     if row is None:
         return "FIB_MAP_SYMBOL_MISSING", "NO_NATIVE_SHORT_FIB_CONTEXT"
@@ -179,6 +208,8 @@ def summarize_short_context_coverage(
 ) -> dict[str, int]:
     summary = {
         "NATIVE_SHORT_CONTEXT_AVAILABLE": 0,
+        "INSUFFICIENT_4H_HISTORY": 0,
+        "INSUFFICIENT_1H_HISTORY": 0,
         "LEGACY_1D_CONTEXT_ONLY": 0,
         "FIB_MAP_SYMBOL_MISSING": 0,
         "FIB_MAP_SOURCE_MISSING": 0,
@@ -207,6 +238,7 @@ def load_fib_map_rows(path: Path) -> tuple[dict[str, dict[str, str]], bool]:
 def _build_fib_ext_context(
     *,
     symbol: str,
+    interval_code: str,
     swing_low: Decimal,
     swing_high: Decimal,
     current_price: Decimal,
@@ -217,7 +249,7 @@ def _build_fib_ext_context(
         ext_map = build_htf_extension_map(
             HtfSwingInput(
                 symbol=symbol,
-                interval_code="1d",
+                interval_code=interval_code,
                 swing_low=swing_low,
                 swing_high=swing_high,
                 current_price=current_price,
@@ -243,6 +275,7 @@ def _build_fib_ext_context(
 def _build_reentry_context(
     *,
     symbol: str,
+    interval_code: str,
     swing_low: Decimal,
     swing_high: Decimal,
     current_price: Decimal,
@@ -252,7 +285,7 @@ def _build_reentry_context(
         ladder = build_fib_retrace_ladder(
             HtfReentryInput(
                 symbol=symbol,
-                interval_code="1d",
+                interval_code=interval_code,
                 swing_low=swing_low,
                 swing_high=swing_high,
                 current_price=current_price,
@@ -279,9 +312,11 @@ def load_zone_contexts(
     prices: dict[str, Decimal],
     swing_anchors: dict[str, list[str]],
     recent_lows: dict[str, list[str]],
+    native_short_rows_path: Path,
     fib_map_rows_path: Path,
 ) -> ZoneContextLoadResult:
     fib_rows_by_symbol, source_missing = load_fib_map_rows(fib_map_rows_path)
+    native_rows_by_symbol, _native_source_missing = load_native_short_context_rows(native_short_rows_path)
     fib_ext_by_symbol: dict[str, FibExtContext] = {}
     reentry_by_symbol: dict[str, ReentryContext] = {}
     activation_ts_by_symbol: dict[str, datetime | None] = {}
@@ -301,6 +336,7 @@ def load_zone_contexts(
             if swing_low is not None and swing_high is not None and current_price is not None:
                 fib_ext = _build_fib_ext_context(
                     symbol=symbol,
+                    interval_code="4h",
                     swing_low=swing_low,
                     swing_high=swing_high,
                     current_price=current_price,
@@ -309,6 +345,7 @@ def load_zone_contexts(
                 )
                 reentry = _build_reentry_context(
                     symbol=symbol,
+                    interval_code="4h",
                     swing_low=swing_low,
                     swing_high=swing_high,
                     current_price=current_price,
@@ -332,6 +369,49 @@ def load_zone_contexts(
                 display_state_by_symbol[symbol] = "NO_NATIVE_SHORT_FIB_CONTEXT"
             continue
 
+        native_row = native_rows_by_symbol.get(symbol)
+        native_reference_only = native_row is not None and native_row.context_status != NATIVE_SHORT_CONTEXT_AVAILABLE
+        if native_row is not None:
+            input_status_by_symbol[symbol] = native_row.context_status
+            coverage_status_by_symbol[symbol] = native_row.context_status
+            display_state_by_symbol[symbol] = (
+                "HAS_NATIVE_SHORT_FIB_CONTEXT"
+                if native_row.context_status == NATIVE_SHORT_CONTEXT_AVAILABLE
+                else "NO_NATIVE_SHORT_FIB_CONTEXT"
+            )
+            activation_ts_by_symbol[symbol] = native_row.anchor_end_ts_utc
+            if native_row.context_status == NATIVE_SHORT_CONTEXT_AVAILABLE:
+                swing_low = native_row.anchor_low_price
+                swing_high = native_row.anchor_high_price
+                current_price = prices.get(market) or native_row.latest_primary_close_price
+                if swing_low is not None and swing_high is not None and current_price is not None:
+                    fib_ext_by_symbol[symbol] = FibExtContext(
+                        local_reaction_price=swing_high,
+                        anchor_end_ts_utc=native_row.anchor_end_ts_utc,
+                        ext_1_272=native_row.ext_1_272_price or swing_high,
+                        ext_1_618=native_row.ext_1_618_price or swing_high,
+                        ext_2_000=native_row.ext_2_000_price or swing_high,
+                        breakout_gate=native_row.breakout_gate_price or swing_high,
+                        price_band=_native_price_band(
+                            current_price=current_price,
+                            breakout_gate=native_row.breakout_gate_price or swing_high,
+                            ext_1_272=native_row.ext_1_272_price or swing_high,
+                            ext_1_618=native_row.ext_1_618_price or swing_high,
+                            ext_2_000=native_row.ext_2_000_price or swing_high,
+                        ),
+                        ext_1_272_touched_and_rejected=False,
+                        retesting_breakout_gate=native_row.supporting_1h_state == "RETESTING_BREAKOUT_GATE",
+                    )
+                    reentry_by_symbol[symbol] = ReentryContext(
+                        r382_price=native_row.reload_r382_price or swing_high,
+                        r500_price=native_row.reload_r500_price or swing_high,
+                        r618_price=native_row.reload_r618_price or swing_high,
+                        r786_price=native_row.reload_r786_price or swing_low,
+                        deepest_touched_label=None,
+                        missed_main_rebuy_by_pct=None,
+                    )
+                continue
+
         if source_missing:
             input_status_by_symbol[symbol] = "ZONE_SOURCE_MISSING"
             coverage_status_by_symbol[symbol] = "FIB_MAP_SOURCE_MISSING"
@@ -340,26 +420,32 @@ def load_zone_contexts(
 
         fib_row = fib_rows_by_symbol.get(symbol)
         if fib_row is None:
-            input_status_by_symbol[symbol] = "ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING"
-            coverage_status_by_symbol[symbol] = "FIB_MAP_SYMBOL_MISSING"
-            display_state_by_symbol[symbol] = "NO_NATIVE_SHORT_FIB_CONTEXT"
+            if not native_reference_only:
+                input_status_by_symbol[symbol] = "ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING"
+                coverage_status_by_symbol[symbol] = "FIB_MAP_SYMBOL_MISSING"
+                display_state_by_symbol[symbol] = "NO_NATIVE_SHORT_FIB_CONTEXT"
             continue
 
-        coverage_status_by_symbol[symbol], display_state_by_symbol[symbol] = _short_context_gap_from_row(fib_row)
+        legacy_coverage_status, legacy_display_state = _short_context_gap_from_row(fib_row)
+        if not native_reference_only:
+            coverage_status_by_symbol[symbol] = legacy_coverage_status
+            display_state_by_symbol[symbol] = legacy_display_state
 
         activation_ts_by_symbol[symbol] = _parse_iso_ts(fib_row.get("anchor_end_ts"))
         swing_low = _parse_decimal(fib_row.get("swing_low_price"))
         swing_high = _parse_decimal(fib_row.get("local_reaction_price")) or _parse_decimal(fib_row.get("swing_high_price"))
         current_price = prices.get(market) or _parse_decimal(fib_row.get("current_price"))
         if swing_low is None or swing_high is None or current_price is None:
-            input_status_by_symbol[symbol] = "MISSING_ZONE_CONTEXT"
-            if coverage_status_by_symbol[symbol] == "LEGACY_1D_CONTEXT_ONLY":
+            if not native_reference_only:
+                input_status_by_symbol[symbol] = "MISSING_ZONE_CONTEXT"
+            if not native_reference_only and coverage_status_by_symbol[symbol] == "LEGACY_1D_CONTEXT_ONLY":
                 coverage_status_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
                 display_state_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
             continue
 
         fib_ext = _build_fib_ext_context(
             symbol=symbol,
+            interval_code="1d",
             swing_low=swing_low,
             swing_high=swing_high,
             current_price=current_price,
@@ -368,6 +454,7 @@ def load_zone_contexts(
         )
         reentry = _build_reentry_context(
             symbol=symbol,
+            interval_code="1d",
             swing_low=swing_low,
             swing_high=swing_high,
             current_price=current_price,
@@ -377,12 +464,18 @@ def load_zone_contexts(
             fib_ext_by_symbol[symbol] = fib_ext
         if reentry is not None:
             reentry_by_symbol[symbol] = reentry
-        input_status_by_symbol[symbol] = (
-            "HAS_ZONE_CONTEXT"
-            if fib_ext is not None or reentry is not None
-            else "MISSING_ZONE_CONTEXT"
-        )
-        if fib_ext is None and reentry is None and coverage_status_by_symbol[symbol] == "LEGACY_1D_CONTEXT_ONLY":
+        if not native_reference_only:
+            input_status_by_symbol[symbol] = (
+                "HAS_ZONE_CONTEXT"
+                if fib_ext is not None or reentry is not None
+                else "MISSING_ZONE_CONTEXT"
+            )
+        if (
+            not native_reference_only
+            and fib_ext is None
+            and reentry is None
+            and coverage_status_by_symbol[symbol] == "LEGACY_1D_CONTEXT_ONLY"
+        ):
             coverage_status_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
             display_state_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
 
@@ -531,11 +624,13 @@ def print_summary(*, context, cards: list[ProfitPlanCard], output_html: Path, ou
         markets=list(context.markets),
         coverage_status_by_symbol={card.symbol: card.short_context_coverage_status for card in cards},
     )
-    print(f"short_context_bridge=legacy_1d_fib_map_bridge")
+    print("short_context_bridge=native_short_context_v1+legacy_1d_reference_fallback")
     print(
         "short_context_coverage="
         + " ; ".join(f"{key}:{coverage_summary.get(key, 0)}" for key in (
             "NATIVE_SHORT_CONTEXT_AVAILABLE",
+            "INSUFFICIENT_4H_HISTORY",
+            "INSUFFICIENT_1H_HISTORY",
             "LEGACY_1D_CONTEXT_ONLY",
             "FIB_MAP_SYMBOL_MISSING",
             "FIB_MAP_SOURCE_MISSING",
@@ -617,6 +712,7 @@ def main() -> int:
         prices=prices,
         swing_anchors=_parse_kv_list(args.swing_anchors, 3),
         recent_lows=_parse_kv_list(args.recent_lows, 2),
+        native_short_rows_path=Path(args.native_short_context_rows),
         fib_map_rows_path=Path(args.fib_map_rows),
     )
     history_by_symbol = fetch_market_target_history_by_symbol(

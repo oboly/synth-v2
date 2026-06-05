@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
+from src.market_data.native_short_fib_context_v1 import NativeShortContextRow, write_context_rows
 import src.reporting.run_manual_short_trader_profit_plan_v1 as profit_plan_runner
 import src.reporting.account_dashboard_profile_access_v1 as profile_access
 from src.market_data.market_price_snapshot_v1 import MarketPriceSnapshot
@@ -47,6 +48,50 @@ def _fet_reentry(missed_pct: str | None = "1.95") -> ReentryContext:
         r786_price=Decimal("0.1827"),
         deepest_touched_label="retrace_0_382" if missed_pct else None,
         missed_main_rebuy_by_pct=Decimal(missed_pct) if missed_pct else None,
+    )
+
+
+def _native_short_row(
+    *,
+    symbol: str = "WLD",
+    status: str = "NATIVE_SHORT_CONTEXT_AVAILABLE",
+) -> NativeShortContextRow:
+    return NativeShortContextRow(
+        symbol=symbol,
+        venue="bitvavo",
+        quote_currency="EUR",
+        fib_trading_horizon="SHORT",
+        primary_interval="4h",
+        supporting_interval="1h",
+        context_status=status,
+        map_cycle_id=f"{symbol}|SHORT|4h|demo",
+        anchor_start_ts_utc=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
+        anchor_end_ts_utc=datetime(2026, 6, 2, 0, 0, tzinfo=UTC),
+        anchor_low_price=Decimal("0.3000"),
+        anchor_high_price=Decimal("0.3800"),
+        breakout_gate_price=Decimal("0.3800"),
+        latest_primary_close_ts_utc=datetime(2026, 6, 5, 8, 0, tzinfo=UTC),
+        latest_support_close_ts_utc=datetime(2026, 6, 5, 11, 0, tzinfo=UTC),
+        latest_primary_close_price=Decimal("0.4700"),
+        ext_1_272_price=Decimal("0.454438"),
+        ext_1_618_price=Decimal("0.515600"),
+        ext_2_000_price=Decimal("0.6200"),
+        active_target_levels=(Decimal("0.515600"), Decimal("0.6200")),
+        previous_target_levels=(Decimal("0.454438"),),
+        reload_r382_price=Decimal("0.3494"),
+        reload_r500_price=Decimal("0.3400"),
+        reload_r618_price=Decimal("0.3306"),
+        reload_r786_price=Decimal("0.3171"),
+        invalidation_price=Decimal("0.3000"),
+        primary_4h_lifecycle_state="ACTIVE_4H_EXTENSION",
+        supporting_1h_state="ALIGNED_WITH_4H",
+        context_freshness_status="FRESH",
+        max_primary_high_since_anchor=Decimal("0.4700"),
+        min_primary_low_since_anchor=Decimal("0.3300"),
+        source_name="native_short_fib_context_v1",
+        source_version="0.1",
+        source_primary_ref="obs_market_candle:4h",
+        source_support_ref="obs_market_candle:1h",
     )
 
 
@@ -186,11 +231,67 @@ def test_load_zone_contexts_uses_source_rows_without_manual_cli() -> None:
             prices={"WLD-EUR": Decimal("0.48")},
             swing_anchors={},
             recent_lows={},
+            native_short_rows_path=Path("/tmp/missing-native-short-context.csv"),
             fib_map_rows_path=fib_rows,
         )
         assert result.input_status_by_symbol["WLD"] == "HAS_ZONE_CONTEXT"
         assert result.coverage_status_by_symbol["WLD"] == "LEGACY_1D_CONTEXT_ONLY"
         assert result.display_state_by_symbol["WLD"] == "NO_NATIVE_SHORT_FIB_CONTEXT"
+
+
+def test_load_zone_contexts_prefers_native_short_rows() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "\n".join([
+                "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price",
+                "WLD,0.48,0.30,0.38,0.38,0.33",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[_native_short_row()], output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("0.48")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+        )
+        assert result.input_status_by_symbol["WLD"] == "NATIVE_SHORT_CONTEXT_AVAILABLE"
+        assert result.coverage_status_by_symbol["WLD"] == "NATIVE_SHORT_CONTEXT_AVAILABLE"
+        assert result.display_state_by_symbol["WLD"] == "HAS_NATIVE_SHORT_FIB_CONTEXT"
+        assert result.fib_ext_by_symbol["WLD"].ext_1_618 == Decimal("0.515600")
+
+
+def test_load_zone_contexts_keeps_partial_native_gap_truthful_even_with_legacy_row() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "\n".join([
+                "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price",
+                "WLD,0.48,0.30,0.38,0.38,0.33",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(
+            rows=[_native_short_row(status="INSUFFICIENT_1H_HISTORY")],
+            output_dir=native_dir,
+        )
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("0.48")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+        )
+        assert result.input_status_by_symbol["WLD"] == "INSUFFICIENT_1H_HISTORY"
+        assert result.coverage_status_by_symbol["WLD"] == "INSUFFICIENT_1H_HISTORY"
+        assert result.display_state_by_symbol["WLD"] == "NO_NATIVE_SHORT_FIB_CONTEXT"
+        assert result.fib_ext_by_symbol["WLD"].ext_1_618 == Decimal("0.515600")
 
 
 def test_load_zone_contexts_manual_cli_overrides_missing_source() -> None:
@@ -199,6 +300,7 @@ def test_load_zone_contexts_manual_cli_overrides_missing_source() -> None:
         prices={"WLD-EUR": Decimal("0.48")},
         swing_anchors={"WLD": ["0.30", "0.38"]},
         recent_lows={"WLD": ["0.33"]},
+        native_short_rows_path=Path("/tmp/missing-native-short-context.csv"),
         fib_map_rows_path=Path("/tmp/missing-fib-map.csv"),
     )
     assert result.input_status_by_symbol["WLD"] == "MANUAL_ZONE_CONTEXT_USED"
@@ -211,6 +313,7 @@ def test_load_zone_contexts_missing_source_fails_closed() -> None:
         prices={"WLD-EUR": Decimal("0.48")},
         swing_anchors={},
         recent_lows={},
+        native_short_rows_path=Path("/tmp/missing-native-short-context.csv"),
         fib_map_rows_path=Path("/tmp/missing-fib-map.csv"),
     )
     assert result.input_status_by_symbol["WLD"] == "ZONE_SOURCE_MISSING"
@@ -232,6 +335,7 @@ def test_load_zone_contexts_symbol_missing_fails_closed() -> None:
             prices={"WLD-EUR": Decimal("0.48")},
             swing_anchors={},
             recent_lows={},
+            native_short_rows_path=Path("/tmp/missing-native-short-context.csv"),
             fib_map_rows_path=fib_rows,
         )
         assert result.input_status_by_symbol["WLD"] == "ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING"
@@ -270,6 +374,7 @@ def test_load_zone_contexts_market_data_missing_is_truthful() -> None:
             prices={"PLUME-EUR": Decimal("0.155")},
             swing_anchors={},
             recent_lows={},
+            native_short_rows_path=Path("/tmp/missing-native-short-context.csv"),
             fib_map_rows_path=fib_rows,
         )
         assert result.coverage_status_by_symbol["PLUME"] == "MARKET_DATA_MISSING"
@@ -709,6 +814,7 @@ def test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account
                         "output_html": None,
                         "output_json": None,
                         "monitor_href": None,
+                        "native_short_context_rows": "/tmp/missing-native-short-context.csv",
                         "fib_map_rows": str(fib_rows),
                         "swing_anchors": [],
                         "recent_lows": [],
@@ -767,6 +873,7 @@ def test_profit_plan_runner_missing_account_fails_closed() -> None:
                 "output_html": None,
                 "output_json": None,
                 "monitor_href": None,
+                "native_short_context_rows": "/tmp/missing-native-short-context.csv",
                 "fib_map_rows": "/tmp/missing-fib-map.csv",
                 "swing_anchors": [],
                 "recent_lows": [],
