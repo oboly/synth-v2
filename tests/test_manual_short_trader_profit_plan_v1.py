@@ -16,6 +16,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     FibExtContext,
     ProfitPlanCard,
     ReentryContext,
+    TargetHistoryCandle,
     build_json_snapshot,
     build_profit_plan_card,
     render_full_html,
@@ -48,9 +49,10 @@ def _fet_reentry(missed_pct: str | None = "1.95") -> ReentryContext:
 
 
 class _FakeOrder:
-    def __init__(self, price: str, side: str = "buy") -> None:
+    def __init__(self, price: str, side: str = "buy", created_at_ms: int | None = None) -> None:
         self.limit_price = Decimal(price)
         self.side = side
+        self.created_at_ms = created_at_ms
 
 
 def _make_card(
@@ -64,6 +66,7 @@ def _make_card(
     completed_sell_levels: tuple[Decimal, ...] = (),
     history_high_since_activation: Decimal | None = None,
     history_low_since_activation: Decimal | None = None,
+    history_candles_since_activation: tuple[TargetHistoryCandle, ...] = (),
     symbol: str = "WLD",
     market: str = "WLD-EUR",
 ) -> ProfitPlanCard:
@@ -79,6 +82,7 @@ def _make_card(
         completed_sell_levels=completed_sell_levels,
         history_high_since_activation=history_high_since_activation,
         history_low_since_activation=history_low_since_activation,
+        history_candles_since_activation=history_candles_since_activation,
     )
 
 
@@ -234,9 +238,30 @@ def test_reload_zone_approaching_when_price_is_near_reload_zone() -> None:
     assert card.primary_state == "RELOAD_ZONE_APPROACHING"
 
 
-def test_price_ran_away_when_price_is_far_above_target_assumptions() -> None:
-    card = _make_card(current_price="0.7600", fib_ext=_wld_fib_ext())
-    assert card.primary_state == "PRICE_RAN_AWAY"
+def test_map_recompute_needed_when_price_is_above_all_completed_targets() -> None:
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=(
+            TargetHistoryCandle(
+                close_ts_utc=datetime(2026, 6, 3, 16, 0, tzinfo=UTC),
+                high_price=Decimal("0.4700"),
+                low_price=Decimal("0.4300"),
+            ),
+            TargetHistoryCandle(
+                close_ts_utc=datetime(2026, 6, 4, 16, 0, tzinfo=UTC),
+                high_price=Decimal("0.7600"),
+                low_price=Decimal("0.5000"),
+            ),
+        ),
+    )
+    assert card.all_sell_targets_completed is True
+    assert card.active_target is None
+    assert card.target_exit_zone == ()
+    assert card.scenario_type == "MAP_COMPLETED"
+    assert card.primary_state == "MAP_RECOMPUTE_NEEDED"
+    assert card.primary_state != "PRICE_RAN_AWAY"
 
 
 def test_invalidation_near_when_price_approaches_risk_zone() -> None:
@@ -344,7 +369,7 @@ def test_wld_fixture_advances_active_target_and_does_not_mark_passed_level_missi
     assert first_level.lifecycle_state == "PASSED"
     assert second_level.level == Decimal("0.454438")
     assert second_level.lifecycle_state == "PASSED"
-    assert second_level.coverage_state == "PASSED_OPEN_ORDER"
+    assert second_level.coverage_state == "OPEN_ORDER_AFTER_PASSED_LEVEL"
     assert third_level.level == Decimal("0.515600")
     assert third_level.is_active_target is True
     assert third_level.matching_open_sell_orders == 1
@@ -396,6 +421,55 @@ def test_price_above_all_targets_has_no_active_target() -> None:
     assert card.active_target is None
     assert card.target_level_statuses[1].lifecycle_state == "PASSED"
     assert card.target_level_statuses[2].lifecycle_state == "PASSED"
+
+
+def test_completed_map_synchronizes_scenario_and_state() -> None:
+    card = _make_card(
+        current_price="0.468850",
+        fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.543160"),
+        history_candles_since_activation=(
+            TargetHistoryCandle(
+                close_ts_utc=datetime(2026, 6, 3, 16, 0, tzinfo=UTC),
+                high_price=Decimal("0.470000"),
+                low_price=Decimal("0.430000"),
+            ),
+            TargetHistoryCandle(
+                close_ts_utc=datetime(2026, 6, 4, 16, 0, tzinfo=UTC),
+                high_price=Decimal("0.543160"),
+                low_price=Decimal("0.460000"),
+            ),
+        ),
+    )
+    assert card.all_sell_targets_completed is True
+    assert card.active_target is None
+    assert card.target_exit_zone == ()
+    assert card.scenario_type == "MAP_COMPLETED"
+    assert card.primary_state == "POST_EXTENSION_PULLBACK"
+    assert card.action_label == "WAIT"
+    assert card.suggested_manual_attention_label == "Post-extension pullback"
+    assert card.primary_state != "TAKE_PROFIT_WAITING"
+    assert card.primary_state != "PRICE_RAN_AWAY"
+
+
+def test_order_before_cross_is_marked_missed_order() -> None:
+    card = _make_card(
+        current_price="0.452410",
+        fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.470000"),
+        history_candles_since_activation=(
+            TargetHistoryCandle(
+                close_ts_utc=datetime(2026, 6, 3, 16, 0, tzinfo=UTC),
+                high_price=Decimal("0.470000"),
+                low_price=Decimal("0.440000"),
+            ),
+        ),
+        sell_orders=(
+            _FakeOrder("0.454438", side="sell", created_at_ms=int(datetime(2026, 6, 3, 15, 0, tzinfo=UTC).timestamp() * 1000)),
+        ),
+    )
+    assert card.target_level_statuses[1].coverage_state == "MISSED_ORDER"
+    assert any("missed sell level @ 0.454438" in item for item in card.order_summary.missing_suggested)
 
 
 def test_multiple_orders_near_only_one_target_are_scoped_per_level() -> None:
@@ -597,7 +671,7 @@ def main() -> None:
         test_load_zone_contexts_symbol_missing_fails_closed,
         test_take_profit_waiting_when_target_is_near_and_sell_order_exists,
         test_reload_zone_approaching_when_price_is_near_reload_zone,
-        test_price_ran_away_when_price_is_far_above_target_assumptions,
+        test_map_recompute_needed_when_price_is_above_all_completed_targets,
         test_invalidation_near_when_price_approaches_risk_zone,
         test_order_too_far_or_stale_when_open_orders_are_far,
         test_do_nothing_for_neutral_valid_state,
@@ -611,7 +685,9 @@ def main() -> None:
         test_price_exactly_at_first_target_advances_to_second_target,
         test_price_between_targets_uses_second_target_distance,
         test_price_above_all_targets_has_no_active_target,
+        test_completed_map_synchronizes_scenario_and_state,
         test_multiple_orders_near_only_one_target_are_scoped_per_level,
+        test_order_before_cross_is_marked_missed_order,
         test_passed_level_without_fill_evidence_is_marked_missed,
         test_filled_and_completed_level_evidence_are_displayed,
         test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account_leakage,

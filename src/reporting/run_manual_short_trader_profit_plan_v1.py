@@ -31,6 +31,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     FibExtContext,
     ProfitPlanCard,
     ReentryContext,
+    TargetHistoryCandle,
     build_json_snapshot,
     build_profit_plan_card,
     render_full_html,
@@ -65,6 +66,7 @@ class ZoneContextLoadResult:
 class MarketTargetHistory:
     high_since_activation: Decimal | None
     low_since_activation: Decimal | None
+    candles_since_activation: tuple[TargetHistoryCandle, ...]
 
 
 def parse_args() -> argparse.Namespace:
@@ -353,32 +355,59 @@ def fetch_market_target_history_by_symbol(
         return {}
     conn = get_connection()
     try:
+        earliest_activation = min(activation_ts_by_symbol[symbol] for symbol in symbols if activation_ts_by_symbol[symbol] is not None)
         out: dict[str, MarketTargetHistory] = {}
         with conn.cursor() as cur:
-            for symbol in symbols:
-                activation_ts = activation_ts_by_symbol.get(symbol)
-                if activation_ts is None:
-                    continue
-                cur.execute(
-                    """
-                    SELECT
-                        MAX(c.high_price) AS max_high_price,
-                        MIN(c.low_price) AS min_low_price
-                    FROM obs_market_candle c
-                    JOIN asset a
-                      ON a.asset_id = c.asset_id
-                    WHERE c.venue = %s
-                      AND c.interval_code = %s
-                      AND a.symbol = %s
-                      AND c.close_ts_utc >= %s
-                    """,
-                    (venue, interval_code, symbol, activation_ts),
+            placeholders = ",".join(["%s"] * len(symbols))
+            cur.execute(
+                f"""
+                SELECT
+                    a.symbol,
+                    c.close_ts_utc,
+                    c.high_price,
+                    c.low_price
+                FROM obs_market_candle c
+                JOIN asset a
+                  ON a.asset_id = c.asset_id
+                WHERE c.venue = %s
+                  AND c.interval_code = %s
+                  AND a.symbol IN ({placeholders})
+                  AND c.close_ts_utc >= %s
+                ORDER BY a.symbol ASC, c.close_ts_utc ASC
+                """,
+                (venue, interval_code, *symbols, earliest_activation),
+            )
+            rows = list(cur.fetchall())
+        grouped_rows: dict[str, list[TargetHistoryCandle]] = {symbol: [] for symbol in symbols}
+        for row in rows:
+            symbol = str(row.get("symbol") or "").upper()
+            close_ts = row.get("close_ts_utc")
+            activation_ts = activation_ts_by_symbol.get(symbol)
+            if not symbol or activation_ts is None or close_ts is None:
+                continue
+            close_ts_utc = close_ts.replace(tzinfo=UTC) if close_ts.tzinfo is None else close_ts.astimezone(UTC)
+            if close_ts_utc < activation_ts:
+                continue
+            high_price = _parse_decimal(row.get("high_price"))
+            low_price = _parse_decimal(row.get("low_price"))
+            if high_price is None or low_price is None:
+                continue
+            grouped_rows[symbol].append(
+                TargetHistoryCandle(
+                    close_ts_utc=close_ts_utc,
+                    high_price=high_price,
+                    low_price=low_price,
                 )
-                row = cur.fetchone() or {}
-                out[symbol] = MarketTargetHistory(
-                    high_since_activation=_parse_decimal(row.get("max_high_price")),
-                    low_since_activation=_parse_decimal(row.get("min_low_price")),
-                )
+            )
+        for symbol in symbols:
+            candles = tuple(grouped_rows.get(symbol, []))
+            highs = [candle.high_price for candle in candles]
+            lows = [candle.low_price for candle in candles]
+            out[symbol] = MarketTargetHistory(
+                high_since_activation=max(highs) if highs else None,
+                low_since_activation=min(lows) if lows else None,
+                candles_since_activation=candles,
+            )
         return out
     finally:
         conn.close()
@@ -413,6 +442,7 @@ def build_cards(
                 sell_orders=sell_orders,
                 history_high_since_activation=None if history is None else history.high_since_activation,
                 history_low_since_activation=None if history is None else history.low_since_activation,
+                history_candles_since_activation=() if history is None else history.candles_since_activation,
             )
         )
     return cards

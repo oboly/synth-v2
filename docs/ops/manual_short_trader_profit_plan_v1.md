@@ -109,6 +109,8 @@ Profit Plan v1.1 adds deterministic display-only states:
 - `PRICE_RAN_AWAY` → `Price ran away`
 - `INVALIDATION_NEAR` → `Invalidation / risk zone near`
 - `ORDER_TOO_FAR_OR_STALE` → `Order too far or stale`
+- `POST_EXTENSION_PULLBACK` → `Post-extension pullback`
+- `MAP_RECOMPUTE_NEEDED` → `Map recompute needed`
 - `DO_NOTHING` → `Do nothing`
 - `INSUFFICIENT_DATA` → `Insufficient data`
 
@@ -131,10 +133,12 @@ Per target level:
 - account-aware coverage is audited separately per level
 - lifecycle uses market history since map activation where available, not current price alone
 - lifecycle is monotonic: `REACHED`, `PASSED`, and `COMPLETED` never regress back to `NEAR` or `UPCOMING` because price pulled back
+- when every mapped sell target is historically passed, Profit Plan switches to `scenario_type=MAP_COMPLETED`, clears `active_target`, and removes old passed targets from `Active target / exit zone`
 - passed levels never remain the `active_target`
 - `distance_to_target_pct` always uses the next active upcoming target, never an already passed level
 - a passed level with no fill evidence is shown as `PASSED_UNFILLED` with human wording `missed sell level`
 - explicit fill evidence may show `REACHED_FILLED` or `COMPLETED`
+- passed-level open orders are split between `MISSED_ORDER` and `OPEN_ORDER_AFTER_PASSED_LEVEL` when first-cross timing is available
 - open sell orders are matched per individual level using bounded tolerance; broad sell-zone proximity does not count as coverage for every level
 
 The full sell zone remains visible, but Profit Plan distinguishes:
