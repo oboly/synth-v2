@@ -55,7 +55,7 @@ The legacy global prototype pages `/synth/profit-plan.html` and
 ## What the page shows
 
 - account/profile name
-- links to the same account's Wallet, Profit Plan, and Open Orders Monitor pages
+- links to the global About page and the same account's Wallet, Profit Plan, and Open Orders Monitor pages
 - latest wallet refresh timestamp
 - freshness: `FRESH`, `STALE`, `NEVER_REFRESHED`
 - balances:

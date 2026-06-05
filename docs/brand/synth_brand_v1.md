@@ -29,6 +29,14 @@ This concept sheet is the visual source of truth for the first canonical Synth
 branding foundation. Future refinements must stay recognizably inside this
 direction unless a new brand version explicitly replaces it.
 
+Approved faction artwork:
+
+- `assets/brand/synth/synth-third-faction-triptych.png`
+
+This triptych is approved as a global brand-lore hero image for SYNTH. It is
+appropriate for the public About page and other explicit brand surfaces. It is
+not a default operational dashboard image.
+
 ## Brand Meaning
 
 The brand should communicate:
@@ -119,6 +127,8 @@ Rules:
 
 - accent color supports the shape; it must not replace legibility
 - accent variant must still be recognizable when glow is reduced or removed
+- the Third Faction triptych is brand artwork, not a favicon, nav icon, or
+  inline operational UI badge
 
 ### Monochrome Variant
 

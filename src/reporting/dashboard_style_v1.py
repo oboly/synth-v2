@@ -51,6 +51,7 @@ def cockpit_nav() -> str:
     return """
     <nav class="cockpit-nav" aria-label="Cockpit navigation">
       <a href="/synth/index.html">Cockpit</a>
+      <a href="/synth/about.html">About</a>
       <a href="/synth/paper-advice.html">Paper Advice</a>
       <a href="/synth/entry-candidates.html">Entry Candidates</a>
       <a href="/synth/rotation-preview.html">Rotation Preview</a>

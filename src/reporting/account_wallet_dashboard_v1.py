@@ -149,6 +149,7 @@ def _max_ts(*values: datetime | None) -> datetime | None:
 
 def _account_dashboard_links(profile: str) -> dict[str, str]:
     return {
+        "about": "/synth/about.html",
         "wallet": f"/synth/accounts/{profile}/wallet.html",
         "profit_plan": f"/synth/accounts/{profile}/profit-plan.html",
         "open_orders_monitor": f"/synth/accounts/{profile}/open-orders-monitor.html",
@@ -753,6 +754,7 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
         all_assets_html = "<tr><td colspan='6' class='muted'>No settings rows available.</td></tr>"
     dashboard_nav_html = "".join(
         (
+            f"<a href='{esc(payload.dashboard_links['about'])}'>About</a>",
             f"<a href='{esc(payload.dashboard_links['wallet'])}'>Wallet</a>",
             f"<a href='{esc(payload.dashboard_links['profit_plan'])}'>Profit Plan</a>",
             f"<a href='{esc(payload.dashboard_links['open_orders_monitor'])}'>Open Orders Monitor</a>",

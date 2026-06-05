@@ -13,6 +13,8 @@ Render a read-only online cockpit for paper advice, A+ Table 1 DB context, fresh
 - /var/www/html/synth/open-orders-monitor.json
 - /var/www/html/synth/profit-plan.html
 - /var/www/html/synth/profit-plan.json
+- /var/www/html/synth/about.html
+- /var/www/html/synth/assets/brand/synth-third-faction-triptych.png
 
 ## Runner
 
@@ -29,8 +31,13 @@ Profit Plan integration stays read-only:
 - refresh canonical `fibo_target_map_v1` before Profit Plan render
 - render `/var/www/html/synth/profit-plan.html`
 - render `/var/www/html/synth/profit-plan.json`
+- render `/var/www/html/synth/about.html`
+- copy `/var/www/html/synth/assets/brand/synth-third-faction-triptych.png`
 - keep public browser hrefs separate from filesystem output paths, e.g.
   `/synth/open-orders-monitor.html` vs `/var/www/html/synth/open-orders-monitor.html`
+- keep public brand-asset hrefs separate from filesystem output paths, e.g.
+  `/synth/assets/brand/synth-third-faction-triptych.png` vs
+  `/var/www/html/synth/assets/brand/synth-third-faction-triptych.png`
 - no broker writes, no order submission, no executor path
 
 Forbidden: broker writes, order submission, execution_planner activation, executor activation, decision_gate permission changes, live trading.
@@ -46,6 +53,10 @@ Do not expose publicly without authentication. Preferred MVP access: Tailscale/V
 
 ## Limitations
 
+- The About page is global and account-agnostic. Do not duplicate it under
+  `/synth/accounts/<profile>/`.
+- The large third-faction triptych is reserved for the About page and explicit
+  brand surfaces, not normal operational dashboards.
 - Better candidates are heuristic review aids, not allocation instructions.
 - Rotation preview is not an executor and does not create orders.
 - A+ Table 2 / breath rhythm is parked.

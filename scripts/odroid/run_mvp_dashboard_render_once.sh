@@ -18,6 +18,10 @@ export SYNTH_PROFIT_PLAN_DASHBOARD_JSON="${SYNTH_PROFIT_PLAN_DASHBOARD_JSON:-/va
 export SYNTH_OPEN_ORDERS_MONITOR_HTML="${SYNTH_OPEN_ORDERS_MONITOR_HTML:-/var/www/html/synth/open-orders-monitor.html}"
 export SYNTH_OPEN_ORDERS_MONITOR_JSON="${SYNTH_OPEN_ORDERS_MONITOR_JSON:-/var/www/html/synth/open-orders-monitor.json}"
 export SYNTH_OPEN_ORDERS_MONITOR_HREF="${SYNTH_OPEN_ORDERS_MONITOR_HREF:-/synth/open-orders-monitor.html}"
+export SYNTH_ABOUT_PAGE_HTML="${SYNTH_ABOUT_PAGE_HTML:-/var/www/html/synth/about.html}"
+export SYNTH_ABOUT_HERO_ASSET_SOURCE="${SYNTH_ABOUT_HERO_ASSET_SOURCE:-assets/brand/synth/synth-third-faction-triptych.png}"
+export SYNTH_ABOUT_HERO_ASSET_OUTPUT="${SYNTH_ABOUT_HERO_ASSET_OUTPUT:-/var/www/html/synth/assets/brand/synth-third-faction-triptych.png}"
+export SYNTH_ABOUT_HERO_ASSET_HREF="${SYNTH_ABOUT_HERO_ASSET_HREF:-/synth/assets/brand/synth-third-faction-triptych.png}"
 export SYNTH_MVP_PROFIT_PLAN_SYMBOLS="${SYNTH_MVP_PROFIT_PLAN_SYMBOLS:-WLD,ONDO}"
 export SYNTH_MVP_PROFIT_PLAN_MARKETS="${SYNTH_MVP_PROFIT_PLAN_MARKETS:-WLD-EUR ONDO-EUR}"
 export SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR="${SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR:-data/research/fibo_target_map_v1}"
@@ -56,6 +60,13 @@ run_step python -m src.reporting.run_entry_candidate_static_dashboard_v1 \
   --output-html "${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML}" \
   --output summary
 
+run_step python -m src.reporting.run_synth_about_page_v1 \
+  --output-html "${SYNTH_ABOUT_PAGE_HTML}" \
+  --hero-asset-source "${SYNTH_ABOUT_HERO_ASSET_SOURCE}" \
+  --hero-asset-output "${SYNTH_ABOUT_HERO_ASSET_OUTPUT}" \
+  --hero-asset-href "${SYNTH_ABOUT_HERO_ASSET_HREF}" \
+  --output summary
+
 run_step python -m src.reporting.run_manual_short_trader_dashboard_v1 \
   --markets ${SYNTH_MVP_PROFIT_PLAN_MARKETS} \
   --fib-map-rows "${SYNTH_MVP_FIBO_TARGET_MAP_OUTPUT_DIR}/fibo_target_map_rows_v1.csv" \
@@ -82,8 +93,10 @@ echo
 echo "[MVP_DASHBOARD_RENDER][DONE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML}"
+echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ABOUT_PAGE_HTML}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_OPEN_ORDERS_MONITOR_HTML}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_OPEN_ORDERS_MONITOR_JSON}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_PROFIT_PLAN_DASHBOARD_HTML}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_PROFIT_PLAN_DASHBOARD_JSON}"
+echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ABOUT_HERO_ASSET_OUTPUT}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] $(dirname "${SYNTH_ROTATION_PREVIEW_DASHBOARD_HTML}")/index.html"

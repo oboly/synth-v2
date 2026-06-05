@@ -2232,6 +2232,10 @@ def write_index(output_dir: Path) -> Path:
     <p>{badge_html("broker_private_calls=0", css_name="ok")}{badge_html("broker_writes=0", css_name="ok")}{badge_html("order_submission=0", css_name="ok")}{badge_html("executor=none", css_name="ok")}</p>
     <div class="grid">
       <div class="card">
+        <a href="/synth/about.html">About</a>
+        <p class="muted">Global SYNTH brand, subtitle, and faction-lore overview. Read-only and account-agnostic.</p>
+      </div>
+      <div class="card">
         <a href="/synth/paper-advice.html">Paper Advice</a>
         <p class="muted">Market/setup/A+ context and paper navigation.</p>
       </div>

@@ -24,11 +24,19 @@ approved concept sheet and governed by:
 - `favicon/`
   Small-size simplified symbol-only exports.
 
+## Tracked Repository Artwork
+
+- `synth-logo-concept-sheet.png`
+- `synth-third-faction-triptych.png`
+
 ## Asset Rules
 
 - Keep the interlocked `S` monogram recognizable without glow.
 - Do not use the composite concept sheet itself as a favicon.
+- Do not use the third-faction triptych itself as a favicon.
 - Do not place the subtitle into small UI lockups.
+- Reserve the triptych for explicit global brand surfaces such as
+  `/synth/about.html`, not normal operational dashboards.
 - Monochrome assets must remain clearly identifiable as SYNTH.
 - Keep public assets plain and product-facing; internal lore belongs in docs,
   not embedded into the logo file naming or exports.
