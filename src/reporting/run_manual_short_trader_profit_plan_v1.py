@@ -12,6 +12,7 @@ from typing import Any
 from src.reporting.account_scoped_short_trader_dashboard_v1 import (
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_VENUE,
+    classify_market_prices_by_market,
     default_page_paths,
     load_account_scoped_short_dashboard_context,
     public_page_href,
@@ -308,6 +309,8 @@ def load_zone_contexts(
 def build_cards(
     markets: list[str],
     prices: dict[str, Decimal],
+    price_status_by_market: dict[str, str],
+    price_age_min_by_market: dict[str, Decimal | None],
     fib_ext_by_symbol: dict[str, FibExtContext],
     reentry_by_symbol: dict[str, ReentryContext],
     orders_by_symbol: dict[str, tuple[tuple[LadderOrderRow, ...], tuple[LadderOrderRow, ...]]],
@@ -322,6 +325,8 @@ def build_cards(
                 symbol=symbol,
                 market=market,
                 current_price=current,
+                current_price_status=price_status_by_market.get(market),
+                current_price_age_min=price_age_min_by_market.get(market),
                 fib_ext=fib_ext_by_symbol.get(symbol),
                 reentry=reentry_by_symbol.get(symbol),
                 buy_orders=buy_orders,
@@ -399,14 +404,18 @@ def main() -> int:
         print(f"[error] account scope load failed: {exc}", file=sys.stderr)
         return 1
 
+    price_display_by_market = classify_market_prices_by_market(context=context)
     prices = {
-        snapshot.market: snapshot.price
-        for snapshot in context.market_price_by_symbol.values()
+        market: display.safe_price
+        for market, display in price_display_by_market.items()
+        if display.safe_price is not None
     }
     sections = build_all_sections(
         list(context.orders),
         list(context.balances),
         prices,
+        price_status_by_market={market: display.status for market, display in price_display_by_market.items()},
+        price_age_min_by_market={market: display.age_min for market, display in price_display_by_market.items()},
     )
     orders_by_symbol: dict[str, tuple[tuple[LadderOrderRow, ...], tuple[LadderOrderRow, ...]]] = {
         section.symbol: (section.buy_orders, section.sell_orders)
@@ -427,6 +436,8 @@ def main() -> int:
     cards = build_cards(
         list(context.markets),
         prices,
+        {market: display.status for market, display in price_display_by_market.items()},
+        {market: display.age_min for market, display in price_display_by_market.items()},
         zone_contexts.fib_ext_by_symbol,
         zone_contexts.reentry_by_symbol,
         orders_by_symbol,

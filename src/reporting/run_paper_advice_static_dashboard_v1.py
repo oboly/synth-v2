@@ -19,6 +19,7 @@ from src.market_data.market_price_snapshot_v1 import (
     MarketPriceSnapshot,
     fetch_latest_prices_by_symbol,
 )
+from src.reporting.current_price_snapshot_v1 import classify_current_price_snapshot
 from src.reporting.badge_html_v1 import badge_html as shared_badge_html
 from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav, pill_classes
 from src.reporting.entry_zone_state_v1 import (
@@ -177,6 +178,18 @@ def price_age_min(snapshot: MarketPriceSnapshot | None, *, now_utc: datetime) ->
         return None
     age_seconds = Decimal(str((now_utc.replace(tzinfo=None) - snapshot.observed_ts_utc).total_seconds()))
     return age_seconds / Decimal("60")
+
+
+def apply_current_price_snapshot(
+    row: dict[str, Any],
+    snapshot: MarketPriceSnapshot | None,
+    *,
+    now_utc: datetime,
+) -> None:
+    display = classify_current_price_snapshot(snapshot, now_utc=now_utc)
+    row["current_price_status"] = display.status
+    row["price_age_min"] = display.age_min
+    row["current_price"] = display.safe_price
 
 
 def fmt_score(value: Any) -> str:
@@ -1779,6 +1792,7 @@ def render_table(
 
         zone_cell_1, zone_cell_2, zone_cell_3 = zone_display_cells(row)
         current_price = row.get("current_price")
+        current_price_status = str(row.get("current_price_status") or "MISSING_CURRENT_PRICE").upper()
         entry_state = classify_entry_zone_state(
             leg_direction=row.get("leg_direction"),
             current_price=current_price,
@@ -1885,7 +1899,16 @@ def render_table(
         action_class = css_class(action_label)
         action_detail = f"policy/action: {esc(row.get('advice_action'))}"
         policy_html = esc(row.get("policy_decision"))
-        if block_display is not None:
+        if current_price_status == "STALE_CURRENT_PRICE":
+            action_label = "STALE_CURRENT_PRICE"
+            action_class = css_class("STALE_CURRENT_PRICE")
+            action_detail = "Current public price snapshot is stale; price-based action review blocked."
+        if current_price_status == "STALE_CURRENT_PRICE":
+            policy_html = (
+                f'{badge_html("STALE_CURRENT_PRICE")}'
+                f'<div class="muted small">Current public price snapshot is stale.</div>'
+            )
+        elif block_display is not None:
             action_label = block_display.display_policy_label
             action_class = css_class(block_display.display_policy_label)
             action_detail = block_reason_summary_text(block_display)
@@ -1948,7 +1971,7 @@ def render_table(
                 <td>{badge_text_html(manual_support.horizon_bucket)}</td>
                 <td class="mono right">{fmt_score(row.get("confidence_score"))}</td>
                 <td>{badge_html(risk_label)}</td>
-                <td class="mono right sticky-price">{esc(fmt_snapshot_price(current_price))}</td>
+                <td class="mono right sticky-price">{esc(fmt_snapshot_price(current_price) or current_price_status)}</td>
                 <td class="mono right">{fmt_decimal(row.get("price_age_min"), places=1)}</td>
                 <td>{badge_html(entry_display_state)}<div class="muted small">raw: {esc(entry_state)}</div></td>
                 <td>{progress_html}</td>
@@ -2437,8 +2460,7 @@ def main() -> int:
     for row in rows:
         symbol = str(row.get("symbol") or "").upper()
         snapshot = price_by_symbol.get(symbol)
-        row["current_price"] = None if snapshot is None else snapshot.price
-        row["price_age_min"] = price_age_min(snapshot, now_utc=now_utc)
+        apply_current_price_snapshot(row, snapshot, now_utc=now_utc)
         attach_fib_map_context(row, fib_map_by_symbol.get(symbol))
     selected_min_asof, selected_max_asof = selected_asof_bounds(rows)
 

@@ -27,6 +27,14 @@ trading_account
 The dashboard profile is an output/navigation identity, not a credential and not
 the trading account itself.
 
+Current price policy:
+
+- active account dashboards fail closed on stale public prices
+- stale public prices are exposed as `STALE_CURRENT_PRICE`
+- price age remains visible
+- stale prices do not contribute estimated EUR value, percentage delta, or
+  action-style review text
+
 ## Dependency
 
 This dashboard depends on `src/account/run_account_wallet_refresh_v1.py` already existing and writing account-specific rows to:
@@ -83,6 +91,12 @@ The legacy global prototype pages `/synth/profit-plan.html` and
 `/synth/open-orders-monitor.html` are no longer rendered by the global MVP
 cockpit runner. Account-scoped dashboards render only through
 `scripts/odroid/run_account_wallet_dashboard_render_once.sh <profile>`.
+The active account navigation contains only:
+
+- About
+- Wallet
+- Profit Plan
+- Open Orders Monitor
 
 ## What the page shows
 
@@ -165,6 +179,10 @@ Render all per-account dashboard pages together:
 scripts/odroid/run_account_wallet_dashboard_render_once.sh joost
 scripts/odroid/run_account_wallet_dashboard_render_once.sh hugo
 ```
+
+The render wrapper refreshes public `market_price_snapshot` data before account
+page rendering. If that refresh fails, rendering continues but stale prices
+remain fail-closed and non-actionable.
 
 ## Safety
 

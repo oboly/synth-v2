@@ -34,6 +34,8 @@ Identity model:
   `trading_account.account_code`, but Profit Plan does not derive this from the
   profile name
 - unmapped profiles fail closed with `PROFILE_HAS_NO_ACCOUNT_ACCESS`
+- stale public prices fail closed as `STALE_CURRENT_PRICE`; Profit Plan hides
+  percentage-distance and action-style output until public price refresh succeeds
 
 It does not:
 

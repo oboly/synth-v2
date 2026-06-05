@@ -220,15 +220,18 @@ def render_global_cockpit_index_html() -> str:
         <a href="/synth/about.html">About</a>
         <p class="muted">Global SYNTH brand, subtitle, and faction-lore overview. Read-only and account-agnostic.</p>
       </div>
+{account_cards_html}
+    </div>
+    <h2>Legacy / Archive</h2>
+    <div class="grid">
       <div class="card">
         <a href="/synth/paper-advice.html">Paper Advice</a>
-        <p class="muted">Market/setup/A+ context and paper navigation.</p>
+        <p class="muted">Legacy global review page. Archive-only; not part of active operational navigation.</p>
       </div>
       <div class="card">
         <a href="/synth/entry-candidates.html">Entry Candidates</a>
-        <p class="muted">Market-only setup candidates and readiness groups.</p>
+        <p class="muted">Legacy market-only review page. Archive-only; not part of active operational navigation.</p>
       </div>
-{account_cards_html}
     </div>
   </main>
 </body>

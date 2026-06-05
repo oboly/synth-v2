@@ -11,6 +11,7 @@ from typing import Any
 from src.reporting.account_scoped_short_trader_dashboard_v1 import (
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_VENUE,
+    classify_market_prices_by_market,
     default_page_paths,
     load_account_scoped_short_dashboard_context,
     validate_profile_slug,
@@ -82,15 +83,19 @@ def _build_sections(
     context,
     fib_rows: dict[str, dict[str, Any]],
 ) -> list[LadderSymbolSection]:
+    price_display_by_market = classify_market_prices_by_market(context=context)
     prices = {
-        snapshot.market: snapshot.price
-        for snapshot in context.market_price_by_symbol.values()
+        market: display.safe_price
+        for market, display in price_display_by_market.items()
+        if display.safe_price is not None
     }
     return build_all_sections(
         list(context.orders),
         list(context.balances),
         prices,
         fib_rows=fib_rows,
+        price_status_by_market={market: display.status for market, display in price_display_by_market.items()},
+        price_age_min_by_market={market: display.age_min for market, display in price_display_by_market.items()},
     )
 
 

@@ -10,6 +10,11 @@ from typing import Any
 from src.common.db import get_connection
 from src.market_data.market_price_snapshot_v1 import MarketPriceSnapshot, fetch_latest_prices_by_symbol
 from src.reporting.account_wallet_dashboard_v1 import QUOTE_CURRENCY, to_decimal
+from src.reporting.current_price_snapshot_v1 import (
+    DEFAULT_CURRENT_PRICE_FRESH_AFTER,
+    CurrentPriceDisplay,
+    classify_current_price_snapshot,
+)
 from src.reporting.manual_short_trader_dashboard_v1 import BrokerBalanceRow, BrokerOrderRow
 
 
@@ -32,6 +37,23 @@ class AccountScopedShortDashboardContext:
     open_order_count_by_market: dict[str, int]
     market_price_by_symbol: dict[str, MarketPriceSnapshot]
     markets: tuple[str, ...]
+
+
+def classify_market_prices_by_market(
+    *,
+    context: AccountScopedShortDashboardContext,
+    now_utc: datetime | None = None,
+) -> dict[str, CurrentPriceDisplay]:
+    now_utc = now_utc or datetime.now(UTC)
+    out: dict[str, CurrentPriceDisplay] = {}
+    for market in context.markets:
+        symbol = market.split("-", 1)[0].upper()
+        out[market] = classify_current_price_snapshot(
+            context.market_price_by_symbol.get(symbol),
+            now_utc=now_utc,
+            fresh_after=DEFAULT_CURRENT_PRICE_FRESH_AFTER,
+        )
+    return out
 
 
 def validate_profile_slug(profile: str) -> None:

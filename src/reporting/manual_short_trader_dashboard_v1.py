@@ -64,6 +64,8 @@ class LadderSymbolSection:
     market: str
     quote_currency: str
     current_price: Decimal | None
+    current_price_status: str
+    current_price_age_min: Decimal | None
     buy_orders: tuple[LadderOrderRow, ...]
     sell_orders: tuple[LadderOrderRow, ...]
     balance_available: Decimal | None
@@ -209,6 +211,8 @@ def build_all_sections(
     prices: dict[str, Decimal],
     *,
     fib_rows: dict[str, dict[str, Any]] | None = None,
+    price_status_by_market: dict[str, str] | None = None,
+    price_age_min_by_market: dict[str, Decimal | None] | None = None,
 ) -> list[LadderSymbolSection]:
     """
     Group open orders by market, enrich with current price distance and labels,
@@ -218,6 +222,8 @@ def build_all_sections(
     fib_rows keys are base symbols, e.g. "WLD".
     """
     fib_rows = fib_rows or {}
+    price_status_by_market = price_status_by_market or {}
+    price_age_min_by_market = price_age_min_by_market or {}
     balance_by_symbol: dict[str, BrokerBalanceRow] = {b.symbol: b for b in balances}
     markets = sorted({o.market for o in orders})
 
@@ -225,6 +231,11 @@ def build_all_sections(
     for market in markets:
         symbol, quote = parse_market(market)
         current_price = prices.get(market)
+        current_price_status = price_status_by_market.get(
+            market,
+            "FRESH_CURRENT_PRICE" if current_price is not None else "MISSING_CURRENT_PRICE",
+        )
+        current_price_age_min = price_age_min_by_market.get(market)
         market_orders = [o for o in orders if o.market == market]
 
         buy_rows = tuple(
@@ -248,6 +259,8 @@ def build_all_sections(
                 if label not in seen:
                     seen.add(label)
                     section_labels.append(label)
+        if current_price_status != "FRESH_CURRENT_PRICE" and current_price_status not in seen:
+            section_labels.append(current_price_status)
 
         sections.append(
             LadderSymbolSection(
@@ -255,6 +268,8 @@ def build_all_sections(
                 market=market,
                 quote_currency=quote,
                 current_price=current_price,
+                current_price_status=current_price_status,
+                current_price_age_min=current_price_age_min,
                 buy_orders=buy_rows,
                 sell_orders=sell_rows,
                 balance_available=balance.available if balance else None,
@@ -451,6 +466,14 @@ def _fib_context_html(fib_ctx: dict[str, Any]) -> str:
 def render_symbol_section(section: LadderSymbolSection) -> str:
     price_str = fmt_price(section.current_price) if section.current_price else "—"
     labels_html = " ".join(_pill(label) for label in section.section_labels)
+    price_meta = (
+        f"<div><strong>Price:</strong> <span class='mono'>{esc(price_str)} {esc(section.quote_currency)}</span></div>"
+    )
+    if section.current_price_status != "FRESH_CURRENT_PRICE":
+        price_meta += (
+            f"<div class='muted small'>status: {esc(section.current_price_status)} · "
+            f"price_age_min={esc(fmt_price(section.current_price_age_min, places=1))}</div>"
+        )
 
     balance_html = ""
     if section.balance_available is not None or section.balance_in_order is not None:
@@ -467,7 +490,7 @@ def render_symbol_section(section: LadderSymbolSection) -> str:
         "<div class='card-head'>"
         f"<div><h2>{esc(section.symbol)} "
         f"<span class='muted' style='font-size:15px'>{esc(section.market)}</span></h2>"
-        f"<div><strong>Price:</strong> <span class='mono'>{esc(price_str)} {esc(section.quote_currency)}</span></div>"
+        f"{price_meta}"
         f"{balance_html}</div>"
         f"<div class='state'>{labels_html}</div>"
         "</div>"
@@ -555,6 +578,10 @@ def build_json_snapshot(
                 "symbol": s.symbol,
                 "market": s.market,
                 "current_price": str(s.current_price) if s.current_price is not None else None,
+                "current_price_status": s.current_price_status,
+                "current_price_age_min": (
+                    str(s.current_price_age_min) if s.current_price_age_min is not None else None
+                ),
                 "balance_available": str(s.balance_available) if s.balance_available is not None else None,
                 "balance_in_order": str(s.balance_in_order) if s.balance_in_order is not None else None,
                 "section_labels": list(s.section_labels),

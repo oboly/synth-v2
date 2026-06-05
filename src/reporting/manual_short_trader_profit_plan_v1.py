@@ -18,6 +18,7 @@ PRICE_RAN_AWAY_THRESHOLD_PCT = Decimal("12")
 ORDER_STALE_DISTANCE_PCT = Decimal("12")
 
 STATE_LABELS: dict[str, str] = {
+    "STALE_CURRENT_PRICE": "Stale current price",
     "TAKE_PROFIT_WAITING": "Take profit already waiting",
     "RELOAD_ZONE_APPROACHING": "Reload zone approaching",
     "PRICE_RAN_AWAY": "Price ran away",
@@ -92,6 +93,8 @@ class ProfitPlanCard:
     symbol: str
     market: str
     current_price: Decimal | None
+    current_price_status: str | None
+    current_price_age_min: Decimal | None
     scenario_type: str
     action_label: str
     timeframe_label: str
@@ -570,7 +573,45 @@ def build_profit_plan_card(
     preferred_retrace_level: str | None = None,
     buy_orders: tuple[Any, ...] = (),
     sell_orders: tuple[Any, ...] = (),
+    current_price_status: str | None = None,
+    current_price_age_min: Decimal | None = None,
 ) -> ProfitPlanCard:
+    if current_price_status == "STALE_CURRENT_PRICE":
+        order_summary = build_order_summary(
+            None,
+            (),
+            (),
+            buy_orders,
+            sell_orders,
+        )
+        return ProfitPlanCard(
+            symbol=symbol,
+            market=market,
+            current_price=None,
+            current_price_status=current_price_status,
+            current_price_age_min=current_price_age_min,
+            scenario_type="NO_CURRENT_PRICE",
+            action_label="NO_CURRENT_PRICE",
+            timeframe_label="review blocked",
+            buy_zone=(),
+            sell_zone=(),
+            invalidation_level=None,
+            reasons=(
+                "Current public price snapshot is stale.",
+                "Do not use percentage distance, action labels, or scenario recommendation until price refresh succeeds.",
+            ),
+            order_summary=order_summary,
+            target_exit_zone=(),
+            reload_reentry_zone=(),
+            invalidation_risk_zone=None,
+            distance_to_target_pct=None,
+            distance_to_reload_pct=None,
+            distance_to_invalidation_pct=None,
+            primary_state="STALE_CURRENT_PRICE",
+            secondary_state=None,
+            suggested_manual_attention_label=STATE_LABELS["STALE_CURRENT_PRICE"],
+            is_relevant=False,
+        )
     (
         scenario_type,
         action_label,
@@ -620,6 +661,8 @@ def build_profit_plan_card(
         symbol=symbol,
         market=market,
         current_price=current_price,
+        current_price_status=current_price_status,
+        current_price_age_min=current_price_age_min,
         scenario_type=scenario_type,
         action_label=action_label,
         timeframe_label=timeframe_label,
@@ -875,6 +918,8 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
     metrics_html = "".join((
         _metric_block("Market", card.market),
         _metric_block("Current price", f"{price_str} {quote}".strip()),
+        _metric_block("Current price status", card.current_price_status or "FRESH_CURRENT_PRICE"),
+        _metric_block("Price age (min)", "?" if card.current_price_age_min is None else _fmt_p(card.current_price_age_min)),
         _metric_block("Target / exit zone", ", ".join(_fmt_p(v) for v in card.target_exit_zone) or "No levels loaded"),
         _metric_block("Reload / re-entry zone", ", ".join(_fmt_p(v) for v in card.reload_reentry_zone) or "No levels loaded"),
         _metric_block("Invalidation / risk zone", _fmt_p(card.invalidation_risk_zone)),
@@ -985,6 +1030,8 @@ def build_json_snapshot(
                 "symbol": c.symbol,
                 "market": c.market,
                 "current_price": str(c.current_price) if c.current_price is not None else None,
+                "current_price_status": c.current_price_status,
+                "current_price_age_min": str(c.current_price_age_min) if c.current_price_age_min is not None else None,
                 "scenario_type": c.scenario_type,
                 "action_label": c.action_label,
                 "timeframe_label": c.timeframe_label,

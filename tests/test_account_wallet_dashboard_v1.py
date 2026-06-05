@@ -138,7 +138,49 @@ def test_unknown_asset_render():
     payload_json = payload_to_json_dict(payload)
     assert payload.market_data_warning is not None
     assert "XYZ" in html
-    assert payload_json["balances"][0]["price_status"] == "MISSING"
+    assert payload_json["balances"][0]["price_status"] == "MISSING_CURRENT_PRICE"
+
+
+def test_stale_price_fails_closed_for_estimated_value() -> None:
+    now = _base_now()
+    stale_price = MarketPriceSnapshot(
+        venue="bitvavo",
+        symbol="HOME",
+        market="HOME-EUR",
+        quote_currency="EUR",
+        price=Decimal("1.30"),
+        source_name="market_price_snapshot_v1",
+        source_ts_utc=(now - timedelta(days=2)).replace(tzinfo=None),
+        observed_ts_utc=(now - timedelta(days=2)).replace(tzinfo=None),
+    )
+    payload = build_wallet_dashboard_payload(
+        profile="joost",
+        account_code="bitvavo_joost_read",
+        trading_account_id=1,
+        venue="bitvavo",
+        latest_balance_snapshot_ts_utc=now.replace(tzinfo=None),
+        latest_order_snapshot_ts_utc=None,
+        balance_rows=[
+            {
+                "currency_code": "HOME",
+                "available_amount": Decimal("100"),
+                "reserved_amount": Decimal("0"),
+                "total_amount": Decimal("100"),
+            }
+        ],
+        open_order_count_rows=[],
+        account_asset_settings=_settings(),
+        price_by_symbol={"HOME": stale_price},
+        account_asset_rows=[],
+        venue_market_rows=[],
+        now_utc=now,
+    )
+    html = render_wallet_html(payload)
+    payload_json = payload_to_json_dict(payload)
+    assert payload.balances[0].estimated_eur_value is None
+    assert payload_json["balances"][0]["price_status"] == "STALE_CURRENT_PRICE"
+    assert payload_json["balances"][0]["estimated_eur_value"] is None
+    assert "STALE_CURRENT_PRICE" in html
 
 
 def test_joost_hugo_isolation():
@@ -341,6 +383,9 @@ def test_wallet_html_includes_management_sections():
     assert "/synth/about.html" in html
     assert "/synth/accounts/joost/profit-plan.html" in html
     assert "/synth/accounts/joost/open-orders-monitor.html" in html
+    assert "/synth/paper-advice.html" not in html
+    assert "/synth/entry-candidates.html" not in html
+    assert "/synth/rotation-preview.html" not in html
 
 
 def test_wallet_dashboard_source_has_no_decision_execution_imports():
@@ -453,6 +498,7 @@ def main():
     test_stale_detection()
     test_empty_wallet_render()
     test_unknown_asset_render()
+    test_stale_price_fails_closed_for_estimated_value()
     test_joost_hugo_isolation()
     test_no_secrets_in_html_json()
     test_write_wallet_dashboard_outputs_accounts_profile_files()

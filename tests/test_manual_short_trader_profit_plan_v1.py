@@ -262,6 +262,21 @@ def test_insufficient_data_when_zones_are_missing() -> None:
     assert card.primary_state == "INSUFFICIENT_DATA"
 
 
+def test_stale_current_price_blocks_actionable_profit_plan_outputs() -> None:
+    card = build_profit_plan_card(
+        symbol="HOME",
+        market="HOME-EUR",
+        current_price=Decimal("1.30"),
+        current_price_status="STALE_CURRENT_PRICE",
+        current_price_age_min=Decimal("2880"),
+        fib_ext=_wld_fib_ext(),
+    )
+    assert card.primary_state == "STALE_CURRENT_PRICE"
+    assert card.action_label == "NO_CURRENT_PRICE"
+    assert card.distance_to_target_pct is None
+    assert card.current_price is None
+
+
 def test_render_full_html_uses_profit_plan_title_and_public_monitor_href() -> None:
     card = _make_card(current_price="0.48", fib_ext=_wld_fib_ext())
     html = render_full_html([card], monitor_link="/synth/accounts/joost/open-orders-monitor.html")
@@ -431,6 +446,7 @@ def main() -> None:
         test_order_too_far_or_stale_when_open_orders_are_far,
         test_do_nothing_for_neutral_valid_state,
         test_insufficient_data_when_zones_are_missing,
+        test_stale_current_price_blocks_actionable_profit_plan_outputs,
         test_render_full_html_uses_profit_plan_title_and_public_monitor_href,
         test_json_snapshot_structure_and_safety_markers,
         test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account_leakage,

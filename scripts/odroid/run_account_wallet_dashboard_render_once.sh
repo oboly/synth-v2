@@ -11,6 +11,7 @@ REPO_DIR="${SYNTH_REPO_DIR:-$HOME/projects/synth-v2}"
 OUTPUT_ROOT="${SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT:-/var/www/html/synth}"
 LOCK_FILE="${SYNTH_ACCOUNT_WALLET_DASHBOARD_LOCK:-/tmp/synth-account-wallet-dashboard-${PROFILE}.lock}"
 VENUE="${SYNTH_ACCOUNT_WALLET_VENUE:-bitvavo}"
+QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
 
 echo "account_wallet_dashboard_render_once starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "profile=${PROFILE}"
@@ -34,6 +35,14 @@ exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
   echo "Skipped: another wallet dashboard render is already running for ${PROFILE}."
   exit 0
+fi
+
+if ! python -m src.market_data.run_market_price_snapshot_v1 \
+  --venue "${VENUE}" \
+  --quote "${QUOTE}" \
+  --write-db \
+  --output none; then
+  echo "Warning: public market price refresh failed; continuing with stale-price fail-closed rendering."
 fi
 
 python -m src.reporting.run_account_wallet_dashboard_v1 \

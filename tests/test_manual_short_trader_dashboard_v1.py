@@ -375,6 +375,23 @@ def test_build_all_sections_current_price_set() -> None:
     sections = _make_sections()
     wld = next(s for s in sections if s.symbol == "WLD")
     assert wld.current_price == Decimal("0.68")
+    assert wld.current_price_status == "FRESH_CURRENT_PRICE"
+
+
+def test_build_all_sections_stale_price_fails_closed() -> None:
+    orders = [normalize_broker_order(_raw_order("o-1", "HOME-EUR", "sell", "1.3000", "100"))]
+    sections = build_all_sections(
+        orders,
+        [],
+        {},
+        price_status_by_market={"HOME-EUR": "STALE_CURRENT_PRICE"},
+        price_age_min_by_market={"HOME-EUR": Decimal("2880")},
+    )
+    home = sections[0]
+    assert home.current_price is None
+    assert home.current_price_status == "STALE_CURRENT_PRICE"
+    assert home.sell_orders[0].distance_pct is None
+    assert "STALE_CURRENT_PRICE" in home.section_labels
 
 
 def test_build_all_sections_sell_at_current_is_near_sell() -> None:
@@ -858,6 +875,7 @@ def main() -> None:
         test_build_all_sections_separates_buy_and_sell,
         test_build_all_sections_carries_balance,
         test_build_all_sections_current_price_set,
+        test_build_all_sections_stale_price_fails_closed,
         test_build_all_sections_sell_at_current_is_near_sell,
         test_build_all_sections_quote_value_correct,
         test_build_all_sections_manual_only_in_section_labels,

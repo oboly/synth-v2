@@ -68,8 +68,8 @@ def test_wallet_navigation_links_to_global_about() -> None:
 
 def test_global_cockpit_navigation_links_to_about() -> None:
     assert "/synth/about.html" in cockpit_nav()
-    assert "/synth/paper-advice.html" in cockpit_nav()
-    assert "/synth/entry-candidates.html" in cockpit_nav()
+    assert "/synth/paper-advice.html" not in cockpit_nav()
+    assert "/synth/entry-candidates.html" not in cockpit_nav()
     assert "/synth/profit-plan.html" not in cockpit_nav()
     assert "/synth/open-orders-monitor.html" not in cockpit_nav()
     assert "/synth/rotation-preview.html" not in cockpit_nav()
@@ -78,12 +78,13 @@ def test_global_cockpit_navigation_links_to_about() -> None:
 def test_global_cockpit_index_links_global_pages_and_configured_account() -> None:
     html = render_global_cockpit_index_html()
     assert "/synth/about.html" in html
-    assert "/synth/paper-advice.html" in html
-    assert "/synth/entry-candidates.html" in html
     assert "/synth/accounts/joost/wallet.html" in html
     assert "/synth/profit-plan.html" not in html
     assert "/synth/open-orders-monitor.html" not in html
     assert "/synth/rotation-preview.html" not in html
+    assert "Legacy / Archive" in html
+    assert "/synth/paper-advice.html" in html
+    assert "/synth/entry-candidates.html" in html
     assert "/var/www/html/" not in html
 
 

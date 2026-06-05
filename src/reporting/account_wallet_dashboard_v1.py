@@ -15,13 +15,17 @@ from src.reporting.account_asset_management_v1 import (
     build_account_asset_management_payload,
     build_ui_prep_actions,
 )
+from src.reporting.current_price_snapshot_v1 import (
+    DEFAULT_CURRENT_PRICE_FRESH_AFTER,
+    classify_current_price_snapshot,
+)
 
 
 REPORT_NAME = "account_wallet_dashboard_v1"
 REPORT_VERSION = "0.1"
 DEFAULT_OUTPUT_ROOT = Path("/var/www/html/synth")
 DEFAULT_FRESH_AFTER = timedelta(minutes=15)
-DEFAULT_PRICE_FRESH_AFTER = timedelta(minutes=15)
+DEFAULT_PRICE_FRESH_AFTER = DEFAULT_CURRENT_PRICE_FRESH_AFTER
 QUOTE_CURRENCY = "EUR"
 
 
@@ -35,6 +39,7 @@ class BalanceDashboardRow:
     price_eur: Decimal | None
     price_observed_ts_utc: datetime | None
     price_status: str
+    price_age_min: Decimal | None
 
 
 @dataclass(frozen=True)
@@ -110,10 +115,6 @@ def esc(value: Any) -> str:
     return html.escape(str(value))
 
 
-def _naive_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=None) if value.tzinfo is not None else value
-
-
 def classify_wallet_freshness(
     latest_wallet_refresh_ts_utc: datetime | None,
     *,
@@ -122,20 +123,9 @@ def classify_wallet_freshness(
 ) -> str:
     if latest_wallet_refresh_ts_utc is None:
         return "NEVER_REFRESHED"
-    if _naive_utc(now_utc) - _naive_utc(latest_wallet_refresh_ts_utc) <= fresh_after:
-        return "FRESH"
-    return "STALE"
-
-
-def classify_price_status(
-    snapshot: MarketPriceSnapshot | None,
-    *,
-    now_utc: datetime,
-    fresh_after: timedelta = DEFAULT_PRICE_FRESH_AFTER,
-) -> str:
-    if snapshot is None:
-        return "MISSING"
-    if _naive_utc(now_utc) - _naive_utc(snapshot.observed_ts_utc) <= fresh_after:
+    latest = latest_wallet_refresh_ts_utc.replace(tzinfo=None) if latest_wallet_refresh_ts_utc.tzinfo is not None else latest_wallet_refresh_ts_utc
+    current = now_utc.replace(tzinfo=None) if now_utc.tzinfo is not None else now_utc
+    if current - latest <= fresh_after:
         return "FRESH"
     return "STALE"
 
@@ -420,29 +410,34 @@ def build_wallet_dashboard_payload(
         price_eur: Decimal | None = None
         price_observed_ts_utc: datetime | None = None
         price_status = "NOT_NEEDED"
+        price_age_min: Decimal | None = None
 
         if asset == QUOTE_CURRENCY:
             estimated_eur_value = total
             price_eur = Decimal("1")
+            price_age_min = Decimal("0")
             total_estimated_portfolio_value += total
             any_estimated_value = True
         elif asset:
             snapshot = price_by_symbol.get(asset)
-            price_status = classify_price_status(
+            price_display = classify_current_price_snapshot(
                 snapshot,
                 now_utc=now_utc,
                 fresh_after=price_fresh_after,
             )
-            if snapshot is None:
+            price_status = price_display.status
+            price_observed_ts_utc = price_display.observed_ts_utc
+            price_age_min = price_display.age_min
+            if price_status == "MISSING_CURRENT_PRICE":
                 missing_market_data_count += 1
+            elif price_status == "STALE_CURRENT_PRICE":
+                stale_market_data_count += 1
+                price_eur = snapshot.price if snapshot is not None else None
             else:
-                price_eur = snapshot.price
-                price_observed_ts_utc = snapshot.observed_ts_utc
-                estimated_eur_value = total * snapshot.price
+                price_eur = price_display.safe_price
+                estimated_eur_value = total * price_display.safe_price
                 total_estimated_portfolio_value += estimated_eur_value
                 any_estimated_value = True
-                if price_status == "STALE":
-                    stale_market_data_count += 1
 
         balances.append(
             BalanceDashboardRow(
@@ -454,6 +449,7 @@ def build_wallet_dashboard_payload(
                 price_eur=price_eur,
                 price_observed_ts_utc=price_observed_ts_utc,
                 price_status=price_status,
+                price_age_min=price_age_min,
             )
         )
 
@@ -642,6 +638,7 @@ def payload_to_json_dict(payload: WalletDashboardPayload) -> dict[str, Any]:
                     None if row.price_observed_ts_utc is None else row.price_observed_ts_utc.isoformat(sep=" ")
                 ),
                 "price_status": row.price_status,
+                "price_age_min": None if row.price_age_min is None else str(row.price_age_min),
             }
             for row in payload.balances
         ],
@@ -679,13 +676,14 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
             f"<td>{esc(decimal_text(row.in_order, places='0.000000'))}</td>"
             f"<td>{esc(decimal_text(row.estimated_eur_value))}</td>"
             f"<td>{esc(row.price_status)}</td>"
+            f"<td>{esc(decimal_text(row.price_age_min, places='0.1'))}</td>"
             "</tr>"
         )
         for row in payload.balances
     )
     if not balances_html:
         balances_html = (
-            "<tr><td colspan='5' class='muted'>No wallet balances found for the latest snapshot.</td></tr>"
+            "<tr><td colspan='6' class='muted'>No wallet balances found for the latest snapshot.</td></tr>"
         )
 
     order_counts_html = "".join(
@@ -845,6 +843,7 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
             <th>In Order</th>
             <th>Estimated EUR Value</th>
             <th>Market Data</th>
+            <th>Price Age (min)</th>
           </tr>
         </thead>
         <tbody>

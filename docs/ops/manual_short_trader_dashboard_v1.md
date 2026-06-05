@@ -59,6 +59,8 @@ must not bypass decision or execution boundaries.
 - reads only `trading_account_balance_snapshot`, `account_open_order_snapshot`,
   `account_asset`, and shared market-price/fib-map context
 - fails closed on unmapped profile access or ambiguous account resolution
+- fails closed on stale public prices with `STALE_CURRENT_PRICE`; no price
+  distance or near-order review is derived from stale prices
 - never calls a broker client, `place_order`, `cancel_order`, or any write path
 
 Current configured profile access:

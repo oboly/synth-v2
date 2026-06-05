@@ -50,6 +50,8 @@ Do not expose publicly without authentication. Preferred MVP access: Tailscale/V
   through `scripts/odroid/run_account_wallet_dashboard_render_once.sh <profile>`.
 - The global MVP cockpit must not render account-aware rotation preview, Profit
   Plan, or Open Orders Monitor pages itself.
+- Legacy pages such as Paper Advice and Entry Candidates may appear only in a
+  clearly labeled `Legacy / Archive` section, not in primary navigation.
 - The large third-faction triptych is reserved for the About page and explicit
   brand surfaces, not normal operational dashboards.
 - Better candidates are heuristic review aids, not allocation instructions.
