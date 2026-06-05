@@ -133,7 +133,7 @@ Per target level:
 - account-aware coverage is audited separately per level
 - lifecycle uses market history since map activation where available, not current price alone
 - lifecycle is monotonic: `REACHED`, `PASSED`, and `COMPLETED` never regress back to `NEAR` or `UPCOMING` because price pulled back
-- when every mapped sell target is historically passed, Profit Plan switches to `scenario_type=MAP_COMPLETED`, clears `active_target`, and removes old passed targets from `Active target / exit zone`
+- when every mapped sell target is historically passed, Profit Plan switches to `scenario_type=MAP_COMPLETED`, sets `action_label=WAIT_FOR_NEW_MAP`, clears `active_target`, and removes old passed targets from `Active target / exit zone`
 - passed levels never remain the `active_target`
 - `distance_to_target_pct` always uses the next active upcoming target, never an already passed level
 - a passed level with no fill evidence is shown as `PASSED_UNFILLED` with human wording `missed sell level`

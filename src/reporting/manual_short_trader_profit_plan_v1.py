@@ -618,7 +618,7 @@ def _completed_map_override(
     return (
         True,
         "MAP_COMPLETED",
-        "WAIT",
+        "WAIT_FOR_NEW_MAP",
         primary_state,
         attention_label,
         tuple(list(reasons) + [extra_reason]),

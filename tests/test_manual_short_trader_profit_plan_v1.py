@@ -261,6 +261,7 @@ def test_map_recompute_needed_when_price_is_above_all_completed_targets() -> Non
     assert card.target_exit_zone == ()
     assert card.scenario_type == "MAP_COMPLETED"
     assert card.primary_state == "MAP_RECOMPUTE_NEEDED"
+    assert card.action_label == "WAIT_FOR_NEW_MAP"
     assert card.primary_state != "PRICE_RAN_AWAY"
 
 
@@ -446,7 +447,7 @@ def test_completed_map_synchronizes_scenario_and_state() -> None:
     assert card.target_exit_zone == ()
     assert card.scenario_type == "MAP_COMPLETED"
     assert card.primary_state == "POST_EXTENSION_PULLBACK"
-    assert card.action_label == "WAIT"
+    assert card.action_label == "WAIT_FOR_NEW_MAP"
     assert card.suggested_manual_attention_label == "Post-extension pullback"
     assert card.primary_state != "TAKE_PROFIT_WAITING"
     assert card.primary_state != "PRICE_RAN_AWAY"
