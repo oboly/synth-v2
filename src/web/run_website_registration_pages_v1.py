@@ -3,7 +3,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
+from src.reporting.dashboard_style_v1 import (
+    cockpit_base_css,
+    cockpit_nav,
+    copy_synth_favicon_assets,
+    synth_favicon_head_html,
+)
 
 
 DEFAULT_OUTPUT_ROOT = Path("/var/www/html/synth")
@@ -57,6 +62,7 @@ def _page_shell(*, title: str, body_html: str, script_html: str = "") -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{title}</title>
+  {synth_favicon_head_html().rstrip()}
   <style>{css}</style>
 </head>
 <body>
@@ -256,6 +262,7 @@ refreshOnboardingStatus();
 def main() -> int:
     args = parse_args()
     output_root = Path(args.output_root)
+    favicon_outputs = copy_synth_favicon_assets(output_root=output_root)
     pages = {
         "register.html": render_register_page(),
         "login.html": render_login_page(),
@@ -269,6 +276,8 @@ def main() -> int:
         print(f"output_root={output_root}")
         for filename in pages:
             print(f"page={output_root / filename}")
+        for favicon_output in favicon_outputs:
+            print(f"favicon_asset_output={favicon_output}")
         print("broker_private_calls=0")
         print("broker_writes=0")
         print("order_submission=0")

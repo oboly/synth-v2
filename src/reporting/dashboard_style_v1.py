@@ -1,6 +1,18 @@
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
+
 DEFAULT_NAV_ACCOUNT_PROFILE = "joost"
+SYNTH_BRAND_ASSET_DIR = Path("assets/brand/synth")
+SYNTH_FAVICON_FILENAMES = (
+    "favicon.svg",
+    "favicon-16x16.png",
+    "favicon-32x32.png",
+    "apple-touch-icon.png",
+    "favicon.ico",
+)
+SYNTH_FAVICON_PUBLIC_ROOT = "/synth/assets/brand/synth"
 
 
 LIFECYCLE_CRITICAL_LABELS = {
@@ -86,6 +98,30 @@ def cockpit_nav(*, account_profile: str | None = None, include_auth_links: bool 
         f"{links_html}\n"
         "    </nav>\n    "
     )
+
+
+def synth_favicon_head_html(*, public_root: str = SYNTH_FAVICON_PUBLIC_ROOT) -> str:
+    root = public_root.rstrip("/")
+    return (
+        f'  <link rel="icon" type="image/svg+xml" href="{root}/favicon.svg">\n'
+        f'  <link rel="icon" type="image/png" sizes="32x32" href="{root}/favicon-32x32.png">\n'
+        f'  <link rel="icon" type="image/png" sizes="16x16" href="{root}/favicon-16x16.png">\n'
+        f'  <link rel="apple-touch-icon" sizes="180x180" href="{root}/apple-touch-icon.png">\n'
+        f'  <link rel="shortcut icon" href="{root}/favicon.ico">\n'
+    )
+
+
+def copy_synth_favicon_assets(*, output_root: Path, source_dir: Path = SYNTH_BRAND_ASSET_DIR) -> list[Path]:
+    target_dir = Path(output_root) / "assets" / "brand" / "synth"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    copied: list[Path] = []
+    for filename in SYNTH_FAVICON_FILENAMES:
+        source = source_dir / filename
+        target = target_dir / filename
+        shutil.copy2(source, target)
+        target.chmod(0o644)
+        copied.append(target)
+    return copied
 
 
 def cockpit_base_css(*, min_table_width: int = 1800) -> str:

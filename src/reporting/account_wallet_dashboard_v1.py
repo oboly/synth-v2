@@ -19,6 +19,7 @@ from src.reporting.current_price_snapshot_v1 import (
     DEFAULT_CURRENT_PRICE_FRESH_AFTER,
     classify_current_price_snapshot,
 )
+from src.reporting.dashboard_style_v1 import synth_favicon_head_html
 from src.reporting.dashboard_time_v1 import format_ui_timestamp
 
 
@@ -776,6 +777,7 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Synth Wallet · {esc(payload.profile)}</title>
+  {synth_favicon_head_html().rstrip()}
   <style>
     body {{ font-family: Arial, sans-serif; margin: 24px; background: #f5f1e8; color: #1a1a1a; }}
     .wrap {{ max-width: 1100px; margin: 0 auto; }}

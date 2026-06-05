@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from src.reporting.dashboard_style_v1 import synth_favicon_head_html
 from src.reporting.dashboard_time_v1 import format_ui_now
 
 
@@ -534,6 +535,7 @@ def render_full_html(
         "  <meta http-equiv='refresh' content='120'>\n"
         "  <meta name='viewport' content='width=device-width, initial-scale=1'>\n"
         "  <title>Synth — Open Orders Monitor</title>\n"
+        f"{synth_favicon_head_html()}"
         f"  <style>{_CSS}</style>\n"
         "</head>\n<body>\n"
         "  <header>\n"

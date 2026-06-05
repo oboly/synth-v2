@@ -191,6 +191,17 @@ If the full monogram is too detailed for tiny sizes, a reduced small-size
 version of the same `S` silhouette should be created rather than inventing a
 different logo.
 
+Canonical favicon asset set:
+
+- `assets/brand/synth/favicon.svg`
+- `assets/brand/synth/favicon-16x16.png`
+- `assets/brand/synth/favicon-32x32.png`
+- `assets/brand/synth/apple-touch-icon.png`
+- `assets/brand/synth/favicon.ico`
+
+These assets must use the angular SYNTH `S` monogram only.
+They must not include the wordmark, subtitle, or faction artwork.
+
 ## Accessibility And Contrast Guidance
 
 Minimum guidance:

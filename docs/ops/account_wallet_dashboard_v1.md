@@ -191,6 +191,14 @@ The render wrapper refreshes public `market_price_snapshot` data before account
 page rendering. If that refresh fails, rendering continues but stale prices
 remain fail-closed and non-actionable.
 
+The same wrapper also copies the canonical SYNTH favicon asset set into:
+
+- `/var/www/html/synth/assets/brand/synth/favicon.svg`
+- `/var/www/html/synth/assets/brand/synth/favicon-16x16.png`
+- `/var/www/html/synth/assets/brand/synth/favicon-32x32.png`
+- `/var/www/html/synth/assets/brand/synth/apple-touch-icon.png`
+- `/var/www/html/synth/assets/brand/synth/favicon.ico`
+
 ## Safety
 
 Dashboard render is DB-read-only.

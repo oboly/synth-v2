@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">SYNTH favicon monogram</title>
+  <desc id="desc">Angular metallic S monogram with violet accent and subtle cyan highlight.</desc>
+  <defs>
+    <linearGradient id="graphite" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5a606d"/>
+      <stop offset="34%" stop-color="#272c35"/>
+      <stop offset="100%" stop-color="#11141a"/>
+    </linearGradient>
+    <linearGradient id="violet" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7a42ff"/>
+      <stop offset="100%" stop-color="#2a0e5d"/>
+    </linearGradient>
+    <linearGradient id="cyan" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8ffcff"/>
+      <stop offset="100%" stop-color="#4d9fff"/>
+    </linearGradient>
+  </defs>
+  <path
+    d="M14 8H56L48 16H24L18 22H40L48 30H26L18 38H42L50 46H28L20 54H8L16 46H34L40 40H16L8 32H30L38 24H14L8 16Z"
+    fill="url(#graphite)"
+  />
+  <path
+    d="M22 14H46L42 18H24L20 22H36L40 26H24L20 30H36L40 34H22L18 38H30L34 42H18L16 46H24L32 38H18L14 34H32L40 26H22L18 22H34L38 18H20Z"
+    fill="url(#violet)"
+  />
+  <path
+    d="M18 14L46 14L43 17L21 17Z"
+    fill="url(#cyan)"
+    opacity="0.7"
+  />
+</svg>

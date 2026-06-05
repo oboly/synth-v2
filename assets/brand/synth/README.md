@@ -49,5 +49,20 @@ approved concept sheet and governed by:
 - `synth_monochrome_white_v1.*`
 - `synth_favicon_symbol_v1.*`
 
-No generated exports are added by this change. This README establishes the
-canonical asset folder contract only.
+## Canonical Favicon Assets
+
+The committed canonical favicon set is:
+
+- `favicon.svg`
+- `favicon-16x16.png`
+- `favicon-32x32.png`
+- `apple-touch-icon.png`
+- `favicon.ico`
+
+Rules:
+
+- the favicon uses only the angular SYNTH `S` monogram
+- no wordmark, subtitle, or faction artwork
+- the vector source remains the canonical design source
+- raster exports are permanent brand assets, not temporary previews
+- browser/public hrefs resolve under `/synth/assets/brand/synth/`

@@ -19,6 +19,7 @@ from src.reporting.dashboard_style_v1 import (
     cockpit_base_css,
     cockpit_nav,
     pill_classes,
+    synth_favicon_head_html,
 )
 from src.reporting.dashboard_time_v1 import format_ui_now
 from src.reporting.entry_zone_state_v1 import (
@@ -2153,6 +2154,7 @@ def render_html(
   <meta http-equiv="refresh" content="300">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Synth Portfolio Cockpit</title>
+  {synth_favicon_head_html().rstrip()}
   <style>
     {cockpit_base_css(min_table_width=2450)}
   </style>
@@ -2210,6 +2212,7 @@ def write_index(output_dir: Path) -> Path:
             "<html lang=\"en\">\n"
             "<head><meta charset=\"utf-8\"><meta http-equiv=\"refresh\" content=\"300\">"
             "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            f"{synth_favicon_head_html().strip()}"
             "<title>Synth Cockpit</title></head>\n"
             "<body><main><h1>Synth MVP Read-only Cockpit</h1>"
             "<p>This legacy index writer is deprecated. Render the global cockpit index through "

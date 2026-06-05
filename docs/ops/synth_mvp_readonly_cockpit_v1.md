@@ -10,6 +10,11 @@ Render a read-only online cockpit for global account-agnostic pages. Account das
 - /var/www/html/synth/paper-advice.html
 - /var/www/html/synth/entry-candidates.html
 - /var/www/html/synth/about.html
+- /var/www/html/synth/assets/brand/synth/favicon.svg
+- /var/www/html/synth/assets/brand/synth/favicon-16x16.png
+- /var/www/html/synth/assets/brand/synth/favicon-32x32.png
+- /var/www/html/synth/assets/brand/synth/apple-touch-icon.png
+- /var/www/html/synth/assets/brand/synth/favicon.ico
 - /var/www/html/synth/assets/brand/synth-third-faction-triptych.png
 
 ## Runner
@@ -25,11 +30,17 @@ Global cockpit render stays read-only:
 - render `/var/www/html/synth/index.html`
 - render `/var/www/html/synth/about.html`
 - render `/var/www/html/synth/entry-candidates.html`
+- copy `/var/www/html/synth/assets/brand/synth/favicon.svg`
+- copy `/var/www/html/synth/assets/brand/synth/favicon-16x16.png`
+- copy `/var/www/html/synth/assets/brand/synth/favicon-32x32.png`
+- copy `/var/www/html/synth/assets/brand/synth/apple-touch-icon.png`
+- copy `/var/www/html/synth/assets/brand/synth/favicon.ico`
 - copy `/var/www/html/synth/assets/brand/synth-third-faction-triptych.png`
 - keep public brand-asset hrefs separate from filesystem output paths, e.g.
   `/synth/assets/brand/synth-third-faction-triptych.png` vs
   `/var/www/html/synth/assets/brand/synth-third-faction-triptych.png`
 - no broker writes, no order submission, no executor path
+- no separate manual favicon copy step; the normal global render flow deploys favicon assets automatically
 
 Forbidden: broker writes, order submission, execution_planner activation, executor activation, decision_gate permission changes, live trading.
 

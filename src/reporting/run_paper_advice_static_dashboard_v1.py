@@ -25,6 +25,7 @@ from src.reporting.dashboard_style_v1 import (
     cockpit_base_css,
     cockpit_nav,
     pill_classes,
+    synth_favicon_head_html,
 )
 from src.reporting.dashboard_time_v1 import format_ui_timestamp
 from src.reporting.entry_zone_state_v1 import (
@@ -2091,6 +2092,7 @@ def render_html(
     <meta http-equiv="refresh" content="300">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{esc(title)}</title>
+    {synth_favicon_head_html().rstrip()}
     <style>
         {cockpit_base_css(min_table_width=2400)}
         :root {{

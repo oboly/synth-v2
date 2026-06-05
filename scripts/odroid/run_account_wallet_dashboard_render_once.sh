@@ -9,6 +9,8 @@ fi
 
 REPO_DIR="${SYNTH_REPO_DIR:-$HOME/projects/synth-v2}"
 OUTPUT_ROOT="${SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT:-/var/www/html/synth}"
+FAVICON_SOURCE_DIR="${SYNTH_FAVICON_SOURCE_DIR:-assets/brand/synth}"
+FAVICON_OUTPUT_DIR="${OUTPUT_ROOT}/assets/brand/synth"
 LOCK_FILE="${SYNTH_ACCOUNT_WALLET_DASHBOARD_LOCK:-/tmp/synth-account-wallet-dashboard-${PROFILE}.lock}"
 VENUE="${SYNTH_ACCOUNT_WALLET_VENUE:-bitvavo}"
 QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
@@ -30,6 +32,11 @@ else
   echo "No .venv or venv found under ${REPO_DIR}" >&2
   exit 1
 fi
+
+mkdir -p "${FAVICON_OUTPUT_DIR}"
+for favicon_file in favicon.svg favicon-16x16.png favicon-32x32.png apple-touch-icon.png favicon.ico; do
+  install -m 0644 "${FAVICON_SOURCE_DIR}/${favicon_file}" "${FAVICON_OUTPUT_DIR}/${favicon_file}"
+done
 
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then

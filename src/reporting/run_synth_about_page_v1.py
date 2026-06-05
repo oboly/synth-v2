@@ -9,8 +9,10 @@ from src.reporting.account_dashboard_profile_access_v1 import (
 )
 from src.reporting.dashboard_style_v1 import (
     DEFAULT_NAV_ACCOUNT_PROFILE,
+    copy_synth_favicon_assets,
     cockpit_base_css,
     cockpit_nav,
+    synth_favicon_head_html,
 )
 
 
@@ -101,6 +103,7 @@ def render_about_html(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SYNTH About</title>
+  {synth_favicon_head_html().rstrip()}
   <style>{css}</style>
 </head>
 <body>
@@ -205,6 +208,7 @@ def render_global_cockpit_index_html(
   <meta http-equiv="refresh" content="300">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Synth Cockpit</title>
+  {synth_favicon_head_html().rstrip()}
   <style>
     body {{ margin:0; background:#0b1020; color:#e7edf8; font-family:system-ui,-apple-system,Segoe UI,sans-serif; }}
     code {{ color:#8ea0bf; }}
@@ -263,6 +267,7 @@ def main() -> int:
     index_html.parent.mkdir(parents=True, exist_ok=True)
     hero_output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(hero_source, hero_output)
+    favicon_outputs = copy_synth_favicon_assets(output_root=output_html.parent)
     output_html.write_text(
         render_about_html(hero_href=args.hero_asset_href, account_profile=DEFAULT_NAV_ACCOUNT_PROFILE),
         encoding="utf-8",
@@ -279,6 +284,8 @@ def main() -> int:
         print(f"index_output={index_html}")
         print(f"hero_asset_output={hero_output}")
         print(f"hero_asset_href={args.hero_asset_href}")
+        for favicon_output in favicon_outputs:
+            print(f"favicon_asset_output={favicon_output}")
         print("broker_private_calls=0")
         print("broker_writes=0")
         print("order_submission=0")
