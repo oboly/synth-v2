@@ -192,7 +192,7 @@ action_label  = TAKE_PROFIT_NEAR
 sell_zone     = [0.6500]  ← 1.618 extension
 reasons       = ["Main target at 1.618 extension (0.6500).",
                  "Watch for round-number confluence near target — strong magnet.",
-                 "Momentum suggests continuation — hold sells until target."]
+                 "Momentum supports continuation toward the target / sell zone at <price>."]
 ```
 
 Requires: `--swing-anchors WLD:0.30:0.38`

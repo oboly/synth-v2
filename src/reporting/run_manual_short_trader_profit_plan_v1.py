@@ -19,6 +19,7 @@ from src.reporting.account_scoped_short_trader_dashboard_v1 import (
     validate_profile_slug,
 )
 from src.reporting.account_dashboard_profile_access_v1 import resolve_dashboard_profile_access
+from src.reporting.dashboard_style_v1 import cockpit_nav
 from src.reporting.manual_short_trader_dashboard_v1 import (
     BrokerOrderRow,
     LadderOrderRow,
@@ -445,7 +446,12 @@ def main() -> int:
 
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(
-        render_full_html(cards, broker_mode="db_snapshot", monitor_link=monitor_link),
+        render_full_html(
+            cards,
+            broker_mode="db_snapshot",
+            monitor_link=monitor_link,
+            nav_html=cockpit_nav(account_profile=args.account_profile).strip(),
+        ),
         encoding="utf-8",
     )
     output_json.parent.mkdir(parents=True, exist_ok=True)

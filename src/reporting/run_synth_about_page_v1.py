@@ -7,7 +7,11 @@ from pathlib import Path
 from src.reporting.account_dashboard_profile_access_v1 import (
     CONFIGURED_DASHBOARD_PROFILE_ACCESS,
 )
-from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav
+from src.reporting.dashboard_style_v1 import (
+    DEFAULT_NAV_ACCOUNT_PROFILE,
+    cockpit_base_css,
+    cockpit_nav,
+)
 
 
 REPORT_NAME = "run_synth_about_page_v1"
@@ -39,7 +43,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def render_about_html(*, hero_href: str) -> str:
+def render_about_html(
+    *,
+    hero_href: str,
+    account_profile: str = DEFAULT_NAV_ACCOUNT_PROFILE,
+) -> str:
     css = cockpit_base_css(min_table_width=960) + """
     .about-hero {
       display: grid;
@@ -98,7 +106,7 @@ def render_about_html(*, hero_href: str) -> str:
 <body>
   <div class="page">
     <header class="header">
-      {cockpit_nav()}
+      {cockpit_nav(account_profile=account_profile)}
       <div class="about-hero">
         <div>
           <div class="brand-kicker">SYNTH</div>
@@ -174,7 +182,10 @@ def render_about_html(*, hero_href: str) -> str:
 """
 
 
-def render_global_cockpit_index_html() -> str:
+def render_global_cockpit_index_html(
+    *,
+    account_profile: str = DEFAULT_NAV_ACCOUNT_PROFILE,
+) -> str:
     account_cards = []
     for access in CONFIGURED_DASHBOARD_PROFILE_ACCESS:
         href = f"/synth/accounts/{access.account_profile}/wallet.html"
@@ -213,7 +224,7 @@ def render_global_cockpit_index_html() -> str:
   <main>
     <h1>Synth MVP Read-only Cockpit</h1>
     <p class="muted">Global cockpit pages render only account-agnostic content. Account dashboards render separately under <code>/synth/accounts/&lt;profile&gt;/</code>.</p>
-    {cockpit_nav()}
+    {cockpit_nav(account_profile=account_profile)}
     <p><span class="pill">broker_private_calls=0</span><span class="pill">broker_writes=0</span><span class="pill">order_submission=0</span><span class="pill">executor=none</span></p>
     <div class="grid">
       <div class="card">
@@ -252,8 +263,14 @@ def main() -> int:
     index_html.parent.mkdir(parents=True, exist_ok=True)
     hero_output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(hero_source, hero_output)
-    output_html.write_text(render_about_html(hero_href=args.hero_asset_href), encoding="utf-8")
-    index_html.write_text(render_global_cockpit_index_html(), encoding="utf-8")
+    output_html.write_text(
+        render_about_html(hero_href=args.hero_asset_href, account_profile=DEFAULT_NAV_ACCOUNT_PROFILE),
+        encoding="utf-8",
+    )
+    index_html.write_text(
+        render_global_cockpit_index_html(account_profile=DEFAULT_NAV_ACCOUNT_PROFILE),
+        encoding="utf-8",
+    )
 
     if args.output == "summary":
         print(f"report={REPORT_NAME}")

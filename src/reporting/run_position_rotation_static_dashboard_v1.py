@@ -15,7 +15,12 @@ from src.reporting.badge_html_v1 import (
     badge_html as shared_badge_html,
     badge_with_axis_html as shared_badge_with_axis_html,
 )
-from src.reporting.dashboard_style_v1 import cockpit_base_css, cockpit_nav, pill_classes
+from src.reporting.dashboard_style_v1 import (
+    DEFAULT_NAV_ACCOUNT_PROFILE,
+    cockpit_base_css,
+    cockpit_nav,
+    pill_classes,
+)
 from src.reporting.entry_zone_state_v1 import (
     classify_entry_zone_state,
     classify_price_progress_state,
@@ -2160,7 +2165,7 @@ def render_html(
     <div class="muted">Rendered {esc(local_ts)} Amsterdam time</div>
     <div class="muted">portefeuille / rotatie / huidige holdings</div>
     <div class="muted">venue={esc(venue)} · quote={esc(quote_currency)} · interval={esc(interval)} · trading_account_id={esc(account_id)}</div>
-    {cockpit_nav()}
+    {cockpit_nav(account_profile=DEFAULT_NAV_ACCOUNT_PROFILE)}
     <div class="legend">
       <div><strong>Read-only review context.</strong> No row is an order instruction; sell/increase still requires downstream permission.</div>
       <div><strong>Hover/tap a badge for label description.</strong></div>

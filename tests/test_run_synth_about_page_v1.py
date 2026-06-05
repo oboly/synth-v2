@@ -10,7 +10,7 @@ from src.reporting.account_wallet_dashboard_v1 import (
     payload_to_json_dict,
     render_wallet_html,
 )
-from src.reporting.dashboard_style_v1 import cockpit_nav
+from src.reporting.dashboard_style_v1 import DEFAULT_NAV_ACCOUNT_PROFILE, cockpit_nav
 from src.reporting.run_synth_about_page_v1 import (
     DEFAULT_HERO_HREF,
     render_about_html,
@@ -67,18 +67,24 @@ def test_wallet_navigation_links_to_global_about() -> None:
 
 
 def test_global_cockpit_navigation_links_to_about() -> None:
-    assert "/synth/about.html" in cockpit_nav()
-    assert "/synth/paper-advice.html" not in cockpit_nav()
-    assert "/synth/entry-candidates.html" not in cockpit_nav()
-    assert "/synth/profit-plan.html" not in cockpit_nav()
-    assert "/synth/open-orders-monitor.html" not in cockpit_nav()
-    assert "/synth/rotation-preview.html" not in cockpit_nav()
+    nav_html = cockpit_nav(account_profile=DEFAULT_NAV_ACCOUNT_PROFILE)
+    assert "/synth/about.html" in nav_html
+    assert "/synth/accounts/joost/wallet.html" in nav_html
+    assert "/synth/accounts/joost/profit-plan.html" in nav_html
+    assert "/synth/accounts/joost/open-orders-monitor.html" in nav_html
+    assert "/synth/profit-plan.html" not in nav_html
+    assert "/synth/open-orders-monitor.html" not in nav_html
+    assert "/synth/paper-advice.html" not in nav_html
+    assert "/synth/entry-candidates.html" not in nav_html
+    assert "/synth/rotation-preview.html" not in nav_html
 
 
 def test_global_cockpit_index_links_global_pages_and_configured_account() -> None:
-    html = render_global_cockpit_index_html()
+    html = render_global_cockpit_index_html(account_profile=DEFAULT_NAV_ACCOUNT_PROFILE)
     assert "/synth/about.html" in html
     assert "/synth/accounts/joost/wallet.html" in html
+    assert "/synth/accounts/joost/profit-plan.html" in html
+    assert "/synth/accounts/joost/open-orders-monitor.html" in html
     assert "/synth/profit-plan.html" not in html
     assert "/synth/open-orders-monitor.html" not in html
     assert "/synth/rotation-preview.html" not in html
@@ -95,8 +101,14 @@ def test_about_runner_writes_html_and_copies_asset() -> None:
         target_html = root / "about.html"
         target_index = root / "index.html"
         target_asset = root / "assets" / "brand" / "synth-third-faction-triptych.png"
-        target_html.write_text(render_about_html(hero_href=DEFAULT_HERO_HREF), encoding="utf-8")
-        target_index.write_text(render_global_cockpit_index_html(), encoding="utf-8")
+        target_html.write_text(
+            render_about_html(hero_href=DEFAULT_HERO_HREF, account_profile=DEFAULT_NAV_ACCOUNT_PROFILE),
+            encoding="utf-8",
+        )
+        target_index.write_text(
+            render_global_cockpit_index_html(account_profile=DEFAULT_NAV_ACCOUNT_PROFILE),
+            encoding="utf-8",
+        )
         target_asset.parent.mkdir(parents=True, exist_ok=True)
         target_asset.write_bytes(source.read_bytes())
         assert target_html.exists()

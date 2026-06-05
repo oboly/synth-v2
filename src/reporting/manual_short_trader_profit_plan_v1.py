@@ -204,7 +204,7 @@ def _classify_scenario(
                 (
                     f"Main target at 1.618 extension ({_fmt_p(fib_ext.ext_1_618)}).",
                     "Watch for round-number confluence near target — strong magnet.",
-                    "Momentum suggests continuation — hold sells until target.",
+                    f"Momentum supports continuation toward the target / sell zone at {_fmt_p(fib_ext.ext_1_618)}.",
                 ),
             )
 
@@ -708,6 +708,13 @@ _CSS = """
       background: rgba(8,13,24,.88); position: sticky; top: 0;
       z-index: 10; backdrop-filter: blur(10px);
     }
+    .cockpit-nav {
+      display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 0;
+    }
+    .cockpit-nav a {
+      color: var(--blue); text-decoration: none; font-size: 14px;
+    }
+    .cockpit-nav a:hover { text-decoration: underline; }
     h1 { margin: 0 0 6px; font-size: 22px; }
     h2 { margin: 0 0 6px; font-size: 19px; }
     h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase;
@@ -969,6 +976,7 @@ def render_full_html(
     rendered_at: str | None = None,
     broker_mode: str = "offline",
     monitor_link: str | None = None,
+    nav_html: str | None = None,
 ) -> str:
     if rendered_at is None:
         rendered_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -990,6 +998,7 @@ def render_full_html(
         "    <h1>Synth v2 — Profit Plan</h1>\n"
         f"    <div class='muted'>Rendered: {esc(rendered_at)} · Mode: {esc(broker_mode)}</div>\n"
         f"    <div class='muted small'>Relevant: {relevant_count} · Total: {total_count}</div>\n"
+        f"{'' if not nav_html else f'    {nav_html}\\n'}"
         "    <div class='view-toggle'>\n"
         "      <button id='btn-relevant' class='toggle-btn' onclick='setView(\"relevant\")'>Relevant candidates</button>\n"
         "      <button id='btn-all' class='toggle-btn' onclick='setView(\"all\")'>All candidates</button>\n"

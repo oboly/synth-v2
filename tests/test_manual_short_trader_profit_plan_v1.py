@@ -279,10 +279,25 @@ def test_stale_current_price_blocks_actionable_profit_plan_outputs() -> None:
 
 def test_render_full_html_uses_profit_plan_title_and_public_monitor_href() -> None:
     card = _make_card(current_price="0.48", fib_ext=_wld_fib_ext())
-    html = render_full_html([card], monitor_link="/synth/accounts/joost/open-orders-monitor.html")
+    html = render_full_html(
+        [card],
+        monitor_link="/synth/accounts/joost/open-orders-monitor.html",
+        nav_html=(
+            "<nav class='cockpit-nav'>"
+            "<a href='/synth/about.html'>About</a>"
+            "<a href='/synth/accounts/joost/wallet.html'>Wallet</a>"
+            "<a href='/synth/accounts/joost/profit-plan.html'>Profit Plan</a>"
+            "<a href='/synth/accounts/joost/open-orders-monitor.html'>Open Orders Monitor</a>"
+            "</nav>"
+        ),
+    )
     assert "Profit Plan" in html
     assert 'href="/synth/accounts/joost/open-orders-monitor.html"' in html or "href='/synth/accounts/joost/open-orders-monitor.html'" in html
+    assert "/synth/accounts/joost/wallet.html" in html
+    assert "/synth/accounts/joost/profit-plan.html" in html
     assert "/var/www/html/synth/" not in html
+    assert "/synth/profit-plan.html" not in html
+    assert "/synth/open-orders-monitor.html" not in html
 
 
 def test_json_snapshot_structure_and_safety_markers() -> None:
@@ -381,8 +396,14 @@ def test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account
             assert "BTC" in joost_html and "BTC" in hugo_html
             assert "WLD" in joost_html and "WLD" not in hugo_html
             assert "ETH" in hugo_html and "ETH" not in joost_html
+            assert "/synth/accounts/joost/wallet.html" in joost_html
+            assert "/synth/accounts/joost/profit-plan.html" in joost_html
             assert "/synth/accounts/joost/open-orders-monitor.html" in joost_html
+            assert "/synth/accounts/hugo/wallet.html" in hugo_html
+            assert "/synth/accounts/hugo/profit-plan.html" in hugo_html
             assert "/synth/accounts/hugo/open-orders-monitor.html" in hugo_html
+            assert "/synth/profit-plan.html" not in joost_html
+            assert "/synth/open-orders-monitor.html" not in joost_html
             assert {row["market"] for row in joost_json["symbols"]} == {"BTC-EUR", "WLD-EUR"}
             assert {row["market"] for row in hugo_json["symbols"]} == {"BTC-EUR", "ETH-EUR"}
     finally:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+DEFAULT_NAV_ACCOUNT_PROFILE = "joost"
+
 
 LIFECYCLE_CRITICAL_LABELS = {
     "INVALIDATION_TOUCHED",
@@ -47,13 +49,38 @@ def pill_classes(tone: str, value: object) -> str:
     return f"{tone} {context}".strip()
 
 
-def cockpit_nav() -> str:
-    return """
-    <nav class="cockpit-nav" aria-label="Cockpit navigation">
-      <a href="/synth/index.html">Cockpit</a>
-      <a href="/synth/about.html">About</a>
-    </nav>
-    """
+def account_dashboard_links(profile: str) -> dict[str, str]:
+    normalized_profile = str(profile or "").strip().lower()
+    if not normalized_profile:
+        raise ValueError("account profile required for account dashboard links")
+    return {
+        "about": "/synth/about.html",
+        "wallet": f"/synth/accounts/{normalized_profile}/wallet.html",
+        "profit_plan": f"/synth/accounts/{normalized_profile}/profit-plan.html",
+        "open_orders_monitor": f"/synth/accounts/{normalized_profile}/open-orders-monitor.html",
+    }
+
+
+def cockpit_nav(*, account_profile: str | None = None) -> str:
+    if account_profile:
+        links = account_dashboard_links(account_profile)
+        items = (
+            ("About", links["about"]),
+            ("Wallet", links["wallet"]),
+            ("Profit Plan", links["profit_plan"]),
+            ("Open Orders Monitor", links["open_orders_monitor"]),
+        )
+    else:
+        items = (
+            ("Cockpit", "/synth/index.html"),
+            ("About", "/synth/about.html"),
+        )
+    links_html = "\n".join(f'      <a href="{href}">{label}</a>' for label, href in items)
+    return (
+        '\n    <nav class="cockpit-nav" aria-label="Cockpit navigation">\n'
+        f"{links_html}\n"
+        "    </nav>\n    "
+    )
 
 
 def cockpit_base_css(*, min_table_width: int = 1800) -> str:

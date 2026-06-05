@@ -458,9 +458,25 @@ def test_build_all_sections_sell_orders_sorted_ascending_by_price() -> None:
 
 def test_render_full_html_contains_symbol_names() -> None:
     sections = _make_sections()
-    html = render_full_html(sections, broker_mode="offline")
+    html = render_full_html(
+        sections,
+        broker_mode="offline",
+        nav_html=(
+            "<nav class='cockpit-nav'>"
+            "<a href='/synth/about.html'>About</a>"
+            "<a href='/synth/accounts/joost/wallet.html'>Wallet</a>"
+            "<a href='/synth/accounts/joost/profit-plan.html'>Profit Plan</a>"
+            "<a href='/synth/accounts/joost/open-orders-monitor.html'>Open Orders Monitor</a>"
+            "</nav>"
+        ),
+    )
     assert "WLD" in html
     assert "ONDO" in html
+    assert "/synth/accounts/joost/wallet.html" in html
+    assert "/synth/accounts/joost/profit-plan.html" in html
+    assert "/synth/accounts/joost/open-orders-monitor.html" in html
+    assert "/synth/profit-plan.html" not in html
+    assert "/synth/open-orders-monitor.html" not in html
 
 
 def test_render_full_html_contains_open_orders_monitor_title() -> None:
@@ -794,6 +810,11 @@ def test_dashboard_runner_writes_account_scoped_outputs() -> None:
             payload = json.loads(json_path.read_text(encoding="utf-8"))
             assert "Open Orders Monitor" in html
             assert "WLD" in html
+            assert "/synth/accounts/joost/wallet.html" in html
+            assert "/synth/accounts/joost/profit-plan.html" in html
+            assert "/synth/accounts/joost/open-orders-monitor.html" in html
+            assert "/synth/profit-plan.html" not in html
+            assert "/synth/open-orders-monitor.html" not in html
             assert payload["broker_writes"] == 0
             assert payload["order_submission"] == 0
     finally:

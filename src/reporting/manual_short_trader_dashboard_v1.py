@@ -305,6 +305,13 @@ _CSS = """
       background: rgba(8,13,24,.88); position: sticky; top: 0;
       z-index: 10; backdrop-filter: blur(10px);
     }
+    .cockpit-nav {
+      display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 0;
+    }
+    .cockpit-nav a {
+      color: var(--blue); text-decoration: none; font-size: 14px;
+    }
+    .cockpit-nav a:hover { text-decoration: underline; }
     h1 { margin: 0 0 8px; font-size: 24px; }
     h2 { margin: 0 0 8px; font-size: 20px; }
     h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase;
@@ -508,6 +515,7 @@ def render_full_html(
     *,
     rendered_at: str | None = None,
     broker_mode: str = "offline",
+    nav_html: str | None = None,
 ) -> str:
     if rendered_at is None:
         rendered_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -530,6 +538,7 @@ def render_full_html(
         "    <h1>Synth v2 — Open Orders Monitor</h1>\n"
         f"    <div class='muted'>Rendered: {esc(rendered_at)} · Mode: {esc(broker_mode)} · Symbols: {symbols_str}</div>\n"
         f"    <div class='summary-line muted'>BUY orders: {total_buy} · SELL orders: {total_sell}</div>\n"
+        f"{'' if not nav_html else f'    {nav_html}\\n'}"
         "    <div class='muted small' style='margin-top:6px'>"
         "Read-only open-order audit view. No broker writes. No order submission. No automatic placement."
         "</div>\n"
