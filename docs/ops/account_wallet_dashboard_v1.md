@@ -11,6 +11,22 @@ Truth model:
 - no account state is stored in web folders
 - credentials remain outside the repo and outside webroot
 
+Identity model:
+
+```text
+app user/profile
+→ explicit account access
+→ trading_account
+→ venue
+
+trading_account
+→ max one active READ credential
+→ max one active WRITE credential
+```
+
+The dashboard profile is an output/navigation identity, not a credential and not
+the trading account itself.
+
 ## Dependency
 
 This dashboard depends on `src/account/run_account_wallet_refresh_v1.py` already existing and writing account-specific rows to:
@@ -18,6 +34,20 @@ This dashboard depends on `src/account/run_account_wallet_refresh_v1.py` already
 - `trading_account_balance_snapshot`
 - `account_open_order_snapshot`
 - `account_asset`
+
+It also depends on the explicit dashboard-profile access map in:
+
+- `src/reporting/account_dashboard_profile_access_v1.py`
+
+Current configured access:
+
+- `account_profile=joost`
+- `venue=bitvavo`
+- `trading_account_stable_ref=bitvavo_joost_read`
+
+This stable ref is accepted by the current DB through `trading_account.account_code`,
+but it is treated here only as a legacy stable trading-account reference. It is
+not credential selection logic.
 
 ## Files
 
@@ -121,6 +151,11 @@ python -m src.reporting.run_account_wallet_dashboard_v1 \
   --output-root /var/www/html/synth \
   --output summary
 ```
+
+Expected Hugo result right now:
+
+- fail closed with `PROFILE_HAS_NO_ACCOUNT_ACCESS`
+- no DB snapshot render output for Hugo until an explicit access row is configured
 
 Render all per-account dashboard pages together:
 

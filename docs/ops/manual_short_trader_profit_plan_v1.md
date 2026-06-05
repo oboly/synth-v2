@@ -26,6 +26,15 @@ Cockpit integration:
 - the legacy global `/synth/profit-plan.html` prototype is deprecated after
   account-scoped replacement verification
 
+Identity model:
+
+- `--account-profile` selects dashboard/output identity
+- explicit profile access config resolves the account-scoped trading account
+- the current DB still accepts a legacy stable trading-account ref through
+  `trading_account.account_code`, but Profit Plan does not derive this from the
+  profile name
+- unmapped profiles fail closed with `PROFILE_HAS_NO_ACCOUNT_ACCESS`
+
 It does not:
 
 - submit orders

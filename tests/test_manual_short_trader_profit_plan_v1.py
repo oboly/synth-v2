@@ -8,6 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import src.reporting.run_manual_short_trader_profit_plan_v1 as profit_plan_runner
+import src.reporting.account_dashboard_profile_access_v1 as profile_access
 from src.market_data.market_price_snapshot_v1 import MarketPriceSnapshot
 from src.reporting.account_scoped_short_trader_dashboard_v1 import AccountScopedShortDashboardContext
 from src.reporting.manual_short_trader_dashboard_v1 import BrokerBalanceRow, BrokerOrderRow
@@ -103,7 +104,7 @@ def _context(
         open_order_count_by_market[order.market] = open_order_count_by_market.get(order.market, 0) + 1
     return AccountScopedShortDashboardContext(
         profile=profile,
-        account_code=f"bitvavo_{profile}_read",
+        account_code=f"stable-ref-{account_id}",
         trading_account_id=account_id,
         venue="bitvavo",
         latest_balance_snapshot_ts_utc=None,
@@ -281,6 +282,7 @@ def test_json_snapshot_structure_and_safety_markers() -> None:
 def test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account_leakage() -> None:
     original_parse_args = profit_plan_runner.parse_args
     original_load_context = profit_plan_runner.load_account_scoped_short_dashboard_context
+    original_resolve_access = profit_plan_runner.resolve_dashboard_profile_access
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -343,6 +345,15 @@ def test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account
                         "output": "none",
                     },
                 )()
+                profit_plan_runner.resolve_dashboard_profile_access = lambda **_: type(
+                    "Access",
+                    (),
+                    {
+                        "account_profile": profile,
+                        "venue": "bitvavo",
+                        "trading_account_stable_ref": context.account_code,
+                    },
+                )()
                 profit_plan_runner.load_account_scoped_short_dashboard_context = lambda **_: context
                 assert profit_plan_runner.main() == 0
                 html_path = root / "accounts" / profile / "profit-plan.html"
@@ -362,18 +373,19 @@ def test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account
     finally:
         profit_plan_runner.parse_args = original_parse_args
         profit_plan_runner.load_account_scoped_short_dashboard_context = original_load_context
+        profit_plan_runner.resolve_dashboard_profile_access = original_resolve_access
 
 
 def test_profit_plan_runner_missing_account_fails_closed() -> None:
     original_parse_args = profit_plan_runner.parse_args
     original_load_context = profit_plan_runner.load_account_scoped_short_dashboard_context
+    original_resolve_access = profit_plan_runner.resolve_dashboard_profile_access
     try:
         profit_plan_runner.parse_args = lambda: type(
             "Args",
             (),
             {
                 "account_profile": "joost",
-                "account_code": None,
                 "venue": "bitvavo",
                 "output_root": "/tmp",
                 "output_html": None,
@@ -385,6 +397,9 @@ def test_profit_plan_runner_missing_account_fails_closed() -> None:
                 "output": "none",
             },
         )()
+        profit_plan_runner.resolve_dashboard_profile_access = lambda **_: (_ for _ in ()).throw(
+            RuntimeError(f"{profile_access.PROFILE_HAS_NO_ACCOUNT_ACCESS}: profile=hugo venue=bitvavo")
+        )
         profit_plan_runner.load_account_scoped_short_dashboard_context = lambda **_: (_ for _ in ()).throw(
             RuntimeError("trading_account missing")
         )
@@ -392,6 +407,13 @@ def test_profit_plan_runner_missing_account_fails_closed() -> None:
     finally:
         profit_plan_runner.parse_args = original_parse_args
         profit_plan_runner.load_account_scoped_short_dashboard_context = original_load_context
+        profit_plan_runner.resolve_dashboard_profile_access = original_resolve_access
+
+
+def test_runner_source_does_not_construct_account_code_from_profile_name() -> None:
+    source = Path("src/reporting/run_manual_short_trader_profit_plan_v1.py").read_text(encoding="utf-8")
+    assert "bitvavo_{args.account_profile}_read" not in source
+    assert "default_account_code" not in source
 
 
 def main() -> None:
@@ -413,6 +435,7 @@ def main() -> None:
         test_json_snapshot_structure_and_safety_markers,
         test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account_leakage,
         test_profit_plan_runner_missing_account_fails_closed,
+        test_runner_source_does_not_construct_account_code_from_profile_name,
     ]
     for test in tests:
         test()

@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import src.reporting.account_dashboard_profile_access_v1 as profile_access
 import src.reporting.run_manual_short_trader_dashboard_v1 as dashboard_runner
 from src.market_data.market_price_snapshot_v1 import MarketPriceSnapshot
 from src.reporting.account_scoped_short_trader_dashboard_v1 import (
@@ -666,7 +667,7 @@ def _context(
         open_order_count_by_market[order.market] = open_order_count_by_market.get(order.market, 0) + 1
     return AccountScopedShortDashboardContext(
         profile=profile,
-        account_code=f"bitvavo_{profile}_read",
+        account_code=f"stable-ref-{account_id}",
         trading_account_id=account_id,
         venue="bitvavo",
         latest_balance_snapshot_ts_utc=None,
@@ -786,13 +787,13 @@ def test_dashboard_runner_writes_account_scoped_outputs() -> None:
 def test_dashboard_runner_missing_account_fails_closed() -> None:
     original_parse_args = dashboard_runner.parse_args
     original_load_context = dashboard_runner.load_account_scoped_short_dashboard_context
+    original_resolve_access = dashboard_runner.resolve_dashboard_profile_access
     try:
         dashboard_runner.parse_args = lambda: type(
             "Args",
             (),
             {
                 "account_profile": "joost",
-                "account_code": None,
                 "venue": "bitvavo",
                 "output_root": "/tmp",
                 "output_html": None,
@@ -801,6 +802,9 @@ def test_dashboard_runner_missing_account_fails_closed() -> None:
                 "output": "none",
             },
         )()
+        dashboard_runner.resolve_dashboard_profile_access = lambda **_: (_ for _ in ()).throw(
+            RuntimeError(f"{profile_access.PROFILE_HAS_NO_ACCOUNT_ACCESS}: profile=hugo venue=bitvavo")
+        )
         dashboard_runner.load_account_scoped_short_dashboard_context = lambda **_: (_ for _ in ()).throw(
             RuntimeError("trading_account missing")
         )
@@ -808,6 +812,13 @@ def test_dashboard_runner_missing_account_fails_closed() -> None:
     finally:
         dashboard_runner.parse_args = original_parse_args
         dashboard_runner.load_account_scoped_short_dashboard_context = original_load_context
+        dashboard_runner.resolve_dashboard_profile_access = original_resolve_access
+
+
+def test_runner_source_does_not_construct_account_code_from_profile_name() -> None:
+    source = Path("src/reporting/run_manual_short_trader_dashboard_v1.py").read_text(encoding="utf-8")
+    assert "bitvavo_{args.account_profile}_read" not in source
+    assert "default_account_code" not in source
 
 
 # ---------------------------------------------------------------------------
@@ -877,6 +888,7 @@ def main() -> None:
         test_build_account_market_scope_keeps_disabled_asset_with_open_order_visible,
         test_dashboard_runner_writes_account_scoped_outputs,
         test_dashboard_runner_missing_account_fails_closed,
+        test_runner_source_does_not_construct_account_code_from_profile_name,
     ]
     for test in tests:
         test()

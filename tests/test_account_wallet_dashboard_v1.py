@@ -7,8 +7,10 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import src.reporting.run_account_wallet_dashboard_v1 as wallet_runner
 from src.reporting.account_wallet_dashboard_v1 import (
     AccountAssetSettingsSummary,
+    _fetch_trading_account,
     build_wallet_dashboard_payload,
     classify_wallet_freshness,
     payload_to_json_dict,
@@ -371,6 +373,82 @@ def test_source_ast_no_broker_calls():
             raise AssertionError(f"Forbidden method call .{node.attr}() in dashboard source")
 
 
+class _FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, sql, params):
+        self.sql = sql
+        self.params = params
+
+    def fetchall(self):
+        return self._rows
+
+
+class _FakeConn:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def cursor(self):
+        return _FakeCursor(self._rows)
+
+
+def test_fetch_trading_account_fails_closed_on_ambiguous_match() -> None:
+    conn = _FakeConn(
+        [
+            {"trading_account_id": 3, "account_code": "legacy_ref", "venue": "bitvavo"},
+            {"trading_account_id": 9, "account_code": "legacy_ref", "venue": "bitvavo"},
+        ]
+    )
+    try:
+        _fetch_trading_account(conn, account_code="legacy_ref", venue="bitvavo")
+    except RuntimeError as exc:
+        assert "trading_account ambiguous" in str(exc)
+    else:
+        raise AssertionError("Expected ambiguous trading_account resolution to fail closed")
+
+
+def test_wallet_runner_source_does_not_construct_account_code_from_profile_name() -> None:
+    source = Path("src/reporting/run_account_wallet_dashboard_v1.py").read_text(encoding="utf-8")
+    assert "bitvavo_{args.account_profile}_read" not in source
+
+
+def test_wallet_runner_unmapped_profile_fails_closed() -> None:
+    original_parse_args = wallet_runner.parse_args
+    original_resolve_access = wallet_runner.resolve_dashboard_profile_access
+    original_load = wallet_runner.load_and_write_wallet_dashboard
+    try:
+        wallet_runner.parse_args = lambda: type(
+            "Args",
+            (),
+            {
+                "account_profile": "hugo",
+                "venue": "bitvavo",
+                "output_root": "/tmp",
+                "fresh_after_minutes": 15,
+                "price_fresh_after_minutes": 15,
+                "output": "none",
+            },
+        )()
+        wallet_runner.resolve_dashboard_profile_access = lambda **_: (_ for _ in ()).throw(
+            RuntimeError("PROFILE_HAS_NO_ACCOUNT_ACCESS: profile=hugo venue=bitvavo")
+        )
+        wallet_runner.load_and_write_wallet_dashboard = lambda **_: (_ for _ in ()).throw(
+            AssertionError("load should not be reached for unmapped profile")
+        )
+        assert wallet_runner.main() == 1
+    finally:
+        wallet_runner.parse_args = original_parse_args
+        wallet_runner.resolve_dashboard_profile_access = original_resolve_access
+        wallet_runner.load_and_write_wallet_dashboard = original_load
+
+
 def main():
     test_stale_detection()
     test_empty_wallet_render()
@@ -383,6 +461,9 @@ def main():
     test_wallet_dashboard_source_has_no_decision_execution_imports()
     test_source_no_broker_writes_or_order_submission()
     test_source_ast_no_broker_calls()
+    test_wallet_runner_source_does_not_construct_account_code_from_profile_name()
+    test_wallet_runner_unmapped_profile_fails_closed()
+    test_fetch_trading_account_fails_closed_on_ambiguous_match()
     print("ok")
 
 

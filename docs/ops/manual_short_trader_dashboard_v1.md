@@ -53,11 +53,21 @@ must not bypass decision or execution boundaries.
 `run_manual_short_trader_dashboard_v1.py` (runner):
 
 - requires explicit `--account-profile`
+- resolves dashboard identity through explicit profile access config in
+  `src/reporting/account_dashboard_profile_access_v1.py`
 - resolves exactly one `trading_account_id`
 - reads only `trading_account_balance_snapshot`, `account_open_order_snapshot`,
   `account_asset`, and shared market-price/fib-map context
-- fails closed on missing or ambiguous account resolution
+- fails closed on unmapped profile access or ambiguous account resolution
 - never calls a broker client, `place_order`, `cancel_order`, or any write path
+
+Current configured profile access:
+
+- `joost` → `bitvavo` → legacy stable trading-account ref `bitvavo_joost_read`
+
+Unmapped profiles, including `hugo`, fail closed with:
+
+- `PROFILE_HAS_NO_ACCOUNT_ACCESS`
 
 ## Labels
 

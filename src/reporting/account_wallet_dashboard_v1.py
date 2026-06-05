@@ -165,14 +165,18 @@ def _fetch_trading_account(conn: Any, *, account_code: str, venue: str) -> dict[
     FROM trading_account
     WHERE account_code = %s
       AND venue = %s
-    LIMIT 1
+    ORDER BY trading_account_id
     """
     with conn.cursor() as cur:
         cur.execute(sql, (account_code, venue))
-        row = cur.fetchone()
-    if not row:
+        rows = list(cur.fetchall())
+    if not rows:
         raise RuntimeError(f"trading_account not found: account_code={account_code} venue={venue}")
-    return dict(row)
+    if len(rows) != 1:
+        raise RuntimeError(
+            f"trading_account ambiguous: account_code={account_code} venue={venue} matches={len(rows)}"
+        )
+    return dict(rows[0])
 
 
 def _fetch_latest_balance_snapshot_ts(

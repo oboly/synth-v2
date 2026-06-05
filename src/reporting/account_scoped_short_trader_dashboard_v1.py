@@ -43,10 +43,6 @@ def validate_profile_slug(profile: str) -> None:
         raise ValueError(f"Path traversal rejected in profile slug: {profile!r}")
 
 
-def default_account_code(*, profile: str, venue: str) -> str:
-    return f"{venue.lower()}_{profile}_read"
-
-
 def default_page_paths(*, output_root: Path, profile: str, page_stem: str) -> tuple[Path, Path]:
     profile_dir = output_root / "accounts" / profile
     return profile_dir / f"{page_stem}.html", profile_dir / f"{page_stem}.json"

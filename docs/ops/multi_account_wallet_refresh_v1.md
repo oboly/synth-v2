@@ -26,7 +26,7 @@ Credentials live outside the repo and outside webroot.
 1. Migration `20260603_multi_account_asset_foundation_v1.sql` — creates `venue_market` and `account_asset`
 2. Migration `20260603_account_open_order_snapshot_v1.sql` — creates `account_open_order_snapshot`
 3. Bitvavo market sync run at least once (`--write-db`) so `venue_market` rows exist for account asset discovery
-4. `trading_account` row exists for the profile (account_code = `bitvavo_<profile>_read`)
+4. `trading_account` row exists for the account being refreshed
 
 ## Files
 
@@ -61,6 +61,28 @@ BITVAVO_API_SECRET=<secret>
 Profile slug rules:
 - must match `[a-z0-9][a-z0-9_-]{0,62}`
 - no uppercase, no spaces, no path separators, no `..`
+
+Canonical relationship model:
+
+```text
+app user/profile
+→ explicit account access
+→ trading_account
+→ venue
+
+trading_account
+→ max one active READ credential
+→ max one active WRITE credential
+```
+
+Notes:
+
+- a dashboard/app profile is not itself a trading account
+- a credential is not itself a trading account
+- public market-data surfaces use no account credential
+- private account refresh uses the trading account's active READ credential
+- executor-only write actions would use the trading account's active WRITE credential
+- dashboard/reporting code reads DB snapshots only
 
 The `credential_ref` concept (future):
 - DB may store only `credential_ref = "local_env:joost"` — a pointer
@@ -127,11 +149,11 @@ db/migrations/20260603_multi_account_asset_foundation_v1.sql
 db/migrations/20260603_account_open_order_snapshot_v1.sql
 ```
 
-Expected summary output:
+Expected summary output example:
 
 ```
 runner=account_wallet_refresh_v1 version=0.1
-profile=hugo account_code=bitvavo_hugo_read
+profile=joost account_code=bitvavo_joost_read
 trading_account_id=2 venue=bitvavo
 [INFO] private read-only; no broker writes; no order submission
 snapshot_ts_utc=2026-06-03 14:00:00
@@ -148,9 +170,9 @@ executor=none
 
 ## Account isolation
 
-Hugo's refresh uses `--account-profile hugo` → `account_code=bitvavo_hugo_read`
-→ `trading_account_id=<hugo>`. All DB writes are scoped to that ID. Joost's
-`account_asset`, balance snapshot, and order snapshot rows are never touched.
+Refresh writes are always scoped to exactly one `trading_account_id`. One account's
+`account_asset`, balance snapshot, and order snapshot rows must never touch another
+account's rows.
 
 ## Safety markers
 

@@ -11,11 +11,11 @@ from typing import Any
 from src.reporting.account_scoped_short_trader_dashboard_v1 import (
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_VENUE,
-    default_account_code,
     default_page_paths,
     load_account_scoped_short_dashboard_context,
     validate_profile_slug,
 )
+from src.reporting.account_dashboard_profile_access_v1 import resolve_dashboard_profile_access
 from src.reporting.manual_short_trader_dashboard_v1 import (
     LadderSymbolSection,
     build_all_sections,
@@ -38,12 +38,6 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--account-profile", required=True, metavar="PROFILE")
-    parser.add_argument(
-        "--account-code",
-        default=None,
-        metavar="CODE",
-        help="trading_account.account_code. Defaults to bitvavo_<profile>_read.",
-    )
     parser.add_argument("--venue", default=DEFAULT_VENUE)
     parser.add_argument(
         "--output-root",
@@ -144,10 +138,14 @@ def main() -> int:
         print(f"[error] {exc}", file=sys.stderr)
         return 1
 
-    account_code = args.account_code or default_account_code(
-        profile=args.account_profile,
-        venue=args.venue,
-    )
+    try:
+        access = resolve_dashboard_profile_access(
+            account_profile=args.account_profile,
+            venue=args.venue,
+        )
+    except RuntimeError as exc:
+        print(f"[error] {exc}", file=sys.stderr)
+        return 1
     output_root = Path(args.output_root)
     default_html, default_json = default_page_paths(
         output_root=output_root,
@@ -160,7 +158,7 @@ def main() -> int:
     try:
         context = load_account_scoped_short_dashboard_context(
             profile=args.account_profile,
-            account_code=account_code,
+            account_code=access.trading_account_stable_ref,
             venue=args.venue,
         )
     except RuntimeError as exc:
