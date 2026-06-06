@@ -42,12 +42,10 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import statistics
 import sys
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional
 
@@ -67,7 +65,12 @@ from src.research.run_manual_exact_zone_backtest_v1 import (
     GATE_NOT_LIVE_VALID,
     ContextLookupAudit,
     ContextTimeline,
-    evaluate_continuation_gate,
+    _POSITIVE_BREATH_PHASES,
+    _NEGATIVE_BREATH_PHASES,
+    _POSITIVE_BREATH_ALIGNMENTS,
+    _NEGATIVE_BREATH_ALIGNMENTS,
+    _POSITIVE_REGIMES,
+    _NEGATIVE_REGIMES,
     fetch_context_timeline_raw,
     load_db_config,
     connect,
@@ -99,10 +102,53 @@ _VARIANTS = [
     ("C5", "PARENT_CONTEXT",   "C5_PARENT_CONTEXT"),
 ]
 
-# Positive gate states (gate fired to hold longer)
-_HOLD_STATES = frozenset({GATE_CONTINUATION_SUPPORTED, GATE_CONTINUATION_WEAK})
-# Conflict states (gate fired to exit early)
-_CONFLICT_STATES = frozenset({GATE_REGIME_CONFLICT, GATE_BREATH_CONFLICT})
+# Only SUPPORTED may change variant behavior from the C1 baseline.
+# WEAK, CONFLICT, and UNKNOWN all fall through to the C1 baseline hold (1c).
+_EXTENDING_STATES = frozenset({GATE_CONTINUATION_SUPPORTED})
+
+
+# ---------------------------------------------------------------------------
+# Context-only gate (multi-event dataset)
+# ---------------------------------------------------------------------------
+
+def evaluate_gate_multi_event(ctx: dict) -> str:
+    """
+    Evaluate continuation gate using only point-in-time context fields.
+
+    Drops the close_above_target condition used in the single-event runner
+    because this dataset has no per-event zone target price.
+    All four context fields must come from data observable at decision candle
+    close — no forward return fields are read.
+
+    Priority (highest overrides lower):
+      REGIME_CONFLICT > BREATH_CONFLICT > CONTEXT_UNKNOWN >
+      CONTINUATION_WEAK > CONTINUATION_SUPPORTED
+    """
+    market_regime = ctx.get("market_regime", "UNKNOWN")
+    symbol_regime = ctx.get("symbol_regime", "UNKNOWN")
+    breath_phase = ctx.get("breath_phase", "UNKNOWN")
+    breath_alignment = ctx.get("breath_alignment", "UNKNOWN")
+
+    mr_up = market_regime.upper()
+    sr_up = symbol_regime.upper()
+    bp_up = breath_phase.upper()
+    ba_up = breath_alignment.upper()
+
+    if mr_up in _NEGATIVE_REGIMES or sr_up in _NEGATIVE_REGIMES:
+        return GATE_REGIME_CONFLICT
+    if bp_up in _NEGATIVE_BREATH_PHASES or ba_up in _NEGATIVE_BREATH_ALIGNMENTS:
+        return GATE_BREATH_CONFLICT
+    if all(v == "UNKNOWN" for v in [market_regime, symbol_regime, breath_phase, breath_alignment]):
+        return GATE_CONTEXT_UNKNOWN
+
+    positive_regime = mr_up in _POSITIVE_REGIMES or sr_up in _POSITIVE_REGIMES
+    positive_breath = bp_up in _POSITIVE_BREATH_PHASES
+    positive_alignment = ba_up in _POSITIVE_BREATH_ALIGNMENTS
+
+    if positive_regime and positive_breath and positive_alignment:
+        return GATE_CONTINUATION_SUPPORTED
+
+    return GATE_CONTINUATION_WEAK
 
 
 # ---------------------------------------------------------------------------
@@ -314,57 +360,50 @@ def _apply_variant(
     """
     Determine hold_candles, variant_return, gate_applied, live_valid, delta_vs_c1.
     Pure function — no DB, no future leakage.
+
+    Semantic rules enforced here:
+    - Only CONTINUATION_SUPPORTED extends holding beyond the C1 baseline.
+    - CONTINUATION_WEAK falls back to C1 baseline (1c); gate_applied=False.
+    - BREATH_CONFLICT and REGIME_CONFLICT do not extend holding; gate_applied=False.
+    - CONTEXT_UNKNOWN uses C1 baseline; gate_applied=False.
+    - gate_applied=True only when CONTINUATION_SUPPORTED fires and behavior changes.
     """
     is_baseline = variant_type == "BASELINE"
     is_supported = gate_state == GATE_CONTINUATION_SUPPORTED
-    is_weak = gate_state == GATE_CONTINUATION_WEAK
-    is_conflict = gate_state in _CONFLICT_STATES
-    is_hold = gate_state in _HOLD_STATES
-
-    gate_applied: bool
-    live_valid: bool
+    is_unknown = gate_state == GATE_CONTEXT_UNKNOWN
 
     if is_baseline:
         hold_candles = 1
         gate_applied = False
         live_valid = True
     elif variant_type == "BREATH_HOLD":
-        hold_candles = 6 if is_hold else 1
-        gate_applied = ctx_audit.gate_applied
+        hold_candles = 6 if is_supported else 1
+        gate_applied = is_supported
         live_valid = True
     elif variant_type == "REGIME_SHIFT":
-        hold_candles = 12 if is_hold else 1
-        gate_applied = ctx_audit.gate_applied
+        hold_candles = 12 if is_supported else 1
+        gate_applied = is_supported
         live_valid = True
     elif variant_type == "TRAILING_RUNNER":
-        if is_supported:
-            hold_candles = 24
-        elif is_weak:
-            hold_candles = 12
-        elif is_conflict:
-            hold_candles = 1
-        else:
-            hold_candles = 6
-        gate_applied = ctx_audit.gate_applied
+        hold_candles = 24 if is_supported else 1
+        gate_applied = is_supported
         live_valid = True
     elif variant_type == "PARENT_CONTEXT":
-        hold_candles = 6 if is_hold else 1
-        gate_applied = ctx_audit.gate_applied
-        # NOT_LIVE_VALID when context is unknown (mirrors single-event behavior)
-        live_valid = gate_state != GATE_NOT_LIVE_VALID and gate_state != GATE_CONTEXT_UNKNOWN
+        hold_candles = 6 if is_supported else 1
+        gate_applied = is_supported
+        # NOT_LIVE_VALID when context is unknown — cannot validate continuation
+        live_valid = not is_unknown
     else:
         hold_candles = 1
         gate_applied = False
         live_valid = True
 
     variant_return = _select_return(event, hold_candles)
-    delta = None
-    if not is_baseline and c1_return is not None and variant_return is not None:
-        delta = variant_return - c1_return
-    elif not is_baseline and c1_return is None and variant_return is not None:
-        delta = None  # cannot compute delta without c1
-    elif not is_baseline:
-        delta = None
+    delta = (
+        (variant_return - c1_return)
+        if (not is_baseline and c1_return is not None and variant_return is not None)
+        else None
+    )
 
     return hold_candles, variant_return, gate_applied, live_valid, delta
 
@@ -384,11 +423,9 @@ def process_event(
     asof_ts = _parse_ts(event.asof_ts_utc)
     ctx, ctx_audit = timeline.at_with_audit(asof_ts)
 
-    gate_result = evaluate_continuation_gate(
-        ctx,
-        touch_candle=None,   # no zone touch; close_vs_target always None
-        target_price=Decimal("0"),
-    )
+    # Context-only gate — no zone target price available in this dataset.
+    # All inputs are observable at decision candle close.
+    gate_state = evaluate_gate_multi_event(ctx)
 
     eid = _event_id(event.symbol, event.asof_ts_utc)
     results: list[VariantEventResult] = []
@@ -398,7 +435,7 @@ def process_event(
 
     for vid, vtype, vname in _VARIANTS:
         hold_candles, variant_return, gate_applied, live_valid, delta = _apply_variant(
-            vid, vtype, gate_result.gate_state, ctx_audit, event, c1_return,
+            vid, vtype, gate_state, ctx_audit, event, c1_return,
         )
         results.append(VariantEventResult(
             event_id=eid,
@@ -416,7 +453,7 @@ def process_event(
             max_drawdown_24c_from_asof_close=event.max_drawdown_24c_from_asof_close,
             variant_id=vname,
             variant_type=vtype,
-            gate_state=gate_result.gate_state,
+            gate_state=gate_state,
             gate_applied=gate_applied,
             live_valid=live_valid,
             context_lookup_status=ctx_audit.context_lookup_status,
@@ -425,10 +462,10 @@ def process_event(
                            if ctx_audit.context_ts_utc else "",
             context_age_minutes=float(ctx_audit.context_age_minutes) if ctx_audit.context_age_minutes is not None else None,
             context_freshness_status=ctx_audit.context_freshness_status or "",
-            breath_phase=gate_result.breath_phase,
-            breath_alignment=gate_result.breath_alignment,
-            market_regime=gate_result.market_regime,
-            symbol_regime=gate_result.symbol_regime,
+            breath_phase=ctx.get("breath_phase", "UNKNOWN"),
+            breath_alignment=ctx.get("breath_alignment", "UNKNOWN"),
+            market_regime=ctx.get("market_regime", "UNKNOWN"),
+            symbol_regime=ctx.get("symbol_regime", "UNKNOWN"),
             variant_hold_candles=hold_candles,
             variant_return_pct=variant_return,
             delta_vs_c1=delta,

@@ -39,6 +39,7 @@ from src.research.run_continuation_gate_multi_event_v1 import (
     _apply_variant,
     _event_id,
     _select_return,
+    evaluate_gate_multi_event,
     compute_context_audit,
     compute_concentration,
     compute_symbol_aggregates,
@@ -127,7 +128,7 @@ def _make_timeline_with_audit(gate_state: str, audit: ContextLookupAudit) -> Con
 
 
 def _gate_state_to_ctx(gate_state: str) -> dict:
-    """Produce a ctx dict that will trigger the given gate state."""
+    """Produce a ctx dict that triggers the given gate state via evaluate_gate_multi_event."""
     if gate_state == GATE_REGIME_CONFLICT:
         return {"market_regime": "BEARISH", "symbol_regime": "UNKNOWN",
                 "breath_phase": "EXPANSION", "breath_alignment": "SUPPORTIVE"}
@@ -138,13 +139,12 @@ def _gate_state_to_ctx(gate_state: str) -> dict:
         return {"market_regime": "UNKNOWN", "symbol_regime": "UNKNOWN",
                 "breath_phase": "UNKNOWN", "breath_alignment": "UNKNOWN"}
     if gate_state == GATE_CONTINUATION_SUPPORTED:
-        # touch_candle=None so close_above always False; can't reach SUPPORTED from runtime
-        # Use all positives — gate lands at WEAK because close_above=False
-        return {"market_regime": "TRENDING_UP", "symbol_regime": "RANGE",
+        # All three positive: regime + breath + alignment → SUPPORTED (no close_above needed)
+        return {"market_regime": "TRENDING_UP", "symbol_regime": "BULLISH",
                 "breath_phase": "EXPANSION", "breath_alignment": "SUPPORTIVE"}
-    # WEAK
+    # WEAK: positive regime but missing breath or alignment
     return {"market_regime": "TRENDING_UP", "symbol_regime": "RANGE",
-            "breath_phase": "EXPANSION", "breath_alignment": "SUPPORTIVE"}
+            "breath_phase": "NEUTRAL_TRANSITION", "breath_alignment": "NEUTRAL"}
 
 
 def _write_source_jsonl(path: Path, rows: list[dict]) -> None:
@@ -338,14 +338,84 @@ def test_c1_baseline_delta_is_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _apply_variant — C2 BREATH_HOLD
+# evaluate_gate_multi_event — gate state routing
 # ---------------------------------------------------------------------------
 
-def test_c2_hold_6c_on_weak() -> None:
+def test_gate_multi_event_supported_all_positive() -> None:
+    ctx = {"market_regime": "TRENDING_UP", "symbol_regime": "BULLISH",
+           "breath_phase": "EXPANSION", "breath_alignment": "SUPPORTIVE"}
+    assert evaluate_gate_multi_event(ctx) == GATE_CONTINUATION_SUPPORTED
+
+
+def test_gate_multi_event_weak_missing_positive_alignment() -> None:
+    ctx = {"market_regime": "TRENDING_UP", "symbol_regime": "BULLISH",
+           "breath_phase": "EXPANSION", "breath_alignment": "NEUTRAL"}
+    assert evaluate_gate_multi_event(ctx) == GATE_CONTINUATION_WEAK
+
+
+def test_gate_multi_event_weak_missing_positive_breath() -> None:
+    ctx = {"market_regime": "TRENDING_UP", "symbol_regime": "BULLISH",
+           "breath_phase": "NEUTRAL_TRANSITION", "breath_alignment": "SUPPORTIVE"}
+    assert evaluate_gate_multi_event(ctx) == GATE_CONTINUATION_WEAK
+
+
+def test_gate_multi_event_regime_conflict_bearish() -> None:
+    ctx = {"market_regime": "BEARISH", "symbol_regime": "UNKNOWN",
+           "breath_phase": "EXPANSION", "breath_alignment": "SUPPORTIVE"}
+    assert evaluate_gate_multi_event(ctx) == GATE_REGIME_CONFLICT
+
+
+def test_gate_multi_event_breath_conflict_distribution() -> None:
+    ctx = {"market_regime": "TRENDING_UP", "symbol_regime": "RANGE",
+           "breath_phase": "DISTRIBUTION", "breath_alignment": "WEAK"}
+    assert evaluate_gate_multi_event(ctx) == GATE_BREATH_CONFLICT
+
+
+def test_gate_multi_event_context_unknown_all_unknown() -> None:
+    ctx = {"market_regime": "UNKNOWN", "symbol_regime": "UNKNOWN",
+           "breath_phase": "UNKNOWN", "breath_alignment": "UNKNOWN"}
+    assert evaluate_gate_multi_event(ctx) == GATE_CONTEXT_UNKNOWN
+
+
+def test_gate_multi_event_regime_conflict_takes_priority_over_breath_conflict() -> None:
+    """Regime conflict fires before breath conflict."""
+    ctx = {"market_regime": "BEARISH", "symbol_regime": "UNKNOWN",
+           "breath_phase": "EXHAUSTION", "breath_alignment": "WEAK"}
+    assert evaluate_gate_multi_event(ctx) == GATE_REGIME_CONFLICT
+
+
+def test_gate_multi_event_breath_conflict_takes_priority_over_unknown() -> None:
+    ctx = {"market_regime": "UNKNOWN", "symbol_regime": "UNKNOWN",
+           "breath_phase": "EXHAUSTION", "breath_alignment": "WEAK"}
+    assert evaluate_gate_multi_event(ctx) == GATE_BREATH_CONFLICT
+
+
+def test_gate_multi_event_supported_requires_positive_regime_too() -> None:
+    """Without positive regime, SUPPORTED cannot fire."""
+    ctx = {"market_regime": "UNKNOWN", "symbol_regime": "RANGE",
+           "breath_phase": "EXPANSION", "breath_alignment": "SUPPORTIVE"}
+    # No positive regime, no conflict → WEAK
+    assert evaluate_gate_multi_event(ctx) == GATE_CONTINUATION_WEAK
+
+
+# ---------------------------------------------------------------------------
+# _apply_variant — C2 BREATH_HOLD (corrected semantics)
+# ---------------------------------------------------------------------------
+
+def test_c2_hold_6c_on_supported() -> None:
+    """Only SUPPORTED extends hold to 6c."""
     audit = _audit_gate_applied()
-    hold, ret, _, _, _ = _apply_variant("C2", "BREATH_HOLD", GATE_CONTINUATION_WEAK, audit, _make_event(), 1.0)
+    hold, ret, _, _, _ = _apply_variant("C2", "BREATH_HOLD", GATE_CONTINUATION_SUPPORTED, audit, _make_event(), 1.0)
     assert hold == 6
     assert ret == 3.0  # fwd_return_6c
+
+
+def test_c2_hold_1c_on_weak() -> None:
+    """WEAK falls back to C1 baseline (1c)."""
+    audit = _audit_gate_applied()
+    hold, ret, _, _, _ = _apply_variant("C2", "BREATH_HOLD", GATE_CONTINUATION_WEAK, audit, _make_event(), 1.0)
+    assert hold == 1
+    assert ret == 1.0
 
 
 def test_c2_hold_1c_on_conflict() -> None:
@@ -361,15 +431,41 @@ def test_c2_hold_1c_on_unknown() -> None:
     assert hold == 1
 
 
+def test_c2_gate_applied_true_only_on_supported() -> None:
+    audit = _audit_gate_applied()
+    _, _, ga, _, _ = _apply_variant("C2", "BREATH_HOLD", GATE_CONTINUATION_SUPPORTED, audit, _make_event(), 1.0)
+    assert ga is True
+
+
+def test_c2_gate_applied_false_on_weak() -> None:
+    """gate_applied=False when WEAK — behavior did not change from baseline."""
+    audit = _audit_gate_applied()
+    _, _, ga, _, _ = _apply_variant("C2", "BREATH_HOLD", GATE_CONTINUATION_WEAK, audit, _make_event(), 1.0)
+    assert ga is False
+
+
+def test_c2_gate_applied_false_on_conflict() -> None:
+    audit = _audit_gate_applied()
+    _, _, ga, _, _ = _apply_variant("C2", "BREATH_HOLD", GATE_REGIME_CONFLICT, audit, _make_event(), 1.0)
+    assert ga is False
+
+
 # ---------------------------------------------------------------------------
-# _apply_variant — C3 REGIME_SHIFT
+# _apply_variant — C3 REGIME_SHIFT (corrected semantics)
 # ---------------------------------------------------------------------------
 
-def test_c3_hold_12c_on_weak() -> None:
+def test_c3_hold_12c_on_supported() -> None:
     audit = _audit_gate_applied()
-    hold, ret, _, _, _ = _apply_variant("C3", "REGIME_SHIFT", GATE_CONTINUATION_WEAK, audit, _make_event(), 1.0)
+    hold, ret, _, _, _ = _apply_variant("C3", "REGIME_SHIFT", GATE_CONTINUATION_SUPPORTED, audit, _make_event(), 1.0)
     assert hold == 12
     assert ret == 4.0  # fwd_return_12c
+
+
+def test_c3_hold_1c_on_weak() -> None:
+    """WEAK must not shift targets — falls back to baseline."""
+    audit = _audit_gate_applied()
+    hold, _, _, _, _ = _apply_variant("C3", "REGIME_SHIFT", GATE_CONTINUATION_WEAK, audit, _make_event(), 1.0)
+    assert hold == 1
 
 
 def test_c3_hold_1c_on_conflict() -> None:
@@ -379,30 +475,59 @@ def test_c3_hold_1c_on_conflict() -> None:
 
 
 # ---------------------------------------------------------------------------
-# _apply_variant — C4 TRAILING_RUNNER
+# _apply_variant — C4 TRAILING_RUNNER (corrected semantics)
 # ---------------------------------------------------------------------------
 
-def test_c4_hold_12c_on_weak() -> None:
+def test_c4_hold_24c_on_supported() -> None:
+    audit = _audit_gate_applied()
+    hold, _, _, _, _ = _apply_variant("C4", "TRAILING_RUNNER", GATE_CONTINUATION_SUPPORTED, audit, _make_event(), 1.0)
+    assert hold == 24
+
+
+def test_c4_hold_1c_on_weak() -> None:
+    """WEAK must not extend runner hold."""
     audit = _audit_gate_applied()
     hold, _, _, _, _ = _apply_variant("C4", "TRAILING_RUNNER", GATE_CONTINUATION_WEAK, audit, _make_event(), 1.0)
-    assert hold == 12
+    assert hold == 1
 
 
 def test_c4_hold_1c_on_conflict() -> None:
+    """CONFLICT must not extend holding."""
     audit = _audit_gate_applied()
     hold, _, _, _, _ = _apply_variant("C4", "TRAILING_RUNNER", GATE_REGIME_CONFLICT, audit, _make_event(), 1.0)
     assert hold == 1
 
 
-def test_c4_hold_6c_on_unknown() -> None:
+def test_c4_hold_1c_on_breath_conflict() -> None:
+    """BREATH_CONFLICT must not extend holding."""
+    audit = _audit_gate_applied()
+    hold, _, _, _, _ = _apply_variant("C4", "TRAILING_RUNNER", GATE_BREATH_CONFLICT, audit, _make_event(), 1.0)
+    assert hold == 1
+
+
+def test_c4_hold_1c_on_unknown() -> None:
+    """UNKNOWN uses C1 baseline — no extension."""
     audit = _audit_gate_not_applied()
     hold, _, _, _, _ = _apply_variant("C4", "TRAILING_RUNNER", GATE_CONTEXT_UNKNOWN, audit, _make_event(), 1.0)
+    assert hold == 1
+
+
+# ---------------------------------------------------------------------------
+# _apply_variant — C5 PARENT_CONTEXT (corrected semantics)
+# ---------------------------------------------------------------------------
+
+def test_c5_hold_6c_on_supported() -> None:
+    audit = _audit_gate_applied()
+    hold, ret, _, _, _ = _apply_variant("C5", "PARENT_CONTEXT", GATE_CONTINUATION_SUPPORTED, audit, _make_event(), 1.0)
     assert hold == 6
+    assert ret == 3.0
 
 
-# ---------------------------------------------------------------------------
-# _apply_variant — C5 PARENT_CONTEXT live_valid
-# ---------------------------------------------------------------------------
+def test_c5_hold_1c_on_weak() -> None:
+    audit = _audit_gate_applied()
+    hold, _, _, _, _ = _apply_variant("C5", "PARENT_CONTEXT", GATE_CONTINUATION_WEAK, audit, _make_event(), 1.0)
+    assert hold == 1
+
 
 def test_c5_live_valid_false_on_context_unknown() -> None:
     audit = _audit_gate_not_applied()
@@ -411,33 +536,110 @@ def test_c5_live_valid_false_on_context_unknown() -> None:
 
 
 def test_c5_live_valid_true_on_weak() -> None:
+    """WEAK is live-valid for C5 — it just falls back to baseline."""
     audit = _audit_gate_applied()
     _, _, _, live_valid, _ = _apply_variant("C5", "PARENT_CONTEXT", GATE_CONTINUATION_WEAK, audit, _make_event(), 1.0)
     assert live_valid is True
+
+
+def test_c5_live_valid_true_on_conflict() -> None:
+    """CONFLICT is live-valid for C5 — context was found, gate fired defensively."""
+    audit = _audit_gate_applied()
+    _, _, _, live_valid, _ = _apply_variant("C5", "PARENT_CONTEXT", GATE_REGIME_CONFLICT, audit, _make_event(), 1.0)
+    assert live_valid is True
+
+
+# ---------------------------------------------------------------------------
+# Semantic invariants across all variants
+# ---------------------------------------------------------------------------
+
+def test_no_variant_extends_on_weak() -> None:
+    """CONTINUATION_WEAK must not extend holding beyond 1c for any variant."""
+    audit = _audit_gate_applied()
+    for vid, vtype, vname in [
+        ("C2", "BREATH_HOLD", ""), ("C3", "REGIME_SHIFT", ""),
+        ("C4", "TRAILING_RUNNER", ""), ("C5", "PARENT_CONTEXT", ""),
+    ]:
+        hold, _, _, _, _ = _apply_variant(vid, vtype, GATE_CONTINUATION_WEAK, audit, _make_event(), 1.0)
+        assert hold == 1, f"{vtype} extended to {hold} on WEAK — violates semantic rule"
+
+
+def test_no_variant_extends_on_regime_conflict() -> None:
+    """REGIME_CONFLICT must not extend holding."""
+    audit = _audit_gate_applied()
+    for vid, vtype, vname in [
+        ("C2", "BREATH_HOLD", ""), ("C3", "REGIME_SHIFT", ""),
+        ("C4", "TRAILING_RUNNER", ""), ("C5", "PARENT_CONTEXT", ""),
+    ]:
+        hold, _, _, _, _ = _apply_variant(vid, vtype, GATE_REGIME_CONFLICT, audit, _make_event(), 1.0)
+        assert hold == 1, f"{vtype} extended to {hold} on REGIME_CONFLICT — violates semantic rule"
+
+
+def test_no_variant_extends_on_breath_conflict() -> None:
+    """BREATH_CONFLICT must not extend holding."""
+    audit = _audit_gate_applied()
+    for vid, vtype, vname in [
+        ("C2", "BREATH_HOLD", ""), ("C3", "REGIME_SHIFT", ""),
+        ("C4", "TRAILING_RUNNER", ""), ("C5", "PARENT_CONTEXT", ""),
+    ]:
+        hold, _, _, _, _ = _apply_variant(vid, vtype, GATE_BREATH_CONFLICT, audit, _make_event(), 1.0)
+        assert hold == 1, f"{vtype} extended to {hold} on BREATH_CONFLICT — violates semantic rule"
+
+
+def test_no_variant_extends_on_unknown() -> None:
+    """CONTEXT_UNKNOWN must use explicit C1 baseline fallback."""
+    audit = _audit_gate_not_applied()
+    for vid, vtype, vname in [
+        ("C2", "BREATH_HOLD", ""), ("C3", "REGIME_SHIFT", ""),
+        ("C4", "TRAILING_RUNNER", ""), ("C5", "PARENT_CONTEXT", ""),
+    ]:
+        hold, _, _, _, _ = _apply_variant(vid, vtype, GATE_CONTEXT_UNKNOWN, audit, _make_event(), 1.0)
+        assert hold == 1, f"{vtype} extended to {hold} on CONTEXT_UNKNOWN — violates semantic rule"
+
+
+def test_gate_applied_false_on_all_non_supported_states() -> None:
+    """gate_applied must be False for all gated variants unless CONTINUATION_SUPPORTED."""
+    audit = _audit_gate_applied()
+    for gs in [GATE_CONTINUATION_WEAK, GATE_REGIME_CONFLICT, GATE_BREATH_CONFLICT, GATE_CONTEXT_UNKNOWN]:
+        for vid, vtype, _ in [
+            ("C2", "BREATH_HOLD", ""), ("C3", "REGIME_SHIFT", ""),
+            ("C4", "TRAILING_RUNNER", ""), ("C5", "PARENT_CONTEXT", ""),
+        ]:
+            _, _, ga, _, _ = _apply_variant(vid, vtype, gs, audit, _make_event(), 1.0)
+            assert ga is False, f"{vtype} gate_applied=True on {gs} — should only fire on SUPPORTED"
 
 
 # ---------------------------------------------------------------------------
 # Paired C1 delta computation
 # ---------------------------------------------------------------------------
 
-def test_delta_vs_c1_correct_math() -> None:
+def test_delta_vs_c1_correct_math_on_supported() -> None:
     audit = _audit_gate_applied()
     event = _make_event(fwd_return_1c=1.0, fwd_return_6c=4.0)
-    _, _, _, _, delta = _apply_variant("C2", "BREATH_HOLD", GATE_CONTINUATION_WEAK, audit, event, c1_return=1.0)
+    _, _, _, _, delta = _apply_variant("C2", "BREATH_HOLD", GATE_CONTINUATION_SUPPORTED, audit, event, c1_return=1.0)
     assert delta == pytest.approx(3.0)  # 4.0 - 1.0
 
 
-def test_delta_vs_c1_negative_when_variant_underperforms() -> None:
+def test_delta_vs_c1_negative_when_supported_variant_underperforms() -> None:
+    """Delta is negative when longer hold returns less than 1c baseline."""
     audit = _audit_gate_applied()
     event = _make_event(fwd_return_1c=5.0, fwd_return_6c=2.0)
-    _, _, _, _, delta = _apply_variant("C2", "BREATH_HOLD", GATE_CONTINUATION_WEAK, audit, event, c1_return=5.0)
+    _, _, _, _, delta = _apply_variant("C2", "BREATH_HOLD", GATE_CONTINUATION_SUPPORTED, audit, event, c1_return=5.0)
     assert delta == pytest.approx(-3.0)
+
+
+def test_delta_is_zero_on_weak_because_hold_matches_c1() -> None:
+    """WEAK falls back to 1c, so delta=0 when c1_return=fwd_return_1c."""
+    audit = _audit_gate_applied()
+    event = _make_event(fwd_return_1c=2.5, fwd_return_6c=5.0)
+    _, _, _, _, delta = _apply_variant("C2", "BREATH_HOLD", GATE_CONTINUATION_WEAK, audit, event, c1_return=2.5)
+    assert delta == pytest.approx(0.0)
 
 
 def test_delta_vs_c1_none_when_c1_return_is_none() -> None:
     audit = _audit_gate_applied()
     event = _make_event(fwd_return_1c=None)
-    _, _, _, _, delta = _apply_variant("C2", "BREATH_HOLD", GATE_CONTINUATION_WEAK, audit, event, c1_return=None)
+    _, _, _, _, delta = _apply_variant("C2", "BREATH_HOLD", GATE_CONTINUATION_SUPPORTED, audit, event, c1_return=None)
     assert delta is None
 
 
@@ -447,18 +649,38 @@ def test_delta_vs_c1_none_when_c1_return_is_none() -> None:
 
 def test_process_event_produces_5_variants() -> None:
     audit = _make_audit(status=CTX_FOUND, gate_applied=True)
-    tl = _make_timeline_with_audit(GATE_CONTINUATION_WEAK, audit)
+    tl = _make_timeline_with_audit(GATE_CONTINUATION_SUPPORTED, audit)
     event = _make_event()
     results = process_event(event, tl)
     assert len(results) == 5
 
 
 def test_process_event_c1_gate_applied_false() -> None:
+    """C1 gate_applied must always be False regardless of gate state."""
     audit = _make_audit(status=CTX_FOUND, gate_applied=True)
-    tl = _make_timeline_with_audit(GATE_CONTINUATION_WEAK, audit)
+    tl = _make_timeline_with_audit(GATE_CONTINUATION_SUPPORTED, audit)
     results = process_event(_make_event(), tl)
     c1 = next(r for r in results if r.variant_type == "BASELINE")
     assert c1.gate_applied is False
+
+
+def test_process_event_supported_gate_applied_true_on_gated_variants() -> None:
+    """All gated variants (C2-C5) have gate_applied=True when SUPPORTED fires."""
+    audit = _make_audit(status=CTX_FOUND, gate_applied=True)
+    tl = _make_timeline_with_audit(GATE_CONTINUATION_SUPPORTED, audit)
+    results = process_event(_make_event(), tl)
+    for r in results:
+        if r.variant_type != "BASELINE":
+            assert r.gate_applied is True, f"{r.variant_type} gate_applied=False on SUPPORTED"
+
+
+def test_process_event_weak_gate_applied_false_on_all_variants() -> None:
+    """WEAK state: gate_applied=False for all variants including gated ones."""
+    audit = _make_audit(status=CTX_FOUND, gate_applied=True)
+    tl = _make_timeline_with_audit(GATE_CONTINUATION_WEAK, audit)
+    results = process_event(_make_event(), tl)
+    for r in results:
+        assert r.gate_applied is False, f"{r.variant_type} gate_applied=True on WEAK"
 
 
 def test_process_event_context_unknown_gate_state() -> None:
@@ -637,7 +859,7 @@ def _make_full_output_data():
     excluded = [ExcludedEvent(symbol="SOL", asof_ts_utc="2026-04-01T00:00:00Z",
                               exclusion_reason="outcome_not_available")]
     audit = _make_audit()
-    tl = _make_timeline_with_audit(GATE_CONTINUATION_WEAK, audit)
+    tl = _make_timeline_with_audit(GATE_CONTINUATION_SUPPORTED, audit)
     results = process_event(event, tl)
     events = [event]
     variant_aggs = compute_variant_aggregates(results)
