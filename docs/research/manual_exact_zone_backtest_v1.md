@@ -237,10 +237,89 @@ python -m src.research.run_manual_exact_zone_backtest_v1 --no-chart
 
 ---
 
+## Multi-event continuation-gate evaluation (v1)
+
+A separate bounded runner evaluates C1-C5 gate logic across all events in the
+canonical market-breath outcome dataset.
+
+**Runner:** `src/research/run_continuation_gate_multi_event_v1.py`
+**Source:** `data/research/market_breath_outcome_validation_v1/outcome_rows_v1.jsonl`
+**Output:** `data/research/continuation_gate_multi_event_v1/`
+
+### Variant outcome mapping
+
+Each variant selects a pre-computed forward return horizon based on gate state:
+
+| Variant | SUPPORTED/WEAK | CONFLICT | UNKNOWN |
+|---|---|---|---|
+| C1 BASELINE | 1c (always) | 1c | 1c |
+| C2 BREATH_HOLD | 6c | 1c | 1c |
+| C3 REGIME_SHIFT | 12c | 1c | 1c |
+| C4 TRAILING_RUNNER | 24c (SUPP) / 12c (WEAK) | 1c | 6c |
+| C5 PARENT_CONTEXT | 6c (NOT_LIVE_VALID if UNKNOWN) | 1c | 1c |
+
+`touch_candle=None` → `close_above_target` never True → CONTINUATION_SUPPORTED
+cannot fire in this dataset. C2-C5 operate on CONTINUATION_WEAK and conflict
+states only.
+
+### Run command
+
+```bash
+# Full default run (all symbols, 2026-03-14 to 2026-05-12, max 500 events)
+python -m src.research.run_continuation_gate_multi_event_v1
+
+# Dry run (load/filter events only; no DB queries or file writes)
+python -m src.research.run_continuation_gate_multi_event_v1 --dry-run
+
+# Bounded subset (smoke)
+python -m src.research.run_continuation_gate_multi_event_v1 \
+  --symbols BTC ETH SOL \
+  --max-events 30 \
+  --output-dir data/research/continuation_gate_multi_event_v1_smoke
+
+# Custom date range and symbol list
+python -m src.research.run_continuation_gate_multi_event_v1 \
+  --date-from 2026-04-01 \
+  --date-to 2026-04-30 \
+  --symbols BTC ETH \
+  --max-events 100
+```
+
+### Output files
+
+```
+data/research/continuation_gate_multi_event_v1/
+  event_results_v1.csv          # Per-event × per-variant rows
+  event_results_v1.jsonl        # Same, JSONL format
+  excluded_events_v1.csv        # Every excluded event with exclusion reason
+  variant_aggregate_v1.csv      # Aggregated by (variant_id, gate_state)
+  variant_aggregate_v1.json     # Same, JSON
+  symbol_aggregate_v1.csv       # Aggregated by (variant_id, symbol)
+  symbol_aggregate_v1.json      # Same, JSON
+  context_audit_v1.csv          # Context coverage/freshness summary
+  context_audit_v1.json         # Same, JSON
+  concentration_audit_v1.csv    # Symbol and month concentration
+  concentration_audit_v1.json   # Same, JSON
+  manifest_v1.json              # Args, counts, output paths, safety markers
+```
+
+### Guardrails and limitations
+
+- No DB writes. No broker/account/execution code.
+- Events selected deterministically: sorted by (asof_ts_utc, symbol), max-events cap applied after sort.
+- Every excluded event recorded with exclusion reason.
+- Fails closed if canonical source file is missing.
+- CONTINUATION_SUPPORTED never fires in this dataset (requires close_above_target from a live zone touch candle; pre-computed forward returns do not carry that signal).
+- All returns are pre-computed in the source file — no future leakage introduced by this runner.
+- Context is fetched point-in-time per symbol from the DB. Context coverage depends on DB history for the event window.
+- n=10 BTC smoke: 60% BREATH_CONFLICT, 20% CONTINUATION_WEAK, 20% REGIME_CONFLICT. Do not generalise from this sample.
+
+---
+
 ## Planned extensions (not in v1)
 
 - Ladder entry (multiple buy levels)
 - TP threshold sweep: 1%, 2%, 3%, 5%, 8%
-- Results grouped by market_regime and breath_phase across multiple windows
 - Walk-forward over multiple prediction windows
 - Continuation gate re-evaluation at T2 and T3 decision points (currently only T1)
+- CONTINUATION_SUPPORTED evaluation with zone-level close-above-target (requires per-event zone spec)
