@@ -206,65 +206,148 @@ def load_and_join(
 
 
 # ---------------------------------------------------------------------------
+# Outcome classification
+# ---------------------------------------------------------------------------
+
+# Priority-ordered 6-state classifier. Each state has a deterministic definition.
+_CLASSIFICATION_DEFINITIONS = {
+    "NO_MEANINGFUL_EXTENSION": (
+        "max_runup_24c <= 0: price never exceeded entry at any candle high in 24c window"
+    ),
+    "CLEAN_EXTENSION_AND_HOLD": (
+        "max_runup_24c > 1.0% AND close_at_6c > 0: meaningful new high AND closed above entry at 24h"
+    ),
+    "EXTENSION_THEN_REVERSAL": (
+        "max_runup_24c > 1.0% AND close_at_6c <= 0: meaningful new high but reversed below entry by 24h"
+    ),
+    "REJECTION_AFTER_TARGET": (
+        "close_at_1c > 0 AND close_at_6c <= 0 AND 0 < max_runup <= 1.0%: "
+        "initial upward close then reversed; no meaningful candle extension"
+    ),
+    "HIGHER_HIGH_WITHOUT_HOLD": (
+        "max_runup > 0 AND close_at_1c <= 0 AND close_at_6c <= 0: "
+        "genuine candle high above entry but never closed above entry in first candle"
+    ),
+    "CLOSE_HIGHER_WITHOUT_NEW_HIGH": (
+        "close_at_6c > 0 AND max_runup <= 1.0%: closed above entry without a significant "
+        "intracandle extension (max high modest, ≤1% above entry)"
+    ),
+}
+
+
+def _classify_outcome(
+    r1: Optional[float],
+    r6: Optional[float],
+    mfe: Optional[float],
+) -> str:
+    """
+    Deterministic 6-state outcome classifier.
+
+    r1  = fwd_return_1c (close at 4h)
+    r6  = fwd_return_6c (close at 24h)
+    mfe = max_runup_24c (max candle HIGH above entry over 24c window, from actual candle highs)
+
+    Priority order ensures mutual exclusivity.
+    Returns "UNKNOWN" only when required inputs are None.
+    """
+    if r6 is None or mfe is None:
+        return "UNKNOWN"
+
+    # 1. Price never exceeded entry at any candle high in the 24c window
+    if mfe <= 0:
+        return "NO_MEANINGFUL_EXTENSION"
+
+    # 2/3. Meaningful extension (mfe > threshold)
+    if mfe > RUNUP_MEANINGFUL_PCT:
+        return "CLEAN_EXTENSION_AND_HOLD" if r6 > 0 else "EXTENSION_THEN_REVERSAL"
+
+    # From here: 0 < mfe <= RUNUP_MEANINGFUL_PCT
+    # 4. Closed above entry at 1c but reversed to negative/flat by 6c
+    #    (initial upward close confirmed, then rejected; note: if r1>0 then mfe>=r1>0)
+    if r1 is not None and r1 > 0 and r6 <= 0:
+        return "REJECTION_AFTER_TARGET"
+
+    # 5. Candle high exceeded entry but no closing confirmation at 1c; still negative at 6c
+    #    (intracandle touch above entry; no closing follow-through)
+    if r1 is not None and r1 <= 0 and r6 <= 0:
+        return "HIGHER_HIGH_WITHOUT_HOLD"
+
+    # 6. Closed above entry at 24h but no significant intracandle extension (mfe <= threshold)
+    #    By elimination: r6 > 0 (otherwise caught above) and mfe <= threshold
+    if r6 > 0:
+        return "CLOSE_HIGHER_WITHOUT_NEW_HIGH"
+
+    return "UNKNOWN"
+
+
+# ---------------------------------------------------------------------------
 # High-change labels
 # ---------------------------------------------------------------------------
 
 def assign_high_change_labels(ev: dict) -> dict[str, Any]:
     """
-    Assign outcome labels based on pre-computed forward returns.
-    All inputs must be available at or after decision candle close.
-    fwd_return_Nc is the return N candles after asof_ts_utc — not future leakage
-    (these are pre-computed outcomes used for research evaluation only).
+    Assign outcome labels based on pre-computed forward returns and candle-based MFE/MAE.
 
-    Horizons: 1c=4h, 3c=12h, 6c=24h, 12c=48h. 4c/8c not available.
+    Close-above-entry fields use horizon close prices (truthfully named).
+    Higher-high fields use actual candle high data via max_runup_24c (24c = 96h window).
+    Sub-96h higher-high requires per-candle OHLCV not in the pre-computed outcome dataset.
+
+    Reference: entry_price = close_price at asof_ts_utc.
+    Target_price, decision_candle_high, and swing references not available in this dataset.
     """
     r1 = ev.get("fwd_return_1c")
     r3 = ev.get("fwd_return_3c")
     r6 = ev.get("fwd_return_6c")
     r12 = ev.get("fwd_return_12c")
-    mfe = ev.get("max_runup_24c")
-    mae = ev.get("max_drawdown_24c_from_asof_close")
-    min_r = ev.get("min_fwd_return_24c")
-    max_r = ev.get("max_fwd_return_24c")
+    r24 = ev.get("fwd_return_24c")
+    mfe = ev.get("max_runup_24c")    # max candle HIGH above entry, 24c window (genuine HH)
+    mae = ev.get("max_drawdown_24c_from_asof_close")   # max candle LOW below entry, 24c window
+    close_price = ev.get("close_price")
 
     def _yn(v: Optional[float]) -> Optional[bool]:
         return (v > 0) if v is not None else None
 
-    def _label_or_none(condition: Optional[bool], label: str) -> Optional[str]:
-        if condition is None:
-            return None
-        return label if condition else f"NO_{label}"
-
+    # Close-above-entry at specific horizons (truthfully named — NOT higher high)
     labels: dict[str, Any] = {
-        "higher_high_within_4h": _yn(r1),     # 1 candle close above entry
-        "higher_high_within_12h": _yn(r3),    # 3 candle close above entry
-        "higher_high_within_24h": _yn(r6),    # 6 candle close above entry
-        "note_4c_8c_missing": "4c/8c horizons not in pre-computed data; using 3c/6c as nearest",
-        "mfe_24c_pct": round(mfe, 4) if mfe is not None else None,
-        "mae_24c_pct": round(mae, 4) if mae is not None else None,
-        "max_fwd_24c_pct": round(max_r, 4) if max_r is not None else None,
-        "min_fwd_24c_pct": round(min_r, 4) if min_r is not None else None,
+        "close_above_entry_at_4h": _yn(r1),   # close at 1c (4h) vs entry
+        "close_above_entry_at_12h": _yn(r3),  # close at 3c (12h) vs entry
+        "close_above_entry_at_24h": _yn(r6),  # close at 6c (24h) vs entry
+        "close_above_entry_at_48h": _yn(r12), # close at 12c (48h) vs entry
+        # Genuine higher-high: actual candle high exceeded entry at some point in 96h window
+        # Source: max_runup_24c_from_asof_close — computed from real candle highs in outcome ETL
+        "higher_high_within_96h": _yn(mfe),
+        # Sub-96h genuine higher-highs require per-candle OHLCV not in pre-computed outcome data
+        "higher_high_sub_96h_available": False,
+        "higher_high_sub_96h_note": (
+            "4h/8h/12h/24h/48h genuine higher-high metrics require per-candle OHLCV. "
+            "Not available in pre-computed outcome_rows_v1.jsonl. "
+            "Only the full 24c (96h) window max is available via max_runup_24c_from_asof_close."
+        ),
+        # Reference for higher-high comparison
+        "higher_high_reference_type": "entry_price",
+        "higher_high_reference_price": close_price,
+        "higher_high_reference_note": (
+            "Reference is entry_price (=close_price at asof_ts_utc). "
+            "target_price, decision_candle_high, pre_touch_local_high, "
+            "child_swing_high, parent_swing_high: not available in this dataset."
+        ),
+        # Path metrics (from pre-computed candle-based MFE/MAE where available)
+        "mfe_pct": round(mfe, 4) if mfe is not None else None,
+        "mae_pct": round(mae, 4) if mae is not None else None,
+        "max_high_within_96h_pct": round(mfe, 4) if mfe is not None else None,
+        "min_low_within_96h_pct": round(mae, 4) if mae is not None else None,
+        "close_at_24h_pct": round(r6, 4) if r6 is not None else None,
+        "close_at_48h_pct": round(r12, 4) if r12 is not None else None,
+        "gave_back_from_max_pct": (
+            round(mfe - r24, 4) if (mfe is not None and r24 is not None) else None
+        ),
+        # Not computable from pre-computed outcome data (requires candle-level timestamps)
+        "time_to_max_high_minutes": None,
+        "time_to_min_low_minutes": None,
+        # Outcome classification (deterministic 6-state)
+        "outcome_classification": _classify_outcome(r1, r6, mfe),
+        "outcome_classification_definitions": "see _CLASSIFICATION_DEFINITIONS in runner",
     }
-
-    # Narrative label
-    if r6 is not None and mfe is not None:
-        if mfe > RUNUP_MEANINGFUL_PCT and r6 > 0:
-            narrative = "EXTENSION_THEN_HOLD"
-        elif mfe > RUNUP_MEANINGFUL_PCT and r6 <= 0:
-            # Had meaningful extension but gave it back
-            narrative = "EXTENSION_THEN_REVERSAL"
-        elif r6 <= 0 and mfe <= RUNUP_MEANINGFUL_PCT:
-            # Never extended meaningfully; negative or flat close
-            narrative = "NO_MEANINGFUL_EXTENSION"
-        elif r1 is not None and r1 > 0 and r6 <= 0:
-            # Minor initial pop then reversal (mfe not large enough for extension)
-            narrative = "REJECTION_AFTER_TARGET"
-        else:
-            narrative = "HIGHER_HIGH_WITHIN_24H"
-    else:
-        narrative = "UNKNOWN"
-
-    labels["high_change_narrative"] = narrative
     return labels
 
 
@@ -449,6 +532,88 @@ def compute_breakdown(
     return result
 
 
+def compute_path_breakdown(
+    events_c1: list[dict],
+    dimension: str,
+    field: str,
+) -> list[dict[str, Any]]:
+    """
+    Per-context-bucket path statistics across ALL gate states.
+    Uses C1 (BASELINE) events (one row per unique event).
+    Reports genuine higher-high (96h, candle-based) vs close-above-entry (24h, close-based),
+    outcome classification distribution, and median MFE/MAE/giveback.
+    """
+    def _med(vals: list[float]) -> Optional[float]:
+        if not vals:
+            return None
+        sv = sorted(vals)
+        n = len(sv)
+        return sv[n // 2] if n % 2 else (sv[n // 2 - 1] + sv[n // 2]) / 2
+
+    groups: dict[str, list[dict]] = defaultdict(list)
+    for ev in events_c1:
+        key = ev.get(field, "UNKNOWN") or "UNKNOWN"
+        groups[key].append(ev)
+
+    result = []
+    for key, evs in sorted(groups.items()):
+        mfe_vals = [ev["max_runup_24c"] for ev in evs if ev.get("max_runup_24c") is not None]
+        mae_vals = [
+            ev["max_drawdown_24c_from_asof_close"]
+            for ev in evs
+            if ev.get("max_drawdown_24c_from_asof_close") is not None
+        ]
+        r6_vals = [ev["fwd_return_6c"] for ev in evs if ev.get("fwd_return_6c") is not None]
+
+        n = len(evs)
+        n_mfe = len(mfe_vals)
+        n_r6 = len(r6_vals)
+        n_hh96 = sum(1 for v in mfe_vals if v > 0)
+        n_close24 = sum(1 for v in r6_vals if v > 0)
+
+        # Outcome classification distribution
+        cls_counter: Counter[str] = Counter(
+            _classify_outcome(
+                ev.get("fwd_return_1c"), ev.get("fwd_return_6c"), ev.get("max_runup_24c")
+            )
+            for ev in evs
+        )
+
+        # Gave-back distribution (mfe - r24)
+        gb_vals = [
+            ev["max_runup_24c"] - ev["fwd_return_24c"]
+            for ev in evs
+            if ev.get("max_runup_24c") is not None and ev.get("fwd_return_24c") is not None
+        ]
+
+        row: dict[str, Any] = {
+            "dimension": dimension,
+            "bucket": key,
+            "n_events": n,
+            "n_with_mfe_data": n_mfe,
+            "higher_high_within_96h_count": n_hh96,
+            "higher_high_within_96h_pct": _safe_pct(n_hh96, n_mfe) if n_mfe else None,
+            "close_above_entry_24h_count": n_close24,
+            "close_above_entry_24h_pct": _safe_pct(n_close24, n_r6) if n_r6 else None,
+            "median_mfe_pct": round(_med(mfe_vals), 4) if _med(mfe_vals) is not None else None,
+            "median_mae_pct": round(_med(mae_vals), 4) if _med(mae_vals) is not None else None,
+            "median_r6_pct": round(_med(r6_vals), 4) if _med(r6_vals) is not None else None,
+            "median_gave_back_pct": round(_med(gb_vals), 4) if _med(gb_vals) is not None else None,
+        }
+        for cls in [
+            "NO_MEANINGFUL_EXTENSION",
+            "CLEAN_EXTENSION_AND_HOLD",
+            "EXTENSION_THEN_REVERSAL",
+            "REJECTION_AFTER_TARGET",
+            "HIGHER_HIGH_WITHOUT_HOLD",
+            "CLOSE_HIGHER_WITHOUT_NEW_HIGH",
+            "UNKNOWN",
+        ]:
+            row[f"n_{cls.lower()}"] = cls_counter.get(cls, 0)
+        result.append(row)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # HTML/SVG chart generation
 # ---------------------------------------------------------------------------
@@ -509,7 +674,7 @@ def _svg_return_chart(ev: dict, gate_state: str) -> str:
     bg = _COLORS["positive_bg"] if points.get(6, 0) >= 0 else _COLORS["negative_bg"]
     svg.append(f'<rect width="{_CHART_W}" height="{_CHART_H}" fill="{bg}"/>')
 
-    # MFE/MAE shading bands
+    # MFE/MAE shading bands (candle-based — genuine high/low range, not close)
     if mfe is not None and mae is not None:
         ymfe = _y(mfe, y_min, y_max)
         ymae = _y(mae, y_min, y_max)
@@ -524,6 +689,26 @@ def _svg_return_chart(ev: dict, gate_state: str) -> str:
             f'<rect x="{_PAD_L}" y="{_y(0, y_min, y_max):.1f}" '
             f'width="{_PLOT_W}" height="{max(h_neg, 0):.1f}" '
             f'fill="{_COLORS["mae"]}" opacity="0.5"/>'
+        )
+        # Dotted line at MFE level — marks the genuine candle-high maximum
+        svg.append(
+            f'<line x1="{_PAD_L}" y1="{ymfe:.1f}" '
+            f'x2="{_PAD_L + _PLOT_W}" y2="{ymfe:.1f}" '
+            f'stroke="#16a34a" stroke-width="1" stroke-dasharray="3,3" opacity="0.7"/>'
+        )
+        svg.append(
+            f'<text x="{_PAD_L + _PLOT_W + 2}" y="{ymfe + 4:.1f}" '
+            f'font-size="8" fill="#16a34a">Max H</text>'
+        )
+        # Dotted line at MAE level — marks the genuine candle-low minimum
+        svg.append(
+            f'<line x1="{_PAD_L}" y1="{ymae:.1f}" '
+            f'x2="{_PAD_L + _PLOT_W}" y2="{ymae:.1f}" '
+            f'stroke="#dc2626" stroke-width="1" stroke-dasharray="3,3" opacity="0.7"/>'
+        )
+        svg.append(
+            f'<text x="{_PAD_L + _PLOT_W + 2}" y="{ymae + 4:.1f}" '
+            f'font-size="8" fill="#dc2626">Min L</text>'
         )
 
     # Zero baseline
@@ -612,12 +797,15 @@ def _html_event_page(ev: dict, hc: dict, gate_state: str, sample_type: str) -> s
         "C3 return (12c)": f"{ev.get('fwd_return_12c', 'n/a'):.2f}%" if ev.get("fwd_return_12c") is not None else "n/a",
         "C4 return (24c)": f"{ev.get('fwd_return_24c', 'n/a'):.2f}%" if ev.get("fwd_return_24c") is not None else "n/a",
         "C2 delta vs C1": f"{delta_c2:.2f}%" if delta_c2 is not None else "n/a",
-        "MFE (max runup 24c)": f"{ev.get('max_runup_24c', 'n/a'):.2f}%" if ev.get("max_runup_24c") is not None else "n/a",
-        "MAE (max drawdown 24c)": f"{ev.get('max_drawdown_24c_from_asof_close', 'n/a'):.2f}%" if ev.get("max_drawdown_24c_from_asof_close") is not None else "n/a",
-        "Higher high 4h": hc.get("higher_high_within_4h"),
-        "Higher high 12h": hc.get("higher_high_within_12h"),
-        "Higher high 24h": hc.get("higher_high_within_24h"),
-        "Narrative label": hc.get("high_change_narrative"),
+        "MFE — max candle high 96h": f"{ev.get('max_runup_24c', 'n/a'):.2f}%" if ev.get("max_runup_24c") is not None else "n/a",
+        "MAE — min candle low 96h": f"{ev.get('max_drawdown_24c_from_asof_close', 'n/a'):.2f}%" if ev.get("max_drawdown_24c_from_asof_close") is not None else "n/a",
+        "Gave back from max (24c)": f"{hc.get('gave_back_from_max_pct'):.2f}%" if hc.get("gave_back_from_max_pct") is not None else "n/a",
+        "Higher high 96h (candle H)": hc.get("higher_high_within_96h"),
+        "Higher high ref type": hc.get("higher_high_reference_type"),
+        "Close above entry 4h": hc.get("close_above_entry_at_4h"),
+        "Close above entry 24h": hc.get("close_above_entry_at_24h"),
+        "Close above entry 48h": hc.get("close_above_entry_at_48h"),
+        "Outcome classification": hc.get("outcome_classification"),
         "Sample type": sample_type,
     }
 
@@ -643,9 +831,7 @@ td{{padding:3px 0;font-weight:bold}}
 <body>
 <h2>{title}</h2>
 <div>{svg}</div>
-<p class="chart-note">Forward return trajectory (4h candles). MFE/MAE bands are 24c maxima — not per-candle.
-Exit markers show hold horizons; C2/C3/C4 only shown when gate_state=CONTINUATION_SUPPORTED.
-Price candles require separate DB fetch — not available in pre-computed outcome data.</p>
+<p class="chart-note">Forward return trajectory (close prices, 4h candles). Green band = MFE (max candle high above entry, genuine 96h high); red band = MAE (min candle low). Max H / Min L lines show actual candle-high/-low envelope — not close-based. Close markers show fwd_return at specific horizons. Exit markers: C1=1c always; C2/C3/C4 only when CONTINUATION_SUPPORTED. Sub-96h per-candle highs/lows require separate DB OHLCV fetch.</p>
 <table>{detail_rows}</table>
 <p><a href="index.html">← Back to index</a></p>
 </body></html>
@@ -660,7 +846,7 @@ def _html_index_page(
         "<tr>"
         "<th>Symbol</th><th>Date</th><th>Gate</th>"
         "<th>Breath</th><th>Regime</th>"
-        "<th>C2 Δ</th><th>Higher 24h</th><th>Narrative</th><th>Chart</th>"
+        "<th>C2 Δ</th><th>HH 96h</th><th>Classification</th><th>Chart</th>"
         "</tr>"
     )
     tbody_rows = []
@@ -668,19 +854,19 @@ def _html_index_page(
         delta = m.get("c2_delta")
         delta_str = f"{delta:.2f}%" if delta is not None else "n/a"
         delta_cls = "pos" if (delta or 0) > 0 else ("neg" if (delta or 0) < 0 else "neu")
-        hh24 = "YES" if m.get("higher_high_within_24h") else ("NO" if m.get("higher_high_within_24h") is False else "?")
+        hh96 = "YES" if m.get("higher_high_within_96h") else ("NO" if m.get("higher_high_within_96h") is False else "?")
         tbody_rows.append(
             f'<tr data-symbol="{m["symbol"]}" data-gate="{m["gate_state"]}" '
             f'data-breath="{m.get("breath_phase","")}" data-regime="{m.get("market_regime","")}" '
-            f'data-delta="{delta_cls}" data-hh24="{hh24}">'
+            f'data-delta="{delta_cls}" data-hh96="{hh96}">'
             f'<td>{m["symbol"]}</td>'
             f'<td>{m["asof_ts_utc"][:10]}</td>'
             f'<td>{m["gate_state"]}</td>'
             f'<td>{m.get("breath_phase","")}</td>'
             f'<td>{m.get("market_regime","")}</td>'
             f'<td class="{delta_cls}">{delta_str}</td>'
-            f'<td>{hh24}</td>'
-            f'<td>{m.get("narrative","")}</td>'
+            f'<td>{hh96}</td>'
+            f'<td>{m.get("outcome_classification","")}</td>'
             f'<td><a href="{m["filename"]}">view</a></td>'
             f'</tr>'
         )
@@ -691,7 +877,7 @@ def _html_index_page(
         "Breath": sorted(set(m.get("breath_phase","") for m in event_meta)),
         "Regime": sorted(set(m.get("market_regime","") for m in event_meta)),
         "C2 outcome": ["pos", "neg", "neu"],
-        "Higher 24h": ["YES", "NO"],
+        "HH 96h": ["YES", "NO"],
     }
     filter_controls = ""
     for label, options in filter_options.items():
@@ -736,7 +922,7 @@ function applyFilters() {{
     [document.getElementById('filter_breath').value, 'breath'],
     [document.getElementById('filter_regime').value, 'regime'],
     [document.getElementById('filter_c2_outcome').value, 'delta'],
-    [document.getElementById('filter_higher_24h').value, 'hh24'],
+    [document.getElementById('filter_hh_96h').value, 'hh96'],
   ];
   rows.forEach(row => {{
     const show = filters.every(([val, attr]) => !val || row.dataset[attr] === val);
@@ -759,6 +945,7 @@ def write_robustness_outputs(
     loo_rows: list[dict],
     hc_rows: list[dict],
     source_paths: dict,
+    path_breakdown_rows: Optional[list[dict]] = None,
 ) -> dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     written: dict[str, Path] = {}
@@ -797,11 +984,34 @@ def write_robustness_outputs(
     # High-change breakdown CSV
     p = output_dir / "continuation_high_change_breakdown_v1.csv"
     if hc_rows:
+        all_fields: list[str] = []
+        seen2: set[str] = set()
+        for row in hc_rows:
+            for k in row.keys():
+                if k not in seen2:
+                    all_fields.append(k)
+                    seen2.add(k)
         with open(p, "w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=list(hc_rows[0].keys()))
+            writer = csv.DictWriter(f, fieldnames=all_fields, extrasaction="ignore")
             writer.writeheader()
             writer.writerows(hc_rows)
     written["high_change_breakdown"] = p
+
+    # Path breakdown CSV (all gate states × context dimensions)
+    if path_breakdown_rows:
+        p = output_dir / "continuation_path_breakdown_v1.csv"
+        all_fields_pb: list[str] = []
+        seen_pb: set[str] = set()
+        for row in path_breakdown_rows:
+            for k in row.keys():
+                if k not in seen_pb:
+                    all_fields_pb.append(k)
+                    seen_pb.add(k)
+        with open(p, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=all_fields_pb, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(path_breakdown_rows)
+        written["path_breakdown"] = p
 
     return written
 
@@ -832,8 +1042,8 @@ def write_visual_review(
             "breath_phase": ev.get("breath_phase"),
             "market_regime": ev.get("market_regime"),
             "c2_delta": c2_delta,
-            "higher_high_within_24h": hc.get("higher_high_within_24h"),
-            "narrative": hc.get("high_change_narrative"),
+            "higher_high_within_96h": hc.get("higher_high_within_96h"),
+            "outcome_classification": hc.get("outcome_classification"),
             "filename": fn,
         })
         return fn
@@ -951,6 +1161,8 @@ def run(
     # --- High-change labels ---
     print("  High-change labels...", flush=True)
     hc_rows: list[dict] = []
+    exclude_from_hc_csv = {"outcome_classification_definitions", "higher_high_reference_note",
+                           "higher_high_sub_96h_note"}
     for ev in supported_c2:
         hc = assign_high_change_labels(ev)
         hc_rows.append({
@@ -959,27 +1171,76 @@ def run(
             "asof_ts_utc": ev["asof_ts_utc"],
             "gate_state": ev["gate_state"],
             "delta_vs_c1": ev.get("delta_vs_c1"),
-            **{k: v for k, v in hc.items() if k != "note_4c_8c_missing"},
+            **{k: v for k, v in hc.items() if k not in exclude_from_hc_csv},
         })
 
-    # High-change frequency summary
-    hh4 = [r for r in hc_rows if r.get("higher_high_within_4h") is True]
-    hh12 = [r for r in hc_rows if r.get("higher_high_within_12h") is True]
-    hh24 = [r for r in hc_rows if r.get("higher_high_within_24h") is True]
-    narrative_counts = Counter(r["high_change_narrative"] for r in hc_rows)
+    # High-change frequency summary (corrected: close-based vs candle-high-based)
     n_supp = len(hc_rows)
+    n_close4h = sum(1 for r in hc_rows if r.get("close_above_entry_at_4h") is True)
+    n_close24h = sum(1 for r in hc_rows if r.get("close_above_entry_at_24h") is True)
+    n_close48h = sum(1 for r in hc_rows if r.get("close_above_entry_at_48h") is True)
+    n_hh96h = sum(1 for r in hc_rows if r.get("higher_high_within_96h") is True)
+    cls_counts = Counter(r.get("outcome_classification", "UNKNOWN") for r in hc_rows)
+    mfe_vals_supp = [r["mfe_pct"] for r in hc_rows if r.get("mfe_pct") is not None]
+    mae_vals_supp = [r["mae_pct"] for r in hc_rows if r.get("mae_pct") is not None]
+    gb_vals_supp = [r["gave_back_from_max_pct"] for r in hc_rows
+                    if r.get("gave_back_from_max_pct") is not None]
+
+    def _med_list(vals: list[float]) -> Optional[float]:
+        if not vals:
+            return None
+        sv = sorted(vals)
+        n = len(sv)
+        return sv[n // 2] if n % 2 else (sv[n // 2 - 1] + sv[n // 2]) / 2
 
     hc_summary = {
         "n_supported_events": n_supp,
-        "higher_high_within_4h": len(hh4),
-        "higher_high_within_4h_pct": _safe_pct(len(hh4), n_supp),
-        "higher_high_within_12h": len(hh12),
-        "higher_high_within_12h_pct": _safe_pct(len(hh12), n_supp),
-        "higher_high_within_24h": len(hh24),
-        "higher_high_within_24h_pct": _safe_pct(len(hh24), n_supp),
-        "note": "4h=1c close, 12h=3c close, 24h=6c close. 4c/8c exact horizons not in pre-computed data.",
-        "narrative_counts": dict(narrative_counts.most_common()),
+        "close_above_entry_at_4h_count": n_close4h,
+        "close_above_entry_at_4h_pct": _safe_pct(n_close4h, n_supp),
+        "close_above_entry_at_24h_count": n_close24h,
+        "close_above_entry_at_24h_pct": _safe_pct(n_close24h, n_supp),
+        "close_above_entry_at_48h_count": n_close48h,
+        "close_above_entry_at_48h_pct": _safe_pct(n_close48h, n_supp),
+        "higher_high_within_96h_count": n_hh96h,
+        "higher_high_within_96h_pct": _safe_pct(n_hh96h, n_supp),
+        "median_mfe_pct": round(_med_list(mfe_vals_supp), 4) if _med_list(mfe_vals_supp) is not None else None,
+        "median_mae_pct": round(_med_list(mae_vals_supp), 4) if _med_list(mae_vals_supp) is not None else None,
+        "median_gave_back_from_max_pct": round(_med_list(gb_vals_supp), 4) if _med_list(gb_vals_supp) is not None else None,
+        "outcome_classification_counts": dict(cls_counts.most_common()),
+        "note_close_vs_higher_high": (
+            "close_above_entry_at_Nh uses horizon close price. "
+            "higher_high_within_96h uses actual candle high (max_runup_24c_from_asof_close). "
+            "Sub-96h genuine higher-high requires per-candle OHLCV not in this dataset."
+        ),
+        "note_reference": (
+            "Reference is entry_price (=close_price at asof_ts_utc). "
+            "target_price, decision_candle_high, swing_highs: not available in this dataset."
+        ),
     }
+
+    # --- Path breakdown (all gate states × context dimensions) ---
+    print("  Path breakdown across all gate states...", flush=True)
+    all_c1 = [ev for ev in events if ev["variant_type"] == "BASELINE"]
+    path_breakdown_rows: list[dict] = []
+    for dim, field in [
+        ("gate_state", "gate_state"),
+        ("market_regime", "market_regime"),
+        ("symbol_regime", "symbol_regime"),
+        ("breath_phase", "breath_phase"),
+        ("breath_alignment", "breath_alignment"),
+        ("acceptance_state", None),  # derived
+    ]:
+        if field:
+            path_breakdown_rows.extend(compute_path_breakdown(all_c1, dim, field))
+        else:
+            # acceptance_state: ACCEPTED when CONTINUATION_SUPPORTED, else REJECTED
+            for ev in all_c1:
+                ev["_acceptance_state"] = (
+                    "ACCEPTED" if ev.get("gate_state") == "CONTINUATION_SUPPORTED" else "REJECTED"
+                )
+            path_breakdown_rows.extend(compute_path_breakdown(all_c1, "acceptance_state", "_acceptance_state"))
+            for ev in all_c1:
+                ev.pop("_acceptance_state", None)
 
     # --- Build robustness rows CSV ---
     robustness_rows: list[dict] = []
@@ -1005,6 +1266,18 @@ def run(
         "high_change_summary": hc_summary,
         "breakdowns": {k: v for k, v in breakdowns.items()},
         "notes": {
+            "outcome_semantics_correction": (
+                "v1 incorrectly labeled close-based metrics as HIGHER_HIGH. "
+                "Corrected: close_above_entry_at_Nh = close price above entry; "
+                "higher_high_within_96h = actual candle high above entry (from max_runup_24c_from_asof_close). "
+                "Sub-96h genuine higher-high requires per-candle OHLCV not in pre-computed data."
+            ),
+            "outcome_classification_v2": (
+                "6-state classifier: NO_MEANINGFUL_EXTENSION / CLEAN_EXTENSION_AND_HOLD / "
+                "EXTENSION_THEN_REVERSAL / REJECTION_AFTER_TARGET / HIGHER_HIGH_WITHOUT_HOLD / "
+                "CLOSE_HIGHER_WITHOUT_NEW_HIGH. Deterministic priority order. "
+                "See _CLASSIFICATION_DEFINITIONS in runner source."
+            ),
             "4c_8c_horizons": "Not available in pre-computed outcome data. Used 3c/6c/12c as nearest.",
             "fee_note": (
                 "Fees are symmetric: C1 and any variant both pay one round-trip. "
@@ -1045,6 +1318,7 @@ def run(
     written = write_robustness_outputs(
         output_dir, summary, robustness_rows, loo_rows_all, hc_rows,
         {"event_results": str(event_results_path), "outcome_rows": str(outcome_rows_path)},
+        path_breakdown_rows=path_breakdown_rows,
     )
     for k, p in written.items():
         print(f"  {k}: {p}", flush=True)
@@ -1111,12 +1385,15 @@ def print_summary(summary: dict) -> None:
         )
     print(f"\n--- C5 audit: {summary['c5_audit']['c5_verdict']} ---")
     print(f"  {summary['c5_audit']['reason']}")
-    print(f"\n--- High-change ---")
+    print(f"\n--- High-change outcomes (SUPPORTED events) ---")
     hc = summary["high_change_summary"]
-    print(f"  Higher high 4h: {hc['higher_high_within_4h']}/{hc['n_supported_events']} ({hc['higher_high_within_4h_pct']}%)")
-    print(f"  Higher high 12h: {hc['higher_high_within_12h']}/{hc['n_supported_events']} ({hc['higher_high_within_12h_pct']}%)")
-    print(f"  Higher high 24h: {hc['higher_high_within_24h']}/{hc['n_supported_events']} ({hc['higher_high_within_24h_pct']}%)")
-    print(f"  Narratives: {hc['narrative_counts']}")
+    n = hc["n_supported_events"]
+    print(f"  Close above entry 4h:  {hc['close_above_entry_at_4h_count']}/{n} ({hc['close_above_entry_at_4h_pct']}%)")
+    print(f"  Close above entry 24h: {hc['close_above_entry_at_24h_count']}/{n} ({hc['close_above_entry_at_24h_pct']}%)")
+    print(f"  Close above entry 48h: {hc['close_above_entry_at_48h_count']}/{n} ({hc['close_above_entry_at_48h_pct']}%)")
+    print(f"  Higher high 96h (candle): {hc['higher_high_within_96h_count']}/{n} ({hc['higher_high_within_96h_pct']}%)")
+    print(f"  Median MFE: {hc['median_mfe_pct']}%  MAE: {hc['median_mae_pct']}%  Gave-back: {hc['median_gave_back_from_max_pct']}%")
+    print(f"  Outcome classifications: {hc['outcome_classification_counts']}")
 
 
 # ---------------------------------------------------------------------------

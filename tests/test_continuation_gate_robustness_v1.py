@@ -32,7 +32,9 @@ from src.research.run_continuation_gate_robustness_v1 import (
     FEE_RT_PCT,
     HORIZON_COMPARISON,
     MATCHED_CONFLICT_N,
+    RUNUP_MEANINGFUL_PCT,
     _bootstrap_ci,
+    _classify_outcome,
     _trimmed_mean,
     _stats,
     assign_high_change_labels,
@@ -41,6 +43,7 @@ from src.research.run_continuation_gate_robustness_v1 import (
     compute_concentration_summary,
     compute_horizon_comparison,
     compute_leave_one_out,
+    compute_path_breakdown,
     load_and_join,
     write_robustness_outputs,
     write_visual_review,
@@ -211,64 +214,232 @@ def test_stats_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _classify_outcome
+# ---------------------------------------------------------------------------
+
+def test_classify_no_meaningful_extension_when_mfe_zero() -> None:
+    assert _classify_outcome(r1=0.5, r6=-0.5, mfe=0.0) == "NO_MEANINGFUL_EXTENSION"
+
+
+def test_classify_no_meaningful_extension_when_mfe_negative() -> None:
+    assert _classify_outcome(r1=-0.5, r6=-1.0, mfe=-0.3) == "NO_MEANINGFUL_EXTENSION"
+
+
+def test_classify_clean_extension_and_hold() -> None:
+    """Meaningful runup AND positive close at 6c."""
+    assert _classify_outcome(r1=1.5, r6=2.0, mfe=3.0) == "CLEAN_EXTENSION_AND_HOLD"
+
+
+def test_classify_extension_then_reversal() -> None:
+    """Meaningful runup BUT negative close at 6c."""
+    assert _classify_outcome(r1=1.5, r6=-0.5, mfe=2.5) == "EXTENSION_THEN_REVERSAL"
+
+
+def test_classify_rejection_after_target() -> None:
+    """Small runup, r1>0 (initial upward close), r6<=0 (reversed)."""
+    assert _classify_outcome(r1=0.5, r6=-0.3, mfe=0.7) == "REJECTION_AFTER_TARGET"
+
+
+def test_classify_higher_high_without_hold() -> None:
+    """Candle high above entry (mfe>0) but close_1c<=0 and close_6c<=0."""
+    assert _classify_outcome(r1=-0.1, r6=-0.5, mfe=0.4) == "HIGHER_HIGH_WITHOUT_HOLD"
+
+
+def test_classify_close_higher_without_new_high() -> None:
+    """Closed above entry at 6c but no significant intracandle extension."""
+    assert _classify_outcome(r1=0.3, r6=0.6, mfe=0.8) == "CLOSE_HIGHER_WITHOUT_NEW_HIGH"
+
+
+def test_classify_unknown_on_none_inputs() -> None:
+    assert _classify_outcome(r1=None, r6=None, mfe=None) == "UNKNOWN"
+    assert _classify_outcome(r1=1.0, r6=None, mfe=1.5) == "UNKNOWN"
+    assert _classify_outcome(r1=1.0, r6=1.0, mfe=None) == "UNKNOWN"
+
+
+def test_classify_mfe_at_threshold_boundary() -> None:
+    """mfe exactly at RUNUP_MEANINGFUL_PCT goes to small-mfe branch (<=)."""
+    threshold = RUNUP_MEANINGFUL_PCT
+    # Exactly at threshold: treated as NOT meaningful (state 4 or 5 or 6)
+    result = _classify_outcome(r1=0.5, r6=-0.2, mfe=threshold)
+    assert result in ("REJECTION_AFTER_TARGET", "HIGHER_HIGH_WITHOUT_HOLD", "CLOSE_HIGHER_WITHOUT_NEW_HIGH")
+
+
+def test_classify_all_six_states_mutually_exclusive() -> None:
+    """Each state fires for a canonical example, no overlaps."""
+    cases = [
+        (dict(r1=-0.5, r6=-1.0, mfe=0.0), "NO_MEANINGFUL_EXTENSION"),
+        (dict(r1=1.5, r6=2.0, mfe=2.5), "CLEAN_EXTENSION_AND_HOLD"),
+        (dict(r1=1.5, r6=-0.5, mfe=2.5), "EXTENSION_THEN_REVERSAL"),
+        (dict(r1=0.5, r6=-0.3, mfe=0.7), "REJECTION_AFTER_TARGET"),
+        (dict(r1=-0.1, r6=-0.5, mfe=0.4), "HIGHER_HIGH_WITHOUT_HOLD"),
+        (dict(r1=0.3, r6=0.6, mfe=0.8), "CLOSE_HIGHER_WITHOUT_NEW_HIGH"),
+    ]
+    for kwargs, expected in cases:
+        assert _classify_outcome(**kwargs) == expected, f"Failed for {kwargs}"
+
+
+# ---------------------------------------------------------------------------
 # assign_high_change_labels
 # ---------------------------------------------------------------------------
 
-def test_hc_positive_1c_sets_higher_high_4h() -> None:
+def test_hc_positive_1c_sets_close_above_4h() -> None:
+    """r1>0 → close_above_entry_at_4h=True (correctly named)."""
     ev = _ev(r1=1.5)
     hc = assign_high_change_labels(ev)
-    assert hc["higher_high_within_4h"] is True
+    assert hc["close_above_entry_at_4h"] is True
 
 
-def test_hc_negative_1c_clears_higher_high_4h() -> None:
+def test_hc_negative_1c_clears_close_above_4h() -> None:
     ev = _ev(r1=-0.5)
     hc = assign_high_change_labels(ev)
-    assert hc["higher_high_within_4h"] is False
+    assert hc["close_above_entry_at_4h"] is False
 
 
-def test_hc_positive_6c_sets_higher_high_24h() -> None:
+def test_hc_positive_6c_sets_close_above_24h() -> None:
     ev = _ev(r6=2.0)
     hc = assign_high_change_labels(ev)
-    assert hc["higher_high_within_24h"] is True
+    assert hc["close_above_entry_at_24h"] is True
 
 
-def test_hc_negative_6c_clears_higher_high_24h() -> None:
+def test_hc_negative_6c_clears_close_above_24h() -> None:
     ev = _ev(r6=-1.0)
     hc = assign_high_change_labels(ev)
-    assert hc["higher_high_within_24h"] is False
+    assert hc["close_above_entry_at_24h"] is False
 
 
-def test_hc_extension_then_reversal() -> None:
-    """Meaningful runup (>1%) but 6c return is negative → EXTENSION_THEN_REVERSAL."""
-    ev = _ev(r6=-0.5, max_runup=2.0)
+def test_hc_no_old_higher_high_labels() -> None:
+    """Old incorrectly-named labels must be absent."""
+    ev = _ev(r1=1.0, r6=2.0)
     hc = assign_high_change_labels(ev)
-    assert hc["high_change_narrative"] == "EXTENSION_THEN_REVERSAL"
+    assert "higher_high_within_4h" not in hc
+    assert "higher_high_within_12h" not in hc
+    assert "higher_high_within_24h" not in hc
+    assert "high_change_narrative" not in hc
 
 
-def test_hc_no_meaningful_extension() -> None:
-    """Low runup and negative 6c return → NO_MEANINGFUL_EXTENSION."""
-    ev = _ev(r6=-0.5, max_runup=0.3)
+def test_hc_genuine_higher_high_96h_from_max_runup() -> None:
+    """higher_high_within_96h uses max_runup_24c (candle-high), not close."""
+    # max_runup > 0 but r1 < 0 (close never exceeded entry; high did)
+    ev = _ev(r1=-0.3, r6=-0.8, max_runup=0.5)
     hc = assign_high_change_labels(ev)
-    assert hc["high_change_narrative"] == "NO_MEANINGFUL_EXTENSION"
+    assert hc["higher_high_within_96h"] is True
+    assert hc["close_above_entry_at_4h"] is False  # close stayed negative
 
 
-def test_hc_extension_then_hold() -> None:
-    ev = _ev(r6=2.0, max_runup=3.0)
+def test_hc_no_higher_high_96h_when_mfe_zero() -> None:
+    ev = _ev(max_runup=0.0)
     hc = assign_high_change_labels(ev)
-    assert hc["high_change_narrative"] == "EXTENSION_THEN_HOLD"
+    assert hc["higher_high_within_96h"] is False
 
 
-def test_hc_mfe_mae_present() -> None:
+def test_hc_outcome_classification_present() -> None:
+    ev = _ev(r1=1.5, r6=2.0, max_runup=3.0)
+    hc = assign_high_change_labels(ev)
+    assert "outcome_classification" in hc
+    assert hc["outcome_classification"] == "CLEAN_EXTENSION_AND_HOLD"
+
+
+def test_hc_path_metrics_present() -> None:
     ev = _ev(max_runup=4.0, max_drawdown=-1.5)
     hc = assign_high_change_labels(ev)
-    assert hc["mfe_24c_pct"] == pytest.approx(4.0)
-    assert hc["mae_24c_pct"] == pytest.approx(-1.5)
+    assert hc["mfe_pct"] == pytest.approx(4.0)
+    assert hc["mae_pct"] == pytest.approx(-1.5)
+    assert hc["max_high_within_96h_pct"] == pytest.approx(4.0)
+    assert hc["min_low_within_96h_pct"] == pytest.approx(-1.5)
 
 
-def test_hc_note_about_4c_8c() -> None:
+def test_hc_gave_back_from_max_pct() -> None:
+    """gave_back_from_max_pct = mfe - fwd_return_24c."""
+    ev = _ev(max_runup=5.0, r24=2.0)
+    hc = assign_high_change_labels(ev)
+    assert hc["gave_back_from_max_pct"] == pytest.approx(3.0)
+
+
+def test_hc_higher_high_without_close_above() -> None:
+    """Price makes genuine higher high (mfe>0) but close stays negative — distinct from close-above."""
+    ev = _ev(r1=-0.2, r3=-0.1, r6=-0.5, r12=-0.3, max_runup=0.8, max_drawdown=-1.0)
+    hc = assign_high_change_labels(ev)
+    assert hc["higher_high_within_96h"] is True     # candle high above entry
+    assert hc["close_above_entry_at_4h"] is False   # but close never confirmed it
+    assert hc["close_above_entry_at_24h"] is False
+    assert hc["outcome_classification"] == "HIGHER_HIGH_WITHOUT_HOLD"
+
+
+def test_hc_close_above_without_meaningful_new_high() -> None:
+    """Close above entry but max_runup small — CLOSE_HIGHER_WITHOUT_NEW_HIGH."""
+    ev = _ev(r1=0.3, r6=0.6, max_runup=0.8)  # mfe=0.8 <= RUNUP_MEANINGFUL_PCT=1.0
+    hc = assign_high_change_labels(ev)
+    assert hc["close_above_entry_at_24h"] is True
+    assert hc["outcome_classification"] == "CLOSE_HIGHER_WITHOUT_NEW_HIGH"
+
+
+def test_hc_reference_type_is_entry_price() -> None:
     ev = _ev()
     hc = assign_high_change_labels(ev)
-    assert "note_4c_8c_missing" in hc
+    assert hc["higher_high_reference_type"] == "entry_price"
+
+
+def test_hc_sub_96h_not_available() -> None:
+    ev = _ev()
+    hc = assign_high_change_labels(ev)
+    assert hc["higher_high_sub_96h_available"] is False
+
+
+def test_hc_time_to_max_not_available() -> None:
+    ev = _ev()
+    hc = assign_high_change_labels(ev)
+    assert hc["time_to_max_high_minutes"] is None
+    assert hc["time_to_min_low_minutes"] is None
+
+
+# ---------------------------------------------------------------------------
+# compute_path_breakdown
+# ---------------------------------------------------------------------------
+
+def test_path_breakdown_produces_one_row_per_bucket() -> None:
+    events = [
+        _ev(variant_type="BASELINE", market_regime="TRENDING_UP"),
+        _ev(variant_type="BASELINE", market_regime="TRENDING_UP"),
+        _ev(variant_type="BASELINE", market_regime="RISK_ON"),
+    ]
+    rows = compute_path_breakdown(events, "market_regime", "market_regime")
+    buckets = {r["bucket"] for r in rows}
+    assert buckets == {"TRENDING_UP", "RISK_ON"}
+
+
+def test_path_breakdown_counts_higher_high_96h() -> None:
+    events = [
+        _ev(variant_type="BASELINE", market_regime="TRENDING_UP", max_runup=2.0),
+        _ev(variant_type="BASELINE", market_regime="TRENDING_UP", max_runup=-0.5),
+        _ev(variant_type="BASELINE", market_regime="TRENDING_UP", max_runup=1.5),
+    ]
+    rows = compute_path_breakdown(events, "market_regime", "market_regime")
+    row = rows[0]
+    assert row["higher_high_within_96h_count"] == 2
+    assert row["n_with_mfe_data"] == 3
+
+
+def test_path_breakdown_counts_close_above_24h() -> None:
+    events = [
+        _ev(variant_type="BASELINE", r6=1.0),
+        _ev(variant_type="BASELINE", r6=-1.0),
+        _ev(variant_type="BASELINE", r6=2.0),
+    ]
+    rows = compute_path_breakdown(events, "gate_state", "gate_state")
+    row = next(r for r in rows if r["bucket"] == "CONTINUATION_SUPPORTED")
+    assert row["close_above_entry_24h_count"] == 2
+
+
+def test_path_breakdown_reports_classification_counts() -> None:
+    # All events: mfe>1 and r6>0 → CLEAN_EXTENSION_AND_HOLD
+    events = [
+        _ev(variant_type="BASELINE", r1=1.5, r6=2.0, max_runup=3.0)
+        for _ in range(4)
+    ]
+    rows = compute_path_breakdown(events, "gate_state", "gate_state")
+    row = rows[0]
+    assert row["n_clean_extension_and_hold"] == 4
+    assert row["n_no_meaningful_extension"] == 0
 
 
 # ---------------------------------------------------------------------------
