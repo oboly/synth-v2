@@ -87,6 +87,16 @@ Design rules:
 - Keep renderer functions limited to assembled view models.
 - Do not label chart overlays as buy or sell instructions.
 
+## P2 — Market Confluence & Events Dashboard v1
+
+Status: TODO — design documented, pre-implementation.
+
+See: [`docs/architecture/market_confluence_events_dashboard_v1.md`](../architecture/market_confluence_events_dashboard_v1.md)
+
+Next step: Phase 1 inventory — inspect existing event, sentiment, and outcome tables before any schema design or implementation.
+
+---
+
 ## Later UI v2 direction
 
 - TradingView-style Lightweight Charts frontend.
