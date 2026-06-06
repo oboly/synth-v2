@@ -191,6 +191,26 @@ The render wrapper refreshes public `market_price_snapshot` data before account
 page rendering. If that refresh fails, rendering continues but stale prices
 remain fail-closed and non-actionable.
 
+Five-minute wrapper order:
+
+1. refresh public current prices
+2. build native SHORT context for the bounded account market scope
+3. validate and atomically publish the native SHORT output
+4. render `wallet.html`
+5. render `open-orders-monitor.html`
+6. render `profit-plan.html` using the published native SHORT rows
+
+Runtime native SHORT path:
+
+- `/var/www/html/synth/accounts/<profile>/_runtime/native_short_context_v1/native_short_fib_context_rows_v1.csv`
+
+Rules:
+
+- native SHORT build stays market-only; the profile is used only to derive market scope
+- malformed or missing fresh native output fails closed before Profit Plan render
+- a failed refresh preserves the previous valid published native output
+- legacy `1d` fib context must never be silently treated as native SHORT by the wrapper
+
 The same wrapper also copies the canonical SYNTH favicon asset set into:
 
 - `/var/www/html/synth/assets/brand/synth/favicon.svg`

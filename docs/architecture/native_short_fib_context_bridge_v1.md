@@ -141,3 +141,9 @@ Files:
 
 These are generated artifacts and must not be committed unless explicitly
 requested and reviewed.
+
+When the normal five-minute account dashboard wrapper publishes native SHORT
+rows for a profile, it must not write into `data/research/`. The runtime
+publish path is profile-scoped and validated first, then atomically replaced:
+
+- `/var/www/html/synth/accounts/<profile>/_runtime/native_short_context_v1/`
