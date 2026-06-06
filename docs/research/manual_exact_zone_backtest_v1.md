@@ -152,29 +152,37 @@ Context is fetched from the DB at T1 touch timestamp (point-in-time — no futur
 | C4_BREATH_TRAILING_RUNNER | TRAILING_RUNNER | Stop further tranches if REGIME_CONFLICT or BREATH_CONFLICT; else hold runner |
 | C5_PARENT_CONTEXT_RUNNER | PARENT_CONTEXT | live_valid=False when parent_tf_target_status=UNKNOWN |
 
-### NEAR result (2026-05-21, 14d, context=UNKNOWN for all rows)
+### NEAR result (2026-05-21, 14d, context=FOUND — signal_engine_state 2026-05-23 16:00)
 
 ```
-variant                          final_eur  gross%  live   gate_state
-C1_BASELINE_20_15_15_RUNNER         116.38   16.38  True   CONTEXT_UNKNOWN
-C2_BREATH_HOLD_FIRST_TARGET         116.38   16.38  True   CONTEXT_UNKNOWN
-C3_REGIME_TARGET_SHIFT              116.38   16.38  True   CONTEXT_UNKNOWN
-C4_BREATH_TRAILING_RUNNER           116.38   16.38  True   CONTEXT_UNKNOWN
-C5_PARENT_CONTEXT_RUNNER            116.38   16.38  False  NOT_LIVE_VALID
+variant                          final_eur  gross%  live   gate_state         gate_applied
+C1_BASELINE_20_15_15_RUNNER         116.38   16.38  True   CONTINUATION_WEAK  False (BASELINE_NO_GATE)
+C2_BREATH_HOLD_FIRST_TARGET         116.38   16.38  True   CONTINUATION_WEAK  True
+C3_REGIME_TARGET_SHIFT              116.38   16.38  True   CONTINUATION_WEAK  True
+C4_BREATH_TRAILING_RUNNER           116.38   16.38  True   CONTINUATION_WEAK  True
+C5_PARENT_CONTEXT_RUNNER            116.38   16.38  False  NOT_LIVE_VALID     True
 ```
 
-All C1-C4 fall back to baseline C when context is UNKNOWN.
-C5 simulates baseline C but is marked NOT_LIVE_VALID.
+Context found: `signal_engine_state+selection_state+paper_advice_observation` at 2026-05-23 16:00 (~150 min before T1 touch).
+- `breath_phase=EXPANSION` (PHASE_EXPANSION_COHERENT), `breath_alignment=SUPPORTIVE` (COMPASS_EXPANSION_SUPPORT)
+- `market_regime=TRENDING_UP` (TREND_UP_STRONG proxy), `symbol_regime=RANGE` (regime_label_4h)
+- Gate = CONTINUATION_WEAK: positive breath and regime, but T1 touch candle close_vs_target=-1.72% (closed below 2.12)
 
-**Sample size: n=1. Do not overfit. Gate logic is correct; future multi-window tests
-will show differentiated results when context DB rows are present.**
+C2-C4 fall back to baseline because CONTINUATION_SUPPORTED requires close above target.
+C5 is NOT_LIVE_VALID (parent_tf_target_status=UNKNOWN).
+
+**Sample size: n=1. Do not overfit. Gate fires with real context; CONTINUATION_SUPPORTED
+would require the T1 touch candle to close above target.**
 
 ### Emitted fields per continuation variant
 
 `breath_phase_at_target`, `breath_alignment_at_target`, `market_regime_at_target`,
 `symbol_regime_at_target`, `context_quality_tier_at_target`, `continuation_gate_state`,
 `continuation_gate_reason`, `sell_reduction_reason`, `target_shift_reason`,
-`runner_hold_reason`, `live_valid`, `overshoot_pct_at_t1`, `close_vs_target_pct_at_t1`
+`runner_hold_reason`, `live_valid`, `overshoot_pct_at_t1`, `close_vs_target_pct_at_t1`,
+`context_lookup_status`, `context_source`, `context_ts_utc`, `context_age_minutes`,
+`max_context_age_minutes`, `context_freshness_status`, `gate_applied`,
+`fallback_policy`, `fallback_reason`
 
 ## Outputs
 
@@ -188,8 +196,11 @@ data/research/manual_exact_zone_backtest_v1/near_exact_first_test/
   chart_variants_v1.png                  # Price chart with all target levels
   continuation_variant_summary_v1.json   # 5 continuation-gate variant results
   continuation_variant_rows_v1.jsonl     # One row per continuation variant
-  continuation_gate_breakdown_v1.csv     # Gate state + reason per continuation variant
-  breath_regime_breakdown_v1.csv         # Context at T1 decision point per variant
+  continuation_gate_breakdown_v1.csv              # Gate state + reason per continuation variant
+  breath_regime_breakdown_v1.csv                  # Context at T1 decision point per variant
+  continuation_context_lookup_audit_v1.csv        # Per-variant context lookup audit
+  continuation_context_lookup_summary_v1.json     # Aggregate context/gate counts
+  continuation_gate_applied_breakdown_v1.csv      # gate_applied=True variants only
 ```
 
 ---

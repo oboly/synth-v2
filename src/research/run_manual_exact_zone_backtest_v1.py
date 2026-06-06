@@ -5,7 +5,7 @@ Layer: research/backtest only.
 
 Boundary:
   - DB reads allowed (obs_market_candle, asset, paper_advice_observation,
-    selection_state, market_regime_snapshot).
+    selection_state, regime_selector_backtest_observation_v1, signal_engine_state).
   - DB writes forbidden.
   - No broker calls, no orders, no account access.
   - No changes to selection_engine, decision_gate, execution_planner, executor.
@@ -109,6 +109,23 @@ VARIANT_TYPE_BREATH_HOLD = "BREATH_HOLD"
 VARIANT_TYPE_REGIME_SHIFT = "REGIME_SHIFT"
 VARIANT_TYPE_TRAILING_RUNNER = "TRAILING_RUNNER"
 VARIANT_TYPE_PARENT_CONTEXT = "PARENT_CONTEXT"
+
+# Staleness thresholds per candle interval (minutes)
+_INTERVAL_MAX_STALENESS_MINUTES: dict[str, int] = {
+    "15m": 480,    # 8h
+    "1h":  1440,   # 24h
+    "4h":  2880,   # 48h
+    "1d":  10080,  # 7d
+}
+_DEFAULT_MAX_STALENESS_MINUTES = 480
+
+# Context lookup status codes
+CTX_FOUND = "FOUND"
+CTX_SOURCE_MISSING = "SOURCE_MISSING"
+CTX_TIME_RANGE_MISSING = "TIME_RANGE_MISSING"
+CTX_ASOF_JOIN_MISS = "ASOF_JOIN_MISS"
+CTX_CONTEXT_TOO_STALE = "CONTEXT_TOO_STALE"
+CTX_CONTEXT_TRULY_UNKNOWN = "CONTEXT_TRULY_UNKNOWN"
 
 # Context classification sets (matched upper-cased)
 _POSITIVE_BREATH_PHASES = frozenset({
@@ -347,82 +364,84 @@ def fetch_context_annotation(
     window_start = prediction_ts - timedelta(days=3)
     window_end = prediction_ts + timedelta(hours=1)
 
-    # market_regime from market_regime_snapshot
+    # market_regime from regime_selector_backtest_observation_v1
     try:
         row = fetch_one(
             conn,
             """
-            SELECT * FROM market_regime_snapshot
-            WHERE asof_ts_utc <= %s
+            SELECT global_regime, asset_class_regime
+            FROM regime_selector_backtest_observation_v1
+            WHERE symbol = %s AND asof_ts_utc <= %s
             ORDER BY asof_ts_utc DESC
             LIMIT 1
             """,
-            (window_end,),
+            (symbol, window_end),
         )
         if row:
-            val = str(row.get("market_regime") or row.get("regime") or "").strip()
+            val = _normalize_global_regime(
+                str(row.get("global_regime") or "").strip()
+            )
             if val:
                 context["market_regime"] = val
     except Exception:
         pass
 
-    # breath_phase and context fields from paper_advice_observation
+    # breath_phase and context fields from paper_advice_observation (uses asof_ts_utc)
     try:
         rows = fetch_all(
             conn,
             """
-            SELECT *
+            SELECT asof_ts_utc, advice_state, aplus_phase, aplus_field,
+                   aplus_strategic_bias, aplus_expansion_quality,
+                   selection_state, selection_bias
             FROM paper_advice_observation
             WHERE symbol = %s
-              AND observed_at_utc >= %s
-              AND observed_at_utc <= %s
-            ORDER BY observed_at_utc DESC
+              AND asof_ts_utc >= %s
+              AND asof_ts_utc <= %s
+            ORDER BY asof_ts_utc DESC
             LIMIT 1
             """,
             (symbol, window_start, window_end),
         )
         if rows:
             r = rows[0]
-            for src_key, dst_key in [
-                ("market_breath_phase", "breath_phase"),
-                ("breath_phase", "breath_phase"),
-                ("breath_alignment", "breath_alignment"),
-                ("context_quality_tier", "context_quality_tier"),
-                ("symbol_regime", "symbol_regime"),
-            ]:
-                val = str(r.get(src_key) or "").strip()
-                if val and val.upper() not in ("", "NONE", "NULL"):
-                    context[dst_key] = val
+            # A+ strategic bias as breath proxy
+            strat = str(r.get("aplus_strategic_bias") or "").strip()
+            if strat and context["breath_phase"] == "UNKNOWN":
+                context["breath_phase"] = strat.upper()
     except Exception:
         pass
 
-    # symbol_regime and context_quality_tier from selection_state
-    if context["symbol_regime"] == "UNKNOWN" or context["context_quality_tier"] == "UNKNOWN":
+    # symbol_regime from selection_state.regime_label_4h (uses asset_id)
+    if context["symbol_regime"] == "UNKNOWN":
         try:
-            rows = fetch_all(
+            asset_row = fetch_one(
                 conn,
-                """
-                SELECT *
-                FROM selection_state
-                WHERE symbol = %s
-                  AND asof_ts_utc >= %s
-                  AND asof_ts_utc <= %s
-                ORDER BY asof_ts_utc DESC
-                LIMIT 1
-                """,
-                (symbol, window_start, window_end),
+                "SELECT DISTINCT asset_id FROM paper_advice_observation WHERE symbol = %s LIMIT 1",
+                (symbol,),
             )
-            if rows:
-                r = rows[0]
-                for src_key, dst_key in [
-                    ("symbol_regime", "symbol_regime"),
-                    ("regime", "symbol_regime"),
-                    ("context_quality_tier", "context_quality_tier"),
-                ]:
-                    val = str(r.get(src_key) or "").strip()
-                    if val and val.upper() not in ("", "NONE", "NULL"):
-                        if context[dst_key] == "UNKNOWN":
-                            context[dst_key] = val
+            if asset_row:
+                aid = int(asset_row["asset_id"])
+                rows = fetch_all(
+                    conn,
+                    """
+                    SELECT asof_ts_utc, regime_label_1h, regime_label_4h
+                    FROM selection_state
+                    WHERE asset_id = %s
+                      AND asof_ts_utc >= %s
+                      AND asof_ts_utc <= %s
+                    ORDER BY asof_ts_utc DESC
+                    LIMIT 1
+                    """,
+                    (aid, window_start, window_end),
+                )
+                if rows:
+                    r = rows[0]
+                    for k in ("regime_label_4h", "regime_label_1h"):
+                        v = str(r.get(k) or "").strip()
+                        if v and v.upper() not in ("", "NONE", "NULL"):
+                            context["symbol_regime"] = v
+                            break
         except Exception:
             pass
 
@@ -435,43 +454,45 @@ def fetch_context_timeline_raw(
     venue: str,
     window_start: datetime,
     window_end: datetime,
+    interval_code: str = "15m",
 ) -> ContextTimeline:
     """
-    Fetch all context rows for the backtest window from each source table.
+    Fetch all context rows for the backtest window from available source tables.
     Returns a ContextTimeline for point-in-time lookup during simulation.
     Extends lookback by 3 days to capture context predating the window start.
+
+    Sources (in priority order for context):
+      signal_engine_state              — primary breath/regime proxy (by asset_id)
+      regime_selector_backtest_observation_v1 — canonical regime (by symbol)
+      paper_advice_observation         — A+ supplementary context (by symbol)
+      selection_state                  — symbol_regime via regime_label (by asset_id)
     """
     lookback_start = window_start - timedelta(days=3)
+
+    # Resolve asset_id for tables that use it instead of symbol
+    asset_id: Optional[int] = None
+    try:
+        row = fetch_one(
+            conn,
+            "SELECT DISTINCT asset_id FROM paper_advice_observation WHERE symbol = %s LIMIT 1",
+            (symbol,),
+        )
+        if row:
+            asset_id = int(row["asset_id"])
+    except Exception:
+        pass
+
     market_regime_rows: list[dict] = []
     breath_rows: list[dict] = []
     selection_rows: list[dict] = []
+    signal_rows: list[dict] = []
 
+    # regime_selector_backtest_observation_v1 — canonical regime source
     try:
         market_regime_rows = fetch_all(
             conn,
-            """SELECT * FROM market_regime_snapshot
-               WHERE asof_ts_utc >= %s AND asof_ts_utc <= %s
-               ORDER BY asof_ts_utc ASC""",
-            (lookback_start, window_end),
-        )
-    except Exception:
-        pass
-
-    try:
-        breath_rows = fetch_all(
-            conn,
-            """SELECT * FROM paper_advice_observation
-               WHERE symbol = %s AND observed_at_utc >= %s AND observed_at_utc <= %s
-               ORDER BY observed_at_utc ASC""",
-            (symbol, lookback_start, window_end),
-        )
-    except Exception:
-        pass
-
-    try:
-        selection_rows = fetch_all(
-            conn,
-            """SELECT * FROM selection_state
+            """SELECT asof_ts_utc, global_regime, asset_class_regime, global_class_regime
+               FROM regime_selector_backtest_observation_v1
                WHERE symbol = %s AND asof_ts_utc >= %s AND asof_ts_utc <= %s
                ORDER BY asof_ts_utc ASC""",
             (symbol, lookback_start, window_end),
@@ -479,10 +500,59 @@ def fetch_context_timeline_raw(
     except Exception:
         pass
 
+    # paper_advice_observation — A+ supplementary context (uses asof_ts_utc)
+    try:
+        breath_rows = fetch_all(
+            conn,
+            """SELECT asof_ts_utc, context_ts_utc, symbol, advice_state,
+                      aplus_bucket, aplus_phase, aplus_coherence, aplus_field,
+                      aplus_strategic_bias, aplus_expansion_quality,
+                      selection_state, selection_bias
+               FROM paper_advice_observation
+               WHERE symbol = %s AND asof_ts_utc >= %s AND asof_ts_utc <= %s
+               ORDER BY asof_ts_utc ASC""",
+            (symbol, lookback_start, window_end),
+        )
+    except Exception:
+        pass
+
+    # selection_state — symbol_regime via regime_label_4h / regime_label_1h (uses asset_id)
+    if asset_id is not None:
+        try:
+            selection_rows = fetch_all(
+                conn,
+                """SELECT asof_ts_utc, regime_label_1h, regime_label_4h,
+                          selection_state, selection_bias, selection_score
+                   FROM selection_state
+                   WHERE asset_id = %s AND asof_ts_utc >= %s AND asof_ts_utc <= %s
+                   ORDER BY asof_ts_utc ASC""",
+                (asset_id, lookback_start, window_end),
+            )
+        except Exception:
+            pass
+
+    # signal_engine_state — primary breath + regime proxy (uses asset_id)
+    if asset_id is not None:
+        try:
+            signal_rows = fetch_all(
+                conn,
+                """SELECT signal_ts_utc, interval_code, trend_signal, phase_signal,
+                          compass_signal, rotation_signal, relative_signal,
+                          setup_signal, risk_signal
+                   FROM signal_engine_state
+                   WHERE asset_id = %s AND signal_ts_utc >= %s AND signal_ts_utc <= %s
+                   ORDER BY signal_ts_utc ASC""",
+                (asset_id, lookback_start, window_end),
+            )
+        except Exception:
+            pass
+
     return ContextTimeline(
         market_regime_rows=market_regime_rows,
         breath_rows=breath_rows,
         selection_rows=selection_rows,
+        signal_rows=signal_rows,
+        interval_code=interval_code,
     )
 
 
@@ -741,6 +811,16 @@ class VariantResult:
     runner_hold_reason: Optional[str] = None
     overshoot_pct_at_t1: Optional[Decimal] = None
     close_vs_target_pct_at_t1: Optional[Decimal] = None
+    # Context lookup audit fields
+    context_lookup_status: Optional[str] = None
+    context_source: Optional[str] = None
+    context_ts_utc: Optional[datetime] = None
+    context_age_minutes: Optional[float] = None
+    max_context_age_minutes: Optional[int] = None
+    context_freshness_status: Optional[str] = None
+    gate_applied: Optional[bool] = None
+    fallback_policy: Optional[str] = None
+    fallback_reason: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -765,18 +845,118 @@ def _latest_before(rows: list[dict], ts: datetime, ts_key: str) -> Optional[dict
     return result
 
 
+def _normalize_phase_signal(v: str) -> str:
+    """Map signal_engine_state phase_signal to gate-compatible breath_phase label."""
+    u = v.upper()
+    for term, mapped in [
+        ("EXPANSION", "EXPANSION"), ("IMPULSE", "IMPULSE"),
+        ("ACCUMULATION", "ACCUMULATION"), ("DISTRIBUTION", "DISTRIBUTION"),
+        ("CONTRACTION", "CONTRACTION"), ("CORRECTION", "CORRECTION"),
+        ("REVERSAL", "REVERSAL"), ("MARKDOWN", "MARKDOWN"), ("MARKUP", "MARKUP"),
+        ("MOMENTUM", "MOMENTUM"), ("TREND", "TRENDING"),
+    ]:
+        if term in u:
+            return mapped
+    return v
+
+
+def _normalize_compass_signal(v: str) -> str:
+    """Map signal_engine_state compass_signal to gate-compatible breath_alignment label."""
+    u = v.upper()
+    for term, mapped in [
+        ("SUPPORT", "SUPPORTIVE"), ("WEAK", "WEAK"),
+        ("CONFLICT", "CONFLICTING"), ("BULL", "BULLISH"),
+        ("BEAR", "BEARISH"), ("ALIGN", "ALIGNED"),
+    ]:
+        if term in u:
+            return mapped
+    return v
+
+
+def _normalize_trend_signal(v: str) -> str:
+    """Map signal_engine_state trend_signal to gate-compatible market_regime label."""
+    u = v.upper()
+    if "UP" in u and "TREND" in u:
+        return "TRENDING_UP"
+    if "DOWN" in u and "TREND" in u:
+        return "TRENDING_DOWN"
+    if "BULL" in u:
+        return "BULLISH"
+    if "BEAR" in u:
+        return "BEARISH"
+    if "NEUTRAL" in u:
+        return "NEUTRAL"
+    return v
+
+
+def _normalize_global_regime(v: str) -> str:
+    """Map regime_selector_backtest_observation_v1 global_regime to gate-compatible label."""
+    u = v.upper()
+    if "RISK_ON" in u:
+        return "RISK_ON"
+    if "RISK_OFF" in u:
+        return "RISK_OFF"
+    if "BREAKDOWN" in u:
+        return "BREAKDOWN"
+    if "BULL" in u:
+        return "BULLISH"
+    if "BEAR" in u:
+        return "BEARISH"
+    if "NEUTRAL" in u:
+        return "NEUTRAL"
+    return v
+
+
+def _get_row_ts(row: dict, ts_key: str) -> Optional[datetime]:
+    """Extract and timezone-normalise a datetime from a row dict."""
+    v = row.get(ts_key)
+    if v is None:
+        return None
+    if isinstance(v, str):
+        v = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    if isinstance(v, datetime) and v.tzinfo is None:
+        v = v.replace(tzinfo=UTC)
+    return v
+
+
+@dataclass(frozen=True)
+class ContextLookupAudit:
+    """Audit record for one context lookup at a specific decision timestamp."""
+    context_lookup_status: str      # FOUND / SOURCE_MISSING / ASOF_JOIN_MISS / CONTEXT_TOO_STALE / ...
+    context_source: str             # e.g. "signal_engine_state+selection_state"
+    context_ts_utc: Optional[datetime]
+    context_age_minutes: Optional[float]
+    max_context_age_minutes: int
+    context_freshness_status: str   # FRESH / ACCEPTABLE / STALE / UNKNOWN
+    source_refs: str
+    gate_applied: bool
+    fallback_policy: Optional[str]
+    fallback_reason: Optional[str]
+
+
 @dataclass
 class ContextTimeline:
     """
     Pre-fetched context snapshots for a backtest window.
-    at(ts) merges fields from all sources using only rows with asof/observed_ts <= ts.
-    Callers supply the event timestamp at each decision point — no future leakage.
-    """
-    market_regime_rows: list[dict]   # sorted ascending by asof_ts_utc
-    breath_rows: list[dict]          # sorted ascending by observed_at_utc (paper_advice_observation)
-    selection_rows: list[dict]       # sorted ascending by asof_ts_utc (selection_state)
+    at(ts) / at_with_audit(ts) merge fields from all sources using only rows
+    with asof/signal_ts <= ts — no future leakage.
 
-    def at(self, ts: datetime) -> dict[str, str]:
+    Sources:
+      market_regime_rows: regime_selector_backtest_observation_v1 (asof_ts_utc)
+      breath_rows:        paper_advice_observation (asof_ts_utc)
+      selection_rows:     selection_state (asof_ts_utc)
+      signal_rows:        signal_engine_state (signal_ts_utc) — primary breath/regime proxy
+    """
+    market_regime_rows: list[dict]
+    breath_rows: list[dict]
+    selection_rows: list[dict]
+    signal_rows: list[dict] = field(default_factory=list)
+    interval_code: str = "15m"
+
+    def _build_ctx(
+        self, ts: datetime
+    ) -> tuple[dict[str, str], list[str], Optional[datetime], bool]:
+        """Return (ctx_dict, sources_found, latest_fresh_ts, any_row_before_ts_found)."""
         ctx: dict[str, str] = {
             "market_regime": "UNKNOWN",
             "symbol_regime": "UNKNOWN",
@@ -784,44 +964,170 @@ class ContextTimeline:
             "breath_alignment": "UNKNOWN",
             "context_quality_tier": "UNKNOWN",
         }
+        max_staleness = _INTERVAL_MAX_STALENESS_MINUTES.get(
+            self.interval_code, _DEFAULT_MAX_STALENESS_MINUTES
+        )
+        sources_found: list[str] = []
+        latest_ts: Optional[datetime] = None
+        any_row_before_ts = False  # True if any row <= ts exists (even if stale)
 
-        mr_row = _latest_before(self.market_regime_rows, ts, "asof_ts_utc")
-        if mr_row:
-            val = str(mr_row.get("market_regime") or mr_row.get("regime") or "").strip()
-            if val:
-                ctx["market_regime"] = val
+        def _age_ok(row_ts: datetime) -> bool:
+            return (ts - row_ts).total_seconds() / 60 <= max_staleness
 
-        br_row = _latest_before(self.breath_rows, ts, "observed_at_utc")
-        if br_row:
-            for src_key, dst_key in [
-                ("market_breath_phase", "breath_phase"),
-                ("breath_phase", "breath_phase"),
-                ("breath_alignment", "breath_alignment"),
-                ("context_quality_tier", "context_quality_tier"),
-                ("symbol_regime", "symbol_regime"),
-            ]:
-                val = str(br_row.get(src_key) or "").strip()
-                if val and val.upper() not in ("", "NONE", "NULL"):
-                    if ctx[dst_key] == "UNKNOWN":
-                        ctx[dst_key] = val
+        def _update_latest(row_ts: datetime) -> None:
+            nonlocal latest_ts
+            if latest_ts is None or row_ts > latest_ts:
+                latest_ts = row_ts
 
+        # 1. signal_engine_state — primary breath + market_regime proxy
+        sig_row = _latest_before(self.signal_rows, ts, "signal_ts_utc")
+        if sig_row:
+            sig_ts = _get_row_ts(sig_row, "signal_ts_utc")
+            if sig_ts is not None:
+                any_row_before_ts = True
+                if _age_ok(sig_ts):
+                    sources_found.append("signal_engine_state")
+                    _update_latest(sig_ts)
+                    phase = str(sig_row.get("phase_signal") or "").strip()
+                    compass = str(sig_row.get("compass_signal") or "").strip()
+                    trend = str(sig_row.get("trend_signal") or "").strip()
+                    if phase and ctx["breath_phase"] == "UNKNOWN":
+                        ctx["breath_phase"] = _normalize_phase_signal(phase)
+                    if compass and ctx["breath_alignment"] == "UNKNOWN":
+                        ctx["breath_alignment"] = _normalize_compass_signal(compass)
+                    if trend and ctx["market_regime"] == "UNKNOWN":
+                        ctx["market_regime"] = _normalize_trend_signal(trend)
+
+        # 2. regime_selector_backtest_observation_v1 — canonical regime (overrides proxy)
+        reg_row = _latest_before(self.market_regime_rows, ts, "asof_ts_utc")
+        if reg_row:
+            reg_ts = _get_row_ts(reg_row, "asof_ts_utc")
+            if reg_ts is not None:
+                any_row_before_ts = True
+                if _age_ok(reg_ts):
+                    sources_found.append("regime_selector_backtest_observation_v1")
+                    _update_latest(reg_ts)
+                    gtr = str(
+                        reg_row.get("global_regime")
+                        or reg_row.get("market_regime")
+                        or reg_row.get("regime") or ""
+                    ).strip()
+                    if gtr:
+                        ctx["market_regime"] = _normalize_global_regime(gtr)
+
+        # 3. selection_state — symbol_regime from regime_label_4h / regime_label_1h
         sel_row = _latest_before(self.selection_rows, ts, "asof_ts_utc")
         if sel_row:
-            for src_key, dst_key in [
-                ("symbol_regime", "symbol_regime"),
-                ("regime", "symbol_regime"),
-                ("context_quality_tier", "context_quality_tier"),
-            ]:
-                val = str(sel_row.get(src_key) or "").strip()
-                if val and val.upper() not in ("", "NONE", "NULL"):
-                    if ctx[dst_key] == "UNKNOWN":
-                        ctx[dst_key] = val
+            sel_ts = _get_row_ts(sel_row, "asof_ts_utc")
+            if sel_ts is not None:
+                any_row_before_ts = True
+                if _age_ok(sel_ts):
+                    sources_found.append("selection_state")
+                    _update_latest(sel_ts)
+                    for k in ("regime_label_4h", "regime_label_1h", "symbol_regime", "regime"):
+                        v = str(sel_row.get(k) or "").strip()
+                        if v and v.upper() not in ("", "NONE", "NULL") and ctx["symbol_regime"] == "UNKNOWN":
+                            ctx["symbol_regime"] = v
 
+        # 4. paper_advice_observation — supplementary A+ context
+        br_row = _latest_before(self.breath_rows, ts, "asof_ts_utc")
+        if br_row:
+            br_ts = _get_row_ts(br_row, "asof_ts_utc")
+            if br_ts is not None:
+                any_row_before_ts = True
+                if _age_ok(br_ts):
+                    if "paper_advice_observation" not in sources_found:
+                        sources_found.append("paper_advice_observation")
+                    _update_latest(br_ts)
+                    for src_key, dst_key in [
+                        ("market_breath_phase", "breath_phase"),
+                        ("breath_phase", "breath_phase"),
+                        ("breath_alignment", "breath_alignment"),
+                        ("context_quality_tier", "context_quality_tier"),
+                        ("symbol_regime", "symbol_regime"),
+                    ]:
+                        v = str(br_row.get(src_key) or "").strip()
+                        if v and v.upper() not in ("", "NONE", "NULL") and ctx[dst_key] == "UNKNOWN":
+                            ctx[dst_key] = v
+                    # A+ strategic bias as breath_phase fallback
+                    if ctx["breath_phase"] == "UNKNOWN":
+                        strat = str(br_row.get("aplus_strategic_bias") or "").strip()
+                        if strat:
+                            ctx["breath_phase"] = strat.upper()
+
+        return ctx, sources_found, latest_ts, any_row_before_ts
+
+    def at(self, ts: datetime) -> dict[str, str]:
+        ctx, _, _, _ = self._build_ctx(ts)
         return ctx
+
+    def at_with_audit(self, ts: datetime) -> tuple[dict[str, str], ContextLookupAudit]:
+        max_staleness = _INTERVAL_MAX_STALENESS_MINUTES.get(
+            self.interval_code, _DEFAULT_MAX_STALENESS_MINUTES
+        )
+        ctx, sources_found, latest_ts, any_row_before_ts = self._build_ctx(ts)
+
+        has_any_rows = bool(
+            self.signal_rows or self.market_regime_rows
+            or self.selection_rows or self.breath_rows
+        )
+
+        if latest_ts is None:
+            if not has_any_rows:
+                lookup_status = CTX_SOURCE_MISSING
+                fallback_reason = "no_rows_in_timeline"
+            elif any_row_before_ts:
+                # Rows exist before ts but all were too stale
+                lookup_status = CTX_CONTEXT_TOO_STALE
+                fallback_reason = "all_rows_exceed_staleness_threshold"
+            else:
+                # Rows exist but none are at or before ts
+                lookup_status = CTX_ASOF_JOIN_MISS
+                fallback_reason = "no_rows_at_or_before_decision_ts"
+            freshness = "UNKNOWN"
+            age_minutes = None
+            gate_applied = False
+        else:
+            age_minutes = round((ts - latest_ts).total_seconds() / 60, 1)
+            if not sources_found:
+                lookup_status = CTX_CONTEXT_TOO_STALE
+                freshness = "STALE"
+                gate_applied = False
+                fallback_reason = f"age_min={age_minutes} threshold={max_staleness}"
+            else:
+                lookup_status = CTX_FOUND
+                if age_minutes <= max_staleness * 0.5:
+                    freshness = "FRESH"
+                else:
+                    freshness = "ACCEPTABLE"
+                gate_applied = True
+                fallback_reason = None
+
+        audit = ContextLookupAudit(
+            context_lookup_status=lookup_status,
+            context_source="+".join(sources_found) if sources_found else "NONE",
+            context_ts_utc=latest_ts,
+            context_age_minutes=age_minutes,
+            max_context_age_minutes=max_staleness,
+            context_freshness_status=freshness,
+            source_refs=(
+                f"signal_rows={len(self.signal_rows)} "
+                f"regime_rows={len(self.market_regime_rows)} "
+                f"selection_rows={len(self.selection_rows)} "
+                f"breath_rows={len(self.breath_rows)}"
+            ),
+            gate_applied=gate_applied,
+            fallback_policy=None if gate_applied else "C1_BASELINE",
+            fallback_reason=fallback_reason,
+        )
+        return ctx, audit
 
 
 def _empty_context_timeline() -> ContextTimeline:
-    return ContextTimeline(market_regime_rows=[], breath_rows=[], selection_rows=[])
+    return ContextTimeline(
+        market_regime_rows=[], breath_rows=[], selection_rows=[],
+        signal_rows=[], interval_code="15m",
+    )
 
 
 @dataclass(frozen=True)
@@ -1284,7 +1590,7 @@ def simulate_continuation_variant(
         t1_touch_candle.open_ts_utc if t1_touch_candle is not None
         else (eligible[-1].open_ts_utc if eligible else prediction_ts)
     )
-    ctx_at_gate = context_timeline.at(gate_ts)
+    ctx_at_gate, ctx_audit = context_timeline.at_with_audit(gate_ts)
     gate = evaluate_continuation_gate(ctx_at_gate, t1_touch_candle, t1_target_price)
 
     # Resolve effective tranches based on variant_type and gate state
@@ -1383,6 +1689,17 @@ def simulate_continuation_variant(
         cgs = gate.gate_state
         cgr = gate.gate_reason
 
+    # gate_applied: True only when context was found and variant type is gated.
+    # BASELINE/STANDARD never applies a gate by design.
+    is_gated_type = variant_type not in (VARIANT_TYPE_BASELINE, VARIANT_TYPE_STANDARD)
+    eff_gate_applied: bool = ctx_audit.gate_applied and is_gated_type
+    if is_gated_type:
+        eff_fallback_policy = ctx_audit.fallback_policy
+        eff_fallback_reason = ctx_audit.fallback_reason
+    else:
+        eff_fallback_policy = "BASELINE_NO_GATE"
+        eff_fallback_reason = f"variant_type={variant_type}"
+
     return VariantResult(
         variant_id=spec.variant_id, label=spec.label,
         active_long_reserve_pct=spec.active_long_reserve_pct,
@@ -1411,6 +1728,15 @@ def simulate_continuation_variant(
         runner_hold_reason=run_hold,
         overshoot_pct_at_t1=gate.overshoot_pct,
         close_vs_target_pct_at_t1=gate.close_vs_target_pct,
+        context_lookup_status=ctx_audit.context_lookup_status,
+        context_source=ctx_audit.context_source,
+        context_ts_utc=ctx_audit.context_ts_utc,
+        context_age_minutes=ctx_audit.context_age_minutes,
+        max_context_age_minutes=ctx_audit.max_context_age_minutes,
+        context_freshness_status=ctx_audit.context_freshness_status,
+        gate_applied=eff_gate_applied,
+        fallback_policy=eff_fallback_policy,
+        fallback_reason=eff_fallback_reason,
     )
 
 
@@ -1569,6 +1895,15 @@ def _variant_to_dict(r: VariantResult) -> dict[str, Any]:
         "runner_hold_reason": r.runner_hold_reason,
         "overshoot_pct_at_t1": ds(r.overshoot_pct_at_t1),
         "close_vs_target_pct_at_t1": ds(r.close_vs_target_pct_at_t1),
+        "context_lookup_status": r.context_lookup_status,
+        "context_source": r.context_source,
+        "context_ts_utc": _ts_str(r.context_ts_utc) if r.context_ts_utc else None,
+        "context_age_minutes": r.context_age_minutes,
+        "max_context_age_minutes": r.max_context_age_minutes,
+        "context_freshness_status": r.context_freshness_status,
+        "gate_applied": r.gate_applied,
+        "fallback_policy": r.fallback_policy,
+        "fallback_reason": r.fallback_reason,
     }
 
 
@@ -1850,6 +2185,144 @@ def write_continuation_outputs(
             })
     written["breath_regime_breakdown"] = brd_path
 
+    # Write context lookup audit outputs
+    audit_written = write_context_lookup_audit_outputs(continuation_results, output_dir)
+    written.update(audit_written)
+
+    return written
+
+
+def write_context_lookup_audit_outputs(
+    continuation_results: list[VariantResult],
+    output_dir: Path,
+) -> dict[str, Path]:
+    """
+    Write three context-lookup audit outputs:
+      continuation_context_lookup_audit_v1.csv   — one row per variant with full audit fields
+      continuation_context_lookup_summary_v1.json — aggregate counts
+      continuation_gate_applied_breakdown_v1.csv  — gate_applied=True rows only
+    """
+    import csv as _csv
+    output_dir.mkdir(parents=True, exist_ok=True)
+    written: dict[str, Path] = {}
+
+    def _ds(v: Any) -> str:
+        if isinstance(v, Decimal):
+            return str(round(v, 4))
+        return str(v) if v is not None else ""
+
+    # continuation_context_lookup_audit_v1.csv
+    audit_fields = [
+        "variant_id", "variant_type", "live_valid",
+        "context_lookup_status", "context_source", "context_ts_utc",
+        "context_age_minutes", "max_context_age_minutes", "context_freshness_status",
+        "gate_applied", "fallback_policy", "fallback_reason",
+        "continuation_gate_state",
+        "breath_phase_at_target", "breath_alignment_at_target",
+        "market_regime_at_target", "symbol_regime_at_target",
+        "final_value_eur", "gross_return_pct",
+    ]
+    audit_path = output_dir / "continuation_context_lookup_audit_v1.csv"
+    with audit_path.open("w", newline="") as fh:
+        writer = _csv.DictWriter(fh, fieldnames=audit_fields, extrasaction="ignore")
+        writer.writeheader()
+        for r in continuation_results:
+            writer.writerow({
+                "variant_id": r.variant_id,
+                "variant_type": r.label,
+                "live_valid": str(r.live_valid),
+                "context_lookup_status": r.context_lookup_status or "",
+                "context_source": r.context_source or "",
+                "context_ts_utc": _ts_str(r.context_ts_utc) if r.context_ts_utc else "",
+                "context_age_minutes": str(r.context_age_minutes) if r.context_age_minutes is not None else "",
+                "max_context_age_minutes": str(r.max_context_age_minutes) if r.max_context_age_minutes is not None else "",
+                "context_freshness_status": r.context_freshness_status or "",
+                "gate_applied": str(r.gate_applied),
+                "fallback_policy": r.fallback_policy or "",
+                "fallback_reason": r.fallback_reason or "",
+                "continuation_gate_state": r.continuation_gate_state or "",
+                "breath_phase_at_target": r.breath_phase_at_target or "UNKNOWN",
+                "breath_alignment_at_target": r.breath_alignment_at_target or "UNKNOWN",
+                "market_regime_at_target": r.market_regime_at_target or "UNKNOWN",
+                "symbol_regime_at_target": r.symbol_regime_at_target or "UNKNOWN",
+                "final_value_eur": _ds(r.final_value_eur),
+                "gross_return_pct": _ds(r.gross_return_pct),
+            })
+    written["context_lookup_audit"] = audit_path
+
+    # continuation_context_lookup_summary_v1.json
+    total = len(continuation_results)
+    found = sum(1 for r in continuation_results if r.context_lookup_status == CTX_FOUND)
+    stale = sum(1 for r in continuation_results if r.context_lookup_status == CTX_CONTEXT_TOO_STALE)
+    missing = sum(1 for r in continuation_results if r.context_lookup_status in (
+        CTX_SOURCE_MISSING, CTX_ASOF_JOIN_MISS, CTX_CONTEXT_TRULY_UNKNOWN
+    ))
+    gate_applied_count = sum(1 for r in continuation_results if r.gate_applied)
+    fallback_count = sum(1 for r in continuation_results if r.fallback_policy == "C1_BASELINE")
+
+    by_gate_state: dict[str, int] = {}
+    for r in continuation_results:
+        k = r.continuation_gate_state or "NONE"
+        by_gate_state[k] = by_gate_state.get(k, 0) + 1
+
+    summary_payload = {
+        "runner": RUNNER_NAME,
+        "version": RUNNER_VERSION,
+        "total_variants": total,
+        "context_found": found,
+        "context_stale": stale,
+        "context_missing": missing,
+        "gate_applied_count": gate_applied_count,
+        "fallback_to_c1_baseline_count": fallback_count,
+        "gate_state_counts": by_gate_state,
+        "note": (
+            "gate_applied=True only when valid fresh context found AND variant is a gated type. "
+            "BASELINE variants set gate_applied=False by design."
+        ),
+    }
+    summary_path = output_dir / "continuation_context_lookup_summary_v1.json"
+    summary_path.write_text(json.dumps(summary_payload, indent=2, default=str))
+    written["context_lookup_summary"] = summary_path
+
+    # continuation_gate_applied_breakdown_v1.csv — gated variants only
+    gate_fields = [
+        "variant_id", "live_valid", "gate_applied",
+        "continuation_gate_state", "continuation_gate_reason",
+        "context_lookup_status", "context_source", "context_ts_utc", "context_age_minutes",
+        "breath_phase_at_target", "breath_alignment_at_target",
+        "market_regime_at_target", "symbol_regime_at_target",
+        "overshoot_pct_at_t1", "close_vs_target_pct_at_t1",
+        "final_value_eur", "gross_return_pct", "improvement_vs_buy_and_hold",
+    ]
+    gated_path = output_dir / "continuation_gate_applied_breakdown_v1.csv"
+    with gated_path.open("w", newline="") as fh:
+        writer = _csv.DictWriter(fh, fieldnames=gate_fields, extrasaction="ignore")
+        writer.writeheader()
+        for r in continuation_results:
+            if not r.gate_applied:
+                continue
+            writer.writerow({
+                "variant_id": r.variant_id,
+                "live_valid": str(r.live_valid),
+                "gate_applied": str(r.gate_applied),
+                "continuation_gate_state": r.continuation_gate_state or "",
+                "continuation_gate_reason": r.continuation_gate_reason or "",
+                "context_lookup_status": r.context_lookup_status or "",
+                "context_source": r.context_source or "",
+                "context_ts_utc": _ts_str(r.context_ts_utc) if r.context_ts_utc else "",
+                "context_age_minutes": str(r.context_age_minutes) if r.context_age_minutes is not None else "",
+                "breath_phase_at_target": r.breath_phase_at_target or "UNKNOWN",
+                "breath_alignment_at_target": r.breath_alignment_at_target or "UNKNOWN",
+                "market_regime_at_target": r.market_regime_at_target or "UNKNOWN",
+                "symbol_regime_at_target": r.symbol_regime_at_target or "UNKNOWN",
+                "overshoot_pct_at_t1": _ds(r.overshoot_pct_at_t1),
+                "close_vs_target_pct_at_t1": _ds(r.close_vs_target_pct_at_t1),
+                "final_value_eur": _ds(r.final_value_eur),
+                "gross_return_pct": _ds(r.gross_return_pct),
+                "improvement_vs_buy_and_hold": _ds(r.improvement_vs_buy_and_hold),
+            })
+    written["gate_applied_breakdown"] = gated_path
+
     return written
 
 
@@ -2085,9 +2558,11 @@ def run(
         if run_continuation:
             context_timeline = fetch_context_timeline_raw(
                 conn, symbol, venue, window_start, window_end,
+                interval_code=interval_code,
             )
             print(
                 f"  context_timeline: "
+                f"signal_rows={len(context_timeline.signal_rows)} "
                 f"regime_rows={len(context_timeline.market_regime_rows)} "
                 f"breath_rows={len(context_timeline.breath_rows)} "
                 f"selection_rows={len(context_timeline.selection_rows)}"

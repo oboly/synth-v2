@@ -7,6 +7,10 @@ or manually constructed rows.
 Coverage:
 - _latest_before: empty, single row, multiple rows, ts exactly on boundary
 - ContextTimeline.at(): all unknown when empty, fields populated when rows present
+- ContextTimeline.at_with_audit(): SOURCE_MISSING / ASOF_JOIN_MISS / FOUND / CONTEXT_TOO_STALE
+- ContextTimeline signal_rows: phase_signal / compass_signal / trend_signal normalization
+- staleness threshold per interval_code
+- gate_applied: True only for gated type with fresh context
 - evaluate_continuation_gate: CONTEXT_UNKNOWN / REGIME_CONFLICT / BREATH_CONFLICT /
   CONTINUATION_SUPPORTED / CONTINUATION_WEAK
 - evaluate_continuation_gate overshoot and close_vs_target fields
@@ -17,7 +21,7 @@ Coverage:
 - C5 PARENT_CONTEXT live_valid=False when parent_tf_status=UNKNOWN
 - run_all_continuation_variants: one result per spec, deterministic
 - NEAR_CONTINUATION_VARIANTS: 5 variants, all construct without error
-- write_continuation_outputs: creates required files
+- write_continuation_outputs: creates required files including 3 new audit files
 - print_continuation_comparison_table: runs without error
 """
 
@@ -38,6 +42,10 @@ from src.account.long_reserve_policy_v1 import (
     TP_SCOPE_CHILD_SHORT_SWING,
 )
 from src.research.run_manual_exact_zone_backtest_v1 import (
+    CTX_ASOF_JOIN_MISS,
+    CTX_CONTEXT_TOO_STALE,
+    CTX_FOUND,
+    CTX_SOURCE_MISSING,
     GATE_BREATH_CONFLICT,
     GATE_CONTEXT_UNKNOWN,
     GATE_CONTINUATION_SUPPORTED,
@@ -56,11 +64,15 @@ from src.research.run_manual_exact_zone_backtest_v1 import (
     VariantSpec,
     _empty_context_timeline,
     _latest_before,
+    _normalize_compass_signal,
+    _normalize_phase_signal,
+    _normalize_trend_signal,
     evaluate_continuation_gate,
     print_continuation_comparison_table,
     run_all_continuation_variants,
     simulate_continuation_variant,
     write_continuation_outputs,
+    write_context_lookup_audit_outputs,
 )
 
 
@@ -139,7 +151,13 @@ def _ctx_row(ts: datetime, **kwargs) -> dict:
 
 
 def _breath_row(ts: datetime, **kwargs) -> dict:
-    return {"observed_at_utc": ts, **kwargs}
+    """Synthetic paper_advice_observation row (uses asof_ts_utc)."""
+    return {"asof_ts_utc": ts, **kwargs}
+
+
+def _signal_row(ts: datetime, **kwargs) -> dict:
+    """Synthetic signal_engine_state row (uses signal_ts_utc)."""
+    return {"signal_ts_utc": ts, **kwargs}
 
 
 # ---------------------------------------------------------------------------
@@ -193,13 +211,26 @@ def test_empty_timeline_returns_all_unknown() -> None:
 
 
 def test_timeline_market_regime_populated() -> None:
+    # global_regime from regime_selector_backtest_observation_v1 (via market_regime_rows)
+    # "BULL" normalizes to "BULLISH" via _normalize_global_regime
     tl = ContextTimeline(
         market_regime_rows=[_ctx_row(_ts(10), market_regime="BULL")],
         breath_rows=[],
         selection_rows=[],
     )
     ctx = tl.at(_ts(30))
-    assert ctx["market_regime"] == "BULL"
+    assert ctx["market_regime"] == "BULLISH"
+
+
+def test_timeline_market_regime_raw_global_regime_key() -> None:
+    # global_regime key (canonical column in regime_selector_backtest_observation_v1)
+    tl = ContextTimeline(
+        market_regime_rows=[_ctx_row(_ts(10), global_regime="GLOBAL_NEUTRAL")],
+        breath_rows=[],
+        selection_rows=[],
+    )
+    ctx = tl.at(_ts(30))
+    assert ctx["market_regime"] == "NEUTRAL"
 
 
 def test_timeline_breath_phase_from_paper_advice() -> None:
@@ -213,6 +244,39 @@ def test_timeline_breath_phase_from_paper_advice() -> None:
     assert ctx["breath_alignment"] == "POSITIVE"
 
 
+def test_timeline_breath_phase_from_signal_rows() -> None:
+    # signal_engine_state is the primary breath source
+    tl = ContextTimeline(
+        market_regime_rows=[],
+        breath_rows=[],
+        selection_rows=[],
+        signal_rows=[_signal_row(
+            _ts(10),
+            phase_signal="PHASE_EXPANSION_COHERENT",
+            compass_signal="COMPASS_EXPANSION_SUPPORT",
+            trend_signal="TREND_UP_STRONG",
+        )],
+    )
+    ctx = tl.at(_ts(30))
+    assert ctx["breath_phase"] == "EXPANSION"
+    assert ctx["breath_alignment"] == "SUPPORTIVE"
+    assert ctx["market_regime"] == "TRENDING_UP"
+
+
+def test_timeline_signal_rows_take_priority_over_breath_rows() -> None:
+    tl = ContextTimeline(
+        market_regime_rows=[],
+        breath_rows=[_breath_row(_ts(5), breath_phase="EXHAUSTION")],
+        selection_rows=[],
+        signal_rows=[_signal_row(_ts(10), phase_signal="PHASE_EXPANSION_COHERENT",
+                                 compass_signal="COMPASS_EXPANSION_SUPPORT",
+                                 trend_signal="TREND_UP_STRONG")],
+    )
+    ctx = tl.at(_ts(30))
+    # signal_rows processed first — sets breath_phase=EXPANSION; breath_rows can't override
+    assert ctx["breath_phase"] == "EXPANSION"
+
+
 def test_timeline_selection_state_fills_symbol_regime() -> None:
     tl = ContextTimeline(
         market_regime_rows=[],
@@ -223,14 +287,26 @@ def test_timeline_selection_state_fills_symbol_regime() -> None:
     assert ctx["symbol_regime"] == "UPTREND"
 
 
-def test_timeline_paper_advice_takes_priority_over_selection() -> None:
+def test_timeline_selection_state_regime_label_4h() -> None:
+    # selection_state uses regime_label_4h in real DB rows
+    tl = ContextTimeline(
+        market_regime_rows=[],
+        breath_rows=[],
+        selection_rows=[_ctx_row(_ts(10), regime_label_4h="RANGE")],
+    )
+    ctx = tl.at(_ts(30))
+    assert ctx["symbol_regime"] == "RANGE"
+
+
+def test_timeline_selection_takes_priority_over_breath_rows_for_symbol_regime() -> None:
+    # selection_rows processed before breath_rows — selection wins for symbol_regime
     tl = ContextTimeline(
         market_regime_rows=[],
         breath_rows=[_breath_row(_ts(15), symbol_regime="BULLISH")],
-        selection_rows=[_ctx_row(_ts(10), symbol_regime="BEAR")],
+        selection_rows=[_ctx_row(_ts(10), regime_label_4h="RANGE")],
     )
     ctx = tl.at(_ts(30))
-    assert ctx["symbol_regime"] == "BULLISH"
+    assert ctx["symbol_regime"] == "RANGE"
 
 
 # ---------------------------------------------------------------------------
@@ -601,6 +677,10 @@ def test_write_continuation_outputs_creates_required_files() -> None:
         assert "continuation_rows" in written
         assert "continuation_gate_breakdown" in written
         assert "breath_regime_breakdown" in written
+        # New audit outputs
+        assert "context_lookup_audit" in written
+        assert "context_lookup_summary" in written
+        assert "gate_applied_breakdown" in written
         for key, path in written.items():
             assert path.exists(), f"Missing: {key}"
 
@@ -699,3 +779,246 @@ def test_gate_result_preserves_all_context_fields() -> None:
     assert gate.breath_phase == "EXPANSION"
     assert gate.breath_alignment == "POSITIVE"
     assert gate.context_quality_tier == "A"
+
+
+# ---------------------------------------------------------------------------
+# Normalization helpers
+# ---------------------------------------------------------------------------
+
+def test_normalize_phase_expansion() -> None:
+    assert _normalize_phase_signal("PHASE_EXPANSION_COHERENT") == "EXPANSION"
+
+
+def test_normalize_phase_contraction() -> None:
+    assert _normalize_phase_signal("PHASE_CONTRACTION_WEAK") == "CONTRACTION"
+
+
+def test_normalize_compass_support() -> None:
+    assert _normalize_compass_signal("COMPASS_EXPANSION_SUPPORT") == "SUPPORTIVE"
+
+
+def test_normalize_compass_weak() -> None:
+    assert _normalize_compass_signal("COMPASS_ALIGNMENT_WEAK") == "WEAK"
+
+
+def test_normalize_trend_up() -> None:
+    assert _normalize_trend_signal("TREND_UP_STRONG") == "TRENDING_UP"
+
+
+def test_normalize_trend_down() -> None:
+    assert _normalize_trend_signal("TREND_DOWN_STRONG") == "TRENDING_DOWN"
+
+
+# ---------------------------------------------------------------------------
+# ContextTimeline.at_with_audit()
+# ---------------------------------------------------------------------------
+
+def test_at_with_audit_source_missing_when_no_rows() -> None:
+    tl = _empty_context_timeline()
+    ctx, audit = tl.at_with_audit(_ts(30))
+    assert audit.context_lookup_status == CTX_SOURCE_MISSING
+    assert audit.gate_applied is False
+    assert audit.context_ts_utc is None
+    assert audit.fallback_policy == "C1_BASELINE"
+
+
+def test_at_with_audit_asof_join_miss_when_all_rows_future() -> None:
+    # All rows are AFTER the query timestamp — _latest_before returns None
+    tl = ContextTimeline(
+        market_regime_rows=[_ctx_row(_ts(60), global_regime="GLOBAL_NEUTRAL")],
+        breath_rows=[],
+        selection_rows=[],
+        signal_rows=[],
+    )
+    ctx, audit = tl.at_with_audit(_ts(30))
+    assert audit.context_lookup_status == CTX_ASOF_JOIN_MISS
+    assert audit.gate_applied is False
+
+
+def test_at_with_audit_found_when_fresh_signal_row() -> None:
+    tl = ContextTimeline(
+        market_regime_rows=[],
+        breath_rows=[],
+        selection_rows=[],
+        signal_rows=[_signal_row(_ts(10), phase_signal="PHASE_EXPANSION_COHERENT",
+                                 compass_signal="COMPASS_EXPANSION_SUPPORT",
+                                 trend_signal="TREND_UP_STRONG")],
+        interval_code="15m",
+    )
+    ctx, audit = tl.at_with_audit(_ts(30))
+    assert audit.context_lookup_status == CTX_FOUND
+    assert audit.gate_applied is True
+    assert "signal_engine_state" in audit.context_source
+    assert audit.context_age_minutes is not None
+    assert audit.context_age_minutes <= 480.0
+
+
+def test_at_with_audit_stale_when_age_exceeds_threshold() -> None:
+    # Row at _ts(0) but queried at _ts(0) + 600 min (10h) — beyond 480 min threshold
+    query_ts = PREDICTION_TS + timedelta(minutes=600)
+    tl = ContextTimeline(
+        market_regime_rows=[],
+        breath_rows=[],
+        selection_rows=[],
+        signal_rows=[_signal_row(PREDICTION_TS, phase_signal="PHASE_EXPANSION_COHERENT",
+                                 compass_signal="COMPASS_EXPANSION_SUPPORT",
+                                 trend_signal="TREND_UP_STRONG")],
+        interval_code="15m",
+    )
+    ctx, audit = tl.at_with_audit(query_ts)
+    assert audit.context_lookup_status == CTX_CONTEXT_TOO_STALE
+    assert audit.gate_applied is False
+    assert audit.fallback_policy == "C1_BASELINE"
+
+
+def test_at_with_audit_freshness_fresh_under_half_threshold() -> None:
+    # Row age = 100 min < 240 min (half of 480) → FRESH
+    tl = ContextTimeline(
+        market_regime_rows=[],
+        breath_rows=[],
+        selection_rows=[],
+        signal_rows=[_signal_row(_ts(0), phase_signal="PHASE_EXPANSION_COHERENT",
+                                 compass_signal="COMPASS_EXPANSION_SUPPORT",
+                                 trend_signal="TREND_UP_STRONG")],
+        interval_code="15m",
+    )
+    ctx, audit = tl.at_with_audit(_ts(100))
+    assert audit.context_freshness_status == "FRESH"
+
+
+def test_at_with_audit_freshness_acceptable_over_half_threshold() -> None:
+    # Row age = 300 min > 240 (half of 480) but < 480 → ACCEPTABLE
+    tl = ContextTimeline(
+        market_regime_rows=[],
+        breath_rows=[],
+        selection_rows=[],
+        signal_rows=[_signal_row(_ts(0), phase_signal="PHASE_EXPANSION_COHERENT",
+                                 compass_signal="COMPASS_EXPANSION_SUPPORT",
+                                 trend_signal="TREND_UP_STRONG")],
+        interval_code="15m",
+    )
+    ctx, audit = tl.at_with_audit(_ts(300))
+    assert audit.context_freshness_status == "ACCEPTABLE"
+
+
+# ---------------------------------------------------------------------------
+# gate_applied semantics
+# ---------------------------------------------------------------------------
+
+def test_gate_applied_false_for_baseline_variant_even_with_context() -> None:
+    candles = _baseline_candles()
+    spec = _spec(variant_type=VARIANT_TYPE_BASELINE)
+    tl = ContextTimeline(
+        market_regime_rows=[],
+        breath_rows=[],
+        selection_rows=[],
+        signal_rows=[_signal_row(_ts(10), phase_signal="PHASE_EXPANSION_COHERENT",
+                                 compass_signal="COMPASS_EXPANSION_SUPPORT",
+                                 trend_signal="TREND_UP_STRONG")],
+        interval_code="15m",
+    )
+    r = simulate_continuation_variant(candles, PREDICTION_TS, BUY, CAPITAL, spec, tl)
+    assert r.gate_applied is False
+    assert r.fallback_policy == "BASELINE_NO_GATE"
+
+
+def test_gate_applied_true_for_gated_type_with_fresh_context() -> None:
+    candles = _baseline_candles()
+    spec = _spec(variant_type=VARIANT_TYPE_BREATH_HOLD)
+    tl = ContextTimeline(
+        market_regime_rows=[],
+        breath_rows=[],
+        selection_rows=[],
+        signal_rows=[_signal_row(_ts(10), phase_signal="PHASE_EXPANSION_COHERENT",
+                                 compass_signal="COMPASS_EXPANSION_SUPPORT",
+                                 trend_signal="TREND_UP_STRONG")],
+        interval_code="15m",
+    )
+    r = simulate_continuation_variant(candles, PREDICTION_TS, BUY, CAPITAL, spec, tl)
+    assert r.gate_applied is True
+    assert r.context_lookup_status == CTX_FOUND
+
+
+def test_gate_applied_false_for_gated_type_with_missing_context() -> None:
+    candles = _baseline_candles()
+    spec = _spec(variant_type=VARIANT_TYPE_BREATH_HOLD)
+    r = simulate_continuation_variant(candles, PREDICTION_TS, BUY, CAPITAL, spec,
+                                      _empty_context_timeline())
+    assert r.gate_applied is False
+    assert r.context_lookup_status == CTX_SOURCE_MISSING
+    assert r.fallback_policy == "C1_BASELINE"
+
+
+def test_live_valid_true_does_not_imply_gate_applied_true() -> None:
+    # C1 BASELINE: live_valid=True but gate_applied=False
+    candles = _baseline_candles()
+    spec = _spec(variant_type=VARIANT_TYPE_BASELINE)
+    r = simulate_continuation_variant(candles, PREDICTION_TS, BUY, CAPITAL, spec,
+                                      _empty_context_timeline())
+    assert r.live_valid is True
+    assert r.gate_applied is False
+
+
+# ---------------------------------------------------------------------------
+# write_context_lookup_audit_outputs
+# ---------------------------------------------------------------------------
+
+def test_write_context_lookup_audit_outputs_creates_all_files() -> None:
+    results = _make_continuation_results()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        written = write_context_lookup_audit_outputs(results, Path(tmpdir))
+        assert "context_lookup_audit" in written
+        assert "context_lookup_summary" in written
+        assert "gate_applied_breakdown" in written
+        for key, path in written.items():
+            assert path.exists(), f"Missing: {key}"
+
+
+def test_context_lookup_summary_json_has_required_keys() -> None:
+    results = _make_continuation_results()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        written = write_context_lookup_audit_outputs(results, Path(tmpdir))
+        data = json.loads(written["context_lookup_summary"].read_text())
+    assert "total_variants" in data
+    assert "context_found" in data
+    assert "gate_applied_count" in data
+    assert "gate_state_counts" in data
+    assert data["total_variants"] == 5
+
+
+def test_context_lookup_audit_csv_has_five_rows() -> None:
+    results = _make_continuation_results()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        written = write_context_lookup_audit_outputs(results, Path(tmpdir))
+        with written["context_lookup_audit"].open() as fh:
+            rows = list(csv.DictReader(fh))
+    assert len(rows) == 5
+    for row in rows:
+        assert "variant_id" in row
+        assert "context_lookup_status" in row
+        assert "gate_applied" in row
+
+
+def test_gate_applied_breakdown_csv_empty_when_no_gate_applied() -> None:
+    # With empty context timeline, no variant has gate_applied=True
+    results = _make_continuation_results()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        written = write_context_lookup_audit_outputs(results, Path(tmpdir))
+        with written["gate_applied_breakdown"].open() as fh:
+            rows = list(csv.DictReader(fh))
+    # No gated variants have gate_applied=True with empty context
+    assert len(rows) == 0
+
+
+def test_variant_result_has_all_audit_fields() -> None:
+    candles = _baseline_candles()
+    spec = _spec(variant_type=VARIANT_TYPE_BREATH_HOLD)
+    r = simulate_continuation_variant(candles, PREDICTION_TS, BUY, CAPITAL, spec,
+                                      _empty_context_timeline())
+    assert hasattr(r, "context_lookup_status")
+    assert hasattr(r, "context_source")
+    assert hasattr(r, "context_ts_utc")
+    assert hasattr(r, "context_age_minutes")
+    assert hasattr(r, "gate_applied")
+    assert hasattr(r, "fallback_policy")
+    assert hasattr(r, "fallback_reason")
