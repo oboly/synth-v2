@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import html as html_module
+import os
 from pathlib import Path
 
 from src.reporting.dashboard_style_v1 import (
@@ -9,6 +11,7 @@ from src.reporting.dashboard_style_v1 import (
     copy_synth_favicon_assets,
     synth_favicon_head_html,
 )
+from src.web.website_registration_v1 import is_production_env
 
 
 DEFAULT_OUTPUT_ROOT = Path("/var/www/html/synth")
@@ -18,6 +21,10 @@ LOGIN_ENDPOINT = "/synth/web-auth/login"
 LOGOUT_ENDPOINT = "/synth/web-auth/logout"
 ONBOARDING_ENDPOINT = "/synth/web-auth/onboarding-status"
 RESEND_ENDPOINT = "/synth/web-auth/resend-verification"
+
+TURNSTILE_SCRIPT_URL = "https://challenges.cloudflare.com/turnstile/v0/api.js"
+# Cloudflare's published always-pass test site key (public, non-secret).
+TURNSTILE_TEST_SITE_KEY = "1x00000000000000000000AA"
 
 
 def parse_args() -> argparse.Namespace:
@@ -29,6 +36,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT))
     parser.add_argument("--output", choices=("summary", "none"), default="summary")
+    parser.add_argument(
+        "--turnstile-site-key",
+        default=os.getenv("SYNTH_TURNSTILE_SITE_KEY", ""),
+        help="Cloudflare Turnstile public site key (SYNTH_TURNSTILE_SITE_KEY env). "
+             "Public value — safe to embed in HTML. Never pass the secret key here.",
+    )
     return parser.parse_args()
 
 
@@ -107,7 +120,9 @@ async function synthPostJson(path, payload) {
 """.strip()
 
 
-def render_register_page() -> str:
+def render_register_page(turnstile_site_key: str = "") -> str:
+    # Escape for safe embedding in HTML attribute. Site key is public — no secret risk.
+    safe_site_key = html_module.escape(turnstile_site_key or TURNSTILE_TEST_SITE_KEY)
     body = f"""
         <h2>Register</h2>
         <p class="auth-note">Create a SYNTH website profile. This does not create a trading account and does not collect exchange API credentials.</p>
@@ -115,7 +130,7 @@ def render_register_page() -> str:
           <div class="auth-field"><label>Email address</label><input type="email" name="email" autocomplete="email" required></div>
           <div class="auth-field"><label>Alias / profile code</label><input type="text" name="profile_code" autocomplete="username" required></div>
           <div class="auth-field"><label>Password</label><input type="password" name="password" autocomplete="new-password" required></div>
-          <div class="auth-field"><label>Proof-of-human response</label><textarea name="proof_response" rows="3" required></textarea></div>
+          <div class="cf-turnstile" data-sitekey="{safe_site_key}" data-callback="synthTurnstileSuccess" data-expired-callback="synthTurnstileExpired" data-error-callback="synthTurnstileError"></div>
           <div class="auth-actions">
             <button type="submit">Register</button>
             <a href="/synth/login.html">Already verified? Log in</a>
@@ -126,17 +141,42 @@ def render_register_page() -> str:
     script = (
         _json_fetch_script()
         + f"""
+<script src="{TURNSTILE_SCRIPT_URL}" async defer></script>
 <script>
+var _synthTurnstileToken = "";
+function synthTurnstileSuccess(token) {{ _synthTurnstileToken = token; }}
+function synthTurnstileExpired() {{
+  _synthTurnstileToken = "";
+  var s = document.getElementById("register-status");
+  if (s) {{ s.textContent = "Verification expired. Please complete the challenge again."; }}
+}}
+function synthTurnstileError(code) {{
+  _synthTurnstileToken = "";
+  var s = document.getElementById("register-status");
+  if (s) {{ s.textContent = "Verification error. Please reload and try again."; }}
+}}
 document.getElementById("register-form").addEventListener("submit", async function(event) {{
   event.preventDefault();
   const form = event.currentTarget;
   const status = document.getElementById("register-status");
-  const payload = Object.fromEntries(new FormData(form).entries());
+  if (!_synthTurnstileToken) {{
+    status.textContent = "Please complete the human verification challenge.";
+    return;
+  }}
+  const formData = new FormData(form);
+  const payload = {{
+    email: formData.get("email") || "",
+    profile_code: formData.get("profile_code") || "",
+    password: formData.get("password") || "",
+    proof_response: _synthTurnstileToken,
+  }};
   status.textContent = "Submitting registration...";
   const {{response, data}} = await synthPostJson("{REGISTER_ENDPOINT}", payload);
   if (response.ok && data.ok) {{
     status.textContent = "Registration accepted. Check your email for the verification link.";
   }} else {{
+    _synthTurnstileToken = "";
+    if (typeof turnstile !== "undefined") {{ turnstile.reset(); }}
     status.textContent = "Registration failed: " + ((data.error && data.error.code) || "UNKNOWN_ERROR");
   }}
 }});
@@ -310,10 +350,13 @@ refreshOnboardingStatus();
 
 def main() -> int:
     args = parse_args()
+    env = dict(os.environ)
+    if is_production_env(env) and not args.turnstile_site_key:
+        raise RuntimeError("PRODUCTION_TURNSTILE_SITE_KEY_REQUIRED")
     output_root = Path(args.output_root)
     favicon_outputs = copy_synth_favicon_assets(output_root=output_root)
     pages = {
-        "register.html": render_register_page(),
+        "register.html": render_register_page(turnstile_site_key=args.turnstile_site_key),
         "login.html": render_login_page(),
         "verify-result.html": render_verify_result_page(),
         "onboarding.html": render_onboarding_page(),
