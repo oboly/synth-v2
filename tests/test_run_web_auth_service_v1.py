@@ -7,6 +7,7 @@ from pathlib import Path
 
 from src.web.run_web_auth_service_v1 import (
     MIN_PEPPER_LENGTH,
+    _validate_production_base_url,
     _validate_production_pepper,
     build_service,
     parse_args,
@@ -159,6 +160,207 @@ def test_web_auth_modules_have_no_broker_or_execution_imports() -> None:
             assert "executor" not in module_name
 
 
+def test_production_base_url_required() -> None:
+    try:
+        _validate_production_base_url("")
+    except RuntimeError as exc:
+        assert "PRODUCTION_BASE_URL_REQUIRED" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError for empty base URL")
+
+
+def test_production_base_url_must_be_https() -> None:
+    for bad in ("http://synth.local", "ftp://synth.local", "synth.local"):
+        try:
+            _validate_production_base_url(bad)
+        except RuntimeError as exc:
+            assert "MUST_BE_HTTPS" in str(exc) or "MALFORMED" in str(exc)
+        else:
+            raise AssertionError(f"expected RuntimeError for non-HTTPS URL: {bad!r}")
+
+
+def test_production_base_url_rejects_path() -> None:
+    try:
+        _validate_production_base_url("https://synth.local/some/path")
+    except RuntimeError as exc:
+        assert "PATH_FORBIDDEN" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError for URL with path")
+
+
+def test_production_base_url_rejects_query() -> None:
+    try:
+        _validate_production_base_url("https://synth.local?q=1")
+    except RuntimeError as exc:
+        assert "QUERY_FORBIDDEN" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError for URL with query")
+
+
+def test_production_base_url_rejects_fragment() -> None:
+    try:
+        _validate_production_base_url("https://synth.local#section")
+    except RuntimeError as exc:
+        assert "FRAGMENT_FORBIDDEN" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError for URL with fragment")
+
+
+def test_production_base_url_rejects_userinfo() -> None:
+    try:
+        _validate_production_base_url("https://user:pass@synth.local")
+    except RuntimeError as exc:
+        assert "USERINFO_FORBIDDEN" in str(exc)
+    else:
+        raise AssertionError("expected RuntimeError for URL with userinfo")
+
+
+def test_production_base_url_accepts_valid_https() -> None:
+    result = _validate_production_base_url("https://synth.example.com")
+    assert result == "https://synth.example.com"
+
+
+def test_production_base_url_normalizes_trailing_slash() -> None:
+    result = _validate_production_base_url("https://synth.example.com/")
+    assert result == "https://synth.example.com"
+    assert not result.endswith("/")
+
+
+def test_production_base_url_preserves_port() -> None:
+    result = _validate_production_base_url("https://synth.example.com:8443")
+    assert result == "https://synth.example.com:8443"
+
+
+def test_production_base_url_no_port_is_clean() -> None:
+    result = _validate_production_base_url("https://synth.example.com")
+    assert ":" not in result.split("//", 1)[1]
+
+
+def test_production_service_origin_enforcement() -> None:
+    """Production: correct Origin accepted, missing or foreign rejected."""
+    import io
+    import json
+    import sqlite3
+    from wsgiref.util import setup_testing_defaults
+    from src.web.web_auth_http_v1 import build_wsgi_app
+    from src.web.website_registration_v1 import (
+        MemoryMailer,
+        MockProofOfHumanProvider,
+        SqliteWebsiteRegistrationRepository,
+        WebsiteRegistrationService,
+    )
+
+    conn = sqlite3.connect(":memory:")
+    repo = SqliteWebsiteRegistrationRepository(conn)
+    repo.create_schema()
+    mailer = MemoryMailer(sent_messages=[])
+    service = WebsiteRegistrationService(
+        repository=repo,
+        proof_provider=MockProofOfHumanProvider(),
+        mailer=mailer,
+        base_url="https://synth.local",
+    )
+    app = build_wsgi_app(service=service, allowed_origins={"https://synth.local"})
+
+    def call(origin: str | None) -> int:
+        environ: dict = {}
+        setup_testing_defaults(environ)
+        environ["REQUEST_METHOD"] = "POST"
+        environ["PATH_INFO"] = "/synth/web-auth/register"
+        body = json.dumps({
+            "email": "t@t.com", "profile_code": "test",
+            "password": "ValidPass123!", "proof_response": "test-human-ok",
+        }).encode()
+        environ["CONTENT_LENGTH"] = str(len(body))
+        environ["CONTENT_TYPE"] = "application/json"
+        environ["wsgi.input"] = io.BytesIO(body)
+        if origin is not None:
+            environ["HTTP_ORIGIN"] = origin
+        captured: dict = {}
+        def start_response(status, headers):
+            captured["status"] = status
+        app(environ, start_response)
+        return int(captured["status"].split(" ", 1)[0])
+
+    assert call("https://synth.local") == 200, "Exact origin must be accepted"
+    assert call("https://evil.example") == 403, "Foreign origin must be rejected"
+    assert call(None) == 403, "Missing origin must be rejected"
+
+
+def test_healthz_get_no_origin_check() -> None:
+    """GET /healthz must not require Origin header even in production mode."""
+    import io
+    import sqlite3
+    from wsgiref.util import setup_testing_defaults
+    from src.web.web_auth_http_v1 import build_wsgi_app
+    from src.web.website_registration_v1 import (
+        MemoryMailer,
+        MockProofOfHumanProvider,
+        SqliteWebsiteRegistrationRepository,
+        WebsiteRegistrationService,
+    )
+
+    conn = sqlite3.connect(":memory:")
+    repo = SqliteWebsiteRegistrationRepository(conn)
+    repo.create_schema()
+    service = WebsiteRegistrationService(
+        repository=repo,
+        proof_provider=MockProofOfHumanProvider(),
+        mailer=MemoryMailer(sent_messages=[]),
+        base_url="https://synth.local",
+    )
+    app = build_wsgi_app(service=service, allowed_origins={"https://synth.local"})
+
+    environ: dict = {}
+    setup_testing_defaults(environ)
+    environ["REQUEST_METHOD"] = "GET"
+    environ["PATH_INFO"] = "/synth/web-auth/healthz"
+    environ["wsgi.input"] = io.BytesIO(b"")
+    captured: dict = {}
+    def start_response(status, headers):
+        captured["status"] = status
+    app(environ, start_response)
+    assert int(captured["status"].split(" ", 1)[0]) == 200
+
+
+def test_check_access_get_no_origin_check() -> None:
+    """GET /check-access must not require Origin header (GET, not POST)."""
+    import io
+    import sqlite3
+    from wsgiref.util import setup_testing_defaults
+    from src.web.web_auth_http_v1 import build_wsgi_app
+    from src.web.website_registration_v1 import (
+        MemoryMailer,
+        MockProofOfHumanProvider,
+        SqliteWebsiteRegistrationRepository,
+        WebsiteRegistrationService,
+    )
+
+    conn = sqlite3.connect(":memory:")
+    repo = SqliteWebsiteRegistrationRepository(conn)
+    repo.create_schema()
+    service = WebsiteRegistrationService(
+        repository=repo,
+        proof_provider=MockProofOfHumanProvider(),
+        mailer=MemoryMailer(sent_messages=[]),
+        base_url="https://synth.local",
+    )
+    app = build_wsgi_app(service=service, allowed_origins={"https://synth.local"})
+
+    environ: dict = {}
+    setup_testing_defaults(environ)
+    environ["REQUEST_METHOD"] = "GET"
+    environ["PATH_INFO"] = "/synth/web-auth/check-access"
+    environ["wsgi.input"] = io.BytesIO(b"")
+    captured: dict = {}
+    def start_response(status, headers):
+        captured["status"] = status
+    app(environ, start_response)
+    # No session → 401, but not 403 ORIGIN_NOT_ALLOWED
+    code = int(captured["status"].split(" ", 1)[0])
+    assert code == 401, f"Expected 401 (no session), got {code}"
+
+
 def main() -> None:
     test_production_service_refuses_mock_proof_provider()
     test_dev_service_can_start_with_sqlite_and_memory_mailer()
@@ -170,6 +372,19 @@ def main() -> None:
     test_pepper_value_not_in_runner_source()
     test_public_pages_remain_unchanged_dashboard_routes()
     test_web_auth_modules_have_no_broker_or_execution_imports()
+    test_production_base_url_required()
+    test_production_base_url_must_be_https()
+    test_production_base_url_rejects_path()
+    test_production_base_url_rejects_query()
+    test_production_base_url_rejects_fragment()
+    test_production_base_url_rejects_userinfo()
+    test_production_base_url_accepts_valid_https()
+    test_production_base_url_normalizes_trailing_slash()
+    test_production_base_url_preserves_port()
+    test_production_base_url_no_port_is_clean()
+    test_production_service_origin_enforcement()
+    test_healthz_get_no_origin_check()
+    test_check_access_get_no_origin_check()
     print("ok")
 
 

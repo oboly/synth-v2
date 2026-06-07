@@ -5,6 +5,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 from wsgiref.simple_server import make_server
 
 from src.web.web_auth_http_v1 import build_wsgi_app
@@ -49,6 +50,36 @@ def _build_repository(args: argparse.Namespace):
         repo.create_schema()
         return repo
     return MariaDbWebsiteRegistrationRepository()
+
+
+def _validate_production_base_url(base_url: str) -> str:
+    """
+    Validate and normalize SYNTH_PUBLIC_BASE_URL for production CSRF Origin enforcement.
+    Accepts only HTTPS scheme + hostname + optional port.
+    Rejects path, query, fragment, userinfo, and malformed values.
+    Returns normalized origin (no trailing slash).
+    Never prints the URL value in error messages.
+    """
+    if not base_url:
+        raise RuntimeError("PRODUCTION_BASE_URL_REQUIRED")
+    try:
+        parsed = urlparse(base_url)
+    except Exception:
+        raise RuntimeError("PRODUCTION_BASE_URL_MALFORMED")
+    if parsed.scheme != "https":
+        raise RuntimeError("PRODUCTION_BASE_URL_MUST_BE_HTTPS")
+    if not parsed.hostname:
+        raise RuntimeError("PRODUCTION_BASE_URL_MALFORMED")
+    if parsed.username or parsed.password:
+        raise RuntimeError("PRODUCTION_BASE_URL_USERINFO_FORBIDDEN")
+    if parsed.path and parsed.path != "/":
+        raise RuntimeError("PRODUCTION_BASE_URL_PATH_FORBIDDEN")
+    if parsed.query:
+        raise RuntimeError("PRODUCTION_BASE_URL_QUERY_FORBIDDEN")
+    if parsed.fragment:
+        raise RuntimeError("PRODUCTION_BASE_URL_FRAGMENT_FORBIDDEN")
+    port_part = f":{parsed.port}" if parsed.port else ""
+    return f"https://{parsed.hostname}{port_part}"
 
 
 def _validate_production_pepper(env: dict[str, str]) -> str:
@@ -102,8 +133,14 @@ def build_service(args: argparse.Namespace) -> WebsiteRegistrationService:
 
 def main() -> int:
     args = parse_args()
+    env = dict(os.environ)
     service = build_service(args)
-    app = build_wsgi_app(service=service)
+    allowed_origins: set[str] | None = None
+    if is_production_env(env):
+        raw_base_url = env.get("SYNTH_PUBLIC_BASE_URL", "")
+        normalized_origin = _validate_production_base_url(raw_base_url)
+        allowed_origins = {normalized_origin}
+    app = build_wsgi_app(service=service, allowed_origins=allowed_origins)
     print(
         f"STARTED runner=website_registration_service_v1 host={args.host} port={args.port} database={args.database}",
         flush=True,

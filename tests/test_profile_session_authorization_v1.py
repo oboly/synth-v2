@@ -1000,3 +1000,35 @@ class TestNginxTemplateHardening:
         root = pathlib.Path(__file__).resolve().parents[1]
         migration = (root / "db/migrations/20260607_profile_session_authorization_v1.sql").read_text()
         assert "idle_expires_ts_utc IS NULL" in migration
+
+    def test_transitional_config_uses_internal_uri_not_named_location(self) -> None:
+        """auth_request must use an internal URI location, not a named @ location."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        config = (root / "docs/deployment/nginx_transition_dual_auth_v1.conf").read_text()
+        assert "auth_request /synth/_internal/check-access" in config
+        assert "location = /synth/_internal/check-access" in config
+        assert "internal;" in config
+        assert "auth_basic off;" in config
+
+    def test_systemd_service_has_security_hardening(self) -> None:
+        """Systemd unit must include EnvironmentFile, UMask, NoNewPrivileges, and [Install]."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        svc = (root / "scripts/odroid/systemd/synth-website-registration.service").read_text()
+        assert "EnvironmentFile=" in svc
+        assert "UMask=0077" in svc
+        assert "NoNewPrivileges=true" in svc
+        assert "WantedBy=default.target" in svc
+
+    def test_migration_runner_applies_chain(self) -> None:
+        """Migration runner must reference both migrations in order."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        source = (root / "src/web/run_website_registration_db_migration_v1.py").read_text()
+        assert "20260605_website_registration_foundation_v1.sql" in source
+        assert "20260607_profile_session_authorization_v1.sql" in source
+        # Second migration must follow the first
+        pos1 = source.index("20260605_website_registration_foundation_v1.sql")
+        pos2 = source.index("20260607_profile_session_authorization_v1.sql")
+        assert pos1 < pos2, "Foundation migration must precede authorization migration"

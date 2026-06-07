@@ -6,17 +6,21 @@ from pathlib import Path
 from src.common.db import get_connection
 
 
-DEFAULT_MIGRATION_PATH = Path("db/migrations/20260605_website_registration_foundation_v1.sql")
+# Canonical migration chain — applied in order, idempotent.
+MIGRATION_CHAIN = [
+    Path("db/migrations/20260605_website_registration_foundation_v1.sql"),
+    Path("db/migrations/20260607_profile_session_authorization_v1.sql"),
+]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Apply the SYNTH website registration foundation migration with the repository's "
-            "canonical MariaDB connection settings. No trading_account or credential changes."
+            "Apply the SYNTH website registration migration chain with the repository's "
+            "canonical MariaDB connection settings. No trading_account or credential changes. "
+            "Migrations are applied in order and are idempotent."
         )
     )
-    parser.add_argument("--migration-path", default=str(DEFAULT_MIGRATION_PATH))
     parser.add_argument("--output", choices=("summary", "none"), default="summary")
     return parser.parse_args()
 
@@ -42,25 +46,32 @@ def _split_sql_statements(sql_text: str) -> list[str]:
     return statements
 
 
-def main() -> int:
-    args = parse_args()
-    migration_path = Path(args.migration_path)
+def _apply_migration(conn: object, migration_path: Path) -> int:
     sql_text = migration_path.read_text(encoding="utf-8")
     statements = _split_sql_statements(sql_text)
+    with conn.cursor() as cur:
+        for statement in statements:
+            cur.execute(statement)
+    conn.commit()
+    return len(statements)
+
+
+def main() -> int:
+    args = parse_args()
     conn = get_connection()
+    results: list[tuple[str, int]] = []
     try:
-        with conn.cursor() as cur:
-            for statement in statements:
-                cur.execute(statement)
-        conn.commit()
+        for migration_path in MIGRATION_CHAIN:
+            count = _apply_migration(conn, migration_path)
+            results.append((migration_path.name, count))
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
     if args.output == "summary":
-        print(f"migration_path={migration_path}")
-        print(f"statements_applied={len(statements)}")
+        for name, count in results:
+            print(f"migration={name} statements_applied={count}")
         print("broker_private_calls=0")
         print("broker_writes=0")
         print("order_submission=0")

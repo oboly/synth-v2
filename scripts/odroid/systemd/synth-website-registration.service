@@ -4,7 +4,14 @@ After=network-online.target
 
 [Service]
 Type=simple
+EnvironmentFile=/home/theone/.config/synth/web-auth.env
 WorkingDirectory=/home/theone/projects/synth-v2
 ExecStart=/home/theone/projects/synth-v2/scripts/odroid/run_website_registration_service_once.sh
 Restart=on-failure
 RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
