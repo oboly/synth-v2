@@ -1044,3 +1044,187 @@ class TestNginxTemplateHardening:
         pos1 = source.index("20260605_website_registration_foundation_v1.sql")
         pos2 = source.index("20260607_profile_session_authorization_v1.sql")
         assert pos1 < pos2, "Foundation migration must precede authorization migration"
+
+
+class TestNginxActivationScript:
+    """Tests for activate_nginx_transition_dual_auth_v1.sh and verify_nginx_transition_dual_auth_v1.sh."""
+
+    def _read_script(self, name: str) -> str:
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        return (root / "scripts" / "odroid" / name).read_text()
+
+    def test_activation_script_bash_syntax(self) -> None:
+        """Activation script must pass bash -n syntax check."""
+        import subprocess
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            ["bash", "-n", str(root / "scripts/odroid/activate_nginx_transition_dual_auth_v1.sh")],
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+
+    def test_verify_script_bash_syntax(self) -> None:
+        """Verify script must pass bash -n syntax check."""
+        import subprocess
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            ["bash", "-n", str(root / "scripts/odroid/verify_nginx_transition_dual_auth_v1.sh")],
+            capture_output=True,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+
+    def test_activation_script_host_and_user_guards(self) -> None:
+        """Activation script must check hostname and user before doing anything."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "odroid" in script
+        assert "theone" in script
+        # Guards must precede the config generation
+        guard_pos = max(script.index("odroid"), script.index("theone"))
+        config_pos = script.index("ENDOFCONFIG")
+        assert guard_pos < config_pos, "Guards must appear before config generation"
+
+    def test_activation_script_has_set_euo_pipefail(self) -> None:
+        """Both scripts must be fail-closed with set -euo pipefail."""
+        for name in (
+            "activate_nginx_transition_dual_auth_v1.sh",
+            "verify_nginx_transition_dual_auth_v1.sh",
+        ):
+            script = self._read_script(name)
+            assert "set -euo pipefail" in script, f"{name}: missing set -euo pipefail"
+
+    def test_activation_script_has_rollback(self) -> None:
+        """Activation script must define a rollback function and trap ERR."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "rollback" in script
+        assert "trap rollback ERR" in script
+        assert "BACKUP" in script
+        assert "cp" in script  # backup restoration
+
+    def test_activation_script_has_preflight_health_check(self) -> None:
+        """Activation script must check web-auth health before touching nginx."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        # Health check must precede config generation
+        health_pos = script.index("healthz")
+        config_pos = script.index("ENDOFCONFIG")
+        assert health_pos < config_pos, "Health check must precede config generation"
+
+    def test_nginx_config_has_basic_auth(self) -> None:
+        """Generated nginx config must preserve Basic Auth for all /synth routes."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert 'auth_basic           "Synth cockpit"' in script
+        assert "auth_basic_user_file /etc/nginx/.synth_htpasswd" in script
+
+    def test_nginx_config_has_internal_check_access_location(self) -> None:
+        """Generated config must use internal URI location for auth_request."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "auth_request /synth/_internal/check-access" in script
+        assert "location = /synth/_internal/check-access" in script
+        assert "internal;" in script
+        assert "auth_basic off;" in script
+
+    def test_nginx_config_profile_slug_from_uri_capture(self) -> None:
+        """Profile slug must come from nginx URI regex capture, not client headers."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "synth_profile_slug" in script
+        assert "set $synth_profile_slug $1" in script
+        assert "X-Synth-Requested-Profile $synth_profile_slug" in script
+
+    def test_nginx_config_has_acme_challenge(self) -> None:
+        """Generated config must preserve ACME challenge on port 80."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "/.well-known/acme-challenge/" in script
+        assert "listen 80" in script
+
+    def test_nginx_config_has_tls_and_security_headers(self) -> None:
+        """Generated config must preserve TLS cert paths and security headers."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "gurk11.duckdns.org/fullchain.pem" in script
+        assert "gurk11.duckdns.org/privkey.pem" in script
+        assert "X-Frame-Options" in script
+        assert "X-Content-Type-Options" in script
+        assert "Referrer-Policy" in script
+        assert "Cache-Control" in script
+
+    def test_nginx_config_has_x_real_ip_on_web_auth_proxy(self) -> None:
+        """Web-auth proxy block must set X-Real-IP from $remote_addr."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "X-Real-IP" in script
+        assert "$remote_addr" in script
+
+    def test_nginx_config_denies_direct_check_access(self) -> None:
+        """Direct /synth/web-auth/check-access must be denied."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "location = /synth/web-auth/check-access" in script
+        assert "deny all" in script
+
+    def test_nginx_config_has_root_and_index(self) -> None:
+        """Generated config must preserve root /var/www/html and index index.html."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "root  /var/www/html" in script or "root /var/www/html" in script
+        assert "index index.html" in script
+
+    def test_nginx_config_has_root_redirect(self) -> None:
+        """Generated config must redirect / to /synth/."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "return 302 /synth/" in script
+
+    def test_activation_script_no_secret_in_echo(self) -> None:
+        """BASIC_PASS must never appear in an echo statement."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        for line in script.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "echo" in stripped and "BASIC_PASS" in stripped:
+                raise AssertionError(
+                    f"BASIC_PASS must not be echoed: {stripped!r}"
+                )
+
+    def test_verify_script_no_secret_in_echo(self) -> None:
+        """BASIC_PASS must never appear in an echo statement in verify script."""
+        script = self._read_script("verify_nginx_transition_dual_auth_v1.sh")
+        for line in script.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "echo" in stripped and "BASIC_PASS" in stripped:
+                raise AssertionError(
+                    f"BASIC_PASS must not be echoed: {stripped!r}"
+                )
+
+    def test_verify_script_uses_netrc_not_user_flag(self) -> None:
+        """Credentials must be passed via netrc file, not --user flag (avoids ps exposure)."""
+        script = self._read_script("verify_nginx_transition_dual_auth_v1.sh")
+        assert "--netrc-file" in script
+        assert "chmod 0600" in script
+        # --user flag with password in args would expose in ps
+        # Check that --user is not used with $BASIC_PASS directly
+        for line in script.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "--user" in stripped and "BASIC_PASS" in stripped:
+                raise AssertionError(
+                    f"Credentials must not be passed via --user flag: {stripped!r}"
+                )
+
+    def test_verify_script_deletes_netrc_with_trap(self) -> None:
+        """Netrc file must be deleted via trap to ensure cleanup on failure."""
+        script = self._read_script("verify_nginx_transition_dual_auth_v1.sh")
+        assert "trap" in script
+        assert "NETRC" in script
+
+    def test_activation_script_calls_verify_script(self) -> None:
+        """Activation script must call the verify script for acceptance tests."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "verify_nginx_transition_dual_auth_v1.sh" in script
+
+    def test_activation_script_timestamped_backup(self) -> None:
+        """Activation script must create a timestamped backup of the active site."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "TIMESTAMP" in script or "timestamp" in script.lower()
+        assert "BACKUP" in script
+        assert "ACTIVE_SITE" in script

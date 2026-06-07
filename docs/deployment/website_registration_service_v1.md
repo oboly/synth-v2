@@ -191,19 +191,45 @@ curl -fsS http://127.0.0.1:8786/synth/web-auth/healthz
 
 ## nginx Activation (Transitional Phase)
 
-```bash
-# Test new config
-nginx -t
+Use the canonical fail-closed installer. It is idempotent and rolls back automatically on any error.
 
-# Reload without downtime
-nginx -s reload
+**Activate (always-tests only):**
+
+```bash
+bash scripts/odroid/activate_nginx_transition_dual_auth_v1.sh
 ```
 
-**Rollback** (if application auth fails):
+**Activate with authenticated acceptance tests:**
 
 ```bash
-# Revert nginx to previous config, then:
-sudo nginx -s reload
+bash scripts/odroid/activate_nginx_transition_dual_auth_v1.sh --basic-user theone
+```
+
+The script:
+1. Guards: refuses to run unless `hostname=odroid` and `user=theone`
+2. Pre-flight: checks web-auth health, active site file, enabled symlink, htpasswd, TLS certs
+3. Generates the full nginx config via single-quoted heredoc (no bash variable expansion into nginx)
+4. Creates a timestamped backup: `${ACTIVE_SITE}.backup.${TIMESTAMP}`
+5. Installs candidate, runs `sudo nginx -t`, reloads
+6. On any error: trap restores backup and reloads nginx before exit
+7. Runs `verify_nginx_transition_dual_auth_v1.sh` for acceptance
+
+**Verify only (read-only, safe to run at any time):**
+
+```bash
+# Always tests (no credentials required)
+bash scripts/odroid/verify_nginx_transition_dual_auth_v1.sh
+
+# With authenticated acceptance tests
+bash scripts/odroid/verify_nginx_transition_dual_auth_v1.sh --basic-user theone
+```
+
+**Rollback** (if acceptance fails after activation):
+
+```bash
+# Restore from timestamped backup printed by activation script:
+sudo cp /etc/nginx/sites-available/synth.backup.<TIMESTAMP> /etc/nginx/sites-available/synth
+sudo nginx -t && sudo nginx -s reload
 # No data loss: registration, sessions, profiles preserved.
 ```
 
