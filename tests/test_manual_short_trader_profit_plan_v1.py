@@ -92,6 +92,11 @@ def _native_short_row(
         source_version="0.1",
         source_primary_ref="obs_market_candle:4h",
         source_support_ref="obs_market_candle:1h",
+        current_map_status="CURRENT_ACTIVE_MAP",
+        previous_map_cycle_id="",
+        previous_map_lifecycle_state="",
+        rollover_state="SINGLE_MAP",
+        selection_reason="Single active map selected",
     )
 
 
@@ -292,6 +297,120 @@ def test_load_zone_contexts_keeps_partial_native_gap_truthful_even_with_legacy_r
         assert result.coverage_status_by_symbol["WLD"] == "INSUFFICIENT_1H_HISTORY"
         assert result.display_state_by_symbol["WLD"] == "NO_NATIVE_SHORT_FIB_CONTEXT"
         assert result.fib_ext_by_symbol["WLD"].ext_1_618 == Decimal("0.515600")
+
+
+def test_partial_native_row_with_incomplete_map_does_not_produce_actionable_plan() -> None:
+    """Partial native row (INSUFFICIENT_4H_HISTORY, no ext prices) must fail closed."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "\n".join([
+                "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price",
+                "WLD,0.48,0.30,0.38,0.38,0.33",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        native_dir = Path(tmpdir) / "native"
+        # INSUFFICIENT_4H_HISTORY row: all ext prices are None (no candidate built)
+        insufficient_row = NativeShortContextRow(
+            symbol="WLD",
+            venue="bitvavo",
+            quote_currency="EUR",
+            fib_trading_horizon="SHORT",
+            primary_interval="4h",
+            supporting_interval="1h",
+            context_status="INSUFFICIENT_4H_HISTORY",
+            map_cycle_id="",
+            anchor_start_ts_utc=None,
+            anchor_end_ts_utc=None,
+            anchor_low_price=None,
+            anchor_high_price=None,
+            breakout_gate_price=None,
+            latest_primary_close_ts_utc=None,
+            latest_support_close_ts_utc=None,
+            latest_primary_close_price=None,
+            ext_1_272_price=None,
+            ext_1_618_price=None,
+            ext_2_000_price=None,
+            active_target_levels=(),
+            previous_target_levels=(),
+            reload_r382_price=None,
+            reload_r500_price=None,
+            reload_r618_price=None,
+            reload_r786_price=None,
+            invalidation_price=None,
+            primary_4h_lifecycle_state="UNKNOWN",
+            supporting_1h_state="UNKNOWN",
+            context_freshness_status="UNKNOWN",
+            max_primary_high_since_anchor=None,
+            min_primary_low_since_anchor=None,
+            source_name="native_short_fib_context_v1",
+            source_version="0.1",
+            source_primary_ref="obs_market_candle:4h",
+            source_support_ref="obs_market_candle:1h",
+            current_map_status="NO_VALID_MAP",
+            previous_map_cycle_id="",
+            previous_map_lifecycle_state="",
+            rollover_state="NO_VALID_MAP",
+            selection_reason="",
+        )
+        native_paths = write_context_rows(rows=[insufficient_row], output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("0.48")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+        )
+        assert result.input_status_by_symbol["WLD"] == "INSUFFICIENT_4H_HISTORY"
+        assert result.coverage_status_by_symbol["WLD"] == "INSUFFICIENT_4H_HISTORY"
+        assert result.display_state_by_symbol["WLD"] == "NO_NATIVE_SHORT_FIB_CONTEXT"
+        # No fib_ext: incomplete native must not produce active map or actionable levels
+        assert result.fib_ext_by_symbol.get("WLD") is None
+
+
+def test_partial_native_row_card_is_non_actionable() -> None:
+    """Card built from partial native context must not emit actionable BUY/SELL guidance."""
+    card = _make_card(
+        current_price="0.48",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="INSUFFICIENT_1H_HISTORY",
+        short_context_coverage_status="INSUFFICIENT_1H_HISTORY",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    actionable = {"BUY_DIP", "TAKE_PROFIT_NEAR", "BREAKOUT_WATCH", "REBUY_ZONE_NEAR"}
+    assert card.action_label not in actionable, (
+        f"Partial native card must not emit actionable label; got: {card.action_label}"
+    )
+    assert card.is_relevant is False
+    assert card.primary_state == "NO_NATIVE_SHORT_FIB_CONTEXT"
+
+
+def test_no_native_row_legacy_path_unchanged() -> None:
+    """No native row: legacy 1d path must continue to work as before."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "\n".join([
+                "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price",
+                "WLD,0.48,0.30,0.38,0.38,0.33",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("0.48")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=Path("/tmp/missing-native-short-context.csv"),
+            fib_map_rows_path=fib_rows,
+        )
+        assert result.input_status_by_symbol["WLD"] == "HAS_ZONE_CONTEXT"
+        assert result.coverage_status_by_symbol["WLD"] == "LEGACY_1D_CONTEXT_ONLY"
+        assert result.display_state_by_symbol["WLD"] == "NO_NATIVE_SHORT_FIB_CONTEXT"
+        # Legacy fib_ext IS populated (existing behavior unchanged)
+        assert result.fib_ext_by_symbol.get("WLD") is not None
 
 
 def test_load_zone_contexts_manual_cli_overrides_missing_source() -> None:

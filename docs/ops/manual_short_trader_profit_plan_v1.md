@@ -56,6 +56,28 @@ It does not:
 | `src/market_data/native_short_fib_context_v1.py` | Canonical market-only native SHORT 4h/1h row contract |
 | `src/market_data/run_native_short_fib_context_v1.py` | Deterministic native SHORT bridge builder / coverage runner |
 
+## Map Lifecycle Rollover and MAP_COMPLETED Reporting
+
+When the selected native SHORT candidate has `primary_4h_lifecycle_state=MAP_COMPLETED`:
+
+- No active targets are shown (all sell levels have been historically reached or passed).
+- The scenario shows `MAP_COMPLETED / WAIT_FOR_NEW_MAP` with reasons limited to the
+  completion context — no active-target language is appended.
+- `previous_target_levels` records the historically passed levels for audit.
+- `rollover_state` and `current_map_status` on the native row surface whether a newer
+  active map has already replaced it.
+
+Candidate selection priority (highest to lowest):
+
+1. Any active/developing state — not COMPLETED, not INVALIDATED.
+2. MAP_COMPLETED — historical reference only, shown if no newer valid map exists.
+3. INVALIDATED — never becomes active output context.
+
+Within each tier, the newest `anchor_end_ts_utc` wins.
+
+The reporting layer must never append active-scenario reasons to a MAP_COMPLETED card.
+`_completed_map_override()` replaces (not appends to) the scenario reason tuple.
+
 ## View Toggle
 
 The dashboard has a client-side toggle at the top:

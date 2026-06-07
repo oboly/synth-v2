@@ -83,6 +83,41 @@ Canonical row fields:
 - `source_version`
 - `source_primary_ref`
 - `source_support_ref`
+- `current_map_status`
+- `previous_map_cycle_id`
+- `previous_map_lifecycle_state`
+- `rollover_state`
+- `selection_reason`
+
+## Map Lifecycle Rollover
+
+When multiple swing candidates are detected, the builder selects the best
+candidate by 3-tier priority:
+
+1. Any active/developing state (not COMPLETED, not INVALIDATED) — highest
+2. MAP_COMPLETED — historical fallback only
+3. INVALIDATED — never becomes active context
+
+Within each tier, the most recent `anchor_end_ts_utc` wins.
+
+Rollover state values:
+
+- `SINGLE_MAP` — one valid active swing, no rollover
+- `CASE_A_NEWER_ACTIVE_SELECTED` — newer non-completed map won; older
+  completed map is referenced in `previous_map_cycle_id`
+- `CASE_B_NO_NEW_MAP_WAIT` — no newer valid map; completed map shown as
+  historical reference under `current_map_status=PREVIOUS_COMPLETED_MAP`
+- `CASE_C_INVALIDATED_FALLBACK` — newest swing was invalidated; fell back
+  to an older still-valid active map
+- `INVALIDATED_ONLY` — all swings are invalidated
+- `NO_VALID_MAP` — no swings detected at all
+
+`current_map_status` values:
+
+- `CURRENT_ACTIVE_MAP` — selected candidate is active/non-completed
+- `PREVIOUS_COMPLETED_MAP` — no active map; completed map shown as fallback
+- `INVALIDATED_MAP` — all candidates are invalidated
+- `NO_VALID_MAP` — no candidates
 
 ## Context Status
 

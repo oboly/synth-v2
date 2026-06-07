@@ -668,13 +668,15 @@ def _completed_map_override(
         primary_state = "MAP_RECOMPUTE_NEEDED"
         attention_label = STATE_LABELS[primary_state]
         extra_reason = "All mapped sell targets are historically passed. Refresh the fib map before relying on a new active target."
+    # Replace scenario reasons entirely — scenario classification reasons reference active targets
+    # that no longer apply once all sell levels have been reached or passed.
     return (
         True,
         "MAP_COMPLETED",
         "WAIT_FOR_NEW_MAP",
         primary_state,
         attention_label,
-        tuple(list(reasons) + [extra_reason]),
+        (extra_reason,),
     )
 
 
@@ -1137,6 +1139,7 @@ def build_profit_plan_card(
         "LEGACY_1D_CONTEXT_ONLY",
         "INSUFFICIENT_4H_HISTORY",
         "INSUFFICIENT_1H_HISTORY",
+        "CONTEXT_INVALID_OR_STALE",
     }:
         legacy_reason = (
             "Displayed levels come from the current legacy 1d fib-map bridge or partial fallback context. "

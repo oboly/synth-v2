@@ -102,6 +102,11 @@ CSV_FIELDS = [
     "source_version",
     "source_primary_ref",
     "source_support_ref",
+    "current_map_status",
+    "previous_map_cycle_id",
+    "previous_map_lifecycle_state",
+    "rollover_state",
+    "selection_reason",
 ]
 
 
@@ -151,6 +156,11 @@ class NativeShortContextRow:
     source_version: str
     source_primary_ref: str
     source_support_ref: str
+    current_map_status: str
+    previous_map_cycle_id: str
+    previous_map_lifecycle_state: str
+    rollover_state: str
+    selection_reason: str
 
     def to_csv_row(self) -> dict[str, str]:
         def _fmt_ts(value: datetime | None) -> str:
@@ -198,6 +208,11 @@ class NativeShortContextRow:
             "source_version": self.source_version,
             "source_primary_ref": self.source_primary_ref,
             "source_support_ref": self.source_support_ref,
+            "current_map_status": self.current_map_status,
+            "previous_map_cycle_id": self.previous_map_cycle_id,
+            "previous_map_lifecycle_state": self.previous_map_lifecycle_state,
+            "rollover_state": self.rollover_state,
+            "selection_reason": self.selection_reason,
         }
 
 
@@ -352,6 +367,11 @@ def _base_row(
         source_version=SHORT_CONTEXT_VERSION,
         source_primary_ref="obs_market_candle:4h",
         source_support_ref="obs_market_candle:1h",
+        current_map_status="NO_VALID_MAP",
+        previous_map_cycle_id="",
+        previous_map_lifecycle_state="",
+        rollover_state="NO_VALID_MAP",
+        selection_reason="",
     )
 
 
@@ -465,25 +485,25 @@ def _build_swing_candidate(
 
 
 def _candidate_rank(candidate: SwingCandidateContext) -> tuple[int, datetime]:
-    state_rank = {
-        PRIMARY_LIFECYCLE_COMPLETED: 6,
-        PRIMARY_LIFECYCLE_TARGET_REACHED: 5,
-        PRIMARY_LIFECYCLE_TARGET_ACTIVE: 4,
-        PRIMARY_LIFECYCLE_BREAKOUT_CONFIRMED: 3,
-        PRIMARY_LIFECYCLE_PULLBACK: 2,
-        PRIMARY_LIFECYCLE_BELOW_GATE: 1,
-        PRIMARY_LIFECYCLE_INVALIDATED: 0,
-    }
-    return (
-        state_rank.get(candidate.primary_4h_lifecycle_state, -1),
-        candidate.anchor_end_ts_utc,
-    )
+    # Group priority: active/developing (2) > completed historical (1) > invalidated (0).
+    # Within each group, newer anchor wins. This ensures a newer valid map always beats
+    # an older completed map, fixing the rollover defect.
+    state = candidate.primary_4h_lifecycle_state
+    if state == PRIMARY_LIFECYCLE_INVALIDATED:
+        group = 0
+    elif state == PRIMARY_LIFECYCLE_COMPLETED:
+        group = 1
+    else:
+        group = 2
+    return (group, candidate.anchor_end_ts_utc)
 
 
-def _select_best_candidate(*, symbol: str, primary_candles: list[Candle], swings: list[dict[str, Any]]) -> SwingCandidateContext:
+def _select_best_candidate(
+    *, symbol: str, primary_candles: list[Candle], swings: list[dict[str, Any]]
+) -> tuple[SwingCandidateContext, list[SwingCandidateContext]]:
     candidates = [_build_swing_candidate(symbol=symbol, swing=swing, primary_candles=primary_candles) for swing in swings]
     candidates.sort(key=_candidate_rank, reverse=True)
-    return candidates[0]
+    return candidates[0], candidates
 
 
 def _classify_support_state(
@@ -565,7 +585,55 @@ def build_native_short_context_row(
             freshness_status=FRESHNESS_STALE_PRIMARY,
         )
 
-    candidate = _select_best_candidate(symbol=symbol, primary_candles=primary_candles, swings=swings)
+    candidate, all_candidates = _select_best_candidate(symbol=symbol, primary_candles=primary_candles, swings=swings)
+
+    # Compute rollover metadata from the full candidate set.
+    active_candidates = [
+        c for c in all_candidates
+        if c.primary_4h_lifecycle_state not in {PRIMARY_LIFECYCLE_COMPLETED, PRIMARY_LIFECYCLE_INVALIDATED}
+    ]
+    completed_candidates = sorted(
+        [c for c in all_candidates if c.primary_4h_lifecycle_state == PRIMARY_LIFECYCLE_COMPLETED],
+        key=lambda c: c.anchor_end_ts_utc,
+        reverse=True,
+    )
+    invalidated_candidates = [c for c in all_candidates if c.primary_4h_lifecycle_state == PRIMARY_LIFECYCLE_INVALIDATED]
+    active_sorted = sorted(active_candidates, key=lambda c: c.anchor_end_ts_utc, reverse=True)
+
+    def _make_cycle_id(c: SwingCandidateContext) -> str:
+        return f"{symbol}|SHORT|4h|{c.anchor_start_ts_utc.isoformat()}|{c.anchor_end_ts_utc.isoformat()}"
+
+    if active_sorted:
+        current_map_status = "CURRENT_ACTIVE_MAP"
+        if completed_candidates:
+            rollover_state = "CASE_A_NEWER_ACTIVE_SELECTED"
+            previous_map_cycle_id = _make_cycle_id(completed_candidates[0])
+            previous_map_lifecycle_state = completed_candidates[0].primary_4h_lifecycle_state
+            selection_reason = "Newer active map selected; older completed map is historical reference"
+        elif invalidated_candidates and any(
+            inv.anchor_end_ts_utc > candidate.anchor_end_ts_utc for inv in invalidated_candidates
+        ):
+            rollover_state = "CASE_C_INVALIDATED_FALLBACK"
+            previous_map_cycle_id = ""
+            previous_map_lifecycle_state = ""
+            selection_reason = "Newest swing invalidated; fell back to older still-valid map"
+        else:
+            rollover_state = "SINGLE_MAP"
+            previous_map_cycle_id = ""
+            previous_map_lifecycle_state = ""
+            selection_reason = "Single active map selected"
+    elif completed_candidates:
+        current_map_status = "PREVIOUS_COMPLETED_MAP"
+        rollover_state = "CASE_B_NO_NEW_MAP_WAIT"
+        previous_map_cycle_id = ""
+        previous_map_lifecycle_state = ""
+        selection_reason = "No newer valid map; completed map shown as historical reference"
+    else:
+        current_map_status = "INVALIDATED_MAP"
+        rollover_state = "INVALIDATED_ONLY"
+        previous_map_cycle_id = ""
+        previous_map_lifecycle_state = ""
+        selection_reason = "All swings are invalidated"
 
     support_state = SUPPORT_STATE_UNKNOWN
     status = STATUS_AVAILABLE
@@ -623,6 +691,11 @@ def build_native_short_context_row(
         source_version=SHORT_CONTEXT_VERSION,
         source_primary_ref="obs_market_candle:4h",
         source_support_ref="obs_market_candle:1h",
+        current_map_status=current_map_status,
+        previous_map_cycle_id=previous_map_cycle_id,
+        previous_map_lifecycle_state=previous_map_lifecycle_state,
+        rollover_state=rollover_state,
+        selection_reason=selection_reason,
     )
 
 
@@ -739,5 +812,10 @@ def load_native_short_context_rows(path: Path) -> tuple[dict[str, NativeShortCon
                 source_version=str(raw.get("source_version") or SHORT_CONTEXT_VERSION),
                 source_primary_ref=str(raw.get("source_primary_ref") or "obs_market_candle:4h"),
                 source_support_ref=str(raw.get("source_support_ref") or "obs_market_candle:1h"),
+                current_map_status=str(raw.get("current_map_status") or ""),
+                previous_map_cycle_id=str(raw.get("previous_map_cycle_id") or ""),
+                previous_map_lifecycle_state=str(raw.get("previous_map_lifecycle_state") or ""),
+                rollover_state=str(raw.get("rollover_state") or ""),
+                selection_reason=str(raw.get("selection_reason") or ""),
             )
     return rows, False

@@ -411,6 +411,34 @@ def load_zone_contexts(
                         missed_main_rebuy_by_pct=None,
                     )
                 continue
+            # Partial native row (not AVAILABLE): retain 4h map values as reference-only
+            # and skip legacy path. Legacy must not overwrite partial native context.
+            if (
+                native_row.ext_1_272_price is not None
+                and native_row.ext_1_618_price is not None
+                and native_row.ext_2_000_price is not None
+                and native_row.breakout_gate_price is not None
+            ):
+                _partial_price = prices.get(market) or native_row.latest_primary_close_price
+                if _partial_price is not None:
+                    fib_ext_by_symbol[symbol] = FibExtContext(
+                        local_reaction_price=native_row.anchor_high_price or native_row.breakout_gate_price,
+                        anchor_end_ts_utc=native_row.anchor_end_ts_utc,
+                        ext_1_272=native_row.ext_1_272_price,
+                        ext_1_618=native_row.ext_1_618_price,
+                        ext_2_000=native_row.ext_2_000_price,
+                        breakout_gate=native_row.breakout_gate_price,
+                        price_band=_native_price_band(
+                            current_price=_partial_price,
+                            breakout_gate=native_row.breakout_gate_price,
+                            ext_1_272=native_row.ext_1_272_price,
+                            ext_1_618=native_row.ext_1_618_price,
+                            ext_2_000=native_row.ext_2_000_price,
+                        ),
+                        ext_1_272_touched_and_rejected=False,
+                        retesting_breakout_gate=False,
+                    )
+            continue
 
         if source_missing:
             input_status_by_symbol[symbol] = "ZONE_SOURCE_MISSING"
