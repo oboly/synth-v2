@@ -676,14 +676,20 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
             "Estimated EUR values may be incomplete or stale.</div>"
         )
 
+    def _price_status_label(status: str) -> str:
+        if status == "NOT_NEEDED":
+            return "No conversion needed"
+        return status
+
     balances_html = "".join(
         (
             "<tr>"
             f"<td>{esc(row.asset)}</td>"
             f"<td>{esc(decimal_text(row.available, places='0.000000'))}</td>"
             f"<td>{esc(decimal_text(row.in_order, places='0.000000'))}</td>"
+            f"<td>{esc(decimal_text(row.total, places='0.000000'))}</td>"
             f"<td>{esc(decimal_text(row.estimated_eur_value))}</td>"
-            f"<td>{esc(row.price_status)}</td>"
+            f"<td>{esc(_price_status_label(row.price_status))}</td>"
             f"<td>{esc(decimal_text(row.price_age_min, places='0.1'))}</td>"
             "</tr>"
         )
@@ -691,7 +697,7 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
     )
     if not balances_html:
         balances_html = (
-            "<tr><td colspan='6' class='muted'>No wallet balances found for the latest snapshot.</td></tr>"
+            "<tr><td colspan='7' class='muted'>No wallet balances found for the latest snapshot.</td></tr>"
         )
 
     order_counts_html = "".join(
@@ -848,17 +854,23 @@ def render_wallet_html(payload: WalletDashboardPayload) -> str:
         <thead>
           <tr>
             <th>Asset</th>
-            <th>Available</th>
-            <th>In Order</th>
-            <th>Estimated EUR Value</th>
-            <th>Market Data</th>
-            <th>Price Age (min)</th>
+            <th>Available now</th>
+            <th>Reserved in open orders</th>
+            <th>Total balance</th>
+            <th>Estimated EUR value</th>
+            <th>Market-data status</th>
+            <th>Price age (min)</th>
           </tr>
         </thead>
         <tbody>
           {balances_html}
         </tbody>
       </table>
+      <div class="footnote">
+        <strong>Available now</strong> = immediately spendable &nbsp;&middot;&nbsp;
+        <strong>Reserved in open orders</strong> = locked by active orders &nbsp;&middot;&nbsp;
+        <strong>Total balance</strong> = available + reserved
+      </div>
     </div>
 
     <div class="section">
