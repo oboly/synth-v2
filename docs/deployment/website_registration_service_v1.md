@@ -88,6 +88,44 @@ Used for HMAC-SHA256 IP hashing in login rate limiting. Never logged or returned
 - health endpoint exposes no secrets, token values, or user data
 - no broker or `trading_account` access is used
 
+## systemd ExecStart Fix (status=203/EXEC)
+
+**Root cause:** `scripts/odroid/run_website_registration_service_once.sh` has git mode `100644`
+(intentionally not executable). systemd invokes `ExecStart=` directly via `execve(2)`.
+Without the executable bit set, `execve` returns `EACCES` and systemd reports `status=203/EXEC`.
+
+**Canonical fix:** invoke bash explicitly so the file mode is irrelevant:
+
+```ini
+ExecStart=/usr/bin/bash /home/theone/projects/synth-v2/scripts/odroid/run_website_registration_service_once.sh
+```
+
+This is the canonical unit in `scripts/odroid/systemd/synth-website-registration.service`.
+Do not change the wrapper script's git mode — the explicit bash invocation is sufficient.
+
+**Removing the temporary drop-in** (if one was applied via `systemctl edit`):
+
+```bash
+# Remove override
+sudo rm -rf /etc/systemd/system/synth-website-registration.service.d/   # system unit
+# or for user unit:
+rm -rf ~/.config/systemd/user/synth-website-registration.service.d/
+
+# Deploy canonical unit
+install -m 0644 scripts/odroid/systemd/synth-website-registration.service \
+    ~/.config/systemd/user/
+
+# Reload and restart
+systemctl --user daemon-reload
+systemctl --user restart synth-website-registration.service
+
+# Verify
+systemctl --user status synth-website-registration.service
+curl -fsS http://127.0.0.1:8786/synth/web-auth/healthz
+```
+
+Expected after fix: `active (running)`, healthz returns `{"ok": true}`, port 8786 listening.
+
 ## Migration Chain
 
 Migrations must be applied in order. Both are idempotent (safe to re-run):

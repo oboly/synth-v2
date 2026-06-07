@@ -1021,6 +1021,18 @@ class TestNginxTemplateHardening:
         assert "NoNewPrivileges=true" in svc
         assert "WantedBy=default.target" in svc
 
+    def test_systemd_service_execstart_uses_explicit_bash(self) -> None:
+        """ExecStart must use /usr/bin/bash explicitly — wrapper may be non-executable (git 100644)."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        svc = (root / "scripts/odroid/systemd/synth-website-registration.service").read_text()
+        assert "ExecStart=/usr/bin/bash " in svc, (
+            "ExecStart must invoke /usr/bin/bash explicitly to avoid status=203/EXEC "
+            "when the wrapper script is git mode 100644 (not executable)."
+        )
+        assert svc.count("ExecStart=") == 1, "No duplicate ExecStart directives"
+        assert "run_website_registration_service_once.sh" in svc
+
     def test_migration_runner_applies_chain(self) -> None:
         """Migration runner must reference both migrations in order."""
         import pathlib
