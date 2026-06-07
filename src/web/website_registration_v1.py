@@ -22,11 +22,15 @@ from src.common.db import get_connection
 PROFILE_ONBOARDING_NO_EXCHANGE = "NO_EXCHANGE_ACCOUNT_CONNECTED"
 USER_STATUS_PENDING = "PENDING_EMAIL_VERIFICATION"
 USER_STATUS_ACTIVE = "ACTIVE"
+USER_STATUS_DISABLED = "DISABLED"
 ACCESS_ROLE_OWNER = "OWNER"
 DEFAULT_PROFILE_TIMEZONE = "Europe/Amsterdam"
 DEFAULT_VERIFICATION_TTL = timedelta(hours=24)
 DEFAULT_SESSION_TTL = timedelta(days=14)
+DEFAULT_SESSION_IDLE_TTL = timedelta(days=7)
 DEFAULT_VERIFICATION_RESEND_COOLDOWN = timedelta(minutes=15)
+DEFAULT_LOGIN_RATE_LIMIT_WINDOW = timedelta(minutes=15)
+DEFAULT_LOGIN_RATE_LIMIT_MAX = 10
 PROFILE_CODE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 PRODUCTION_ENV_NAMES = {"prod", "production"}
@@ -62,6 +66,10 @@ def normalize_profile_code(value: str) -> str:
 
 def _hash_token(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def _hash_ip(ip: str) -> str:
+    return hashlib.sha256(str(ip or "").encode("utf-8")).hexdigest()
 
 
 def hash_password(password: str) -> str:
@@ -193,6 +201,7 @@ class WebsiteRegistrationRepository(Protocol):
         session_hash: str,
         created_ts_utc: datetime,
         expires_ts_utc: datetime,
+        idle_expires_ts_utc: datetime | None = None,
     ) -> None:
         ...
 
@@ -200,6 +209,27 @@ class WebsiteRegistrationRepository(Protocol):
         ...
 
     def invalidate_session(self, session_hash: str, invalidated_ts_utc: datetime) -> None:
+        ...
+
+    def invalidate_active_sessions_for_user(
+        self, app_user_id: int, invalidated_ts_utc: datetime
+    ) -> None:
+        ...
+
+    def update_session_last_seen(
+        self,
+        session_hash: str,
+        last_seen_ts: datetime,
+        idle_expires_ts: datetime,
+    ) -> None:
+        ...
+
+    def record_login_attempt(
+        self, ip_hash: str, attempted_ts: datetime, success: bool
+    ) -> None:
+        ...
+
+    def count_recent_login_failures(self, ip_hash: str, since_utc: datetime) -> int:
         ...
 
 
@@ -419,6 +449,16 @@ class OnboardingAccessResult:
     onboarding_state: str | None = None
 
 
+@dataclass(frozen=True)
+class CheckAccessResult:
+    """Result from the nginx auth_request authorization check."""
+    success: bool
+    error_code: str | None = None
+    profile_code: str | None = None
+    # http_status: 200 = allowed, 401 = unauthenticated, 403 = forbidden
+    http_status: int = 200
+
+
 class SqliteWebsiteRegistrationRepository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self.conn = conn
@@ -468,10 +508,19 @@ class SqliteWebsiteRegistrationRepository:
                 session_hash TEXT NOT NULL UNIQUE,
                 created_ts_utc TEXT NOT NULL,
                 expires_ts_utc TEXT NOT NULL,
+                idle_expires_ts_utc TEXT NULL,
                 rotated_from_session_id INTEGER NULL,
                 invalidated_ts_utc TEXT NULL,
                 last_seen_ts_utc TEXT NULL
             );
+            CREATE TABLE IF NOT EXISTS login_attempt (
+                login_attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ip_hash TEXT NOT NULL,
+                attempted_ts_utc TEXT NOT NULL,
+                success INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS ix_login_attempt_ip_ts
+                ON login_attempt (ip_hash, attempted_ts_utc);
             """
         )
         self.conn.commit()
@@ -699,7 +748,9 @@ class SqliteWebsiteRegistrationRepository:
         session_hash: str,
         created_ts_utc: datetime,
         expires_ts_utc: datetime,
+        idle_expires_ts_utc: datetime | None = None,
     ) -> None:
+        idle_text = _utc_text(idle_expires_ts_utc) if idle_expires_ts_utc else None
         self.conn.execute(
             """
             INSERT INTO web_session (
@@ -707,8 +758,9 @@ class SqliteWebsiteRegistrationRepository:
                 app_profile_id,
                 session_hash,
                 created_ts_utc,
-                expires_ts_utc
-            ) VALUES (?, ?, ?, ?, ?)
+                expires_ts_utc,
+                idle_expires_ts_utc
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 app_user_id,
@@ -716,6 +768,7 @@ class SqliteWebsiteRegistrationRepository:
                 session_hash,
                 _utc_text(created_ts_utc),
                 _utc_text(expires_ts_utc),
+                idle_text,
             ),
         )
         self.conn.execute(
@@ -731,14 +784,20 @@ class SqliteWebsiteRegistrationRepository:
                 ws.web_session_id,
                 ws.app_user_id,
                 ws.app_profile_id,
+                ws.session_hash,
                 ws.created_ts_utc,
                 ws.expires_ts_utc,
+                ws.idle_expires_ts_utc,
                 ws.invalidated_ts_utc,
+                ws.last_seen_ts_utc,
                 ap.profile_code,
-                ap.onboarding_state
+                ap.onboarding_state,
+                au.status AS user_status
             FROM web_session ws
             JOIN app_profile ap
               ON ap.app_profile_id = ws.app_profile_id
+            JOIN app_user au
+              ON au.app_user_id = ws.app_user_id
             WHERE ws.session_hash = ?
             """,
             (session_hash,),
@@ -750,6 +809,62 @@ class SqliteWebsiteRegistrationRepository:
             (_utc_text(invalidated_ts_utc), session_hash),
         )
         self.conn.commit()
+
+    def invalidate_active_sessions_for_user(
+        self, app_user_id: int, invalidated_ts_utc: datetime
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE web_session
+            SET invalidated_ts_utc = ?
+            WHERE app_user_id = ?
+              AND invalidated_ts_utc IS NULL
+            """,
+            (_utc_text(invalidated_ts_utc), app_user_id),
+        )
+        self.conn.commit()
+
+    def update_session_last_seen(
+        self,
+        session_hash: str,
+        last_seen_ts: datetime,
+        idle_expires_ts: datetime,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE web_session
+            SET last_seen_ts_utc = ?, idle_expires_ts_utc = ?
+            WHERE session_hash = ?
+              AND invalidated_ts_utc IS NULL
+            """,
+            (_utc_text(last_seen_ts), _utc_text(idle_expires_ts), session_hash),
+        )
+        self.conn.commit()
+
+    def record_login_attempt(
+        self, ip_hash: str, attempted_ts: datetime, success: bool
+    ) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO login_attempt (ip_hash, attempted_ts_utc, success)
+            VALUES (?, ?, ?)
+            """,
+            (ip_hash, _utc_text(attempted_ts), 1 if success else 0),
+        )
+        self.conn.commit()
+
+    def count_recent_login_failures(self, ip_hash: str, since_utc: datetime) -> int:
+        row = self.conn.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM login_attempt
+            WHERE ip_hash = ?
+              AND attempted_ts_utc >= ?
+              AND success = 0
+            """,
+            (ip_hash, _utc_text(since_utc)),
+        ).fetchone()
+        return int(row["n"]) if row else 0
 
 
 class MariaDbWebsiteRegistrationRepository:
@@ -1008,7 +1123,10 @@ class MariaDbWebsiteRegistrationRepository:
         session_hash: str,
         created_ts_utc: datetime,
         expires_ts_utc: datetime,
+        idle_expires_ts_utc: datetime | None = None,
     ) -> None:
+        idle_text = _utc_text(idle_expires_ts_utc) if idle_expires_ts_utc else None
+
         def _run(_conn: Any, cur: Any) -> None:
             cur.execute(
                 """
@@ -1017,8 +1135,9 @@ class MariaDbWebsiteRegistrationRepository:
                     app_profile_id,
                     session_hash,
                     created_ts_utc,
-                    expires_ts_utc
-                ) VALUES (%s, %s, %s, %s, %s)
+                    expires_ts_utc,
+                    idle_expires_ts_utc
+                ) VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (
                     app_user_id,
@@ -1026,6 +1145,7 @@ class MariaDbWebsiteRegistrationRepository:
                     session_hash,
                     _utc_text(created_ts_utc),
                     _utc_text(expires_ts_utc),
+                    idle_text,
                 ),
             )
             cur.execute(
@@ -1042,14 +1162,20 @@ class MariaDbWebsiteRegistrationRepository:
                     ws.web_session_id,
                     ws.app_user_id,
                     ws.app_profile_id,
+                    ws.session_hash,
                     ws.created_ts_utc,
                     ws.expires_ts_utc,
+                    ws.idle_expires_ts_utc,
                     ws.invalidated_ts_utc,
+                    ws.last_seen_ts_utc,
                     ap.profile_code,
-                    ap.onboarding_state
+                    ap.onboarding_state,
+                    au.status AS user_status
                 FROM web_session ws
                 JOIN app_profile ap
                   ON ap.app_profile_id = ws.app_profile_id
+                JOIN app_user au
+                  ON au.app_user_id = ws.app_user_id
                 WHERE ws.session_hash = %s
                 """,
                 (session_hash,),
@@ -1065,6 +1191,102 @@ class MariaDbWebsiteRegistrationRepository:
             )
         self._with_conn(_run)
 
+    def invalidate_active_sessions_for_user(
+        self, app_user_id: int, invalidated_ts_utc: datetime
+    ) -> None:
+        def _run(_conn: Any, cur: Any) -> None:
+            cur.execute(
+                """
+                UPDATE web_session
+                SET invalidated_ts_utc = %s
+                WHERE app_user_id = %s
+                  AND invalidated_ts_utc IS NULL
+                """,
+                (_utc_text(invalidated_ts_utc), app_user_id),
+            )
+        self._with_conn(_run)
+
+    def update_session_last_seen(
+        self,
+        session_hash: str,
+        last_seen_ts: datetime,
+        idle_expires_ts: datetime,
+    ) -> None:
+        def _run(_conn: Any, cur: Any) -> None:
+            cur.execute(
+                """
+                UPDATE web_session
+                SET last_seen_ts_utc = %s, idle_expires_ts_utc = %s
+                WHERE session_hash = %s
+                  AND invalidated_ts_utc IS NULL
+                """,
+                (_utc_text(last_seen_ts), _utc_text(idle_expires_ts), session_hash),
+            )
+        self._with_conn(_run)
+
+    def record_login_attempt(
+        self, ip_hash: str, attempted_ts: datetime, success: bool
+    ) -> None:
+        def _run(_conn: Any, cur: Any) -> None:
+            cur.execute(
+                """
+                INSERT INTO login_attempt (ip_hash, attempted_ts_utc, success)
+                VALUES (%s, %s, %s)
+                """,
+                (ip_hash, _utc_text(attempted_ts), 1 if success else 0),
+            )
+        self._with_conn(_run)
+
+    def count_recent_login_failures(self, ip_hash: str, since_utc: datetime) -> int:
+        def _run(_conn: Any, cur: Any) -> int:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM login_attempt
+                WHERE ip_hash = %s
+                  AND attempted_ts_utc >= %s
+                  AND success = 0
+                """,
+                (ip_hash, _utc_text(since_utc)),
+            )
+            row = cur.fetchone()
+            return int(row["n"]) if row else 0
+        return int(self._with_conn(_run))
+
+
+def _row_get(row: Mapping[str, object], key: str, default: object = None) -> object:
+    """sqlite3.Row does not support .get(); this provides a safe fallback."""
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return default
+
+
+def _validate_session_row(
+    row: Mapping[str, object] | None,
+    now: datetime,
+) -> str | None:
+    """
+    Validate session row fields. Returns error_code string if invalid, None if valid.
+    Checks: exists, not revoked, absolute expiry, idle expiry, user status.
+    """
+    if row is None:
+        return "UNAUTHORIZED"
+    if row["invalidated_ts_utc"] is not None:
+        return "UNAUTHORIZED"
+    expires = _as_utc_datetime(row["expires_ts_utc"])
+    if expires < now.astimezone(UTC):
+        return "SESSION_EXPIRED"
+    idle_raw = _row_get(row, "idle_expires_ts_utc")
+    if idle_raw is not None:
+        idle_expires = _as_utc_datetime(idle_raw)
+        if idle_expires < now.astimezone(UTC):
+            return "SESSION_IDLE_EXPIRED"
+    user_status = str(_row_get(row, "user_status") or USER_STATUS_ACTIVE)
+    if user_status != USER_STATUS_ACTIVE:
+        return "UNAUTHORIZED"
+    return None
+
 
 class WebsiteRegistrationService:
     def __init__(
@@ -1076,7 +1298,10 @@ class WebsiteRegistrationService:
         base_url: str,
         verification_ttl: timedelta = DEFAULT_VERIFICATION_TTL,
         session_ttl: timedelta = DEFAULT_SESSION_TTL,
+        session_idle_ttl: timedelta = DEFAULT_SESSION_IDLE_TTL,
         verification_resend_cooldown: timedelta = DEFAULT_VERIFICATION_RESEND_COOLDOWN,
+        login_rate_limit_window: timedelta = DEFAULT_LOGIN_RATE_LIMIT_WINDOW,
+        login_rate_limit_max: int = DEFAULT_LOGIN_RATE_LIMIT_MAX,
         display_timezone: str = DEFAULT_PROFILE_TIMEZONE,
     ) -> None:
         self.repository = repository
@@ -1085,7 +1310,10 @@ class WebsiteRegistrationService:
         self.base_url = base_url.rstrip("/")
         self.verification_ttl = verification_ttl
         self.session_ttl = session_ttl
+        self.session_idle_ttl = session_idle_ttl
         self.verification_resend_cooldown = verification_resend_cooldown
+        self.login_rate_limit_window = login_rate_limit_window
+        self.login_rate_limit_max = login_rate_limit_max
         self.display_timezone = display_timezone
 
     def register(
@@ -1203,16 +1431,26 @@ class WebsiteRegistrationService:
         *,
         login_value: str,
         password: str,
+        remote_ip: str | None = None,
         now_utc: datetime | None = None,
     ) -> LoginResult:
         now = now_utc or utc_now()
+        ip_hash = _hash_ip(remote_ip or "")
+        rate_limit_since = (now - self.login_rate_limit_window).astimezone(UTC)
+        if self.repository.count_recent_login_failures(ip_hash, rate_limit_since) >= self.login_rate_limit_max:
+            return LoginResult(success=False, error_code="LOGIN_RATE_LIMITED")
         row = self.repository.find_user_for_login(login_value)
         if row is None:
+            self.repository.record_login_attempt(ip_hash, now, success=False)
             return LoginResult(success=False, error_code="INVALID_LOGIN")
         if str(row["status"]) != USER_STATUS_ACTIVE:
+            self.repository.record_login_attempt(ip_hash, now, success=False)
             return LoginResult(success=False, error_code="PROFILE_NOT_VERIFIED")
         if not verify_password(password, str(row["password_hash"])):
+            self.repository.record_login_attempt(ip_hash, now, success=False)
             return LoginResult(success=False, error_code="INVALID_LOGIN")
+        # Session rotation: invalidate all existing sessions for this user
+        self.repository.invalidate_active_sessions_for_user(int(row["app_user_id"]), now)
         raw_session = secrets.token_urlsafe(32)
         self.repository.create_session(
             app_user_id=int(row["app_user_id"]),
@@ -1220,7 +1458,9 @@ class WebsiteRegistrationService:
             session_hash=_hash_token(raw_session),
             created_ts_utc=now,
             expires_ts_utc=now + self.session_ttl,
+            idle_expires_ts_utc=now + self.session_idle_ttl,
         )
+        self.repository.record_login_attempt(ip_hash, now, success=True)
         return LoginResult(
             success=True,
             session_token=raw_session,
@@ -1240,18 +1480,67 @@ class WebsiteRegistrationService:
     ) -> OnboardingAccessResult:
         now = now_utc or utc_now()
         row = self.repository.lookup_active_session(_hash_token(session_token))
-        if row is None:
-            return OnboardingAccessResult(success=False, error_code="UNAUTHORIZED")
-        if row["invalidated_ts_utc"] is not None:
-            return OnboardingAccessResult(success=False, error_code="UNAUTHORIZED")
-        expires = _as_utc_datetime(row["expires_ts_utc"])
-        if expires < now.astimezone(UTC):
-            return OnboardingAccessResult(success=False, error_code="SESSION_EXPIRED")
-        normalized_profile = normalize_profile_code(requested_profile_code)
+        error = _validate_session_row(row, now)
+        if error:
+            status = 401 if error != "FORBIDDEN" else 403
+            return OnboardingAccessResult(success=False, error_code=error)
+        try:
+            normalized_profile = normalize_profile_code(requested_profile_code)
+        except ValueError:
+            return OnboardingAccessResult(success=False, error_code="FORBIDDEN")
         if str(row["profile_code"]) != normalized_profile:
             return OnboardingAccessResult(success=False, error_code="FORBIDDEN")
         return OnboardingAccessResult(
             success=True,
             profile_code=str(row["profile_code"]),
             onboarding_state=str(row["onboarding_state"]),
+        )
+
+    def check_access(
+        self,
+        *,
+        session_token: str,
+        requested_profile_code: str | None = None,
+        now_utc: datetime | None = None,
+    ) -> CheckAccessResult:
+        """
+        Authorization endpoint for nginx auth_request.
+
+        Validates session, user status, idle expiry, and (when provided)
+        profile ownership. Updates last_seen and extends idle expiry on
+        successful access.
+
+        The requested_profile_code MUST come from an nginx-controlled variable
+        (URI regex capture group), never from a client-supplied header.
+        """
+        now = now_utc or utc_now()
+        if not session_token:
+            return CheckAccessResult(success=False, error_code="UNAUTHORIZED", http_status=401)
+        session_hash = _hash_token(session_token)
+        row = self.repository.lookup_active_session(session_hash)
+        error = _validate_session_row(row, now)
+        if error:
+            http_status = 401
+            return CheckAccessResult(success=False, error_code=error, http_status=http_status)
+        # Validate profile ownership when a specific profile is requested
+        if requested_profile_code:
+            try:
+                normalized_profile = normalize_profile_code(requested_profile_code)
+            except ValueError:
+                return CheckAccessResult(success=False, error_code="FORBIDDEN", http_status=403)
+            if str(row["profile_code"]) != normalized_profile:
+                return CheckAccessResult(success=False, error_code="FORBIDDEN", http_status=403)
+        # Update session last_seen and extend idle expiry
+        try:
+            self.repository.update_session_last_seen(
+                session_hash=session_hash,
+                last_seen_ts=now,
+                idle_expires_ts=now + self.session_idle_ttl,
+            )
+        except Exception:
+            pass  # Non-fatal: access is still granted if update fails
+        return CheckAccessResult(
+            success=True,
+            profile_code=str(row["profile_code"]),
+            http_status=200,
         )

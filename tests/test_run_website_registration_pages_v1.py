@@ -24,7 +24,7 @@ def test_register_page_contains_required_fields() -> None:
 def test_login_page_contains_expected_copy() -> None:
     html = render_login_page()
     assert "Login" in html
-    assert "Existing public dashboard pages remain public and unchanged" in html
+    assert "Existing public dashboard URLs remain unchanged" in html
     assert "/synth/web-auth/login" in html
     assert "/synth/web-auth/resend-verification" in html
 

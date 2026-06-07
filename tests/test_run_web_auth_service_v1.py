@@ -52,10 +52,14 @@ def test_dev_service_can_start_with_sqlite_and_memory_mailer() -> None:
 def test_public_pages_remain_unchanged_dashboard_routes() -> None:
     register_html = render_register_page()
     login_html = render_login_page()
-    for html in (register_html, login_html):
-        assert "/synth/accounts/" not in html
-        assert "/synth/profit-plan.html" not in html
-        assert "/synth/open-orders-monitor.html" not in html
+    # Register page has no account references at all.
+    assert "/synth/accounts/" not in register_html
+    assert "/synth/profit-plan.html" not in register_html
+    assert "/synth/open-orders-monitor.html" not in register_html
+    # Login page contains /synth/accounts/ only as a post-login JS redirect target — correct behavior.
+    # It must not link to per-user routes as static nav.
+    assert "/synth/profit-plan.html" not in login_html
+    assert "/synth/open-orders-monitor.html" not in login_html
 
 
 def test_web_auth_modules_have_no_broker_or_execution_imports() -> None:

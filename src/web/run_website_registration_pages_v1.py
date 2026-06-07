@@ -149,7 +149,8 @@ document.getElementById("register-form").addEventListener("submit", async functi
 def render_login_page() -> str:
     body = f"""
         <h2>Login</h2>
-        <p class="auth-note">Use your verified email address or profile code. Existing public dashboard pages remain public and unchanged in this activation batch.</p>
+        <p class="auth-note">Use your verified email address or profile code. Email verification is required before login is permitted.</p>
+        <div id="login-notice" class="auth-status" style="display:none" aria-live="polite"></div>
         <form class="auth-grid" id="login-form">
           <div class="auth-field"><label>Email or profile code</label><input type="text" name="login_value" autocomplete="username" required></div>
           <div class="auth-field"><label>Password</label><input type="password" name="password" autocomplete="current-password" required></div>
@@ -164,6 +165,20 @@ def render_login_page() -> str:
         _json_fetch_script()
         + f"""
 <script>
+(function() {{
+  const notice = document.getElementById("login-notice");
+  const reason = new URLSearchParams(window.location.search).get("reason") || "";
+  if (reason === "session_expired") {{
+    notice.textContent = "Your session has expired. Please log in again.";
+    notice.style.display = "";
+  }} else if (reason === "unauthorized") {{
+    notice.textContent = "Authentication required to access that page.";
+    notice.style.display = "";
+  }} else if (reason === "forbidden") {{
+    notice.textContent = "You are not authorized to access that profile.";
+    notice.style.display = "";
+  }}
+}})();
 const loginForm = document.getElementById("login-form");
 const loginStatus = document.getElementById("login-status");
 loginForm.addEventListener("submit", async function(event) {{
@@ -172,10 +187,15 @@ loginForm.addEventListener("submit", async function(event) {{
   const payload = Object.fromEntries(new FormData(loginForm).entries());
   const {{response, data}} = await synthPostJson("{LOGIN_ENDPOINT}", payload);
   if (response.ok && data.ok) {{
-    loginStatus.textContent = "Login complete. Redirecting to onboarding...";
-    window.location.assign("/synth/onboarding.html?profile=" + encodeURIComponent(data.profile_code || ""));
+    loginStatus.textContent = "Login complete. Redirecting to your profile...";
+    const profile = data.profile_code || "";
+    if (profile) {{
+      window.location.assign("/synth/accounts/" + encodeURIComponent(profile) + "/");
+    }} else {{
+      window.location.assign("/synth/onboarding.html");
+    }}
   }} else {{
-    loginStatus.textContent = "Login failed: " + ((data.error && data.error.code) || "UNKNOWN_ERROR");
+    loginStatus.textContent = "Login failed. Check your email/profile code and password and try again.";
   }}
 }});
 document.getElementById("resend-button").addEventListener("click", async function() {{
@@ -233,6 +253,30 @@ def render_onboarding_page() -> str:
         <div class="auth-actions">
           <button type="button" id="logout-button">Logout</button>
         </div>
+
+        <section class="auth-card" style="margin-top:28px;opacity:.7">
+          <h3 style="color:var(--muted);font-size:13px;text-transform:uppercase;letter-spacing:.08em">
+            API-account koppelen
+            <span style="font-size:10px;border:1px solid var(--line);border-radius:6px;padding:2px 8px;margin-left:8px">Toekomstig</span>
+          </h3>
+          <p class="auth-note">
+            Een exchange API-koppeling wordt later in een aparte stap toegevoegd.
+            Wanneer je een API-sleutel koppelt, worden uitsluitend de volgende rechten ondersteund:
+          </p>
+          <ul class="auth-note" style="padding-left:18px;line-height:2">
+            <li>Accountbalans lezen</li>
+            <li>Posities lezen</li>
+            <li>Openstaande orders lezen</li>
+          </ul>
+          <p class="auth-note" style="color:var(--warn)">
+            <strong>Niet toegestaan:</strong> handelen, orders aanmaken of wijzigen, opnames, overboekingen of adresbeheer.
+          </p>
+          <p class="auth-note">
+            API-sleutels worden later server-side versleuteld opgeslagen.
+            Ze worden nooit opgeslagen in HTML, JSON, URL's, logbestanden of browserstorage.
+            Er zijn op dit moment geen velden voor inloggegevens beschikbaar.
+          </p>
+        </section>
         """
     script = (
         _json_fetch_script()
@@ -244,13 +288,18 @@ async function refreshOnboardingStatus() {{
   const {{response, data}} = await synthPostJson("{ONBOARDING_ENDPOINT}", {{requested_profile_code: requestedProfileCode}});
   if (response.ok && data.ok) {{
     onboardingStatus.textContent = "Onboarding state: " + (data.onboarding_state || "UNKNOWN");
+  }} else if (response.status === 401) {{
+    onboardingStatus.textContent = "Session verlopen of niet ingelogd. Doorsturen naar login...";
+    setTimeout(function() {{ window.location.assign("/synth/login.html?reason=session_expired"); }}, 1500);
+  }} else if (response.status === 403) {{
+    onboardingStatus.textContent = "Geen toegang tot dit profiel.";
   }} else {{
     onboardingStatus.textContent = "Onboarding access failed: " + ((data.error && data.error.code) || "UNKNOWN_ERROR");
   }}
 }}
 document.getElementById("logout-button").addEventListener("click", async function() {{
   await synthPostJson("{LOGOUT_ENDPOINT}", {{}});
-  onboardingStatus.textContent = "Logged out.";
+  window.location.assign("/synth/login.html");
 }});
 refreshOnboardingStatus();
 </script>
