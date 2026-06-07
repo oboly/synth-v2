@@ -21,9 +21,10 @@ from src.web.website_registration_v1 import (
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8786
+MIN_PEPPER_LENGTH = 32
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Run the isolated SYNTH website registration HTTP service. "
@@ -36,7 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sqlite-path", default="/tmp/synth_website_registration_v1.sqlite3")
     parser.add_argument("--base-url", default=os.getenv("SYNTH_PUBLIC_BASE_URL", "https://synth.example"))
     parser.add_argument("--display-timezone", default=os.getenv("SYNTH_DEFAULT_PROFILE_TIMEZONE", DEFAULT_PROFILE_TIMEZONE))
-    return parser.parse_args()
+    return parser.parse_args(args)
 
 
 def _build_repository(args: argparse.Namespace):
@@ -48,6 +49,21 @@ def _build_repository(args: argparse.Namespace):
         repo.create_schema()
         return repo
     return MariaDbWebsiteRegistrationRepository()
+
+
+def _validate_production_pepper(env: dict[str, str]) -> str:
+    """
+    In production, SYNTH_IP_HASH_PEPPER must be set and at least MIN_PEPPER_LENGTH chars.
+    Refuses startup if absent or too short. Never prints the pepper value.
+    """
+    pepper = str(env.get("SYNTH_IP_HASH_PEPPER", "")).strip()
+    if not pepper:
+        raise RuntimeError("PRODUCTION_IP_HASH_PEPPER_REQUIRED")
+    if len(pepper) < MIN_PEPPER_LENGTH:
+        raise RuntimeError(
+            f"PRODUCTION_IP_HASH_PEPPER_TOO_SHORT (minimum {MIN_PEPPER_LENGTH} characters)"
+        )
+    return pepper
 
 
 def _validate_production_config(env: dict[str, str]) -> tuple[object, object]:
@@ -65,12 +81,15 @@ def _validate_production_config(env: dict[str, str]) -> tuple[object, object]:
 def build_service(args: argparse.Namespace) -> WebsiteRegistrationService:
     env = dict(os.environ)
     if is_production_env(env):
+        # Pepper must be validated before proof provider so no production startup
+        # succeeds without it, regardless of proof provider outcome.
+        ip_hash_pepper = _validate_production_pepper(env)
         proof_provider, mailer = _validate_production_config(env)
     else:
         proof_provider = build_proof_of_human_provider_from_env(env)
         mailer = build_mailer_from_env(env)
+        ip_hash_pepper = str(env.get("SYNTH_IP_HASH_PEPPER", "")).strip()
     repository = _build_repository(args)
-    ip_hash_pepper = str(env.get("SYNTH_IP_HASH_PEPPER", "")).strip()
     return WebsiteRegistrationService(
         repository=repository,
         proof_provider=proof_provider,
