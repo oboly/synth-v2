@@ -101,7 +101,8 @@ def test_unverified_profile_cannot_log_in() -> None:
     )
     result = service.login(login_value="hugo@example.com", password="VerySecurePassword123")
     assert result.success is False
-    assert result.error_code == "PROFILE_NOT_VERIFIED"
+    # Returns INVALID_LOGIN (not PROFILE_NOT_VERIFIED) to prevent account enumeration.
+    assert result.error_code == "INVALID_LOGIN"
 
 
 def test_verification_token_is_single_use_and_expires() -> None:

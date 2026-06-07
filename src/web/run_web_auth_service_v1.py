@@ -70,12 +70,14 @@ def build_service(args: argparse.Namespace) -> WebsiteRegistrationService:
         proof_provider = build_proof_of_human_provider_from_env(env)
         mailer = build_mailer_from_env(env)
     repository = _build_repository(args)
+    ip_hash_pepper = str(env.get("SYNTH_IP_HASH_PEPPER", "")).strip()
     return WebsiteRegistrationService(
         repository=repository,
         proof_provider=proof_provider,
         mailer=mailer,
         base_url=args.base_url,
         display_timezone=args.display_timezone,
+        ip_hash_pepper=ip_hash_pepper,
     )
 
 

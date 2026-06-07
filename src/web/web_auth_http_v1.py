@@ -81,9 +81,11 @@ def _get_cookie_value(environ: Mapping[str, Any], name: str) -> str | None:
 
 
 def _remote_ip(environ: Mapping[str, Any]) -> str | None:
-    forwarded = str(environ.get("HTTP_X_FORWARDED_FOR") or "").strip()
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()
+    # Prefer X-Real-IP set by nginx from $remote_addr — overwritten by nginx, not client-spoofable.
+    # X-Forwarded-For leftmost hop is client-controlled and must not be trusted for rate limiting.
+    real_ip = str(environ.get("HTTP_X_REAL_IP") or "").strip()
+    if real_ip:
+        return real_ip
     remote = str(environ.get("REMOTE_ADDR") or "").strip()
     return remote or None
 

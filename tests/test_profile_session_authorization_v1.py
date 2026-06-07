@@ -366,7 +366,8 @@ class TestSessionExpiry:
         )
         result = service.login(login_value="pending", password="Password123!")
         assert not result.success
-        assert result.error_code == "PROFILE_NOT_VERIFIED"
+        # Returns INVALID_LOGIN (not PROFILE_NOT_VERIFIED) to prevent account enumeration.
+        assert result.error_code == "INVALID_LOGIN"
 
     def test_disabled_user_rejected_on_session_lookup(self) -> None:
         service, repo, mailer = _make_service()
@@ -858,3 +859,144 @@ class TestArchitectureBoundaries:
         # idle_expires should have been extended forward
         assert idle_after is not None
         assert idle_after > idle_before  # now+1h > now+30min (ISO string comparison works here)
+
+
+# ---------------------------------------------------------------------------
+# Hardening tests (added post-review)
+# ---------------------------------------------------------------------------
+
+class TestRateLimitHardening:
+    def test_remote_ip_prefers_x_real_ip_over_x_forwarded_for(self) -> None:
+        """X-Real-IP (set by nginx from $remote_addr) must take precedence.
+        X-Forwarded-For leftmost hop is client-controlled."""
+        from src.web.web_auth_http_v1 import _remote_ip
+        environ = {
+            "HTTP_X_REAL_IP": "10.0.0.1",
+            "HTTP_X_FORWARDED_FOR": "1.2.3.4, 10.0.0.1",
+            "REMOTE_ADDR": "127.0.0.1",
+        }
+        assert _remote_ip(environ) == "10.0.0.1"
+
+    def test_remote_ip_falls_back_to_remote_addr_when_no_x_real_ip(self) -> None:
+        from src.web.web_auth_http_v1 import _remote_ip
+        environ = {
+            "HTTP_X_FORWARDED_FOR": "1.2.3.4",
+            "REMOTE_ADDR": "10.0.0.1",
+        }
+        assert _remote_ip(environ) == "10.0.0.1"
+
+    def test_rate_limit_cannot_be_bypassed_by_spoofing_x_forwarded_for(self) -> None:
+        """Login rate limit must not be bypassable by changing X-Forwarded-For."""
+        app, service, repo, mailer = _make_app()
+        _register_and_verify(service, mailer, email="joost@example.com", profile_code="joost")
+        real_ip = "10.0.0.1"
+        for i in range(11):
+            spoofed_xff = f"192.168.1.{i}"
+            _invoke(
+                app,
+                method="POST",
+                path="/synth/web-auth/login",
+                payload={"login_value": "joost", "password": "wrongpassword"},
+                extra_headers={
+                    "HTTP_X_REAL_IP": real_ip,
+                    "HTTP_X_FORWARDED_FOR": spoofed_xff,
+                },
+            )
+        # The 11th attempt from the same real IP must be rate-limited
+        # regardless of spoofed X-Forwarded-For values
+        code, _, data = _invoke(
+            app,
+            method="POST",
+            path="/synth/web-auth/login",
+            payload={"login_value": "joost", "password": "wrongpassword"},
+            extra_headers={
+                "HTTP_X_REAL_IP": real_ip,
+                "HTTP_X_FORWARDED_FOR": "99.99.99.99",
+            },
+        )
+        assert data.get("error", {}).get("code") == "LOGIN_RATE_LIMITED"
+
+    def test_ip_hash_uses_hmac_not_plain_sha256(self) -> None:
+        """_hash_ip with a pepper must produce HMAC-SHA256, not plain SHA-256."""
+        import hmac as hmac_module
+        import hashlib
+        ip = "192.168.1.1"
+        pepper = "test-pepper"
+        expected = hmac_module.new(
+            pepper.encode("utf-8"),
+            ip.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+        from src.web.website_registration_v1 import _hash_ip
+        assert _hash_ip(ip, pepper) == expected
+
+    def test_ip_hash_pepper_isolates_across_deployments(self) -> None:
+        """Different peppers produce different hashes for the same IP."""
+        from src.web.website_registration_v1 import _hash_ip
+        ip = "10.0.0.1"
+        hash1 = _hash_ip(ip, "pepper_a")
+        hash2 = _hash_ip(ip, "pepper_b")
+        assert hash1 != hash2
+
+
+class TestEnumerationHardening:
+    def test_unverified_user_returns_same_error_as_wrong_password(self) -> None:
+        """Login must return INVALID_LOGIN for unverified accounts to prevent enumeration."""
+        service, repo, mailer = _make_service()
+        service.register(
+            email="unverified@example.com",
+            profile_code="unverified",
+            password="Password123!",
+            proof_response="test-human-ok",
+        )
+        result_unverified = service.login(login_value="unverified", password="Password123!")
+        result_wrong_pw = service.login(login_value="unverified", password="wrongpassword")
+        result_nonexistent = service.login(login_value="nobody", password="whatever")
+        assert result_unverified.error_code == "INVALID_LOGIN"
+        assert result_wrong_pw.error_code == "INVALID_LOGIN"
+        assert result_nonexistent.error_code == "INVALID_LOGIN"
+
+    def test_disabled_user_login_returns_same_error_as_wrong_password(self) -> None:
+        """Login must return INVALID_LOGIN for disabled accounts to prevent enumeration."""
+        service, repo, mailer = _make_service()
+        _register_and_verify(service, mailer, email="joost@example.com", profile_code="joost")
+        repo.conn.execute(
+            "UPDATE app_user SET status = ? WHERE email_normalized = ?",
+            (USER_STATUS_DISABLED, "joost@example.com"),
+        )
+        repo.conn.commit()
+        result = service.login(login_value="joost", password="Password123!")
+        assert result.error_code == "INVALID_LOGIN"
+
+
+class TestNginxTemplateHardening:
+    def test_nginx_template_includes_x_real_ip_header(self) -> None:
+        """nginx must set X-Real-IP from $remote_addr for rate limiting."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        template = (root / "docs/deployment/nginx_auth_request_template_v1.conf").read_text()
+        assert "X-Real-IP" in template
+        assert "$remote_addr" in template
+
+    def test_transitional_config_includes_basic_auth_and_app_auth(self) -> None:
+        """Transitional nginx config must have both auth_basic and auth_request."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        config = (root / "docs/deployment/nginx_transition_dual_auth_v1.conf").read_text()
+        assert "auth_basic" in config
+        assert "auth_request" in config
+        assert "X-Real-IP" in config
+
+    def test_migration_includes_retention_comment(self) -> None:
+        """Migration must document login_attempt retention strategy."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        migration = (root / "db/migrations/20260607_profile_session_authorization_v1.sql").read_text()
+        assert "retention" in migration.lower() or "DELETE FROM login_attempt" in migration
+
+    def test_migration_includes_legacy_session_cleanup_option(self) -> None:
+        """Migration must document optional pre-migration session invalidation."""
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parents[1]
+        migration = (root / "db/migrations/20260607_profile_session_authorization_v1.sql").read_text()
+        assert "idle_expires_ts_utc IS NULL" in migration

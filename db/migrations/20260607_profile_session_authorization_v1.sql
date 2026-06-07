@@ -12,6 +12,22 @@
 --
 -- Prerequisite: 20260605_website_registration_foundation_v1.sql must have been applied.
 
+-- Optional: invalidate pre-migration sessions that lack idle expiry (fail-closed).
+-- Pre-migration sessions have idle_expires_ts_utc = NULL and will only expire at
+-- their absolute expires_ts_utc (up to 14 days after session creation).
+-- Run this to force re-login for all pre-migration sessions immediately after migration:
+--
+--   UPDATE web_session
+--   SET invalidated_ts_utc = UTC_TIMESTAMP()
+--   WHERE idle_expires_ts_utc IS NULL
+--     AND invalidated_ts_utc IS NULL;
+
+-- Retention: login_attempt rows accumulate over time.
+-- Recommended periodic cleanup (e.g. weekly cron or manual):
+--
+--   DELETE FROM login_attempt
+--   WHERE attempted_ts_utc < DATE_SUB(UTC_TIMESTAMP(), INTERVAL 30 DAY);
+
 -- Add idle expiry column to web_session.
 -- Existing rows get NULL (treated as: no idle expiry, absolute expiry still applies).
 ALTER TABLE web_session

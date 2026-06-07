@@ -68,8 +68,15 @@ def _hash_token(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
-def _hash_ip(ip: str) -> str:
-    return hashlib.sha256(str(ip or "").encode("utf-8")).hexdigest()
+def _hash_ip(ip: str, pepper: str = "") -> str:
+    # HMAC-SHA256 with deployment pepper prevents cross-system IP hash correlation
+    # and precomputation over the small IPv4 address space.
+    # When pepper="" the result is HMAC-SHA256("", ip) — still safer than plain SHA-256.
+    return hmac.new(
+        pepper.encode("utf-8"),
+        str(ip or "").encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def hash_password(password: str) -> str:
@@ -1303,6 +1310,7 @@ class WebsiteRegistrationService:
         login_rate_limit_window: timedelta = DEFAULT_LOGIN_RATE_LIMIT_WINDOW,
         login_rate_limit_max: int = DEFAULT_LOGIN_RATE_LIMIT_MAX,
         display_timezone: str = DEFAULT_PROFILE_TIMEZONE,
+        ip_hash_pepper: str = "",
     ) -> None:
         self.repository = repository
         self.proof_provider = proof_provider
@@ -1315,6 +1323,7 @@ class WebsiteRegistrationService:
         self.login_rate_limit_window = login_rate_limit_window
         self.login_rate_limit_max = login_rate_limit_max
         self.display_timezone = display_timezone
+        self.ip_hash_pepper = ip_hash_pepper
 
     def register(
         self,
@@ -1435,7 +1444,7 @@ class WebsiteRegistrationService:
         now_utc: datetime | None = None,
     ) -> LoginResult:
         now = now_utc or utc_now()
-        ip_hash = _hash_ip(remote_ip or "")
+        ip_hash = _hash_ip(remote_ip or "", self.ip_hash_pepper)
         rate_limit_since = (now - self.login_rate_limit_window).astimezone(UTC)
         if self.repository.count_recent_login_failures(ip_hash, rate_limit_since) >= self.login_rate_limit_max:
             return LoginResult(success=False, error_code="LOGIN_RATE_LIMITED")
@@ -1444,8 +1453,9 @@ class WebsiteRegistrationService:
             self.repository.record_login_attempt(ip_hash, now, success=False)
             return LoginResult(success=False, error_code="INVALID_LOGIN")
         if str(row["status"]) != USER_STATUS_ACTIVE:
+            # Return same error as wrong password to prevent account enumeration.
             self.repository.record_login_attempt(ip_hash, now, success=False)
-            return LoginResult(success=False, error_code="PROFILE_NOT_VERIFIED")
+            return LoginResult(success=False, error_code="INVALID_LOGIN")
         if not verify_password(password, str(row["password_hash"])):
             self.repository.record_login_attempt(ip_hash, now, success=False)
             return LoginResult(success=False, error_code="INVALID_LOGIN")
