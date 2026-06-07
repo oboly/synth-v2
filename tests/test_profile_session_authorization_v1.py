@@ -670,13 +670,15 @@ class TestLoginNoEnumeration:
 
 class TestNoUnsafeRedirect:
     def test_login_redirect_uses_api_returned_profile_code(self) -> None:
-        """The login redirect uses server-returned profile_code, not a browser form field."""
+        """Redirect must use server-provided landing_path, not a browser-constructed profile URL."""
         from src.web.run_website_registration_pages_v1 import render_login_page
         page = render_login_page()
-        # Redirect must construct URL from data.profile_code (server response)
-        assert "data.profile_code" in page
-        # Must NOT use a form input field directly for the profile in the redirect
-        assert "/accounts/" in page
+        # Redirect must use the server-returned landing_path, not a client-constructed URL
+        assert "data.landing_path" in page
+        # landing_path must be validated as /synth/ internal before navigation
+        assert "startsWith(\"/synth/\")" in page or 'startsWith("/synth/")' in page
+        # Must NOT construct account URL from profile_code alone in the browser
+        assert '"/synth/accounts/" + encodeURIComponent' not in page
         # Should not redirect based on an unrestricted client-supplied parameter
         assert "open redirect" not in page.lower()
 

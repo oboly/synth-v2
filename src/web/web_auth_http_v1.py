@@ -104,6 +104,12 @@ def _result_payload(result: RegisterResult | VerifyResult | ResendResult | Login
         onboarding_state = getattr(result, "onboarding_state", None)
         if onboarding_state:
             payload["onboarding_state"] = onboarding_state
+        landing_path = getattr(result, "landing_path", None)
+        if landing_path:
+            payload["landing_path"] = landing_path
+        account_connection_state = getattr(result, "account_connection_state", None)
+        if account_connection_state:
+            payload["account_connection_state"] = account_connection_state
     else:
         payload["error"] = {"code": str(result.error_code or "UNKNOWN_ERROR")}
     return payload

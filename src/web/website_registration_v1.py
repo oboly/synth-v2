@@ -239,6 +239,13 @@ class WebsiteRegistrationRepository(Protocol):
     def count_recent_login_failures(self, ip_hash: str, since_utc: datetime) -> int:
         ...
 
+    def lookup_primary_account_link(self, app_profile_id: int) -> Mapping[str, object] | None:
+        """
+        Return primary active trading account link row for this profile, or None if unlinked.
+        Used only to compute server-side landing_path at login. No broker calls.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class MockProofOfHumanProvider:
@@ -439,6 +446,10 @@ class ResendResult:
     profile_code: str | None = None
 
 
+ACCOUNT_CONNECTION_NONE = "NO_EXCHANGE_ACCOUNT_CONNECTED"
+ACCOUNT_CONNECTION_READ_ONLY = "READ_ONLY_EXCHANGE_ACCOUNT_CONNECTED"
+
+
 @dataclass(frozen=True)
 class LoginResult:
     success: bool
@@ -446,6 +457,8 @@ class LoginResult:
     session_token: str | None = None
     profile_code: str | None = None
     onboarding_state: str | None = None
+    landing_path: str | None = None
+    account_connection_state: str | None = None
 
 
 @dataclass(frozen=True)
@@ -873,6 +886,11 @@ class SqliteWebsiteRegistrationRepository:
         ).fetchone()
         return int(row["n"]) if row else 0
 
+    def lookup_primary_account_link(self, app_profile_id: int) -> Mapping[str, object] | None:
+        # app_profile_trading_account_link does not exist in the SQLite test schema.
+        # All test profiles are treated as unlinked (landing → onboarding).
+        return None
+
 
 class MariaDbWebsiteRegistrationRepository:
     def __init__(self, connection_factory: Callable[[], Any] | None = None) -> None:
@@ -1260,6 +1278,39 @@ class MariaDbWebsiteRegistrationRepository:
             return int(row["n"]) if row else 0
         return int(self._with_conn(_run))
 
+    def lookup_primary_account_link(self, app_profile_id: int) -> Mapping[str, object] | None:
+        def _run(_conn: Any, cur: Any) -> Mapping[str, object] | None:
+            cur.execute(
+                """
+                SELECT
+                    aptl.link_id,
+                    aptl.trading_account_id,
+                    aptl.link_status,
+                    aptl.is_primary,
+                    ta.account_code,
+                    ta.venue
+                FROM app_profile_trading_account_link aptl
+                JOIN trading_account ta
+                  ON ta.trading_account_id = aptl.trading_account_id
+                WHERE aptl.app_profile_id = %s
+                  AND aptl.link_status = 'ACTIVE'
+                  AND aptl.is_primary = 1
+                ORDER BY aptl.link_id
+                LIMIT 2
+                """,
+                (app_profile_id,),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                return None
+            if len(rows) > 1:
+                raise RuntimeError(
+                    f"AMBIGUOUS_PRIMARY_LINK: app_profile_id={app_profile_id} "
+                    f"has multiple primary active links"
+                )
+            return rows[0]
+        return self._with_conn(_run)
+
 
 def _row_get(row: Mapping[str, object], key: str, default: object = None) -> object:
     """sqlite3.Row does not support .get(); this provides a safe fallback."""
@@ -1471,11 +1522,25 @@ class WebsiteRegistrationService:
             idle_expires_ts_utc=now + self.session_idle_ttl,
         )
         self.repository.record_login_attempt(ip_hash, now, success=True)
+        profile_code = str(row["profile_code"])
+        # Compute server-side landing from explicit DB link. Never infer from profile name.
+        try:
+            link = self.repository.lookup_primary_account_link(int(row["app_profile_id"]))
+        except RuntimeError:
+            link = None  # Ambiguous: route to onboarding
+        if link is not None:
+            landing_path = f"/synth/accounts/{profile_code}/"
+            account_connection_state = ACCOUNT_CONNECTION_READ_ONLY
+        else:
+            landing_path = "/synth/onboarding.html"
+            account_connection_state = ACCOUNT_CONNECTION_NONE
         return LoginResult(
             success=True,
             session_token=raw_session,
-            profile_code=str(row["profile_code"]),
+            profile_code=profile_code,
             onboarding_state=str(row["onboarding_state"]),
+            landing_path=landing_path,
+            account_connection_state=account_connection_state,
         )
 
     def logout(self, *, session_token: str, now_utc: datetime | None = None) -> None:

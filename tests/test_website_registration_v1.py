@@ -267,7 +267,9 @@ def test_no_trading_account_or_credential_is_created() -> None:
     assert "trading_account" not in tables
     assert "credential" not in tables
     source = Path("src/web/website_registration_v1.py").read_text(encoding="utf-8")
-    assert "trading_account" not in source
+    # No direct trading_account creation or credential storage in web auth service
+    assert "INSERT INTO trading_account" not in source
+    assert "CREATE TABLE trading_account" not in source
     assert "BITVAVO_API_KEY" not in source
     assert "BITVAVO_API_SECRET" not in source
 

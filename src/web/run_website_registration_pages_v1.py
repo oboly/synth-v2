@@ -227,10 +227,10 @@ loginForm.addEventListener("submit", async function(event) {{
   const payload = Object.fromEntries(new FormData(loginForm).entries());
   const {{response, data}} = await synthPostJson("{LOGIN_ENDPOINT}", payload);
   if (response.ok && data.ok) {{
-    loginStatus.textContent = "Login complete. Redirecting to your profile...";
-    const profile = data.profile_code || "";
-    if (profile) {{
-      window.location.assign("/synth/accounts/" + encodeURIComponent(profile) + "/");
+    loginStatus.textContent = "Login complete. Redirecting...";
+    const landingPath = typeof data.landing_path === "string" ? data.landing_path : "";
+    if (landingPath && landingPath.startsWith("/synth/")) {{
+      window.location.assign(landingPath);
     }} else {{
       window.location.assign("/synth/onboarding.html");
     }}
