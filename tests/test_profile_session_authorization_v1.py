@@ -1111,6 +1111,44 @@ class TestNginxActivationScript:
         config_pos = script.index("ENDOFCONFIG")
         assert health_pos < config_pos, "Health check must precede config generation"
 
+    def test_tls_preflight_uses_sudo(self) -> None:
+        """TLS cert/key existence must be checked via sudo (Let's Encrypt dirs not readable by non-root)."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        assert "sudo test -f" in script
+        # Both cert and key must use sudo test -f
+        assert script.count("sudo test -f") >= 2
+        # Must not use plain [[ -f ... ]] for the TLS paths
+        for line in script.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "letsencrypt" in stripped and "[[ ! -f" in stripped:
+                raise AssertionError(
+                    f"TLS path must use sudo test -f, not bare [[ -f ]]: {stripped!r}"
+                )
+
+    def test_htpasswd_preflight_uses_sudo(self) -> None:
+        """htpasswd existence must be checked via sudo (may not be readable by user theone)."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        # Find the htpasswd check block — must use sudo test -f, not bare [[ -f ]]
+        for line in script.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if ".synth_htpasswd" in stripped and "[[ ! -f" in stripped:
+                raise AssertionError(
+                    f"htpasswd check must use sudo test -f, not bare [[ -f ]]: {stripped!r}"
+                )
+        # Confirm sudo test -f is present at all
+        assert "sudo test -f" in script
+
+    def test_tls_preflight_does_not_print_cert_contents(self) -> None:
+        """Preflight must not cat, print, hash, or expose TLS cert/key contents."""
+        script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
+        forbidden = ["cat ${TLS_CERT}", "cat ${TLS_KEY}", "openssl x509", "md5sum", "sha256sum"]
+        for pattern in forbidden:
+            assert pattern not in script, f"cert content exposure detected: {pattern!r}"
+
     def test_nginx_config_has_basic_auth(self) -> None:
         """Generated nginx config must preserve Basic Auth for all /synth routes."""
         script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")

@@ -214,6 +214,11 @@ The script:
 6. On any error: trap restores backup and reloads nginx before exit
 7. Runs `verify_nginx_transition_dual_auth_v1.sh` for acceptance
 
+**sudo usage in pre-flight:** `/etc/nginx/.synth_htpasswd` and Let's Encrypt live/archive dirs
+(`/etc/letsencrypt/live/…`) are not traversable or readable by user `theone`. nginx reads them
+as root. The installer uses `sudo test -f` to check existence only — no certificate or key
+contents are printed, hashed, or logged.
+
 **Verify only (read-only, safe to run at any time):**
 
 ```bash

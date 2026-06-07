@@ -87,17 +87,20 @@ if [[ ! -L "${ENABLED_LINK}" ]]; then
 fi
 echo "check enabled symlink ok: ${ENABLED_LINK}"
 
-if [[ ! -f "${HTPASSWD}" ]]; then
+# htpasswd may not be readable by user theone — check via sudo
+if ! sudo test -f "${HTPASSWD}"; then
     echo "FAIL htpasswd not found: ${HTPASSWD}" >&2
     exit 1
 fi
 echo "check htpasswd ok"
 
-if [[ ! -f "${TLS_CERT}" ]]; then
+# Let's Encrypt live/archive dirs are not traversable by non-root.
+# nginx reads them as root; check existence via sudo (no content printed).
+if ! sudo test -f "${TLS_CERT}"; then
     echo "FAIL TLS cert not found: ${TLS_CERT}" >&2
     exit 1
 fi
-if [[ ! -f "${TLS_KEY}" ]]; then
+if ! sudo test -f "${TLS_KEY}"; then
     echo "FAIL TLS key not found: ${TLS_KEY}" >&2
     exit 1
 fi
