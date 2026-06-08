@@ -1599,18 +1599,18 @@ _CSS = """
       font-size: 14px;
     }
     header {
-      padding: 20px 24px; border-bottom: 1px solid var(--line);
-      background: rgba(8,13,24,.88); position: sticky; top: 0;
+      padding: 10px 16px 8px; border-bottom: 1px solid var(--line);
+      background: rgba(8,13,24,.92); position: sticky; top: 0;
       z-index: 10; backdrop-filter: blur(10px);
     }
     .cockpit-nav {
-      display: flex; flex-wrap: wrap; gap: 14px; margin: 10px 0 0;
+      display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0 0;
     }
     .cockpit-nav a {
       color: var(--blue); text-decoration: none; font-size: 14px;
     }
     .cockpit-nav a:hover { text-decoration: underline; }
-    h1 { margin: 0 0 6px; font-size: 22px; }
+    h1 { margin: 0 0 2px; font-size: 18px; }
     h2 { margin: 0 0 6px; font-size: 19px; }
     h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase;
          letter-spacing: .07em; color: var(--blue); }
@@ -1630,6 +1630,9 @@ _CSS = """
       gap: 12px; padding-bottom: 10px; margin-bottom: 10px;
       border-bottom: 1px solid var(--line);
     }
+    .card-head-left { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 0; }
+    .card-row1 { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+    .card-symbol { font-size: 15px; font-weight: 700; }
     .scenario-badge {
       font-size: 12px; font-weight: 600; letter-spacing: .04em;
       padding: 4px 10px; border-radius: 8px; white-space: nowrap;
@@ -1693,11 +1696,11 @@ _CSS = """
     .monitor-link { font-size: 12px; color: var(--blue); margin-top: 6px; }
     .manual-only { font-size: 11px; color: var(--muted); margin-top: 4px; }
     .view-toggle {
-      display: flex; gap: 6px; margin-top: 10px; align-items: center; flex-wrap: wrap;
+      display: flex; gap: 6px; margin-top: 6px; align-items: center; flex-wrap: wrap;
     }
     .sticky-controls {
-      position: sticky; top: 0; z-index: 4; background: rgba(9,12,18,.96);
-      backdrop-filter: blur(10px); padding: 10px 0 8px 0; margin-top: 6px;
+      /* Lives inside the sticky <header> — no separate sticky needed. */
+      padding: 4px 0 2px; margin-top: 4px;
     }
     .search-shell { display: none; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
     .search-input {
@@ -2243,15 +2246,17 @@ def render_plan_card(
         f" data-search='{esc(search_text)}'"
         f" data-render-id='{esc(card.render_id)}'>"
         "<div class='card-head'>"
+        "<div class='card-head-left'>"
         f"<div class='card-row1'>"
         f"<span class='mono card-symbol'>{esc(card.symbol)}</span>"
         f"<span class='muted small'>{esc(card.market)}</span>"
         f"<span class='muted small'>·</span>"
         f"<span class='muted small'>{esc(card.fib_trading_horizon)}</span>"
         f"<span class='muted small'>·</span>"
-        f"<span class='mono'>{esc(price_line)}</span>"
+        f"<span class='mono small'>{esc(price_line)}</span>"
         f"</div>"
         f"<div class='card-row2'>{quality_html}</div>"
+        "</div>"
         f"<div style='text-align:right'>"
         f"{_scenario_badge(card.scenario_type)}"
         f"<div class='state-label {_state_class(card.primary_state)}'>{esc(card.suggested_manual_attention_label)}</div>"
@@ -2309,14 +2314,16 @@ def render_full_html(
         f"  <style>{_CSS}</style>\n"
         "</head>\n<body>\n"
         "  <header>\n"
+        "    <div style='display:flex;align-items:baseline;gap:12px;flex-wrap:wrap'>\n"
         "    <h1>Synth v2 — Profit Plan</h1>\n"
-        f"    <div class='muted'>Rendered: {esc(rendered_at)} · Mode: {esc(broker_mode)}</div>\n"
-        f"    <div class='muted small'>Relevant: {relevant_count} · Total: {total_count}</div>\n"
+        f"    <span class='muted small'>Rendered: {esc(rendered_at)} · Mode: {esc(broker_mode)} · Relevant: {relevant_count} / {total_count}</span>\n"
+        "    </div>\n"
         f"{'' if not nav_html else f'    {nav_html}\\n'}"
         "    <div class='sticky-controls'>\n"
         "    <div class='view-toggle'>\n"
         "      <button id='btn-relevant' class='toggle-btn' onclick='setView(\"relevant\")'>Relevant candidates</button>\n"
         "      <button id='btn-all' class='toggle-btn' onclick='setView(\"all\")'>All candidates</button>\n"
+        "      <span class='muted small' style='margin-left:4px'>broker_writes=0 · order_submission=0</span>\n"
         "    </div>\n"
         "    <div id='search-shell' class='search-shell'>\n"
         "      <input id='candidate-search' class='search-input' type='search' placeholder='Search symbol, market, scenario, state, action, horizon, context…' oninput='updateSearch()'>\n"
@@ -2324,9 +2331,6 @@ def render_full_html(
         "      <div id='matching-count' class='search-meta'>Matching 0 of 0</div>\n"
         "    </div>\n"
         "    </div>\n"
-        "    <div class='muted small' style='margin-top:6px'>"
-        "Human-readable scenario planning only. broker_writes=0. order_submission=0. No automatic placement."
-        "</div>\n"
         "  </header>\n"
         "  <main>\n"
         f"    {empty_note}\n"
