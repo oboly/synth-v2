@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import html as _html
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -230,6 +231,7 @@ class ProfitPlanCard:
     ladder_states: tuple[str, ...]
     relevance_reasons: tuple[str, ...]
     is_relevant: bool
+    render_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 @dataclass(frozen=True)
@@ -1729,13 +1731,31 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
             f"<div class='state-secondary'>Secondary state: {esc(STATE_LABELS.get(card.secondary_state, card.secondary_state))}</div>"
         )
 
+    price_age_str = (
+        f" · {_fmt_p(card.current_price_age_min)} min"
+        if card.current_price_age_min is not None else ""
+    )
+    price_status_badge = card.current_price_status or "FRESH"
+    short_ctx_label = _short_context_display_label(card.short_context_display_state)
+
     return (
-        f"<section class='card plan-card' data-relevant='{str(card.is_relevant).lower()}' data-search='{esc(search_text)}'>"
+        f"<section class='card plan-card'"
+        f" data-relevant='{str(card.is_relevant).lower()}'"
+        f" data-search='{esc(search_text)}'"
+        f" data-render-id='{esc(card.render_id)}'>"
         "<div class='card-head'>"
-        f"<div>"
-        f"<h2><span class='mono'>{esc(card.symbol)}</span> "
-        f"<span class='muted small'>{esc(card.market)}</span></h2>"
-        f"<div><span class='mono'>{esc(price_str)}</span> <span class='muted small'>{esc(quote)}</span></div>"
+        f"<div class='card-row1'>"
+        f"<span class='mono card-symbol'>{esc(card.symbol)}</span>"
+        f"<span class='muted small'>{esc(card.market)}</span>"
+        f"<span class='muted small'>·</span>"
+        f"<span class='muted small'>{esc(card.fib_trading_horizon)}</span>"
+        f"<span class='muted small'>·</span>"
+        f"<span class='mono'>{esc(price_str)} {esc(quote)}</span>"
+        f"<span class='muted small price-status'>{esc(price_status_badge)}{esc(price_age_str)}</span>"
+        f"</div>"
+        f"<div class='card-row2'>"
+        f"<span class='muted small'>SHORT context:</span>"
+        f"<span class='short-ctx-state'>{esc(short_ctx_label)}</span>"
         f"</div>"
         f"<div style='text-align:right'>"
         f"{_scenario_badge(card.scenario_type)}"
@@ -1824,17 +1844,32 @@ def build_json_snapshot(
     *,
     snapshot_ts: str | None = None,
     broker_mode: str = "offline",
+    generated_ts_utc: str | None = None,
+    account_snapshot_ts_utc: str | None = None,
+    order_snapshot_ts_utc: str | None = None,
+    market_price_snapshot_ts_utc: str | None = None,
 ) -> dict[str, Any]:
+    now_ts = snapshot_ts or datetime.now(UTC).isoformat()
+    relevant_count = sum(1 for c in cards if c.is_relevant)
+    total_count = len(cards)
     return {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
-        "snapshot_ts": snapshot_ts or datetime.now(UTC).isoformat(),
+        "render_id": str(uuid.uuid4()),
+        "snapshot_ts": now_ts,
+        "generated_ts_utc": generated_ts_utc or now_ts,
+        "account_snapshot_ts_utc": account_snapshot_ts_utc,
+        "order_snapshot_ts_utc": order_snapshot_ts_utc,
+        "market_price_snapshot_ts_utc": market_price_snapshot_ts_utc,
+        "relevant_count": relevant_count,
+        "total_count": total_count,
         "broker_mode": broker_mode,
         "broker_writes": 0,
         "order_submission": 0,
         "executor": "none",
         "symbols": [
             {
+                "render_id": c.render_id,
                 "symbol": c.symbol,
                 "market": c.market,
                 "fib_trading_horizon": c.fib_trading_horizon,

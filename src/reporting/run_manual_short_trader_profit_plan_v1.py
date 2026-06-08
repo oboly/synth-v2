@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -766,26 +768,34 @@ def main() -> int:
     )
 
     output_html.parent.mkdir(parents=True, exist_ok=True)
-    output_html.write_text(
-        render_full_html(
-            cards,
-            broker_mode="db_snapshot",
-            monitor_link=monitor_link,
-            nav_html=cockpit_nav(account_profile=args.account_profile).strip(),
-            storage_scope=args.account_profile,
-        ),
-        encoding="utf-8",
-    )
     output_json.parent.mkdir(parents=True, exist_ok=True)
-    output_json.write_text(
-        json.dumps(
-            build_json_snapshot(cards, broker_mode="db_snapshot"),
-            indent=2,
-            sort_keys=True,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+
+    html_content = render_full_html(
+        cards,
+        broker_mode="db_snapshot",
+        monitor_link=monitor_link,
+        nav_html=cockpit_nav(account_profile=args.account_profile).strip(),
+        storage_scope=args.account_profile,
     )
+    json_content = json.dumps(
+        build_json_snapshot(cards, broker_mode="db_snapshot"),
+        indent=2,
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+    # Atomic publication: write to temp then os.replace to avoid partial reads.
+    html_dir = str(output_html.parent)
+    json_dir = str(output_json.parent)
+    with tempfile.NamedTemporaryFile("w", dir=html_dir, suffix=".tmp", delete=False, encoding="utf-8") as tf:
+        tf.write(html_content)
+        tmp_html = tf.name
+    os.replace(tmp_html, output_html)
+
+    with tempfile.NamedTemporaryFile("w", dir=json_dir, suffix=".tmp", delete=False, encoding="utf-8") as tf:
+        tf.write(json_content)
+        tmp_json = tf.name
+    os.replace(tmp_json, output_json)
 
     if args.output == "summary":
         print_summary(

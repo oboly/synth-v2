@@ -1302,6 +1302,91 @@ def test_setup_state_breakout_setup_for_breakout_retest() -> None:
     assert card.setup_state == "BREAKOUT_SETUP"
 
 
+# ---------------------------------------------------------------------------
+# Commit 2: render_id, snapshot fields, card top half, atomic publication
+# ---------------------------------------------------------------------------
+
+def test_card_has_render_id() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    assert isinstance(card.render_id, str)
+    assert len(card.render_id) == 36  # UUID4 hyphenated form
+
+
+def test_two_cards_have_different_render_ids() -> None:
+    card_a = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    card_b = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    assert card_a.render_id != card_b.render_id
+
+
+def test_card_html_contains_data_render_id() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_plan_card(card)
+    assert f"data-render-id='{card.render_id}'" in html
+
+
+def test_card_html_row1_contains_symbol_market_horizon_price() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_plan_card(card)
+    assert "card-row1" in html
+    assert "WLD" in html
+    assert "WLD-EUR" in html
+    assert "SHORT" in html
+    assert "0.440000" in html
+
+
+def test_card_html_row2_contains_short_context_label() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_plan_card(card)
+    assert "card-row2" in html
+    assert "SHORT context" in html
+
+
+def test_json_snapshot_has_render_id_at_top_level() -> None:
+    snap = build_json_snapshot([])
+    assert "render_id" in snap
+    assert isinstance(snap["render_id"], str)
+    assert len(snap["render_id"]) == 36
+
+
+def test_json_snapshot_has_relevant_and_total_count() -> None:
+    cards = [
+        _make_card(current_price="0.440000", fib_ext=_wld_fib_ext()),
+        _make_card(current_price="0.2500", reentry=_fet_reentry(missed_pct=None)),
+    ]
+    snap = build_json_snapshot(cards)
+    assert "relevant_count" in snap
+    assert "total_count" in snap
+    assert snap["total_count"] == 2
+    assert isinstance(snap["relevant_count"], int)
+
+
+def test_json_snapshot_has_timestamp_fields() -> None:
+    snap = build_json_snapshot(
+        [],
+        generated_ts_utc="2026-06-08T10:00:00+00:00",
+        account_snapshot_ts_utc="2026-06-08T09:55:00+00:00",
+        order_snapshot_ts_utc="2026-06-08T09:56:00+00:00",
+        market_price_snapshot_ts_utc="2026-06-08T09:57:00+00:00",
+    )
+    assert snap["generated_ts_utc"] == "2026-06-08T10:00:00+00:00"
+    assert snap["account_snapshot_ts_utc"] == "2026-06-08T09:55:00+00:00"
+    assert snap["order_snapshot_ts_utc"] == "2026-06-08T09:56:00+00:00"
+    assert snap["market_price_snapshot_ts_utc"] == "2026-06-08T09:57:00+00:00"
+
+
+def test_json_snapshot_per_card_render_id() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    snap = build_json_snapshot([card])
+    assert snap["symbols"][0]["render_id"] == card.render_id
+
+
+def test_runner_source_uses_atomic_publication() -> None:
+    import src.reporting.run_manual_short_trader_profit_plan_v1 as runner_mod
+    src_text = Path(runner_mod.__file__).read_text(encoding="utf-8")
+    assert "os.replace" in src_text
+    assert "NamedTemporaryFile" in src_text
+
+
 def main() -> None:
     tests = [
         test_pure_module_has_no_forbidden_imports,
