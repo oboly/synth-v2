@@ -59,6 +59,67 @@ RELEVANT_STATES: frozenset[str] = frozenset({
     "MAP_COMPLETED",
 })
 
+# ---------------------------------------------------------------------------
+# Canonical semantic state enumerations (v2 redesign)
+# ---------------------------------------------------------------------------
+
+SETUP_STATE_FROM_SCENARIO: dict[str, str] = {
+    "EXTENSION_RUNNER": "EXTENSION_SETUP",
+    "BREAKOUT_RETEST": "BREAKOUT_SETUP",
+    "REENTRY_WAIT": "REENTRY_SETUP",
+    "RANGE_BOUNCE": "RANGE_SETUP",
+    "MAP_COMPLETED": "MAP_COMPLETED",
+    "LEGACY_CONTEXT_REFERENCE_ONLY": "MINIMAL_CONTEXT",
+    "NO_CLEAR_PLAN": "MINIMAL_CONTEXT",
+    "NO_SHORT_FIB_CONTEXT": "MINIMAL_CONTEXT",
+    "NO_CURRENT_PRICE": "MINIMAL_CONTEXT",
+}
+
+EVENT_STATE_FROM_PRIMARY: dict[str, str] = {
+    "RELOAD_ZONE_APPROACHING": "RELOAD_ZONE_APPROACHING",
+    "TAKE_PROFIT_WAITING": "TARGET_APPROACHING",
+    "MAP_RECOMPUTE_NEEDED": "MAP_EXPIRED",
+    "POST_EXTENSION_PULLBACK": "MAP_EXPIRED",
+    "INVALIDATION_NEAR": "INVALIDATION_NEAR",
+    "DO_NOTHING": "BETWEEN_LEVELS",
+    "PRICE_RAN_AWAY": "BETWEEN_LEVELS",
+    "ORDER_TOO_FAR_OR_STALE": "BETWEEN_LEVELS",
+    "INSUFFICIENT_DATA": "CONTEXT_UNAVAILABLE",
+    "NO_NATIVE_SHORT_FIB_CONTEXT": "CONTEXT_UNAVAILABLE",
+    "HAS_NATIVE_SHORT_FIB_CONTEXT": "BETWEEN_LEVELS",
+    "MARKET_DATA_MISSING": "CONTEXT_UNAVAILABLE",
+    "CONTEXT_INVALID_OR_STALE": "CONTEXT_UNAVAILABLE",
+    "STALE_CURRENT_PRICE": "CONTEXT_UNAVAILABLE",
+}
+
+RELEVANT_EVENT_STATES: frozenset[str] = frozenset({
+    "RELOAD_ZONE_APPROACHING",
+    "TARGET_APPROACHING",
+    "TARGET_HIT",
+    "MAP_EXPIRED",
+    "INVALIDATION_NEAR",
+    "CONTEXT_UNAVAILABLE",
+})
+
+RELEVANT_LADDER_STATES: frozenset[str] = frozenset({
+    "LADDER_MISSING",
+    "LADDER_INCOMPLETE",
+    "STALE_ORDERS_PRESENT",
+    "ORDER_DATA_UNAVAILABLE",
+})
+
+_ACTION_DISPLAY_MAP: dict[str, str] = {
+    "WAIT": "BETWEEN LEVELS",
+    "NO_ACTION": "BETWEEN LEVELS",
+    "DO_NOTHING": "BETWEEN LEVELS",
+    "WAIT_FOR_SHORT_CONTEXT": "CONTEXT UNAVAILABLE",
+    "WAIT_FOR_NEW_MAP": "MAP EXPIRED",
+    "NO_CURRENT_PRICE": "PRICE UNAVAILABLE",
+    "PLACE_LADDER": "SETUP LADDER",
+    "REPAIR_LADDER": "REVIEW LADDER",
+    "FAR_MOONBAG_ONLY": "MOONBAG ONLY",
+}
+
 SHORT_CONTEXT_DISPLAY_LABELS: dict[str, str] = {
     "HAS_NATIVE_SHORT_FIB_CONTEXT": "Native SHORT fib context available",
     "NO_NATIVE_SHORT_FIB_CONTEXT": "No native SHORT fib context",
@@ -164,6 +225,10 @@ class ProfitPlanCard:
     primary_state: str
     secondary_state: str | None
     suggested_manual_attention_label: str
+    setup_state: str
+    event_state: str
+    ladder_states: tuple[str, ...]
+    relevance_reasons: tuple[str, ...]
     is_relevant: bool
 
 
@@ -916,6 +981,10 @@ def _short_context_gap_card(
         primary_state=short_context_display_state,
         secondary_state=None,
         suggested_manual_attention_label=_short_context_display_label(short_context_display_state),
+        setup_state="MINIMAL_CONTEXT",
+        event_state="CONTEXT_UNAVAILABLE",
+        ladder_states=("ORDER_DATA_UNAVAILABLE",),
+        relevance_reasons=("MINIMAL_CONTEXT",),
         is_relevant=True,
     )
 
@@ -950,6 +1019,108 @@ def _legacy_short_reference_override(
         tuple(deduped),
         False,
     )
+
+
+# ---------------------------------------------------------------------------
+# Semantic state derivation helpers
+# ---------------------------------------------------------------------------
+
+def _derive_setup_state(scenario_type: str) -> str:
+    return SETUP_STATE_FROM_SCENARIO.get(scenario_type, "MINIMAL_CONTEXT")
+
+
+def _derive_event_state(primary_state: str) -> str:
+    return EVENT_STATE_FROM_PRIMARY.get(primary_state, "BETWEEN_LEVELS")
+
+
+def _classify_order_for_zone_coverage(
+    order_price: Decimal,
+    target_level_statuses: tuple[TargetLevelStatus, ...],
+    buy_zone: tuple[Decimal, ...],
+) -> str:
+    """Classify one order relative to known zones.
+
+    Returns ARMED when the order is near an active zone, HISTORICAL when near a
+    passed/completed zone, or STALE when no zone match exists.  Moonbag sell
+    orders that sit far above current price but match an active zone are
+    classified ARMED (not STALE), fixing the aggregate-max bug.
+    """
+    for level in target_level_statuses:
+        if _near(order_price, level.level, ORDER_MATCH_TOLERANCE_PCT):
+            if level.lifecycle_state in {"UPCOMING", "NEAR"}:
+                return "ARMED"
+            return "HISTORICAL"
+    for buy_level in buy_zone:
+        if _near(order_price, buy_level, ORDER_MATCH_TOLERANCE_PCT):
+            return "ARMED"
+    return "STALE"
+
+
+def _derive_ladder_states(
+    buy_zone: tuple[Decimal, ...],
+    target_level_statuses: tuple[TargetLevelStatus, ...],
+    buy_orders: tuple[Any, ...],
+    sell_orders: tuple[Any, ...],
+) -> tuple[str, ...]:
+    active_levels = [
+        lv for lv in target_level_statuses
+        if lv.lifecycle_state in {"UPCOMING", "NEAR"}
+    ]
+    has_buy_zone = bool(buy_zone)
+    if not active_levels and not has_buy_zone:
+        return ("LADDER_NOT_REQUIRED",)
+    states: list[str] = []
+    if active_levels:
+        covered_count = sum(1 for lv in active_levels if lv.matching_open_sell_orders > 0)
+        if covered_count == 0:
+            states.append("LADDER_MISSING")
+        elif covered_count < len(active_levels):
+            states.append("LADDER_INCOMPLETE")
+        else:
+            states.append("LADDER_ARMED")
+    if has_buy_zone:
+        buy_covered = sum(
+            1 for buy_level in buy_zone
+            if any(_near(o.limit_price, buy_level, ORDER_MATCH_TOLERANCE_PCT) for o in buy_orders)
+        )
+        if buy_covered == 0 and "LADDER_MISSING" not in states:
+            states.append("LADDER_MISSING")
+        elif 0 < buy_covered < len(buy_zone) and "LADDER_MISSING" not in states and "LADDER_INCOMPLETE" not in states:
+            states.append("LADDER_INCOMPLETE")
+    all_orders = list(buy_orders) + list(sell_orders)
+    stale_found = any(
+        _classify_order_for_zone_coverage(o.limit_price, target_level_statuses, buy_zone) == "STALE"
+        for o in all_orders
+    )
+    if stale_found:
+        states.append("STALE_ORDERS_PRESENT")
+    if not states:
+        states.append("LADDER_ARMED")
+    return tuple(dict.fromkeys(states))
+
+
+def _derive_relevance_with_reasons(
+    event_state: str,
+    ladder_states: tuple[str, ...],
+    setup_state: str,
+    *,
+    force_not_relevant: bool = False,
+) -> tuple[bool, tuple[str, ...]]:
+    if force_not_relevant:
+        return False, ()
+    reasons: list[str] = []
+    if event_state in RELEVANT_EVENT_STATES:
+        reasons.append(event_state)
+    for ls in ladder_states:
+        if ls in RELEVANT_LADDER_STATES:
+            reasons.append(ls)
+    if not reasons and setup_state == "MINIMAL_CONTEXT" and event_state == "CONTEXT_UNAVAILABLE":
+        reasons.append("MINIMAL_CONTEXT")
+    return bool(reasons), tuple(reasons)
+
+
+def _display_action_label(action_label: str) -> str:
+    return _ACTION_DISPLAY_MAP.get(action_label, action_label.replace("_", " "))
 
 
 # ---------------------------------------------------------------------------
@@ -1022,6 +1193,10 @@ def build_profit_plan_card(
             primary_state="STALE_CURRENT_PRICE",
             secondary_state=None,
             suggested_manual_attention_label=STATE_LABELS["STALE_CURRENT_PRICE"],
+            setup_state="MINIMAL_CONTEXT",
+            event_state="CONTEXT_UNAVAILABLE",
+            ladder_states=("ORDER_DATA_UNAVAILABLE",),
+            relevance_reasons=(),
             is_relevant=False,
         )
     if (
@@ -1164,12 +1339,17 @@ def build_profit_plan_card(
             active_target=active_target,
         )
         suggested_manual_attention_label = _short_context_display_label(short_context_display_state)
-    else:
-        is_relevant = (
-            primary_state in RELEVANT_STATES
-            or action_label in RELEVANT_STATES
-            or scenario_type in RELEVANT_STATES
+        setup_state = _derive_setup_state(scenario_type)
+        event_state = _derive_event_state(primary_state)
+        ladder_states = _derive_ladder_states(buy_zone, target_level_statuses, buy_orders, sell_orders)
+        is_relevant, relevance_reasons = _derive_relevance_with_reasons(
+            event_state, ladder_states, setup_state, force_not_relevant=True
         )
+    else:
+        setup_state = _derive_setup_state(scenario_type)
+        event_state = _derive_event_state(primary_state)
+        ladder_states = _derive_ladder_states(buy_zone, target_level_statuses, buy_orders, sell_orders)
+        is_relevant, relevance_reasons = _derive_relevance_with_reasons(event_state, ladder_states, setup_state)
 
     return ProfitPlanCard(
         symbol=symbol,
@@ -1203,6 +1383,10 @@ def build_profit_plan_card(
         primary_state=primary_state,
         secondary_state=secondary_state,
         suggested_manual_attention_label=suggested_manual_attention_label,
+        setup_state=setup_state,
+        event_state=event_state,
+        ladder_states=ladder_states,
+        relevance_reasons=relevance_reasons,
         is_relevant=is_relevant,
     )
 
@@ -1520,17 +1704,18 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
     if card.invalidation_level is not None:
         invalidation_html = f"<div class='invalidation'>✕ Invalidates below {esc(_fmt_p(card.invalidation_level))}</div>"
 
+    ladder_states_str = " · ".join(card.ladder_states) if card.ladder_states else "—"
     metrics_html = "".join((
         _metric_block("Market", card.market),
         _metric_block("Horizon", card.fib_trading_horizon),
         _metric_block("Current price", f"{price_str} {quote}".strip()),
         _metric_block("Current price status", card.current_price_status or "FRESH_CURRENT_PRICE"),
         _metric_block("Price age (min)", "?" if card.current_price_age_min is None else _fmt_p(card.current_price_age_min)),
-        _metric_block("SHORT context input", card.short_context_input_status),
-        _metric_block("SHORT context coverage", card.short_context_coverage_status),
-        _metric_block("SHORT context state", _short_context_display_label(card.short_context_display_state)),
+        _metric_block("Setup", card.setup_state),
+        _metric_block("Event", card.event_state),
+        _metric_block("Ladder", ladder_states_str),
+        _metric_block("SHORT context", _short_context_display_label(card.short_context_display_state)),
         _metric_block("Active target / exit zone", ", ".join(_fmt_p(v) for v in card.target_exit_zone) or "No upcoming levels"),
-        _metric_block("Active target", _fmt_p(card.active_target)),
         _metric_block("Reload / re-entry zone", ", ".join(_fmt_p(v) for v in card.reload_reentry_zone) or "No levels loaded"),
         _metric_block("Invalidation / risk zone", _fmt_p(card.invalidation_risk_zone)),
         _metric_block("Distance to target", _pct(card.distance_to_target_pct)),
@@ -1556,7 +1741,7 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
         f"{_scenario_badge(card.scenario_type)}"
         f"<div class='state-label {_state_class(card.primary_state)}'>{esc(card.suggested_manual_attention_label)}</div>"
         f"{secondary_state_html}"
-        f"<div class='action-label {_action_class(card.action_label)}'>{esc(card.action_label.replace('_', ' '))}</div>"
+        f"<div class='action-label {_action_class(card.action_label)}'>{esc(_display_action_label(card.action_label))}</div>"
         f"<div class='tf-label'>{esc(card.timeframe_label)}</div>"
         f"</div>"
         "</div>"
@@ -1694,6 +1879,10 @@ def build_json_snapshot(
                 "primary_state": c.primary_state,
                 "secondary_state": c.secondary_state,
                 "suggested_manual_attention_label": c.suggested_manual_attention_label,
+                "setup_state": c.setup_state,
+                "event_state": c.event_state,
+                "ladder_states": list(c.ladder_states),
+                "relevance_reasons": list(c.relevance_reasons),
                 "reasons": list(c.reasons),
                 "is_relevant": c.is_relevant,
                 "order_summary": {

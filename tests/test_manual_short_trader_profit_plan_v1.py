@@ -23,6 +23,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     build_profit_plan_card,
     filter_cards_for_view,
     render_full_html,
+    render_plan_card,
 )
 
 
@@ -1018,10 +1019,317 @@ def test_runner_source_does_not_construct_account_code_from_profile_name() -> No
     assert "default_account_code" not in source
 
 
+# ---------------------------------------------------------------------------
+# Semantic state field tests (v2 redesign)
+# ---------------------------------------------------------------------------
+
+
+def test_setup_state_extension_setup_for_extension_runner() -> None:
+    card = _make_card(current_price="0.48", fib_ext=_wld_fib_ext())
+    assert card.setup_state == "EXTENSION_SETUP"
+
+
+def test_setup_state_reentry_setup_for_reentry_wait() -> None:
+    card = _make_card(current_price="0.2500", reentry=_fet_reentry())
+    assert card.setup_state == "REENTRY_SETUP"
+
+
+def test_setup_state_map_completed_for_completed_map() -> None:
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=(
+            TargetHistoryCandle(
+                close_ts_utc=datetime(2026, 6, 3, 16, 0, tzinfo=UTC),
+                high_price=Decimal("0.7600"),
+                low_price=Decimal("0.5000"),
+            ),
+        ),
+    )
+    assert card.setup_state == "MAP_COMPLETED"
+
+
+def test_setup_state_minimal_context_for_no_context() -> None:
+    card = _make_card(
+        current_price="0.155000",
+        fib_ext=None,
+        reentry=None,
+        short_context_input_status="ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING",
+        short_context_coverage_status="FIB_MAP_SYMBOL_MISSING",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        symbol="PLUME",
+        market="PLUME-EUR",
+    )
+    assert card.setup_state == "MINIMAL_CONTEXT"
+
+
+def test_event_state_target_approaching_for_take_profit_waiting() -> None:
+    card = _make_card(
+        current_price="0.5120",
+        fib_ext=_wld_fib_ext(),
+        sell_orders=(_FakeOrder("0.515600", side="sell"),),
+    )
+    assert card.primary_state == "TAKE_PROFIT_WAITING"
+    assert card.event_state == "TARGET_APPROACHING"
+
+
+def test_event_state_reload_zone_approaching_for_approaching_reentry() -> None:
+    card = _make_card(current_price="0.2100", reentry=_fet_reentry())
+    assert card.primary_state == "RELOAD_ZONE_APPROACHING"
+    assert card.event_state == "RELOAD_ZONE_APPROACHING"
+
+
+def test_event_state_map_expired_for_completed_map() -> None:
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=(
+            TargetHistoryCandle(
+                close_ts_utc=datetime(2026, 6, 4, 16, 0, tzinfo=UTC),
+                high_price=Decimal("0.7600"),
+                low_price=Decimal("0.5000"),
+            ),
+        ),
+    )
+    assert card.event_state == "MAP_EXPIRED"
+
+
+def test_event_state_between_levels_for_do_nothing() -> None:
+    card = _make_card(current_price="0.2500", reentry=_fet_reentry())
+    assert card.primary_state == "DO_NOTHING"
+    assert card.event_state == "BETWEEN_LEVELS"
+
+
+def test_event_state_context_unavailable_for_stale_price() -> None:
+    card = build_profit_plan_card(
+        symbol="HOME",
+        market="HOME-EUR",
+        current_price=Decimal("1.30"),
+        current_price_status="STALE_CURRENT_PRICE",
+        current_price_age_min=Decimal("2880"),
+        fib_ext=_wld_fib_ext(),
+    )
+    assert card.event_state == "CONTEXT_UNAVAILABLE"
+    assert card.is_relevant is False
+
+
+def test_event_state_context_unavailable_for_short_context_gap() -> None:
+    card = _make_card(
+        current_price="0.155000",
+        fib_ext=None,
+        reentry=None,
+        short_context_input_status="ZONE_SOURCE_PRESENT_BUT_SYMBOL_MISSING",
+        short_context_coverage_status="FIB_MAP_SYMBOL_MISSING",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        symbol="PLUME",
+        market="PLUME-EUR",
+    )
+    assert card.event_state == "CONTEXT_UNAVAILABLE"
+    assert card.is_relevant is True
+    assert "MINIMAL_CONTEXT" in card.relevance_reasons
+
+
+def test_ladder_states_armed_when_all_active_targets_have_orders() -> None:
+    card = _make_card(
+        current_price="0.440000",
+        fib_ext=_wld_fib_ext(),
+        sell_orders=(
+            _FakeOrder("0.454438", side="sell"),
+            _FakeOrder("0.515600", side="sell"),
+        ),
+    )
+    assert "LADDER_ARMED" in card.ladder_states
+    assert "LADDER_MISSING" not in card.ladder_states
+
+
+def test_ladder_states_missing_when_no_orders_at_active_target() -> None:
+    card = _make_card(
+        current_price="0.440000",
+        fib_ext=_wld_fib_ext(),
+        sell_orders=(),
+    )
+    assert "LADDER_MISSING" in card.ladder_states
+
+
+def test_ladder_states_stale_orders_absent_for_moonbag_at_active_zone() -> None:
+    """A sell order far above current price but at an UPCOMING target is ARMED, not STALE.
+    This is the moonbag fix: aggregate max-distance check was wrong."""
+    card = _make_card(
+        current_price="0.440000",
+        fib_ext=_wld_fib_ext(),
+        sell_orders=(
+            _FakeOrder("0.454438", side="sell"),
+            _FakeOrder("0.515600", side="sell"),
+        ),
+    )
+    assert "STALE_ORDERS_PRESENT" not in card.ladder_states
+    assert "LADDER_ARMED" in card.ladder_states
+
+
+def test_ladder_states_stale_present_for_order_matching_no_zone() -> None:
+    card = _make_card(
+        current_price="0.3000",
+        reentry=_fet_reentry(),
+        buy_orders=(_FakeOrder("0.1000"),),
+    )
+    assert "STALE_ORDERS_PRESENT" in card.ladder_states
+
+
+def test_ladder_states_historical_order_does_not_trigger_stale() -> None:
+    """A sell order near a PASSED target should be HISTORICAL, not STALE."""
+    card = _make_card(
+        current_price="0.458790",
+        fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.470000"),
+        sell_orders=(
+            _FakeOrder("0.454438", side="sell"),
+            _FakeOrder("0.515600", side="sell"),
+        ),
+    )
+    assert "STALE_ORDERS_PRESENT" not in card.ladder_states
+
+
+def test_ladder_states_not_required_when_map_completed() -> None:
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=(
+            TargetHistoryCandle(
+                close_ts_utc=datetime(2026, 6, 4, 16, 0, tzinfo=UTC),
+                high_price=Decimal("0.7600"),
+                low_price=Decimal("0.5000"),
+            ),
+        ),
+    )
+    assert card.all_sell_targets_completed is True
+    assert "LADDER_NOT_REQUIRED" in card.ladder_states
+
+
+def test_reentry_wait_alone_without_orders_is_relevant_due_to_ladder_missing() -> None:
+    """REENTRY_SETUP + BETWEEN_LEVELS + no orders → LADDER_MISSING → relevant.
+    The card is relevant because orders are missing, not merely because of REENTRY_WAIT."""
+    card = _make_card(current_price="0.2500", reentry=_fet_reentry())
+    assert card.setup_state == "REENTRY_SETUP"
+    assert card.event_state == "BETWEEN_LEVELS"
+    assert "LADDER_MISSING" in card.ladder_states
+    assert card.is_relevant is True
+    assert "LADDER_MISSING" in card.relevance_reasons
+
+
+def test_reentry_wait_with_armed_ladder_and_between_levels_is_not_relevant() -> None:
+    """REENTRY_SETUP + BETWEEN_LEVELS + armed buy orders → not relevant.
+    REENTRY_WAIT alone must not trigger relevance — only ladder/event state does."""
+    r = _fet_reentry()
+    card = _make_card(
+        current_price="0.2500",
+        reentry=r,
+        buy_orders=(
+            _FakeOrder(str(r.r382_price)),
+            _FakeOrder(str(r.r500_price)),
+        ),
+    )
+    assert card.setup_state == "REENTRY_SETUP"
+    assert card.event_state == "BETWEEN_LEVELS"
+    assert "LADDER_MISSING" not in card.ladder_states
+    assert card.is_relevant is False
+
+
+def test_relevance_reasons_populated_for_relevant_card() -> None:
+    card = _make_card(current_price="0.2100", reentry=_fet_reentry())
+    assert card.is_relevant is True
+    assert len(card.relevance_reasons) > 0
+    assert "RELOAD_ZONE_APPROACHING" in card.relevance_reasons
+
+
+def test_relevance_reasons_empty_for_non_relevant_card() -> None:
+    r = _fet_reentry()
+    card = _make_card(
+        current_price="0.2500",
+        reentry=r,
+        buy_orders=(
+            _FakeOrder(str(r.r382_price)),
+            _FakeOrder(str(r.r500_price)),
+        ),
+    )
+    assert card.is_relevant is False
+    assert card.relevance_reasons == ()
+
+
+def test_json_snapshot_includes_new_semantic_fields() -> None:
+    card = _make_card(current_price="0.48", fib_ext=_wld_fib_ext())
+    snapshot = build_json_snapshot([card], broker_mode="db_snapshot")
+    row = snapshot["symbols"][0]
+    assert "setup_state" in row
+    assert "event_state" in row
+    assert "ladder_states" in row
+    assert "relevance_reasons" in row
+    assert isinstance(row["ladder_states"], list)
+    assert isinstance(row["relevance_reasons"], list)
+
+
+def test_html_does_not_show_wait_or_do_nothing_as_action_label() -> None:
+    # missed_pct=None → deepest_touched_label=None → action_label="WAIT" → display "BETWEEN LEVELS"
+    card = _make_card(current_price="0.2500", reentry=_fet_reentry(missed_pct=None))
+    html = render_plan_card(card)
+    assert ">WAIT<" not in html
+    assert ">DO NOTHING<" not in html
+    assert ">DO_NOTHING<" not in html
+    assert "BETWEEN LEVELS" in html
+
+
+def test_html_does_not_show_duplicate_active_target_field() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_plan_card(card)
+    assert html.count("Active target") <= 1
+
+
+def test_setup_state_breakout_setup_for_breakout_retest() -> None:
+    fib = FibExtContext(
+        local_reaction_price=Decimal("0.399040"),
+        anchor_end_ts_utc=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
+        ext_1_272=Decimal("0.49"),
+        ext_1_618=Decimal("0.65"),
+        ext_2_000=Decimal("0.80"),
+        breakout_gate=Decimal("0.38"),
+        price_band="BELOW_BREAKOUT_GATE",
+        ext_1_272_touched_and_rejected=False,
+        retesting_breakout_gate=True,
+    )
+    card = _make_card(current_price="0.3750", fib_ext=fib)
+    assert card.setup_state == "BREAKOUT_SETUP"
+
+
 def main() -> None:
     tests = [
         test_pure_module_has_no_forbidden_imports,
         test_runner_has_no_broker_or_execution_imports,
+        test_setup_state_extension_setup_for_extension_runner,
+        test_setup_state_reentry_setup_for_reentry_wait,
+        test_setup_state_map_completed_for_completed_map,
+        test_setup_state_minimal_context_for_no_context,
+        test_setup_state_breakout_setup_for_breakout_retest,
+        test_event_state_target_approaching_for_take_profit_waiting,
+        test_event_state_reload_zone_approaching_for_approaching_reentry,
+        test_event_state_map_expired_for_completed_map,
+        test_event_state_between_levels_for_do_nothing,
+        test_event_state_context_unavailable_for_stale_price,
+        test_event_state_context_unavailable_for_short_context_gap,
+        test_ladder_states_armed_when_all_active_targets_have_orders,
+        test_ladder_states_missing_when_no_orders_at_active_target,
+        test_ladder_states_stale_orders_absent_for_moonbag_at_active_zone,
+        test_ladder_states_stale_present_for_order_matching_no_zone,
+        test_ladder_states_historical_order_does_not_trigger_stale,
+        test_ladder_states_not_required_when_map_completed,
+        test_reentry_wait_alone_without_orders_is_relevant_due_to_ladder_missing,
+        test_reentry_wait_with_armed_ladder_and_between_levels_is_not_relevant,
+        test_relevance_reasons_populated_for_relevant_card,
+        test_relevance_reasons_empty_for_non_relevant_card,
+        test_json_snapshot_includes_new_semantic_fields,
+        test_html_does_not_show_wait_or_do_nothing_as_action_label,
+        test_html_does_not_show_duplicate_active_target_field,
         test_load_zone_contexts_uses_source_rows_without_manual_cli,
         test_load_zone_contexts_manual_cli_overrides_missing_source,
         test_load_zone_contexts_missing_source_fails_closed,
