@@ -17,6 +17,7 @@ NATIVE_SHORT_ROWS_PATH="${NATIVE_SHORT_RUNTIME_DIR}/native_short_fib_context_row
 LOCK_FILE="${SYNTH_ACCOUNT_WALLET_DASHBOARD_LOCK:-/tmp/synth-account-wallet-dashboard-${PROFILE}.lock}"
 VENUE="${SYNTH_ACCOUNT_WALLET_VENUE:-bitvavo}"
 QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
+SKIP_MARKET_PRICE_REFRESH="${SYNTH_SKIP_MARKET_PRICE_REFRESH:-0}"
 
 phase_start() {
   local phase="$1"
@@ -60,16 +61,20 @@ if ! flock -n 9; then
   exit 0
 fi
 
-phase_epoch="$(date +%s)"
-phase_start "refresh_public_prices"
-if ! python -m src.market_data.run_market_price_snapshot_v1 \
-  --venue "${VENUE}" \
-  --quote "${QUOTE}" \
-  --write-db \
-  --output none; then
-  echo "Warning: public market price refresh failed; continuing with stale-price fail-closed rendering."
+if [[ "${SKIP_MARKET_PRICE_REFRESH}" == "1" ]]; then
+  echo "market_price_refresh=skipped (SYNTH_SKIP_MARKET_PRICE_REFRESH=1)"
+else
+  phase_epoch="$(date +%s)"
+  phase_start "refresh_public_prices"
+  if ! python -m src.market_data.run_market_price_snapshot_v1 \
+    --venue "${VENUE}" \
+    --quote "${QUOTE}" \
+    --write-db \
+    --output none; then
+    echo "Warning: public market price refresh failed; continuing with stale-price fail-closed rendering."
+  fi
+  phase_finished "refresh_public_prices" "${phase_epoch}"
 fi
-phase_finished "refresh_public_prices" "${phase_epoch}"
 
 phase_epoch="$(date +%s)"
 phase_start "build_native_short_context"

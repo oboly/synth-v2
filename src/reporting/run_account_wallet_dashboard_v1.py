@@ -15,6 +15,7 @@ from src.reporting.account_wallet_dashboard_v1 import (
     load_and_write_wallet_dashboard,
 )
 from src.reporting.account_dashboard_profile_access_v1 import resolve_dashboard_profile_access
+from src.reporting.account_profile_home_v1 import write_account_profile_home
 
 
 DEFAULT_VENUE = "bitvavo"
@@ -88,6 +89,14 @@ def main() -> int:
         print(f"[error] {exc}", file=sys.stderr)
         return 1
 
+    home_path = write_account_profile_home(
+        profile_code=access.account_profile,
+        venue=access.venue,
+        account_code=access.trading_account_stable_ref,
+        display_timezone=access.display_timezone,
+        output_root=Path(args.output_root),
+    )
+
     if args.output == "summary":
         print(f"runner={REPORT_NAME} version={REPORT_VERSION}")
         print(f"profile={payload.profile} account_code={payload.account_code}")
@@ -96,6 +105,7 @@ def main() -> int:
         print(f"freshness={payload.freshness}")
         print(f"balance_count={payload.balance_count}")
         print(f"open_order_market_count={payload.open_order_market_count}")
+        print(f"account_home_output={home_path}")
         print(f"html_output={html_path}")
         print(f"json_output={json_path}")
         if payload.market_data_warning:

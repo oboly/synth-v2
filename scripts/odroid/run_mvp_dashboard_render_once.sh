@@ -52,6 +52,14 @@ run_step python -m src.reporting.run_synth_about_page_v1 \
   --output summary
 
 echo
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+echo "[MVP_DASHBOARD_RENDER][STEP] linked_profile_dashboard_refresh (market prices already refreshed)"
+SYNTH_SKIP_MARKET_PRICE_REFRESH=1 \
+SYNTH_ACCOUNT_WALLET_VENUE="${VENUE}" \
+bash "${SCRIPT_DIR}/run_linked_profile_dashboard_refresh_once.sh" || \
+  echo "[MVP_DASHBOARD_RENDER][WARN] linked_profile_dashboard_refresh failed (non-fatal)"
+
+echo
 echo "[MVP_DASHBOARD_RENDER][DONE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ABOUT_PAGE_HTML}"

@@ -508,6 +508,134 @@ def test_wallet_runner_unmapped_profile_fails_closed() -> None:
         wallet_runner.load_and_write_wallet_dashboard = original_load
 
 
+def test_wallet_runner_writes_account_home_for_linked_profile() -> None:
+    import io
+    import contextlib
+    from unittest.mock import MagicMock
+
+    original_parse_args = wallet_runner.parse_args
+    original_resolve_access = wallet_runner.resolve_dashboard_profile_access
+    original_load = wallet_runner.load_and_write_wallet_dashboard
+    original_write_home = wallet_runner.write_account_profile_home
+
+    home_calls: list[dict] = []
+
+    def fake_write_home(**kwargs):
+        home_calls.append(kwargs)
+        return Path("/tmp/accounts/arbitraryprofile/index.html")
+
+    try:
+        from src.reporting.account_dashboard_profile_access_v1 import DashboardProfileAccess
+        wallet_runner.parse_args = lambda: type(
+            "Args",
+            (),
+            {
+                "account_profile": "arbitraryprofile",
+                "venue": "bitvavo",
+                "output_root": "/tmp",
+                "fresh_after_minutes": 15,
+                "price_fresh_after_minutes": 15,
+                "output": "none",
+            },
+        )()
+        wallet_runner.resolve_dashboard_profile_access = lambda **_: DashboardProfileAccess(
+            account_profile="arbitraryprofile",
+            venue="bitvavo",
+            trading_account_stable_ref="bitvavo_arb_read",
+            display_timezone="Europe/Amsterdam",
+        )
+        fake_payload = MagicMock()
+        fake_payload.profile = "arbitraryprofile"
+        fake_payload.account_code = "bitvavo_arb_read"
+        fake_payload.trading_account_id = 99
+        fake_payload.venue = "bitvavo"
+        fake_payload.latest_wallet_refresh_ts_utc = None
+        fake_payload.freshness = "FRESH"
+        fake_payload.balance_count = 0
+        fake_payload.open_order_market_count = 0
+        fake_payload.market_data_warning = None
+        wallet_runner.load_and_write_wallet_dashboard = lambda **_: (
+            fake_payload,
+            Path("/tmp/accounts/arbitraryprofile/wallet.html"),
+            Path("/tmp/accounts/arbitraryprofile/wallet.json"),
+        )
+        wallet_runner.write_account_profile_home = fake_write_home
+        with contextlib.redirect_stdout(io.StringIO()):
+            result = wallet_runner.main()
+        assert result == 0
+        assert len(home_calls) == 1
+        assert home_calls[0]["profile_code"] == "arbitraryprofile"
+        assert home_calls[0]["account_code"] == "bitvavo_arb_read"
+        assert home_calls[0]["venue"] == "bitvavo"
+    finally:
+        wallet_runner.parse_args = original_parse_args
+        wallet_runner.resolve_dashboard_profile_access = original_resolve_access
+        wallet_runner.load_and_write_wallet_dashboard = original_load
+        wallet_runner.write_account_profile_home = original_write_home
+
+
+def test_wallet_runner_summary_includes_account_home_output() -> None:
+    import io
+    import contextlib
+    from unittest.mock import MagicMock
+
+    original_parse_args = wallet_runner.parse_args
+    original_resolve_access = wallet_runner.resolve_dashboard_profile_access
+    original_load = wallet_runner.load_and_write_wallet_dashboard
+    original_write_home = wallet_runner.write_account_profile_home
+
+    try:
+        from src.reporting.account_dashboard_profile_access_v1 import DashboardProfileAccess
+        wallet_runner.parse_args = lambda: type(
+            "Args",
+            (),
+            {
+                "account_profile": "arbitraryprofile",
+                "venue": "bitvavo",
+                "output_root": "/tmp",
+                "fresh_after_minutes": 15,
+                "price_fresh_after_minutes": 15,
+                "output": "summary",
+            },
+        )()
+        wallet_runner.resolve_dashboard_profile_access = lambda **_: DashboardProfileAccess(
+            account_profile="arbitraryprofile",
+            venue="bitvavo",
+            trading_account_stable_ref="bitvavo_arb_read",
+            display_timezone="Europe/Amsterdam",
+        )
+        fake_payload = MagicMock()
+        fake_payload.profile = "arbitraryprofile"
+        fake_payload.account_code = "bitvavo_arb_read"
+        fake_payload.trading_account_id = 99
+        fake_payload.venue = "bitvavo"
+        fake_payload.latest_wallet_refresh_ts_utc = None
+        fake_payload.freshness = "FRESH"
+        fake_payload.balance_count = 0
+        fake_payload.open_order_market_count = 0
+        fake_payload.market_data_warning = None
+        wallet_runner.load_and_write_wallet_dashboard = lambda **_: (
+            fake_payload,
+            Path("/tmp/accounts/arbitraryprofile/wallet.html"),
+            Path("/tmp/accounts/arbitraryprofile/wallet.json"),
+        )
+        wallet_runner.write_account_profile_home = lambda **_: Path(
+            "/tmp/accounts/arbitraryprofile/index.html"
+        )
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            result = wallet_runner.main()
+        output = buf.getvalue()
+        assert result == 0
+        assert "account_home_output=" in output
+        assert "accounts/arbitraryprofile/index.html" in output
+    finally:
+        wallet_runner.parse_args = original_parse_args
+        wallet_runner.resolve_dashboard_profile_access = original_resolve_access
+        wallet_runner.load_and_write_wallet_dashboard = original_load
+        wallet_runner.write_account_profile_home = original_write_home
+
+
 def main():
     test_stale_detection()
     test_empty_wallet_render()
@@ -523,6 +651,8 @@ def main():
     test_source_ast_no_broker_calls()
     test_wallet_runner_source_does_not_construct_account_code_from_profile_name()
     test_wallet_runner_unmapped_profile_fails_closed()
+    test_wallet_runner_writes_account_home_for_linked_profile()
+    test_wallet_runner_summary_includes_account_home_output()
     test_fetch_trading_account_fails_closed_on_ambiguous_match()
     print("ok")
 
