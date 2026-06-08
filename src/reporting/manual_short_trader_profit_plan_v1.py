@@ -241,6 +241,20 @@ class TargetHistoryCandle:
     low_price: Decimal
 
 
+@dataclass(frozen=True)
+class OrderRow:
+    """One selectable row in the order ladder display."""
+    row_id: str         # stable UUID4 within a render
+    render_id: str      # parent card render_id
+    state: str          # MISSING | ARMED | STALE | HISTORICAL | DATA_UNAVAILABLE
+    reason_code: str    # machine code for tooltip/filtering
+    reason_label: str   # human-readable tooltip text
+    side: str           # buy | sell
+    price: Decimal | None
+    distance_pct: Decimal | None
+    zone_role: str      # zone description e.g. "sell target 1.272" or "buy zone r382"
+
+
 # ---------------------------------------------------------------------------
 # Scenario classification
 # ---------------------------------------------------------------------------
@@ -1579,6 +1593,19 @@ def _build_client_js(storage_scope: str) -> str:
     if (queryInput) queryInput.value = '';
     updateSearch();
   }}
+  function selectLadderRows(renderIdStr, mode) {{
+    var checks = document.querySelectorAll(
+      '.order-ladder-row[data-render-id="' + renderIdStr + '"] .order-row-check'
+    );
+    checks.forEach(function(cb) {{
+      var state = cb.dataset.state || '';
+      if (mode === 'clear') {{
+        cb.checked = false;
+      }} else if (mode === 'actionable') {{
+        cb.checked = (state === 'MISSING' || state === 'STALE');
+      }}
+    }});
+  }}
   document.addEventListener('DOMContentLoaded', function() {{
     var savedMode = 'relevant';
     var savedQuery = '';
@@ -1696,7 +1723,218 @@ def _metric_block(label: str, value: str) -> str:
     )
 
 
-def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -> str:
+# ---------------------------------------------------------------------------
+# Order ladder rows (Commit 3)
+# ---------------------------------------------------------------------------
+
+_ORDER_ROW_STATE_CSS: dict[str, str] = {
+    "MISSING": "order-row-missing",
+    "ARMED": "order-row-armed",
+    "STALE": "order-row-stale",
+    "HISTORICAL": "order-row-historical",
+    "DATA_UNAVAILABLE": "order-row-unavailable",
+}
+
+
+def build_order_rows(
+    *,
+    card_render_id: str,
+    current_price: Decimal | None,
+    buy_zone: tuple[Decimal, ...],
+    target_level_statuses: tuple[TargetLevelStatus, ...],
+    buy_orders: tuple[Any, ...],
+    sell_orders: tuple[Any, ...],
+) -> tuple[OrderRow, ...]:
+    rows: list[OrderRow] = []
+    covered_sell_order_prices: set[str] = set()
+    covered_buy_order_prices: set[str] = set()
+
+    # One row per active sell target level
+    for level in target_level_statuses:
+        if level.lifecycle_state not in {"UPCOMING", "NEAR"}:
+            continue
+        matching = [
+            o for o in sell_orders
+            if _near(o.limit_price, level.level, ORDER_MATCH_TOLERANCE_PCT)
+        ]
+        dist = _distance_to_level_pct(current_price, level.level)
+        zone_role = f"sell target {_fmt_p(level.level)} ({level.lifecycle_state})"
+        if matching:
+            for o in matching:
+                covered_sell_order_prices.add(str(o.limit_price))
+            state = "ARMED"
+            reason_code = "SELL_ORDER_AT_ACTIVE_TARGET"
+            reason_label = (
+                f"Sell order at active target {_fmt_p(level.level)} "
+                f"({level.lifecycle_state}); "
+                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
+        else:
+            state = "MISSING"
+            reason_code = "NO_SELL_ORDER_AT_ACTIVE_TARGET"
+            reason_label = (
+                f"No sell order at active target {_fmt_p(level.level)} "
+                f"({level.lifecycle_state}); "
+                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
+        rows.append(OrderRow(
+            row_id=str(uuid.uuid4()),
+            render_id=card_render_id,
+            state=state,
+            reason_code=reason_code,
+            reason_label=reason_label,
+            side="sell",
+            price=level.level,
+            distance_pct=dist,
+            zone_role=zone_role,
+        ))
+
+    # One row per buy zone level
+    for buy_level in buy_zone:
+        matching = [
+            o for o in buy_orders
+            if _near(o.limit_price, buy_level, ORDER_MATCH_TOLERANCE_PCT)
+        ]
+        dist = _distance_to_level_pct(current_price, buy_level)
+        zone_role = f"buy zone {_fmt_p(buy_level)}"
+        if matching:
+            for o in matching:
+                covered_buy_order_prices.add(str(o.limit_price))
+            state = "ARMED"
+            reason_code = "BUY_ORDER_AT_ZONE"
+            reason_label = (
+                f"Buy order at reload zone {_fmt_p(buy_level)}; "
+                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
+        else:
+            state = "MISSING"
+            reason_code = "NO_BUY_ORDER_AT_ZONE"
+            reason_label = (
+                f"No buy order at reload zone {_fmt_p(buy_level)}; "
+                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
+        rows.append(OrderRow(
+            row_id=str(uuid.uuid4()),
+            render_id=card_render_id,
+            state=state,
+            reason_code=reason_code,
+            reason_label=reason_label,
+            side="buy",
+            price=buy_level,
+            distance_pct=dist,
+            zone_role=zone_role,
+        ))
+
+    # Remaining sell orders not at any active target → HISTORICAL or STALE
+    for o in sell_orders:
+        if str(o.limit_price) in covered_sell_order_prices:
+            continue
+        classification = _classify_order_for_zone_coverage(
+            o.limit_price, target_level_statuses, buy_zone
+        )
+        dist = _distance_to_level_pct(current_price, o.limit_price)
+        if classification == "HISTORICAL":
+            state = "HISTORICAL"
+            reason_code = "SELL_ORDER_AT_PASSED_TARGET"
+            reason_label = (
+                f"Sell order at {_fmt_p(o.limit_price)} is at a passed/completed target; "
+                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
+            zone_role = "passed sell target"
+        else:
+            state = "STALE"
+            reason_code = "SELL_ORDER_NOT_AT_ANY_ZONE"
+            reason_label = (
+                f"Sell order at {_fmt_p(o.limit_price)} does not match any active zone "
+                f"(tolerance {ORDER_MATCH_TOLERANCE_PCT}%); "
+                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
+            zone_role = "unmatched sell order"
+        rows.append(OrderRow(
+            row_id=str(uuid.uuid4()),
+            render_id=card_render_id,
+            state=state,
+            reason_code=reason_code,
+            reason_label=reason_label,
+            side="sell",
+            price=o.limit_price,
+            distance_pct=dist,
+            zone_role=zone_role,
+        ))
+
+    # Remaining buy orders not at any zone → STALE
+    for o in buy_orders:
+        if str(o.limit_price) in covered_buy_order_prices:
+            continue
+        dist = _distance_to_level_pct(current_price, o.limit_price)
+        rows.append(OrderRow(
+            row_id=str(uuid.uuid4()),
+            render_id=card_render_id,
+            state="STALE",
+            reason_code="BUY_ORDER_NOT_AT_ANY_ZONE",
+            reason_label=(
+                f"Buy order at {_fmt_p(o.limit_price)} does not match any reload zone "
+                f"(tolerance {ORDER_MATCH_TOLERANCE_PCT}%); "
+                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            ),
+            side="buy",
+            price=o.limit_price,
+            distance_pct=dist,
+            zone_role="unmatched buy order",
+        ))
+
+    return tuple(rows)
+
+
+def _order_rows_html(order_rows: tuple[OrderRow, ...], *, card_render_id: str) -> str:
+    if not order_rows:
+        return ""
+    has_actionable = any(r.state in {"MISSING", "STALE"} for r in order_rows)
+    rows_html = []
+    for row in order_rows:
+        css = _ORDER_ROW_STATE_CSS.get(row.state, "order-row-unavailable")
+        price_str = _fmt_p(row.price) if row.price else "?"
+        dist_str = _pct(row.distance_pct)
+        tooltip = esc(row.reason_label)
+        rows_html.append(
+            f"<label class='order-ladder-row {css}'"
+            f" title='{tooltip}'"
+            f" data-row-id='{esc(row.row_id)}'"
+            f" data-state='{esc(row.state)}'"
+            f" data-render-id='{esc(card_render_id)}'>"
+            f"<input type='checkbox' class='order-row-check'"
+            f" data-row-id='{esc(row.row_id)}' data-state='{esc(row.state)}'>"
+            f"<span class='order-row-state'>{esc(row.state)}</span>"
+            f"<span class='order-row-side muted'>{esc(row.side.upper())}</span>"
+            f"<span class='order-row-price mono'>{esc(price_str)}</span>"
+            f"<span class='order-row-dist muted'>{esc(dist_str)}</span>"
+            f"<span class='order-row-role muted small'>{esc(row.zone_role)}</span>"
+            f"</label>"
+        )
+    select_menu = (
+        "<div class='order-ladder-menu'>"
+        f"<button class='toggle-btn small' onclick='selectLadderRows(\"{esc(card_render_id)}\",\"actionable\")'>Select missing / stale</button>"
+        f"<button class='toggle-btn small' onclick='selectLadderRows(\"{esc(card_render_id)}\",\"clear\")'>Clear selection</button>"
+        f"<button class='toggle-btn small disabled' disabled title='Read-only snapshot — no broker calls'>Fix selected (offline)</button>"
+        "</div>"
+        if has_actionable else ""
+    )
+    return (
+        "<div class='order-ladder'>"
+        "<div class='order-ladder-label'>Order ladder</div>"
+        + "".join(rows_html)
+        + select_menu
+        + "</div>"
+    )
+
+
+def render_plan_card(
+    card: ProfitPlanCard,
+    *,
+    monitor_link: str | None = None,
+    buy_orders: tuple[Any, ...] = (),
+    sell_orders: tuple[Any, ...] = (),
+) -> str:
     price_str = _fmt_p(card.current_price) if card.current_price else "—"
     quote = card.market.split("-")[-1] if "-" in card.market else ""
     search_text = build_card_search_text(card)
@@ -1738,6 +1976,16 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
     price_status_badge = card.current_price_status or "FRESH"
     short_ctx_label = _short_context_display_label(card.short_context_display_state)
 
+    order_rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=buy_orders,
+        sell_orders=sell_orders,
+    )
+    order_rows_html = _order_rows_html(order_rows, card_render_id=card.render_id)
+
     return (
         f"<section class='card plan-card'"
         f" data-relevant='{str(card.is_relevant).lower()}'"
@@ -1771,6 +2019,7 @@ def render_plan_card(card: ProfitPlanCard, *, monitor_link: str | None = None) -
         f"<div><h3 style='color:var(--warn)'>Sell Zone</h3>{_zone_html(card.sell_zone, 'sell')}</div>"
         f"<div><h3 style='color:var(--warn)'>Target Lifecycle</h3>{_target_lifecycle_html(card.target_level_statuses)}</div>"
         "</div>"
+        f"{order_rows_html}"
         f"<ul class='reasons'>{reasons_html}</ul>"
         f"{invalidation_html}"
         f"{_order_summary_html(card.order_summary, monitor_link)}"

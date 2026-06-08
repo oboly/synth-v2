@@ -1387,6 +1387,136 @@ def test_runner_source_uses_atomic_publication() -> None:
     assert "NamedTemporaryFile" in src_text
 
 
+# ---------------------------------------------------------------------------
+# Commit 3: selectable order ladder rows
+# ---------------------------------------------------------------------------
+
+from src.reporting.manual_short_trader_profit_plan_v1 import OrderRow, build_order_rows
+
+
+def test_order_rows_missing_for_active_target_with_no_order() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    # Both UPCOMING targets should be MISSING
+    missing = [r for r in rows if r.state == "MISSING" and r.side == "sell"]
+    assert len(missing) >= 1
+
+
+def test_order_rows_armed_when_sell_order_at_active_target() -> None:
+    card = _make_card(
+        current_price="0.440000",
+        fib_ext=_wld_fib_ext(),
+        sell_orders=(
+            _FakeOrder("0.454438", side="sell"),
+            _FakeOrder("0.515600", side="sell"),
+        ),
+    )
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(_FakeOrder("0.454438", side="sell"), _FakeOrder("0.515600", side="sell")),
+    )
+    armed = [r for r in rows if r.state == "ARMED" and r.side == "sell"]
+    assert len(armed) >= 1
+
+
+def test_order_rows_stale_for_order_not_at_any_zone() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(_FakeOrder("0.350000", side="sell"),),  # nowhere near any zone
+    )
+    stale = [r for r in rows if r.state == "STALE"]
+    assert len(stale) == 1
+    assert stale[0].reason_code == "SELL_ORDER_NOT_AT_ANY_ZONE"
+
+
+def test_order_rows_each_have_unique_row_id() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    ids = [r.row_id for r in rows]
+    assert len(ids) == len(set(ids))
+
+
+def test_order_rows_html_contains_checkboxes_and_select_menu() -> None:
+    from src.reporting.manual_short_trader_profit_plan_v1 import _order_rows_html
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    html = _order_rows_html(rows, card_render_id=card.render_id)
+    assert "order-row-check" in html
+    assert "order-ladder-menu" in html
+    assert "Select missing" in html
+    assert "Clear selection" in html
+
+
+def test_order_rows_html_color_follows_state_not_side() -> None:
+    from src.reporting.manual_short_trader_profit_plan_v1 import _order_rows_html
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    html = _order_rows_html(rows, card_render_id=card.render_id)
+    # MISSING rows use order-row-missing class regardless of side
+    assert "order-row-missing" in html
+
+
+def test_moonbag_at_upcoming_zone_is_not_stale_in_order_rows() -> None:
+    """Sell order far from current price but at UPCOMING zone must be ARMED, not STALE."""
+    card = _make_card(
+        current_price="0.440000",
+        fib_ext=_wld_fib_ext(),
+        sell_orders=(
+            _FakeOrder("0.454438", side="sell"),
+            _FakeOrder("0.515600", side="sell"),
+        ),
+    )
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(_FakeOrder("0.454438", side="sell"), _FakeOrder("0.515600", side="sell")),
+    )
+    stale = [r for r in rows if r.state == "STALE"]
+    armed = [r for r in rows if r.state == "ARMED"]
+    assert not stale, f"Expected no stale rows, got: {stale}"
+    assert armed
+
+
 def main() -> None:
     tests = [
         test_pure_module_has_no_forbidden_imports,
