@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -682,6 +683,7 @@ def print_summary(*, context, cards: list[ProfitPlanCard], output_html: Path, ou
 
 
 def main() -> int:
+    writer_instance_id = str(uuid.uuid4())
     args = parse_args()
     try:
         validate_profile_slug(args.account_profile)
@@ -778,7 +780,7 @@ def main() -> int:
         storage_scope=args.account_profile,
     )
     json_content = json.dumps(
-        build_json_snapshot(cards, broker_mode="db_snapshot"),
+        build_json_snapshot(cards, broker_mode="db_snapshot", writer_instance_id=writer_instance_id),
         indent=2,
         sort_keys=True,
         ensure_ascii=False,

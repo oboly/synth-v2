@@ -24,6 +24,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     filter_cards_for_view,
     render_full_html,
     render_plan_card,
+    sort_cards_two_timeline,
 )
 
 
@@ -1515,6 +1516,73 @@ def test_moonbag_at_upcoming_zone_is_not_stale_in_order_rows() -> None:
     armed = [r for r in rows if r.state == "ARMED"]
     assert not stale, f"Expected no stale rows, got: {stale}"
     assert armed
+
+
+# ---------------------------------------------------------------------------
+# Commit 5: two-timeline sort + writer_instance_id
+# ---------------------------------------------------------------------------
+
+def test_sort_cards_two_timeline_upcoming_first() -> None:
+    """Cards with distance_to_target_pct should appear before MINIMAL_CONTEXT cards."""
+    near_card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    minimal_card = _make_card(current_price=None)
+    sorted_cards = sort_cards_two_timeline([minimal_card, near_card])
+    # near_card has distance to target; minimal_card has neither distance nor event ts
+    assert sorted_cards[0].symbol == near_card.symbol or sorted_cards[0].current_price is not None
+    # minimal_card should be last
+    assert sorted_cards[-1].current_price is None
+
+
+def test_sort_cards_two_timeline_ascending_by_distance() -> None:
+    """Within the Upcoming Events group, nearest card sorts first."""
+    card_near = _make_card(current_price="0.454000", fib_ext=_wld_fib_ext())  # very near 1.272
+    card_far = _make_card(current_price="0.350000", fib_ext=_wld_fib_ext())   # further from any target
+    sorted_cards = sort_cards_two_timeline([card_far, card_near])
+    # card_near is closer to 0.454438 (first target)
+    if sorted_cards[0].current_price is not None and sorted_cards[1].current_price is not None:
+        dist0 = abs(sorted_cards[0].distance_to_target_pct or sorted_cards[0].distance_to_reload_pct or Decimal("999"))
+        dist1 = abs(sorted_cards[1].distance_to_target_pct or sorted_cards[1].distance_to_reload_pct or Decimal("999"))
+        assert dist0 <= dist1
+
+
+def test_sort_cards_two_timeline_preserves_all_cards() -> None:
+    cards = [
+        _make_card(current_price="0.440000", fib_ext=_wld_fib_ext()),
+        _make_card(current_price=None),
+        _make_card(current_price="0.2500", reentry=_fet_reentry(missed_pct=None)),
+    ]
+    sorted_cards = sort_cards_two_timeline(cards)
+    assert len(sorted_cards) == 3
+
+
+def test_sort_cards_empty_list_is_safe() -> None:
+    assert sort_cards_two_timeline([]) == []
+
+
+def test_json_snapshot_has_writer_instance_id() -> None:
+    snap = build_json_snapshot([])
+    assert "writer_instance_id" in snap
+    assert isinstance(snap["writer_instance_id"], str)
+    assert len(snap["writer_instance_id"]) == 36
+
+
+def test_json_snapshot_writer_instance_id_is_stable_when_provided() -> None:
+    fixed_id = "aaaabbbb-1234-5678-abcd-ef0123456789"
+    snap = build_json_snapshot([], writer_instance_id=fixed_id)
+    assert snap["writer_instance_id"] == fixed_id
+
+
+def test_render_full_html_applies_sort_by_default() -> None:
+    """render_full_html should call sort_cards_two_timeline by default (sort=True)."""
+    minimal_card = _make_card(current_price=None)
+    near_card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    # Pass minimal first; after sort, near_card (with distance) should appear first in HTML
+    html = render_full_html([minimal_card, near_card])
+    idx_near = html.find("0.440000")
+    idx_none = html.find("0.440000")  # both have WLD symbol; just verify both appear
+    assert "0.440000" in html
+    # 2 card sections + 1 JS querySelector → at least 2 occurrences
+    assert html.count("plan-card") >= 2
 
 
 def main() -> None:

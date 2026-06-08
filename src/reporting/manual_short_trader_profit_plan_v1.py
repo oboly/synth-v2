@@ -320,6 +320,55 @@ def filter_cards_for_view(cards: list[ProfitPlanCard], *, mode: str, query: str)
     return out
 
 
+def _nearest_distance(card: ProfitPlanCard) -> Decimal | None:
+    """Return the smallest absolute distance to any actionable level (target or reload)."""
+    candidates: list[Decimal] = []
+    if card.distance_to_target_pct is not None:
+        candidates.append(abs(card.distance_to_target_pct))
+    if card.distance_to_reload_pct is not None:
+        candidates.append(abs(card.distance_to_reload_pct))
+    return min(candidates) if candidates else None
+
+
+def _most_recent_event_ts(card: ProfitPlanCard) -> datetime | None:
+    """Return the latest first_cross_ts_utc among PASSED/COMPLETED target levels."""
+    timestamps = [
+        level.first_cross_ts_utc
+        for level in card.target_level_statuses
+        if level.first_cross_ts_utc is not None
+        and level.lifecycle_state in {"PASSED", "COMPLETED", "HISTORICAL"}
+    ]
+    return max(timestamps) if timestamps else None
+
+
+def sort_cards_two_timeline(cards: list[ProfitPlanCard]) -> list[ProfitPlanCard]:
+    """
+    Sort cards into two timelines followed by a residual group:
+
+    1. Upcoming Events — has a nearest_distance; sorted by ascending absolute distance.
+    2. Recent/Passed — no upcoming distance but has event timestamp; sorted by descending ts.
+    3. Minimal Context — no usable distance or timestamp.
+    """
+    upcoming: list[tuple[Decimal, ProfitPlanCard]] = []
+    recent: list[tuple[datetime, ProfitPlanCard]] = []
+    minimal: list[ProfitPlanCard] = []
+
+    for card in cards:
+        dist = _nearest_distance(card)
+        if dist is not None:
+            upcoming.append((dist, card))
+        else:
+            ts = _most_recent_event_ts(card)
+            if ts is not None:
+                recent.append((ts, card))
+            else:
+                minimal.append(card)
+
+    sorted_upcoming = [c for _, c in sorted(upcoming, key=lambda x: x[0])]
+    sorted_recent = [c for _, c in sorted(recent, key=lambda x: x[0], reverse=True)]
+    return sorted_upcoming + sorted_recent + minimal
+
+
 def _unique_levels(levels: tuple[Decimal | None, ...]) -> tuple[Decimal, ...]:
     seen: set[Decimal] = set()
     out: list[Decimal] = []
@@ -2036,13 +2085,15 @@ def render_full_html(
     monitor_link: str | None = None,
     nav_html: str | None = None,
     storage_scope: str = "default",
+    sort: bool = True,
 ) -> str:
     if rendered_at is None:
         rendered_at = format_ui_now()
 
+    display_cards = sort_cards_two_timeline(cards) if sort else list(cards)
     relevant_count = sum(1 for c in cards if c.is_relevant)
     total_count = len(cards)
-    cards_html = "\n".join(render_plan_card(c, monitor_link=monitor_link) for c in cards)
+    cards_html = "\n".join(render_plan_card(c, monitor_link=monitor_link) for c in display_cards)
     empty_note = "<div class='muted' style='padding:16px;grid-column:1/-1'>No symbols with a plan loaded.</div>" if not cards else ""
 
     return (
@@ -2097,6 +2148,7 @@ def build_json_snapshot(
     account_snapshot_ts_utc: str | None = None,
     order_snapshot_ts_utc: str | None = None,
     market_price_snapshot_ts_utc: str | None = None,
+    writer_instance_id: str | None = None,
 ) -> dict[str, Any]:
     now_ts = snapshot_ts or datetime.now(UTC).isoformat()
     relevant_count = sum(1 for c in cards if c.is_relevant)
@@ -2105,6 +2157,7 @@ def build_json_snapshot(
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
         "render_id": str(uuid.uuid4()),
+        "writer_instance_id": writer_instance_id or str(uuid.uuid4()),
         "snapshot_ts": now_ts,
         "generated_ts_utc": generated_ts_utc or now_ts,
         "account_snapshot_ts_utc": account_snapshot_ts_utc,
