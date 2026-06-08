@@ -79,6 +79,48 @@ class MarketTargetHistory:
     candles_since_activation: tuple[TargetHistoryCandle, ...]
 
 
+_OUTPUT_MODE = 0o644
+
+
+def atomic_text_write(content: str, dest: Path) -> None:
+    """
+    Write content to dest atomically with mode 0644.
+
+    Steps: write to same-directory temp → flush → fsync → fchmod 0644 →
+    os.replace (atomic rename) → fsync parent directory.
+
+    NamedTemporaryFile defaults to mode 0600; fchmod before replace ensures
+    the final file is always readable by the web server (www-data).
+    Cleans up the temp file on any exception before replace.
+    """
+    dest_dir = str(dest.parent)
+    tmp_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", dir=dest_dir, suffix=".tmp", delete=False, encoding="utf-8"
+        ) as tf:
+            tmp_path = tf.name
+            tf.write(content)
+            tf.flush()
+            os.fsync(tf.fileno())
+            os.fchmod(tf.fileno(), _OUTPUT_MODE)
+        os.replace(tmp_path, dest)
+        tmp_path = None  # replace succeeded; nothing to clean up
+        # Fsync the directory so the rename is durable.
+        dir_fd = os.open(dest_dir, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except Exception:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        raise
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -794,18 +836,9 @@ def main() -> int:
         ensure_ascii=False,
     )
 
-    # Atomic publication: write to temp then os.replace to avoid partial reads.
-    html_dir = str(output_html.parent)
-    json_dir = str(output_json.parent)
-    with tempfile.NamedTemporaryFile("w", dir=html_dir, suffix=".tmp", delete=False, encoding="utf-8") as tf:
-        tf.write(html_content)
-        tmp_html = tf.name
-    os.replace(tmp_html, output_html)
-
-    with tempfile.NamedTemporaryFile("w", dir=json_dir, suffix=".tmp", delete=False, encoding="utf-8") as tf:
-        tf.write(json_content)
-        tmp_json = tf.name
-    os.replace(tmp_json, output_json)
+    # Atomic publication: flush → fsync → chmod 0644 → os.replace.
+    atomic_text_write(html_content, output_html)
+    atomic_text_write(json_content, output_json)
 
     if args.output == "summary":
         print_summary(
