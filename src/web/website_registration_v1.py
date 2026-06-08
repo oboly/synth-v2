@@ -1550,21 +1550,23 @@ class WebsiteRegistrationService:
         self,
         *,
         session_token: str,
-        requested_profile_code: str,
+        requested_profile_code: str = "",
         now_utc: datetime | None = None,
     ) -> OnboardingAccessResult:
         now = now_utc or utc_now()
         row = self.repository.lookup_active_session(_hash_token(session_token))
         error = _validate_session_row(row, now)
         if error:
-            status = 401 if error != "FORBIDDEN" else 403
             return OnboardingAccessResult(success=False, error_code=error)
-        try:
-            normalized_profile = normalize_profile_code(requested_profile_code)
-        except ValueError:
-            return OnboardingAccessResult(success=False, error_code="FORBIDDEN")
-        if str(row["profile_code"]) != normalized_profile:
-            return OnboardingAccessResult(success=False, error_code="FORBIDDEN")
+        # Empty requested_profile_code → session-owned; use session profile directly.
+        # Explicit code provided → must match session owner or FORBIDDEN.
+        if requested_profile_code:
+            try:
+                normalized_profile = normalize_profile_code(requested_profile_code)
+            except ValueError:
+                return OnboardingAccessResult(success=False, error_code="FORBIDDEN")
+            if str(row["profile_code"]) != normalized_profile:
+                return OnboardingAccessResult(success=False, error_code="FORBIDDEN")
         return OnboardingAccessResult(
             success=True,
             profile_code=str(row["profile_code"]),

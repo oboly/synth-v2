@@ -324,8 +324,7 @@ def render_onboarding_page() -> str:
 <script>
 const onboardingStatus = document.getElementById("onboarding-status");
 async function refreshOnboardingStatus() {{
-  const requestedProfileCode = new URLSearchParams(window.location.search).get("profile") || "";
-  const {{response, data}} = await synthPostJson("{ONBOARDING_ENDPOINT}", {{requested_profile_code: requestedProfileCode}});
+  const {{response, data}} = await synthPostJson("{ONBOARDING_ENDPOINT}", {{}});
   if (response.ok && data.ok) {{
     onboardingStatus.textContent = "Onboarding state: " + (data.onboarding_state || "UNKNOWN");
   }} else if (response.status === 401) {{

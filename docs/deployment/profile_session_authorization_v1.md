@@ -25,7 +25,7 @@ Canonical documentation for SYNTH profile-scoped website session authorization.
 
 | Route | Profile check |
 |---|---|
-| `GET /synth/onboarding.html` | Any valid session |
+| `GET /synth/onboarding.html` | Any valid session (profile resolved server-side from session) |
 | `GET /synth/api-account-connect.html` | Any valid session (future milestone) |
 | `GET /synth/accounts/<profile>/` | Session owner must match `<profile>` |
 | `GET /synth/accounts/<profile>/wallet.html` | Session owner must match `<profile>` |
@@ -74,6 +74,17 @@ logout
   → invalidated_ts_utc = now set on session
   → clear cookie (Max-Age=0)
 ```
+
+## Onboarding Status Endpoint
+
+`POST /synth/web-auth/onboarding-status` is session-owned:
+
+- **Empty `requested_profile_code`** (or omitted): success using the session row's `profile_code`. The frontend sends an empty body — no URL parameter or storage lookup required.
+- **Explicit matching `requested_profile_code`**: success (backward-compatible with existing callers).
+- **Explicit mismatched `requested_profile_code`**: `403 FORBIDDEN`.
+- **Invalid or missing session**: `401 UNAUTHORIZED`.
+
+The frontend must not read a `?profile=` query parameter or localStorage to populate `requested_profile_code`. The server returns `profile_code` in the success response; the frontend uses that value for display only.
 
 ## Ownership Model
 
