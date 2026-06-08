@@ -76,13 +76,36 @@ systemctl --user restart synth-website-registration.service
 echo "PHASE_FINISHED phase=restart_web_auth elapsed_sec=$(( $(date +%s) - phase_epoch )) ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # -- Health retry (fail-closed, up to 20s) --
+# Uses Python JSON parsing: requires valid JSON, data["ok"] is True, and presence of "ok" field.
+# Curl failures are retried. Invalid JSON or ok!=True are retried. Does not log response body.
 
 echo ""
 echo "PHASE_STARTED phase=health_check ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 phase_epoch="$(date +%s)"
 health_ok=0
 for i in $(seq 1 "${WEB_AUTH_HEALTH_RETRIES}"); do
-  if curl -fsS --max-time 3 "${WEB_AUTH_HEALTH_URL}" | grep -q '"ok":true'; then
+  health_body=""
+  if ! health_body="$(curl -fsS --max-time 3 "${WEB_AUTH_HEALTH_URL}" 2>/dev/null)"; then
+    echo "health_check=curl_failed attempt=${i} ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    sleep "${WEB_AUTH_HEALTH_INTERVAL}"
+    continue
+  fi
+  if SYNTH_HEALTH_BODY="${health_body}" python3 - <<'PY'
+import json, os, sys
+body = os.environ.get("SYNTH_HEALTH_BODY", "")
+try:
+    data = json.loads(body)
+except Exception as exc:
+    print(f"health_check=invalid_json detail={exc}", file=sys.stderr)
+    sys.exit(1)
+if "ok" not in data:
+    print("health_check=missing_ok_field", file=sys.stderr)
+    sys.exit(1)
+if data["ok"] is not True:
+    print(f"health_check=not_ok value={data['ok']!r}", file=sys.stderr)
+    sys.exit(1)
+PY
+  then
     health_ok=1
     echo "health_check=ok attempt=${i}"
     break
@@ -98,8 +121,10 @@ fi
 echo "PHASE_FINISHED phase=health_check elapsed_sec=$(( $(date +%s) - phase_epoch )) ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # -- Generic linked-profile dashboard refresh --
+# Record start epoch before refresh so freshness verification proves files were written now.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ACCEPTANCE_START_EPOCH="$(date +%s)"
 
 echo ""
 echo "PHASE_STARTED phase=linked_profile_dashboard_refresh ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -110,7 +135,41 @@ SYNTH_ACCOUNT_WALLET_VENUE="${VENUE}" \
 bash "${SCRIPT_DIR}/run_linked_profile_dashboard_refresh_once.sh"
 echo "PHASE_FINISHED phase=linked_profile_dashboard_refresh elapsed_sec=$(( $(date +%s) - phase_epoch )) ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# -- Verify linked profile outputs (Joost, or any active linked profile) --
+# -- Verify linked profile outputs: must exist AND be newer than acceptance start --
+# Rejects pre-existing stale files from a previous run.
+
+verify_file_fresh() {
+  local profile_code="$1"
+  local fpath="$2"
+  local filename
+  filename="$(basename "${fpath}")"
+  if [[ ! -f "${fpath}" ]]; then
+    echo "verify=MISSING profile=${profile_code} file=${filename}" >&2
+    return 1
+  fi
+  if ! SYNTH_ACCEPTANCE_START="${ACCEPTANCE_START_EPOCH}" \
+       SYNTH_FILE_PATH="${fpath}" \
+       python3 - <<'PY'
+import os, sys
+fpath = os.environ["SYNTH_FILE_PATH"]
+acceptance_start = int(os.environ["SYNTH_ACCEPTANCE_START"])
+try:
+    mtime = os.path.getmtime(fpath)
+except OSError as exc:
+    print(f"verify=mtime_error file={fpath} {exc}", file=sys.stderr)
+    sys.exit(1)
+if mtime < acceptance_start:
+    age_sec = acceptance_start - int(mtime)
+    print(f"verify=STALE file={fpath} file_age_sec={age_sec}", file=sys.stderr)
+    sys.exit(1)
+PY
+  then
+    echo "verify=STALE profile=${profile_code} file=${filename}" >&2
+    return 1
+  fi
+  echo "verify=ok profile=${profile_code} file=${filename}"
+  return 0
+}
 
 echo ""
 echo "PHASE_STARTED phase=verify_linked_profile_outputs ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -128,10 +187,7 @@ else
     profile_dir="${OUTPUT_ROOT}/accounts/${profile_code}"
     verify_fail=0
     for f in index.html wallet.html wallet.json profit-plan.html open-orders-monitor.html; do
-      if [[ -f "${profile_dir}/${f}" ]]; then
-        echo "verify=ok profile=${profile_code} file=${f}"
-      else
-        echo "verify=MISSING profile=${profile_code} file=${f}" >&2
+      if ! verify_file_fresh "${profile_code}" "${profile_dir}/${f}"; then
         verify_fail=1
       fi
     done
