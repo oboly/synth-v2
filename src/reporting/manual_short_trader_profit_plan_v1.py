@@ -1189,6 +1189,129 @@ def _display_action_label(action_label: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Quality state aggregation (replaces FRESH_CURRENT_PRICE / NATIVE_SHORT display)
+# ---------------------------------------------------------------------------
+
+_QUALITY_PRICE_STALE_STATES = {"STALE_CURRENT_PRICE", "MISSING_CURRENT_PRICE"}
+_FIB_CTX_PASS_STATE = "HAS_NATIVE_SHORT_FIB_CONTEXT"
+_PRICE_WARN_AGE_MIN = Decimal("5")
+
+
+def derive_quality_state(
+    *,
+    current_price: "Decimal | None",
+    current_price_status: "str | None",
+    current_price_age_min: "Decimal | None",
+    short_context_display_state: str,
+) -> "tuple[str, str | None]":
+    """
+    Aggregate data quality into a single display state.
+    Returns (quality_state, quality_reason).
+    quality_state: PASS | WARN | FAIL
+    quality_reason: None on PASS, human-readable explanation on WARN/FAIL
+    """
+    if current_price is None or current_price_status in _QUALITY_PRICE_STALE_STATES:
+        reason = "No current price" if current_price is None else "Stale price data"
+        return "FAIL", reason
+    if short_context_display_state != _FIB_CTX_PASS_STATE:
+        return "FAIL", "No fib context"
+    if current_price_age_min is not None and current_price_age_min >= _PRICE_WARN_AGE_MIN:
+        return "WARN", f"Price {float(current_price_age_min):.1f} min old"
+    return "PASS", None
+
+
+def _card_quality_state(card: "ProfitPlanCard") -> "tuple[str, str | None]":
+    return derive_quality_state(
+        current_price=card.current_price,
+        current_price_status=card.current_price_status,
+        current_price_age_min=card.current_price_age_min,
+        short_context_display_state=card.short_context_display_state,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Merged value+distance display helpers
+# ---------------------------------------------------------------------------
+
+def _eur(price: "Decimal | None") -> str:
+    return f"€{_fmt_p(price)}" if price is not None else "?"
+
+
+def format_current_price_line(
+    price: "Decimal | None",
+    age_min: "Decimal | None",
+    quote: str,
+) -> str:
+    """Merged current price display: €0.675670 · 0.3 min ago"""
+    if price is None:
+        return "—"
+    price_str = f"€{_fmt_p(price)}" if quote == "EUR" else f"{_fmt_p(price)} {quote}".strip()
+    if age_min is not None:
+        return f"{price_str} · {float(age_min):.1f} min ago"
+    return price_str
+
+
+def format_reentry_zone_line(
+    reload_zone: "tuple[Decimal, ...]",
+    current_price: "Decimal | None",
+) -> str:
+    """Merged reload zone: €0.675991 – €0.669810 · 0.05% away"""
+    if not reload_zone:
+        return "No levels loaded"
+    prices = " – ".join(_eur(p) for p in reload_zone)
+    dist = _distance_to_zone_pct(current_price, reload_zone)
+    if dist is not None:
+        return f"{prices} · {abs(dist):.2f}% away"
+    return prices
+
+
+def format_target_zone_line(
+    target_exit_zone: "tuple[Decimal, ...]",
+    distance_to_target_pct: "Decimal | None",
+) -> str:
+    """Merged target zone: €0.696000 / €0.710247 / €0.728371 · nearest 3.01%"""
+    if not target_exit_zone:
+        return "No upcoming levels"
+    prices = " / ".join(_eur(p) for p in target_exit_zone)
+    if distance_to_target_pct is not None:
+        return f"{prices} · nearest {abs(distance_to_target_pct):.2f}%"
+    return prices
+
+
+def format_invalidation_line(
+    invalidation_risk_zone: "Decimal | None",
+    distance_to_invalidation_pct: "Decimal | None",
+) -> str:
+    """Merged invalidation: Below €0.654829 · -3.08%"""
+    if invalidation_risk_zone is None:
+        return "—"
+    price_str = f"Below {_eur(invalidation_risk_zone)}"
+    if distance_to_invalidation_pct is not None:
+        return f"{price_str} · {_pct(distance_to_invalidation_pct)}"
+    return price_str
+
+
+# ---------------------------------------------------------------------------
+# User action override: FIX LADDER beats WAIT when orders need attention
+# ---------------------------------------------------------------------------
+
+_WAIT_LIKE_DISPLAY_LABELS = {"BETWEEN LEVELS", "CONTEXT UNAVAILABLE", "WAIT", "DO NOTHING"}
+
+
+def _displayed_user_action(action_label: str, order_rows: "tuple[OrderRow, ...]") -> str:
+    """
+    Returns the display user action label.
+    Overrides WAIT-like labels with 'FIX LADDER' when actionable orders exist.
+    market_state and user_action remain independent; this only affects the display label.
+    """
+    base = _display_action_label(action_label)
+    if base.upper() in _WAIT_LIKE_DISPLAY_LABELS:
+        if any(r.state in {"MISSING", "STALE"} for r in order_rows):
+            return "FIX LADDER"
+    return base
+
+
+# ---------------------------------------------------------------------------
 # Card builder
 # ---------------------------------------------------------------------------
 
@@ -1596,6 +1719,55 @@ _CSS = """
       color: var(--blue); font-weight: 600;
     }
     .toggle-btn:hover:not(.active) { background: rgba(255,255,255,.1); color: var(--text); }
+    .quality-block { display: flex; align-items: center; gap: 6px; }
+    .quality-badge {
+      font-size: 10px; font-weight: 700; letter-spacing: .06em;
+      padding: 2px 7px; border-radius: 6px; white-space: nowrap;
+    }
+    .quality-pass { background: rgba(102,223,178,.12); color: var(--ok);  border: 1px solid rgba(102,223,178,.3); }
+    .quality-warn { background: rgba(255,209,102,.12); color: var(--warn); border: 1px solid rgba(255,209,102,.3); }
+    .quality-fail { background: rgba(255,113,113,.12); color: var(--bad);  border: 1px solid rgba(255,113,113,.3); }
+    .quality-reason { font-size: 11px; color: var(--muted); }
+    .order-section { margin-top: 10px; }
+    .order-section-header {
+      display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap;
+      padding: 6px 0 6px; border-top: 1px solid var(--line); margin-bottom: 4px;
+      font-size: 12px; color: var(--muted);
+    }
+    .order-section-header .event-label { font-weight: 600; color: var(--text); }
+    .order-ladder { margin-top: 2px; }
+    .order-ladder-label {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+      color: var(--muted); margin-bottom: 4px;
+    }
+    .order-ladder-row {
+      display: grid;
+      grid-template-columns: 18px 42px 1fr 64px 74px 1fr;
+      align-items: center; gap: 6px;
+      padding: 5px 8px; margin: 3px 0;
+      border-radius: 8px; cursor: pointer; font-size: 12px;
+    }
+    .order-row-missing  { background: rgba(0,0,0,.14); border: 1px dashed rgba(147,164,194,.2); }
+    .order-row-missing .order-row-side,
+    .order-row-missing .order-row-price,
+    .order-row-missing .order-row-dist { color: var(--muted); font-style: italic; }
+    .order-row-armed    { background: rgba(102,223,178,.07); border: 1px solid rgba(102,223,178,.22); }
+    .order-row-stale    { background: rgba(255,209,102,.07); border: 1px solid rgba(255,209,102,.2); }
+    .order-row-historical{ background: rgba(0,0,0,.1);       border: 1px solid var(--line); opacity: .65; }
+    .order-row-unavailable{ background: rgba(0,0,0,.1);      border: 1px dashed var(--line); opacity: .55; }
+    .order-row-check { width: 14px; height: 14px; cursor: pointer; accent-color: var(--blue); }
+    .order-row-side  { font-weight: 600; font-size: 11px; text-transform: uppercase; }
+    .order-row-price { font-family: ui-monospace, monospace; }
+    .order-row-dist  { font-family: ui-monospace, monospace; text-align: right; }
+    .order-row-status{ font-size: 10px; font-weight: 700; letter-spacing: .04em; }
+    .order-row-status.armed    { color: var(--ok); }
+    .order-row-status.missing  { color: var(--muted); font-style: italic; }
+    .order-row-status.stale    { color: var(--warn); }
+    .order-row-status.historical{ color: var(--muted); }
+    .order-row-status.unavailable{ color: var(--muted); }
+    .order-row-reason { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .order-ladder-menu { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+    .disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
 """
 
 def _build_client_js(storage_scope: str) -> str:
@@ -1935,6 +2107,23 @@ def build_order_rows(
     return tuple(rows)
 
 
+_ORDER_ROW_STATUS_LABEL: dict[str, str] = {
+    "ARMED":          "Armed",
+    "MISSING":        "No order",
+    "STALE":          "Stale",
+    "HISTORICAL":     "Past level",
+    "DATA_UNAVAILABLE": "Unavailable",
+}
+
+_ORDER_ROW_STATUS_CSS_CLASS: dict[str, str] = {
+    "ARMED":          "armed",
+    "MISSING":        "missing",
+    "STALE":          "stale",
+    "HISTORICAL":     "historical",
+    "DATA_UNAVAILABLE": "unavailable",
+}
+
+
 def _order_rows_html(order_rows: tuple[OrderRow, ...], *, card_render_id: str) -> str:
     if not order_rows:
         return ""
@@ -1942,8 +2131,10 @@ def _order_rows_html(order_rows: tuple[OrderRow, ...], *, card_render_id: str) -
     rows_html = []
     for row in order_rows:
         css = _ORDER_ROW_STATE_CSS.get(row.state, "order-row-unavailable")
-        price_str = _fmt_p(row.price) if row.price else "?"
+        price_str = _eur(row.price) if row.price else "?"
         dist_str = _pct(row.distance_pct)
+        status_label = _ORDER_ROW_STATUS_LABEL.get(row.state, row.state.replace("_", " ").title())
+        status_cls = _ORDER_ROW_STATUS_CSS_CLASS.get(row.state, "unavailable")
         tooltip = esc(row.reason_label)
         rows_html.append(
             f"<label class='order-ladder-row {css}'"
@@ -1953,11 +2144,11 @@ def _order_rows_html(order_rows: tuple[OrderRow, ...], *, card_render_id: str) -
             f" data-render-id='{esc(card_render_id)}'>"
             f"<input type='checkbox' class='order-row-check'"
             f" data-row-id='{esc(row.row_id)}' data-state='{esc(row.state)}'>"
-            f"<span class='order-row-state'>{esc(row.state)}</span>"
-            f"<span class='order-row-side muted'>{esc(row.side.upper())}</span>"
+            f"<span class='order-row-side'>{esc(row.side.upper())}</span>"
             f"<span class='order-row-price mono'>{esc(price_str)}</span>"
-            f"<span class='order-row-dist muted'>{esc(dist_str)}</span>"
-            f"<span class='order-row-role muted small'>{esc(row.zone_role)}</span>"
+            f"<span class='order-row-dist'>{esc(dist_str)}</span>"
+            f"<span class='order-row-status {status_cls}'>{esc(status_label)}</span>"
+            f"<span class='order-row-reason'>{esc(row.zone_role)}</span>"
             f"</label>"
         )
     select_menu = (
@@ -1984,47 +2175,37 @@ def render_plan_card(
     buy_orders: tuple[Any, ...] = (),
     sell_orders: tuple[Any, ...] = (),
 ) -> str:
-    price_str = _fmt_p(card.current_price) if card.current_price else "—"
     quote = card.market.split("-")[-1] if "-" in card.market else ""
     search_text = build_card_search_text(card)
 
-    reasons_html = "".join(f"<li>{esc(r)}</li>" for r in card.reasons)
-    invalidation_html = ""
-    if card.invalidation_level is not None:
-        invalidation_html = f"<div class='invalidation'>✕ Invalidates below {esc(_fmt_p(card.invalidation_level))}</div>"
+    # Quality aggregation (replaces separate FRESH_CURRENT_PRICE / NATIVE_SHORT display)
+    quality_state, quality_reason = _card_quality_state(card)
+    quality_css = f"quality-{quality_state.lower()}"
+    quality_html = (
+        f"<div class='quality-block'>"
+        f"<span class='quality-badge {quality_css}'>{esc(quality_state)}</span>"
+        + (f"<span class='quality-reason'>{esc(quality_reason)}</span>" if quality_reason else "")
+        + "</div>"
+    )
 
-    ladder_states_str = " · ".join(card.ladder_states) if card.ladder_states else "—"
+    # Merged value + distance fields
+    price_line = format_current_price_line(card.current_price, card.current_price_age_min, quote)
+    reentry_line = format_reentry_zone_line(card.reload_reentry_zone, card.current_price)
+    target_line = format_target_zone_line(card.target_exit_zone, card.distance_to_target_pct)
+    invalidation_line = format_invalidation_line(card.invalidation_risk_zone, card.distance_to_invalidation_pct)
+
     metrics_html = "".join((
         _metric_block("Market", card.market),
         _metric_block("Horizon", card.fib_trading_horizon),
-        _metric_block("Current price", f"{price_str} {quote}".strip()),
-        _metric_block("Current price status", card.current_price_status or "FRESH_CURRENT_PRICE"),
-        _metric_block("Price age (min)", "?" if card.current_price_age_min is None else _fmt_p(card.current_price_age_min)),
+        _metric_block("Current price", price_line),
         _metric_block("Setup", card.setup_state),
-        _metric_block("Event", card.event_state),
-        _metric_block("Ladder", ladder_states_str),
-        _metric_block("SHORT context", _short_context_display_label(card.short_context_display_state)),
-        _metric_block("Active target / exit zone", ", ".join(_fmt_p(v) for v in card.target_exit_zone) or "No upcoming levels"),
-        _metric_block("Reload / re-entry zone", ", ".join(_fmt_p(v) for v in card.reload_reentry_zone) or "No levels loaded"),
-        _metric_block("Invalidation / risk zone", _fmt_p(card.invalidation_risk_zone)),
-        _metric_block("Distance to target", _pct(card.distance_to_target_pct)),
-        _metric_block("Distance to reload", _pct(card.distance_to_reload_pct)),
-        _metric_block("Distance to invalidation", _pct(card.distance_to_invalidation_pct)),
+        _metric_block("Quality", quality_state + (f" — {quality_reason}" if quality_reason else "")),
+        _metric_block("Re-entry zone", reentry_line),
+        _metric_block("Target zone", target_line),
+        _metric_block("Invalidation", invalidation_line),
     ))
 
-    secondary_state_html = ""
-    if card.secondary_state is not None:
-        secondary_state_html = (
-            f"<div class='state-secondary'>Secondary state: {esc(STATE_LABELS.get(card.secondary_state, card.secondary_state))}</div>"
-        )
-
-    price_age_str = (
-        f" · {_fmt_p(card.current_price_age_min)} min"
-        if card.current_price_age_min is not None else ""
-    )
-    price_status_badge = card.current_price_status or "FRESH"
-    short_ctx_label = _short_context_display_label(card.short_context_display_state)
-
+    # Build order rows first (needed for FIX LADDER override)
     order_rows = build_order_rows(
         card_render_id=card.render_id,
         current_price=card.current_price,
@@ -2033,7 +2214,28 @@ def render_plan_card(
         buy_orders=buy_orders,
         sell_orders=sell_orders,
     )
+    displayed_action = _displayed_user_action(card.action_label, order_rows)
+
+    # Event + ladder state above order ladder
+    event_label = STATE_LABELS.get(card.event_state, card.event_state.replace("_", " "))
+    ladder_label = " · ".join(
+        STATE_LABELS.get(ls, ls.replace("_", " ")) for ls in card.ladder_states
+    ) if card.ladder_states else "—"
+    order_section_header = (
+        "<div class='order-section-header'>"
+        f"<span>Event: <span class='event-label'>{esc(event_label)}</span></span>"
+        f"<span>Ladder: {esc(ladder_label)}</span>"
+        "</div>"
+    )
     order_rows_html = _order_rows_html(order_rows, card_render_id=card.render_id)
+
+    secondary_state_html = ""
+    if card.secondary_state is not None:
+        secondary_state_html = (
+            f"<div class='state-secondary'>Secondary: {esc(STATE_LABELS.get(card.secondary_state, card.secondary_state))}</div>"
+        )
+
+    reasons_html = "".join(f"<li>{esc(r)}</li>" for r in card.reasons)
 
     return (
         f"<section class='card plan-card'"
@@ -2047,30 +2249,23 @@ def render_plan_card(
         f"<span class='muted small'>·</span>"
         f"<span class='muted small'>{esc(card.fib_trading_horizon)}</span>"
         f"<span class='muted small'>·</span>"
-        f"<span class='mono'>{esc(price_str)} {esc(quote)}</span>"
-        f"<span class='muted small price-status'>{esc(price_status_badge)}{esc(price_age_str)}</span>"
+        f"<span class='mono'>{esc(price_line)}</span>"
         f"</div>"
-        f"<div class='card-row2'>"
-        f"<span class='muted small'>SHORT context:</span>"
-        f"<span class='short-ctx-state'>{esc(short_ctx_label)}</span>"
-        f"</div>"
+        f"<div class='card-row2'>{quality_html}</div>"
         f"<div style='text-align:right'>"
         f"{_scenario_badge(card.scenario_type)}"
         f"<div class='state-label {_state_class(card.primary_state)}'>{esc(card.suggested_manual_attention_label)}</div>"
         f"{secondary_state_html}"
-        f"<div class='action-label {_action_class(card.action_label)}'>{esc(_display_action_label(card.action_label))}</div>"
+        f"<div class='action-label {_action_class(card.action_label)}'>{esc(displayed_action)}</div>"
         f"<div class='tf-label'>{esc(card.timeframe_label)}</div>"
         f"</div>"
         "</div>"
         f"<div class='field-grid'>{metrics_html}</div>"
-        "<div class='zones'>"
-        f"<div><h3 style='color:var(--ok)'>Buy Zone</h3>{_zone_html(card.buy_zone, 'buy')}</div>"
-        f"<div><h3 style='color:var(--warn)'>Sell Zone</h3>{_zone_html(card.sell_zone, 'sell')}</div>"
-        f"<div><h3 style='color:var(--warn)'>Target Lifecycle</h3>{_target_lifecycle_html(card.target_level_statuses)}</div>"
-        "</div>"
+        f"<div class='order-section'>"
+        f"{order_section_header}"
         f"{order_rows_html}"
+        f"</div>"
         f"<ul class='reasons'>{reasons_html}</ul>"
-        f"{invalidation_html}"
         f"{_order_summary_html(card.order_summary, monitor_link)}"
         "<div class='manual-only muted'>MANUAL_ONLY — read-only snapshot, no automatic placement</div>"
         "</section>"

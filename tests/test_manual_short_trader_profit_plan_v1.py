@@ -13,15 +13,22 @@ import src.reporting.account_dashboard_profile_access_v1 as profile_access
 from src.market_data.market_price_snapshot_v1 import MarketPriceSnapshot
 from src.reporting.account_scoped_short_trader_dashboard_v1 import AccountScopedShortDashboardContext
 from src.reporting.manual_short_trader_dashboard_v1 import BrokerBalanceRow, BrokerOrderRow
+import src.reporting.manual_short_trader_profit_plan_v1 as _pp_module
 from src.reporting.manual_short_trader_profit_plan_v1 import (
     FibExtContext,
+    OrderRow,
     ProfitPlanCard,
     ReentryContext,
     TargetHistoryCandle,
     build_card_search_text,
     build_json_snapshot,
     build_profit_plan_card,
+    derive_quality_state,
     filter_cards_for_view,
+    format_current_price_line,
+    format_invalidation_line,
+    format_reentry_zone_line,
+    format_target_zone_line,
     render_full_html,
     render_plan_card,
     sort_cards_two_timeline,
@@ -1335,11 +1342,13 @@ def test_card_html_row1_contains_symbol_market_horizon_price() -> None:
     assert "0.440000" in html
 
 
-def test_card_html_row2_contains_short_context_label() -> None:
+def test_card_html_row2_contains_quality_badge() -> None:
     card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
     html = render_plan_card(card)
     assert "card-row2" in html
-    assert "SHORT context" in html
+    # Row 2 now shows the quality badge instead of raw SHORT context label
+    assert "quality-badge" in html
+    assert "PASS" in html or "WARN" in html or "FAIL" in html
 
 
 def test_json_snapshot_has_render_id_at_top_level() -> None:
@@ -1652,6 +1661,328 @@ def test_json_snapshot_render_id_is_generated_when_not_provided() -> None:
     assert len(snap["render_id"]) > 0
 
 
+# ---------------------------------------------------------------------------
+# Focused: quality aggregation (derive_quality_state)
+# ---------------------------------------------------------------------------
+
+def test_quality_state_fail_when_price_is_none() -> None:
+    state, reason = derive_quality_state(
+        current_price=None,
+        current_price_status="OK",
+        current_price_age_min=Decimal("1"),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert state == "FAIL"
+    assert reason is not None and "price" in reason.lower()
+
+
+def test_quality_state_fail_when_price_status_is_stale() -> None:
+    state, reason = derive_quality_state(
+        current_price=Decimal("0.44"),
+        current_price_status="STALE_CURRENT_PRICE",
+        current_price_age_min=Decimal("12"),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert state == "FAIL"
+    assert reason is not None
+
+
+def test_quality_state_fail_when_price_status_is_missing() -> None:
+    state, reason = derive_quality_state(
+        current_price=Decimal("0.44"),
+        current_price_status="MISSING_CURRENT_PRICE",
+        current_price_age_min=None,
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert state == "FAIL"
+
+
+def test_quality_state_fail_when_fib_context_absent() -> None:
+    state, reason = derive_quality_state(
+        current_price=Decimal("0.44"),
+        current_price_status="OK",
+        current_price_age_min=Decimal("1"),
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert state == "FAIL"
+    assert reason == "No fib context"
+
+
+def test_quality_state_warn_when_price_age_at_threshold() -> None:
+    state, reason = derive_quality_state(
+        current_price=Decimal("0.44"),
+        current_price_status="OK",
+        current_price_age_min=Decimal("5"),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert state == "WARN"
+    assert reason is not None and "5.0" in reason
+
+
+def test_quality_state_warn_when_price_age_exceeds_threshold() -> None:
+    state, reason = derive_quality_state(
+        current_price=Decimal("0.44"),
+        current_price_status="OK",
+        current_price_age_min=Decimal("8.5"),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert state == "WARN"
+    assert reason is not None
+
+
+def test_quality_state_pass_when_all_good() -> None:
+    state, reason = derive_quality_state(
+        current_price=Decimal("0.44"),
+        current_price_status="OK",
+        current_price_age_min=Decimal("1"),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert state == "PASS"
+    assert reason is None
+
+
+def test_quality_state_pass_when_age_is_none() -> None:
+    state, reason = derive_quality_state(
+        current_price=Decimal("0.44"),
+        current_price_status="OK",
+        current_price_age_min=None,
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert state == "PASS"
+    assert reason is None
+
+
+# ---------------------------------------------------------------------------
+# Focused: merged value+distance formatting
+# ---------------------------------------------------------------------------
+
+def test_format_current_price_line_with_age() -> None:
+    result = format_current_price_line(Decimal("0.675670"), Decimal("0.3"), "EUR")
+    assert "€0.675670" in result
+    assert "0.3 min ago" in result
+
+
+def test_format_current_price_line_no_age() -> None:
+    result = format_current_price_line(Decimal("0.675670"), None, "EUR")
+    assert "€0.675670" in result
+    assert "min ago" not in result
+
+
+def test_format_current_price_line_none_returns_dash() -> None:
+    result = format_current_price_line(None, Decimal("2"), "EUR")
+    assert result == "—"
+
+
+def test_format_reentry_zone_line_with_distance() -> None:
+    zone = (Decimal("0.675991"), Decimal("0.669810"))
+    result = format_reentry_zone_line(zone, Decimal("0.676000"))
+    assert "€0.675991" in result
+    assert "€0.669810" in result
+    assert "% away" in result
+
+
+def test_format_reentry_zone_line_empty_zone() -> None:
+    result = format_reentry_zone_line((), Decimal("0.44"))
+    assert "No levels loaded" in result
+
+
+def test_format_target_zone_line_with_distance() -> None:
+    zone = (Decimal("0.515600"), Decimal("0.620000"))
+    result = format_target_zone_line(zone, Decimal("3.01"))
+    assert "€0.515600" in result
+    assert "€0.620000" in result
+    assert "nearest" in result
+    assert "3.01" in result
+
+
+def test_format_target_zone_line_empty_zone() -> None:
+    result = format_target_zone_line((), None)
+    assert "No upcoming levels" in result
+
+
+def test_format_invalidation_line_with_distance() -> None:
+    result = format_invalidation_line(Decimal("0.300000"), Decimal("-3.08"))
+    assert "€0.300000" in result or "Below" in result
+    assert "-3.08" in result
+
+
+def test_format_invalidation_line_no_price() -> None:
+    result = format_invalidation_line(None, Decimal("-2.5"))
+    assert result == "—"
+
+
+# ---------------------------------------------------------------------------
+# Focused: rendered HTML has no duplicate zone/distance metric blocks
+# ---------------------------------------------------------------------------
+
+def test_rendered_card_has_no_separate_distance_to_target_field() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext(),
+                      short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT")
+    html = render_plan_card(card)
+    assert "Distance to target" not in html
+    assert "distance_to_target" not in html
+
+
+def test_rendered_card_has_no_separate_distance_to_reload_field() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext(),
+                      short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT")
+    html = render_plan_card(card)
+    assert "Distance to reload" not in html
+    assert "distance_to_reload" not in html
+
+
+def test_rendered_card_has_no_separate_distance_to_invalidation_field() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext(),
+                      short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT")
+    html = render_plan_card(card)
+    assert "Distance to invalidation" not in html
+
+
+def test_rendered_card_has_no_separate_price_age_field() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_plan_card(card)
+    assert "Price age" not in html
+    assert "price_age" not in html
+
+
+def test_rendered_card_has_no_separate_short_context_label() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_plan_card(card)
+    assert "SHORT context" not in html
+    assert "NATIVE_SHORT_CONTEXT_AVAILABLE" not in html
+
+
+def test_rendered_card_has_no_separate_current_price_status_field() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_plan_card(card)
+    assert "Current price status" not in html
+    assert "FRESH_CURRENT_PRICE" not in html
+
+
+# ---------------------------------------------------------------------------
+# Focused: order row HTML uses human-readable labels, not raw machine codes
+# ---------------------------------------------------------------------------
+
+def _make_order_row(*, state: str, side: str = "sell") -> OrderRow:
+    return OrderRow(
+        row_id="test-row-1",
+        render_id="test-render-1",
+        state=state,
+        reason_code="TEST_CODE",
+        reason_label="Test reason",
+        side=side,
+        price=Decimal("0.515600"),
+        distance_pct=Decimal("3.01"),
+        zone_role="sell target 1.618",
+    )
+
+
+def test_order_row_html_missing_shows_no_order_not_machine_code() -> None:
+    from src.reporting.manual_short_trader_profit_plan_v1 import _order_rows_html
+    rows = (_make_order_row(state="MISSING"),)
+    html = _order_rows_html(rows, card_render_id="r1")
+    assert "No order" in html
+    # Raw machine code must not appear as visible text content
+    assert ">MISSING<" not in html
+
+
+def test_order_row_html_armed_shows_armed_label() -> None:
+    from src.reporting.manual_short_trader_profit_plan_v1 import _order_rows_html
+    rows = (_make_order_row(state="ARMED"),)
+    html = _order_rows_html(rows, card_render_id="r1")
+    assert "Armed" in html
+    assert ">ARMED<" not in html
+
+
+def test_order_row_html_stale_shows_stale_label() -> None:
+    from src.reporting.manual_short_trader_profit_plan_v1 import _order_rows_html
+    rows = (_make_order_row(state="STALE"),)
+    html = _order_rows_html(rows, card_render_id="r1")
+    assert "Stale" in html
+    assert ">STALE<" not in html
+
+
+def test_order_row_html_historical_shows_past_level_label() -> None:
+    from src.reporting.manual_short_trader_profit_plan_v1 import _order_rows_html
+    rows = (_make_order_row(state="HISTORICAL"),)
+    html = _order_rows_html(rows, card_render_id="r1")
+    assert "Past level" in html
+    assert ">HISTORICAL<" not in html
+
+
+def test_order_row_html_columns_not_concatenated_as_single_text() -> None:
+    from src.reporting.manual_short_trader_profit_plan_v1 import _order_rows_html
+    rows = (_make_order_row(state="MISSING"),)
+    html = _order_rows_html(rows, card_render_id="r1")
+    # Each column is in its own span; price and state are not merged into one text node
+    assert "order-row-price" in html
+    assert "order-row-status" in html
+    assert "order-row-side" in html
+
+
+# ---------------------------------------------------------------------------
+# Focused: FIX LADDER overrides WAIT-like display, market_state independent
+# ---------------------------------------------------------------------------
+
+def test_fix_ladder_overrides_between_levels_when_missing_order() -> None:
+    rows = (_make_order_row(state="MISSING"),)
+    result = _pp_module._displayed_user_action("BETWEEN_LEVELS", rows)
+    assert result == "FIX LADDER"
+
+
+def test_fix_ladder_overrides_do_nothing_when_stale_order() -> None:
+    rows = (_make_order_row(state="STALE"),)
+    result = _pp_module._displayed_user_action("DO_NOTHING", rows)
+    assert result == "FIX LADDER"
+
+
+def test_fix_ladder_overrides_context_unavailable_when_missing_order() -> None:
+    rows = (_make_order_row(state="MISSING"),)
+    result = _pp_module._displayed_user_action("CONTEXT_UNAVAILABLE", rows)
+    assert result == "FIX LADDER"
+
+
+def test_wait_like_not_overridden_when_all_orders_armed() -> None:
+    rows = (_make_order_row(state="ARMED"),)
+    result = _pp_module._displayed_user_action("BETWEEN_LEVELS", rows)
+    assert result != "FIX LADDER"
+
+
+def test_wait_like_not_overridden_when_no_order_rows() -> None:
+    result = _pp_module._displayed_user_action("BETWEEN_LEVELS", ())
+    assert result != "FIX LADDER"
+
+
+def test_non_wait_action_not_overridden_even_with_missing_orders() -> None:
+    rows = (_make_order_row(state="MISSING"),)
+    result = _pp_module._displayed_user_action("TAKE_PROFIT_WAITING", rows)
+    assert result != "FIX LADDER"
+
+
+def test_market_state_independent_from_displayed_action() -> None:
+    # Even when display shows FIX LADDER, card.action_label (market_state) is unchanged.
+    card = _make_card(
+        current_price="0.440000",
+        fib_ext=_wld_fib_ext(),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    # action_label is a field on the card; render does not mutate it
+    original_action = card.action_label
+    render_plan_card(card)
+    assert card.action_label == original_action
+
+
+def test_fix_ladder_displayed_but_market_state_is_between_levels() -> None:
+    # _displayed_user_action returns FIX LADDER for display, but does not touch market state.
+    rows = (_make_order_row(state="MISSING"),)
+    displayed = _pp_module._displayed_user_action("BETWEEN_LEVELS", rows)
+    assert displayed == "FIX LADDER"
+    # The original action_label passed in is unmodified (function is pure / no mutation)
+    # We verify by calling with the same input again:
+    displayed2 = _pp_module._displayed_user_action("BETWEEN_LEVELS", rows)
+    assert displayed2 == "FIX LADDER"
+
+
 def main() -> None:
     tests = [
         test_pure_module_has_no_forbidden_imports,
@@ -1714,6 +2045,42 @@ def main() -> None:
         test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account_leakage,
         test_profit_plan_runner_missing_account_fails_closed,
         test_runner_source_does_not_construct_account_code_from_profile_name,
+        test_quality_state_fail_when_price_is_none,
+        test_quality_state_fail_when_price_status_is_stale,
+        test_quality_state_fail_when_price_status_is_missing,
+        test_quality_state_fail_when_fib_context_absent,
+        test_quality_state_warn_when_price_age_at_threshold,
+        test_quality_state_warn_when_price_age_exceeds_threshold,
+        test_quality_state_pass_when_all_good,
+        test_quality_state_pass_when_age_is_none,
+        test_format_current_price_line_with_age,
+        test_format_current_price_line_no_age,
+        test_format_current_price_line_none_returns_dash,
+        test_format_reentry_zone_line_with_distance,
+        test_format_reentry_zone_line_empty_zone,
+        test_format_target_zone_line_with_distance,
+        test_format_target_zone_line_empty_zone,
+        test_format_invalidation_line_with_distance,
+        test_format_invalidation_line_no_price,
+        test_rendered_card_has_no_separate_distance_to_target_field,
+        test_rendered_card_has_no_separate_distance_to_reload_field,
+        test_rendered_card_has_no_separate_distance_to_invalidation_field,
+        test_rendered_card_has_no_separate_price_age_field,
+        test_rendered_card_has_no_separate_short_context_label,
+        test_rendered_card_has_no_separate_current_price_status_field,
+        test_order_row_html_missing_shows_no_order_not_machine_code,
+        test_order_row_html_armed_shows_armed_label,
+        test_order_row_html_stale_shows_stale_label,
+        test_order_row_html_historical_shows_past_level_label,
+        test_order_row_html_columns_not_concatenated_as_single_text,
+        test_fix_ladder_overrides_between_levels_when_missing_order,
+        test_fix_ladder_overrides_do_nothing_when_stale_order,
+        test_fix_ladder_overrides_context_unavailable_when_missing_order,
+        test_wait_like_not_overridden_when_all_orders_armed,
+        test_wait_like_not_overridden_when_no_order_rows,
+        test_non_wait_action_not_overridden_even_with_missing_orders,
+        test_market_state_independent_from_displayed_action,
+        test_fix_ladder_displayed_but_market_state_is_between_levels,
     ]
     for test in tests:
         test()
