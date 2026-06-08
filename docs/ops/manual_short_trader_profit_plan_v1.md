@@ -53,6 +53,7 @@ It does not:
 |------|------|
 | `src/reporting/manual_short_trader_profit_plan_v1.py` | Pure computation and HTML/JSON rendering — no broker/DB imports |
 | `src/reporting/run_manual_short_trader_profit_plan_v1.py` | Runner — account-scoped DB snapshot loader + shared fib context join |
+| `src/reporting/profit_plan_proposal_preview_v1.py` | Read-only proposal preview — validates row selections, builds OrderProposal, no broker calls |
 | `src/market_data/native_short_fib_context_v1.py` | Canonical market-only native SHORT 4h/1h row contract |
 | `src/market_data/run_native_short_fib_context_v1.py` | Deterministic native SHORT bridge builder / coverage runner |
 
@@ -78,14 +79,157 @@ Within each tier, the newest `anchor_end_ts_utc` wins.
 The reporting layer must never append active-scenario reasons to a MAP_COMPLETED card.
 `_completed_map_override()` replaces (not appends to) the scenario reason tuple.
 
+## Semantic State Fields (v2 redesign)
+
+Each card now exposes canonical machine-readable state enumerations:
+
+### setup_state
+
+Derived from `scenario_type`:
+
+| setup_state | scenario_type |
+|-------------|---------------|
+| EXTENSION_SETUP | EXTENSION_RUNNER |
+| BREAKOUT_SETUP | BREAKOUT_RETEST |
+| REENTRY_SETUP | REENTRY_WAIT |
+| RANGE_SETUP | RANGE_BOUNCE |
+| MAP_COMPLETED | MAP_COMPLETED |
+| MINIMAL_CONTEXT | any gap/fallback |
+
+### event_state
+
+Derived from `primary_state`:
+
+| event_state | primary_state |
+|-------------|---------------|
+| RELOAD_ZONE_APPROACHING | RELOAD_ZONE_APPROACHING |
+| TARGET_APPROACHING | TAKE_PROFIT_WAITING |
+| TARGET_HIT | (direct completion detection) |
+| MAP_EXPIRED | MAP_RECOMPUTE_NEEDED, POST_EXTENSION_PULLBACK |
+| INVALIDATION_NEAR | INVALIDATION_NEAR |
+| BETWEEN_LEVELS | DO_NOTHING, PRICE_RAN_AWAY, ORDER_TOO_FAR_OR_STALE |
+| CONTEXT_UNAVAILABLE | INSUFFICIENT_DATA, MARKET_DATA_MISSING, STALE_CURRENT_PRICE |
+
+### ladder_states
+
+Tuple of one or more:
+
+| ladder_state | Meaning |
+|--------------|---------|
+| LADDER_ARMED | All active zone levels have matching open orders |
+| LADDER_MISSING | No orders at any active level |
+| LADDER_INCOMPLETE | Some active levels have orders, some don't |
+| STALE_ORDERS_PRESENT | Open orders that don't match any active zone |
+| LADDER_NOT_REQUIRED | No active levels or buy zone |
+| ORDER_DATA_UNAVAILABLE | Context gap — order check skipped |
+
+**Moonbag fix:** Orders placed at UPCOMING or NEAR fib extension targets are
+classified ARMED regardless of their distance from the current price.
+The old aggregate `max_open_order_distance_pct` check was wrong for
+intentional moonbag sell orders at far-ahead targets.
+
+### relevance_reasons
+
+Tuple of strings explaining why `is_relevant=True`:
+- event_state from `RELEVANT_EVENT_STATES`: RELOAD_ZONE_APPROACHING, TARGET_APPROACHING, TARGET_HIT, MAP_EXPIRED, INVALIDATION_NEAR, CONTEXT_UNAVAILABLE
+- ladder_state from `RELEVANT_LADDER_STATES`: LADDER_MISSING, LADDER_INCOMPLETE, STALE_ORDERS_PRESENT, ORDER_DATA_UNAVAILABLE
+- Empty tuple when card is not relevant.
+
+**REENTRY_WAIT alone no longer triggers relevance.** Only a problematic event_state
+or ladder problem does.
+
+### Action label display mapping
+
+Internal action labels are mapped to review language in HTML:
+
+| Internal | Displayed |
+|----------|-----------|
+| WAIT | BETWEEN LEVELS |
+| NO_ACTION | BETWEEN LEVELS |
+| DO_NOTHING | BETWEEN LEVELS |
+| WAIT_FOR_SHORT_CONTEXT | CONTEXT UNAVAILABLE |
+| WAIT_FOR_NEW_MAP | MAP EXPIRED |
+| NO_CURRENT_PRICE | PRICE UNAVAILABLE |
+| PLACE_LADDER | SETUP LADDER |
+| REPAIR_LADDER | REVIEW LADDER |
+| FAR_MOONBAG_ONLY | MOONBAG ONLY |
+
+## Card Identity (render_id)
+
+Each `ProfitPlanCard` carries a `render_id` (UUID4) assigned at construction time.
+- Exposed as `data-render-id` on the card's `<section>` element
+- Included per card in the JSON snapshot (`symbols[i].render_id`)
+- Used by the order ladder and proposal preview to scope row selections
+
+The JSON snapshot also carries:
+- `render_id`: a UUID4 per snapshot generation
+- `writer_instance_id`: a UUID4 per runner invocation (shared across HTML+JSON writes of the same run — used to identify which run wrote the snapshot)
+- `relevant_count`, `total_count`
+- `generated_ts_utc`, `account_snapshot_ts_utc`, `order_snapshot_ts_utc`, `market_price_snapshot_ts_utc`
+
+## Card Sort Order (Two-Timeline)
+
+`sort_cards_two_timeline()` organises cards before rendering:
+
+1. **Upcoming Events** — cards with `distance_to_target_pct` or `distance_to_reload_pct`, sorted ascending by nearest absolute distance.
+2. **Recent/Passed** — cards with no upcoming distance but a `first_cross_ts_utc` on a PASSED/COMPLETED level; sorted descending by most recent event timestamp.
+3. **Minimal Context** — cards with neither usable distance nor event timestamp.
+
+`render_full_html` applies this sort by default (`sort=True`).
+
+## Atomic Publication
+
+The runner writes HTML and JSON via `tempfile.NamedTemporaryFile` + `os.replace`:
+- prevents partial reads by the nginx server during concurrent refresh
+- the old file remains readable until the new file is fully written and renamed
+
+## Selectable Order Ladder Rows
+
+Each card includes a selectable order ladder below the zone panels:
+
+- One `OrderRow` per active zone level (UPCOMING/NEAR sell target or buy zone level): state ARMED or MISSING.
+- Uncovered existing orders (not at any active zone) appear as STALE or HISTORICAL rows.
+- Color follows state (ARMED=green, MISSING=warn, STALE=error, HISTORICAL=muted).
+- Each row has a checkbox (`order-row-check`, `data-row-id`, `data-state`).
+- Tooltip on each row shows: reason, zone role, distance from current price, tolerance.
+- Selection menu (per card, scoped by `render_id`):
+  - "Select missing / stale" — checks all MISSING and STALE rows
+  - "Clear selection" — unchecks all rows
+  - "Fix selected (offline)" — disabled button; read-only, no broker calls
+
+**OrderRow states:**
+
+| State | Meaning |
+|-------|---------|
+| MISSING | Zone level has no matching open order |
+| ARMED | Zone level has a matching open order |
+| STALE | Existing order not matching any active zone |
+| HISTORICAL | Existing order at a PASSED/COMPLETED target |
+| DATA_UNAVAILABLE | Order data not available for this card |
+
+## Proposal Preview Controller
+
+`src/reporting/profit_plan_proposal_preview_v1.py` implements a read-only
+proposal preview (no broker calls, no order placement):
+
+- `ProposalAccessContext` — session-validated profile + account identity (built by the web handler after session+CSRF checks).
+- `build_proposal_from_rows()` — validates `render_id` match + row_id membership, builds `OrderProposal` with typed operations.
+- Operation types: `ADD_LIMIT_BUY`, `ADD_LIMIT_SELL`, `CANCEL_ORDER` only.
+- `proposal_hash` — deterministic SHA256 of profile + account + render_id + operations.
+- `decision_gate_preview` — defaults to `PREVIEW_BLOCKED` (no live account context); a live web handler can enrich this.
+- `render_proposal_preview_html()` — table preview with safety markers; no broker calls.
+- Proposals expire after 300 seconds (`PROPOSAL_TTL_SECONDS`).
+
+**Safety:** broker_writes=0 order_submission=0 live_orders=0 executor=none
+
 ## View Toggle
 
 The dashboard has a client-side toggle at the top:
 
 | View | Shows |
 |------|-------|
-| **Relevant candidates** (default) | Symbols with TAKE_PROFIT_NEAR, REBUY_ZONE_NEAR, BUY_DIP, BREAKOUT_WATCH, REENTRY_WAIT, RANGE_BOUNCE, BREAKOUT_RETEST |
-| **All candidates** | Every symbol with a loaded plan, including FAR_MOONBAG_ONLY, DO_NOT_TOUCH, NO_CLEAR_PLAN |
+| **Relevant candidates** (default) | Symbols where event_state is in RELEVANT_EVENT_STATES or ladder_states contains a RELEVANT_LADDER_STATE |
+| **All candidates** | Every symbol with a loaded plan, including MINIMAL_CONTEXT and BETWEEN_LEVELS |
 
 When **All candidates** is selected, a sticky client-side search field appears.
 It filters instantly and case-insensitively across symbol, market, scenario,
