@@ -1600,8 +1600,7 @@ _CSS = """
     }
     header {
       padding: 10px 16px 8px; border-bottom: 1px solid var(--line);
-      background: rgba(8,13,24,.92); position: sticky; top: 0;
-      z-index: 10; backdrop-filter: blur(10px);
+      background: rgba(8,13,24,.92);
     }
     .cockpit-nav {
       display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0 0;
@@ -1699,8 +1698,10 @@ _CSS = """
       display: flex; gap: 6px; margin-top: 6px; align-items: center; flex-wrap: wrap;
     }
     .sticky-controls {
-      /* Lives inside the sticky <header> — no separate sticky needed. */
-      padding: 4px 0 2px; margin-top: 4px;
+      position: sticky; top: 0; z-index: 10;
+      background: rgba(8,13,24,.96); backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--line); box-shadow: 0 2px 8px rgba(0,0,0,.3);
+      padding: 6px 16px 8px;
     }
     .search-shell { display: none; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
     .search-input {
@@ -2319,7 +2320,8 @@ def render_full_html(
         f"    <span class='muted small'>Rendered: {esc(rendered_at)} · Mode: {esc(broker_mode)} · Relevant: {relevant_count} / {total_count}</span>\n"
         "    </div>\n"
         f"{'' if not nav_html else f'    {nav_html}\\n'}"
-        "    <div class='sticky-controls'>\n"
+        "  </header>\n"
+        "  <div class='sticky-controls'>\n"
         "    <div class='view-toggle'>\n"
         "      <button id='btn-relevant' class='toggle-btn' onclick='setView(\"relevant\")'>Relevant candidates</button>\n"
         "      <button id='btn-all' class='toggle-btn' onclick='setView(\"all\")'>All candidates</button>\n"
@@ -2330,8 +2332,7 @@ def render_full_html(
         "      <button class='toggle-btn' type='button' onclick='clearSearch()'>Clear</button>\n"
         "      <div id='matching-count' class='search-meta'>Matching 0 of 0</div>\n"
         "    </div>\n"
-        "    </div>\n"
-        "  </header>\n"
+        "  </div>\n"
         "  <main>\n"
         f"    {empty_note}\n"
         f"    {cards_html}\n"

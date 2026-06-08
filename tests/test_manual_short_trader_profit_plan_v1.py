@@ -1983,6 +1983,66 @@ def test_fix_ladder_displayed_but_market_state_is_between_levels() -> None:
     assert displayed2 == "FIX LADDER"
 
 
+def _make_minimal_full_html() -> str:
+    from src.reporting.manual_short_trader_profit_plan_v1 import render_full_html
+    return render_full_html(
+        cards=[],
+        rendered_at="2026-06-08T00:00:00Z",
+        broker_mode="MANUAL_ONLY",
+        storage_scope="test",
+    )
+
+
+def test_page_header_has_no_position_sticky() -> None:
+    # The <header> element must scroll with the page — only .sticky-controls is sticky.
+    css = _pp_module._CSS
+    import re
+    header_rule = re.search(r"header\s*\{([^}]*)\}", css)
+    assert header_rule is not None, "header CSS rule not found"
+    assert "position: sticky" not in header_rule.group(1), "header must not have position: sticky"
+
+
+def test_sticky_controls_has_position_sticky() -> None:
+    css = _pp_module._CSS
+    import re
+    sc_rule = re.search(r"\.sticky-controls\s*\{([^}]*)\}", css)
+    assert sc_rule is not None, ".sticky-controls CSS rule not found"
+    assert "position: sticky" in sc_rule.group(1), ".sticky-controls must have position: sticky"
+
+
+def test_h1_not_inside_sticky_controls_in_rendered_html() -> None:
+    html = _make_minimal_full_html()
+    sc_start = html.find("class='sticky-controls'")
+    assert sc_start != -1, "sticky-controls not found in HTML"
+    # Find the closing </div> of sticky-controls (next top-level </div> after open)
+    inner_start = html.find(">", sc_start) + 1
+    # h1 must appear before sticky-controls, not inside it
+    h1_pos = html.find("<h1>")
+    assert h1_pos != -1, "h1 not found in HTML"
+    assert h1_pos < sc_start, "h1 must not be inside sticky-controls"
+
+
+def test_render_metadata_not_inside_sticky_controls_in_rendered_html() -> None:
+    html = _make_minimal_full_html()
+    sc_start = html.find("class='sticky-controls'")
+    assert sc_start != -1, "sticky-controls not found in HTML"
+    # Rendered: label must appear before sticky-controls
+    rendered_pos = html.find("Rendered:")
+    assert rendered_pos != -1, "Rendered: metadata not found in HTML"
+    assert rendered_pos < sc_start, "Rendered: metadata must not be inside sticky-controls"
+
+
+def test_only_one_sticky_container_in_rendered_output() -> None:
+    html = _make_minimal_full_html()
+    css = _pp_module._CSS
+    # Count position:sticky occurrences in CSS (should be exactly 1: .sticky-controls)
+    import re
+    sticky_rules = re.findall(r"position:\s*sticky", css)
+    assert len(sticky_rules) == 1, f"Expected exactly 1 position:sticky in CSS, found {len(sticky_rules)}"
+    # The single sticky container in rendered HTML must be sticky-controls
+    assert html.count("class='sticky-controls'") == 1
+
+
 def main() -> None:
     tests = [
         test_pure_module_has_no_forbidden_imports,
@@ -2081,6 +2141,11 @@ def main() -> None:
         test_non_wait_action_not_overridden_even_with_missing_orders,
         test_market_state_independent_from_displayed_action,
         test_fix_ladder_displayed_but_market_state_is_between_levels,
+        test_page_header_has_no_position_sticky,
+        test_sticky_controls_has_position_sticky,
+        test_h1_not_inside_sticky_controls_in_rendered_html,
+        test_render_metadata_not_inside_sticky_controls_in_rendered_html,
+        test_only_one_sticky_container_in_rendered_output,
     ]
     for test in tests:
         test()
