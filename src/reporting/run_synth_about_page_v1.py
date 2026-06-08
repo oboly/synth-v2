@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 
-from src.reporting.account_dashboard_profile_access_v1 import (
-    CONFIGURED_DASHBOARD_PROFILE_ACCESS,
-)
+from src.account.app_profile_trading_account_link_v1 import discover_active_linked_profiles
 from src.reporting.dashboard_style_v1 import (
     DEFAULT_NAV_ACCOUNT_PROFILE,
     copy_synth_favicon_assets,
@@ -23,6 +22,7 @@ DEFAULT_INDEX_HTML = Path("/var/www/html/synth/index.html")
 DEFAULT_HERO_SOURCE = Path("assets/brand/synth/synth-third-faction-triptych.png")
 DEFAULT_HERO_OUTPUT = Path("/var/www/html/synth/assets/brand/synth-third-faction-triptych.png")
 DEFAULT_HERO_HREF = "/synth/assets/brand/synth-third-faction-triptych.png"
+DEFAULT_VENUE = "bitvavo"
 HERO_ALT = (
     "Synth Third Faction triptych artwork showing three dark-futurist brand treatments "
     "of the angular SYNTH emblem with violet energy accents."
@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hero-asset-source", default=str(DEFAULT_HERO_SOURCE))
     parser.add_argument("--hero-asset-output", default=str(DEFAULT_HERO_OUTPUT))
     parser.add_argument("--hero-asset-href", default=DEFAULT_HERO_HREF)
+    parser.add_argument("--venue", default=DEFAULT_VENUE)
     parser.add_argument("--output", choices=("summary", "none"), default="summary")
     return parser.parse_args()
 
@@ -187,16 +188,24 @@ def render_about_html(
 
 def render_global_cockpit_index_html(
     *,
+    linked_profiles: list[dict],
     account_profile: str = DEFAULT_NAV_ACCOUNT_PROFILE,
 ) -> str:
+    """
+    Render the global cockpit index page.
+
+    linked_profiles: explicit list of dicts with at least profile_code, sourced from
+    the account layer (discover_active_linked_profiles). Reporting must not own this query.
+    """
     account_cards = []
-    for access in CONFIGURED_DASHBOARD_PROFILE_ACCESS:
-        href = f"/synth/accounts/{access.account_profile}/wallet.html"
+    for profile in linked_profiles:
+        profile_code = str(profile["profile_code"])
+        href = f"/synth/accounts/{profile_code}/wallet.html"
         account_cards.append(
             f"""
       <div class="card">
-        <a href="{href}">{access.account_profile.title()} Account</a>
-        <p class="muted">Per-account wallet, Profit Plan, and Open Orders Monitor render separately under <code>/synth/accounts/{access.account_profile}/</code>.</p>
+        <a href="{href}">Wallet</a>
+        <p class="muted">Account wallet and review surfaces for <code>{profile_code}</code> under <code>/synth/accounts/{profile_code}/</code>.</p>
       </div>""".rstrip()
         )
     account_cards_html = "\n".join(account_cards)
@@ -222,6 +231,10 @@ def render_global_cockpit_index_html(
     .pill {{ display:inline-block; border-radius:999px; padding:4px 9px; margin:4px 4px 0 0; border:1px solid #273657; color:#55d6a7; }}
     .cockpit-nav {{ display:flex; flex-wrap:wrap; gap:14px; margin:14px 0 18px; }}
     .cockpit-nav a {{ font-size:16px; }}
+    .legacy-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:16px; opacity:0.55; }}
+    .legacy-card {{ background:#0d1326; border:1px solid #1e2a45; border-radius:16px; padding:20px; box-shadow:0 8px 24px rgba(0,0,0,.18); }}
+    .legacy-card a {{ color:#5a7abf; font-size:18px; }}
+    .legacy-badge {{ display:inline-block; font-size:10px; font-weight:700; letter-spacing:0.12em; padding:2px 7px; border-radius:999px; background:#1a2240; color:#6a80a8; margin-left:8px; vertical-align:middle; }}
   </style>
 </head>
 <body>
@@ -238,13 +251,13 @@ def render_global_cockpit_index_html(
 {account_cards_html}
     </div>
     <h2>Legacy / Archive</h2>
-    <div class="grid">
-      <div class="card">
-        <a href="/synth/paper-advice.html">Paper Advice</a>
+    <div class="legacy-grid">
+      <div class="legacy-card">
+        <a href="/synth/paper-advice.html">Paper Advice <span class="legacy-badge">LEGACY</span></a>
         <p class="muted">Legacy global review page. Archive-only; not part of active operational navigation.</p>
       </div>
-      <div class="card">
-        <a href="/synth/entry-candidates.html">Entry Candidates</a>
+      <div class="legacy-card">
+        <a href="/synth/entry-candidates.html">Entry Candidates <span class="legacy-badge">LEGACY</span></a>
         <p class="muted">Legacy market-only review page. Archive-only; not part of active operational navigation.</p>
       </div>
     </div>
@@ -263,6 +276,12 @@ def main() -> int:
     if not hero_source.exists():
         raise SystemExit(f"[error] hero asset missing: {hero_source}")
 
+    try:
+        linked_profiles = discover_active_linked_profiles(venue=args.venue)
+    except Exception as exc:
+        print(f"[error] linked-profile discovery failed: {exc}", file=sys.stderr)
+        linked_profiles = []
+
     output_html.parent.mkdir(parents=True, exist_ok=True)
     index_html.parent.mkdir(parents=True, exist_ok=True)
     hero_output.parent.mkdir(parents=True, exist_ok=True)
@@ -273,7 +292,10 @@ def main() -> int:
         encoding="utf-8",
     )
     index_html.write_text(
-        render_global_cockpit_index_html(account_profile=DEFAULT_NAV_ACCOUNT_PROFILE),
+        render_global_cockpit_index_html(
+            linked_profiles=linked_profiles,
+            account_profile=DEFAULT_NAV_ACCOUNT_PROFILE,
+        ),
         encoding="utf-8",
     )
 
@@ -284,6 +306,8 @@ def main() -> int:
         print(f"index_output={index_html}")
         print(f"hero_asset_output={hero_output}")
         print(f"hero_asset_href={args.hero_asset_href}")
+        print(f"venue={args.venue}")
+        print(f"linked_profile_count={len(linked_profiles)}")
         for favicon_output in favicon_outputs:
             print(f"favicon_asset_output={favicon_output}")
         print("broker_private_calls=0")

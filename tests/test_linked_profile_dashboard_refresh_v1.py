@@ -9,6 +9,7 @@ from src.account.run_linked_profile_dashboard_refresh_v1 import discover_linked_
 
 
 SOURCE = Path("src/account/run_linked_profile_dashboard_refresh_v1.py").read_text(encoding="utf-8")
+ACCOUNT_LAYER_SOURCE = Path("src/account/app_profile_trading_account_link_v1.py").read_text(encoding="utf-8")
 SHELL_SCRIPT = Path("scripts/odroid/run_linked_profile_dashboard_refresh_once.sh").read_text(encoding="utf-8")
 RENDER_SCRIPT = Path("scripts/odroid/run_account_wallet_dashboard_render_once.sh").read_text(encoding="utf-8")
 
@@ -40,9 +41,11 @@ def test_runner_safety_markers_in_source() -> None:
 
 
 def test_runner_queries_link_table() -> None:
-    assert "app_profile_trading_account_link" in SOURCE
-    assert "ACTIVE" in SOURCE
-    assert "is_primary" in SOURCE
+    # SQL now lives in the account layer; runner delegates via discover_active_linked_profiles.
+    assert "discover_active_linked_profiles" in SOURCE
+    assert "app_profile_trading_account_link" in ACCOUNT_LAYER_SOURCE
+    assert "ACTIVE" in ACCOUNT_LAYER_SOURCE
+    assert "is_primary" in ACCOUNT_LAYER_SOURCE
 
 
 def test_runner_no_broker_or_execution_imports() -> None:
@@ -157,13 +160,8 @@ def test_discovery_returns_empty_for_no_links() -> None:
 
 
 def test_discovery_real_query_uses_venue_param() -> None:
-    conn = _FakeConn([])
-    with patch("src.account.run_linked_profile_dashboard_refresh_v1.discover_linked_profiles") as mock_discover:
-        mock_discover.return_value = []
-        # Verify the DB query uses venue scoping by calling the real function with a mock conn
-        pass
-    # Verify source queries by venue
-    assert "ta.venue = %s" in SOURCE or "WHERE ta.venue" in SOURCE
+    # SQL is in the account layer; check the canonical source.
+    assert "ta.venue = %s" in ACCOUNT_LAYER_SOURCE or "WHERE ta.venue" in ACCOUNT_LAYER_SOURCE
 
 
 def test_discovery_one_profile_isolates_from_other_venue() -> None:

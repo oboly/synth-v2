@@ -377,6 +377,35 @@ Bitvavo account linking:
 - no wallet private keys
 - no withdrawal keys
 
+## Auth UX — Already-verified token handling
+
+Status: open / backlog.
+
+Context:
+
+When a user clicks a verification link from a previously-sent email and the
+profile is already ACTIVE (token was already used), the current response exposes
+the raw error code `VERIFICATION_TOKEN_ALREADY_USED` to the user.
+
+Required fix:
+
+- Detect the `VERIFICATION_TOKEN_ALREADY_USED` case in the verification handler.
+- If the associated profile is already ACTIVE, show a friendly message:
+  "Email address already verified. Continue to login."
+- Provide a direct link to `/synth/login.html` (or the app login path).
+- Do not expose `VERIFICATION_TOKEN_ALREADY_USED` or any internal error code to the user.
+
+Implementation location:
+
+- `src/web/website_registration_v1.py` — `verify_email_token` path, around line 1477.
+- The verification page renderer must handle this state as a non-error user path.
+
+Boundary:
+
+```text
+No broker calls. No order submission. No executor. Read-only token state check.
+```
+
 ## P2 — Systemd service ownership cleanup
 
 Goal:

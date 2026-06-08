@@ -1166,10 +1166,12 @@ class TestNginxActivationScript:
         assert "auth_basic off;" in script
 
     def test_nginx_config_profile_slug_from_uri_capture(self) -> None:
-        """Profile slug must come from nginx URI regex capture, not client headers."""
+        """Profile slug must come from nginx URI named capture, not numeric $1 set line."""
         script = self._read_script("activate_nginx_transition_dual_auth_v1.sh")
         assert "synth_profile_slug" in script
-        assert "set $synth_profile_slug $1" in script
+        # Named capture populates $synth_profile_slug directly; numeric set line was removed.
+        assert "(?<synth_profile_slug>" in script
+        assert "set $synth_profile_slug $1" not in script
         assert "X-Synth-Requested-Profile $synth_profile_slug" in script
 
     def test_nginx_config_has_acme_challenge(self) -> None:

@@ -180,3 +180,45 @@ class AppProfileTradingAccountLinkRepository:
                 "updated_ts_utc": now_text,
             }
         return self._with_conn(_run)
+
+
+def discover_active_linked_profiles(*, venue: str) -> list[dict]:
+    """
+    Return all active primary link rows for the given venue.
+    Each dict has: profile_code, account_code, venue, display_timezone.
+    Ordered by profile_code for deterministic output.
+    Never infers account from profile name.
+    No broker calls. No credential reads.
+    """
+    from src.common.db import get_connection
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    ap.profile_code,
+                    ta.account_code,
+                    ta.venue,
+                    ap.display_timezone
+                FROM app_profile ap
+                JOIN app_profile_trading_account_link aptl
+                  ON aptl.app_profile_id = ap.app_profile_id
+                JOIN trading_account ta
+                  ON ta.trading_account_id = aptl.trading_account_id
+                WHERE ta.venue = %s
+                  AND aptl.link_status = 'ACTIVE'
+                  AND aptl.is_primary = 1
+                ORDER BY ap.profile_code
+                """,
+                (venue,),
+            )
+            rows = cur.fetchall()
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return [dict(r) for r in rows]

@@ -12,6 +12,8 @@ import argparse
 import sys
 from datetime import UTC, datetime
 
+from src.account.app_profile_trading_account_link_v1 import discover_active_linked_profiles
+
 
 RUNNER_NAME = "run_linked_profile_dashboard_refresh_v1"
 RUNNER_VERSION = "0.1"
@@ -20,43 +22,13 @@ DEFAULT_VENUE = "bitvavo"
 
 def discover_linked_profiles(*, venue: str) -> list[dict]:
     """
-    Return all active primary link rows for the given venue.
+    Return all active primary link rows for the given venue via the account layer.
+    Delegates to the canonical account-layer discovery function.
     Each dict has profile_code, account_code, venue, display_timezone.
     Ordered by profile_code for deterministic output.
     Never infers account from profile name.
     """
-    from src.common.db import get_connection
-
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    ap.profile_code,
-                    ta.account_code,
-                    ta.venue,
-                    ap.display_timezone
-                FROM app_profile ap
-                JOIN app_profile_trading_account_link aptl
-                  ON aptl.app_profile_id = ap.app_profile_id
-                JOIN trading_account ta
-                  ON ta.trading_account_id = aptl.trading_account_id
-                WHERE ta.venue = %s
-                  AND aptl.link_status = 'ACTIVE'
-                  AND aptl.is_primary = 1
-                ORDER BY ap.profile_code
-                """,
-                (venue,),
-            )
-            rows = cur.fetchall()
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
-    return [dict(r) for r in rows]
+    return discover_active_linked_profiles(venue=venue)
 
 
 def parse_args() -> argparse.Namespace:
