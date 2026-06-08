@@ -229,6 +229,45 @@ def test_exact_profile_access_and_cross_profile_denial() -> None:
     assert anonymous.error_code == "UNAUTHORIZED"
 
 
+def test_onboarding_session_owned_access() -> None:
+    """Onboarding access is session-owned: empty profile uses session, explicit must match."""
+    service, _, mailer = _service()
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=UTC)
+    service.register(
+        email="hugo@example.com",
+        profile_code="hugo",
+        password="VerySecurePassword123",
+        proof_response="test-human-ok",
+        now_utc=now,
+    )
+    token = _extract_token(mailer.sent_messages[-1])
+    service.verify_email(raw_token=token, now_utc=now + timedelta(minutes=1))
+    login = service.login(login_value="hugo", password="VerySecurePassword123", now_utc=now + timedelta(minutes=2))
+    session = login.session_token or ""
+    t = now + timedelta(minutes=3)
+
+    # Empty requested_profile_code → session owns the onboarding, success via session profile_code.
+    empty_code = service.get_onboarding_access(session_token=session, requested_profile_code="", now_utc=t)
+    assert empty_code.success is True
+    assert empty_code.profile_code == "hugo"
+    assert empty_code.onboarding_state == PROFILE_ONBOARDING_NO_EXCHANGE
+
+    # Matching explicit profile_code → success.
+    explicit_match = service.get_onboarding_access(session_token=session, requested_profile_code="hugo", now_utc=t)
+    assert explicit_match.success is True
+    assert explicit_match.profile_code == "hugo"
+
+    # Mismatched explicit profile_code → FORBIDDEN.
+    explicit_mismatch = service.get_onboarding_access(session_token=session, requested_profile_code="other", now_utc=t)
+    assert explicit_mismatch.success is False
+    assert explicit_mismatch.error_code == "FORBIDDEN"
+
+    # Missing/invalid session → UNAUTHORIZED (regardless of profile code).
+    no_session = service.get_onboarding_access(session_token="no-such-token", requested_profile_code="", now_utc=t)
+    assert no_session.success is False
+    assert no_session.error_code == "UNAUTHORIZED"
+
+
 def test_logout_invalidates_session() -> None:
     service, _, mailer = _service()
     now = datetime(2026, 6, 5, 12, 0, tzinfo=UTC)
@@ -320,6 +359,7 @@ def main() -> None:
     test_resend_verification_is_rate_limited()
     test_verified_hugo_receives_no_exchange_onboarding()
     test_exact_profile_access_and_cross_profile_denial()
+    test_onboarding_session_owned_access()
     test_logout_invalidates_session()
     test_no_trading_account_or_credential_is_created()
     test_mock_provider_allowed_only_in_test_mode()
