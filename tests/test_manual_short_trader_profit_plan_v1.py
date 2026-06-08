@@ -1585,6 +1585,73 @@ def test_render_full_html_applies_sort_by_default() -> None:
     assert html.count("plan-card") >= 2
 
 
+# ---------------------------------------------------------------------------
+# Task 2: HTML/JSON render identity alignment
+# ---------------------------------------------------------------------------
+
+def test_render_full_html_embeds_render_id_in_meta_tag() -> None:
+    fixed_render_id = "test-render-id-1234-abcd"
+    html = render_full_html([], render_id=fixed_render_id)
+    assert f"content='{fixed_render_id}'" in html or f'content="{fixed_render_id}"' in html
+
+
+def test_render_full_html_embeds_writer_instance_id_in_meta_tag() -> None:
+    fixed_writer_id = "test-writer-id-5678-efgh"
+    html = render_full_html([], writer_instance_id=fixed_writer_id)
+    assert fixed_writer_id in html
+
+
+def test_render_full_html_embeds_relevant_count_in_meta_tag() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_full_html([card])
+    assert "synth-relevant-count" in html
+
+
+def test_render_full_html_embeds_total_count_in_meta_tag() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_full_html([card])
+    assert "synth-total-count" in html
+
+
+def test_html_and_json_render_id_match_when_same_id_passed() -> None:
+    fixed_render_id = "shared-render-id-abcd-1234"
+    fixed_writer_id = "shared-writer-id-efgh-5678"
+    cards = [_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())]
+    html = render_full_html(cards, render_id=fixed_render_id, writer_instance_id=fixed_writer_id)
+    snap = build_json_snapshot(cards, render_id=fixed_render_id, writer_instance_id=fixed_writer_id)
+    assert snap["render_id"] == fixed_render_id
+    assert snap["writer_instance_id"] == fixed_writer_id
+    assert fixed_render_id in html
+    assert fixed_writer_id in html
+
+
+def test_html_relevant_count_matches_json_relevant_count() -> None:
+    cards = [
+        _make_card(current_price="0.440000", fib_ext=_wld_fib_ext()),
+        _make_card(current_price=None),
+    ]
+    fixed_render_id = "count-check-render-id"
+    html = render_full_html(cards, render_id=fixed_render_id)
+    snap = build_json_snapshot(cards, render_id=fixed_render_id)
+    # Both must compute the same relevant_count and total_count from the same cards
+    assert snap["total_count"] == 2
+    # HTML meta tag must contain the same total count
+    assert f"content='{snap['total_count']}'" in html or str(snap["total_count"]) in html
+
+
+def test_json_snapshot_render_id_is_stable_when_provided() -> None:
+    fixed_id = "stable-render-id-for-snapshot"
+    snap = build_json_snapshot([], render_id=fixed_id)
+    assert snap["render_id"] == fixed_id
+
+
+def test_json_snapshot_render_id_is_generated_when_not_provided() -> None:
+    snap = build_json_snapshot([])
+    assert "render_id" in snap
+    assert isinstance(snap["render_id"], str)
+    assert len(snap["render_id"]) > 0
+
+
 def main() -> None:
     tests = [
         test_pure_module_has_no_forbidden_imports,

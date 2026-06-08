@@ -684,6 +684,7 @@ def print_summary(*, context, cards: list[ProfitPlanCard], output_html: Path, ou
 
 def main() -> int:
     writer_instance_id = str(uuid.uuid4())
+    snapshot_render_id = str(uuid.uuid4())
     args = parse_args()
     try:
         validate_profile_slug(args.account_profile)
@@ -778,9 +779,16 @@ def main() -> int:
         monitor_link=monitor_link,
         nav_html=cockpit_nav(account_profile=args.account_profile).strip(),
         storage_scope=args.account_profile,
+        render_id=snapshot_render_id,
+        writer_instance_id=writer_instance_id,
     )
     json_content = json.dumps(
-        build_json_snapshot(cards, broker_mode="db_snapshot", writer_instance_id=writer_instance_id),
+        build_json_snapshot(
+            cards,
+            broker_mode="db_snapshot",
+            writer_instance_id=writer_instance_id,
+            render_id=snapshot_render_id,
+        ),
         indent=2,
         sort_keys=True,
         ensure_ascii=False,

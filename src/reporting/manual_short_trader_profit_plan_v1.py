@@ -2086,9 +2086,13 @@ def render_full_html(
     nav_html: str | None = None,
     storage_scope: str = "default",
     sort: bool = True,
+    render_id: str | None = None,
+    writer_instance_id: str | None = None,
 ) -> str:
     if rendered_at is None:
         rendered_at = format_ui_now()
+    snapshot_render_id = render_id or str(uuid.uuid4())
+    snapshot_writer_id = writer_instance_id or str(uuid.uuid4())
 
     display_cards = sort_cards_two_timeline(cards) if sort else list(cards)
     relevant_count = sum(1 for c in cards if c.is_relevant)
@@ -2101,6 +2105,10 @@ def render_full_html(
         "  <meta charset='utf-8'>\n"
         "  <meta http-equiv='refresh' content='120'>\n"
         "  <meta name='viewport' content='width=device-width, initial-scale=1'>\n"
+        f"  <meta name='synth-render-id' content='{esc(snapshot_render_id)}'>\n"
+        f"  <meta name='synth-writer-instance-id' content='{esc(snapshot_writer_id)}'>\n"
+        f"  <meta name='synth-relevant-count' content='{relevant_count}'>\n"
+        f"  <meta name='synth-total-count' content='{total_count}'>\n"
         "  <title>Synth — Profit Plan</title>\n"
         f"{synth_favicon_head_html()}"
         f"  <style>{_CSS}</style>\n"
@@ -2149,6 +2157,7 @@ def build_json_snapshot(
     order_snapshot_ts_utc: str | None = None,
     market_price_snapshot_ts_utc: str | None = None,
     writer_instance_id: str | None = None,
+    render_id: str | None = None,
 ) -> dict[str, Any]:
     now_ts = snapshot_ts or datetime.now(UTC).isoformat()
     relevant_count = sum(1 for c in cards if c.is_relevant)
@@ -2156,7 +2165,7 @@ def build_json_snapshot(
     return {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
-        "render_id": str(uuid.uuid4()),
+        "render_id": render_id or str(uuid.uuid4()),
         "writer_instance_id": writer_instance_id or str(uuid.uuid4()),
         "snapshot_ts": now_ts,
         "generated_ts_utc": generated_ts_utc or now_ts,
