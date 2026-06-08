@@ -224,8 +224,7 @@ server {
 
     # Protected: account pages — session owner must match profile slug from URI.
     # Profile slug extracted from URI by nginx (never from client-supplied header).
-    location ~ "^/synth/accounts/([a-z0-9][a-z0-9_-]{0,62})(/.*)?" {
-        set $synth_profile_slug $1;
+    location ~ "^/synth/accounts/(?<synth_profile_slug>[a-z0-9][a-z0-9_-]{0,62})(?:/.*)?$" {
 
         auth_request /synth/_internal/check-access;
         error_page 401 = @synth_login_required;
