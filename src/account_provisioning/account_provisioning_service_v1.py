@@ -52,6 +52,7 @@ class ProvisioningResult:
     landing_path: str | None = None
     refresh_pending: bool = False
     refresh_error_code: str | None = None
+    trading_account_id: int | None = None
 
 
 def _generate_account_code(profile_code: str, venue: str) -> str:
@@ -191,6 +192,7 @@ class AccountProvisioningService:
                 account_connection_state=_ACCOUNT_CONNECTION_READ_ONLY,
                 landing_path=f"/synth/accounts/{identity.profile_code}/profit-plan.html",
                 refresh_pending=True,
+                trading_account_id=trading_account_id,
             )
         except Exception:
             conn.rollback()
