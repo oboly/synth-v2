@@ -142,6 +142,7 @@ class AccountProvisioningService:
                     error_code="ACCOUNT_ALREADY_CONNECTED",
                     profile_code=identity.profile_code,
                     landing_path=f"/synth/accounts/{identity.profile_code}/profit-plan.html",
+                    trading_account_id=int(existing_link["trading_account_id"]),
                 )
 
             account_code = _generate_account_code(identity.profile_code, _BITVAVO_VENUE)

@@ -79,10 +79,12 @@ Commits:
 
 Safety: broker_private_calls=0 (tests), broker_writes=0, order_submission=0, executor=none
 
-Production wiring (runner, not yet committed):
-- Build `RealBitvavoCredentialValidator` with permission env set
-- After `provision_bitvavo_account` succeeds: load credential → `take_first_snapshot`
-- Set `refresh_pending=False` on snapshot success, `True` + `refresh_error_code=INITIAL_REFRESH_FAILED` on failure
+Production wiring complete:
+- `src/account_provisioning/connect_bitvavo_v1.py` — `build_connect_bitvavo()` factory
+- `run_web_auth_service_v1.py` wired: `RealBitvavoCredentialValidator`, deps at startup, `--output-root`
+- `refresh_pending=False` only when snapshot + wallet render both succeed
+- Safe retry on `ACCOUNT_ALREADY_CONNECTED` (no credential resubmission)
+- Mocked transports in all tests — `broker_private_calls=0`
 
 ---
 

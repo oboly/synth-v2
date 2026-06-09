@@ -272,16 +272,15 @@ POST /synth/web-auth/connect-bitvavo
 - Writes to `trading_account_balance_snapshot` + `broker_order_snapshot`
 - Returns `SnapshotResult(ok, error_code, balance_row_count, order_row_count)`
 
-### Production runner wiring (to do)
+### Production runner wiring (complete)
 
-```python
-result = service.provision_bitvavo_account(..., conn_factory=get_db_connection, now_utc=utc_now())
-if result.ok:
-    plain = load_account_credential(conn, trading_account_id=result.trading_account_id, ...)
-    client = BitvavoClient(api_key=plain.api_key, api_secret=plain.api_secret)
-    snap = take_first_snapshot(conn, trading_account_id=result.trading_account_id, venue="bitvavo", bitvavo_client=client)
-    if snap.ok:
-        result = dataclasses.replace(result, refresh_pending=False)
-    else:
-        result = dataclasses.replace(result, refresh_error_code="INITIAL_REFRESH_FAILED")
-```
+`src/account_provisioning/connect_bitvavo_v1.build_connect_bitvavo(...)` builds the callable:
+- Provision account (transaction) → load stored credential → take snapshot → render wallet
+- `refresh_pending=False` only when all three activation steps succeed
+- On post-commit failure: `refresh_pending=True` + `refresh_error_code`
+- Safe retry: `ACCOUNT_ALREADY_CONNECTED` retries snapshot + render without resubmitting credentials
+
+Wired in `run_web_auth_service_v1.py` (`--database mariadb` mode only):
+- `RealBitvavoCredentialValidator` — never the mock
+- Dependencies constructed once at startup
+- `--output-root` controls where rendered dashboards are written
