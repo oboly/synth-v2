@@ -31,6 +31,13 @@ Unless a task explicitly says otherwise:
 - no selection/advice/decision/execution changes unless the task explicitly belongs to that layer
 - research tasks remain market-only and account-agnostic
 
+Explicit exception:
+
+- `profit_plan_live_ladder.md` is the active controlled execution lane.
+- It may introduce authenticated live limit-order mutation only through:
+  `decision_gate -> execution_planner -> executor -> broker client`.
+- Reporting/UI may never call the broker directly.
+
 Architecture split:
 
 ```text
@@ -47,34 +54,63 @@ Do not bypass layers.
 | File | Status | Purpose |
 |---|---:|---|
 | `workflow_standard.md` | standard | TODO creation, update, closure, priority, boundary, and commit rules |
+| `profit_plan_live_ladder.md` | **active P0** | Shortest safe route from Profit Plan detail-page ladder rows to authenticated preview, decision gate, execution plan, executor, and a one-account live limit-order canary; cosmetics follow afterward |
+| `manual_ladder_dashboard.md` | superseded for active priority / historical source | Earlier read-only manual ladder dashboard direction; retain as historical design input, but active Profit Plan work is tracked in `profit_plan_live_ladder.md` |
 | `market_breath.md` | characterized/parked | Market Breath V1 characterized as a regime-dependent rhythm/phase sensor; reopen only for downstream regime/profile use-cases |
-| `regime_research.md` | active next research | Rotation replay rerun/readout, discovered regime full-ish review, symbol breath profile design, regime interaction audit design, and later replay-safe classifier path |
+| `regime_research.md` | parked while P0 executes | Rotation replay, discovered regime review, symbol breath profile design, and regime interaction audits |
 | `watchlist_candidates.md` | open intake | User-thesis watchlist candidates such as KITE before validation/promotion |
-| `deploy_runtime.md` | MVP cockpit implemented / ops follow-up | Odroid read-only cockpit runner, dashboard render path, and related operational follow-ups |
+| `deploy_runtime.md` | MVP cockpit implemented / ops follow-up | Odroid cockpit runner, dashboard render path, and related operational follow-ups |
 | `fibo_zones.md` | open research | Fib target maps, leak-free zone/fib touch evaluation, zone context guardrails, exit ladder profiles, and zone UI overlays |
-| `ui_webview.md` | active/open | Read-only chart/UI/Webview upgrades, cockpit sticky columns, reading-flow split, and simplified dashboard design |
-| `signal_matrix_dashboard.md` | active next dashboard lane | Transparent per-asset/per-timeframe primitive signal inventory for Synth v2.14, upstream of manual ladder/dashboard composition |
+| `ui_webview.md` | open / secondary | UI/Webview upgrades and styling; non-blocking cosmetics stay behind live ladder repair |
+| `signal_matrix_dashboard.md` | parked while P0 executes | Transparent per-asset/per-timeframe primitive signal inventory |
 | `breath_curve.md` | parked/open | Breath Curve baseline, non-overlap follow-up, partial-cycle, and regime-gated validation continuation |
-| `strategy_candidates.md` | active/open research | Current strategy audit follow-up, horizon bucket design, later classifier/policy research, and research-lead follow-ups |
-| `position_rotation_preview.md` | MVP implemented / parked follow-up | Account-aware read-only cockpit/rotation preview with current price and distance semantics; strategy/backtests remain separate |
-| `multi_horizon_fib_dashboard_backlog.md` | parked/foundation follow-up | Read-only dashboard backlog that depends on the new multi-horizon fib research foundation outputs and checkpoint coverage |
-| `paper_candidate_contract.md` | future design | Safe adapter path from research candidates to decision_gate |
-| `dev_ops_hygiene.md` | mostly parked | Codex smoke state, DBeaver/MariaDB access recovery, MariaDB backup/export hygiene, local untracked-file hygiene |
+| `strategy_candidates.md` | parked/open research | Strategy audit, horizon buckets, later classifier/policy research, and research-lead follow-ups |
+| `position_rotation_preview.md` | MVP implemented / parked follow-up | Account-aware read-only cockpit/rotation preview with current price and distance semantics |
+| `multi_horizon_fib_dashboard_backlog.md` | parked/foundation follow-up | Read-only dashboard backlog depending on multi-horizon fib research outputs |
+| `paper_candidate_contract.md` | future design | Safe adapter path from research candidates to decision_gate; not the Profit Plan ladder-repair mutation contract |
+| `dev_ops_hygiene.md` | mostly parked | Codex smoke state, DBeaver/MariaDB access recovery, backup/export hygiene, local untracked-file hygiene |
 | `parked_backlog.md` | parked/backlog | A+ archive state and external PRO narrative backlog |
 
 ## Active next-step recommendation
 
 ```text
-1. Treat the read-only cockpit, rotation preview semantics, and the committed research runners as completed baseline work.
-2. For Synth v2.14 dashboard direction, start with `docs/todo/signal_matrix_dashboard.md`:
-   build the transparent primitive signal inventory before more manual ladder/dashboard composition work.
-3. Keep `docs/todo/manual_ladder_dashboard.md` downstream from the future signal matrix; do not keep tuning it as the first truth surface.
-4. Keep discovered regime comparisons diagnostic only; existing labels may be joined after clustering but must not become clustering input.
-5. After the signal-matrix direction is clear, continue `docs/todo/regime_research.md` follow-up work for symbol/profile/regime interaction research.
-6. Keep first paper strategy candidate selection blocked until regime/profile research and transparent signal inventory work are in place.
-7. Keep Market Breath characterized and parked until a downstream regime-aware or symbol-profile use-case explicitly needs it.
-8. Keep astro context parked as external lunar/solar context only; no astro interaction work before discovered regime review and symbol breath profile design exist.
-9. Keep A+, PRO, execution, broker, account, and live/paper lanes parked unless directly needed by an explicit task.
+1. Execute docs/todo/profit_plan_live_ladder.md as the active P0 lane.
+2. First finish only the minimum detail-page and ladder-row semantics needed for safe selection:
+   stable map_cycle_id, deterministic row identity, MISSING/STALE-only selection, and complete source timestamps.
+3. Audit the authenticated write path, CSRF, account/profile ownership, live permissions,
+   decision_gate, execution_planner, executor idempotency, broker create/cancel semantics,
+   open-order freshness, and audit persistence.
+4. Build server-side preview with explicit sizing and zero broker writes.
+5. Build decision-gate approval and deterministic dry-run execution plan.
+6. Review all safety assertions.
+7. Run one account, one market, low-cap, limit-order-only live canary.
+8. Expand to additional coins only after idempotency, audit, revalidation, and refreshed open-order state are proven.
+9. After live Fix selected ladder is usable, continue structured scanner filtering/sorting and cosmetic cleanup.
+10. Keep 5m Trade Path, historical zone path, T0, wallet styling, deliverability, and mobile polish in later lanes.
+```
+
+## Active P0 safety rule
+
+Before the live canary:
+
+```text
+broker_writes=0
+order_submission=0
+executor=none
+```
+
+The live canary is allowed only when all of these are explicit and server-derived:
+
+```text
+authenticated user
+profile/account ownership
+live execution permission
+broker-write permission
+allowlisted account
+allowlisted market
+approved immutable plan
+idempotency key
+fresh map, price, balance, position, and open-order snapshots
 ```
 
 ## 2026-05-19 Product/Cockpit/Strategy bundle
