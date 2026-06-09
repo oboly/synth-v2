@@ -73,6 +73,7 @@ class CredentialRepository:
         key_version: str,
         credential_fingerprint: str,
         now_utc: datetime,
+        validation_state: str = "UNVALIDATED",
     ) -> int:
         """
         Insert an ACTIVE credential row.
@@ -101,7 +102,7 @@ class CredentialRepository:
                     encrypted_envelope, encryption_algorithm, key_version,
                     credential_fingerprint, credential_status, validation_state,
                     created_ts_utc
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', 'UNVALIDATED', %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', %s, %s)
                 """,
                 (
                     trading_account_id,
@@ -111,6 +112,7 @@ class CredentialRepository:
                     encryption_algorithm,
                     key_version,
                     credential_fingerprint,
+                    validation_state,
                     _utc_text(now_utc),
                 ),
             )
@@ -273,7 +275,7 @@ class SqliteCredentialRepository:
         rotated_ts_utc TEXT NULL,
         revoked_ts_utc TEXT NULL,
         CHECK (credential_status IN ('ACTIVE', 'REVOKED', 'ROTATED', 'INVALID')),
-        CHECK (validation_state IN ('UNVALIDATED', 'VALID_READ_ONLY', 'INVALID_CREDENTIALS'))
+        CHECK (validation_state IN ('UNVALIDATED', 'VALID_READ_ONLY', 'VALID_PRIVATE_READ', 'INVALID_CREDENTIALS'))
     );
     """
 
@@ -307,6 +309,7 @@ class SqliteCredentialRepository:
         key_version: str,
         credential_fingerprint: str,
         now_utc: datetime,
+        validation_state: str = "UNVALIDATED",
     ) -> int:
         row = self._fetchone(
             "SELECT COUNT(*) AS cnt FROM trading_account_credential"
@@ -323,7 +326,7 @@ class SqliteCredentialRepository:
                 encrypted_envelope, encryption_algorithm, key_version,
                 credential_fingerprint, credential_status, validation_state,
                 created_ts_utc
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', 'UNVALIDATED', %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', %s, %s)
             """,
             (
                 trading_account_id,
@@ -333,6 +336,7 @@ class SqliteCredentialRepository:
                 encryption_algorithm,
                 key_version,
                 credential_fingerprint,
+                validation_state,
                 _utc_text(now_utc),
             ),
         )

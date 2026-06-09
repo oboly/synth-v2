@@ -20,6 +20,7 @@ class CredentialStatus(str, Enum):
 class CredentialValidationState(str, Enum):
     UNVALIDATED = "UNVALIDATED"
     VALID_READ_ONLY = "VALID_READ_ONLY"
+    VALID_PRIVATE_READ = "VALID_PRIVATE_READ"
     INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
 
 

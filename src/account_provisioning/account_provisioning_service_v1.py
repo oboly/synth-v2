@@ -169,6 +169,7 @@ class AccountProvisioningService:
                 key_version=envelope.kv,
                 credential_fingerprint=fingerprint,
                 now_utc=now_utc,
+                validation_state=validation.validation_state,
             )
 
             account_repo.create_profile_link(
