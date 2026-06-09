@@ -16,7 +16,6 @@ from src.market_data.market_price_snapshot_v1 import (
 )
 from src.reporting.badge_html_v1 import badge_html
 from src.reporting.dashboard_style_v1 import (
-    DEFAULT_NAV_ACCOUNT_PROFILE,
     cockpit_base_css,
     cockpit_nav,
     pill_classes,
@@ -608,7 +607,7 @@ def render_html(rows: list[RecomputeLifecycleRow], *, venue: str, interval: str)
   <header>
     <h1>Maps needing refresh</h1>
     <div class="muted">Rendered {esc(generated)} · venue={esc(venue)} · interval={esc(interval)}</div>
-    {cockpit_nav(account_profile=DEFAULT_NAV_ACCOUNT_PROFILE)}
+    {cockpit_nav(account_profile=None)}
     <div class="legend">
       <div><strong>Refresh candidate, not trade advice.</strong></div>
       <div>This page is market-only and account-agnostic. It identifies stale, finished, reclaimed, or invalidated advice maps for future zone/advice refresh.</div>

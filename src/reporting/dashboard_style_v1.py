@@ -3,7 +3,6 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-DEFAULT_NAV_ACCOUNT_PROFILE = "joost"
 SYNTH_BRAND_ASSET_DIR = Path("assets/brand/synth")
 SYNTH_FAVICON_FILENAMES = (
     "favicon.svg",

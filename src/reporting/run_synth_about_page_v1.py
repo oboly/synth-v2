@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import sys
 from pathlib import Path
 
-from src.account.app_profile_trading_account_link_v1 import discover_active_linked_profiles
 from src.reporting.dashboard_style_v1 import (
-    DEFAULT_NAV_ACCOUNT_PROFILE,
     copy_synth_favicon_assets,
     cockpit_base_css,
     cockpit_nav,
@@ -22,7 +19,6 @@ DEFAULT_INDEX_HTML = Path("/var/www/html/synth/index.html")
 DEFAULT_HERO_SOURCE = Path("assets/brand/synth/synth-third-faction-triptych.png")
 DEFAULT_HERO_OUTPUT = Path("/var/www/html/synth/assets/brand/synth-third-faction-triptych.png")
 DEFAULT_HERO_HREF = "/synth/assets/brand/synth-third-faction-triptych.png"
-DEFAULT_VENUE = "bitvavo"
 HERO_ALT = (
     "Synth Third Faction triptych artwork showing three dark-futurist brand treatments "
     "of the angular SYNTH emblem with violet energy accents."
@@ -41,16 +37,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hero-asset-source", default=str(DEFAULT_HERO_SOURCE))
     parser.add_argument("--hero-asset-output", default=str(DEFAULT_HERO_OUTPUT))
     parser.add_argument("--hero-asset-href", default=DEFAULT_HERO_HREF)
-    parser.add_argument("--venue", default=DEFAULT_VENUE)
     parser.add_argument("--output", choices=("summary", "none"), default="summary")
     return parser.parse_args()
 
 
-def render_about_html(
-    *,
-    hero_href: str,
-    account_profile: str = DEFAULT_NAV_ACCOUNT_PROFILE,
-) -> str:
+def render_about_html(*, hero_href: str) -> str:
+    """
+    Render the global About page. Account-agnostic: no profile, no account links.
+    Uses global navigation (Cockpit, About, Register, Login).
+    """
     css = cockpit_base_css(min_table_width=960) + """
     .about-hero {
       display: grid;
@@ -110,7 +105,7 @@ def render_about_html(
 <body>
   <div class="page">
     <header class="header">
-      {cockpit_nav(account_profile=account_profile, include_auth_links=True)}
+      {cockpit_nav(account_profile=None, include_auth_links=True)}
       <div class="about-hero">
         <div>
           <div class="brand-kicker">SYNTH</div>
@@ -186,30 +181,15 @@ def render_about_html(
 """
 
 
-def render_global_cockpit_index_html(
-    *,
-    linked_profiles: list[dict],
-    account_profile: str = DEFAULT_NAV_ACCOUNT_PROFILE,
-) -> str:
+def render_global_cockpit_index_html() -> str:
     """
     Render the global cockpit index page.
 
-    linked_profiles: explicit list of dicts with at least profile_code, sourced from
-    the account layer (discover_active_linked_profiles). Reporting must not own this query.
+    Account-agnostic: no linked-profile discovery, no wallet cards, no profile-specific paths.
+    Global pages render only globally available content.
+    Account dashboards render separately under /synth/accounts/<profile>/.
+    Authentication landing may route a user to their account page after login.
     """
-    account_cards = []
-    for profile in linked_profiles:
-        profile_code = str(profile["profile_code"])
-        href = f"/synth/accounts/{profile_code}/wallet.html"
-        account_cards.append(
-            f"""
-      <div class="card">
-        <a href="{href}">Wallet</a>
-        <p class="muted">Account wallet and review surfaces for <code>{profile_code}</code> under <code>/synth/accounts/{profile_code}/</code>.</p>
-      </div>""".rstrip()
-        )
-    account_cards_html = "\n".join(account_cards)
-
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -241,14 +221,13 @@ def render_global_cockpit_index_html(
   <main>
     <h1>Synth MVP Read-only Cockpit</h1>
     <p class="muted">Global cockpit pages render only account-agnostic content. Account dashboards render separately under <code>/synth/accounts/&lt;profile&gt;/</code>.</p>
-    {cockpit_nav(account_profile=account_profile, include_auth_links=True)}
+    {cockpit_nav(account_profile=None, include_auth_links=True)}
     <p><span class="pill">broker_private_calls=0</span><span class="pill">broker_writes=0</span><span class="pill">order_submission=0</span><span class="pill">executor=none</span></p>
     <div class="grid">
       <div class="card">
         <a href="/synth/about.html">About</a>
         <p class="muted">Global SYNTH brand, subtitle, and faction-lore overview. Read-only and account-agnostic.</p>
       </div>
-{account_cards_html}
     </div>
     <h2>Legacy / Archive</h2>
     <div class="legacy-grid">
@@ -276,28 +255,13 @@ def main() -> int:
     if not hero_source.exists():
         raise SystemExit(f"[error] hero asset missing: {hero_source}")
 
-    try:
-        linked_profiles = discover_active_linked_profiles(venue=args.venue)
-    except Exception as exc:
-        print(f"[error] linked-profile discovery failed: {exc}", file=sys.stderr)
-        linked_profiles = []
-
     output_html.parent.mkdir(parents=True, exist_ok=True)
     index_html.parent.mkdir(parents=True, exist_ok=True)
     hero_output.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(hero_source, hero_output)
     favicon_outputs = copy_synth_favicon_assets(output_root=output_html.parent)
-    output_html.write_text(
-        render_about_html(hero_href=args.hero_asset_href, account_profile=DEFAULT_NAV_ACCOUNT_PROFILE),
-        encoding="utf-8",
-    )
-    index_html.write_text(
-        render_global_cockpit_index_html(
-            linked_profiles=linked_profiles,
-            account_profile=DEFAULT_NAV_ACCOUNT_PROFILE,
-        ),
-        encoding="utf-8",
-    )
+    output_html.write_text(render_about_html(hero_href=args.hero_asset_href), encoding="utf-8")
+    index_html.write_text(render_global_cockpit_index_html(), encoding="utf-8")
 
     if args.output == "summary":
         print(f"report={REPORT_NAME}")
@@ -306,8 +270,6 @@ def main() -> int:
         print(f"index_output={index_html}")
         print(f"hero_asset_output={hero_output}")
         print(f"hero_asset_href={args.hero_asset_href}")
-        print(f"venue={args.venue}")
-        print(f"linked_profile_count={len(linked_profiles)}")
         for favicon_output in favicon_outputs:
             print(f"favicon_asset_output={favicon_output}")
         print("broker_private_calls=0")

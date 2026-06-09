@@ -18,7 +18,6 @@ from src.reporting.badge_html_v1 import (
     badge_with_axis_html,
 )
 from src.reporting.dashboard_style_v1 import (
-    DEFAULT_NAV_ACCOUNT_PROFILE,
     cockpit_base_css,
     cockpit_nav,
     pill_classes,
@@ -867,7 +866,7 @@ def render_html(
     <h1>Entry Candidates</h1>
     <div class="muted">Rendered {esc(generated_text)}</div>
     <div class="muted">latest advice snapshot: {esc(latest_text)} · venue={esc(venue)} · interval={esc(interval)}</div>
-    {cockpit_nav(account_profile=DEFAULT_NAV_ACCOUNT_PROFILE)}
+    {cockpit_nav(account_profile=None)}
     <div class="legend">
       <div><strong>Market/setup review only.</strong> Candidate readiness is context, not order permission.</div>
       <div><strong>Hover/tap a badge for label description.</strong></div>

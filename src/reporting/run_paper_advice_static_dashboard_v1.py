@@ -21,7 +21,6 @@ from src.market_data.market_price_snapshot_v1 import (
 from src.reporting.current_price_snapshot_v1 import classify_current_price_snapshot
 from src.reporting.badge_html_v1 import badge_html as shared_badge_html
 from src.reporting.dashboard_style_v1 import (
-    DEFAULT_NAV_ACCOUNT_PROFILE,
     cockpit_base_css,
     cockpit_nav,
     pill_classes,
@@ -2323,7 +2322,7 @@ def render_html(
                     dashboard rendered: {esc(generated_text)}<br>
                     Setup/policy changes when the 4h chain writes a new paper_advice_observation snapshot. Fast lifecycle candles check whether the existing map is touched, stale, invalidated, or near reclaim. They do not create a new strategy map.
                 </div>
-                {cockpit_nav(account_profile=DEFAULT_NAV_ACCOUNT_PROFILE)}
+                {cockpit_nav(account_profile=None)}
                 <div class="legend">
                     <div><strong>Read-only review context.</strong> This page is not trade advice or order permission.</div>
                     <div><strong>Hover/tap a badge for label description.</strong></div>
