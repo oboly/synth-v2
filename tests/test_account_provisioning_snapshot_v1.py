@@ -242,25 +242,27 @@ def test_snapshot_writes_balance_rows() -> None:
     seed.close()
 
 
-def test_snapshot_writes_zero_order_rows() -> None:
-    """Initial read-only snapshot must not write any broker_order_snapshot rows."""
+def test_snapshot_writes_order_rows() -> None:
     db = _next_db()
     seed = _seed_schema(db)
     kv, kb = parse_master_key(generate_test_master_key())
     ta_id = _seed_account_with_credential(seed, kb, kv)
     conn = _shared_conn(db)
-    client = _mock_client()
+    client = _mock_client(orders=[
+        {"orderId": "ord-001", "market": "BTC-EUR", "side": "sell", "orderType": "limit",
+         "price": "50000", "amount": "0.001", "filledAmount": "0", "amountRemaining": "0.001", "status": "new"},
+    ])
     result = take_first_snapshot(conn, trading_account_id=ta_id, venue="bitvavo", bitvavo_client=client, now_utc=_NOW)
     assert result.ok is True
-    assert result.order_row_count == 0
+    assert result.order_row_count == 1
     count = seed.execute("SELECT COUNT(*) AS n FROM broker_order_snapshot WHERE trading_account_id = ?", (ta_id,)).fetchone()["n"]
-    assert count == 0
+    assert count == 1
     conn.close()
     seed.close()
 
 
-def test_snapshot_calls_balance_only() -> None:
-    """Snapshot must call get_balance exactly once and never call get_open_orders."""
+def test_snapshot_calls_balance_and_open_orders() -> None:
+    """Snapshot must call both get_balance and get_open_orders exactly once each."""
     db = _next_db()
     seed = _seed_schema(db)
     kv, kb = parse_master_key(generate_test_master_key())
@@ -269,7 +271,7 @@ def test_snapshot_calls_balance_only() -> None:
     client = _mock_client()
     take_first_snapshot(conn, trading_account_id=ta_id, venue="bitvavo", bitvavo_client=client, now_utc=_NOW)
     client.get_balance.assert_called_once()
-    client.get_open_orders.assert_not_called()
+    client.get_open_orders.assert_called_once()
     conn.close()
     seed.close()
 
@@ -284,6 +286,20 @@ def test_snapshot_balance_fetch_failure_returns_error() -> None:
     result = take_first_snapshot(conn, trading_account_id=ta_id, venue="bitvavo", bitvavo_client=client, now_utc=_NOW)
     assert result.ok is False
     assert result.error_code == "BALANCE_FETCH_FAILED"
+    conn.close()
+    seed.close()
+
+
+def test_snapshot_orders_fetch_failure_returns_error() -> None:
+    db = _next_db()
+    seed = _seed_schema(db)
+    kv, kb = parse_master_key(generate_test_master_key())
+    ta_id = _seed_account_with_credential(seed, kb, kv)
+    conn = _shared_conn(db)
+    client = _mock_client(orders_exc=RuntimeError("orders unavailable"))
+    result = take_first_snapshot(conn, trading_account_id=ta_id, venue="bitvavo", bitvavo_client=client, now_utc=_NOW)
+    assert result.ok is False
+    assert result.error_code == "ORDERS_FETCH_FAILED"
     conn.close()
     seed.close()
 
@@ -371,9 +387,10 @@ if __name__ == "__main__":
         test_load_credential_never_uses_global_env,
         test_hugo_cannot_get_joost_credentials,
         test_snapshot_writes_balance_rows,
-        test_snapshot_writes_zero_order_rows,
-        test_snapshot_calls_balance_only,
+        test_snapshot_writes_order_rows,
+        test_snapshot_calls_balance_and_open_orders,
         test_snapshot_balance_fetch_failure_returns_error,
+        test_snapshot_orders_fetch_failure_returns_error,
         test_snapshot_failure_leaves_no_rows_on_write_error,
         test_provisioning_result_includes_trading_account_id,
         test_no_global_env_fallback_in_loader,

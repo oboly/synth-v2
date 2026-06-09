@@ -5,11 +5,22 @@ Uses BitvavoClient with explicit api_key + api_secret (not global env fallback).
 Requires SYNTH_BROKER_PRIVATE_READ_PERMISSION env to be set.
 Never falls back to global env credentials.
 
-Read-only credential policy: validates via get_balance() ONLY.
-Open-order access requires Trade permission and is not part of initial provisioning.
+Bitvavo API key requirement: Read ON + Trade ON + Withdraw OFF.
+Trade permission on the key does not enable trading in Synth.
+Synth live_trading_enabled and broker_write_permission remain disabled separately.
+
+Validation sequence:
+  1. get_balance() — proves Read permission is active
+  2. get_open_orders() — proves Trade permission is active (required for order visibility)
+
+Error mapping:
+  balance 401/403                      → INVALID_CREDENTIALS_OR_READ_PERMISSION
+  balance ok, open-orders 401/403      → TRADE_PERMISSION_REQUIRED
+  network/server failure (either call) → VALIDATION_UNAVAILABLE
+  both calls succeed                   → VALID_PRIVATE_READ
 
 Safety:
-  broker_private_calls=1 (read-only: get_balance only)
+  broker_private_calls=2 (read-only: get_balance + get_open_orders)
   broker_writes=0
   order_submission=0
   executor=none
@@ -38,10 +49,14 @@ _HTTP_SERVER_ERROR_MIN = 500
 
 class RealBitvavoCredentialValidator:
     """
-    Validates Bitvavo credentials via get_balance() only.
+    Validates Bitvavo credentials by calling get_balance() then get_open_orders().
 
-    Open-order access requires Trade permission and is outside the read-only
-    onboarding contract. get_open_orders() is never called here.
+    Both calls are required:
+    - get_balance() proves Read permission is active.
+    - get_open_orders() proves Trade permission is active (needed for order visibility).
+
+    Trade permission on the Bitvavo key does not enable trading in Synth.
+    Synth live_trading_enabled and broker_write_permission remain disabled separately.
 
     Uses explicit api_key/api_secret from the credential — never falls back to
     global env vars. This ensures Hugo's credentials are never confused with
@@ -63,6 +78,7 @@ class RealBitvavoCredentialValidator:
             api_secret=credential.api_secret,
         )
 
+        # Step 1: balance — proves Read permission.
         try:
             client.get_balance()
         except PermissionError:
@@ -77,7 +93,30 @@ class RealBitvavoCredentialValidator:
                 return CredentialValidationResult(
                     success=False,
                     validation_state=_INVALID_CREDENTIALS,
-                    safe_error_code="INVALID_CREDENTIALS",
+                    safe_error_code="INVALID_CREDENTIALS_OR_READ_PERMISSION",
+                )
+            return CredentialValidationResult(
+                success=False,
+                validation_state=_VALIDATION_UNAVAILABLE,
+                safe_error_code="VALIDATION_UNAVAILABLE",
+            )
+
+        # Step 2: open orders — proves Trade permission.
+        try:
+            client.get_open_orders()
+        except PermissionError:
+            return CredentialValidationResult(
+                success=False,
+                validation_state=_VALIDATION_UNAVAILABLE,
+                safe_error_code="VALIDATION_UNAVAILABLE",
+            )
+        except Exception as exc:
+            status_code = _http_status_from_exception(exc)
+            if status_code is not None and status_code in _HTTP_AUTH_ERROR_CODES:
+                return CredentialValidationResult(
+                    success=False,
+                    validation_state=_INVALID_CREDENTIALS,
+                    safe_error_code="TRADE_PERMISSION_REQUIRED",
                 )
             return CredentialValidationResult(
                 success=False,
@@ -88,7 +127,7 @@ class RealBitvavoCredentialValidator:
         return CredentialValidationResult(
             success=True,
             validation_state=_VALID_PRIVATE_READ,
-            capabilities=["read_balance"],
+            capabilities=["read_balance", "read_orders"],
         )
 
 

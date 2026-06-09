@@ -295,9 +295,14 @@ def render_onboarding_page() -> str:
         <section class="auth-card" style="margin-top:28px" id="connect-section">
           <h3>Connect your Bitvavo account</h3>
           <p class="auth-note">
+            Required Bitvavo API key permissions:
+            <strong>Read: ON &nbsp;·&nbsp; Trade: ON &nbsp;·&nbsp; Withdraw: OFF</strong>
+          </p>
+          <p class="auth-note">
+            Trade permission on the Bitvavo key does not enable trading in Synth.
+            Synth live trading remains disabled separately and requires explicit activation.
             Your credentials are encrypted before storage.
-            Trading remains disabled until separately activated.
-            Withdrawal is never used by Synth.
+            Withdrawal permission is never required by Synth.
           </p>
           <form class="auth-grid" id="connect-form" autocomplete="off">
             <div class="auth-field">

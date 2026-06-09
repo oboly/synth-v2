@@ -251,14 +251,18 @@ POST /synth/web-auth/connect-bitvavo
 ### Real Bitvavo validator
 
 `RealBitvavoCredentialValidator` in `bitvavo_credential_validator_v1.py`:
-- Calls `get_balance()` **only** — read-only credential policy
-- Does not call `get_open_orders()` (requires Trade permission, outside initial provisioning scope)
+- Calls `get_balance()` then `get_open_orders()` — both required
 - Uses `BitvavoClient(api_key=..., api_secret=...)` — explicit credentials only
 - Never falls back to global env vars (`BITVAVO_API_KEY`, `BITVAVO_API_SECRET`)
 - Requires `SYNTH_BROKER_PRIVATE_READ_PERMISSION=I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA`
-- Maps successful balance read → `VALID_PRIVATE_READ`, capabilities `["read_balance"]`
-- Maps 401/403 on balance → `INVALID_CREDENTIALS`
-- Maps network/server error → `VALIDATION_UNAVAILABLE`
+- balance 401/403 → `INVALID_CREDENTIALS_OR_READ_PERMISSION`
+- balance ok, open-orders 401/403 → `TRADE_PERMISSION_REQUIRED`
+- network/server failure → `VALIDATION_UNAVAILABLE`
+- both succeed → `VALID_PRIVATE_READ`, capabilities `["read_balance", "read_orders"]`
+
+Required Bitvavo API key permissions: Read ON · Trade ON · Withdraw OFF.
+Trade permission on the key does not enable trading in Synth.
+Synth live_trading_enabled and broker_write_permission remain disabled separately.
 
 ### Account credential loader
 
@@ -270,10 +274,10 @@ POST /synth/web-auth/connect-bitvavo
 ### Account snapshot service
 
 `account_snapshot_service_v1.take_first_snapshot(conn, trading_account_id, venue, bitvavo_client, now_utc)`:
-- Calls `get_balance()` **only** — read-only credential policy
-- Does not call `get_open_orders()` (requires Trade permission; order details unavailable at initial provisioning)
-- Writes to `trading_account_balance_snapshot` only; `broker_order_snapshot` receives zero rows
-- Returns `SnapshotResult(ok, error_code, balance_row_count, order_row_count=0)`
+- Calls `get_balance()` then `get_open_orders()` — both required
+- Writes to both `trading_account_balance_snapshot` and `broker_order_snapshot`
+- Failure of either fetch returns `ok=False` without writing any rows
+- Returns `SnapshotResult(ok, error_code, balance_row_count, order_row_count)`
 
 ### Production runner wiring (complete)
 

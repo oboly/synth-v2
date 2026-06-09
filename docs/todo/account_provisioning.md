@@ -88,22 +88,33 @@ Production wiring complete:
 
 ---
 
-## Hotfix — Balance-only read-only provisioning  ✅ DONE
+## Hotfix A — Balance-only (reverted by Hotfix B)  ✅ SUPERSEDED
 
 Branch: `fix/read-only-provisioning-balance-only-v1`
 Commit: `Accept balance-only credentials for read-only provisioning`
 
-Root cause: `RealBitvavoCredentialValidator` and `take_first_snapshot` incorrectly called
-`get_open_orders()`, which requires Trade permission. A correct read-only Bitvavo key
-returns HTTP 403 on that call, which was misclassified as `INVALID_CREDENTIALS`.
+Misdiagnosed root cause. Reverted by Hotfix B.
 
-- [x] `bitvavo_credential_validator_v1` — `get_balance()` only; no `get_open_orders()`
-- [x] `account_snapshot_service_v1` — `get_balance()` only; `order_row_count=0`
-- [x] capabilities now `["read_balance"]` — `read_orders` removed
-- [x] tests: `test_validator_calls_get_balance_only`, `test_snapshot_calls_balance_only`
-- [x] tests: `test_snapshot_writes_zero_order_rows` replaces old order-write test
-- [x] `test_snapshot_orders_fetch_failure_returns_error` removed (orders not fetched)
-- [x] 157 tests passing
+---
+
+## Hotfix B — Restore Bitvavo order-read provisioning contract  ✅ DONE
+
+Branch: `fix/restore-bitvavo-order-read-validation-v1`
+Commit: `Restore Bitvavo order-read provisioning contract`
+
+Correct diagnosis: initial Bitvavo provisioning requires Trade permission on the key
+for open-order visibility. The provisioning form now explicitly states:
+Read ON · Trade ON · Withdraw OFF, with a note that Trade on the key does not
+enable trading in Synth.
+
+- [x] `bitvavo_credential_validator_v1` — `get_balance()` + `get_open_orders()` restored
+- [x] balance 401/403 → `INVALID_CREDENTIALS_OR_READ_PERMISSION`
+- [x] balance ok, open-orders 401/403 → `TRADE_PERMISSION_REQUIRED`
+- [x] network/server failure → `VALIDATION_UNAVAILABLE`
+- [x] capabilities restored to `["read_balance", "read_orders"]`
+- [x] `account_snapshot_service_v1` — both fetches restored; failure of either → `ok=False`
+- [x] onboarding page updated: permission list + Trade-does-not-enable-trading clarification
+- [x] tests: 161 passing
 
 Safety: broker_private_calls=0 (tests), broker_writes=0, order_submission=0, executor=none
 

@@ -76,7 +76,7 @@ def test_blocked_with_wrong_permission_value() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Success path (mock HTTP 200)
+# Success path — both calls return HTTP 200
 # ---------------------------------------------------------------------------
 
 def test_valid_credentials_return_valid_private_read() -> None:
@@ -84,12 +84,13 @@ def test_valid_credentials_return_valid_private_read() -> None:
     os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = _PERMISSION_GRANTED
     try:
         balance_resp = _mock_response(200, [{"symbol": "EUR", "available": "100.00", "inOrder": "0"}])
-        with patch("requests.get", return_value=balance_resp):
+        orders_resp = _mock_response(200, [])
+        with patch("requests.get", side_effect=[balance_resp, orders_resp]):
             result = RealBitvavoCredentialValidator().validate(_credential())
         assert result.success is True
         assert result.validation_state == "VALID_PRIVATE_READ"
         assert "read_balance" in result.capabilities
-        assert "read_orders" not in result.capabilities
+        assert "read_orders" in result.capabilities
     finally:
         os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
 
@@ -98,34 +99,30 @@ def test_valid_credentials_no_safe_error_code() -> None:
     import os
     os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = _PERMISSION_GRANTED
     try:
-        with patch("requests.get", return_value=_mock_response(200, [])):
+        with patch("requests.get", side_effect=[_mock_response(200, []), _mock_response(200, [])]):
             result = RealBitvavoCredentialValidator().validate(_credential())
         assert result.safe_error_code is None
     finally:
         os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
 
 
-def test_validator_calls_get_balance_only() -> None:
-    """Validator must call get_balance exactly once and never call get_open_orders."""
+def test_validator_calls_balance_then_open_orders() -> None:
+    """Validator must call get_balance then get_open_orders — exactly two HTTP calls."""
     import os
-    from unittest.mock import MagicMock, call
     os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = _PERMISSION_GRANTED
     try:
-        with patch("requests.get", return_value=_mock_response(200, [])) as mock_get:
+        with patch("requests.get", side_effect=[_mock_response(200, []), _mock_response(200, [])]) as mock_get:
             RealBitvavoCredentialValidator().validate(_credential())
-        assert mock_get.call_count == 1
-        for c in mock_get.call_args_list:
-            url = c.args[0] if c.args else c.kwargs.get("url", "")
-            assert "open-orders" not in url, f"get_open_orders must not be called, got url: {url}"
+        assert mock_get.call_count == 2
     finally:
         os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
 
 
 # ---------------------------------------------------------------------------
-# Auth failure (HTTP 401/403)
+# Balance auth failure (HTTP 401/403) → INVALID_CREDENTIALS_OR_READ_PERMISSION
 # ---------------------------------------------------------------------------
 
-def test_http_401_returns_invalid_credentials() -> None:
+def test_balance_http_401_returns_invalid_credentials_or_read_permission() -> None:
     import os
     os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = _PERMISSION_GRANTED
     try:
@@ -133,19 +130,48 @@ def test_http_401_returns_invalid_credentials() -> None:
             result = RealBitvavoCredentialValidator().validate(_credential())
         assert result.success is False
         assert result.validation_state == "INVALID_CREDENTIALS"
-        assert result.safe_error_code == "INVALID_CREDENTIALS"
+        assert result.safe_error_code == "INVALID_CREDENTIALS_OR_READ_PERMISSION"
     finally:
         os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
 
 
-def test_http_403_returns_invalid_credentials() -> None:
+def test_balance_http_403_returns_invalid_credentials_or_read_permission() -> None:
     import os
     os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = _PERMISSION_GRANTED
     try:
         with patch("requests.get", return_value=_mock_response(403)):
             result = RealBitvavoCredentialValidator().validate(_credential())
         assert result.success is False
-        assert result.safe_error_code == "INVALID_CREDENTIALS"
+        assert result.safe_error_code == "INVALID_CREDENTIALS_OR_READ_PERMISSION"
+    finally:
+        os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
+
+
+# ---------------------------------------------------------------------------
+# Open-orders auth failure (balance ok, orders 401/403) → TRADE_PERMISSION_REQUIRED
+# ---------------------------------------------------------------------------
+
+def test_orders_http_401_returns_trade_permission_required() -> None:
+    import os
+    os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = _PERMISSION_GRANTED
+    try:
+        with patch("requests.get", side_effect=[_mock_response(200, []), _mock_response(401)]):
+            result = RealBitvavoCredentialValidator().validate(_credential())
+        assert result.success is False
+        assert result.validation_state == "INVALID_CREDENTIALS"
+        assert result.safe_error_code == "TRADE_PERMISSION_REQUIRED"
+    finally:
+        os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
+
+
+def test_orders_http_403_returns_trade_permission_required() -> None:
+    import os
+    os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = _PERMISSION_GRANTED
+    try:
+        with patch("requests.get", side_effect=[_mock_response(200, []), _mock_response(403)]):
+            result = RealBitvavoCredentialValidator().validate(_credential())
+        assert result.success is False
+        assert result.safe_error_code == "TRADE_PERMISSION_REQUIRED"
     finally:
         os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
 
@@ -154,11 +180,23 @@ def test_http_403_returns_invalid_credentials() -> None:
 # Server/network failures → VALIDATION_UNAVAILABLE
 # ---------------------------------------------------------------------------
 
-def test_http_500_returns_unavailable() -> None:
+def test_balance_http_500_returns_unavailable() -> None:
     import os
     os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = _PERMISSION_GRANTED
     try:
         with patch("requests.get", return_value=_mock_response(500)):
+            result = RealBitvavoCredentialValidator().validate(_credential())
+        assert result.success is False
+        assert result.safe_error_code == "VALIDATION_UNAVAILABLE"
+    finally:
+        os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
+
+
+def test_orders_http_500_returns_unavailable() -> None:
+    import os
+    os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = _PERMISSION_GRANTED
+    try:
+        with patch("requests.get", side_effect=[_mock_response(200, []), _mock_response(500)]):
             result = RealBitvavoCredentialValidator().validate(_credential())
         assert result.success is False
         assert result.safe_error_code == "VALIDATION_UNAVAILABLE"
@@ -249,10 +287,13 @@ if __name__ == "__main__":
         test_blocked_with_wrong_permission_value,
         test_valid_credentials_return_valid_private_read,
         test_valid_credentials_no_safe_error_code,
-        test_validator_calls_get_balance_only,
-        test_http_401_returns_invalid_credentials,
-        test_http_403_returns_invalid_credentials,
-        test_http_500_returns_unavailable,
+        test_validator_calls_balance_then_open_orders,
+        test_balance_http_401_returns_invalid_credentials_or_read_permission,
+        test_balance_http_403_returns_invalid_credentials_or_read_permission,
+        test_orders_http_401_returns_trade_permission_required,
+        test_orders_http_403_returns_trade_permission_required,
+        test_balance_http_500_returns_unavailable,
+        test_orders_http_500_returns_unavailable,
         test_connection_error_returns_unavailable,
         test_timeout_returns_unavailable,
         test_validator_uses_explicit_credentials_not_global_env,

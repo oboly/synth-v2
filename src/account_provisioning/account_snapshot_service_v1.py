@@ -1,18 +1,18 @@
 """
 account_snapshot_service_v1 — First-time account snapshot after provisioning.
 
-Fetches balance using account-scoped credentials (never global env),
-writes balance rows to the snapshot table, and returns a SnapshotResult.
+Fetches balance and open orders using account-scoped credentials (never global env),
+writes them to the snapshot tables, and returns a SnapshotResult.
 
-Read-only credential policy: calls get_balance() only.
-Open-order details require Trade permission and are unavailable under the initial
-read-only credential. order_row_count is always 0 after first snapshot.
+Both balance and open-order reads are required. The provisioned key must have
+Trade permission for open-order visibility. Failure of either fetch returns
+ok=False and keeps refresh_pending=True upstream.
 
 Called post-commit by the connect_bitvavo runner after successful provisioning.
 Must not be called in the provisioning transaction.
 
 Safety:
-  broker_private_calls=1 (read-only: get_balance only)
+  broker_private_calls=2 (read-only: get_balance + get_open_orders)
   broker_writes=0
   order_submission=0
   executor=none
@@ -149,18 +149,18 @@ def take_first_snapshot(
     now_utc: datetime | None = None,
 ) -> SnapshotResult:
     """
-    Fetch balance for the account and write to trading_account_balance_snapshot.
-
-    Open-order details are not fetched — the initial read-only credential does not
-    have Trade permission. order_row_count is always 0.
+    Fetch balance + open orders and write both to snapshot tables.
 
     bitvavo_client must be created with explicit api_key + api_secret from the
     account's decrypted credential — never from global env vars.
 
+    Both fetches are required. Failure of either returns ok=False without writing
+    any rows (balance write is deferred until both fetches succeed).
+
     conn is a committed/writable connection (outside the provisioning transaction).
     Commits the snapshot writes.
 
-    broker_private_calls=1 (get_balance only — no writes, no orders placed).
+    broker_private_calls=2 (get_balance + get_open_orders — no writes, no orders placed).
     """
     snapshot_ts_utc = (now_utc or _utc_naive()).replace(tzinfo=None)
 
@@ -170,6 +170,11 @@ def take_first_snapshot(
         return SnapshotResult(ok=False, error_code="BALANCE_FETCH_FAILED")
 
     try:
+        raw_orders = bitvavo_client.get_open_orders()
+    except Exception:
+        return SnapshotResult(ok=False, error_code="ORDERS_FETCH_FAILED")
+
+    try:
         balance_count = _insert_balance_rows(
             conn,
             trading_account_id=trading_account_id,
@@ -177,11 +182,18 @@ def take_first_snapshot(
             raw_balances=raw_balances,
             snapshot_ts_utc=snapshot_ts_utc,
         )
+        order_count = _insert_order_rows(
+            conn,
+            trading_account_id=trading_account_id,
+            venue=venue,
+            raw_orders=raw_orders,
+            snapshot_ts_utc=snapshot_ts_utc,
+        )
         try:
             conn.commit()
         except (AttributeError, TypeError):
             pass
-        return SnapshotResult(ok=True, balance_row_count=balance_count, order_row_count=0)
+        return SnapshotResult(ok=True, balance_row_count=balance_count, order_row_count=order_count)
     except Exception:
         try:
             conn.rollback()
