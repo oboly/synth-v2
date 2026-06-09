@@ -75,33 +75,20 @@ def _service(kv, kb):
         credential_validator=MockBitvavoCredentialValidator(),
         master_key_version=kv,
         master_key_bytes=kb,
+        account_repo_factory=SqliteAccountRepository,
+        cred_repo_factory=SqliteCredentialRepository,
     )
 
 
 def _provision(service, identity, db_name, api_key="mock-valid-read-only-key", api_secret="test-secret", confirmed=True):
-    conn = _shared_conn(db_name)
-    try:
-        account_repo = SqliteAccountRepository(conn)
-        cred_repo = SqliteCredentialRepository(conn)
-        result = service.provision_bitvavo_account(
-            identity=identity,
-            api_key=api_key,
-            api_secret=api_secret,
-            withdrawal_disabled_confirmed=confirmed,
-            account_repo=account_repo,
-            cred_repo=cred_repo,
-            now_utc=_NOW,
-        )
-        if result.ok:
-            conn.commit()
-        else:
-            conn.rollback()
-        return result
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    return service.provision_bitvavo_account(
+        identity=identity,
+        api_key=api_key,
+        api_secret=api_secret,
+        withdrawal_disabled_confirmed=confirmed,
+        conn_factory=lambda: _shared_conn(db_name),
+        now_utc=_NOW,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -332,28 +319,67 @@ def test_failed_transaction_leaves_no_partial_rows() -> None:
     )
     seed.commit()
 
-    conn = _shared_conn(db)
     try:
-        account_repo = SqliteAccountRepository(conn)
-        cred_repo = SqliteCredentialRepository(conn)
-        try:
-            _service(kv, kb).provision_bitvavo_account(
-                identity=identity,
-                api_key="mock-valid-read-only-key",
-                api_secret="s",
-                withdrawal_disabled_confirmed=True,
-                account_repo=account_repo,
-                cred_repo=cred_repo,
-                now_utc=_NOW,
-            )
-        except Exception:
-            conn.rollback()
-        else:
-            conn.rollback()
-    finally:
-        conn.close()
+        _provision(_service(kv, kb), identity, db)
+    except Exception:
+        pass
 
     # Credential and link must not exist
+    assert seed.execute("SELECT COUNT(*) AS n FROM trading_account_credential").fetchone()["n"] == 0
+    assert seed.execute("SELECT COUNT(*) AS n FROM app_profile_trading_account_link").fetchone()["n"] == 0
+    seed.close()
+
+
+# ---------------------------------------------------------------------------
+# Transaction ownership
+# ---------------------------------------------------------------------------
+
+def test_service_commits_on_success() -> None:
+    source = Path("src/account_provisioning/account_provisioning_service_v1.py").read_text()
+    assert ".commit()" in source, "service must own the transaction and commit on success"
+
+
+def test_service_rolls_back_on_failure() -> None:
+    source = Path("src/account_provisioning/account_provisioning_service_v1.py").read_text()
+    assert ".rollback()" in source, "service must rollback on failure or exception"
+
+
+def test_service_commits_once_on_success() -> None:
+    """Provisioning commits and subsequent verify reads committed data."""
+    db = _next_db()
+    seed = _seed_schema(db)
+    pid = _seed_profile(seed, "hugo")
+    kv, kb = _master_key()
+    identity = AuthenticatedProfileIdentity(app_user_id=1, app_profile_id=pid, profile_code="hugo")
+    result = _provision(_service(kv, kb), identity, db)
+    assert result.ok is True
+    # seed conn should see committed rows immediately
+    count = seed.execute("SELECT COUNT(*) AS n FROM trading_account").fetchone()["n"]
+    assert count == 1
+    seed.close()
+
+
+def test_service_rolls_back_on_db_exception() -> None:
+    """Exception mid-provisioning leaves no orphan rows."""
+    db = _next_db()
+    seed = _seed_schema(db)
+    pid = _seed_profile(seed, "hugo")
+    kv, kb = _master_key()
+    identity = AuthenticatedProfileIdentity(app_user_id=1, app_profile_id=pid, profile_code="hugo")
+
+    seed.execute(
+        "INSERT INTO trading_account (account_code, venue, account_mode, enabled, live_trading_enabled, created_ts_utc) VALUES (?, ?, ?, ?, ?, ?)",
+        ("hugo-bitvavo", "bitvavo", "paper", 1, 0, "2026-06-09 11:00:00"),
+    )
+    seed.commit()
+
+    raised = False
+    try:
+        _provision(_service(kv, kb), identity, db)
+    except Exception:
+        raised = True
+
+    assert raised is True
     assert seed.execute("SELECT COUNT(*) AS n FROM trading_account_credential").fetchone()["n"] == 0
     assert seed.execute("SELECT COUNT(*) AS n FROM app_profile_trading_account_link").fetchone()["n"] == 0
     seed.close()
@@ -404,27 +430,10 @@ def test_secrets_absent_from_exception_text() -> None:
     kv, kb = _master_key()
     identity = AuthenticatedProfileIdentity(app_user_id=1, app_profile_id=pid, profile_code="hugo")
     exc_text: list[str] = []
-    conn = _shared_conn(db)
     try:
-        account_repo = SqliteAccountRepository(conn)
-        cred_repo = SqliteCredentialRepository(conn)
-        try:
-            _service(kv, kb).provision_bitvavo_account(
-                identity=identity,
-                api_key="mock-invalid-key",
-                api_secret="very-secret-secret",
-                withdrawal_disabled_confirmed=True,
-                account_repo=account_repo,
-                cred_repo=cred_repo,
-                now_utc=_NOW,
-            )
-        except Exception as exc:
-            exc_text.append(str(exc))
-            conn.rollback()
-        else:
-            conn.rollback()
-    finally:
-        conn.close()
+        _provision(_service(kv, kb), identity, db, api_key="mock-invalid-key", api_secret="very-secret-secret")
+    except Exception as exc:
+        exc_text.append(str(exc))
     for text in exc_text:
         assert "very-secret-secret" not in text
     seed.close()
@@ -494,11 +503,6 @@ def test_no_broker_import_in_provisioning_service() -> None:
     assert "place_order" not in source
 
 
-def test_service_does_not_commit() -> None:
-    source = Path("src/account_provisioning/account_provisioning_service_v1.py").read_text()
-    assert ".commit()" not in source
-
-
 def test_reporting_unchanged() -> None:
     source = Path("src/account_provisioning/account_provisioning_service_v1.py").read_text()
     assert "reporting" not in source
@@ -526,6 +530,10 @@ if __name__ == "__main__":
         test_existing_link_returns_already_connected,
         test_duplicate_request_produces_one_account,
         test_failed_transaction_leaves_no_partial_rows,
+        test_service_commits_on_success,
+        test_service_rolls_back_on_failure,
+        test_service_commits_once_on_success,
+        test_service_rolls_back_on_db_exception,
         test_hugo_cannot_provision_as_joost,
         test_secrets_absent_from_result,
         test_secrets_absent_from_exception_text,
@@ -533,7 +541,6 @@ if __name__ == "__main__":
         test_plaintext_absent_from_database,
         test_plain_credential_repr_safe,
         test_no_broker_import_in_provisioning_service,
-        test_service_does_not_commit,
         test_reporting_unchanged,
         test_decision_gate_unchanged,
     ]
