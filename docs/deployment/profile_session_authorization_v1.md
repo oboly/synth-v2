@@ -6,6 +6,10 @@ Canonical documentation for SYNTH profile-scoped website session authorization.
 
 ### Public (no auth required)
 
+`/synth/index.html` and `/synth/about.html` are strictly account-agnostic.
+They contain no `/synth/accounts/<profile>/` hrefs and are rendered without
+any linked-profile or account discovery. See `docs/ops/synth_mvp_readonly_cockpit_v1.md`.
+
 | Route | Handler |
 |---|---|
 | `GET /synth/` | Static (Hugo) |

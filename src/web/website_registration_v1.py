@@ -887,9 +887,28 @@ class SqliteWebsiteRegistrationRepository:
         return int(row["n"]) if row else 0
 
     def lookup_primary_account_link(self, app_profile_id: int) -> Mapping[str, object] | None:
-        # app_profile_trading_account_link does not exist in the SQLite test schema.
-        # All test profiles are treated as unlinked (landing → onboarding).
-        return None
+        # Table may exist (created by SqliteAccountRepository) or may not (website-only tests).
+        try:
+            rows = self.conn.execute(
+                """
+                SELECT link_id, trading_account_id, link_status, is_primary
+                FROM app_profile_trading_account_link
+                WHERE app_profile_id = ?
+                  AND link_status = 'ACTIVE'
+                  AND is_primary = 1
+                LIMIT 2
+                """,
+                (app_profile_id,),
+            ).fetchall()
+        except Exception:
+            return None
+        if not rows:
+            return None
+        if len(rows) > 1:
+            raise RuntimeError(
+                f"AMBIGUOUS_PRIMARY_LINK: app_profile_id={app_profile_id} has multiple primary active links"
+            )
+        return rows[0]
 
 
 class MariaDbWebsiteRegistrationRepository:
@@ -1545,6 +1564,29 @@ class WebsiteRegistrationService:
 
     def logout(self, *, session_token: str, now_utc: datetime | None = None) -> None:
         self.repository.invalidate_session(_hash_token(session_token), now_utc or utc_now())
+
+    def resolve_session_identity(
+        self,
+        *,
+        session_token: str,
+        now_utc: datetime | None = None,
+    ) -> dict[str, object] | None:
+        """
+        Validate session and return {app_user_id, app_profile_id, profile_code}, or None.
+        Used by account provisioning to build AuthenticatedProfileIdentity server-side.
+        Does not update last_seen.
+        """
+        if not session_token:
+            return None
+        now = now_utc or utc_now()
+        row = self.repository.lookup_active_session(_hash_token(session_token))
+        if _validate_session_row(row, now) is not None:
+            return None
+        return {
+            "app_user_id": int(row["app_user_id"]),
+            "app_profile_id": int(row["app_profile_id"]),
+            "profile_code": str(row["profile_code"]),
+        }
 
     def get_onboarding_access(
         self,

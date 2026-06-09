@@ -13,7 +13,6 @@ from typing import Any
 from src.common.db import get_connection
 from src.regime.run_active_regime_observation_v1 import classify_asset_class
 from src.reporting.dashboard_style_v1 import (
-    DEFAULT_NAV_ACCOUNT_PROFILE,
     cockpit_base_css,
     cockpit_nav,
     pill_classes,
@@ -755,7 +754,7 @@ def render_html(rows: list[DashboardRow], *, venue: str, quote: str, interval: s
       <h1>Breath / Fibo Strategy Dashboard v1</h1>
       <div class="muted">Market-only strategy hypotheses. No advice, no execution, no account logic.</div>
       <div class="small muted">venue={esc(venue)} · quote={esc(quote)} · interval={esc(interval)} · rendered={esc(rendered_label)}</div>
-      {cockpit_nav(account_profile=DEFAULT_NAV_ACCOUNT_PROFILE)}
+      {cockpit_nav(account_profile=None)}
       <div class="summary">{counts_html}</div>
       <div class="small muted">Breath/Fibo gives the frame. Regime gives the first Synth layer. Levels give the TP/reload/invalidation map. Nothing executes.</div>
     </div>

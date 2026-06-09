@@ -53,6 +53,23 @@ Forbidden: broker writes, order submission, execution_planner activation, execut
 
 Do not expose publicly without authentication. Preferred MVP access: Tailscale/VPN or LAN-only.
 
+## Global page isolation rules
+
+`/synth/index.html` and `/synth/about.html` are strictly account-agnostic.
+
+- `run_synth_about_page_v1.py` performs no linked-profile or account discovery.
+  It does not call `discover_active_linked_profiles` or query any account table.
+- Global pages contain no `href="/synth/accounts/<profile>/..."` links.
+- `cockpit_nav(account_profile=None)` renders Cockpit and About links only.
+  It must not include Wallet, Profit Plan, or Open Orders Monitor.
+- Account navigation (Wallet, Profit Plan, Open Orders Monitor) is only emitted
+  by account-scoped dashboard runners with an explicit `account_profile` argument.
+- No default profile may be hardcoded in `run_synth_about_page_v1.py` or
+  `dashboard_style_v1.py`. `DEFAULT_NAV_ACCOUNT_PROFILE` must not exist.
+- Login landing and redirect behavior is handled by the session auth layer and
+  is profile/account-aware. It is unaffected by global page rendering.
+  See `docs/deployment/profile_session_authorization_v1.md`.
+
 ## Limitations
 
 - The About page is global and account-agnostic. Do not duplicate it under

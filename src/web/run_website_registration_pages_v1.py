@@ -21,6 +21,7 @@ LOGIN_ENDPOINT = "/synth/web-auth/login"
 LOGOUT_ENDPOINT = "/synth/web-auth/logout"
 ONBOARDING_ENDPOINT = "/synth/web-auth/onboarding-status"
 RESEND_ENDPOINT = "/synth/web-auth/resend-verification"
+CONNECT_BITVAVO_ENDPOINT = "/synth/web-auth/connect-bitvavo"
 
 TURNSTILE_SCRIPT_URL = "https://challenges.cloudflare.com/turnstile/v0/api.js"
 # Cloudflare's published always-pass test site key (public, non-secret).
@@ -288,34 +289,41 @@ def render_onboarding_page() -> str:
     body = f"""
         <h2>Onboarding</h2>
         <p class="auth-note">A verified website profile can exist before any exchange mapping is provisioned.</p>
-        <div class="pill warn status-pill">NO_EXCHANGE_ACCOUNT_CONNECTED</div>
+        <div class="pill warn status-pill" id="onboarding-badge">NO_EXCHANGE_ACCOUNT_CONNECTED</div>
         <div id="onboarding-status" class="auth-status" aria-live="polite">Checking onboarding access...</div>
-        <div class="auth-actions">
-          <button type="button" id="logout-button">Logout</button>
-        </div>
 
-        <section class="auth-card" style="margin-top:28px;opacity:.7">
-          <h3 style="color:var(--muted);font-size:13px;text-transform:uppercase;letter-spacing:.08em">
-            API-account koppelen
-            <span style="font-size:10px;border:1px solid var(--line);border-radius:6px;padding:2px 8px;margin-left:8px">Toekomstig</span>
-          </h3>
+        <section class="auth-card" style="margin-top:28px" id="connect-section">
+          <h3>Connect your Bitvavo account</h3>
           <p class="auth-note">
-            Een exchange API-koppeling wordt later in een aparte stap toegevoegd.
-            Wanneer je een API-sleutel koppelt, worden uitsluitend de volgende rechten ondersteund:
+            Your credentials are encrypted before storage.
+            Trading remains disabled until separately activated.
+            Withdrawal is never used by Synth.
           </p>
-          <ul class="auth-note" style="padding-left:18px;line-height:2">
-            <li>Accountbalans lezen</li>
-            <li>Posities lezen</li>
-            <li>Openstaande orders lezen</li>
-          </ul>
-          <p class="auth-note" style="color:var(--warn)">
-            <strong>Niet toegestaan:</strong> handelen, orders aanmaken of wijzigen, opnames, overboekingen of adresbeheer.
-          </p>
-          <p class="auth-note">
-            API-sleutels worden later server-side versleuteld opgeslagen.
-            Ze worden nooit opgeslagen in HTML, JSON, URL's, logbestanden of browserstorage.
-            Er zijn op dit moment geen velden voor inloggegevens beschikbaar.
-          </p>
+          <form class="auth-grid" id="connect-form" autocomplete="off">
+            <div class="auth-field">
+              <label>Bitvavo API key</label>
+              <input type="text" id="connect-api-key" autocomplete="off" required
+                     placeholder="Enter your Bitvavo API key">
+            </div>
+            <div class="auth-field">
+              <label>Bitvavo API secret</label>
+              <input type="password" id="connect-api-secret" autocomplete="off" required
+                     placeholder="Enter your Bitvavo API secret">
+            </div>
+            <label style="display:flex;gap:8px;align-items:flex-start;color:var(--muted);font-size:13px;cursor:pointer">
+              <input type="checkbox" id="connect-confirm" style="margin-top:2px;flex-shrink:0">
+              <span>I confirm that withdrawal permission is disabled for this API key.</span>
+            </label>
+            <div class="auth-actions">
+              <button type="submit" id="connect-button">Connect Bitvavo account</button>
+              <button type="button" id="logout-button">Logout</button>
+            </div>
+          </form>
+          <div id="connect-status" class="auth-status" style="display:none" aria-live="polite"></div>
+          <div id="connect-success" style="display:none">
+            <div class="pill ok status-pill">READ_ONLY_EXCHANGE_ACCOUNT_CONNECTED</div>
+            <p class="auth-note" style="margin-top:10px">Account connected. Redirecting...</p>
+          </div>
         </section>
         """
     script = (
@@ -323,23 +331,71 @@ def render_onboarding_page() -> str:
         + f"""
 <script>
 const onboardingStatus = document.getElementById("onboarding-status");
+const connectStatus = document.getElementById("connect-status");
+const connectSuccess = document.getElementById("connect-success");
+const connectForm = document.getElementById("connect-form");
+const connectButton = document.getElementById("connect-button");
+const connectSection = document.getElementById("connect-section");
+
 async function refreshOnboardingStatus() {{
   const {{response, data}} = await synthPostJson("{ONBOARDING_ENDPOINT}", {{}});
   if (response.ok && data.ok) {{
     onboardingStatus.textContent = "Onboarding state: " + (data.onboarding_state || "UNKNOWN");
+    if (data.onboarding_state === "READ_ONLY_EXCHANGE_ACCOUNT_CONNECTED") {{
+      connectSection.style.display = "none";
+    }}
   }} else if (response.status === 401) {{
-    onboardingStatus.textContent = "Session verlopen of niet ingelogd. Doorsturen naar login...";
+    onboardingStatus.textContent = "Session expired. Redirecting to login...";
     setTimeout(function() {{ window.location.assign("/synth/login.html?reason=session_expired"); }}, 1500);
   }} else if (response.status === 403) {{
-    onboardingStatus.textContent = "Geen toegang tot dit profiel.";
+    onboardingStatus.textContent = "Access denied for this profile.";
   }} else {{
     onboardingStatus.textContent = "Onboarding access failed: " + ((data.error && data.error.code) || "UNKNOWN_ERROR");
   }}
 }}
+
 document.getElementById("logout-button").addEventListener("click", async function() {{
   await synthPostJson("{LOGOUT_ENDPOINT}", {{}});
   window.location.assign("/synth/login.html");
 }});
+
+connectForm.addEventListener("submit", async function(event) {{
+  event.preventDefault();
+  const apiKey = document.getElementById("connect-api-key").value || "";
+  const apiSecret = document.getElementById("connect-api-secret").value || "";
+  const confirmed = document.getElementById("connect-confirm").checked;
+
+  // Clear credential inputs immediately after reading — never store in any client state
+  document.getElementById("connect-api-key").value = "";
+  document.getElementById("connect-api-secret").value = "";
+
+  connectButton.disabled = true;
+  connectStatus.style.display = "";
+  connectStatus.textContent = "Connecting...";
+
+  const payload = {{
+    api_key: apiKey,
+    api_secret: apiSecret,
+    withdrawal_disabled_confirmed: confirmed,
+  }};
+
+  const {{response, data}} = await synthPostJson("{CONNECT_BITVAVO_ENDPOINT}", payload);
+
+  if (response.ok && data.ok) {{
+    connectForm.style.display = "none";
+    connectSuccess.style.display = "";
+    connectStatus.textContent = "Bitvavo account connected.";
+    const landingPath = typeof data.landing_path === "string" ? data.landing_path : "";
+    if (landingPath && landingPath.startsWith("/synth/")) {{
+      setTimeout(function() {{ window.location.assign(landingPath); }}, 2000);
+    }}
+  }} else {{
+    connectButton.disabled = false;
+    const code = (data.error && data.error.code) || "UNKNOWN_ERROR";
+    connectStatus.textContent = "Connection failed: " + code;
+  }}
+}});
+
 refreshOnboardingStatus();
 </script>
 """

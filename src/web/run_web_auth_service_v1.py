@@ -5,6 +5,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from typing import Callable, Any
 from urllib.parse import urlparse
 from wsgiref.simple_server import make_server
 
@@ -23,6 +24,7 @@ from src.web.website_registration_v1 import (
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8786
 MIN_PEPPER_LENGTH = 32
+DEFAULT_OUTPUT_ROOT = "/var/www/html/synth"
 
 
 def parse_args(args: list[str] | None = None) -> argparse.Namespace:
@@ -38,6 +40,11 @@ def parse_args(args: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--sqlite-path", default="/tmp/synth_website_registration_v1.sqlite3")
     parser.add_argument("--base-url", default=os.getenv("SYNTH_PUBLIC_BASE_URL", "https://synth.example"))
     parser.add_argument("--display-timezone", default=os.getenv("SYNTH_DEFAULT_PROFILE_TIMEZONE", DEFAULT_PROFILE_TIMEZONE))
+    parser.add_argument(
+        "--output-root",
+        default=os.getenv("SYNTH_WEB_OUTPUT_ROOT", DEFAULT_OUTPUT_ROOT),
+        help="Web output root for rendered dashboards (default: /var/www/html/synth).",
+    )
     return parser.parse_args(args)
 
 
@@ -109,6 +116,52 @@ def _validate_production_config(env: dict[str, str]) -> tuple[object, object]:
     return proof_provider, mailer
 
 
+def _build_connect_bitvavo(args: argparse.Namespace) -> Callable[..., Any] | None:
+    """
+    Build the connect_bitvavo callable for MariaDB mode.
+
+    Returns None in SQLite mode — provisioning requires a persistent DB.
+    Raises RuntimeError at startup if the master key env var is missing.
+
+    Production: RealBitvavoCredentialValidator, never the mock.
+    """
+    if args.database != "mariadb":
+        return None
+
+    from src.account_provisioning.account_provisioning_service_v1 import AccountProvisioningService
+    from src.account_provisioning.account_repository_v1 import MariaDbAccountRepository
+    from src.account_provisioning.bitvavo_credential_validator_v1 import RealBitvavoCredentialValidator
+    from src.account_provisioning.connect_bitvavo_v1 import build_connect_bitvavo
+    from src.account_provisioning.credential_crypto_v1 import load_master_key_from_env
+    from src.account_provisioning.credential_repository_v1 import CredentialRepository
+    from src.common.db import get_db_connection
+    from src.execution.bitvavo_client import BitvavoClient
+
+    try:
+        key_version, key_bytes = load_master_key_from_env()
+    except ValueError as exc:
+        raise RuntimeError(f"PROVISIONING_STARTUP_FAILED: {exc}") from exc
+
+    provisioning_service = AccountProvisioningService(
+        credential_validator=RealBitvavoCredentialValidator(),
+        master_key_version=key_version,
+        master_key_bytes=key_bytes,
+        account_repo_factory=MariaDbAccountRepository,
+        cred_repo_factory=CredentialRepository,
+    )
+
+    return build_connect_bitvavo(
+        provisioning_service=provisioning_service,
+        conn_factory=get_db_connection,
+        master_key_bytes=key_bytes,
+        cred_repo_factory=CredentialRepository,
+        bitvavo_client_factory=lambda api_key, api_secret: BitvavoClient(
+            api_key=api_key, api_secret=api_secret
+        ),
+        output_root=Path(args.output_root),
+    )
+
+
 def build_service(args: argparse.Namespace) -> WebsiteRegistrationService:
     env = dict(os.environ)
     if is_production_env(env):
@@ -135,14 +188,17 @@ def main() -> int:
     args = parse_args()
     env = dict(os.environ)
     service = build_service(args)
+    connect_bitvavo = _build_connect_bitvavo(args)
     allowed_origins: set[str] | None = None
     if is_production_env(env):
         raw_base_url = env.get("SYNTH_PUBLIC_BASE_URL", "")
         normalized_origin = _validate_production_base_url(raw_base_url)
         allowed_origins = {normalized_origin}
-    app = build_wsgi_app(service=service, allowed_origins=allowed_origins)
+    app = build_wsgi_app(service=service, allowed_origins=allowed_origins, connect_bitvavo=connect_bitvavo)
+    provisioning_status = "enabled" if connect_bitvavo is not None else "disabled"
     print(
-        f"STARTED runner=website_registration_service_v1 host={args.host} port={args.port} database={args.database}",
+        f"STARTED runner=website_registration_service_v1 host={args.host} port={args.port}"
+        f" database={args.database} provisioning={provisioning_status}",
         flush=True,
     )
     print("broker_private_calls=0", flush=True)

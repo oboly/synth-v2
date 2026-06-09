@@ -2,9 +2,17 @@ from __future__ import annotations
 
 import ast
 import json
+import sys
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+
+# When run directly as `python tests/test_*.py`, Python replaces sys.path[0] with
+# the tests/ directory, dropping '' (cwd). The sibling synth-v2 repo then shadows
+# src.* imports. Insert the project root explicitly so both pytest and the standalone
+# runner always resolve src.* from this repository.
+_PROJECT_ROOT = Path(__file__).parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.reporting.account_wallet_dashboard_v1 import (
     AccountAssetSettingsSummary,
@@ -12,7 +20,7 @@ from src.reporting.account_wallet_dashboard_v1 import (
     payload_to_json_dict,
     render_wallet_html,
 )
-from src.reporting.dashboard_style_v1 import DEFAULT_NAV_ACCOUNT_PROFILE, cockpit_nav
+from src.reporting.dashboard_style_v1 import account_dashboard_links, cockpit_nav
 from src.reporting.run_synth_about_page_v1 import (
     DEFAULT_HERO_HREF,
     render_about_html,
@@ -33,15 +41,6 @@ def _settings() -> AccountAssetSettingsSummary:
     )
 
 
-def _profile(code: str) -> dict:
-    return {
-        "profile_code": code,
-        "account_code": f"bitvavo_{code}_read",
-        "venue": "bitvavo",
-        "display_timezone": "UTC",
-    }
-
-
 # -- Import / source checks --
 
 def test_about_runner_imports_successfully() -> None:
@@ -59,9 +58,21 @@ def test_no_hardcoded_profile_names_in_source() -> None:
     assert "'hugo'" not in ABOUT_SOURCE
 
 
-def test_runner_uses_account_layer_discovery() -> None:
-    assert "discover_active_linked_profiles" in ABOUT_SOURCE
-    assert "src.account.app_profile_trading_account_link_v1" in ABOUT_SOURCE
+def test_runner_no_longer_uses_account_layer_discovery() -> None:
+    """Global runner must not call discover_active_linked_profiles — no account query."""
+    assert "discover_active_linked_profiles" not in ABOUT_SOURCE
+    assert "src.account.app_profile_trading_account_link_v1" not in ABOUT_SOURCE
+
+
+def test_runner_no_default_nav_account_profile() -> None:
+    """DEFAULT_NAV_ACCOUNT_PROFILE must not appear in the runner source."""
+    assert "DEFAULT_NAV_ACCOUNT_PROFILE" not in ABOUT_SOURCE
+
+
+def test_runner_no_venue_argument() -> None:
+    """Runner must not accept --venue (no account discovery)."""
+    assert "--venue" not in ABOUT_SOURCE
+    assert "DEFAULT_VENUE" not in ABOUT_SOURCE
 
 
 def test_runner_safety_markers_in_source() -> None:
@@ -109,9 +120,182 @@ def test_render_about_html_has_meaningful_alt_text() -> None:
     assert "triptych artwork" in html
 
 
-# -- Wallet nav links --
+def test_render_about_html_no_account_links() -> None:
+    html = render_about_html(hero_href=DEFAULT_HERO_HREF)
+    assert 'href="/synth/accounts/' not in html
+    assert "href='/synth/accounts/" not in html
+    assert "joost" not in html
+    assert "hugo" not in html
+
+
+def test_render_about_html_no_wallet_profit_plan_links() -> None:
+    """Global About must not contain Wallet, Profit Plan, or Open Orders nav items."""
+    html = render_about_html(hero_href=DEFAULT_HERO_HREF)
+    # Check that nav hrefs for those pages are absent
+    assert "/wallet.html" not in html
+    assert "/profit-plan.html" not in html
+    assert "/open-orders-monitor.html" not in html
+
+
+def test_render_about_html_has_cockpit_and_about_nav() -> None:
+    html = render_about_html(hero_href=DEFAULT_HERO_HREF)
+    assert "/synth/index.html" in html or "/synth/about.html" in html
+
+
+def test_render_about_html_no_account_profile_param() -> None:
+    """render_about_html signature must not accept account_profile."""
+    import inspect
+    sig = inspect.signature(render_about_html)
+    assert "account_profile" not in sig.parameters
+
+
+# -- Global cockpit index --
+
+def test_global_cockpit_index_signature_no_params() -> None:
+    """render_global_cockpit_index_html must accept no parameters."""
+    import inspect
+    sig = inspect.signature(render_global_cockpit_index_html)
+    assert len(sig.parameters) == 0
+
+
+def test_global_cockpit_index_no_account_links() -> None:
+    html = render_global_cockpit_index_html()
+    assert 'href="/synth/accounts/' not in html
+    assert "href='/synth/accounts/" not in html
+
+
+def test_global_cockpit_index_no_joost_hugo() -> None:
+    html = render_global_cockpit_index_html()
+    assert "joost" not in html
+    assert "hugo" not in html
+
+
+def test_global_cockpit_index_no_wallet_card() -> None:
+    html = render_global_cockpit_index_html()
+    # Wallet nav link must not appear in global cockpit
+    assert "/wallet.html" not in html
+    assert ">Wallet<" not in html
+
+
+def test_global_cockpit_index_no_profit_plan_link() -> None:
+    html = render_global_cockpit_index_html()
+    assert "/profit-plan.html" not in html
+    assert ">Profit Plan<" not in html
+
+
+def test_global_cockpit_index_no_open_orders_link() -> None:
+    html = render_global_cockpit_index_html()
+    assert "/open-orders-monitor.html" not in html
+    assert ">Open Orders Monitor<" not in html
+
+
+def test_global_cockpit_index_links_global_pages() -> None:
+    html = render_global_cockpit_index_html()
+    assert 'href="/synth/about.html"' in html
+    assert "/synth/register.html" in html
+    assert "/synth/login.html" in html
+    assert "Legacy / Archive" in html
+    assert 'href="/synth/paper-advice.html"' in html
+    assert 'href="/synth/entry-candidates.html"' in html
+    assert "/var/www/html/" not in html
+
+
+def test_global_cockpit_index_has_about_card() -> None:
+    html = render_global_cockpit_index_html()
+    assert 'class="card"' in html
+    assert "/synth/about.html" in html
+
+
+# -- Legacy cards --
+
+def test_legacy_section_heading_present() -> None:
+    html = render_global_cockpit_index_html()
+    assert "Legacy / Archive" in html
+
+
+def test_legacy_cards_have_clickable_links() -> None:
+    html = render_global_cockpit_index_html()
+    assert 'href="/synth/paper-advice.html"' in html
+    assert 'href="/synth/entry-candidates.html"' in html
+
+
+def test_legacy_cards_have_legacy_badge() -> None:
+    html = render_global_cockpit_index_html()
+    assert "LEGACY" in html
+    assert "legacy-badge" in html
+
+
+def test_legacy_cards_are_visually_dimmed() -> None:
+    html = render_global_cockpit_index_html()
+    assert "legacy-grid" in html or "opacity" in html
+
+
+# -- Global navigation (account_profile=None) --
+
+def test_global_nav_has_cockpit_and_about() -> None:
+    nav_html = cockpit_nav(account_profile=None)
+    assert "/synth/index.html" in nav_html
+    assert "/synth/about.html" in nav_html
+
+
+def test_global_nav_no_wallet_links() -> None:
+    nav_html = cockpit_nav(account_profile=None)
+    assert "/wallet.html" not in nav_html
+    assert "/profit-plan.html" not in nav_html
+    assert "/open-orders-monitor.html" not in nav_html
+
+
+def test_public_navigation_can_include_register_and_login() -> None:
+    nav_html = cockpit_nav(include_auth_links=True)
+    assert "/synth/register.html" in nav_html
+    assert "/synth/login.html" in nav_html
+
+
+def test_global_nav_no_profile_names() -> None:
+    nav_html = cockpit_nav(account_profile=None)
+    assert "joost" not in nav_html
+    assert "hugo" not in nav_html
+
+
+# -- Account-scoped navigation still works --
+
+def test_account_dashboard_links_hugo_produces_hugo_paths() -> None:
+    links = account_dashboard_links("hugo")
+    assert links["wallet"] == "/synth/accounts/hugo/wallet.html"
+    assert links["profit_plan"] == "/synth/accounts/hugo/profit-plan.html"
+    assert links["open_orders_monitor"] == "/synth/accounts/hugo/open-orders-monitor.html"
+    assert "joost" not in str(links)
+
+
+def test_account_dashboard_links_joost_produces_joost_paths() -> None:
+    links = account_dashboard_links("joost")
+    assert links["wallet"] == "/synth/accounts/joost/wallet.html"
+    assert links["profit_plan"] == "/synth/accounts/joost/profit-plan.html"
+    assert links["open_orders_monitor"] == "/synth/accounts/joost/open-orders-monitor.html"
+    assert "hugo" not in str(links)
+
+
+def test_account_scoped_nav_produces_explicit_profile_links() -> None:
+    nav_hugo = cockpit_nav(account_profile="hugo")
+    assert "/synth/accounts/hugo/wallet.html" in nav_hugo
+    assert "joost" not in nav_hugo
+
+    nav_joost = cockpit_nav(account_profile="joost")
+    assert "/synth/accounts/joost/wallet.html" in nav_joost
+    assert "hugo" not in nav_joost
+
+
+def test_no_implicit_default_profile_in_dashboard_style() -> None:
+    """DEFAULT_NAV_ACCOUNT_PROFILE must not exist in dashboard_style_v1."""
+    source = Path("src/reporting/dashboard_style_v1.py").read_text(encoding="utf-8")
+    assert "DEFAULT_NAV_ACCOUNT_PROFILE" not in source
+    assert '"joost"' not in source or "DEFAULT_NAV" not in source
+
+
+# -- Wallet nav still links to global About --
 
 def test_wallet_navigation_links_to_global_about() -> None:
+    html = _wallet_html_for_joost()
     payload = build_wallet_dashboard_payload(
         profile="joost",
         account_code="bitvavo_joost_read",
@@ -127,162 +311,12 @@ def test_wallet_navigation_links_to_global_about() -> None:
         account_asset_rows=[],
         venue_market_rows=[],
     )
-    html = render_wallet_html(payload)
     payload_json = json.dumps(payload_to_json_dict(payload), sort_keys=True)
     assert "/synth/about.html" in html
     assert "/synth/about.html" in payload_json
 
 
-def test_global_cockpit_navigation_links_to_about() -> None:
-    nav_html = cockpit_nav(account_profile=DEFAULT_NAV_ACCOUNT_PROFILE)
-    assert "/synth/about.html" in nav_html
-    assert "/synth/accounts/joost/wallet.html" in nav_html
-    assert "/synth/accounts/joost/profit-plan.html" in nav_html
-    assert "/synth/accounts/joost/open-orders-monitor.html" in nav_html
-    assert "/synth/profit-plan.html" not in nav_html
-    assert "/synth/open-orders-monitor.html" not in nav_html
-    assert "/synth/paper-advice.html" not in nav_html
-    assert "/synth/entry-candidates.html" not in nav_html
-    assert "/synth/rotation-preview.html" not in nav_html
-
-
-def test_public_navigation_can_include_register_and_login() -> None:
-    nav_html = cockpit_nav(include_auth_links=True)
-    assert "/synth/register.html" in nav_html
-    assert "/synth/login.html" in nav_html
-
-
-# -- Cockpit index: linked profiles from explicit argument --
-
-def test_global_cockpit_index_links_global_pages() -> None:
-    html = render_global_cockpit_index_html(linked_profiles=[])
-    assert "/synth/about.html" in html
-    assert "/synth/register.html" in html
-    assert "/synth/login.html" in html
-    assert "Legacy / Archive" in html
-    assert "/synth/paper-advice.html" in html
-    assert "/synth/entry-candidates.html" in html
-    assert "/var/www/html/" not in html
-
-
-def test_global_cockpit_index_zero_profiles_no_wallet_cards() -> None:
-    # The account grid cards are driven by linked_profiles.
-    # With no linked profiles, no account card is rendered in the grid.
-    # (The nav may still include the default nav profile's wallet link — that is separate.)
-    html = render_global_cockpit_index_html(linked_profiles=[])
-    assert 'class="card"' in html  # About card is always present
-    # No extra wallet card beyond the default nav profile
-    assert html.count('/wallet.html"') <= 1  # at most the nav's wallet link
-
-
-def test_global_cockpit_index_one_profile_renders_wallet_card() -> None:
-    html = render_global_cockpit_index_html(linked_profiles=[_profile("alpha")])
-    assert "/synth/accounts/alpha/wallet.html" in html
-    assert "Wallet" in html
-
-
-def test_global_cockpit_index_wallet_label_not_account_title() -> None:
-    html = render_global_cockpit_index_html(linked_profiles=[_profile("alpha")])
-    assert "Alpha Account" not in html
-    assert ">Wallet<" in html or ">Wallet " in html
-
-
-def test_global_cockpit_index_no_duplicate_wallet_tile() -> None:
-    html = render_global_cockpit_index_html(linked_profiles=[_profile("alpha")])
-    assert html.count("/synth/accounts/alpha/wallet.html") == 1
-
-
-def test_global_cockpit_index_multiple_profiles() -> None:
-    profiles = [_profile("alpha"), _profile("beta"), _profile("gamma")]
-    html = render_global_cockpit_index_html(linked_profiles=profiles)
-    assert "/synth/accounts/alpha/wallet.html" in html
-    assert "/synth/accounts/beta/wallet.html" in html
-    assert "/synth/accounts/gamma/wallet.html" in html
-
-
-def test_global_cockpit_index_ordering_reflects_linked_profiles_order() -> None:
-    profiles = [_profile("alpha"), _profile("beta")]
-    html = render_global_cockpit_index_html(linked_profiles=profiles)
-    pos_alpha = html.index("accounts/alpha/")
-    pos_beta = html.index("accounts/beta/")
-    assert pos_alpha < pos_beta
-
-
-def test_global_cockpit_index_account_cards_driven_by_linked_profiles() -> None:
-    # Cards in the account grid must reflect only what is in linked_profiles.
-    # When only testuser is linked, testuser's wallet card appears; alpha's does not.
-    html_testuser = render_global_cockpit_index_html(linked_profiles=[_profile("testuser")])
-    assert "/synth/accounts/testuser/wallet.html" in html_testuser
-    assert "/synth/accounts/alpha/wallet.html" not in html_testuser
-
-    html_alpha = render_global_cockpit_index_html(linked_profiles=[_profile("alpha")])
-    assert "/synth/accounts/alpha/wallet.html" in html_alpha
-    assert "/synth/accounts/testuser/wallet.html" not in html_alpha
-
-
-# -- Legacy cards: dimmed but links usable --
-
-def test_legacy_section_heading_present() -> None:
-    html = render_global_cockpit_index_html(linked_profiles=[])
-    assert "Legacy / Archive" in html
-
-
-def test_legacy_cards_have_clickable_links() -> None:
-    html = render_global_cockpit_index_html(linked_profiles=[])
-    assert 'href="/synth/paper-advice.html"' in html
-    assert 'href="/synth/entry-candidates.html"' in html
-
-
-def test_legacy_cards_have_legacy_badge() -> None:
-    html = render_global_cockpit_index_html(linked_profiles=[])
-    assert "LEGACY" in html
-    assert "legacy-badge" in html
-
-
-def test_legacy_cards_are_visually_dimmed() -> None:
-    html = render_global_cockpit_index_html(linked_profiles=[])
-    assert "legacy-grid" in html or "opacity" in html
-
-
-# -- MVP render pipeline: discover_active_linked_profiles called from main --
-
-def test_mvp_render_pipeline_calls_account_layer_discovery() -> None:
-    called_venue: dict = {}
-
-    def fake_discover(*, venue: str) -> list[dict]:
-        called_venue["venue"] = venue
-        return [_profile("testprofile")]
-
-    original_parse_args = about_runner.parse_args
-
-    with tempfile.TemporaryDirectory() as d:
-        root = Path(d)
-        html_out = root / "about.html"
-        idx_out = root / "index.html"
-        hero_out = root / "assets" / "brand" / "synth-third-faction-triptych.png"
-
-        try:
-            about_runner.parse_args = lambda: type("Args", (), {
-                "output_html": str(html_out),
-                "cockpit_index_html": str(idx_out),
-                "hero_asset_source": "assets/brand/synth/synth-third-faction-triptych.png",
-                "hero_asset_output": str(hero_out),
-                "hero_asset_href": DEFAULT_HERO_HREF,
-                "venue": "bitvavo",
-                "output": "none",
-            })()
-            with patch.object(about_runner, "discover_active_linked_profiles", side_effect=fake_discover):
-                result = about_runner.main()
-        finally:
-            about_runner.parse_args = original_parse_args
-
-        assert result == 0
-        assert called_venue.get("venue") == "bitvavo"
-        index_html_content = idx_out.read_text(encoding="utf-8")
-        assert "/synth/accounts/testprofile/wallet.html" in index_html_content
-
-
-# -- Asset copy test --
+# -- Runner write test --
 
 def test_about_runner_writes_html_and_copies_asset() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -291,23 +325,113 @@ def test_about_runner_writes_html_and_copies_asset() -> None:
         target_html = root / "about.html"
         target_index = root / "index.html"
         target_asset = root / "assets" / "brand" / "synth-third-faction-triptych.png"
-        target_html.write_text(
-            render_about_html(hero_href=DEFAULT_HERO_HREF, account_profile=DEFAULT_NAV_ACCOUNT_PROFILE),
-            encoding="utf-8",
-        )
-        target_index.write_text(
-            render_global_cockpit_index_html(
-                linked_profiles=[],
-                account_profile=DEFAULT_NAV_ACCOUNT_PROFILE,
-            ),
-            encoding="utf-8",
-        )
+        target_html.write_text(render_about_html(hero_href=DEFAULT_HERO_HREF), encoding="utf-8")
+        target_index.write_text(render_global_cockpit_index_html(), encoding="utf-8")
         target_asset.parent.mkdir(parents=True, exist_ok=True)
         target_asset.write_bytes(source.read_bytes())
         assert target_html.exists()
         assert target_index.exists()
         assert target_asset.exists()
         assert target_asset.read_bytes() == source.read_bytes()
+        # Verify no account leakage in output
+        assert "joost" not in target_html.read_text(encoding="utf-8")
+        assert 'href="/synth/accounts/' not in target_html.read_text(encoding="utf-8")
+        assert "joost" not in target_index.read_text(encoding="utf-8")
+        assert 'href="/synth/accounts/' not in target_index.read_text(encoding="utf-8")
+
+
+def test_main_runner_produces_clean_global_pages() -> None:
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        html_out = root / "about.html"
+        idx_out = root / "index.html"
+        hero_out = root / "assets" / "brand" / "synth-third-faction-triptych.png"
+
+        original_parse_args = about_runner.parse_args
+        try:
+            about_runner.parse_args = lambda: type("Args", (), {
+                "output_html": str(html_out),
+                "cockpit_index_html": str(idx_out),
+                "hero_asset_source": "assets/brand/synth/synth-third-faction-triptych.png",
+                "hero_asset_output": str(hero_out),
+                "hero_asset_href": DEFAULT_HERO_HREF,
+                "output": "none",
+            })()
+            result = about_runner.main()
+        finally:
+            about_runner.parse_args = original_parse_args
+
+        assert result == 0
+        about_html = html_out.read_text(encoding="utf-8")
+        index_html = idx_out.read_text(encoding="utf-8")
+
+        for html, name in [(about_html, "about.html"), (index_html, "index.html")]:
+            assert "joost" not in html, f"{name} must not contain 'joost'"
+            assert "hugo" not in html, f"{name} must not contain 'hugo'"
+            assert 'href="/synth/accounts/' not in html, f"{name} must not contain profile-scoped hrefs"
+            assert "/wallet.html" not in html, f"{name} must not contain wallet link"
+            assert ">Profit Plan<" not in html, f"{name} must not contain Profit Plan nav item"
+            assert ">Open Orders Monitor<" not in html, f"{name} must not contain Open Orders nav item"
+
+
+def _assert_global_page_clean(html: str, name: str) -> None:
+    assert "joost" not in html, f"{name}: must not contain 'joost'"
+    assert "hugo" not in html, f"{name}: must not contain 'hugo'"
+    assert 'href="/synth/accounts/' not in html, f"{name}: must not contain account hrefs"
+    assert "href='/synth/accounts/" not in html, f"{name}: must not contain account hrefs"
+    assert "/wallet.html" not in html, f"{name}: must not contain wallet link"
+    assert "/profit-plan.html" not in html, f"{name}: must not contain profit-plan link"
+    assert "/open-orders-monitor.html" not in html, f"{name}: must not contain open-orders link"
+
+
+def _wallet_html_for_joost() -> str:
+    payload = build_wallet_dashboard_payload(
+        profile="joost",
+        account_code="bitvavo_joost_read",
+        trading_account_id=3,
+        venue="bitvavo",
+        display_timezone="Europe/Amsterdam",
+        latest_balance_snapshot_ts_utc=None,
+        latest_order_snapshot_ts_utc=None,
+        balance_rows=[],
+        open_order_count_rows=[],
+        account_asset_settings=_settings(),
+        price_by_symbol={},
+        account_asset_rows=[],
+        venue_market_rows=[],
+    )
+    return render_wallet_html(payload)
+
+
+def test_invocation_order_wallet_then_global() -> None:
+    """Render account-scoped wallet first, then global pages — global must stay clean."""
+    wallet_html = _wallet_html_for_joost()
+    # wallet uses single-quoted hrefs; verify it is account-scoped
+    assert "/synth/accounts/joost/wallet.html" in wallet_html, "wallet must contain account hrefs"
+    assert "joost" in wallet_html, "wallet must reference profile"
+
+    about_html = render_about_html(hero_href=DEFAULT_HERO_HREF)
+    cockpit_html = render_global_cockpit_index_html()
+
+    _assert_global_page_clean(about_html, "about (after wallet)")
+    _assert_global_page_clean(cockpit_html, "cockpit index (after wallet)")
+
+
+def test_invocation_order_global_then_wallet_then_global() -> None:
+    """Render global, then account-scoped wallet, then global again — global must stay clean."""
+    about_html_1 = render_about_html(hero_href=DEFAULT_HERO_HREF)
+    cockpit_html_1 = render_global_cockpit_index_html()
+    _assert_global_page_clean(about_html_1, "about (first pass)")
+    _assert_global_page_clean(cockpit_html_1, "cockpit index (first pass)")
+
+    wallet_html = _wallet_html_for_joost()
+    assert "/synth/accounts/joost/wallet.html" in wallet_html, "wallet must contain account hrefs"
+    assert "joost" in wallet_html, "wallet must reference profile"
+
+    about_html_2 = render_about_html(hero_href=DEFAULT_HERO_HREF)
+    cockpit_html_2 = render_global_cockpit_index_html()
+    _assert_global_page_clean(about_html_2, "about (after wallet, second pass)")
+    _assert_global_page_clean(cockpit_html_2, "cockpit index (after wallet, second pass)")
 
 
 def main() -> None:
@@ -315,24 +439,42 @@ def main() -> None:
         test_about_runner_imports_successfully,
         test_no_configured_dashboard_profile_access_import,
         test_no_hardcoded_profile_names_in_source,
-        test_runner_uses_account_layer_discovery,
+        test_runner_no_longer_uses_account_layer_discovery,
+        test_runner_no_default_nav_account_profile,
+        test_runner_no_venue_argument,
         test_runner_safety_markers_in_source,
+        test_runner_no_broker_or_execution_imports,
         test_render_about_html_uses_public_asset_href,
         test_render_about_html_has_meaningful_alt_text,
-        test_wallet_navigation_links_to_global_about,
-        test_global_cockpit_navigation_links_to_about,
-        test_public_navigation_can_include_register_and_login,
+        test_render_about_html_no_account_links,
+        test_render_about_html_no_wallet_profit_plan_links,
+        test_render_about_html_has_cockpit_and_about_nav,
+        test_render_about_html_no_account_profile_param,
+        test_global_cockpit_index_signature_no_params,
+        test_global_cockpit_index_no_account_links,
+        test_global_cockpit_index_no_joost_hugo,
+        test_global_cockpit_index_no_wallet_card,
+        test_global_cockpit_index_no_profit_plan_link,
+        test_global_cockpit_index_no_open_orders_link,
         test_global_cockpit_index_links_global_pages,
-        test_global_cockpit_index_zero_profiles_no_wallet_cards,
-        test_global_cockpit_index_one_profile_renders_wallet_card,
-        test_global_cockpit_index_wallet_label_not_account_title,
-        test_global_cockpit_index_no_duplicate_wallet_tile,
-        test_global_cockpit_index_multiple_profiles,
+        test_global_cockpit_index_has_about_card,
         test_legacy_section_heading_present,
         test_legacy_cards_have_clickable_links,
         test_legacy_cards_have_legacy_badge,
         test_legacy_cards_are_visually_dimmed,
+        test_global_nav_has_cockpit_and_about,
+        test_global_nav_no_wallet_links,
+        test_public_navigation_can_include_register_and_login,
+        test_global_nav_no_profile_names,
+        test_account_dashboard_links_hugo_produces_hugo_paths,
+        test_account_dashboard_links_joost_produces_joost_paths,
+        test_account_scoped_nav_produces_explicit_profile_links,
+        test_no_implicit_default_profile_in_dashboard_style,
+        test_wallet_navigation_links_to_global_about,
         test_about_runner_writes_html_and_copies_asset,
+        test_main_runner_produces_clean_global_pages,
+        test_invocation_order_wallet_then_global,
+        test_invocation_order_global_then_wallet_then_global,
     ]
     for test in tests:
         test()
