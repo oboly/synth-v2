@@ -84,13 +84,12 @@ def test_valid_credentials_return_valid_private_read() -> None:
     os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = _PERMISSION_GRANTED
     try:
         balance_resp = _mock_response(200, [{"symbol": "EUR", "available": "100.00", "inOrder": "0"}])
-        orders_resp = _mock_response(200, [])
-        with patch("requests.get", side_effect=[balance_resp, orders_resp]):
+        with patch("requests.get", return_value=balance_resp):
             result = RealBitvavoCredentialValidator().validate(_credential())
         assert result.success is True
         assert result.validation_state == "VALID_PRIVATE_READ"
         assert "read_balance" in result.capabilities
-        assert "read_orders" in result.capabilities
+        assert "read_orders" not in result.capabilities
     finally:
         os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
 
@@ -99,9 +98,25 @@ def test_valid_credentials_no_safe_error_code() -> None:
     import os
     os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = _PERMISSION_GRANTED
     try:
-        with patch("requests.get", side_effect=[_mock_response(200, []), _mock_response(200, [])]):
+        with patch("requests.get", return_value=_mock_response(200, [])):
             result = RealBitvavoCredentialValidator().validate(_credential())
         assert result.safe_error_code is None
+    finally:
+        os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
+
+
+def test_validator_calls_get_balance_only() -> None:
+    """Validator must call get_balance exactly once and never call get_open_orders."""
+    import os
+    from unittest.mock import MagicMock, call
+    os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = _PERMISSION_GRANTED
+    try:
+        with patch("requests.get", return_value=_mock_response(200, [])) as mock_get:
+            RealBitvavoCredentialValidator().validate(_credential())
+        assert mock_get.call_count == 1
+        for c in mock_get.call_args_list:
+            url = c.args[0] if c.args else c.kwargs.get("url", "")
+            assert "open-orders" not in url, f"get_open_orders must not be called, got url: {url}"
     finally:
         os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
 
@@ -234,6 +249,7 @@ if __name__ == "__main__":
         test_blocked_with_wrong_permission_value,
         test_valid_credentials_return_valid_private_read,
         test_valid_credentials_no_safe_error_code,
+        test_validator_calls_get_balance_only,
         test_http_401_returns_invalid_credentials,
         test_http_403_returns_invalid_credentials,
         test_http_500_returns_unavailable,

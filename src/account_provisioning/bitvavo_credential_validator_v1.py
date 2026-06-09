@@ -5,8 +5,11 @@ Uses BitvavoClient with explicit api_key + api_secret (not global env fallback).
 Requires SYNTH_BROKER_PRIVATE_READ_PERMISSION env to be set.
 Never falls back to global env credentials.
 
+Read-only credential policy: validates via get_balance() ONLY.
+Open-order access requires Trade permission and is not part of initial provisioning.
+
 Safety:
-  broker_private_calls=1 (read-only: get_balance + get_open_orders)
+  broker_private_calls=1 (read-only: get_balance only)
   broker_writes=0
   order_submission=0
   executor=none
@@ -35,7 +38,10 @@ _HTTP_SERVER_ERROR_MIN = 500
 
 class RealBitvavoCredentialValidator:
     """
-    Validates Bitvavo credentials by calling get_balance() and get_open_orders().
+    Validates Bitvavo credentials via get_balance() only.
+
+    Open-order access requires Trade permission and is outside the read-only
+    onboarding contract. get_open_orders() is never called here.
 
     Uses explicit api_key/api_secret from the credential — never falls back to
     global env vars. This ensures Hugo's credentials are never confused with
@@ -59,7 +65,6 @@ class RealBitvavoCredentialValidator:
 
         try:
             client.get_balance()
-            client.get_open_orders()
         except PermissionError:
             return CredentialValidationResult(
                 success=False,
@@ -83,7 +88,7 @@ class RealBitvavoCredentialValidator:
         return CredentialValidationResult(
             success=True,
             validation_state=_VALID_PRIVATE_READ,
-            capabilities=["read_balance", "read_orders"],
+            capabilities=["read_balance"],
         )
 
 

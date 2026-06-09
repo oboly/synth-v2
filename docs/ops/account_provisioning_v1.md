@@ -251,11 +251,13 @@ POST /synth/web-auth/connect-bitvavo
 ### Real Bitvavo validator
 
 `RealBitvavoCredentialValidator` in `bitvavo_credential_validator_v1.py`:
+- Calls `get_balance()` **only** — read-only credential policy
+- Does not call `get_open_orders()` (requires Trade permission, outside initial provisioning scope)
 - Uses `BitvavoClient(api_key=..., api_secret=...)` — explicit credentials only
 - Never falls back to global env vars (`BITVAVO_API_KEY`, `BITVAVO_API_SECRET`)
 - Requires `SYNTH_BROKER_PRIVATE_READ_PERMISSION=I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA`
-- Maps successful validation → `VALID_PRIVATE_READ`
-- Maps 401/403 → `INVALID_CREDENTIALS`
+- Maps successful balance read → `VALID_PRIVATE_READ`, capabilities `["read_balance"]`
+- Maps 401/403 on balance → `INVALID_CREDENTIALS`
 - Maps network/server error → `VALIDATION_UNAVAILABLE`
 
 ### Account credential loader
@@ -268,9 +270,10 @@ POST /synth/web-auth/connect-bitvavo
 ### Account snapshot service
 
 `account_snapshot_service_v1.take_first_snapshot(conn, trading_account_id, venue, bitvavo_client, now_utc)`:
-- Calls `get_balance()` + `get_open_orders()` with account-scoped client
-- Writes to `trading_account_balance_snapshot` + `broker_order_snapshot`
-- Returns `SnapshotResult(ok, error_code, balance_row_count, order_row_count)`
+- Calls `get_balance()` **only** — read-only credential policy
+- Does not call `get_open_orders()` (requires Trade permission; order details unavailable at initial provisioning)
+- Writes to `trading_account_balance_snapshot` only; `broker_order_snapshot` receives zero rows
+- Returns `SnapshotResult(ok, error_code, balance_row_count, order_row_count=0)`
 
 ### Production runner wiring (complete)
 
