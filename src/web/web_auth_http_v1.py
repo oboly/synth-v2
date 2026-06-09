@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from typing import Any, Callable, Mapping
 from urllib.parse import parse_qs
 
+from src.account_provisioning.account_provisioning_service_v1 import (
+    AuthenticatedProfileIdentity,
+    ProvisioningResult,
+)
 from src.web.website_registration_v1 import (
     CheckAccessResult,
     LoginResult,
@@ -15,6 +19,7 @@ from src.web.website_registration_v1 import (
     ResendResult,
     VerifyResult,
     WebsiteRegistrationService,
+    utc_now,
 )
 
 
@@ -128,10 +133,24 @@ def _origin_allowed(origin: str | None, allowed_origins: set[str] | None) -> boo
     return origin in allowed_origins
 
 
+_BROWSER_SUPPLIED_OWNERSHIP_FIELDS = frozenset({
+    "app_user_id",
+    "app_profile_id",
+    "profile_code",
+    "trading_account_id",
+    "account_code",
+    "live_trading_enabled",
+    "broker_write_permission",
+    "credential_status",
+    "validation_state",
+})
+
+
 def build_wsgi_app(
     *,
     service: WebsiteRegistrationService,
     allowed_origins: set[str] | None = None,
+    connect_bitvavo: Callable[[AuthenticatedProfileIdentity, str, str, bool, datetime], ProvisioningResult] | None = None,
 ) -> Callable[[Mapping[str, Any], Callable[..., Any]], list[bytes]]:
     """
     Build the WSGI application.
@@ -270,6 +289,82 @@ def build_wsgi_app(
             if result.error_code == "FORBIDDEN":
                 status = HTTPStatus.FORBIDDEN
             return _json_response(start_response, status=status, payload=_result_payload(result))
+
+        if path == "/synth/web-auth/connect-bitvavo":
+            if connect_bitvavo is None:
+                return _json_response(
+                    start_response,
+                    status=HTTPStatus.NOT_FOUND,
+                    payload={"ok": False, "error": {"code": "NOT_FOUND"}},
+                )
+            session_token = _get_cookie_value(environ, SESSION_COOKIE_NAME) or ""
+            identity_dict = service.resolve_session_identity(session_token=session_token)
+            if identity_dict is None:
+                return _json_response(
+                    start_response,
+                    status=HTTPStatus.UNAUTHORIZED,
+                    payload={"ok": False, "error": {"code": "UNAUTHORIZED"}},
+                )
+            identity = AuthenticatedProfileIdentity(
+                app_user_id=int(identity_dict["app_user_id"]),
+                app_profile_id=int(identity_dict["app_profile_id"]),
+                profile_code=str(identity_dict["profile_code"]),
+            )
+            # Browser-supplied ownership fields are silently ignored.
+            # Server always derives identity from the validated session.
+            api_key = str(body.get("api_key") or "")
+            api_secret = str(body.get("api_secret") or "")
+            confirmed = body.get("withdrawal_disabled_confirmed") is True
+            if not api_key:
+                return _json_response(
+                    start_response,
+                    status=HTTPStatus.BAD_REQUEST,
+                    payload={"ok": False, "error": {"code": "MISSING_API_KEY"}},
+                )
+            if not api_secret:
+                return _json_response(
+                    start_response,
+                    status=HTTPStatus.BAD_REQUEST,
+                    payload={"ok": False, "error": {"code": "MISSING_API_SECRET"}},
+                )
+            if not confirmed:
+                return _json_response(
+                    start_response,
+                    status=HTTPStatus.BAD_REQUEST,
+                    payload={"ok": False, "error": {"code": "WITHDRAWAL_CONFIRMATION_REQUIRED"}},
+                )
+            try:
+                prov_result = connect_bitvavo(identity, api_key, api_secret, confirmed, utc_now())
+            except Exception:
+                return _json_response(
+                    start_response,
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                    payload={"ok": False, "error": {"code": "PROVISIONING_ERROR"}},
+                )
+            if prov_result.ok:
+                payload_out: dict[str, Any] = {
+                    "ok": True,
+                    "profile_code": prov_result.profile_code,
+                    "account_connection_state": prov_result.account_connection_state,
+                    "landing_path": prov_result.landing_path,
+                    "refresh_pending": prov_result.refresh_pending,
+                }
+                return _json_response(start_response, status=HTTPStatus.OK, payload=payload_out)
+            if prov_result.error_code == "ACCOUNT_ALREADY_CONNECTED":
+                payload_out = {
+                    "ok": False,
+                    "error": {"code": "ACCOUNT_ALREADY_CONNECTED"},
+                    "landing_path": prov_result.landing_path,
+                }
+                return _json_response(start_response, status=HTTPStatus.CONFLICT, payload=payload_out)
+            error_status = HTTPStatus.BAD_REQUEST
+            if prov_result.error_code in {"VALIDATION_UNAVAILABLE"}:
+                error_status = HTTPStatus.SERVICE_UNAVAILABLE
+            return _json_response(
+                start_response,
+                status=error_status,
+                payload={"ok": False, "error": {"code": prov_result.error_code or "PROVISIONING_FAILED"}},
+            )
 
         return _json_response(
             start_response,

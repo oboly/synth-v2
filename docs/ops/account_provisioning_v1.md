@@ -4,21 +4,17 @@ Canonical documentation for the `src/account_provisioning/` package.
 
 ## Scope
 
-Encrypted storage of exchange API credentials, linked to a `trading_account` row.
+Encrypted Bitvavo credential storage and authenticated account provisioning.
 
-This batch covers:
+Batch 1 (complete): encrypted credential storage, contracts, crypto, MariaDB migration.
 
-- encrypted credential storage (contracts, crypto, repository)
-- MariaDB migration for `trading_account_credential`
+Batch 2 (complete): authenticated HTTP intake with mocked validation, atomic provisioning.
 
 Not yet in scope:
 
-- HTTP endpoint for credential intake
-- Bitvavo API validation (no broker calls)
-- `trading_account` creation
-- `app_profile_trading_account_link` creation
-- account snapshot refresh
-- dashboard rendering
+- Real Bitvavo API validation (Batch 4)
+- Account snapshot refresh (Batch 3)
+- Dashboard rendering for newly linked profile (Batch 3)
 
 ## Safety boundary
 
@@ -39,9 +35,12 @@ No live trading. No broker calls. No order logic.
 ```
 src/account_provisioning/
     __init__.py
-    contracts_v1.py          — immutable contracts and enums
-    credential_crypto_v1.py  — AES-256-GCM encryption, fingerprinting
-    credential_repository_v1.py — MariaDB + SQLite(test) repository
+    contracts_v1.py                  — immutable contracts and enums
+    credential_crypto_v1.py          — AES-256-GCM encryption, fingerprinting
+    credential_repository_v1.py      — MariaDB + SQLite(test) encrypted credential repo
+    credential_validator_v1.py       — BitvavoCredentialValidator protocol + MockBitvavoCredentialValidator
+    account_repository_v1.py         — trading_account + profile link repo (MariaDB + SQLite)
+    account_provisioning_service_v1.py — orchestration: validate → create account → store credential → link
 ```
 
 ## Database schema
@@ -192,11 +191,62 @@ python -m src.web.run_website_registration_db_migration_v1
 
 Migration is idempotent (safe to re-run).
 
-## Next batch
+## HTTP endpoint (Batch 2)
 
-- `POST /synth/web-auth/connect-bitvavo` HTTP endpoint
-- Mocked Bitvavo credential validation (no live broker call)
-- Atomic `trading_account` + credential + profile link creation
-- Onboarding state update to `READ_ONLY_EXCHANGE_ACCOUNT_CONNECTED`
-- First account snapshot trigger
-- Profile dashboard rendering for linked accounts
+```
+POST /synth/web-auth/connect-bitvavo
+```
+
+Request body:
+```json
+{"api_key": "...", "api_secret": "...", "withdrawal_disabled_confirmed": true}
+```
+
+Server derives identity from session cookie. Browser-supplied ownership fields are ignored.
+
+Success response:
+```json
+{
+  "ok": true,
+  "profile_code": "hugo",
+  "account_connection_state": "READ_ONLY_EXCHANGE_ACCOUNT_CONNECTED",
+  "landing_path": "/synth/accounts/hugo/profit-plan.html",
+  "refresh_pending": true
+}
+```
+
+`refresh_pending=true` is expected in Batches 2 and 3 until snapshot/render activation is wired.
+
+## Session identity contract
+
+`WebsiteRegistrationService.resolve_session_identity(session_token)` returns
+`{app_user_id, app_profile_id, profile_code}` server-side. The HTTP handler converts
+this to `AuthenticatedProfileIdentity`. Provisioning service receives only this identity —
+never raw browser-supplied profile or user IDs.
+
+## Provisioning flow
+
+```
+POST /synth/web-auth/connect-bitvavo
+  → resolve_session_identity → AuthenticatedProfileIdentity
+  → AccountProvisioningService.provision_bitvavo_account
+      1. check existing primary link
+      2. MockBitvavoCredentialValidator.validate (Batch 2)
+      3. create trading_account (paper, enabled, not live)
+      4. encrypt + store credential
+      5. create primary profile link
+      6. update onboarding state
+  → HTTP handler commits on ok=True, rolls back on ok=False
+```
+
+## Next batch (Batch 3)
+
+- First account snapshot after provisioning (`refresh_pending=true` resolved)
+- Profile redirect to dashboard
+- Dashboard rendering for newly linked profile
+- Onboarding page unlinked state: show connect form, not 401
+
+## Batch 4 (Parked)
+
+- Real Bitvavo `get_balance` validation (broker_private_calls=1)
+- Update `validation_state` → VALID_READ_ONLY or INVALID_CREDENTIALS
