@@ -57,15 +57,32 @@ Safety: broker_private_calls=0, broker_writes=0, order_submission=0, executor=no
 
 ---
 
-## Batch 3 — First snapshot and profile dashboards  ⬜ PENDING
+## Batch 3 — First snapshot and profile dashboards  ✅ DONE
 
-Prerequisites: Batch 2 deployed.
+Commits:
+- `Move account provisioning transaction into service`
+- `Add real Bitvavo account validation`
+- `Activate first account snapshot and profile dashboards`
 
-- [ ] Inline first account snapshot attempt after provisioning
-- [ ] Profile redirect after successful provisioning (`refresh_pending=true` resolved)
-- [ ] Dashboard rendering for newly linked profile
-- [ ] Onboarding page unlinked state: show connect form (not 401)
-- [ ] Authenticated profile without account link → onboarding state, not 401
+- [x] `AccountProvisioningService` owns transaction boundary (commit/rollback)
+- [x] `conn_factory` + `account_repo_factory` + `cred_repo_factory` injected
+- [x] `RealBitvavoCredentialValidator` — explicit credentials, never global env
+- [x] Maps to `VALID_PRIVATE_READ` (Bitvavo has no reliable read-only capability metadata)
+- [x] Permission guard: `SYNTH_BROKER_PRIVATE_READ_PERMISSION` required
+- [x] `account_credential_loader_v1` — load + decrypt stored credential, no env fallback
+- [x] `account_snapshot_service_v1` — balance + order snapshot with account-scoped client
+- [x] `ProvisioningResult.trading_account_id` exposed for post-commit snapshot trigger
+- [x] `ProvisioningResult.refresh_error_code` for `INITIAL_REFRESH_FAILED`
+- [x] Hugo NEVER falls back to Joost global env credentials (hard test: `test_load_credential_never_uses_global_env`)
+- [x] Migration: `VALID_PRIVATE_READ` added to `chk_tac_validation_state` CHECK constraint
+- [x] `broker_private_calls=0` in all automated tests
+
+Safety: broker_private_calls=0 (tests), broker_writes=0, order_submission=0, executor=none
+
+Production wiring (runner, not yet committed):
+- Build `RealBitvavoCredentialValidator` with permission env set
+- After `provision_bitvavo_account` succeeds: load credential → `take_first_snapshot`
+- Set `refresh_pending=False` on snapshot success, `True` + `refresh_error_code=INITIAL_REFRESH_FAILED` on failure
 
 ---
 

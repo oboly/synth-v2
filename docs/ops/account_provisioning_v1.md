@@ -239,14 +239,49 @@ POST /synth/web-auth/connect-bitvavo
   → HTTP handler commits on ok=True, rolls back on ok=False
 ```
 
-## Next batch (Batch 3)
+## Batch 3 (complete)
 
-- First account snapshot after provisioning (`refresh_pending=true` resolved)
-- Profile redirect to dashboard
-- Dashboard rendering for newly linked profile
-- Onboarding page unlinked state: show connect form, not 401
+### Transaction ownership
 
-## Batch 4 (Parked)
+`AccountProvisioningService` owns the full transaction boundary:
+- Takes `conn_factory`, `account_repo_factory`, `cred_repo_factory`
+- Commits on success, rolls back on failure or exception
+- HTTP handler and runner never call commit/rollback
 
-- Real Bitvavo `get_balance` validation (broker_private_calls=1)
-- Update `validation_state` → VALID_READ_ONLY or INVALID_CREDENTIALS
+### Real Bitvavo validator
+
+`RealBitvavoCredentialValidator` in `bitvavo_credential_validator_v1.py`:
+- Uses `BitvavoClient(api_key=..., api_secret=...)` — explicit credentials only
+- Never falls back to global env vars (`BITVAVO_API_KEY`, `BITVAVO_API_SECRET`)
+- Requires `SYNTH_BROKER_PRIVATE_READ_PERMISSION=I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA`
+- Maps successful validation → `VALID_PRIVATE_READ`
+- Maps 401/403 → `INVALID_CREDENTIALS`
+- Maps network/server error → `VALIDATION_UNAVAILABLE`
+
+### Account credential loader
+
+`account_credential_loader_v1.load_account_credential(conn, trading_account_id, venue, master_key_bytes, cred_repo_factory)`:
+- Returns `PlainBitvavoCredential` for the given account
+- Raises `ValueError(NO_ACTIVE_CREDENTIAL)` if none found
+- Never falls back to global env vars — Hugo always uses Hugo's stored credential
+
+### Account snapshot service
+
+`account_snapshot_service_v1.take_first_snapshot(conn, trading_account_id, venue, bitvavo_client, now_utc)`:
+- Calls `get_balance()` + `get_open_orders()` with account-scoped client
+- Writes to `trading_account_balance_snapshot` + `broker_order_snapshot`
+- Returns `SnapshotResult(ok, error_code, balance_row_count, order_row_count)`
+
+### Production runner wiring (to do)
+
+```python
+result = service.provision_bitvavo_account(..., conn_factory=get_db_connection, now_utc=utc_now())
+if result.ok:
+    plain = load_account_credential(conn, trading_account_id=result.trading_account_id, ...)
+    client = BitvavoClient(api_key=plain.api_key, api_secret=plain.api_secret)
+    snap = take_first_snapshot(conn, trading_account_id=result.trading_account_id, venue="bitvavo", bitvavo_client=client)
+    if snap.ok:
+        result = dataclasses.replace(result, refresh_pending=False)
+    else:
+        result = dataclasses.replace(result, refresh_error_code="INITIAL_REFRESH_FAILED")
+```
