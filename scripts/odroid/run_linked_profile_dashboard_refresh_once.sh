@@ -65,6 +65,42 @@ if [[ -z "${linked_profiles}" ]]; then
   exit 0
 fi
 
+# Check 1h candle freshness before building native context.
+# Stale 1h candles mean native context will also be stale.
+# Non-blocking: emits a warning but does not abort the pipeline.
+echo "PHASE_STARTED phase=check_1h_candle_freshness ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+phase_epoch="$(date +%s)"
+python - <<'PY' || echo "[WARN] 1h_candle_freshness_check=failed — native context build may produce stale results"
+from __future__ import annotations
+import sys
+from datetime import UTC, datetime
+from dotenv import load_dotenv
+from src.common.db import get_db_connection
+load_dotenv()
+conn = get_db_connection()
+try:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT MAX(close_ts_utc) AS latest FROM obs_market_candle "
+            "WHERE venue=%s AND interval_code=%s",
+            ("bitvavo", "1h"),
+        )
+        row = cur.fetchone() or {}
+    latest = row.get("latest")
+    if latest is None:
+        print("candle_freshness_1h=NO_DATA")
+        sys.exit(0)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    age_hours = (now - latest).total_seconds() / 3600
+    if age_hours > 3:
+        print(f"[WARN] candle_freshness_1h=STALE age_hours={age_hours:.1f} latest={latest.isoformat()}")
+    else:
+        print(f"candle_freshness_1h=ok age_hours={age_hours:.1f} latest={latest.isoformat()}")
+finally:
+    conn.close()
+PY
+echo "PHASE_FINISHED phase=check_1h_candle_freshness elapsed_sec=$(( $(date +%s) - phase_epoch )) ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 # Build union native SHORT context from ALL linked profiles before any per-profile render.
 # This ensures every Profit Plan reads from a complete context and prevents per-profile
 # overwrites that would silently drop markets from earlier profiles.

@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 
 from src.common.db import get_db_connection
 from src.common.utc import utc_now
+from src.etl.bitvavo.etl_bitvavo_candles import MarketUnavailableError
 
 
 DEFAULT_CONFIG_PATH = "configs/etl_bitvavo_candles.yaml"
@@ -440,6 +441,42 @@ def main(argv: list[str] | None = None) -> int:
         etl_fn = resolve_etl_callable(module)
         session = build_session(module)
 
+        # Filter assets to active/trading markets before ETL begins.
+        # Fail-open: if the market metadata fetch fails, proceed with all assets.
+        skipped_market_errors: list[dict[str, str]] = []
+        active_market_filter_fn = getattr(module, "fetch_active_bitvavo_markets", None)
+        if callable(active_market_filter_fn):
+            try:
+                phase_started = time.perf_counter()
+                emit("PHASE_STARTED filter_active_markets")
+                active_markets: set[str] = active_market_filter_fn(
+                    session=session, timeout_seconds=config.timeout_seconds
+                )
+                pre_count = len(assets)
+                inactive = [a for a in assets if a.market not in active_markets]
+                assets = [a for a in assets if a.market in active_markets]
+                for a in inactive:
+                    emit(
+                        f"SKIPPED_MARKET market={a.market} "
+                        f"reason=NOT_IN_ACTIVE_MARKET_LIST"
+                    )
+                    skipped_market_errors.append(
+                        {"market": a.market, "reason": "NOT_IN_ACTIVE_MARKET_LIST"}
+                    )
+                emit(
+                    f"PHASE_FINISHED filter_active_markets "
+                    f"elapsed_s={time.perf_counter() - phase_started:.3f} "
+                    f"active_count={len(active_markets)} "
+                    f"assets_before={pre_count} assets_after={len(assets)} "
+                    f"filtered_out={len(inactive)}"
+                )
+            except Exception as exc:
+                emit(
+                    f"[WARN] active_market_filter_failed "
+                    f"reason={exc.__class__.__name__}:{exc} "
+                    "proceeding_without_filter"
+                )
+
         total_written = 0
         total_tasks = len(assets) * len(intervals)
         completed_tasks = 0
@@ -468,18 +505,42 @@ def main(argv: list[str] | None = None) -> int:
                     f"dry_run={args.dry_run}"
                 )
 
-                result = call_etl_function(
-                    etl_fn,
-                    conn=conn,
-                    session=session,
-                    asset=asset,
-                    interval_code=interval_code,
-                    start_dt=start_dt,
-                    end_dt=end_dt,
-                    venue=config.venue,
-                    config=config,
-                    dry_run=args.dry_run,
-                )
+                try:
+                    result = call_etl_function(
+                        etl_fn,
+                        conn=conn,
+                        session=session,
+                        asset=asset,
+                        interval_code=interval_code,
+                        start_dt=start_dt,
+                        end_dt=end_dt,
+                        venue=config.venue,
+                        config=config,
+                        dry_run=args.dry_run,
+                    )
+                except MarketUnavailableError as exc:
+                    emit(
+                        f"SKIPPED_MARKET_ERROR market={asset.market} "
+                        f"interval={interval_code} "
+                        f"reason=MARKET_UNAVAILABLE "
+                        f"http_status={exc.http_status}"
+                    )
+                    skipped_market_errors.append(
+                        {
+                            "market": asset.market,
+                            "interval": interval_code,
+                            "reason": "MARKET_UNAVAILABLE",
+                            "http_status": str(exc.http_status),
+                        }
+                    )
+                    skipped_tasks += 1
+                    completed_tasks += 1
+                    emit(
+                        f"PROGRESS run_candles_etl completed={completed_tasks}/{total_tasks} "
+                        f"skipped={skipped_tasks} total_rows={total_written} "
+                        f"elapsed_s={time.perf_counter() - started_at:.3f}"
+                    )
+                    continue
 
                 written = extract_written_rows(result)
                 if written is not None:
@@ -509,7 +570,8 @@ def main(argv: list[str] | None = None) -> int:
 
         emit(
             f"FINISHED run_candles_etl elapsed_s={time.perf_counter() - started_at:.3f} "
-            f"task_count={completed_tasks} total_rows={total_written} skipped={skipped_tasks}"
+            f"task_count={completed_tasks} total_rows={total_written} skipped={skipped_tasks} "
+            f"skipped_market_errors={len(skipped_market_errors)}"
         )
         return 0
 

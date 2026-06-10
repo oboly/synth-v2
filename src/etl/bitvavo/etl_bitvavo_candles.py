@@ -12,6 +12,21 @@ BITVAVO_BASE_URL = "https://api.bitvavo.com/v2"
 BITVAVO_MAX_LIMIT = 1440
 
 
+class MarketUnavailableError(Exception):
+    """Raised when a market/interval is rejected by the exchange (HTTP 400/404).
+
+    Callers must catch this per-task and continue — it must not abort the full run.
+    """
+
+    def __init__(self, *, market: str, interval_code: str, http_status: int) -> None:
+        self.market = market
+        self.interval_code = interval_code
+        self.http_status = http_status
+        super().__init__(
+            f"market={market} interval={interval_code} http_status={http_status}"
+        )
+
+
 INTERVAL_TO_MS: dict[str, int] = {
     "1m": 60_000,
     "5m": 5 * 60_000,
@@ -53,6 +68,32 @@ def build_requests_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({"Accept": "application/json"})
     return session
+
+
+def fetch_active_bitvavo_markets(
+    *,
+    session: requests.Session,
+    timeout_seconds: int = 20,
+) -> set[str]:
+    """Return the set of market names whose status is 'trading' from GET /v2/markets.
+
+    Callers should use this to pre-filter the asset list before ETL so that
+    delisted/suspended markets (e.g. ALMANAK-EUR) are skipped rather than aborted.
+    Raises on HTTP error so the caller can decide whether to fail-open or fail-closed.
+    """
+    url = f"{BITVAVO_BASE_URL}/markets"
+    response = session.get(url, timeout=timeout_seconds)
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, list):
+        return set()
+    return {
+        str(item["market"])
+        for item in payload
+        if isinstance(item, dict)
+        and item.get("status") == "trading"
+        and item.get("market")
+    }
 
 
 def ensure_utc(dt: datetime) -> datetime:
@@ -153,6 +194,10 @@ def fetch_bitvavo_candles(
     }
 
     response = session.get(url, params=params, timeout=timeout_seconds)
+    if response.status_code in (400, 404):
+        raise MarketUnavailableError(
+            market=market, interval_code=interval_code, http_status=response.status_code
+        )
     response.raise_for_status()
 
     payload = response.json()

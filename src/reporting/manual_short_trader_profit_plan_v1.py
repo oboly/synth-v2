@@ -1640,6 +1640,7 @@ _CSS = """
     main { padding: 16px; display: grid; gap: 16px;
            grid-template-columns: repeat(auto-fill, minmax(440px, 1fr)); }
     .muted { color: var(--muted); } .small { font-size: 12px; }
+    .pipeline-warn { background:#fff3cd; border:1px solid #ffc107; border-radius:8px; padding:10px 16px; margin:8px 0; font-size:13px; font-weight:600; color:#856404; }
     .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
     .accent { color: var(--accent); }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
@@ -2315,6 +2316,7 @@ def render_full_html(
     sort: bool = True,
     render_id: str | None = None,
     writer_instance_id: str | None = None,
+    pipeline_banner_html: str | None = None,
 ) -> str:
     if rendered_at is None:
         rendered_at = format_ui_now()
@@ -2347,6 +2349,7 @@ def render_full_html(
         "    </div>\n"
         f"{'' if not nav_html else f'    {nav_html}\\n'}"
         "  </header>\n"
+        f"{'' if not pipeline_banner_html else f'  {pipeline_banner_html}\\n'}"
         "  <div class='sticky-controls'>\n"
         "    <div class='view-toggle'>\n"
         "      <button id='btn-relevant' class='toggle-btn' onclick='setView(\"relevant\")'>Relevant candidates</button>\n"
@@ -2518,6 +2521,7 @@ def build_json_snapshot(
     writer_instance_id: str | None = None,
     render_id: str | None = None,
     normalization_audit_by_symbol: dict[str, list[Any]] | None = None,
+    pipeline_health: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     now_ts = snapshot_ts or datetime.now(UTC).isoformat()
     relevant_count = sum(1 for c in cards if c.is_relevant)
@@ -2538,6 +2542,7 @@ def build_json_snapshot(
         "broker_writes": 0,
         "order_submission": 0,
         "executor": "none",
+        "pipeline_health": pipeline_health,
         "symbols": [
             {
                 "render_id": c.render_id,

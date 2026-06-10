@@ -75,6 +75,7 @@ class ZoneContextLoadResult:
     display_state_by_symbol: dict[str, str]
     source_name: str
     source_missing: bool
+    native_source_missing: bool = False
 
 
 @dataclass(frozen=True)
@@ -366,7 +367,7 @@ def load_zone_contexts(
     fib_map_rows_path: Path,
 ) -> ZoneContextLoadResult:
     fib_rows_by_symbol, source_missing = load_fib_map_rows(fib_map_rows_path)
-    native_rows_by_symbol, _native_source_missing = load_native_short_context_rows(native_short_rows_path)
+    native_rows_by_symbol, native_source_missing = load_native_short_context_rows(native_short_rows_path)
     fib_ext_by_symbol: dict[str, FibExtContext] = {}
     reentry_by_symbol: dict[str, ReentryContext] = {}
     activation_ts_by_symbol: dict[str, datetime | None] = {}
@@ -566,6 +567,7 @@ def load_zone_contexts(
         display_state_by_symbol=display_state_by_symbol,
         source_name="fibo_target_map_rows_v1.csv",
         source_missing=source_missing,
+        native_source_missing=native_source_missing,
     )
 
 
@@ -839,6 +841,45 @@ def main() -> int:
         venue=args.venue,
     )
 
+    # Pipeline health gate: expose machine-readable health in JSON and HTML.
+    # If native SHORT context is globally unavailable (CSV missing), show one
+    # top-level warning rather than per-coin FAIL labels without a global cause.
+    native_context_count = sum(
+        1 for s in zone_contexts.coverage_status_by_symbol.values()
+        if s == "NATIVE_SHORT_CONTEXT_AVAILABLE"
+    )
+    pipeline_health: dict[str, object] = {
+        "native_source_missing": zone_contexts.native_source_missing,
+        "native_context_available_count": native_context_count,
+        "native_context_globally_unavailable": (
+            zone_contexts.native_source_missing or native_context_count == 0
+        ),
+        "pipeline_status": (
+            "ok" if native_context_count > 0
+            else ("source_missing" if zone_contexts.native_source_missing else "no_context")
+        ),
+        "blocking_reasons": (
+            ["NATIVE_SHORT_CONTEXT_SOURCE_MISSING"] if zone_contexts.native_source_missing
+            else ([] if native_context_count > 0 else ["NATIVE_SHORT_CONTEXT_UNAVAILABLE"])
+        ),
+    }
+    pipeline_banner_html: str | None = None
+    if pipeline_health["native_context_globally_unavailable"]:
+        if zone_contexts.native_source_missing:
+            pipeline_banner_html = (
+                "<div class='pipeline-warn'>"
+                "Native SHORT context CSV missing — candle ETL may need to run. "
+                "All cards show NO_NATIVE_SHORT_FIB_CONTEXT until context is built."
+                "</div>"
+            )
+        else:
+            pipeline_banner_html = (
+                "<div class='pipeline-warn'>"
+                "Native SHORT context unavailable for all markets — "
+                "check candle ETL pipeline (1h/4h candles may be stale)."
+                "</div>"
+            )
+
     output_html.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(output_html.parent, 0o755)
     output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -851,6 +892,7 @@ def main() -> int:
         storage_scope=args.account_profile,
         render_id=snapshot_render_id,
         writer_instance_id=writer_instance_id,
+        pipeline_banner_html=pipeline_banner_html,
     )
     json_content = json.dumps(
         build_json_snapshot(
@@ -859,6 +901,7 @@ def main() -> int:
             writer_instance_id=writer_instance_id,
             render_id=snapshot_render_id,
             normalization_audit_by_symbol=normalization_audit,
+            pipeline_health=pipeline_health,
         ),
         indent=2,
         sort_keys=True,
