@@ -538,7 +538,9 @@ def test_shell_script_does_not_reference_account_env_dir_in_default_path() -> No
 
 def test_shell_script_uses_db_credential_source() -> None:
     script = Path("scripts/odroid/run_account_wallet_refresh_once.sh").read_text()
-    assert "--credential-source db" in script
+    # Script reads SYNTH_WALLET_CREDENTIAL_SOURCE env var, defaulting to "db"
+    assert 'SYNTH_WALLET_CREDENTIAL_SOURCE:-db' in script
+    assert '--credential-source "${CREDENTIAL_SOURCE}"' in script
 
 
 def test_shell_script_has_profile_scoped_lock() -> None:

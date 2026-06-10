@@ -2188,16 +2188,16 @@ def test_ldo_target_exit_zone_normalized_to_5dp() -> None:
         assert dp == 5, f"Expected 5dp, got {dp} for {price}"
 
 
-def test_ldo_sell_price_is_floored_not_rounded_up() -> None:
-    # 0.232605 with 5dp tick should floor to 0.23260, NOT round to 0.23261
+def test_ldo_sell_price_ceils_to_tick_above() -> None:
+    # 0.232605 with 5dp SELL tick should ceil to 0.23261, never floor below target
     raw = Decimal("0.232605")
     from src.market_rules.price_tick_normalization_v1 import normalize_price_to_tick, PRICE_ROLE_TARGET_SELL
     rule = _make_tick_rules(**{"LDO-EUR": 5})["LDO-EUR"]
     result = normalize_price_to_tick(raw, rule, PRICE_ROLE_TARGET_SELL)
-    assert result.normalized_price == Decimal("0.23260"), (
-        f"Expected 0.23260 (floor), got {result.normalized_price}"
+    assert result.normalized_price == Decimal("0.23261"), (
+        f"Expected 0.23261 (ceil), got {result.normalized_price}"
     )
-    assert result.normalized_price <= raw
+    assert result.normalized_price >= raw
 
 
 def test_ldo_reload_reentry_zone_normalized() -> None:

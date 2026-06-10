@@ -10,16 +10,11 @@ Usage:
   2. Resolve per-market rule (DB-first, static fallback): resolve_tick_rule(...)
   3. Normalize a price: normalize_price_to_tick(raw_price, tick_rule, price_role)
 
-Rounding semantics (all executable roles):
-  ROUND_DOWN (floor to nearest valid tick below the raw analytical price).
-
-  Rationale:
-    SELL/TARGET  — executable sell at or below the analytical level is valid.
-    BUY/REENTRY  — executable buy at or below the analytical level is valid.
-    INVALIDATION — floor preserves risk semantics; the displayed level is not
-                   more than 1 tick above the analytical value.
-
-  DISPLAY_ONLY prices use ROUND_HALF_UP (nearest tick).
+Rounding semantics (side-aware):
+  TARGET_SELL  — ROUND_UP (ceiling): never place a sell order below the analytical target.
+  REENTRY_BUY  — ROUND_DOWN (floor): never place a buy order above the analytical rebuy.
+  INVALIDATION — ROUND_DOWN (floor): keep invalidation at or below analytical level.
+  DISPLAY_ONLY — ROUND_HALF_UP (nearest tick).
 
 Fail-closed:
   When tick rules are unavailable for a market, normalize_price_to_tick returns
@@ -38,7 +33,7 @@ order_submission=0
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 from typing import Any
 
 # ---------------------------------------------------------------------------
@@ -278,11 +273,14 @@ def normalize_price_to_tick(
 ) -> PriceNormalizationResult:
     """Normalize raw_price to the nearest valid tick boundary.
 
-    Executable roles (TARGET_SELL, REENTRY_BUY, INVALIDATION):
-      Use ROUND_DOWN (floor). The normalized price is ≤ raw_price.
-
-    DISPLAY_ONLY:
-      Use ROUND_HALF_UP (nearest tick). Marks result DISPLAY_ONLY_NOT_EXECUTABLE.
+    Side-aware rounding semantics:
+      TARGET_SELL: ROUND_UP (ceiling) — normalized price ≥ raw_price.
+        Sell limit orders must never be placed below the analytical target.
+      REENTRY_BUY: ROUND_DOWN (floor) — normalized price ≤ raw_price.
+        Buy limit orders must never be placed above the analytical rebuy.
+      INVALIDATION: ROUND_DOWN (floor) — normalized price ≤ raw_price.
+        Keep invalidation level conservative; never raise it above analytical.
+      DISPLAY_ONLY: ROUND_HALF_UP (nearest tick). Marks result DISPLAY_ONLY_NOT_EXECUTABLE.
 
     MISSING_TICK_RULE:
       Raw price returned unchanged. Result has MISSING_TICK_RULE status.
@@ -318,9 +316,10 @@ def normalize_price_to_tick(
             rule_source=tick_rule.source,
         )
 
-    # All executable roles: ROUND_DOWN
-    normalized = _quantize_to_tick(raw_price, tick_size, ROUND_DOWN)
-    normalized = normalized.quantize(q, rounding=ROUND_DOWN)
+    # Side-aware rounding: SELL ceils, BUY/INVALIDATION floor
+    rounding = ROUND_UP if price_role == PRICE_ROLE_TARGET_SELL else ROUND_DOWN
+    normalized = _quantize_to_tick(raw_price, tick_size, rounding)
+    normalized = normalized.quantize(q, rounding=rounding)
     return PriceNormalizationResult(
         raw_price=raw_price,
         normalized_price=normalized,

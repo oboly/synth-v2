@@ -2380,7 +2380,7 @@ def apply_price_tick_normalization(
     normalization_audit_by_symbol maps symbol → list of PriceNormalizationResult
     for inclusion in the JSON snapshot.
 
-    Rounding: ROUND_DOWN for all executable roles.
+    Rounding: ROUND_UP for TARGET_SELL, ROUND_DOWN for REENTRY_BUY/INVALIDATION.
     Missing tick rule: raw price preserved, MISSING_TICK_RULE status surfaced.
 
     broker_private_calls=0

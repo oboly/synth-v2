@@ -122,20 +122,20 @@ def test_ldo_sell_exact_tick_boundary_unchanged() -> None:
     assert result.price_rule_status == NORM_STATUS_APPLIED
 
 
-def test_ldo_sell_floors_to_nearest_tick_below() -> None:
-    """LDO 0.232605 SELL → 0.23260 (floor, not 0.23261)."""
+def test_ldo_sell_ceils_to_tick_above() -> None:
+    """LDO 0.232605 SELL → 0.23261 (ceiling, not floor): never sell below target."""
     raw = Decimal("0.232605")
     result = normalize_price_to_tick(raw, _ldo_rule(), PRICE_ROLE_TARGET_SELL)
-    assert result.normalized_price == Decimal("0.23260")
-    assert result.normalized_price < raw
+    assert result.normalized_price == Decimal("0.23261")
+    assert result.normalized_price > raw
 
 
 def test_ldo_sell_production_example() -> None:
-    """Exact production example from task description: 0.232605 → 0.23260."""
+    """LDO SELL 0.232605 → 0.23261 (side-aware ceiling)."""
     result = normalize_price_to_tick(
         Decimal("0.232605"), _ldo_rule(), PRICE_ROLE_TARGET_SELL
     )
-    assert result.normalized_price == Decimal("0.23260")
+    assert result.normalized_price == Decimal("0.23261")
 
 
 def test_ldo_buy_rounds_down() -> None:
@@ -155,10 +155,10 @@ def test_ldo_price_already_aligned_buy() -> None:
 # Tiny markets (8dp: PEPE/MOG/SHIB/FLOKI)
 # ---------------------------------------------------------------------------
 
-def test_pepe_eur_rounds_down() -> None:
+def test_pepe_eur_sell_ceils_to_tick_above() -> None:
     raw = Decimal("0.000007563")
     result = normalize_price_to_tick(raw, _pepe_rule(), PRICE_ROLE_TARGET_SELL)
-    assert result.normalized_price == Decimal("0.00000756")
+    assert result.normalized_price == Decimal("0.00000757")
     assert result.decimal_places == 8
 
 
@@ -179,10 +179,10 @@ def test_pepe_normalized_has_8_decimal_places() -> None:
 # High-price markets (ETH/SOL)
 # ---------------------------------------------------------------------------
 
-def test_eth_eur_rounds_down_2dp() -> None:
+def test_eth_eur_sell_ceils_to_tick_above() -> None:
     raw = Decimal("2573.999")
     result = normalize_price_to_tick(raw, _eth_rule(), PRICE_ROLE_TARGET_SELL)
-    assert result.normalized_price == Decimal("2573.99")
+    assert result.normalized_price == Decimal("2574.00")
 
 
 def test_eth_eur_exact_unchanged() -> None:
@@ -191,10 +191,10 @@ def test_eth_eur_exact_unchanged() -> None:
     assert result.normalized_price == Decimal("2574.00")
 
 
-def test_sol_eur_4dp_rounds_down() -> None:
+def test_sol_eur_sell_ceils_to_tick_above() -> None:
     raw = Decimal("143.56789")
     result = normalize_price_to_tick(raw, _sol_rule(), PRICE_ROLE_TARGET_SELL)
-    assert result.normalized_price == Decimal("143.5678")
+    assert result.normalized_price == Decimal("143.5679")
 
 
 # ---------------------------------------------------------------------------
@@ -335,8 +335,11 @@ def test_normalize_prices_multiple() -> None:
     normalized, audits = normalize_prices(prices, _ldo_rule(), PRICE_ROLE_TARGET_SELL)
     assert len(normalized) == 3
     assert len(audits) == 3
-    assert normalized[0] == Decimal("0.23260")
+    # 0.232605 → ceil → 0.23261
+    assert normalized[0] == Decimal("0.23261")
+    # 0.26000 already on tick → unchanged
     assert normalized[1] == Decimal("0.26000")
+    # 0.30001 already on tick → unchanged
     assert normalized[2] == Decimal("0.30001")
 
 
@@ -350,7 +353,7 @@ def test_normalize_optional_price_value() -> None:
     v, result = normalize_optional_price(
         Decimal("0.232605"), _ldo_rule(), PRICE_ROLE_TARGET_SELL
     )
-    assert v == Decimal("0.23260")
+    assert v == Decimal("0.23261")
     assert result is not None
     assert result.price_rule_status == NORM_STATUS_APPLIED
 
@@ -565,6 +568,112 @@ def test_all_static_entries_have_valid_tick_size() -> None:
         assert tick > Decimal("0"), f"{market} has zero tick_size"
 
 
+# ---------------------------------------------------------------------------
+# Side-aware invariants
+# ---------------------------------------------------------------------------
+
+def test_sell_price_never_below_analytical_target() -> None:
+    """Normalized SELL price must always be ≥ raw analytical price."""
+    samples = [
+        (Decimal("0.232605"), _ldo_rule()),
+        (Decimal("0.000007563"), _pepe_rule()),
+        (Decimal("2573.999"), _eth_rule()),
+        (Decimal("143.56789"), _sol_rule()),
+    ]
+    for raw, rule in samples:
+        result = normalize_price_to_tick(raw, rule, PRICE_ROLE_TARGET_SELL)
+        assert result.normalized_price >= raw, (
+            f"{rule.market}: normalized {result.normalized_price} < raw {raw}"
+        )
+
+
+def test_buy_price_never_above_analytical_rebuy() -> None:
+    """Normalized BUY price must always be ≤ raw analytical price."""
+    samples = [
+        (Decimal("0.232605"), _ldo_rule()),
+        (Decimal("0.000007563"), _pepe_rule()),
+        (Decimal("2573.999"), _eth_rule()),
+        (Decimal("143.56789"), _sol_rule()),
+    ]
+    for raw, rule in samples:
+        result = normalize_price_to_tick(raw, rule, PRICE_ROLE_REENTRY_BUY)
+        assert result.normalized_price <= raw, (
+            f"{rule.market}: normalized {result.normalized_price} > raw {raw}"
+        )
+
+
+def test_ldo_sell_vs_buy_same_raw_price() -> None:
+    """SELL of 0.232605 → 0.23261; BUY of 0.232605 → 0.23260."""
+    raw = Decimal("0.232605")
+    sell = normalize_price_to_tick(raw, _ldo_rule(), PRICE_ROLE_TARGET_SELL)
+    buy = normalize_price_to_tick(raw, _ldo_rule(), PRICE_ROLE_REENTRY_BUY)
+    assert sell.normalized_price == Decimal("0.23261")
+    assert buy.normalized_price == Decimal("0.23260")
+    assert sell.normalized_price > buy.normalized_price
+
+
+def test_sell_idempotent() -> None:
+    """SELL normalization is idempotent: normalizing a normalized price is unchanged."""
+    raw = Decimal("0.232605")
+    r1 = normalize_price_to_tick(raw, _ldo_rule(), PRICE_ROLE_TARGET_SELL)
+    r2 = normalize_price_to_tick(r1.normalized_price, _ldo_rule(), PRICE_ROLE_TARGET_SELL)
+    assert r1.normalized_price == r2.normalized_price
+
+
+def test_buy_idempotent() -> None:
+    """BUY normalization is idempotent."""
+    raw = Decimal("0.232609")
+    r1 = normalize_price_to_tick(raw, _ldo_rule(), PRICE_ROLE_REENTRY_BUY)
+    r2 = normalize_price_to_tick(r1.normalized_price, _ldo_rule(), PRICE_ROLE_REENTRY_BUY)
+    assert r1.normalized_price == r2.normalized_price
+
+
+def test_sell_exact_tick_unchanged() -> None:
+    """SELL price that is already on a valid tick must not change."""
+    raw = Decimal("0.23260")
+    result = normalize_price_to_tick(raw, _ldo_rule(), PRICE_ROLE_TARGET_SELL)
+    assert result.normalized_price == raw
+
+
+def test_buy_exact_tick_unchanged() -> None:
+    """BUY price that is already on a valid tick must not change."""
+    raw = Decimal("0.23260")
+    result = normalize_price_to_tick(raw, _ldo_rule(), PRICE_ROLE_REENTRY_BUY)
+    assert result.normalized_price == raw
+
+
+def test_all_market_sell_prices_on_valid_tick() -> None:
+    """Every normalized SELL price must satisfy: price % tick_size == 0."""
+    samples = {
+        "LDO-EUR": (Decimal("0.232605"), _ldo_rule()),
+        "PEPE-EUR": (Decimal("0.000007563"), _pepe_rule()),
+        "ETH-EUR": (Decimal("2573.999"), _eth_rule()),
+        "SOL-EUR": (Decimal("143.56789"), _sol_rule()),
+    }
+    for market, (raw, rule) in samples.items():
+        result = normalize_price_to_tick(raw, rule, PRICE_ROLE_TARGET_SELL)
+        remainder = result.normalized_price % rule.tick_size
+        assert remainder == Decimal("0"), (
+            f"{market}: {result.normalized_price} % {rule.tick_size} = {remainder}"
+        )
+
+
+def test_all_market_buy_prices_on_valid_tick() -> None:
+    """Every normalized BUY price must satisfy: price % tick_size == 0."""
+    samples = {
+        "LDO-EUR": (Decimal("0.232605"), _ldo_rule()),
+        "PEPE-EUR": (Decimal("0.000007563"), _pepe_rule()),
+        "ETH-EUR": (Decimal("2573.999"), _eth_rule()),
+        "SOL-EUR": (Decimal("143.56789"), _sol_rule()),
+    }
+    for market, (raw, rule) in samples.items():
+        result = normalize_price_to_tick(raw, rule, PRICE_ROLE_REENTRY_BUY)
+        remainder = result.normalized_price % rule.tick_size
+        assert remainder == Decimal("0"), (
+            f"{market}: {result.normalized_price} % {rule.tick_size} = {remainder}"
+        )
+
+
 if __name__ == "__main__":
     tests = [
         test_tick_size_precision_5,
@@ -573,16 +682,16 @@ if __name__ == "__main__":
         test_tick_size_precision_1,
         test_tick_size_is_decimal_not_float,
         test_ldo_sell_exact_tick_boundary_unchanged,
-        test_ldo_sell_floors_to_nearest_tick_below,
+        test_ldo_sell_ceils_to_tick_above,
         test_ldo_sell_production_example,
         test_ldo_buy_rounds_down,
         test_ldo_price_already_aligned_buy,
-        test_pepe_eur_rounds_down,
+        test_pepe_eur_sell_ceils_to_tick_above,
         test_pepe_eur_exact_boundary_unchanged,
         test_pepe_normalized_has_8_decimal_places,
-        test_eth_eur_rounds_down_2dp,
+        test_eth_eur_sell_ceils_to_tick_above,
         test_eth_eur_exact_unchanged,
-        test_sol_eur_4dp_rounds_down,
+        test_sol_eur_sell_ceils_to_tick_above,
         test_normalization_is_idempotent,
         test_pepe_normalization_is_idempotent,
         test_display_only_uses_round_half_up,
@@ -618,6 +727,15 @@ if __name__ == "__main__":
         test_all_configured_synth_markets_have_static_metadata,
         test_all_static_entries_have_positive_decimal_places,
         test_all_static_entries_have_valid_tick_size,
+        test_sell_price_never_below_analytical_target,
+        test_buy_price_never_above_analytical_rebuy,
+        test_ldo_sell_vs_buy_same_raw_price,
+        test_sell_idempotent,
+        test_buy_idempotent,
+        test_sell_exact_tick_unchanged,
+        test_buy_exact_tick_unchanged,
+        test_all_market_sell_prices_on_valid_tick,
+        test_all_market_buy_prices_on_valid_tick,
     ]
     for t in tests:
         t()
