@@ -10,6 +10,9 @@ fi
 REPO_DIR="${SYNTH_REPO_DIR:-$HOME/projects/synth-v2}"
 LOCK_FILE="${SYNTH_ACCOUNT_WALLET_REFRESH_LOCK:-/tmp/synth-account-wallet-refresh-${PROFILE}.lock}"
 VENUE="${SYNTH_ACCOUNT_WALLET_VENUE:-bitvavo}"
+# Credential source: 'db' for encrypted DB credentials (default for provisioned accounts).
+# Set to 'profile-env' via a systemd drop-in for accounts still using legacy .env files.
+CREDENTIAL_SOURCE="${SYNTH_WALLET_CREDENTIAL_SOURCE:-db}"
 
 echo "account_wallet_refresh_once starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "profile=${PROFILE}"
@@ -37,11 +40,12 @@ fi
 
 export SYNTH_BROKER_PRIVATE_READ_PERMISSION="${SYNTH_BROKER_PRIVATE_READ_PERMISSION:-I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA}"
 
-# Credential source: db (default). SYNTH_ACCOUNT_CREDENTIAL_MASTER_KEY must
-# be present in the environment (supplied by EnvironmentFile in the systemd unit).
+# CREDENTIAL_SOURCE is set from SYNTH_WALLET_CREDENTIAL_SOURCE env var (default: db).
+# Provisioned accounts use 'db'. Legacy accounts still using a .env file must set
+# SYNTH_WALLET_CREDENTIAL_SOURCE=profile-env via a systemd drop-in.
 python -m src.account.run_account_wallet_refresh_v1 \
   --account-profile "${PROFILE}" \
-  --credential-source db \
+  --credential-source "${CREDENTIAL_SOURCE}" \
   --venue "${VENUE}" \
   --write-db \
   --output summary
