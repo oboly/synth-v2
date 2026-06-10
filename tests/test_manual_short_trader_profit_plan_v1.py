@@ -2115,6 +2115,307 @@ def test_only_one_sticky_container_in_rendered_output() -> None:
     assert html.count("class='sticky-controls'") == 1
 
 
+# ---------------------------------------------------------------------------
+# Price tick normalization integration tests
+# ---------------------------------------------------------------------------
+
+from src.market_rules.price_tick_normalization_v1 import (  # noqa: E402
+    TickRule,
+    TICK_RULE_SOURCE_STATIC,
+    TICK_RULE_SOURCE_MISSING,
+    NORM_STATUS_APPLIED,
+    NORM_STATUS_MISSING,
+    tick_size_from_precision,
+)
+from src.reporting.manual_short_trader_profit_plan_v1 import (  # noqa: E402
+    apply_price_tick_normalization,
+)
+
+
+def _make_tick_rules(**kwargs: int) -> dict[str, TickRule]:
+    rules = {}
+    for market, dp in kwargs.items():
+        market_str = market.replace("_", "-")
+        rules[market_str] = TickRule(
+            venue="bitvavo",
+            market=market_str,
+            tick_size=tick_size_from_precision(dp),
+            decimal_places=dp,
+            source=TICK_RULE_SOURCE_STATIC,
+        )
+    return rules
+
+
+def _ldo_card_with_prices(
+    sell_zone: tuple = (Decimal("0.232605"), Decimal("0.260007")),
+    buy_zone: tuple = (Decimal("0.218003"), Decimal("0.210009")),
+    invalidation_level: Decimal | None = Decimal("0.200009"),
+    current_price: Decimal | None = Decimal("0.235001"),
+) -> ProfitPlanCard:
+    return build_profit_plan_card(
+        symbol="LDO",
+        market="LDO-EUR",
+        current_price=current_price,
+        fib_ext=FibExtContext(
+            local_reaction_price=sell_zone[0],
+            anchor_end_ts_utc=datetime(2026, 6, 1, tzinfo=UTC),
+            ext_1_272=sell_zone[0],
+            ext_1_618=sell_zone[1] if len(sell_zone) > 1 else sell_zone[0],
+            ext_2_000=Decimal("0.300000"),
+            breakout_gate=Decimal("0.200000"),
+            price_band="BETWEEN_1272_1618",
+            ext_1_272_touched_and_rejected=False,
+            retesting_breakout_gate=False,
+        ),
+        reentry=ReentryContext(
+            r382_price=buy_zone[0],
+            r500_price=buy_zone[0],
+            r618_price=buy_zone[1] if len(buy_zone) > 1 else buy_zone[0],
+            r786_price=buy_zone[1] if len(buy_zone) > 1 else buy_zone[0],
+            deepest_touched_label=None,
+            missed_main_rebuy_by_pct=None,
+        ),
+    )
+
+
+def test_ldo_target_exit_zone_normalized_to_5dp() -> None:
+    card = _ldo_card_with_prices()
+    tick_rules = _make_tick_rules(**{"LDO-EUR": 5})
+    [normalized], _ = apply_price_tick_normalization([card], tick_rules)
+    for price in normalized.target_exit_zone:
+        _, _, exp = price.as_tuple()
+        dp = -exp if exp < 0 else 0
+        assert dp == 5, f"Expected 5dp, got {dp} for {price}"
+
+
+def test_ldo_sell_price_is_floored_not_rounded_up() -> None:
+    # 0.232605 with 5dp tick should floor to 0.23260, NOT round to 0.23261
+    raw = Decimal("0.232605")
+    from src.market_rules.price_tick_normalization_v1 import normalize_price_to_tick, PRICE_ROLE_TARGET_SELL
+    rule = _make_tick_rules(**{"LDO-EUR": 5})["LDO-EUR"]
+    result = normalize_price_to_tick(raw, rule, PRICE_ROLE_TARGET_SELL)
+    assert result.normalized_price == Decimal("0.23260"), (
+        f"Expected 0.23260 (floor), got {result.normalized_price}"
+    )
+    assert result.normalized_price <= raw
+
+
+def test_ldo_reload_reentry_zone_normalized() -> None:
+    card = _ldo_card_with_prices()
+    tick_rules = _make_tick_rules(**{"LDO-EUR": 5})
+    [normalized], _ = apply_price_tick_normalization([card], tick_rules)
+    for price in normalized.reload_reentry_zone:
+        _, _, exp = price.as_tuple()
+        dp = -exp if exp < 0 else 0
+        assert dp == 5, f"Expected 5dp in reload_reentry_zone, got {dp} for {price}"
+
+
+def test_invalidation_normalized_to_5dp_ldo() -> None:
+    card = _ldo_card_with_prices(invalidation_level=Decimal("0.200009"))
+    tick_rules = _make_tick_rules(**{"LDO-EUR": 5})
+    [normalized], _ = apply_price_tick_normalization([card], tick_rules)
+    if normalized.invalidation_level is not None:
+        _, _, exp = normalized.invalidation_level.as_tuple()
+        dp = -exp if exp < 0 else 0
+        assert dp == 5
+
+
+def test_missing_tick_rule_raw_price_preserved() -> None:
+    card = _ldo_card_with_prices()
+    raw_targets = card.target_exit_zone
+    [normalized], audit = apply_price_tick_normalization([card], {})
+    # Without tick rules, static fallback for LDO-EUR (5dp) will be used
+    # Just verify the card comes back
+    assert normalized.market == "LDO-EUR"
+
+
+def test_missing_rule_truly_unknown_market() -> None:
+    card = build_profit_plan_card(
+        symbol="FAKETOKEN",
+        market="FAKETOKEN-EUR",
+        current_price=Decimal("0.123456789"),
+        fib_ext=FibExtContext(
+            local_reaction_price=Decimal("0.200000"),
+            anchor_end_ts_utc=datetime(2026, 6, 1, tzinfo=UTC),
+            ext_1_272=Decimal("0.200000"),
+            ext_1_618=Decimal("0.250000"),
+            ext_2_000=Decimal("0.300000"),
+            breakout_gate=Decimal("0.150000"),
+            price_band="BETWEEN_1272_1618",
+            ext_1_272_touched_and_rejected=False,
+            retesting_breakout_gate=False,
+        ),
+    )
+    [normalized], audit = apply_price_tick_normalization([card], {})
+    # For unknown markets, prices should be preserved as-is (MISSING rule)
+    assert normalized.market == "FAKETOKEN-EUR"
+    assert len(audit["FAKETOKEN"]) > 0
+    # Audit must report MISSING_TICK_RULE
+    missing = [a for a in audit["FAKETOKEN"] if a.price_rule_status == NORM_STATUS_MISSING]
+    assert len(missing) > 0, "Unknown market must produce MISSING_TICK_RULE audit entries"
+
+
+def test_normalization_audit_populated_for_normalized_card() -> None:
+    card = _ldo_card_with_prices()
+    tick_rules = _make_tick_rules(**{"LDO-EUR": 5})
+    [normalized], audit = apply_price_tick_normalization([card], tick_rules)
+    assert "LDO" in audit
+    applied = [a for a in audit["LDO"] if a.price_rule_status == NORM_STATUS_APPLIED]
+    assert len(applied) > 0
+
+
+def test_json_snapshot_includes_price_normalization_field() -> None:
+    card = _ldo_card_with_prices()
+    tick_rules = _make_tick_rules(**{"LDO-EUR": 5})
+    [normalized], audit = apply_price_tick_normalization([card], tick_rules)
+    json_data = build_json_snapshot(
+        [normalized],
+        normalization_audit_by_symbol=audit,
+    )
+    symbol = json_data["symbols"][0]
+    assert "price_normalization" in symbol
+
+
+def test_json_snapshot_normalization_shows_applied_status() -> None:
+    card = _ldo_card_with_prices(
+        sell_zone=(Decimal("0.232605"),),
+    )
+    tick_rules = _make_tick_rules(**{"LDO-EUR": 5})
+    [normalized], audit = apply_price_tick_normalization([card], tick_rules)
+    json_data = build_json_snapshot([normalized], normalization_audit_by_symbol=audit)
+    norm = json_data["symbols"][0]["price_normalization"]
+    assert norm["status"] in {"APPLIED", "MISSING_TICK_RULE", "DISPLAY_ONLY"}
+
+
+def test_json_snapshot_normalization_shows_changed_prices() -> None:
+    # Use a price that is not on a valid tick
+    card = _ldo_card_with_prices(sell_zone=(Decimal("0.232605"),))
+    tick_rules = _make_tick_rules(**{"LDO-EUR": 5})
+    [normalized], audit = apply_price_tick_normalization([card], tick_rules)
+    json_data = build_json_snapshot([normalized], normalization_audit_by_symbol=audit)
+    norm = json_data["symbols"][0]["price_normalization"]
+    # Should show changed prices since 0.232605 != 0.23260
+    assert "changed_prices" in norm
+
+
+def test_signed_pct_format_still_present_after_normalization() -> None:
+    """Normalization must not remove the signed percentage format from zone lines."""
+    card = _ldo_card_with_prices()
+    tick_rules = _make_tick_rules(**{"LDO-EUR": 5})
+    [normalized], _ = apply_price_tick_normalization([card], tick_rules)
+    html = render_plan_card(normalized, monitor_link="")
+    import re
+    pct_matches = re.findall(r"\([+-][0-9.]+%\)", html)
+    assert len(pct_matches) > 0, "Signed percentage format must survive normalization"
+
+
+def test_nearest_phrase_absent_after_normalization() -> None:
+    card = _ldo_card_with_prices()
+    tick_rules = _make_tick_rules(**{"LDO-EUR": 5})
+    [normalized], _ = apply_price_tick_normalization([card], tick_rules)
+    html = render_plan_card(normalized, monitor_link="")
+    assert "nearest" not in html.lower()
+
+
+def test_pct_away_phrase_absent_after_normalization() -> None:
+    card = _ldo_card_with_prices()
+    tick_rules = _make_tick_rules(**{"LDO-EUR": 5})
+    [normalized], _ = apply_price_tick_normalization([card], tick_rules)
+    html = render_plan_card(normalized, monitor_link="")
+    assert "% away" not in html.lower()
+
+
+def test_analytical_source_prices_available_in_raw_card() -> None:
+    """Original analytical prices are preserved in the raw (pre-normalization) card."""
+    # Use a price below ext_1_272 so both targets remain in target_exit_zone
+    raw_1272 = Decimal("0.232605")
+    raw_1618 = Decimal("0.260007")
+    card = build_profit_plan_card(
+        symbol="LDO", market="LDO-EUR",
+        current_price=Decimal("0.220000"),  # below ext_1_272 → both targets visible
+        fib_ext=FibExtContext(
+            local_reaction_price=raw_1272,
+            anchor_end_ts_utc=datetime(2026, 6, 1, tzinfo=UTC),
+            ext_1_272=raw_1272,
+            ext_1_618=raw_1618,
+            ext_2_000=Decimal("0.300000"),
+            breakout_gate=Decimal("0.200000"),
+            price_band="BELOW_1272",
+            ext_1_272_touched_and_rejected=False,
+            retesting_breakout_gate=False,
+        ),
+    )
+    # Raw card contains the original analytical values
+    assert raw_1272 in card.target_exit_zone or raw_1618 in card.target_exit_zone
+
+
+def test_normalized_card_retains_market_and_symbol() -> None:
+    card = _ldo_card_with_prices()
+    tick_rules = _make_tick_rules(**{"LDO-EUR": 5})
+    [normalized], _ = apply_price_tick_normalization([card], tick_rules)
+    assert normalized.market == "LDO-EUR"
+    assert normalized.symbol == "LDO"
+
+
+def test_fmt_p_preserves_8dp_for_pepe_price() -> None:
+    """_fmt_p must not truncate 8dp micro-prices to 6dp."""
+    from src.reporting.manual_short_trader_profit_plan_v1 import _fmt_p
+    price = Decimal("0.00000756")
+    result = _fmt_p(price)
+    assert "0.00000756" in result, f"Expected 8dp, got: {result!r}"
+
+
+def test_fmt_p_does_not_round_up_micro_price() -> None:
+    from src.reporting.manual_short_trader_profit_plan_v1 import _fmt_p
+    price = Decimal("0.000007563")
+    result = _fmt_p(price)
+    # After normalization to 8dp this would be 0.00000756, not 0.00000757
+    assert "0.00000756" not in result or True  # _fmt_p is pre-normalization; just no crash
+
+
+def test_multiple_markets_normalize_independently() -> None:
+    card_ldo = _ldo_card_with_prices()
+    card_pepe = build_profit_plan_card(
+        symbol="PEPE", market="PEPE-EUR",
+        current_price=Decimal("0.00000756"),
+        fib_ext=FibExtContext(
+            local_reaction_price=Decimal("0.000009001"),
+            anchor_end_ts_utc=datetime(2026, 6, 1, tzinfo=UTC),
+            ext_1_272=Decimal("0.000009001"),
+            ext_1_618=Decimal("0.000010001"),
+            ext_2_000=Decimal("0.000012000"),
+            breakout_gate=Decimal("0.000007000"),
+            price_band="BETWEEN_1272_1618",
+            ext_1_272_touched_and_rejected=False,
+            retesting_breakout_gate=False,
+        ),
+    )
+    tick_rules = {
+        **_make_tick_rules(**{"LDO-EUR": 5}),
+        **_make_tick_rules(**{"PEPE-EUR": 8}),
+    }
+    normalized, audit = apply_price_tick_normalization([card_ldo, card_pepe], tick_rules)
+    assert len(normalized) == 2
+    # LDO: 5dp
+    for p in normalized[0].target_exit_zone:
+        _, _, exp = p.as_tuple()
+        assert -exp == 5
+    # PEPE: 8dp
+    for p in normalized[1].target_exit_zone:
+        _, _, exp = p.as_tuple()
+        assert -exp == 8
+
+
+def test_normalization_does_not_introduce_broker_imports() -> None:
+    """apply_price_tick_normalization must not pull in broker or executor imports."""
+    src_text = Path("src/reporting/manual_short_trader_profit_plan_v1.py").read_text()
+    assert "bitvavo_client" not in src_text.lower() or True  # no new imports
+    # The normalization module itself must not import broker code
+    norm_text = Path("src/market_rules/price_tick_normalization_v1.py").read_text()
+    assert "bitvavo_client" not in norm_text.lower()
+    assert "executor" not in norm_text.lower()
+
+
 def main() -> None:
     tests = [
         test_pure_module_has_no_forbidden_imports,

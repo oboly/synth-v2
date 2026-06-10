@@ -262,6 +262,12 @@ class OrderRow:
 def _fmt_p(v: Decimal | None) -> str:
     if v is None:
         return "?"
+    # If the value is already quantized to more than 6 decimal places
+    # (e.g., PEPE-EUR at 8dp after tick normalization), preserve that precision.
+    _sign, _digits, exponent = v.as_tuple()
+    native_dp = -exponent if exponent < 0 else 0
+    if native_dp > 6:
+        return str(v)
     if abs(v) < Decimal("1"):
         return str(v.quantize(Decimal("0.000001")))
     return str(v.quantize(Decimal("0.01")))
@@ -2358,6 +2364,139 @@ def render_full_html(
 
 
 # ---------------------------------------------------------------------------
+# Price tick normalization integration
+# ---------------------------------------------------------------------------
+
+def apply_price_tick_normalization(
+    cards: "list[ProfitPlanCard]",
+    tick_rules_by_market: "dict[str, Any]",
+    venue: str = "bitvavo",
+) -> "tuple[list[ProfitPlanCard], dict[str, list[Any]]]":
+    """Normalize all executable Profit Plan prices to market tick boundaries.
+
+    Returns:
+      (normalized_cards, normalization_audit_by_symbol)
+
+    normalization_audit_by_symbol maps symbol → list of PriceNormalizationResult
+    for inclusion in the JSON snapshot.
+
+    Rounding: ROUND_DOWN for all executable roles.
+    Missing tick rule: raw price preserved, MISSING_TICK_RULE status surfaced.
+
+    broker_private_calls=0
+    """
+    import dataclasses
+    from src.market_rules.price_tick_normalization_v1 import (
+        PRICE_ROLE_DISPLAY_ONLY,
+        PRICE_ROLE_INVALIDATION,
+        PRICE_ROLE_REENTRY_BUY,
+        PRICE_ROLE_TARGET_SELL,
+        TickRule,
+        normalize_optional_price,
+        normalize_prices,
+        normalize_price_to_tick,
+        resolve_tick_rule,
+    )
+
+    normalized_cards: list[ProfitPlanCard] = []
+    audit_by_symbol: dict[str, list[Any]] = {}
+
+    for card in cards:
+        rule: TickRule = resolve_tick_rule(
+            venue=venue,
+            market=card.market,
+            db_rules=tick_rules_by_market,
+        )
+        audits: list[Any] = []
+
+        def _norm_tuple(prices: "tuple[Decimal, ...]", role: str) -> "tuple[Decimal, ...]":
+            result_tuple, results = normalize_prices(prices, rule, role)
+            audits.extend(results)
+            return result_tuple
+
+        def _norm_opt(price: "Decimal | None", role: str) -> "Decimal | None":
+            v, result = normalize_optional_price(price, rule, role)
+            if result is not None:
+                audits.append(result)
+            return v
+
+        # Normalize executable price fields
+        target_exit_zone = _norm_tuple(card.target_exit_zone, PRICE_ROLE_TARGET_SELL)
+        reload_reentry_zone = _norm_tuple(card.reload_reentry_zone, PRICE_ROLE_REENTRY_BUY)
+        buy_zone = _norm_tuple(card.buy_zone, PRICE_ROLE_REENTRY_BUY)
+        sell_zone = _norm_tuple(card.sell_zone, PRICE_ROLE_TARGET_SELL)
+        active_target = _norm_opt(card.active_target, PRICE_ROLE_TARGET_SELL)
+        invalidation_level = _norm_opt(card.invalidation_level, PRICE_ROLE_INVALIDATION)
+        invalidation_risk_zone = _norm_opt(card.invalidation_risk_zone, PRICE_ROLE_INVALIDATION)
+        current_price = _norm_opt(card.current_price, PRICE_ROLE_DISPLAY_ONLY)
+
+        # Normalize target level statuses (display levels only)
+        normalized_statuses: list[TargetLevelStatus] = []
+        for tls in card.target_level_statuses:
+            result = normalize_price_to_tick(tls.level, rule, PRICE_ROLE_TARGET_SELL)
+            audits.append(result)
+            normalized_statuses.append(
+                dataclasses.replace(tls, level=result.normalized_price)
+            )
+
+        normalized_card = dataclasses.replace(
+            card,
+            target_exit_zone=target_exit_zone,
+            reload_reentry_zone=reload_reentry_zone,
+            buy_zone=buy_zone,
+            sell_zone=sell_zone,
+            active_target=active_target,
+            invalidation_level=invalidation_level,
+            invalidation_risk_zone=invalidation_risk_zone,
+            current_price=current_price,
+            target_level_statuses=tuple(normalized_statuses),
+        )
+        normalized_cards.append(normalized_card)
+        audit_by_symbol[card.symbol] = audits
+
+    return normalized_cards, audit_by_symbol
+
+
+# ---------------------------------------------------------------------------
+# JSON snapshot helpers
+# ---------------------------------------------------------------------------
+
+def _build_normalization_audit_json(
+    audits: "list[Any] | None",
+) -> "dict[str, Any]":
+    """Compact audit summary for price_normalization JSON field."""
+    if not audits:
+        return {"status": "NOT_APPLIED"}
+    statuses = [a.price_rule_status for a in audits]
+    applied = sum(1 for s in statuses if s == "TICK_RULE_APPLIED")
+    missing = sum(1 for s in statuses if s == "MISSING_TICK_RULE")
+    display_only = sum(1 for s in statuses if s == "DISPLAY_ONLY_NOT_EXECUTABLE")
+    rule_sources = sorted({a.rule_source for a in audits})
+    tick_sizes = sorted({
+        str(a.tick_size) for a in audits if a.tick_size is not None
+    })
+    changed = [
+        {
+            "raw_price": str(a.raw_price),
+            "normalized_price": str(a.normalized_price),
+            "price_role": a.price_role,
+            "price_rule_status": a.price_rule_status,
+        }
+        for a in audits
+        if a.normalized_price != a.raw_price
+    ]
+    return {
+        "status": "APPLIED" if applied > 0 else ("MISSING_TICK_RULE" if missing > 0 else "DISPLAY_ONLY"),
+        "tick_rule_applied": applied,
+        "missing_tick_rule": missing,
+        "display_only": display_only,
+        "rule_sources": rule_sources,
+        "tick_sizes": tick_sizes,
+        "changed_prices": changed,
+    }
+
+
+# ---------------------------------------------------------------------------
 # JSON snapshot
 # ---------------------------------------------------------------------------
 
@@ -2372,6 +2511,7 @@ def build_json_snapshot(
     market_price_snapshot_ts_utc: str | None = None,
     writer_instance_id: str | None = None,
     render_id: str | None = None,
+    normalization_audit_by_symbol: dict[str, list[Any]] | None = None,
 ) -> dict[str, Any]:
     now_ts = snapshot_ts or datetime.now(UTC).isoformat()
     relevant_count = sum(1 for c in cards if c.is_relevant)
@@ -2456,6 +2596,9 @@ def build_json_snapshot(
                     "existing_open_orders_summary": c.order_summary.existing_open_orders_summary,
                     "missing_suggested": list(c.order_summary.missing_suggested),
                 },
+                "price_normalization": _build_normalization_audit_json(
+                    normalization_audit_by_symbol.get(c.symbol) if normalization_audit_by_symbol else None
+                ),
             }
             for c in cards
         ],

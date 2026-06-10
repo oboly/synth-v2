@@ -35,11 +35,16 @@ from src.reporting.manual_short_trader_dashboard_v1 import (
     LadderOrderRow,
     build_all_sections,
 )
+from src.market_rules.price_tick_normalization_v1 import (
+    load_tick_rules_from_db,
+    resolve_tick_rule,
+)
 from src.reporting.manual_short_trader_profit_plan_v1 import (
     FibExtContext,
     ProfitPlanCard,
     ReentryContext,
     TargetHistoryCandle,
+    apply_price_tick_normalization,
     build_json_snapshot,
     build_profit_plan_card,
     render_full_html,
@@ -812,6 +817,28 @@ def main() -> int:
         orders_by_symbol,
     )
 
+    # Load market tick rules from DB and apply price normalization to all cards.
+    # DB is the preferred source; static fallback covers markets with no synced row.
+    # broker_private_calls=0 — venue_market is public market metadata.
+    try:
+        _tick_conn = get_connection()
+        try:
+            tick_rules_by_market = load_tick_rules_from_db(
+                _tick_conn,
+                venue=args.venue,
+                markets=list(context.markets),
+            )
+        finally:
+            _tick_conn.close()
+    except Exception:
+        tick_rules_by_market = {}
+
+    cards, normalization_audit = apply_price_tick_normalization(
+        cards,
+        tick_rules_by_market=tick_rules_by_market,
+        venue=args.venue,
+    )
+
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_json.parent.mkdir(parents=True, exist_ok=True)
 
@@ -830,6 +857,7 @@ def main() -> int:
             broker_mode="db_snapshot",
             writer_instance_id=writer_instance_id,
             render_id=snapshot_render_id,
+            normalization_audit_by_symbol=normalization_audit,
         ),
         indent=2,
         sort_keys=True,
