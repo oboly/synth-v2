@@ -14,6 +14,8 @@ FAVICON_OUTPUT_DIR="${OUTPUT_ROOT}/assets/brand/synth"
 PROFILE_OUTPUT_DIR="${OUTPUT_ROOT}/accounts/${PROFILE}"
 NATIVE_SHORT_RUNTIME_DIR="${PROFILE_OUTPUT_DIR}/_runtime/native_short_context_v1"
 NATIVE_SHORT_ROWS_PATH="${NATIVE_SHORT_RUNTIME_DIR}/native_short_fib_context_rows_v1.csv"
+# Pre-built union context from run_linked_profile_dashboard_refresh_once.sh (empty = build per-profile)
+PRE_BUILT_NATIVE_ROWS_PATH="${SYNTH_NATIVE_SHORT_ROWS_PATH:-}"
 LOCK_FILE="${SYNTH_ACCOUNT_WALLET_DASHBOARD_LOCK:-/tmp/synth-account-wallet-dashboard-${PROFILE}.lock}"
 VENUE="${SYNTH_ACCOUNT_WALLET_VENUE:-bitvavo}"
 QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
@@ -76,23 +78,27 @@ else
   phase_finished "refresh_public_prices" "${phase_epoch}"
 fi
 
-phase_epoch="$(date +%s)"
-phase_start "build_native_short_context"
-native_tmp_dir="$(mktemp -d /tmp/native-short-context-${PROFILE}.XXXXXX)"
-native_log_path="$(mktemp /tmp/native-short-context-log-${PROFILE}.XXXXXX)"
-cleanup_native_tmp() {
-  rm -rf "${native_tmp_dir}"
-  rm -f "${native_log_path}"
-}
-trap cleanup_native_tmp EXIT
-python -m src.market_data.run_native_short_fib_context_v1 \
-  --account-profile "${PROFILE}" \
-  --venue "${VENUE}" \
-  --write-files \
-  --output summary \
-  --output-dir "${native_tmp_dir}" | tee "${native_log_path}"
+if [[ -n "${PRE_BUILT_NATIVE_ROWS_PATH}" && -f "${PRE_BUILT_NATIVE_ROWS_PATH}" ]]; then
+  echo "native_short_context=pre_built_union path=${PRE_BUILT_NATIVE_ROWS_PATH}"
+  NATIVE_SHORT_ROWS_PATH="${PRE_BUILT_NATIVE_ROWS_PATH}"
+else
+  phase_epoch="$(date +%s)"
+  phase_start "build_native_short_context"
+  native_tmp_dir="$(mktemp -d /tmp/native-short-context-${PROFILE}.XXXXXX)"
+  native_log_path="$(mktemp /tmp/native-short-context-log-${PROFILE}.XXXXXX)"
+  cleanup_native_tmp() {
+    rm -rf "${native_tmp_dir}"
+    rm -f "${native_log_path}"
+  }
+  trap cleanup_native_tmp EXIT
+  python -m src.market_data.run_native_short_fib_context_v1 \
+    --account-profile "${PROFILE}" \
+    --venue "${VENUE}" \
+    --write-files \
+    --output summary \
+    --output-dir "${native_tmp_dir}" | tee "${native_log_path}"
 
-python - <<'PY' "${native_tmp_dir}"
+  python - <<'PY' "${native_tmp_dir}"
 import csv
 import json
 import sys
@@ -123,34 +129,35 @@ if int(manifest.get("row_count") or 0) != len(rows):
 print(f"native_short_context_validation=ok row_count={len(rows)}")
 PY
 
-phase_finished "build_native_short_context" "${phase_epoch}"
+  phase_finished "build_native_short_context" "${phase_epoch}"
 
-phase_epoch="$(date +%s)"
-phase_start "publish_native_short_context"
-mkdir -p "${PROFILE_OUTPUT_DIR}/_runtime"
-native_prev_dir=""
-native_backup_dir=""
-if [[ -d "${NATIVE_SHORT_RUNTIME_DIR}" ]]; then
-  native_prev_dir="${NATIVE_SHORT_RUNTIME_DIR}"
-  native_backup_dir="${NATIVE_SHORT_RUNTIME_DIR}.bak.$$"
-  mv "${native_prev_dir}" "${native_backup_dir}"
-fi
-if mv "${native_tmp_dir}" "${NATIVE_SHORT_RUNTIME_DIR}"; then
-  if [[ -n "${native_backup_dir}" ]]; then
-    rm -rf "${native_backup_dir}"
+  phase_epoch="$(date +%s)"
+  phase_start "publish_native_short_context"
+  mkdir -p "${PROFILE_OUTPUT_DIR}/_runtime"
+  native_prev_dir=""
+  native_backup_dir=""
+  if [[ -d "${NATIVE_SHORT_RUNTIME_DIR}" ]]; then
+    native_prev_dir="${NATIVE_SHORT_RUNTIME_DIR}"
+    native_backup_dir="${NATIVE_SHORT_RUNTIME_DIR}.bak.$$"
+    mv "${native_prev_dir}" "${native_backup_dir}"
   fi
-else
-  if [[ -n "${native_backup_dir}" && -d "${native_backup_dir}" ]]; then
-    mv "${native_backup_dir}" "${NATIVE_SHORT_RUNTIME_DIR}"
+  if mv "${native_tmp_dir}" "${NATIVE_SHORT_RUNTIME_DIR}"; then
+    if [[ -n "${native_backup_dir}" ]]; then
+      rm -rf "${native_backup_dir}"
+    fi
+  else
+    if [[ -n "${native_backup_dir}" && -d "${native_backup_dir}" ]]; then
+      mv "${native_backup_dir}" "${NATIVE_SHORT_RUNTIME_DIR}"
+    fi
+    echo "native_short_context_publish=failed" >&2
+    exit 1
   fi
-  echo "native_short_context_publish=failed" >&2
-  exit 1
-fi
-phase_finished "publish_native_short_context" "${phase_epoch}"
+  phase_finished "publish_native_short_context" "${phase_epoch}"
 
-if [[ ! -f "${NATIVE_SHORT_ROWS_PATH}" ]]; then
-  echo "native_short_context_publish=missing_rows_path path=${NATIVE_SHORT_ROWS_PATH}" >&2
-  exit 1
+  if [[ ! -f "${NATIVE_SHORT_ROWS_PATH}" ]]; then
+    echo "native_short_context_publish=missing_rows_path path=${NATIVE_SHORT_ROWS_PATH}" >&2
+    exit 1
+  fi
 fi
 
 phase_epoch="$(date +%s)"

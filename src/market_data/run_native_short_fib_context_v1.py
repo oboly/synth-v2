@@ -39,7 +39,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--venue", default=DEFAULT_VENUE)
     parser.add_argument("--symbols", default="", help="Comma-separated symbols. Optional if --account-profile is used.")
-    parser.add_argument("--account-profile", default="", help="Optional profile used only to derive market scope.")
+    parser.add_argument(
+        "--account-profile",
+        default="",
+        help="Optional profile used only to derive market scope. Comma-separated for union builds.",
+    )
     parser.add_argument("--write-files", action="store_true")
     parser.add_argument("--output", choices=("summary", "none"), default="summary")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
@@ -63,11 +67,14 @@ def _load_markets_for_profile(*, account_profile: str, venue: str) -> list[str]:
 
 def _select_symbols(*, explicit_symbols: list[str], account_profile: str, venue: str) -> tuple[list[str], list[str]]:
     markets: list[str] = []
-    if account_profile:
-        markets = _load_markets_for_profile(account_profile=account_profile, venue=venue)
-    scoped_symbols = [market.split("-", 1)[0].upper() for market in markets]
-    merged = sorted({*explicit_symbols, *scoped_symbols})
-    return merged, markets
+    for profile in (p.strip() for p in account_profile.split(",") if p.strip()):
+        markets.extend(_load_markets_for_profile(account_profile=profile, venue=venue))
+    # Deduplicate preserving first-seen order across profiles
+    seen: set[str] = set()
+    unique_markets = [m for m in markets if not (m in seen or seen.add(m))]  # type: ignore[func-returns-value]
+    scoped_symbols = [market.split("-", 1)[0].upper() for market in unique_markets]
+    merged = list(dict.fromkeys(explicit_symbols + scoped_symbols))
+    return merged, unique_markets
 
 
 def _fetch_candles_by_symbol(

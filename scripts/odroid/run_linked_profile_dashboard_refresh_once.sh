@@ -65,6 +65,45 @@ if [[ -z "${linked_profiles}" ]]; then
   exit 0
 fi
 
+# Build union native SHORT context from ALL linked profiles before any per-profile render.
+# This ensures every Profit Plan reads from a complete context and prevents per-profile
+# overwrites that would silently drop markets from earlier profiles.
+SHARED_NATIVE_DIR="${OUTPUT_ROOT}/_runtime/native_short_context_union_v1"
+SHARED_NATIVE_ROWS_PATH="${SHARED_NATIVE_DIR}/native_short_fib_context_rows_v1.csv"
+all_profiles_csv="$(tr '\n' ',' <<< "${linked_profiles}" | sed 's/,$//')"
+UNION_NATIVE_ROWS_PATH=""
+
+echo "PHASE_STARTED phase=build_union_native_short_context profiles=${all_profiles_csv} ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+phase_epoch="$(date +%s)"
+union_native_tmp="$(mktemp -d /tmp/native-short-union.XXXXXX)"
+union_build_ok=0
+
+if python -m src.market_data.run_native_short_fib_context_v1 \
+  --account-profile "${all_profiles_csv}" \
+  --venue "${VENUE}" \
+  --write-files \
+  --output summary \
+  --output-dir "${union_native_tmp}"; then
+  # Atomic publish: move new dir into place
+  mkdir -p "$(dirname "${SHARED_NATIVE_DIR}")"
+  if mv -T "${union_native_tmp}" "${SHARED_NATIVE_DIR}.new" 2>/dev/null && \
+     rm -rf "${SHARED_NATIVE_DIR}" && \
+     mv "${SHARED_NATIVE_DIR}.new" "${SHARED_NATIVE_DIR}"; then
+    union_build_ok=1
+  else
+    rm -rf "${SHARED_NATIVE_DIR}.new" 2>/dev/null || true
+  fi
+fi
+rm -rf "${union_native_tmp}" 2>/dev/null || true
+
+if [[ "${union_build_ok}" == "1" && -f "${SHARED_NATIVE_ROWS_PATH}" ]]; then
+  echo "union_native_short_context=ok path=${SHARED_NATIVE_ROWS_PATH}"
+  UNION_NATIVE_ROWS_PATH="${SHARED_NATIVE_ROWS_PATH}"
+else
+  echo "[WARN] union_native_short_context=MISSING_OR_BUILD_FAILED — per-profile builds will run as fallback"
+fi
+echo "PHASE_FINISHED phase=build_union_native_short_context elapsed_sec=$(( $(date +%s) - phase_epoch )) ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
 profile_count=0
 per_profile_success=0
 per_profile_failure=0
@@ -78,6 +117,7 @@ while IFS= read -r profile_code; do
      SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT="${OUTPUT_ROOT}" \
      SYNTH_ACCOUNT_WALLET_VENUE="${VENUE}" \
      SYNTH_REPO_DIR="${REPO_DIR}" \
+     SYNTH_NATIVE_SHORT_ROWS_PATH="${UNION_NATIVE_ROWS_PATH}" \
      bash "${SCRIPT_DIR}/run_account_wallet_dashboard_render_once.sh" "${profile_code}"; then
     per_profile_success=$(( per_profile_success + 1 ))
     echo "PHASE_FINISHED phase=render_profile profile=${profile_code} result=ok elapsed_sec=$(( $(date +%s) - phase_epoch )) ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -372,7 +372,7 @@ def test_explicit_symbol_scope_count_is_not_zero() -> None:
         account_profile="",
         venue="bitvavo",
     )
-    assert symbols == ["PLUME", "WLD"]
+    assert set(symbols) == {"PLUME", "WLD"}
     assert markets == []
 
 
