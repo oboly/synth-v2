@@ -1518,6 +1518,10 @@ def build_profit_plan_card(
         secondary_state = None
         suggested_manual_attention_label = completed_map_attention_label or suggested_manual_attention_label
 
+    # For completed maps, old re-entry levels are historical only — suppress from ladder.
+    # This prevents LADDER_MISSING on old reload zones after all sell targets have passed.
+    _ladder_buy_zone = () if all_sell_targets_completed else buy_zone
+
     if short_context_coverage_status in {
         "LEGACY_1D_CONTEXT_ONLY",
         "INSUFFICIENT_4H_HISTORY",
@@ -1549,14 +1553,14 @@ def build_profit_plan_card(
         suggested_manual_attention_label = _short_context_display_label(short_context_display_state)
         setup_state = _derive_setup_state(scenario_type)
         event_state = _derive_event_state(primary_state)
-        ladder_states = _derive_ladder_states(buy_zone, target_level_statuses, buy_orders, sell_orders)
+        ladder_states = _derive_ladder_states(_ladder_buy_zone, target_level_statuses, buy_orders, sell_orders)
         is_relevant, relevance_reasons = _derive_relevance_with_reasons(
             event_state, ladder_states, setup_state, force_not_relevant=True
         )
     else:
         setup_state = _derive_setup_state(scenario_type)
         event_state = _derive_event_state(primary_state)
-        ladder_states = _derive_ladder_states(buy_zone, target_level_statuses, buy_orders, sell_orders)
+        ladder_states = _derive_ladder_states(_ladder_buy_zone, target_level_statuses, buy_orders, sell_orders)
         is_relevant, relevance_reasons = _derive_relevance_with_reasons(event_state, ladder_states, setup_state)
 
     return ProfitPlanCard(
@@ -2229,11 +2233,13 @@ def render_plan_card(
         _metric_block("Invalidation", invalidation_line),
     ))
 
-    # Build order rows first (needed for FIX LADDER override)
+    # Build order rows first (needed for FIX LADDER override).
+    # For completed maps, old re-entry levels are historical — omit from actionable order rows.
+    _order_buy_zone = () if card.all_sell_targets_completed else card.buy_zone
     order_rows = build_order_rows(
         card_render_id=card.render_id,
         current_price=card.current_price,
-        buy_zone=card.buy_zone,
+        buy_zone=_order_buy_zone,
         target_level_statuses=card.target_level_statuses,
         buy_orders=buy_orders,
         sell_orders=sell_orders,

@@ -1216,6 +1216,135 @@ def test_ladder_states_not_required_when_map_completed() -> None:
     assert "LADDER_NOT_REQUIRED" in card.ladder_states
 
 
+def _wld_fib_ext_touched() -> FibExtContext:
+    """WLD fib context: 1.272 was touched and rejected, price now below breakout gate.
+    price_band=BELOW_BREAKOUT_GATE ensures ext_1_272_touched_and_rejected branch runs,
+    which produces a non-empty buy_zone from the reentry context."""
+    return FibExtContext(
+        local_reaction_price=Decimal("0.399040"),
+        anchor_end_ts_utc=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
+        ext_1_272=Decimal("0.454438"),
+        ext_1_618=Decimal("0.515600"),
+        ext_2_000=Decimal("0.8000"),
+        breakout_gate=Decimal("0.3800"),
+        price_band="BELOW_BREAKOUT_GATE",
+        ext_1_272_touched_and_rejected=True,
+        retesting_breakout_gate=False,
+    )
+
+
+_COMPLETED_MAP_CANDLES = (
+    TargetHistoryCandle(
+        close_ts_utc=datetime(2026, 6, 3, 16, 0, tzinfo=UTC),
+        high_price=Decimal("0.470000"),
+        low_price=Decimal("0.430000"),
+    ),
+    TargetHistoryCandle(
+        close_ts_utc=datetime(2026, 6, 4, 16, 0, tzinfo=UTC),
+        high_price=Decimal("0.7600"),
+        low_price=Decimal("0.5000"),
+    ),
+)
+
+
+def test_completed_map_with_buy_zone_no_ladder_missing() -> None:
+    """MAP_COMPLETED with a non-empty re-entry zone and no buy orders must NOT produce LADDER_MISSING.
+    Old re-entry levels are historical after all sell targets pass."""
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext_touched(),
+        reentry=_fet_reentry(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+    )
+    assert card.all_sell_targets_completed is True
+    assert len(card.buy_zone) > 0, "Test requires a non-empty buy zone to be meaningful"
+    assert "LADDER_MISSING" not in card.ladder_states
+    assert "LADDER_NOT_REQUIRED" in card.ladder_states
+
+
+def test_completed_map_primary_action_is_map_expired_not_fix_ladder() -> None:
+    """After map completion, displayed action must NOT be FIX LADDER even with missing buy orders."""
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext_touched(),
+        reentry=_fet_reentry(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+    )
+    assert card.all_sell_targets_completed is True
+    assert card.action_label == "WAIT_FOR_NEW_MAP"
+    html = render_plan_card(card, monitor_link="")
+    assert "FIX LADDER" not in html
+
+
+def test_completed_map_order_rows_exclude_old_reentry_buys() -> None:
+    """render_plan_card must not create MISSING buy rows for old re-entry levels on completed maps."""
+    from src.reporting.manual_short_trader_profit_plan_v1 import build_order_rows
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext_touched(),
+        reentry=_fet_reentry(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+    )
+    assert card.all_sell_targets_completed is True
+    assert len(card.buy_zone) > 0, "Test requires non-empty buy zone"
+    # render_plan_card suppresses old buy zone for completed maps
+    _order_buy_zone = () if card.all_sell_targets_completed else card.buy_zone
+    order_rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=_order_buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    missing_buy_rows = [r for r in order_rows if r.side == "buy" and r.state == "MISSING"]
+    assert missing_buy_rows == [], "Old re-entry buy rows must not appear as MISSING after map completion"
+
+
+def test_completed_map_no_active_target_zone() -> None:
+    """After map completion, target_exit_zone must be empty — no upcoming levels remain."""
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext_touched(),
+        reentry=_fet_reentry(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+    )
+    assert card.all_sell_targets_completed is True
+    assert card.target_exit_zone == ()
+    assert card.active_target is None
+
+
+def test_completed_map_historical_buy_zone_retained_on_card() -> None:
+    """buy_zone is retained on the card after completion for historical reference."""
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext_touched(),
+        reentry=_fet_reentry(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+    )
+    assert card.all_sell_targets_completed is True
+    assert len(card.buy_zone) > 0
+
+
+def test_completed_map_scenario_type_and_action() -> None:
+    """MAP_COMPLETED cards must have scenario_type=MAP_COMPLETED and action_label=WAIT_FOR_NEW_MAP."""
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext_touched(),
+        reentry=_fet_reentry(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+    )
+    assert card.scenario_type == "MAP_COMPLETED"
+    assert card.action_label == "WAIT_FOR_NEW_MAP"
+    assert card.primary_state in {"MAP_RECOMPUTE_NEEDED", "POST_EXTENSION_PULLBACK"}
+
+
 def test_reentry_wait_alone_without_orders_is_relevant_due_to_ladder_missing() -> None:
     """REENTRY_SETUP + BETWEEN_LEVELS + no orders → LADDER_MISSING → relevant.
     The card is relevant because orders are missing, not merely because of REENTRY_WAIT."""
