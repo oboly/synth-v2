@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Default no-op cleanup; may be overridden when this script creates temp native context.
+cleanup_native_tmp() {
+  return 0
+}
+
 PROFILE="${1:-}"
 if [[ -z "${PROFILE}" ]]; then
   echo "Usage: $0 <profile>" >&2
