@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -965,6 +966,7 @@ def write_wallet_dashboard(
 ) -> tuple[Path, Path]:
     profile_dir = output_root / "accounts" / payload.profile
     profile_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(profile_dir, 0o755)
     html_path = profile_dir / "wallet.html"
     json_path = profile_dir / "wallet.json"
     html_path.write_text(render_wallet_html(payload), encoding="utf-8")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -192,6 +193,7 @@ def main() -> int:
         return 1
 
     output_html.parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(output_html.parent, 0o755)
     output_html.write_text(
         render_full_html(
             sections,

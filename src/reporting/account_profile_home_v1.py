@@ -10,6 +10,7 @@ Unlinked profiles produce no output — caller must check linkage first.
 from __future__ import annotations
 
 import html as html_module
+import os
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -101,6 +102,7 @@ def write_account_profile_home(
     """
     output_dir = output_root / "accounts" / profile_code
     output_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(output_dir, 0o755)
     output_path = output_dir / "index.html"
     content = render_account_profile_home(
         profile_code=profile_code,
