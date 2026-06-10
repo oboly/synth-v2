@@ -1773,12 +1773,15 @@ def test_format_current_price_line_none_returns_dash() -> None:
     assert result == "—"
 
 
-def test_format_reentry_zone_line_with_distance() -> None:
-    zone = (Decimal("0.675991"), Decimal("0.669810"))
-    result = format_reentry_zone_line(zone, Decimal("0.676000"))
-    assert "€0.675991" in result
-    assert "€0.669810" in result
-    assert "% away" in result
+def test_format_reentry_zone_line_shows_first_last_with_signed_pct() -> None:
+    zone = (Decimal("96.00"), Decimal("92.00"))
+    result = format_reentry_zone_line(zone, Decimal("100.00"))
+    assert "€96.00" in result
+    assert "€92.00" in result
+    assert "(-4.00%)" in result
+    assert "(-8.00%)" in result
+    assert "% away" not in result
+    assert "nearest" not in result
 
 
 def test_format_reentry_zone_line_empty_zone() -> None:
@@ -1786,18 +1789,87 @@ def test_format_reentry_zone_line_empty_zone() -> None:
     assert "No levels loaded" in result
 
 
-def test_format_target_zone_line_with_distance() -> None:
-    zone = (Decimal("0.515600"), Decimal("0.620000"))
-    result = format_target_zone_line(zone, Decimal("3.01"))
-    assert "€0.515600" in result
-    assert "€0.620000" in result
-    assert "nearest" in result
-    assert "3.01" in result
+def test_format_reentry_zone_line_three_levels_hides_middle() -> None:
+    zone = (Decimal("96.00"), Decimal("94.00"), Decimal("92.00"))
+    result = format_reentry_zone_line(zone, Decimal("100.00"))
+    assert "€96.00" in result
+    assert "€92.00" in result
+    assert "€94.00" not in result
+
+
+def test_format_reentry_zone_line_single_level() -> None:
+    zone = (Decimal("96.00"),)
+    result = format_reentry_zone_line(zone, Decimal("100.00"))
+    assert "€96.00" in result
+    assert "(-4.00%)" in result
+    assert "–" not in result
+
+
+def test_format_reentry_zone_line_duplicate_first_last() -> None:
+    zone = (Decimal("96.00"), Decimal("96.00"))
+    result = format_reentry_zone_line(zone, Decimal("100.00"))
+    assert result.count("€96.00") == 1
+
+
+def test_format_reentry_zone_line_no_current_price() -> None:
+    zone = (Decimal("96.00"), Decimal("92.00"))
+    result = format_reentry_zone_line(zone, None)
+    assert "€96.00" in result
+    assert "€92.00" in result
+    assert "%" not in result
+
+
+def test_format_target_zone_line_shows_first_last_with_signed_pct() -> None:
+    zone = (Decimal("104.00"), Decimal("108.00"))
+    result = format_target_zone_line(zone, Decimal("100.00"))
+    assert "€104.00" in result
+    assert "€108.00" in result
+    assert "(+4.00%)" in result
+    assert "(+8.00%)" in result
+    assert "nearest" not in result
+    assert "% away" not in result
+
+
+def test_format_target_zone_line_three_levels_hides_middle() -> None:
+    zone = (Decimal("104.00"), Decimal("106.00"), Decimal("108.00"))
+    result = format_target_zone_line(zone, Decimal("100.00"))
+    assert "€104.00" in result
+    assert "€108.00" in result
+    assert "€106.00" not in result
+
+
+def test_format_target_zone_line_single_level() -> None:
+    zone = (Decimal("104.00"),)
+    result = format_target_zone_line(zone, Decimal("100.00"))
+    assert "€104.00" in result
+    assert "(+4.00%)" in result
+    assert "–" not in result
+
+
+def test_format_target_zone_line_duplicate_first_last() -> None:
+    zone = (Decimal("104.00"), Decimal("104.00"))
+    result = format_target_zone_line(zone, Decimal("100.00"))
+    assert result.count("€104.00") == 1
+
+
+def test_format_target_zone_line_no_current_price() -> None:
+    zone = (Decimal("104.00"), Decimal("108.00"))
+    result = format_target_zone_line(zone, None)
+    assert "€104.00" in result
+    assert "€108.00" in result
+    assert "%" not in result
 
 
 def test_format_target_zone_line_empty_zone() -> None:
     result = format_target_zone_line((), None)
     assert "No upcoming levels" in result
+
+
+def test_rendered_card_zone_fields_have_no_nearest_or_pct_away() -> None:
+    card = _make_card(current_price="100.00", fib_ext=_wld_fib_ext())
+    html = render_plan_card(card)
+    assert "% away" not in html
+    assert "nearest " not in html
 
 
 def test_format_invalidation_line_with_distance() -> None:
@@ -2116,10 +2188,19 @@ def main() -> None:
         test_format_current_price_line_with_age,
         test_format_current_price_line_no_age,
         test_format_current_price_line_none_returns_dash,
-        test_format_reentry_zone_line_with_distance,
+        test_format_reentry_zone_line_shows_first_last_with_signed_pct,
         test_format_reentry_zone_line_empty_zone,
-        test_format_target_zone_line_with_distance,
+        test_format_reentry_zone_line_three_levels_hides_middle,
+        test_format_reentry_zone_line_single_level,
+        test_format_reentry_zone_line_duplicate_first_last,
+        test_format_reentry_zone_line_no_current_price,
+        test_format_target_zone_line_shows_first_last_with_signed_pct,
+        test_format_target_zone_line_three_levels_hides_middle,
+        test_format_target_zone_line_single_level,
+        test_format_target_zone_line_duplicate_first_last,
+        test_format_target_zone_line_no_current_price,
         test_format_target_zone_line_empty_zone,
+        test_rendered_card_zone_fields_have_no_nearest_or_pct_away,
         test_format_invalidation_line_with_distance,
         test_format_invalidation_line_no_price,
         test_rendered_card_has_no_separate_distance_to_target_field,

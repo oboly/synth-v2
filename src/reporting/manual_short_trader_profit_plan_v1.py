@@ -1251,31 +1251,45 @@ def format_current_price_line(
     return price_str
 
 
+def _format_zone_endpoint(price: "Decimal", current_price: "Decimal | None") -> str:
+    """Format one zone price as '€0.96 (-4.00%)' or '€0.96' when current_price is unavailable."""
+    price_str = _eur(price)
+    if current_price is None or current_price <= 0:
+        return price_str
+    pct = (price - current_price) / current_price * Decimal("100")
+    sign = "+" if pct >= 0 else ""
+    return f"{price_str} ({sign}{pct.quantize(Decimal('0.01'))}%)"
+
+
+def _format_zone_range(zone: "tuple[Decimal, ...]", current_price: "Decimal | None") -> str:
+    """Format tuple[0] – tuple[-1] with signed percentages. Single endpoint if length 1 or identical."""
+    if not zone:
+        return ""
+    first = _format_zone_endpoint(zone[0], current_price)
+    if len(zone) == 1 or zone[0] == zone[-1]:
+        return first
+    last = _format_zone_endpoint(zone[-1], current_price)
+    return f"{first} – {last}"
+
+
 def format_reentry_zone_line(
     reload_zone: "tuple[Decimal, ...]",
     current_price: "Decimal | None",
 ) -> str:
-    """Merged reload zone: €0.675991 – €0.669810 · 0.05% away"""
+    """Re-entry zone: €0.675991 (-0.00%) – €0.669810 (-0.91%)"""
     if not reload_zone:
         return "No levels loaded"
-    prices = " – ".join(_eur(p) for p in reload_zone)
-    dist = _distance_to_zone_pct(current_price, reload_zone)
-    if dist is not None:
-        return f"{prices} · {abs(dist):.2f}% away"
-    return prices
+    return _format_zone_range(reload_zone, current_price)
 
 
 def format_target_zone_line(
     target_exit_zone: "tuple[Decimal, ...]",
-    distance_to_target_pct: "Decimal | None",
+    current_price: "Decimal | None",
 ) -> str:
-    """Merged target zone: €0.696000 / €0.710247 / €0.728371 · nearest 3.01%"""
+    """Target zone: €0.696000 (+2.99%) – €0.728371 (+7.77%)"""
     if not target_exit_zone:
         return "No upcoming levels"
-    prices = " / ".join(_eur(p) for p in target_exit_zone)
-    if distance_to_target_pct is not None:
-        return f"{prices} · nearest {abs(distance_to_target_pct):.2f}%"
-    return prices
+    return _format_zone_range(target_exit_zone, current_price)
 
 
 def format_invalidation_line(
@@ -2195,7 +2209,7 @@ def render_plan_card(
     # Merged value + distance fields
     price_line = format_current_price_line(card.current_price, card.current_price_age_min, quote)
     reentry_line = format_reentry_zone_line(card.reload_reentry_zone, card.current_price)
-    target_line = format_target_zone_line(card.target_exit_zone, card.distance_to_target_pct)
+    target_line = format_target_zone_line(card.target_exit_zone, card.current_price)
     invalidation_line = format_invalidation_line(card.invalidation_risk_zone, card.distance_to_invalidation_pct)
 
     metrics_html = "".join((
