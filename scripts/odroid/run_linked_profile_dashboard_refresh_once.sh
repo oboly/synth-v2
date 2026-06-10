@@ -74,9 +74,10 @@ python - <<'PY' || echo "[WARN] 1h_candle_freshness_check=failed — native cont
 from __future__ import annotations
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from dotenv import load_dotenv
 from src.common.db import get_db_connection
-load_dotenv()
+load_dotenv(dotenv_path=Path.cwd() / ".env", override=False)
 conn = get_db_connection()
 try:
     with conn.cursor() as cur:
