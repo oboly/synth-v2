@@ -10,11 +10,10 @@ fi
 REPO_DIR="${SYNTH_REPO_DIR:-$HOME/projects/synth-v2}"
 LOCK_FILE="${SYNTH_ACCOUNT_WALLET_REFRESH_LOCK:-/tmp/synth-account-wallet-refresh-${PROFILE}.lock}"
 VENUE="${SYNTH_ACCOUNT_WALLET_VENUE:-bitvavo}"
-ACCOUNT_ENV_DIR="${SYNTH_ACCOUNT_ENV_DIR:-$HOME/.config/synth/accounts}"
 
 echo "account_wallet_refresh_once starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "profile=${PROFILE}"
-echo "broker_private_calls=1 broker_writes=0 order_submission=0 live_orders=0"
+echo "broker_private_calls=2 broker_writes=0 order_submission=0 live_orders=0"
 echo "decision_gate=none execution_planner=none executor=none"
 
 cd "${REPO_DIR}"
@@ -38,9 +37,11 @@ fi
 
 export SYNTH_BROKER_PRIVATE_READ_PERMISSION="${SYNTH_BROKER_PRIVATE_READ_PERMISSION:-I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA}"
 
+# Credential source: db (default). SYNTH_ACCOUNT_CREDENTIAL_MASTER_KEY must
+# be present in the environment (supplied by EnvironmentFile in the systemd unit).
 python -m src.account.run_account_wallet_refresh_v1 \
   --account-profile "${PROFILE}" \
-  --account-env-dir "${ACCOUNT_ENV_DIR}" \
+  --credential-source db \
   --venue "${VENUE}" \
   --write-db \
   --output summary

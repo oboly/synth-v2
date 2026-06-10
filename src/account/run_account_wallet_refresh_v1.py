@@ -1,3 +1,23 @@
+"""
+run_account_wallet_refresh_v1 — Per-account wallet snapshot refresh.
+
+Default credential source: encrypted DB credential (--credential-source db).
+The active encrypted credential for the profile's primary linked trading account
+is loaded using SYNTH_ACCOUNT_CREDENTIAL_MASTER_KEY and decrypted in memory.
+The plaintext reference is discarded immediately after client construction.
+
+Legacy file-based credentials are only loaded when --credential-source profile-env
+is passed explicitly. This path is never an automatic fallback.
+
+Safety:
+  broker_private_calls=2 (get_balance + get_open_orders)
+  broker_writes=0
+  order_submission=0
+  live_orders=0
+  decision_gate=none
+  execution_planner=none
+  executor=none
+"""
 from __future__ import annotations
 
 import argparse
@@ -18,20 +38,25 @@ from src.account.account_snapshot_models_v1 import (
     WalletOpenOrderRow,
     WalletRefreshResult,
 )
+from src.account.linked_account_resolver_v1 import resolve_primary_linked_account
+from src.account_provisioning.account_credential_loader_v1 import load_account_credential
+from src.account_provisioning.credential_crypto_v1 import load_master_key_from_env
+from src.account_provisioning.credential_repository_v1 import CredentialRepository
 from src.common.db import get_db_connection
 from src.execution.bitvavo_client import BitvavoClient
 
 
 RUNNER_NAME = "account_wallet_refresh_v1"
-RUNNER_VERSION = "0.1"
+RUNNER_VERSION = "0.2"
 DEFAULT_VENUE = "bitvavo"
+# Legacy profile-env path only — never used for the default db credential source.
 CREDENTIAL_BASE_DIR = Path.home() / ".config/synth/accounts"
 
 _PROFILE_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 
 
 # ---------------------------------------------------------------------------
-# Credential loading
+# Profile slug validation
 # ---------------------------------------------------------------------------
 
 def validate_profile_slug(profile: str) -> None:
@@ -43,6 +68,10 @@ def validate_profile_slug(profile: str) -> None:
     if ".." in profile or "/" in profile:
         raise ValueError(f"Path traversal rejected in profile slug: {profile!r}")
 
+
+# ---------------------------------------------------------------------------
+# Legacy profile-env credential loading (explicit --credential-source profile-env only)
+# ---------------------------------------------------------------------------
 
 def get_account_env_dir(account_env_dir: str | Path | None = None) -> Path:
     if account_env_dir is not None:
@@ -58,7 +87,11 @@ def load_profile_credentials(
     *,
     account_env_dir: str | Path | None = None,
 ) -> tuple[str, str]:
-    """Load API key and secret from profile env file. Never returns empty strings."""
+    """Load API key and secret from profile env file. Never returns empty strings.
+
+    Only called when --credential-source profile-env is explicitly set.
+    Never used as a fallback from the default db credential source.
+    """
     validate_profile_slug(profile)
     env_path = get_account_env_dir(account_env_dir) / f"{profile}.env"
     if not env_path.exists():
@@ -97,6 +130,7 @@ def optional_decimal(value: Any) -> Decimal | None:
 
 
 def fetch_trading_account(conn: Any, *, account_code: str, venue: str) -> dict[str, Any]:
+    """Validate trading_account by account_code. Used for profile-env legacy path."""
     sql = (
         "SELECT trading_account_id, account_code, venue, account_mode, enabled, live_trading_enabled "
         "FROM trading_account WHERE account_code = %s AND venue = %s LIMIT 1"
@@ -388,23 +422,37 @@ def parse_args() -> argparse.Namespace:
         "--account-profile",
         required=True,
         metavar="PROFILE",
+        help="Account profile slug [a-z0-9_-].",
+    )
+    parser.add_argument(
+        "--credential-source",
+        choices=["db", "profile-env"],
+        default="db",
         help=(
-            "Account profile slug [a-z0-9_-]. "
-            "Credentials loaded from SYNTH_ACCOUNT_ENV_DIR or ~/.config/synth/accounts/<profile>.env"
+            "Credential source. 'db' (default): load encrypted credential from DB "
+            "using SYNTH_ACCOUNT_CREDENTIAL_MASTER_KEY. "
+            "'profile-env': load from ~/.config/synth/accounts/<profile>.env "
+            "(legacy, explicit only — never an automatic fallback)."
         ),
     )
     parser.add_argument(
         "--account-env-dir",
         default=None,
-        help="Override credential directory. Defaults to SYNTH_ACCOUNT_ENV_DIR or ~/.config/synth/accounts.",
+        help=(
+            "Override credential directory for --credential-source profile-env. "
+            "Ignored when --credential-source db is used."
+        ),
     )
-    parser.add_argument("--venue", default=DEFAULT_VENUE)
     parser.add_argument(
         "--account-code",
         default=None,
         metavar="CODE",
-        help="trading_account.account_code. Defaults to bitvavo_<profile>_read.",
+        help=(
+            "trading_account.account_code. Only used with --credential-source profile-env. "
+            "Ignored for --credential-source db (always resolved from DB)."
+        ),
     )
+    parser.add_argument("--venue", default=DEFAULT_VENUE)
     parser.add_argument(
         "--write-db",
         action="store_true",
@@ -429,31 +477,79 @@ def main() -> int:
         print(f"[error] {exc}", file=sys.stderr)
         return 1
 
-    account_code = args.account_code or f"bitvavo_{args.account_profile}_read"
-
-    try:
-        api_key, api_secret = load_profile_credentials(
-            args.account_profile,
-            account_env_dir=args.account_env_dir,
-        )
-    except (FileNotFoundError, ValueError) as exc:
-        print(f"[error] credential load failed: {exc}", file=sys.stderr)
-        return 1
-
-    client = BitvavoClient(
-        api_key=api_key,
-        api_secret=api_secret,
-        timeout_seconds=args.timeout_seconds,
-    )
-
     conn = get_db_connection()
     try:
-        account = fetch_trading_account(conn, account_code=account_code, venue=args.venue)
-        trading_account_id = int(account["trading_account_id"])
+        if args.credential_source == "db":
+            # Load master key from environment — never from profile .env files.
+            try:
+                _, master_key_bytes = load_master_key_from_env()
+            except ValueError as exc:
+                print(f"[error] master key: {exc}", file=sys.stderr)
+                return 1
+
+            # Resolve profile → primary linked trading account.
+            try:
+                identity = resolve_primary_linked_account(
+                    conn,
+                    profile_code=args.account_profile,
+                    venue=args.venue,
+                )
+            except ValueError as exc:
+                print(f"[error] account resolution: {exc}", file=sys.stderr)
+                return 1
+
+            trading_account_id = identity.trading_account_id
+            account_code = identity.account_code
+
+            # Decrypt the stored active credential.
+            try:
+                plain = load_account_credential(
+                    conn,
+                    trading_account_id=trading_account_id,
+                    venue=args.venue,
+                    master_key_bytes=master_key_bytes,
+                    cred_repo_factory=CredentialRepository,
+                )
+            except ValueError as exc:
+                print(f"[error] credential load: {exc}", file=sys.stderr)
+                return 1
+
+            client = BitvavoClient(
+                api_key=plain.api_key,
+                api_secret=plain.api_secret,
+                timeout_seconds=args.timeout_seconds,
+            )
+            del plain  # discard plaintext reference immediately
+
+        else:
+            # profile-env: explicit legacy path only.
+            account_code = args.account_code or f"bitvavo_{args.account_profile}_read"
+            try:
+                api_key, api_secret = load_profile_credentials(
+                    args.account_profile,
+                    account_env_dir=args.account_env_dir,
+                )
+            except (FileNotFoundError, ValueError) as exc:
+                print(f"[error] credential load failed: {exc}", file=sys.stderr)
+                return 1
+
+            try:
+                account = fetch_trading_account(conn, account_code=account_code, venue=args.venue)
+                trading_account_id = int(account["trading_account_id"])
+            except RuntimeError as exc:
+                print(f"[error] {exc}", file=sys.stderr)
+                return 1
+
+            client = BitvavoClient(
+                api_key=api_key,
+                api_secret=api_secret,
+                timeout_seconds=args.timeout_seconds,
+            )
 
         print(f"runner={RUNNER_NAME} version={RUNNER_VERSION}")
         print(f"profile={args.account_profile} account_code={account_code}")
         print(f"trading_account_id={trading_account_id} venue={args.venue}")
+        print(f"credential_source={args.credential_source}")
         print("[INFO] private read-only; no broker writes; no order submission")
 
         try:
@@ -529,6 +625,7 @@ def main() -> int:
                 print(f"order_snapshot_writes={order_writes}")
             else:
                 print("[DRY_RUN] --write-db not set; no DB writes performed")
+            print("broker_private_calls=2")
             print("broker_writes=0")
             print("order_submission=0")
             print("executor=none")

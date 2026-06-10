@@ -7,6 +7,15 @@ Type=oneshot
 WorkingDirectory=/home/theone/projects/synth-v2
 ExecStart=/home/theone/projects/synth-v2/scripts/odroid/run_account_wallet_refresh_once.sh %i
 
+# Supply SYNTH_ACCOUNT_CREDENTIAL_MASTER_KEY for encrypted credential decryption.
+# This file is also used by the web provisioning service. Never print its contents.
+EnvironmentFile=/home/theone/.config/synth/web-auth.env
+
+# Security hardening
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
 # Example instances:
-#   synth-account-wallet-refresh@joost.service
-#   synth-account-wallet-refresh@hugo.service
+#   systemctl start synth-account-wallet-refresh@joost.service
+#   systemctl start synth-account-wallet-refresh@hugo.service
