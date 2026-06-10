@@ -26,9 +26,12 @@ Safety:
 from __future__ import annotations
 
 import dataclasses
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+
+_LOGGER = logging.getLogger(__name__)
 
 from src.account_provisioning.account_credential_loader_v1 import load_account_credential
 from src.account_provisioning.account_provisioning_service_v1 import (
@@ -56,8 +59,29 @@ def _try_render_activation(
     try:
         activation_renderer(profile_code=profile_code, venue=venue, output_root=output_root)
         return True
-    except Exception:
+    except _ActivationStageError as exc:
+        _LOGGER.error(
+            "Activation render failed: profile=%s stage=%s exc_type=%s",
+            profile_code,
+            exc.stage,
+            type(exc.__cause__).__name__ if exc.__cause__ else "unknown",
+        )
         return False
+    except Exception as exc:
+        _LOGGER.error(
+            "Activation render failed: profile=%s stage=unknown exc_type=%s",
+            profile_code,
+            type(exc).__name__,
+        )
+        return False
+
+
+class _ActivationStageError(RuntimeError):
+    """Raised when a named activation stage fails. Never includes secrets."""
+
+    def __init__(self, stage: str, profile_code: str) -> None:
+        super().__init__(f"ACTIVATION_STAGE_FAILED stage={stage} profile={profile_code}")
+        self.stage = stage
 
 
 def _run_activation(
@@ -231,6 +255,11 @@ def _default_activation_renderer(*, profile_code: str, venue: str, output_root: 
     All files are written with mode 0644.
     Uses its own DB connections (get_connection from src.common.db).
     Handles missing fib/zone data gracefully — renders empty-state pages.
+
+    Each stage is individually guarded. Failures are logged with exc_type and stage
+    name — no API keys, secrets, or raw broker payloads are ever logged.
+    If any required stage fails, raises _ActivationStageError so the caller sets
+    refresh_pending=True with a diagnostic code.
     """
     import json
     import uuid
@@ -266,26 +295,42 @@ def _default_activation_renderer(*, profile_code: str, venue: str, output_root: 
     account_code = access.trading_account_stable_ref
     display_timezone = access.display_timezone
 
+    failed_stages: list[str] = []
+
     # 1. Wallet dashboard (wallet.html + wallet.json)
-    _, wallet_html, wallet_json = load_and_write_wallet_dashboard(
-        profile=profile_code,
-        account_code=account_code,
-        venue=venue,
-        display_timezone=display_timezone,
-        output_root=output_root,
-    )
-    wallet_html.chmod(0o644)
-    wallet_json.chmod(0o644)
+    try:
+        _, wallet_html, wallet_json = load_and_write_wallet_dashboard(
+            profile=profile_code,
+            account_code=account_code,
+            venue=venue,
+            display_timezone=display_timezone,
+            output_root=output_root,
+        )
+        wallet_html.chmod(0o644)
+        wallet_json.chmod(0o644)
+    except Exception as exc:
+        _LOGGER.error(
+            "Activation render: stage=wallet profile=%s exc_type=%s exc=%s",
+            profile_code, type(exc).__name__, exc,
+        )
+        failed_stages.append("wallet")
 
     # 2. Profile home (index.html)
-    index_html = write_account_profile_home(
-        profile_code=profile_code,
-        venue=venue,
-        account_code=account_code,
-        display_timezone=display_timezone,
-        output_root=output_root,
-    )
-    index_html.chmod(0o644)
+    try:
+        index_html = write_account_profile_home(
+            profile_code=profile_code,
+            venue=venue,
+            account_code=account_code,
+            display_timezone=display_timezone,
+            output_root=output_root,
+        )
+        index_html.chmod(0o644)
+    except Exception as exc:
+        _LOGGER.error(
+            "Activation render: stage=index profile=%s exc_type=%s exc=%s",
+            profile_code, type(exc).__name__, exc,
+        )
+        failed_stages.append("index")
 
     # Load account scope once — shared between open-orders-monitor and profit-plan.
     context = load_account_scoped_short_dashboard_context(
@@ -308,84 +353,115 @@ def _default_activation_renderer(*, profile_code: str, venue: str, output_root: 
     )
 
     # 3. Open-orders-monitor (open-orders-monitor.html + open-orders-monitor.json)
-    oom_html, oom_json = default_page_paths(
-        output_root=output_root, profile=profile_code, page_stem="open-orders-monitor"
-    )
-    oom_html.parent.mkdir(parents=True, exist_ok=True)
-    oom_html.write_text(
-        oom_render_html(sections, broker_mode="db_snapshot", nav_html=nav_html),
-        encoding="utf-8",
-    )
-    oom_html.chmod(0o644)
-    oom_json.write_text(
-        json.dumps(oom_build_json(sections, broker_mode="db_snapshot"), indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
-    oom_json.chmod(0o644)
+    try:
+        oom_html, oom_json = default_page_paths(
+            output_root=output_root, profile=profile_code, page_stem="open-orders-monitor"
+        )
+        oom_html.parent.mkdir(parents=True, exist_ok=True)
+        oom_html.write_text(
+            oom_render_html(sections, broker_mode="db_snapshot", nav_html=nav_html),
+            encoding="utf-8",
+        )
+        oom_html.chmod(0o644)
+        oom_json.write_text(
+            json.dumps(
+                oom_build_json(
+                    sections,
+                    profile=profile_code,
+                    account_code=account_code,
+                    trading_account_id=context.trading_account_id,
+                    venue=venue,
+                    market_count=len(context.markets),
+                ),
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        oom_json.chmod(0o644)
+    except Exception as exc:
+        _LOGGER.error(
+            "Activation render: stage=open-orders-monitor profile=%s exc_type=%s exc=%s",
+            profile_code, type(exc).__name__, exc,
+        )
+        failed_stages.append("open-orders-monitor")
 
     # 4. Profit plan (profit-plan.html + profit-plan.json)
-    render_id = str(uuid.uuid4())
-    writer_id = str(uuid.uuid4())
+    try:
+        render_id = str(uuid.uuid4())
+        writer_id = str(uuid.uuid4())
 
-    zone_contexts = load_zone_contexts(
-        markets=list(context.markets),
-        prices=prices,
-        swing_anchors={},
-        recent_lows={},
-        native_short_rows_path=Path(_NATIVE_SHORT_ROWS),
-        fib_map_rows_path=DEFAULT_FIB_MAP_ROWS,
-    )
-    history = fetch_market_target_history_by_symbol(
-        venue=venue,
-        activation_ts_by_symbol=zone_contexts.activation_ts_by_symbol,
-    )
-    orders_by_symbol = {
-        section.symbol: (section.buy_orders, section.sell_orders)
-        for section in sections
-    }
-    cards = build_cards(
-        list(context.markets),
-        prices,
-        price_status,
-        price_age_min,
-        zone_contexts.input_status_by_symbol,
-        zone_contexts.coverage_status_by_symbol,
-        zone_contexts.display_state_by_symbol,
-        zone_contexts.fib_ext_by_symbol,
-        zone_contexts.reentry_by_symbol,
-        history,
-        orders_by_symbol,
-    )
+        zone_contexts = load_zone_contexts(
+            markets=list(context.markets),
+            prices=prices,
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=Path(_NATIVE_SHORT_ROWS),
+            fib_map_rows_path=DEFAULT_FIB_MAP_ROWS,
+        )
+        history = fetch_market_target_history_by_symbol(
+            venue=venue,
+            activation_ts_by_symbol=zone_contexts.activation_ts_by_symbol,
+        )
+        orders_by_symbol = {
+            section.symbol: (section.buy_orders, section.sell_orders)
+            for section in sections
+        }
+        cards = build_cards(
+            list(context.markets),
+            prices,
+            price_status,
+            price_age_min,
+            zone_contexts.input_status_by_symbol,
+            zone_contexts.coverage_status_by_symbol,
+            zone_contexts.display_state_by_symbol,
+            zone_contexts.fib_ext_by_symbol,
+            zone_contexts.reentry_by_symbol,
+            history,
+            orders_by_symbol,
+        )
 
-    pp_html, pp_json = default_page_paths(
-        output_root=output_root, profile=profile_code, page_stem="profit-plan"
-    )
-    pp_html.parent.mkdir(parents=True, exist_ok=True)
-    pp_html.write_text(
-        pp_render_html(
-            cards,
-            broker_mode="db_snapshot",
-            monitor_link=public_page_href(profile=profile_code, page_stem="open-orders-monitor"),
-            nav_html=nav_html,
-            storage_scope=profile_code,
-            render_id=render_id,
-            writer_instance_id=writer_id,
-        ),
-        encoding="utf-8",
-    )
-    pp_html.chmod(0o644)
-    pp_json.write_text(
-        json.dumps(
-            pp_build_json(
+        pp_html, pp_json = default_page_paths(
+            output_root=output_root, profile=profile_code, page_stem="profit-plan"
+        )
+        pp_html.parent.mkdir(parents=True, exist_ok=True)
+        pp_html.write_text(
+            pp_render_html(
                 cards,
                 broker_mode="db_snapshot",
-                writer_instance_id=writer_id,
+                monitor_link=public_page_href(profile=profile_code, page_stem="open-orders-monitor"),
+                nav_html=nav_html,
+                storage_scope=profile_code,
                 render_id=render_id,
+                writer_instance_id=writer_id,
             ),
-            indent=2,
-            sort_keys=True,
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-    pp_json.chmod(0o644)
+            encoding="utf-8",
+        )
+        pp_html.chmod(0o644)
+        pp_json.write_text(
+            json.dumps(
+                pp_build_json(
+                    cards,
+                    broker_mode="db_snapshot",
+                    writer_instance_id=writer_id,
+                    render_id=render_id,
+                ),
+                indent=2,
+                sort_keys=True,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        pp_json.chmod(0o644)
+    except Exception as exc:
+        _LOGGER.error(
+            "Activation render: stage=profit-plan profile=%s exc_type=%s exc=%s",
+            profile_code, type(exc).__name__, exc,
+        )
+        failed_stages.append("profit-plan")
+
+    if failed_stages:
+        raise _ActivationStageError(
+            stage=",".join(failed_stages),
+            profile_code=profile_code,
+        )

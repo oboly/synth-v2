@@ -228,6 +228,77 @@ def _fetch_open_order_rows(
     return orders
 
 
+def _fetch_latest_broker_order_snapshot_ts(
+    conn: Any,
+    *,
+    trading_account_id: int,
+    venue: str,
+) -> datetime | None:
+    sql = """
+    SELECT MAX(snapshot_ts_utc) AS latest_snapshot_ts_utc
+    FROM broker_order_snapshot
+    WHERE trading_account_id = %s
+      AND venue = %s
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (trading_account_id, venue))
+        row = cur.fetchone()
+    return None if not row else row.get("latest_snapshot_ts_utc")
+
+
+def _fetch_order_rows_from_broker_snapshot(
+    conn: Any,
+    *,
+    trading_account_id: int,
+    venue: str,
+    snapshot_ts_utc: datetime | None,
+) -> list[BrokerOrderRow]:
+    """Fall back to broker_order_snapshot when account_open_order_snapshot is empty (first provisioning)."""
+    if snapshot_ts_utc is None:
+        return []
+    sql = """
+    SELECT
+        symbol AS market,
+        broker_order_id,
+        side,
+        order_type,
+        limit_price_eur,
+        quantity_base,
+        filled_quantity_base,
+        remaining_quantity_base,
+        broker_status
+    FROM broker_order_snapshot
+    WHERE trading_account_id = %s
+      AND venue = %s
+      AND snapshot_ts_utc = %s
+    ORDER BY symbol, side, limit_price_eur, broker_order_id
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (trading_account_id, venue, snapshot_ts_utc))
+        rows = list(cur.fetchall())
+    orders: list[BrokerOrderRow] = []
+    for row in rows:
+        limit_price = to_decimal(row.get("limit_price_eur")) or Decimal("0")
+        amount = to_decimal(row.get("quantity_base")) or Decimal("0")
+        filled = to_decimal(row.get("filled_quantity_base")) or Decimal("0")
+        remaining = to_decimal(row.get("remaining_quantity_base")) or Decimal("0")
+        orders.append(
+            BrokerOrderRow(
+                order_id=str(row.get("broker_order_id") or ""),
+                market=str(row.get("market") or "").upper(),
+                side=str(row.get("side") or "").lower(),
+                order_type=str(row.get("order_type") or "limit").lower(),
+                limit_price=limit_price,
+                amount=amount,
+                filled_amount=filled,
+                remaining_amount=remaining,
+                status=str(row.get("broker_status") or ""),
+                created_at_ms=None,
+            )
+        )
+    return orders
+
+
 def _fetch_account_asset_rows(
     conn: Any,
     *,
@@ -277,7 +348,9 @@ def build_account_market_scope(
             positive_balance_markets.add(f"{symbol}-{QUOTE_CURRENCY}")
 
     open_order_markets = {str(row.market or "").upper() for row in orders if str(row.market or "").strip()}
-    included_markets: set[str] = set(open_order_markets)
+    # Positive balance markets and open order markets are always included regardless
+    # of account_asset rows — account_asset is a preference overlay, not a prerequisite.
+    included_markets: set[str] = set(open_order_markets) | positive_balance_markets
 
     for raw in account_asset_rows:
         market = str(raw.get("market") or "").upper()
@@ -287,14 +360,13 @@ def build_account_market_scope(
         is_hidden = bool(raw.get("is_hidden"))
         is_visible = bool(raw.get("is_visible"))
         source = str(raw.get("source") or "").upper()
-        has_positive_balance = market in positive_balance_markets
 
         if has_open_order:
             included_markets.add(market)
             continue
         if is_hidden:
             continue
-        if is_visible or has_positive_balance or source == "MANUAL_ADD":
+        if is_visible or source == "MANUAL_ADD":
             included_markets.add(market)
 
     return sorted(included_markets)
@@ -321,18 +393,36 @@ def load_account_scoped_short_dashboard_context(
             trading_account_id=trading_account_id,
             venue=venue,
         )
+        _order_source = "account_open_order_snapshot"
+        if latest_order_snapshot_ts_utc is None:
+            broker_ts = _fetch_latest_broker_order_snapshot_ts(
+                conn,
+                trading_account_id=trading_account_id,
+                venue=venue,
+            )
+            if broker_ts is not None:
+                latest_order_snapshot_ts_utc = broker_ts
+                _order_source = "broker_order_snapshot"
         balances = _fetch_balance_rows(
             conn,
             trading_account_id=trading_account_id,
             venue=venue,
             snapshot_ts_utc=latest_balance_snapshot_ts_utc,
         )
-        orders = _fetch_open_order_rows(
-            conn,
-            trading_account_id=trading_account_id,
-            venue=venue,
-            snapshot_ts_utc=latest_order_snapshot_ts_utc,
-        )
+        if _order_source == "broker_order_snapshot":
+            orders = _fetch_order_rows_from_broker_snapshot(
+                conn,
+                trading_account_id=trading_account_id,
+                venue=venue,
+                snapshot_ts_utc=latest_order_snapshot_ts_utc,
+            )
+        else:
+            orders = _fetch_open_order_rows(
+                conn,
+                trading_account_id=trading_account_id,
+                venue=venue,
+                snapshot_ts_utc=latest_order_snapshot_ts_utc,
+            )
         account_asset_rows = _fetch_account_asset_rows(
             conn,
             trading_account_id=trading_account_id,
