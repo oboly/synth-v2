@@ -334,6 +334,45 @@ def _detect_trigger(
 # Main builder
 # ---------------------------------------------------------------------------
 
+def build_fib_navigation_map_from_anchor(
+    *,
+    anchor_low: Decimal,
+    anchor_high: Decimal,
+    current_price: Decimal,
+    direction: str = DIRECTION_BULLISH,
+    prior_map_state: str = MAP_STATE_EXHAUSTED,
+    computed_at_utc: datetime,
+) -> FibNavigationMap:
+    """
+    Build a FibNavigationMap directly from a known anchor without candle detection.
+
+    Used when the anchor is already known (e.g., from native context) and candle
+    detection is not needed or available. Sets map_state=EMERGENCY_REBUILT when
+    prior_map_state is EXHAUSTED.
+    """
+    if anchor_high <= anchor_low or anchor_low <= 0:
+        raise ValueError(
+            f"Invalid anchor for fib nav map: low={anchor_low}, high={anchor_high}"
+        )
+    retrace, ext = _build_levels(anchor_low, anchor_high, direction)
+    trigger = TRIGGER_MAP_EXHAUSTED if prior_map_state == MAP_STATE_EXHAUSTED else TRIGGER_MAP_MISSING
+    map_state = MAP_STATE_EMERGENCY_REBUILT if prior_map_state == MAP_STATE_EXHAUSTED else MAP_STATE_FRESH
+    return FibNavigationMap(
+        anchor_low=anchor_low,
+        anchor_high=anchor_high,
+        direction=direction,
+        leg_size=anchor_high - anchor_low,
+        current_price=current_price,
+        retracement_levels=retrace,
+        extension_levels=ext,
+        map_state=map_state,
+        rebuild_trigger=trigger,
+        confidence="HIGH",
+        anchor_candle_count=0,
+        computed_at_utc=computed_at_utc,
+    )
+
+
 def build_fib_navigation_map(
     *,
     candles: list[FibNavCandle],

@@ -7,7 +7,7 @@ import os
 import sys
 import tempfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -39,8 +39,14 @@ from src.market_rules.price_tick_normalization_v1 import (
     load_tick_rules_from_db,
     resolve_tick_rule,
 )
+from src.market_data.fib_navigation_map_v1 import (
+    DIRECTION_BULLISH,
+    MAP_STATE_EXHAUSTED,
+    build_fib_navigation_map_from_anchor,
+)
 from src.reporting.manual_short_trader_profit_plan_v1 import (
     FibExtContext,
+    FibNavContext,
     ProfitPlanCard,
     ReentryContext,
     TargetHistoryCandle,
@@ -76,6 +82,7 @@ class ZoneContextLoadResult:
     source_name: str
     source_missing: bool
     native_source_missing: bool = False
+    nav_context_by_symbol: dict[str, FibNavContext] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -357,6 +364,59 @@ def _build_reentry_context(
     )
 
 
+def _build_nav_context_from_native_row(
+    native_row: "Any",
+    current_price: Decimal | None,
+    now_utc: datetime,
+) -> FibNavContext | None:
+    """
+    Build a FibNavContext from a MAP_COMPLETED native row using its anchor.
+
+    Only called when active_target_levels is empty (all old targets passed).
+    Uses the known anchor directly — no candle detection required.
+    """
+    anchor_low = native_row.anchor_low_price
+    anchor_high = native_row.anchor_high_price
+    if anchor_low is None or anchor_high is None or anchor_high <= anchor_low or anchor_low <= 0:
+        return None
+    price = current_price or native_row.latest_primary_close_price
+    if price is None or price <= 0:
+        return None
+    try:
+        nav_map = build_fib_navigation_map_from_anchor(
+            anchor_low=anchor_low,
+            anchor_high=anchor_high,
+            current_price=price,
+            direction=DIRECTION_BULLISH,
+            prior_map_state=MAP_STATE_EXHAUSTED,
+            computed_at_utc=now_utc,
+        )
+    except Exception:
+        return None
+    nav_sell = tuple(sorted(
+        lvl.price for lvl in nav_map.extension_levels
+        if lvl.price > price
+    ))
+    nav_buy = tuple(sorted(
+        (lvl.price for lvl in nav_map.retracement_levels if lvl.price < price),
+        reverse=True,
+    ))
+    r1000 = next(
+        (lvl.price for lvl in nav_map.retracement_levels if lvl.label == "r_1000"),
+        None,
+    )
+    return FibNavContext(
+        nav_sell_levels=nav_sell,
+        nav_buy_levels=nav_buy,
+        nav_invalidation=r1000,
+        map_state=nav_map.map_state,
+        rebuild_trigger=nav_map.rebuild_trigger,
+        anchor_low=anchor_low,
+        anchor_high=anchor_high,
+        direction=DIRECTION_BULLISH,
+    )
+
+
 def load_zone_contexts(
     *,
     markets: list[str],
@@ -365,7 +425,9 @@ def load_zone_contexts(
     recent_lows: dict[str, list[str]],
     native_short_rows_path: Path,
     fib_map_rows_path: Path,
+    now_utc: datetime | None = None,
 ) -> ZoneContextLoadResult:
+    _now = now_utc or datetime.now(UTC)
     fib_rows_by_symbol, source_missing = load_fib_map_rows(fib_map_rows_path)
     native_rows_by_symbol, native_source_missing = load_native_short_context_rows(native_short_rows_path)
     fib_ext_by_symbol: dict[str, FibExtContext] = {}
@@ -374,6 +436,7 @@ def load_zone_contexts(
     input_status_by_symbol: dict[str, str] = {}
     coverage_status_by_symbol: dict[str, str] = {}
     display_state_by_symbol: dict[str, str] = {}
+    nav_context_by_symbol: dict[str, FibNavContext] = {}
 
     for market in markets:
         symbol = market.split("-")[0].upper()
@@ -461,6 +524,14 @@ def load_zone_contexts(
                         deepest_touched_label=None,
                         missed_main_rebuy_by_pct=None,
                     )
+                    # Build nav context when the primary map is exhausted (all targets passed).
+                    # active_target_levels==() signals MAP_COMPLETED in the native context lifecycle.
+                    if not native_row.active_target_levels:
+                        nav_ctx = _build_nav_context_from_native_row(
+                            native_row, current_price, _now
+                        )
+                        if nav_ctx is not None:
+                            nav_context_by_symbol[symbol] = nav_ctx
                 continue
             # Partial native row (not AVAILABLE): retain 4h map values as reference-only
             # and skip legacy path. Legacy must not overwrite partial native context.
@@ -568,6 +639,7 @@ def load_zone_contexts(
         source_name="fibo_target_map_rows_v1.csv",
         source_missing=source_missing,
         native_source_missing=native_source_missing,
+        nav_context_by_symbol=nav_context_by_symbol,
     )
 
 
@@ -652,7 +724,9 @@ def build_cards(
     reentry_by_symbol: dict[str, ReentryContext],
     history_by_symbol: dict[str, MarketTargetHistory],
     orders_by_symbol: dict[str, tuple[tuple[LadderOrderRow, ...], tuple[LadderOrderRow, ...]]],
+    nav_context_by_symbol: dict[str, FibNavContext] | None = None,
 ) -> list[ProfitPlanCard]:
+    _nav = nav_context_by_symbol or {}
     cards: list[ProfitPlanCard] = []
     for market in markets:
         symbol = market.split("-")[0].upper()
@@ -677,6 +751,7 @@ def build_cards(
                 history_high_since_activation=None if history is None else history.high_since_activation,
                 history_low_since_activation=None if history is None else history.low_since_activation,
                 history_candles_since_activation=() if history is None else history.candles_since_activation,
+                fib_nav_context=_nav.get(symbol),
             )
         )
     return cards
@@ -817,6 +892,7 @@ def main() -> int:
         zone_contexts.reentry_by_symbol,
         history_by_symbol,
         orders_by_symbol,
+        nav_context_by_symbol=zone_contexts.nav_context_by_symbol,
     )
 
     # Load market tick rules from DB and apply price normalization to all cards.
