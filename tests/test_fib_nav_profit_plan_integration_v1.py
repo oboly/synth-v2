@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import ast
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from src.market_data.fib_navigation_map_v1 import (
+    DIRECTION_BULLISH,
     MAP_STATE_EMERGENCY_REBUILT,
     TRIGGER_MAP_EXHAUSTED,
+    FibNavCandle,
+    PriorMapMeta,
     build_fib_navigation_map_from_anchor,
 )
 from src.reporting.manual_short_trader_profit_plan_v1 import (
@@ -21,6 +24,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     build_json_snapshot,
     build_profit_plan_card,
 )
+from src.reporting import run_manual_short_trader_profit_plan_v1 as profit_plan_runner
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +53,78 @@ _SXT_COMPLETED_FIB_EXT = FibExtContext(
 
 # History high that exceeds all ext levels → triggers MAP_COMPLETED detection
 _SXT_HISTORY_HIGH = Decimal("0.014000")
+
+
+def _make_sxt_candles_for_pivot_detection() -> list[FibNavCandle]:
+    """11 1h-equivalent candles with detectable pivot at low=0.006571, high=0.010127.
+
+    Index 3 = pivot low (lowest in span-3 window).
+    Index 7 = pivot high (highest in span-3 window).
+    """
+    now = _NOW
+    base_ts = now - timedelta(hours=10)
+    rows = [
+        # pre-swing candles
+        (Decimal("0.008000"), Decimal("0.007500")),   # 0
+        (Decimal("0.007800"), Decimal("0.007200")),   # 1
+        (Decimal("0.007500"), Decimal("0.006900")),   # 2
+        (Decimal("0.007300"), Decimal("0.006571")),   # 3 ← pivot low
+        (Decimal("0.008200"), Decimal("0.007100")),   # 4
+        (Decimal("0.009000"), Decimal("0.008100")),   # 5
+        (Decimal("0.009800"), Decimal("0.008900")),   # 6
+        (Decimal("0.010127"), Decimal("0.009400")),   # 7 ← pivot high
+        (Decimal("0.009900"), Decimal("0.009200")),   # 8
+        (Decimal("0.009700"), Decimal("0.009100")),   # 9
+        (Decimal("0.009700"), Decimal("0.009400")),   # 10 (current ~0.009588)
+    ]
+    return [
+        FibNavCandle(
+            close_ts_utc=base_ts + timedelta(hours=i),
+            open_price=(h + l) / Decimal("2"),
+            high_price=h,
+            low_price=l,
+            close_price=(h + l) / Decimal("2"),
+        )
+        for i, (h, l) in enumerate(rows)
+    ]
+
+
+def _make_sxt_history_candles() -> tuple[TargetHistoryCandle, ...]:
+    """TargetHistoryCandle version of the same SXT candle set."""
+    now = _NOW
+    base_ts = now - timedelta(hours=10)
+    rows = [
+        (Decimal("0.008000"), Decimal("0.007500")),
+        (Decimal("0.007800"), Decimal("0.007200")),
+        (Decimal("0.007500"), Decimal("0.006900")),
+        (Decimal("0.007300"), Decimal("0.006571")),   # pivot low
+        (Decimal("0.008200"), Decimal("0.007100")),
+        (Decimal("0.009000"), Decimal("0.008100")),
+        (Decimal("0.009800"), Decimal("0.008900")),
+        (Decimal("0.010127"), Decimal("0.009400")),   # pivot high
+        (Decimal("0.009900"), Decimal("0.009200")),
+        (Decimal("0.009700"), Decimal("0.009100")),
+        (Decimal("0.009700"), Decimal("0.009400")),
+    ]
+    return tuple(
+        TargetHistoryCandle(
+            close_ts_utc=base_ts + timedelta(hours=i),
+            high_price=h,
+            low_price=l,
+        )
+        for i, (h, l) in enumerate(rows)
+    )
+
+
+def _make_sxt_prior_meta() -> PriorMapMeta:
+    return PriorMapMeta(
+        map_state="EXHAUSTED",
+        anchor_low=Decimal("0.005000"),  # OLD anchor — different from candle swing
+        anchor_high=Decimal("0.009000"),  # OLD anchor high
+        direction=DIRECTION_BULLISH,
+        top_extension_price=Decimal("0.018000"),
+        candle_ts_utc=datetime(2026, 1, 1, tzinfo=UTC),
+    )
 
 
 def _make_nav_map() -> "Any":
@@ -121,9 +197,7 @@ def test_exhausted_targets_plus_nav_context_populates_target_exit_zone() -> None
     assert card.fib_nav_context is not None
     assert card.fib_nav_context.map_state == MAP_STATE_EMERGENCY_REBUILT
     assert card.fib_nav_context.rebuild_trigger == TRIGGER_MAP_EXHAUSTED
-    # target_exit_zone must be non-empty — nav levels populated it
     assert len(card.target_exit_zone) > 0, "target_exit_zone must not be empty with nav context"
-    # All levels should be above current price
     for lvl in card.target_exit_zone:
         assert lvl > _SXT_CURRENT, f"Nav sell level {lvl} should be above current {_SXT_CURRENT}"
 
@@ -216,7 +290,6 @@ def test_json_snapshot_existing_fields_unchanged() -> None:
         "broker_writes", "order_submission",
     )
     for field in required_fields:
-        # broker_writes etc. are top-level
         if field in ("broker_writes", "order_submission"):
             assert field in snapshot, f"Top-level field missing: {field}"
         else:
@@ -337,6 +410,214 @@ def test_from_anchor_rejects_invalid_anchor() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 6. Candle-driven rebuild path (primary)
+# ---------------------------------------------------------------------------
+
+def test_candle_driven_rebuild_detects_sxt_swing_not_old_anchor() -> None:
+    """Primary path: candle swing detection finds new pivot, not the stale old anchor."""
+    fib_candles = _make_sxt_candles_for_pivot_detection()
+    old_anchor_meta = _make_sxt_prior_meta()  # old anchor: low=0.005, high=0.009
+
+    ctx = profit_plan_runner._build_nav_context_from_candle_set(
+        fib_nav_candles=fib_candles,
+        current_price=_SXT_CURRENT,
+        prior=old_anchor_meta,
+        now_utc=_NOW,
+    )
+
+    assert ctx is not None
+    assert ctx.map_state == MAP_STATE_EMERGENCY_REBUILT
+    assert ctx.rebuild_trigger == TRIGGER_MAP_EXHAUSTED
+    # Candle-detected swing: low=0.006571, high=0.010127 (not old anchor 0.005/0.009)
+    tol = Decimal("0.000020")
+    assert abs(ctx.anchor_low - _SXT_LOW) <= tol, (
+        f"Expected candle-detected low={_SXT_LOW}, got {ctx.anchor_low}"
+    )
+    assert abs(ctx.anchor_high - _SXT_HIGH) <= tol, (
+        f"Expected candle-detected high={_SXT_HIGH}, got {ctx.anchor_high}"
+    )
+
+
+def test_candle_driven_rebuild_sxt_extension_levels() -> None:
+    """Candle-driven path produces SXT expected extension targets."""
+    fib_candles = _make_sxt_candles_for_pivot_detection()
+    prior = _make_sxt_prior_meta()
+
+    ctx = profit_plan_runner._build_nav_context_from_candle_set(
+        fib_nav_candles=fib_candles,
+        current_price=_SXT_CURRENT,
+        prior=prior,
+        now_utc=_NOW,
+    )
+    assert ctx is not None
+
+    # nav_sell_levels are extension levels above current price (ascending)
+    sell_set = set(str(p)[:7] for p in ctx.nav_sell_levels)
+    tol = Decimal("0.00002")
+
+    # Validate at least the first three sell levels
+    all_ext = sorted(ctx.nav_sell_levels)
+    expected_first = Decimal("0.011094")
+    assert abs(all_ext[0] - expected_first) <= tol, (
+        f"First sell level expected ~{expected_first}, got {all_ext[0]}"
+    )
+
+
+def test_anchor_fallback_used_when_candles_insufficient() -> None:
+    """With empty candles, anchor fallback produces levels from old anchor."""
+    old_anchor_meta = PriorMapMeta(
+        map_state="EXHAUSTED",
+        anchor_low=_SXT_LOW,
+        anchor_high=_SXT_HIGH,
+        direction=DIRECTION_BULLISH,
+        top_extension_price=Decimal("0.021635"),
+        candle_ts_utc=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+    ctx = profit_plan_runner._build_nav_context_from_candle_set(
+        fib_nav_candles=[],  # empty candles → NO_DATA → fall back to anchor
+        current_price=_SXT_CURRENT,
+        prior=old_anchor_meta,
+        now_utc=_NOW,
+    )
+
+    assert ctx is not None, "Anchor fallback must produce nav context when candles absent"
+    assert ctx.map_state == MAP_STATE_EMERGENCY_REBUILT
+    tol = Decimal("0.000020")
+    assert abs(ctx.anchor_low - _SXT_LOW) <= tol
+    assert abs(ctx.anchor_high - _SXT_HIGH) <= tol
+
+
+def test_anchor_fallback_is_secondary_candle_path_wins_when_fresh() -> None:
+    """Candle path overrides old anchor: detected swing differs from old anchor."""
+    fib_candles = _make_sxt_candles_for_pivot_detection()
+    old_anchor_meta = _make_sxt_prior_meta()  # old anchor differs from candle swing
+
+    ctx = profit_plan_runner._build_nav_context_from_candle_set(
+        fib_nav_candles=fib_candles,
+        current_price=_SXT_CURRENT,
+        prior=old_anchor_meta,
+        now_utc=_NOW,
+    )
+    assert ctx is not None
+    # Candle path found new swing (0.006571 / 0.010127), not old anchor (0.005 / 0.009)
+    assert ctx.anchor_low != old_anchor_meta.anchor_low, (
+        "Candle-detected swing should differ from old anchor"
+    )
+
+
+def test_no_valid_anchor_and_no_candles_returns_none() -> None:
+    """No candles AND invalid anchor (low >= high) → None."""
+    bad_meta = PriorMapMeta(
+        map_state="EXHAUSTED",
+        anchor_low=Decimal("0.010000"),
+        anchor_high=Decimal("0.005000"),  # inverted → anchor builder raises
+        direction=DIRECTION_BULLISH,
+        top_extension_price=Decimal("0.020000"),
+        candle_ts_utc=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    ctx = profit_plan_runner._build_nav_context_from_candle_set(
+        fib_nav_candles=[],
+        current_price=_SXT_CURRENT,
+        prior=bad_meta,
+        now_utc=_NOW,
+    )
+    assert ctx is None
+
+
+def test_candles_to_fib_nav_converts_correctly() -> None:
+    """_candles_to_fib_nav synthesizes midpoint open/close, zero volume."""
+    raw = _make_sxt_history_candles()
+    converted = profit_plan_runner._candles_to_fib_nav(raw)
+
+    assert len(converted) == len(raw)
+    for orig, conv in zip(raw, converted):
+        assert conv.high_price == orig.high_price
+        assert conv.low_price == orig.low_price
+        assert conv.close_ts_utc == orig.close_ts_utc
+        expected_mid = (orig.high_price + orig.low_price) / Decimal("2")
+        assert conv.open_price == expected_mid
+        assert conv.close_price == expected_mid
+        assert conv.volume == Decimal("0")
+
+
+def test_build_cards_uses_candle_driven_path() -> None:
+    """build_cards() produces nav context from candles when prior_map_meta present."""
+    from src.reporting.run_manual_short_trader_profit_plan_v1 import (
+        MarketTargetHistory,
+        build_cards,
+    )
+
+    history_candles = _make_sxt_history_candles()
+    prior_meta = _make_sxt_prior_meta()
+
+    cards = build_cards(
+        markets=["SXT-EUR"],
+        prices={"SXT-EUR": _SXT_CURRENT},
+        price_status_by_market={"SXT-EUR": "FRESH"},
+        price_age_min_by_market={"SXT-EUR": Decimal("1")},
+        input_status_by_symbol={"SXT": "NATIVE_SHORT_CONTEXT_AVAILABLE"},
+        coverage_status_by_symbol={"SXT": "NATIVE_SHORT_CONTEXT_AVAILABLE"},
+        display_state_by_symbol={"SXT": "HAS_NATIVE_SHORT_FIB_CONTEXT"},
+        fib_ext_by_symbol={"SXT": _SXT_COMPLETED_FIB_EXT},
+        reentry_by_symbol={},
+        history_by_symbol={
+            "SXT": MarketTargetHistory(
+                high_since_activation=_SXT_HISTORY_HIGH,
+                low_since_activation=Decimal("0.006571"),
+                candles_since_activation=history_candles,
+            )
+        },
+        orders_by_symbol={},
+        prior_map_meta_by_symbol={"SXT": prior_meta},
+        now_utc=_NOW,
+    )
+
+    assert len(cards) == 1
+    card = cards[0]
+    assert card.fib_nav_context is not None, "build_cards must produce nav context when prior_map_meta is set"
+    assert card.fib_nav_context.map_state == MAP_STATE_EMERGENCY_REBUILT
+    # Candle-detected swing used (not old anchor)
+    tol = Decimal("0.000020")
+    assert abs(card.fib_nav_context.anchor_low - _SXT_LOW) <= tol
+
+
+def test_build_cards_no_nav_context_without_prior_meta() -> None:
+    """build_cards() produces no nav context when prior_map_meta absent."""
+    from src.reporting.run_manual_short_trader_profit_plan_v1 import (
+        MarketTargetHistory,
+        build_cards,
+    )
+
+    history_candles = _make_sxt_history_candles()
+
+    cards = build_cards(
+        markets=["SXT-EUR"],
+        prices={"SXT-EUR": _SXT_CURRENT},
+        price_status_by_market={"SXT-EUR": "FRESH"},
+        price_age_min_by_market={"SXT-EUR": Decimal("1")},
+        input_status_by_symbol={"SXT": "NATIVE_SHORT_CONTEXT_AVAILABLE"},
+        coverage_status_by_symbol={"SXT": "NATIVE_SHORT_CONTEXT_AVAILABLE"},
+        display_state_by_symbol={"SXT": "HAS_NATIVE_SHORT_FIB_CONTEXT"},
+        fib_ext_by_symbol={"SXT": _SXT_COMPLETED_FIB_EXT},
+        reentry_by_symbol={},
+        history_by_symbol={
+            "SXT": MarketTargetHistory(
+                high_since_activation=_SXT_HISTORY_HIGH,
+                low_since_activation=Decimal("0.006571"),
+                candles_since_activation=history_candles,
+            )
+        },
+        orders_by_symbol={},
+        prior_map_meta_by_symbol={},  # no prior meta → no nav context
+        now_utc=_NOW,
+    )
+
+    assert len(cards) == 1
+    assert cards[0].fib_nav_context is None
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -357,6 +638,14 @@ def main() -> None:
         test_from_anchor_sxt_extension_levels,
         test_from_anchor_full_level_set_present,
         test_from_anchor_rejects_invalid_anchor,
+        test_candle_driven_rebuild_detects_sxt_swing_not_old_anchor,
+        test_candle_driven_rebuild_sxt_extension_levels,
+        test_anchor_fallback_used_when_candles_insufficient,
+        test_anchor_fallback_is_secondary_candle_path_wins_when_fresh,
+        test_no_valid_anchor_and_no_candles_returns_none,
+        test_candles_to_fib_nav_converts_correctly,
+        test_build_cards_uses_candle_driven_path,
+        test_build_cards_no_nav_context_without_prior_meta,
     ]
     passed = 0
     failed = 0

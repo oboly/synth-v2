@@ -1,6 +1,6 @@
 # TODO: Fib navigation map rebuild v1
 
-**Status: IMPLEMENTED** — branch `feature/fib-navigation-map-rebuild-v1`, commits 89360fd (builder) and subsequent integration commit.
+**Status: IMPLEMENTED** — branch `feature/fib-navigation-map-rebuild-v1`. Candle-driven rebuild is the primary path; anchor-only is the fallback.
 
 Fix the fib-map lifecycle issue where exhausted/legacy targets cause cards to show no usable fib levels, even while recent candles clearly contain a fresh breakout/impulse.
 
