@@ -115,6 +115,7 @@ _ACTION_DISPLAY_MAP: dict[str, str] = {
     "DO_NOTHING": "BETWEEN LEVELS",
     "WAIT_FOR_SHORT_CONTEXT": "CONTEXT UNAVAILABLE",
     "WAIT_FOR_NEW_MAP": "MAP EXPIRED",
+    "NAVIGATION_ONLY": "NAVIGATION MAP",
     "NO_CURRENT_PRICE": "PRICE UNAVAILABLE",
     "PLACE_LADDER": "SETUP LADDER",
     "REPAIR_LADDER": "REVIEW LADDER",
@@ -159,6 +160,25 @@ class ReentryContext:
     r786_price: Decimal
     deepest_touched_label: str | None
     missed_main_rebuy_by_pct: Decimal | None
+
+
+@dataclass(frozen=True)
+class FibNavContext:
+    """
+    Navigation map context extracted from FibNavigationMap.
+
+    Populated by the runner when the primary map is exhausted.
+    The card builder uses these levels for display when all sell targets
+    have been historically passed. No fib builder imports — plain Decimals only.
+    """
+    nav_sell_levels: tuple[Decimal, ...]   # extension levels above current price (ascending)
+    nav_buy_levels: tuple[Decimal, ...]    # retracement levels below current price (descending)
+    nav_invalidation: Decimal | None       # r_1000 price (anchor_low for bullish)
+    map_state: str                         # EMERGENCY_REBUILT / FALLBACK / FRESH / etc.
+    rebuild_trigger: str
+    anchor_low: Decimal
+    anchor_high: Decimal
+    direction: str
 
 
 @dataclass(frozen=True)
@@ -231,6 +251,7 @@ class ProfitPlanCard:
     ladder_states: tuple[str, ...]
     relevance_reasons: tuple[str, ...]
     is_relevant: bool
+    fib_nav_context: FibNavContext | None = None
     render_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
@@ -1357,6 +1378,7 @@ def build_profit_plan_card(
     history_candles_since_activation: tuple[TargetHistoryCandle, ...] = (),
     current_price_status: str | None = None,
     current_price_age_min: Decimal | None = None,
+    fib_nav_context: FibNavContext | None = None,
 ) -> ProfitPlanCard:
     if current_price_status == "STALE_CURRENT_PRICE":
         order_summary = build_order_summary(
@@ -1496,6 +1518,26 @@ def build_profit_plan_card(
         reasons=tuple(list(reasons) + [note for note in retest_notes if note not in reasons]),
     )
 
+    # When all old targets are passed and a nav map is available, surface its levels
+    # for display instead of showing empty zones. The primary_state stays MAP_RECOMPUTE_NEEDED
+    # because a formal recompute is still warranted — these are navigation reference levels.
+    if all_sell_targets_completed and fib_nav_context is not None:
+        _nav_sell = tuple(
+            p for p in fib_nav_context.nav_sell_levels
+            if current_price is None or p > current_price
+        )
+        if _nav_sell:
+            active_target_exit_zone = _nav_sell
+            active_target = _nav_sell[0]
+            if fib_nav_context.nav_buy_levels:
+                buy_zone = fib_nav_context.nav_buy_levels
+            invalidation_level = fib_nav_context.nav_invalidation
+            action_label = "NAVIGATION_ONLY"
+            reasons = (
+                "Old sell targets are historically completed. Navigation levels from the extended cycle map are shown for reference.",
+                *reasons,
+            )
+
     (
         primary_state,
         secondary_state,
@@ -1600,6 +1642,7 @@ def build_profit_plan_card(
         ladder_states=ladder_states,
         relevance_reasons=relevance_reasons,
         is_relevant=is_relevant,
+        fib_nav_context=fib_nav_context,
     )
 
 
@@ -2610,6 +2653,16 @@ def build_json_snapshot(
                 "price_normalization": _build_normalization_audit_json(
                     normalization_audit_by_symbol.get(c.symbol) if normalization_audit_by_symbol else None
                 ),
+                "fib_nav_context": {
+                    "map_state": c.fib_nav_context.map_state,
+                    "rebuild_trigger": c.fib_nav_context.rebuild_trigger,
+                    "direction": c.fib_nav_context.direction,
+                    "anchor_low": str(c.fib_nav_context.anchor_low),
+                    "anchor_high": str(c.fib_nav_context.anchor_high),
+                    "nav_sell_levels": [str(p) for p in c.fib_nav_context.nav_sell_levels],
+                    "nav_buy_levels": [str(p) for p in c.fib_nav_context.nav_buy_levels],
+                    "nav_invalidation": str(c.fib_nav_context.nav_invalidation) if c.fib_nav_context.nav_invalidation is not None else None,
+                } if c.fib_nav_context is not None else None,
             }
             for c in cards
         ],

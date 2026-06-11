@@ -7,7 +7,7 @@ import os
 import sys
 import tempfile
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -39,8 +39,20 @@ from src.market_rules.price_tick_normalization_v1 import (
     load_tick_rules_from_db,
     resolve_tick_rule,
 )
+from src.market_data.fib_navigation_map_v1 import (
+    DIRECTION_BULLISH,
+    MAP_STATE_EXHAUSTED,
+    MAP_STATE_NO_DATA,
+    MAP_STATE_STALE,
+    FibNavCandle,
+    FibNavigationMap,
+    PriorMapMeta,
+    build_fib_navigation_map,
+    build_fib_navigation_map_from_anchor,
+)
 from src.reporting.manual_short_trader_profit_plan_v1 import (
     FibExtContext,
+    FibNavContext,
     ProfitPlanCard,
     ReentryContext,
     TargetHistoryCandle,
@@ -76,6 +88,7 @@ class ZoneContextLoadResult:
     source_name: str
     source_missing: bool
     native_source_missing: bool = False
+    prior_map_meta_by_symbol: dict[str, PriorMapMeta] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -357,6 +370,127 @@ def _build_reentry_context(
     )
 
 
+def _build_prior_map_meta_from_native_row(
+    native_row: "Any",
+    now_utc: datetime,
+) -> PriorMapMeta | None:
+    """Extract anchor data from a MAP_COMPLETED native row into PriorMapMeta."""
+    anchor_low = native_row.anchor_low_price
+    anchor_high = native_row.anchor_high_price
+    if anchor_low is None or anchor_high is None or anchor_high <= anchor_low or anchor_low <= 0:
+        return None
+    ext_candidates = [
+        p for p in (
+            native_row.ext_1_272_price,
+            native_row.ext_1_618_price,
+            native_row.ext_2_000_price,
+        )
+        if p is not None
+    ]
+    top_ext = max(ext_candidates) if ext_candidates else anchor_low + (anchor_high - anchor_low) * Decimal("2")
+    candle_ts = native_row.anchor_end_ts_utc or now_utc
+    return PriorMapMeta(
+        map_state=MAP_STATE_EXHAUSTED,
+        anchor_low=anchor_low,
+        anchor_high=anchor_high,
+        direction=DIRECTION_BULLISH,
+        top_extension_price=top_ext,
+        candle_ts_utc=candle_ts,
+    )
+
+
+def _candles_to_fib_nav(candles: tuple) -> list[FibNavCandle]:
+    """Convert TargetHistoryCandle → FibNavCandle. Synthesize open/close as (high+low)/2; volume=0.
+
+    TargetHistoryCandle only carries high_price and low_price (no open/close/volume).
+    The midpoint approximation is sufficient for pivot detection; volume-based triggers
+    are disabled because volume=0 never passes the expansion ratio check.
+    Runner currently uses 1h candles (TARGET_HISTORY_INTERVAL="1h"). 15m candles are
+    not yet fetched; pivot quality improves if a 15m feed is added later.
+    """
+    result: list[FibNavCandle] = []
+    for c in candles:
+        mid = (c.high_price + c.low_price) / Decimal("2")
+        result.append(FibNavCandle(
+            close_ts_utc=c.close_ts_utc,
+            open_price=mid,
+            high_price=c.high_price,
+            low_price=c.low_price,
+            close_price=mid,
+            volume=Decimal("0"),
+        ))
+    return result
+
+
+def _nav_context_from_map(nav_map: FibNavigationMap, current_price: Decimal) -> FibNavContext:
+    nav_sell = tuple(sorted(lvl.price for lvl in nav_map.extension_levels if lvl.price > current_price))
+    nav_buy = tuple(sorted(
+        (lvl.price for lvl in nav_map.retracement_levels if lvl.price < current_price),
+        reverse=True,
+    ))
+    r1000 = next((lvl.price for lvl in nav_map.retracement_levels if lvl.label == "r_1000"), None)
+    return FibNavContext(
+        nav_sell_levels=nav_sell,
+        nav_buy_levels=nav_buy,
+        nav_invalidation=r1000,
+        map_state=nav_map.map_state,
+        rebuild_trigger=nav_map.rebuild_trigger,
+        anchor_low=nav_map.anchor_low,
+        anchor_high=nav_map.anchor_high,
+        direction=nav_map.direction,
+    )
+
+
+def _build_nav_context_from_candle_set(
+    *,
+    fib_nav_candles: list[FibNavCandle],
+    current_price: Decimal,
+    prior: PriorMapMeta,
+    now_utc: datetime,
+) -> FibNavContext | None:
+    """Primary: candle-driven swing detection. Fallback: anchor-only rebuild.
+
+    Candle-driven path (build_fib_navigation_map) detects a fresh swing from
+    history candles and returns EMERGENCY_REBUILT when the prior map is EXHAUSTED.
+    Anchor fallback is used only when candles are too few or stale.
+    """
+    # Primary: candle-driven pivot detection
+    nav_map: FibNavigationMap | None = None
+    try:
+        nav_map = build_fib_navigation_map(
+            candles=fib_nav_candles,
+            current_price=current_price,
+            now_utc=now_utc,
+            prior=prior,
+            direction=prior.direction,
+        )
+    except Exception:
+        pass
+
+    if (
+        nav_map is not None
+        and nav_map.map_state not in {MAP_STATE_NO_DATA, MAP_STATE_STALE}
+        and nav_map.extension_levels
+    ):
+        return _nav_context_from_map(nav_map, current_price)
+
+    # Fallback: anchor-only rebuild when candles are insufficient or stale
+    try:
+        anchor_map = build_fib_navigation_map_from_anchor(
+            anchor_low=prior.anchor_low,
+            anchor_high=prior.anchor_high,
+            current_price=current_price,
+            direction=prior.direction,
+            prior_map_state=prior.map_state,
+            computed_at_utc=now_utc,
+        )
+    except Exception:
+        return None
+    if not anchor_map.extension_levels:
+        return None
+    return _nav_context_from_map(anchor_map, current_price)
+
+
 def load_zone_contexts(
     *,
     markets: list[str],
@@ -365,7 +499,9 @@ def load_zone_contexts(
     recent_lows: dict[str, list[str]],
     native_short_rows_path: Path,
     fib_map_rows_path: Path,
+    now_utc: datetime | None = None,
 ) -> ZoneContextLoadResult:
+    _now = now_utc or datetime.now(UTC)
     fib_rows_by_symbol, source_missing = load_fib_map_rows(fib_map_rows_path)
     native_rows_by_symbol, native_source_missing = load_native_short_context_rows(native_short_rows_path)
     fib_ext_by_symbol: dict[str, FibExtContext] = {}
@@ -374,6 +510,7 @@ def load_zone_contexts(
     input_status_by_symbol: dict[str, str] = {}
     coverage_status_by_symbol: dict[str, str] = {}
     display_state_by_symbol: dict[str, str] = {}
+    prior_map_meta_by_symbol: dict[str, PriorMapMeta] = {}
 
     for market in markets:
         symbol = market.split("-")[0].upper()
@@ -461,6 +598,13 @@ def load_zone_contexts(
                         deepest_touched_label=None,
                         missed_main_rebuy_by_pct=None,
                     )
+                    # When the primary map is exhausted (all targets passed), record anchor
+                    # metadata so build_cards() can attempt a candle-driven rebuild.
+                    # active_target_levels==() signals MAP_COMPLETED in the native context lifecycle.
+                    if not native_row.active_target_levels:
+                        prior_meta = _build_prior_map_meta_from_native_row(native_row, _now)
+                        if prior_meta is not None:
+                            prior_map_meta_by_symbol[symbol] = prior_meta
                 continue
             # Partial native row (not AVAILABLE): retain 4h map values as reference-only
             # and skip legacy path. Legacy must not overwrite partial native context.
@@ -568,6 +712,7 @@ def load_zone_contexts(
         source_name="fibo_target_map_rows_v1.csv",
         source_missing=source_missing,
         native_source_missing=native_source_missing,
+        prior_map_meta_by_symbol=prior_map_meta_by_symbol,
     )
 
 
@@ -652,13 +797,34 @@ def build_cards(
     reentry_by_symbol: dict[str, ReentryContext],
     history_by_symbol: dict[str, MarketTargetHistory],
     orders_by_symbol: dict[str, tuple[tuple[LadderOrderRow, ...], tuple[LadderOrderRow, ...]]],
+    prior_map_meta_by_symbol: dict[str, PriorMapMeta] | None = None,
+    now_utc: datetime | None = None,
 ) -> list[ProfitPlanCard]:
+    _prior = prior_map_meta_by_symbol or {}
+    _now = now_utc or datetime.now(UTC)
     cards: list[ProfitPlanCard] = []
     for market in markets:
         symbol = market.split("-")[0].upper()
         current = prices.get(market)
         buy_orders, sell_orders = orders_by_symbol.get(symbol, ((), ()))
         history = history_by_symbol.get(symbol)
+
+        # Candle-driven nav rebuild: primary path uses history candles to detect a fresh
+        # swing (build_fib_navigation_map); anchor-only fallback when candles are
+        # insufficient or stale. Only triggered when prior map is MAP_COMPLETED.
+        nav_context: FibNavContext | None = None
+        prior_meta = _prior.get(symbol)
+        if prior_meta is not None and current is not None:
+            fib_nav_candles = _candles_to_fib_nav(
+                history.candles_since_activation if history is not None else ()
+            )
+            nav_context = _build_nav_context_from_candle_set(
+                fib_nav_candles=fib_nav_candles,
+                current_price=current,
+                prior=prior_meta,
+                now_utc=_now,
+            )
+
         cards.append(
             build_profit_plan_card(
                 symbol=symbol,
@@ -677,6 +843,7 @@ def build_cards(
                 history_high_since_activation=None if history is None else history.high_since_activation,
                 history_low_since_activation=None if history is None else history.low_since_activation,
                 history_candles_since_activation=() if history is None else history.candles_since_activation,
+                fib_nav_context=nav_context,
             )
         )
     return cards
@@ -817,6 +984,7 @@ def main() -> int:
         zone_contexts.reentry_by_symbol,
         history_by_symbol,
         orders_by_symbol,
+        prior_map_meta_by_symbol=zone_contexts.prior_map_meta_by_symbol,
     )
 
     # Load market tick rules from DB and apply price normalization to all cards.
