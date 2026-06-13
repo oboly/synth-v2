@@ -123,8 +123,35 @@ def build_breathline_state(
             warnings=("INVALID_PARAMETERS",),
         )
 
-    if not candles or len(candles) < absolute_min_candles:
-        latest_ts = None if not candles else max(candle.close_ts_utc for candle in candles)
+    if not candles:
+        return _result(
+            state=BreathlineState.NO_DATA,
+            breathline_price=None,
+            atr=None,
+            distance_atr=None,
+            latest_close_ts_utc=None,
+            warnings=("INSUFFICIENT_CANDLES",),
+        )
+
+    # Validate required fields before any sort or max-timestamp operation.
+    for candle in candles:
+        if (
+            candle.close_ts_utc is None
+            or candle.high_price is None
+            or candle.low_price is None
+            or candle.close_price is None
+        ):
+            return _result(
+                state=BreathlineState.NO_DATA,
+                breathline_price=None,
+                atr=None,
+                distance_atr=None,
+                latest_close_ts_utc=None,
+                warnings=("INVALID_CANDLE_DATA",),
+            )
+
+    if len(candles) < absolute_min_candles:
+        latest_ts = max(candle.close_ts_utc for candle in candles)
         return _result(
             state=BreathlineState.NO_DATA,
             breathline_price=None,
@@ -135,13 +162,10 @@ def build_breathline_state(
         )
 
     sorted_candles = sorted(candles, key=lambda candle: candle.close_ts_utc)
+    # Validate OHLC constraints; required fields are guaranteed non-None above.
     for candle in sorted_candles:
         if (
-            candle.close_ts_utc is None
-            or candle.high_price is None
-            or candle.low_price is None
-            or candle.close_price is None
-            or candle.high_price <= 0
+            candle.high_price <= 0
             or candle.low_price <= 0
             or candle.close_price <= 0
             or candle.high_price < candle.low_price

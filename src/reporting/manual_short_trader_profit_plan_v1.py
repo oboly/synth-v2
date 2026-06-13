@@ -2565,6 +2565,7 @@ def build_json_snapshot(
     render_id: str | None = None,
     normalization_audit_by_symbol: dict[str, list[Any]] | None = None,
     pipeline_health: dict[str, Any] | None = None,
+    market_context_by_symbol: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     now_ts = snapshot_ts or datetime.now(UTC).isoformat()
     relevant_count = sum(1 for c in cards if c.is_relevant)
@@ -2663,6 +2664,7 @@ def build_json_snapshot(
                     "nav_buy_levels": [str(p) for p in c.fib_nav_context.nav_buy_levels],
                     "nav_invalidation": str(c.fib_nav_context.nav_invalidation) if c.fib_nav_context.nav_invalidation is not None else None,
                 } if c.fib_nav_context is not None else None,
+                "market_context": (market_context_by_symbol or {}).get(c.symbol),
             }
             for c in cards
         ],

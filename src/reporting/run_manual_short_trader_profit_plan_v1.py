@@ -8,12 +8,16 @@ import sys
 import tempfile
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from src.common.db import get_connection
+from src.market_context.market_context_builder_v1 import (
+    MarketContextCandle,
+    build_market_context_by_symbol,
+)
 from src.market_data.native_short_fib_context_v1 import (
     DEFAULT_ROWS_CSV as DEFAULT_NATIVE_SHORT_ROWS,
     STATUS_AVAILABLE as NATIVE_SHORT_CONTEXT_AVAILABLE,
@@ -75,6 +79,8 @@ DEFAULT_FIB_MAP_ROWS = Path("data/research/fibo_target_map_v1/fibo_target_map_ro
 REPORT_NAME = "run_manual_short_trader_profit_plan_v1"
 REPORT_VERSION = "0.2"
 TARGET_HISTORY_INTERVAL = "1h"
+_MARKET_CONTEXT_INTERVAL = "4h"
+_MARKET_CONTEXT_LOOKBACK_DAYS = 90
 
 
 @dataclass(frozen=True)
@@ -232,6 +238,10 @@ def _parse_iso_ts(value: Any) -> datetime | None:
         return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
     except Exception:
         return None
+
+
+def _symbols_from_markets(markets: list[str]) -> list[str]:
+    return sorted({market.split("-")[0].upper() for market in markets if market})
 
 
 def _native_price_band(
@@ -785,6 +795,69 @@ def fetch_market_target_history_by_symbol(
         conn.close()
 
 
+def _fetch_market_context_candles_by_symbol(
+    *,
+    venue: str,
+    symbols: list[str],
+    now_utc: datetime,
+) -> dict[str, list[MarketContextCandle]]:
+    if not symbols:
+        return {}
+    since_utc = now_utc - timedelta(days=_MARKET_CONTEXT_LOOKBACK_DAYS)
+    conn = get_connection()
+    try:
+        out: dict[str, list[MarketContextCandle]] = {symbol: [] for symbol in symbols}
+        with conn.cursor() as cur:
+            placeholders = ",".join(["%s"] * len(symbols))
+            cur.execute(
+                f"""
+                SELECT
+                    a.symbol,
+                    c.close_ts_utc,
+                    c.open_price,
+                    c.high_price,
+                    c.low_price,
+                    c.close_price
+                FROM obs_market_candle c
+                JOIN asset a
+                  ON a.asset_id = c.asset_id
+                WHERE c.venue = %s
+                  AND c.interval_code = %s
+                  AND a.symbol IN ({placeholders})
+                  AND c.close_ts_utc >= %s
+                ORDER BY a.symbol ASC, c.close_ts_utc ASC
+                """,
+                (venue, _MARKET_CONTEXT_INTERVAL, *symbols, since_utc),
+            )
+            rows = list(cur.fetchall())
+        for row in rows:
+            symbol = str(row.get("symbol") or "").upper()
+            if symbol not in out:
+                continue
+            close_ts = row.get("close_ts_utc")
+            if close_ts is None:
+                continue
+            close_ts_utc = close_ts.replace(tzinfo=UTC) if close_ts.tzinfo is None else close_ts.astimezone(UTC)
+            open_price = _parse_decimal(row.get("open_price"))
+            high_price = _parse_decimal(row.get("high_price"))
+            low_price = _parse_decimal(row.get("low_price"))
+            close_price = _parse_decimal(row.get("close_price"))
+            if open_price is None or high_price is None or low_price is None or close_price is None:
+                continue
+            out[symbol].append(
+                MarketContextCandle(
+                    close_ts_utc=close_ts_utc,
+                    open_price=open_price,
+                    high_price=high_price,
+                    low_price=low_price,
+                    close_price=close_price,
+                )
+            )
+        return out
+    finally:
+        conn.close()
+
+
 def build_cards(
     markets: list[str],
     prices: dict[str, Decimal],
@@ -968,6 +1041,17 @@ def main() -> int:
         venue=args.venue,
         activation_ts_by_symbol=zone_contexts.activation_ts_by_symbol,
     )
+    now_utc = datetime.now(UTC)
+    _mc_symbols = _symbols_from_markets(list(context.markets))
+    _mc_candles = _fetch_market_context_candles_by_symbol(
+        venue=args.venue,
+        symbols=_mc_symbols,
+        now_utc=now_utc,
+    )
+    market_context_by_symbol = build_market_context_by_symbol(
+        candles_by_symbol=_mc_candles,
+        now_utc=now_utc,
+    )
     monitor_link = args.monitor_href or public_page_href(
         profile=args.account_profile,
         page_stem="open-orders-monitor",
@@ -1070,6 +1154,7 @@ def main() -> int:
             render_id=snapshot_render_id,
             normalization_audit_by_symbol=normalization_audit,
             pipeline_health=pipeline_health,
+            market_context_by_symbol=market_context_by_symbol,
         ),
         indent=2,
         sort_keys=True,
