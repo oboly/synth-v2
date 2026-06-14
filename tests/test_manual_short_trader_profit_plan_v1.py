@@ -886,6 +886,8 @@ def test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account
     original_parse_args = profit_plan_runner.parse_args
     original_load_context = profit_plan_runner.load_account_scoped_short_dashboard_context
     original_resolve_access = profit_plan_runner.resolve_dashboard_profile_access
+    original_fetch_market_context_candles = profit_plan_runner._fetch_market_context_candles_by_symbol
+    original_build_market_context = profit_plan_runner.build_market_context_by_symbol
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -959,6 +961,10 @@ def test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account
                     },
                 )()
                 profit_plan_runner.load_account_scoped_short_dashboard_context = lambda **_: context
+                profit_plan_runner._fetch_market_context_candles_by_symbol = (
+                    lambda **kwargs: {symbol: [] for symbol in kwargs["symbols"]}
+                )
+                profit_plan_runner.build_market_context_by_symbol = lambda **kwargs: {}
                 assert profit_plan_runner.main() == 0
                 html_path = root / "accounts" / profile / "profit-plan.html"
                 json_path = root / "accounts" / profile / "profit-plan.json"
@@ -984,6 +990,8 @@ def test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account
         profit_plan_runner.parse_args = original_parse_args
         profit_plan_runner.load_account_scoped_short_dashboard_context = original_load_context
         profit_plan_runner.resolve_dashboard_profile_access = original_resolve_access
+        profit_plan_runner._fetch_market_context_candles_by_symbol = original_fetch_market_context_candles
+        profit_plan_runner.build_market_context_by_symbol = original_build_market_context
 
 
 def test_profit_plan_runner_missing_account_fails_closed() -> None:
@@ -1019,6 +1027,100 @@ def test_profit_plan_runner_missing_account_fails_closed() -> None:
         profit_plan_runner.parse_args = original_parse_args
         profit_plan_runner.load_account_scoped_short_dashboard_context = original_load_context
         profit_plan_runner.resolve_dashboard_profile_access = original_resolve_access
+
+
+def test_default_native_short_context_rows_path_uses_union_file_when_arg_omitted() -> None:
+    class _StopAfterZoneContexts(RuntimeError):
+        pass
+
+    original_parse_args = profit_plan_runner.parse_args
+    original_load_context = profit_plan_runner.load_account_scoped_short_dashboard_context
+    original_resolve_access = profit_plan_runner.resolve_dashboard_profile_access
+    original_load_zone_contexts = profit_plan_runner.load_zone_contexts
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            union_path = root / "_runtime/native_short_context_union_v1/native_short_fib_context_rows_v1.csv"
+            union_path.parent.mkdir(parents=True, exist_ok=True)
+            union_path.write_text("symbol\nBTC\n", encoding="utf-8")
+
+            captured: dict[str, Path] = {}
+
+            profit_plan_runner.parse_args = lambda: type(
+                "Args",
+                (),
+                {
+                    "account_profile": "joost",
+                    "venue": "bitvavo",
+                    "output_root": str(root),
+                    "output_html": None,
+                    "output_json": None,
+                    "monitor_href": None,
+                    "native_short_context_rows": None,
+                    "fib_map_rows": str(root / "missing-fib.csv"),
+                    "swing_anchors": [],
+                    "recent_lows": [],
+                    "output": "none",
+                },
+            )()
+            profit_plan_runner.resolve_dashboard_profile_access = lambda **_: type(
+                "Access",
+                (),
+                {
+                    "account_profile": "joost",
+                    "venue": "bitvavo",
+                    "trading_account_stable_ref": "acct-joost",
+                },
+            )()
+            profit_plan_runner.load_account_scoped_short_dashboard_context = lambda **_: _context(
+                profile="joost",
+                account_id=11,
+                markets=("BTC-EUR",),
+                orders=(),
+                balances=(),
+                prices={"BTC-EUR": "100000"},
+            )
+
+            def _capture_zone_contexts(**kwargs):
+                captured["path"] = kwargs["native_short_rows_path"]
+                raise _StopAfterZoneContexts()
+
+            profit_plan_runner.load_zone_contexts = _capture_zone_contexts
+
+            try:
+                profit_plan_runner.main()
+            except _StopAfterZoneContexts:
+                pass
+            else:
+                raise AssertionError("Expected sentinel stop after native-short path capture")
+
+            assert captured["path"] == union_path
+    finally:
+        profit_plan_runner.parse_args = original_parse_args
+        profit_plan_runner.load_account_scoped_short_dashboard_context = original_load_context
+        profit_plan_runner.resolve_dashboard_profile_access = original_resolve_access
+        profit_plan_runner.load_zone_contexts = original_load_zone_contexts
+
+
+def test_resolve_native_short_context_rows_path_explicit_override_wins() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        explicit = root / "custom/native_short.csv"
+        resolved = profit_plan_runner._resolve_native_short_context_rows_path(
+            output_root=root,
+            native_short_context_rows_arg=str(explicit),
+        )
+        assert resolved == explicit
+
+
+def test_resolve_native_short_context_rows_path_missing_union_preserves_fallback() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        resolved = profit_plan_runner._resolve_native_short_context_rows_path(
+            output_root=root,
+            native_short_context_rows_arg=None,
+        )
+        assert resolved == Path(profit_plan_runner.DEFAULT_NATIVE_SHORT_ROWS)
 
 
 def test_runner_source_does_not_construct_account_code_from_profile_name() -> None:
