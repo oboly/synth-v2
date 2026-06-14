@@ -223,3 +223,34 @@ def test_completed_reference_without_fresh_rebuild_marks_recompute_needed() -> N
     assert result.map_state == "NO_DATA"
     assert result.historical_reference_state == MAP_COMPLETED_FROZEN
     assert result.recompute_status == RECOMPUTE_NEEDED
+
+
+def test_anchor_only_completed_fallback_stays_reference_only() -> None:
+    from src.market_data.fib_navigation_map_v1 import build_fib_navigation_map_from_anchor
+
+    nav = build_fib_navigation_map_from_anchor(
+        anchor_low=Decimal("250"),
+        anchor_high=Decimal("300"),
+        current_price=Decimal("320"),
+        direction=DIRECTION_BULLISH,
+        prior_map_state="MAP_COMPLETED",
+        computed_at_utc=_ts(10),
+    )
+    assert nav.historical_reference_state == MAP_COMPLETED_FROZEN
+    assert nav.historical_reference_anchor_low == Decimal("250")
+    assert nav.historical_reference_anchor_high == Decimal("300")
+    assert nav.active_map_state is None
+    assert nav.recompute_status == RECOMPUTE_NEEDED
+
+
+def test_candle_rebuild_completed_prior_exposes_active_recomputed_map() -> None:
+    result = build_fib_navigation_map(
+        candles=_sxt_case_candles(),
+        current_price=Decimal("0.009588"),
+        now_utc=_ts(10) + timedelta(minutes=1),
+        prior=_completed_prior(low="0.0050", high="0.0080", top="0.0090"),
+        direction=DIRECTION_BULLISH,
+    )
+    assert result.historical_reference_state == MAP_COMPLETED_FROZEN
+    assert result.active_map_state == ACTIVE_RECOMPUTED_MAP
+    assert result.recompute_status == NEW_MAP_AVAILABLE
