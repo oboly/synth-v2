@@ -15,6 +15,8 @@ MAP_STATE_FALLBACK = "FALLBACK"
 MAP_STATE_EMERGENCY_REBUILT = "EMERGENCY_REBUILT"
 MAP_STATE_NO_DATA = "NO_DATA"
 MAP_STATE_LOW_CONFIDENCE = "LOW_CONFIDENCE"
+MAP_COMPLETED_FROZEN = "MAP_COMPLETED_FROZEN"
+ACTIVE_RECOMPUTED_MAP = "ACTIVE_RECOMPUTED_MAP"
 
 # ---------------------------------------------------------------------------
 # Rebuild triggers
@@ -30,6 +32,9 @@ TRIGGER_PRICE_BELOW_INVALIDATION = "PRICE_BELOW_INVALIDATION"
 TRIGGER_NEW_HIGH_WITH_VOLUME = "NEW_HIGH_WITH_VOLUME_EXPANSION"
 TRIGGER_NEW_LOW_WITH_VOLUME = "NEW_LOW_WITH_VOLUME_EXPANSION"
 TRIGGER_IMPULSE_MOVE = "IMPULSE_MOVE_GT_ATR_MULTIPLE"
+RECOMPUTE_NEEDED = "RECOMPUTE_NEEDED"
+NEW_MAP_AVAILABLE = "NEW_MAP_AVAILABLE"
+RECOMPUTE_STATUS_NONE = "NONE"
 
 DIRECTION_BULLISH = "BULLISH"
 DIRECTION_BEARISH = "BEARISH"
@@ -119,6 +124,12 @@ class FibNavigationMap:
     confidence: str             # HIGH / MEDIUM / LOW
     anchor_candle_count: int
     computed_at_utc: datetime
+    historical_reference_state: str | None = None
+    historical_reference_anchor_low: Decimal | None = None
+    historical_reference_anchor_high: Decimal | None = None
+    historical_reference_top_extension_price: Decimal | None = None
+    active_map_state: str | None = None
+    recompute_status: str = RECOMPUTE_STATUS_NONE
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +288,86 @@ def _range_fallback(candles: list[FibNavCandle]) -> tuple[Decimal, Decimal] | No
     return low, high
 
 
+def _is_completed_or_exhausted_state(state: str | None) -> bool:
+    return str(state or "").upper() in {
+        MAP_STATE_EXHAUSTED,
+        MAP_COMPLETED_FROZEN,
+        "MAP_COMPLETED",
+    }
+
+
+def _latest_active_bullish_swing(
+    candles: list[FibNavCandle], span: int
+) -> tuple[Decimal, Decimal] | None:
+    if len(candles) < span + 2:
+        return None
+    recent_start = max(0, len(candles) - (span + 1))
+    high_idx = max(
+        range(recent_start, len(candles)),
+        key=lambda idx: (candles[idx].high_price, idx),
+    )
+    if high_idx <= 0:
+        return None
+    pivot_lows = [idx for idx in _find_pivot_lows(candles, span) if idx < high_idx]
+    if pivot_lows:
+        low_idx = pivot_lows[-1]
+    else:
+        low_idx = min(range(0, high_idx), key=lambda idx: (candles[idx].low_price, idx))
+    low_price = candles[low_idx].low_price
+    high_price = candles[high_idx].high_price
+    if low_price <= 0 or high_price <= low_price:
+        return None
+    return low_price, high_price
+
+
+def _latest_active_bearish_swing(
+    candles: list[FibNavCandle], span: int
+) -> tuple[Decimal, Decimal] | None:
+    if len(candles) < span + 2:
+        return None
+    recent_start = max(0, len(candles) - (span + 1))
+    low_idx = min(
+        range(recent_start, len(candles)),
+        key=lambda idx: (candles[idx].low_price, idx),
+    )
+    if low_idx <= 0:
+        return None
+    pivot_highs = [idx for idx in _find_pivot_highs(candles, span) if idx < low_idx]
+    if pivot_highs:
+        high_idx = pivot_highs[-1]
+    else:
+        high_idx = max(range(0, low_idx), key=lambda idx: (candles[idx].high_price, idx))
+    low_price = candles[low_idx].low_price
+    high_price = candles[high_idx].high_price
+    if low_price <= 0 or high_price <= low_price:
+        return None
+    return low_price, high_price
+
+
+def _reference_fields(
+    prior: PriorMapMeta | None,
+    *,
+    recompute_available: bool,
+) -> dict[str, Decimal | str | None]:
+    if prior is None or not _is_completed_or_exhausted_state(prior.map_state):
+        return {
+            "historical_reference_state": None,
+            "historical_reference_anchor_low": None,
+            "historical_reference_anchor_high": None,
+            "historical_reference_top_extension_price": None,
+            "active_map_state": None,
+            "recompute_status": RECOMPUTE_STATUS_NONE,
+        }
+    return {
+        "historical_reference_state": MAP_COMPLETED_FROZEN,
+        "historical_reference_anchor_low": prior.anchor_low,
+        "historical_reference_anchor_high": prior.anchor_high,
+        "historical_reference_top_extension_price": prior.top_extension_price,
+        "active_map_state": ACTIVE_RECOMPUTED_MAP if recompute_available else None,
+        "recompute_status": NEW_MAP_AVAILABLE if recompute_available else RECOMPUTE_NEEDED,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Rebuild trigger detection
 # ---------------------------------------------------------------------------
@@ -295,7 +386,7 @@ def _detect_trigger(
     if prior is None:
         return TRIGGER_MAP_MISSING
 
-    if prior.map_state == MAP_STATE_EXHAUSTED:
+    if _is_completed_or_exhausted_state(prior.map_state):
         return TRIGGER_MAP_EXHAUSTED
 
     if now_utc - prior.candle_ts_utc > stale_after:
@@ -355,8 +446,12 @@ def build_fib_navigation_map_from_anchor(
             f"Invalid anchor for fib nav map: low={anchor_low}, high={anchor_high}"
         )
     retrace, ext = _build_levels(anchor_low, anchor_high, direction)
-    trigger = TRIGGER_MAP_EXHAUSTED if prior_map_state == MAP_STATE_EXHAUSTED else TRIGGER_MAP_MISSING
-    map_state = MAP_STATE_EMERGENCY_REBUILT if prior_map_state == MAP_STATE_EXHAUSTED else MAP_STATE_FRESH
+    exhausted_reference = _is_completed_or_exhausted_state(prior_map_state)
+    trigger = TRIGGER_MAP_EXHAUSTED if exhausted_reference else TRIGGER_MAP_MISSING
+    map_state = MAP_STATE_EMERGENCY_REBUILT if exhausted_reference else MAP_STATE_FRESH
+    active_map_state = ACTIVE_RECOMPUTED_MAP if exhausted_reference else None
+    recompute_status = NEW_MAP_AVAILABLE if exhausted_reference else RECOMPUTE_STATUS_NONE
+    historical_reference_state = MAP_COMPLETED_FROZEN if exhausted_reference else None
     return FibNavigationMap(
         anchor_low=anchor_low,
         anchor_high=anchor_high,
@@ -370,6 +465,12 @@ def build_fib_navigation_map_from_anchor(
         confidence="HIGH",
         anchor_candle_count=0,
         computed_at_utc=computed_at_utc,
+        historical_reference_state=historical_reference_state,
+        historical_reference_anchor_low=anchor_low if historical_reference_state else None,
+        historical_reference_anchor_high=anchor_high if historical_reference_state else None,
+        historical_reference_top_extension_price=ext[-1].price if historical_reference_state else None,
+        active_map_state=active_map_state,
+        recompute_status=recompute_status,
     )
 
 
@@ -388,6 +489,7 @@ def build_fib_navigation_map(
 ) -> FibNavigationMap:
 
     def _empty(state: str, trigger: str) -> FibNavigationMap:
+        reference = _reference_fields(prior, recompute_available=False)
         return FibNavigationMap(
             anchor_low=Decimal("0"),
             anchor_high=Decimal("0"),
@@ -401,6 +503,12 @@ def build_fib_navigation_map(
             confidence="LOW",
             anchor_candle_count=len(candles),
             computed_at_utc=now_utc,
+            historical_reference_state=reference["historical_reference_state"],
+            historical_reference_anchor_low=reference["historical_reference_anchor_low"],
+            historical_reference_anchor_high=reference["historical_reference_anchor_high"],
+            historical_reference_top_extension_price=reference["historical_reference_top_extension_price"],
+            active_map_state=reference["active_map_state"],
+            recompute_status=str(reference["recompute_status"]),
         )
 
     if len(candles) < min_candles:
@@ -443,9 +551,13 @@ def build_fib_navigation_map(
     # Rebuild: detect swing from fresh candles
     fallback_used = False
     if direction == DIRECTION_BULLISH:
-        pair = _best_bullish_swing(candles, pivot_span)
+        pair = _latest_active_bullish_swing(candles, pivot_span)
+        if pair is None:
+            pair = _best_bullish_swing(candles, pivot_span)
     else:
-        pair = _best_bearish_swing(candles, pivot_span)
+        pair = _latest_active_bearish_swing(candles, pivot_span)
+        if pair is None:
+            pair = _best_bearish_swing(candles, pivot_span)
 
     if pair is None:
         fb = _range_fallback(candles)
@@ -480,6 +592,11 @@ def build_fib_navigation_map(
     else:
         confidence = "MEDIUM"
 
+    reference = _reference_fields(
+        prior,
+        recompute_available=trigger in exhausted_triggers or _is_completed_or_exhausted_state(prior.map_state if prior else None),
+    )
+
     return FibNavigationMap(
         anchor_low=anchor_low,
         anchor_high=anchor_high,
@@ -493,4 +610,10 @@ def build_fib_navigation_map(
         confidence=confidence,
         anchor_candle_count=len(candles),
         computed_at_utc=now_utc,
+        historical_reference_state=reference["historical_reference_state"],
+        historical_reference_anchor_low=reference["historical_reference_anchor_low"],
+        historical_reference_anchor_high=reference["historical_reference_anchor_high"],
+        historical_reference_top_extension_price=reference["historical_reference_top_extension_price"],
+        active_map_state=reference["active_map_state"],
+        recompute_status=str(reference["recompute_status"]),
     )
