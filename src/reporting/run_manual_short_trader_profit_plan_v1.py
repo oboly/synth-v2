@@ -81,6 +81,9 @@ REPORT_VERSION = "0.2"
 TARGET_HISTORY_INTERVAL = "1h"
 _MARKET_CONTEXT_INTERVAL = "4h"
 _MARKET_CONTEXT_LOOKBACK_DAYS = 90
+_DEFAULT_NATIVE_SHORT_CONTEXT_UNION_RELATIVE = Path(
+    "_runtime/native_short_context_union_v1/native_short_fib_context_rows_v1.csv"
+)
 
 
 @dataclass(frozen=True)
@@ -180,7 +183,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--native-short-context-rows",
-        default=str(DEFAULT_NATIVE_SHORT_ROWS),
+        default=None,
         help="Canonical native SHORT context rows path. Native 4h+1h rows are preferred when available.",
     )
     parser.add_argument(
@@ -238,6 +241,19 @@ def _parse_iso_ts(value: Any) -> datetime | None:
         return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
     except Exception:
         return None
+
+
+def _resolve_native_short_context_rows_path(
+    *,
+    output_root: Path,
+    native_short_context_rows_arg: str | None,
+) -> Path:
+    if native_short_context_rows_arg:
+        return Path(native_short_context_rows_arg)
+    union_path = output_root / _DEFAULT_NATIVE_SHORT_CONTEXT_UNION_RELATIVE
+    if union_path.exists():
+        return union_path
+    return Path(DEFAULT_NATIVE_SHORT_ROWS)
 
 
 def _symbols_from_markets(markets: list[str]) -> list[str]:
@@ -990,6 +1006,10 @@ def main() -> int:
         print(f"[error] {exc}", file=sys.stderr)
         return 1
     output_root = Path(args.output_root)
+    native_short_rows_path = _resolve_native_short_context_rows_path(
+        output_root=output_root,
+        native_short_context_rows_arg=args.native_short_context_rows,
+    )
     default_html, default_json = default_page_paths(
         output_root=output_root,
         profile=args.account_profile,
@@ -1034,7 +1054,7 @@ def main() -> int:
         prices=prices,
         swing_anchors=_parse_kv_list(args.swing_anchors, 3),
         recent_lows=_parse_kv_list(args.recent_lows, 2),
-        native_short_rows_path=Path(args.native_short_context_rows),
+        native_short_rows_path=native_short_rows_path,
         fib_map_rows_path=Path(args.fib_map_rows),
     )
     history_by_symbol = fetch_market_target_history_by_symbol(
