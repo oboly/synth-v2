@@ -6,12 +6,12 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Sequence
 
-from src.market_context.breathline_state_v1 import (
-    BreathlineCandle,
-    BreathlineStateResult,
-    build_breathline_state,
+from src.market_context.local_ma_atr_context_v1 import (
+    LocalMaAtrCandle,
+    LocalMaAtrContextResult,
+    build_local_ma_atr_context,
 )
-from src.market_context.contracts_v1 import BreathlineState, ImpulseHealthState
+from src.market_context.contracts_v1 import LocalMaAtrState, ImpulseHealthState
 from src.market_context.impulse_health_state_v1 import (
     ImpulseHealthCandle,
     ImpulseHealthStateResult,
@@ -39,9 +39,9 @@ PROFIT_PLAN_BIAS_AVOID_CHASE = "AVOID_CHASE"
 
 _SENTINEL_STATES: frozenset[str] = frozenset({"NO_DATA", "STALE", "LOW_CONFIDENCE"})
 
-_WAIT_BREATHLINE_STATES: frozenset[str] = frozenset({
-    BreathlineState.TESTING_BREATHLINE,
-    BreathlineState.BELOW_BREATHLINE,
+_WAIT_LOCAL_MA_ATR_STATES: frozenset[str] = frozenset({
+    LocalMaAtrState.TESTING_BREATHLINE,
+    LocalMaAtrState.BELOW_BREATHLINE,
 })
 
 _BUILDING_IMPULSE_STATES: frozenset[str] = frozenset({
@@ -62,22 +62,22 @@ class MarketContextCandle:
 
 
 def build_extension_context(
-    breathline_result: BreathlineStateResult,
+    local_ma_atr_result: LocalMaAtrContextResult,
     impulse_result: ImpulseHealthStateResult,
 ) -> dict[str, Any]:
     """
-    Combine breathline + impulse health into a read-only display context.
+    Combine local MA/ATR context + impulse health into a read-only display context.
 
     Read-only market/reporting context.
     Not execution intent. Not order advice. Not account-aware.
     suggested_profit_plan_bias is a display hint only and must never reach
     decision_gate, execution_planner, or executor.
     """
-    b_state = str(breathline_result.state)
+    local_state = str(local_ma_atr_result.state)
     i_state = str(impulse_result.state)
 
     # Degrade gracefully when either builder lacks reliable data.
-    if b_state in _SENTINEL_STATES or i_state in _SENTINEL_STATES:
+    if local_state in _SENTINEL_STATES or i_state in _SENTINEL_STATES:
         return {
             "state": EXTENSION_CONTEXT_NO_DATA,
             "label": "Insufficient data",
@@ -85,7 +85,7 @@ def build_extension_context(
             "warnings": [],
         }
 
-    # Blow-off — highest priority caution signal regardless of breathline.
+    # Blow-off — highest priority caution signal regardless of the local MA line.
     if i_state == ImpulseHealthState.BLOW_OFF_SPIKE:
         return {
             "state": EXTENSION_CONTEXT_NO_CHASE,
@@ -94,8 +94,8 @@ def build_extension_context(
             "warnings": [],
         }
 
-    # Spike cooling — breathline-level exhaustion signal.
-    if b_state == BreathlineState.SPIKE_COOLING:
+    # Spike cooling — local MA/ATR exhaustion signal.
+    if local_state == LocalMaAtrState.SPIKE_COOLING:
         return {
             "state": EXTENSION_CONTEXT_EXHAUSTED,
             "label": "Spike cooling — avoid chase",
@@ -105,7 +105,7 @@ def build_extension_context(
 
     # Distribution risk while extended — extension topped out.
     if (
-        b_state == BreathlineState.EXTENDED_ABOVE_BREATHLINE
+        local_state == LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE
         and i_state == ImpulseHealthState.DISTRIBUTION_RISK
     ):
         return {
@@ -117,7 +117,7 @@ def build_extension_context(
 
     # Both extended — active extension, consider selling into strength.
     if (
-        b_state == BreathlineState.EXTENDED_ABOVE_BREATHLINE
+        local_state == LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE
         and i_state == ImpulseHealthState.EXTENDED_IMPULSE
     ):
         return {
@@ -127,8 +127,8 @@ def build_extension_context(
             "warnings": [],
         }
 
-    # Breathline extended with any other healthy impulse — setup phase.
-    if b_state == BreathlineState.EXTENDED_ABOVE_BREATHLINE:
+    # Local MA/ATR context extended with any other healthy impulse — setup phase.
+    if local_state == LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE:
         return {
             "state": EXTENSION_CONTEXT_SETUP,
             "label": "Extension setup — prepare sell targets",
@@ -136,20 +136,20 @@ def build_extension_context(
             "warnings": [],
         }
 
-    # Above breathline with extended impulse — extension forming.
+    # Above local MA with extended impulse — extension forming.
     if (
-        b_state == BreathlineState.ABOVE_BREATHLINE
+        local_state == LocalMaAtrState.ABOVE_BREATHLINE
         and i_state == ImpulseHealthState.EXTENDED_IMPULSE
     ):
         return {
             "state": EXTENSION_CONTEXT_SETUP,
-            "label": "Extended impulse above breathline",
+            "label": "Extended impulse above local MA",
             "suggested_profit_plan_bias": PROFIT_PLAN_BIAS_SELL_INTO_EXTENSION,
             "warnings": [],
         }
 
-    # Reclaiming or above breathline with building impulse — prepare sell side.
-    if b_state in {BreathlineState.RECLAIMING_BREATHLINE, BreathlineState.ABOVE_BREATHLINE}:
+    # Reclaiming or above the local MA with building impulse — prepare sell side.
+    if local_state in {LocalMaAtrState.RECLAIMING_BREATHLINE, LocalMaAtrState.ABOVE_BREATHLINE}:
         if i_state in _BUILDING_IMPULSE_STATES:
             return {
                 "state": EXTENSION_CONTEXT_BUILDING,
@@ -158,11 +158,11 @@ def build_extension_context(
                 "warnings": [],
             }
 
-    # Wait states — breathline breakdown or failed impulse reclaim.
-    if b_state in _WAIT_BREATHLINE_STATES or i_state == ImpulseHealthState.FAILED_RECLAIM:
+    # Wait states — local-MA breakdown or failed impulse reclaim.
+    if local_state in _WAIT_LOCAL_MA_ATR_STATES or i_state == ImpulseHealthState.FAILED_RECLAIM:
         return {
             "state": EXTENSION_CONTEXT_NO_DATA,
-            "label": "Wait for pullback to breathline",
+            "label": "Wait for pullback to local MA",
             "suggested_profit_plan_bias": PROFIT_PLAN_BIAS_WAIT_FOR_PULLBACK,
             "warnings": [],
         }
@@ -180,8 +180,8 @@ def build_market_context_for_symbol(
     candles: Sequence[MarketContextCandle],
     now_utc: datetime,
 ) -> dict[str, Any]:
-    breathline_candles = [
-        BreathlineCandle(
+    local_ma_atr_candles = [
+        LocalMaAtrCandle(
             close_ts_utc=c.close_ts_utc,
             high_price=c.high_price,
             low_price=c.low_price,
@@ -199,12 +199,12 @@ def build_market_context_for_symbol(
         )
         for c in candles
     ]
-    breathline_result = build_breathline_state(candles=breathline_candles, now_utc=now_utc)
+    local_ma_atr_result = build_local_ma_atr_context(candles=local_ma_atr_candles, now_utc=now_utc)
     impulse_result = build_impulse_health_state(candles=impulse_candles, now_utc=now_utc)
     return {
-        "breathline": dataclasses.asdict(breathline_result),
+        "local_ma_atr_context": dataclasses.asdict(local_ma_atr_result),
         "impulse_health": dataclasses.asdict(impulse_result),
-        "extension_context": build_extension_context(breathline_result, impulse_result),
+        "extension_context": build_extension_context(local_ma_atr_result, impulse_result),
     }
 
 

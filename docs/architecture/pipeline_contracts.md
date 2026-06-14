@@ -19,7 +19,7 @@ Market-context modules describe market structure only. Account permission, execu
 | market_data | `src/market_data/` | Candles, ticker/current price, volume, freshness, symbol normalization | Account logic, scoring, ladders, orders |
 | market_context / features | `src/market_context/`, `src/features/`, `src/measurement/` | Market-only deterministic feature objects | Account state, orders, decision_gate, execution planning, broker calls |
 | selection_engine | `src/selection/` | Market-only ranking and setup classification | Balances, exposure, open orders, broker calls |
-| decision_gate | `src/decision_gate/` | Account-aware permission checks | Fibs, breathline, impulse, timing, order placement |
+| decision_gate | `src/decision_gate/` | Account-aware permission checks | Fibs, local MA/ATR context, impulse, timing, order placement |
 | execution_planner | `src/execution_planner/` | Execution intent and proposed plans only | Broker calls, market feature calculation, permission bypass |
 | executor / agents | `src/executor/`, `src/execution/` | Broker/order handling, idempotency, audit, failure handling | Market scoring, feature calculation, strategy selection |
 | UI / dashboard | `apps/`, `src/reporting/` | Display payload and explicit manual user actions | Hidden order logic, market feature calculation, permission inference |
@@ -83,7 +83,7 @@ It aggregates:
     navigation_regime
     fib_map_state
     fib_map_confidence
-    breathline_state
+    local_ma_atr_state
     impulse_health_state
     timing_state
     freshness_state
@@ -144,7 +144,11 @@ Required sentinel states:
     STALE
     LOW_CONFIDENCE
 
-Breathline examples:
+`local_ma_atr_context` is local per-symbol MA/ATR trend context. It is not the future universal breathline model.
+
+`breathline` is reserved for a future universal market breathline / A+ phase model and must not be used for per-symbol MA/ATR context naming.
+
+Local MA/ATR examples:
 
     ABOVE_BREATHLINE
     TESTING_BREATHLINE

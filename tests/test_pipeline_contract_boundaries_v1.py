@@ -86,9 +86,9 @@ def test_navigation_regime_sentinel_values_present():
     assert "LOW_CONFIDENCE" in values
 
 
-def test_breathline_state_sentinel_and_canonical_values_present():
-    from src.market_context.contracts_v1 import BreathlineState
-    values = {v.value for v in BreathlineState}
+def test_local_ma_atr_state_sentinel_and_canonical_values_present():
+    from src.market_context.contracts_v1 import LocalMaAtrState
+    values = {v.value for v in LocalMaAtrState}
     assert "NO_DATA" in values
     assert "STALE" in values
     assert "LOW_CONFIDENCE" in values
@@ -174,11 +174,11 @@ def test_fib_map_confidence_values_present():
 
 def test_all_enum_values_are_json_safe():
     from src.market_context.contracts_v1 import (
-        BreathlineState,
         FibMapConfidence,
         FibMapState,
         FreshnessState,
         ImpulseHealthState,
+        LocalMaAtrState,
         NavigationRegime,
         TimingState,
     )
@@ -186,7 +186,7 @@ def test_all_enum_values_are_json_safe():
         FibMapState,
         FibMapConfidence,
         NavigationRegime,
-        BreathlineState,
+        LocalMaAtrState,
         ImpulseHealthState,
         TimingState,
         FreshnessState,
@@ -197,11 +197,11 @@ def test_all_enum_values_are_json_safe():
 
 def test_market_navigation_state_is_json_safe():
     from src.market_context.contracts_v1 import (
-        BreathlineState,
         FibMapConfidence,
         FibMapState,
         FreshnessState,
         ImpulseHealthState,
+        LocalMaAtrState,
         MarketNavigationState,
         NavigationRegime,
         TimingState,
@@ -211,7 +211,7 @@ def test_market_navigation_state_is_json_safe():
         navigation_regime=NavigationRegime.NO_DATA,
         fib_map_state=FibMapState.NO_DATA,
         fib_map_confidence=FibMapConfidence.NONE,
-        breathline_state=BreathlineState.NO_DATA,
+        local_ma_atr_state=LocalMaAtrState.NO_DATA,
         impulse_health_state=ImpulseHealthState.NO_DATA,
         timing_state=TimingState.NO_DATA,
         freshness_state=FreshnessState.NO_DATA,
@@ -241,7 +241,7 @@ def test_market_navigation_state_is_aggregate_dataclass():
         "navigation_regime",
         "fib_map_state",
         "fib_map_confidence",
-        "breathline_state",
+        "local_ma_atr_state",
         "impulse_health_state",
         "timing_state",
         "freshness_state",
@@ -259,11 +259,11 @@ def test_market_navigation_state_is_aggregate_dataclass():
 
 def test_market_navigation_enums_contain_no_order_action_semantics():
     from src.market_context.contracts_v1 import (
-        BreathlineState,
         FibMapConfidence,
         FibMapState,
         FreshnessState,
         ImpulseHealthState,
+        LocalMaAtrState,
         NavigationRegime,
         TimingState,
     )
@@ -271,7 +271,7 @@ def test_market_navigation_enums_contain_no_order_action_semantics():
         FibMapState,
         FibMapConfidence,
         NavigationRegime,
-        BreathlineState,
+        LocalMaAtrState,
         ImpulseHealthState,
         TimingState,
         FreshnessState,

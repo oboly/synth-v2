@@ -27,7 +27,7 @@ FORBIDDEN_IMPORT_FRAGMENTS = (
     "reporting",
     "dashboard",
     "view",
-    "breathline_state_v1",
+    "local_ma_atr_context_v1",
     "fib_navigation",
 )
 

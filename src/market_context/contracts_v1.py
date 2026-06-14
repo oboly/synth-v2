@@ -7,7 +7,7 @@ __all__ = [
     "FibMapState",
     "FibMapConfidence",
     "NavigationRegime",
-    "BreathlineState",
+    "LocalMaAtrState",
     "ImpulseHealthState",
     "TimingState",
     "FreshnessState",
@@ -42,7 +42,7 @@ class NavigationRegime(StrEnum):
     TRANSITION = "TRANSITION"
 
 
-class BreathlineState(StrEnum):
+class LocalMaAtrState(StrEnum):
     NO_DATA = "NO_DATA"
     STALE = "STALE"
     LOW_CONFIDENCE = "LOW_CONFIDENCE"
@@ -96,7 +96,7 @@ class MarketNavigationState:
     navigation_regime: NavigationRegime
     fib_map_state: FibMapState
     fib_map_confidence: FibMapConfidence
-    breathline_state: BreathlineState
+    local_ma_atr_state: LocalMaAtrState
     impulse_health_state: ImpulseHealthState
     timing_state: TimingState
     freshness_state: FreshnessState
