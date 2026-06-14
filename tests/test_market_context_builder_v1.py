@@ -6,9 +6,9 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from src.market_context.breathline_state_v1 import BreathlineStateResult
-from src.market_context.contracts_v1 import BreathlineState, ImpulseHealthState
+from src.market_context.contracts_v1 import LocalMaAtrState, ImpulseHealthState
 from src.market_context.impulse_health_state_v1 import ImpulseHealthStateResult
+from src.market_context.local_ma_atr_context_v1 import LocalMaAtrContextResult
 from src.market_context.market_context_builder_v1 import (
     EXTENSION_CONTEXT_ACTIVE,
     EXTENSION_CONTEXT_BUILDING,
@@ -79,10 +79,10 @@ def _flat_seed(length: int = 20, price: str = "100.0") -> list[MarketContextCand
     ]
 
 
-def _breathline_result(state: BreathlineState) -> BreathlineStateResult:
-    return BreathlineStateResult(
+def _local_ma_atr_result(state: LocalMaAtrState) -> LocalMaAtrContextResult:
+    return LocalMaAtrContextResult(
         state=state,
-        breathline_price=None,
+        ma_price=None,
         atr=None,
         distance_atr=None,
         latest_close_ts_utc=None,
@@ -132,28 +132,28 @@ def test_json_safe_for_valid_candles() -> None:
 
 def test_output_has_all_three_keys() -> None:
     result = build_market_context_for_symbol(candles=_flat_seed(20), now_utc=_ts(19))
-    assert "breathline" in result
+    assert "local_ma_atr_context" in result
     assert "impulse_health" in result
     assert "extension_context" in result
 
 
 def test_state_values_are_strings() -> None:
     result = build_market_context_for_symbol(candles=_flat_seed(20), now_utc=_ts(19))
-    assert isinstance(result["breathline"]["state"], str)
+    assert isinstance(result["local_ma_atr_context"]["state"], str)
     assert isinstance(result["impulse_health"]["state"], str)
     assert isinstance(result["extension_context"]["state"], str)
 
 
 def test_no_data_on_empty_candles() -> None:
     result = build_market_context_for_symbol(candles=[], now_utc=_ts(0))
-    assert result["breathline"]["state"] == "NO_DATA"
+    assert result["local_ma_atr_context"]["state"] == "NO_DATA"
     assert result["impulse_health"]["state"] == "NO_DATA"
     assert result["extension_context"]["state"] == EXTENSION_CONTEXT_NO_DATA
 
 
 def test_no_data_on_insufficient_candles() -> None:
     result = build_market_context_for_symbol(candles=_flat_seed(1), now_utc=_ts(0))
-    assert result["breathline"]["state"] == "NO_DATA"
+    assert result["local_ma_atr_context"]["state"] == "NO_DATA"
     assert result["impulse_health"]["state"] == "NO_DATA"
 
 
@@ -163,7 +163,7 @@ def test_stale_on_old_candles() -> None:
         candles=candles,
         now_utc=_ts(19) + timedelta(days=10),
     )
-    assert result["breathline"]["state"] == "STALE"
+    assert result["local_ma_atr_context"]["state"] == "STALE"
     assert result["extension_context"]["state"] == EXTENSION_CONTEXT_NO_DATA
 
 
@@ -234,7 +234,7 @@ def test_warnings_are_sequences() -> None:
     # dataclasses.asdict() keeps string tuples as tuples; extension_context warnings
     # are built as a plain list. Both are JSON-safe — json.dumps handles tuple and list.
     result = build_market_context_for_symbol(candles=[], now_utc=_ts(0))
-    assert hasattr(result["breathline"]["warnings"], "__iter__")
+    assert hasattr(result["local_ma_atr_context"]["warnings"], "__iter__")
     assert hasattr(result["impulse_health"]["warnings"], "__iter__")
     assert isinstance(result["extension_context"]["warnings"], list)
     # JSON-safety covered by test_json_safe_for_valid_candles
@@ -245,7 +245,7 @@ def test_warnings_are_sequences() -> None:
 # ---------------------------------------------------------------------------
 
 def test_extension_active_on_extended_states() -> None:
-    b = _breathline_result(BreathlineState.EXTENDED_ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE)
     i = _impulse_result(ImpulseHealthState.EXTENDED_IMPULSE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_ACTIVE
@@ -253,7 +253,7 @@ def test_extension_active_on_extended_states() -> None:
 
 
 def test_extension_no_chase_on_blow_off() -> None:
-    b = _breathline_result(BreathlineState.ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.ABOVE_BREATHLINE)
     i = _impulse_result(ImpulseHealthState.BLOW_OFF_SPIKE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_NO_CHASE
@@ -261,7 +261,7 @@ def test_extension_no_chase_on_blow_off() -> None:
 
 
 def test_extension_exhausted_on_spike_cooling() -> None:
-    b = _breathline_result(BreathlineState.SPIKE_COOLING)
+    b = _local_ma_atr_result(LocalMaAtrState.SPIKE_COOLING)
     i = _impulse_result(ImpulseHealthState.HEALTHY_IMPULSE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_EXHAUSTED
@@ -269,14 +269,14 @@ def test_extension_exhausted_on_spike_cooling() -> None:
 
 
 def test_extension_exhausted_on_distribution_risk() -> None:
-    b = _breathline_result(BreathlineState.EXTENDED_ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE)
     i = _impulse_result(ImpulseHealthState.DISTRIBUTION_RISK)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_EXHAUSTED
 
 
-def test_extension_setup_on_extended_breathline_other_impulse() -> None:
-    b = _breathline_result(BreathlineState.EXTENDED_ABOVE_BREATHLINE)
+def test_extension_setup_on_extended_local_ma_other_impulse() -> None:
+    b = _local_ma_atr_result(LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE)
     i = _impulse_result(ImpulseHealthState.HEALTHY_IMPULSE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_SETUP
@@ -284,22 +284,22 @@ def test_extension_setup_on_extended_breathline_other_impulse() -> None:
 
 
 def test_extension_setup_on_above_extended_impulse() -> None:
-    b = _breathline_result(BreathlineState.ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.ABOVE_BREATHLINE)
     i = _impulse_result(ImpulseHealthState.EXTENDED_IMPULSE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_SETUP
 
 
-def test_extension_building_on_reclaiming_breathline() -> None:
-    b = _breathline_result(BreathlineState.RECLAIMING_BREATHLINE)
+def test_extension_building_on_reclaiming_local_ma() -> None:
+    b = _local_ma_atr_result(LocalMaAtrState.RECLAIMING_BREATHLINE)
     i = _impulse_result(ImpulseHealthState.HEALTHY_IMPULSE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_BUILDING
     assert ec["suggested_profit_plan_bias"] == PROFIT_PLAN_BIAS_PREPARE_SELLS
 
 
-def test_extension_wait_for_pullback_on_below_breathline() -> None:
-    b = _breathline_result(BreathlineState.BELOW_BREATHLINE)
+def test_extension_wait_for_pullback_on_below_local_ma() -> None:
+    b = _local_ma_atr_result(LocalMaAtrState.BELOW_BREATHLINE)
     i = _impulse_result(ImpulseHealthState.HEALTHY_IMPULSE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_NO_DATA
@@ -307,15 +307,15 @@ def test_extension_wait_for_pullback_on_below_breathline() -> None:
 
 
 def test_extension_wait_for_pullback_on_failed_reclaim() -> None:
-    b = _breathline_result(BreathlineState.ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.ABOVE_BREATHLINE)
     i = _impulse_result(ImpulseHealthState.FAILED_RECLAIM)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_NO_DATA
     assert ec["suggested_profit_plan_bias"] == PROFIT_PLAN_BIAS_WAIT_FOR_PULLBACK
 
 
-def test_extension_no_data_when_breathline_stale() -> None:
-    b = _breathline_result(BreathlineState.STALE)
+def test_extension_no_data_when_local_ma_stale() -> None:
+    b = _local_ma_atr_result(LocalMaAtrState.STALE)
     i = _impulse_result(ImpulseHealthState.HEALTHY_IMPULSE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_NO_DATA
@@ -323,7 +323,7 @@ def test_extension_no_data_when_breathline_stale() -> None:
 
 
 def test_extension_no_data_when_impulse_stale() -> None:
-    b = _breathline_result(BreathlineState.ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.ABOVE_BREATHLINE)
     i = _impulse_result(ImpulseHealthState.STALE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_NO_DATA
@@ -340,7 +340,7 @@ def test_by_symbol_multiple() -> None:
     )
     assert set(result.keys()) == {"BTC", "ETH"}
     for sym in result:
-        assert "breathline" in result[sym]
+        assert "local_ma_atr_context" in result[sym]
         assert "impulse_health" in result[sym]
         assert "extension_context" in result[sym]
 
@@ -351,9 +351,14 @@ def test_by_symbol_empty_candle_list_returns_no_data_context() -> None:
         now_utc=_ts(19),
     )
     assert set(result.keys()) == {"BTC", "ETH"}
-    assert result["BTC"]["breathline"]["state"] == "NO_DATA"
+    assert result["BTC"]["local_ma_atr_context"]["state"] == "NO_DATA"
     assert result["BTC"]["impulse_health"]["state"] == "NO_DATA"
     assert result["BTC"]["extension_context"]["state"] == EXTENSION_CONTEXT_NO_DATA
+
+
+def test_market_context_does_not_expose_legacy_breathline_key() -> None:
+    result = build_market_context_for_symbol(candles=_flat_seed(20), now_utc=_ts(19))
+    assert "breathline" not in result
 
 
 def test_by_symbol_empty_dict() -> None:

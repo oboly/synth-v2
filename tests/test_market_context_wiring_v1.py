@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from src.reporting.manual_short_trader_profit_plan_v1 import (
     ActiveOrderSummary,
     ProfitPlanCard,
     build_json_snapshot,
 )
+
+ROOT = Path(__file__).parent.parent
 
 
 def _order_summary() -> ActiveOrderSummary:
@@ -70,8 +73,8 @@ def _minimal_card(symbol: str) -> ProfitPlanCard:
 
 
 _MINIMAL_MARKET_CONTEXT = {
-    "breathline": {"state": "ABOVE_BREATHLINE", "breathline_price": None, "atr": None,
-                   "distance_atr": None, "latest_close_ts_utc": None, "warnings": []},
+    "local_ma_atr_context": {"state": "ABOVE_BREATHLINE", "ma_price": None, "atr": None,
+                             "distance_atr": None, "latest_close_ts_utc": None, "warnings": []},
     "impulse_health": {"state": "HEALTHY_IMPULSE", "ema_price": None, "atr": None,
                        "swing_high_price": None, "distance_atr": None,
                        "pullback_from_high_atr": None, "latest_close_ts_utc": None, "warnings": []},
@@ -80,8 +83,8 @@ _MINIMAL_MARKET_CONTEXT = {
 }
 
 _NO_DATA_MARKET_CONTEXT = {
-    "breathline": {"state": "NO_DATA", "breathline_price": None, "atr": None,
-                   "distance_atr": None, "latest_close_ts_utc": None, "warnings": ["INSUFFICIENT_CANDLES"]},
+    "local_ma_atr_context": {"state": "NO_DATA", "ma_price": None, "atr": None,
+                             "distance_atr": None, "latest_close_ts_utc": None, "warnings": ["INSUFFICIENT_CANDLES"]},
     "impulse_health": {"state": "NO_DATA", "ema_price": None, "atr": None,
                        "swing_high_price": None, "distance_atr": None,
                        "pullback_from_high_atr": None, "latest_close_ts_utc": None, "warnings": ["INSUFFICIENT_CANDLES"]},
@@ -121,6 +124,23 @@ def test_market_context_no_data_payload_is_emitted_as_non_null() -> None:
     )
     assert snapshot["symbols"][0]["market_context"] == _NO_DATA_MARKET_CONTEXT
     json.dumps(snapshot)
+
+
+def test_market_context_payload_has_no_legacy_breathline_key() -> None:
+    snapshot = build_json_snapshot(
+        [_minimal_card("BTC")],
+        market_context_by_symbol={"BTC": _MINIMAL_MARKET_CONTEXT},
+    )
+    assert "breathline" not in snapshot["symbols"][0]["market_context"]
+
+
+def test_source_files_do_not_reintroduce_market_context_breathline_key() -> None:
+    for rel_path in (
+        "src/market_context/market_context_builder_v1.py",
+        "src/reporting/manual_short_trader_profit_plan_v1.py",
+    ):
+        text = (ROOT / rel_path).read_text()
+        assert '"breathline":' not in text
 
 
 def test_existing_fields_still_present() -> None:
