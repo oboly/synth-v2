@@ -449,8 +449,10 @@ def build_fib_navigation_map_from_anchor(
     exhausted_reference = _is_completed_or_exhausted_state(prior_map_state)
     trigger = TRIGGER_MAP_EXHAUSTED if exhausted_reference else TRIGGER_MAP_MISSING
     map_state = MAP_STATE_EMERGENCY_REBUILT if exhausted_reference else MAP_STATE_FRESH
-    active_map_state = ACTIVE_RECOMPUTED_MAP if exhausted_reference else None
-    recompute_status = NEW_MAP_AVAILABLE if exhausted_reference else RECOMPUTE_STATUS_NONE
+    # Anchor-only fallback reuses the historical anchor. It must not claim
+    # that a fresh active recomputed map was derived from new candles.
+    active_map_state = None
+    recompute_status = RECOMPUTE_NEEDED if exhausted_reference else RECOMPUTE_STATUS_NONE
     historical_reference_state = MAP_COMPLETED_FROZEN if exhausted_reference else None
     return FibNavigationMap(
         anchor_low=anchor_low,
