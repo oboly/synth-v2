@@ -1584,7 +1584,7 @@ def test_navigation_only_card_shows_navigation_wording() -> None:
     assert card.actionability_state == "NAVIGATION_ONLY"
     assert card.action_label == "NAVIGATION_ONLY"
     assert "Navigation target zone" in html
-    assert "Navigation only" in html or "NAVIGATION MAP" in html
+    assert "NAVIGATION ONLY" in html or "NAVIGATION MAP" in html
 
 
 def test_non_active_card_open_orders_are_review_only() -> None:
@@ -2795,6 +2795,184 @@ def test_multiple_markets_normalize_independently() -> None:
     for p in normalized[1].target_exit_zone:
         _, _, exp = p.as_tuple()
         assert -exp == 8
+
+
+def _invalidated_buy_dip_card() -> "ProfitPlanCard":
+    """INVALIDATED card whose base action_label would be BUY_DIP (retesting breakout gate, price below gate)."""
+    fib = FibExtContext(
+        local_reaction_price=Decimal("0.399040"),
+        anchor_end_ts_utc=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
+        ext_1_272=Decimal("0.49"),
+        ext_1_618=Decimal("0.65"),
+        ext_2_000=Decimal("0.80"),
+        breakout_gate=Decimal("0.38"),
+        price_band="BELOW_BREAKOUT_GATE",
+        ext_1_272_touched_and_rejected=False,
+        retesting_breakout_gate=True,
+    )
+    return _make_card(
+        current_price="0.3600",
+        fib_ext=fib,
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Blocker 1: non-active header label and action-class de-actioning
+# ---------------------------------------------------------------------------
+
+def test_invalidated_card_does_not_render_active_buy_dip_label() -> None:
+    card = _invalidated_buy_dip_card()
+    assert card.actionability_state == "INVALIDATED"
+    assert card.action_label == "BUY_DIP"
+    html = render_plan_card(card)
+    assert "BUY DIP" not in html
+    assert "INVALIDATED" in html
+
+
+def test_invalidated_card_does_not_use_active_buy_css_class() -> None:
+    card = _invalidated_buy_dip_card()
+    assert card.actionability_state == "INVALIDATED"
+    html = render_plan_card(card)
+    assert "action-buy" not in html
+
+
+def test_needs_recompute_card_renders_review_map_label() -> None:
+    # price=0.50 is above invalidation_level (ext_1_272=0.454438), so not INVALIDATED
+    card = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.50"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="HAS_ZONE_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        fib_ext=_wld_fib_ext(),
+    )
+    assert card.actionability_state == "NEEDS_RECOMPUTE"
+    html = render_plan_card(card)
+    assert "REVIEW MAP" in html
+    assert "action-buy" not in html
+    assert "action-tp" not in html
+
+
+def test_navigation_only_card_renders_navigation_only_label() -> None:
+    card = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.7600"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        fib_ext=_wld_fib_ext_touched(),
+        reentry=_fet_reentry(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+        fib_nav_context=_nav_context(),
+    )
+    assert card.actionability_state == "NAVIGATION_ONLY"
+    html = render_plan_card(card)
+    assert "NAVIGATION ONLY" in html
+
+
+# ---------------------------------------------------------------------------
+# Blocker 2: order-row de-actioning on non-active cards
+# ---------------------------------------------------------------------------
+
+def test_non_active_card_zones_do_not_emit_missing_row_states() -> None:
+    from src.reporting.manual_short_trader_profit_plan_v1 import _order_rows_html
+    # price=0.50 is above invalidation_level (0.454438), so card is NEEDS_RECOMPUTE not INVALIDATED
+    card = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.50"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="HAS_ZONE_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        fib_ext=_wld_fib_ext(),
+    )
+    assert card.actionability_state == "NEEDS_RECOMPUTE"
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        actionability_state=card.actionability_state,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    missing = [r for r in rows if r.state == "MISSING"]
+    assert not missing, f"Non-active card must not emit MISSING rows; got: {missing}"
+    reason_codes = {r.reason_code for r in rows}
+    assert "NO_BUY_ORDER_AT_ZONE" not in reason_codes
+    assert "NO_SELL_ORDER_AT_ACTIVE_TARGET" not in reason_codes
+    html = _order_rows_html(rows, card_render_id=card.render_id, actionability_state=card.actionability_state)
+    assert "Select missing" not in html
+    assert "Fix selected" not in html
+
+
+def test_non_active_card_existing_orders_still_render_as_reference_rows() -> None:
+    from src.reporting.manual_short_trader_profit_plan_v1 import _order_rows_html
+    card = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.50"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="HAS_ZONE_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        fib_ext=_wld_fib_ext(),
+    )
+    assert card.actionability_state == "NEEDS_RECOMPUTE"
+    existing_sell = (_FakeOrder("0.515600", side="sell"),)
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        actionability_state=card.actionability_state,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=existing_sell,
+    )
+    assert rows, "Existing orders must still produce rows on non-active cards"
+    armed = [r for r in rows if r.state == "ARMED"]
+    assert armed, "An existing order at an active zone must still be ARMED (visible as reference)"
+    html = _order_rows_html(rows, card_render_id=card.render_id, actionability_state=card.actionability_state)
+    assert "SELL" in html
+
+
+def test_active_card_still_emits_missing_rows_and_select_menu() -> None:
+    from src.reporting.manual_short_trader_profit_plan_v1 import _order_rows_html
+    # price=0.50 is above invalidation_level (0.454438) → ACTIVE_TRADE_SETUP with native context
+    card = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.50"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        fib_ext=_wld_fib_ext(),
+    )
+    assert card.actionability_state == "ACTIVE_TRADE_SETUP"
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        actionability_state=card.actionability_state,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    missing = [r for r in rows if r.state == "MISSING"]
+    assert missing, "ACTIVE card must still emit MISSING rows when orders absent"
+    html = _order_rows_html(rows, card_render_id=card.render_id, actionability_state=card.actionability_state)
+    assert "Select missing" in html
+    assert "Fix selected" in html
 
 
 def _make_order_summary(*, matching_buys: int = 0, matching_sells: int = 0) -> ActiveOrderSummary:

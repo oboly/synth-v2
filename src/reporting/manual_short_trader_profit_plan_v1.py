@@ -1251,6 +1251,14 @@ def _display_action_label(action_label: str) -> str:
     return _ACTION_DISPLAY_MAP.get(action_label, action_label.replace("_", " "))
 
 
+_NON_ACTIVE_DISPLAY_LABELS: dict[str, str] = {
+    CARD_ACTIONABILITY_INVALIDATED: "INVALIDATED",
+    CARD_ACTIONABILITY_NEEDS_RECOMPUTE: "REVIEW MAP",
+    CARD_ACTIONABILITY_NAVIGATION_ONLY: "NAVIGATION ONLY",
+    CARD_ACTIONABILITY_HISTORICAL_REFERENCE: "REFERENCE ONLY",
+}
+
+
 # ---------------------------------------------------------------------------
 # Quality state aggregation (replaces FRESH_CURRENT_PRICE / NATIVE_SHORT display)
 # ---------------------------------------------------------------------------
@@ -1421,7 +1429,7 @@ def _displayed_user_action(
     """
     base = _display_action_label(action_label)
     if actionability_state != CARD_ACTIONABILITY_ACTIVE:
-        return base
+        return _NON_ACTIVE_DISPLAY_LABELS.get(actionability_state, actionability_state.replace("_", " "))
     if base.upper() in _WAIT_LIKE_DISPLAY_LABELS:
         if any(r.state in {"MISSING", "STALE"} for r in order_rows):
             return "FIX LADDER"
@@ -2161,13 +2169,20 @@ def build_order_rows(
                 f"({level.lifecycle_state}); "
                 f"distance {_pct(dist)} from {_fmt_p(current_price)}"
             )
-        else:
+        elif actionability_state == CARD_ACTIONABILITY_ACTIVE:
             state = "MISSING"
             reason_code = "NO_SELL_ORDER_AT_ACTIVE_TARGET"
             reason_label = (
                 f"No sell order at active target {_fmt_p(level.level)} "
                 f"({level.lifecycle_state}); "
                 f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
+        else:
+            state = "HISTORICAL"
+            reason_code = "NO_ACTIVE_ORDER_REFERENCE_ONLY"
+            reason_label = (
+                f"No sell order at {_fmt_p(level.level)} ({level.lifecycle_state}) — "
+                f"reference only; card is {actionability_state}"
             )
         rows.append(OrderRow(
             row_id=str(uuid.uuid4()),
@@ -2198,12 +2213,19 @@ def build_order_rows(
                 f"Buy order at reload zone {_fmt_p(buy_level)}; "
                 f"distance {_pct(dist)} from {_fmt_p(current_price)}"
             )
-        else:
+        elif actionability_state == CARD_ACTIONABILITY_ACTIVE:
             state = "MISSING"
             reason_code = "NO_BUY_ORDER_AT_ZONE"
             reason_label = (
                 f"No buy order at reload zone {_fmt_p(buy_level)}; "
                 f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
+        else:
+            state = "HISTORICAL"
+            reason_code = "NO_ACTIVE_ORDER_REFERENCE_ONLY"
+            reason_label = (
+                f"No buy order at reload zone {_fmt_p(buy_level)} — "
+                f"reference only; card is {actionability_state}"
             )
         rows.append(OrderRow(
             row_id=str(uuid.uuid4()),
@@ -2320,10 +2342,18 @@ _ORDER_ROW_STATUS_CSS_CLASS: dict[str, str] = {
 }
 
 
-def _order_rows_html(order_rows: tuple[OrderRow, ...], *, card_render_id: str) -> str:
+def _order_rows_html(
+    order_rows: tuple[OrderRow, ...],
+    *,
+    card_render_id: str,
+    actionability_state: str = CARD_ACTIONABILITY_ACTIVE,
+) -> str:
     if not order_rows:
         return ""
-    has_actionable = any(r.state in {"MISSING", "STALE"} for r in order_rows)
+    has_actionable = (
+        actionability_state == CARD_ACTIONABILITY_ACTIVE
+        and any(r.state in {"MISSING", "STALE"} for r in order_rows)
+    )
     rows_html = []
     for row in order_rows:
         css = _ORDER_ROW_STATE_CSS.get(row.state, "order-row-unavailable")
@@ -2428,9 +2458,11 @@ def render_plan_card(
         f"<span>Ladder: {esc(ladder_label)}</span>"
         "</div>"
     )
-    order_rows_html = _order_rows_html(order_rows, card_render_id=card.render_id).replace(
-        "Order ladder", order_ladder_label, 1
-    )
+    order_rows_html = _order_rows_html(
+        order_rows,
+        card_render_id=card.render_id,
+        actionability_state=card.actionability_state,
+    ).replace("Order ladder", order_ladder_label, 1)
 
     secondary_state_html = ""
     if card.secondary_state is not None:
@@ -2461,7 +2493,7 @@ def render_plan_card(
         f"{_scenario_badge(card.scenario_type)}"
         f"<div class='state-label {_state_class(card.primary_state)}'>{esc(card.suggested_manual_attention_label)}</div>"
         f"{secondary_state_html}"
-        f"<div class='action-label {_action_class(card.action_label)}'>{esc(displayed_action)}</div>"
+        f"<div class='action-label {_action_class(card.action_label) if card.actionability_state == CARD_ACTIONABILITY_ACTIVE else 'action-wait'}'>{esc(displayed_action)}</div>"
         f"<div class='tf-label'>{esc(card.timeframe_label)}</div>"
         f"</div>"
         "</div>"
