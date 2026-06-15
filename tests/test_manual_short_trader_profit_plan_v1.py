@@ -1526,7 +1526,7 @@ def test_json_snapshot_includes_new_semantic_fields() -> None:
 
 def test_active_trade_setup_keeps_active_zone_wording() -> None:
     card = _make_card(
-        current_price="0.440000",
+        current_price="0.470000",
         fib_ext=_wld_fib_ext(),
         short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
@@ -1600,6 +1600,60 @@ def test_non_active_card_open_orders_are_review_only() -> None:
     assert "Order review" in html
     assert "Existing open orders to review:" in html
     assert "Review only" in html
+
+
+def test_breached_invalidation_emits_invalidated_actionability_state() -> None:
+    fib = FibExtContext(
+        local_reaction_price=Decimal("0.399040"),
+        anchor_end_ts_utc=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
+        ext_1_272=Decimal("0.49"),
+        ext_1_618=Decimal("0.65"),
+        ext_2_000=Decimal("0.80"),
+        breakout_gate=Decimal("0.38"),
+        price_band="BELOW_BREAKOUT_GATE",
+        ext_1_272_touched_and_rejected=False,
+        retesting_breakout_gate=True,
+    )
+    card = _make_card(
+        current_price="0.3600",
+        fib_ext=fib,
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert card.invalidation_level is not None
+    assert card.current_price is not None
+    assert card.current_price <= card.invalidation_level
+    assert card.actionability_state == "INVALIDATED"
+
+
+def test_invalidated_card_uses_reference_review_wording() -> None:
+    fib = FibExtContext(
+        local_reaction_price=Decimal("0.399040"),
+        anchor_end_ts_utc=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
+        ext_1_272=Decimal("0.49"),
+        ext_1_618=Decimal("0.65"),
+        ext_2_000=Decimal("0.80"),
+        breakout_gate=Decimal("0.38"),
+        price_band="BELOW_BREAKOUT_GATE",
+        ext_1_272_touched_and_rejected=False,
+        retesting_breakout_gate=True,
+    )
+    card = _make_card(
+        current_price="0.3600",
+        fib_ext=fib,
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    html = render_plan_card(card)
+    assert card.actionability_state == "INVALIDATED"
+    assert "Invalidated re-entry zone" in html
+    assert "Historical target zone" in html
+    assert "Context invalidated — review existing orders if applicable" in html
+    assert "Order review" in html
+    assert "Re-entry zone" not in html.replace("Invalidated re-entry zone", "")
+    assert "Target zone" not in html.replace("Historical target zone", "")
 
 
 def test_native_short_context_available_does_not_regress_to_missing_symbol() -> None:

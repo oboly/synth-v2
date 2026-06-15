@@ -336,6 +336,14 @@ def _derive_card_actionability_state(
     current_price: Decimal | None,
     invalidation_level: Decimal | None,
 ) -> str:
+    if primary_state == "INVALIDATED":
+        return CARD_ACTIONABILITY_INVALIDATED
+    if (
+        current_price is not None
+        and invalidation_level is not None
+        and current_price <= invalidation_level
+    ):
+        return CARD_ACTIONABILITY_INVALIDATED
     if action_label == "NAVIGATION_ONLY":
         return CARD_ACTIONABILITY_NAVIGATION_ONLY
     if scenario_type in {"MAP_COMPLETED", LEGACY_SHORT_REFERENCE_SCENARIO}:
