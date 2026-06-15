@@ -122,6 +122,12 @@ _ACTION_DISPLAY_MAP: dict[str, str] = {
     "FAR_MOONBAG_ONLY": "MOONBAG ONLY",
 }
 
+CARD_ACTIONABILITY_ACTIVE = "ACTIVE_TRADE_SETUP"
+CARD_ACTIONABILITY_NAVIGATION_ONLY = "NAVIGATION_ONLY"
+CARD_ACTIONABILITY_HISTORICAL_REFERENCE = "HISTORICAL_REFERENCE"
+CARD_ACTIONABILITY_NEEDS_RECOMPUTE = "NEEDS_RECOMPUTE"
+CARD_ACTIONABILITY_INVALIDATED = "INVALIDATED"
+
 SHORT_CONTEXT_DISPLAY_LABELS: dict[str, str] = {
     "HAS_NATIVE_SHORT_FIB_CONTEXT": "Native SHORT fib context available",
     "NO_NATIVE_SHORT_FIB_CONTEXT": "No native SHORT fib context",
@@ -251,6 +257,7 @@ class ProfitPlanCard:
     ladder_states: tuple[str, ...]
     relevance_reasons: tuple[str, ...]
     is_relevant: bool
+    actionability_state: str = CARD_ACTIONABILITY_ACTIVE
     fib_nav_context: FibNavContext | None = None
     render_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
@@ -318,6 +325,34 @@ def _distance_to_zone_pct(current_price: Decimal | None, levels: tuple[Decimal, 
 
 def _short_context_display_label(state: str) -> str:
     return SHORT_CONTEXT_DISPLAY_LABELS.get(state, state.replace("_", " "))
+
+
+def _derive_card_actionability_state(
+    *,
+    scenario_type: str,
+    action_label: str,
+    short_context_display_state: str,
+    primary_state: str,
+    current_price: Decimal | None,
+    invalidation_level: Decimal | None,
+) -> str:
+    if primary_state == "INVALIDATED":
+        return CARD_ACTIONABILITY_INVALIDATED
+    if (
+        current_price is not None
+        and invalidation_level is not None
+        and current_price <= invalidation_level
+    ):
+        return CARD_ACTIONABILITY_INVALIDATED
+    if action_label == "NAVIGATION_ONLY":
+        return CARD_ACTIONABILITY_NAVIGATION_ONLY
+    if scenario_type in {"MAP_COMPLETED", LEGACY_SHORT_REFERENCE_SCENARIO}:
+        if primary_state in {"MAP_RECOMPUTE_NEEDED", "POST_EXTENSION_PULLBACK"}:
+            return CARD_ACTIONABILITY_NEEDS_RECOMPUTE
+        return CARD_ACTIONABILITY_HISTORICAL_REFERENCE
+    if short_context_display_state != "HAS_NATIVE_SHORT_FIB_CONTEXT":
+        return CARD_ACTIONABILITY_NEEDS_RECOMPUTE
+    return CARD_ACTIONABILITY_ACTIVE
 
 
 def build_card_search_text(card: ProfitPlanCard) -> str:
@@ -1056,6 +1091,7 @@ def _short_context_gap_card(
         all_sell_targets_completed=False,
         scenario_type="NO_SHORT_FIB_CONTEXT",
         action_label="WAIT_FOR_SHORT_CONTEXT",
+        actionability_state=CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
         timeframe_label="SHORT 4h/1h",
         buy_zone=(),
         sell_zone=(),
@@ -1215,6 +1251,14 @@ def _display_action_label(action_label: str) -> str:
     return _ACTION_DISPLAY_MAP.get(action_label, action_label.replace("_", " "))
 
 
+_NON_ACTIVE_DISPLAY_LABELS: dict[str, str] = {
+    CARD_ACTIONABILITY_INVALIDATED: "INVALIDATED",
+    CARD_ACTIONABILITY_NEEDS_RECOMPUTE: "REVIEW MAP",
+    CARD_ACTIONABILITY_NAVIGATION_ONLY: "NAVIGATION ONLY",
+    CARD_ACTIONABILITY_HISTORICAL_REFERENCE: "REFERENCE ONLY",
+}
+
+
 # ---------------------------------------------------------------------------
 # Quality state aggregation (replaces FRESH_CURRENT_PRICE / NATIVE_SHORT display)
 # ---------------------------------------------------------------------------
@@ -1332,6 +1376,40 @@ def format_invalidation_line(
     return price_str
 
 
+def _actionability_display_bundle(card: ProfitPlanCard) -> tuple[str, str, str, str, str, str]:
+    reentry_label = "Re-entry zone"
+    target_label = "Target zone"
+    order_ladder_label = "Order ladder"
+    open_orders_label = "Existing open orders:"
+    reentry_line = format_reentry_zone_line(card.reload_reentry_zone, card.current_price)
+    target_line = format_target_zone_line(card.target_exit_zone, card.current_price)
+
+    if card.actionability_state == CARD_ACTIONABILITY_ACTIVE:
+        return reentry_label, target_label, order_ladder_label, open_orders_label, reentry_line, target_line
+
+    reentry_label = "Reference re-entry zone"
+    open_orders_label = "Existing open orders to review:"
+    order_ladder_label = "Order review"
+
+    if card.actionability_state == CARD_ACTIONABILITY_NAVIGATION_ONLY:
+        target_label = "Navigation target zone"
+        if not card.target_exit_zone:
+            target_line = "Navigation only"
+    elif card.actionability_state == CARD_ACTIONABILITY_HISTORICAL_REFERENCE:
+        target_label = "Historical target zone"
+        if not card.target_exit_zone:
+            target_line = "Historical targets already completed"
+    elif card.actionability_state == CARD_ACTIONABILITY_NEEDS_RECOMPUTE:
+        target_label = "Historical target zone"
+        target_line = "Fresh map required before new orders"
+    elif card.actionability_state == CARD_ACTIONABILITY_INVALIDATED:
+        reentry_label = "Invalidated re-entry zone"
+        target_label = "Historical target zone"
+        target_line = "Context invalidated — review existing orders if applicable"
+
+    return reentry_label, target_label, order_ladder_label, open_orders_label, reentry_line, target_line
+
+
 # ---------------------------------------------------------------------------
 # User action override: FIX LADDER beats WAIT when orders need attention
 # ---------------------------------------------------------------------------
@@ -1339,13 +1417,19 @@ def format_invalidation_line(
 _WAIT_LIKE_DISPLAY_LABELS = {"BETWEEN LEVELS", "CONTEXT UNAVAILABLE", "WAIT", "DO NOTHING"}
 
 
-def _displayed_user_action(action_label: str, order_rows: "tuple[OrderRow, ...]") -> str:
+def _displayed_user_action(
+    action_label: str,
+    order_rows: "tuple[OrderRow, ...]",
+    actionability_state: str = CARD_ACTIONABILITY_ACTIVE,
+) -> str:
     """
     Returns the display user action label.
     Overrides WAIT-like labels with 'FIX LADDER' when actionable orders exist.
     market_state and user_action remain independent; this only affects the display label.
     """
     base = _display_action_label(action_label)
+    if actionability_state != CARD_ACTIONABILITY_ACTIVE:
+        return _NON_ACTIVE_DISPLAY_LABELS.get(actionability_state, actionability_state.replace("_", " "))
     if base.upper() in _WAIT_LIKE_DISPLAY_LABELS:
         if any(r.state in {"MISSING", "STALE"} for r in order_rows):
             return "FIX LADDER"
@@ -1401,9 +1485,10 @@ def build_profit_plan_card(
             history_high_since_activation=history_high_since_activation,
             history_low_since_activation=history_low_since_activation,
             all_sell_targets_completed=False,
-            scenario_type="NO_CURRENT_PRICE",
-            action_label="NO_CURRENT_PRICE",
-            timeframe_label="review blocked",
+        scenario_type="NO_CURRENT_PRICE",
+        action_label="NO_CURRENT_PRICE",
+        actionability_state=CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+        timeframe_label="review blocked",
             buy_zone=(),
             sell_zone=(),
             invalidation_level=None,
@@ -1605,6 +1690,15 @@ def build_profit_plan_card(
         ladder_states = _derive_ladder_states(_ladder_buy_zone, target_level_statuses, buy_orders, sell_orders)
         is_relevant, relevance_reasons = _derive_relevance_with_reasons(event_state, ladder_states, setup_state)
 
+    actionability_state = _derive_card_actionability_state(
+        scenario_type=scenario_type,
+        action_label=action_label,
+        short_context_display_state=short_context_display_state,
+        primary_state=primary_state,
+        current_price=current_price,
+        invalidation_level=invalidation_level,
+    )
+
     return ProfitPlanCard(
         symbol=symbol,
         market=market,
@@ -1620,6 +1714,7 @@ def build_profit_plan_card(
         all_sell_targets_completed=all_sell_targets_completed,
         scenario_type=scenario_type,
         action_label=action_label,
+        actionability_state=actionability_state,
         timeframe_label=timeframe_label,
         buy_zone=buy_zone,
         sell_zone=sell_zone,
@@ -1982,13 +2077,24 @@ def _target_lifecycle_html(target_levels: tuple[TargetLevelStatus, ...]) -> str:
     return "<div class='zone-block zone-sell'>" + "".join(lines) + "</div>"
 
 
-def _order_summary_html(summary: ActiveOrderSummary, monitor_link: str | None) -> str:
+def _order_summary_html(
+    summary: ActiveOrderSummary,
+    monitor_link: str | None,
+    *,
+    open_orders_label: str,
+    actionability_state: str,
+) -> str:
     parts: list[str] = []
-    parts.append(f"<span class='order-chip muted'>{esc(summary.existing_open_orders_summary)}</span>")
+    summary_prefix = summary.existing_open_orders_summary
+    if actionability_state != CARD_ACTIONABILITY_ACTIVE and summary_prefix != "No open orders linked":
+        summary_prefix = f"Review only · {summary_prefix}"
+    parts.append(f"<span class='order-chip muted'>{esc(summary_prefix)}</span>")
     if summary.matching_buys > 0:
-        parts.append(f"<span class='order-chip ok'>{summary.matching_buys} buy order{'s' if summary.matching_buys != 1 else ''} near zone</span>")
+        _buy_suffix = "near zone" if actionability_state == CARD_ACTIONABILITY_ACTIVE else "to review"
+        parts.append(f"<span class='order-chip ok'>{summary.matching_buys} buy order{'s' if summary.matching_buys != 1 else ''} {_buy_suffix}</span>")
     if summary.matching_sells > 0:
-        parts.append(f"<span class='order-chip warn'>{summary.matching_sells} sell order{'s' if summary.matching_sells != 1 else ''} near zone</span>")
+        _sell_suffix = "near zone" if actionability_state == CARD_ACTIONABILITY_ACTIVE else "to review"
+        parts.append(f"<span class='order-chip warn'>{summary.matching_sells} sell order{'s' if summary.matching_sells != 1 else ''} {_sell_suffix}</span>")
     for missing in summary.missing_suggested:
         label = missing if missing.startswith("missed sell level @ ") else f"missing: {missing}"
         parts.append(f"<span class='order-chip miss'>{esc(label)}</span>")
@@ -2000,7 +2106,7 @@ def _order_summary_html(summary: ActiveOrderSummary, monitor_link: str | None) -
         link_html = f"<div class='monitor-link'><a href='{esc(monitor_link)}' style='color:inherit'>→ Open Orders Monitor</a></div>"
     return (
         f"<div class='order-summary'>"
-        f"<div style='margin-bottom:4px'>Existing open orders:</div>"
+        f"<div style='margin-bottom:4px'>{esc(open_orders_label)}</div>"
         f"<div class='order-row'>{chips}</div>"
         f"{link_html}"
         f"</div>"
@@ -2032,6 +2138,7 @@ _ORDER_ROW_STATE_CSS: dict[str, str] = {
 def build_order_rows(
     *,
     card_render_id: str,
+    actionability_state: str = CARD_ACTIONABILITY_ACTIVE,
     current_price: Decimal | None,
     buy_zone: tuple[Decimal, ...],
     target_level_statuses: tuple[TargetLevelStatus, ...],
@@ -2062,13 +2169,20 @@ def build_order_rows(
                 f"({level.lifecycle_state}); "
                 f"distance {_pct(dist)} from {_fmt_p(current_price)}"
             )
-        else:
+        elif actionability_state == CARD_ACTIONABILITY_ACTIVE:
             state = "MISSING"
             reason_code = "NO_SELL_ORDER_AT_ACTIVE_TARGET"
             reason_label = (
                 f"No sell order at active target {_fmt_p(level.level)} "
                 f"({level.lifecycle_state}); "
                 f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
+        else:
+            state = "HISTORICAL"
+            reason_code = "NO_ACTIVE_ORDER_REFERENCE_ONLY"
+            reason_label = (
+                f"No sell order at {_fmt_p(level.level)} ({level.lifecycle_state}) — "
+                f"reference only; card is {actionability_state}"
             )
         rows.append(OrderRow(
             row_id=str(uuid.uuid4()),
@@ -2099,12 +2213,19 @@ def build_order_rows(
                 f"Buy order at reload zone {_fmt_p(buy_level)}; "
                 f"distance {_pct(dist)} from {_fmt_p(current_price)}"
             )
-        else:
+        elif actionability_state == CARD_ACTIONABILITY_ACTIVE:
             state = "MISSING"
             reason_code = "NO_BUY_ORDER_AT_ZONE"
             reason_label = (
                 f"No buy order at reload zone {_fmt_p(buy_level)}; "
                 f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
+        else:
+            state = "HISTORICAL"
+            reason_code = "NO_ACTIVE_ORDER_REFERENCE_ONLY"
+            reason_label = (
+                f"No buy order at reload zone {_fmt_p(buy_level)} — "
+                f"reference only; card is {actionability_state}"
             )
         rows.append(OrderRow(
             row_id=str(uuid.uuid4()),
@@ -2128,21 +2249,36 @@ def build_order_rows(
         dist = _distance_to_level_pct(current_price, o.limit_price)
         if classification == "HISTORICAL":
             state = "HISTORICAL"
-            reason_code = "SELL_ORDER_AT_PASSED_TARGET"
-            reason_label = (
-                f"Sell order at {_fmt_p(o.limit_price)} is at a passed/completed target; "
-                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
-            )
+            if actionability_state == CARD_ACTIONABILITY_ACTIVE:
+                reason_code = "SELL_ORDER_AT_PASSED_TARGET"
+                reason_label = (
+                    f"Sell order at {_fmt_p(o.limit_price)} is at a passed/completed target; "
+                    f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+                )
+            else:
+                reason_code = "MAP_COMPLETED_ORDER_REVIEW_NEEDED"
+                reason_label = (
+                    f"Review existing sell order at {_fmt_p(o.limit_price)} against a historical/passed target; "
+                    f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+                )
             zone_role = "passed sell target"
         else:
             state = "STALE"
-            reason_code = "SELL_ORDER_NOT_AT_ANY_ZONE"
-            reason_label = (
-                f"Sell order at {_fmt_p(o.limit_price)} does not match any active zone "
-                f"(tolerance {ORDER_MATCH_TOLERANCE_PCT}%); "
-                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
-            )
-            zone_role = "unmatched sell order"
+            if actionability_state == CARD_ACTIONABILITY_ACTIVE:
+                reason_code = "SELL_ORDER_NOT_AT_ANY_ZONE"
+                reason_label = (
+                    f"Sell order at {_fmt_p(o.limit_price)} does not match any active zone "
+                    f"(tolerance {ORDER_MATCH_TOLERANCE_PCT}%); "
+                    f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+                )
+                zone_role = "unmatched sell order"
+            else:
+                reason_code = "STALE_FOR_ACTIVE_SHORT_SWING"
+                reason_label = (
+                    f"Review existing sell order at {_fmt_p(o.limit_price)} — it does not match the current "
+                    f"active short-swing map and is reference only here."
+                )
+                zone_role = "review unmatched sell order"
         rows.append(OrderRow(
             row_id=str(uuid.uuid4()),
             render_id=card_render_id,
@@ -2160,20 +2296,30 @@ def build_order_rows(
         if str(o.limit_price) in covered_buy_order_prices:
             continue
         dist = _distance_to_level_pct(current_price, o.limit_price)
+        if actionability_state == CARD_ACTIONABILITY_ACTIVE:
+            reason_code = "BUY_ORDER_NOT_AT_ANY_ZONE"
+            reason_label = (
+                f"Buy order at {_fmt_p(o.limit_price)} does not match any reload zone "
+                f"(tolerance {ORDER_MATCH_TOLERANCE_PCT}%); "
+                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
+            zone_role = "unmatched buy order"
+        else:
+            reason_code = "RUNNER_REFERENCE_ONLY"
+            reason_label = (
+                f"Review existing buy order at {_fmt_p(o.limit_price)} — reference only until a fresh active map exists."
+            )
+            zone_role = "review unmatched buy order"
         rows.append(OrderRow(
             row_id=str(uuid.uuid4()),
             render_id=card_render_id,
             state="STALE",
-            reason_code="BUY_ORDER_NOT_AT_ANY_ZONE",
-            reason_label=(
-                f"Buy order at {_fmt_p(o.limit_price)} does not match any reload zone "
-                f"(tolerance {ORDER_MATCH_TOLERANCE_PCT}%); "
-                f"distance {_pct(dist)} from {_fmt_p(current_price)}"
-            ),
+            reason_code=reason_code,
+            reason_label=reason_label,
             side="buy",
             price=o.limit_price,
             distance_pct=dist,
-            zone_role="unmatched buy order",
+            zone_role=zone_role,
         ))
 
     return tuple(rows)
@@ -2196,10 +2342,18 @@ _ORDER_ROW_STATUS_CSS_CLASS: dict[str, str] = {
 }
 
 
-def _order_rows_html(order_rows: tuple[OrderRow, ...], *, card_render_id: str) -> str:
+def _order_rows_html(
+    order_rows: tuple[OrderRow, ...],
+    *,
+    card_render_id: str,
+    actionability_state: str = CARD_ACTIONABILITY_ACTIVE,
+) -> str:
     if not order_rows:
         return ""
-    has_actionable = any(r.state in {"MISSING", "STALE"} for r in order_rows)
+    has_actionable = (
+        actionability_state == CARD_ACTIONABILITY_ACTIVE
+        and any(r.state in {"MISSING", "STALE"} for r in order_rows)
+    )
     rows_html = []
     for row in order_rows:
         css = _ORDER_ROW_STATE_CSS.get(row.state, "order-row-unavailable")
@@ -2262,8 +2416,9 @@ def render_plan_card(
 
     # Merged value + distance fields
     price_line = format_current_price_line(card.current_price, card.current_price_age_min, quote)
-    reentry_line = format_reentry_zone_line(card.reload_reentry_zone, card.current_price)
-    target_line = format_target_zone_line(card.target_exit_zone, card.current_price)
+    reentry_label, target_label, order_ladder_label, open_orders_label, reentry_line, target_line = (
+        _actionability_display_bundle(card)
+    )
     invalidation_line = format_invalidation_line(card.invalidation_risk_zone, card.distance_to_invalidation_pct)
 
     metrics_html = "".join((
@@ -2271,9 +2426,10 @@ def render_plan_card(
         _metric_block("Horizon", card.fib_trading_horizon),
         _metric_block("Current price", price_line),
         _metric_block("Setup", card.setup_state),
+        _metric_block("Actionability", card.actionability_state),
         _metric_block("Quality", quality_state + (f" — {quality_reason}" if quality_reason else "")),
-        _metric_block("Re-entry zone", reentry_line),
-        _metric_block("Target zone", target_line),
+        _metric_block(reentry_label, reentry_line),
+        _metric_block(target_label, target_line),
         _metric_block("Invalidation", invalidation_line),
     ))
 
@@ -2282,13 +2438,14 @@ def render_plan_card(
     _order_buy_zone = () if card.all_sell_targets_completed else card.buy_zone
     order_rows = build_order_rows(
         card_render_id=card.render_id,
+        actionability_state=card.actionability_state,
         current_price=card.current_price,
         buy_zone=_order_buy_zone,
         target_level_statuses=card.target_level_statuses,
         buy_orders=buy_orders,
         sell_orders=sell_orders,
     )
-    displayed_action = _displayed_user_action(card.action_label, order_rows)
+    displayed_action = _displayed_user_action(card.action_label, order_rows, card.actionability_state)
 
     # Event + ladder state above order ladder
     event_label = STATE_LABELS.get(card.event_state, card.event_state.replace("_", " "))
@@ -2301,7 +2458,11 @@ def render_plan_card(
         f"<span>Ladder: {esc(ladder_label)}</span>"
         "</div>"
     )
-    order_rows_html = _order_rows_html(order_rows, card_render_id=card.render_id)
+    order_rows_html = _order_rows_html(
+        order_rows,
+        card_render_id=card.render_id,
+        actionability_state=card.actionability_state,
+    ).replace("Order ladder", order_ladder_label, 1)
 
     secondary_state_html = ""
     if card.secondary_state is not None:
@@ -2332,7 +2493,7 @@ def render_plan_card(
         f"{_scenario_badge(card.scenario_type)}"
         f"<div class='state-label {_state_class(card.primary_state)}'>{esc(card.suggested_manual_attention_label)}</div>"
         f"{secondary_state_html}"
-        f"<div class='action-label {_action_class(card.action_label)}'>{esc(displayed_action)}</div>"
+        f"<div class='action-label {_action_class(card.action_label) if card.actionability_state == CARD_ACTIONABILITY_ACTIVE else 'action-wait'}'>{esc(displayed_action)}</div>"
         f"<div class='tf-label'>{esc(card.timeframe_label)}</div>"
         f"</div>"
         "</div>"
@@ -2342,7 +2503,7 @@ def render_plan_card(
         f"{order_rows_html}"
         f"</div>"
         f"<ul class='reasons'>{reasons_html}</ul>"
-        f"{_order_summary_html(card.order_summary, monitor_link)}"
+        f"{_order_summary_html(card.order_summary, monitor_link, open_orders_label=open_orders_label, actionability_state=card.actionability_state)}"
         "<div class='manual-only muted'>MANUAL_ONLY — read-only snapshot, no automatic placement</div>"
         "</section>"
     )
@@ -2604,6 +2765,7 @@ def build_json_snapshot(
                 "all_sell_targets_completed": c.all_sell_targets_completed,
                 "scenario_type": c.scenario_type,
                 "action_label": c.action_label,
+                "actionability_state": c.actionability_state,
                 "timeframe_label": c.timeframe_label,
                 "buy_zone": [str(p) for p in c.buy_zone],
                 "sell_zone": [str(p) for p in c.sell_zone],
