@@ -67,7 +67,7 @@ No new trading logic.
 
 Goal:
 - market-only breathline/equilibrium state
-- states like ABOVE_BREATHLINE, TESTING_BREATHLINE, RECLAIMING_BREATHLINE, SPIKE_COOLING
+- states like ABOVE_MA, TESTING_MA, RECLAIMING_MA, SPIKE_COOLING
 
 ### Bundle 3 — ImpulseHealthState
 

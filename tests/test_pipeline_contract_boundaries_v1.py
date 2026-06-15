@@ -92,11 +92,11 @@ def test_local_ma_atr_state_sentinel_and_canonical_values_present():
     assert "NO_DATA" in values
     assert "STALE" in values
     assert "LOW_CONFIDENCE" in values
-    assert "ABOVE_BREATHLINE" in values
-    assert "TESTING_BREATHLINE" in values
-    assert "BELOW_BREATHLINE" in values
-    assert "RECLAIMING_BREATHLINE" in values
-    assert "EXTENDED_ABOVE_BREATHLINE" in values
+    assert "ABOVE_MA" in values
+    assert "TESTING_MA" in values
+    assert "BELOW_MA" in values
+    assert "RECLAIMING_MA" in values
+    assert "EXTENDED_ABOVE_MA" in values
     assert "SPIKE_COOLING" in values
 
 

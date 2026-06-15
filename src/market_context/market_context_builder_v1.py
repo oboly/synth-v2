@@ -40,8 +40,8 @@ PROFIT_PLAN_BIAS_AVOID_CHASE = "AVOID_CHASE"
 _SENTINEL_STATES: frozenset[str] = frozenset({"NO_DATA", "STALE", "LOW_CONFIDENCE"})
 
 _WAIT_LOCAL_MA_ATR_STATES: frozenset[str] = frozenset({
-    LocalMaAtrState.TESTING_BREATHLINE,
-    LocalMaAtrState.BELOW_BREATHLINE,
+    LocalMaAtrState.TESTING_MA,
+    LocalMaAtrState.BELOW_MA,
 })
 
 _BUILDING_IMPULSE_STATES: frozenset[str] = frozenset({
@@ -105,7 +105,7 @@ def build_extension_context(
 
     # Distribution risk while extended — extension topped out.
     if (
-        local_state == LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE
+        local_state == LocalMaAtrState.EXTENDED_ABOVE_MA
         and i_state == ImpulseHealthState.DISTRIBUTION_RISK
     ):
         return {
@@ -117,7 +117,7 @@ def build_extension_context(
 
     # Both extended — active extension, consider selling into strength.
     if (
-        local_state == LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE
+        local_state == LocalMaAtrState.EXTENDED_ABOVE_MA
         and i_state == ImpulseHealthState.EXTENDED_IMPULSE
     ):
         return {
@@ -128,7 +128,7 @@ def build_extension_context(
         }
 
     # Local MA/ATR context extended with any other healthy impulse — setup phase.
-    if local_state == LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE:
+    if local_state == LocalMaAtrState.EXTENDED_ABOVE_MA:
         return {
             "state": EXTENSION_CONTEXT_SETUP,
             "label": "Extension setup — prepare sell targets",
@@ -138,7 +138,7 @@ def build_extension_context(
 
     # Above local MA with extended impulse — extension forming.
     if (
-        local_state == LocalMaAtrState.ABOVE_BREATHLINE
+        local_state == LocalMaAtrState.ABOVE_MA
         and i_state == ImpulseHealthState.EXTENDED_IMPULSE
     ):
         return {
@@ -149,7 +149,7 @@ def build_extension_context(
         }
 
     # Reclaiming or above the local MA with building impulse — prepare sell side.
-    if local_state in {LocalMaAtrState.RECLAIMING_BREATHLINE, LocalMaAtrState.ABOVE_BREATHLINE}:
+    if local_state in {LocalMaAtrState.RECLAIMING_MA, LocalMaAtrState.ABOVE_MA}:
         if i_state in _BUILDING_IMPULSE_STATES:
             return {
                 "state": EXTENSION_CONTEXT_BUILDING,

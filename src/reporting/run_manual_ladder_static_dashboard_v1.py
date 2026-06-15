@@ -623,7 +623,7 @@ def render_row_card(row: DashboardRow) -> str:
 
       <div class="stack">
         <div class="layer breath">
-          <h3>1. Breathline / A+</h3>
+          <h3>1. A+ Phase / Market Breath</h3>
           <div><strong>phase</strong>: {esc(row.breath_phase)}</div>
           <div><strong>context</strong>: {esc(row.breath_context)}</div>
         </div>

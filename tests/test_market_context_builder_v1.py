@@ -245,7 +245,7 @@ def test_warnings_are_sequences() -> None:
 # ---------------------------------------------------------------------------
 
 def test_extension_active_on_extended_states() -> None:
-    b = _local_ma_atr_result(LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.EXTENDED_ABOVE_MA)
     i = _impulse_result(ImpulseHealthState.EXTENDED_IMPULSE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_ACTIVE
@@ -253,7 +253,7 @@ def test_extension_active_on_extended_states() -> None:
 
 
 def test_extension_no_chase_on_blow_off() -> None:
-    b = _local_ma_atr_result(LocalMaAtrState.ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.ABOVE_MA)
     i = _impulse_result(ImpulseHealthState.BLOW_OFF_SPIKE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_NO_CHASE
@@ -269,14 +269,14 @@ def test_extension_exhausted_on_spike_cooling() -> None:
 
 
 def test_extension_exhausted_on_distribution_risk() -> None:
-    b = _local_ma_atr_result(LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.EXTENDED_ABOVE_MA)
     i = _impulse_result(ImpulseHealthState.DISTRIBUTION_RISK)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_EXHAUSTED
 
 
 def test_extension_setup_on_extended_local_ma_other_impulse() -> None:
-    b = _local_ma_atr_result(LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.EXTENDED_ABOVE_MA)
     i = _impulse_result(ImpulseHealthState.HEALTHY_IMPULSE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_SETUP
@@ -284,14 +284,14 @@ def test_extension_setup_on_extended_local_ma_other_impulse() -> None:
 
 
 def test_extension_setup_on_above_extended_impulse() -> None:
-    b = _local_ma_atr_result(LocalMaAtrState.ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.ABOVE_MA)
     i = _impulse_result(ImpulseHealthState.EXTENDED_IMPULSE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_SETUP
 
 
 def test_extension_building_on_reclaiming_local_ma() -> None:
-    b = _local_ma_atr_result(LocalMaAtrState.RECLAIMING_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.RECLAIMING_MA)
     i = _impulse_result(ImpulseHealthState.HEALTHY_IMPULSE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_BUILDING
@@ -299,7 +299,7 @@ def test_extension_building_on_reclaiming_local_ma() -> None:
 
 
 def test_extension_wait_for_pullback_on_below_local_ma() -> None:
-    b = _local_ma_atr_result(LocalMaAtrState.BELOW_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.BELOW_MA)
     i = _impulse_result(ImpulseHealthState.HEALTHY_IMPULSE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_NO_DATA
@@ -307,7 +307,7 @@ def test_extension_wait_for_pullback_on_below_local_ma() -> None:
 
 
 def test_extension_wait_for_pullback_on_failed_reclaim() -> None:
-    b = _local_ma_atr_result(LocalMaAtrState.ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.ABOVE_MA)
     i = _impulse_result(ImpulseHealthState.FAILED_RECLAIM)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_NO_DATA
@@ -323,7 +323,7 @@ def test_extension_no_data_when_local_ma_stale() -> None:
 
 
 def test_extension_no_data_when_impulse_stale() -> None:
-    b = _local_ma_atr_result(LocalMaAtrState.ABOVE_BREATHLINE)
+    b = _local_ma_atr_result(LocalMaAtrState.ABOVE_MA)
     i = _impulse_result(ImpulseHealthState.STALE)
     ec = build_extension_context(b, i)
     assert ec["state"] == EXTENSION_CONTEXT_NO_DATA
