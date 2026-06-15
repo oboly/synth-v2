@@ -16,6 +16,7 @@ from src.reporting.manual_short_trader_dashboard_v1 import BrokerBalanceRow, Bro
 import src.reporting.manual_short_trader_profit_plan_v1 as _pp_module
 from src.reporting.manual_short_trader_profit_plan_v1 import (
     FibExtContext,
+    FibNavContext,
     OrderRow,
     ProfitPlanCard,
     ReentryContext,
@@ -197,6 +198,19 @@ def _context(
         open_order_count_by_market=open_order_count_by_market,
         market_price_by_symbol=snapshots,
         markets=markets,
+    )
+
+
+def _nav_context() -> FibNavContext:
+    return FibNavContext(
+        nav_sell_levels=(Decimal("0.8800"), Decimal("0.9600")),
+        nav_buy_levels=(Decimal("0.7100"), Decimal("0.6800")),
+        nav_invalidation=Decimal("0.6200"),
+        map_state="ACTIVE_RECOMPUTED_MAP",
+        rebuild_trigger="MAP_EXHAUSTED",
+        anchor_low=Decimal("0.5000"),
+        anchor_high=Decimal("0.7600"),
+        direction="BULLISH",
     )
 
 
@@ -1505,8 +1519,99 @@ def test_json_snapshot_includes_new_semantic_fields() -> None:
     assert "event_state" in row
     assert "ladder_states" in row
     assert "relevance_reasons" in row
+    assert "actionability_state" in row
     assert isinstance(row["ladder_states"], list)
     assert isinstance(row["relevance_reasons"], list)
+
+
+def test_active_trade_setup_keeps_active_zone_wording() -> None:
+    card = _make_card(
+        current_price="0.440000",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    html = render_plan_card(card)
+    assert card.actionability_state == "ACTIVE_TRADE_SETUP"
+    assert "Re-entry zone" in html
+    assert "Target zone" in html
+    assert "Reference re-entry zone" not in html
+    assert "Historical target zone" not in html
+
+
+def test_map_completed_card_uses_reference_wording_and_fresh_map_warning() -> None:
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext_touched(),
+        reentry=_fet_reentry(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+    )
+    html = render_plan_card(card)
+    assert card.scenario_type == "MAP_COMPLETED"
+    assert card.actionability_state == "NEEDS_RECOMPUTE"
+    assert "Reference re-entry zone" in html
+    assert "Historical target zone" in html
+    assert "Fresh map required before new orders" in html
+    assert "Re-entry zone" not in html.replace("Reference re-entry zone", "")
+    assert "Target zone" not in html.replace("Historical target zone", "")
+
+
+def test_navigation_only_card_shows_navigation_wording() -> None:
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext_touched(),
+        reentry=_fet_reentry(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+    )
+    card = build_profit_plan_card(
+        symbol=card.symbol,
+        market=card.market,
+        current_price=card.current_price,
+        fib_ext=_wld_fib_ext_touched(),
+        reentry=_fet_reentry(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        fib_nav_context=_nav_context(),
+    )
+    html = render_plan_card(card)
+    assert card.actionability_state == "NAVIGATION_ONLY"
+    assert card.action_label == "NAVIGATION_ONLY"
+    assert "Navigation target zone" in html
+    assert "Navigation only" in html or "NAVIGATION MAP" in html
+
+
+def test_non_active_card_open_orders_are_review_only() -> None:
+    card = _make_card(
+        current_price="0.7600",
+        fib_ext=_wld_fib_ext_touched(),
+        reentry=_fet_reentry(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+        sell_orders=(_FakeOrder("0.9000", side="sell"),),
+    )
+    html = render_plan_card(card, sell_orders=(_FakeOrder("0.9000", side="sell"),))
+    assert card.actionability_state == "NEEDS_RECOMPUTE"
+    assert "Order review" in html
+    assert "Existing open orders to review:" in html
+    assert "Review only" in html
+
+
+def test_native_short_context_available_does_not_regress_to_missing_symbol() -> None:
+    card = _make_card(
+        current_price="0.440000",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert card.short_context_coverage_status == "NATIVE_SHORT_CONTEXT_AVAILABLE"
+    assert card.short_context_coverage_status != "FIB_MAP_SYMBOL_MISSING"
 
 
 def test_html_does_not_show_wait_or_do_nothing_as_action_label() -> None:
