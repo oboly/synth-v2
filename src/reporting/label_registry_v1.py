@@ -331,9 +331,9 @@ _REGISTRY: dict[str, LabelDescription] = {
         ),
         _entry(
             "BREATHLINE_CONTEXT_V1",
-            "Display-only strategy-family inference for rows with explicit breathline context in current paper inputs.",
+            "Display-only strategy-family inference for rows with explicit A+ breath/phase context in current paper inputs.",
             category="candidate_readiness",
-            human_label="Breathline context v1",
+            human_label="A+ breath context v1",
         ),
         _entry(
             "ROTATION_REVIEW_V1",

@@ -73,7 +73,7 @@ def _minimal_card(symbol: str) -> ProfitPlanCard:
 
 
 _MINIMAL_MARKET_CONTEXT = {
-    "local_ma_atr_context": {"state": "ABOVE_BREATHLINE", "ma_price": None, "atr": None,
+    "local_ma_atr_context": {"state": "ABOVE_MA", "ma_price": None, "atr": None,
                              "distance_atr": None, "latest_close_ts_utc": None, "warnings": []},
     "impulse_health": {"state": "HEALTHY_IMPULSE", "ema_price": None, "atr": None,
                        "swing_high_price": None, "distance_atr": None,

@@ -232,20 +232,20 @@ def build_local_ma_atr_context(
     ):
         state = LocalMaAtrState.SPIKE_COOLING
     elif latest_close >= ma_now + (atr * extended_atr_multiple) and slope >= 0:
-        state = LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE
+        state = LocalMaAtrState.EXTENDED_ABOVE_MA
     elif (
         previous.close_price <= ma_prev - reclaim_buffer
         and latest.low_price <= ma_now
         and latest.high_price >= ma_now
         and latest_close >= ma_now + reclaim_buffer
     ):
-        state = LocalMaAtrState.RECLAIMING_BREATHLINE
+        state = LocalMaAtrState.RECLAIMING_MA
     elif latest.low_price <= ma_now + test_buffer and latest.high_price >= ma_now - test_buffer:
-        state = LocalMaAtrState.TESTING_BREATHLINE
+        state = LocalMaAtrState.TESTING_MA
     elif latest_close > ma_now + test_buffer:
-        state = LocalMaAtrState.ABOVE_BREATHLINE
+        state = LocalMaAtrState.ABOVE_MA
     else:
-        state = LocalMaAtrState.BELOW_BREATHLINE
+        state = LocalMaAtrState.BELOW_MA
 
     return _result(
         state=state,

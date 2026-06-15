@@ -154,7 +154,7 @@ def test_above_local_ma_when_close_clears_buffer() -> None:
         now_utc=_ts(19),
         warmup_candles=10,
     )
-    assert result.state is LocalMaAtrState.ABOVE_BREATHLINE
+    assert result.state is LocalMaAtrState.ABOVE_MA
     assert result.distance_atr is not None and Decimal(result.distance_atr) > 0
 
 
@@ -172,7 +172,7 @@ def test_testing_local_ma_when_candle_overlaps_line() -> None:
         now_utc=_ts(19),
         warmup_candles=10,
     )
-    assert result.state is LocalMaAtrState.TESTING_BREATHLINE
+    assert result.state is LocalMaAtrState.TESTING_MA
 
 
 def test_below_local_ma_when_close_breaks_below_buffer() -> None:
@@ -188,7 +188,7 @@ def test_below_local_ma_when_close_breaks_below_buffer() -> None:
         now_utc=_ts(19),
         warmup_candles=10,
     )
-    assert result.state is LocalMaAtrState.BELOW_BREATHLINE
+    assert result.state is LocalMaAtrState.BELOW_MA
 
 
 def test_reclaiming_local_ma_beats_testing() -> None:
@@ -205,7 +205,7 @@ def test_reclaiming_local_ma_beats_testing() -> None:
         now_utc=_ts(19),
         warmup_candles=10,
     )
-    assert result.state is LocalMaAtrState.RECLAIMING_BREATHLINE
+    assert result.state is LocalMaAtrState.RECLAIMING_MA
 
 
 def test_extended_above_local_ma_beats_above() -> None:
@@ -220,7 +220,7 @@ def test_extended_above_local_ma_beats_above() -> None:
         now_utc=_ts(19),
         warmup_candles=10,
     )
-    assert result.state is LocalMaAtrState.EXTENDED_ABOVE_BREATHLINE
+    assert result.state is LocalMaAtrState.EXTENDED_ABOVE_MA
 
 
 def test_spike_cooling_beats_extended_when_fading() -> None:
