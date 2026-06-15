@@ -2082,9 +2082,11 @@ def _order_summary_html(
         summary_prefix = f"Review only · {summary_prefix}"
     parts.append(f"<span class='order-chip muted'>{esc(summary_prefix)}</span>")
     if summary.matching_buys > 0:
-        parts.append(f"<span class='order-chip ok'>{summary.matching_buys} buy order{'s' if summary.matching_buys != 1 else ''} near zone</span>")
+        _buy_suffix = "near zone" if actionability_state == CARD_ACTIONABILITY_ACTIVE else "to review"
+        parts.append(f"<span class='order-chip ok'>{summary.matching_buys} buy order{'s' if summary.matching_buys != 1 else ''} {_buy_suffix}</span>")
     if summary.matching_sells > 0:
-        parts.append(f"<span class='order-chip warn'>{summary.matching_sells} sell order{'s' if summary.matching_sells != 1 else ''} near zone</span>")
+        _sell_suffix = "near zone" if actionability_state == CARD_ACTIONABILITY_ACTIVE else "to review"
+        parts.append(f"<span class='order-chip warn'>{summary.matching_sells} sell order{'s' if summary.matching_sells != 1 else ''} {_sell_suffix}</span>")
     for missing in summary.missing_suggested:
         label = missing if missing.startswith("missed sell level @ ") else f"missing: {missing}"
         parts.append(f"<span class='order-chip miss'>{esc(label)}</span>")

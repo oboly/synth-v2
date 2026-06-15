@@ -15,6 +15,7 @@ from src.reporting.account_scoped_short_trader_dashboard_v1 import AccountScoped
 from src.reporting.manual_short_trader_dashboard_v1 import BrokerBalanceRow, BrokerOrderRow
 import src.reporting.manual_short_trader_profit_plan_v1 as _pp_module
 from src.reporting.manual_short_trader_profit_plan_v1 import (
+    ActiveOrderSummary,
     FibExtContext,
     FibNavContext,
     OrderRow,
@@ -2794,6 +2795,75 @@ def test_multiple_markets_normalize_independently() -> None:
     for p in normalized[1].target_exit_zone:
         _, _, exp = p.as_tuple()
         assert -exp == 8
+
+
+def _make_order_summary(*, matching_buys: int = 0, matching_sells: int = 0) -> ActiveOrderSummary:
+    return ActiveOrderSummary(
+        open_buy_orders=matching_buys,
+        open_sell_orders=matching_sells,
+        matching_buys=matching_buys,
+        matching_sells=matching_sells,
+        nearest_buy_price=None,
+        nearest_sell_price=None,
+        nearest_buy_distance_pct=None,
+        nearest_sell_distance_pct=None,
+        nearest_open_buy_distance_pct=None,
+        nearest_open_sell_distance_pct=None,
+        max_open_order_distance_pct=None,
+        missing_suggested=(),
+        existing_open_orders_summary="No open orders linked",
+    )
+
+
+def test_non_active_buy_chip_shows_to_review_not_near_zone() -> None:
+    summary = _make_order_summary(matching_buys=2)
+    html = _pp_module._order_summary_html(
+        summary,
+        monitor_link=None,
+        open_orders_label="Open orders",
+        actionability_state="NAVIGATION_ONLY",
+    )
+    assert "buy order" in html
+    assert "to review" in html
+    assert "near zone" not in html
+
+
+def test_non_active_sell_chip_shows_to_review_not_near_zone() -> None:
+    summary = _make_order_summary(matching_sells=1)
+    html = _pp_module._order_summary_html(
+        summary,
+        monitor_link=None,
+        open_orders_label="Open orders",
+        actionability_state="NEEDS_RECOMPUTE",
+    )
+    assert "sell order" in html
+    assert "to review" in html
+    assert "near zone" not in html
+
+
+def test_active_buy_chip_still_shows_near_zone() -> None:
+    summary = _make_order_summary(matching_buys=1)
+    html = _pp_module._order_summary_html(
+        summary,
+        monitor_link=None,
+        open_orders_label="Open orders",
+        actionability_state="ACTIVE_TRADE_SETUP",
+    )
+    assert "buy order" in html
+    assert "near zone" in html
+    assert "to review" not in html
+
+
+def test_active_sell_chip_still_shows_near_zone() -> None:
+    summary = _make_order_summary(matching_sells=3)
+    html = _pp_module._order_summary_html(
+        summary,
+        monitor_link=None,
+        open_orders_label="Open orders",
+        actionability_state="ACTIVE_TRADE_SETUP",
+    )
+    assert "sell orders near zone" in html
+    assert "to review" not in html
 
 
 def test_normalization_does_not_introduce_broker_imports() -> None:
