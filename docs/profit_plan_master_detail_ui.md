@@ -1,10 +1,10 @@
 
 
-## Profit Plan Search-First Refactor TODO
+## Short Swing Search-First Refactor TODO
 
-Current behavior uses `Relevant candidates` / `card.is_relevant` as a default visibility gate.
+Current behavior uses the wrong user-facing name (`Profit Plan`) and also uses `Relevant candidates` / `card.is_relevant` as a default visibility gate.
 
-This must be removed from the user-facing Profit Plan flow.
+User-facing `Profit Plan` must be renamed to `Short Swing`, and `Relevant` must be removed from the flow.
 
 ### Problem
 
@@ -25,13 +25,13 @@ This makes symbol discovery unclear.
 
 ### Required Direction
 
-Remove the user-facing `Relevant` concept from Profit Plan.
+Rename the user-facing page from `Profit Plan` to `Short Swing` and remove the user-facing `Relevant` concept.
 
 Do not replace it with another vague filter.
 
 The first refactor should be:
 
-    Profit Plan page
+    Short Swing page
       -> expanded search/filter interface
       -> user can find any supported/configured symbol
       -> selected symbol opens one full Profit Plan card
@@ -171,7 +171,8 @@ Do not hide it without explanation.
 
 ### Acceptance Criteria
 
-- `Relevant candidates` is no longer the default Profit Plan view.
+- User-facing `Profit Plan` naming is replaced by `Short Swing`.
+- `Relevant candidates` is no longer the default Short Swing view.
 - User-facing `Relevant` label is removed.
 - XLM can be found through search even when it has no current action.
 - Search/filter list distinguishes discoverable symbols from actionable symbols.
