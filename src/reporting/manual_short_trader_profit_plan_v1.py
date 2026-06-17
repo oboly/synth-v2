@@ -31,7 +31,7 @@ STATE_LABELS: dict[str, str] = {
     "TAKE_PROFIT_WAITING": "Take profit already waiting",
     "RELOAD_ZONE_APPROACHING": "Reload zone approaching",
     "PRICE_RAN_AWAY": "Price ran away",
-    "INVALIDATION_NEAR": "Invalidation / risk zone near",
+    "INVALIDATION_NEAR": "Invalidation zone near",
     "ORDER_TOO_FAR_OR_STALE": "Order too far or stale",
     "POST_EXTENSION_PULLBACK": "Post-extension pullback",
     "MAP_RECOMPUTE_NEEDED": "Map recompute needed",
@@ -371,11 +371,15 @@ def build_card_search_text(card: ProfitPlanCard) -> str:
 
 
 def filter_cards_for_view(cards: list[ProfitPlanCard], *, mode: str, query: str) -> list[ProfitPlanCard]:
+    """Return cards matching search text.
+
+    The mode argument is retained for caller compatibility only. Profit Plan
+    visibility is controlled by asset selection, not by a "relevant" gate.
+    """
+    _ = mode
     query_norm = query.strip().lower()
     out: list[ProfitPlanCard] = []
     for card in cards:
-        if mode != "all" and not card.is_relevant:
-            continue
         if query_norm and query_norm not in build_card_search_text(card):
             continue
         out.append(card)
@@ -1018,17 +1022,20 @@ def _evaluate_display_states(
     elif target_exit_zone and distance_to_target_pct is not None and distance_to_target_pct <= -PRICE_RAN_AWAY_THRESHOLD_PCT:
         state_candidates.append("PRICE_RAN_AWAY")
 
+    order_overlay_state = None
     if (
         order_summary.max_open_order_distance_pct is not None
         and order_summary.max_open_order_distance_pct >= ORDER_STALE_DISTANCE_PCT
     ):
-        state_candidates.append("ORDER_TOO_FAR_OR_STALE")
+        order_overlay_state = "ORDER_TOO_FAR_OR_STALE"
 
     if not state_candidates:
         state_candidates.append("DO_NOTHING")
 
     primary_state = state_candidates[0]
     secondary_state = next((state for state in state_candidates[1:] if state != primary_state), None)
+    if secondary_state is None and order_overlay_state is not None and order_overlay_state != primary_state:
+        secondary_state = order_overlay_state
     return (
         primary_state,
         secondary_state,
@@ -1940,41 +1947,36 @@ _CSS = """
 def _build_client_js(storage_scope: str) -> str:
     storage_scope = esc(storage_scope or "default")
     return f"""
-  var PP_VIEW_KEY = 'ppView:{storage_scope}';
   var PP_QUERY_KEY = 'ppQuery:{storage_scope}';
-  function applyFilters(mode, query) {{
+  function applyFilters(_mode, query) {{
     var total = 0;
     var matches = 0;
     document.querySelectorAll('.plan-card').forEach(function(card) {{
       total += 1;
-      var rel = card.dataset.relevant === 'true';
       var hay = (card.dataset.search || '').toLowerCase();
       var queryMatch = !query || hay.indexOf(query) !== -1;
-      var visible = queryMatch && (mode === 'all' || rel);
-      card.style.display = visible ? '' : 'none';
-      if (visible) matches += 1;
+      card.style.display = queryMatch ? '' : 'none';
+      if (queryMatch) matches += 1;
     }});
     var matching = document.getElementById('matching-count');
     if (matching) matching.textContent = 'Matching ' + matches + ' of ' + total;
     var noResults = document.getElementById('no-results');
     if (noResults) noResults.style.display = matches === 0 ? '' : 'none';
   }}
-  function setView(mode) {{
-    document.getElementById('btn-relevant').classList.toggle('active', mode === 'relevant');
-    document.getElementById('btn-all').classList.toggle('active', mode === 'all');
+  function setView(_mode) {{
+    var btn = document.getElementById('btn-all');
+    if (btn) btn.classList.add('active');
     var shell = document.getElementById('search-shell');
-    if (shell) shell.style.display = mode === 'all' ? 'flex' : 'none';
+    if (shell) shell.style.display = 'flex';
     var queryInput = document.getElementById('candidate-search');
-    var query = mode === 'all' && queryInput ? (queryInput.value || '').trim().toLowerCase() : '';
-    applyFilters(mode, query);
-    try {{ localStorage.setItem(PP_VIEW_KEY, mode); }} catch(e) {{}}
+    var query = queryInput ? (queryInput.value || '').trim().toLowerCase() : '';
+    applyFilters('all', query);
   }}
   function updateSearch() {{
-    var mode = document.getElementById('btn-all').classList.contains('active') ? 'all' : 'relevant';
     var queryInput = document.getElementById('candidate-search');
     var query = queryInput ? (queryInput.value || '').trim().toLowerCase() : '';
     try {{ localStorage.setItem(PP_QUERY_KEY, query); }} catch(e) {{}}
-    applyFilters(mode, mode === 'all' ? query : '');
+    applyFilters('all', query);
   }}
   function clearSearch() {{
     var queryInput = document.getElementById('candidate-search');
@@ -1995,15 +1997,13 @@ def _build_client_js(storage_scope: str) -> str:
     }});
   }}
   document.addEventListener('DOMContentLoaded', function() {{
-    var savedMode = 'relevant';
     var savedQuery = '';
     try {{
-      savedMode = localStorage.getItem(PP_VIEW_KEY) || 'relevant';
       savedQuery = localStorage.getItem(PP_QUERY_KEY) || '';
     }} catch(e) {{}}
     var queryInput = document.getElementById('candidate-search');
     if (queryInput) queryInput.value = savedQuery;
-    setView(savedMode === 'all' ? 'all' : 'relevant');
+    setView('all');
     updateSearch();
   }});
 """
@@ -2528,7 +2528,7 @@ def render_full_html(
     snapshot_writer_id = writer_instance_id or str(uuid.uuid4())
 
     display_cards = sort_cards_two_timeline(cards) if sort else list(cards)
-    relevant_count = sum(1 for c in cards if c.is_relevant)
+    attention_count = sum(1 for c in cards if c.is_relevant)
     total_count = len(cards)
     cards_html = "\n".join(render_plan_card(c, monitor_link=monitor_link) for c in display_cards)
     empty_note = "<div class='muted' style='padding:16px;grid-column:1/-1'>No symbols with a plan loaded.</div>" if not cards else ""
@@ -2540,7 +2540,7 @@ def render_full_html(
         "  <meta name='viewport' content='width=device-width, initial-scale=1'>\n"
         f"  <meta name='synth-render-id' content='{esc(snapshot_render_id)}'>\n"
         f"  <meta name='synth-writer-instance-id' content='{esc(snapshot_writer_id)}'>\n"
-        f"  <meta name='synth-relevant-count' content='{relevant_count}'>\n"
+        f"  <meta name='synth-attention-count' content='{attention_count}'>\n"
         f"  <meta name='synth-total-count' content='{total_count}'>\n"
         "  <title>Synth — Profit Plan</title>\n"
         f"{synth_favicon_head_html()}"
@@ -2549,15 +2549,14 @@ def render_full_html(
         "  <header>\n"
         "    <div style='display:flex;align-items:baseline;gap:12px;flex-wrap:wrap'>\n"
         "    <h1>Synth v2 — Profit Plan</h1>\n"
-        f"    <span class='muted small'>Rendered: {esc(rendered_at)} · Mode: {esc(broker_mode)} · Relevant: {relevant_count} / {total_count}</span>\n"
+        f"    <span class='muted small'>Rendered: {esc(rendered_at)} · Mode: {esc(broker_mode)} · Cards: {total_count} · Attention: {attention_count}</span>\n"
         "    </div>\n"
         f"{'' if not nav_html else f'    {nav_html}\\n'}"
         "  </header>\n"
         f"{'' if not pipeline_banner_html else f'  {pipeline_banner_html}\\n'}"
         "  <div class='sticky-controls'>\n"
         "    <div class='view-toggle'>\n"
-        "      <button id='btn-relevant' class='toggle-btn' onclick='setView(\"relevant\")'>Relevant candidates</button>\n"
-        "      <button id='btn-all' class='toggle-btn' onclick='setView(\"all\")'>All candidates</button>\n"
+        "      <button id='btn-all' class='toggle-btn active' onclick='setView(\"all\")'>All selected assets</button>\n"
         "      <span class='muted small' style='margin-left:4px'>broker_writes=0 · order_submission=0</span>\n"
         "    </div>\n"
         "    <div id='search-shell' class='search-shell'>\n"
