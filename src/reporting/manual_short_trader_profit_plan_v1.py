@@ -135,6 +135,15 @@ SHORT_CONTEXT_DISPLAY_LABELS: dict[str, str] = {
     "CONTEXT_INVALID_OR_STALE": "Context invalid or stale",
 }
 
+
+SCENARIO_DISPLAY_LABELS: dict[str, str] = {
+    "REENTRY_WAIT": "REENTRY SETUP",
+}
+
+SEARCH_TEXT_TOKEN_OVERRIDES: dict[str, str] = {
+    "REENTRY_WAIT": "REENTRY_SETUP",
+    "WAIT": "",
+}
 LEGACY_SHORT_REFERENCE_SCENARIO = "LEGACY_CONTEXT_REFERENCE_ONLY"
 LEGACY_SHORT_REFERENCE_ACTION = "MANUAL_REVIEW"
 
@@ -287,18 +296,27 @@ class OrderRow:
 # Scenario classification
 # ---------------------------------------------------------------------------
 
+def _strip_decimal_zeros(v: Decimal) -> str:
+    text = format(v, "f")
+    if "." not in text:
+        return text
+    text = text.rstrip("0").rstrip(".")
+    if text in {"", "-0"}:
+        return "0"
+    return text
+
+
 def _fmt_p(v: Decimal | None) -> str:
     if v is None:
         return "?"
-    # If the value is already quantized to more than 6 decimal places
-    # (e.g., PEPE-EUR at 8dp after tick normalization), preserve that precision.
+    # Preserve useful small-price precision, but strip display-only zero noise.
     _sign, _digits, exponent = v.as_tuple()
     native_dp = -exponent if exponent < 0 else 0
     if native_dp > 6:
-        return str(v)
+        return _strip_decimal_zeros(v)
     if abs(v) < Decimal("1"):
-        return str(v.quantize(Decimal("0.000001")))
-    return str(v.quantize(Decimal("0.01")))
+        return _strip_decimal_zeros(v.quantize(Decimal("0.000001")))
+    return _strip_decimal_zeros(v.quantize(Decimal("0.01")))
 
 
 def _pct(v: Decimal | None) -> str:
@@ -367,7 +385,14 @@ def build_card_search_text(card: ProfitPlanCard) -> str:
         card.short_context_coverage_status,
         card.short_context_display_state,
     )
-    return " ".join(part.lower() for part in parts if part)
+    tokens: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        token = SEARCH_TEXT_TOKEN_OVERRIDES.get(part, part)
+        if token:
+            tokens.append(token.lower())
+    return " ".join(tokens)
 
 
 def filter_cards_for_view(cards: list[ProfitPlanCard], *, mode: str, query: str) -> list[ProfitPlanCard]:
@@ -689,7 +714,7 @@ def _classify_reentry(
         reentry.r786_price,
         (
             f"Re-entry ladder loaded: first touch {_fmt_p(reentry.r382_price)}, main {_fmt_p(reentry.r500_price)}.",
-            "No recent dip recorded — watching for a pull-back.",
+            "Maintain the pre-planned re-entry ladder; no live wait signal is required.",
         ),
     )
 
@@ -2015,6 +2040,10 @@ def esc(value: Any) -> str:
     return _html.escape(str(value))
 
 
+def _scenario_display_label(scenario_type: str) -> str:
+    return SCENARIO_DISPLAY_LABELS.get(scenario_type, scenario_type.replace("_", " "))
+
+
 def _scenario_badge(scenario_type: str) -> str:
     cls_map = {
         "EXTENSION_RUNNER": "badge-ext",
@@ -2023,7 +2052,7 @@ def _scenario_badge(scenario_type: str) -> str:
         "BREAKOUT_RETEST":  "badge-bkout",
     }
     cls = cls_map.get(scenario_type, "badge-none")
-    return f"<span class='scenario-badge {cls}'>{esc(scenario_type.replace('_', ' '))}</span>"
+    return f"<span class='scenario-badge {cls}'>{esc(_scenario_display_label(scenario_type))}</span>"
 
 
 def _action_class(action_label: str) -> str:
@@ -2422,12 +2451,9 @@ def render_plan_card(
     invalidation_line = format_invalidation_line(card.invalidation_risk_zone, card.distance_to_invalidation_pct)
 
     metrics_html = "".join((
-        _metric_block("Market", card.market),
-        _metric_block("Horizon", card.fib_trading_horizon),
         _metric_block("Current price", price_line),
         _metric_block("Setup", card.setup_state),
         _metric_block("Actionability", card.actionability_state),
-        _metric_block("Quality", quality_state + (f" — {quality_reason}" if quality_reason else "")),
         _metric_block(reentry_label, reentry_line),
         _metric_block(target_label, target_line),
         _metric_block("Invalidation", invalidation_line),
@@ -2474,7 +2500,7 @@ def render_plan_card(
 
     return (
         f"<section class='card plan-card'"
-        f" data-relevant='{str(card.is_relevant).lower()}'"
+        f" data-attention='{str(card.is_relevant).lower()}'"
         f" data-search='{esc(search_text)}'"
         f" data-render-id='{esc(card.render_id)}'>"
         "<div class='card-head'>"
