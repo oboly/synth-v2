@@ -194,3 +194,5 @@ Do not do these from market-context, docs, tests, or rendering work:
     call broker APIs
 
 All live execution requires explicit user action, broker write permission, decision_gate re-check, idempotency, and executor boundary.
+
+For SHORT / MEDIUM / LONG horizon ownership and the A+ / universal Breathline strategy contract, see `docs/architecture/multi_horizon_aplus_breathline_strategy_contract_v1.md`.

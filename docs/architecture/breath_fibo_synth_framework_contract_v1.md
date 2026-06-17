@@ -214,3 +214,5 @@ fibo zone              →  account permission
 reporting/dashboard    →  broker call or execution intent
 executor               →  strategy decision
 ```
+
+For the expanded A+ / universal Breathline field contract and per-horizon allowed inputs, see `docs/architecture/multi_horizon_aplus_breathline_strategy_contract_v1.md`.
