@@ -581,13 +581,15 @@ def test_invalidation_near_when_price_approaches_risk_zone() -> None:
     assert card.primary_state == "INVALIDATION_NEAR"
 
 
-def test_order_too_far_or_stale_when_open_orders_are_far() -> None:
+def test_order_too_far_or_stale_is_secondary_order_overlay() -> None:
     card = _make_card(
         current_price="0.3000",
         reentry=_fet_reentry(),
         buy_orders=(_FakeOrder("0.1000"),),
     )
-    assert card.primary_state == "ORDER_TOO_FAR_OR_STALE"
+    assert card.primary_state == "DO_NOTHING"
+    assert card.secondary_state == "ORDER_TOO_FAR_OR_STALE"
+    assert "STALE_ORDERS_PRESENT" in card.ladder_states
 
 
 def test_do_nothing_for_neutral_valid_state() -> None:
@@ -654,7 +656,7 @@ def test_all_candidates_search_matches_plu_to_plume_and_clear_restores_all() -> 
     assert [card.symbol for card in restored] == ["PLUME", "WLD"]
 
 
-def test_legacy_1d_context_is_not_relevant_only_from_legacy_levels() -> None:
+def test_legacy_1d_context_remains_visible_without_relevant_gate() -> None:
     legacy = _make_card(
         current_price="0.48",
         fib_ext=_wld_fib_ext(),
@@ -663,9 +665,9 @@ def test_legacy_1d_context_is_not_relevant_only_from_legacy_levels() -> None:
         short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
     )
     visible_all = filter_cards_for_view([legacy], mode="all", query="")
-    visible_relevant = filter_cards_for_view([legacy], mode="relevant", query="")
+    visible_default = filter_cards_for_view([legacy], mode="relevant", query="")
     assert [card.symbol for card in visible_all] == ["WLD"]
-    assert visible_relevant == []
+    assert [card.symbol for card in visible_default] == ["WLD"]
 
 
 def test_stale_current_price_blocks_actionable_profit_plan_outputs() -> None:
@@ -706,12 +708,14 @@ def test_render_full_html_uses_profit_plan_title_and_public_monitor_href() -> No
     assert "/synth/profit-plan.html" not in html
     assert "/synth/open-orders-monitor.html" not in html
     assert "candidate-search" in html
-    assert "ppView:joost" in html
     assert "ppQuery:joost" in html
     assert "search-shell" in html
     assert "no-results" in html
     assert "Matching 0 of 0" in html
-    assert "shell.style.display = mode === 'all' ? 'flex' : 'none'" in html
+    assert "All selected assets" in html
+    assert "Relevant candidates" not in html
+    assert "Relevant:" not in html
+    assert "shell.style.display = 'flex'" in html
 
 
 def test_json_snapshot_structure_and_safety_markers() -> None:
@@ -2001,10 +2005,15 @@ def test_render_full_html_embeds_writer_instance_id_in_meta_tag() -> None:
     assert fixed_writer_id in html
 
 
-def test_render_full_html_embeds_relevant_count_in_meta_tag() -> None:
+def test_render_full_html_embeds_attention_count_in_meta_tag() -> None:
     card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
     html = render_full_html([card])
-    assert "synth-relevant-count" in html
+
+    assert "synth-attention-count" in html
+    assert "synth-relevant-count" not in html
+    assert "Cards:" in html
+    assert "Attention:" in html
+    assert "Relevant:" not in html
 
 
 def test_render_full_html_embeds_total_count_in_meta_tag() -> None:
