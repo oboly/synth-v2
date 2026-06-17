@@ -14,8 +14,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 def _existing_paths(relative_paths: Iterable[str]) -> list[Path]:
     paths = [PROJECT_ROOT / path for path in relative_paths]
     existing = [path for path in paths if path.exists()]
+
     if not existing:
         pytest.skip(f"No target paths exist yet: {', '.join(relative_paths)}")
+
     return existing
 
 
@@ -40,6 +42,43 @@ def _python_files(paths: Iterable[Path]) -> list[Path]:
     return sorted(files)
 
 
+def _module_parts_for_file(path: Path) -> list[str]:
+    relative = path.relative_to(PROJECT_ROOT).with_suffix("")
+    parts = list(relative.parts)
+
+    if parts[-1] == "__init__":
+        return parts[:-1]
+
+    return parts
+
+
+def _package_parts_for_file(path: Path) -> list[str]:
+    parts = _module_parts_for_file(path)
+
+    if path.name == "__init__.py":
+        return parts
+
+    return parts[:-1]
+
+
+def _resolve_from_import_module(path: Path, node: ast.ImportFrom) -> str:
+    module = node.module or ""
+
+    if node.level == 0:
+        return module
+
+    package_parts = _package_parts_for_file(path)
+    ascend = node.level - 1
+
+    if ascend > len(package_parts):
+        return "." * node.level + module
+
+    base_parts = package_parts[: len(package_parts) - ascend]
+    module_parts = module.split(".") if module else []
+
+    return ".".join([*base_parts, *module_parts])
+
+
 def _imports_in_file(path: Path) -> list[tuple[int, str]]:
     tree = ast.parse(path.read_text(), filename=str(path))
     imports: list[tuple[int, str]] = []
@@ -50,29 +89,47 @@ def _imports_in_file(path: Path) -> list[tuple[int, str]]:
                 imports.append((node.lineno, alias.name))
 
         elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if node.level:
-                module = "." * node.level + module
-            imports.append((node.lineno, module))
+            base_module = _resolve_from_import_module(path, node)
+
+            if base_module:
+                imports.append((node.lineno, base_module))
+
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+
+                expanded = (
+                    f"{base_module}.{alias.name}"
+                    if base_module
+                    else alias.name
+                )
+                imports.append((node.lineno, expanded))
 
     return imports
+
+
+def _matches_forbidden_module(imported: str, forbidden: str) -> bool:
+    if "." in forbidden:
+        return imported == forbidden or imported.startswith(f"{forbidden}.")
+
+    return forbidden in imported.split(".")
 
 
 def _assert_no_forbidden_imports(
     *,
     relative_paths: Iterable[str],
-    forbidden_fragments: Iterable[str],
+    forbidden_modules: Iterable[str],
     reason: str,
 ) -> None:
     roots = _existing_paths(relative_paths)
     files = _python_files(roots)
-    forbidden = tuple(forbidden_fragments)
+    forbidden = tuple(forbidden_modules)
 
     violations: list[str] = []
 
     for file_path in files:
         for lineno, imported in _imports_in_file(file_path):
-            if any(fragment in imported for fragment in forbidden):
+            if any(_matches_forbidden_module(imported, item) for item in forbidden):
                 rel = file_path.relative_to(PROJECT_ROOT)
                 violations.append(f"{rel}:{lineno}: imports {imported}")
 
@@ -82,15 +139,22 @@ def _assert_no_forbidden_imports(
 def test_selection_engine_has_no_account_or_execution_imports() -> None:
     _assert_no_forbidden_imports(
         relative_paths=("src/selection", "src/selection_engine"),
-        forbidden_fragments=(
+        forbidden_modules=(
             "src.decision_gate",
             "src.execution_planner",
             "src.executor",
             "src.execution",
+            "src.account",
+            "src.accounts",
+            "src.balance",
+            "src.balances",
+            "src.position",
+            "src.positions",
+            "src.broker",
+            "src.brokers",
+            "src.order_submit",
             "broker",
-            "account",
-            "balance",
-            "position",
+            "brokers",
             "order_submit",
         ),
         reason=(
@@ -103,7 +167,7 @@ def test_selection_engine_has_no_account_or_execution_imports() -> None:
 def test_decision_gate_has_no_market_structure_computation_imports() -> None:
     _assert_no_forbidden_imports(
         relative_paths=("src/decision_gate",),
-        forbidden_fragments=(
+        forbidden_modules=(
             "src.market_context",
             "src.features",
             "src.market_data.fib_navigation_map",
@@ -119,7 +183,7 @@ def test_decision_gate_has_no_market_structure_computation_imports() -> None:
 def test_execution_planner_has_no_market_context_or_selection_imports() -> None:
     _assert_no_forbidden_imports(
         relative_paths=("src/execution_planner",),
-        forbidden_fragments=(
+        forbidden_modules=(
             "src.market_context",
             "src.features",
             "src.selection",
@@ -136,7 +200,7 @@ def test_execution_planner_has_no_market_context_or_selection_imports() -> None:
 def test_executor_has_no_strategy_imports() -> None:
     _assert_no_forbidden_imports(
         relative_paths=("src/executor", "src/agents"),
-        forbidden_fragments=(
+        forbidden_modules=(
             "src.selection",
             "src.selection_engine",
             "src.aplus",
@@ -152,11 +216,16 @@ def test_executor_has_no_strategy_imports() -> None:
 def test_aplus_module_has_no_execution_imports() -> None:
     _assert_no_forbidden_imports(
         relative_paths=("src/aplus",),
-        forbidden_fragments=(
+        forbidden_modules=(
             "src.decision_gate",
             "src.execution_planner",
             "src.executor",
+            "src.execution",
+            "src.broker",
+            "src.brokers",
+            "src.order_submit",
             "broker",
+            "brokers",
             "order_submit",
         ),
         reason=(
