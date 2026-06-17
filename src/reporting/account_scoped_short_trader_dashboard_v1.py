@@ -407,13 +407,14 @@ def build_account_market_scope(
         if not market:
             continue
         has_open_order = market in open_order_markets
+        has_positive_balance = market in positive_balance_markets
         is_hidden = bool(raw.get("is_hidden"))
         is_visible = bool(raw.get("is_visible"))
         is_candidate_enabled = bool(raw.get("is_candidate_enabled"))
         is_order_proposal_enabled = bool(raw.get("is_order_proposal_enabled"))
         source = str(raw.get("source") or "").upper()
 
-        if has_open_order:
+        if has_open_order or has_positive_balance:
             included_markets.add(market)
             continue
         if is_hidden:
