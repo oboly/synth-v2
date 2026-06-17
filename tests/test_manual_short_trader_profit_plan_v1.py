@@ -869,7 +869,7 @@ def test_multiple_orders_near_only_one_target_are_scoped_per_level() -> None:
     second_level = card.target_level_statuses[2]
     assert first_level.matching_open_sell_orders == 2
     assert second_level.matching_open_sell_orders == 0
-    assert any("sell @ 0.515600" in item for item in card.order_summary.missing_suggested)
+    assert any("sell @ 0.5156" in item for item in card.order_summary.missing_suggested)
 
 
 def test_passed_level_without_fill_evidence_is_marked_missed() -> None:
@@ -1734,7 +1734,7 @@ def test_card_html_row1_contains_symbol_market_horizon_price() -> None:
     assert "WLD" in html
     assert "WLD-EUR" in html
     assert "SHORT" in html
-    assert "0.440000" in html
+    assert "€0.44" in html
 
 
 def test_card_html_row2_contains_quality_badge() -> None:
@@ -1984,7 +1984,7 @@ def test_render_full_html_applies_sort_by_default() -> None:
     html = render_full_html([minimal_card, near_card])
     idx_near = html.find("0.440000")
     idx_none = html.find("0.440000")  # both have WLD symbol; just verify both appear
-    assert "0.440000" in html
+    assert "€0.44" in html
     # 2 card sections + 1 JS querySelector → at least 2 occurrences
     assert html.count("plan-card") >= 2
 
@@ -2011,6 +2011,8 @@ def test_render_full_html_embeds_attention_count_in_meta_tag() -> None:
 
     assert "synth-attention-count" in html
     assert "synth-relevant-count" not in html
+    assert "data-attention=" in html
+    assert "data-relevant=" not in html
     assert "Cards:" in html
     assert "Attention:" in html
     assert "Relevant:" not in html
@@ -2158,13 +2160,13 @@ def test_quality_state_pass_when_age_is_none() -> None:
 
 def test_format_current_price_line_with_age() -> None:
     result = format_current_price_line(Decimal("0.675670"), Decimal("0.3"), "EUR")
-    assert "€0.675670" in result
+    assert "€0.67567" in result
     assert "0.3 min ago" in result
 
 
 def test_format_current_price_line_no_age() -> None:
     result = format_current_price_line(Decimal("0.675670"), None, "EUR")
-    assert "€0.675670" in result
+    assert "€0.67567" in result
     assert "min ago" not in result
 
 
@@ -2176,8 +2178,8 @@ def test_format_current_price_line_none_returns_dash() -> None:
 def test_format_reentry_zone_line_shows_first_last_with_signed_pct() -> None:
     zone = (Decimal("96.00"), Decimal("92.00"))
     result = format_reentry_zone_line(zone, Decimal("100.00"))
-    assert "€96.00" in result
-    assert "€92.00" in result
+    assert "€96" in result
+    assert "€92" in result
     assert "(-4.00%)" in result
     assert "(-8.00%)" in result
     assert "% away" not in result
@@ -2192,15 +2194,15 @@ def test_format_reentry_zone_line_empty_zone() -> None:
 def test_format_reentry_zone_line_three_levels_hides_middle() -> None:
     zone = (Decimal("96.00"), Decimal("94.00"), Decimal("92.00"))
     result = format_reentry_zone_line(zone, Decimal("100.00"))
-    assert "€96.00" in result
-    assert "€92.00" in result
+    assert "€96" in result
+    assert "€92" in result
     assert "€94.00" not in result
 
 
 def test_format_reentry_zone_line_single_level() -> None:
     zone = (Decimal("96.00"),)
     result = format_reentry_zone_line(zone, Decimal("100.00"))
-    assert "€96.00" in result
+    assert "€96" in result
     assert "(-4.00%)" in result
     assert "–" not in result
 
@@ -2208,22 +2210,22 @@ def test_format_reentry_zone_line_single_level() -> None:
 def test_format_reentry_zone_line_duplicate_first_last() -> None:
     zone = (Decimal("96.00"), Decimal("96.00"))
     result = format_reentry_zone_line(zone, Decimal("100.00"))
-    assert result.count("€96.00") == 1
+    assert result.count("€96") == 1
 
 
 def test_format_reentry_zone_line_no_current_price() -> None:
     zone = (Decimal("96.00"), Decimal("92.00"))
     result = format_reentry_zone_line(zone, None)
-    assert "€96.00" in result
-    assert "€92.00" in result
+    assert "€96" in result
+    assert "€92" in result
     assert "%" not in result
 
 
 def test_format_target_zone_line_shows_first_last_with_signed_pct() -> None:
     zone = (Decimal("104.00"), Decimal("108.00"))
     result = format_target_zone_line(zone, Decimal("100.00"))
-    assert "€104.00" in result
-    assert "€108.00" in result
+    assert "€104" in result
+    assert "€108" in result
     assert "(+4.00%)" in result
     assert "(+8.00%)" in result
     assert "nearest" not in result
@@ -2233,15 +2235,15 @@ def test_format_target_zone_line_shows_first_last_with_signed_pct() -> None:
 def test_format_target_zone_line_three_levels_hides_middle() -> None:
     zone = (Decimal("104.00"), Decimal("106.00"), Decimal("108.00"))
     result = format_target_zone_line(zone, Decimal("100.00"))
-    assert "€104.00" in result
-    assert "€108.00" in result
+    assert "€104" in result
+    assert "€108" in result
     assert "€106.00" not in result
 
 
 def test_format_target_zone_line_single_level() -> None:
     zone = (Decimal("104.00"),)
     result = format_target_zone_line(zone, Decimal("100.00"))
-    assert "€104.00" in result
+    assert "€104" in result
     assert "(+4.00%)" in result
     assert "–" not in result
 
@@ -2249,14 +2251,14 @@ def test_format_target_zone_line_single_level() -> None:
 def test_format_target_zone_line_duplicate_first_last() -> None:
     zone = (Decimal("104.00"), Decimal("104.00"))
     result = format_target_zone_line(zone, Decimal("100.00"))
-    assert result.count("€104.00") == 1
+    assert result.count("€104") == 1
 
 
 def test_format_target_zone_line_no_current_price() -> None:
     zone = (Decimal("104.00"), Decimal("108.00"))
     result = format_target_zone_line(zone, None)
-    assert "€104.00" in result
-    assert "€108.00" in result
+    assert "€104" in result
+    assert "€108" in result
     assert "%" not in result
 
 
@@ -3183,3 +3185,34 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def test_price_display_strips_trailing_decimal_noise() -> None:
+    assert format_current_price_line(
+        Decimal("0.199210000000000000"),
+        Decimal("0.3"),
+        "EUR",
+    ) == "€0.19921 · 0.3 min ago"
+
+
+def test_reentry_wait_is_not_user_visible_or_searchable_wait_label() -> None:
+    card = _make_card(current_price="0.3000", reentry=_fet_reentry(missed_pct=None))
+    html = render_plan_card(card)
+
+    assert card.scenario_type == "REENTRY_WAIT"
+    assert "REENTRY SETUP" in html
+    assert "REENTRY WAIT" not in html
+    assert "reentry_wait" not in html
+    assert "No recent dip recorded" not in html
+    assert "watching for a pull-back" not in html
+
+
+def test_card_body_omits_header_duplicate_fields() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_plan_card(card)
+
+    assert "<div class='field-label'>Market</div>" not in html
+    assert "<div class='field-label'>Horizon</div>" not in html
+    assert "<div class='field-label'>Quality</div>" not in html
+    assert "<div class='field-label'>Current price</div>" in html
+
