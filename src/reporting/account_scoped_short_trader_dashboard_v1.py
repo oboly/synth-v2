@@ -332,11 +332,50 @@ def _fetch_account_asset_rows(
     return [dict(row) for row in rows]
 
 
+def _fetch_selected_asset_market_rows(
+    conn: Any,
+    *,
+    venue: str,
+) -> list[dict[str, Any]]:
+    """Return globally selected assets for read-only Short Swing rendering.
+
+    Asset data is the global selection layer. Account rows, balances, and open
+    orders are overlays; they must not be the only way a symbol becomes visible.
+    """
+    sql = """
+    SELECT
+        vm.market,
+        vm.quote_currency,
+        a.symbol AS asset_symbol,
+        a.is_enabled AS asset_is_enabled,
+        a.is_tradeable AS asset_is_tradeable,
+        a.is_portfolio AS asset_is_portfolio,
+        a.is_core_sensor AS asset_is_core_sensor
+    FROM venue_market vm
+    JOIN asset a
+      ON a.asset_id = vm.base_asset_id
+    WHERE vm.venue = %s
+      AND vm.quote_currency = %s
+      AND a.is_enabled = 1
+      AND COALESCE(a.is_tradeable, 0) = 1
+      AND (
+        COALESCE(a.is_portfolio, 0) = 1
+        OR COALESCE(a.is_core_sensor, 0) = 1
+      )
+    ORDER BY vm.market
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (venue, QUOTE_CURRENCY))
+        rows = list(cur.fetchall())
+    return [dict(row) for row in rows]
+
+
 def build_account_market_scope(
     *,
     account_asset_rows: list[dict[str, Any]],
     balances: list[BrokerBalanceRow],
     orders: list[BrokerOrderRow],
+    selected_asset_market_rows: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     positive_balance_markets: set[str] = set()
     for row in balances:
@@ -348,25 +387,40 @@ def build_account_market_scope(
             positive_balance_markets.add(f"{symbol}-{QUOTE_CURRENCY}")
 
     open_order_markets = {str(row.market or "").upper() for row in orders if str(row.market or "").strip()}
+
+    # Global asset data defines the selectable Short Swing universe.
+    # This prevents rendering the full Bitvavo catalog while allowing symbols
+    # such as XLM to be enabled centrally without needing a balance or order.
+    included_markets: set[str] = set()
+    for raw in selected_asset_market_rows or []:
+        market = str(raw.get("market") or "").upper()
+        quote_currency = str(raw.get("quote_currency") or "").upper()
+        if market and quote_currency == QUOTE_CURRENCY:
+            included_markets.add(market)
+
     # Positive balance markets and open order markets are always included regardless
     # of account_asset rows — account_asset is a preference overlay, not a prerequisite.
-    included_markets: set[str] = set(open_order_markets) | positive_balance_markets
+    included_markets |= set(open_order_markets) | positive_balance_markets
 
     for raw in account_asset_rows:
         market = str(raw.get("market") or "").upper()
         if not market:
             continue
         has_open_order = market in open_order_markets
+        has_positive_balance = market in positive_balance_markets
         is_hidden = bool(raw.get("is_hidden"))
         is_visible = bool(raw.get("is_visible"))
+        is_candidate_enabled = bool(raw.get("is_candidate_enabled"))
+        is_order_proposal_enabled = bool(raw.get("is_order_proposal_enabled"))
         source = str(raw.get("source") or "").upper()
 
-        if has_open_order:
+        if has_open_order or has_positive_balance:
             included_markets.add(market)
             continue
         if is_hidden:
+            included_markets.discard(market)
             continue
-        if is_visible or source == "MANUAL_ADD":
+        if is_visible or is_candidate_enabled or is_order_proposal_enabled or source == "MANUAL_ADD":
             included_markets.add(market)
 
     return sorted(included_markets)
@@ -428,10 +482,15 @@ def load_account_scoped_short_dashboard_context(
             trading_account_id=trading_account_id,
             venue=venue,
         )
+        selected_asset_market_rows = _fetch_selected_asset_market_rows(
+            conn,
+            venue=venue,
+        )
         markets = build_account_market_scope(
             account_asset_rows=account_asset_rows,
             balances=balances,
             orders=orders,
+            selected_asset_market_rows=selected_asset_market_rows,
         )
         symbols = sorted({market.split("-", 1)[0].upper() for market in markets if "-" in market})
         market_price_by_symbol = fetch_latest_prices_by_symbol(
