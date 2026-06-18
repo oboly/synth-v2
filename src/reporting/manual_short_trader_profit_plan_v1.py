@@ -2204,6 +2204,15 @@ _CSS = """
       border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
       font-size: 12px; min-width: 138px;
     }
+    .filter-select option {
+      background: #ffffff;
+      color: #111827;
+    }
+    .filter-select option:checked {
+      background: #2563eb;
+      color: #ffffff;
+    }
+
     .no-results {
       display: none; padding: 18px; border: 1px dashed var(--line); border-radius: 12px;
       color: var(--muted); grid-column: 1 / -1;
