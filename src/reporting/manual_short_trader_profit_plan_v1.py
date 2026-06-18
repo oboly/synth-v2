@@ -341,6 +341,35 @@ def _distance_to_zone_pct(current_price: Decimal | None, levels: tuple[Decimal, 
     return min(valid, key=lambda dist: abs(dist))
 
 
+def _profit_plan_potential_pct_from_levels(
+    entry_levels: tuple[Decimal, ...],
+    target_levels: tuple[Decimal, ...],
+) -> Decimal | None:
+    """Return PPP: lowest entry/reload level to highest active target."""
+    if not entry_levels or not target_levels:
+        return None
+    entry = min(entry_levels)
+    target = max(target_levels)
+    if entry <= 0:
+        return None
+    return (target - entry) / entry * Decimal("100")
+
+
+def _profit_plan_potential_pct(card: ProfitPlanCard) -> Decimal | None:
+    return _profit_plan_potential_pct_from_levels(
+        card.reload_reentry_zone or card.buy_zone,
+        card.target_exit_zone,
+    )
+
+
+def _format_ppp_ppt_ppv_line(card: ProfitPlanCard) -> str:
+    ppp = _profit_plan_potential_pct(card)
+    if ppp is None:
+        return "— / — = —"
+    # PPT/PPV require a deterministic time-to-target source; do not fake it.
+    return f"{_pct(ppp)} / — = —"
+
+
 def _short_context_display_label(state: str) -> str:
     return SHORT_CONTEXT_DISPLAY_LABELS.get(state, state.replace("_", " "))
 
@@ -458,6 +487,73 @@ def sort_cards_two_timeline(cards: list[ProfitPlanCard]) -> list[ProfitPlanCard]
     sorted_upcoming = [c for _, c in sorted(upcoming, key=lambda x: x[0])]
     sorted_recent = [c for _, c in sorted(recent, key=lambda x: x[0], reverse=True)]
     return sorted_upcoming + sorted_recent + minimal
+
+
+
+
+def _order_ladder_sort_priority(ladder_states: tuple[str, ...]) -> int:
+    states = set(ladder_states)
+    if "LADDER_MISSING" in states:
+        return 0
+    if "LADDER_INCOMPLETE" in states:
+        return 1
+    if "STALE_ORDERS_PRESENT" in states:
+        return 2
+    if "ORDER_DATA_UNAVAILABLE" in states:
+        return 3
+    if "LADDER_ARMED" in states:
+        return 5
+    if "LADDER_NOT_REQUIRED" in states:
+        return 7
+    return 8
+
+
+def _event_sort_priority(card: ProfitPlanCard) -> int:
+    if card.primary_state == "INVALIDATION_NEAR":
+        return 0
+    if card.primary_state == "RELOAD_ZONE_APPROACHING":
+        return 1
+    if card.event_state == "MAP_EXPIRED" or card.primary_state in {"MAP_RECOMPUTE_NEEDED", "POST_EXTENSION_PULLBACK"}:
+        return 2
+    if card.primary_state == "TAKE_PROFIT_WAITING" or card.event_state == "TARGET_APPROACHING":
+        return 3
+    if card.event_state == "CONTEXT_UNAVAILABLE":
+        return 6
+    return 5
+
+
+def _setup_sort_priority(card: ProfitPlanCard) -> int:
+    order = {
+        "REENTRY_SETUP": 0,
+        "EXTENSION_SETUP": 1,
+        "BREAKOUT_SETUP": 2,
+        "RANGE_SETUP": 3,
+        "MAP_COMPLETED": 4,
+        "MINIMAL_CONTEXT": 8,
+    }
+    return order.get(card.setup_state, 9)
+
+
+def _card_action_sort_value(card: ProfitPlanCard) -> int:
+    if not card.is_relevant:
+        return 999
+    return (_order_ladder_sort_priority(card.ladder_states) * 100) + (_event_sort_priority(card) * 10)
+
+
+def sort_cards_action_priority(cards: list[ProfitPlanCard]) -> list[ProfitPlanCard]:
+    """Default UI sort: user-actionable cards first, then market/risk urgency."""
+    def key(card: ProfitPlanCard) -> tuple[bool, int, Decimal, Decimal, str]:
+        dist = _nearest_distance(card)
+        ppp = _profit_plan_potential_pct(card)
+        return (
+            not card.is_relevant,
+            _card_action_sort_value(card),
+            dist if dist is not None else Decimal("999999"),
+            -(ppp if ppp is not None else Decimal("-999999")),
+            card.symbol,
+        )
+
+    return sorted(cards, key=key)
 
 
 def _unique_levels(levels: tuple[Decimal | None, ...]) -> tuple[Decimal, ...]:
@@ -1262,6 +1358,28 @@ def _derive_ladder_states(
     return tuple(dict.fromkeys(states))
 
 
+def _order_ladder_display_status(ladder_states: tuple[str, ...]) -> str:
+    """Collapse internal ladder states into one user-facing order-ladder status."""
+    states = set(ladder_states)
+    if not states:
+        return "unknown"
+    if "ORDER_DATA_UNAVAILABLE" in states:
+        return "unknown"
+    if "LADDER_NOT_REQUIRED" in states:
+        return "not required"
+    if "LADDER_MISSING" in states and ("LADDER_ARMED" in states or "LADDER_INCOMPLETE" in states):
+        return "incomplete orders"
+    if "LADDER_MISSING" in states:
+        return "missing orders"
+    if "LADDER_INCOMPLETE" in states:
+        return "incomplete orders"
+    if "STALE_ORDERS_PRESENT" in states:
+        return "review stale orders"
+    if "LADDER_ARMED" in states:
+        return "armed"
+    return "unknown"
+
+
 def _derive_relevance_with_reasons(
     event_state: str,
     ladder_states: tuple[str, ...],
@@ -2011,6 +2129,32 @@ def _build_client_js(storage_scope: str) -> str:
     if (queryInput) queryInput.value = '';
     updateSearch();
   }}
+  function sortCards(mode) {{
+    var main = document.querySelector('main');
+    if (!main) return;
+    var cards = Array.prototype.slice.call(main.querySelectorAll('.plan-card'));
+    var noResults = document.getElementById('no-results');
+    function num(card, key, fallback) {{
+      var v = parseFloat(card.dataset[key] || fallback);
+      return isNaN(v) ? parseFloat(fallback) : v;
+    }}
+    cards.sort(function(a, b) {{
+      if (mode === 'ppp') {{
+        var pppDelta = num(b, 'sortPpp', '-999999') - num(a, 'sortPpp', '-999999');
+        if (pppDelta !== 0) return pppDelta;
+      }} else if (mode === 'setup') {{
+        var setupDelta = num(a, 'sortSetup', '999') - num(b, 'sortSetup', '999');
+        if (setupDelta !== 0) return setupDelta;
+      }} else {{
+        var actionDelta = num(a, 'sortAction', '999') - num(b, 'sortAction', '999');
+        if (actionDelta !== 0) return actionDelta;
+      }}
+      return (a.dataset.sortSymbol || '').localeCompare(b.dataset.sortSymbol || '');
+    }});
+    cards.forEach(function(card) {{ main.appendChild(card); }});
+    if (noResults) main.appendChild(noResults);
+    updateSearch();
+  }}
   function selectLadderRows(renderIdStr, mode) {{
     var checks = document.querySelectorAll(
       '.order-ladder-row[data-render-id="' + renderIdStr + '"] .order-row-check'
@@ -2452,6 +2596,7 @@ def render_plan_card(
         _actionability_display_bundle(card)
     )
     invalidation_line = format_invalidation_line(card.invalidation_risk_zone, card.distance_to_invalidation_pct)
+    ppp_line = _format_ppp_ppt_ppv_line(card)
 
     metrics_html = "".join((
         _metric_block("Current price", price_line),
@@ -2460,6 +2605,7 @@ def render_plan_card(
         _metric_block(reentry_label, reentry_line),
         _metric_block(target_label, target_line),
         _metric_block("Invalidation", invalidation_line),
+        _metric_block("PPP / PPT = PPV", ppp_line),
     ))
 
     # Build order rows first (needed for FIX LADDER override).
@@ -2475,16 +2621,19 @@ def render_plan_card(
         sell_orders=sell_orders,
     )
     displayed_action = _displayed_user_action(card.action_label, order_rows, card.actionability_state)
+    action_sort_value = _card_action_sort_value(card)
+    setup_sort_value = _setup_sort_priority(card)
+    ppp_pct = _profit_plan_potential_pct(card)
+    ppp_sort_value = ppp_pct if ppp_pct is not None else Decimal("-999999")
 
-    # Event + ladder state above order ladder
+    # Event + order-ladder state above order ladder.
+    # Keep internal ladder_states for data/tests, but render one deterministic user-facing status.
     event_label = STATE_LABELS.get(card.event_state, card.event_state.replace("_", " "))
-    ladder_label = " · ".join(
-        STATE_LABELS.get(ls, ls.replace("_", " ")) for ls in card.ladder_states
-    ) if card.ladder_states else "—"
+    order_ladder_status = _order_ladder_display_status(card.ladder_states)
     order_section_header = (
         "<div class='order-section-header'>"
         f"<span>Event: <span class='event-label'>{esc(event_label)}</span></span>"
-        f"<span>Ladder: {esc(ladder_label)}</span>"
+        f"<span>Order ladder: {esc(order_ladder_status)}</span>"
         "</div>"
     )
     order_rows_html = _order_rows_html(
@@ -2505,6 +2654,10 @@ def render_plan_card(
         f"<section class='card plan-card'"
         f" data-attention='{str(card.is_relevant).lower()}'"
         f" data-search='{esc(search_text)}'"
+        f" data-sort-action='{esc(action_sort_value)}'"
+        f" data-sort-setup='{esc(setup_sort_value)}'"
+        f" data-sort-ppp='{esc(ppp_sort_value)}'"
+        f" data-sort-symbol='{esc(card.symbol.lower())}'"
         f" data-render-id='{esc(card.render_id)}'>"
         "<div class='card-head'>"
         "<div class='card-head-left'>"
@@ -2556,7 +2709,7 @@ def render_full_html(
     snapshot_render_id = render_id or str(uuid.uuid4())
     snapshot_writer_id = writer_instance_id or str(uuid.uuid4())
 
-    display_cards = sort_cards_two_timeline(cards) if sort else list(cards)
+    display_cards = sort_cards_action_priority(cards) if sort else list(cards)
     attention_count = sum(1 for c in cards if c.is_relevant)
     total_count = len(cards)
     cards_html = "\n".join(render_plan_card(c, monitor_link=monitor_link) for c in display_cards)
@@ -2586,6 +2739,9 @@ def render_full_html(
         "  <div class='sticky-controls'>\n"
         "    <div class='view-toggle'>\n"
         "      <button id='btn-all' class='toggle-btn active' onclick='setView(\"all\")'>All selected assets</button>\n"
+        "      <button class='toggle-btn' type='button' onclick='sortCards(\"action\")'>Sort: Action</button>\n"
+        "      <button class='toggle-btn' type='button' onclick='sortCards(\"setup\")'>Sort: Setup</button>\n"
+        "      <button class='toggle-btn' type='button' onclick='sortCards(\"ppp\")'>Sort: PPP</button>\n"
         "      <span class='muted small' style='margin-left:4px'>broker_writes=0 · order_submission=0</span>\n"
         "    </div>\n"
         "    <div id='search-shell' class='search-shell'>\n"
