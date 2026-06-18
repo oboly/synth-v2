@@ -3216,3 +3216,47 @@ def test_card_body_omits_header_duplicate_fields() -> None:
     assert "<div class='field-label'>Quality</div>" not in html
     assert "<div class='field-label'>Current price</div>" in html
 
+
+def test_take_profit_waiting_does_not_hide_missing_reentry_ladder_work() -> None:
+    """A sell order near target is coverage; it must not outrank risk/reload work."""
+    fib_ext = FibExtContext(
+        local_reaction_price=None,
+        anchor_end_ts_utc=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
+        ext_1_272=Decimal("0.00002315"),
+        ext_1_618=Decimal("0.00002369"),
+        ext_2_000=Decimal("0.00002440"),
+        breakout_gate=Decimal("0.00002100"),
+        price_band="BELOW_BREAKOUT_GATE",
+        ext_1_272_touched_and_rejected=False,
+        retesting_breakout_gate=False,
+    )
+    reentry = ReentryContext(
+        r382_price=Decimal("0.00002281"),
+        r500_price=Decimal("0.00002270"),
+        r618_price=Decimal("0.00002260"),
+        r786_price=Decimal("0.00002245"),
+        deepest_touched_label=None,
+        missed_main_rebuy_by_pct=None,
+    )
+    card = _make_card(
+        current_price="0.00002253",
+        fib_ext=fib_ext,
+        reentry=reentry,
+        sell_orders=(_FakeOrder("0.00002315", side="sell"),),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        symbol="FLOKI",
+        market="FLOKI-EUR",
+    )
+    html = render_plan_card(card)
+
+    assert card.primary_state == "INVALIDATION_NEAR"
+    assert card.secondary_state == "RELOAD_ZONE_APPROACHING"
+    assert card.actionability_state == "ACTIVE_TRADE_SETUP"
+    assert "LADDER_MISSING" in card.ladder_states
+    assert "TAKE_PROFIT_WAITING" not in {card.primary_state, card.secondary_state}
+    assert "Invalidation zone near" in html
+    assert "FIX LADDER" in html
+    assert "Take profit already waiting" not in html
+

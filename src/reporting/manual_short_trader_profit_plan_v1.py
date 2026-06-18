@@ -28,7 +28,7 @@ STATE_LABELS: dict[str, str] = {
     "NO_NATIVE_SHORT_FIB_CONTEXT": "No native SHORT fib context",
     "MARKET_DATA_MISSING": "Market data missing",
     "CONTEXT_INVALID_OR_STALE": "Context invalid or stale",
-    "TAKE_PROFIT_WAITING": "Take profit already waiting",
+    "TAKE_PROFIT_WAITING": "Sell order already waiting",
     "RELOAD_ZONE_APPROACHING": "Reload zone approaching",
     "PRICE_RAN_AWAY": "Price ran away",
     "INVALIDATION_NEAR": "Invalidation zone near",
@@ -1023,13 +1023,9 @@ def _evaluate_display_states(
 
     state_candidates: list[str] = []
 
-    if (
-        distance_to_target_pct is not None
-        and abs(distance_to_target_pct) <= TAKE_PROFIT_WAITING_THRESHOLD_PCT
-        and any(level.is_active_target and level.matching_open_sell_orders > 0 for level in target_level_statuses)
-    ):
-        state_candidates.append("TAKE_PROFIT_WAITING")
-
+    # Primary event priority is market/risk first.
+    # A waiting sell order is positive order coverage, not a reason to hide
+    # nearby invalidation/reload work or missing ladder rows.
     if (
         distance_to_invalidation_pct is not None
         and abs(distance_to_invalidation_pct) <= INVALIDATION_NEAR_THRESHOLD_PCT
@@ -1041,6 +1037,13 @@ def _evaluate_display_states(
         and abs(distance_to_reload_pct) <= RELOAD_ZONE_APPROACHING_THRESHOLD_PCT
     ):
         state_candidates.append("RELOAD_ZONE_APPROACHING")
+
+    if (
+        distance_to_target_pct is not None
+        and abs(distance_to_target_pct) <= TAKE_PROFIT_WAITING_THRESHOLD_PCT
+        and any(level.is_active_target and level.matching_open_sell_orders > 0 for level in target_level_statuses)
+    ):
+        state_candidates.append("TAKE_PROFIT_WAITING")
 
     if active_target is None and target_level_statuses:
         state_candidates.append("PRICE_RAN_AWAY")
