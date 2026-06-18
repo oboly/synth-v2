@@ -3347,11 +3347,133 @@ def test_rendered_profit_plan_exposes_sort_controls_and_sort_keys() -> None:
     )
     html = render_full_html([card], rendered_at="now", broker_mode="test")
 
-    assert "Sort: Action" in html
-    assert "Sort: Setup" in html
-    assert "Sort: PPP" in html
+    assert "id='sort-mode'" in html
+    assert "Action priority" in html
+    assert "Setup" in html
+    assert "PPP high-low" in html
+    assert "PPP low-high" in html
     assert "data-sort-action=" in html
     assert "data-sort-setup=" in html
     assert "data-sort-ppp=" in html
     assert "function sortCards(mode)" in html
+
+
+def test_ppp_uses_highest_planned_target_from_target_lifecycle() -> None:
+    from dataclasses import replace
+
+    base = _make_card(
+        current_price="0.1100",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    higher_target = _pp_module.TargetLevelStatus(
+        level=Decimal("0.1500"),
+        lifecycle_state="UPCOMING",
+        coverage_state="MISSING",
+        human_label="higher planned target",
+        retest_context=None,
+        first_cross_ts_utc=None,
+        distance_pct=None,
+        matching_open_sell_orders=0,
+        nearest_open_sell_price=None,
+        nearest_open_sell_distance_pct=None,
+        is_active_target=True,
+    )
+    card = replace(
+        base,
+        reload_reentry_zone=(Decimal("0.1000"),),
+        buy_zone=(Decimal("0.1000"),),
+        target_exit_zone=(Decimal("0.1200"),),
+        target_level_statuses=(higher_target,),
+    )
+
+    ppp = _pp_module._profit_plan_potential_pct(card)
+
+    assert ppp is not None
+    assert ppp.quantize(Decimal("0.01")) == Decimal("50.00")
+
+
+def test_dynamic_filter_reference_lists_are_derived_from_cards() -> None:
+    from dataclasses import replace
+
+    base = _make_card(
+        current_price="0.458790",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    card = replace(
+        base,
+        actionability_state=_pp_module.CARD_ACTIONABILITY_ACTIVE,
+        ladder_states=("LADDER_MISSING",),
+    )
+
+    refs = _pp_module.build_profit_plan_filter_reference_lists([card])
+
+    assert any(option.value == "fix_ladder" and option.label == "Fix ladder" for option in refs["action"])
+    assert any(
+        option.value == card.setup_state
+        and option.label == _pp_module._filter_display_label(card.setup_state)
+        for option in refs["setup"]
+    )
+    assert any(
+        option.value == card.primary_state
+        and option.label == _pp_module._filter_display_label(card.primary_state)
+        for option in refs["primary"]
+    )
+    assert any(option.value == "missing_orders" and option.label == "Missing Orders" for option in refs["orders"])
+
+
+def test_rendered_profit_plan_exposes_dynamic_filter_controls_and_contract_attrs() -> None:
+    card = _make_card(
+        current_price="0.440000",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    html = render_full_html([card], rendered_at="now", broker_mode="test")
+
+    assert "id='filter-action'" in html
+    assert "id='filter-setup'" in html
+    assert "id='filter-primary'" in html
+    assert "id='filter-orders'" in html
+    assert "id='sort-mode'" in html
+    assert "Symbol A-Z" in html
+    assert "Symbol Z-A" in html
+    assert "PPP high-low" in html
+    assert "data-filter-action=" in html
+    assert "data-filter-action-label=" in html
+    assert "data-filter-setup=" in html
+    assert "data-filter-setup-label=" in html
+    assert "data-filter-primary=" in html
+    assert "data-filter-primary-label=" in html
+    assert "data-filter-orders=" in html
+    assert "data-filter-orders-label=" in html
+    assert "data-workflow-bucket=" in html
+    assert "function applyFiltersAndSort()" in html
+
+
+def test_workflow_sort_bucket_keeps_completed_maps_below_active_ppp_setups() -> None:
+    from dataclasses import replace
+
+    active = _make_card(
+        current_price="0.458790",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    completed = replace(
+        active,
+        setup_state="MAP_COMPLETED",
+        action_label="NAVIGATION_ONLY",
+        actionability_state=_pp_module.CARD_ACTIONABILITY_NAVIGATION_ONLY,
+    )
+
+    assert _pp_module._workflow_sort_bucket(active) == 0
+    assert _pp_module._workflow_sort_bucket(completed) == 2
 
