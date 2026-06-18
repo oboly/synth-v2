@@ -3260,3 +3260,98 @@ def test_take_profit_waiting_does_not_hide_missing_reentry_ladder_work() -> None
     assert "FIX LADDER" in html
     assert "Take profit already waiting" not in html
 
+
+def test_order_ladder_display_status_collapses_armed_and_missing() -> None:
+    assert _pp_module._order_ladder_display_status(("LADDER_ARMED", "LADDER_MISSING")) == "incomplete orders"
+
+
+def test_order_ladder_display_status_armed_only() -> None:
+    assert _pp_module._order_ladder_display_status(("LADDER_ARMED",)) == "armed"
+
+
+def test_order_ladder_display_status_not_required() -> None:
+    assert _pp_module._order_ladder_display_status(("LADDER_NOT_REQUIRED",)) == "not required"
+
+
+def test_order_ladder_header_uses_context_label_and_single_status() -> None:
+    card = _make_card(
+        current_price="0.458790",
+        fib_ext=_wld_fib_ext(),
+        sell_orders=(_FakeOrder("0.515600", side="sell"),),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    html = render_plan_card(card, sell_orders=(_FakeOrder("0.515600", side="sell"),))
+
+    assert "Order ladder:" in html
+    assert "Ladder:" not in html
+    assert "LADDER " not in html
+
+
+def test_profit_plan_potential_pct_uses_lowest_entry_and_highest_target() -> None:
+    result = _pp_module._profit_plan_potential_pct_from_levels(
+        (Decimal("100.00"), Decimal("95.00")),
+        (Decimal("110.00"), Decimal("125.00")),
+    )
+    assert result is not None
+    assert result.quantize(Decimal("0.01")) == Decimal("31.58")
+
+
+def test_ppp_ppt_ppv_display_uses_real_ppp_and_unknown_time_fields() -> None:
+    from dataclasses import replace
+
+    base = _make_card(
+        current_price="0.440000",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    card = replace(
+        base,
+        reload_reentry_zone=(Decimal("0.4000"), Decimal("0.3900")),
+        buy_zone=(Decimal("0.4000"), Decimal("0.3900")),
+        target_exit_zone=(Decimal("0.5000"), Decimal("0.5200")),
+    )
+    html = render_plan_card(card)
+
+    assert "PPP / PPT = PPV" in html
+    assert "33.33% / — = —" in html
+
+
+def test_action_priority_sort_puts_missing_ladder_before_armed_ladder() -> None:
+    from dataclasses import replace
+
+    base = _make_card(
+        current_price="0.458790",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    missing = replace(base, symbol="MISS", market="MISS-EUR", ladder_states=("LADDER_MISSING",), is_relevant=True)
+    armed = replace(base, symbol="ARM", market="ARM-EUR", ladder_states=("LADDER_ARMED",), is_relevant=True)
+
+    sorted_cards = _pp_module.sort_cards_action_priority([armed, missing])
+    assert sorted_cards[0] is missing
+
+
+def test_rendered_profit_plan_exposes_sort_controls_and_sort_keys() -> None:
+    card = _make_card(
+        current_price="0.440000",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    html = render_full_html([card], rendered_at="now", broker_mode="test")
+
+    assert "Sort: Action" in html
+    assert "Sort: Setup" in html
+    assert "Sort: PPP" in html
+    assert "data-sort-action=" in html
+    assert "data-sort-setup=" in html
+    assert "data-sort-ppp=" in html
+    assert "function sortCards(mode)" in html
+
