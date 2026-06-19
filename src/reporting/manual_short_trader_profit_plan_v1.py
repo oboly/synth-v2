@@ -128,6 +128,19 @@ CARD_ACTIONABILITY_HISTORICAL_REFERENCE = "HISTORICAL_REFERENCE"
 CARD_ACTIONABILITY_NEEDS_RECOMPUTE = "NEEDS_RECOMPUTE"
 CARD_ACTIONABILITY_INVALIDATED = "INVALIDATED"
 
+# Canonical action filter options — always rendered in this order, regardless of card set.
+# Zero-count options remain visible (may be muted); unknown render-derived values appended after.
+CANONICAL_ACTION_FILTER: tuple[tuple[str, str], ...] = (
+    ("fix_ladder", "Fix ladder"),
+    ("take_profit_near", "Take profit"),
+    ("between_levels", "Between levels"),
+    ("map_expired", "Map expired"),
+    ("navigation_map", "Navigation Map"),
+    ("manual_review", "Manual review"),
+    ("breakout_watch", "Breakout Watch"),
+    ("invalidated", "Invalidated"),
+)
+
 SHORT_CONTEXT_DISPLAY_LABELS: dict[str, str] = {
     "HAS_NATIVE_SHORT_FIB_CONTEXT": "Native SHORT fib context available",
     "NO_NATIVE_SHORT_FIB_CONTEXT": "No native SHORT fib context",
@@ -721,6 +734,33 @@ def _filter_select_options(options: tuple[_FilterOption, ...]) -> str:
         f"<option value='{esc(option.value)}'>{esc(option.label)}</option>"
         for option in options
     )
+
+
+def _canonical_action_filter_options_html(cards: list[ProfitPlanCard]) -> str:
+    """Render action filter options using the canonical list, always in fixed order.
+
+    Canonical options are always visible with their count (may be zero).
+    Non-canonical action values found in rendered cards are appended after.
+    """
+    canonical_values = {value for value, _ in CANONICAL_ACTION_FILTER}
+    counts: dict[str, int] = {}
+    extra: dict[str, str] = {}
+
+    for card in cards:
+        value, label = _card_filter_action_option(card)
+        counts[value] = counts.get(value, 0) + 1
+        if value not in canonical_values:
+            extra.setdefault(value, label)
+
+    parts: list[str] = []
+    for value, label in CANONICAL_ACTION_FILTER:
+        count = counts.get(value, 0)
+        parts.append(f"<option value='{esc(value)}'>{esc(label)} ({count})</option>")
+    for value in sorted(extra, key=lambda v: extra[v].lower()):
+        count = counts.get(value, 0)
+        label = extra[value]
+        parts.append(f"<option value='{esc(value)}'>{esc(label)} ({count})</option>")
+    return "".join(parts)
 
 
 def _unique_levels(levels: tuple[Decimal | None, ...]) -> tuple[Decimal, ...]:
@@ -2095,8 +2135,36 @@ _CSS = """
     h2 { margin: 0 0 6px; font-size: 19px; }
     h3 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase;
          letter-spacing: .07em; color: var(--blue); }
-    main { padding: 16px; display: grid; gap: 16px;
-           grid-template-columns: repeat(auto-fill, minmax(440px, 1fr)); }
+    main { padding: 16px; }
+    #profit-plan-cockpit {
+      display: grid; grid-template-columns: 220px 1fr 280px; gap: 12px;
+    }
+    #profit-plan-selector {
+      background: rgba(17,26,46,.94); border: 1px solid var(--line);
+      border-radius: 12px; overflow-y: auto; max-height: calc(100vh - 140px);
+    }
+    .pp-selector-item {
+      padding: 8px 12px; cursor: pointer;
+      border-bottom: 1px solid var(--line); font-size: 13px;
+    }
+    .pp-selector-item:hover { background: rgba(255,255,255,.05); }
+    .pp-selector-item.active {
+      background: rgba(139,179,255,.12); border-left: 3px solid var(--blue);
+    }
+    .pp-selector-symbol { font-weight: 700; font-family: ui-monospace, monospace; }
+    .pp-selector-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    #profit-plan-main { min-width: 0; }
+    #profit-plan-main .plan-card { display: none; }
+    #profit-plan-main .plan-card.pp-active { display: block; }
+    #profit-plan-detail-panel {
+      background: rgba(17,26,46,.94); border: 1px solid var(--line);
+      border-radius: 12px; padding: 16px; font-size: 13px;
+      overflow-y: auto; max-height: calc(100vh - 140px);
+    }
+    @media (max-width: 900px) {
+      #profit-plan-cockpit { grid-template-columns: 1fr; }
+      #profit-plan-selector { max-height: 180px; }
+    }
     .muted { color: var(--muted); } .small { font-size: 12px; }
     .pipeline-warn { background:#fff3cd; border:1px solid #ffc107; border-radius:8px; padding:10px 16px; margin:8px 0; font-size:13px; font-weight:600; color:#856404; }
     .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
@@ -2321,7 +2389,7 @@ def _build_client_js(storage_scope: str) -> str:
   }}
 
   function sortCardsInDom(mode) {{
-    var main = document.querySelector('main');
+    var main = document.getElementById('profit-plan-main');
     if (!main) return;
     var cards = Array.prototype.slice.call(main.querySelectorAll('.plan-card'));
     var noResults = document.getElementById('no-results');
@@ -2398,6 +2466,8 @@ def _build_client_js(storage_scope: str) -> str:
 
     var noResults = document.getElementById('no-results');
     if (noResults) noResults.style.display = matches === 0 ? '' : 'none';
+
+    syncProfitPlanCockpit();
   }}
 
   function setView(_mode) {{
@@ -2425,6 +2495,104 @@ def _build_client_js(storage_scope: str) -> str:
     setSelectedValue('filter-orders', '');
     setSelectedValue('sort-mode', 'action');
     clearSearch();
+  }}
+
+  function buildProfitPlanSelector() {{
+    var sel = document.getElementById('profit-plan-selector');
+    if (!sel) return;
+    var cards = Array.prototype.slice.call(
+      document.querySelectorAll('#profit-plan-main .plan-card')
+    );
+    sel.innerHTML = '';
+    var visible = cards.filter(function(c) {{ return c.style.display !== 'none'; }});
+    if (visible.length === 0) {{
+      sel.innerHTML = "<div class='pp-selector-item muted'>No matching cards</div>";
+      return;
+    }}
+    visible.forEach(function(card) {{
+      var item = document.createElement('div');
+      item.className = 'pp-selector-item';
+      item.dataset.renderId = card.dataset.renderId || '';
+      var symbol = (card.dataset.sortSymbol || '?').toUpperCase();
+      var action = card.dataset.filterActionLabel || card.dataset.filterAction || '';
+      var ppp = card.dataset.sortPpp && card.dataset.sortPpp !== '-999999'
+        ? card.dataset.sortPpp + '%' : '';
+      item.innerHTML =
+        "<div class='pp-selector-symbol'>" + symbol + "</div>" +
+        "<div class='pp-selector-meta'>" + action + (ppp ? ' \xb7 ' + ppp : '') + "</div>";
+      item.addEventListener('click', function() {{
+        selectProfitPlanCard(item.dataset.renderId);
+      }});
+      sel.appendChild(item);
+    }});
+  }}
+
+  function _ppUpdateDetailPanel(card) {{
+    var panel = document.getElementById('profit-plan-detail-panel');
+    if (!panel) return;
+    var symbol = (card.dataset.sortSymbol || '?').toUpperCase();
+    var action = card.dataset.filterActionLabel || card.dataset.filterAction || '—';
+    var setup = card.dataset.filterSetup || '—';
+    var ppp = card.dataset.sortPpp && card.dataset.sortPpp !== '-999999'
+      ? card.dataset.sortPpp + '%' : '—';
+    var marketEl = card.querySelector('.card-row1 .muted.small');
+    var market = marketEl ? marketEl.textContent.trim() : '';
+    panel.innerHTML =
+      "<h3>" + symbol + "</h3>" +
+      "<div class='small muted' style='margin-bottom:10px'>" + market + "</div>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Action: </span>" + action + "</div>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Setup: </span>" + setup + "</div>" +
+      "<div style='margin-bottom:14px'><span class='muted small'>PPP: </span>" + ppp + "</div>" +
+      "<h3>Wallet</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
+      "<h3>Position</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
+      "<h3>Orders</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
+      "<h3>Context</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>";
+  }}
+
+  function selectProfitPlanCard(renderId) {{
+    document.querySelectorAll('#profit-plan-main .plan-card').forEach(function(card) {{
+      card.classList.remove('pp-active');
+    }});
+    var active = document.querySelector(
+      '#profit-plan-main .plan-card[data-render-id="' + renderId + '"]'
+    );
+    if (active) {{
+      active.classList.add('pp-active');
+      _ppUpdateDetailPanel(active);
+    }}
+    document.querySelectorAll('#profit-plan-selector .pp-selector-item').forEach(function(item) {{
+      item.classList.toggle('active', item.dataset.renderId === renderId);
+    }});
+    try {{ localStorage.setItem('ppCard:' + PP_QUERY_KEY, renderId); }} catch(e) {{}}
+  }}
+
+  function syncProfitPlanCockpit() {{
+    buildProfitPlanSelector();
+    var cards = Array.prototype.slice.call(
+      document.querySelectorAll('#profit-plan-main .plan-card')
+    );
+    var visible = cards.filter(function(c) {{ return c.style.display !== 'none'; }});
+    var activeCard = document.querySelector('#profit-plan-main .plan-card.pp-active');
+    if (activeCard && activeCard.style.display !== 'none') {{
+      selectProfitPlanCard(activeCard.dataset.renderId || '');
+      return;
+    }}
+    if (visible.length > 0) {{
+      var savedId = '';
+      try {{ savedId = localStorage.getItem('ppCard:' + PP_QUERY_KEY) || ''; }} catch(e) {{}}
+      var target = savedId
+        ? visible.filter(function(c) {{ return c.dataset.renderId === savedId; }})[0]
+        : null;
+      selectProfitPlanCard((target || visible[0]).dataset.renderId || '');
+    }} else {{
+      var panel = document.getElementById('profit-plan-detail-panel');
+      if (panel) panel.innerHTML =
+        "<div class='muted small'>No cards match the current filter.</div>" +
+        "<h3>Wallet</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
+        "<h3>Position</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
+        "<h3>Orders</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
+        "<h3>Context</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>";
+    }}
   }}
 
   function sortCards(mode) {{
@@ -2465,6 +2633,7 @@ def _build_client_js(storage_scope: str) -> str:
     }} catch(e) {{}}
 
     setView('all');
+    syncProfitPlanCockpit();
   }});
 """
 
@@ -3018,7 +3187,7 @@ def render_full_html(
     cards_html = "\n".join(render_plan_card(c, monitor_link=monitor_link) for c in display_cards)
     empty_note = "<div class='muted' style='padding:16px;grid-column:1/-1'>No symbols with a plan loaded.</div>" if not cards else ""
     filter_refs = build_profit_plan_filter_reference_lists(display_cards)
-    action_filter_options_html = _filter_select_options(filter_refs["action"])
+    action_filter_options_html = _canonical_action_filter_options_html(display_cards)
     setup_filter_options_html = _filter_select_options(filter_refs["setup"])
     primary_filter_options_html = _filter_select_options(filter_refs["primary"])
     order_filter_options_html = _filter_select_options(filter_refs["orders"])
@@ -3081,9 +3250,23 @@ def render_full_html(
         "    </div>\n"
         "  </div>\n"
         "  <main>\n"
-        f"    {empty_note}\n"
-        f"    {cards_html}\n"
-        "    <div id='no-results' class='no-results'>No candidates match the current search.</div>\n"
+        "    <div id='profit-plan-cockpit'>\n"
+        "      <div id='profit-plan-selector'>\n"
+        "        <div class='pp-selector-item muted'>Loading…</div>\n"
+        "      </div>\n"
+        "      <div id='profit-plan-main'>\n"
+        f"        {empty_note}\n"
+        f"        {cards_html}\n"
+        "        <div id='no-results' class='no-results'>No candidates match the current search.</div>\n"
+        "      </div>\n"
+        "      <div id='profit-plan-detail-panel'>\n"
+        "        <div class='muted small'>Select a card to see details.</div>\n"
+        "        <h3>Wallet</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>\n"
+        "        <h3>Position</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>\n"
+        "        <h3>Orders</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>\n"
+        "        <h3>Context</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>\n"
+        "      </div>\n"
+        "    </div>\n"
         "  </main>\n"
         f"  <script>{_build_client_js(storage_scope)}</script>\n"
         "</body>\n</html>"
