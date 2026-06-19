@@ -3218,7 +3218,13 @@ def test_card_body_omits_header_duplicate_fields() -> None:
 
 
 def test_take_profit_waiting_does_not_hide_missing_reentry_ladder_work() -> None:
-    """A sell order near target is coverage; it must not outrank risk/reload work."""
+    """A sell order near target is coverage; it must not outrank risk/reload work.
+
+    PR22: the buy zone levels (r382, r500) here are ABOVE current price.
+    They are now classified as ABOVE_CURRENT_BUY (reference-only), not MISSING.
+    LADDER_MISSING is therefore NOT triggered by them — this is correct PR22 behavior.
+    The card remains relevant due to INVALIDATION_NEAR and the sell order is ARMED.
+    """
     fib_ext = FibExtContext(
         local_reaction_price=None,
         anchor_end_ts_utc=datetime(2026, 6, 1, 0, 0, tzinfo=UTC),
@@ -3231,8 +3237,8 @@ def test_take_profit_waiting_does_not_hide_missing_reentry_ladder_work() -> None
         retesting_breakout_gate=False,
     )
     reentry = ReentryContext(
-        r382_price=Decimal("0.00002281"),
-        r500_price=Decimal("0.00002270"),
+        r382_price=Decimal("0.00002281"),   # above current 0.00002253
+        r500_price=Decimal("0.00002270"),   # above current 0.00002253
         r618_price=Decimal("0.00002260"),
         r786_price=Decimal("0.00002245"),
         deepest_touched_label=None,
@@ -3254,10 +3260,13 @@ def test_take_profit_waiting_does_not_hide_missing_reentry_ladder_work() -> None
     assert card.primary_state == "INVALIDATION_NEAR"
     assert card.secondary_state == "RELOAD_ZONE_APPROACHING"
     assert card.actionability_state == "ACTIVE_TRADE_SETUP"
-    assert "LADDER_MISSING" in card.ladder_states
+    # PR22: buy zone levels (r382, r500) are above current price — must NOT trigger LADDER_MISSING
+    assert "LADDER_MISSING" not in card.ladder_states
+    # Sell order at 0.00002315 is ARMED
+    assert "LADDER_ARMED" in card.ladder_states
+    assert card.is_relevant is True  # relevant via INVALIDATION_NEAR event state
     assert "TAKE_PROFIT_WAITING" not in {card.primary_state, card.secondary_state}
     assert "Invalidation zone near" in html
-    assert "FIX LADDER" in html
     assert "Take profit already waiting" not in html
 
 
@@ -3629,4 +3638,213 @@ def test_workflow_sort_bucket_keeps_completed_maps_below_active_ppp_setups() -> 
 
     assert _pp_module._workflow_sort_bucket(active) == 0
     assert _pp_module._workflow_sort_bucket(completed) == 2
+
+
+# ---------------------------------------------------------------------------
+# PR22: above-current BUY reload row safety classification
+# ---------------------------------------------------------------------------
+
+def _above_current_reentry() -> ReentryContext:
+    """Re-entry context where buy reload levels are ABOVE current market price.
+
+    Current price in tests is set to 0.1500, which is below all reload levels,
+    simulating a situation where the dip was missed and price is now above the
+    reload zone.
+    """
+    return ReentryContext(
+        r382_price=Decimal("0.2142"),
+        r500_price=Decimal("0.2050"),
+        r618_price=Decimal("0.1958"),
+        r786_price=Decimal("0.1827"),
+        deepest_touched_label=None,
+        missed_main_rebuy_by_pct=None,
+    )
+
+
+def test_above_current_buy_row_is_not_missing() -> None:
+    """BUY reload levels above current price must render as ABOVE_CURRENT_BUY, not MISSING."""
+    r = _above_current_reentry()
+    card = _make_card(current_price="0.1500", reentry=r)
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    above_rows = [row for row in rows if row.side == "buy" and row.state == "ABOVE_CURRENT_BUY"]
+    missing_buy_rows = [row for row in rows if row.side == "buy" and row.state == "MISSING"]
+    assert above_rows, "Expected at least one ABOVE_CURRENT_BUY row for buy levels above current price"
+    assert not missing_buy_rows, f"No buy row should be MISSING when all buy levels are above current price; got: {missing_buy_rows}"
+
+
+def test_above_current_buy_row_reason_label_is_clear() -> None:
+    """ABOVE_CURRENT_BUY row must have a clear, non-scary reason label."""
+    r = _above_current_reentry()
+    card = _make_card(current_price="0.1500", reentry=r)
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    above_rows = [row for row in rows if row.state == "ABOVE_CURRENT_BUY"]
+    assert above_rows
+    for row in above_rows:
+        assert "reference only" in row.reason_label.lower() or "above current" in row.reason_label.lower()
+        assert row.reason_code == "BUY_ABOVE_CURRENT_PRICE"
+
+
+def test_above_current_buy_not_in_missing_suggested() -> None:
+    """Above-current buy reload levels must not appear in order_summary.missing_suggested."""
+    r = _above_current_reentry()
+    card = _make_card(current_price="0.1500", reentry=r)
+    for item in card.order_summary.missing_suggested:
+        assert "buy @" not in item.lower(), (
+            f"Above-current buy levels must not appear in missing_suggested; got: {item}"
+        )
+
+
+def test_above_current_buy_does_not_trigger_ladder_missing() -> None:
+    """A card with only above-current BUY levels must not have LADDER_MISSING — it is not actionable."""
+    r = _above_current_reentry()
+    card = _make_card(current_price="0.1500", reentry=r)
+    assert "LADDER_MISSING" not in card.ladder_states, (
+        f"Above-current buy levels must not trigger LADDER_MISSING; got: {card.ladder_states}"
+    )
+
+
+def test_above_current_buy_does_not_trigger_fix_ladder_action() -> None:
+    """A card with only above-current BUY levels must not show FIX LADDER as display action."""
+    r = _above_current_reentry()
+    card = _make_card(current_price="0.1500", reentry=r)
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    from src.reporting.manual_short_trader_profit_plan_v1 import _displayed_user_action
+    displayed = _displayed_user_action(card.action_label, rows, card.actionability_state)
+    assert displayed != "FIX LADDER", (
+        f"Above-current buy rows must not trigger FIX LADDER; got: {displayed}"
+    )
+
+
+def test_above_current_buy_not_selected_by_actionable_selector() -> None:
+    """HTML order rows for ABOVE_CURRENT_BUY must have data-state='ABOVE_CURRENT_BUY', not MISSING/STALE."""
+    from src.reporting.manual_short_trader_profit_plan_v1 import _order_rows_html
+    r = _above_current_reentry()
+    card = _make_card(current_price="0.1500", reentry=r)
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    html = _order_rows_html(rows, card_render_id=card.render_id)
+    assert "data-state='ABOVE_CURRENT_BUY'" in html
+    # selectLadderRows("actionable") only selects MISSING/STALE — verify ABOVE_CURRENT_BUY rows exist
+    # and MISSING buy rows do not
+    assert "data-state='MISSING'" not in html or all(
+        "data-state='MISSING'" not in line
+        for line in html.split("\n")
+        if "BUY" in line
+    )
+
+
+def test_below_current_buy_remains_missing() -> None:
+    """BUY reload levels below current price must still be classified MISSING (existing behavior)."""
+    r = ReentryContext(
+        r382_price=Decimal("0.2142"),
+        r500_price=Decimal("0.2050"),
+        r618_price=Decimal("0.1958"),
+        r786_price=Decimal("0.1827"),
+        deepest_touched_label=None,
+        missed_main_rebuy_by_pct=None,
+    )
+    # current price 0.3000, all buy levels are below current price
+    card = _make_card(current_price="0.3000", reentry=r)
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    missing_buy = [row for row in rows if row.side == "buy" and row.state == "MISSING"]
+    above_buy = [row for row in rows if row.side == "buy" and row.state == "ABOVE_CURRENT_BUY"]
+    assert missing_buy, "Buy levels below current price must be MISSING when no order exists"
+    assert not above_buy, "No ABOVE_CURRENT_BUY rows expected when levels are below current price"
+
+
+def test_sell_rows_unaffected_by_above_current_buy_fix() -> None:
+    """SELL target rows must not be affected by the above-current buy classification."""
+    r = _above_current_reentry()
+    fib = _wld_fib_ext()
+    card = _make_card(current_price="0.1500", reentry=r, fib_ext=fib)
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    sell_rows = [row for row in rows if row.side == "sell"]
+    # Sell rows must not have ABOVE_CURRENT_BUY state
+    for row in sell_rows:
+        assert row.state != "ABOVE_CURRENT_BUY", f"Sell row must not get ABOVE_CURRENT_BUY state: {row}"
+
+
+def test_above_current_buy_card_has_no_broker_markers() -> None:
+    """A card with above-current buy levels must not introduce broker/execution markers."""
+    r = _above_current_reentry()
+    card = _make_card(current_price="0.1500", reentry=r)
+    html = render_plan_card(card)
+    assert "broker_write" not in html or "broker_writes=0" in html
+    assert "order_submission=0" in html or "MANUAL_ONLY" in html
+    assert "place_order" not in html
+    assert "cancel_order" not in html
+
+
+def test_mixed_above_and_below_current_buy_levels() -> None:
+    """When some buy levels are above and some below current price, only below-current are MISSING."""
+    r = ReentryContext(
+        r382_price=Decimal("0.2142"),   # above current 0.2000
+        r500_price=Decimal("0.1900"),   # below current 0.2000
+        r618_price=Decimal("0.1800"),   # below current 0.2000
+        r786_price=Decimal("0.1650"),
+        deepest_touched_label=None,
+        missed_main_rebuy_by_pct=None,
+    )
+    card = _make_card(current_price="0.2000", reentry=r)
+    rows = build_order_rows(
+        card_render_id=card.render_id,
+        current_price=card.current_price,
+        buy_zone=card.buy_zone,
+        target_level_statuses=card.target_level_statuses,
+        buy_orders=(),
+        sell_orders=(),
+    )
+    buy_rows = [row for row in rows if row.side == "buy"]
+    above = [row for row in buy_rows if row.state == "ABOVE_CURRENT_BUY"]
+    missing = [row for row in buy_rows if row.state == "MISSING"]
+    assert above, "r382 (0.2142) is above current (0.2000) and must be ABOVE_CURRENT_BUY"
+    assert missing, "r500 (0.1900) and r618 (0.1800) are below current and must be MISSING"
+    # missing_suggested must only list below-current levels
+    for item in card.order_summary.missing_suggested:
+        if "buy @" in item:
+            price_str = item.split("buy @ ")[1]
+            assert Decimal(price_str) < Decimal("0.2000"), (
+                f"Only below-current buy levels should appear in missing_suggested; got: {item}"
+            )
 
