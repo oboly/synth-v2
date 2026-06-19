@@ -3457,6 +3457,159 @@ def test_rendered_profit_plan_exposes_dynamic_filter_controls_and_contract_attrs
     assert "function applyFiltersAndSort()" in html
 
 
+# ---------------------------------------------------------------------------
+# PR21 Part A: canonical action filter
+# ---------------------------------------------------------------------------
+
+def test_canonical_action_filter_constant_defined() -> None:
+    assert hasattr(_pp_module, "CANONICAL_ACTION_FILTER")
+    values = {v for v, _ in _pp_module.CANONICAL_ACTION_FILTER}
+    assert "fix_ladder" in values
+    assert "take_profit_near" in values
+    assert "between_levels" in values
+    assert "map_expired" in values
+    assert "navigation_map" in values
+    assert "manual_review" in values
+    assert "breakout_watch" in values
+    assert "invalidated" in values
+
+
+def test_canonical_action_filter_options_always_rendered_in_html() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_full_html([card], rendered_at="now", broker_mode="test")
+    # All canonical options must appear in the action filter select
+    assert "Fix ladder" in html
+    assert "Take profit" in html
+    assert "Between levels" in html
+    assert "Map expired" in html
+    assert "Navigation Map" in html
+    assert "Manual review" in html
+    assert "Breakout Watch" in html
+    assert "Invalidated" in html
+
+
+def test_take_profit_present_even_when_no_card_has_that_action() -> None:
+    """Take profit option must appear in filter even when no card emits take_profit_near."""
+    card = _make_card(current_price="0.2500", reentry=_fet_reentry(missed_pct=None))
+    # card action is DO_NOTHING → BETWEEN LEVELS, not TAKE_PROFIT_NEAR
+    assert card.primary_state != "TAKE_PROFIT_NEAR"
+    assert card.action_label not in {"TAKE_PROFIT_NEAR"}
+    html = render_full_html([card], rendered_at="now", broker_mode="test")
+    assert "Take profit" in html
+
+
+def test_between_levels_present_even_when_no_card_has_that_filter_value() -> None:
+    """Between levels must appear in the action filter even when no card emits it."""
+    # Use a card that has FIX LADDER as its displayed action
+    from dataclasses import replace as dc_replace
+    base = _make_card(
+        current_price="0.440000",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    card = dc_replace(base, ladder_states=("LADDER_MISSING",), actionability_state=_pp_module.CARD_ACTIONABILITY_ACTIVE)
+    html = render_full_html([card], rendered_at="now", broker_mode="test")
+    assert "Between levels" in html
+
+
+def test_canonical_action_options_have_counts_in_labels() -> None:
+    """Action options rendered from canonical list include count suffix."""
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_full_html([card], rendered_at="now", broker_mode="test")
+    # Format: "Fix ladder (N)" — canonical options always show count
+    import re
+    # At least some canonical options with count present
+    count_matches = re.findall(r"(Fix ladder|Take profit|Between levels|Map expired|Navigation Map|Manual review|Breakout Watch|Invalidated) \(\d+\)", html)
+    assert len(count_matches) > 0, "Canonical action options must include count suffix"
+
+
+def test_canonical_filter_options_html_function_exists() -> None:
+    assert hasattr(_pp_module, "_canonical_action_filter_options_html")
+
+
+# ---------------------------------------------------------------------------
+# PR21 Part B: one-card cockpit shell
+# ---------------------------------------------------------------------------
+
+def test_cockpit_shell_ids_present_in_rendered_html() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_full_html([card], rendered_at="now", broker_mode="test")
+    assert "profit-plan-cockpit" in html
+    assert "profit-plan-selector" in html
+    assert "profit-plan-main" in html
+    assert "profit-plan-detail-panel" in html
+
+
+def test_cockpit_js_functions_present_in_rendered_html() -> None:
+    html = render_full_html([], rendered_at="now", broker_mode="test")
+    assert "buildProfitPlanSelector" in html
+    assert "selectProfitPlanCard" in html
+    assert "syncProfitPlanCockpit" in html
+
+
+def test_cockpit_pr19_filter_controls_still_present() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_full_html([card], rendered_at="now", broker_mode="test")
+    assert "id='filter-action'" in html
+    assert "id='filter-setup'" in html
+    assert "id='filter-primary'" in html
+    assert "id='filter-orders'" in html
+    assert "id='sort-mode'" in html
+    assert "data-workflow-bucket=" in html
+    assert "PPP high-low" in html
+
+
+def test_cockpit_pr19_card_data_attrs_still_present() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_plan_card(card)
+    assert "data-filter-action=" in html
+    assert "data-filter-setup=" in html
+    assert "data-filter-primary=" in html
+    assert "data-filter-orders=" in html
+    assert "data-workflow-bucket=" in html
+    assert "data-sort-action=" in html
+    assert "data-sort-setup=" in html
+    assert "data-sort-ppp=" in html
+    assert "data-sort-symbol=" in html
+
+
+def test_cockpit_detail_panel_has_placeholder_headings() -> None:
+    html = render_full_html([], rendered_at="now", broker_mode="test")
+    assert "Wallet" in html
+    assert "Position" in html
+    assert "Orders" in html
+    assert "Context" in html
+
+
+def test_cockpit_no_wallet_account_value_computation() -> None:
+    """Detail panel must only contain placeholder headings, no computed wallet value."""
+    html = render_full_html([], rendered_at="now", broker_mode="test")
+    assert "wallet_value" not in html
+    assert "account_value" not in html
+    assert "total_balance" not in html
+
+
+def test_cockpit_no_decision_or_execution_behavior() -> None:
+    """Cockpit shell must not reference decision_gate, executor, or order placement."""
+    html = render_full_html([], rendered_at="now", broker_mode="test")
+    assert "decision_gate" not in html
+    assert "place_order" not in html
+    assert "executor" not in html
+    assert "broker_write" not in html.split("broker_writes=0")[1] if "broker_writes=0" in html else True
+
+
+def test_cockpit_cards_in_profit_plan_main_container() -> None:
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_full_html([card], rendered_at="now", broker_mode="test")
+    main_pos = html.find("id='profit-plan-main'")
+    card_pos = html.find("class='card plan-card'")
+    assert main_pos != -1
+    assert card_pos != -1
+    assert main_pos < card_pos, "plan-card must appear inside profit-plan-main"
+
+
 def test_workflow_sort_bucket_keeps_completed_maps_below_active_ppp_setups() -> None:
     from dataclasses import replace
 
