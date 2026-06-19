@@ -1256,6 +1256,8 @@ def build_order_summary(
 
     missing: list[str] = []
     for zone_p in buy_zone:
+        if current_price is not None and zone_p >= current_price:
+            continue  # above-current buy reload is not an actionable missing entry
         if not any(_near(o.limit_price, zone_p, ORDER_MATCH_TOLERANCE_PCT) for o in buy_orders):
             missing.append(f"buy @ {_fmt_p(zone_p)}")
     if target_level_statuses:
@@ -1527,6 +1529,7 @@ def _derive_ladder_states(
     target_level_statuses: tuple[TargetLevelStatus, ...],
     buy_orders: tuple[Any, ...],
     sell_orders: tuple[Any, ...],
+    current_price: Decimal | None = None,
 ) -> tuple[str, ...]:
     active_levels = [
         lv for lv in target_level_statuses
@@ -1545,14 +1548,21 @@ def _derive_ladder_states(
         else:
             states.append("LADDER_ARMED")
     if has_buy_zone:
-        buy_covered = sum(
-            1 for buy_level in buy_zone
-            if any(_near(o.limit_price, buy_level, ORDER_MATCH_TOLERANCE_PCT) for o in buy_orders)
+        # Exclude buy reload levels that are at or above current price — those are
+        # missed entries (not dip-catches) and must not trigger LADDER_MISSING.
+        actionable_buy_zone = tuple(
+            lv for lv in buy_zone
+            if current_price is None or lv < current_price
         )
-        if buy_covered == 0 and "LADDER_MISSING" not in states:
-            states.append("LADDER_MISSING")
-        elif 0 < buy_covered < len(buy_zone) and "LADDER_MISSING" not in states and "LADDER_INCOMPLETE" not in states:
-            states.append("LADDER_INCOMPLETE")
+        if actionable_buy_zone:
+            buy_covered = sum(
+                1 for buy_level in actionable_buy_zone
+                if any(_near(o.limit_price, buy_level, ORDER_MATCH_TOLERANCE_PCT) for o in buy_orders)
+            )
+            if buy_covered == 0 and "LADDER_MISSING" not in states:
+                states.append("LADDER_MISSING")
+            elif 0 < buy_covered < len(actionable_buy_zone) and "LADDER_MISSING" not in states and "LADDER_INCOMPLETE" not in states:
+                states.append("LADDER_INCOMPLETE")
     all_orders = list(buy_orders) + list(sell_orders)
     stale_found = any(
         _classify_order_for_zone_coverage(o.limit_price, target_level_statuses, buy_zone) == "STALE"
@@ -2040,14 +2050,14 @@ def build_profit_plan_card(
         suggested_manual_attention_label = _short_context_display_label(short_context_display_state)
         setup_state = _derive_setup_state(scenario_type)
         event_state = _derive_event_state(primary_state)
-        ladder_states = _derive_ladder_states(_ladder_buy_zone, target_level_statuses, buy_orders, sell_orders)
+        ladder_states = _derive_ladder_states(_ladder_buy_zone, target_level_statuses, buy_orders, sell_orders, current_price)
         is_relevant, relevance_reasons = _derive_relevance_with_reasons(
             event_state, ladder_states, setup_state, force_not_relevant=True
         )
     else:
         setup_state = _derive_setup_state(scenario_type)
         event_state = _derive_event_state(primary_state)
-        ladder_states = _derive_ladder_states(_ladder_buy_zone, target_level_statuses, buy_orders, sell_orders)
+        ladder_states = _derive_ladder_states(_ladder_buy_zone, target_level_statuses, buy_orders, sell_orders, current_price)
         is_relevant, relevance_reasons = _derive_relevance_with_reasons(event_state, ladder_states, setup_state)
 
     actionability_state = _derive_card_actionability_state(
@@ -2341,6 +2351,8 @@ _CSS = """
     .order-row-status.stale    { color: var(--warn); }
     .order-row-status.historical{ color: var(--muted); }
     .order-row-status.unavailable{ color: var(--muted); }
+    .order-row-status.above_current { color: var(--muted); font-style: italic; }
+    .order-row-above-current { background: rgba(0,0,0,.1); border: 1px dashed var(--line); opacity: .6; }
     .order-row-reason { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .order-ladder-menu { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
     .disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
@@ -2764,6 +2776,7 @@ _ORDER_ROW_STATE_CSS: dict[str, str] = {
     "STALE": "order-row-stale",
     "HISTORICAL": "order-row-historical",
     "DATA_UNAVAILABLE": "order-row-unavailable",
+    "ABOVE_CURRENT_BUY": "order-row-above-current",
 }
 
 
@@ -2844,6 +2857,13 @@ def build_order_rows(
             reason_label = (
                 f"Buy order at reload zone {_fmt_p(buy_level)}; "
                 f"distance {_pct(dist)} from {_fmt_p(current_price)}"
+            )
+        elif actionability_state == CARD_ACTIONABILITY_ACTIVE and current_price is not None and buy_level >= current_price:
+            state = "ABOVE_CURRENT_BUY"
+            reason_code = "BUY_ABOVE_CURRENT_PRICE"
+            reason_label = (
+                f"Buy reload level is above current price — reference only. "
+                f"Level {_fmt_p(buy_level)} is at or above current {_fmt_p(current_price)}"
             )
         elif actionability_state == CARD_ACTIONABILITY_ACTIVE:
             state = "MISSING"
@@ -2958,19 +2978,21 @@ def build_order_rows(
 
 
 _ORDER_ROW_STATUS_LABEL: dict[str, str] = {
-    "ARMED":          "Armed",
-    "MISSING":        "No order",
-    "STALE":          "Stale",
-    "HISTORICAL":     "Past level",
-    "DATA_UNAVAILABLE": "Unavailable",
+    "ARMED":             "Armed",
+    "MISSING":           "No order",
+    "STALE":             "Stale",
+    "HISTORICAL":        "Past level",
+    "DATA_UNAVAILABLE":  "Unavailable",
+    "ABOVE_CURRENT_BUY": "Above current",
 }
 
 _ORDER_ROW_STATUS_CSS_CLASS: dict[str, str] = {
-    "ARMED":          "armed",
-    "MISSING":        "missing",
-    "STALE":          "stale",
-    "HISTORICAL":     "historical",
-    "DATA_UNAVAILABLE": "unavailable",
+    "ARMED":             "armed",
+    "MISSING":           "missing",
+    "STALE":             "stale",
+    "HISTORICAL":        "historical",
+    "DATA_UNAVAILABLE":  "unavailable",
+    "ABOVE_CURRENT_BUY": "above_current",
 }
 
 
