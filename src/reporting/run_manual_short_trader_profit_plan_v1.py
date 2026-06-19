@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from src.common.db import get_connection
 from src.market_context.market_context_builder_v1 import (
@@ -24,6 +24,7 @@ from src.market_data.native_short_fib_context_v1 import (
     load_native_short_context_rows,
 )
 from src.reporting.account_scoped_short_trader_dashboard_v1 import (
+    AccountPlanPolicy,
     DEFAULT_OUTPUT_ROOT,
     DEFAULT_VENUE,
     classify_market_prices_by_market,
@@ -55,6 +56,11 @@ from src.market_data.fib_navigation_map_v1 import (
     build_fib_navigation_map_from_anchor,
 )
 from src.reporting.manual_short_trader_profit_plan_v1 import (
+    CARD_MODE_ACCOUNT_ORDER_ONLY,
+    CARD_MODE_ACCOUNT_PLAN_ENABLED,
+    CARD_MODE_MARKET_SELECTED,
+    CARD_MODE_POSITION_HELD,
+    CARD_MODE_WATCH_ONLY_ROTATION,
     FibExtContext,
     FibNavContext,
     ProfitPlanCard,
@@ -874,6 +880,34 @@ def _fetch_market_context_candles_by_symbol(
         conn.close()
 
 
+def _derive_presentation_mode(
+    market: str,
+    reasons: frozenset[str],
+    account_plan_policy: AccountPlanPolicy | None = None,
+) -> str:
+    """Derive the card presentation mode from market inclusion provenance.
+
+    Priority: POSITION_HELD > OPEN_ORDER > ACCOUNT_PLAN_ENABLED > WATCH_ONLY_ROTATION > MARKET_SELECTED.
+    """
+    if "POSITION_HELD" in reasons:
+        return CARD_MODE_POSITION_HELD
+    if "OPEN_ORDER" in reasons:
+        return CARD_MODE_ACCOUNT_ORDER_ONLY
+    policy = account_plan_policy or AccountPlanPolicy()
+    if (
+        not policy.is_hidden
+        and (
+            policy.is_candidate_enabled
+            or policy.is_order_proposal_enabled
+            or policy.source == "MANUAL_ADD"
+        )
+    ):
+        return CARD_MODE_ACCOUNT_PLAN_ENABLED
+    if "CORE_SENSOR" in reasons:
+        return CARD_MODE_WATCH_ONLY_ROTATION
+    return CARD_MODE_MARKET_SELECTED
+
+
 def build_cards(
     markets: list[str],
     prices: dict[str, Decimal],
@@ -888,6 +922,8 @@ def build_cards(
     orders_by_symbol: dict[str, tuple[tuple[LadderOrderRow, ...], tuple[LadderOrderRow, ...]]],
     prior_map_meta_by_symbol: dict[str, PriorMapMeta] | None = None,
     now_utc: datetime | None = None,
+    inclusion_reasons_by_market: Mapping[str, frozenset[str]] | None = None,
+    account_plan_policy_by_market: Mapping[str, AccountPlanPolicy] | None = None,
 ) -> list[ProfitPlanCard]:
     _prior = prior_map_meta_by_symbol or {}
     _now = now_utc or datetime.now(UTC)
@@ -933,6 +969,11 @@ def build_cards(
                 history_low_since_activation=None if history is None else history.low_since_activation,
                 history_candles_since_activation=() if history is None else history.candles_since_activation,
                 fib_nav_context=nav_context,
+                presentation_mode=_derive_presentation_mode(
+                    market,
+                    reasons=(inclusion_reasons_by_market or {}).get(market, frozenset()),
+                    account_plan_policy=(account_plan_policy_by_market or {}).get(market),
+                ),
             )
         )
     return cards
@@ -1089,6 +1130,8 @@ def main() -> int:
         history_by_symbol,
         orders_by_symbol,
         prior_map_meta_by_symbol=zone_contexts.prior_map_meta_by_symbol,
+        inclusion_reasons_by_market=context.market_inclusion_reasons_by_market,
+        account_plan_policy_by_market=context.account_plan_policy_by_market,
     )
 
     # Load market tick rules from DB and apply price normalization to all cards.

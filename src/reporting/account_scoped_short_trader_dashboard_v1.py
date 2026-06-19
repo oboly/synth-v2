@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from src.common.db import get_connection
 from src.market_data.market_price_snapshot_v1 import MarketPriceSnapshot, fetch_latest_prices_by_symbol
@@ -37,6 +37,17 @@ class AccountScopedShortDashboardContext:
     open_order_count_by_market: dict[str, int]
     market_price_by_symbol: dict[str, MarketPriceSnapshot]
     markets: tuple[str, ...]
+    market_inclusion_reasons_by_market: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    account_plan_policy_by_market: Mapping[str, "AccountPlanPolicy"] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AccountPlanPolicy:
+    is_visible: bool = False
+    is_candidate_enabled: bool = False
+    is_order_proposal_enabled: bool = False
+    is_hidden: bool = False
+    source: str = ""
 
 
 def classify_market_prices_by_market(
@@ -492,6 +503,42 @@ def load_account_scoped_short_dashboard_context(
             orders=orders,
             selected_asset_market_rows=selected_asset_market_rows,
         )
+        # Build per-market inclusion provenance while source rows are still available.
+        # Reason values: POSITION_HELD, OPEN_ORDER, PORTFOLIO_MARKER, CORE_SENSOR
+        _reasons: dict[str, set[str]] = {}
+        for b in balances:
+            sym = str(b.symbol or "").upper()
+            if sym and sym != QUOTE_CURRENCY:
+                total = (b.available or Decimal("0")) + (b.in_order or Decimal("0"))
+                if total > Decimal("0"):
+                    _reasons.setdefault(f"{sym}-{QUOTE_CURRENCY}", set()).add("POSITION_HELD")
+        for o in orders:
+            mkt = str(o.market or "").upper()
+            if mkt:
+                _reasons.setdefault(mkt, set()).add("OPEN_ORDER")
+        for row in selected_asset_market_rows:
+            mkt = str(row.get("market") or "").upper()
+            if not mkt:
+                continue
+            if row.get("asset_is_portfolio"):
+                _reasons.setdefault(mkt, set()).add("PORTFOLIO_MARKER")
+            if row.get("asset_is_core_sensor"):
+                _reasons.setdefault(mkt, set()).add("CORE_SENSOR")
+        market_inclusion_reasons_by_market: Mapping[str, frozenset[str]] = {
+            m: frozenset(r) for m, r in _reasons.items()
+        }
+        account_plan_policy_by_market: Mapping[str, AccountPlanPolicy] = {
+            str(row.get("market") or "").upper(): AccountPlanPolicy(
+                is_visible=bool(row.get("is_visible")),
+                is_candidate_enabled=bool(row.get("is_candidate_enabled")),
+                is_order_proposal_enabled=bool(row.get("is_order_proposal_enabled")),
+                is_hidden=bool(row.get("is_hidden")),
+                source=str(row.get("source") or "").upper(),
+            )
+            for row in account_asset_rows
+            if str(row.get("market") or "").upper()
+        }
+
         symbols = sorted({market.split("-", 1)[0].upper() for market in markets if "-" in market})
         market_price_by_symbol = fetch_latest_prices_by_symbol(
             conn,
@@ -519,4 +566,6 @@ def load_account_scoped_short_dashboard_context(
         open_order_count_by_market=open_order_count_by_market,
         market_price_by_symbol=market_price_by_symbol,
         markets=tuple(markets),
+        market_inclusion_reasons_by_market=market_inclusion_reasons_by_market,
+        account_plan_policy_by_market=account_plan_policy_by_market,
     )
