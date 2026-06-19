@@ -2850,8 +2850,11 @@ def test_invalidated_card_does_not_use_active_buy_css_class() -> None:
     assert "action-buy" not in html
 
 
-def test_needs_recompute_card_renders_review_map_label() -> None:
-    # price=0.50 is above invalidation_level (ext_1_272=0.454438), so not INVALIDATED
+def test_needs_recompute_card_renders_action_label_not_review_map() -> None:
+    # price=0.50 is above invalidation_level (ext_1_272=0.454438), so not INVALIDATED.
+    # BETWEEN_1272_1618 band → action_label="TAKE_PROFIT_NEAR".
+    # _effective_workflow_action returns "TAKE PROFIT NEAR" (from action_label);
+    # "REVIEW MAP" was the old _NON_ACTIVE_DISPLAY_LABELS override that caused filter drift.
     card = build_profit_plan_card(
         symbol="WLD",
         market="WLD-EUR",
@@ -2864,12 +2867,16 @@ def test_needs_recompute_card_renders_review_map_label() -> None:
     )
     assert card.actionability_state == "NEEDS_RECOMPUTE"
     html = render_plan_card(card)
-    assert "REVIEW MAP" in html
+    assert "TAKE PROFIT NEAR" in html
+    assert "REVIEW MAP" not in html
     assert "action-buy" not in html
     assert "action-tp" not in html
 
 
-def test_navigation_only_card_renders_navigation_only_label() -> None:
+def test_navigation_only_card_renders_navigation_map_label() -> None:
+    # action_label="NAVIGATION_ONLY" → _effective_workflow_action → "NAVIGATION MAP"
+    # (via _ACTION_DISPLAY_MAP). "NAVIGATION ONLY" was the old _NON_ACTIVE_DISPLAY_LABELS
+    # override that caused filter drift against the canonical "navigation_map" value.
     card = build_profit_plan_card(
         symbol="WLD",
         market="WLD-EUR",
@@ -2886,7 +2893,8 @@ def test_navigation_only_card_renders_navigation_only_label() -> None:
     )
     assert card.actionability_state == "NAVIGATION_ONLY"
     html = render_plan_card(card)
-    assert "NAVIGATION ONLY" in html
+    assert "NAVIGATION MAP" in html
+    assert "NAVIGATION ONLY" not in html
 
 
 # ---------------------------------------------------------------------------
@@ -3641,6 +3649,148 @@ def test_workflow_sort_bucket_keeps_completed_maps_below_active_ppp_setups() -> 
 
 
 # ---------------------------------------------------------------------------
+# PR23: action-filter contract — MANUAL_REVIEW, INVALIDATED, NAVIGATION_ONLY
+# ---------------------------------------------------------------------------
+
+def _make_manual_review_card(symbol: str = "HNT") -> "ProfitPlanCard":
+    """Legacy 1d context card — action_label=MANUAL_REVIEW, actionability=HISTORICAL_REFERENCE."""
+    return _make_card(
+        current_price="0.48",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="HAS_ZONE_CONTEXT",
+        short_context_coverage_status="LEGACY_1D_CONTEXT_ONLY",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        symbol=symbol,
+        market=f"{symbol}-EUR",
+    )
+
+
+def test_manual_review_card_action_label() -> None:
+    card = _make_manual_review_card()
+    assert card.action_label == "MANUAL_REVIEW"
+    assert card.actionability_state == _pp_module.CARD_ACTIONABILITY_HISTORICAL_REFERENCE
+
+
+def test_manual_review_effective_workflow_action_is_manual_review() -> None:
+    card = _make_manual_review_card()
+    result = _pp_module._effective_workflow_action(card)
+    assert result == "MANUAL REVIEW", f"expected 'MANUAL REVIEW', got {result!r}"
+
+
+def test_manual_review_card_header_shows_manual_review_not_reference_only() -> None:
+    import re
+    card = _make_manual_review_card()
+    html = render_plan_card(card)
+    # Action header div must show MANUAL REVIEW
+    assert "MANUAL REVIEW" in html
+    # data-filter-action must be manual_review, never reference_only
+    assert "data-filter-action='manual_review'" in html
+    assert "data-filter-action='reference_only'" not in html
+    # Confirm the action-label div content is MANUAL REVIEW (not REFERENCE ONLY)
+    action_div = re.search(r"class='action-label[^']*'>([^<]*)<", html)
+    assert action_div is not None
+    assert action_div.group(1).strip() == "MANUAL REVIEW"
+
+
+def test_manual_review_card_data_filter_action_is_manual_review() -> None:
+    card = _make_manual_review_card()
+    html = render_plan_card(card)
+    assert "data-filter-action='manual_review'" in html
+    assert "data-filter-action='reference_only'" not in html
+
+
+def test_manual_review_dropdown_count_matches_rendered_cards() -> None:
+    hnt = _make_manual_review_card("HNT")
+    sxt = _make_manual_review_card("SXT")
+    html = render_full_html([hnt, sxt], rendered_at="now", broker_mode="test")
+    assert "Manual review (2)" in html
+    assert "data-filter-action='manual_review'" in html
+    assert html.count("data-filter-action='manual_review'") == 2
+
+
+def test_selecting_manual_review_matches_exactly_n_cards() -> None:
+    hnt = _make_manual_review_card("HNT")
+    sxt = _make_manual_review_card("SXT")
+    from src.reporting.manual_short_trader_profit_plan_v1 import _card_filter_action_option
+    values = [_card_filter_action_option(c)[0] for c in [hnt, sxt]]
+    assert all(v == "manual_review" for v in values), f"filter values: {values}"
+
+
+def test_invalidated_card_filter_action_is_invalidated() -> None:
+    card = _invalidated_buy_dip_card()
+    assert card.actionability_state == "INVALIDATED"
+    result = _pp_module._effective_workflow_action(card)
+    assert result == "INVALIDATED"
+    html = render_plan_card(card)
+    assert "data-filter-action='invalidated'" in html
+
+
+def test_navigation_map_filter_action_value_matches_canonical() -> None:
+    card = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.7600"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        fib_ext=_wld_fib_ext_touched(),
+        reentry=_fet_reentry(),
+        history_high_since_activation=Decimal("0.7600"),
+        history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+        fib_nav_context=_nav_context(),
+    )
+    assert card.actionability_state == "NAVIGATION_ONLY"
+    result = _pp_module._effective_workflow_action(card)
+    assert result == "NAVIGATION MAP"
+    from src.reporting.manual_short_trader_profit_plan_v1 import _card_filter_action_option
+    value, _ = _card_filter_action_option(card)
+    assert value == "navigation_map"
+    html = render_plan_card(card)
+    assert "data-filter-action='navigation_map'" in html
+
+
+def test_fix_ladder_filter_action_still_works_for_active_missing_ladder() -> None:
+    from dataclasses import replace
+    base = _make_card(
+        current_price="0.458790",
+        fib_ext=_wld_fib_ext(),
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    card = replace(base, actionability_state=_pp_module.CARD_ACTIONABILITY_ACTIVE, ladder_states=("LADDER_MISSING",))
+    result = _pp_module._effective_workflow_action(card)
+    assert result == "FIX LADDER"
+
+
+def test_no_filter_action_drift_between_count_and_dom() -> None:
+    """For every card, _card_filter_action_option value must equal the data-filter-action in the rendered card."""
+    from src.reporting.manual_short_trader_profit_plan_v1 import _card_filter_action_option
+    import re
+    cards = [
+        _make_manual_review_card("HNT"),
+        _make_manual_review_card("SXT"),
+        _invalidated_buy_dip_card(),
+        _make_card(
+            current_price="0.458790",
+            fib_ext=_wld_fib_ext(),
+            short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        ),
+    ]
+    for card in cards:
+        expected_value, _ = _card_filter_action_option(card)
+        html = render_plan_card(card)
+        match = re.search(r"data-filter-action='([^']*)'", html)
+        assert match, f"data-filter-action not found for {card.symbol}"
+        dom_value = match.group(1)
+        assert dom_value == expected_value, (
+            f"{card.symbol}: count path gave {expected_value!r} but DOM has {dom_value!r}"
+        )
+
+
 # PR22: above-current BUY reload row safety classification
 # ---------------------------------------------------------------------------
 
@@ -3847,4 +3997,3 @@ def test_mixed_above_and_below_current_buy_levels() -> None:
             assert Decimal(price_str) < Decimal("0.2000"), (
                 f"Only below-current buy levels should appear in missing_suggested; got: {item}"
             )
-

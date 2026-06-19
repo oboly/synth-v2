@@ -651,15 +651,22 @@ def _collect_filter_options(items: list[tuple[str, str]]) -> tuple[_FilterOption
     )
 
 
-def _card_displayed_action_for_filter(card: ProfitPlanCard) -> str:
+def _effective_workflow_action(card: ProfitPlanCard) -> str:
     """
-    Return the user-facing action category for filtering.
+    Single source of truth for the rendered workflow action.
 
-    Contract:
-    - Uses only existing card fields.
-    - Does not introduce a new hidden category.
-    - Mirrors the UI rule that missing/incomplete/stale active ladders are FIX LADDER work.
+    Used by:
+    - card action header
+    - data-filter-action
+    - data-filter-action-label
+    - canonical Action filter counts
+    - selector action label
+
+    Reference-only/historical remains actionability context, not a workflow action.
     """
+    if card.actionability_state == CARD_ACTIONABILITY_INVALIDATED:
+        return "INVALIDATED"
+
     if (
         card.actionability_state == CARD_ACTIONABILITY_ACTIVE
         and any(
@@ -668,11 +675,19 @@ def _card_displayed_action_for_filter(card: ProfitPlanCard) -> str:
         )
     ):
         return "FIX LADDER"
-    return _ACTION_DISPLAY_MAP.get(card.action_label, card.action_label)
+
+    return _ACTION_DISPLAY_MAP.get(
+        card.action_label,
+        card.action_label.replace("_", " "),
+    )
+
+
+def _card_displayed_action_for_filter(card: ProfitPlanCard) -> str:
+    return _effective_workflow_action(card)
 
 
 def _card_filter_action_option(card: ProfitPlanCard) -> tuple[str, str]:
-    label = _filter_display_label(_card_displayed_action_for_filter(card))
+    label = _filter_display_label(_effective_workflow_action(card))
     return _filter_value_from_label(label), label
 
 
@@ -3098,7 +3113,7 @@ def render_plan_card(
         buy_orders=buy_orders,
         sell_orders=sell_orders,
     )
-    displayed_action = _displayed_user_action(card.action_label, order_rows, card.actionability_state)
+    displayed_action = _effective_workflow_action(card)
     action_sort_value = _card_action_sort_value(card)
     setup_sort_value = _setup_sort_priority(card)
     ppp_pct = _profit_plan_potential_pct(card)
