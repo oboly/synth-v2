@@ -128,6 +128,17 @@ CARD_ACTIONABILITY_HISTORICAL_REFERENCE = "HISTORICAL_REFERENCE"
 CARD_ACTIONABILITY_NEEDS_RECOMPUTE = "NEEDS_RECOMPUTE"
 CARD_ACTIONABILITY_INVALIDATED = "INVALIDATED"
 
+CARD_MODE_POSITION_HELD = "POSITION_HELD"
+CARD_MODE_ACCOUNT_ORDER_ONLY = "ACCOUNT_ORDER_ONLY"
+CARD_MODE_ACCOUNT_PLAN_ENABLED = "ACCOUNT_PLAN_ENABLED"
+CARD_MODE_WATCH_ONLY_ROTATION = "WATCH_ONLY_ROTATION"
+CARD_MODE_MARKET_SELECTED = "MARKET_SELECTED_NO_ACCOUNT_STATE"
+
+_NO_ACCOUNT_STATE_MODES: frozenset[str] = frozenset({
+    CARD_MODE_WATCH_ONLY_ROTATION,
+    CARD_MODE_MARKET_SELECTED,
+})
+
 # Canonical action filter options — always rendered in this order, regardless of card set.
 # Zero-count options remain visible (may be muted); unknown render-derived values appended after.
 CANONICAL_ACTION_FILTER: tuple[tuple[str, str], ...] = (
@@ -280,6 +291,7 @@ class ProfitPlanCard:
     relevance_reasons: tuple[str, ...]
     is_relevant: bool
     actionability_state: str = CARD_ACTIONABILITY_ACTIVE
+    presentation_mode: str = CARD_MODE_MARKET_SELECTED
     fib_nav_context: FibNavContext | None = None
     render_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
@@ -556,6 +568,15 @@ def _setup_sort_priority(card: ProfitPlanCard) -> int:
     return order.get(card.setup_state, 9)
 
 
+_PRESENTATION_MODE_SORT_RANK: dict[str, int] = {
+    CARD_MODE_POSITION_HELD: 0,
+    CARD_MODE_ACCOUNT_ORDER_ONLY: 1,
+    CARD_MODE_ACCOUNT_PLAN_ENABLED: 2,
+    CARD_MODE_WATCH_ONLY_ROTATION: 3,
+    CARD_MODE_MARKET_SELECTED: 4,
+}
+
+
 def _card_action_sort_value(card: ProfitPlanCard) -> int:
     if not card.is_relevant:
         return 999
@@ -563,11 +584,12 @@ def _card_action_sort_value(card: ProfitPlanCard) -> int:
 
 
 def sort_cards_action_priority(cards: list[ProfitPlanCard]) -> list[ProfitPlanCard]:
-    """Default UI sort: user-actionable cards first, then market/risk urgency."""
-    def key(card: ProfitPlanCard) -> tuple[bool, int, Decimal, Decimal, str]:
+    """Default UI sort: portfolio position cards first, then watch-only rotation cards last."""
+    def key(card: ProfitPlanCard) -> tuple[int, bool, int, Decimal, Decimal, str]:
         dist = _nearest_distance(card)
         ppp = _profit_plan_potential_pct(card)
         return (
+            _PRESENTATION_MODE_SORT_RANK.get(card.presentation_mode, 99),
             not card.is_relevant,
             _card_action_sort_value(card),
             dist if dist is not None else Decimal("999999"),
@@ -576,6 +598,10 @@ def sort_cards_action_priority(cards: list[ProfitPlanCard]) -> list[ProfitPlanCa
         )
 
     return sorted(cards, key=key)
+
+
+def _presentation_mode_sort_rank(card: ProfitPlanCard) -> int:
+    return _PRESENTATION_MODE_SORT_RANK.get(card.presentation_mode, 99)
 
 
 
@@ -668,7 +694,8 @@ def _effective_workflow_action(card: ProfitPlanCard) -> str:
         return "INVALIDATED"
 
     if (
-        card.actionability_state == CARD_ACTIONABILITY_ACTIVE
+        card.presentation_mode not in _NO_ACCOUNT_STATE_MODES
+        and card.actionability_state == CARD_ACTIONABILITY_ACTIVE
         and any(
             state in {"LADDER_MISSING", "LADDER_INCOMPLETE", "STALE_ORDERS_PRESENT"}
             for state in card.ladder_states
@@ -687,6 +714,8 @@ def _card_displayed_action_for_filter(card: ProfitPlanCard) -> str:
 
 
 def _card_filter_action_option(card: ProfitPlanCard) -> tuple[str, str]:
+    if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+        return "", ""
     label = _filter_display_label(_effective_workflow_action(card))
     return _filter_value_from_label(label), label
 
@@ -733,8 +762,11 @@ def build_profit_plan_filter_reference_lists(cards: list[ProfitPlanCard]) -> dic
         action_items.append(_card_filter_action_option(card))
         setup_items.append((card.setup_state, _filter_display_label(card.setup_state)))
         primary_items.append((card.primary_state, _filter_display_label(card.primary_state)))
-        order_status = _order_ladder_display_status(card.ladder_states)
-        order_items.append((_filter_value_from_label(order_status), _filter_display_label(order_status)))
+        if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+            order_items.append(("not_applicable", "Not applicable"))
+        else:
+            order_status = _order_ladder_display_status(card.ladder_states)
+            order_items.append((_filter_value_from_label(order_status), _filter_display_label(order_status)))
 
     return {
         "action": _collect_filter_options(action_items),
@@ -763,6 +795,8 @@ def _canonical_action_filter_options_html(cards: list[ProfitPlanCard]) -> str:
 
     for card in cards:
         value, label = _card_filter_action_option(card)
+        if not value:
+            continue
         counts[value] = counts.get(value, 0) + 1
         if value not in canonical_values:
             extra.setdefault(value, label)
@@ -1407,6 +1441,7 @@ def _short_context_gap_card(
     current_price_age_min: Decimal | None,
     history_high_since_activation: Decimal | None,
     history_low_since_activation: Decimal | None,
+    presentation_mode: str = CARD_MODE_MARKET_SELECTED,
 ) -> ProfitPlanCard:
     order_summary = build_order_summary(
         current_price,
@@ -1469,6 +1504,7 @@ def _short_context_gap_card(
         ladder_states=("ORDER_DATA_UNAVAILABLE",),
         relevance_reasons=("MINIMAL_CONTEXT",),
         is_relevant=True,
+        presentation_mode=presentation_mode,
     )
 
 
@@ -1769,6 +1805,9 @@ def _actionability_display_bundle(card: ProfitPlanCard) -> tuple[str, str, str, 
     reentry_line = format_reentry_zone_line(card.reload_reentry_zone, card.current_price)
     target_line = format_target_zone_line(card.target_exit_zone, card.current_price)
 
+    if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+        return "Entry zone", target_label, "Market zones", "", reentry_line, target_line
+
     if card.actionability_state == CARD_ACTIONABILITY_ACTIVE:
         return reentry_label, target_label, order_ladder_label, open_orders_label, reentry_line, target_line
 
@@ -1848,6 +1887,7 @@ def build_profit_plan_card(
     current_price_status: str | None = None,
     current_price_age_min: Decimal | None = None,
     fib_nav_context: FibNavContext | None = None,
+    presentation_mode: str = CARD_MODE_MARKET_SELECTED,
 ) -> ProfitPlanCard:
     if current_price_status == "STALE_CURRENT_PRICE":
         order_summary = build_order_summary(
@@ -1898,6 +1938,7 @@ def build_profit_plan_card(
             ladder_states=("ORDER_DATA_UNAVAILABLE",),
             relevance_reasons=(),
             is_relevant=False,
+            presentation_mode=presentation_mode,
         )
     if (
         fib_ext is None
@@ -1921,6 +1962,7 @@ def build_profit_plan_card(
             current_price_age_min=current_price_age_min,
             history_high_since_activation=history_high_since_activation,
             history_low_since_activation=history_low_since_activation,
+            presentation_mode=presentation_mode,
         )
     (
         scenario_type,
@@ -2123,6 +2165,7 @@ def build_profit_plan_card(
         relevance_reasons=relevance_reasons,
         is_relevant=is_relevant,
         fib_nav_context=fib_nav_context,
+        presentation_mode=presentation_mode,
     )
 
 
@@ -2191,6 +2234,12 @@ _CSS = """
       #profit-plan-selector { max-height: 180px; }
     }
     .muted { color: var(--muted); } .small { font-size: 12px; }
+    .watch-only-badge {
+      font-size: 11px; font-weight: 700; letter-spacing: .06em;
+      color: var(--muted); border: 1px solid var(--line);
+      border-radius: 6px; padding: 4px 10px; display: inline-block; margin-bottom: 6px;
+    }
+    .watch-only-zone-notice { font-size: 11px; color: var(--muted); }
     .pipeline-warn { background:#fff3cd; border:1px solid #ffc107; border-radius:8px; padding:10px 16px; margin:8px 0; font-size:13px; font-weight:600; color:#856404; }
     .ok { color: var(--ok); } .warn { color: var(--warn); } .bad { color: var(--bad); }
     .accent { color: var(--accent); }
@@ -2451,6 +2500,9 @@ def _build_client_js(storage_scope: str) -> str:
 
         return (a.dataset.sortSymbol || '').localeCompare(b.dataset.sortSymbol || '');
       }}
+
+      var presentationDelta = numericDataset(a, 'sortPresentation', '999') - numericDataset(b, 'sortPresentation', '999');
+      if (presentationDelta !== 0) return presentationDelta;
 
       var actionDelta = numericDataset(a, 'sortAction', '999') - numericDataset(b, 'sortAction', '999');
       if (actionDelta !== 0) return actionDelta;
@@ -3091,29 +3143,40 @@ def render_plan_card(
     invalidation_line = format_invalidation_line(card.invalidation_risk_zone, card.distance_to_invalidation_pct)
     ppp_line = _format_ppp_ppt_ppv_line(card)
 
-    metrics_html = "".join((
+    event_label = STATE_LABELS.get(card.event_state, card.event_state.replace("_", " "))
+    metrics_blocks = [
         _metric_block("Current price", price_line),
         _metric_block("Setup", card.setup_state),
         _metric_block("Actionability", card.actionability_state),
+    ]
+    if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+        metrics_blocks.append(_metric_block("Market event", event_label))
+    metrics_blocks.extend((
         _metric_block(reentry_label, reentry_line),
         _metric_block(target_label, target_line),
         _metric_block("Invalidation", invalidation_line),
         _metric_block("PPP / PPT = PPV", ppp_line),
     ))
+    metrics_html = "".join(metrics_blocks)
 
-    # Build order rows first (needed for FIX LADDER override).
+    # Build order rows (needed for FIX LADDER override).
+    # Watch-only cards have no account orders; skip to avoid MISSING states on zone levels.
     # For completed maps, old re-entry levels are historical — omit from actionable order rows.
     _order_buy_zone = () if card.all_sell_targets_completed else card.buy_zone
-    order_rows = build_order_rows(
-        card_render_id=card.render_id,
-        actionability_state=card.actionability_state,
-        current_price=card.current_price,
-        buy_zone=_order_buy_zone,
-        target_level_statuses=card.target_level_statuses,
-        buy_orders=buy_orders,
-        sell_orders=sell_orders,
-    )
-    displayed_action = _effective_workflow_action(card)
+    if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+        order_rows = ()
+    else:
+        order_rows = build_order_rows(
+            card_render_id=card.render_id,
+            actionability_state=card.actionability_state,
+            current_price=card.current_price,
+            buy_zone=_order_buy_zone,
+            target_level_statuses=card.target_level_statuses,
+            buy_orders=buy_orders,
+            sell_orders=sell_orders,
+        )
+    displayed_action = "NO ACCOUNT ACTION" if card.presentation_mode in _NO_ACCOUNT_STATE_MODES else _effective_workflow_action(card)
+    presentation_sort_value = _presentation_mode_sort_rank(card)
     action_sort_value = _card_action_sort_value(card)
     setup_sort_value = _setup_sort_priority(card)
     ppp_pct = _profit_plan_potential_pct(card)
@@ -3122,25 +3185,61 @@ def render_plan_card(
 
     # Event + order-ladder state above order ladder.
     # Keep internal ladder_states for data/tests, but render one deterministic user-facing status.
-    event_label = STATE_LABELS.get(card.event_state, card.event_state.replace("_", " "))
-    order_ladder_status = _order_ladder_display_status(card.ladder_states)
-    filter_action_label = _filter_display_label(displayed_action)
-    filter_action_value = _filter_value_from_label(filter_action_label)
+    if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+        filter_action_label = ""
+        filter_action_value = ""
+    else:
+        filter_action_label = _filter_display_label(displayed_action)
+        filter_action_value = _filter_value_from_label(filter_action_label)
     filter_setup_label = _filter_display_label(card.setup_state)
     filter_primary_label = _filter_display_label(card.primary_state)
-    filter_order_label = _filter_display_label(order_ladder_status)
-    filter_order_value = _filter_value_from_label(filter_order_label)
-    order_section_header = (
-        "<div class='order-section-header'>"
-        f"<span>Event: <span class='event-label'>{esc(event_label)}</span></span>"
-        f"<span>Order ladder: {esc(order_ladder_status)}</span>"
-        "</div>"
-    )
-    order_rows_html = _order_rows_html(
-        order_rows,
-        card_render_id=card.render_id,
-        actionability_state=card.actionability_state,
-    ).replace("Order ladder", order_ladder_label, 1)
+    if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+        order_ladder_status = "NOT_APPLICABLE"
+        filter_order_label = "Not applicable"
+        filter_order_value = "not_applicable"
+    else:
+        order_ladder_status = _order_ladder_display_status(card.ladder_states)
+        filter_order_label = _filter_display_label(order_ladder_status)
+        filter_order_value = _filter_value_from_label(filter_order_label)
+
+    # Order section and open-orders summary: suppressed for no-account-state cards.
+    if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+        if card.presentation_mode == CARD_MODE_WATCH_ONLY_ROTATION:
+            _no_account_badge = "WATCH ONLY · NO POSITION · NO ACCOUNT ACTION"
+        else:
+            _no_account_badge = "MARKET SELECTED · NO POSITION · NO ACCOUNT ACTION"
+        order_section_html = (
+            "<div class='order-section'>"
+            f"<div class='watch-only-badge'>{esc(_no_account_badge)}</div>"
+            "<div class='watch-only-zone-notice'>Market zones are shown in the field grid above."
+            " No account orders for this asset.</div>"
+            "</div>"
+        )
+        open_orders_html = ""
+    else:
+        order_section_header = (
+            "<div class='order-section-header'>"
+            f"<span>Event: <span class='event-label'>{esc(event_label)}</span></span>"
+            f"<span>Order ladder: {esc(order_ladder_status)}</span>"
+            "</div>"
+        )
+        order_rows_html = _order_rows_html(
+            order_rows,
+            card_render_id=card.render_id,
+            actionability_state=card.actionability_state,
+        ).replace("Order ladder", order_ladder_label, 1)
+        order_section_html = (
+            f"<div class='order-section'>"
+            f"{order_section_header}"
+            f"{order_rows_html}"
+            f"</div>"
+        )
+        open_orders_html = _order_summary_html(
+            card.order_summary,
+            monitor_link,
+            open_orders_label=open_orders_label,
+            actionability_state=card.actionability_state,
+        )
 
     secondary_state_html = ""
     if card.secondary_state is not None:
@@ -3162,7 +3261,9 @@ def render_plan_card(
         f" data-filter-primary-label='{esc(filter_primary_label)}'"
         f" data-filter-orders='{esc(filter_order_value)}'"
         f" data-filter-orders-label='{esc(filter_order_label)}'"
+        f" data-presentation-mode='{esc(card.presentation_mode)}'"
         f" data-workflow-bucket='{esc(workflow_sort_bucket)}'"
+        f" data-sort-presentation='{esc(presentation_sort_value)}'"
         f" data-sort-action='{esc(action_sort_value)}'"
         f" data-sort-setup='{esc(setup_sort_value)}'"
         f" data-sort-ppp='{esc(ppp_sort_value)}'"
@@ -3184,17 +3285,14 @@ def render_plan_card(
         f"{_scenario_badge(card.scenario_type)}"
         f"<div class='state-label {_state_class(card.primary_state)}'>{esc(card.suggested_manual_attention_label)}</div>"
         f"{secondary_state_html}"
-        f"<div class='action-label {_action_class(card.action_label) if card.actionability_state == CARD_ACTIONABILITY_ACTIVE else 'action-wait'}'>{esc(displayed_action)}</div>"
+        f"<div class='action-label {'action-wait' if card.presentation_mode in _NO_ACCOUNT_STATE_MODES or card.actionability_state != CARD_ACTIONABILITY_ACTIVE else _action_class(card.action_label)}'>{esc(displayed_action)}</div>"
         f"<div class='tf-label'>{esc(card.timeframe_label)}</div>"
         f"</div>"
         "</div>"
         f"<div class='field-grid'>{metrics_html}</div>"
-        f"<div class='order-section'>"
-        f"{order_section_header}"
-        f"{order_rows_html}"
-        f"</div>"
+        f"{order_section_html}"
         f"<ul class='reasons'>{reasons_html}</ul>"
-        f"{_order_summary_html(card.order_summary, monitor_link, open_orders_label=open_orders_label, actionability_state=card.actionability_state)}"
+        f"{open_orders_html}"
         "<div class='manual-only muted'>MANUAL_ONLY — read-only snapshot, no automatic placement</div>"
         "</section>"
     )

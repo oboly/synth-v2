@@ -15,6 +15,11 @@ from src.reporting.account_scoped_short_trader_dashboard_v1 import AccountScoped
 from src.reporting.manual_short_trader_dashboard_v1 import BrokerBalanceRow, BrokerOrderRow
 import src.reporting.manual_short_trader_profit_plan_v1 as _pp_module
 from src.reporting.manual_short_trader_profit_plan_v1 import (
+    CARD_MODE_ACCOUNT_ORDER_ONLY,
+    CARD_MODE_ACCOUNT_PLAN_ENABLED,
+    CARD_MODE_MARKET_SELECTED,
+    CARD_MODE_POSITION_HELD,
+    CARD_MODE_WATCH_ONLY_ROTATION,
     ActiveOrderSummary,
     FibExtContext,
     FibNavContext,
@@ -33,6 +38,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     format_target_zone_line,
     render_full_html,
     render_plan_card,
+    sort_cards_action_priority,
     sort_cards_two_timeline,
 )
 
@@ -153,6 +159,7 @@ def _make_card(
         history_high_since_activation=history_high_since_activation,
         history_low_since_activation=history_low_since_activation,
         history_candles_since_activation=history_candles_since_activation,
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
 
 
@@ -678,6 +685,7 @@ def test_stale_current_price_blocks_actionable_profit_plan_outputs() -> None:
         current_price_status="STALE_CURRENT_PRICE",
         current_price_age_min=Decimal("2880"),
         fib_ext=_wld_fib_ext(),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
     assert card.primary_state == "STALE_CURRENT_PRICE"
     assert card.action_label == "NO_CURRENT_PRICE"
@@ -1239,6 +1247,7 @@ def test_event_state_context_unavailable_for_stale_price() -> None:
         current_price_status="STALE_CURRENT_PRICE",
         current_price_age_min=Decimal("2880"),
         fib_ext=_wld_fib_ext(),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
     assert card.event_state == "CONTEXT_UNAVAILABLE"
     assert card.is_relevant is False
@@ -1583,6 +1592,7 @@ def test_navigation_only_card_shows_navigation_wording() -> None:
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
         fib_nav_context=_nav_context(),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
     html = render_plan_card(card)
     assert card.actionability_state == "NAVIGATION_ONLY"
@@ -2577,6 +2587,7 @@ def _ldo_card_with_prices(
             deepest_touched_label=None,
             missed_main_rebuy_by_pct=None,
         ),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
 
 
@@ -2647,6 +2658,7 @@ def test_missing_rule_truly_unknown_market() -> None:
             ext_1_272_touched_and_rejected=False,
             retesting_breakout_gate=False,
         ),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
     [normalized], audit = apply_price_tick_normalization([card], {})
     # For unknown markets, prices should be preserved as-is (MISSING rule)
@@ -2746,6 +2758,7 @@ def test_analytical_source_prices_available_in_raw_card() -> None:
             ext_1_272_touched_and_rejected=False,
             retesting_breakout_gate=False,
         ),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
     # Raw card contains the original analytical values
     assert raw_1272 in card.target_exit_zone or raw_1618 in card.target_exit_zone
@@ -2791,6 +2804,7 @@ def test_multiple_markets_normalize_independently() -> None:
             ext_1_272_touched_and_rejected=False,
             retesting_breakout_gate=False,
         ),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
     tick_rules = {
         **_make_tick_rules(**{"LDO-EUR": 5}),
@@ -2864,6 +2878,7 @@ def test_needs_recompute_card_renders_action_label_not_review_map() -> None:
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
         fib_ext=_wld_fib_ext(),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
     assert card.actionability_state == "NEEDS_RECOMPUTE"
     html = render_plan_card(card)
@@ -2890,6 +2905,7 @@ def test_navigation_only_card_renders_navigation_map_label() -> None:
         history_high_since_activation=Decimal("0.7600"),
         history_candles_since_activation=_COMPLETED_MAP_CANDLES,
         fib_nav_context=_nav_context(),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
     assert card.actionability_state == "NAVIGATION_ONLY"
     html = render_plan_card(card)
@@ -2913,6 +2929,7 @@ def test_non_active_card_zones_do_not_emit_missing_row_states() -> None:
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
         fib_ext=_wld_fib_ext(),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
     assert card.actionability_state == "NEEDS_RECOMPUTE"
     rows = build_order_rows(
@@ -2945,6 +2962,7 @@ def test_non_active_card_existing_orders_still_render_as_reference_rows() -> Non
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
         fib_ext=_wld_fib_ext(),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
     assert card.actionability_state == "NEEDS_RECOMPUTE"
     existing_sell = (_FakeOrder("0.515600", side="sell"),)
@@ -2976,6 +2994,7 @@ def test_active_card_still_emits_missing_rows_and_select_menu() -> None:
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
         fib_ext=_wld_fib_ext(),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
     assert card.actionability_state == "ACTIVE_TRADE_SETUP"
     rows = build_order_rows(
@@ -3739,6 +3758,7 @@ def test_navigation_map_filter_action_value_matches_canonical() -> None:
         history_high_since_activation=Decimal("0.7600"),
         history_candles_since_activation=_COMPLETED_MAP_CANDLES,
         fib_nav_context=_nav_context(),
+        presentation_mode=CARD_MODE_POSITION_HELD,
     )
     assert card.actionability_state == "NAVIGATION_ONLY"
     result = _pp_module._effective_workflow_action(card)
@@ -3997,3 +4017,824 @@ def test_mixed_above_and_below_current_buy_levels() -> None:
             assert Decimal(price_str) < Decimal("0.2000"), (
                 f"Only below-current buy levels should appear in missing_suggested; got: {item}"
             )
+
+
+# ---------------------------------------------------------------------------
+# PR24 — Market-only Visibility / Watch-only Rotation Cards
+# ---------------------------------------------------------------------------
+
+class TestPresentationModeDerivation:
+    def test_position_held_wins(self) -> None:
+        from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
+        reasons = frozenset({"POSITION_HELD", "CORE_SENSOR", "PORTFOLIO_MARKER"})
+        assert _derive_presentation_mode("XPL-EUR", reasons) == CARD_MODE_POSITION_HELD
+
+    def test_open_order_wins_over_core_sensor(self) -> None:
+        from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
+        reasons = frozenset({"OPEN_ORDER", "CORE_SENSOR"})
+        assert _derive_presentation_mode("XLM-EUR", reasons) == CARD_MODE_ACCOUNT_ORDER_ONLY
+
+    def test_core_sensor_gives_watch_only_rotation(self) -> None:
+        from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
+        reasons = frozenset({"CORE_SENSOR"})
+        assert _derive_presentation_mode("XPL-EUR", reasons) == CARD_MODE_WATCH_ONLY_ROTATION
+
+    def test_candidate_enabled_gives_account_plan_enabled(self) -> None:
+        from src.reporting.account_scoped_short_trader_dashboard_v1 import AccountPlanPolicy
+        from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
+        policy = AccountPlanPolicy(is_candidate_enabled=True)
+        assert _derive_presentation_mode("XPL-EUR", frozenset(), account_plan_policy=policy) == CARD_MODE_ACCOUNT_PLAN_ENABLED
+
+    def test_proposal_enabled_gives_account_plan_enabled(self) -> None:
+        from src.reporting.account_scoped_short_trader_dashboard_v1 import AccountPlanPolicy
+        from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
+        policy = AccountPlanPolicy(is_order_proposal_enabled=True)
+        assert _derive_presentation_mode("XLM-EUR", frozenset(), account_plan_policy=policy) == CARD_MODE_ACCOUNT_PLAN_ENABLED
+
+    def test_manual_add_gives_account_plan_enabled(self) -> None:
+        from src.reporting.account_scoped_short_trader_dashboard_v1 import AccountPlanPolicy
+        from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
+        policy = AccountPlanPolicy(source="MANUAL_ADD")
+        assert _derive_presentation_mode("APT-EUR", frozenset(), account_plan_policy=policy) == CARD_MODE_ACCOUNT_PLAN_ENABLED
+
+    def test_visible_only_stays_market_selected(self) -> None:
+        from src.reporting.account_scoped_short_trader_dashboard_v1 import AccountPlanPolicy
+        from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
+        policy = AccountPlanPolicy(is_visible=True)
+        assert _derive_presentation_mode("WLD-EUR", frozenset(), account_plan_policy=policy) == CARD_MODE_MARKET_SELECTED
+
+    def test_hidden_candidate_does_not_give_account_plan_enabled(self) -> None:
+        from src.reporting.account_scoped_short_trader_dashboard_v1 import AccountPlanPolicy
+        from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
+        policy = AccountPlanPolicy(is_candidate_enabled=True, is_hidden=True)
+        assert _derive_presentation_mode("WLD-EUR", frozenset(), account_plan_policy=policy) == CARD_MODE_MARKET_SELECTED
+
+    def test_hidden_manual_add_does_not_give_account_plan_enabled(self) -> None:
+        from src.reporting.account_scoped_short_trader_dashboard_v1 import AccountPlanPolicy
+        from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
+        policy = AccountPlanPolicy(source="MANUAL_ADD", is_hidden=True)
+        assert _derive_presentation_mode("WLD-EUR", frozenset(), account_plan_policy=policy) == CARD_MODE_MARKET_SELECTED
+
+    def test_portfolio_marker_gives_market_selected(self) -> None:
+        from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
+        reasons = frozenset({"PORTFOLIO_MARKER"})
+        assert _derive_presentation_mode("WLD-EUR", reasons) == CARD_MODE_MARKET_SELECTED
+
+    def test_portfolio_marker_plus_core_sensor_gives_watch_only_rotation(self) -> None:
+        from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
+        reasons = frozenset({"PORTFOLIO_MARKER", "CORE_SENSOR"})
+        assert _derive_presentation_mode("WLD-EUR", reasons) == CARD_MODE_WATCH_ONLY_ROTATION
+
+    def test_empty_reasons_gives_market_selected(self) -> None:
+        from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
+        assert _derive_presentation_mode("WLD-EUR", frozenset()) == CARD_MODE_MARKET_SELECTED
+
+
+class TestWatchOnlyRotationCard:
+    """XPL and XLM with CORE_SENSOR reason → WATCH_ONLY_ROTATION card behavior."""
+
+    def _make_watch_only(self, symbol: str = "XPL", *, fib_ext: FibExtContext | None = None) -> ProfitPlanCard:
+        return build_profit_plan_card(
+            symbol=symbol,
+            market=f"{symbol}-EUR",
+            current_price=Decimal("0.0050"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            fib_ext=fib_ext,
+            reentry=None,
+            buy_orders=(),
+            sell_orders=(),
+            presentation_mode=CARD_MODE_WATCH_ONLY_ROTATION,
+        )
+
+    def test_presentation_mode_is_watch_only_rotation(self) -> None:
+        card = self._make_watch_only("XPL")
+        assert card.presentation_mode == CARD_MODE_WATCH_ONLY_ROTATION
+
+    def test_xlm_presentation_mode_is_watch_only_rotation(self) -> None:
+        card = self._make_watch_only("XLM")
+        assert card.presentation_mode == CARD_MODE_WATCH_ONLY_ROTATION
+
+    def test_no_account_action_rendered_and_action_metadata_empty(self) -> None:
+        card = self._make_watch_only("XPL", fib_ext=_wld_fib_ext())
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert ">NO ACCOUNT ACTION<" in html
+        assert "TAKE PROFIT" not in html
+        assert "FIX LADDER" not in html
+        assert "data-filter-action=''" in html
+        assert "data-filter-action-label=''" in html
+        assert "data-filter-action='take_profit" not in html
+        assert "data-filter-action='sell" not in html
+        assert "data-filter-action='buy" not in html
+        assert "data-filter-action='fix_ladder'" not in html
+        assert "Market event" in html
+        assert "BETWEEN LEVELS" in html
+
+    def test_watch_only_badge_rendered(self) -> None:
+        card = self._make_watch_only("XPL")
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "WATCH ONLY" in html
+        assert "NO POSITION" in html
+        assert "NO ACCOUNT ACTION" in html
+
+    def test_no_fix_ladder_in_html(self) -> None:
+        card = self._make_watch_only("XPL", fib_ext=_wld_fib_ext())
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "FIX LADDER" not in html
+
+    def test_no_missing_order_rows_in_html(self) -> None:
+        card = self._make_watch_only("XPL", fib_ext=_wld_fib_ext())
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "MISSING" not in html
+
+    def test_data_presentation_mode_attribute(self) -> None:
+        card = self._make_watch_only("XPL")
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "data-presentation-mode='WATCH_ONLY_ROTATION'" in html
+        assert "data-sort-presentation='3'" in html
+
+    def test_watch_only_data_filter_orders_is_not_applicable(self) -> None:
+        card = self._make_watch_only("XPL")
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "data-filter-orders='not_applicable'" in html
+        assert "data-filter-orders-label='Not applicable'" in html
+
+    def test_watch_only_with_fib_ext_data_filter_orders_is_not_applicable(self) -> None:
+        card = self._make_watch_only("XPL", fib_ext=_wld_fib_ext())
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "data-filter-orders='not_applicable'" in html
+
+    def test_watch_only_cannot_have_missing_or_incomplete_filter_orders(self) -> None:
+        card = self._make_watch_only("XPL", fib_ext=_wld_fib_ext())
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "data-filter-orders='missing" not in html
+        assert "data-filter-orders='incomplete" not in html
+        assert "data-filter-orders='stale" not in html
+
+    def test_five_mode_sort_order_is_deterministic(self) -> None:
+        cards = sort_cards_action_priority([
+            build_profit_plan_card(
+                symbol="MRK",
+                market="MRK-EUR",
+                current_price=Decimal("0.50"),
+                fib_trading_horizon="SHORT",
+                short_context_input_status="HAS_ZONE_CONTEXT",
+                short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+                short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+                presentation_mode=CARD_MODE_MARKET_SELECTED,
+            ),
+            self._make_watch_only("WAT"),
+            build_profit_plan_card(
+                symbol="PLN",
+                market="PLN-EUR",
+                current_price=Decimal("0.50"),
+                fib_trading_horizon="SHORT",
+                short_context_input_status="HAS_ZONE_CONTEXT",
+                short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+                short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+                presentation_mode=CARD_MODE_ACCOUNT_PLAN_ENABLED,
+            ),
+            build_profit_plan_card(
+                symbol="ORD",
+                market="ORD-EUR",
+                current_price=Decimal("0.50"),
+                fib_trading_horizon="SHORT",
+                short_context_input_status="HAS_ZONE_CONTEXT",
+                short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+                short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+                presentation_mode=CARD_MODE_ACCOUNT_ORDER_ONLY,
+            ),
+            build_profit_plan_card(
+                symbol="POS",
+                market="POS-EUR",
+                current_price=Decimal("0.50"),
+                fib_trading_horizon="SHORT",
+                short_context_input_status="HAS_ZONE_CONTEXT",
+                short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+                short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+                presentation_mode=CARD_MODE_POSITION_HELD,
+            ),
+        ])
+        assert [card.presentation_mode for card in cards] == [
+            CARD_MODE_POSITION_HELD,
+            CARD_MODE_ACCOUNT_ORDER_ONLY,
+            CARD_MODE_ACCOUNT_PLAN_ENABLED,
+            CARD_MODE_WATCH_ONLY_ROTATION,
+            CARD_MODE_MARKET_SELECTED,
+        ]
+
+
+class TestAccountPlanEnabledCard:
+    def _make_account_plan_enabled(self, symbol: str = "APT", *, fib_ext: FibExtContext | None = None) -> ProfitPlanCard:
+        return build_profit_plan_card(
+            symbol=symbol,
+            market=f"{symbol}-EUR",
+            current_price=Decimal("0.0050"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            fib_ext=fib_ext,
+            reentry=None,
+            buy_orders=(),
+            sell_orders=(),
+            presentation_mode=CARD_MODE_ACCOUNT_PLAN_ENABLED,
+        )
+
+    def test_presentation_mode_is_account_plan_enabled(self) -> None:
+        card = self._make_account_plan_enabled()
+        assert card.presentation_mode == CARD_MODE_ACCOUNT_PLAN_ENABLED
+
+    def test_account_plan_enabled_retains_action_filter_behavior(self) -> None:
+        html = render_plan_card(self._make_account_plan_enabled(fib_ext=_wld_fib_ext()), buy_orders=(), sell_orders=())
+        assert "data-filter-action=''" not in html
+        assert "data-filter-action-label=''" not in html
+        assert ">NO ACCOUNT ACTION<" not in html
+        assert "WATCH ONLY · NO POSITION · NO ACCOUNT ACTION" not in html
+
+    def test_account_plan_enabled_dom_rank_is_third(self) -> None:
+        html = render_plan_card(self._make_account_plan_enabled(), buy_orders=(), sell_orders=())
+        assert "data-sort-presentation='2'" in html
+
+    def test_manual_add_account_plan_enabled_retains_action_filter_behavior(self) -> None:
+        html = render_plan_card(
+            build_profit_plan_card(
+                symbol="MAN",
+                market="MAN-EUR",
+                current_price=Decimal("0.0050"),
+                fib_trading_horizon="SHORT",
+                short_context_input_status="HAS_ZONE_CONTEXT",
+                short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+                short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+                fib_ext=_wld_fib_ext(),
+                presentation_mode=CARD_MODE_ACCOUNT_PLAN_ENABLED,
+            ),
+            buy_orders=(),
+            sell_orders=(),
+        )
+        assert "data-filter-action=''" not in html
+        assert "data-filter-action-label=''" not in html
+
+
+class TestMarketSelectedCard:
+    """MARKET_SELECTED_NO_ACCOUNT_STATE card: suppresses order UI, no WATCH ONLY badge."""
+
+    def test_presentation_mode_set(self) -> None:
+        card = build_profit_plan_card(
+            symbol="WLD",
+            market="WLD-EUR",
+            current_price=Decimal("0.5"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            presentation_mode=CARD_MODE_MARKET_SELECTED,
+        )
+        assert card.presentation_mode == CARD_MODE_MARKET_SELECTED
+
+    def test_no_watch_only_badge(self) -> None:
+        card = build_profit_plan_card(
+            symbol="WLD",
+            market="WLD-EUR",
+            current_price=Decimal("0.5"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            presentation_mode=CARD_MODE_MARKET_SELECTED,
+        )
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "WATCH ONLY · NO POSITION · NO ACCOUNT ACTION" not in html
+        assert "MARKET SELECTED" in html
+
+    def test_no_account_action_rendered_and_action_metadata_empty(self) -> None:
+        card = build_profit_plan_card(
+            symbol="WLD",
+            market="WLD-EUR",
+            current_price=Decimal("0.5"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            fib_ext=_wld_fib_ext(),
+            presentation_mode=CARD_MODE_MARKET_SELECTED,
+        )
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert ">NO ACCOUNT ACTION<" in html
+        assert "TAKE PROFIT" not in html
+        assert "FIX LADDER" not in html
+        assert "data-filter-action=''" in html
+        assert "data-filter-action-label=''" in html
+        assert "data-filter-action='take_profit" not in html
+        assert "data-filter-action='sell" not in html
+        assert "data-filter-action='buy" not in html
+        assert "data-filter-action='fix_ladder'" not in html
+        assert "Market event" in html
+        assert "BETWEEN LEVELS" in html
+
+    def test_portfolio_marker_only_has_no_action_metadata_or_ladder_ui(self) -> None:
+        html = render_plan_card(
+            build_profit_plan_card(
+                symbol="PRT",
+                market="PRT-EUR",
+                current_price=Decimal("0.5"),
+                fib_trading_horizon="SHORT",
+                short_context_input_status="HAS_ZONE_CONTEXT",
+                short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+                short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+                fib_ext=_wld_fib_ext(),
+                presentation_mode=CARD_MODE_MARKET_SELECTED,
+            ),
+            buy_orders=(),
+            sell_orders=(),
+        )
+        assert "data-filter-action=''" in html
+        assert "data-filter-action-label=''" in html
+        assert "NO ACCOUNT ACTION" in html
+        assert "order-section-header" not in html
+
+    def test_no_fix_ladder(self) -> None:
+        card = build_profit_plan_card(
+            symbol="WLD",
+            market="WLD-EUR",
+            current_price=Decimal("0.5"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            fib_ext=_wld_fib_ext(),
+            presentation_mode=CARD_MODE_MARKET_SELECTED,
+        )
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "FIX LADDER" not in html
+
+    def test_market_selected_data_filter_orders_is_not_applicable(self) -> None:
+        card = build_profit_plan_card(
+            symbol="WLD",
+            market="WLD-EUR",
+            current_price=Decimal("0.5"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            presentation_mode=CARD_MODE_MARKET_SELECTED,
+        )
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "data-filter-orders='not_applicable'" in html
+        assert "data-filter-orders-label='Not applicable'" in html
+
+    def test_market_selected_with_fib_ext_cannot_have_missing_or_incomplete_filter_orders(self) -> None:
+        card = build_profit_plan_card(
+            symbol="WLD",
+            market="WLD-EUR",
+            current_price=Decimal("0.5"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            fib_ext=_wld_fib_ext(),
+            presentation_mode=CARD_MODE_MARKET_SELECTED,
+        )
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "data-filter-orders='missing" not in html
+        assert "data-filter-orders='incomplete" not in html
+        assert "data-filter-orders='stale" not in html
+
+
+class TestPositionHeldCardUnchanged:
+    """PR24 must not regress POSITION_HELD card behavior (PR22/PR23 contract)."""
+
+    def test_helper_builds_position_held_cards_explicitly(self) -> None:
+        card = _make_card(current_price="0.5")
+        assert card.presentation_mode == CARD_MODE_POSITION_HELD
+
+    def test_position_held_shows_order_section_not_badge(self) -> None:
+        card = _make_card(current_price="0.5", fib_ext=_wld_fib_ext())
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "order-section-header" in html
+        assert "WATCH ONLY" not in html
+
+    def test_position_held_data_attribute(self) -> None:
+        card = _make_card(current_price="0.5")
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "data-presentation-mode='POSITION_HELD'" in html
+
+    def test_filter_action_not_watch_only_for_position_held(self) -> None:
+        card = _make_card(current_price="0.5")
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "data-filter-action='watch_only'" not in html
+        assert "data-filter-action=''" not in html
+
+    def test_position_held_order_filter_is_not_not_applicable(self) -> None:
+        """POSITION_HELD cards retain real order filter values — not overridden to not_applicable."""
+        card = _make_card(current_price="0.5", fib_ext=_wld_fib_ext())
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "data-filter-orders='not_applicable'" not in html
+
+    def test_account_order_only_order_filter_is_not_not_applicable(self) -> None:
+        """ACCOUNT_ORDER_ONLY cards also retain real order filter values."""
+        card = build_profit_plan_card(
+            symbol="HBAR",
+            market="HBAR-EUR",
+            current_price=Decimal("0.12"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            fib_ext=_wld_fib_ext(),
+            presentation_mode=CARD_MODE_ACCOUNT_ORDER_ONLY,
+        )
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "data-filter-orders='not_applicable'" not in html
+
+    def test_account_order_modes_keep_existing_action_filter_behavior(self) -> None:
+        position_html = render_plan_card(_make_card(current_price="0.5", fib_ext=_wld_fib_ext()), buy_orders=(), sell_orders=())
+        order_only_html = render_plan_card(
+            build_profit_plan_card(
+                symbol="HBAR",
+                market="HBAR-EUR",
+                current_price=Decimal("0.12"),
+                fib_trading_horizon="SHORT",
+                short_context_input_status="HAS_ZONE_CONTEXT",
+                short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+                short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+                fib_ext=_wld_fib_ext(),
+                presentation_mode=CARD_MODE_ACCOUNT_ORDER_ONLY,
+            ),
+            buy_orders=(),
+            sell_orders=(),
+        )
+        assert "data-filter-action=''" not in position_html
+        assert "data-filter-action-label=''" not in position_html
+        assert "data-filter-action=''" not in order_only_html
+        assert "data-filter-action-label=''" not in order_only_html
+
+
+class TestNoAccountStateOrderFilterOptions:
+    """render_full_html filter option generation for watch-only-only fixtures."""
+
+    def test_render_full_html_exposes_not_applicable_for_watch_only_fixture(self) -> None:
+        card = build_profit_plan_card(
+            symbol="XPL",
+            market="XPL-EUR",
+            current_price=Decimal("0.0050"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            presentation_mode=CARD_MODE_WATCH_ONLY_ROTATION,
+        )
+        html = render_full_html([card])
+        assert "Not applicable" in html
+        assert ">Missing orders<" not in html
+        assert ">Incomplete orders<" not in html
+    def test_render_full_html_exposes_not_applicable_for_market_selected_fixture(self) -> None:
+        card = build_profit_plan_card(
+            symbol="WLD",
+            market="WLD-EUR",
+            current_price=Decimal("0.5"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            fib_ext=_wld_fib_ext(),
+            presentation_mode=CARD_MODE_MARKET_SELECTED,
+        )
+        html = render_full_html([card])
+        assert "Not applicable" in html
+        assert ">Missing orders<" not in html
+
+
+def test_rendered_dom_rank_metadata_matches_five_mode_order() -> None:
+    html = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rendered_at="now", broker_mode="test")
+    assert "sortPresentation" in html
+    ranks = {
+        CARD_MODE_POSITION_HELD: "0",
+        CARD_MODE_ACCOUNT_ORDER_ONLY: "1",
+        CARD_MODE_ACCOUNT_PLAN_ENABLED: "2",
+        CARD_MODE_WATCH_ONLY_ROTATION: "3",
+        CARD_MODE_MARKET_SELECTED: "4",
+    }
+    for mode, rank in ranks.items():
+        card = build_profit_plan_card(
+            symbol=mode[:3],
+            market=f"{mode[:3]}-EUR",
+            current_price=Decimal("0.5"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            presentation_mode=mode,
+        )
+        card_html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert f"data-sort-presentation='{rank}'" in card_html
+
+
+class TestBuildCardsPipelineIntegration:
+    """
+    build_cards() pipeline integration: verify that XPL and XLM
+    with CORE_SENSOR provenance (no position, no open order) produce
+    WATCH_ONLY_ROTATION cards with the correct rendered output.
+    """
+
+    def _make_inclusion_reasons(self) -> "Mapping[str, frozenset[str]]":
+        from typing import Mapping
+        return {
+            "XPL-EUR": frozenset({"CORE_SENSOR"}),
+            "XLM-EUR": frozenset({"CORE_SENSOR"}),
+        }
+
+    def _make_account_plan_policy(self) -> "Mapping[str, Any]":
+        from src.reporting.account_scoped_short_trader_dashboard_v1 import AccountPlanPolicy
+        return {
+            "APT-EUR": AccountPlanPolicy(is_candidate_enabled=True),
+            "SUI-EUR": AccountPlanPolicy(is_order_proposal_enabled=True),
+            "WLD-EUR": AccountPlanPolicy(is_visible=True),
+            "HID-EUR": AccountPlanPolicy(is_candidate_enabled=True, is_hidden=True),
+            "MAD-EUR": AccountPlanPolicy(source="MANUAL_ADD"),
+            "HMA-EUR": AccountPlanPolicy(source="MANUAL_ADD", is_hidden=True),
+        }
+
+    def _run_build_cards(self) -> list[ProfitPlanCard]:
+        return profit_plan_runner.build_cards(
+            markets=["XPL-EUR", "XLM-EUR"],
+            prices={"XPL-EUR": Decimal("0.0050"), "XLM-EUR": Decimal("0.1200")},
+            price_status_by_market={"XPL-EUR": "FRESH", "XLM-EUR": "FRESH"},
+            price_age_min_by_market={"XPL-EUR": None, "XLM-EUR": None},
+            input_status_by_symbol={
+                "XPL": "HAS_ZONE_CONTEXT",
+                "XLM": "HAS_ZONE_CONTEXT",
+            },
+            coverage_status_by_symbol={
+                "XPL": "NATIVE_SHORT_CONTEXT_AVAILABLE",
+                "XLM": "NATIVE_SHORT_CONTEXT_AVAILABLE",
+            },
+            display_state_by_symbol={
+                "XPL": "NO_NATIVE_SHORT_FIB_CONTEXT",
+                "XLM": "NO_NATIVE_SHORT_FIB_CONTEXT",
+            },
+            fib_ext_by_symbol={},
+            reentry_by_symbol={},
+            history_by_symbol={},
+            orders_by_symbol={},
+            inclusion_reasons_by_market=self._make_inclusion_reasons(),
+        )
+
+    def test_xpl_xlm_presentation_mode_is_watch_only_rotation(self) -> None:
+        cards = {c.symbol: c for c in self._run_build_cards()}
+        assert cards["XPL"].presentation_mode == CARD_MODE_WATCH_ONLY_ROTATION, (
+            "XPL with CORE_SENSOR and no position/order must be WATCH_ONLY_ROTATION"
+        )
+        assert cards["XLM"].presentation_mode == CARD_MODE_WATCH_ONLY_ROTATION, (
+            "XLM with CORE_SENSOR and no position/order must be WATCH_ONLY_ROTATION"
+        )
+
+    def test_watch_only_badge_in_rendered_cards(self) -> None:
+        for card in self._run_build_cards():
+            html = render_plan_card(card, buy_orders=(), sell_orders=())
+            assert "WATCH ONLY" in html, f"{card.symbol}: expected WATCH ONLY badge in rendered HTML"
+            assert "NO POSITION" in html, f"{card.symbol}: expected NO POSITION in badge"
+
+    def test_no_missing_order_rows_in_rendered_cards(self) -> None:
+        for card in self._run_build_cards():
+            html = render_plan_card(card, buy_orders=(), sell_orders=())
+            assert "MISSING" not in html, f"{card.symbol}: MISSING order rows must not appear for watch-only card"
+
+    def test_no_account_order_ui_in_rendered_cards(self) -> None:
+        for card in self._run_build_cards():
+            html = render_plan_card(card, buy_orders=(), sell_orders=())
+            assert "order-section-header" not in html, (
+                f"{card.symbol}: order-section-header must be absent for watch-only card"
+            )
+
+    def test_position_held_card_not_degraded_when_mixed(self) -> None:
+        """When a mix of markets is included, portfolio cards keep POSITION_HELD mode."""
+        reasons: dict[str, frozenset[str]] = {
+            "WLD-EUR": frozenset({"POSITION_HELD", "PORTFOLIO_MARKER"}),
+            "XPL-EUR": frozenset({"CORE_SENSOR"}),
+        }
+        cards = profit_plan_runner.build_cards(
+            markets=["WLD-EUR", "XPL-EUR"],
+            prices={"WLD-EUR": Decimal("0.50"), "XPL-EUR": Decimal("0.0050")},
+            price_status_by_market={"WLD-EUR": "FRESH", "XPL-EUR": "FRESH"},
+            price_age_min_by_market={"WLD-EUR": None, "XPL-EUR": None},
+            input_status_by_symbol={
+                "WLD": "HAS_ZONE_CONTEXT",
+                "XPL": "HAS_ZONE_CONTEXT",
+            },
+            coverage_status_by_symbol={
+                "WLD": "NATIVE_SHORT_CONTEXT_AVAILABLE",
+                "XPL": "NATIVE_SHORT_CONTEXT_AVAILABLE",
+            },
+            display_state_by_symbol={
+                "WLD": "NO_NATIVE_SHORT_FIB_CONTEXT",
+                "XPL": "NO_NATIVE_SHORT_FIB_CONTEXT",
+            },
+            fib_ext_by_symbol={},
+            reentry_by_symbol={},
+            history_by_symbol={},
+            orders_by_symbol={},
+            inclusion_reasons_by_market=reasons,
+        )
+        by_sym = {c.symbol: c for c in cards}
+        assert by_sym["WLD"].presentation_mode == CARD_MODE_POSITION_HELD
+        assert by_sym["XPL"].presentation_mode == CARD_MODE_WATCH_ONLY_ROTATION
+
+    def test_candidate_enabled_without_balance_or_order_gives_account_plan_enabled(self) -> None:
+        cards = profit_plan_runner.build_cards(
+            markets=["APT-EUR"],
+            prices={"APT-EUR": Decimal("1.00")},
+            price_status_by_market={"APT-EUR": "FRESH"},
+            price_age_min_by_market={"APT-EUR": None},
+            input_status_by_symbol={"APT": "HAS_ZONE_CONTEXT"},
+            coverage_status_by_symbol={"APT": "NATIVE_SHORT_CONTEXT_AVAILABLE"},
+            display_state_by_symbol={"APT": "NO_NATIVE_SHORT_FIB_CONTEXT"},
+            fib_ext_by_symbol={},
+            reentry_by_symbol={},
+            history_by_symbol={},
+            orders_by_symbol={},
+            inclusion_reasons_by_market={},
+            account_plan_policy_by_market=self._make_account_plan_policy(),
+        )
+        assert cards[0].presentation_mode == CARD_MODE_ACCOUNT_PLAN_ENABLED
+
+    def test_proposal_enabled_without_balance_or_order_gives_account_plan_enabled(self) -> None:
+        cards = profit_plan_runner.build_cards(
+            markets=["SUI-EUR"],
+            prices={"SUI-EUR": Decimal("1.00")},
+            price_status_by_market={"SUI-EUR": "FRESH"},
+            price_age_min_by_market={"SUI-EUR": None},
+            input_status_by_symbol={"SUI": "HAS_ZONE_CONTEXT"},
+            coverage_status_by_symbol={"SUI": "NATIVE_SHORT_CONTEXT_AVAILABLE"},
+            display_state_by_symbol={"SUI": "NO_NATIVE_SHORT_FIB_CONTEXT"},
+            fib_ext_by_symbol={},
+            reentry_by_symbol={},
+            history_by_symbol={},
+            orders_by_symbol={},
+            inclusion_reasons_by_market={},
+            account_plan_policy_by_market=self._make_account_plan_policy(),
+        )
+        assert cards[0].presentation_mode == CARD_MODE_ACCOUNT_PLAN_ENABLED
+
+    def test_manual_add_without_balance_or_order_gives_account_plan_enabled(self) -> None:
+        cards = profit_plan_runner.build_cards(
+            markets=["MAD-EUR"],
+            prices={"MAD-EUR": Decimal("1.00")},
+            price_status_by_market={"MAD-EUR": "FRESH"},
+            price_age_min_by_market={"MAD-EUR": None},
+            input_status_by_symbol={"MAD": "HAS_ZONE_CONTEXT"},
+            coverage_status_by_symbol={"MAD": "NATIVE_SHORT_CONTEXT_AVAILABLE"},
+            display_state_by_symbol={"MAD": "NO_NATIVE_SHORT_FIB_CONTEXT"},
+            fib_ext_by_symbol={},
+            reentry_by_symbol={},
+            history_by_symbol={},
+            orders_by_symbol={},
+            inclusion_reasons_by_market={},
+            account_plan_policy_by_market=self._make_account_plan_policy(),
+        )
+        assert cards[0].presentation_mode == CARD_MODE_ACCOUNT_PLAN_ENABLED
+
+    def test_visible_only_without_balance_or_order_stays_market_selected(self) -> None:
+        cards = profit_plan_runner.build_cards(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("1.00")},
+            price_status_by_market={"WLD-EUR": "FRESH"},
+            price_age_min_by_market={"WLD-EUR": None},
+            input_status_by_symbol={"WLD": "HAS_ZONE_CONTEXT"},
+            coverage_status_by_symbol={"WLD": "NATIVE_SHORT_CONTEXT_AVAILABLE"},
+            display_state_by_symbol={"WLD": "NO_NATIVE_SHORT_FIB_CONTEXT"},
+            fib_ext_by_symbol={},
+            reentry_by_symbol={},
+            history_by_symbol={},
+            orders_by_symbol={},
+            inclusion_reasons_by_market={},
+            account_plan_policy_by_market=self._make_account_plan_policy(),
+        )
+        assert cards[0].presentation_mode == CARD_MODE_MARKET_SELECTED
+
+    def test_hidden_candidate_row_does_not_produce_account_plan_enabled(self) -> None:
+        cards = profit_plan_runner.build_cards(
+            markets=["HID-EUR"],
+            prices={"HID-EUR": Decimal("1.00")},
+            price_status_by_market={"HID-EUR": "FRESH"},
+            price_age_min_by_market={"HID-EUR": None},
+            input_status_by_symbol={"HID": "HAS_ZONE_CONTEXT"},
+            coverage_status_by_symbol={"HID": "NATIVE_SHORT_CONTEXT_AVAILABLE"},
+            display_state_by_symbol={"HID": "NO_NATIVE_SHORT_FIB_CONTEXT"},
+            fib_ext_by_symbol={},
+            reentry_by_symbol={},
+            history_by_symbol={},
+            orders_by_symbol={},
+            inclusion_reasons_by_market={},
+            account_plan_policy_by_market=self._make_account_plan_policy(),
+        )
+        assert cards[0].presentation_mode == CARD_MODE_MARKET_SELECTED
+
+    def test_hidden_manual_add_row_does_not_produce_account_plan_enabled(self) -> None:
+        cards = profit_plan_runner.build_cards(
+            markets=["HMA-EUR"],
+            prices={"HMA-EUR": Decimal("1.00")},
+            price_status_by_market={"HMA-EUR": "FRESH"},
+            price_age_min_by_market={"HMA-EUR": None},
+            input_status_by_symbol={"HMA": "HAS_ZONE_CONTEXT"},
+            coverage_status_by_symbol={"HMA": "NATIVE_SHORT_CONTEXT_AVAILABLE"},
+            display_state_by_symbol={"HMA": "NO_NATIVE_SHORT_FIB_CONTEXT"},
+            fib_ext_by_symbol={},
+            reentry_by_symbol={},
+            history_by_symbol={},
+            orders_by_symbol={},
+            inclusion_reasons_by_market={},
+            account_plan_policy_by_market=self._make_account_plan_policy(),
+        )
+        assert cards[0].presentation_mode == CARD_MODE_MARKET_SELECTED
+
+    def test_portfolio_marker_only_without_account_plan_stays_market_selected(self) -> None:
+        cards = profit_plan_runner.build_cards(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("1.00")},
+            price_status_by_market={"WLD-EUR": "FRESH"},
+            price_age_min_by_market={"WLD-EUR": None},
+            input_status_by_symbol={"WLD": "HAS_ZONE_CONTEXT"},
+            coverage_status_by_symbol={"WLD": "NATIVE_SHORT_CONTEXT_AVAILABLE"},
+            display_state_by_symbol={"WLD": "NO_NATIVE_SHORT_FIB_CONTEXT"},
+            fib_ext_by_symbol={},
+            reentry_by_symbol={},
+            history_by_symbol={},
+            orders_by_symbol={},
+            inclusion_reasons_by_market={"WLD-EUR": frozenset({"PORTFOLIO_MARKER"})},
+            account_plan_policy_by_market={},
+        )
+        assert cards[0].presentation_mode == CARD_MODE_MARKET_SELECTED
+
+    def test_portfolio_marker_plus_core_sensor_stays_watch_only(self) -> None:
+        cards = profit_plan_runner.build_cards(
+            markets=["WLD-EUR"],
+            prices={"WLD-EUR": Decimal("1.00")},
+            price_status_by_market={"WLD-EUR": "FRESH"},
+            price_age_min_by_market={"WLD-EUR": None},
+            input_status_by_symbol={"WLD": "HAS_ZONE_CONTEXT"},
+            coverage_status_by_symbol={"WLD": "NATIVE_SHORT_CONTEXT_AVAILABLE"},
+            display_state_by_symbol={"WLD": "NO_NATIVE_SHORT_FIB_CONTEXT"},
+            fib_ext_by_symbol={},
+            reentry_by_symbol={},
+            history_by_symbol={},
+            orders_by_symbol={},
+            inclusion_reasons_by_market={"WLD-EUR": frozenset({"PORTFOLIO_MARKER", "CORE_SENSOR"})},
+            account_plan_policy_by_market={},
+        )
+        assert cards[0].presentation_mode == CARD_MODE_WATCH_ONLY_ROTATION
+
+
+class TestMarketSelectedFieldGrid:
+    """
+    MARKET_SELECTED_NO_ACCOUNT_STATE: market zones appear in field grid;
+    account-order UI is suppressed; WATCH ONLY badge is absent.
+    """
+
+    def _make_market_selected(self, fib_ext: FibExtContext | None = None) -> ProfitPlanCard:
+        return build_profit_plan_card(
+            symbol="WLD",
+            market="WLD-EUR",
+            current_price=Decimal("0.50"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status="HAS_ZONE_CONTEXT",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            fib_ext=fib_ext,
+            reentry=None,
+            buy_orders=(),
+            sell_orders=(),
+            presentation_mode=CARD_MODE_MARKET_SELECTED,
+        )
+
+    def test_no_watch_only_badge_text(self) -> None:
+        card = self._make_market_selected()
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "WATCH ONLY · NO POSITION · NO ACCOUNT ACTION" not in html
+
+    def test_market_selected_badge_present(self) -> None:
+        card = self._make_market_selected()
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "MARKET SELECTED" in html
+
+    def test_account_order_section_suppressed(self) -> None:
+        card = self._make_market_selected(fib_ext=_wld_fib_ext())
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "order-section-header" not in html
+
+    def test_no_missing_order_rows(self) -> None:
+        card = self._make_market_selected(fib_ext=_wld_fib_ext())
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "MISSING" not in html
+
+    def test_no_fix_ladder(self) -> None:
+        card = self._make_market_selected(fib_ext=_wld_fib_ext())
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "FIX LADDER" not in html
+
+    def test_data_presentation_mode_attribute(self) -> None:
+        card = self._make_market_selected()
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        assert "data-presentation-mode='MARKET_SELECTED_NO_ACCOUNT_STATE'" in html
