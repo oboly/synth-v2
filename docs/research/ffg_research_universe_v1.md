@@ -73,23 +73,40 @@ The reported 10 inflows vs 8 captured is a known source discrepancy documented i
 
 ```bash
 python -m src.research.run_ffg_research_universe_import_v1 \
-    --seed-file /path/to/ffg_research_universe_seed_v1.json
+    --seed-file /path/to/ffg_research_universe_seed_v1.json --validate-only
 
-# Dry-run (no DB writes, validate only):
+# Dry-run (DB-backed plan, no writes; migrated research tables required):
+python -m src.research.run_ffg_research_universe_import_v1 \
+    --seed-file /path/to/ffg_research_universe_seed_v1.json --dry-run
+
+# Transactional write:
+python -m src.research.run_ffg_research_universe_import_v1 \
+    --seed-file /path/to/ffg_research_universe_seed_v1.json --write-db
+```
+
+Mode semantics:
+- `--validate-only`: seed-only validation, no DB connection, no migration requirement.
+- `--dry-run`: resolves local asset/Bitvavo state and shows the member/source-pair/snapshot synchronization plan without writes. Fails clearly with `Migration required` when the research tables are absent.
+- `--write-db`: executes the same DB-backed plan transactionally.
+
+## Verification flow
+
+Use these read-only commands:
+
+```bash
+python -m src.research.run_ffg_research_universe_import_v1 \
+    --seed-file /path/to/ffg_research_universe_seed_v1.json --validate-only
+
 python -m src.research.run_ffg_research_universe_import_v1 \
     --seed-file /path/to/ffg_research_universe_seed_v1.json --dry-run
 ```
 
-## Verification command
+Mode distinction:
+- `--validate-only`: validates seed structure and source integrity only; no database connection.
+- `--dry-run`: validates the DB-backed import plan and reports proposed reconciliation; no database writes.
+- `--write-db`: transactionally applies the reconciliation; not a verification command.
 
-Run after import to confirm totals:
-
-```bash
-python -m src.research.run_ffg_research_universe_import_v1 \
-    --seed-file /path/to/ffg_research_universe_seed_v1.json
-```
-
-The import script prints a verification block showing source rows, canonical count, excluded count, Bitvavo resolution counts, and confirms zero account rows modified and zero orders generated.
+`--write-db` remains the mutating import path and should not be used as post-import verification.
 
 ## Non-goals
 
