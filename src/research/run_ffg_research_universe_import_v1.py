@@ -20,7 +20,9 @@ Safety markers:
     executor=none
 
 Usage:
-    python -m src.research.run_ffg_research_universe_import_v1 --seed-file PATH [--dry-run]
+    python -m src.research.run_ffg_research_universe_import_v1 --seed-file PATH --validate-only
+    python -m src.research.run_ffg_research_universe_import_v1 --seed-file PATH --dry-run
+    python -m src.research.run_ffg_research_universe_import_v1 --seed-file PATH --write-db
 """
 from __future__ import annotations
 
@@ -42,6 +44,30 @@ EXPECTED_MEMBERS = 100
 EXPECTED_EXCLUDED = 2
 
 BITVAVO_VENUE = "bitvavo"
+MIGRATION_PATH = "db/migrations/20260620_ffg_research_universe_v1.sql"
+PRECHECK_FAILURE_EXIT_CODE = 2
+REQUIRED_RESEARCH_TABLES = (
+    "ffg_research_universe_member_v1",
+    "ffg_research_source_pair_v1",
+    "ffg_external_signal_snapshot_v1",
+)
+
+
+class ResearchUniversePreflightError(Exception):
+    def __init__(self, reason: str, *, missing_tables: Iterable[str] | None = None, detail: str | None = None) -> None:
+        self.reason = reason
+        self.missing_tables = tuple(missing_tables or ())
+        self.detail = detail or ""
+        super().__init__(self.format_message())
+
+    def format_message(self) -> str:
+        parts = [f"reason={self.reason}"]
+        if self.missing_tables:
+            parts.append(f"missing_tables={','.join(self.missing_tables)}")
+        parts.append(f"migration={MIGRATION_PATH}")
+        if self.detail:
+            parts.append(f"detail={self.detail}")
+        return " ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +97,26 @@ def validate_seed_totals(assets: list[dict[str, Any]]) -> None:
 
     if mismatches:
         raise ValueError("Seed total mismatch — do not silently change counts:\n  " + "\n  ".join(mismatches))
+
+
+def validate_canonical_uniqueness(assets: Iterable[dict[str, Any]]) -> None:
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for asset in assets:
+        symbol = str(asset["source_symbol"]).strip().upper()
+        if symbol in seen:
+            duplicates.add(symbol)
+        seen.add(symbol)
+    if duplicates:
+        joined = ", ".join(sorted(duplicates))
+        raise ValueError(
+            f"Duplicate canonical source_symbol entries are not allowed in the seed: {joined}"
+        )
+
+
+def validate_seed(assets: list[dict[str, Any]]) -> None:
+    validate_canonical_uniqueness(assets)
+    validate_seed_totals(assets)
 
 
 def derive_bitvavo_resolution(
@@ -105,10 +151,14 @@ def extract_source_exchange(source_pair: str) -> str:
 
 
 def normalize_member_rows(member_rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Deduplicate authoritative member rows per (universe_key, source_symbol)."""
+    """Validate and normalize authoritative member rows per (universe_key, source_symbol)."""
     deduped: dict[tuple[str, str], dict[str, Any]] = {}
     for row in member_rows:
         key = (str(row["universe_key"]), str(row["source_symbol"]).upper())
+        if key in deduped:
+            raise ValueError(
+                f"Duplicate member row for universe_key={key[0]} source_symbol={key[1]}"
+            )
         normalized = dict(row)
         normalized["source_symbol"] = key[1]
         deduped[key] = normalized
@@ -186,6 +236,27 @@ def fetch_existing_source_pairs(conn, universe_key: str) -> set[tuple[str, str]]
         }
 
 
+def assert_required_research_tables(conn) -> None:
+    placeholders = ", ".join(["%s"] * len(REQUIRED_RESEARCH_TABLES))
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = DATABASE()
+              AND table_name IN ({placeholders})
+            """,
+            REQUIRED_RESEARCH_TABLES,
+        )
+        present = {str(row["table_name"]) for row in cur.fetchall()}
+    missing = [table for table in REQUIRED_RESEARCH_TABLES if table not in present]
+    if missing:
+        raise ResearchUniversePreflightError(
+            "MIGRATION_REQUIRED",
+            missing_tables=missing,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Upsert helpers
 # ---------------------------------------------------------------------------
@@ -220,21 +291,6 @@ def upsert_member(conn, row: dict[str, Any], dry_run: bool) -> None:
     if not dry_run:
         with conn.cursor() as cur:
             cur.execute(sql, row)
-
-
-def upsert_source_pairs(conn, universe_key: str, source_symbol: str, source_pairs: list[str], dry_run: bool) -> None:
-    sql = """
-        INSERT INTO ffg_research_source_pair_v1
-            (universe_key, source_symbol, source_pair, source_exchange)
-        VALUES (%s, %s, %s, %s)
-        ON DUPLICATE KEY UPDATE
-            source_exchange = VALUES(source_exchange)
-    """
-    if not dry_run:
-        with conn.cursor() as cur:
-            for pair in source_pairs:
-                exchange = extract_source_exchange(pair)
-                cur.execute(sql, (universe_key, source_symbol.upper(), pair.upper(), exchange))
 
 
 def delete_member_symbols(conn, universe_key: str, source_symbols: Iterable[str], dry_run: bool) -> None:
@@ -414,27 +470,46 @@ def main() -> int:
         description="Import FFG research universe seed into Synth research tables."
     )
     parser.add_argument("--seed-file", required=True, type=Path, help="Path to ffg_research_universe_seed_v1.json")
-    parser.add_argument("--dry-run", action="store_true", help="Parse and validate only; no DB writes.")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--validate-only", action="store_true", help="Seed-only validation; no DB connection required.")
+    mode.add_argument("--dry-run", action="store_true", help="DB-backed import plan; no writes.")
+    mode.add_argument("--write-db", action="store_true", help="Apply the DB-backed import plan transactionally.")
     args = parser.parse_args()
+
+    mode_label = (
+        "validate-only"
+        if args.validate_only
+        else "dry-run"
+        if args.dry_run
+        else "write-db"
+    )
 
     now_utc = datetime.now(UTC).isoformat()
     print(f"STARTED ffg_research_universe_import_v1 at {now_utc}")
     print(f"  seed_file: {args.seed_file}")
-    print(f"  dry_run:   {args.dry_run}")
+    print(f"  mode:      {mode_label}")
     print("  broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0")
     print(f"  universe_key: {UNIVERSE_KEY}")
 
     # --- Load and validate seed ---
-    seed = load_seed(args.seed_file)
-    seed_schema_version = seed.get("schema_version", "")
-    assets: list[dict[str, Any]] = seed["assets"]
-    beta_flow: dict[str, Any] = seed.get("beta_flow_snapshot", {})
-
-    validate_seed_totals(assets)
-    print(f"  Seed validation passed: {len(assets)} canonical, {EXPECTED_SOURCE_ROWS} source rows")
-
-    conn = get_connection()
+    conn = None
     try:
+        seed = load_seed(args.seed_file)
+        seed_schema_version = seed.get("schema_version", "")
+        assets: list[dict[str, Any]] = seed["assets"]
+        beta_flow: dict[str, Any] = seed.get("beta_flow_snapshot", {})
+
+        validate_seed(assets)
+        print(f"  Seed validation passed: {len(assets)} canonical, {EXPECTED_SOURCE_ROWS} source rows")
+
+        if args.validate_only:
+            print("  Validation-only mode: no DB connection opened")
+            print("FINISHED ffg_research_universe_import_v1")
+            return 0
+
+        conn = get_connection()
+        assert_required_research_tables(conn)
+
         # --- Resolve Bitvavo availability ---
         print("  Resolving Bitvavo EUR market availability from local DB...")
         symbol_to_asset_id = fetch_symbol_to_asset_id(conn)
@@ -476,23 +551,29 @@ def main() -> int:
             member_rows=member_rows,
             assets=assets,
             beta_flow=beta_flow,
-            dry_run=args.dry_run,
+            dry_run=not args.write_db,
         )
         print(f"  Imported {total_pairs} normalized source pair rows")
         print(f"  Removed stale member rows: {len(stale_members)}")
         print(f"  Removed stale source pairs: {len(stale_pairs)}")
 
-        if not args.dry_run:
+        if args.write_db:
             conn.commit()
             print("  Committed.")
+        else:
+            print("  Dry-run only: no DB writes committed")
 
         print(f"  Bitvavo resolution: {resolution_counts}")
 
-        if not args.dry_run:
+        if args.write_db:
             print_verification(conn, UNIVERSE_KEY)
 
+    except (ResearchUniversePreflightError, ValueError) as exc:
+        print(f"FAILED run_ffg_research_universe_import_v1 {exc}")
+        return PRECHECK_FAILURE_EXIT_CODE
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
     print(f"FINISHED ffg_research_universe_import_v1")
     return 0

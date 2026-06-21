@@ -7,6 +7,7 @@ They verify pure helpers and DB-facing synchronization through recording fakes.
 from __future__ import annotations
 
 import json
+from io import StringIO
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -18,14 +19,20 @@ from src.research.run_ffg_research_universe_import_v1 import (
     EXPECTED_EXCLUDED,
     EXPECTED_MEMBERS,
     EXPECTED_SOURCE_ROWS,
+    PRECHECK_FAILURE_EXIT_CODE,
+    REQUIRED_RESEARCH_TABLES,
     UNIVERSE_KEY,
+    assert_required_research_tables,
     derive_bitvavo_resolution,
     extract_source_exchange,
     main,
+    normalize_member_rows,
     normalize_source_pair_rows,
     synchronize_source_pairs,
     synchronize_universe,
     upsert_signal_snapshot,
+    validate_canonical_uniqueness,
+    validate_seed,
     validate_seed_totals,
 )
 
@@ -134,6 +141,10 @@ class RecordingCursor:
             ]
             return
 
+        if "SELECT table_name FROM information_schema.tables" in normalized_sql:
+            self._results = [{"table_name": table_name} for table_name in sorted(self.conn.present_tables)]
+            return
+
         if normalized_sql == "SELECT symbol, asset_id FROM asset":
             self._results = [{"symbol": symbol, "asset_id": asset_id} for symbol, asset_id in sorted(self.conn.asset_rows.items())]
             return
@@ -222,6 +233,7 @@ class RecordingConnection:
         source_pairs_by_universe: dict[str, set[tuple[str, str]]] | None = None,
         asset_rows: dict[str, int] | None = None,
         bitvavo_asset_ids: set[int] | None = None,
+        present_tables: set[str] | None = None,
     ) -> None:
         self.member_symbols_by_universe = member_symbols_by_universe or {}
         self.member_rows_by_universe: dict[str, dict[str, dict[str, Any]]] = {
@@ -239,6 +251,7 @@ class RecordingConnection:
         self.source_pairs_by_universe = source_pairs_by_universe or {}
         self.asset_rows = asset_rows or {}
         self.bitvavo_asset_ids = bitvavo_asset_ids or set()
+        self.present_tables = present_tables if present_tables is not None else set(REQUIRED_RESEARCH_TABLES)
         self.signal_snapshots: dict[tuple[str, str, str], dict[str, Any]] = {}
         self.statements: list[tuple[str, Any]] = []
         self.commit_count = 0
@@ -274,6 +287,14 @@ class TestSeedTotals:
         assert EXPECTED_CANONICAL == 102
         assert EXPECTED_MEMBERS == 100
         assert EXPECTED_EXCLUDED == 2
+
+    def test_duplicate_canonical_member_fails_validation(self) -> None:
+        assets = [_make_asset("WLD"), _make_asset("wld")]
+        with pytest.raises(ValueError, match="Duplicate canonical source_symbol"):
+            validate_canonical_uniqueness(assets)
+
+    def test_validate_seed_runs_totals_and_duplicate_guard(self) -> None:
+        validate_seed(_valid_asset_list())
 
 
 class TestAccountPlanBoundary:
@@ -396,6 +417,10 @@ class TestSourcePairExtraction:
 
 
 class TestNormalization:
+    def test_normalize_member_rows_rejects_duplicate_canonical_member(self) -> None:
+        with pytest.raises(ValueError, match="Duplicate member row"):
+            normalize_member_rows([_make_member_row("WLD"), _make_member_row("wld")])
+
     def test_normalize_source_pair_rows_deduplicates_and_sorts(self) -> None:
         assets = [
             _make_asset("wld", source_pairs=["coinbase:wldusd", "BINANCE:WLDUSDT", "coinbase:wldusd"]),
@@ -406,6 +431,25 @@ class TestNormalization:
             (UNIVERSE_KEY, "WLD", "BINANCE:WLDUSDT", "BINANCE"),
             (UNIVERSE_KEY, "WLD", "COINBASE:WLDUSD", "COINBASE"),
         ]
+
+    def test_multiple_source_pairs_for_one_canonical_member_are_preserved(self) -> None:
+        assert normalize_source_pair_rows(
+            UNIVERSE_KEY,
+            [_make_asset("AERO", source_pairs=["KUCOIN:AEROUSDT", "COINBASE:AEROUSD"])],
+        ) == [
+            (UNIVERSE_KEY, "AERO", "COINBASE:AEROUSD", "COINBASE"),
+            (UNIVERSE_KEY, "AERO", "KUCOIN:AEROUSDT", "KUCOIN"),
+        ]
+
+
+class TestMigrationPreflight:
+    def test_required_research_tables_pass_when_all_present(self) -> None:
+        assert_required_research_tables(RecordingConnection())
+
+    def test_required_research_tables_raise_clear_error_when_missing(self) -> None:
+        conn = RecordingConnection(present_tables={"ffg_research_universe_member_v1"})
+        with pytest.raises(Exception, match="reason=MIGRATION_REQUIRED"):
+            assert_required_research_tables(conn)
 
 
 class TestDbSynchronization:
@@ -490,13 +534,18 @@ class TestDbSynchronization:
         assert len(conn.signal_snapshots) == 1
         assert conn.signal_snapshots[("FFG", "2026-06-20", "UNVERIFIED_BETA")]["reported_inflow_count"] == 11
 
+    def test_validation_failure_occurs_before_any_db_write_or_delete(self) -> None:
+        duplicate_assets = [_make_asset("WLD"), _make_asset("wld")]
+        with pytest.raises(ValueError, match="Duplicate canonical source_symbol"):
+            validate_seed(duplicate_assets)
+
     def test_source_pair_and_member_synchronization_is_transactional_in_main(self) -> None:
         conn = RecordingConnection(asset_rows={"AERO": 1}, bitvavo_asset_ids={1})
         seed = _make_seed(_valid_asset_list())
 
         with patch("src.research.run_ffg_research_universe_import_v1.get_connection", return_value=conn), \
              patch("src.research.run_ffg_research_universe_import_v1.load_seed", return_value=seed), \
-             patch("sys.argv", ["ffg_import", "--seed-file", str(Path("/tmp/ffg.json"))]):
+             patch("sys.argv", ["ffg_import", "--seed-file", str(Path("/tmp/ffg.json")), "--write-db"]):
             result = main()
 
         assert result == 0
@@ -573,3 +622,56 @@ class TestDbSynchronization:
         delete_statements = [(sql, params) for sql, params in conn.statements if "DELETE FROM ffg_research_universe_member_v1" in sql]
         assert len(delete_statements) == 1
         assert delete_statements[0][1] == (UNIVERSE_KEY, "ETH")
+
+
+class TestCliModes:
+    def test_validate_only_never_opens_db_connection(self) -> None:
+        seed = _make_seed(_valid_asset_list())
+
+        with patch("src.research.run_ffg_research_universe_import_v1.load_seed", return_value=seed), \
+             patch("src.research.run_ffg_research_universe_import_v1.get_connection", side_effect=AssertionError("DB should not open")), \
+             patch("sys.argv", ["ffg_import", "--seed-file", str(Path("/tmp/ffg.json")), "--validate-only"]):
+            result = main()
+
+        assert result == 0
+
+    def test_dry_run_without_migration_raises_clear_preflight_error(self) -> None:
+        conn = RecordingConnection(present_tables={"ffg_research_universe_member_v1"})
+        seed = _make_seed(_valid_asset_list())
+        stdout = StringIO()
+
+        with patch("src.research.run_ffg_research_universe_import_v1.get_connection", return_value=conn), \
+             patch("src.research.run_ffg_research_universe_import_v1.load_seed", return_value=seed), \
+             patch("sys.argv", ["ffg_import", "--seed-file", str(Path("/tmp/ffg.json")), "--dry-run"]), \
+             patch("sys.stdout", stdout):
+            result = main()
+
+        assert result == PRECHECK_FAILURE_EXIT_CODE
+        output = stdout.getvalue()
+        assert "FAILED run_ffg_research_universe_import_v1 reason=MIGRATION_REQUIRED" in output
+        assert "missing_tables=ffg_research_source_pair_v1,ffg_external_signal_snapshot_v1" in output
+        assert "migration=db/migrations/20260620_ffg_research_universe_v1.sql" in output
+        assert "Traceback" not in output
+        write_statements = [
+            sql for sql, _params in conn.statements
+            if sql.startswith("INSERT") or sql.startswith("DELETE") or sql.startswith("UPDATE")
+        ]
+        assert not write_statements
+
+    def test_dry_run_with_migration_returns_planned_result_without_writes(self) -> None:
+        conn = RecordingConnection(asset_rows={"AERO": 1}, bitvavo_asset_ids={1})
+        seed = _make_seed(_valid_asset_list())
+
+        with patch("src.research.run_ffg_research_universe_import_v1.get_connection", return_value=conn), \
+             patch("src.research.run_ffg_research_universe_import_v1.load_seed", return_value=seed), \
+             patch("sys.argv", ["ffg_import", "--seed-file", str(Path("/tmp/ffg.json")), "--dry-run"]):
+            result = main()
+
+        assert result == 0
+        assert conn.commit_count == 0
+        assert conn.close_count == 1
+        write_statements = [
+            sql for sql, _params in conn.statements
+            if sql.startswith("INSERT") or sql.startswith("DELETE") or sql.startswith("UPDATE")
+        ]
+        assert not write_statements
