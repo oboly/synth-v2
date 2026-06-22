@@ -1,0 +1,20 @@
+FFG Forecast Beta
+Observed label: Saved page 2026-06-22 beta capture
+
+FFG List
+Inflow (4)
+1 | HYPE | Hyperliquid | +22.1% | $748.1M | PEAK | ALERT
+2 | XLM | Stellar | +50.3% | $308.3M
+3 | XPL | Plasma | +131.8% | $364.7M | ALERT
+
+Outflow (2)
+1 | BTC | Bitcoin | -4.1% | $120.0M
+2 | ETH | Ethereum | -3.0% | $98.5M | PEAK
+
+Outside FFG Radar
+Inflow (2)
+1 | MYST | Mystery Project | +9.5% | $2.3M
+2 | ORCA | Orca | +7.0% | $1.1M | ALERT
+
+Outflow (1)
+1 | GONE | Gone Token | -6.5% | $0.4M
