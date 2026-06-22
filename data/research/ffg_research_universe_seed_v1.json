@@ -1,0 +1,2031 @@
+{
+  "schema_version": "ffg_research_universe_seed_v1",
+  "purpose": "Market-only external research universe seed. Never use this file to create account positions, enable global card visibility, or submit orders.",
+  "source": {
+    "provider": "Future Forecasting / FFG",
+    "source_page": "THE Crypto List",
+    "saved_html_date": "2026-06-20",
+    "source_asset_rows": 109,
+    "canonical_assets": 102,
+    "deduplicated_source_rows": 7,
+    "notes": [
+      "The FFG page exposes a virtual $2,000-per-token portfolio from January 2, 2026; its return is source metadata only, not a Synth score.",
+      "Displayed source exchange pairs identify the FFG symbol but do not establish Bitvavo availability.",
+      "The FFG forecast feature is beta; its declared 24h/7d/30d/90d tabs were not verified as distinct datasets."
+    ]
+  },
+  "contracts": {
+    "market_only": true,
+    "selection_engine_account_agnostic": true,
+    "account_plan_default": "NOT_ENABLED",
+    "does_not_change_asset_is_enabled": true,
+    "does_not_create_positions": true,
+    "does_not_create_orders": true,
+    "requires_local_exchange_resolution_before_price_ingest": true
+  },
+  "assets": [
+    {
+      "source_symbol": "HYPE",
+      "source_names": [
+        "HYPE"
+      ],
+      "source_pairs": [
+        "KUCOIN:HYPEUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": 192.36,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEFI_LIQUIDITY",
+        "PERPS_INFRA"
+      ],
+      "priority_tier": "rotation_core",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "STABLE",
+      "source_names": [
+        "Stable"
+      ],
+      "source_pairs": [
+        "KRAKEN:STABLEUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": 119.75,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "requires_identity_resolution",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "CFG",
+      "source_names": [
+        "Centrifuge"
+      ],
+      "source_pairs": [
+        "KRAKEN:CFGUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": 111.95,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "TOKENIZATION_RAILS",
+        "RWA"
+      ],
+      "priority_tier": "theme_core",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "KITE",
+      "source_names": [
+        "KITE AI"
+      ],
+      "source_pairs": [
+        "BINANCE:KITEUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": 75.77,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "AI_COMPUTE_NEW_INFRA"
+      ],
+      "priority_tier": "research_watch",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "LUNC",
+      "source_names": [
+        "Terra Classic"
+      ],
+      "source_pairs": [
+        "BINANCE:LUNCUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": 70.76,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "LIT",
+      "source_names": [
+        "Lighter"
+      ],
+      "source_pairs": [
+        "MEXC:LITUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": 69.98,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "NEAR",
+      "source_names": [
+        "NEAR Protocol"
+      ],
+      "source_pairs": [
+        "BINANCE:NEARUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": 31.55,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "AI_COMPUTE_NEW_INFRA",
+        "L1"
+      ],
+      "priority_tier": "theme_watch",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ROBO",
+      "source_names": [
+        "Robo Inu Finance"
+      ],
+      "source_pairs": [
+        "COINBASE:ROBOUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": 29.04,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "RNDR",
+      "source_names": [
+        "Render"
+      ],
+      "source_pairs": [
+        "BINANCE:RENDERUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": 26.35,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "AI_COMPUTE_NEW_INFRA",
+        "GPU_COMPUTE"
+      ],
+      "priority_tier": "theme_watch",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "WLD",
+      "source_names": [
+        "Worldcoin"
+      ],
+      "source_pairs": [
+        "BINANCE:WLDUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": 16.81,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "IDENTITY_CONSUMER",
+        "AI"
+      ],
+      "priority_tier": "research_watch",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "RED",
+      "source_names": [
+        "RED"
+      ],
+      "source_pairs": [
+        "BINANCE:REDUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": 14.5,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "TOKENIZATION_RAILS",
+        "ORACLE_DATA_INFRA"
+      ],
+      "priority_tier": "theme_core",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "TRX",
+      "source_names": [
+        "TRON"
+      ],
+      "source_pairs": [
+        "BINANCE:TRXUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": 12.99,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "PAYMENTS_RAILS"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "INJ",
+      "source_names": [
+        "Injective"
+      ],
+      "source_pairs": [
+        "COINBASE:INJUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": 11.95,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEFI_LIQUIDITY",
+        "L1"
+      ],
+      "priority_tier": "theme_watch",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "AERO",
+      "source_names": [
+        "Aerodrome Finance"
+      ],
+      "source_pairs": [
+        "KUCOIN:AEROUSDT",
+        "COINBASE:AEROUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": 4.28,
+      "source_row_count": 2,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEFI_LIQUIDITY"
+      ],
+      "priority_tier": "theme_watch",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "XLM",
+      "source_names": [
+        "Stellar"
+      ],
+      "source_pairs": [
+        "BINANCE:XLMUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": 3.64,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "TOKENIZATION_RAILS",
+        "PAYMENTS_RAILS"
+      ],
+      "priority_tier": "rotation_core",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "USDT",
+      "source_names": [
+        "Tether"
+      ],
+      "source_pairs": [
+        "BINANCEUS:USDTUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": 0.11,
+      "source_row_count": 1,
+      "research_status": "EXCLUDED",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC",
+      "exclusion_reason": "quote_asset_not_research_candidate"
+    },
+    {
+      "source_symbol": "TAO",
+      "source_names": [
+        "Bittensor"
+      ],
+      "source_pairs": [
+        "BINANCE:TAOUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": 0.1,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "AI_COMPUTE_NEW_INFRA"
+      ],
+      "priority_tier": "theme_watch",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "BOB",
+      "source_names": [
+        "BOB"
+      ],
+      "source_pairs": [
+        "KRAKEN:BOBUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -0.0,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "requires_identity_resolution",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "LEO",
+      "source_names": [
+        "UNUS SED LEO"
+      ],
+      "source_pairs": [
+        "BITFINEX:LEOUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -0.31,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ZBCN",
+      "source_names": [
+        "Zebec Network"
+      ],
+      "source_pairs": [
+        "CRYPTO:ZBCNUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -0.53,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "SKY",
+      "source_names": [
+        "Sky"
+      ],
+      "source_pairs": [
+        "COINBASE:SKYUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -4.23,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "PAXG",
+      "source_names": [
+        "PAX Gold"
+      ],
+      "source_pairs": [
+        "BINANCE:PAXGUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -4.64,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "TOKENIZED_COMMODITY"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "CC",
+      "source_names": [
+        "CC"
+      ],
+      "source_pairs": [
+        "KRAKEN:CCUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -4.68,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "requires_identity_resolution",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "QNT",
+      "source_names": [
+        "Quant"
+      ],
+      "source_pairs": [
+        "BINANCE:QNTUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -6.68,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "TOKENIZATION_RAILS",
+        "INTEROPERABILITY"
+      ],
+      "priority_tier": "theme_core",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ONDO",
+      "source_names": [
+        "Ondo Finance"
+      ],
+      "source_pairs": [
+        "COINBASE:ONDOUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -9.54,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "TOKENIZATION_RAILS",
+        "RWA"
+      ],
+      "priority_tier": "theme_core",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ZEC",
+      "source_names": [
+        "Zcash"
+      ],
+      "source_pairs": [
+        "COINBASE:ZECUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -10.18,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "PRIVACY"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "FET",
+      "source_names": [
+        "Fetch.ai"
+      ],
+      "source_pairs": [
+        "BINANCE:FETUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -11.25,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "AI_COMPUTE_NEW_INFRA"
+      ],
+      "priority_tier": "theme_watch",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "VIRTUAL",
+      "source_names": [
+        "Virtuals Protocol"
+      ],
+      "source_pairs": [
+        "BINANCE:VIRTUALUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -13.14,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "AI_COMPUTE_NEW_INFRA",
+        "AI_AGENTS"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "DASH",
+      "source_names": [
+        "Dash"
+      ],
+      "source_pairs": [
+        "BITFINEX:DSHUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -14.73,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "SENT",
+      "source_names": [
+        "Sentinel"
+      ],
+      "source_pairs": [
+        "BINANCE:SENTUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -21.26,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "requires_identity_resolution",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ALGO",
+      "source_names": [
+        "Algorand"
+      ],
+      "source_pairs": [
+        "BINANCE:ALGOUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -22.1,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "PAYMENTS_RAILS",
+        "L1"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "TRAC",
+      "source_names": [
+        "OriginTrail"
+      ],
+      "source_pairs": [
+        "CRYPTO:TRACUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -23.22,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "AI_COMPUTE_NEW_INFRA",
+        "KNOWLEDGE_GRAPH"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ICP",
+      "source_names": [
+        "Internet Computer"
+      ],
+      "source_pairs": [
+        "BINANCE:ICPUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -23.59,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "L1"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "XMR",
+      "source_names": [
+        "Monero"
+      ],
+      "source_pairs": [
+        "BITFINEX:XMRUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -24.38,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "PRIVACY"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ZRO",
+      "source_names": [
+        "LayerZero"
+      ],
+      "source_pairs": [
+        "COINBASE:ZROUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -28.08,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "INTEROPERABILITY"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "BTC",
+      "source_names": [
+        "Bitcoin"
+      ],
+      "source_pairs": [
+        "BINANCE:BTCUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -28.33,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "MACRO_BENCHMARK"
+      ],
+      "priority_tier": "macro_benchmark",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "HBAR",
+      "source_names": [
+        "Hedera"
+      ],
+      "source_pairs": [
+        "BINANCE:HBARUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -29.61,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "TOKENIZATION_RAILS",
+        "ENTERPRISE_INFRA"
+      ],
+      "priority_tier": "theme_core",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ARC",
+      "source_names": [
+        "ARC"
+      ],
+      "source_pairs": [
+        "POLONIEX:ARCUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -29.73,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "requires_identity_resolution",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "NOT",
+      "source_names": [
+        "Notcoin"
+      ],
+      "source_pairs": [
+        "BINANCE:NOTUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -29.96,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "CONSUMER_GAMING"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "PENDLE",
+      "source_names": [
+        "Pendle"
+      ],
+      "source_pairs": [
+        "BINANCE:PENDLEUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -31.75,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEFI_LIQUIDITY"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "BNB",
+      "source_names": [
+        "BNB"
+      ],
+      "source_pairs": [
+        "BINANCE:BNBUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -32.05,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "KAS",
+      "source_names": [
+        "Kaspa"
+      ],
+      "source_pairs": [
+        "MEXC:KASUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -32.72,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "DOGE",
+      "source_names": [
+        "Dogecoin"
+      ],
+      "source_pairs": [
+        "BINANCE:DOGEUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -33.77,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "POLYX",
+      "source_names": [
+        "Polymesh"
+      ],
+      "source_pairs": [
+        "BINANCE:POLYXUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -33.81,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "RPL",
+      "source_names": [
+        "Rocket Pool"
+      ],
+      "source_pairs": [
+        "COINBASE:RPLUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -34.69,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEFI_LIQUIDITY",
+        "STAKING"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "CFX",
+      "source_names": [
+        "Conflux"
+      ],
+      "source_pairs": [
+        "BINANCE:CFXUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -35.6,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "SHIB",
+      "source_names": [
+        "Shiba Inu"
+      ],
+      "source_pairs": [
+        "BINANCE:SHIBUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -36.79,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "LINK",
+      "source_names": [
+        "Chainlink"
+      ],
+      "source_pairs": [
+        "COINBASE:LINKUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -36.83,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "TOKENIZATION_RAILS",
+        "ORACLE_DATA_INFRA"
+      ],
+      "priority_tier": "theme_core",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "CRO",
+      "source_names": [
+        "Cronos"
+      ],
+      "source_pairs": [
+        "COINBASE:CROUSD",
+        "CRYPTOCOM:CROUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -37.5,
+      "source_row_count": 2,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "MOG",
+      "source_names": [
+        "Mogul"
+      ],
+      "source_pairs": [
+        "BITSTAMP:MOGUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -38.64,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "MEME"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "XRP",
+      "source_names": [
+        "XRP"
+      ],
+      "source_pairs": [
+        "BINANCE:XRPUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -38.72,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "PAYMENTS_RAILS"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "HOT",
+      "source_names": [
+        "Holo"
+      ],
+      "source_pairs": [
+        "BINANCE:HOTUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -39.06,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "STORAGE"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "FLOKI",
+      "source_names": [
+        "FLOKI"
+      ],
+      "source_pairs": [
+        "BINANCE:FLOKIUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -41.66,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "MEME"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "PEPE",
+      "source_names": [
+        "Pepe"
+      ],
+      "source_pairs": [
+        "BINANCE:PEPEUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -42.3,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "MEME"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ETH",
+      "source_names": [
+        "Ethereum"
+      ],
+      "source_pairs": [
+        "BINANCE:ETHUSDT",
+        "BITSTAMP:ETHUSD",
+        "BINANCE:ETHBTC"
+      ],
+      "ffg_virtual_portfolio_return_pct": -42.5,
+      "source_row_count": 3,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "L1"
+      ],
+      "priority_tier": "macro_benchmark",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "XDC",
+      "source_names": [
+        "XDC Network"
+      ],
+      "source_pairs": [
+        "BITFINEX:XDCUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -42.52,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "SOL",
+      "source_names": [
+        "Solana"
+      ],
+      "source_pairs": [
+        "BITSTAMP:SOLUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -43.52,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "L1"
+      ],
+      "priority_tier": "macro_benchmark",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "RVN",
+      "source_names": [
+        "Ravencoin"
+      ],
+      "source_pairs": [
+        "BINANCEUS:RVNUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -44.2,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "BONK",
+      "source_names": [
+        "Bonk"
+      ],
+      "source_pairs": [
+        "BINANCE:BONKUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -44.46,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "MEME"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "LTC",
+      "source_names": [
+        "Litecoin"
+      ],
+      "source_pairs": [
+        "BINANCE:LTCUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -44.55,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "THETA",
+      "source_names": [
+        "Theta Network"
+      ],
+      "source_pairs": [
+        "BINANCE:THETAUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -45.17,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "GRT",
+      "source_names": [
+        "The Graph"
+      ],
+      "source_pairs": [
+        "BINANCE:GRTUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -45.31,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "CELR",
+      "source_names": [
+        "Celer Network"
+      ],
+      "source_pairs": [
+        "BINANCE:CELRUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -45.49,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "MNT",
+      "source_names": [
+        "Mantle"
+      ],
+      "source_pairs": [
+        "BYBIT:MNTUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -45.53,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "CRV",
+      "source_names": [
+        "Curve DAO Token"
+      ],
+      "source_pairs": [
+        "POLONIEX:CRVUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -45.59,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEFI_LIQUIDITY"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ASTR",
+      "source_names": [
+        "Astar Network"
+      ],
+      "source_pairs": [
+        "BINANCE:ASTERUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -46.87,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "requires_identity_resolution",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "FIL",
+      "source_names": [
+        "Filecoin"
+      ],
+      "source_pairs": [
+        "BINANCE:FILUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -47.12,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "STORAGE"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "NEIRO",
+      "source_names": [
+        "NEIRO"
+      ],
+      "source_pairs": [
+        "BINANCE:NEIROUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -47.28,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "SHDW",
+      "source_names": [
+        "Shadow Token"
+      ],
+      "source_pairs": [
+        "COINBASE:SHDWUSDC"
+      ],
+      "ffg_virtual_portfolio_return_pct": -47.35,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ICX",
+      "source_names": [
+        "ICON"
+      ],
+      "source_pairs": [
+        "BINANCE:ICXUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -49.25,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "TURBO",
+      "source_names": [
+        "Turbo"
+      ],
+      "source_pairs": [
+        "MEXC:TURBOUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -49.43,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "MEME"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "AAVE",
+      "source_names": [
+        "Aave"
+      ],
+      "source_pairs": [
+        "BINANCE:AAVEUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -49.48,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEFI_LIQUIDITY"
+      ],
+      "priority_tier": "theme_watch",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "CVC",
+      "source_names": [
+        "Civic"
+      ],
+      "source_pairs": [
+        "BINANCE:CVCUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -49.74,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "SUI",
+      "source_names": [
+        "Sui"
+      ],
+      "source_pairs": [
+        "BINANCE:SUIUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -51.1,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "L1"
+      ],
+      "priority_tier": "research_watch",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "DOT",
+      "source_names": [
+        "Polkadot"
+      ],
+      "source_pairs": [
+        "BINANCE:DOTUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -51.72,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "L0_INTEROPERABILITY"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "XTZ",
+      "source_names": [
+        "Tezos"
+      ],
+      "source_pairs": [
+        "COINBASE:XTZUSD",
+        "BINANCE:XTZUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -52.88,
+      "source_row_count": 2,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "DEEP",
+      "source_names": [
+        "DEEP"
+      ],
+      "source_pairs": [
+        "KUCOIN:DEEPUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -53.77,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEFI_LIQUIDITY"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "EWT",
+      "source_names": [
+        "Energy Web Token"
+      ],
+      "source_pairs": [
+        "KRAKEN:EWTUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -53.87,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "ENERGY_WEB3"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "LDO",
+      "source_names": [
+        "Lido DAO"
+      ],
+      "source_pairs": [
+        "COINBASE:LDOUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -54.07,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEFI_LIQUIDITY"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "AVAX",
+      "source_names": [
+        "Avalanche"
+      ],
+      "source_pairs": [
+        "BINANCE:AVAXUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -54.22,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "L1"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ADA",
+      "source_names": [
+        "Cardano"
+      ],
+      "source_pairs": [
+        "BINANCE:ADAUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -54.28,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "TFUEL",
+      "source_names": [
+        "Theta Fuel"
+      ],
+      "source_pairs": [
+        "BINANCE:TFUELUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -54.43,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "VET",
+      "source_names": [
+        "VeChain"
+      ],
+      "source_pairs": [
+        "BINANCE:VETUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -55.68,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "DGB",
+      "source_names": [
+        "DigiByte"
+      ],
+      "source_pairs": [
+        "BINANCE:DGBUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -56.11,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "FARTCOIN",
+      "source_names": [
+        "Fartcoin"
+      ],
+      "source_pairs": [
+        "MEXC:FARTCOINUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -57.24,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "MEME"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "IOST",
+      "source_names": [
+        "IOST"
+      ],
+      "source_pairs": [
+        "BINANCE:IOSTUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -58.48,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "FXS",
+      "source_names": [
+        "Frax Share"
+      ],
+      "source_pairs": [
+        "KRAKEN:FXSUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -58.97,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEFI_LIQUIDITY",
+        "STABLECOIN_INFRA"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "PUMP",
+      "source_names": [
+        "PUMP"
+      ],
+      "source_pairs": [
+        "MEXC:PUMPUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -59.25,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ENA",
+      "source_names": [
+        "Ethena"
+      ],
+      "source_pairs": [
+        "BINANCE:ENAUSDT",
+        "CRYPTO:ENAUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -59.43,
+      "source_row_count": 2,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEFI_LIQUIDITY",
+        "SYNTHETIC_DOLLAR"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "WLFI",
+      "source_names": [
+        "World Liberty Financial"
+      ],
+      "source_pairs": [
+        "COINBASE:WLFIUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -60.2,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "ID",
+      "source_names": [
+        "SPACE ID"
+      ],
+      "source_pairs": [
+        "BINANCE:IDUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -60.55,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "SYRUP",
+      "source_names": [
+        "Syrup"
+      ],
+      "source_pairs": [
+        "KRAKEN:SYRUPUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -63.27,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEFI_LIQUIDITY"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "APT",
+      "source_names": [
+        "Aptos"
+      ],
+      "source_pairs": [
+        "COINBASE:APTUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -65.63,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "BCH",
+      "source_names": [
+        "Bitcoin Cash"
+      ],
+      "source_pairs": [
+        "BINANCE:BCHUSDT",
+        "COINBASE:BCHUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -66.45,
+      "source_row_count": 2,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "SXT",
+      "source_names": [
+        "SXT"
+      ],
+      "source_pairs": [
+        "COINBASE:SXTUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -67.67,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "DEXTF",
+      "source_names": [
+        "DEXTF"
+      ],
+      "source_pairs": [
+        "MEXC:DEXTFUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -71.07,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "RIVER",
+      "source_names": [
+        "River"
+      ],
+      "source_pairs": [
+        "CRYPTO:RIVERUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -71.37,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "WAL",
+      "source_names": [
+        "WAL"
+      ],
+      "source_pairs": [
+        "KUCOIN:WALUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -71.77,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "WALRUS_STORAGE"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "WFI",
+      "source_names": [
+        "WFI"
+      ],
+      "source_pairs": [
+        "CRYPTO:WFIUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -76.71,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "requires_identity_resolution",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "HNT",
+      "source_names": [
+        "Helium"
+      ],
+      "source_pairs": [
+        "COINBASE:HNTUSD"
+      ],
+      "ffg_virtual_portfolio_return_pct": -81.53,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [
+        "DEPIN"
+      ],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "IP",
+      "source_names": [
+        "Story Protocol"
+      ],
+      "source_pairs": [
+        "MEXC:IPUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -84.87,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    },
+    {
+      "source_symbol": "XPL",
+      "source_names": [
+        "Plasma"
+      ],
+      "source_pairs": [
+        "BINANCE:XPLUSDT"
+      ],
+      "ffg_virtual_portfolio_return_pct": -100.0,
+      "source_row_count": 1,
+      "research_status": "RESEARCH_UNIVERSE",
+      "account_plan_default": "NOT_ENABLED",
+      "identity_status": "source_pair_resolved",
+      "theme_tags": [],
+      "priority_tier": "broad_research",
+      "bitvavo_eur_resolution": "PENDING_LOCAL_MARKET_SYNC"
+    }
+  ],
+  "beta_flow_snapshot": {
+    "provider": "FFG",
+    "captured_on": "2026-06-20",
+    "timeframe": "UNVERIFIED_BETA",
+    "reported_inflow_count": 10,
+    "captured_inflow_records": 8,
+    "reported_outflow_count": 96,
+    "captured_outflow_symbols": [
+      "BTC",
+      "ETH",
+      "XRP",
+      "SOL",
+      "TRX",
+      "DOGE",
+      "ZEC",
+      "ADA",
+      "XMR",
+      "LINK",
+      "GRAM",
+      "BCH",
+      "LTC",
+      "SUI",
+      "SHIB",
+      "CRO",
+      "AVAX",
+      "TAO",
+      "MNT",
+      "ONDO",
+      "DOT",
+      "SKY",
+      "ICP",
+      "PEPE",
+      "AAVE",
+      "ATOM",
+      "ALGO",
+      "KAS",
+      "ENA",
+      "FIL",
+      "XDC",
+      "ARB",
+      "APT",
+      "DASH",
+      "VET",
+      "BONK",
+      "VIRTUAL",
+      "SEI",
+      "STX",
+      "PYTH",
+      "XTZ",
+      "FLOKI",
+      "PENDLE",
+      "LDO",
+      "JASMY",
+      "OP",
+      "GRT",
+      "IOTA",
+      "COMP",
+      "RAY",
+      "SYRUP",
+      "THETA",
+      "TRAC",
+      "GALA",
+      "FARTCOIN",
+      "SNX",
+      "SUSHI",
+      "DGB",
+      "RED",
+      "MOG",
+      "DEEP",
+      "VTHO",
+      "CELR",
+      "P2P",
+      "TIA",
+      "PUMP",
+      "UNI",
+      "PAXG",
+      "ASTER",
+      "RENDER",
+      "CRV"
+    ],
+    "inflows": [
+      {
+        "symbol": "HYPE",
+        "change_pct": 22.1,
+        "reported_flow_usd": 748100000,
+        "peak_flag": true
+      },
+      {
+        "symbol": "XLM",
+        "change_pct": 50.3,
+        "reported_flow_usd": 308300000,
+        "peak_flag": true
+      },
+      {
+        "symbol": "NEAR",
+        "change_pct": 21.4,
+        "reported_flow_usd": 247400000,
+        "peak_flag": true
+      },
+      {
+        "symbol": "WLD",
+        "change_pct": 131.8,
+        "reported_flow_usd": 364700000,
+        "peak_flag": true
+      },
+      {
+        "symbol": "AERO",
+        "change_pct": 17.1,
+        "reported_flow_usd": 46500000,
+        "peak_flag": false
+      },
+      {
+        "symbol": "LIT",
+        "change_pct": 10.9,
+        "reported_flow_usd": 27200000,
+        "peak_flag": false
+      },
+      {
+        "symbol": "XPL",
+        "change_pct": 10.5,
+        "reported_flow_usd": 129500000,
+        "peak_flag": false
+      },
+      {
+        "symbol": "EWT",
+        "change_pct": 35.1,
+        "reported_flow_usd": 387000,
+        "peak_flag": true
+      }
+    ],
+    "source_confidence": "low",
+    "notes": [
+      "The source reported 10 inflows but the captured text contained 8 detailed inflow records.",
+      "Do not derive multi-horizon signal strength or automated trade permissions from this snapshot.",
+      "Peak flags are source metadata only."
+    ]
+  }
+}

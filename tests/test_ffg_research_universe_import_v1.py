@@ -36,6 +36,8 @@ from src.research.run_ffg_research_universe_import_v1 import (
     validate_seed_totals,
 )
 
+SEED_PATH = Path(__file__).resolve().parent.parent / "data" / "research" / "ffg_research_universe_seed_v1.json"
+
 
 def _make_asset(
     source_symbol: str = "WLD",
@@ -102,7 +104,7 @@ def _make_member_row(source_symbol: str) -> dict[str, Any]:
 def _valid_asset_list() -> list[dict[str, Any]]:
     assets: list[dict[str, Any]] = []
     assets.append(_make_asset("USDT", research_status="EXCLUDED", exclusion_reason="quote_asset_not_research_candidate"))
-    assets.append(_make_asset("XPLUS", research_status="EXCLUDED", exclusion_reason="source_value_zero_or_unresolved_identity", identity_status="do_not_import"))
+    assets.append(_make_asset("XPL", source_pairs=["BINANCE:XPLUSDT"]))
     multi_pairs = [
         ("AERO", 2), ("CRO", 2), ("ETH", 3), ("XTZ", 2), ("BCH", 2), ("ENA", 2),
     ]
@@ -111,6 +113,11 @@ def _valid_asset_list() -> list[dict[str, Any]]:
     for i in range(94):
         assets.append(_make_asset(f"SYM{i:02d}"))
     return assets
+
+
+def _actual_seed_asset(source_symbol: str) -> dict[str, Any]:
+    payload = json.loads(SEED_PATH.read_text(encoding="utf-8"))
+    return next(asset for asset in payload["assets"] if asset["source_symbol"] == source_symbol)
 
 
 class RecordingCursor:
@@ -285,8 +292,26 @@ class TestSeedTotals:
     def test_total_counts_match_expected_constants(self) -> None:
         assert EXPECTED_SOURCE_ROWS == 109
         assert EXPECTED_CANONICAL == 102
-        assert EXPECTED_MEMBERS == 100
-        assert EXPECTED_EXCLUDED == 2
+        assert EXPECTED_MEMBERS == 101
+        assert EXPECTED_EXCLUDED == 1
+
+    def test_xpl_exists_as_non_excluded_member(self) -> None:
+        xpl = next(a for a in _valid_asset_list() if a["source_symbol"] == "XPL")
+        assert xpl["research_status"] == "RESEARCH_UNIVERSE"
+        assert xpl["identity_status"] == "source_pair_resolved"
+
+    def test_xpl_preserves_xplusdt_source_provenance(self) -> None:
+        xpl = next(a for a in _valid_asset_list() if a["source_symbol"] == "XPL")
+        assert xpl["source_pairs"] == ["BINANCE:XPLUSDT"]
+
+    def test_lit_has_source_name_lighter_in_seed(self) -> None:
+        lit = _actual_seed_asset("LIT")
+        assert lit["source_names"] == ["Lighter"]
+
+    def test_lit_remains_non_excluded_research_member_in_seed(self) -> None:
+        lit = _actual_seed_asset("LIT")
+        assert lit["research_status"] == "RESEARCH_UNIVERSE"
+        assert lit["identity_status"] == "source_pair_resolved"
 
     def test_duplicate_canonical_member_fails_validation(self) -> None:
         assets = [_make_asset("WLD"), _make_asset("wld")]
@@ -343,9 +368,13 @@ class TestBitvavoResolution:
         result = derive_bitvavo_resolution("BOB", "requires_identity_resolution", bitvavo_asset_ids={5}, symbol_to_asset_id={"BOB": 5})
         assert result == "REQUIRES_MANUAL_RESOLUTION"
 
-    def test_requires_manual_for_do_not_import(self) -> None:
-        result = derive_bitvavo_resolution("XPLUS", "do_not_import", bitvavo_asset_ids=set(), symbol_to_asset_id={})
-        assert result == "REQUIRES_MANUAL_RESOLUTION"
+    def test_xpl_can_resolve_normally_when_bitvavo_data_exists(self) -> None:
+        result = derive_bitvavo_resolution("XPL", "source_pair_resolved", bitvavo_asset_ids={8}, symbol_to_asset_id={"XPL": 8})
+        assert result == "RESOLVED"
+
+    def test_lit_can_resolve_normally_when_bitvavo_data_exists(self) -> None:
+        result = derive_bitvavo_resolution("LIT", "source_pair_resolved", bitvavo_asset_ids={9}, symbol_to_asset_id={"LIT": 9})
+        assert result == "RESOLVED"
 
     def test_requires_manual_takes_priority_over_bitvavo_resolved(self) -> None:
         result = derive_bitvavo_resolution("CC", "requires_identity_resolution", bitvavo_asset_ids={77}, symbol_to_asset_id={"CC": 77})

@@ -12,8 +12,8 @@ This is a data-lane change only. It does not change global asset selection, crea
 |---|---|
 | Source rows | 109 |
 | Canonical symbols | 102 |
-| Research universe members | 100 |
-| Excluded | 2 (USDT, XPLUS) |
+| Research universe members | 101 |
+| Excluded | 1 (USDT) |
 
 ## Tables
 
