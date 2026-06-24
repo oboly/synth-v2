@@ -915,6 +915,8 @@ def test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account
     original_resolve_access = profit_plan_runner.resolve_dashboard_profile_access
     original_fetch_market_context_candles = profit_plan_runner._fetch_market_context_candles_by_symbol
     original_build_market_context = profit_plan_runner.build_market_context_by_symbol
+    original_fetch_breath_curve_candles = profit_plan_runner._fetch_breath_curve_candles_by_symbol
+    original_build_breath_curve = profit_plan_runner.build_breath_curve_live_by_symbol
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -992,6 +994,10 @@ def test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account
                     lambda **kwargs: {symbol: [] for symbol in kwargs["symbols"]}
                 )
                 profit_plan_runner.build_market_context_by_symbol = lambda **kwargs: {}
+                profit_plan_runner._fetch_breath_curve_candles_by_symbol = (
+                    lambda **kwargs: {symbol: [] for symbol in kwargs["symbols"]}
+                )
+                profit_plan_runner.build_breath_curve_live_by_symbol = lambda **kwargs: {}
                 assert profit_plan_runner.main() == 0
                 html_path = root / "accounts" / profile / "profit-plan.html"
                 json_path = root / "accounts" / profile / "profit-plan.json"
@@ -1019,6 +1025,8 @@ def test_profit_plan_runner_scopes_output_per_account_and_prevents_cross_account
         profit_plan_runner.resolve_dashboard_profile_access = original_resolve_access
         profit_plan_runner._fetch_market_context_candles_by_symbol = original_fetch_market_context_candles
         profit_plan_runner.build_market_context_by_symbol = original_build_market_context
+        profit_plan_runner._fetch_breath_curve_candles_by_symbol = original_fetch_breath_curve_candles
+        profit_plan_runner.build_breath_curve_live_by_symbol = original_build_breath_curve
 
 
 def test_profit_plan_runner_missing_account_fails_closed() -> None:
