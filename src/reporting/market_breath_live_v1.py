@@ -3,6 +3,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from src.research.market_breath_classifier_v1 import (
+    DEFAULT_MARKET_BREATH_THRESHOLD_PROFILE_V1,
+    diagnose_market_breath_context_v1,
+)
 from src.research.run_market_breath_analysis_v1 import (
     INTERVAL_SECONDS,
     add_breadth_and_scores,
@@ -55,6 +59,17 @@ def _source_ts(candles: list[Any]) -> datetime | None:
     return candles[-1].close_ts_utc
 
 
+def _raw_scores_from_row(row: dict[str, Any] | None) -> dict[str, float | None]:
+    row = row or {}
+    return {
+        "compression": row.get("compression_score"),
+        "expansion": row.get("expansion_score"),
+        "momentum": row.get("momentum_score"),
+        "reversal_pressure": row.get("reversal_pressure_score"),
+        "relative_strength": row.get("relative_strength_score"),
+    }
+
+
 def _build_unavailable_payload(
     *,
     asof_ts: datetime,
@@ -67,6 +82,10 @@ def _build_unavailable_payload(
         "market_breath_phase": None,
         "market_breath_state": None,
         "market_breath_confidence": None,
+        "raw_scores": _raw_scores_from_row(None),
+        "closest_regime_context": None,
+        "closest_regime_failed_conditions": [],
+        "neutral_reason": None,
         "trajectory_label": "TRANSITION_UNCLEAR",
         "source_candle_ts_utc": fmt_ts(source_candle_ts) if source_candle_ts else None,
         "resolved_asof_ts_utc": fmt_ts(asof_ts),
@@ -88,6 +107,10 @@ def _build_stale_payload(
         "market_breath_phase": None,
         "market_breath_state": None,
         "market_breath_confidence": None,
+        "raw_scores": _raw_scores_from_row(None),
+        "closest_regime_context": None,
+        "closest_regime_failed_conditions": [],
+        "neutral_reason": None,
         "trajectory_label": "TRANSITION_UNCLEAR",
         "source_candle_ts_utc": fmt_ts(source_candle_ts) if source_candle_ts else None,
         "resolved_asof_ts_utc": fmt_ts(asof_ts),
@@ -206,11 +229,23 @@ def build_market_breath_live_by_symbol(
         phase = row.get("market_breath_phase")
         state = row.get("market_breath_state")
         confidence = row.get("market_breath_confidence")
+        diagnostics = diagnose_market_breath_context_v1(
+            compression=float(row.get("compression_score") or 0.0),
+            expansion=float(row.get("expansion_score") or 0.0),
+            momentum=float(row.get("momentum_score") or 0.0),
+            reversal_pressure=float(row.get("reversal_pressure_score") or 0.0),
+            relative_strength=float(row.get("relative_strength_score") or 0.0),
+            profile=DEFAULT_MARKET_BREATH_THRESHOLD_PROFILE_V1,
+        )
         output[symbol] = {
             "availability_state": STATUS_AVAILABLE,
             "market_breath_phase": phase,
             "market_breath_state": state,
             "market_breath_confidence": confidence,
+            "raw_scores": _raw_scores_from_row(row),
+            "closest_regime_context": diagnostics["closest_regime_context"],
+            "closest_regime_failed_conditions": diagnostics["closest_regime_failed_conditions"],
+            "neutral_reason": diagnostics["neutral_reason"],
             "trajectory_label": trajectory_label_for_market_breath_phase(
                 str(phase or ""),
                 availability_state=STATUS_AVAILABLE,

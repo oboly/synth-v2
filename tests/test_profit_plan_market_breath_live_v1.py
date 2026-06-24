@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from src.reporting.manual_short_trader_profit_plan_v1 import (
     ActiveOrderSummary,
@@ -128,6 +129,11 @@ def test_live_payload_available(monkeypatch) -> None:
             "market_breath_phase": "NEUTRAL_TRANSITION" if asset.symbol == "BTC" else "EXHALE_EXPANSION",
             "market_breath_state": "UNKNOWN" if asset.symbol == "BTC" else "CONFIRMED",
             "market_breath_confidence": 83.5 if asset.symbol == "ETH" else 50.0,
+            "compression_score": 10.0 if asset.symbol == "ETH" else 40.0,
+            "expansion_score": 74.0 if asset.symbol == "ETH" else 20.0,
+            "momentum_score": 38.0 if asset.symbol == "ETH" else 0.0,
+            "reversal_pressure_score": 11.0 if asset.symbol == "ETH" else 0.0,
+            "relative_strength_score": 4.0 if asset.symbol == "ETH" else 0.0,
             "invalid_reason": None,
         },
     )
@@ -141,6 +147,16 @@ def test_live_payload_available(monkeypatch) -> None:
         "market_breath_phase": "EXHALE_EXPANSION",
         "market_breath_state": "CONFIRMED",
         "market_breath_confidence": 83.5,
+        "raw_scores": {
+            "compression": 10.0,
+            "expansion": 74.0,
+            "momentum": 38.0,
+            "reversal_pressure": 11.0,
+            "relative_strength": 4.0,
+        },
+        "closest_regime_context": "EXHALE_EXPANSION",
+        "closest_regime_failed_conditions": [],
+        "neutral_reason": None,
         "trajectory_label": "EXPANSION_ACTIVE",
         "source_candle_ts_utc": "2026-06-24T12:00:00Z",
         "resolved_asof_ts_utc": "2026-06-24T12:00:00Z",
@@ -191,7 +207,16 @@ def test_live_payload_insufficient_data_is_unavailable(monkeypatch) -> None:
     assert payload["SOL"]["market_breath_phase"] is None
     assert payload["SOL"]["market_breath_state"] is None
     assert payload["SOL"]["market_breath_confidence"] is None
+    assert payload["SOL"]["raw_scores"] == {
+        "compression": None,
+        "expansion": None,
+        "momentum": None,
+        "reversal_pressure": None,
+        "relative_strength": None,
+    }
     assert payload["SOL"]["trajectory_label"] == "TRANSITION_UNCLEAR"
+    assert payload["SOL"]["closest_regime_context"] is None
+    assert payload["SOL"]["neutral_reason"] is None
     assert payload["SOL"]["warnings"] == ["insufficient_candles:7<24"]
 
 
@@ -228,9 +253,85 @@ def test_live_payload_stale_source_candle(monkeypatch) -> None:
     assert payload["ADA"]["market_breath_phase"] is None
     assert payload["ADA"]["market_breath_state"] is None
     assert payload["ADA"]["market_breath_confidence"] is None
+    assert payload["ADA"]["raw_scores"] == {
+        "compression": None,
+        "expansion": None,
+        "momentum": None,
+        "reversal_pressure": None,
+        "relative_strength": None,
+    }
     assert payload["ADA"]["trajectory_label"] == "TRANSITION_UNCLEAR"
     assert payload["ADA"]["source_candle_ts_utc"] == "2026-06-24T04:00:00Z"
     assert payload["ADA"]["warnings"] == ["SOURCE_CANDLE_STALE"]
+
+
+def test_live_payload_neutral_row_gets_deterministic_diagnostics(monkeypatch) -> None:
+    asof = datetime(2026, 6, 24, 12, 0, tzinfo=UTC).replace(tzinfo=None)
+    btc = Asset(asset_id=1, symbol="BTC")
+    xrp = Asset(asset_id=2, symbol="XRP")
+
+    monkeypatch.setattr("src.reporting.market_breath_live_v1.latest_asof_ts", lambda *_args, **_kwargs: asof)
+    monkeypatch.setattr("src.reporting.market_breath_live_v1.fetch_assets", lambda *_args, **_kwargs: [btc, xrp])
+    monkeypatch.setattr(
+        "src.reporting.market_breath_live_v1.fetch_candles",
+        lambda *_args, **_kwargs: {
+            1: [_candle(1, asof)],
+            2: [_candle(2, asof)],
+        },
+    )
+
+    def _build_row(*, asset, **_kwargs):
+        if asset.symbol == "BTC":
+            return {
+                "symbol": "BTC",
+                "market_breath_phase": "NEUTRAL_TRANSITION",
+                "market_breath_state": "UNKNOWN",
+                "market_breath_confidence": 100.0,
+                "compression_score": 10.0,
+                "expansion_score": 10.0,
+                "momentum_score": 0.0,
+                "reversal_pressure_score": 0.0,
+                "relative_strength_score": 0.0,
+                "invalid_reason": None,
+            }
+        return {
+            "symbol": "XRP",
+            "market_breath_phase": "NEUTRAL_TRANSITION",
+            "market_breath_state": "UNKNOWN",
+            "market_breath_confidence": 100.0,
+            "compression_score": 40.0,
+            "expansion_score": 50.0,
+            "momentum_score": 25.0,
+            "reversal_pressure_score": 5.0,
+            "relative_strength_score": -1.0,
+            "invalid_reason": None,
+        }
+
+    monkeypatch.setattr("src.reporting.market_breath_live_v1.build_base_observation", _build_row)
+    monkeypatch.setattr("src.reporting.market_breath_live_v1.add_breadth_and_scores", lambda rows, _lookback: rows)
+
+    payload = build_market_breath_live_by_symbol(object(), symbols=["XRP"])
+    row = payload["XRP"]
+
+    assert row["availability_state"] == STATUS_AVAILABLE
+    assert row["market_breath_phase"] == "NEUTRAL_TRANSITION"
+    assert row["market_breath_state"] == "UNKNOWN"
+    assert row["raw_scores"] == {
+        "compression": 40.0,
+        "expansion": 50.0,
+        "momentum": 25.0,
+        "reversal_pressure": 5.0,
+        "relative_strength": -1.0,
+    }
+    assert row["closest_regime_context"] == "EXHALE_EXPANSION"
+    assert row["closest_regime_failed_conditions"] == [
+        "expansion below EXHALE threshold (50.0 < 55.0)",
+        "relative strength not above EXHALE threshold (-1.0 <= 0.0)",
+    ]
+    assert row["neutral_reason"] == (
+        "No classified phase — expansion below EXHALE threshold (50.0 < 55.0); "
+        "relative strength not above EXHALE threshold (-1.0 <= 0.0)"
+    )
 
 
 def test_profit_plan_json_and_html_include_market_breath_payload() -> None:
@@ -239,6 +340,16 @@ def test_profit_plan_json_and_html_include_market_breath_payload() -> None:
         "market_breath_phase": "EXHALE_EXPANSION",
         "market_breath_state": "CONFIRMED",
         "market_breath_confidence": 88.2,
+        "raw_scores": {
+            "compression": 12.0,
+            "expansion": 74.0,
+            "momentum": 38.0,
+            "reversal_pressure": 11.0,
+            "relative_strength": 4.0,
+        },
+        "closest_regime_context": "EXHALE_EXPANSION",
+        "closest_regime_failed_conditions": [],
+        "neutral_reason": None,
         "trajectory_label": "EXPANSION_ACTIVE",
         "source_candle_ts_utc": "2026-06-24T12:00:00Z",
         "resolved_asof_ts_utc": "2026-06-24T12:00:00Z",
@@ -257,3 +368,15 @@ def test_profit_plan_json_and_html_include_market_breath_payload() -> None:
     assert "data-mb-trajectory='EXPANSION_ACTIVE'" in html
     assert "Market Breath" in html
     assert "EXPANSION_ACTIVE" in html
+    assert "Data coverage" in html
+    assert "Confidence" not in html
+
+
+def test_reporting_and_ui_do_not_duplicate_classifier_threshold_literals() -> None:
+    reporting_source = Path("src/reporting/market_breath_live_v1.py").read_text(encoding="utf-8")
+    ui_source = Path("src/reporting/manual_short_trader_profit_plan_v1.py").read_text(encoding="utf-8")
+
+    assert "diagnose_market_breath_context_v1(" in reporting_source
+    for literal in ("-25.0", "45.0", "55.0", "65.0", "70.0", "75.0", "35.0", "20.0", "5.0"):
+        assert literal not in reporting_source
+        assert literal not in ui_source

@@ -358,6 +358,13 @@ def _fmt_pct_number(v: Any) -> str:
         return "—"
 
 
+def _fmt_score_number(v: Any) -> str:
+    try:
+        return f"{float(v):.1f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
 def _market_breath_availability(payload: dict[str, Any] | None) -> str:
     return str((payload or {}).get("availability_state") or "UNAVAILABLE").upper()
 
@@ -376,7 +383,7 @@ def _market_breath_state_text(payload: dict[str, Any] | None) -> str:
     return str((payload or {}).get("market_breath_state") or "—").upper()
 
 
-def _market_breath_confidence_text(payload: dict[str, Any] | None) -> str:
+def _market_breath_coverage_text(payload: dict[str, Any] | None) -> str:
     availability = _market_breath_availability(payload)
     if availability != "AVAILABLE":
         return "—"
@@ -400,24 +407,50 @@ def _market_breath_compact_summary(payload: dict[str, Any] | None) -> str:
     return f"{phase} · {state}"
 
 
+def _market_breath_raw_scores(payload: dict[str, Any] | None) -> dict[str, Any]:
+    raw = (payload or {}).get("raw_scores") or {}
+    return {
+        "compression": raw.get("compression"),
+        "expansion": raw.get("expansion"),
+        "momentum": raw.get("momentum"),
+        "reversal_pressure": raw.get("reversal_pressure"),
+        "relative_strength": raw.get("relative_strength"),
+    }
+
+
 def _market_breath_detail_html(payload: dict[str, Any] | None) -> str:
     payload = payload or {}
     trajectory = str(payload.get("trajectory_label") or "TRANSITION_UNCLEAR").upper()
     source_ts = str(payload.get("source_candle_ts_utc") or "—")
+    raw_scores = _market_breath_raw_scores(payload)
+    closest_regime = str(payload.get("closest_regime_context") or "—").upper()
+    neutral_reason = str(payload.get("neutral_reason") or "").strip()
     warnings = payload.get("warnings") or []
     warnings_text = " · ".join(str(v) for v in warnings if v) or "none"
     blocks = (
         _metric_block("Phase", _market_breath_phase_text(payload)),
         _metric_block("State / maturity", _market_breath_state_text(payload)),
-        _metric_block("Confidence", _market_breath_confidence_text(payload)),
+        _metric_block("Data coverage", _market_breath_coverage_text(payload)),
         _metric_block("Trajectory", trajectory),
+        _metric_block("Closest regime", closest_regime),
         _metric_block("Source candle", source_ts),
         _metric_block("Freshness", _market_breath_freshness_text(payload)),
+        _metric_block("Compression", _fmt_score_number(raw_scores["compression"])),
+        _metric_block("Expansion", _fmt_score_number(raw_scores["expansion"])),
+        _metric_block("Momentum", _fmt_score_number(raw_scores["momentum"])),
+        _metric_block("Reversal pressure", _fmt_score_number(raw_scores["reversal_pressure"])),
+        _metric_block("Relative strength", _fmt_score_number(raw_scores["relative_strength"])),
+    )
+    neutral_html = (
+        f"<div class='market-breath-note muted small'>Neutral context: {esc(neutral_reason)}</div>"
+        if neutral_reason
+        else ""
     )
     return (
         "<div class='market-breath-section'>"
         "<div class='market-breath-header'>Market Breath</div>"
         f"<div class='market-breath-grid'>{''.join(blocks)}</div>"
+        f"{neutral_html}"
         f"<div class='market-breath-note muted small'>Warnings: {esc(warnings_text)}. Context only, not forecast or execution advice.</div>"
         "</div>"
     )
@@ -2724,10 +2757,17 @@ def _build_client_js(storage_scope: str) -> str:
     var mbAvailability = card.dataset.mbAvailability || 'UNAVAILABLE';
     var mbPhase = card.dataset.mbPhase || 'UNAVAILABLE';
     var mbState = card.dataset.mbState || '—';
-    var mbConfidence = card.dataset.mbConfidence || '—';
+    var mbCoverage = card.dataset.mbCoverage || '—';
     var mbTrajectory = card.dataset.mbTrajectory || 'TRANSITION_UNCLEAR';
     var mbSourceTs = card.dataset.mbSourceTs || '—';
     var mbFreshness = card.dataset.mbFreshness || 'UNAVAILABLE';
+    var mbClosestRegime = card.dataset.mbClosestRegime || '—';
+    var mbNeutralReason = card.dataset.mbNeutralReason || '—';
+    var mbCompression = card.dataset.mbCompression || '—';
+    var mbExpansion = card.dataset.mbExpansion || '—';
+    var mbMomentum = card.dataset.mbMomentum || '—';
+    var mbReversal = card.dataset.mbReversal || '—';
+    var mbRelativeStrength = card.dataset.mbRelativeStrength || '—';
     var marketEl = card.querySelector('.card-row1 .muted.small');
     var market = marketEl ? marketEl.textContent.trim() : '';
     panel.innerHTML =
@@ -2740,8 +2780,17 @@ def _build_client_js(storage_scope: str) -> str:
       "<div style='margin-bottom:6px'><span class='muted small'>Availability: </span>" + mbAvailability + "</div>" +
       "<div style='margin-bottom:6px'><span class='muted small'>Phase: </span>" + mbPhase + "</div>" +
       "<div style='margin-bottom:6px'><span class='muted small'>State: </span>" + mbState + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Confidence: </span>" + mbConfidence + "</div>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Data coverage: </span>" + mbCoverage + "</div>" +
       "<div style='margin-bottom:6px'><span class='muted small'>Trajectory: </span>" + mbTrajectory + "</div>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Closest regime: </span>" + mbClosestRegime + "</div>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Neutral context: </span>" + mbNeutralReason + "</div>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Scores: </span>" +
+        "compression " + mbCompression +
+        " \xb7 expansion " + mbExpansion +
+        " \xb7 momentum " + mbMomentum +
+        " \xb7 reversal " + mbReversal +
+        " \xb7 relative strength " + mbRelativeStrength +
+      "</div>" +
       "<div style='margin-bottom:12px'><span class='muted small'>Source / freshness: </span>" + mbSourceTs + " \xb7 " + mbFreshness + "</div>" +
       "<h3>Wallet</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
       "<h3>Position</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
@@ -3396,10 +3445,18 @@ def render_plan_card(
         f" data-mb-availability='{esc(_market_breath_availability(market_breath_payload))}'"
         f" data-mb-phase='{esc(_market_breath_phase_text(market_breath_payload))}'"
         f" data-mb-state='{esc(_market_breath_state_text(market_breath_payload))}'"
-        f" data-mb-confidence='{esc(_market_breath_confidence_text(market_breath_payload))}'"
+        f" data-mb-confidence='{esc(_market_breath_coverage_text(market_breath_payload))}'"
+        f" data-mb-coverage='{esc(_market_breath_coverage_text(market_breath_payload))}'"
         f" data-mb-trajectory='{esc(str(market_breath_payload.get('trajectory_label') or 'TRANSITION_UNCLEAR').upper())}'"
         f" data-mb-source-ts='{esc(str(market_breath_payload.get('source_candle_ts_utc') or '—'))}'"
         f" data-mb-freshness='{esc(_market_breath_freshness_text(market_breath_payload))}'"
+        f" data-mb-closest-regime='{esc(str(market_breath_payload.get('closest_regime_context') or '—').upper())}'"
+        f" data-mb-neutral-reason='{esc(str(market_breath_payload.get('neutral_reason') or '—'))}'"
+        f" data-mb-compression='{esc(_fmt_score_number(_market_breath_raw_scores(market_breath_payload)['compression']))}'"
+        f" data-mb-expansion='{esc(_fmt_score_number(_market_breath_raw_scores(market_breath_payload)['expansion']))}'"
+        f" data-mb-momentum='{esc(_fmt_score_number(_market_breath_raw_scores(market_breath_payload)['momentum']))}'"
+        f" data-mb-reversal='{esc(_fmt_score_number(_market_breath_raw_scores(market_breath_payload)['reversal_pressure']))}'"
+        f" data-mb-relative-strength='{esc(_fmt_score_number(_market_breath_raw_scores(market_breath_payload)['relative_strength']))}'"
         f" data-render-id='{esc(card.render_id)}'>"
         "<div class='card-head'>"
         "<div class='card-head-left'>"
