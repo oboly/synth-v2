@@ -35,6 +35,7 @@ from src.reporting.account_scoped_short_trader_dashboard_v1 import (
 )
 from src.reporting.account_dashboard_profile_access_v1 import resolve_dashboard_profile_access
 from src.reporting.dashboard_style_v1 import cockpit_nav
+from src.reporting.market_breath_live_v1 import build_market_breath_live_by_symbol
 from src.reporting.manual_short_trader_dashboard_v1 import (
     BrokerOrderRow,
     LadderOrderRow,
@@ -924,6 +925,7 @@ def build_cards(
     now_utc: datetime | None = None,
     inclusion_reasons_by_market: Mapping[str, frozenset[str]] | None = None,
     account_plan_policy_by_market: Mapping[str, AccountPlanPolicy] | None = None,
+    market_breath_by_symbol: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[ProfitPlanCard]:
     _prior = prior_map_meta_by_symbol or {}
     _now = now_utc or datetime.now(UTC)
@@ -974,6 +976,7 @@ def build_cards(
                     reasons=(inclusion_reasons_by_market or {}).get(market, frozenset()),
                     account_plan_policy=(account_plan_policy_by_market or {}).get(market),
                 ),
+                market_breath_live=(market_breath_by_symbol or {}).get(symbol),
             )
         )
     return cards
@@ -1113,6 +1116,15 @@ def main() -> int:
         candles_by_symbol=_mc_candles,
         now_utc=now_utc,
     )
+    _market_breath_conn = get_connection()
+    try:
+        market_breath_by_symbol = build_market_breath_live_by_symbol(
+            _market_breath_conn,
+            venue=args.venue,
+            symbols=_mc_symbols,
+        )
+    finally:
+        _market_breath_conn.close()
     monitor_link = args.monitor_href or public_page_href(
         profile=args.account_profile,
         page_stem="open-orders-monitor",
@@ -1132,6 +1144,7 @@ def main() -> int:
         prior_map_meta_by_symbol=zone_contexts.prior_map_meta_by_symbol,
         inclusion_reasons_by_market=context.market_inclusion_reasons_by_market,
         account_plan_policy_by_market=context.account_plan_policy_by_market,
+        market_breath_by_symbol=market_breath_by_symbol,
     )
 
     # Load market tick rules from DB and apply price normalization to all cards.
