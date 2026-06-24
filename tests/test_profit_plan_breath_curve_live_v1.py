@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+import ast
 from pathlib import Path
 
+from src.market_context.breath_curve_core_v1 import Candle as CoreCandle
 from src.market_context.breath_curve_live_v1 import (
     STATUS_UNAVAILABLE,
     BreathCurveLiveCandle,
     BreathCurveResolvedCandidate,
+    BreathCurveResolverOutcome,
     build_breath_curve_live_by_symbol,
 )
-from src.research.run_breath_curve_template_partial_v1 import PartialResult
+from src.market_context.breath_curve_core_v1 import PartialResult
 from src.reporting.manual_short_trader_profit_plan_v1 import (
     ActiveOrderSummary,
     ProfitPlanCard,
@@ -20,6 +24,10 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
 
 
 ROOT = Path(__file__).parent.parent
+
+
+def test_shared_core_is_volume_independent() -> None:
+    assert "volume" not in {field.name for field in fields(CoreCandle)}
 
 
 def _order_summary() -> ActiveOrderSummary:
@@ -157,24 +165,40 @@ def _candidate(offset_days: float, *, current_code: str, next_code: str) -> Brea
 
 
 def test_no_future_candle_is_used() -> None:
-    as_of = datetime(2026, 5, 3, tzinfo=UTC)
-    candles = [_daily_candle(0), _daily_candle(1)]
-    with_future = [*candles, _daily_candle(5, close_price="9.99")]
+    as_of = datetime(2026, 6, 9, tzinfo=UTC)
+    candles = _enough_candles(45)
+    with_future = [*candles, _daily_candle(60, close_price="9.99")]
 
-    base = build_breath_curve_live_by_symbol(
-        candles_by_symbol={"ETH": candles},
-        as_of_ts_utc=as_of,
-        symbols=["ETH"],
-    )
-    future = build_breath_curve_live_by_symbol(
-        candles_by_symbol={"ETH": with_future},
-        as_of_ts_utc=as_of,
-        symbols=["ETH"],
-    )
+    seen_latest_source_ts: list[str] = []
+    candidate = _candidate(-7.0, current_code="IGNITION_PRE_SPIKE", next_code="MAIN_PULSE_TP_HIGH")
+
+    def _resolve_candidate(**kwargs):
+        seen_latest_source_ts.append(kwargs["candles"][-1].close_ts_utc.isoformat())
+        return BreathCurveResolverOutcome(candidate=candidate, candidate_count_considered=17)
+
+    from src.market_context import breath_curve_live_v1 as module
+
+    original = module._resolve_candidate
+    module._resolve_candidate = _resolve_candidate
+    try:
+        base = build_breath_curve_live_by_symbol(
+            candles_by_symbol={"ETH": candles, "BTC": candles},
+            as_of_ts_utc=as_of,
+            symbols=["ETH"],
+        )
+        future = build_breath_curve_live_by_symbol(
+            candles_by_symbol={"ETH": with_future, "BTC": with_future},
+            as_of_ts_utc=as_of,
+            symbols=["ETH"],
+        )
+    finally:
+        module._resolve_candidate = original
 
     assert base == future
-    assert base["ETH"]["source_candle_ts_utc"] == "2026-05-02T00:00:00Z"
-    assert base["ETH"]["availability_state"] == STATUS_UNAVAILABLE
+    assert base["ETH"]["availability_state"] == "AVAILABLE"
+    assert base["ETH"]["source_candle_ts_utc"] == "2026-06-09T00:00:00Z"
+    assert base["ETH"]["anchor_ts_utc"] == "2026-05-01T00:00:00Z"
+    assert all(value == "2026-06-09T00:00:00+00:00" for value in seen_latest_source_ts)
 
 
 def test_same_as_of_input_is_deterministic() -> None:
@@ -201,7 +225,7 @@ def test_phase_offset_and_next_target_come_from_matcher_progression(monkeypatch)
 
     monkeypatch.setattr(
         "src.market_context.breath_curve_live_v1._resolve_candidate",
-        lambda **_kwargs: candidate,
+        lambda **_kwargs: BreathCurveResolverOutcome(candidate=candidate, candidate_count_considered=17),
     )
 
     payload = build_breath_curve_live_by_symbol(
@@ -217,6 +241,15 @@ def test_phase_offset_and_next_target_come_from_matcher_progression(monkeypatch)
     assert payload["next_checkpoint"] == "MAIN_PULSE_TP_HIGH"
     assert payload["next_target_expected_ts_utc"] == "2026-06-13T00:00:00Z"
     assert payload["next_target_is_future"] is True
+    assert payload["resolver_name"] == "breath_curve_live_anchor_offset_search_v1"
+    assert payload["resolver_version"] == "0.1"
+    assert payload["resolver_candidate_count"] == 17
+    assert payload["resolver_rank_basis"] == [
+        "partial_match_score",
+        "observed_marker_count",
+        "current_marker_ratio",
+        "smaller_abs_phase_offset_days",
+    ]
 
 
 def test_unavailable_anchor_or_data_is_honest() -> None:
@@ -229,6 +262,8 @@ def test_unavailable_anchor_or_data_is_honest() -> None:
     assert payload["availability_state"] == STATUS_UNAVAILABLE
     assert payload["phase_marker"] is None
     assert payload["current_checkpoint"] is None
+    assert payload["resolver_candidate_count"] == 0
+    assert payload["resolver_name"] == "breath_curve_live_anchor_offset_search_v1"
     assert payload["warnings"] == ["INSUFFICIENT_CLOSED_DAILY_CANDLES"]
 
 
@@ -239,6 +274,8 @@ def test_profit_plan_json_and_html_use_breath_curve_not_market_breath() -> None:
         "source_candle_ts_utc": "2026-06-24T00:00:00Z",
         "freshness_label": "FRESH",
         "phase_marker": "IGNITION_PRE_SPIKE",
+        "anchor_ts_utc": "2026-05-01T00:00:00Z",
+        "anchor_search_days": 56,
         "phase_offset_days": -7.0,
         "phase_offset_band": "-7",
         "template_match_score": 0.8123,
@@ -247,6 +284,15 @@ def test_profit_plan_json_and_html_use_breath_curve_not_market_breath() -> None:
         "next_target_expected_ts_utc": "2026-06-27T00:00:00Z",
         "next_target_is_future": True,
         "lead_lag_vs_btc": {"relation": "AHEAD_OF_BTC", "delta_days": 3.0},
+        "resolver_name": "breath_curve_live_anchor_offset_search_v1",
+        "resolver_version": "0.1",
+        "resolver_candidate_count": 17,
+        "resolver_rank_basis": [
+            "partial_match_score",
+            "observed_marker_count",
+            "current_marker_ratio",
+            "smaller_abs_phase_offset_days",
+        ],
         "data_coverage": {"coverage_ratio": 1.0, "closed_candle_count": 120},
         "warnings": [],
     }
@@ -263,7 +309,16 @@ def test_profit_plan_json_and_html_use_breath_curve_not_market_breath() -> None:
     assert "MAIN_PULSE_TP_HIGH" in html
 
 
-def test_live_provider_has_no_aplus_dependency() -> None:
-    text = (ROOT / "src" / "market_context" / "breath_curve_live_v1.py").read_text(encoding="utf-8").lower()
-    assert "aplus" not in text
-    assert "raw_text" not in text
+def test_live_provider_imports_no_research_runner_or_aplus_module() -> None:
+    source = (ROOT / "src" / "market_context" / "breath_curve_live_v1.py").read_text(encoding="utf-8")
+    module = ast.parse(source)
+    imported_modules: set[str] = set()
+
+    for node in ast.walk(module):
+        if isinstance(node, ast.Import):
+            imported_modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_modules.add(node.module)
+
+    assert all(not name.startswith("src.research.run_") for name in imported_modules)
+    assert all("aplus" not in name.lower() for name in imported_modules)

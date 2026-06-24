@@ -4,9 +4,25 @@ import argparse
 import csv
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from src.market_context.breath_curve_core_v1 import (
+    Candle,
+    MARKERS,
+    CORE_VERSION,
+    MarkerMatch,
+    MatchResult,
+    find_marker,
+    gt,
+    iso,
+    lt,
+    match,
+    parse_dt,
+    parse_offsets,
+    shape_score,
+)
 
 try:
     from dotenv import load_dotenv
@@ -18,72 +34,7 @@ try:
 except Exception:
     pymysql = None
 
-
-VERSION = "0.1"
-
-MARKERS = [
-    (0.236, "FIRST_LIFT_HIGH", "HIGH"),
-    (0.382, "FIRST_DIP_LOW", "LOW"),
-    (0.500, "SECOND_PEAK_RETEST_HIGH", "HIGH"),
-    (0.618, "SECOND_DIP_HIGHER_LOW", "LOW"),
-    (0.786, "IGNITION_PRE_SPIKE", "HIGH"),
-    (1.000, "MAIN_PULSE_TP_HIGH", "HIGH"),
-    (1.272, "OVERSHOOT_EXTENSION_TP", "HIGH"),
-]
-
-
-@dataclass(frozen=True)
-class Candle:
-    ts: datetime
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-
-
-@dataclass(frozen=True)
-class MarkerMatch:
-    ratio: float
-    code: str
-    kind: str
-    expected_ts_utc: str
-    observed_ts_utc: str | None
-    observed_price: float | None
-    timing_error_hours: float | None
-    timing_score: float
-    matched: bool
-
-
-@dataclass(frozen=True)
-class MatchResult:
-    symbol: str
-    venue: str | None
-    interval_code: str | None
-    anchor_ts_utc: str
-    cycle_days: float
-    phase_offset_days: float
-    tolerance_hours: float
-    template_match_score: float
-    shape_score: float
-    timing_score: float
-    flags: dict[str, bool]
-    markers: list[MarkerMatch]
-
-
-def parse_dt(value: str) -> datetime:
-    value = value.strip().replace("Z", "+00:00")
-    if len(value) == 10:
-        dt = datetime.fromisoformat(value)
-    else:
-        dt = datetime.fromisoformat(value)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
-def iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+VERSION = CORE_VERSION
 
 
 def env_any(*names: str, default: str = "") -> str:
@@ -92,10 +43,6 @@ def env_any(*names: str, default: str = "") -> str:
         if value:
             return value
     return default
-
-
-def parse_offsets(value: str) -> list[float]:
-    return [float(x.strip()) for x in value.split(",") if x.strip()]
 
 
 def db_connect() -> Any:
@@ -179,8 +126,6 @@ def load_db(symbol: str, asset_id: int | None, venue: str, interval_code: str, s
         close_col = choose(cols, ["close", "close_price", "close_close", "c"])
         venue_col = choose(cols, ["venue"], required=False)
         interval_col = choose(cols, ["interval_code", "timeframe"], required=False)
-        volume_col = choose(cols, ["volume_quote_eur", "volume_base", "quote_volume", "volume"], required=False)
-
         aid = asset_id if asset_id is not None else resolve_asset_id(conn, symbol)
 
         where = [f"`{asset_col}` = %s", f"`{ts_col}` >= %s", f"`{ts_col}` <= %s"]
@@ -194,16 +139,13 @@ def load_db(symbol: str, asset_id: int | None, venue: str, interval_code: str, s
             where.append(f"`{interval_col}` = %s")
             params.append(interval_code)
 
-        volume_expr = f"`{volume_col}`" if volume_col else "0"
-
         sql = f"""
             SELECT
                 `{ts_col}` AS ts,
                 `{open_col}` AS open_price,
                 `{high_col}` AS high_price,
                 `{low_col}` AS low_price,
-                `{close_col}` AS close_price,
-                {volume_expr} AS volume_value
+                `{close_col}` AS close_price
             FROM obs_market_candle
             WHERE {' AND '.join(where)}
             ORDER BY `{ts_col}` ASC
@@ -227,7 +169,6 @@ def load_db(symbol: str, asset_id: int | None, venue: str, interval_code: str, s
                 high=float(row["high_price"]),
                 low=float(row["low_price"]),
                 close=float(row["close_price"]),
-                volume=float(row["volume_value"] or 0.0),
             ))
 
         return out
@@ -243,128 +184,14 @@ def load_csv(path: str) -> list[Candle]:
             ts = row.get("open_ts_utc") or row.get("timestamp") or row.get("ts") or row.get("time")
             if not ts:
                 raise RuntimeError("CSV requires open_ts_utc, timestamp, ts, or time.")
-            vol = row.get("volume_quote_eur") or row.get("volume_base") or row.get("volume") or "0"
             out.append(Candle(
                 ts=parse_dt(ts),
                 open=float(row["open"]),
                 high=float(row["high"]),
                 low=float(row["low"]),
                 close=float(row["close"]),
-                volume=float(vol or 0.0),
             ))
     return sorted(out, key=lambda c: c.ts)
-
-
-def find_marker(candles: list[Candle], ratio: float, code: str, kind: str, expected: datetime, tolerance_hours: float) -> MarkerMatch:
-    start = expected - timedelta(hours=tolerance_hours)
-    end = expected + timedelta(hours=tolerance_hours)
-    window = [c for c in candles if start <= c.ts <= end]
-
-    if not window:
-        return MarkerMatch(ratio, code, kind, iso(expected), None, None, None, 0.0, False)
-
-    if kind == "LOW":
-        chosen = min(window, key=lambda c: c.low)
-        observed_price = chosen.low
-    else:
-        chosen = max(window, key=lambda c: c.high)
-        observed_price = chosen.high
-
-    err = abs((chosen.ts - expected).total_seconds()) / 3600.0
-    score = max(0.0, 1.0 - (err / max(tolerance_hours, 1.0)))
-
-    return MarkerMatch(
-        ratio=ratio,
-        code=code,
-        kind=kind,
-        expected_ts_utc=iso(expected),
-        observed_ts_utc=iso(chosen.ts),
-        observed_price=observed_price,
-        timing_error_hours=round(err, 3),
-        timing_score=round(score, 4),
-        matched=True,
-    )
-
-
-def get_price(markers: list[MarkerMatch], code: str) -> float | None:
-    for marker in markers:
-        if marker.code == code and marker.matched:
-            return marker.observed_price
-    return None
-
-
-def gt(a: float | None, b: float | None, tolerance_pct: float = 0.0) -> bool:
-    return a is not None and b is not None and a > b * (1.0 - tolerance_pct)
-
-
-def lt(a: float | None, b: float | None, tolerance_pct: float = 0.0) -> bool:
-    return a is not None and b is not None and a < b * (1.0 + tolerance_pct)
-
-
-def shape_score(candles: list[Candle], anchor: datetime, markers: list[MarkerMatch]) -> tuple[float, dict[str, bool]]:
-    anchor_candles = [c for c in candles if c.ts <= anchor]
-    anchor_price = anchor_candles[-1].close if anchor_candles else candles[0].close
-
-    first_high = get_price(markers, "FIRST_LIFT_HIGH")
-    first_low = get_price(markers, "FIRST_DIP_LOW")
-    second_high = get_price(markers, "SECOND_PEAK_RETEST_HIGH")
-    second_low = get_price(markers, "SECOND_DIP_HIGHER_LOW")
-    ignition = get_price(markers, "IGNITION_PRE_SPIKE")
-    pulse = get_price(markers, "MAIN_PULSE_TP_HIGH")
-    overshoot = get_price(markers, "OVERSHOOT_EXTENSION_TP")
-
-    flags = {
-        "first_lift_above_anchor": gt(first_high, anchor_price),
-        "first_dip_below_first_lift": lt(first_low, first_high),
-        "second_peak_above_first_dip": gt(second_high, first_low),
-        "second_peak_retests_first_lift": gt(second_high, first_high, 0.025),
-        "second_dip_below_second_peak": lt(second_low, second_high),
-        "second_dip_higher_than_first_dip": gt(second_low, first_low),
-        "ignition_above_second_dip": gt(ignition, second_low),
-        "pulse_above_ignition": gt(pulse, ignition),
-        "pulse_above_second_peak": gt(pulse, second_high),
-        "overshoot_above_pulse": gt(overshoot, pulse),
-    }
-
-    core = [
-        "first_lift_above_anchor",
-        "first_dip_below_first_lift",
-        "second_peak_above_first_dip",
-        "second_dip_below_second_peak",
-        "second_dip_higher_than_first_dip",
-        "ignition_above_second_dip",
-        "pulse_above_ignition",
-        "pulse_above_second_peak",
-    ]
-
-    return round(sum(1 for k in core if flags[k]) / len(core), 4), flags
-
-
-def match(candles: list[Candle], symbol: str, venue: str | None, interval_code: str | None, anchor: datetime, cycle_days: float, offset_days: float, tolerance_hours: float) -> MatchResult:
-    markers: list[MarkerMatch] = []
-
-    for ratio, code, kind in MARKERS:
-        expected = anchor + timedelta(days=(cycle_days * ratio) + offset_days)
-        markers.append(find_marker(candles, ratio, code, kind, expected, tolerance_hours))
-
-    s_score, flags = shape_score(candles, anchor, markers)
-    t_score = round(sum(m.timing_score for m in markers) / len(markers), 4)
-    total = round((0.60 * s_score) + (0.40 * t_score), 4)
-
-    return MatchResult(
-        symbol=symbol,
-        venue=venue,
-        interval_code=interval_code,
-        anchor_ts_utc=iso(anchor),
-        cycle_days=cycle_days,
-        phase_offset_days=offset_days,
-        tolerance_hours=tolerance_hours,
-        template_match_score=total,
-        shape_score=s_score,
-        timing_score=t_score,
-        flags=flags,
-        markers=markers,
-    )
 
 
 def print_result(result: MatchResult) -> None:

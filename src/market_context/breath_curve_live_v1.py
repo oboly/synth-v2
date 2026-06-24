@@ -5,9 +5,14 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
-from src.research.breath_curve_template_matcher_v1 import Candle, parse_offsets
-from src.research.run_breath_curve_phase_calibration_v2 import nearest_band
-from src.research.run_breath_curve_template_partial_v1 import PartialResult, partial_match
+from src.market_context.breath_curve_core_v1 import (
+    CORE_VERSION,
+    Candle,
+    PartialResult,
+    nearest_band,
+    parse_offsets,
+    partial_match,
+)
 
 
 STATUS_AVAILABLE = "AVAILABLE"
@@ -29,6 +34,14 @@ DEFAULT_STALE_AFTER = timedelta(hours=48)
 DEFAULT_ANCHOR_SEARCH_DAYS = 56
 DEFAULT_PHASE_BANDS = tuple(parse_offsets("-10.5,-9,-7,-5,-3,0,3,5,7,9,10.5"))
 DEFAULT_PHASE_BAND_WIDTH_DAYS = 1.0
+RESOLVER_NAME = "breath_curve_live_anchor_offset_search_v1"
+RESOLVER_VERSION = CORE_VERSION
+RESOLVER_RANK_BASIS = (
+    "partial_match_score",
+    "observed_marker_count",
+    "current_marker_ratio",
+    "smaller_abs_phase_offset_days",
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +60,12 @@ class BreathCurveResolvedCandidate:
     phase_offset_band: str
     current_marker: dict[str, Any]
     next_marker: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class BreathCurveResolverOutcome:
+    candidate: BreathCurveResolvedCandidate | None
+    candidate_count_considered: int
 
 
 def fmt_ts(ts: datetime | None) -> str | None:
@@ -73,9 +92,9 @@ def _sorted_closed_candles(
     )
 
 
-def _to_research_candles(candles: Sequence[BreathCurveLiveCandle]) -> list[Candle]:
+def _to_market_candles(candles: Sequence[BreathCurveLiveCandle]) -> list[Candle]:
     out: list[Candle] = []
-    for idx, candle in enumerate(candles, start=1):
+    for candle in candles:
         out.append(
             Candle(
                 ts=_as_utc(candle.close_ts_utc),
@@ -83,7 +102,6 @@ def _to_research_candles(candles: Sequence[BreathCurveLiveCandle]) -> list[Candl
                 high=float(candle.high_price),
                 low=float(candle.low_price),
                 close=float(candle.close_price),
-                volume=float(idx),
             )
         )
     return out
@@ -140,16 +158,17 @@ def _resolve_candidate(
     symbol: str,
     candles: Sequence[BreathCurveLiveCandle],
     source_candle_ts_utc: datetime,
-) -> BreathCurveResolvedCandidate | None:
-    research_candles = _to_research_candles(candles)
+) -> BreathCurveResolverOutcome:
+    market_candles = _to_market_candles(candles)
     best_candidate: BreathCurveResolvedCandidate | None = None
     best_rank: tuple[float, int, float, float] | None = None
+    candidate_count_considered = 0
 
     for anchor_ts in _candidate_anchor_ts(candles, source_candle_ts_utc=source_candle_ts_utc):
         per_anchor: list[tuple[float, int, float, float, PartialResult, dict[str, Any], dict[str, Any]]] = []
         for offset_days in DEFAULT_PHASE_BANDS:
             partial = partial_match(
-                candles=research_candles,
+                candles=market_candles,
                 symbol=symbol,
                 venue="live",
                 interval_code="1d",
@@ -164,6 +183,7 @@ def _resolve_candidate(
             current_marker, next_marker = _progression_markers(partial)
             if current_marker is None or next_marker is None:
                 continue
+            candidate_count_considered += 1
             per_anchor.append(
                 (
                     float(partial.partial_match_score),
@@ -199,7 +219,10 @@ def _resolve_candidate(
                 next_marker=next_marker,
             )
 
-    return best_candidate
+    return BreathCurveResolverOutcome(
+        candidate=best_candidate,
+        candidate_count_considered=candidate_count_considered,
+    )
 
 
 def _lead_lag_vs_btc(
@@ -237,6 +260,8 @@ def _build_unavailable_payload(
     data_coverage: dict[str, Any],
     warnings: list[str],
     freshness_label: str,
+    anchor_ts_utc: datetime | None = None,
+    resolver_candidate_count: int = 0,
     availability_state: str = STATUS_UNAVAILABLE,
 ) -> dict[str, Any]:
     return {
@@ -245,6 +270,8 @@ def _build_unavailable_payload(
         "source_candle_ts_utc": fmt_ts(source_candle_ts_utc),
         "freshness_label": freshness_label,
         "phase_marker": None,
+        "anchor_ts_utc": fmt_ts(anchor_ts_utc),
+        "anchor_search_days": DEFAULT_ANCHOR_SEARCH_DAYS,
         "phase_offset_days": None,
         "phase_offset_band": None,
         "template_match_score": None,
@@ -253,6 +280,10 @@ def _build_unavailable_payload(
         "next_target_expected_ts_utc": None,
         "next_target_is_future": False,
         "lead_lag_vs_btc": None,
+        "resolver_name": RESOLVER_NAME,
+        "resolver_version": RESOLVER_VERSION,
+        "resolver_candidate_count": resolver_candidate_count,
+        "resolver_rank_basis": list(RESOLVER_RANK_BASIS),
         "data_coverage": data_coverage,
         "warnings": warnings,
     }
@@ -263,6 +294,7 @@ def _build_available_payload(
     requested_as_of_ts_utc: datetime,
     source_candle_ts_utc: datetime,
     candidate: BreathCurveResolvedCandidate,
+    resolver_candidate_count: int,
     data_coverage: dict[str, Any],
     lead_lag_vs_btc: dict[str, Any] | None,
     warnings: list[str],
@@ -275,6 +307,8 @@ def _build_available_payload(
         "source_candle_ts_utc": fmt_ts(source_candle_ts_utc),
         "freshness_label": FRESHNESS_FRESH,
         "phase_marker": current_code or None,
+        "anchor_ts_utc": fmt_ts(candidate.anchor_ts_utc),
+        "anchor_search_days": DEFAULT_ANCHOR_SEARCH_DAYS,
         "phase_offset_days": round(float(candidate.partial_result.phase_offset_days), 4),
         "phase_offset_band": candidate.phase_offset_band,
         "template_match_score": round(float(candidate.partial_result.partial_match_score), 4),
@@ -283,6 +317,10 @@ def _build_available_payload(
         "next_target_expected_ts_utc": candidate.next_marker.get("expected_ts_utc"),
         "next_target_is_future": True,
         "lead_lag_vs_btc": lead_lag_vs_btc,
+        "resolver_name": RESOLVER_NAME,
+        "resolver_version": RESOLVER_VERSION,
+        "resolver_candidate_count": resolver_candidate_count,
+        "resolver_rank_basis": list(RESOLVER_RANK_BASIS),
         "data_coverage": data_coverage,
         "warnings": warnings,
     }
@@ -309,7 +347,7 @@ def build_breath_curve_live_by_symbol(
         symbol: (_as_utc(closed[-1].close_ts_utc) if closed else None)
         for symbol, closed in closed_by_symbol.items()
     }
-    candidate_by_symbol = {
+    resolver_outcome_by_symbol = {
         symbol: (
             _resolve_candidate(
                 symbol=symbol,
@@ -317,16 +355,20 @@ def build_breath_curve_live_by_symbol(
                 source_candle_ts_utc=source_ts,
             )
             if source_ts is not None and len(closed_by_symbol[symbol]) >= DEFAULT_MIN_REQUIRED_CANDLES
-            else None
+            else BreathCurveResolverOutcome(candidate=None, candidate_count_considered=0)
         )
         for symbol, source_ts in source_ts_by_symbol.items()
     }
-    btc_candidate = candidate_by_symbol.get(btc_symbol)
+    btc_candidate = resolver_outcome_by_symbol.get(btc_symbol).candidate
 
     output: dict[str, dict[str, Any]] = {}
     for symbol in requested_symbols:
         closed = closed_by_symbol.get(symbol, [])
         source_ts = source_ts_by_symbol.get(symbol)
+        resolver_outcome = resolver_outcome_by_symbol.get(symbol) or BreathCurveResolverOutcome(
+            candidate=None,
+            candidate_count_considered=0,
+        )
         coverage = _data_coverage(closed)
         freshness_label, freshness_reason = _freshness_state(
             requested_as_of_ts_utc=requested_as_of,
@@ -342,6 +384,7 @@ def build_breath_curve_live_by_symbol(
                 data_coverage=coverage,
                 warnings=warnings,
                 freshness_label=FRESHNESS_UNAVAILABLE,
+                resolver_candidate_count=resolver_outcome.candidate_count_considered,
             )
             continue
 
@@ -353,6 +396,7 @@ def build_breath_curve_live_by_symbol(
                 data_coverage=coverage,
                 warnings=warnings,
                 freshness_label=FRESHNESS_STALE,
+                resolver_candidate_count=resolver_outcome.candidate_count_considered,
                 availability_state=STATUS_STALE,
             )
             continue
@@ -365,10 +409,11 @@ def build_breath_curve_live_by_symbol(
                 data_coverage=coverage,
                 warnings=warnings,
                 freshness_label=FRESHNESS_UNAVAILABLE,
+                resolver_candidate_count=resolver_outcome.candidate_count_considered,
             )
             continue
 
-        candidate = candidate_by_symbol.get(symbol)
+        candidate = resolver_outcome.candidate
         if candidate is None:
             warnings.append("ANCHOR_NOT_RESOLVED")
             output[symbol] = _build_unavailable_payload(
@@ -377,6 +422,7 @@ def build_breath_curve_live_by_symbol(
                 data_coverage=coverage,
                 warnings=warnings,
                 freshness_label=FRESHNESS_UNAVAILABLE,
+                resolver_candidate_count=resolver_outcome.candidate_count_considered,
             )
             continue
 
@@ -391,6 +437,7 @@ def build_breath_curve_live_by_symbol(
             requested_as_of_ts_utc=requested_as_of,
             source_candle_ts_utc=source_ts,
             candidate=candidate,
+            resolver_candidate_count=resolver_outcome.candidate_count_considered,
             data_coverage=coverage,
             lead_lag_vs_btc=lead_lag_vs_btc,
             warnings=warnings,
