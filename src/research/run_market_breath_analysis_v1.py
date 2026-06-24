@@ -10,22 +10,20 @@ from statistics import median
 from typing import Any
 
 from src.common.db import get_connection
+from src.research.market_breath_classifier_v1 import (
+    DEFAULT_MARKET_BREATH_THRESHOLD_PROFILE_V1,
+    RUNTIME_MARKET_BREATH_PHASES_V1,
+    RUNTIME_MARKET_BREATH_STATES_V1,
+    classify_market_breath_phase_state_v1,
+)
 
 
 REPORT_NAME = "market_breath_analysis_v1"
 VERSION = "0.1"
 
-PHASES = [
-    "INHALE_ACCUMULATION",
-    "HOLD_COMPRESSION",
-    "EXHALE_EXPANSION",
-    "OVERBREATH_EXTENSION",
-    "COLLAPSE_RESET",
-    "NEUTRAL_TRANSITION",
-    "INSUFFICIENT_DATA",
-]
-
-STATES = ["EARLY", "FORMING", "CONFIRMED", "LATE", "RESET", "UNKNOWN"]
+PHASES = list(RUNTIME_MARKET_BREATH_PHASES_V1)
+HISTORICAL_STATES = ("EARLY", *RUNTIME_MARKET_BREATH_STATES_V1)
+STATES = list(HISTORICAL_STATES)
 
 INTERVAL_SECONDS = {
     "1h": 60 * 60,
@@ -285,20 +283,14 @@ def phase_and_state(
     reversal_pressure: float,
     relative_strength: float,
 ) -> tuple[str, str]:
-    if momentum < -25.0 and reversal_pressure >= 45.0:
-        return "COLLAPSE_RESET", "RESET"
-    if expansion >= 65.0 and momentum >= 55.0 and reversal_pressure >= 45.0:
-        return "OVERBREATH_EXTENSION", "LATE"
-    if expansion >= 55.0 and momentum > 20.0 and relative_strength > 0.0:
-        state = "CONFIRMED" if expansion >= 70.0 and momentum >= 35.0 else "FORMING"
-        return "EXHALE_EXPANSION", state
-    if compression >= 60.0 and expansion < 35.0 and abs(momentum) <= 20.0:
-        state = "CONFIRMED" if compression >= 75.0 else "FORMING"
-        return "HOLD_COMPRESSION", state
-    if compression >= 45.0 and 5.0 <= momentum <= 35.0 and relative_strength > 0.0:
-        state = "FORMING" if momentum < 20.0 else "CONFIRMED"
-        return "INHALE_ACCUMULATION", state
-    return "NEUTRAL_TRANSITION", "UNKNOWN"
+    return classify_market_breath_phase_state_v1(
+        compression=compression,
+        expansion=expansion,
+        momentum=momentum,
+        reversal_pressure=reversal_pressure,
+        relative_strength=relative_strength,
+        profile=DEFAULT_MARKET_BREATH_THRESHOLD_PROFILE_V1,
+    )
 
 
 def breath_score(
