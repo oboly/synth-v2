@@ -8,6 +8,8 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
+from src.market_context.breath_curve_core_v1 import nearest_band
+
 
 REPORT_NAME = "breath_curve_phase_calibration_v2"
 VERSION = "0.1"
@@ -71,19 +73,6 @@ def print_table(headers: list[str], rows: list[list[str]]) -> None:
 def load_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
-
-
-def nearest_band(offset: float | None, bands: list[float], width: float) -> str:
-    if offset is None:
-        return "UNCLEAR"
-
-    best = min(bands, key=lambda band: abs(offset - band))
-    distance = abs(offset - best)
-
-    if distance <= width:
-        return f"{best:+g}"
-
-    return "DRIFT"
 
 
 def distance_bucket(distance: float | None) -> str:

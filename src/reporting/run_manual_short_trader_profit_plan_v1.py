@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from src.common.db import get_connection
+from src.market_context.breath_curve_live_v1 import (
+    BTC_SYMBOL,
+    BreathCurveLiveCandle,
+    build_breath_curve_live_by_symbol,
+)
 from src.market_context.market_context_builder_v1 import (
     MarketContextCandle,
     build_market_context_by_symbol,
@@ -35,7 +40,6 @@ from src.reporting.account_scoped_short_trader_dashboard_v1 import (
 )
 from src.reporting.account_dashboard_profile_access_v1 import resolve_dashboard_profile_access
 from src.reporting.dashboard_style_v1 import cockpit_nav
-from src.reporting.market_breath_live_v1 import build_market_breath_live_by_symbol
 from src.reporting.manual_short_trader_dashboard_v1 import (
     BrokerOrderRow,
     LadderOrderRow,
@@ -88,6 +92,8 @@ REPORT_VERSION = "0.2"
 TARGET_HISTORY_INTERVAL = "1h"
 _MARKET_CONTEXT_INTERVAL = "4h"
 _MARKET_CONTEXT_LOOKBACK_DAYS = 90
+_BREATH_CURVE_INTERVAL = "1d"
+_BREATH_CURVE_LOOKBACK_DAYS = 140
 _DEFAULT_NATIVE_SHORT_CONTEXT_UNION_RELATIVE = Path(
     "_runtime/native_short_context_union_v1/native_short_fib_context_rows_v1.csv"
 )
@@ -881,6 +887,71 @@ def _fetch_market_context_candles_by_symbol(
         conn.close()
 
 
+def _fetch_breath_curve_candles_by_symbol(
+    *,
+    venue: str,
+    symbols: list[str],
+    now_utc: datetime,
+) -> dict[str, list[BreathCurveLiveCandle]]:
+    if not symbols:
+        return {}
+    scoped_symbols = sorted(set([*symbols, BTC_SYMBOL]))
+    since_utc = now_utc - timedelta(days=_BREATH_CURVE_LOOKBACK_DAYS)
+    conn = get_connection()
+    try:
+        out: dict[str, list[BreathCurveLiveCandle]] = {symbol: [] for symbol in scoped_symbols}
+        with conn.cursor() as cur:
+            placeholders = ",".join(["%s"] * len(scoped_symbols))
+            cur.execute(
+                f"""
+                SELECT
+                    a.symbol,
+                    c.close_ts_utc,
+                    c.open_price,
+                    c.high_price,
+                    c.low_price,
+                    c.close_price
+                FROM obs_market_candle c
+                JOIN asset a
+                  ON a.asset_id = c.asset_id
+                WHERE c.venue = %s
+                  AND c.interval_code = %s
+                  AND a.symbol IN ({placeholders})
+                  AND c.close_ts_utc >= %s
+                  AND c.close_ts_utc <= %s
+                ORDER BY a.symbol ASC, c.close_ts_utc ASC
+                """,
+                (venue, _BREATH_CURVE_INTERVAL, *scoped_symbols, since_utc, now_utc),
+            )
+            rows = list(cur.fetchall())
+        for row in rows:
+            symbol = str(row.get("symbol") or "").upper()
+            if symbol not in out:
+                continue
+            close_ts = row.get("close_ts_utc")
+            if close_ts is None:
+                continue
+            close_ts_utc = close_ts.replace(tzinfo=UTC) if close_ts.tzinfo is None else close_ts.astimezone(UTC)
+            open_price = _parse_decimal(row.get("open_price"))
+            high_price = _parse_decimal(row.get("high_price"))
+            low_price = _parse_decimal(row.get("low_price"))
+            close_price = _parse_decimal(row.get("close_price"))
+            if open_price is None or high_price is None or low_price is None or close_price is None:
+                continue
+            out[symbol].append(
+                BreathCurveLiveCandle(
+                    close_ts_utc=close_ts_utc,
+                    open_price=open_price,
+                    high_price=high_price,
+                    low_price=low_price,
+                    close_price=close_price,
+                )
+            )
+        return out
+    finally:
+        conn.close()
+
+
 def _derive_presentation_mode(
     market: str,
     reasons: frozenset[str],
@@ -925,7 +996,7 @@ def build_cards(
     now_utc: datetime | None = None,
     inclusion_reasons_by_market: Mapping[str, frozenset[str]] | None = None,
     account_plan_policy_by_market: Mapping[str, AccountPlanPolicy] | None = None,
-    market_breath_by_symbol: Mapping[str, dict[str, Any]] | None = None,
+    breath_curve_by_symbol: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[ProfitPlanCard]:
     _prior = prior_map_meta_by_symbol or {}
     _now = now_utc or datetime.now(UTC)
@@ -976,7 +1047,7 @@ def build_cards(
                     reasons=(inclusion_reasons_by_market or {}).get(market, frozenset()),
                     account_plan_policy=(account_plan_policy_by_market or {}).get(market),
                 ),
-                market_breath_live=(market_breath_by_symbol or {}).get(symbol),
+                breath_curve=(breath_curve_by_symbol or {}).get(symbol),
             )
         )
     return cards
@@ -1116,15 +1187,16 @@ def main() -> int:
         candles_by_symbol=_mc_candles,
         now_utc=now_utc,
     )
-    _market_breath_conn = get_connection()
-    try:
-        market_breath_by_symbol = build_market_breath_live_by_symbol(
-            _market_breath_conn,
-            venue=args.venue,
-            symbols=_mc_symbols,
-        )
-    finally:
-        _market_breath_conn.close()
+    _breath_curve_candles = _fetch_breath_curve_candles_by_symbol(
+        venue=args.venue,
+        symbols=_mc_symbols,
+        now_utc=now_utc,
+    )
+    breath_curve_by_symbol = build_breath_curve_live_by_symbol(
+        candles_by_symbol=_breath_curve_candles,
+        as_of_ts_utc=now_utc,
+        symbols=_mc_symbols,
+    )
     monitor_link = args.monitor_href or public_page_href(
         profile=args.account_profile,
         page_stem="open-orders-monitor",
@@ -1144,7 +1216,7 @@ def main() -> int:
         prior_map_meta_by_symbol=zone_contexts.prior_map_meta_by_symbol,
         inclusion_reasons_by_market=context.market_inclusion_reasons_by_market,
         account_plan_policy_by_market=context.account_plan_policy_by_market,
-        market_breath_by_symbol=market_breath_by_symbol,
+        breath_curve_by_symbol=breath_curve_by_symbol,
     )
 
     # Load market tick rules from DB and apply price normalization to all cards.

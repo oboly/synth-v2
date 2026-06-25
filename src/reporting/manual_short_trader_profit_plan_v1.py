@@ -294,7 +294,7 @@ class ProfitPlanCard:
     presentation_mode: str = CARD_MODE_MARKET_SELECTED
     fib_nav_context: FibNavContext | None = None
     render_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    market_breath_live: dict[str, Any] | None = None
+    breath_curve: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -358,65 +358,117 @@ def _fmt_pct_number(v: Any) -> str:
         return "—"
 
 
-def _market_breath_availability(payload: dict[str, Any] | None) -> str:
+def _breath_curve_availability(payload: dict[str, Any] | None) -> str:
     return str((payload or {}).get("availability_state") or "UNAVAILABLE").upper()
 
 
-def _market_breath_phase_text(payload: dict[str, Any] | None) -> str:
-    availability = _market_breath_availability(payload)
+def _breath_curve_phase_marker_text(payload: dict[str, Any] | None) -> str:
+    availability = _breath_curve_availability(payload)
     if availability != "AVAILABLE":
         return availability
-    return str((payload or {}).get("market_breath_phase") or "UNAVAILABLE").upper()
+    return str((payload or {}).get("phase_marker") or "UNAVAILABLE").upper()
 
 
-def _market_breath_state_text(payload: dict[str, Any] | None) -> str:
-    availability = _market_breath_availability(payload)
+def _breath_curve_offset_band_text(payload: dict[str, Any] | None) -> str:
+    availability = _breath_curve_availability(payload)
     if availability != "AVAILABLE":
         return "—"
-    return str((payload or {}).get("market_breath_state") or "—").upper()
+    return str((payload or {}).get("phase_offset_band") or "—").upper()
 
 
-def _market_breath_confidence_text(payload: dict[str, Any] | None) -> str:
-    availability = _market_breath_availability(payload)
+def _breath_curve_match_score_text(payload: dict[str, Any] | None) -> str:
+    availability = _breath_curve_availability(payload)
     if availability != "AVAILABLE":
         return "—"
-    return _fmt_pct_number((payload or {}).get("market_breath_confidence"))
+    score = (payload or {}).get("template_match_score")
+    try:
+        return _fmt_pct_number(float(score) * 100.0)
+    except (TypeError, ValueError):
+        return "—"
 
 
-def _market_breath_freshness_text(payload: dict[str, Any] | None) -> str:
-    label = str((payload or {}).get("freshness_label") or "UNAVAILABLE").upper()
-    reason = str((payload or {}).get("freshness_reason") or "").strip()
-    if not reason:
-        return label
-    return f"{label} · {reason}"
+def _breath_curve_data_coverage_text(payload: dict[str, Any] | None) -> str:
+    coverage = (payload or {}).get("data_coverage") or {}
+    ratio = coverage.get("coverage_ratio")
+    count = coverage.get("closed_candle_count")
+    if ratio is None and count is None:
+        return "—"
+    ratio_text = _fmt_pct_number(float(ratio) * 100.0) if ratio is not None else "—"
+    count_text = f"{count} candles" if count is not None else "unknown candles"
+    return f"{ratio_text} · {count_text}"
 
 
-def _market_breath_compact_summary(payload: dict[str, Any] | None) -> str:
-    availability = _market_breath_availability(payload)
+def _breath_curve_freshness_text(payload: dict[str, Any] | None) -> str:
+    return str((payload or {}).get("freshness_label") or "UNAVAILABLE").upper()
+
+
+def _breath_curve_current_checkpoint_text(payload: dict[str, Any] | None) -> str:
+    availability = _breath_curve_availability(payload)
     if availability != "AVAILABLE":
         return availability.replace("_", " ")
-    phase = _market_breath_phase_text(payload)
-    state = _market_breath_state_text(payload)
-    return f"{phase} · {state}"
+    return str((payload or {}).get("current_checkpoint") or "UNAVAILABLE").upper()
 
 
-def _market_breath_detail_html(payload: dict[str, Any] | None) -> str:
+def _breath_curve_next_checkpoint_text(payload: dict[str, Any] | None) -> str:
+    availability = _breath_curve_availability(payload)
+    if availability != "AVAILABLE":
+        return "—"
+    return str((payload or {}).get("next_checkpoint") or "—").upper()
+
+
+def _breath_curve_next_timing_text(payload: dict[str, Any] | None) -> str:
+    availability = _breath_curve_availability(payload)
+    if availability != "AVAILABLE":
+        return "—"
+    next_ts = str((payload or {}).get("next_target_expected_ts_utc") or "").strip()
+    if not next_ts:
+        return "—"
+    return next_ts
+
+
+def _breath_curve_btc_relation_text(payload: dict[str, Any] | None) -> str:
+    relation = (payload or {}).get("lead_lag_vs_btc")
+    if not relation:
+        return "UNAVAILABLE"
+    rel = str(relation.get("relation") or "UNAVAILABLE").upper()
+    delta_days = relation.get("delta_days")
+    if delta_days is None:
+        return rel
+    try:
+        return f"{rel} ({float(delta_days):+.1f}d)"
+    except (TypeError, ValueError):
+        return rel
+
+
+def _breath_curve_compact_summary(payload: dict[str, Any] | None) -> str:
+    availability = _breath_curve_availability(payload)
+    if availability != "AVAILABLE":
+        return availability.replace("_", " ")
+    return (
+        f"{_breath_curve_current_checkpoint_text(payload)}"
+        f" · {_breath_curve_offset_band_text(payload)}"
+    )
+
+
+def _breath_curve_detail_html(payload: dict[str, Any] | None) -> str:
     payload = payload or {}
-    trajectory = str(payload.get("trajectory_label") or "TRANSITION_UNCLEAR").upper()
     source_ts = str(payload.get("source_candle_ts_utc") or "—")
     warnings = payload.get("warnings") or []
     warnings_text = " · ".join(str(v) for v in warnings if v) or "none"
     blocks = (
-        _metric_block("Phase", _market_breath_phase_text(payload)),
-        _metric_block("State / maturity", _market_breath_state_text(payload)),
-        _metric_block("Confidence", _market_breath_confidence_text(payload)),
-        _metric_block("Trajectory", trajectory),
+        _metric_block("Current checkpoint", _breath_curve_current_checkpoint_text(payload)),
+        _metric_block("Offset band", _breath_curve_offset_band_text(payload)),
+        _metric_block("Match quality", _breath_curve_match_score_text(payload)),
+        _metric_block("Next checkpoint", _breath_curve_next_checkpoint_text(payload)),
+        _metric_block("Expected timing", _breath_curve_next_timing_text(payload)),
+        _metric_block("BTC relation", _breath_curve_btc_relation_text(payload)),
         _metric_block("Source candle", source_ts),
-        _metric_block("Freshness", _market_breath_freshness_text(payload)),
+        _metric_block("Freshness", _breath_curve_freshness_text(payload)),
+        _metric_block("Data coverage", _breath_curve_data_coverage_text(payload)),
     )
     return (
-        "<div class='market-breath-section'>"
-        "<div class='market-breath-header'>Market Breath</div>"
+        "<div class='market-breath-section breath-curve-section'>"
+        "<div class='market-breath-header'>Breath Curve</div>"
         f"<div class='market-breath-grid'>{''.join(blocks)}</div>"
         f"<div class='market-breath-note muted small'>Warnings: {esc(warnings_text)}. Context only, not forecast or execution advice.</div>"
         "</div>"
@@ -520,8 +572,9 @@ def build_card_search_text(card: ProfitPlanCard) -> str:
         card.short_context_input_status,
         card.short_context_coverage_status,
         card.short_context_display_state,
-        _market_breath_phase_text(card.market_breath_live),
-        str((card.market_breath_live or {}).get("trajectory_label") or ""),
+        _breath_curve_phase_marker_text(card.breath_curve),
+        _breath_curve_current_checkpoint_text(card.breath_curve),
+        str((card.breath_curve or {}).get("phase_offset_band") or ""),
     )
     tokens: list[str] = []
     for part in parts:
@@ -1517,7 +1570,7 @@ def _short_context_gap_card(
     history_high_since_activation: Decimal | None,
     history_low_since_activation: Decimal | None,
     presentation_mode: str = CARD_MODE_MARKET_SELECTED,
-    market_breath_live: dict[str, Any] | None = None,
+    breath_curve: dict[str, Any] | None = None,
 ) -> ProfitPlanCard:
     order_summary = build_order_summary(
         current_price,
@@ -1581,7 +1634,7 @@ def _short_context_gap_card(
         relevance_reasons=("MINIMAL_CONTEXT",),
         is_relevant=True,
         presentation_mode=presentation_mode,
-        market_breath_live=market_breath_live,
+        breath_curve=breath_curve,
     )
 
 
@@ -1965,7 +2018,7 @@ def build_profit_plan_card(
     current_price_age_min: Decimal | None = None,
     fib_nav_context: FibNavContext | None = None,
     presentation_mode: str = CARD_MODE_MARKET_SELECTED,
-    market_breath_live: dict[str, Any] | None = None,
+    breath_curve: dict[str, Any] | None = None,
 ) -> ProfitPlanCard:
     if current_price_status == "STALE_CURRENT_PRICE":
         order_summary = build_order_summary(
@@ -2017,7 +2070,7 @@ def build_profit_plan_card(
             relevance_reasons=(),
             is_relevant=False,
             presentation_mode=presentation_mode,
-            market_breath_live=market_breath_live,
+            breath_curve=breath_curve,
         )
     if (
         fib_ext is None
@@ -2042,7 +2095,7 @@ def build_profit_plan_card(
             history_high_since_activation=history_high_since_activation,
             history_low_since_activation=history_low_since_activation,
             presentation_mode=presentation_mode,
-            market_breath_live=market_breath_live,
+            breath_curve=breath_curve,
         )
     (
         scenario_type,
@@ -2246,7 +2299,7 @@ def build_profit_plan_card(
         is_relevant=is_relevant,
         fib_nav_context=fib_nav_context,
         presentation_mode=presentation_mode,
-        market_breath_live=market_breath_live,
+        breath_curve=breath_curve,
     )
 
 
@@ -2700,8 +2753,8 @@ def _build_client_js(storage_scope: str) -> str:
       var action = card.dataset.filterActionLabel || card.dataset.filterAction || '';
       var ppp = card.dataset.sortPpp && card.dataset.sortPpp !== '-999999'
         ? card.dataset.sortPpp + '%' : '';
-      var breath = card.dataset.mbPhase || 'UNAVAILABLE';
-      var trajectory = card.dataset.mbTrajectory || 'TRANSITION_UNCLEAR';
+      var breath = card.dataset.bcCurrentCheckpoint || 'UNAVAILABLE';
+      var trajectory = card.dataset.bcNextCheckpoint || 'UNAVAILABLE';
       item.innerHTML =
         "<div class='pp-selector-symbol'>" + symbol + "</div>" +
         "<div class='pp-selector-meta'>" + action + (ppp ? ' \xb7 ' + ppp : '') + "</div>" +
@@ -2721,13 +2774,15 @@ def _build_client_js(storage_scope: str) -> str:
     var setup = card.dataset.filterSetup || '—';
     var ppp = card.dataset.sortPpp && card.dataset.sortPpp !== '-999999'
       ? card.dataset.sortPpp + '%' : '—';
-    var mbAvailability = card.dataset.mbAvailability || 'UNAVAILABLE';
-    var mbPhase = card.dataset.mbPhase || 'UNAVAILABLE';
-    var mbState = card.dataset.mbState || '—';
-    var mbConfidence = card.dataset.mbConfidence || '—';
-    var mbTrajectory = card.dataset.mbTrajectory || 'TRANSITION_UNCLEAR';
-    var mbSourceTs = card.dataset.mbSourceTs || '—';
-    var mbFreshness = card.dataset.mbFreshness || 'UNAVAILABLE';
+    var bcAvailability = card.dataset.bcAvailability || 'UNAVAILABLE';
+    var bcCurrent = card.dataset.bcCurrentCheckpoint || 'UNAVAILABLE';
+    var bcBand = card.dataset.bcOffsetBand || '—';
+    var bcNext = card.dataset.bcNextCheckpoint || '—';
+    var bcTiming = card.dataset.bcNextTiming || '—';
+    var bcRelation = card.dataset.bcBtcRelation || 'UNAVAILABLE';
+    var bcMatch = card.dataset.bcMatchQuality || '—';
+    var bcSourceTs = card.dataset.bcSourceTs || '—';
+    var bcFreshness = card.dataset.bcFreshness || 'UNAVAILABLE';
     var marketEl = card.querySelector('.card-row1 .muted.small');
     var market = marketEl ? marketEl.textContent.trim() : '';
     panel.innerHTML =
@@ -2736,13 +2791,15 @@ def _build_client_js(storage_scope: str) -> str:
       "<div style='margin-bottom:6px'><span class='muted small'>Action: </span>" + action + "</div>" +
       "<div style='margin-bottom:6px'><span class='muted small'>Setup: </span>" + setup + "</div>" +
       "<div style='margin-bottom:14px'><span class='muted small'>PPP: </span>" + ppp + "</div>" +
-      "<h3>Market Breath</h3>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Availability: </span>" + mbAvailability + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Phase: </span>" + mbPhase + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>State: </span>" + mbState + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Confidence: </span>" + mbConfidence + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Trajectory: </span>" + mbTrajectory + "</div>" +
-      "<div style='margin-bottom:12px'><span class='muted small'>Source / freshness: </span>" + mbSourceTs + " \xb7 " + mbFreshness + "</div>" +
+      "<h3>Breath Curve</h3>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Availability: </span>" + bcAvailability + "</div>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Current checkpoint: </span>" + bcCurrent + "</div>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Offset band: </span>" + bcBand + "</div>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Next checkpoint: </span>" + bcNext + "</div>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Expected timing: </span>" + bcTiming + "</div>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>BTC relation: </span>" + bcRelation + "</div>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Match quality: </span>" + bcMatch + "</div>" +
+      "<div style='margin-bottom:12px'><span class='muted small'>Source / freshness: </span>" + bcSourceTs + " \xb7 " + bcFreshness + "</div>" +
       "<h3>Wallet</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
       "<h3>Position</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
       "<h3>Orders</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
@@ -3245,7 +3302,7 @@ def render_plan_card(
 ) -> str:
     quote = card.market.split("-")[-1] if "-" in card.market else ""
     search_text = build_card_search_text(card)
-    market_breath_payload = card.market_breath_live or {}
+    breath_curve_payload = card.breath_curve or {}
 
     # Quality aggregation (replaces separate FRESH_CURRENT_PRICE / NATIVE_SHORT display)
     quality_state, quality_reason = _card_quality_state(card)
@@ -3259,7 +3316,7 @@ def render_plan_card(
 
     # Merged value + distance fields
     price_line = format_current_price_line(card.current_price, card.current_price_age_min, quote)
-    market_breath_section_html = _market_breath_detail_html(market_breath_payload)
+    breath_curve_section_html = _breath_curve_detail_html(breath_curve_payload)
     reentry_label, target_label, order_ladder_label, open_orders_label, reentry_line, target_line = (
         _actionability_display_bundle(card)
     )
@@ -3271,8 +3328,8 @@ def render_plan_card(
         _metric_block("Current price", price_line),
         _metric_block("Setup", card.setup_state),
         _metric_block("Actionability", card.actionability_state),
-        _metric_block("Market Breath", _market_breath_compact_summary(market_breath_payload)),
-        _metric_block("Trajectory", str(market_breath_payload.get("trajectory_label") or "TRANSITION_UNCLEAR").upper()),
+        _metric_block("Breath Curve", _breath_curve_compact_summary(breath_curve_payload)),
+        _metric_block("Next checkpoint", _breath_curve_next_checkpoint_text(breath_curve_payload)),
     ]
     if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
         metrics_blocks.append(_metric_block("Market event", event_label))
@@ -3393,13 +3450,16 @@ def render_plan_card(
         f" data-sort-setup='{esc(setup_sort_value)}'"
         f" data-sort-ppp='{esc(ppp_sort_value)}'"
         f" data-sort-symbol='{esc(card.symbol.lower())}'"
-        f" data-mb-availability='{esc(_market_breath_availability(market_breath_payload))}'"
-        f" data-mb-phase='{esc(_market_breath_phase_text(market_breath_payload))}'"
-        f" data-mb-state='{esc(_market_breath_state_text(market_breath_payload))}'"
-        f" data-mb-confidence='{esc(_market_breath_confidence_text(market_breath_payload))}'"
-        f" data-mb-trajectory='{esc(str(market_breath_payload.get('trajectory_label') or 'TRANSITION_UNCLEAR').upper())}'"
-        f" data-mb-source-ts='{esc(str(market_breath_payload.get('source_candle_ts_utc') or '—'))}'"
-        f" data-mb-freshness='{esc(_market_breath_freshness_text(market_breath_payload))}'"
+        f" data-bc-availability='{esc(_breath_curve_availability(breath_curve_payload))}'"
+        f" data-bc-phase-marker='{esc(_breath_curve_phase_marker_text(breath_curve_payload))}'"
+        f" data-bc-offset-band='{esc(_breath_curve_offset_band_text(breath_curve_payload))}'"
+        f" data-bc-match-quality='{esc(_breath_curve_match_score_text(breath_curve_payload))}'"
+        f" data-bc-current-checkpoint='{esc(_breath_curve_current_checkpoint_text(breath_curve_payload))}'"
+        f" data-bc-next-checkpoint='{esc(_breath_curve_next_checkpoint_text(breath_curve_payload))}'"
+        f" data-bc-next-timing='{esc(_breath_curve_next_timing_text(breath_curve_payload))}'"
+        f" data-bc-btc-relation='{esc(_breath_curve_btc_relation_text(breath_curve_payload))}'"
+        f" data-bc-source-ts='{esc(str(breath_curve_payload.get('source_candle_ts_utc') or '—'))}'"
+        f" data-bc-freshness='{esc(_breath_curve_freshness_text(breath_curve_payload))}'"
         f" data-render-id='{esc(card.render_id)}'>"
         "<div class='card-head'>"
         "<div class='card-head-left'>"
@@ -3422,7 +3482,7 @@ def render_plan_card(
         f"</div>"
         "</div>"
         f"<div class='field-grid'>{metrics_html}</div>"
-        f"{market_breath_section_html}"
+        f"{breath_curve_section_html}"
         f"{order_section_html}"
         f"<ul class='reasons'>{reasons_html}</ul>"
         f"{open_orders_html}"
@@ -3791,7 +3851,7 @@ def build_json_snapshot(
                     "nav_buy_levels": [str(p) for p in c.fib_nav_context.nav_buy_levels],
                     "nav_invalidation": str(c.fib_nav_context.nav_invalidation) if c.fib_nav_context.nav_invalidation is not None else None,
                 } if c.fib_nav_context is not None else None,
-                "market_breath": c.market_breath_live,
+                "breath_curve": c.breath_curve,
                 "market_context": (market_context_by_symbol or {}).get(c.symbol),
             }
             for c in cards
