@@ -10,8 +10,6 @@ from src.market_context.breath_curve_core_v1 import Candle as CoreCandle
 from src.market_context.breath_curve_live_v1 import (
     STATUS_UNAVAILABLE,
     BreathCurveLiveCandle,
-    BreathCurveResolvedCandidate,
-    BreathCurveResolverOutcome,
     build_breath_curve_live_by_symbol,
 )
 from src.market_context.breath_curve_core_v1 import PartialResult
@@ -107,20 +105,62 @@ def _enough_candles(count: int = 40) -> list[BreathCurveLiveCandle]:
     return [_daily_candle(day) for day in range(count)]
 
 
-def _candidate(offset_days: float, *, current_code: str, next_code: str) -> BreathCurveResolvedCandidate:
-    partial = PartialResult(
+
+def test_same_as_of_input_is_deterministic() -> None:
+    as_of = datetime(2026, 5, 10, tzinfo=UTC)
+    candles = _enough_candles()
+
+    first = build_breath_curve_live_by_symbol(
+        candles_by_symbol={"ETH": candles, "BTC": candles},
+        as_of_ts_utc=as_of,
+        symbols=["ETH"],
+    )
+    second = build_breath_curve_live_by_symbol(
+        candles_by_symbol={"ETH": candles, "BTC": candles},
+        as_of_ts_utc=as_of,
+        symbols=["ETH"],
+    )
+
+    assert first == second
+
+
+
+def test_unavailable_anchor_or_data_is_honest() -> None:
+    payload = build_breath_curve_live_by_symbol(
+        candles_by_symbol={"ETH": _enough_candles(10)},
+        as_of_ts_utc=datetime(2026, 5, 10, tzinfo=UTC),
+        symbols=["ETH"],
+    )["ETH"]
+
+    assert payload["availability_state"] == STATUS_UNAVAILABLE
+    assert payload["phase_marker"] is None
+    assert payload["current_checkpoint"] is None
+    assert payload["resolver_name"] == "fixed_global_epoch_v1"
+    assert payload["anchor_source"] == "fixed_global_epoch_v1"
+    assert payload["anchor_ts_utc"] == "2026-05-03T00:00:00Z"
+    assert payload["epoch_index"] == 5
+    assert payload["warnings"] == ["INSUFFICIENT_CLOSED_DAILY_CANDLES"]
+
+
+def _fake_pr(
+    offset_days: float = -7.0,
+    current_code: str = "IGNITION_PRE_SPIKE",
+    next_code: str = "MAIN_PULSE_TP_HIGH",
+    score: float = 0.82,
+) -> PartialResult:
+    return PartialResult(
         symbol="ETH",
         venue="live",
         interval_code="1d",
-        anchor_ts_utc="2026-05-01T00:00:00Z",
+        anchor_ts_utc="2026-05-24T00:00:00Z",
         as_of_ts_utc="2026-06-09T00:00:00Z",
         cycle_days=21.0,
         phase_offset_days=offset_days,
         tolerance_hours=36.0,
         required_ratio=None,
-        partial_match_score=0.82,
-        partial_shape_score=0.88,
-        partial_timing_score=0.79,
+        partial_match_score=score,
+        partial_shape_score=score,
+        partial_timing_score=score,
         marker_coverage_score=1.0,
         observed_marker_count=5,
         due_marker_count=5,
@@ -155,156 +195,130 @@ def _candidate(offset_days: float, *, current_code: str, next_code: str) -> Brea
         ],
         notes=[],
     )
-    return BreathCurveResolvedCandidate(
-        anchor_ts_utc=datetime(2026, 5, 1, tzinfo=UTC),
-        partial_result=partial,
-        phase_offset_band="-7",
-        current_marker=partial.markers[0],
-        next_marker=partial.markers[1],
-    )
 
 
-def test_no_future_candle_is_used() -> None:
+def test_no_future_candle_changes_payload(monkeypatch) -> None:
     as_of = datetime(2026, 6, 9, tzinfo=UTC)
-    candles = _enough_candles(45)
+    candles = _enough_candles(40)
     with_future = [*candles, _daily_candle(60, close_price="9.99")]
 
-    seen_latest_source_ts: list[str] = []
-    candidate = _candidate(-7.0, current_code="IGNITION_PRE_SPIKE", next_code="MAIN_PULSE_TP_HIGH")
+    seen_candle_counts: list[int] = []
 
-    def _resolve_candidate(**kwargs):
-        seen_latest_source_ts.append(kwargs["candles"][-1].close_ts_utc.isoformat())
-        return BreathCurveResolverOutcome(candidate=candidate, candidate_count_considered=17)
+    def _fake_select(candles, symbol, anchor, as_of):
+        seen_candle_counts.append(len(candles))
+        return None
 
-    from src.market_context import breath_curve_live_v1 as module
+    monkeypatch.setattr("src.market_context.breath_curve_live_v1._select_offset", _fake_select)
 
-    original = module._resolve_candidate
-    module._resolve_candidate = _resolve_candidate
-    try:
-        base = build_breath_curve_live_by_symbol(
-            candles_by_symbol={"ETH": candles, "BTC": candles},
-            as_of_ts_utc=as_of,
-            symbols=["ETH"],
-        )
-        future = build_breath_curve_live_by_symbol(
-            candles_by_symbol={"ETH": with_future, "BTC": with_future},
-            as_of_ts_utc=as_of,
-            symbols=["ETH"],
-        )
-    finally:
-        module._resolve_candidate = original
+    base = build_breath_curve_live_by_symbol(
+        candles_by_symbol={"ETH": candles, "BTC": candles},
+        as_of_ts_utc=as_of,
+        symbols=["ETH"],
+    )
+    with_future_result = build_breath_curve_live_by_symbol(
+        candles_by_symbol={"ETH": with_future, "BTC": with_future},
+        as_of_ts_utc=as_of,
+        symbols=["ETH"],
+    )
 
-    assert base == future
-    assert base["ETH"]["availability_state"] == "AVAILABLE"
+    assert base == with_future_result
     assert base["ETH"]["source_candle_ts_utc"] == "2026-06-09T00:00:00Z"
-    assert base["ETH"]["anchor_ts_utc"] == "2026-05-01T00:00:00Z"
-    assert all(value == "2026-06-09T00:00:00+00:00" for value in seen_latest_source_ts)
+    assert all(count == 40 for count in seen_candle_counts)
 
 
-def test_same_as_of_input_is_deterministic() -> None:
-    as_of = datetime(2026, 5, 10, tzinfo=UTC)
-    candles = _enough_candles()
-
-    first = build_breath_curve_live_by_symbol(
-        candles_by_symbol={"ETH": candles, "BTC": candles},
-        as_of_ts_utc=as_of,
-        symbols=["ETH"],
-    )
-    second = build_breath_curve_live_by_symbol(
-        candles_by_symbol={"ETH": candles, "BTC": candles},
-        as_of_ts_utc=as_of,
-        symbols=["ETH"],
-    )
-
-    assert first == second
-
-
-def test_phase_offset_and_next_target_come_from_matcher_progression(monkeypatch) -> None:
-    candidate = _candidate(-7.0, current_code="IGNITION_PRE_SPIKE", next_code="MAIN_PULSE_TP_HIGH")
-    candles = _enough_candles()
+def test_available_payload_fields_when_offset_resolved(monkeypatch) -> None:
+    as_of = datetime(2026, 6, 9, tzinfo=UTC)
+    candles = _enough_candles(40)
+    pr = _fake_pr(-7.0, current_code="IGNITION_PRE_SPIKE", next_code="MAIN_PULSE_TP_HIGH")
 
     monkeypatch.setattr(
-        "src.market_context.breath_curve_live_v1._resolve_candidate",
-        lambda **_kwargs: BreathCurveResolverOutcome(candidate=candidate, candidate_count_considered=17),
+        "src.market_context.breath_curve_live_v1._select_offset",
+        lambda *_args, **_kwargs: pr,
     )
 
     payload = build_breath_curve_live_by_symbol(
         candles_by_symbol={"ETH": candles, "BTC": candles},
-        as_of_ts_utc=datetime(2026, 6, 9, tzinfo=UTC),
+        as_of_ts_utc=as_of,
         symbols=["ETH"],
     )["ETH"]
 
+    # epoch: (2026-06-09 - 2026-01-18).days = 142; 142 // 21 = 6; anchor = Jan 18 + 126 = May 24
     assert payload["availability_state"] == "AVAILABLE"
+    assert payload["resolver_name"] == "fixed_global_epoch_v1"
+    assert payload["anchor_source"] == "fixed_global_epoch_v1"
+    assert payload["epoch_index"] == 6
+    assert payload["anchor_ts_utc"] == "2026-05-24T00:00:00Z"
     assert payload["phase_offset_days"] == -7.0
-    assert payload["phase_offset_band"] == "-7"
     assert payload["current_checkpoint"] == "IGNITION_PRE_SPIKE"
     assert payload["next_checkpoint"] == "MAIN_PULSE_TP_HIGH"
     assert payload["next_target_expected_ts_utc"] == "2026-06-13T00:00:00Z"
     assert payload["next_target_is_future"] is True
-    assert payload["resolver_name"] == "breath_curve_live_anchor_offset_search_v1"
-    assert payload["resolver_version"] == "0.1"
-    assert payload["resolver_candidate_count"] == 17
-    assert payload["resolver_rank_basis"] == [
-        "partial_match_score",
-        "observed_marker_count",
-        "current_marker_ratio",
-        "smaller_abs_phase_offset_days",
-    ]
+    assert "CURRENT_EPOCH_HOLDOUT_UNVERIFIED" in payload["warnings"]
 
 
-def test_unavailable_anchor_or_data_is_honest() -> None:
-    payload = build_breath_curve_live_by_symbol(
-        candles_by_symbol={"ETH": _enough_candles(10)},
-        as_of_ts_utc=datetime(2026, 5, 10, tzinfo=UTC),
-        symbols=["ETH"],
-    )["ETH"]
+def test_historical_epoch_anchors_match_backtest_records() -> None:
+    from src.market_context.breath_curve_epoch_v1 import resolve_global_epoch_anchor
 
-    assert payload["availability_state"] == STATUS_UNAVAILABLE
-    assert payload["phase_marker"] is None
-    assert payload["current_checkpoint"] is None
-    assert payload["resolver_candidate_count"] == 0
-    assert payload["resolver_name"] == "breath_curve_live_anchor_offset_search_v1"
-    assert payload["warnings"] == ["INSUFFICIENT_CLOSED_DAILY_CANDLES"]
+    historical = {
+        datetime(2026, 3, 13, tzinfo=UTC): datetime(2026, 3, 1, tzinfo=UTC),
+        datetime(2026, 4, 3, tzinfo=UTC): datetime(2026, 3, 22, tzinfo=UTC),
+        datetime(2026, 4, 22, tzinfo=UTC): datetime(2026, 4, 12, tzinfo=UTC),
+    }
+    for as_of, expected_anchor in historical.items():
+        anchor, _ = resolve_global_epoch_anchor(as_of)
+        assert anchor == expected_anchor, f"as_of={as_of.date()}: got {anchor.date()}, want {expected_anchor.date()}"
 
 
-def test_profit_plan_json_and_html_use_breath_curve_not_market_breath() -> None:
+def test_profit_plan_json_and_html_include_breath_curve_payload() -> None:
+    # Payload matches the current fixed-epoch provider field contract.
     payload = {
         "availability_state": "AVAILABLE",
         "as_of_ts_utc": "2026-06-24T12:00:00Z",
         "source_candle_ts_utc": "2026-06-24T00:00:00Z",
         "freshness_label": "FRESH",
         "phase_marker": "IGNITION_PRE_SPIKE",
-        "anchor_ts_utc": "2026-05-01T00:00:00Z",
-        "anchor_search_days": 56,
         "phase_offset_days": -7.0,
         "phase_offset_band": "-7",
-        "template_match_score": 0.8123,
+        "template_match_score": 0.82,
         "current_checkpoint": "IGNITION_PRE_SPIKE",
         "next_checkpoint": "MAIN_PULSE_TP_HIGH",
         "next_target_expected_ts_utc": "2026-06-27T00:00:00Z",
         "next_target_is_future": True,
         "lead_lag_vs_btc": {"relation": "AHEAD_OF_BTC", "delta_days": 3.0},
-        "resolver_name": "breath_curve_live_anchor_offset_search_v1",
+        "anchor_ts_utc": "2026-06-14T00:00:00Z",
+        "anchor_source": "fixed_global_epoch_v1",
+        "epoch_index": 7,
+        "validation_state": "CURRENT_EPOCH_HOLDOUT_UNVERIFIED",
+        "resolver_name": "fixed_global_epoch_v1",
         "resolver_version": "0.1",
-        "resolver_candidate_count": 17,
-        "resolver_rank_basis": [
-            "partial_match_score",
-            "observed_marker_count",
-            "current_marker_ratio",
-            "smaller_abs_phase_offset_days",
-        ],
         "data_coverage": {"coverage_ratio": 1.0, "closed_candle_count": 120},
-        "warnings": [],
+        "warnings": ["CURRENT_EPOCH_HOLDOUT_UNVERIFIED"],
     }
     card = _minimal_card("BTC", payload)
 
     snapshot = build_json_snapshot([card], broker_mode="db_snapshot")
     html = render_full_html([card], rendered_at="now", broker_mode="db_snapshot")
 
+    # JSON contract: full payload stored under breath_curve; no market breath key present.
     assert snapshot["symbols"][0]["breath_curve"] == payload
     assert "market_breath" not in snapshot["symbols"][0]
+    assert "market_breath_live" not in snapshot["symbols"][0]
+
+    # Epoch provenance fields round-trip correctly.
+    bc = snapshot["symbols"][0]["breath_curve"]
+    assert bc["anchor_source"] == "fixed_global_epoch_v1"
+    assert bc["epoch_index"] == 7
+    assert bc["validation_state"] == "CURRENT_EPOCH_HOLDOUT_UNVERIFIED"
+    assert bc["resolver_name"] == "fixed_global_epoch_v1"
+    assert "anchor_search_days" not in bc
+    assert "resolver_candidate_count" not in bc
+    assert "resolver_rank_basis" not in bc
+
+    # HTML contract: breath curve data attributes present; no market breath attributes.
     assert "data-bc-current-checkpoint='IGNITION_PRE_SPIKE'" in html
+    assert "data-bc-next-checkpoint='MAIN_PULSE_TP_HIGH'" in html
     assert "data-mb-phase" not in html
+    assert "data-mb-trajectory" not in html
     assert "Breath Curve" in html
     assert "MAIN_PULSE_TP_HIGH" in html
 
