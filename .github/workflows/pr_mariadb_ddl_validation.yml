@@ -1,0 +1,49 @@
+name: PR MariaDB DDL Validation
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  mariadb-ddl-validation:
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ROOT_PASSWORD: disposable_ci_root_password
+          MARIADB_ROOT_HOST: "%"
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mariadb-admin ping --protocol=tcp -h 127.0.0.1 -uroot -pdisposable_ci_root_password --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: disposable_ci_root_password
+      DB_NAME: information_schema
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Run disposable MariaDB DDL validation
+        run: |
+          RUN_MARIADB_DDL_TEST=1 python -m pytest \
+            tests/test_native_short_map_lifecycle_migration_v1.py \
+            -k migration_executes_in_disposable_mariadb_schema
