@@ -101,17 +101,29 @@ Three tables:
 
 | Table | Keyed by | Write rule |
 |---|---|---|
-| `market_rotation_snapshot_v1` | `(as_of_ts_utc, horizon_h, venue)` | `INSERT IGNORE` |
+| `market_rotation_snapshot_v1` | `(as_of_ts_utc, horizon_h, venue)` | create-once header, then reconcile counts on same-hour reruns |
 | `market_rotation_observation_v1` | `(snapshot_id, asset_id)` | `INSERT IGNORE` |
 | `market_global_snapshot_v1` | `(as_of_ts_utc, provider_name)` | conditional — see below |
 
-Repeating the same run produces zero new rows for rotation tables.
+Observation rows remain append-only and idempotent. Same-hour reruns may add newly eligible observations and then reconcile the header counts so `eligible_market_count`, `excluded_market_count`, and `observation_count` always match the latest local computation plus the actual stored observation rows.
 
 ## Global Market Context (CoinGecko)
 
 One optional CoinGecko `/global` fetch runs alongside each hourly rotation snapshot. It records global crypto-market totals that Bitvavo-local candle volume cannot show.
 
 **Credential:** `COINGECKO_API_KEY` environment variable. Header sent: `x-cg-demo-api-key`. If the variable is absent, `source_status = SKIPPED_NO_CREDENTIAL` and all metric fields are NULL.
+
+**Payload validation:** HTTP 200 is not sufficient for `AVAILABLE`. The payload must contain parseable finite values for:
+
+- `total_volume.usd`
+- `total_market_cap.usd`
+- `volume_change_percentage_24h_usd`
+- `market_cap_change_percentage_24h_usd`
+- `market_cap_percentage.btc`
+- `market_cap_percentage.eth`
+- `updated_at`
+
+`total_volume.usd` and `total_market_cap.usd` must be `> 0`. BTC and ETH dominance must be within `0..100`. Any empty, malformed, NaN, infinite, or out-of-range payload is persisted as `UNAVAILABLE` with `source_error_reason` prefixed by `INVALID_PAYLOAD`.
 
 **Fields populated from CoinGecko `data.*`:**
 
@@ -134,7 +146,22 @@ One optional CoinGecko `/global` fetch runs alongside each hourly rotation snaps
 | `UNAVAILABLE` or `SKIPPED_NO_CREDENTIAL` | `AVAILABLE` | UPDATE (promote) |
 | `UNAVAILABLE` or `SKIPPED_NO_CREDENTIAL` | non-AVAILABLE | no-op |
 
-An existing `AVAILABLE` row is never overwritten or downgraded. A failed or skipped global fetch never rolls back local rotation rows — the two writes use separate independent transactions.
+An existing `AVAILABLE` row is never overwritten or downgraded. A malformed HTTP-200 payload is not treated as `AVAILABLE`, so null-metric `AVAILABLE` rows are never created.
+
+## Transaction Ownership
+
+Local rotation is the primary dataset. In `--write-db` mode:
+
+- both requested horizons share one local transaction;
+- snapshot headers and observation rows commit exactly once after both horizons succeed;
+- any local horizon/header/observation failure rolls back all local writes.
+
+Global context is optional and independent:
+
+- local rotation commits before any global context persistence starts;
+- provider failures (`UNAVAILABLE` or `SKIPPED_NO_CREDENTIAL`) are valid outcomes and still persist normally when the table is present;
+- global schema or DB write failures never roll back already committed local rotation rows;
+- global persistence failure is surfaced to operators via `GLOBAL_CONTEXT_TARGET_SCHEMA_MISSING` or `GLOBAL_CONTEXT_PERSIST_FAILED`, and the runner exits non-zero after the local commit.
 
 **Separation:** Bitvavo per-market metrics and CoinGecko global metrics are stored in separate tables and are never combined into a composite score in v1. Later reporting may display them side by side for context; they remain independent primitives.
 

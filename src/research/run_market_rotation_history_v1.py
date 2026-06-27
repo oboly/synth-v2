@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -26,10 +26,14 @@ TOP_N = 10
 
 # Full lookback needed: baseline of 7d horizon starts at as_of_ts - 336h
 _FETCH_LOOKBACK_H = 2 * max(HORIZONS_H)  # 336
+FETCH_BATCH_ROWS = 1000
 
-REQUIRED_TABLES = (
+LOCAL_ROTATION_TABLES = (
     "market_rotation_snapshot_v1",
     "market_rotation_observation_v1",
+)
+GLOBAL_CONTEXT_TABLE = "market_global_snapshot_v1"
+REQUIRED_TABLES = LOCAL_ROTATION_TABLES + (
     "market_global_snapshot_v1",
 )
 
@@ -219,31 +223,6 @@ def _safe_decimal(val: Any) -> Decimal | None:
         return None
 
 
-def normalize_coingecko_global(data: dict[str, Any], fetched_at: datetime) -> GlobalContextResult:
-    updated_ts: datetime | None = None
-    raw_updated = data.get("updated_at")
-    if raw_updated is not None:
-        try:
-            updated_ts = datetime.utcfromtimestamp(int(raw_updated))
-        except (ValueError, TypeError, OverflowError, OSError):
-            pass
-    total_volume = data.get("total_volume") or {}
-    total_market_cap = data.get("total_market_cap") or {}
-    market_cap_pct = data.get("market_cap_percentage") or {}
-    return GlobalContextResult(
-        source_status="AVAILABLE",
-        source_error_reason=None,
-        total_volume_24h_usd=_safe_decimal(total_volume.get("usd")),
-        volume_change_pct_24h=_safe_decimal(data.get("volume_change_percentage_24h_usd")),
-        total_market_cap_usd=_safe_decimal(total_market_cap.get("usd")),
-        market_cap_change_pct_24h=_safe_decimal(data.get("market_cap_change_percentage_24h_usd")),
-        btc_dominance_pct=_safe_decimal(market_cap_pct.get("btc")),
-        eth_dominance_pct=_safe_decimal(market_cap_pct.get("eth")),
-        provider_updated_at_utc=updated_ts,
-        fetched_at_utc=fetched_at,
-    )
-
-
 def _make_unavailable(reason: str, fetched_at: datetime) -> GlobalContextResult:
     return GlobalContextResult(
         source_status="UNAVAILABLE",
@@ -259,8 +238,73 @@ def _make_unavailable(reason: str, fetched_at: datetime) -> GlobalContextResult:
     )
 
 
+def _require_mapping(payload: Any, field_name: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError(field_name)
+    return payload
+
+
+def _require_finite_decimal(raw: Any, field_name: str) -> Decimal:
+    value = _safe_decimal(raw)
+    if value is None or not value.is_finite():
+        raise ValueError(field_name)
+    return value
+
+
+def _require_positive_decimal(raw: Any, field_name: str) -> Decimal:
+    value = _require_finite_decimal(raw, field_name)
+    if value <= 0:
+        raise ValueError(field_name)
+    return value
+
+
+def _require_pct_decimal(raw: Any, field_name: str) -> Decimal:
+    value = _require_finite_decimal(raw, field_name)
+    if value < 0 or value > 100:
+        raise ValueError(field_name)
+    return value
+
+
+def _require_updated_at(raw: Any) -> datetime:
+    updated_at = _require_finite_decimal(raw, "updated_at")
+    if updated_at != updated_at.to_integral_value():
+        raise ValueError("updated_at")
+    try:
+        return datetime.fromtimestamp(int(updated_at), UTC).replace(tzinfo=None)
+    except (ValueError, TypeError, OverflowError, OSError) as exc:
+        raise ValueError("updated_at") from exc
+
+
+def normalize_coingecko_global(data: Any, fetched_at: datetime) -> GlobalContextResult:
+    try:
+        payload = _require_mapping(data, "data")
+        total_volume = _require_mapping(payload.get("total_volume"), "total_volume")
+        total_market_cap = _require_mapping(payload.get("total_market_cap"), "total_market_cap")
+        market_cap_pct = _require_mapping(payload.get("market_cap_percentage"), "market_cap_percentage")
+        return GlobalContextResult(
+            source_status="AVAILABLE",
+            source_error_reason=None,
+            total_volume_24h_usd=_require_positive_decimal(total_volume.get("usd"), "total_volume.usd"),
+            volume_change_pct_24h=_require_finite_decimal(
+                payload.get("volume_change_percentage_24h_usd"),
+                "volume_change_percentage_24h_usd",
+            ),
+            total_market_cap_usd=_require_positive_decimal(total_market_cap.get("usd"), "total_market_cap.usd"),
+            market_cap_change_pct_24h=_require_finite_decimal(
+                payload.get("market_cap_change_percentage_24h_usd"),
+                "market_cap_change_percentage_24h_usd",
+            ),
+            btc_dominance_pct=_require_pct_decimal(market_cap_pct.get("btc"), "market_cap_percentage.btc"),
+            eth_dominance_pct=_require_pct_decimal(market_cap_pct.get("eth"), "market_cap_percentage.eth"),
+            provider_updated_at_utc=_require_updated_at(payload.get("updated_at")),
+            fetched_at_utc=fetched_at,
+        )
+    except ValueError as exc:
+        return _make_unavailable(f"INVALID_PAYLOAD:{exc}", fetched_at)
+
+
 def fetch_coingecko_global(api_key: str | None) -> GlobalContextResult:
-    fetched_at = datetime.utcnow()
+    fetched_at = datetime.now(UTC).replace(tzinfo=None)
     if not api_key:
         return GlobalContextResult(
             source_status="SKIPPED_NO_CREDENTIAL",
@@ -281,8 +325,10 @@ def fetch_coingecko_global(api_key: str | None) -> GlobalContextResult:
             timeout=COINGECKO_TIMEOUT_S,
         )
         resp.raise_for_status()
-        data = resp.json().get("data") or {}
-        return normalize_coingecko_global(data, fetched_at)
+        payload = resp.json()
+        if not isinstance(payload, dict):
+            return _make_unavailable("INVALID_PAYLOAD:response", fetched_at)
+        return normalize_coingecko_global(payload.get("data"), fetched_at)
     except requests.Timeout:
         return _make_unavailable(f"TIMEOUT_{COINGECKO_TIMEOUT_S}s", fetched_at)
     except requests.HTTPError as exc:
@@ -306,6 +352,12 @@ def check_schema_ready(conn: Any) -> list[str]:
         cur.execute(sql, list(REQUIRED_TABLES))
         found = {r["TABLE_NAME"] for r in cur.fetchall()}
     return [t for t in REQUIRED_TABLES if t not in found]
+
+
+def split_missing_tables(missing_tables: list[str]) -> tuple[list[str], list[str]]:
+    local_missing = [table for table in missing_tables if table in LOCAL_ROTATION_TABLES]
+    global_missing = [table for table in missing_tables if table == GLOBAL_CONTEXT_TABLE]
+    return local_missing, global_missing
 
 
 # ---------------------------------------------------------------------------
@@ -351,21 +403,24 @@ def fetch_candles_bulk(
     ORDER BY asset_id, close_ts_utc
     """
     params: list[Any] = [venue, CANDLE_INTERVAL] + asset_ids + [oldest_close_exclusive, newest_close_inclusive]
+    result: dict[int, list[CandleRecord]] = {}
     with conn.cursor() as cur:
         cur.execute(sql, params)
-        rows = cur.fetchall()
-    result: dict[int, list[CandleRecord]] = {}
-    for r in rows:
-        aid = int(r["asset_id"])
-        if aid not in result:
-            result[aid] = []
-        result[aid].append(CandleRecord(
-            asset_id=aid,
-            open_ts_utc=r["open_ts_utc"],
-            close_ts_utc=r["close_ts_utc"],
-            close_price=Decimal(str(r["close_price"])),
-            volume_quote_eur=Decimal(str(r["volume_quote_eur"])),
-        ))
+        while True:
+            rows = cur.fetchmany(FETCH_BATCH_ROWS)
+            if not rows:
+                break
+            for r in rows:
+                aid = int(r["asset_id"])
+                if aid not in result:
+                    result[aid] = []
+                result[aid].append(CandleRecord(
+                    asset_id=aid,
+                    open_ts_utc=r["open_ts_utc"],
+                    close_ts_utc=r["close_ts_utc"],
+                    close_price=Decimal(str(r["close_price"])),
+                    volume_quote_eur=Decimal(str(r["volume_quote_eur"])),
+                ))
     return result
 
 
@@ -377,7 +432,7 @@ def write_rotation_snapshot(
     eligible_count: int,
     excluded_count: int,
     observations: list[HorizonObservation],
-) -> tuple[bool, int]:
+) -> tuple[str, int]:
     sql_header = """
     INSERT IGNORE INTO market_rotation_snapshot_v1
       (as_of_ts_utc, horizon_h, venue, candle_interval_code,
@@ -387,13 +442,15 @@ def write_rotation_snapshot(
     with conn.cursor() as cur:
         affected = cur.execute(sql_header, (
             as_of_ts, horizon_h, venue, CANDLE_INTERVAL,
-            eligible_count, excluded_count, len(observations),
+            eligible_count, excluded_count, 0,
         ))
-    new_snapshot = int(affected) > 0
+    created = int(affected) > 0
 
     sql_get_id = """
-    SELECT snapshot_id FROM market_rotation_snapshot_v1
+    SELECT snapshot_id, eligible_market_count, excluded_market_count, observation_count
+    FROM market_rotation_snapshot_v1
     WHERE as_of_ts_utc = %s AND horizon_h = %s AND venue = %s
+    FOR UPDATE
     """
     with conn.cursor() as cur:
         cur.execute(sql_get_id, (as_of_ts, horizon_h, venue))
@@ -401,6 +458,9 @@ def write_rotation_snapshot(
     if row is None:
         raise RuntimeError(f"Snapshot header missing after INSERT IGNORE: as_of={as_of_ts} h={horizon_h}")
     snapshot_id = int(row["snapshot_id"])
+    prior_eligible = int(row["eligible_market_count"])
+    prior_excluded = int(row["excluded_market_count"])
+    prior_observation_count = int(row["observation_count"])
 
     sql_obs = """
     INSERT IGNORE INTO market_rotation_observation_v1 (
@@ -426,7 +486,49 @@ def write_rotation_snapshot(
                 obs.as_of_ts_utc,
             ))
             obs_written += int(n)
-    return new_snapshot, obs_written
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT COUNT(*) AS observation_count "
+            "FROM market_rotation_observation_v1 WHERE snapshot_id = %s",
+            (snapshot_id,),
+        )
+        obs_row = cur.fetchone()
+    if obs_row is None:
+        raise RuntimeError(f"Observation count missing for snapshot_id={snapshot_id}")
+    actual_observation_count = int(obs_row["observation_count"])
+
+    with conn.cursor() as cur:
+        header_changed = int(cur.execute(
+            """
+            UPDATE market_rotation_snapshot_v1
+            SET eligible_market_count = %s,
+                excluded_market_count = %s,
+                observation_count = %s
+            WHERE snapshot_id = %s
+              AND (
+                eligible_market_count <> %s
+                OR excluded_market_count <> %s
+                OR observation_count <> %s
+              )
+            """,
+            (
+                eligible_count,
+                excluded_count,
+                actual_observation_count,
+                snapshot_id,
+                eligible_count,
+                excluded_count,
+                actual_observation_count,
+            ),
+        )) > 0
+
+    if created:
+        status = "CREATED"
+    elif obs_written > 0 or header_changed or prior_eligible != eligible_count or prior_excluded != excluded_count or prior_observation_count != actual_observation_count:
+        status = "RECONCILED"
+    else:
+        status = "NOOP_ALREADY_COMPLETE"
+    return status, obs_written
 
 
 # ---------------------------------------------------------------------------
@@ -597,6 +699,11 @@ def print_global_section(result: GlobalContextResult, action: str) -> None:
             print(f"  provider_updated:   {result.provider_updated_at_utc.isoformat()}Z")
 
 
+def print_missing_schema(prefix: str, missing_tables: list[str]) -> None:
+    if missing_tables:
+        print(f"{prefix}  missing={missing_tables}")
+
+
 # ---------------------------------------------------------------------------
 # Arg parsing and entry point
 # ---------------------------------------------------------------------------
@@ -632,7 +739,7 @@ def resolve_as_of_ts(asof_arg: str | None) -> datetime:
             from datetime import timezone
             ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
         return floor_to_hour(ts)
-    return floor_to_hour(datetime.utcnow())
+    return floor_to_hour(datetime.now(UTC).replace(tzinfo=None))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -647,17 +754,18 @@ def main(argv: list[str] | None = None) -> int:
         print_validate_config(as_of_ts, args)
         return 0
 
-    api_key = os.getenv(COINGECKO_API_KEY_ENV)
-    global_result = fetch_coingecko_global(api_key)
-
     conn = get_connection()
     try:
         missing_tables = check_schema_ready(conn)
-        if missing_tables:
-            if args.write_db:
-                print(f"FAILED  TARGET_SCHEMA=PENDING_MIGRATION  missing={missing_tables}")
-                return 1
-            print(f"TARGET_SCHEMA=PENDING_MIGRATION  missing={missing_tables}")
+        local_missing, global_missing = split_missing_tables(missing_tables)
+        if local_missing and args.write_db:
+            print_missing_schema("FAILED  LOCAL_ROTATION_TARGET_SCHEMA_MISSING", local_missing)
+            print_missing_schema("GLOBAL_CONTEXT_TARGET_SCHEMA_MISSING", global_missing)
+            return 1
+        if local_missing:
+            print_missing_schema("LOCAL_ROTATION_TARGET_SCHEMA_MISSING", local_missing)
+        if global_missing and not args.write_db:
+            print_missing_schema("GLOBAL_CONTEXT_TARGET_SCHEMA_MISSING", global_missing)
 
         assets = fetch_eligible_assets(conn, args.venue)
         print(f"universe: {len(assets)} eligible EUR spot markets")
@@ -685,39 +793,52 @@ def main(argv: list[str] | None = None) -> int:
                 eligible.append(obs)
             horizon_results.append((h, eligible, excluded))
 
-        if missing_tables:
-            # Schema pending: show planned writes; cannot query existing row status
+        if args.dry_run or local_missing:
+            api_key = os.getenv(COINGECKO_API_KEY_ENV)
+            global_result = fetch_coingecko_global(api_key)
             for h, eligible, excluded in horizon_results:
                 print_horizon_report(h, eligible, excluded, f"DRY_RUN would_write={len(eligible)}")
-            global_action = _determine_global_action(None, global_result.source_status)
-            print_global_section(global_result, global_action)
-
-        elif args.dry_run:
-            # Schema ready, read-only: query existing global row status then report
-            _, global_action = write_global_snapshot(conn, as_of_ts, global_result, dry_run=True)
-            for h, eligible, excluded in horizon_results:
-                print_horizon_report(h, eligible, excluded, f"DRY_RUN would_write={len(eligible)}")
+            if global_missing:
+                global_action = "DRY_RUN_TARGET_SCHEMA_MISSING"
+            else:
+                _, global_action = write_global_snapshot(conn, as_of_ts, global_result, dry_run=True)
             print_global_section(global_result, global_action)
 
         else:
-            # write-db: single transaction — all horizons + global context row
-            snap_results: list[tuple[int, list[HorizonObservation], list[tuple[str, str]], bool, int]] = []
+            snap_results: list[tuple[int, list[HorizonObservation], list[tuple[str, str]], str, int]] = []
             try:
                 for h, eligible, excluded in horizon_results:
-                    new_snap, obs_written = write_rotation_snapshot(
+                    write_status, obs_written = write_rotation_snapshot(
                         conn, as_of_ts, h, args.venue,
                         len(eligible), len(excluded), eligible,
                     )
-                    snap_results.append((h, eligible, excluded, new_snap, obs_written))
-                _, global_action = write_global_snapshot(conn, as_of_ts, global_result, dry_run=False)
+                    snap_results.append((h, eligible, excluded, write_status, obs_written))
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
-            for h, eligible, excluded, new_snap, obs_written in snap_results:
-                write_status = f"WRITTEN obs={obs_written}" if new_snap else "DUPLICATE_SKIPPED"
-                print_horizon_report(h, eligible, excluded, write_status)
-            print_global_section(global_result, global_action)
+            for h, eligible, excluded, write_status, obs_written in snap_results:
+                print_horizon_report(h, eligible, excluded, f"{write_status} obs={obs_written}")
+
+            if global_missing:
+                print_missing_schema("GLOBAL_CONTEXT_TARGET_SCHEMA_MISSING", global_missing)
+                print(f"\nFINISHED {RUNNER_NAME}")
+                return 1
+
+            api_key = os.getenv(COINGECKO_API_KEY_ENV)
+            global_result = fetch_coingecko_global(api_key)
+            try:
+                _, global_action = write_global_snapshot(conn, as_of_ts, global_result, dry_run=False)
+                conn.commit()
+                print_global_section(global_result, global_action)
+            except Exception as exc:
+                conn.rollback()
+                print(
+                    "GLOBAL_CONTEXT_PERSIST_FAILED  "
+                    f"error_type={type(exc).__name__}  error={exc}"
+                )
+                print(f"\nFINISHED {RUNNER_NAME}")
+                return 1
 
     finally:
         conn.close()

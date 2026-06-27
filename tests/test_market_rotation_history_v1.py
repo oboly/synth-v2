@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 import io
 from contextlib import redirect_stdout
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -14,6 +14,7 @@ import pytest
 from src.research.run_market_rotation_history_v1 import (
     AssetRow,
     CandleRecord,
+    FETCH_BATCH_ROWS,
     GlobalContextResult,
     HorizonObservation,
     _determine_global_action,
@@ -24,10 +25,12 @@ from src.research.run_market_rotation_history_v1 import (
     compute_observation,
     compute_price_change_pct,
     compute_relative_volume,
+    fetch_candles_bulk,
     fetch_coingecko_global,
     floor_to_hour,
     main,
     normalize_coingecko_global,
+    split_missing_tables,
     write_global_snapshot,
     write_rotation_snapshot,
 )
@@ -144,11 +147,14 @@ def _skipped_result() -> GlobalContextResult:
     )
 
 
-def _make_conn_mock(fetchone_return=None):
+def _make_conn_mock(fetchone_return=None, fetchone_side_effect=None):
     cursor = MagicMock()
     cursor.__enter__ = MagicMock(return_value=cursor)
     cursor.__exit__ = MagicMock(return_value=False)
-    cursor.fetchone.return_value = fetchone_return
+    if fetchone_side_effect is not None:
+        cursor.fetchone.side_effect = fetchone_side_effect
+    else:
+        cursor.fetchone.return_value = fetchone_return
     conn = MagicMock()
     conn.cursor.return_value = cursor
     return conn, cursor
@@ -311,26 +317,37 @@ def test_normalize_coingecko_global_all_fields():
     assert result.total_volume_24h_usd == Decimal("300000000000.0")
     assert result.volume_change_pct_24h == Decimal("5.2")
     assert result.btc_dominance_pct == Decimal("62.5")
-    assert result.provider_updated_at_utc == datetime.utcfromtimestamp(1735000000)
+    assert result.provider_updated_at_utc == datetime.fromtimestamp(1735000000, UTC).replace(tzinfo=None)
 
 
-def test_normalize_coingecko_global_volume_change_pct_populated():
-    data = {"volume_change_percentage_24h_usd": 3.7, "total_volume": {},
-            "total_market_cap": {}, "market_cap_percentage": {}}
-    result = normalize_coingecko_global(data, datetime(2026, 1, 15, 10, 0, 0))
-    assert result.volume_change_pct_24h == Decimal("3.7")
-
-
-def test_normalize_coingecko_global_missing_fields_returns_none():
+def test_normalize_coingecko_global_empty_payload_is_unavailable():
     result = normalize_coingecko_global({}, datetime(2026, 1, 15, 10, 0, 0))
-    assert result.source_status == "AVAILABLE"
-    assert result.total_volume_24h_usd is None and result.volume_change_pct_24h is None
+    assert result.source_status == "UNAVAILABLE"
+    assert (result.source_error_reason or "").startswith("INVALID_PAYLOAD:")
 
 
-def test_normalize_coingecko_global_bad_updated_at_does_not_raise():
-    data = {"updated_at": "bad", "total_volume": {}, "total_market_cap": {}, "market_cap_percentage": {}}
+def test_normalize_coingecko_global_missing_required_field_is_unavailable():
+    data = dict(MOCK_CG_DATA)
+    data.pop("volume_change_percentage_24h_usd")
     result = normalize_coingecko_global(data, datetime(2026, 1, 15, 10, 0, 0))
-    assert result.provider_updated_at_utc is None
+    assert result.source_status == "UNAVAILABLE"
+    assert "volume_change_percentage_24h_usd" in (result.source_error_reason or "")
+
+
+def test_normalize_coingecko_global_nan_or_infinite_is_unavailable():
+    data = dict(MOCK_CG_DATA)
+    data["market_cap_percentage"] = {"btc": "NaN", "eth": "Infinity"}
+    result = normalize_coingecko_global(data, datetime(2026, 1, 15, 10, 0, 0))
+    assert result.source_status == "UNAVAILABLE"
+    assert "market_cap_percentage.btc" in (result.source_error_reason or "")
+
+
+def test_normalize_coingecko_global_invalid_updated_at_is_unavailable():
+    data = dict(MOCK_CG_DATA)
+    data["updated_at"] = "bad"
+    result = normalize_coingecko_global(data, datetime(2026, 1, 15, 10, 0, 0))
+    assert result.source_status == "UNAVAILABLE"
+    assert "updated_at" in (result.source_error_reason or "")
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +391,17 @@ def test_fetch_coingecko_global_success():
         result = fetch_coingecko_global("demo-key")
     assert result.source_status == "AVAILABLE"
     assert result.volume_change_pct_24h == Decimal("5.2")
+
+
+def test_fetch_coingecko_global_invalid_payload_never_returns_available():
+    with patch(f"{_MOD}.requests.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"data": {}}
+        mock_resp.raise_for_status.return_value = None
+        mock_get.return_value = mock_resp
+        result = fetch_coingecko_global("demo-key")
+    assert result.source_status == "UNAVAILABLE"
+    assert (result.source_error_reason or "").startswith("INVALID_PAYLOAD:")
 
 
 def test_fetch_coingecko_global_uses_demo_header():
@@ -425,7 +453,6 @@ def test_write_global_snapshot_inserts_new_row_no_commit():
 
 
 def test_write_global_snapshot_existing_available_is_noop():
-    # Existing AVAILABLE row must never be overwritten
     conn, cursor = _make_conn_mock(fetchone_return={"source_status": "AVAILABLE"})
     written, action = write_global_snapshot(conn, AS_OF, _available_result())
     assert written is False and action == "SKIP_AVAILABLE_EXISTS"
@@ -447,7 +474,6 @@ def test_write_global_snapshot_existing_available_not_downgraded_by_skipped():
 
 
 def test_write_global_snapshot_unavailable_promotes_when_available_arrives():
-    # Existing UNAVAILABLE row must promote when AVAILABLE result arrives
     conn, cursor = _make_conn_mock(fetchone_return={"source_status": "UNAVAILABLE"})
     written, action = write_global_snapshot(conn, AS_OF, _available_result())
     assert written is True and action == "PROMOTE"
@@ -480,29 +506,67 @@ def test_write_global_snapshot_dry_run_skips_write():
 # ---------------------------------------------------------------------------
 
 def test_write_rotation_snapshot_no_commit():
-    conn, cursor = _make_conn_mock(fetchone_return={"snapshot_id": 7})
-    cursor.execute.side_effect = [1, None, 1, 1]
+    conn, cursor = _make_conn_mock(fetchone_side_effect=[
+        {"snapshot_id": 7, "eligible_market_count": 0, "excluded_market_count": 0, "observation_count": 0},
+        {"observation_count": 2},
+    ])
+    cursor.execute.side_effect = [1, None, 1, 1, None, 1]
     write_rotation_snapshot(conn, AS_OF, 24, "bitvavo", 2, 0, [_make_obs(1), _make_obs(2, "ETH-EUR")])
     conn.commit.assert_not_called()
 
 
 def test_write_rotation_snapshot_idempotent_on_duplicate():
-    conn, cursor = _make_conn_mock(fetchone_return={"snapshot_id": 42})
-    cursor.execute.side_effect = [0, None, 0, 0]
-    new_snap, obs_written = write_rotation_snapshot(
+    conn, cursor = _make_conn_mock(fetchone_side_effect=[
+        {"snapshot_id": 42, "eligible_market_count": 2, "excluded_market_count": 0, "observation_count": 2},
+        {"observation_count": 2},
+    ])
+    cursor.execute.side_effect = [0, None, 0, 0, None, 0]
+    status, obs_written = write_rotation_snapshot(
         conn, AS_OF, 24, "bitvavo", 2, 0, [_make_obs(1), _make_obs(2, "ETH-EUR")]
     )
-    assert new_snap is False and obs_written == 0
+    assert status == "NOOP_ALREADY_COMPLETE" and obs_written == 0
     conn.commit.assert_not_called()
 
 
 def test_write_rotation_snapshot_new_inserts():
-    conn, cursor = _make_conn_mock(fetchone_return={"snapshot_id": 7})
-    cursor.execute.side_effect = [1, None, 1, 1]
-    new_snap, obs_written = write_rotation_snapshot(
+    conn, cursor = _make_conn_mock(fetchone_side_effect=[
+        {"snapshot_id": 7, "eligible_market_count": 0, "excluded_market_count": 0, "observation_count": 0},
+        {"observation_count": 2},
+    ])
+    cursor.execute.side_effect = [1, None, 1, 1, None, 1]
+    status, obs_written = write_rotation_snapshot(
         conn, AS_OF, 24, "bitvavo", 2, 0, [_make_obs(1), _make_obs(2, "ETH-EUR")]
     )
-    assert new_snap is True and obs_written == 2
+    assert status == "CREATED" and obs_written == 2
+    conn.commit.assert_not_called()
+
+
+def test_write_rotation_snapshot_same_hour_rerun_reconciles_header_counts():
+    conn, cursor = _make_conn_mock(fetchone_side_effect=[
+        {"snapshot_id": 42, "eligible_market_count": 1, "excluded_market_count": 1, "observation_count": 1},
+        {"observation_count": 2},
+    ])
+    cursor.execute.side_effect = [0, None, 1, None, 1]
+    status, obs_written = write_rotation_snapshot(
+        conn, AS_OF, 24, "bitvavo", 2, 0, [_make_obs(2, "ETH-EUR")]
+    )
+    assert status == "RECONCILED"
+    assert obs_written == 1
+    update_params = cursor.execute.call_args_list[-1].args[1]
+    assert update_params == (2, 0, 2, 42, 2, 0, 2)
+
+
+def test_write_rotation_snapshot_same_hour_noop_reports_already_complete():
+    conn, cursor = _make_conn_mock(fetchone_side_effect=[
+        {"snapshot_id": 42, "eligible_market_count": 2, "excluded_market_count": 0, "observation_count": 2},
+        {"observation_count": 2},
+    ])
+    cursor.execute.side_effect = [0, None, 0, 0, None, 0]
+    status, obs_written = write_rotation_snapshot(
+        conn, AS_OF, 24, "bitvavo", 2, 0, [_make_obs(1), _make_obs(2, "ETH-EUR")]
+    )
+    assert status == "NOOP_ALREADY_COMPLETE"
+    assert obs_written == 0
     conn.commit.assert_not_called()
 
 
@@ -535,6 +599,80 @@ def test_check_schema_ready_all_missing():
     assert len(check_schema_ready(conn)) == 3
 
 
+def test_split_missing_tables():
+    local_missing, global_missing = split_missing_tables([
+        "market_rotation_snapshot_v1",
+        "market_global_snapshot_v1",
+    ])
+    assert local_missing == ["market_rotation_snapshot_v1"]
+    assert global_missing == ["market_global_snapshot_v1"]
+
+
+class _StreamingCursor:
+    def __init__(self, batches: list[list[dict[str, object]]]):
+        self._batches = list(batches)
+        self.fetchmany_calls: list[int] = []
+        self.execute_calls: list[tuple[str, list[object]]] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def execute(self, sql: str, params: list[object]):
+        self.execute_calls.append((sql, params))
+        return None
+
+    def fetchmany(self, size: int) -> list[dict[str, object]]:
+        self.fetchmany_calls.append(size)
+        if self._batches:
+            return self._batches.pop(0)
+        return []
+
+    def fetchall(self):
+        raise AssertionError("fetchall must not be used for candle streaming")
+
+
+class _StreamingConn:
+    def __init__(self, cursor: _StreamingCursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_fetch_candles_bulk_uses_fetchmany():
+    batches = [
+        [
+            {
+                "asset_id": 1,
+                "open_ts_utc": AS_OF - timedelta(hours=2),
+                "close_ts_utc": AS_OF - timedelta(hours=1),
+                "close_price": "1000.5",
+                "volume_quote_eur": "55.25",
+            }
+        ],
+        [
+            {
+                "asset_id": 2,
+                "open_ts_utc": AS_OF - timedelta(hours=1),
+                "close_ts_utc": AS_OF,
+                "close_price": "2000.5",
+                "volume_quote_eur": "65.25",
+            }
+        ],
+        [],
+    ]
+    cursor = _StreamingCursor(batches)
+    conn = _StreamingConn(cursor)
+    result = fetch_candles_bulk(conn, [1, 2], "bitvavo", AS_OF - timedelta(hours=10), AS_OF)
+    assert sorted(result.keys()) == [1, 2]
+    assert result[1][0].close_price == Decimal("1000.5")
+    assert result[2][0].volume_quote_eur == Decimal("65.25")
+    assert cursor.fetchmany_calls == [FETCH_BATCH_ROWS, FETCH_BATCH_ROWS, FETCH_BATCH_ROWS]
+
+
 # ---------------------------------------------------------------------------
 # main() integration — schema preflight
 # ---------------------------------------------------------------------------
@@ -548,7 +686,7 @@ def _build_patches(*, missing_tables=None, assets=None, candles=None,
     if candles is None:
         candles = {}
     if write_rot_kw is None:
-        write_rot_kw = {"return_value": (True, 0)}
+        write_rot_kw = {"return_value": ("CREATED", 0)}
     if write_glob_kw is None:
         write_glob_kw = {"return_value": (True, "INSERT")}
     ps = [
@@ -584,7 +722,8 @@ def test_dry_run_pending_migration_exits_zero():
                         "market_global_snapshot_v1"],
     )
     assert rc == 0
-    assert "TARGET_SCHEMA=PENDING_MIGRATION" in out
+    assert "LOCAL_ROTATION_TARGET_SCHEMA_MISSING" in out
+    assert "GLOBAL_CONTEXT_TARGET_SCHEMA_MISSING" in out
 
 
 def test_dry_run_pending_migration_shows_eligible_counts():
@@ -600,20 +739,32 @@ def test_dry_run_pending_migration_shows_eligible_counts():
 def test_write_db_pending_migration_exits_nonzero():
     rc, out, conn, m_rot, m_glob = _run(
         ["--write-db", "--as-of-ts", "2026-01-15T12:00:00"],
-        missing_tables=["market_global_snapshot_v1"],
+        missing_tables=["market_rotation_observation_v1", "market_global_snapshot_v1"],
     )
     assert rc == 1
-    assert "PENDING_MIGRATION" in out
+    assert "FAILED  LOCAL_ROTATION_TARGET_SCHEMA_MISSING" in out
 
 
 def test_write_db_pending_migration_performs_zero_writes():
     rc, out, conn, m_rot, m_glob = _run(
         ["--write-db", "--as-of-ts", "2026-01-15T12:00:00"],
-        missing_tables=["market_global_snapshot_v1"],
+        missing_tables=["market_rotation_observation_v1", "market_global_snapshot_v1"],
     )
     m_rot.assert_not_called()
     m_glob.assert_not_called()
     conn.commit.assert_not_called()
+
+
+def test_write_db_global_schema_missing_commits_local_and_exits_nonzero():
+    rc, out, conn, m_rot, m_glob = _run(
+        ["--write-db", "--as-of-ts", "2026-01-15T12:00:00"],
+        missing_tables=["market_global_snapshot_v1"],
+    )
+    assert rc == 1
+    assert "GLOBAL_CONTEXT_TARGET_SCHEMA_MISSING" in out
+    assert m_rot.call_count == 2
+    m_glob.assert_not_called()
+    conn.commit.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -641,32 +792,45 @@ def test_write_db_second_horizon_failure_rolls_back():
     mock_conn.commit.assert_not_called()
 
 
-def test_write_db_global_db_failure_rolls_back_both_horizons():
+def test_write_db_global_db_failure_returns_nonzero_after_local_commit():
+    mock_conn = MagicMock()
+    ps = _build_patches(write_glob_kw={"side_effect": RuntimeError("global DB failure")},
+                        global_result=_available_result())
+    buf = io.StringIO()
+    with ps[0] as mc, ps[1], ps[2], ps[3], ps[4] as m_rot, ps[5], ps[6], redirect_stdout(buf):
+        mc.return_value = mock_conn
+        rc = main(["--write-db", "--as-of-ts", "2026-01-15T12:00:00"])
+    assert rc == 1
+    assert "GLOBAL_CONTEXT_PERSIST_FAILED" in buf.getvalue()
+    assert m_rot.call_count == 2
+    assert mock_conn.commit.call_count == 1
+    mock_conn.rollback.assert_called_once()
+
+
+def test_write_db_local_rotation_commit_survives_global_db_failure():
     mock_conn = MagicMock()
     ps = _build_patches(write_glob_kw={"side_effect": RuntimeError("global DB failure")},
                         global_result=_available_result())
     with ps[0] as mc, ps[1], ps[2], ps[3], ps[4] as m_rot, ps[5], ps[6]:
         mc.return_value = mock_conn
-        with pytest.raises(RuntimeError, match="global DB failure"):
-            main(["--write-db", "--as-of-ts", "2026-01-15T12:00:00"])
-    mock_conn.rollback.assert_called_once()
-    mock_conn.commit.assert_not_called()
-    assert m_rot.call_count == 2   # both horizons were attempted before global failed
+        rc = main(["--write-db", "--as-of-ts", "2026-01-15T12:00:00"])
+    assert rc == 1
+    assert m_rot.call_count == 2
+    assert mock_conn.commit.call_count == 1
 
 
 def test_write_db_provider_unavailable_still_commits():
-    # Provider failure is a valid status; the UNAVAILABLE row is part of the normal transaction
     mock_conn = MagicMock()
     ps = _build_patches(global_result=_unavailable_result())
     with ps[0] as mc, ps[1], ps[2], ps[3], ps[4], ps[5], ps[6]:
         mc.return_value = mock_conn
         rc = main(["--write-db", "--as-of-ts", "2026-01-15T12:00:00"])
     assert rc == 0
-    mock_conn.commit.assert_called_once()
+    assert mock_conn.commit.call_count == 2
     mock_conn.rollback.assert_not_called()
 
 
-def test_write_db_single_commit_covers_all_horizons_and_global():
+def test_write_db_commits_local_then_global():
     mock_conn = MagicMock()
     ps = _build_patches(global_result=_available_result())
     with ps[0] as mc, ps[1], ps[2], ps[3], ps[4] as m_rot, ps[5] as m_glob, ps[6]:
@@ -675,7 +839,7 @@ def test_write_db_single_commit_covers_all_horizons_and_global():
     assert rc == 0
     assert m_rot.call_count == 2
     m_glob.assert_called_once()
-    mock_conn.commit.assert_called_once()
+    assert mock_conn.commit.call_count == 2
 
 
 # ---------------------------------------------------------------------------
