@@ -325,7 +325,10 @@ def fetch_coingecko_global(api_key: str | None) -> GlobalContextResult:
             timeout=COINGECKO_TIMEOUT_S,
         )
         resp.raise_for_status()
-        payload = resp.json()
+        try:
+            payload = resp.json()
+        except ValueError:
+            return _make_unavailable("INVALID_PAYLOAD:JSON_DECODE", fetched_at)
         if not isinstance(payload, dict):
             return _make_unavailable("INVALID_PAYLOAD:response", fetched_at)
         return normalize_coingecko_global(payload.get("data"), fetched_at)

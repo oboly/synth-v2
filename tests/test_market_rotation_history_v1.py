@@ -404,6 +404,17 @@ def test_fetch_coingecko_global_invalid_payload_never_returns_available():
     assert (result.source_error_reason or "").startswith("INVALID_PAYLOAD:")
 
 
+def test_fetch_coingecko_global_invalid_json_is_invalid_payload():
+    with patch(f"{_MOD}.requests.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.json.side_effect = ValueError("bad json")
+        mock_resp.raise_for_status.return_value = None
+        mock_get.return_value = mock_resp
+        result = fetch_coingecko_global("demo-key")
+    assert result.source_status == "UNAVAILABLE"
+    assert result.source_error_reason == "INVALID_PAYLOAD:JSON_DECODE"
+
+
 def test_fetch_coingecko_global_uses_demo_header():
     with patch(f"{_MOD}.requests.get") as mock_get:
         mock_resp = MagicMock()
