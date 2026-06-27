@@ -323,6 +323,21 @@ def test_disposable_mariadb_validation_harness_uses_temp_schema_and_repo_helper(
     assert "SHOW CREATE VIEW native_short_map_current_lifecycle_v1" in DISPOSABLE_MARIADB_VALIDATION_COMMANDS
 
 
+def test_migration_view_lifecycle_state_source_terminal_map_precedes_published_path() -> None:
+    sql = _sql()
+    # Extract the lifecycle_state_source CASE block from the view definition.
+    after_state_col = sql.split("END AS lifecycle_state,", 1)[1]
+    source_case = after_state_col.split("END AS lifecycle_state_source", 1)[0]
+    # FAILED and REJECTED must be named explicitly — not the old broad IS NOT NULL check.
+    assert "event_type IN ('FAILED', 'REJECTED')" in source_case
+    # Terminal map outcome must emit the constant 'TERMINAL_MAP'.
+    assert "THEN 'TERMINAL_MAP'" in source_case
+    # The old broad authoritative check (which let PUBLISHED through) must be absent.
+    assert "authoritative_generation.generation_event_id IS NOT NULL THEN" not in source_case
+    # FAILED/REJECTED check must appear before TERMINAL_MAP in CASE evaluation order.
+    assert source_case.index("IN ('FAILED', 'REJECTED')") < source_case.index("THEN 'TERMINAL_MAP'")
+
+
 @pytest.mark.skipif(
     os.getenv("RUN_MARIADB_DDL_TEST") != "1",
     reason="Set RUN_MARIADB_DDL_TEST=1 to validate the migration in a disposable schema.",
@@ -615,7 +630,8 @@ def test_migration_executes_in_disposable_mariadb_schema() -> None:
 
             cur.execute(
                 """
-                SELECT symbol, quote_currency, lifecycle_state, active_map_id, latest_terminal_map_id
+                SELECT symbol, quote_currency, lifecycle_state, lifecycle_state_source,
+                       active_map_id, latest_terminal_map_id
                 FROM native_short_map_current_lifecycle_v1
                 WHERE symbol IN ('BTC', 'ETH', 'XRP')
                 ORDER BY symbol
@@ -628,6 +644,7 @@ def test_migration_executes_in_disposable_mariadb_schema() -> None:
         projection_by_symbol = {row["symbol"]: row for row in rows}
         assert projection_by_symbol["BTC"]["lifecycle_state"] == "MAP_DATA_UNAVAILABLE"
         assert projection_by_symbol["ETH"]["lifecycle_state"] == "MAP_REBUILD_REQUIRED"
+        assert projection_by_symbol["ETH"]["lifecycle_state_source"] == "TERMINAL_MAP"
         assert projection_by_symbol["ETH"]["latest_terminal_map_id"] == 200
         assert projection_by_symbol["XRP"]["lifecycle_state"] == "MAP_ACTIVE"
         assert projection_by_symbol["XRP"]["active_map_id"] == 301

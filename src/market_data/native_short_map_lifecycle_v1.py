@@ -10,7 +10,7 @@ PR1b repository writes must call `validate_native_short_map_write_intent(...)`
 before persisting generation or lifecycle rows.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -381,11 +381,17 @@ def validate_native_short_map_write_intent(
     for map_id, events in lifecycle_by_map.items():
         ordered = sorted(events, key=lambda event: event.lifecycle_event_id)
         terminal_seen = False
+        seen_event_types: set[NativeShortMapLifecycleEventType] = set()
         for event in ordered:
             if terminal_seen:
                 raise NativeShortMapLifecycleValidationError(
                     f"LIFECYCLE_EVENT_AFTER_TERMINAL map_id={map_id} event_type={event.event_type}"
                 )
+            if event.event_type in seen_event_types:
+                raise NativeShortMapLifecycleValidationError(
+                    f"DUPLICATE_LIFECYCLE_EVENT_TYPE map_id={map_id} event_type={event.event_type}"
+                )
+            seen_event_types.add(event.event_type)
             if event.event_type == NativeShortMapLifecycleEventType.ACTIVATED:
                 continue
             if event.event_type == NativeShortMapLifecycleEventType.SUPERSEDED:
@@ -493,22 +499,18 @@ def project_current_native_short_map_lifecycle(
         )
 
     if latest_authoritative_event is not None:
-        projection = NativeShortMapLifecycleProjection(
-            key=scope_key,
-            lifecycle_state=NativeShortMapLifecycleState.MAP_REBUILD_REQUIRED,
-            lifecycle_state_source="AUTHORITATIVE_ATTEMPT",
-            authoritative_attempt_id=latest_authoritative_event.attempt_id,
-            authoritative_event_type=latest_authoritative_event.event_type,
-            authoritative_event_ts_utc=latest_authoritative_event.event_ts_utc,
-            authoritative_reason_code=latest_authoritative_event.reason_code,
-            latest_skip_attempt_id=None if latest_skip_event is None else latest_skip_event.attempt_id,
-            latest_skip_reason_code=None if latest_skip_event is None else latest_skip_event.reason_code,
-            latest_skip_event_ts_utc=None if latest_skip_event is None else latest_skip_event.event_ts_utc,
-        )
         if latest_authoritative_event.event_type == NativeShortMapGenerationEventType.FAILED:
-            return replace(
-                projection,
+            return NativeShortMapLifecycleProjection(
+                key=scope_key,
                 lifecycle_state=NativeShortMapLifecycleState.MAP_GENERATION_FAILED,
+                lifecycle_state_source="AUTHORITATIVE_ATTEMPT",
+                authoritative_attempt_id=latest_authoritative_event.attempt_id,
+                authoritative_event_type=latest_authoritative_event.event_type,
+                authoritative_event_ts_utc=latest_authoritative_event.event_ts_utc,
+                authoritative_reason_code=latest_authoritative_event.reason_code,
+                latest_skip_attempt_id=None if latest_skip_event is None else latest_skip_event.attempt_id,
+                latest_skip_reason_code=None if latest_skip_event is None else latest_skip_event.reason_code,
+                latest_skip_event_ts_utc=None if latest_skip_event is None else latest_skip_event.event_ts_utc,
             )
         if latest_authoritative_event.event_type == NativeShortMapGenerationEventType.REJECTED:
             rejected_state = (
@@ -516,10 +518,19 @@ def project_current_native_short_map_lifecycle(
                 if (latest_authoritative_event.reason_code or "") in DATA_UNAVAILABLE_REASON_CODES
                 else NativeShortMapLifecycleState.MAP_REBUILD_REJECTED
             )
-            return replace(
-                projection,
+            return NativeShortMapLifecycleProjection(
+                key=scope_key,
                 lifecycle_state=rejected_state,
+                lifecycle_state_source="AUTHORITATIVE_ATTEMPT",
+                authoritative_attempt_id=latest_authoritative_event.attempt_id,
+                authoritative_event_type=latest_authoritative_event.event_type,
+                authoritative_event_ts_utc=latest_authoritative_event.event_ts_utc,
+                authoritative_reason_code=latest_authoritative_event.reason_code,
+                latest_skip_attempt_id=None if latest_skip_event is None else latest_skip_event.attempt_id,
+                latest_skip_reason_code=None if latest_skip_event is None else latest_skip_event.reason_code,
+                latest_skip_event_ts_utc=None if latest_skip_event is None else latest_skip_event.event_ts_utc,
             )
+        # PUBLISHED: fall through to terminal map check
 
     if latest_terminal_map_event is not None:
         return NativeShortMapLifecycleProjection(

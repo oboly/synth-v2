@@ -695,3 +695,59 @@ def test_data_unavailable_reason_codes_match_contract() -> None:
         "INGEST_LOOKBACK_LIMIT",
         "NO_CLOSED_DAILY_CANDLES",
     }
+
+
+def test_projection_parity_published_then_completed_then_skipped() -> None:
+    # PUBLISHED map -> COMPLETED lifecycle -> SKIPPED attempt must yield
+    # MAP_REBUILD_REQUIRED + TERMINAL_MAP.
+    # SQL parity is covered by
+    # test_migration_view_lifecycle_state_source_terminal_map_precedes_published_path.
+    result = project_current_native_short_map_lifecycle(
+        scope_support=_supported(),
+        maps=[_map(1, 1)],
+        generation_events=[
+            _generation_event(1, NativeShortMapGenerationEventType.PUBLISHED, 2, attempt_id="attempt-1", map_id=1),
+            _generation_event(2, NativeShortMapGenerationEventType.SKIPPED, 10, attempt_id="attempt-2", reason_code="THROTTLED"),
+        ],
+        lifecycle_events=[
+            _lifecycle_event(1, 1, NativeShortMapLifecycleEventType.COMPLETED, 5),
+        ],
+    )
+
+    assert result.lifecycle_state == NativeShortMapLifecycleState.MAP_REBUILD_REQUIRED
+    assert result.lifecycle_state_source == "TERMINAL_MAP"
+    assert result.terminal_map_id == 1
+
+
+def test_validator_rejects_duplicate_activated_for_same_map() -> None:
+    with pytest.raises(NativeShortMapLifecycleValidationError, match="DUPLICATE_LIFECYCLE_EVENT_TYPE"):
+        validate_native_short_map_write_intent(
+            scope_support=_supported(),
+            maps=[_map(1, 1)],
+            generation_events=_published_attempt_events(
+                map_id=1,
+                started_event_id=10,
+                published_event_id=11,
+                start_minute=0,
+                publish_minute=1,
+            ),
+            lifecycle_events=[
+                _lifecycle_event(1, 1, NativeShortMapLifecycleEventType.ACTIVATED, 2),
+                _lifecycle_event(2, 1, NativeShortMapLifecycleEventType.ACTIVATED, 3),
+            ],
+        )
+
+
+def test_active_map_wins_over_open_attempt() -> None:
+    result = project_current_native_short_map_lifecycle(
+        scope_support=_supported(),
+        maps=[_map(1, 1)],
+        generation_events=[
+            _generation_event(10, NativeShortMapGenerationEventType.ATTEMPT_STARTED, 5, attempt_id="attempt-2"),
+        ],
+        lifecycle_events=[],
+    )
+
+    assert result.lifecycle_state == NativeShortMapLifecycleState.MAP_ACTIVE
+    assert result.active_map_id == 1
+    assert result.open_attempt_id is None

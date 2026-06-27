@@ -111,10 +111,35 @@ CREATE TABLE IF NOT EXISTS native_short_map_v1 (
         venue, symbol, quote_currency, fib_trading_horizon, primary_interval, supporting_interval, published_at_utc, map_id
     ),
     KEY idx_native_short_map_v1_structure (structure_hash),
-    KEY idx_native_short_map_v1_previous_map (previous_map_id),
+    KEY idx_native_short_map_v1_previous_map_scope (
+        previous_map_id,
+        venue,
+        symbol,
+        quote_currency,
+        fib_trading_horizon,
+        primary_interval,
+        supporting_interval
+    ),
 
-    CONSTRAINT fk_native_short_map_v1_previous_map
-        FOREIGN KEY (previous_map_id) REFERENCES native_short_map_v1 (map_id),
+    CONSTRAINT fk_native_short_map_v1_previous_map_scope
+        FOREIGN KEY (
+            previous_map_id,
+            venue,
+            symbol,
+            quote_currency,
+            fib_trading_horizon,
+            primary_interval,
+            supporting_interval
+        )
+        REFERENCES native_short_map_v1 (
+            map_id,
+            venue,
+            symbol,
+            quote_currency,
+            fib_trading_horizon,
+            primary_interval,
+            supporting_interval
+        ),
     CONSTRAINT chk_native_short_map_v1_horizon
         CHECK (fib_trading_horizon = 'SHORT')
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -475,8 +500,8 @@ SELECT
     CASE
         WHEN active_map.map_id IS NOT NULL THEN 'LATEST_ACTIVE_MAP'
         WHEN open_attempt.generation_event_id IS NOT NULL THEN 'OPEN_ATTEMPT'
-        WHEN authoritative_generation.generation_event_id IS NOT NULL THEN authoritative_generation.event_type
-        WHEN terminal_map.map_id IS NOT NULL THEN terminal_map.lifecycle_event_type
+        WHEN authoritative_generation.event_type IN ('FAILED', 'REJECTED') THEN authoritative_generation.event_type
+        WHEN terminal_map.map_id IS NOT NULL THEN 'TERMINAL_MAP'
         WHEN s.scope_support_state = 'NOT_APPLICABLE' THEN 'SCOPE_POLICY'
         ELSE 'NO_AUTHORITATIVE_ATTEMPT'
     END AS lifecycle_state_source,
