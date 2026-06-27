@@ -227,10 +227,22 @@ Required columns:
 Supported `anchor_type` values in v1:
 
 ```text
-PPP_PRICE
+NATIVE_SHORT_ANCHOR_HIGH
 ```
 
-Do not add `ENTRY_PRICE`, manual anchors, or other anchor sources until a separate requirement exists.
+`NATIVE_SHORT_ANCHOR_HIGH` resolves to `NativeShortContextRow.anchor_high_price` (swing high / breakout gate
+price from the active native short map cycle). Its backing DB column is
+`native_short_map_v1.anchor_high_price DECIMAL(30,12)`.
+
+**PPP (Profit Plan Potential Pct) is a calculated percentage, not a price.**
+Do not use `PPP_PRICE` or `ProfitPlanCard.active_target` as a ladder anchor.
+`active_target` is the first unhit fib extension level (ext_1_272 / ext_1_618), which is above
+the buy zone and is not appropriate for recovery exits below the plan entry reference.
+The anchor resolver is blocked when `context_status != NATIVE_SHORT_CONTEXT_AVAILABLE` or when
+`anchor_high_price` is null.
+
+Do not add `ENTRY_PRICE`, `PPP_PRICE`, `ACTIVE_SELL_TARGET_PRICE`, manual anchors, or other
+anchor sources until a separate requirement exists.
 
 ### 4. `execution_ladder_leg`
 
@@ -270,9 +282,9 @@ Create exactly one default profile for each account that is eligible for manual 
 ```text
 profile_code: SELL_PPP_RECOVERY_V1
 display_label: Sell PPP recovery ladder
-description: Split a user-selected sell trade amount into two equal limit sells below the current PPP anchor. Intended for user-confirmed recovery exits only.
+description: Split a user-selected sell trade amount into two equal limit sells below the Native Short anchor high price. Intended for user-confirmed recovery exits only.
 side: SELL
-anchor_type: PPP_PRICE
+anchor_type: NATIVE_SHORT_ANCHOR_HIGH
 default sizing rule: MANUAL_ONLY
 version: 1
 ```
@@ -291,7 +303,7 @@ allocation_bps: 5000
 order_type: LIMIT
 ```
 
-For a user-selected trade amount of €10 and PPP anchor of €1.00:
+For a user-selected trade amount of €10 and Native Short anchor high price of €1.00 (`NativeShortContextRow.anchor_high_price`):
 
 ```text
 leg 1: €5.00 limit sell at €0.94
@@ -319,10 +331,10 @@ Suggested required fields:
 | `suggested_quote_amount` | derived suggestion, nullable |
 | `requested_quote_amount` | final user-confirmed amount |
 | `trade_amount_source` | `MANUAL_OVERRIDE`, `PROFILE_DEFAULT`, or `USER_CONFIRMED_SUGGESTION` |
-| `anchor_type` | copied snapshot |
-| `anchor_price` | copied PPP snapshot |
-| `source_map_revision` | copied source context where available |
-| `source_epoch_id` | copied source context where available |
+| `anchor_type` | copied snapshot — `NATIVE_SHORT_ANCHOR_HIGH` for v1 |
+| `anchor_price` | resolved `anchor_high_price` snapshot from native short context at request time |
+| `source_map_cycle_id` | `NativeShortContextRow.map_cycle_id` — compound string `"{symbol}\|SHORT\|4h\|{start}\|{end}"` |
+| `source_native_map_id` | `native_short_map_v1.map_id` if resolvable at request time; NULL otherwise |
 | `status` | explicit lifecycle status |
 | `created_at` | audit timestamp |
 | `processed_at` | processing timestamp |
@@ -354,6 +366,7 @@ When a request passes the gate and reaches the planner, persist a deterministic 
 profile_id
 profile_version
 leg_number
+anchor_type
 anchor_price
 price_offset_bps
 limit_price
@@ -362,11 +375,11 @@ computed_base_quantity
 rounded_base_quantity
 exchange_minimum_validation
 available_balance_snapshot
-source_map_revision
-source_epoch_id
+source_map_cycle_id
+source_native_map_id
 ```
 
-A later configuration edit, PPP update, map rotation, or UI refresh must never alter the planned or submitted orders.
+A later configuration edit, anchor map rotation, or UI refresh must never alter the planned or submitted orders.
 
 ## Gate Requirements
 
@@ -423,7 +436,7 @@ Future sizing rules may populate a suggestion, but the user may override it befo
 Before adding to tray, show at least:
 
 ```text
-PPP anchor
+anchor price (NATIVE_SHORT_ANCHOR_HIGH — NativeShortContextRow.anchor_high_price)
 profile label and version
 selected trade amount
 per-leg quote allocation
