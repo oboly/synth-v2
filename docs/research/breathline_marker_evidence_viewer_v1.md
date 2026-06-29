@@ -157,6 +157,18 @@ anchor/marker time window
 No matcher behavior is reimplemented. The viewer only reads existing observation fields and the
 public candle path needed to draw them.
 
+For DB-backed daily candles, the viewer uses the candle `open_ts_utc` schedule coordinate so
+selected HIGH/LOW extrema align with the same candle timestamp convention used by the matcher.
+The chart also shows:
+
+```text
+LATTICE ANCHOR = raw anchor_ts_utc
+OFFSET-ADJUSTED ORIGIN = anchor_ts_utc + phase_offset_days
+```
+
+The offset-adjusted origin is a schedule coordinate only. It is not a confirmed market phase
+start.
+
 ## Output Files
 
 The runner writes:

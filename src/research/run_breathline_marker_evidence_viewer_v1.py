@@ -41,11 +41,11 @@ SOURCE_TABLE = "obs_market_candle"
 DEFAULT_VENUE = "bitvavo"
 
 SVG_WIDTH = 1360
-SVG_HEIGHT = 620
+SVG_HEIGHT = 700
 SVG_PAD_LEFT = 84.0
 SVG_PAD_RIGHT = 28.0
-SVG_PAD_TOP = 70.0
-SVG_PAD_BOTTOM = 72.0
+SVG_PAD_TOP = 86.0
+SVG_PAD_BOTTOM = 120.0
 
 INTERVAL_DELTAS = {
     "15m": timedelta(minutes=15),
@@ -71,6 +71,7 @@ CSV_FIELDS = [
 @dataclass(frozen=True)
 class Candle:
     ts: datetime
+    close_ts: datetime | None
     open_price: float
     high_price: float
     low_price: float
@@ -292,13 +293,24 @@ def marker_timing_delta_hours(marker: ParsedMarker) -> float | None:
     return round((marker.observed_ts - marker.expected_ts).total_seconds() / 3600.0, 3)
 
 
-def chart_window(record: EvidenceRecord) -> tuple[datetime, datetime]:
-    times = [record.anchor_ts]
+def schedule_origin_ts(record: EvidenceRecord) -> datetime:
+    offset_days = record.phase_offset_days if record.phase_offset_days is not None else 0.0
+    return record.anchor_ts + timedelta(days=offset_days)
+
+
+def chart_relevant_times(record: EvidenceRecord) -> list[datetime]:
+    times = [record.anchor_ts, schedule_origin_ts(record)]
     for marker in record.markers:
-        times.append(marker.expected_ts)
+        window_start, window_end = tolerance_window(marker, record.tolerance_hours)
+        times.extend([window_start, marker.expected_ts, window_end])
         if marker.observed_ts is not None:
             times.append(marker.observed_ts)
-    pad = max(timedelta(hours=record.tolerance_hours), interval_delta(record.interval_code), timedelta(hours=12))
+    return times
+
+
+def chart_window(record: EvidenceRecord) -> tuple[datetime, datetime]:
+    times = chart_relevant_times(record)
+    pad = timedelta(days=2)
     return (min(times) - pad, max(times) + pad)
 
 
@@ -344,6 +356,7 @@ def parse_candle_rows(raw_candles: Any, *, context: str) -> tuple[Candle, ...]:
         candles.append(
             Candle(
                 ts=ts,
+                close_ts=None,
                 open_price=open_price,
                 high_price=high_price,
                 low_price=low_price,
@@ -573,6 +586,7 @@ def fetch_candles_for_group(
     sql = f"""
         SELECT
             a.symbol,
+            c.open_ts_utc,
             c.close_ts_utc,
             c.open_price,
             c.high_price,
@@ -585,8 +599,8 @@ def fetch_candles_for_group(
           AND c.interval_code = %s
           AND a.symbol IN ({placeholders})
           AND c.close_ts_utc >= %s
-          AND c.close_ts_utc <= %s
-        ORDER BY a.symbol ASC, c.close_ts_utc ASC
+          AND c.open_ts_utc <= %s
+        ORDER BY a.symbol ASC, c.open_ts_utc ASC
     """
     params: list[Any] = [venue, interval_code, *symbols, naive_utc(min(starts)), naive_utc(max(ends))]
     grouped: dict[str, list[Candle]] = defaultdict(list)
@@ -594,14 +608,20 @@ def fetch_candles_for_group(
         cur.execute(sql, params)
         rows = cur.fetchall()
     for row in rows:
-        ts = row["close_ts_utc"]
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=UTC)
+        open_ts = row["open_ts_utc"]
+        if open_ts.tzinfo is None:
+            open_ts = open_ts.replace(tzinfo=UTC)
         else:
-            ts = ts.astimezone(UTC)
+            open_ts = open_ts.astimezone(UTC)
+        close_ts = row["close_ts_utc"]
+        if close_ts.tzinfo is None:
+            close_ts = close_ts.replace(tzinfo=UTC)
+        else:
+            close_ts = close_ts.astimezone(UTC)
         grouped[str(row["symbol"]).upper()].append(
             Candle(
-                ts=ts,
+                ts=open_ts,
+                close_ts=close_ts,
                 open_price=float(row["open_price"]),
                 high_price=float(row["high_price"]),
                 low_price=float(row["low_price"]),
@@ -611,9 +631,19 @@ def fetch_candles_for_group(
     return {symbol: tuple(grouped.get(symbol, [])) for symbol in symbols}
 
 
+def candle_end_ts(candle: Candle, *, interval_code: str) -> datetime:
+    if candle.close_ts is not None:
+        return candle.close_ts
+    return candle.ts + interval_delta(interval_code)
+
+
 def filter_candles_to_record(candles: tuple[Candle, ...], record: EvidenceRecord) -> tuple[Candle, ...]:
     start_ts, end_ts = chart_window(record)
-    return tuple(candle for candle in candles if start_ts <= candle.ts <= end_ts)
+    return tuple(
+        candle
+        for candle in candles
+        if candle_end_ts(candle, interval_code=record.interval_code) >= start_ts and candle.ts <= end_ts
+    )
 
 
 def resolve_candles(records: list[EvidenceRecord]) -> tuple[dict[tuple[str, str, str], CandleLoadResult], int]:
@@ -727,10 +757,106 @@ def marker_color(marker: ParsedMarker) -> str:
     return "#a43d4f" if marker.kind == "HIGH" else "#1d7b5a"
 
 
+def render_reference_lines(record: EvidenceRecord, *, start_ts: datetime, end_ts: datetime, plot_bottom: float) -> list[str]:
+    anchor_x = x_for_ts(record.anchor_ts, start_ts=start_ts, end_ts=end_ts)
+    origin_ts = schedule_origin_ts(record)
+    origin_x = x_for_ts(origin_ts, start_ts=start_ts, end_ts=end_ts)
+    return [
+        f"<line class='anchor-line' x1='{anchor_x:.2f}' y1='{SVG_PAD_TOP:.1f}' x2='{anchor_x:.2f}' y2='{plot_bottom:.1f}' "
+        f"stroke='#003049' stroke-width='2.2' stroke-dasharray='8 4' data-anchor-ts='{esc(record.anchor_ts_utc)}'></line>",
+        f"<text x='{anchor_x + 6:.2f}' y='{SVG_PAD_TOP + 16:.1f}' class='marker-label' fill='#003049'>LATTICE ANCHOR</text>",
+        f"<line class='origin-line' x1='{origin_x:.2f}' y1='{SVG_PAD_TOP:.1f}' x2='{origin_x:.2f}' y2='{plot_bottom:.1f}' "
+        f"stroke='#6a6257' stroke-width='2.0' stroke-dasharray='4 4' data-offset-origin-ts='{esc(iso_utc(origin_ts))}'></line>",
+        f"<text x='{origin_x + 6:.2f}' y='{SVG_PAD_TOP + 32:.1f}' class='marker-label' fill='#6a6257'>OFFSET-ADJUSTED ORIGIN</text>",
+    ]
+
+
+def build_date_ticks(start_ts: datetime, end_ts: datetime, *, interval_code: str) -> list[datetime]:
+    if interval_code != "1d":
+        return [start_ts, end_ts]
+    current = datetime(start_ts.year, start_ts.month, start_ts.day, tzinfo=UTC)
+    ticks: list[datetime] = []
+    while current <= end_ts:
+        ticks.append(current)
+        current += timedelta(days=2)
+    extras = [
+        datetime(start_ts.year, start_ts.month, start_ts.day, tzinfo=UTC),
+        datetime(end_ts.year, end_ts.month, end_ts.day, tzinfo=UTC),
+    ]
+    seen: set[datetime] = set()
+    ordered: list[datetime] = []
+    for tick in [*extras[:1], *ticks, extras[1]]:
+        if tick not in seen:
+            seen.add(tick)
+            ordered.append(tick)
+    return ordered
+
+
+def render_x_axis(*, start_ts: datetime, end_ts: datetime, interval_code: str, plot_bottom: float) -> list[str]:
+    axis_y = plot_bottom + 18.0
+    pieces = [
+        f"<line x1='{SVG_PAD_LEFT:.1f}' y1='{axis_y:.1f}' x2='{SVG_WIDTH - SVG_PAD_RIGHT:.1f}' y2='{axis_y:.1f}' stroke='#8f8576' stroke-width='1.2'></line>"
+    ]
+    ticks = build_date_ticks(start_ts, end_ts, interval_code=interval_code)
+    for tick in ticks:
+        x = x_for_ts(tick, start_ts=start_ts, end_ts=end_ts)
+        pieces.append(
+            f"<line x1='{x:.2f}' y1='{axis_y:.1f}' x2='{x:.2f}' y2='{axis_y + 6:.1f}' stroke='#8f8576' stroke-width='1'></line>"
+        )
+        pieces.append(
+            f"<text x='{x:.2f}' y='{axis_y + 22:.1f}' class='axis-label' text-anchor='middle'>{esc(tick.strftime('%Y-%m-%d'))}</text>"
+        )
+    pieces.append(
+        f"<text x='{SVG_PAD_LEFT:.1f}' y='{axis_y + 44:.1f}' class='axis-label' text-anchor='start'>range start {esc(start_ts.strftime('%Y-%m-%d'))}</text>"
+    )
+    pieces.append(
+        f"<text x='{SVG_WIDTH - SVG_PAD_RIGHT:.1f}' y='{axis_y + 44:.1f}' class='axis-label' text-anchor='end'>range end {esc(end_ts.strftime('%Y-%m-%d'))}</text>"
+    )
+    return pieces
+
+
+def render_legend() -> list[str]:
+    legend_x = SVG_WIDTH - 364.0
+    legend_y = 12.0
+    row_gap = 18.0
+    pieces = [
+        f"<rect x='{legend_x:.1f}' y='{legend_y:.1f}' width='330' height='162' rx='10' fill='#fff7ea' stroke='#d9c9a8'></rect>",
+        f"<text x='{legend_x + 12:.1f}' y='{legend_y + 18:.1f}' class='axis-label' style='font-weight:600'>Legend</text>",
+    ]
+    items = [
+        ("window-high", "red window = expected HIGH search window"),
+        ("window-low", "green window = expected LOW search window"),
+        ("expected", "coloured dashed line = expected marker time"),
+        ("dot", "dot = selected observed extremum"),
+        ("connector", "diagonal dashed connector = expected-to-observed timing deviation"),
+        ("anchor", "blue dashed line = lattice anchor"),
+        ("origin", "neutral dashed line = offset-adjusted schedule origin"),
+    ]
+    for index, (kind, label) in enumerate(items):
+        y = legend_y + 36.0 + index * row_gap
+        if kind == "window-high":
+            pieces.append(f"<rect x='{legend_x + 12:.1f}' y='{y - 10:.1f}' width='20' height='10' fill='#a43d4f' fill-opacity='0.18'></rect>")
+        elif kind == "window-low":
+            pieces.append(f"<rect x='{legend_x + 12:.1f}' y='{y - 10:.1f}' width='20' height='10' fill='#1d7b5a' fill-opacity='0.18'></rect>")
+        elif kind == "expected":
+            pieces.append(f"<line x1='{legend_x + 12:.1f}' y1='{y - 4:.1f}' x2='{legend_x + 32:.1f}' y2='{y - 4:.1f}' stroke='#a43d4f' stroke-width='1.6' stroke-dasharray='3 5'></line>")
+        elif kind == "dot":
+            pieces.append(f"<circle cx='{legend_x + 22:.1f}' cy='{y - 4:.1f}' r='4.2' fill='#a43d4f' stroke='#ffffff' stroke-width='1'></circle>")
+        elif kind == "connector":
+            pieces.append(f"<line x1='{legend_x + 12:.1f}' y1='{y:.1f}' x2='{legend_x + 32:.1f}' y2='{y - 10:.1f}' stroke='#a43d4f' stroke-width='1.1' stroke-dasharray='2 4'></line>")
+        elif kind == "anchor":
+            pieces.append(f"<line x1='{legend_x + 22:.1f}' y1='{y - 10:.1f}' x2='{legend_x + 22:.1f}' y2='{y:.1f}' stroke='#003049' stroke-width='2' stroke-dasharray='8 4'></line>")
+        elif kind == "origin":
+            pieces.append(f"<line x1='{legend_x + 22:.1f}' y1='{y - 10:.1f}' x2='{legend_x + 22:.1f}' y2='{y:.1f}' stroke='#6a6257' stroke-width='2' stroke-dasharray='4 4'></line>")
+        pieces.append(f"<text x='{legend_x + 40:.1f}' y='{y:.1f}' class='axis-label' text-anchor='start'>{esc(label)}</text>")
+    return pieces
+
+
 def render_timeline_svg(record: EvidenceRecord, load_result: CandleLoadResult) -> str:
     start_ts, end_ts = chart_window(record)
     plot_top = SVG_PAD_TOP
     plot_height = SVG_HEIGHT - SVG_PAD_TOP - SVG_PAD_BOTTOM
+    plot_bottom = SVG_HEIGHT - SVG_PAD_BOTTOM
     mid_y = plot_top + plot_height / 2.0
     pieces = [
         f"<svg viewBox='0 0 {SVG_WIDTH} {SVG_HEIGHT}' class='chart' role='img' aria-label='{esc(record.symbol)} evidence timeline'>",
@@ -741,15 +867,8 @@ def render_timeline_svg(record: EvidenceRecord, load_result: CandleLoadResult) -
         f"<line x1='{SVG_PAD_LEFT:.1f}' y1='{mid_y:.1f}' x2='{SVG_WIDTH - SVG_PAD_RIGHT:.1f}' y2='{mid_y:.1f}' "
         f"stroke='#6a6257' stroke-width='1.6' stroke-dasharray='4 5'></line>",
     ]
-
-    anchor_x = x_for_ts(record.anchor_ts, start_ts=start_ts, end_ts=end_ts)
-    pieces.append(
-        f"<line x1='{anchor_x:.2f}' y1='{SVG_PAD_TOP:.1f}' x2='{anchor_x:.2f}' y2='{SVG_HEIGHT - SVG_PAD_BOTTOM:.1f}' "
-        f"stroke='#003049' stroke-width='2.2' stroke-dasharray='8 4' data-anchor-ts='{esc(record.anchor_ts_utc)}'></line>"
-    )
-    pieces.append(
-        f"<text x='{anchor_x + 6:.2f}' y='{SVG_PAD_TOP + 16:.1f}' class='marker-label'>ANCHOR</text>"
-    )
+    pieces.extend(render_reference_lines(record, start_ts=start_ts, end_ts=end_ts, plot_bottom=plot_bottom))
+    pieces.extend(render_legend())
 
     for marker in record.markers:
         window_start, window_end = tolerance_window(marker, record.tolerance_hours)
@@ -768,7 +887,7 @@ def render_timeline_svg(record: EvidenceRecord, load_result: CandleLoadResult) -
             f"data-marker-code='{esc(marker.code)}' data-expected-ts='{esc(marker.expected_ts_utc)}'></line>"
         )
         pieces.append(
-            f"<text x='{expected_x + 4:.2f}' y='{SVG_HEIGHT - SVG_PAD_BOTTOM + 18:.1f}' class='marker-label'>{esc(marker.code)}</text>"
+            f"<text x='{expected_x + 4:.2f}' y='{plot_bottom + 18:.1f}' class='marker-label'>{esc(marker.code)}</text>"
         )
         if marker.matched and marker.observed_ts is not None:
             observed_x = x_for_ts(marker.observed_ts, start_ts=start_ts, end_ts=end_ts)
@@ -783,6 +902,7 @@ def render_timeline_svg(record: EvidenceRecord, load_result: CandleLoadResult) -
                 f"stroke='{marker_color(marker)}' stroke-width='1.1' stroke-dasharray='2 4'></line>"
             )
 
+    pieces.extend(render_x_axis(start_ts=start_ts, end_ts=end_ts, interval_code=record.interval_code, plot_bottom=plot_bottom))
     pieces.append("</svg>")
     return "".join(pieces)
 
@@ -795,6 +915,7 @@ def render_candle_svg(record: EvidenceRecord, load_result: CandleLoadResult) -> 
     start_ts, end_ts = chart_window(record)
     plot_width = SVG_WIDTH - SVG_PAD_LEFT - SVG_PAD_RIGHT
     plot_height = SVG_HEIGHT - SVG_PAD_TOP - SVG_PAD_BOTTOM
+    plot_bottom = SVG_HEIGHT - SVG_PAD_BOTTOM
     prices = [candle.high_price for candle in candles] + [candle.low_price for candle in candles]
     for marker in record.markers:
         if marker.observed_price is not None:
@@ -817,6 +938,8 @@ def render_candle_svg(record: EvidenceRecord, load_result: CandleLoadResult) -> 
     ]
     if load_result.warning:
         pieces.append(f"<text x='28' y='38' class='chart-warning'>{esc(load_result.warning)}</text>")
+    pieces.extend(render_reference_lines(record, start_ts=start_ts, end_ts=end_ts, plot_bottom=plot_bottom))
+    pieces.extend(render_legend())
 
     for idx in range(5):
         value = min_price + (max_price - min_price) * idx / 4.0
@@ -828,13 +951,6 @@ def render_candle_svg(record: EvidenceRecord, load_result: CandleLoadResult) -> 
         pieces.append(
             f"<text x='10' y='{y + 4:.2f}' class='axis-label'>{esc(fmt_price(value))}</text>"
         )
-
-    anchor_x = x_for_ts(record.anchor_ts, start_ts=start_ts, end_ts=end_ts)
-    pieces.append(
-        f"<line x1='{anchor_x:.2f}' y1='{SVG_PAD_TOP:.1f}' x2='{anchor_x:.2f}' y2='{SVG_HEIGHT - SVG_PAD_BOTTOM:.1f}' "
-        f"stroke='#003049' stroke-width='2.2' stroke-dasharray='8 4' data-anchor-ts='{esc(record.anchor_ts_utc)}'></line>"
-    )
-    pieces.append(f"<text x='{anchor_x + 6:.2f}' y='{SVG_PAD_TOP + 16:.1f}' class='marker-label'>ANCHOR</text>")
 
     for marker in record.markers:
         window_start, window_end = tolerance_window(marker, record.tolerance_hours)
@@ -853,7 +969,7 @@ def render_candle_svg(record: EvidenceRecord, load_result: CandleLoadResult) -> 
             f"data-marker-code='{esc(marker.code)}' data-expected-ts='{esc(marker.expected_ts_utc)}'></line>"
         )
         pieces.append(
-            f"<text x='{expected_x + 4:.2f}' y='{SVG_HEIGHT - SVG_PAD_BOTTOM + 18:.1f}' class='marker-label'>{esc(marker.code)}</text>"
+            f"<text x='{expected_x + 4:.2f}' y='{plot_bottom + 18:.1f}' class='marker-label'>{esc(marker.code)}</text>"
         )
 
     for candle in candles:
@@ -866,10 +982,13 @@ def render_candle_svg(record: EvidenceRecord, load_result: CandleLoadResult) -> 
         body_h = max(abs(open_y - close_y), 1.6)
         color = "#0f7b4d" if candle.close_price >= candle.open_price else "#a43d4f"
         pieces.append(
-            f"<line class='candle-wick' x1='{x:.2f}' y1='{wick_y1:.2f}' x2='{x:.2f}' y2='{wick_y2:.2f}' stroke='{color}' stroke-width='1.2'></line>"
+            f"<line class='candle-wick' x1='{x:.2f}' y1='{wick_y1:.2f}' x2='{x:.2f}' y2='{wick_y2:.2f}' stroke='{color}' stroke-width='1.2' "
+            f"data-candle-ts='{esc(iso_utc(candle.ts))}' data-candle-close-ts='{esc(iso_utc(candle.close_ts))}' "
+            f"data-candle-high='{esc(fmt_price(candle.high_price))}' data-candle-low='{esc(fmt_price(candle.low_price))}'></line>"
         )
         pieces.append(
             f"<rect class='candle-body' x='{x - candle_width / 2:.2f}' y='{body_y:.2f}' width='{candle_width:.2f}' height='{body_h:.2f}' "
+            f"data-candle-ts='{esc(iso_utc(candle.ts))}' data-candle-close-ts='{esc(iso_utc(candle.close_ts))}' "
             f"fill='{color}' fill-opacity='0.82' stroke='{color}' stroke-width='1'></rect>"
         )
 
@@ -889,6 +1008,7 @@ def render_candle_svg(record: EvidenceRecord, load_result: CandleLoadResult) -> 
             f"data-observed-price='{esc(fmt_price(marker.observed_price))}'></circle>"
         )
 
+    pieces.extend(render_x_axis(start_ts=start_ts, end_ts=end_ts, interval_code=record.interval_code, plot_bottom=plot_bottom))
     pieces.append("</svg>")
     return "".join(pieces)
 
@@ -971,6 +1091,7 @@ def render_page(
     metadata_rows = [
         ("symbol", record.symbol),
         ("anchor_ts_utc", record.anchor_ts_utc),
+        ("offset_adjusted_origin_ts_utc", iso_utc(schedule_origin_ts(record))),
         ("checkpoint_ratio", record.checkpoint_ratio),
         ("selected_partial_offset_days", fmt_float(record.selected_partial_offset_days)),
         ("phase_offset_days", fmt_float(record.phase_offset_days)),

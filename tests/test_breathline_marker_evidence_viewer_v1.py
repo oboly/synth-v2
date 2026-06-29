@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import csv
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -229,6 +230,24 @@ def _freeze_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runner, "current_git_commit", lambda: FIXED_COMMIT)
 
 
+def _extract_marker_x(html_text: str, marker_code: str) -> float:
+    match = re.search(
+        rf"<circle[^>]*cx='([0-9.]+)'[^>]*data-selected-marker='{re.escape(marker_code)}'",
+        html_text,
+    )
+    assert match is not None, marker_code
+    return float(match.group(1))
+
+
+def _extract_candle_wick_x(html_text: str, candle_ts: str) -> float:
+    match = re.search(
+        rf"class='candle-wick' x1='([0-9.]+)'[^>]*data-candle-ts='{re.escape(candle_ts)}'",
+        html_text,
+    )
+    assert match is not None, candle_ts
+    return float(match.group(1))
+
+
 class _FakeCursor:
     def __init__(self, connection: "_FakeConnection") -> None:
         self._connection = connection
@@ -251,7 +270,8 @@ class _FakeCursor:
             self._rows = [
                 {
                     "symbol": "BTC",
-                    "close_ts_utc": datetime(2025, 1, 1, 0, 0, tzinfo=UTC),
+                    "open_ts_utc": datetime(2025, 1, 1, 0, 0, tzinfo=UTC),
+                    "close_ts_utc": datetime(2025, 1, 2, 0, 0, tzinfo=UTC),
                     "open_price": 100.0,
                     "high_price": 104.0,
                     "low_price": 99.0,
@@ -259,7 +279,8 @@ class _FakeCursor:
                 },
                 {
                     "symbol": "BTC",
-                    "close_ts_utc": datetime(2025, 1, 2, 0, 0, tzinfo=UTC),
+                    "open_ts_utc": datetime(2025, 1, 2, 0, 0, tzinfo=UTC),
+                    "close_ts_utc": datetime(2025, 1, 3, 0, 0, tzinfo=UTC),
                     "open_price": 103.0,
                     "high_price": 106.0,
                     "low_price": 101.0,
@@ -267,7 +288,8 @@ class _FakeCursor:
                 },
                 {
                     "symbol": "BTC",
-                    "close_ts_utc": datetime(2025, 1, 3, 0, 0, tzinfo=UTC),
+                    "open_ts_utc": datetime(2025, 1, 3, 0, 0, tzinfo=UTC),
+                    "close_ts_utc": datetime(2025, 1, 4, 0, 0, tzinfo=UTC),
                     "open_price": 105.0,
                     "high_price": 109.0,
                     "low_price": 104.0,
@@ -275,7 +297,8 @@ class _FakeCursor:
                 },
                 {
                     "symbol": "BTC",
-                    "close_ts_utc": datetime(2025, 1, 4, 0, 0, tzinfo=UTC),
+                    "open_ts_utc": datetime(2025, 1, 4, 0, 0, tzinfo=UTC),
+                    "close_ts_utc": datetime(2025, 1, 5, 0, 0, tzinfo=UTC),
                     "open_price": 108.0,
                     "high_price": 112.0,
                     "low_price": 106.0,
@@ -283,7 +306,8 @@ class _FakeCursor:
                 },
                 {
                     "symbol": "BTC",
-                    "close_ts_utc": datetime(2025, 1, 5, 0, 0, tzinfo=UTC),
+                    "open_ts_utc": datetime(2025, 1, 5, 0, 0, tzinfo=UTC),
+                    "close_ts_utc": datetime(2025, 1, 6, 0, 0, tzinfo=UTC),
                     "open_price": 111.0,
                     "high_price": 113.0,
                     "low_price": 107.0,
@@ -547,10 +571,71 @@ def test_mocked_read_only_db_success_renders_real_candles(
     html_text = (output_dir / "evidence_btc_20250101T000000Z_cp_0p618.html").read_text(encoding="utf-8")
     assert "class='candle-body'" in html_text
     assert "class='candle-wick'" in html_text
+    assert "data-candle-ts='2025-01-02T00:00:00Z'" in html_text
 
     manifest_text = (output_dir / "manifest.txt").read_text(encoding="utf-8")
     assert "db_reads=2" in manifest_text
     assert "candles unavailable" not in html_text.lower()
+
+
+def test_selected_high_and_low_markers_align_with_matching_wicks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _freeze_metadata(monkeypatch)
+    fake_connection = _FakeConnection()
+    monkeypatch.setattr(runner, "get_connection", lambda: fake_connection)
+
+    input_path = tmp_path / "input.jsonl"
+    output_dir = tmp_path / "out"
+    rows = [
+        _ok_row(
+            symbol="BTC",
+            anchor_ts_utc="2025-01-01T00:00:00Z",
+            checkpoint_ratio="0.618",
+            selected_partial_offset_days=0.0,
+            markers=[
+                _marker(
+                    "FIRST_LIFT_HIGH",
+                    "2025-01-02T00:00:00Z",
+                    kind="HIGH",
+                    ratio=0.236,
+                    matched=True,
+                    observed_ts_utc="2025-01-02T00:00:00Z",
+                    observed_price=106.0,
+                    timing_error_hours=0.0,
+                ),
+                _marker(
+                    "FIRST_DIP_LOW",
+                    "2025-01-03T00:00:00Z",
+                    kind="LOW",
+                    ratio=0.382,
+                    matched=True,
+                    observed_ts_utc="2025-01-03T00:00:00Z",
+                    observed_price=104.0,
+                    timing_error_hours=0.0,
+                ),
+            ],
+            evidence_candles=None,
+        )
+    ]
+    _write_jsonl(input_path, rows)
+
+    code = main(["--input-jsonl", str(input_path), "--out-dir", str(output_dir)])
+    assert code == 0
+
+    html_text = (output_dir / "evidence_btc_20250101T000000Z_cp_0p618.html").read_text(encoding="utf-8")
+    high_dot_x = _extract_marker_x(html_text, "FIRST_LIFT_HIGH")
+    low_dot_x = _extract_marker_x(html_text, "FIRST_DIP_LOW")
+    high_wick_x = _extract_candle_wick_x(html_text, "2025-01-02T00:00:00Z")
+    low_wick_x = _extract_candle_wick_x(html_text, "2025-01-03T00:00:00Z")
+    wrong_high_wick_x = _extract_candle_wick_x(html_text, "2025-01-03T00:00:00Z")
+    wrong_low_wick_x = _extract_candle_wick_x(html_text, "2025-01-04T00:00:00Z")
+
+    assert high_dot_x == pytest.approx(high_wick_x, abs=0.01)
+    assert low_dot_x == pytest.approx(low_wick_x, abs=0.01)
+    assert abs(high_dot_x - wrong_high_wick_x) > 0.01
+    assert abs(low_dot_x - wrong_low_wick_x) > 0.01
 
 
 def test_safety_markers_appear_in_manifest_and_pages(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
