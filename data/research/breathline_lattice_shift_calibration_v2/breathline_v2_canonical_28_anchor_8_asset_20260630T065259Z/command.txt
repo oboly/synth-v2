@@ -1,0 +1,5 @@
+python -m src.research.run_breathline_lattice_shift_calibration_v2 \
+  --input-jsonl /home/gurk/projects/synth-v2-breathline-baseline-replay/data/research/breathline_backtest_campaign_v1/canonical_28_anchor_replay_20260627T124411Z/partial_to_full/breath_curve_partial_to_full_v1_20260627T124411Z.jsonl \
+  --out-dir data/research/breathline_lattice_shift_calibration_v2/breathline_v2_canonical_28_anchor_8_asset_20260630T065259Z \
+  --symbols BTC,ETH,TAO,RENDER,FIL,HBAR,XLM,PEPE \
+  --sensitivity-modes STRICT,NORMAL,MAX
