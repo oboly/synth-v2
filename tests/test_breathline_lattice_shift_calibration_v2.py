@@ -161,6 +161,26 @@ def test_shift_grid_boundary_ownership() -> None:
     )
 
 
+def test_calibration_runner_csv_output_is_lf_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _freeze_metadata(monkeypatch)
+    input_path = tmp_path / "input.jsonl"
+    candles_path = tmp_path / "candles.jsonl"
+    out_dir = tmp_path / "out"
+    anchor = datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
+    _write_jsonl(input_path, [
+        {"status": "OK", "symbol": "BTC", "raw_lattice_anchor_ts_utc": anchor.isoformat().replace("+00:00", "Z"), "interval_code": "1d"},
+    ])
+    _write_jsonl(candles_path, _build_cycle_rows("BTC", anchor, 0.0))
+    main(["--input-jsonl", str(input_path), "--candles-jsonl", str(candles_path), "--out-dir", str(out_dir)])
+    for csv_file in sorted(out_dir.glob("*.csv")):
+        raw = csv_file.read_bytes()
+        assert b"\r\n" not in raw, f"{csv_file.name} contains CRLF"
+        assert b"\r" not in raw, f"{csv_file.name} contains bare CR"
+
+
 def test_source_has_no_forbidden_runtime_imports() -> None:
     tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
     imports: list[str] = []
