@@ -351,7 +351,12 @@ def discover_arm_a_flattened_csvs(extraction_root: Path) -> list[Path]:
 
 
 def discover_arm_a_manifests(extraction_root: Path) -> list[Path]:
-    return sorted(extraction_root.rglob("breathline_v1_recovery_manifest_arm_a_*.json"))
+    # The Arm-A runner writes breathline_v1_recovery_manifest_{run_id}.json with no
+    # fixed "arm_a" segment in the filename template itself (see
+    # run_breathline_v1_recovery_orchestration_v1.py); only run_id's own content
+    # happens to start with "arm_a_" today. Match on the real, ARM_ID-agnostic
+    # template rather than assuming a literal "_arm_a_" filename segment.
+    return sorted(extraction_root.rglob("breathline_v1_recovery_manifest_*.json"))
 
 
 def load_arm_a_evidence(extraction_root: Path) -> ArmAEvidence:

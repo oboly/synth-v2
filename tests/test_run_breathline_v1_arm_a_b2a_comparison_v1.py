@@ -36,6 +36,7 @@ from src.research.run_breathline_v1_arm_a_b2a_comparison_v1 import (
     build_contrast_rows,
     build_matched_cell_rows,
     build_pooled_descriptive_summary,
+    discover_arm_a_manifests,
     load_arm_a_evidence,
     load_b2a_evidence,
     main,
@@ -108,12 +109,14 @@ def build_arm_a_manifest(symbol: str, anchor_date: str, run_id: str) -> dict:
     }
 
 
-def build_arm_a_content(symbols: list[str], anchors_ts_utc: list[str]) -> dict[str, bytes]:
+def build_arm_a_content(
+    symbols: list[str], anchors_ts_utc: list[str], *, run_id_prefix: str = "arm_a_test"
+) -> dict[str, bytes]:
     content: dict[str, bytes] = {}
     for symbol in symbols:
         for anchor_ts_utc in anchors_ts_utc:
             anchor_date = anchor_ts_utc[:10]
-            run_id = f"arm_a_test_{symbol.lower()}_{anchor_date}"
+            run_id = f"{run_id_prefix}_{symbol.lower()}_{anchor_date}"
             rows = [
                 build_arm_a_flattened_row(symbol, anchor_ts_utc, checkpoint, offset, run_id)
                 for checkpoint in CHECKPOINTS
@@ -124,7 +127,10 @@ def build_arm_a_content(symbols: list[str], anchors_ts_utc: list[str]) -> dict[s
                 rows_to_csv_bytes(ARM_A_FLATTENED_FIELDNAMES, rows)
             )
             manifest = build_arm_a_manifest(symbol, anchor_date, run_id)
-            content[f"{combo_dir}/manifest/breathline_v1_recovery_manifest_arm_a_{run_id}.json"] = (
+            # Real Arm-A runner template (run_breathline_v1_recovery_orchestration_v1.py):
+            # breathline_v1_recovery_manifest_{run_id}.json -- no fixed "arm_a" segment;
+            # only run_id's own content happens to start with "arm_a_" in production.
+            content[f"{combo_dir}/manifest/breathline_v1_recovery_manifest_{run_id}.json"] = (
                 json.dumps(manifest).encode("utf-8")
             )
     return content
@@ -333,6 +339,36 @@ def test_cohort_mismatch_rejected(tmp_path: Path) -> None:
     verified = verify_and_extract_archive(archive_root, tmp_path / "work", "arm_a")
     with pytest.raises(ComparisonValidationError, match="cohort mismatch"):
         load_arm_a_evidence(verified.extraction_root)
+
+
+# ---------------------------------------------------------------------------
+# Arm-A manifest discovery: real runner naming, not an invented "_arm_a_" pattern
+# ---------------------------------------------------------------------------
+
+
+def test_arm_a_manifest_discovery_matches_real_runner_naming(tmp_path: Path) -> None:
+    # The real Arm-A runner (run_breathline_v1_recovery_orchestration_v1.py) writes
+    # breathline_v1_recovery_manifest_{run_id}.json -- there is no fixed "_arm_a_"
+    # segment in the filename template itself. Use a run_id prefix that does NOT
+    # contain "arm_a" at all to prove discovery no longer depends on that invented
+    # assumption.
+    content = build_arm_a_content(["BTC"], anchor_dates_ts_utc(1), run_id_prefix="customrun")
+    manifest_rel_paths = [path for path in content if "/manifest/" in path]
+    assert len(manifest_rel_paths) == 1
+    manifest_filename = Path(manifest_rel_paths[0]).name
+
+    # The fixture must match the real runner's naming convention exactly.
+    assert manifest_filename.startswith("breathline_v1_recovery_manifest_")
+    assert not manifest_filename.startswith("breathline_v1_recovery_manifest_arm_a_")
+    # The old invented pattern required a literal "_arm_a_" segment; this run_id has none.
+    assert "_arm_a_" not in manifest_filename
+
+    archive_root = build_archive(tmp_path, "arm_a_custom_run_id", content)
+    verified = verify_and_extract_archive(archive_root, tmp_path / "work", "arm_a")
+
+    discovered = discover_arm_a_manifests(verified.extraction_root)
+    assert len(discovered) == 1
+    assert discovered[0].name == manifest_filename
 
 
 # ---------------------------------------------------------------------------
