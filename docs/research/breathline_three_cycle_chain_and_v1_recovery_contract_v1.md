@@ -856,6 +856,42 @@ pooled aggregate is descriptive unless dependence is handled explicitly
 
 No promotion threshold is set before Arm A/B outputs exist.
 
+10.4 Arm-A vs Arm-B.2a Matched-Control Comparison Implementation Status
+
+External comparison/report runner:
+    src/research/run_breathline_v1_arm_a_b2a_comparison_v1.py
+Deterministic tests:
+    tests/test_run_breathline_v1_arm_a_b2a_comparison_v1.py
+
+The runner never modifies either evidence archive. It verifies each archive's
+tar.gz against its .sha256 file, extracts to an isolated scratch directory,
+verifies the archive-internal SHA256SUMS against the extracted files, and only
+then discovers and parses artifacts. It rejects (fails closed, no partial
+output written) on any checksum mismatch, provenance mismatch, cohort/count
+mismatch, missing or duplicate shift, incorrect canonical/shifted-anchor
+mapping, or schema mismatch, for the preregistered exact cohort: 8 symbols x
+28 anchors x 2 checkpoints x 9 offsets = 4,032 Arm-A rows, joined against
+4,032 x 20 shifts = 80,640 B.2a rows with phase_class_mod_21_days ==
+anchor_displacement_days enforced on every B.2a row.
+
+Outputs: a matched-cell CSV (one canonical Arm-A row plus its 20 B.2a control
+rows per join key), a per-cell contrast CSV for ranking_score,
+partial_match_score, and structurally_eligible (canonical value, control mean/
+median/min/max, tie-aware mid-rank percentile, canonical-minus-control-mean),
+a per-symbol summary, a per-symbol canonical-anchor cluster bootstrap
+uncertainty CSV, a pooled cross-asset descriptive-only summary, and a
+manifest with input archive hashes, source run IDs/commits, registry, counts,
+and output hashes.
+
+Sidecar-outcome comparison is deferred: Arm-A's recovery orchestration
+produces no sidecar metrics artifact, so Arm-A and B.2a sidecar schemas are
+not directly equivalent without adaptation, which is out of scope here.
+
+This comparison is matched phase-control descriptive research only. It is
+not independent hypothesis confirmation and not trading authority: no
+independent-row p-values, no promotion threshold, and no validated,
+predictive, trade, execution, or ranking conclusion may be drawn from it.
+
 11. Implementation Sequence
 Phase 1
 → Claude High contract review
