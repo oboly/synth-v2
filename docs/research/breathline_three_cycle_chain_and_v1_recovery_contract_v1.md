@@ -621,6 +621,24 @@ DATA_UNAVAILABLE in the manifest and excluded from that shift's population
 
 Phase 2 implementation must begin with B.2a.
 
+B.2a implementation status:
+
+External orchestration runner:
+    src/research/run_breathline_v1_recovery_orchestration_b2a_v1.py
+Deterministic tests:
+    tests/test_run_breathline_v1_recovery_orchestration_b2a_v1.py
+
+The runner invokes frozen V1 unchanged once per (symbol, canonical anchor, shift)
+combination across the fixed 20-shift registry, preserves raw V1 CSV/JSONL per
+combination, and writes flattened analysis, sidecar metrics, control metadata,
+manifest, per-symbol summary, and anchor-cluster uncertainty artifacts separately.
+Availability is verified per combination from the frozen V1 run's own row status;
+DATA_UNAVAILABLE combinations are recorded in control metadata and the manifest and
+excluded from the flattened/sidecar analysis population, never substituted.
+
+B.2a is matched phase-control research. It is not independent samples and not
+trading authority. See the statistical note in section 10.3.
+
 B.2b HALF_DAY_PHASE_NULL_CONTROL (deferred)
 
 Candidate lattice: half-day increments over the half-open interval
