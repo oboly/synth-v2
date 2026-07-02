@@ -572,3 +572,228 @@ def test_main_fails_before_v1_subprocess_when_frozen_dependency_is_not_exact(
         assert modified_path in captured.out
     if missing_path is not None:
         assert missing_path in captured.out
+
+
+def test_default_args_preserve_arm_a_run_id_and_arm_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = tmp_path / "repo"
+    out_dir = tmp_path / "research"
+    head_bytes = make_dependency_head_bytes()
+    write_dependency_worktree(repo_root, head_bytes)
+
+    def v1_handler(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raw_dir = Path(cmd[8])
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        write_v1_outputs(raw_dir, [make_ok_row()])
+        return fake_completed_process()
+
+    monkeypatch.setattr("subprocess.run", make_git_runner(head_bytes, v1_handler=v1_handler))
+    monkeypatch.setattr(
+        "src.research.run_breathline_v1_recovery_orchestration_v1.find_repo_root",
+        lambda: repo_root,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["runner", "--symbol", "BTC", "--anchor", "2025-01-01", "--out-dir", str(out_dir)],
+    )
+
+    assert main() == 0
+
+    run_dir = next(out_dir.iterdir())
+    assert run_dir.name.startswith("arm_a_")
+    manifest_path = next((run_dir / "manifest").glob("*.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["arm_id"] == "ARM_A"
+    assert manifest["run_id"].startswith("arm_a_")
+
+
+def test_default_flattened_csv_schema_is_byte_identical_header(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = tmp_path / "repo"
+    out_dir = tmp_path / "research"
+    head_bytes = make_dependency_head_bytes()
+    write_dependency_worktree(repo_root, head_bytes)
+
+    def v1_handler(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raw_dir = Path(cmd[8])
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        write_v1_outputs(raw_dir, [make_ok_row()])
+        return fake_completed_process()
+
+    monkeypatch.setattr("subprocess.run", make_git_runner(head_bytes, v1_handler=v1_handler))
+    monkeypatch.setattr(
+        "src.research.run_breathline_v1_recovery_orchestration_v1.find_repo_root",
+        lambda: repo_root,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["runner", "--symbol", "BTC", "--anchor", "2025-01-01", "--out-dir", str(out_dir)],
+    )
+
+    assert main() == 0
+
+    run_dir = next(out_dir.iterdir())
+    derived_path = next((run_dir / "derived").glob("*.csv"))
+    header_line = derived_path.read_text(encoding="utf-8").splitlines()[0]
+    assert header_line == ",".join(FLATTENED_FIELDNAMES)
+
+
+def test_arm_b_and_arm_b_prefix_override_works(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo_root = tmp_path / "repo"
+    out_dir = tmp_path / "research"
+    head_bytes = make_dependency_head_bytes()
+    write_dependency_worktree(repo_root, head_bytes)
+
+    def v1_handler(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raw_dir = Path(cmd[8])
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        write_v1_outputs(raw_dir, [make_ok_row()])
+        return fake_completed_process()
+
+    monkeypatch.setattr("subprocess.run", make_git_runner(head_bytes, v1_handler=v1_handler))
+    monkeypatch.setattr(
+        "src.research.run_breathline_v1_recovery_orchestration_v1.find_repo_root",
+        lambda: repo_root,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "runner",
+            "--symbol",
+            "BTC",
+            "--anchor",
+            "2025-01-01",
+            "--out-dir",
+            str(out_dir),
+            "--arm-id",
+            "ARM_B",
+            "--run-id-prefix",
+            "arm_b",
+        ],
+    )
+
+    assert main() == 0
+
+    run_dir = next(out_dir.iterdir())
+    assert run_dir.name.startswith("arm_b_")
+    manifest_path = next((run_dir / "manifest").glob("*.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["arm_id"] == "ARM_B"
+    assert manifest["run_id"].startswith("arm_b_")
+
+    derived_path = next((run_dir / "derived").glob("*.csv"))
+    with derived_path.open(newline="", encoding="utf-8") as handle:
+        flattened = list(csv.DictReader(handle))
+    assert all(row["arm_id"] == "ARM_B" for row in flattened)
+
+
+def test_metadata_args_do_not_alter_frozen_v1_subprocess_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = tmp_path / "repo"
+    out_dir = tmp_path / "research"
+    head_bytes = make_dependency_head_bytes()
+    write_dependency_worktree(repo_root, head_bytes)
+    calls: list[list[str]] = []
+
+    def v1_handler(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        raw_dir = Path(cmd[8])
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        write_v1_outputs(raw_dir, [make_ok_row()])
+        return fake_completed_process()
+
+    monkeypatch.setattr("subprocess.run", make_git_runner(head_bytes, v1_handler=v1_handler))
+    monkeypatch.setattr(
+        "src.research.run_breathline_v1_recovery_orchestration_v1.find_repo_root",
+        lambda: repo_root,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "runner",
+            "--symbol",
+            "BTC",
+            "--anchor",
+            "2025-01-01",
+            "--out-dir",
+            str(out_dir),
+            "--arm-id",
+            "ARM_B",
+            "--run-id-prefix",
+            "arm_b",
+        ],
+    )
+
+    assert main() == 0
+    assert len(calls) == 1
+    v1_command = calls[0]
+    assert v1_command[:3] == [sys.executable, "-m", V1_MODULE]
+    assert "--arm-id" not in v1_command
+    assert "--run-id-prefix" not in v1_command
+    assert "ARM_B" not in v1_command
+    assert "arm_b" not in v1_command
+    assert v1_command[3:9] == [
+        "--symbols",
+        "BTC",
+        "--anchors",
+        "2025-01-01",
+        "--out-dir",
+        v1_command[8],
+    ]
+
+
+def test_wrapper_manifest_command_line_key_unchanged_and_holds_frozen_v1_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo_root = tmp_path / "repo"
+    out_dir = tmp_path / "research"
+    head_bytes = make_dependency_head_bytes()
+    write_dependency_worktree(repo_root, head_bytes)
+
+    def v1_handler(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raw_dir = Path(cmd[8])
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        write_v1_outputs(raw_dir, [make_ok_row()])
+        return fake_completed_process()
+
+    monkeypatch.setattr("subprocess.run", make_git_runner(head_bytes, v1_handler=v1_handler))
+    monkeypatch.setattr(
+        "src.research.run_breathline_v1_recovery_orchestration_v1.find_repo_root",
+        lambda: repo_root,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "runner",
+            "--symbol",
+            "BTC",
+            "--anchor",
+            "2025-01-01",
+            "--out-dir",
+            str(out_dir),
+            "--arm-id",
+            "ARM_B",
+            "--run-id-prefix",
+            "arm_b",
+        ],
+    )
+
+    assert main() == 0
+
+    run_dir = next(out_dir.iterdir())
+    manifest_path = next((run_dir / "manifest").glob("*.json"))
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert "command_line" in manifest
+    assert "wrapper_command_line" not in manifest
+    assert "frozen_v1_subprocess_command_line" not in manifest
+    assert manifest["command_line"][:3] == [sys.executable, "-m", V1_MODULE]
+    assert "--arm-id" not in manifest["command_line"]
+    assert "--run-id-prefix" not in manifest["command_line"]

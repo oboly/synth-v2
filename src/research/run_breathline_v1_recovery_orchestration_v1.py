@@ -23,7 +23,8 @@ from pathlib import Path
 from typing import Any
 
 
-ARM_ID = "ARM_A"
+DEFAULT_ARM_ID = "ARM_A"
+DEFAULT_RUN_ID_PREFIX = "arm_a"
 DEFAULT_OUT_BASE = "data/research/breathline_v1_recovery_orchestration_v1"
 DEPENDENCY_CLOSURE_FILES = (
     "src/research/backtest_breath_curve_partial_to_full_v1.py",
@@ -285,6 +286,7 @@ def flatten_rows(
     run_id: str,
     source_jsonl_path: str,
     source_jsonl_sha256: str,
+    arm_id: str = DEFAULT_ARM_ID,
 ) -> list[dict[str, Any]]:
     flattened: list[dict[str, Any]] = []
     for fallback_row_number, row in enumerate(rows, start=1):
@@ -308,7 +310,7 @@ def flatten_rows(
             flattened.append(
                 {
                     "run_id": run_id,
-                    "arm_id": ARM_ID,
+                    "arm_id": arm_id,
                     "source_jsonl_path": source_jsonl_path,
                     "source_jsonl_row_number": source_row_number,
                     "source_jsonl_sha256": source_jsonl_sha256,
@@ -383,10 +385,11 @@ def build_manifest(
     subprocess_exit_code: int,
     availability_summary: dict[str, Any],
     dependency_closure_integrity_status: str,
+    arm_id: str = DEFAULT_ARM_ID,
 ) -> dict[str, Any]:
     return {
         "run_id": run_id,
-        "arm_id": ARM_ID,
+        "arm_id": arm_id,
         "generated_at_utc": generated_at_utc,
         "query_timestamp_utc": query_timestamp_utc,
         "source_commit": source_commit,
@@ -441,6 +444,8 @@ def main() -> int:
     parser.add_argument("--symbol", required=True, help="Exactly one symbol.")
     parser.add_argument("--anchor", required=True, help="Exactly one anchor.")
     parser.add_argument("--out-dir", default=DEFAULT_OUT_BASE)
+    parser.add_argument("--arm-id", default=DEFAULT_ARM_ID)
+    parser.add_argument("--run-id-prefix", default=DEFAULT_RUN_ID_PREFIX)
     args = parser.parse_args()
 
     try:
@@ -462,7 +467,7 @@ def main() -> int:
     symbols_sha256 = sha256_text(symbol)
     anchor_set_sha256 = sha256_text(anchor)
     started_at = utc_now()
-    run_id = f"arm_a_{started_at.strftime('%Y%m%dT%H%M%SZ')}_{symbol.lower()}"
+    run_id = f"{args.run_id_prefix}_{started_at.strftime('%Y%m%dT%H%M%SZ')}_{symbol.lower()}"
     run_dir = Path(args.out_dir) / run_id
     raw_dir = run_dir / "raw"
     derived_dir = run_dir / "derived"
@@ -472,7 +477,7 @@ def main() -> int:
         path.mkdir(parents=True, exist_ok=True)
 
     print(
-        f"STARTED runner=breathline_v1_recovery_orchestration_v1 arm_id={ARM_ID} "
+        f"STARTED runner=breathline_v1_recovery_orchestration_v1 arm_id={args.arm_id} "
         f"symbol={symbol} anchor={anchor}",
         flush=True,
     )
@@ -520,6 +525,7 @@ def main() -> int:
             run_id=run_id,
             source_jsonl_path=str(raw_jsonl_path),
             source_jsonl_sha256=raw_jsonl_sha256,
+            arm_id=args.arm_id,
         )
         flattened_csv_path = derived_dir / f"breathline_v1_recovery_arm_a_flattened_{run_id}.csv"
         write_flattened_csv(flattened_csv_path, flattened)
@@ -548,6 +554,7 @@ def main() -> int:
             subprocess_exit_code=completed.returncode,
             availability_summary=availability_summary,
             dependency_closure_integrity_status="PASS",
+            arm_id=args.arm_id,
         )
     except Exception as exc:
         print(f"FAILED {exc}", flush=True)
