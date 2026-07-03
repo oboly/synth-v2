@@ -11,8 +11,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.research.inventory_aplus_raw_evidence_v1 import (
+    ANALYSIS_LANE_EXPLORATORY_ONLY,
+    ANALYSIS_LANE_PRIMARY_FORECAST_OVERLAP,
+    ANALYSIS_LANE_RETROSPECTIVE_TARGET_ALIGNMENT,
     ASSET_RESOLUTION_RESOLVED,
     ASSET_RESOLUTION_UNRESOLVED,
+    EXCLUSION_REASON_SOURCE_CAPTURE_TIME_INELIGIBLE,
+    EXCLUSION_REASON_SOURCE_NOT_BEFORE_TARGET,
     InventoryIntegrityError,
     LANE_EXPLORATORY_ONLY,
     LANE_FUTURE_OBSERVATION_ASOF,
@@ -21,6 +26,7 @@ from src.research.inventory_aplus_raw_evidence_v1 import (
     ROW_PARSE_STATUS_MALFORMED,
     ROW_PARSE_STATUS_OK,
     ROW_PARSE_STATUS_UNPARSED_NON_TABLE,
+    SOURCE_CAPTURE_TIME_PROVENANCE_FILENAME,
     TABLE_TYPE_TABLE1,
     TABLE_TYPE_TABLE2,
     TABLE_TYPE_UNSUPPORTED,
@@ -31,6 +37,9 @@ from src.research.inventory_aplus_raw_evidence_v1 import (
     TS_PROVENANCE_FILENAME,
     TS_PROVENANCE_UNKNOWN,
     check_content_group_consistency,
+    compute_forecast_overlap_eligibility,
+    derive_prediction_target_timestamp,
+    derive_source_capture_timestamp,
     extract_declared_metadata,
     extract_explicit_timestamps,
     find_duplicate_assets,
@@ -598,3 +607,136 @@ def test_main_missing_root_is_empty_not_fatal(tmp_path: Path) -> None:
     missing_root = tmp_path / "does_not_exist"
     exit_code = main(["--root", str(missing_root)])
     assert exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# Two-time forecast-overlap model: S = source_capture_ts_utc (filename date+time
+# only), T = prediction_target_ts_utc (named prediction_ts_utc field only)
+# ---------------------------------------------------------------------------
+
+
+def forecast_fixture(prediction_ts_utc: str) -> str:
+    return f"""prediction_ts_utc = {prediction_ts_utc}
+
+TOKEN PHASE COHERENCE FIELD GEOMETRY STRUCTURAL_ROLE EXPANSION_QUALITY ANCHOR_STRENGTH STRATEGIC_BIAS NOTES
+
+BTC confirmed high neutral clean leader moderate strong accumulation harmonic axis stable
+"""
+
+
+def test_valid_filename_capture_time_plus_named_target_is_primary_forecast_overlap(tmp_path: Path) -> None:
+    # Filename S = 2026-05-01T08:00:00Z, named T = 2026-05-05T12:00:00Z -> S < T.
+    write_fixture(tmp_path, "2026-05-01_0800_forecast_source.txt", forecast_fixture("2026-05-05T12:00:00Z"))
+    records, rows = run_inventory(tmp_path)
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.source_capture_ts_utc == "2026-05-01T08:00:00Z"
+    assert record.source_capture_time_provenance == SOURCE_CAPTURE_TIME_PROVENANCE_FILENAME
+    assert record.source_capture_time_eligible is True
+    assert record.prediction_target_ts_utc == "2026-05-05T12:00:00Z"
+    assert record.forecast_overlap_eligible is True
+    assert record.forecast_exclusion_reason is None
+    assert record.analysis_lane == ANALYSIS_LANE_PRIMARY_FORECAST_OVERLAP
+    assert record.lead_seconds == 4 * 86400 + 4 * 3600  # 4 days, 4 hours
+
+    asset_rows = [r for r in rows if r["row_parse_status"] == ROW_PARSE_STATUS_OK]
+    assert asset_rows[0]["analysis_lane"] == ANALYSIS_LANE_PRIMARY_FORECAST_OVERLAP
+    assert asset_rows[0]["forecast_overlap_eligible"] is True
+
+
+def test_date_only_filename_excluded_from_primary_forecast_lane_not_midnight_assumed(tmp_path: Path) -> None:
+    # No HHMM in the filename -- must be excluded, never silently assigned 00:00.
+    write_fixture(tmp_path, "2026-05-01_forecast_source.txt", forecast_fixture("2026-05-05T12:00:00Z"))
+    records, _ = run_inventory(tmp_path)
+
+    record = records[0]
+    assert record.source_capture_ts_utc is None
+    assert record.source_capture_time_eligible is False
+    assert record.prediction_target_ts_utc == "2026-05-05T12:00:00Z"  # T still resolves independently
+    assert record.forecast_overlap_eligible is False
+    assert record.forecast_exclusion_reason == EXCLUSION_REASON_SOURCE_CAPTURE_TIME_INELIGIBLE
+    assert record.analysis_lane == ANALYSIS_LANE_RETROSPECTIVE_TARGET_ALIGNMENT  # demoted, never primary
+
+
+def test_source_capture_time_equal_to_target_is_excluded(tmp_path: Path) -> None:
+    # S == T: not strictly S < T, so excluded (matches the real corpus pattern
+    # where the filename timestamp equals the declared prediction_ts_utc).
+    write_fixture(tmp_path, "2026-05-05_1200_same_moment_source.txt", forecast_fixture("2026-05-05T12:00:00Z"))
+    records, _ = run_inventory(tmp_path)
+
+    record = records[0]
+    assert record.forecast_overlap_eligible is False
+    assert record.forecast_exclusion_reason == EXCLUSION_REASON_SOURCE_NOT_BEFORE_TARGET
+    assert record.analysis_lane == ANALYSIS_LANE_RETROSPECTIVE_TARGET_ALIGNMENT
+
+
+def test_source_capture_time_after_target_is_excluded(tmp_path: Path) -> None:
+    write_fixture(tmp_path, "2026-05-05_1300_late_source.txt", forecast_fixture("2026-05-05T12:00:00Z"))
+    records, _ = run_inventory(tmp_path)
+
+    record = records[0]
+    assert record.forecast_overlap_eligible is False
+    assert record.forecast_exclusion_reason == EXCLUSION_REASON_SOURCE_NOT_BEFORE_TARGET
+
+
+def test_lead_seconds_is_deterministic() -> None:
+    source_capture_ts_utc, eligible, provenance = derive_source_capture_timestamp(
+        "2026-05-01_0800_forecast_source.txt"
+    )
+    assert source_capture_ts_utc == "2026-05-01T08:00:00Z"
+    assert eligible is True
+    assert provenance == SOURCE_CAPTURE_TIME_PROVENANCE_FILENAME
+
+    first = compute_forecast_overlap_eligibility(
+        detected_table_type=TABLE_TYPE_TABLE1,
+        status="OK",
+        source_capture_ts_utc=source_capture_ts_utc,
+        source_capture_time_eligible=eligible,
+        prediction_target_ts_utc="2026-05-05T12:00:00Z",
+    )
+    second = compute_forecast_overlap_eligibility(
+        detected_table_type=TABLE_TYPE_TABLE1,
+        status="OK",
+        source_capture_ts_utc=source_capture_ts_utc,
+        source_capture_time_eligible=eligible,
+        prediction_target_ts_utc="2026-05-05T12:00:00Z",
+    )
+    assert first == second == (True, 4 * 86400 + 4 * 3600, None)
+
+
+def test_derive_prediction_target_timestamp_only_uses_named_field() -> None:
+    # A bare unlabeled timestamp must never be used as T.
+    timestamps = extract_explicit_timestamps("Snapshot (2026-05-15T12:44:48Z)")
+    target, provenance = derive_prediction_target_timestamp(timestamps)
+    assert target is None
+    assert provenance == TS_PROVENANCE_UNKNOWN
+
+
+def test_duplicate_alias_paths_still_create_one_source_event_population_under_forecast_model(
+    tmp_path: Path,
+) -> None:
+    content = forecast_fixture("2026-05-05T12:00:00Z")
+    write_fixture(tmp_path, "2026-05-01_0800_a.txt", content)
+    write_fixture(tmp_path, "2026-05-01_0800_b_copy.txt", content)
+
+    records, rows = run_inventory(tmp_path)
+
+    assert len(records) == 1  # one canonical source, not two
+    record = records[0]
+    assert record.alias_count == 2
+    assert record.forecast_overlap_eligible is True
+    assert record.analysis_lane == ANALYSIS_LANE_PRIMARY_FORECAST_OVERLAP
+
+    asset_rows = [r for r in rows if r["row_parse_status"] == ROW_PARSE_STATUS_OK]
+    assert len(asset_rows) == 1  # not duplicated per alias path
+
+
+def test_no_valid_target_is_exploratory_only(tmp_path: Path) -> None:
+    content = "TOKEN MOMENTUM STABILITY\nBTC low high\n"
+    write_fixture(tmp_path, "2026-04-23_consistency.txt", content)
+    records, _ = run_inventory(tmp_path)
+
+    record = records[0]
+    assert record.prediction_target_ts_utc is None
+    assert record.analysis_lane == ANALYSIS_LANE_EXPLORATORY_ONLY
