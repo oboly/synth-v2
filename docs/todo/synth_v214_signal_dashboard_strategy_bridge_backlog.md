@@ -57,29 +57,94 @@ Dashboard should show horizons separately:
 
 ## F. Strategy-Linked Proposals
 
-Canonical internal `strategy_id` / proposal id format:
+Canonical strategy/proposal identity must use opaque ids only.
 
 ```text
-{ACTION}_{HORIZON}_{SETUP}
+market_event_id
+strategy_definition_id
+strategy_profile_id
+proposal_id
+trade_cycle_id
 ```
 
-`ACTION` enum:
+Do not use concatenated semantic ids such as `{ACTION}_{HORIZON}_{SETUP}` as
+canonical identity or logic input.
 
-- `BUY`: entry, re-entry, rebuy, reload, dip-buy. Use `BUY` as the only
-  canonical action for adding or restoring exposure.
-- `SELL`: exit, take-profit, reduce, trim. Use `SELL` as the only canonical
-  action for reducing exposure.
-- `HOLD`: keep exposure with levels, trailing, or invalidation.
-- `ROTATE`: reduce or shift exposure in favor of another thesis or opportunity.
-- `WARN`: no-action warning such as no-chase or stale-context warning.
+Combined phrases such as `SELL_SHORT_SPIKE` may remain only as
+legacy/debug/search/display tags. They must not be canonical ids and must not
+drive logic.
 
-`HORIZON` enum:
+Proposal semantics must be explicit fields:
+
+- `symbol`
+- `horizon`: `SHORT` / `MID` / `LONG`
+- `timeframe`: `15m` / `1h` / `4h` / `1d` / `1w` / etc.
+- `setup`
+- `action`: `BUY` / `SELL` / `HOLD` / `ROTATE` / `WARN`
+- `position_side`: `LONG` / `SHORT`
+- `exposure_effect`: `OPEN` / `ADD` / `REDUCE` / `CLOSE` / `NONE`
+
+Semantic separation rules:
+
+- `SHORT` / `MID` / `LONG` are horizon labels.
+- `SHORT` must never implicitly mean a short position.
+- `timeframe` remains separate from `horizon`.
+- `position_side` remains separate from `action`.
+- `exposure_effect` remains separate from `action`.
+- Profile, bucket, and account intent remain outside `selection_engine`.
+
+`action` enum:
+
+- `BUY`: buy-side order/intent direction or proposal category only.
+- `SELL`: sell-side order/intent direction or proposal category only.
+- `HOLD`: hold/review proposal category only.
+- `ROTATE`: linked rotation proposal category only.
+- `WARN`: no-action warning category such as no-chase or stale-context warning.
+
+`action` must never be interpreted without `position_side` and
+`exposure_effect`.
+
+`exposure_effect` is the only canonical field describing net exposure change:
+
+- `OPEN`
+- `ADD`
+- `REDUCE`
+- `CLOSE`
+- `NONE`
+
+Compatibility table:
+
+```text
+position_side=LONG:
+  BUY  + OPEN/ADD
+  SELL + REDUCE/CLOSE
+
+position_side=SHORT:
+  SELL + OPEN/ADD
+  BUY  + REDUCE/CLOSE
+
+HOLD:
+  exposure_effect=NONE
+
+WARN:
+  exposure_effect=NONE
+```
+
+For `ROTATE`, do not allow one ambiguous proposal to encode both legs.
+Represent the reduction/close leg and the open/add leg as separate linked
+proposals, each with its own `position_side` and `exposure_effect`.
+`trade_cycle_id` may link them.
+
+`position_side=SHORT` is future/venue-capability dependent and remains subject
+to `decision_gate`.
+
+`horizon` enum:
 
 - `SHORT`: tactical `15m` / `1h` / `4h` trade-management bucket
 - `MID`: swing bucket across `4h` / `1d` / several days
 - `LONG`: core thesis / multi-week or multi-month bucket
 
-`SETUP` enum starter set:
+`setup` starter set:
 
 - `SPIKE`
 - `PULLBACK`
@@ -100,27 +165,33 @@ Synonym rules:
 - Do not use exit, take-profit, reduce, or trim as separate canonical action
   names.
 - Use `SELL` for the action.
+- Use `exposure_effect`, not `action`, to encode whether exposure opens, adds,
+  reduces, closes, or remains unchanged.
 - `SELL` and `BUY` must remain separate proposals, even when linked by the same
   `trade_cycle_id`.
-- Internal ids are all-caps stable enums.
+- Stable ids are opaque identifiers. Semantic enums are fields, not ids.
 - Dashboard labels should be human-readable sentence-case.
-- Joost may rename display labels later, but internal canonical ids should
-  remain stable.
+- Joost may rename display labels later, but canonical opaque ids and semantic
+  field values should remain stable.
 
 Strategy proposals must include:
 
-- `strategy_id`
-- `profile_id`
-- `bucket_id`
+- `proposal_id`
+- `strategy_definition_id`
+- `strategy_profile_id`
+- `trade_cycle_id`
 - `bucket_target_pct`
 - `bucket_available_pct` or `bucket_current_pct` when known
-- `trade_cycle_id`
 - `symbol`
 - `horizon`
-- `action = BUY / SELL / HOLD / ROTATE / WARN`
+- `timeframe`
 - `setup`
+- `action`
+- `position_side`
+- `exposure_effect`
 - `activation_condition`
 - `leg_state`
+- `input_market_event_refs`
 - `input_signal_refs`
 - `input_context_run_id`
 - `created_ts_utc`
@@ -135,7 +206,7 @@ Strategy proposals must include:
 No broker write fields.
 No order submission fields.
 
-Candidate strategies:
+Legacy/debug/search/display tags only:
 
 - `SELL_SHORT_SPIKE`
 - `BUY_SHORT_PULLBACK`
@@ -145,6 +216,66 @@ Candidate strategies:
 - `ROTATE_LONG_LEGACY_EXIT`
 - `BUY_LONG_BASE`
 - `WARN_SHORT_NO_CHASE`
+
+These tags are not canonical identity, not strategy definition ids, and not
+logic inputs.
+
+## F1. Market Event Layer
+
+Add one canonical market-event layer between primitive signals and later
+strategy definitions.
+
+This layer is:
+
+- market-only
+- account-agnostic
+- observable/replayable
+- not advice
+- not permission logic
+- not execution intent
+
+Initial event types:
+
+- `BREAKOUT_RETEST_OBSERVED`
+- `REVERSAL_RECLAIM_OBSERVED`
+- `EXPANSION_CONTINUATION_OBSERVED`
+- `EXHAUSTION_FAILURE_OBSERVED`
+
+Each event must retain explicit evidence/reference fields where available:
+
+- `market_event_id`
+- `symbol`
+- `timeframe`
+- `asof_ts_utc`
+- `current_price`
+- structure / higher-low / breakout / reclaim observations
+- support-resistance and breakout level
+- relative-volume ratio and baseline definition
+- RSI value and slope/divergence observation
+- MA alignment and slope observation
+- ATR or volatility compression/expansion observation
+- relative strength versus BTC / ETH / sector proxy
+- fibo anchors, target room, invalidation distance
+- spread/depth/executable-liquidity observation
+- market-regime reference
+- asset-regime reference
+- source/freshness/replay-safety metadata
+
+Do not introduce hidden composite scores such as
+`liquidity_expansion_score`. Transparent feature fields and event evidence are
+the source of truth.
+
+Existing regimes remain the canonical market/asset context. Do not add a
+second lifecycle state machine or permanent asset category such as:
+
+- `ALT_PRE_RUNNER`
+- `PRE_RUNNER_COIN`
+- `LIQUIDITY_EXPANSION_ENGINE`
+
+Compression/building/expansion/exhaustion language is initially only explicit
+observation/event grouping. It can become a formal derived lifecycle tag only
+after validation proves incremental value over existing regimes and primitive
+signals.
 
 ## Strategy Profile Ownership
 
@@ -172,10 +303,12 @@ Explanation:
 
 - These buckets sum to `100%`.
 - `BUY` and `SELL` legs inside the same bucket are not separate allocations.
-- `SELL_SHORT_SPIKE` and `BUY_SHORT_PULLBACK` both operate on the
-  `SHORT_TACTICAL` bucket.
-- `SELL_SHORT_SPIKE` can reduce or sell the tactical bucket into strength.
-- `BUY_SHORT_PULLBACK` can restore or buy the tactical bucket after pullback.
+- Legacy/debug tags such as `SELL_SHORT_SPIKE` and `BUY_SHORT_PULLBACK` may
+  both describe proposals that operate on the `SHORT_TACTICAL` bucket.
+- A `SELL` proposal with `horizon=SHORT`, `position_side=LONG`, and
+  `exposure_effect=REDUCE` can reduce the long tactical bucket into strength.
+- A `BUY` proposal with `horizon=SHORT`, `position_side=LONG`, and
+  `exposure_effect=ADD` can increase the long tactical bucket after pullback.
 - `LONG_CORE` remains untouched by short tactical proposals unless a `LONG`
   strategy leg explicitly applies.
 - `MID_SWING` remains separate from `SHORT_TACTICAL` and `LONG_CORE`.
@@ -224,6 +357,16 @@ Explanation:
 - A+ may validate or calibrate Synth breath.
 - A+ must not replace Synth breath as source of truth.
 - Dashboard must show Synth breath and external A+ context separately.
+- FFG is not required input.
+- FFG is not runtime market data.
+- FFG must not affect `selection_engine`, `decision_gate`,
+  `execution_planner`, or `executor`.
+- No manual daily FFG capture may be required to detect spikes.
+- At most, external FFG observations may later be stored as non-canonical
+  comparison/research overlays with `runtime_effect: NONE`.
+- The canonical basis for the liquidity-expansion / breakout-reclaim lane is
+  Synth market data: OHLCV, volume, structure, relative strength, fibo context,
+  spread/depth, and executable liquidity.
 
 ## J. Freshness Model
 
@@ -246,30 +389,72 @@ Explanation:
 
 ## L. Deferred Implementation Order
 
-1. Runtime freshness audit and ownership docs.
-2. Signal inventory.
-3. Horizon-separated signal matrix.
-4. Asset-card dashboard.
-5. Strategy proposal contract.
-6. Manual Excel or dropfolder path.
-7. LLM strategy bridge.
-8. Outcome logging.
-9. Promotion rules for measured strategy logic.
-10. Only later: decision or execution integration, if explicitly approved.
+P0a — Canonical market-data, replay, and executable-liquidity audit.
+
+P0b — Define separate schemas/contracts for primitive signal, market event, and
+strategy proposal.
+
+P1 — Signal matrix inventory and transparent display.
+
+P2 — Market-event logging only.
+
+P3 — Manual Ladder consumes the same context/event outputs downstream.
+
+P4 — Outcome validation by event cohort.
+
+P5 — Promote only proven event definitions into `strategy_definition` records.
+
+P6 — Manual/paper proposals with profile and bucket context.
+
+P7 — Only later, explicitly approved `decision_gate` / `execution_planner`
+integration.
+
+## L1. Outcome Validation Requirements
+
+No canonical general event-cohort outcome-validation TODO currently exists.
+Until one is created through a separate documentation task, this backlog is the
+bounded home for the liquidity-expansion / breakout-reclaim validation
+requirements.
+
+Compare each event family and explicit feature combination against:
+
+- structure-only baseline
+- structure + volume baseline
+- ordinary top-mover baseline
+- random liquid-asset control
+- same events with and without market-regime segmentation
+
+Measure:
+
+- `1h` / `4h` / `12h` / `24h` returns
+- MFE / MAE
+- target-hit and invalidation-hit rate
+- time-to-target / time-to-invalidation
+- fees, spread, realistic slippage
+- symbol concentration
+- regime dependence
+- out-of-sample performance
+
+No feature combination becomes runtime strategy logic without positive net
+expectancy and documented promotion evidence.
 
 ## M. Anti-Patterns To Avoid
 
 - Dashboard owns data intake.
 - Dashboard recomputes canonical `signal_state`.
 - Signals directly emit trade advice.
-- Treating `SELL_SHORT_SPIKE 30%` and `BUY_SHORT_PULLBACK 30%` as `60%` total
-  allocation.
+- Treating debug tags such as `SELL_SHORT_SPIKE 30%` and
+  `BUY_SHORT_PULLBACK 30%` as canonical ids or as `60%` total allocation.
 - Re-selecting strategy profile every hour.
 - Putting account bucket allocation in `selection_engine`.
 - Letting signals directly activate account-aware actions without
   strategy/profile context.
 - HTF context blocks LTF patterns.
 - A+ treated as source of truth for Synth breath.
+- FFG treated as required runtime input.
+- Adding an alt pre-runner engine or second regime/state-machine.
+- Hiding explicit liquidity/structure/volume evidence inside a composite
+  expansion score.
 - Hidden final labels without visible strategy, input, or freshness.
 - Agent or LLM places or cancels orders.
 - Big refactor before measurement.

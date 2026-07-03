@@ -16,6 +16,8 @@ Elke timeframe mag zijn eigen waarheid hebben; het dashboard toont conflicten, h
 The signal matrix is the transparent signal inventory.
 It is not a composed advice surface.
 It must not collapse primitive signals into hidden final conclusions.
+It feeds the market-event layer downstream, but it does not create advice,
+permission, execution intent, or a hidden composite score.
 
 ## Sources
 
@@ -71,11 +73,13 @@ Primary reading order:
 1. Breath/Fibo frame
 2. Primitive signals per timeframe
 3. Local pattern candidates per timeframe
-4. HTF context shown separately, not as veto/block
-5. Regime context
-6. External catalyst / dirty squeeze flags
-7. Outcome validation readiness fields
-8. Debug/source details
+4. Transparent liquidity/structure/volume/momentum primitives
+5. HTF context shown separately, not as veto/block
+6. Canonical regime context
+7. Market-event references when logged downstream
+8. External catalyst / dirty squeeze flags
+9. Outcome validation readiness fields
+10. Debug/source details
 ```
 
 ## Required local pattern candidates
@@ -89,6 +93,50 @@ Per timeframe, show pattern candidates explicitly:
 
 These are matrix rows/fields only.
 They are not direct trade actions.
+
+## Required primitive feature families
+
+The matrix must keep these feature families visible per symbol/timeframe and
+must never silently combine them into an action:
+
+- price structure / higher lows / reclaim / retest / failure
+- relative volume
+- RSI momentum and divergence
+- MA alignment and slope
+- ATR / volatility compression-expansion
+- relative strength versus BTC, ETH, and sector proxy
+- fibo / support-resistance target room and invalidation distance
+- spread, depth, and executable liquidity
+
+Each timeframe has its own truth. HTF and LTF context are shown separately and
+do not silently veto one another.
+
+Do not introduce hidden composite scores such as
+`liquidity_expansion_score`.
+
+## Downstream market-event layer
+
+The Signal Matrix is upstream of a canonical market-event layer. That layer is
+market-only, account-agnostic, observable/replayable, and not advice.
+
+Initial event types:
+
+- `BREAKOUT_RETEST_OBSERVED`
+- `REVERSAL_RECLAIM_OBSERVED`
+- `EXPANSION_CONTINUATION_OBSERVED`
+- `EXHAUSTION_FAILURE_OBSERVED`
+
+The matrix may display logged event type/status, event timestamp/freshness, and
+evidence references. It must not infer or recompute downstream event state in a
+renderer.
+
+Existing regimes remain the canonical market/asset context. Do not add a
+second lifecycle state machine or permanent asset category such as
+`ALT_PRE_RUNNER`, `PRE_RUNNER_COIN`, or `LIQUIDITY_EXPANSION_ENGINE`.
+
+Compression/building/expansion/exhaustion language is initially only explicit
+observation/event grouping. It can become a formal derived lifecycle tag only
+after validation proves incremental value over existing regimes and primitives.
 
 ## P0 — Signal Matrix Static Dashboard V1
 
@@ -168,6 +216,8 @@ Tasks:
 
 - Specify matrix rows/columns for asset x timeframe inventory.
 - Separate primitive signals from downstream interpretation fields.
+- Separate primitive signal contracts from market-event contracts and strategy
+  proposal contracts.
 - Define how Breath/Fibo frame is shown without collapsing timeframe conflicts.
 - Define how regime context is shown as context only.
 - Define catalyst / dirty squeeze flags as separate context only.
@@ -230,6 +280,40 @@ Tasks:
   - target proximity
   - pattern-candidate flags
   - regime context
+  - relative volume
+  - RSI momentum/divergence
+  - MA alignment/slope
+  - ATR / volatility compression-expansion
+  - relative strength versus BTC / ETH / sector proxy
+  - spread/depth/executable liquidity
+
+## Roadmap Alignment
+
+- P0a — Canonical market-data, replay, and executable-liquidity audit.
+- P0b — Define separate schemas/contracts for primitive signal, market event,
+  and strategy proposal.
+- P1 — Signal matrix inventory and transparent display.
+- P2 — Market-event logging only.
+- P3 — Manual Ladder consumes the same context/event outputs downstream.
+- P4 — Outcome validation by event cohort.
+- P5 — Promote only proven event definitions into `strategy_definition`
+  records.
+- P6 — Manual/paper proposals with profile and bucket context.
+- P7 — Only later, explicitly approved `decision_gate` /
+  `execution_planner` integration.
+
+## FFG / External Research Boundary
+
+- FFG is not required input.
+- FFG is not runtime market data.
+- FFG must not affect `selection_engine`, `decision_gate`,
+  `execution_planner`, or `executor`.
+- No manual daily FFG capture may be required to detect spikes.
+- At most, external FFG observations may later be stored as non-canonical
+  comparison/research overlays with `runtime_effect: NONE`.
+- The canonical basis for this lane is Synth market data: OHLCV, volume,
+  structure, relative strength, fibo context, spread/depth, and executable
+  liquidity.
 
 ## Boundary
 
@@ -256,6 +340,8 @@ It must not become hidden policy logic.
 - no decision permission logic
 - no account-aware position logic
 - no HTF/LTF veto engine
+- no second regime/state-machine
+- no alt pre-runner engine
 - no runtime promotion
 - no hidden final advice state
 - no manual ladder/action commands in this lane

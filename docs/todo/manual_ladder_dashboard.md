@@ -2,9 +2,24 @@
 
 ## Status
 
-Active next dashboard lane for Synth v2.14.
+Downstream P3 consumer for Synth v2.14.
 
-This document is the canonical TODO for the new Breath-Fibo-Regime manual dashboard direction. The new chat bundle is the source of truth for this lane. Older `docs/todo/*` files may contain useful historical context, but many of them were written around the now-parked Paper Advice dashboard and should not drive this task.
+This document is the canonical TODO for the new Breath-Fibo-Regime manual
+dashboard direction, but its event-aware implementation is blocked until the
+canonical signal-matrix and market-event prerequisites exist. Older
+`docs/todo/*` files may contain useful historical context, but many of them
+were written around the now-parked Paper Advice dashboard and should not drive
+this task.
+
+Blocked on:
+
+- P0a canonical market-data, replay, and executable-liquidity audit.
+- P0b separate primitive-signal / market-event / proposal contracts.
+- P1 signal matrix inventory.
+- P2 market-event logging.
+
+Manual Ladder must not become the place where events, canonical signals, or
+composed policy are first calculated.
 
 ## Core direction
 
@@ -12,7 +27,8 @@ This document is the canonical TODO for the new Breath-Fibo-Regime manual dashbo
 Breath/Fibo first
 Regime as first Synth interpretation layer
 Synth confirmation second
-Manual ladder/action review third
+Market-event context downstream
+Manual ladder/review levels last
 Execution remains off
 ```
 
@@ -26,8 +42,9 @@ The old Entry/Paper Advice dashboard is parked as a debug/review tool. Do not co
 3. Regime as the first Synth interpretation layer
 4. Price position inside the map
 5. Synth confirmation sensors
-6. Manual ladder / review state
-7. Debug details
+6. Market-event context if logged downstream
+7. Manual ladder / review state
+8. Debug details
 ```
 
 Interpretation:
@@ -36,10 +53,11 @@ Interpretation:
 Breath + Fibo = where are we on the map?
 Regime = what kind of playbook is valid here?
 Synth sensors = is price confirming?
-Manual ladder = what levels matter now?
+Market events = what observable setup context was logged?
+Manual ladder = what levels matter now for manual review?
 ```
 
-## P0 — Breath-Fibo-Regime Manual Dashboard v1
+## P3 — Breath-Fibo-Regime Manual Dashboard v1
 
 Implementation target:
 
@@ -88,6 +106,11 @@ No BUY/SELL command language
 
 All ladder output is suggested/manual context only. The user places/cancels orders manually.
 
+Manual Ladder remains downstream, read-only, market-only, and
+manual-review-only. It may display canonical market-event context but must not
+recompute canonical signals, invent combinations, emit BUY/SELL commands, or
+become a decision/execution surface.
+
 ## Required display per symbol
 
 Show:
@@ -99,6 +122,9 @@ price freshness
 Breathline / A+ phase or prognosis if available
 Fibo / external map source
 regime state/context if available
+market event type/status if logged downstream
+market event timestamp/freshness if available
+visible market-event evidence references
 current leg direction
 invalidation level
 distance to invalidation
@@ -114,6 +140,39 @@ distance to each ladder level
 manual-only note
 debug details collapsed/secondary
 ```
+
+Market-event display may include:
+
+```text
+event type/status
+timestamp/freshness
+visible evidence
+fibo targets
+invalidation
+relevant regime context
+```
+
+It must not display event context as order permission or execution intent.
+
+## Presentation-Only Preparation
+
+Earlier static display/shell work is allowed only as non-canonical
+presentation-only preparation.
+
+Allowed before P0a-P2:
+
+- static layout shell
+- display model placeholders
+- source/freshness slots
+- visual grouping for future event fields
+
+Not allowed before P0a-P2:
+
+- event calculation
+- signal recomputation
+- action/proposal logic
+- composed policy
+- anything that supersedes P0a-P2
 
 ## Neutral dashboard state labels
 
@@ -208,6 +267,15 @@ regime context != order instruction
 regime context != decision_gate permission
 ```
 
+Existing regimes remain the canonical market/asset context. Do not add a
+second lifecycle state machine or permanent asset category such as
+`ALT_PRE_RUNNER`, `PRE_RUNNER_COIN`, or `LIQUIDITY_EXPANSION_ENGINE`.
+
+Compression/building/expansion/exhaustion language is initially only explicit
+observation/event grouping. It can become a formal derived lifecycle tag only
+after validation proves incremental value over existing regimes and primitive
+signals.
+
 ## Manual ladder examples
 
 ### ALGO-style row
@@ -278,19 +346,37 @@ Runner target still visible.
 Manual only.
 ```
 
-## P0 implementation tasks
+## P3 implementation tasks
+
+Do not start event-aware P3 implementation tasks until P0a-P2 are complete.
 
 ```text
 1. Find existing fib/zone/map data sources.
 2. Find available regime source/status fields.
 3. Find current price source.
-4. Build deterministic display model.
-5. Render clean static HTML.
-6. Include ALGO/WLD-style behavior if real data is incomplete.
-7. Do not touch execution/decision/planner/executor.
+4. Find market-event context outputs once available downstream.
+5. Build deterministic display model.
+6. Render clean static HTML.
+7. Include ALGO/WLD-style behavior if real data is incomplete.
+8. Do not touch execution/decision/planner/executor.
 ```
 
-## P1 — External zone ingestion/display as map source
+## Roadmap Alignment
+
+- P0a — Canonical market-data, replay, and executable-liquidity audit.
+- P0b — Define separate schemas/contracts for primitive signal, market event,
+  and strategy proposal.
+- P1 — Signal matrix inventory and transparent display.
+- P2 — Market-event logging only.
+- P3 — Manual Ladder consumes the same context/event outputs downstream.
+- P4 — Outcome validation by event cohort.
+- P5 — Promote only proven event definitions into `strategy_definition`
+  records.
+- P6 — Manual/paper proposals with profile and bucket context.
+- P7 — Only later, explicitly approved `decision_gate` /
+  `execution_planner` integration.
+
+## Future — External zone ingestion/display as map source
 
 After dashboard v1 exists, add or normalize external zones as dashboard map inputs.
 
@@ -308,7 +394,13 @@ external zones -> order creation
 external zones -> decision_gate bypass
 ```
 
-## P2 — Cleaner regime strategy interpretation labels
+FFG is not required input, is not runtime market data, and must not affect
+`selection_engine`, `decision_gate`, `execution_planner`, or `executor`.
+No manual daily FFG capture may be required to detect spikes. At most,
+external FFG observations may later be stored as non-canonical
+comparison/research overlays with `runtime_effect: NONE`.
+
+## Future — Cleaner regime strategy interpretation labels
 
 After dashboard v1 renders regime context, define clearer regime-to-playbook labels.
 
@@ -353,31 +445,52 @@ These require separate validation, architecture review, and explicit permission.
 Repo: ~/projects/synth-v2
 
 Task:
-Create Manual Ladder Dashboard v1, but structure it as the first Breath-Fibo-Regime dashboard.
+Prepare Manual Ladder Dashboard v1 only after P0a-P2 are complete, or create
+a non-canonical presentation-only shell that cannot calculate events,
+recompute signals, or emit action/proposal logic.
 
 Current source of truth:
-The new chat bundle is valid. Older docs/todo files mostly belong to the parked Paper Advice dashboard and should not drive this task.
+Manual Ladder is a downstream P3 consumer of the canonical signal-matrix and
+market-event context. Older docs/todo files mostly belong to the parked Paper
+Advice dashboard and should not drive this task.
 
 Goal:
-Build a static, reporting-only dashboard where the reading order is:
+Build a static, reporting-only dashboard only after the canonical upstream
+contracts and event logging exist. If doing earlier shell work, keep it
+presentation-only. The reading order is:
 
 1. Breathline / A+ phase and prognosis
 2. Fibo + external zone map
 3. Regime as the first Synth interpretation layer
 4. Price position inside the map
 5. Synth confirmation sensors
-6. Manual ladder / review state
-7. Debug details
+6. Market-event context if logged downstream
+7. Manual ladder / review state
+8. Debug details
 
 Important:
 Regime is not a later research-only dashboard. It belongs in this dashboard immediately because strategy interpretation depends on regime.
 
 Fibo and external zones are priority inputs. External zones should be treated as high-value calculated map levels, not as direct order instructions.
 
+Manual Ladder is downstream of primitive signals and market events. It may display event type/status, timestamp/freshness, visible evidence, fibo targets, invalidation, and relevant regime context. It must not recompute canonical signals, invent combinations, emit BUY/SELL commands, or become a decision/execution surface.
+
+FFG is not required input, is not runtime market data, must not affect selection/decision/planning/execution layers, and may only become a non-canonical comparison/research overlay with runtime_effect=NONE.
+
+Blocked prerequisites for event-aware implementation:
+- P0a canonical market-data/replay/executable-liquidity audit
+- P0b primitive-signal / market-event / proposal contracts
+- P1 signal matrix inventory
+- P2 market-event logging
+
 Rules:
 - Reporting/dashboard only
 - Market-only
 - Account-agnostic
+- Non-canonical presentation-only preparation cannot supersede P0a-P2
+- No event calculation before P2
+- No signal recomputation
+- No action/proposal logic
 - No broker private calls
 - No broker writes
 - No order submission
@@ -405,6 +518,9 @@ Dashboard row/card should show:
 - Breathline/A+ phase/prognosis if available
 - Fibo/external map source
 - regime state/context if available
+- market event type/status if logged downstream
+- market event timestamp/freshness if available
+- visible market-event evidence references
 - current leg direction
 - invalidation
 - distance to invalidation
