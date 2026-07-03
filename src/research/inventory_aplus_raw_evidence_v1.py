@@ -2,11 +2,19 @@
 A+ raw evidence inventory (Phase 1 of the A+ / Breathline V1 alignment study).
 
 Research-only, read-only. Recursively inspects data/aplus_raw/ (or an explicit
---root) and produces a hashed, schema-classified, timestamp-lane-tagged
+--root) and produces a hashed, schema-classified, snapshot-alignment-tagged
 inventory of candidate A+ source files. This is a survey tool: it does not
 select an anchor, does not compute a Breathline state, does not join to
 market data, and does not draw any conclusion. See
 docs/research/aplus_breathline_alignment_contract_v1.md.
+
+A+ Table 1 / Table 2 records are point-in-time snapshots, not forward
+predictions. The named source field prediction_ts_utc is treated in this
+research lane as snapshot_ts_utc -- an A+ snapshot/evaluation timestamp --
+never as a future target time. The primary research question this inventory
+feeds is: at the exact A+ snapshot timestamp, does frozen Breathline V1
+describe a compatible phase/state for the same asset, using only market
+candles fully closed at or before that timestamp?
 
 data/aplus_raw is external local research evidence. This script never writes,
 renames, moves, or edits anything under the scanned root; it only reads.
@@ -44,7 +52,7 @@ from typing import Any
 
 
 REPORT_NAME = "aplus_breathline_alignment_inventory_v1"
-VERSION = "0.3"
+VERSION = "0.4"
 
 DEFAULT_ROOT = "data/aplus_raw"
 DEFAULT_OUT_BASE = "data/research/aplus_breathline_alignment_v1"
@@ -111,52 +119,53 @@ TS_PROVENANCE_EXPLICIT = "EXPLICIT_SOURCE_TIMESTAMP"
 TS_PROVENANCE_FILENAME = "FILENAME_INFERRED_TIMESTAMP"
 TS_PROVENANCE_UNKNOWN = "UNKNOWN"
 
+# The named field is prediction_ts_utc, but this research lane treats it as
+# an A+ snapshot/evaluation timestamp -- never a future target time.
+TIMESTAMP_ROLE_SNAPSHOT = "SNAPSHOT_TIME"
 TIMESTAMP_ROLE_OBSERVATION = "OBSERVATION_TIME"
-TIMESTAMP_ROLE_PREDICTION_TARGET = "PREDICTION_TARGET_TIME"
 TIMESTAMP_ROLE_FILENAME_INFERRED = "FILENAME_INFERRED"
 # An explicit timestamp with no named field to establish its semantic role
 # (e.g. a bare "(2026-05-15T12:44:48Z)" in a title line). Never coerced into
-# OBSERVATION_TIME or PREDICTION_TARGET_TIME without a named field as evidence.
+# OBSERVATION_TIME or SNAPSHOT_TIME without a named field as evidence.
 TIMESTAMP_ROLE_UNLABELED_EXPLICIT = "UNLABELED_EXPLICIT"
 
-# Timestamp lanes (contract section 3.1). Legacy/retrospective metadata,
-# preserved but demoted: PRIMARY_TARGET_ALIGNMENT no longer implies primary
-# eligibility -- see ANALYSIS_LANE_* below, which is the authoritative gate.
-LANE_PRIMARY_TARGET_ALIGNMENT = "PRIMARY_TARGET_ALIGNMENT"
+# Timestamp lanes: which named field a canonical source's primary timestamp
+# came from. Legacy/descriptive metadata; analysis_lane below is the
+# authoritative Phase 2 eligibility gate.
+LANE_PRIMARY_SNAPSHOT_ALIGNMENT = "PRIMARY_SNAPSHOT_ALIGNMENT"
 LANE_FUTURE_OBSERVATION_ASOF = "FUTURE_OBSERVATION_ASOF"
 LANE_EXPLORATORY_ONLY = "EXPLORATORY_ONLY"
 
-# Analysis lanes (contract section 3.1/3.5, the two-time forecast-overlap
-# model). This is the authoritative Phase 2 eligibility gate.
-# PRIMARY_FORECAST_OVERLAP: S (source_capture_ts_utc) strictly precedes
-#   T (prediction_target_ts_utc) -- a genuine advance-forecast pair.
-# RETROSPECTIVE_TARGET_ALIGNMENT: the source has a valid T but does not
-#   qualify for forecast-overlap (missing/ineligible S, or S >= T). This is
-#   the demoted former "primary" lane: never primary, never predictive.
-# EXPLORATORY_ONLY: no valid T at all.
-ANALYSIS_LANE_PRIMARY_FORECAST_OVERLAP = "PRIMARY_FORECAST_OVERLAP"
-ANALYSIS_LANE_RETROSPECTIVE_TARGET_ALIGNMENT = "RETROSPECTIVE_TARGET_ALIGNMENT"
+# Analysis lanes (contract section 3.5). This is the authoritative Phase 2
+# eligibility gate. PRIMARY_SNAPSHOT_ALIGNMENT: a supported, non-empty,
+# OK-status source with a parseable named snapshot_ts_utc, and (at row level)
+# a resolved canonical_market_symbol with no duplicate-asset ambiguity.
+# EXPLORATORY_ONLY: everything else.
+ANALYSIS_LANE_PRIMARY_SNAPSHOT_ALIGNMENT = "PRIMARY_SNAPSHOT_ALIGNMENT"
 ANALYSIS_LANE_EXPLORATORY_ONLY = "EXPLORATORY_ONLY"
 
 # Fixed provenance label for a source_capture_ts_utc derived from a filename
 # containing both a date and an HH:MM time. A date-only filename never
-# produces this -- it is never assigned a silent midnight default.
+# produces this. This is retained purely as a source-capture diagnostic: it
+# is never required for eligibility and never compared to snapshot_ts_utc.
 SOURCE_CAPTURE_TIME_PROVENANCE_FILENAME = "SOURCE_CAPTURE_TIME_FILENAME_UTC_ASSUMED"
+
+# The literal raw source field name snapshot_ts_utc is parsed from, preserved
+# for provenance per the contract's "do not lose the original name" rule.
+SNAPSHOT_SOURCE_FIELD_NAME = "prediction_ts_utc"
 
 EXCLUSION_REASON_NOT_SUPPORTED_TABLE = "NOT_SUPPORTED_TABLE"
 EXCLUSION_REASON_STATUS_NOT_OK = "STATUS_NOT_OK"
-EXCLUSION_REASON_SOURCE_CAPTURE_TIME_INELIGIBLE = "SOURCE_CAPTURE_TIME_INELIGIBLE"
-EXCLUSION_REASON_PREDICTION_TARGET_TIME_MISSING = "PREDICTION_TARGET_TIME_MISSING"
-EXCLUSION_REASON_SOURCE_NOT_BEFORE_TARGET = "SOURCE_NOT_BEFORE_TARGET"
+EXCLUSION_REASON_SNAPSHOT_TIME_MISSING = "SNAPSHOT_TIME_MISSING"
 
 # Named explicit-timestamp field patterns and the role each field name
 # establishes. Add new named fields here only when a source explicitly labels
 # them; never infer a role for an unlabeled bare timestamp.
 NAMED_TIMESTAMP_FIELD_PATTERNS: tuple[tuple[str, re.Pattern[str], str], ...] = (
     (
-        "prediction_ts_utc",
+        SNAPSHOT_SOURCE_FIELD_NAME,
         re.compile(r"prediction_ts_utc\s*=\s*([0-9T:\-]+Z)", re.IGNORECASE),
-        TIMESTAMP_ROLE_PREDICTION_TARGET,
+        TIMESTAMP_ROLE_SNAPSHOT,
     ),
     (
         "observation_ts_utc",
@@ -258,14 +267,17 @@ class CanonicalSourceRecord:
     primary_timestamp_iso: str | None
     primary_timestamp_role: str | None
     timestamp_lane: str
+    # Filename-derived source-capture diagnostics only. Never required for
+    # eligibility; never compared to snapshot_ts_utc.
     source_capture_ts_utc: str | None
     source_capture_time_provenance: str
     source_capture_time_eligible: bool
-    prediction_target_ts_utc: str | None
-    prediction_target_time_provenance: str
-    lead_seconds: int | None
-    forecast_overlap_eligible: bool
-    forecast_exclusion_reason: str | None
+    # The primary snapshot-alignment model (contract section 3.5).
+    snapshot_ts_utc: str | None
+    snapshot_ts_utc_provenance: str
+    snapshot_source_field_name: str | None
+    snapshot_alignment_eligible: bool
+    snapshot_exclusion_reason: str | None
     analysis_lane: str
     assets: list[str]
     duplicate_assets_within_file: list[str]
@@ -542,17 +554,19 @@ def resolve_timestamp_provenance(
 
 
 def resolve_timestamp_lane(primary_role: str | None) -> str:
-    if primary_role == TIMESTAMP_ROLE_PREDICTION_TARGET:
-        return LANE_PRIMARY_TARGET_ALIGNMENT
+    if primary_role == TIMESTAMP_ROLE_SNAPSHOT:
+        return LANE_PRIMARY_SNAPSHOT_ALIGNMENT
     if primary_role == TIMESTAMP_ROLE_OBSERVATION:
         return LANE_FUTURE_OBSERVATION_ASOF
     return LANE_EXPLORATORY_ONLY
 
 
 def derive_source_capture_timestamp(name: str) -> tuple[str | None, bool, str]:
-    """S = source_capture_ts_utc, derived only from a filename containing both
-    a date and an HH:MM time. A date-only filename is never assigned a silent
-    midnight default: it is explicitly ineligible, not a valid S.
+    """Filename-derived source-capture diagnostic only (contract 3.5 item 4).
+
+    Retained for source-capture diagnostics; never required for eligibility
+    and never compared to snapshot_ts_utc. A date-only filename never
+    produces a value here -- it is never assigned a silent midnight default.
 
     Returns (source_capture_ts_utc_or_None, source_capture_time_eligible,
     source_capture_time_provenance).
@@ -571,62 +585,44 @@ def derive_source_capture_timestamp(name: str) -> tuple[str | None, bool, str]:
     return iso, True, SOURCE_CAPTURE_TIME_PROVENANCE_FILENAME
 
 
-def derive_prediction_target_timestamp(
+def derive_snapshot_timestamp(
     explicit_timestamps: list[ExplicitTimestamp],
-) -> tuple[str | None, str]:
-    """T = prediction_target_ts_utc, parsed only from the named source field
+) -> tuple[str | None, str, str | None]:
+    """snapshot_ts_utc, parsed only from the named source field
     prediction_ts_utc -- never from an unlabeled bare timestamp or from
     observation_ts_utc. Ambiguous (multiple conflicting) values are never
-    guessed.
+    guessed. The A+ Table 1/2 timestamp is a point-in-time snapshot, not a
+    future prediction target.
 
-    Returns (prediction_target_ts_utc_or_None, prediction_target_time_provenance).
+    Returns (snapshot_ts_utc_or_None, snapshot_ts_utc_provenance,
+    snapshot_source_field_name_or_None).
     """
-    matches = [ts for ts in explicit_timestamps if ts.field_name == "prediction_ts_utc"]
+    matches = [ts for ts in explicit_timestamps if ts.field_name == SNAPSHOT_SOURCE_FIELD_NAME]
     distinct_isos = {ts.iso for ts in matches}
     if len(distinct_isos) == 1:
-        return matches[0].iso, TS_PROVENANCE_EXPLICIT
-    return None, TS_PROVENANCE_UNKNOWN
+        return matches[0].iso, TS_PROVENANCE_EXPLICIT, SNAPSHOT_SOURCE_FIELD_NAME
+    return None, TS_PROVENANCE_UNKNOWN, None
 
 
-def parse_iso_utc(value: str) -> datetime:
-    return datetime.strptime(value.rstrip("Z"), "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
-
-
-def compute_forecast_overlap_eligibility(
+def compute_snapshot_alignment_eligibility(
     *,
     detected_table_type: str,
     status: str,
-    source_capture_ts_utc: str | None,
-    source_capture_time_eligible: bool,
-    prediction_target_ts_utc: str | None,
-) -> tuple[bool, int | None, str | None]:
-    """Returns (forecast_overlap_eligible, lead_seconds, exclusion_reason).
+    snapshot_ts_utc: str | None,
+) -> tuple[bool, str | None]:
+    """File-level snapshot-alignment preconditions (contract 3.5 item 5,
+    file-level portion). Row-level resolution (a RESOLVED
+    canonical_market_symbol) is applied separately per asset row.
 
-    lead_seconds = T - S in whole seconds, only when S < T. Never computed,
-    and never a fabricated 0/None-as-zero, otherwise.
+    Returns (snapshot_alignment_eligible, snapshot_exclusion_reason).
     """
     if detected_table_type not in (TABLE_TYPE_TABLE1, TABLE_TYPE_TABLE2):
-        return False, None, EXCLUSION_REASON_NOT_SUPPORTED_TABLE
+        return False, EXCLUSION_REASON_NOT_SUPPORTED_TABLE
     if status != "OK":
-        return False, None, EXCLUSION_REASON_STATUS_NOT_OK
-    if not source_capture_time_eligible or source_capture_ts_utc is None:
-        return False, None, EXCLUSION_REASON_SOURCE_CAPTURE_TIME_INELIGIBLE
-    if prediction_target_ts_utc is None:
-        return False, None, EXCLUSION_REASON_PREDICTION_TARGET_TIME_MISSING
-    s_dt = parse_iso_utc(source_capture_ts_utc)
-    t_dt = parse_iso_utc(prediction_target_ts_utc)
-    if not s_dt < t_dt:
-        return False, None, EXCLUSION_REASON_SOURCE_NOT_BEFORE_TARGET
-    lead_seconds = int((t_dt - s_dt).total_seconds())
-    return True, lead_seconds, None
-
-
-def resolve_analysis_lane(*, forecast_overlap_eligible: bool, timestamp_lane: str) -> str:
-    if forecast_overlap_eligible:
-        return ANALYSIS_LANE_PRIMARY_FORECAST_OVERLAP
-    if timestamp_lane == LANE_PRIMARY_TARGET_ALIGNMENT:
-        return ANALYSIS_LANE_RETROSPECTIVE_TARGET_ALIGNMENT
-    return ANALYSIS_LANE_EXPLORATORY_ONLY
+        return False, EXCLUSION_REASON_STATUS_NOT_OK
+    if snapshot_ts_utc is None:
+        return False, EXCLUSION_REASON_SNAPSHOT_TIME_MISSING
+    return True, None
 
 
 def resolve_market_symbol(raw_source_token: str) -> tuple[str | None, str]:
@@ -749,7 +745,8 @@ def build_canonical_record(
     digest: str, alias_paths: list[str], parsed: ParsedContent
 ) -> CanonicalSourceRecord:
     canonical_source_path = alias_paths[0]
-    filename_ts = infer_filename_timestamp(Path(canonical_source_path).name)
+    canonical_name = Path(canonical_source_path).name
+    filename_ts = infer_filename_timestamp(canonical_name)
 
     provenance, primary_iso, primary_role, ts_notes = resolve_timestamp_provenance(
         parsed.explicit_timestamps, filename_ts
@@ -764,22 +761,21 @@ def build_canonical_record(
     duplicate_assets = find_duplicate_assets(parsed.rows)
     unparsed_row_count = len(parsed.row_diagnostics)
 
-    canonical_name = Path(canonical_source_path).name
     source_capture_ts_utc, source_capture_time_eligible, source_capture_time_provenance = (
         derive_source_capture_timestamp(canonical_name)
     )
-    prediction_target_ts_utc, prediction_target_time_provenance = derive_prediction_target_timestamp(
+    snapshot_ts_utc, snapshot_ts_utc_provenance, snapshot_source_field_name = derive_snapshot_timestamp(
         parsed.explicit_timestamps
     )
-    forecast_overlap_eligible, lead_seconds, forecast_exclusion_reason = compute_forecast_overlap_eligibility(
+    snapshot_alignment_eligible, snapshot_exclusion_reason = compute_snapshot_alignment_eligibility(
         detected_table_type=parsed.detected_table_type,
         status=status,
-        source_capture_ts_utc=source_capture_ts_utc,
-        source_capture_time_eligible=source_capture_time_eligible,
-        prediction_target_ts_utc=prediction_target_ts_utc,
+        snapshot_ts_utc=snapshot_ts_utc,
     )
-    analysis_lane = resolve_analysis_lane(
-        forecast_overlap_eligible=forecast_overlap_eligible, timestamp_lane=timestamp_lane
+    analysis_lane = (
+        ANALYSIS_LANE_PRIMARY_SNAPSHOT_ALIGNMENT
+        if snapshot_alignment_eligible
+        else ANALYSIS_LANE_EXPLORATORY_ONLY
     )
 
     return CanonicalSourceRecord(
@@ -805,11 +801,11 @@ def build_canonical_record(
         source_capture_ts_utc=source_capture_ts_utc,
         source_capture_time_provenance=source_capture_time_provenance,
         source_capture_time_eligible=source_capture_time_eligible,
-        prediction_target_ts_utc=prediction_target_ts_utc,
-        prediction_target_time_provenance=prediction_target_time_provenance,
-        lead_seconds=lead_seconds,
-        forecast_overlap_eligible=forecast_overlap_eligible,
-        forecast_exclusion_reason=forecast_exclusion_reason,
+        snapshot_ts_utc=snapshot_ts_utc,
+        snapshot_ts_utc_provenance=snapshot_ts_utc_provenance,
+        snapshot_source_field_name=snapshot_source_field_name,
+        snapshot_alignment_eligible=snapshot_alignment_eligible,
+        snapshot_exclusion_reason=snapshot_exclusion_reason,
         analysis_lane=analysis_lane,
         assets=sorted({row.raw_source_token for row in parsed.rows}),
         duplicate_assets_within_file=duplicate_assets,
@@ -825,18 +821,22 @@ def build_row_records(record: CanonicalSourceRecord, parsed: ParsedContent) -> l
     row_records: list[dict[str, Any]] = []
     for index, row in enumerate(parsed.rows):
         canonical_symbol, resolution_status = resolve_market_symbol(row.raw_source_token)
+        row_analysis_lane = (
+            ANALYSIS_LANE_PRIMARY_SNAPSHOT_ALIGNMENT
+            if record.snapshot_alignment_eligible and resolution_status == ASSET_RESOLUTION_RESOLVED
+            else ANALYSIS_LANE_EXPLORATORY_ONLY
+        )
         row_records.append(
             {
                 "canonical_source_hash": record.canonical_source_hash,
                 "canonical_source_path": record.canonical_source_path,
                 "detected_table_type": record.detected_table_type,
                 "row_index_in_file": index,
-                "primary_timestamp_iso": record.primary_timestamp_iso,
+                "snapshot_ts_utc": record.snapshot_ts_utc,
+                "snapshot_source_field_name": record.snapshot_source_field_name,
                 "timestamp_provenance": record.timestamp_provenance,
-                "primary_timestamp_role": record.primary_timestamp_role,
                 "timestamp_lane": record.timestamp_lane,
-                "analysis_lane": record.analysis_lane,
-                "forecast_overlap_eligible": record.forecast_overlap_eligible,
+                "analysis_lane": row_analysis_lane,
                 "raw_source_token": row.raw_source_token,
                 "canonical_market_symbol": canonical_symbol,
                 "asset_resolution_status": resolution_status,
@@ -851,12 +851,11 @@ def build_row_records(record: CanonicalSourceRecord, parsed: ParsedContent) -> l
                 "canonical_source_path": record.canonical_source_path,
                 "detected_table_type": record.detected_table_type,
                 "row_index_in_file": None,
-                "primary_timestamp_iso": record.primary_timestamp_iso,
+                "snapshot_ts_utc": record.snapshot_ts_utc,
+                "snapshot_source_field_name": record.snapshot_source_field_name,
                 "timestamp_provenance": record.timestamp_provenance,
-                "primary_timestamp_role": record.primary_timestamp_role,
                 "timestamp_lane": record.timestamp_lane,
-                "analysis_lane": record.analysis_lane,
-                "forecast_overlap_eligible": record.forecast_overlap_eligible,
+                "analysis_lane": ANALYSIS_LANE_EXPLORATORY_ONLY,
                 "raw_source_token": None,
                 "canonical_market_symbol": None,
                 "asset_resolution_status": None,
@@ -906,38 +905,25 @@ def build_summary(records: list[CanonicalSourceRecord], row_records: list[dict[s
         role_counts[role_key] = role_counts.get(role_key, 0) + 1
         lane_counts[record.timestamp_lane] = lane_counts.get(record.timestamp_lane, 0) + 1
         analysis_lane_counts[record.analysis_lane] = analysis_lane_counts.get(record.analysis_lane, 0) + 1
-        if record.forecast_exclusion_reason is not None:
-            exclusion_reason_counts[record.forecast_exclusion_reason] = (
-                exclusion_reason_counts.get(record.forecast_exclusion_reason, 0) + 1
+        if record.snapshot_exclusion_reason is not None:
+            exclusion_reason_counts[record.snapshot_exclusion_reason] = (
+                exclusion_reason_counts.get(record.snapshot_exclusion_reason, 0) + 1
             )
 
-    valid_primary_target_alignment_events = [
-        record.canonical_source_path
-        for record in records
-        if record.timestamp_lane == LANE_PRIMARY_TARGET_ALIGNMENT and record.status == "OK"
-    ]
-
-    forecast_overlap_eligible_sources = sorted(
-        record.canonical_source_path for record in records if record.forecast_overlap_eligible
-    )
-    lead_seconds_distribution = sorted(
-        record.lead_seconds for record in records if record.forecast_overlap_eligible and record.lead_seconds is not None
+    snapshot_alignment_eligible_sources = sorted(
+        record.canonical_source_path for record in records if record.snapshot_alignment_eligible
     )
 
     resolution_counts: dict[str, int] = {}
     row_parse_status_counts: dict[str, int] = {}
-    forecast_overlap_eligible_row_count = 0
+    primary_snapshot_alignment_row_count = 0
     for row in row_records:
         row_parse_status_counts[row["row_parse_status"]] = row_parse_status_counts.get(row["row_parse_status"], 0) + 1
         resolution_status = row.get("asset_resolution_status")
         if resolution_status is not None:
             resolution_counts[resolution_status] = resolution_counts.get(resolution_status, 0) + 1
-        if (
-            row["row_parse_status"] == ROW_PARSE_STATUS_OK
-            and row.get("forecast_overlap_eligible")
-            and resolution_status == ASSET_RESOLUTION_RESOLVED
-        ):
-            forecast_overlap_eligible_row_count += 1
+        if row["row_parse_status"] == ROW_PARSE_STATUS_OK and row.get("analysis_lane") == ANALYSIS_LANE_PRIMARY_SNAPSHOT_ALIGNMENT:
+            primary_snapshot_alignment_row_count += 1
 
     alias_groups = [
         {"canonical_source_hash": r.canonical_source_hash, "alias_paths": r.alias_paths}
@@ -959,13 +945,10 @@ def build_summary(records: list[CanonicalSourceRecord], row_records: list[dict[s
         "timestamp_role_counts": dict(sorted(role_counts.items())),
         "timestamp_lane_counts": dict(sorted(lane_counts.items())),
         "analysis_lane_counts": dict(sorted(analysis_lane_counts.items())),
-        "forecast_exclusion_reason_counts": dict(sorted(exclusion_reason_counts.items())),
-        "valid_primary_target_alignment_event_count": len(valid_primary_target_alignment_events),
-        "valid_primary_target_alignment_sources": sorted(valid_primary_target_alignment_events),
-        "forecast_overlap_eligible_source_count": len(forecast_overlap_eligible_sources),
-        "forecast_overlap_eligible_sources": forecast_overlap_eligible_sources,
-        "forecast_overlap_eligible_row_count": forecast_overlap_eligible_row_count,
-        "lead_seconds_distribution": lead_seconds_distribution,
+        "snapshot_exclusion_reason_counts": dict(sorted(exclusion_reason_counts.items())),
+        "snapshot_alignment_eligible_source_count": len(snapshot_alignment_eligible_sources),
+        "snapshot_alignment_eligible_sources": snapshot_alignment_eligible_sources,
+        "primary_snapshot_alignment_row_count": primary_snapshot_alignment_row_count,
         "row_parse_status_counts": dict(sorted(row_parse_status_counts.items())),
         "asset_resolution_counts": dict(sorted(resolution_counts.items())),
     }
@@ -1005,11 +988,11 @@ def canonical_record_to_dict(record: CanonicalSourceRecord) -> dict[str, Any]:
         "source_capture_ts_utc": record.source_capture_ts_utc,
         "source_capture_time_provenance": record.source_capture_time_provenance,
         "source_capture_time_eligible": record.source_capture_time_eligible,
-        "prediction_target_ts_utc": record.prediction_target_ts_utc,
-        "prediction_target_time_provenance": record.prediction_target_time_provenance,
-        "lead_seconds": record.lead_seconds,
-        "forecast_overlap_eligible": record.forecast_overlap_eligible,
-        "forecast_exclusion_reason": record.forecast_exclusion_reason,
+        "snapshot_ts_utc": record.snapshot_ts_utc,
+        "snapshot_ts_utc_provenance": record.snapshot_ts_utc_provenance,
+        "snapshot_source_field_name": record.snapshot_source_field_name,
+        "snapshot_alignment_eligible": record.snapshot_alignment_eligible,
+        "snapshot_exclusion_reason": record.snapshot_exclusion_reason,
         "analysis_lane": record.analysis_lane,
         "assets": record.assets,
         "duplicate_assets_within_file": record.duplicate_assets_within_file,
@@ -1064,22 +1047,16 @@ def render_table_summary(summary: dict[str, Any], output_paths: dict[str, str], 
     for key, value in summary["analysis_lane_counts"].items():
         lines.append(f"  {key}={value}")
     lines.append("")
-    lines.append("--- forecast_exclusion_reason counts ---")
-    for key, value in summary["forecast_exclusion_reason_counts"].items():
+    lines.append("--- snapshot_exclusion_reason counts ---")
+    for key, value in summary["snapshot_exclusion_reason_counts"].items():
         lines.append(f"  {key}={value}")
     lines.append("")
     lines.append(
-        f"valid_primary_target_alignment_event_count={summary['valid_primary_target_alignment_event_count']} "
-        "(RETROSPECTIVE_TARGET_ALIGNMENT lane; demoted, never primary)"
+        f"snapshot_alignment_eligible_source_count={summary['snapshot_alignment_eligible_source_count']}"
     )
-    for path in summary["valid_primary_target_alignment_sources"]:
+    for path in summary["snapshot_alignment_eligible_sources"]:
         lines.append(f"  {path}")
-    lines.append("")
-    lines.append(f"forecast_overlap_eligible_source_count={summary['forecast_overlap_eligible_source_count']}")
-    for path in summary["forecast_overlap_eligible_sources"]:
-        lines.append(f"  {path}")
-    lines.append(f"forecast_overlap_eligible_row_count={summary['forecast_overlap_eligible_row_count']}")
-    lines.append(f"lead_seconds_distribution={summary['lead_seconds_distribution']}")
+    lines.append(f"primary_snapshot_alignment_row_count={summary['primary_snapshot_alignment_row_count']}")
     lines.append("")
     lines.append(f"wrote_files={wrote}")
     if wrote:

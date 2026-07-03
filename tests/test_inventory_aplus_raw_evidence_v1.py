@@ -12,33 +12,34 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.research.inventory_aplus_raw_evidence_v1 import (
     ANALYSIS_LANE_EXPLORATORY_ONLY,
-    ANALYSIS_LANE_PRIMARY_FORECAST_OVERLAP,
-    ANALYSIS_LANE_RETROSPECTIVE_TARGET_ALIGNMENT,
+    ANALYSIS_LANE_PRIMARY_SNAPSHOT_ALIGNMENT,
     ASSET_RESOLUTION_RESOLVED,
     ASSET_RESOLUTION_UNRESOLVED,
-    EXCLUSION_REASON_SOURCE_CAPTURE_TIME_INELIGIBLE,
-    EXCLUSION_REASON_SOURCE_NOT_BEFORE_TARGET,
+    EXCLUSION_REASON_NOT_SUPPORTED_TABLE,
+    EXCLUSION_REASON_SNAPSHOT_TIME_MISSING,
+    EXCLUSION_REASON_STATUS_NOT_OK,
     InventoryIntegrityError,
     LANE_EXPLORATORY_ONLY,
     LANE_FUTURE_OBSERVATION_ASOF,
-    LANE_PRIMARY_TARGET_ALIGNMENT,
+    LANE_PRIMARY_SNAPSHOT_ALIGNMENT,
     ParsedContent,
     ROW_PARSE_STATUS_MALFORMED,
     ROW_PARSE_STATUS_OK,
     ROW_PARSE_STATUS_UNPARSED_NON_TABLE,
+    SNAPSHOT_SOURCE_FIELD_NAME,
     SOURCE_CAPTURE_TIME_PROVENANCE_FILENAME,
     TABLE_TYPE_TABLE1,
     TABLE_TYPE_TABLE2,
     TABLE_TYPE_UNSUPPORTED,
     TIMESTAMP_ROLE_FILENAME_INFERRED,
-    TIMESTAMP_ROLE_PREDICTION_TARGET,
+    TIMESTAMP_ROLE_SNAPSHOT,
     TIMESTAMP_ROLE_UNLABELED_EXPLICIT,
     TS_PROVENANCE_EXPLICIT,
     TS_PROVENANCE_FILENAME,
     TS_PROVENANCE_UNKNOWN,
     check_content_group_consistency,
-    compute_forecast_overlap_eligibility,
-    derive_prediction_target_timestamp,
+    compute_snapshot_alignment_eligibility,
+    derive_snapshot_timestamp,
     derive_source_capture_timestamp,
     extract_declared_metadata,
     extract_explicit_timestamps,
@@ -145,12 +146,21 @@ def write_fixture(tmp_path: Path, name: str, content: str) -> Path:
     return path
 
 
+def forecast_fixture(snapshot_ts_utc: str) -> str:
+    return f"""prediction_ts_utc = {snapshot_ts_utc}
+
+TOKEN PHASE COHERENCE FIELD GEOMETRY STRUCTURAL_ROLE EXPANSION_QUALITY ANCHOR_STRENGTH STRATEGIC_BIAS NOTES
+
+BTC confirmed high neutral clean leader moderate strong accumulation harmonic axis stable
+"""
+
+
 # ---------------------------------------------------------------------------
 # Synthetic Table 1 / Table 2 fixture parsing
 # ---------------------------------------------------------------------------
 
 
-def test_table1_space_delimited_parses_fields_and_timestamp_lane(tmp_path: Path) -> None:
+def test_table1_space_delimited_parses_fields_and_snapshot_alignment(tmp_path: Path) -> None:
     write_fixture(tmp_path, "t1_space.txt", TABLE1_SPACE_FIXTURE)
     records, rows = run_inventory(tmp_path)
 
@@ -161,9 +171,13 @@ def test_table1_space_delimited_parses_fields_and_timestamp_lane(tmp_path: Path)
     assert record.token_count == 2
     assert record.assets == ["BTC", "ETH"]
     assert record.timestamp_provenance == TS_PROVENANCE_EXPLICIT
-    assert record.primary_timestamp_role == TIMESTAMP_ROLE_PREDICTION_TARGET
-    assert record.timestamp_lane == LANE_PRIMARY_TARGET_ALIGNMENT
-    assert record.primary_timestamp_iso == "2026-05-13T19:15:00Z"
+    assert record.primary_timestamp_role == TIMESTAMP_ROLE_SNAPSHOT
+    assert record.timestamp_lane == LANE_PRIMARY_SNAPSHOT_ALIGNMENT
+    assert record.snapshot_ts_utc == "2026-05-13T19:15:00Z"
+    assert record.snapshot_source_field_name == SNAPSHOT_SOURCE_FIELD_NAME
+    assert record.snapshot_alignment_eligible is True
+    assert record.snapshot_exclusion_reason is None
+    assert record.analysis_lane == ANALYSIS_LANE_PRIMARY_SNAPSHOT_ALIGNMENT
 
     btc_row = next(r for r in rows if r["raw_source_token"] == "BTC")
     assert btc_row["phase"] == "confirmed"
@@ -172,6 +186,8 @@ def test_table1_space_delimited_parses_fields_and_timestamp_lane(tmp_path: Path)
     assert btc_row["row_parse_status"] == ROW_PARSE_STATUS_OK
     assert btc_row["canonical_market_symbol"] == "BTC"
     assert btc_row["asset_resolution_status"] == ASSET_RESOLUTION_RESOLVED
+    assert btc_row["analysis_lane"] == ANALYSIS_LANE_PRIMARY_SNAPSHOT_ALIGNMENT
+    assert btc_row["snapshot_ts_utc"] == "2026-05-13T19:15:00Z"
 
 
 def test_table1_pipe_delimited_parses_fields(tmp_path: Path) -> None:
@@ -210,14 +226,32 @@ def test_table2_parses_harmonic_fields(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Explicit vs filename-inferred timestamp separation, and timestamp_lane
+# snapshot_ts_utc: named prediction_ts_utc field is a point-in-time snapshot,
+# never a future target time
 # ---------------------------------------------------------------------------
 
 
-def test_named_field_timestamp_is_explicit_with_prediction_target_role() -> None:
+def test_named_field_timestamp_is_explicit_with_snapshot_role() -> None:
     timestamps = extract_explicit_timestamps("prediction_ts_utc = 2026-05-14T13:15:00Z")
     assert len(timestamps) == 1
-    assert timestamps[0].role == TIMESTAMP_ROLE_PREDICTION_TARGET
+    assert timestamps[0].role == TIMESTAMP_ROLE_SNAPSHOT
+
+
+def test_derive_snapshot_timestamp_only_uses_named_field() -> None:
+    # A bare unlabeled timestamp must never be used as snapshot_ts_utc.
+    timestamps = extract_explicit_timestamps("Snapshot (2026-05-15T12:44:48Z)")
+    snapshot_ts_utc, provenance, field_name = derive_snapshot_timestamp(timestamps)
+    assert snapshot_ts_utc is None
+    assert provenance == TS_PROVENANCE_UNKNOWN
+    assert field_name is None
+
+
+def test_derive_snapshot_timestamp_preserves_raw_field_name() -> None:
+    timestamps = extract_explicit_timestamps("prediction_ts_utc = 2026-05-14T13:15:00Z")
+    snapshot_ts_utc, provenance, field_name = derive_snapshot_timestamp(timestamps)
+    assert snapshot_ts_utc == "2026-05-14T13:15:00Z"
+    assert provenance == TS_PROVENANCE_EXPLICIT
+    assert field_name == SNAPSHOT_SOURCE_FIELD_NAME == "prediction_ts_utc"
 
 
 def test_bare_unlabeled_timestamp_is_explicit_but_role_unresolved() -> None:
@@ -227,42 +261,14 @@ def test_bare_unlabeled_timestamp_is_explicit_but_role_unresolved() -> None:
     assert timestamps[0].role == TIMESTAMP_ROLE_UNLABELED_EXPLICIT
 
 
-def test_filename_inferred_timestamp_used_only_when_no_explicit_timestamp(tmp_path: Path) -> None:
-    content = "TOKEN MOMENTUM STABILITY\nBTC low high\n"
-    path = write_fixture(tmp_path, "2026-04-23_run_01_consistency.txt", content)
-    parsed = parse_content(path)
-    filename_ts = infer_filename_timestamp(path.name)
-
-    assert parsed.explicit_timestamps == []
-    assert filename_ts == "2026-04-23T00:00:00Z"
-    provenance, iso, role, _ = resolve_timestamp_provenance([], filename_ts)
-    assert provenance == TS_PROVENANCE_FILENAME
-    assert role == TIMESTAMP_ROLE_FILENAME_INFERRED
-    assert resolve_timestamp_lane(role) == LANE_EXPLORATORY_ONLY
-
-
-def test_resolve_timestamp_lane_prediction_target_is_primary() -> None:
-    assert resolve_timestamp_lane(TIMESTAMP_ROLE_PREDICTION_TARGET) == LANE_PRIMARY_TARGET_ALIGNMENT
-
-
-def test_resolve_timestamp_lane_observation_is_future_asof() -> None:
-    from src.research.inventory_aplus_raw_evidence_v1 import TIMESTAMP_ROLE_OBSERVATION
-
-    assert resolve_timestamp_lane(TIMESTAMP_ROLE_OBSERVATION) == LANE_FUTURE_OBSERVATION_ASOF
+def test_resolve_timestamp_lane_snapshot_is_primary() -> None:
+    assert resolve_timestamp_lane(TIMESTAMP_ROLE_SNAPSHOT) == LANE_PRIMARY_SNAPSHOT_ALIGNMENT
 
 
 def test_resolve_timestamp_lane_everything_else_is_exploratory() -> None:
     assert resolve_timestamp_lane(TIMESTAMP_ROLE_UNLABELED_EXPLICIT) == LANE_EXPLORATORY_ONLY
     assert resolve_timestamp_lane(TIMESTAMP_ROLE_FILENAME_INFERRED) == LANE_EXPLORATORY_ONLY
     assert resolve_timestamp_lane(None) == LANE_EXPLORATORY_ONLY
-
-
-def test_prediction_ts_utc_file_is_eligible_for_primary_target_alignment(tmp_path: Path) -> None:
-    write_fixture(tmp_path, "t1.txt", TABLE1_SPACE_FIXTURE)
-    records, _ = run_inventory(tmp_path)
-    record = records[0]
-    assert record.timestamp_lane == LANE_PRIMARY_TARGET_ALIGNMENT
-    assert record.status == "OK"
 
 
 def test_ambiguous_conflicting_explicit_timestamps_are_not_silently_resolved(tmp_path: Path) -> None:
@@ -280,6 +286,101 @@ def test_infer_filename_timestamp_handles_date_and_date_time() -> None:
     assert infer_filename_timestamp("2026-05-13_1915_table1.txt") == "2026-05-13T19:15:00Z"
     assert infer_filename_timestamp("2026-03-25_aplusraw.txt") == "2026-03-25T00:00:00Z"
     assert infer_filename_timestamp("not_a_date.txt") is None
+
+
+# ---------------------------------------------------------------------------
+# Filename timestamps are diagnostic only: never required for eligibility,
+# never compared to snapshot_ts_utc, equal timestamps are never a failure
+# ---------------------------------------------------------------------------
+
+
+def test_filename_timestamp_equal_to_snapshot_ts_utc_is_not_a_failure(tmp_path: Path) -> None:
+    # Filename and named field encode the exact same instant -- this must be
+    # accepted, not treated as a conflict or exclusion of any kind.
+    write_fixture(tmp_path, "2026-05-13_1915_table1_canonical_breathline.txt", TABLE1_SPACE_FIXTURE)
+    records, _ = run_inventory(tmp_path)
+
+    record = records[0]
+    assert record.source_capture_ts_utc == "2026-05-13T19:15:00Z"
+    assert record.snapshot_ts_utc == "2026-05-13T19:15:00Z"
+    assert record.snapshot_alignment_eligible is True
+    assert record.snapshot_exclusion_reason is None
+    assert record.analysis_lane == ANALYSIS_LANE_PRIMARY_SNAPSHOT_ALIGNMENT
+
+
+def test_date_only_filename_does_not_block_snapshot_alignment_eligibility(tmp_path: Path) -> None:
+    # No HH:MM in the filename at all -- source_capture_ts_utc stays a
+    # diagnostic None, but this must not gate snapshot-alignment eligibility.
+    write_fixture(tmp_path, "2026-05-01_forecast_source.txt", forecast_fixture("2026-05-05T12:00:00Z"))
+    records, _ = run_inventory(tmp_path)
+
+    record = records[0]
+    assert record.source_capture_ts_utc is None
+    assert record.source_capture_time_eligible is False
+    assert record.snapshot_ts_utc == "2026-05-05T12:00:00Z"
+    assert record.snapshot_alignment_eligible is True
+    assert record.snapshot_exclusion_reason is None
+    assert record.analysis_lane == ANALYSIS_LANE_PRIMARY_SNAPSHOT_ALIGNMENT
+
+
+def test_filename_timestamp_after_snapshot_ts_utc_is_not_a_failure(tmp_path: Path) -> None:
+    # A filename timestamp "later" than snapshot_ts_utc must never be treated
+    # as an ordering failure -- there is no S<T requirement in this model.
+    write_fixture(tmp_path, "2026-05-05_1300_late_filename.txt", forecast_fixture("2026-05-05T12:00:00Z"))
+    records, _ = run_inventory(tmp_path)
+
+    record = records[0]
+    assert record.snapshot_alignment_eligible is True
+    assert record.snapshot_exclusion_reason is None
+
+
+# ---------------------------------------------------------------------------
+# File-level snapshot-alignment eligibility
+# ---------------------------------------------------------------------------
+
+
+def test_compute_snapshot_alignment_eligibility_requires_supported_table() -> None:
+    eligible, reason = compute_snapshot_alignment_eligibility(
+        detected_table_type=TABLE_TYPE_UNSUPPORTED, status="OK", snapshot_ts_utc="2026-05-05T12:00:00Z"
+    )
+    assert eligible is False
+    assert reason == EXCLUSION_REASON_NOT_SUPPORTED_TABLE
+
+
+def test_compute_snapshot_alignment_eligibility_requires_status_ok() -> None:
+    eligible, reason = compute_snapshot_alignment_eligibility(
+        detected_table_type=TABLE_TYPE_TABLE1, status="EMPTY_TABLE_BODY", snapshot_ts_utc="2026-05-05T12:00:00Z"
+    )
+    assert eligible is False
+    assert reason == EXCLUSION_REASON_STATUS_NOT_OK
+
+
+def test_compute_snapshot_alignment_eligibility_requires_snapshot_ts_utc() -> None:
+    eligible, reason = compute_snapshot_alignment_eligibility(
+        detected_table_type=TABLE_TYPE_TABLE1, status="OK", snapshot_ts_utc=None
+    )
+    assert eligible is False
+    assert reason == EXCLUSION_REASON_SNAPSHOT_TIME_MISSING
+
+
+def test_compute_snapshot_alignment_eligibility_passes_when_all_conditions_met() -> None:
+    eligible, reason = compute_snapshot_alignment_eligibility(
+        detected_table_type=TABLE_TYPE_TABLE2, status="OK", snapshot_ts_utc="2026-05-05T12:00:00Z"
+    )
+    assert eligible is True
+    assert reason is None
+
+
+def test_no_snapshot_timestamp_is_exploratory_only(tmp_path: Path) -> None:
+    content = "TOKEN MOMENTUM STABILITY\nBTC low high\n"
+    write_fixture(tmp_path, "2026-04-23_consistency.txt", content)
+    records, _ = run_inventory(tmp_path)
+
+    record = records[0]
+    assert record.snapshot_ts_utc is None
+    assert record.snapshot_alignment_eligible is False
+    assert record.snapshot_exclusion_reason == EXCLUSION_REASON_NOT_SUPPORTED_TABLE
+    assert record.analysis_lane == ANALYSIS_LANE_EXPLORATORY_ONLY
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +402,7 @@ def test_duplicate_files_become_one_canonical_source_and_never_inflate_events(tm
         [str(tmp_path / "a_first.txt"), str(tmp_path / "b_second_copy.txt"), str(tmp_path / "c_third_copy.txt")]
     )
     assert record.canonical_source_path == record.alias_paths[0]
+    assert record.snapshot_alignment_eligible is True
 
     # Row/event population is per content hash, never per alias path: still
     # exactly 2 asset rows (BTC, ETH), not 6.
@@ -343,6 +445,23 @@ def test_check_content_group_consistency_passes_for_identical_content(tmp_path: 
     parsed_b = parse_content(write_fixture(tmp_path, "b_copy.txt", TABLE1_SPACE_FIXTURE))
     group = [(tmp_path / "a.txt", parsed_a), (tmp_path / "b_copy.txt", parsed_b)]
     check_content_group_consistency("irrelevant_since_content_matches", group)  # must not raise
+
+
+def test_duplicate_alias_paths_still_create_one_source_event_population(tmp_path: Path) -> None:
+    content = forecast_fixture("2026-05-05T12:00:00Z")
+    write_fixture(tmp_path, "2026-05-01_0800_a.txt", content)
+    write_fixture(tmp_path, "2026-05-01_0800_b_copy.txt", content)
+
+    records, rows = run_inventory(tmp_path)
+
+    assert len(records) == 1  # one canonical source, not two
+    record = records[0]
+    assert record.alias_count == 2
+    assert record.snapshot_alignment_eligible is True
+    assert record.analysis_lane == ANALYSIS_LANE_PRIMARY_SNAPSHOT_ALIGNMENT
+
+    asset_rows = [r for r in rows if r["row_parse_status"] == ROW_PARSE_STATUS_OK]
+    assert len(asset_rows) == 1  # not duplicated per alias path
 
 
 # ---------------------------------------------------------------------------
@@ -394,8 +513,6 @@ def test_footer_and_stray_prose_never_enter_event_ledger_rows(tmp_path: Path) ->
     assert "THIS" not in all_tokens
     assert all_tokens == {"BTC", "TAO", "LINK"}
 
-    # Token counts at the file level exclude the footer/prose lines entirely.
-    by_path = {r.canonical_source_path: r for r in records}
     trailing_note_record = next(r for r in records if "trailing_note.txt" in r.canonical_source_path)
     assert trailing_note_record.token_count == 2
     assert "NOTE:" not in trailing_note_record.assets
@@ -427,7 +544,7 @@ def test_malformed_row_within_table_body_is_diagnostic_not_asset(tmp_path: Path)
 
 
 # ---------------------------------------------------------------------------
-# Duplicate asset within a single file
+# Duplicate asset within a single file: no duplicate-asset ambiguity allowed
 # ---------------------------------------------------------------------------
 
 
@@ -439,6 +556,17 @@ def test_duplicate_asset_within_single_file_is_flagged_not_fatal(tmp_path: Path)
     assert duplicates == ["BTC"]
     # Both raw rows are preserved -- never silently collapsed.
     assert len(parsed.rows) == 2
+
+
+def test_duplicate_asset_within_file_excludes_from_primary_snapshot_alignment(tmp_path: Path) -> None:
+    write_fixture(tmp_path, "dup_token.txt", DUPLICATE_TOKEN_FIXTURE)
+    records, _ = run_inventory(tmp_path)
+
+    record = records[0]
+    assert record.status == "DUPLICATE_ASSET_ALIAS_WITHIN_FILE"
+    assert record.snapshot_alignment_eligible is False
+    assert record.snapshot_exclusion_reason == EXCLUSION_REASON_STATUS_NOT_OK
+    assert record.analysis_lane == ANALYSIS_LANE_EXPLORATORY_ONLY
 
 
 def test_find_duplicate_assets_pure_function() -> None:
@@ -475,7 +603,7 @@ def test_resolve_market_symbol_unknown_token_is_unresolved_not_guessed() -> None
     assert status == ASSET_RESOLUTION_UNRESOLVED
 
 
-def test_unresolved_token_row_is_preserved_as_diagnostic_not_dropped(tmp_path: Path) -> None:
+def test_unresolved_token_row_is_preserved_as_diagnostic_and_excluded_from_primary_lane(tmp_path: Path) -> None:
     content = (
         "prediction_ts_utc = 2026-05-14T13:15:00Z\n\n"
         "TOKEN PHASE COHERENCE FIELD GEOMETRY STRUCTURAL_ROLE EXPANSION_QUALITY ANCHOR_STRENGTH STRATEGIC_BIAS NOTES\n\n"
@@ -489,6 +617,11 @@ def test_unresolved_token_row_is_preserved_as_diagnostic_not_dropped(tmp_path: P
     assert asset_rows[0]["raw_source_token"] == "ZZZNOTREAL"
     assert asset_rows[0]["asset_resolution_status"] == ASSET_RESOLUTION_UNRESOLVED
     assert asset_rows[0]["canonical_market_symbol"] is None
+    # File-level snapshot_alignment_eligible is True (table/status/timestamp
+    # all fine), but the row itself is excluded from the primary lane because
+    # its token is unresolved.
+    assert records[0].snapshot_alignment_eligible is True
+    assert asset_rows[0]["analysis_lane"] == ANALYSIS_LANE_EXPLORATORY_ONLY
 
 
 # ---------------------------------------------------------------------------
@@ -553,7 +686,7 @@ def test_main_table_output_never_prints_table_values(tmp_path: Path, capsys: pyt
     assert "accumulation" not in captured
     assert "total_canonical_sources=1" in captured
     assert TABLE_TYPE_TABLE1 in captured
-    assert LANE_PRIMARY_TARGET_ALIGNMENT in captured
+    assert ANALYSIS_LANE_PRIMARY_SNAPSHOT_ALIGNMENT in captured
 
 
 def test_main_write_files_produces_expected_artifacts(tmp_path: Path) -> None:
@@ -578,6 +711,7 @@ def test_main_write_files_produces_expected_artifacts(tmp_path: Path) -> None:
     canonical_records = [json.loads(line) for line in canonical_manifest.read_text(encoding="utf-8").splitlines()]
     assert len(canonical_records) == 2
     assert all("alias_paths" in r and "alias_count" in r for r in canonical_records)
+    assert all("snapshot_ts_utc" in r and "snapshot_alignment_eligible" in r for r in canonical_records)
 
     row_records = [json.loads(line) for line in rows_file.read_text(encoding="utf-8").splitlines()]
     asset_rows = [r for r in row_records if r["row_parse_status"] == ROW_PARSE_STATUS_OK]
@@ -586,6 +720,8 @@ def test_main_write_files_produces_expected_artifacts(tmp_path: Path) -> None:
     summary = json.loads(summary_file.read_text(encoding="utf-8"))
     assert summary["total_canonical_sources"] == 2
     assert summary["row_record_count"] == 4
+    assert summary["snapshot_alignment_eligible_source_count"] == 2
+    assert summary["primary_snapshot_alignment_row_count"] == 4
 
 
 def test_main_duplicate_content_writes_one_canonical_source_not_two(tmp_path: Path) -> None:
@@ -607,136 +743,3 @@ def test_main_missing_root_is_empty_not_fatal(tmp_path: Path) -> None:
     missing_root = tmp_path / "does_not_exist"
     exit_code = main(["--root", str(missing_root)])
     assert exit_code == 0
-
-
-# ---------------------------------------------------------------------------
-# Two-time forecast-overlap model: S = source_capture_ts_utc (filename date+time
-# only), T = prediction_target_ts_utc (named prediction_ts_utc field only)
-# ---------------------------------------------------------------------------
-
-
-def forecast_fixture(prediction_ts_utc: str) -> str:
-    return f"""prediction_ts_utc = {prediction_ts_utc}
-
-TOKEN PHASE COHERENCE FIELD GEOMETRY STRUCTURAL_ROLE EXPANSION_QUALITY ANCHOR_STRENGTH STRATEGIC_BIAS NOTES
-
-BTC confirmed high neutral clean leader moderate strong accumulation harmonic axis stable
-"""
-
-
-def test_valid_filename_capture_time_plus_named_target_is_primary_forecast_overlap(tmp_path: Path) -> None:
-    # Filename S = 2026-05-01T08:00:00Z, named T = 2026-05-05T12:00:00Z -> S < T.
-    write_fixture(tmp_path, "2026-05-01_0800_forecast_source.txt", forecast_fixture("2026-05-05T12:00:00Z"))
-    records, rows = run_inventory(tmp_path)
-
-    assert len(records) == 1
-    record = records[0]
-    assert record.source_capture_ts_utc == "2026-05-01T08:00:00Z"
-    assert record.source_capture_time_provenance == SOURCE_CAPTURE_TIME_PROVENANCE_FILENAME
-    assert record.source_capture_time_eligible is True
-    assert record.prediction_target_ts_utc == "2026-05-05T12:00:00Z"
-    assert record.forecast_overlap_eligible is True
-    assert record.forecast_exclusion_reason is None
-    assert record.analysis_lane == ANALYSIS_LANE_PRIMARY_FORECAST_OVERLAP
-    assert record.lead_seconds == 4 * 86400 + 4 * 3600  # 4 days, 4 hours
-
-    asset_rows = [r for r in rows if r["row_parse_status"] == ROW_PARSE_STATUS_OK]
-    assert asset_rows[0]["analysis_lane"] == ANALYSIS_LANE_PRIMARY_FORECAST_OVERLAP
-    assert asset_rows[0]["forecast_overlap_eligible"] is True
-
-
-def test_date_only_filename_excluded_from_primary_forecast_lane_not_midnight_assumed(tmp_path: Path) -> None:
-    # No HHMM in the filename -- must be excluded, never silently assigned 00:00.
-    write_fixture(tmp_path, "2026-05-01_forecast_source.txt", forecast_fixture("2026-05-05T12:00:00Z"))
-    records, _ = run_inventory(tmp_path)
-
-    record = records[0]
-    assert record.source_capture_ts_utc is None
-    assert record.source_capture_time_eligible is False
-    assert record.prediction_target_ts_utc == "2026-05-05T12:00:00Z"  # T still resolves independently
-    assert record.forecast_overlap_eligible is False
-    assert record.forecast_exclusion_reason == EXCLUSION_REASON_SOURCE_CAPTURE_TIME_INELIGIBLE
-    assert record.analysis_lane == ANALYSIS_LANE_RETROSPECTIVE_TARGET_ALIGNMENT  # demoted, never primary
-
-
-def test_source_capture_time_equal_to_target_is_excluded(tmp_path: Path) -> None:
-    # S == T: not strictly S < T, so excluded (matches the real corpus pattern
-    # where the filename timestamp equals the declared prediction_ts_utc).
-    write_fixture(tmp_path, "2026-05-05_1200_same_moment_source.txt", forecast_fixture("2026-05-05T12:00:00Z"))
-    records, _ = run_inventory(tmp_path)
-
-    record = records[0]
-    assert record.forecast_overlap_eligible is False
-    assert record.forecast_exclusion_reason == EXCLUSION_REASON_SOURCE_NOT_BEFORE_TARGET
-    assert record.analysis_lane == ANALYSIS_LANE_RETROSPECTIVE_TARGET_ALIGNMENT
-
-
-def test_source_capture_time_after_target_is_excluded(tmp_path: Path) -> None:
-    write_fixture(tmp_path, "2026-05-05_1300_late_source.txt", forecast_fixture("2026-05-05T12:00:00Z"))
-    records, _ = run_inventory(tmp_path)
-
-    record = records[0]
-    assert record.forecast_overlap_eligible is False
-    assert record.forecast_exclusion_reason == EXCLUSION_REASON_SOURCE_NOT_BEFORE_TARGET
-
-
-def test_lead_seconds_is_deterministic() -> None:
-    source_capture_ts_utc, eligible, provenance = derive_source_capture_timestamp(
-        "2026-05-01_0800_forecast_source.txt"
-    )
-    assert source_capture_ts_utc == "2026-05-01T08:00:00Z"
-    assert eligible is True
-    assert provenance == SOURCE_CAPTURE_TIME_PROVENANCE_FILENAME
-
-    first = compute_forecast_overlap_eligibility(
-        detected_table_type=TABLE_TYPE_TABLE1,
-        status="OK",
-        source_capture_ts_utc=source_capture_ts_utc,
-        source_capture_time_eligible=eligible,
-        prediction_target_ts_utc="2026-05-05T12:00:00Z",
-    )
-    second = compute_forecast_overlap_eligibility(
-        detected_table_type=TABLE_TYPE_TABLE1,
-        status="OK",
-        source_capture_ts_utc=source_capture_ts_utc,
-        source_capture_time_eligible=eligible,
-        prediction_target_ts_utc="2026-05-05T12:00:00Z",
-    )
-    assert first == second == (True, 4 * 86400 + 4 * 3600, None)
-
-
-def test_derive_prediction_target_timestamp_only_uses_named_field() -> None:
-    # A bare unlabeled timestamp must never be used as T.
-    timestamps = extract_explicit_timestamps("Snapshot (2026-05-15T12:44:48Z)")
-    target, provenance = derive_prediction_target_timestamp(timestamps)
-    assert target is None
-    assert provenance == TS_PROVENANCE_UNKNOWN
-
-
-def test_duplicate_alias_paths_still_create_one_source_event_population_under_forecast_model(
-    tmp_path: Path,
-) -> None:
-    content = forecast_fixture("2026-05-05T12:00:00Z")
-    write_fixture(tmp_path, "2026-05-01_0800_a.txt", content)
-    write_fixture(tmp_path, "2026-05-01_0800_b_copy.txt", content)
-
-    records, rows = run_inventory(tmp_path)
-
-    assert len(records) == 1  # one canonical source, not two
-    record = records[0]
-    assert record.alias_count == 2
-    assert record.forecast_overlap_eligible is True
-    assert record.analysis_lane == ANALYSIS_LANE_PRIMARY_FORECAST_OVERLAP
-
-    asset_rows = [r for r in rows if r["row_parse_status"] == ROW_PARSE_STATUS_OK]
-    assert len(asset_rows) == 1  # not duplicated per alias path
-
-
-def test_no_valid_target_is_exploratory_only(tmp_path: Path) -> None:
-    content = "TOKEN MOMENTUM STABILITY\nBTC low high\n"
-    write_fixture(tmp_path, "2026-04-23_consistency.txt", content)
-    records, _ = run_inventory(tmp_path)
-
-    record = records[0]
-    assert record.prediction_target_ts_utc is None
-    assert record.analysis_lane == ANALYSIS_LANE_EXPLORATORY_ONLY

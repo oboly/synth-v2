@@ -1,25 +1,23 @@
 # A+ → Breathline V1 Alignment Study Contract v1
 
-**Status:** DRAFT — Phase 1 (inventory) implemented; Phase 2 (forecast-overlap comparison) preregistered here as a design only, not implemented, not executed
+**Status:** DRAFT — Phase 1 (inventory) implemented; Phase 2 (snapshot-alignment comparison) preregistered here as a design only, not implemented, not executed
 **Scope:** Research-only market/context alignment study
 **Decision status:** No promotion, runtime integration, or execution use
 
 ## 1. Purpose
 
-Determine whether frozen Breathline V1's state, computed strictly from
-information available at an A+ source's capture time `S`, aligns with what
-A+ separately recorded as its forward prediction target `T`, compared with
-matched shifted-time controls that preserve the same `S`-to-`T` horizon.
+A+ Table 1 and Table 2 records are **point-in-time snapshots**, not forward
+predictions. Determine whether, at the exact A+ snapshot timestamp `T`, using
+only market candles fully closed at or before `T`, frozen Breathline V1
+describes a compatible phase/state for the same asset, compared with
+matched shifted-time controls.
 
-This is a **forecast-overlap** study, not a retrospective one: the primary
-question is whether V1's state as of `S` (using no information from between
-`S` and `T`) says something consistent with A+'s own `T`-dated claim. This is
-not a trading feature. It is not connected to `selection_engine`,
-`decision_gate`, `execution_planner`, `executor`, UI, DB writes, accounts,
-broker, or strategy promotion. A+ remains an external symbolic/narrative
-research label, not market-data truth. It is not observation, not
-prospective validation, not predictive proof, not trade evidence, and not
-trading authority.
+This is a **snapshot-alignment** study. It is not a trading feature. It is
+not connected to `selection_engine`, `decision_gate`, `execution_planner`,
+`executor`, UI, DB writes, accounts, broker, or strategy promotion. A+
+remains an external symbolic/narrative research label, not market-data
+truth. It is not observation of a future event, not prospective validation,
+not predictive proof, not trade evidence, and not trading authority.
 
 ## 2. Architectural Boundaries
 
@@ -88,13 +86,16 @@ produces:
 - `explicit_timestamps`: every distinct explicit timestamp found in the
   source text, each tagged with its field name (if any) and resolved role;
 - `filename_inferred_timestamp`, `timestamp_provenance`, `primary_timestamp_iso`,
-  `primary_timestamp_role`, `timestamp_lane` — legacy/retrospective metadata,
-  preserved but demoted (never primary; see 3.5);
-- **the two-time forecast-overlap fields (section 3.5, the primary model)**:
-  `source_capture_ts_utc`, `source_capture_time_provenance`,
-  `source_capture_time_eligible`, `prediction_target_ts_utc`,
-  `prediction_target_time_provenance`, `lead_seconds`,
-  `forecast_overlap_eligible`, `forecast_exclusion_reason`, `analysis_lane`;
+  `primary_timestamp_role`, `timestamp_lane`: which named field (if any)
+  established the primary timestamp;
+- `source_capture_ts_utc`, `source_capture_time_provenance`,
+  `source_capture_time_eligible`: filename-derived **diagnostics only** —
+  never required for eligibility, never compared to `snapshot_ts_utc` (see
+  3.2);
+- **the primary snapshot-alignment fields (section 3.5)**: `snapshot_ts_utc`,
+  `snapshot_ts_utc_provenance`, `snapshot_source_field_name`,
+  `snapshot_alignment_eligible`, `snapshot_exclusion_reason`,
+  `analysis_lane`;
 - `status` and `status_notes`.
 
 Per-row records (only for `TABLE1_CANONICAL_BREATHLINE` /
@@ -103,12 +104,14 @@ Table 2 field (`phase`, `coherence`, `field`, `geometry`, `structural_role`,
 `expansion_quality`, `anchor_strength`, `strategic_bias`, `notes` for Table 1;
 `harmonic_phase`, `phase_state`, `offset_band`, `drift_direction`, `quality`,
 `extension_risk`, `notes` for Table 2), tagged with `canonical_source_hash`,
-`canonical_source_path`, `detected_table_type`, `primary_timestamp_iso`,
-`timestamp_provenance`, `primary_timestamp_role`, `timestamp_lane`,
-`analysis_lane`, `forecast_overlap_eligible`, `raw_source_token`,
-`canonical_market_symbol`, `asset_resolution_status`, and `row_parse_status`.
-Lines that never became an asset row (a footer line, a malformed row,
-trailing prose) appear in the same stream tagged
+`canonical_source_path`, `detected_table_type`, `snapshot_ts_utc`,
+`snapshot_source_field_name`, `timestamp_provenance`, `timestamp_lane`,
+`analysis_lane`, `raw_source_token`, `canonical_market_symbol`,
+`asset_resolution_status`, and `row_parse_status`. A row's own
+`analysis_lane` is `PRIMARY_SNAPSHOT_ALIGNMENT` only when the file-level
+preconditions hold **and** its own token resolves — see 3.5. Lines that
+never became an asset row (a footer line, a malformed row, trailing prose)
+appear in the same stream tagged
 `row_parse_status = MALFORMED_TABLE_BODY` or `UNPARSED_NON_TABLE_LINE`, with
 no asset/field values fabricated for them — see 3.3.
 
@@ -123,7 +126,7 @@ data/research/aplus_breathline_alignment_v1/<run_id>/
 
 These are generated evidence, not committed to git.
 
-### 3.1 Timestamp provenance, role, and (legacy) lane
+### 3.1 Timestamp provenance, role, and (descriptive) lane
 
 Provenance (per canonical source, how confident we are that a timestamp is
 real source evidence rather than a filename guess):
@@ -137,28 +140,30 @@ UNKNOWN                       no usable timestamp found, or found but ambiguous
 Role (what a specific timestamp field means):
 
 ```text
-PREDICTION_TARGET_TIME  named field prediction_ts_utc. This is T in the
-                        two-time forecast-overlap model (section 3.5) --
-                        never described as observation-time, prospective
-                        validation, predictive proof, trade evidence, or
-                        trading authority on its own.
+SNAPSHOT_TIME           named field prediction_ts_utc. Treated in this
+                        research lane as an A+ point-in-time
+                        snapshot/evaluation timestamp -- never a future
+                        target time, never described as observation of a
+                        future event, prospective validation, predictive
+                        proof, trade evidence, or trading authority.
 OBSERVATION_TIME        named field observation_ts_utc. A separate future
                         as-of lane; detected structurally but not
                         implemented in this PR.
 FILENAME_INFERRED       exploratory only; excluded from primary analysis.
 UNLABELED_EXPLICIT      an explicit timestamp with no named field to
                         establish its semantic role -- never coerced into
-                        OBSERVATION_TIME or PREDICTION_TARGET_TIME without a
-                        named field as evidence.
+                        OBSERVATION_TIME or SNAPSHOT_TIME without a named
+                        field as evidence.
 ```
 
-Legacy lane (`timestamp_lane`, preserved but no longer the eligibility gate
-— see `analysis_lane` in 3.5):
+Descriptive lane (`timestamp_lane`, records which named field established
+the primary timestamp — `analysis_lane` in 3.5 is the authoritative Phase 2
+eligibility gate):
 
 ```text
-PRIMARY_TARGET_ALIGNMENT  primary_timestamp_role == PREDICTION_TARGET_TIME.
-FUTURE_OBSERVATION_ASOF   primary_timestamp_role == OBSERVATION_TIME.
-EXPLORATORY_ONLY          everything else.
+PRIMARY_SNAPSHOT_ALIGNMENT  primary_timestamp_role == SNAPSHOT_TIME.
+FUTURE_OBSERVATION_ASOF     primary_timestamp_role == OBSERVATION_TIME.
+EXPLORATORY_ONLY            everything else.
 ```
 
 ### 3.2 Fail-closed rules
@@ -188,11 +193,11 @@ EXPLORATORY_ONLY          everything else.
   `DUPLICATE_ASSET_ALIAS_WITHIN_FILE`. Every raw row is preserved (never
   silently collapsed or best-of-picked); the source is excluded from
   primary-lane eligibility until a human resolves which row is authoritative.
-- **Date-only filenames are never assigned a silent midnight default.** A
-  filename without an `HH:MM` component cannot produce `S`; the source is
-  `source_capture_time_eligible = False`, excluded from
-  `PRIMARY_FORECAST_OVERLAP` via `SOURCE_CAPTURE_TIME_INELIGIBLE`, not
-  coerced into a fabricated capture time.
+- **Filename timestamps are diagnostic only.** `source_capture_ts_utc` is
+  never required for `snapshot_alignment_eligible`, and it is never compared
+  to `snapshot_ts_utc`. A filename timestamp equal to, before, or after
+  `snapshot_ts_utc` is never treated as a failure of any kind — there is no
+  ordering requirement between them in this model.
 - Console/log summary output prints only provenance, counts, and schema
   findings. It never prints PHASE, COHERENCE, HARMONIC_PHASE, or any other
   table-body field value.
@@ -224,210 +229,224 @@ against an explicit, documented registry
 (`MARKET_SYMBOL_ALIAS_REGISTRY` / `CANONICAL_MARKET_SYMBOLS` in the runner).
 Aliases are never inferred from source text. A raw token not in the registry
 is `asset_resolution_status = UNRESOLVED`: it is preserved as a diagnostic
-row, not dropped, and excluded from Phase 2 eligibility until a human adds a
-reviewed registry entry.
+row, not dropped, and excluded from primary-lane eligibility until a human
+adds a reviewed registry entry.
 
 One alias was found and documented from the real corpus:
 `data/aplus_raw/2026-05-27_2149_june_reflection_subset_8_note.txt` writes the
 CC token as `Canton (CC)` in the TOKEN column; the registry maps
 `"CANTON (CC)" -> "CC"`.
 
-### 3.5 The primary model: two-time forecast overlap (`S` and `T`)
+### 3.5 The primary model: point-in-time snapshot alignment
 
-A prior draft of this contract treated a single named timestamp
-(`prediction_ts_utc`) as sufficient for a primary retrospective
-target-alignment lane. **This has been corrected.** The desired primary
-study is a genuine forward forecast-overlap check using two distinct times:
+Two prior drafts of this contract mis-modeled the named `prediction_ts_utc`
+field, first as a retrospective target-alignment time and then as a forward
+forecast target requiring a source-capture time strictly before it.
+**Both have been corrected.** A+ Table 1 and Table 2 are point-in-time
+snapshots. `prediction_ts_utc` is treated in this research lane as:
 
 ```text
-S = source_capture_ts_utc
-    Derived only from a filename containing both a date and an HH:MM time
-    (YYYY-MM-DD_HHMM). Provenance label is exactly
-    SOURCE_CAPTURE_TIME_FILENAME_UTC_ASSUMED. A date-only filename never
-    produces S -- it is excluded, never assigned a silent midnight default.
-
-T = prediction_target_ts_utc
-    Parsed only from the named source field prediction_ts_utc. Never from
-    an unlabeled bare timestamp, never from observation_ts_utc.
+snapshot_ts_utc = an A+ snapshot/evaluation timestamp,
+                  parsed only from the named source field prediction_ts_utc.
+                  The original raw field name is preserved for provenance
+                  as snapshot_source_field_name = "prediction_ts_utc".
 ```
 
-A canonical source is `forecast_overlap_eligible` (`analysis_lane =
-PRIMARY_FORECAST_OVERLAP`) only when **all** of the following hold:
+It is never treated as a future target time. There is no source-capture
+time requirement, no ordering requirement, and no "S < T" condition of any
+kind. Filename timestamps remain retained purely as source-capture
+diagnostics (`source_capture_ts_utc` etc.) — never required for eligibility,
+never compared to `snapshot_ts_utc`, and an equal (or later, or missing)
+filename timestamp is never a failure.
 
-1. it is a supported, non-empty `TABLE1_CANONICAL_BREATHLINE` or
-   `TABLE2_HARMONIC_OVERLAY` canonical source;
-2. `status == OK`;
-3. its filename contains both a date and an `HH:MM` time
-   (`source_capture_time_eligible`);
-4. a named `prediction_ts_utc` value exists (`T` resolves);
-5. `S < T` (strictly before -- `S == T` is excluded, not treated as
-   forward-looking);
-6. `lead_seconds = T - S` is recorded.
+One canonical event per:
 
-Rows additionally require a `RESOLVED` `canonical_market_symbol` (section
-3.4) to count toward the forecast-overlap event population.
+```text
+(canonical_source_hash, table_type, asset, snapshot_ts_utc)
+```
 
-A source that fails only criterion 5 or has no valid `T` at all, but does
-have a valid legacy `PRIMARY_TARGET_ALIGNMENT` timestamp lane, is demoted to
-`analysis_lane = RETROSPECTIVE_TARGET_ALIGNMENT`: **never primary, never
-predictive**, kept only as legacy/retrospective metadata (not deleted).
-Everything else is `EXPLORATORY_ONLY`.
+A row is eligible for `analysis_lane = PRIMARY_SNAPSHOT_ALIGNMENT` only when
+**all** of the following hold:
 
-`forecast_exclusion_reason` (one of `NOT_SUPPORTED_TABLE`, `STATUS_NOT_OK`,
-`SOURCE_CAPTURE_TIME_INELIGIBLE`, `PREDICTION_TARGET_TIME_MISSING`,
-`SOURCE_NOT_BEFORE_TARGET`) records exactly why an otherwise-plausible
-source did not qualify, in that priority order.
+1. its canonical source is a supported, non-empty `TABLE1_CANONICAL_BREATHLINE`
+   or `TABLE2_HARMONIC_OVERLAY` source;
+2. source `status == OK` (this already excludes
+   `DUPLICATE_ASSET_ALIAS_WITHIN_FILE` — i.e. no duplicate-asset ambiguity);
+3. a named `prediction_ts_utc` value exists and parses as `snapshot_ts_utc`;
+4. its own `raw_source_token` resolves to a `canonical_market_symbol`
+   (`asset_resolution_status == RESOLVED`).
 
-**Observed finding:** in the current local corpus, every source whose
-filename encodes a date+time and which also declares a named
-`prediction_ts_utc` has `S == T` (the filename timestamp and the declared
-prediction target are the same clock instant) or lacks an `HH:MM` filename
-component entirely. As implemented, this yields **zero**
-`forecast_overlap_eligible` sources today. This is a legitimate finding about
-the current corpus, not a code defect: these sources describe same-moment
-snapshots, not advance forecasts. New A+ sources whose capture time genuinely
-precedes their declared target time will populate this lane going forward.
+Criteria 1-3 are file-level (`snapshot_alignment_eligible`,
+`snapshot_exclusion_reason` — one of `NOT_SUPPORTED_TABLE`,
+`STATUS_NOT_OK`, `SNAPSHOT_TIME_MISSING`, checked in that priority order);
+criterion 4 is row-level. Everything else is `EXPLORATORY_ONLY`.
 `OBSERVATION_TIME` (`observation_ts_utc`) remains a separate, unimplemented,
 future as-of lane, not required for this study.
 
-## 4. Phase 2 — Preregistered Forecast-Overlap Design (not implemented)
+## 4. Phase 2 — Preregistered Snapshot-Alignment Design (not implemented)
 
 This section fixes the design before any code exists for it. No runner
 implements this section yet. It must not be implemented or executed until
 the Phase 1 ledger inventory (section 3) has been regenerated under the
-forecast-overlap model and reviewed.
+snapshot-alignment model and reviewed.
 
 ### 4.1 Event ledger
 
 One canonical event ledger row per:
 
 ```text
-(canonical_source_hash, table_type, asset, source_capture_ts_utc,
- prediction_target_ts_utc, analysis_lane)
+(canonical_source_hash, table_type, asset, snapshot_ts_utc)
 ```
 
 The ledger is immutable and append-only, carries `canonical_source_hash` and
 full timestamp provenance for every row, and produces exactly one event
 population per canonical source hash — never one per alias path (section
-3.2). Only `analysis_lane == PRIMARY_FORECAST_OVERLAP` rows are in scope for
-Phase 2; `RETROSPECTIVE_TARGET_ALIGNMENT` rows are retained as demoted
-metadata and never used as primary evidence.
+3.2). Only `analysis_lane == PRIMARY_SNAPSHOT_ALIGNMENT` rows are in scope
+for Phase 2.
 
-### 4.2 Frozen-V1 adapter geometry: a forecast vector at `S`, for `T`
+### 4.2 Frozen-V1 adapter geometry: evaluate at `T`, using only candles closed by `T`
 
-For every eligible `(S, T, asset)` event, for each checkpoint `c` in
-`{0.618, 0.786}` and each offset `o` in
+For every eligible event with snapshot timestamp `T`, for each checkpoint
+`c` in `{0.618, 0.786}` and each offset `o` in
 `{-10.5, -7, -5, -3, 0, 3, 5, 7, 10.5}` (the frozen V1 module's own default
 2-checkpoint x 9-offset grid):
 
 ```text
-derived_anchor_ts_utc = S - timedelta(days=(21.0 * c) + o)
+derived_anchor_ts_utc = T - timedelta(days=(21.0 * c) + o)
 ```
 
 The frozen V1 computation is invoked with `derived_anchor_ts_utc` as its
-anchor such that its resulting `as_of` timestamp is exactly `S` — **not**
-`T`. Frozen V1 must only receive candles whose close timestamp is `<=` the
-last fully completed UTC daily candle before `S`; no candle spanning or
-ending after `S` may enter the V1 adapter. This forms a forecast vector *at
-`S`*, to be assessed *for `T`* — the adapter must never calculate V1 as-of
-`T` in the primary lane, since that would leak information from between `S`
-and `T` into the computation.
+anchor such that its resulting `as_of` timestamp is exactly `T`. Frozen V1
+must only receive candles whose close timestamp is `<=` the last fully
+completed UTC daily candle before `T`; no candle spanning or ending after
+`T` may enter the V1 adapter.
 
 The complete 2-checkpoint x 9-offset grid (18 derived anchors) is emitted in
 full for every event and asset; every raw score/state is preserved. The
-adapter must not select a best anchor, best offset, or best checkpoint,
-exactly as the existing Arm-A/B.2a lanes never select a "best-looking" row
-ahead of the rest.
+adapter must not select a best anchor, best offset, or best checkpoint, and
+must not perform any post-hoc selection, exactly as the existing Arm-A/B.2a
+lanes never select a "best-looking" row ahead of the rest.
 
 ### 4.3 Matched shifted-time controls
 
-For every `PRIMARY_FORECAST_OVERLAP` event, for each `k` in the fixed,
+For every `PRIMARY_SNAPSHOT_ALIGNMENT` event, for each `k` in the fixed,
 preregistered integer-day shift registry (no `0d`):
 
 ```text
 -10,-9,-8,-7,-6,-5,-4,-3,-2,-1,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10
 ```
 
-define:
+apply the shift to the snapshot timestamp only:
 
 ```text
-S_control = S + k calendar days
 T_control = T + k calendar days
 ```
 
-**Both** `S` and `T` shift by the same `k` — never `T` alone — so the
-`S`-to-`T` horizon (`lead_seconds`), the same asset, and the same clock time
-of day are preserved exactly. Derived anchors are recomputed from
-`S_control` using the identical section 4.2 formula
-(`derived_anchor_ts_utc = S_control - timedelta(days=(21.0 * c) + o)`) for
-every checkpoint/offset pair. The anchor/offset is never selected after
-results are known, for either the canonical event or any control. No missing
-control may be silently dropped: a control that cannot be computed (e.g.
-candle history unavailable) is recorded as `DATA_UNAVAILABLE` and excluded
-from that control's population, never substituted.
+Same asset, same snapshot source/event, same clock time of day. Derived
+anchors are recomputed from `T_control` using the identical section 4.2
+formula (`derived_anchor_ts_utc = T_control - timedelta(days=(21.0 * c) + o)`)
+for every checkpoint/offset pair. The anchor/offset is never selected after
+results are known, for either the canonical event or any control. No
+missing control may be silently dropped: a control that cannot be computed
+(e.g. candle history unavailable) is recorded as `DATA_UNAVAILABLE` and
+excluded from that control's population, never substituted.
 
-This mirrors the B.2a integer-day phase-null control design in
+These are **descriptive matched-time nulls, not forecast controls** — they
+mirror the B.2a integer-day phase-null control design in
 `docs/research/breathline_three_cycle_chain_and_v1_recovery_contract_v1.md`
-section 10.2, applied to the A+ `(S, T)` pair instead of the P0.3 canonical
-anchor cohort.
+section 10.2, applied to the A+ snapshot timestamp instead of the P0.3
+canonical anchor cohort.
 
-### 4.4 Daily-candle semantics at `S`
+### 4.4 Daily-candle semantics at `T`
 
-A+ source capture times are frequently intraday (e.g. `08:00:00Z`), while
-the frozen V1 module operates on daily candles. At `S` (or `S_control`), V1
-uses the **last fully completed UTC daily candle at or before `S`** — the
-same "raw-checkpoint as-of rule" already frozen in
+A+ snapshot timestamps are frequently intraday (e.g. `19:15:00Z`), while the
+frozen V1 module operates on daily candles. At `T` (or `T_control`), V1 uses
+the **last completed UTC daily candle at or before `T`** — the same
+"raw-checkpoint as-of rule" already frozen in
 `src/research/backtest_breath_curve_partial_to_full_v1.py` and preserved
-unchanged by the Arm-A/B.2a lanes. No candle spanning or ending after `S`,
-no interpolation, and no partial-day candle is ever used. This rule is keyed
-to `S`, never to `T`.
+unchanged by the Arm-A/B.2a lanes. No candle spanning or ending after `T`,
+no interpolation, and no partial-day candle is ever used.
 
-### 4.5 Primary outputs (preregistered)
+### 4.5 Side-by-side output, not a forced label conversion
+
+Future Phase 2 output must present A+ evidence and V1 evidence side by side,
+never as a single forced/scored comparison:
+
+```text
+token
+snapshot_ts_utc
+A+ source table type
+A+ raw fields          (PHASE/COHERENCE/FIELD/... or HARMONIC_PHASE/PHASE_STATE/...,
+                         verbatim, per section 3.4's resolved token)
+Breathline V1 raw grid/state fields   (per section 4.2, the full 2x9 grid)
+crosswalk_status
+crosswalk_note
+```
+
+`crosswalk_status` is one of:
+
+```text
+EXACT_DEFINED     an explicit, preregistered mapping exists between a
+                  specific A+ field/value and a specific V1 field/value.
+PARTIAL_DEFINED   a documented, preregistered partial correspondence exists
+                  (e.g. only some values map, or the mapping is directional
+                  only), explicitly noted as partial.
+UNMAPPED          no mapping is defined. The two fields are shown side by
+                  side with no implied relationship.
+```
+
+**No semantic mapping between A+ labels (`PHASE`, `COHERENCE`, `FIELD`,
+`HARMONIC_PHASE`, `PHASE_STATE`, etc.) and V1 outputs may be invented.** Any
+mapping used to set `crosswalk_status` to `EXACT_DEFINED` or
+`PARTIAL_DEFINED` must be explicitly documented and preregistered in a
+future revision of this contract *before* any comparison score is
+calculated from it. Until such a mapping is preregistered and reviewed,
+every A+-label-to-V1-output pairing defaults to `UNMAPPED`.
+
+### 4.6 Primary outputs (preregistered)
 
 1. Immutable A+ event ledger with canonical source hashes and timestamp
-   provenance/lane, keyed by `(S, T)`.
-2. Fixed-grid Breathline forecast vector at `S`, for `T`, at each eligible
-   `PRIMARY_FORECAST_OVERLAP` event (section 4.2).
-3. Matched shifted-time control vectors (20 per event, per section 4.3, each
-   preserving the `S`-to-`T` horizon).
-4. Per-event and per-asset contrasts for `ranking_score`,
-   `partial_match_score`, `structurally_eligible` (canonical value, control
-   mean/median/min/max, tie-aware mid-rank percentile,
-   canonical-minus-control-mean — the same contrast design used in
-   `run_breathline_v1_arm_a_b2a_comparison_v1.py`).
-5. An A+-label <-> V1-state contingency/overlap report, produced only when
-   the A+ field semantics for that comparison are unambiguous; otherwise the
-   field is reported as unavailable.
-6. Asset-level cluster-aware uncertainty, clustering by source
+   provenance/lane, keyed by `(canonical_source_hash, table_type, asset,
+   snapshot_ts_utc)`.
+2. Fixed-grid Breathline state vector evaluated at `T`, per section 4.2.
+3. Matched shifted-time (descriptive, not forecast) control vectors (20 per
+   event, per section 4.3).
+4. The side-by-side crosswalk output of section 4.5 (A+ raw fields, V1 raw
+   grid/state fields, `crosswalk_status`, `crosswalk_note`) — descriptive
+   only until an explicit mapping is preregistered.
+5. Asset-level cluster-aware uncertainty, clustering by source
    snapshot/event timestamp (not by row), matching the anchor-date
    cluster-bootstrap convention used throughout this research lane.
-7. A pooled descriptive-only output, explicitly labelled cross-asset
+6. A pooled descriptive-only output, explicitly labelled cross-asset
    correlated / non-independent.
-8. A provenance manifest with input hashes, source run IDs/commits, the
-   fixed shift registry, `lead_seconds` distribution, counts, and complete
-   output hashes.
+7. A provenance manifest with input hashes, source run IDs/commits, the
+   fixed shift registry, counts, and complete output hashes.
 
-### 4.6 Statistical and wording boundary
+### 4.7 Statistical and wording boundary
 
 - No independent-row p-values.
 - No "validated", "predictive", "confirmed", "trade", "signal", or
   promotion claims anywhere in outputs, code, or documentation for this
   study.
-- No post-hoc field selection: the three contrast metrics and the fixed
-  2x9 grid are preregistered here, not chosen after inspecting results.
+- No post-hoc field selection: the fixed 2x9 grid is preregistered here, not
+  chosen after inspecting results.
+- No invented semantic mapping between A+ labels and V1 outputs (section
+  4.5) — every pairing defaults to `UNMAPPED` until explicitly preregistered
+  and reviewed.
 - Unsupported or ambiguous A+ fields (unresolved tokens, unsupported
-  schemas, ambiguous timestamps, date-only filenames) are reported as
-  unavailable, never coerced into a supported shape.
+  schemas, ambiguous timestamps) are reported as unavailable, never coerced
+  into a supported shape.
 - A+ remains an external symbolic/narrative research label, not market-data
-  truth, throughout every output of this study. Forecast overlap between `S`
-  and `T` is not observation, not prospective validation, not predictive
-  proof, not trade evidence, and not trading authority.
+  truth, throughout every output of this study. Snapshot alignment at `T` is
+  not observation of a future event, not prospective validation, not
+  predictive proof, not trade evidence, and not trading authority.
 
 ## 5. Implementation Sequence
 
 ```text
-Phase 1  -> inventory + this contract (implemented; forecast-overlap model
-            corrected in this amendment)
+Phase 1  -> inventory + this contract (implemented; snapshot-alignment model
+            corrected in this amendment, replacing the rejected two-time
+            forecast-overlap model)
 Phase 2  -> preregistered design only (this document, section 4); not
             implemented, not executed
 Stop     -> do not implement or execute Phase 2 until the regenerated Phase 1
@@ -450,11 +469,11 @@ no A+ raw evidence mutation, move, rename, or in-place normalization
 no commit of A+ raw evidence or generated inventory artifacts to git
 no inspection of A+ table-body values before this contract is reviewed
 no automatic promotion of A+ labels into trade rules or regime classification
-no execution of the Phase 2 forecast-overlap comparison in this implementation round
-no observation-time, prospective-validation, predictive-proof, trade-evidence,
-or trading-authority claims for PRIMARY_FORECAST_OVERLAP or
-RETROSPECTIVE_TARGET_ALIGNMENT
-no primary-lane or predictive use of RETROSPECTIVE_TARGET_ALIGNMENT
-no silent midnight assumption for a date-only filename
-no shifting only T without shifting S by the same amount in controls
+no execution of the Phase 2 snapshot-alignment comparison in this implementation round
+no treating prediction_ts_utc as a future target/forecast time
+no source-capture-time-before-snapshot-time (S<T) requirement of any kind
+no invented semantic mapping between A+ labels and V1 outputs before a mapping
+is explicitly preregistered and reviewed
+no observation-of-a-future-event, prospective-validation, predictive-proof,
+trade-evidence, or trading-authority claims for PRIMARY_SNAPSHOT_ALIGNMENT
 ```
