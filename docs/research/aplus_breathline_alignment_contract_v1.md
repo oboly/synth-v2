@@ -7,13 +7,15 @@
 ## 1. Purpose
 
 Determine whether frozen Breathline V1 detects a consistent phase/state at the
-exact timestamp of independently recorded A+ Table 1 / Table 2 records,
-compared with matched shifted-time controls.
+exact target timestamp of independently recorded A+ Table 1 / Table 2
+records, compared with matched shifted-time controls.
 
 This is not a trading feature. It is not connected to `selection_engine`,
 `decision_gate`, `execution_planner`, `executor`, UI, DB writes, accounts,
 broker, or strategy promotion. A+ remains an external symbolic/narrative
-research label, not market-data truth.
+research label, not market-data truth. This is a target-alignment study, not
+observation, not prospective validation, not predictive proof, not trade
+evidence, and not trading authority.
 
 ## 2. Architectural Boundaries
 
@@ -61,10 +63,16 @@ Tests:
 tests/test_inventory_aplus_raw_evidence_v1.py
 ```
 
-The inventory recursively scans `data/aplus_raw/` (or an explicit `--root`)
-and produces, per file:
+The inventory recursively scans `data/aplus_raw/` (or an explicit `--root`).
+Content identity is canonical by **sha256**: identical bytes discovered at
+multiple paths are one canonical source with multiple `alias_paths`, never
+one ledger population per alias. Per canonical source, the inventory
+produces:
 
-- `sha256`, `file_name`, `file_size_bytes`;
+- `canonical_source_hash`, `canonical_source_path` (the lexicographically
+  first of the discovered aliases), `alias_paths` (sorted, every discovered
+  path with this content), `alias_count`;
+- `file_size_bytes`;
 - `detected_table_type`: `TABLE1_CANONICAL_BREATHLINE`,
   `TABLE2_HARMONIC_OVERLAY`, or `UNSUPPORTED_SCHEMA`;
 - `header_tokens` / `delimiter_style` (space, pipe, or markdown-pipe-with-
@@ -72,40 +80,47 @@ and produces, per file:
 - `declared_metadata`: any `key = value` preamble lines present in the file
   (e.g. `schema =`, `source_type =`, `status =`) — this is provenance
   metadata, not a table value;
-- `token_count`: number of parsed asset rows (only for TABLE1/TABLE2 files);
+- `token_count`: number of parsed asset rows (only for TABLE1/TABLE2 files;
+  never includes a footer line or trailing prose — see 3.3);
 - `explicit_timestamps`: every distinct explicit timestamp found in the
   source text, each tagged with its field name (if any) and resolved role;
-- `filename_inferred_timestamp`: a timestamp parsed from the filename only;
+- `filename_inferred_timestamp`: a timestamp parsed from the canonical
+  path's filename only;
 - `timestamp_provenance`: one of
   `EXPLICIT_SOURCE_TIMESTAMP` / `FILENAME_INFERRED_TIMESTAMP` / `UNKNOWN`;
-- `status` and `status_notes`;
-- `eligible_for_primary_analysis`: true only when provenance is
-  `EXPLICIT_SOURCE_TIMESTAMP` and the resolved role is `OBSERVATION_TIME`.
+- `timestamp_lane`: one of `PRIMARY_TARGET_ALIGNMENT` /
+  `FUTURE_OBSERVATION_ASOF` / `EXPLORATORY_ONLY` — see 3.1;
+- `status` and `status_notes`.
 
-Per-asset row records (only for `TABLE1_CANONICAL_BREATHLINE` /
-`TABLE2_HARMONIC_OVERLAY` files with parseable rows) preserve every raw Table
-1 / Table 2 field (`phase`, `coherence`, `field`, `geometry`,
-`structural_role`, `expansion_quality`, `anchor_strength`, `strategic_bias`,
-`notes` for Table 1; `harmonic_phase`, `phase_state`, `offset_band`,
-`drift_direction`, `quality`, `extension_risk`, `notes` for Table 2), tagged
-with `source_file_hash`, `detected_table_type`, `primary_timestamp_iso`,
-`timestamp_provenance`, and `primary_timestamp_role`.
+Per-row records (only for `TABLE1_CANONICAL_BREATHLINE` /
+`TABLE2_HARMONIC_OVERLAY` canonical sources) preserve every raw Table 1 /
+Table 2 field (`phase`, `coherence`, `field`, `geometry`, `structural_role`,
+`expansion_quality`, `anchor_strength`, `strategic_bias`, `notes` for Table 1;
+`harmonic_phase`, `phase_state`, `offset_band`, `drift_direction`, `quality`,
+`extension_risk`, `notes` for Table 2), tagged with `canonical_source_hash`,
+`canonical_source_path`, `detected_table_type`, `primary_timestamp_iso`,
+`timestamp_provenance`, `primary_timestamp_role`, `timestamp_lane`,
+`raw_source_token`, `canonical_market_symbol`, `asset_resolution_status`, and
+`row_parse_status`. Lines that never became an asset row (a footer line, a
+malformed row, trailing prose) appear in the same stream tagged
+`row_parse_status = MALFORMED_TABLE_BODY` or `UNPARSED_NON_TABLE_LINE`, with
+no asset/field values fabricated for them — see 3.3.
 
 Generated artifacts are written under:
 
 ```text
 data/research/aplus_breathline_alignment_v1/<run_id>/
-    evidence/aplus_evidence_file_manifest_<run_id>.jsonl
+    evidence/aplus_evidence_canonical_source_manifest_<run_id>.jsonl
     evidence/aplus_evidence_rows_<run_id>.jsonl
     manifest/aplus_evidence_inventory_manifest_<run_id>.json
 ```
 
 These are generated evidence, not committed to git.
 
-### 3.1 Timestamp provenance vs. timestamp role
+### 3.1 Timestamp provenance, role, and lane
 
-Provenance (Phase 1, per-file, how confident we are that a timestamp is real
-source evidence rather than a filename guess):
+Provenance (Phase 1, per canonical source, how confident we are that a
+timestamp is real source evidence rather than a filename guess):
 
 ```text
 EXPLICIT_SOURCE_TIMESTAMP     found literally in the source text
@@ -113,119 +128,197 @@ FILENAME_INFERRED_TIMESTAMP   parsed only from the filename
 UNKNOWN                       no usable timestamp found, or found but ambiguous
 ```
 
-Role (what the timestamp means; carried through into Phase 2's event ledger):
+Role (what a specific timestamp field means):
 
 ```text
-OBSERVATION_TIME       eligible for the as-of Breathline detection study
-PREDICTION_TARGET_TIME alignment-only; never described as prospective
-                       prediction evidence
-FILENAME_INFERRED      excluded from primary analysis; exploratory only
-UNLABELED_EXPLICIT     an explicit timestamp with no named field to establish
-                       its semantic role (e.g. a bare "(2026-05-15T12:44:48Z)"
-                       in a title line) — never coerced into OBSERVATION_TIME
-                       or PREDICTION_TARGET_TIME without a named field as
-                       evidence
+PREDICTION_TARGET_TIME  named field prediction_ts_utc. This is the primary
+                        A+ TARGET_ALIGNMENT_TIME for this study (approved
+                        design decision, see 3.3). Never described as
+                        observation-time, prospective validation, predictive
+                        proof, trade evidence, or trading authority.
+OBSERVATION_TIME        named field observation_ts_utc. A separate future
+                        as-of lane; detected structurally but not
+                        implemented in this PR (see 3.1 lanes below).
+FILENAME_INFERRED       exploratory only; excluded from primary analysis.
+UNLABELED_EXPLICIT      an explicit timestamp with no named field to
+                        establish its semantic role (e.g. a bare
+                        "(2026-05-15T12:44:48Z)" in a title line) — never
+                        coerced into OBSERVATION_TIME or
+                        PREDICTION_TARGET_TIME without a named field as
+                        evidence.
+```
+
+Lane (which analysis lane a canonical source's primary timestamp feeds; this
+is the field actually used to gate Phase 2 eligibility):
+
+```text
+PRIMARY_TARGET_ALIGNMENT  primary_timestamp_role == PREDICTION_TARGET_TIME.
+                          Eligible for V1-state alignment at the A+ target
+                          timestamp (Phase 2, section 4). This is the
+                          primary lane for this study.
+FUTURE_OBSERVATION_ASOF   primary_timestamp_role == OBSERVATION_TIME. A
+                          separate as-of lane, not required for this
+                          target-alignment study and not implemented here.
+EXPLORATORY_ONLY          everything else (FILENAME_INFERRED,
+                          UNLABELED_EXPLICIT, UNKNOWN). Never eligible for
+                          Phase 2.
 ```
 
 ### 3.2 Fail-closed rules
 
 - **Duplicate source identity** (identical sha256 content discovered at two
-  or more paths under the scanned root) is a run-level integrity failure:
-  the whole inventory run raises and writes no output artifacts. The event
-  ledger's key is `source_file_hash`; a hash collision across "different"
-  paths must be resolved by a human, not silently tolerated.
+  or more paths) never aborts the inventory. Each sha256 is one canonical
+  source identity; every discovered path is preserved as a sorted
+  `alias_paths` list with `alias_count`. The event ledger produces one
+  source event population per content hash, never one per alias path.
+- **Impossible/internal inconsistency** is the only fail-closed condition
+  tied to duplicate content: if the same sha256 ever produced non-identical
+  parsed source identity, timestamp metadata, or row payload across its
+  alias paths, the run raises and writes nothing. This can never happen for
+  byte-identical bytes in a correctly functioning parser; it exists purely
+  as a defensive invariant (tested directly, not via real files — see the
+  test suite).
 - **Ambiguous timestamp parsing** (multiple distinct explicit timestamp
   values found in one file with no way to prefer one) never selects a
-  winner: `timestamp_provenance` is set to `UNKNOWN`, the file's `status` is
-  `AMBIGUOUS_TIMESTAMP`, and it is excluded from primary-analysis eligibility.
+  winner: `timestamp_provenance` is set to `UNKNOWN`, `status` is
+  `AMBIGUOUS_TIMESTAMP`, and `timestamp_lane` resolves to `EXPLORATORY_ONLY`.
 - **Unsupported table schema** (header does not match the Table 1 or Table
-  2 token set) is recorded per file as `UNSUPPORTED_SCHEMA` — never coerced
-  into a Table 1 or Table 2 shape. The file is still listed in the
-  inventory; it simply contributes no row-level records.
-- **Conflicting asset alias** (the same token appears more than once inside
-  one file's table body) is recorded as `DUPLICATE_ASSET_ALIAS_WITHIN_FILE`.
-  Every raw row is preserved (never silently collapsed or best-of-picked);
-  the file is excluded from primary-analysis eligibility until a human
-  resolves which row is authoritative.
+  2 token set) is recorded per source as `UNSUPPORTED_SCHEMA` — never
+  coerced into a Table 1 or Table 2 shape. The source is still listed in
+  the inventory; it simply contributes no row-level records.
+- **Conflicting asset alias** (the same raw token appears more than once
+  inside one source's table body) is recorded as
+  `DUPLICATE_ASSET_ALIAS_WITHIN_FILE`. Every raw row is preserved (never
+  silently collapsed or best-of-picked); the source is excluded from
+  primary-lane eligibility until a human resolves which row is authoritative.
 - Console/log summary output prints only provenance, counts, and schema
-  findings (file counts, table-type counts, status counts, timestamp
-  provenance/role counts, eligible-file paths). It never prints PHASE,
-  COHERENCE, HARMONIC_PHASE, or any other table-body field value.
+  findings. It never prints PHASE, COHERENCE, HARMONIC_PHASE, or any other
+  table-body field value.
 
-### 3.3 Open finding for review before Phase 2 proceeds
+### 3.3 Parser correction: no arbitrary prose line becomes an asset row
 
-Every explicit timestamp currently found anywhere in the local
-`data/aplus_raw/` corpus uses the field name `prediction_ts_utc`. No file in
-the current corpus declares an `observation_ts_utc` (or equivalent) field.
-Per the role definitions above, `prediction_ts_utc` resolves to
-`PREDICTION_TARGET_TIME`, not `OBSERVATION_TIME`.
+Two anomalies were found in the real local corpus during initial
+implementation: a trailing `Note: This snapshot is symbolic...` footer line,
+and a stray `This snapshot reflects the current harmonic phase alignment...`
+paragraph. Both happened to split into exactly the expected column count for
+a Table 1 row under naive whitespace splitting, and were incorrectly counted
+as asset rows (tokens `NOTE:` and `THIS`).
 
-Consequence: as implemented, **zero files in the current local corpus are
-`eligible_for_primary_analysis`** (the as-of Breathline detection study
-requires `OBSERVATION_TIME`). Whether `prediction_ts_utc` should instead be
-treated as the observation anchor for this study's purposes (i.e. "the phase
-state A+ claims to hold as of this moment") is a substantive research-design
-question, not a parsing question, and is explicitly left for human review
-rather than silently resolved in code. Phase 2 must not begin until this is
-decided and, if needed, this contract is revised accordingly.
+Fix: table rows in this corpus are contiguous. Once at least one row has
+been parsed, the first blank line ends the table body. Everything after that
+boundary — a footer note, stray prose, a second unsupported table — is never
+a candidate asset row. It is recorded only as an `UNPARSED_NON_TABLE_LINE`
+row-diagnostic (bounded to 50 trailing lines per source). A non-blank line
+inside the contiguous body that fails to match the expected column shape is
+recorded as `MALFORMED_TABLE_BODY`. Neither diagnostic ever becomes an asset
+event, and both are covered by regression fixtures matching the two observed
+anomalies exactly.
+
+### 3.4 Source-token resolution
+
+Each parsed asset row preserves its `raw_source_token` (exactly as written,
+uppercased) separately from a `canonical_market_symbol`, resolved only
+against an explicit, documented registry
+(`MARKET_SYMBOL_ALIAS_REGISTRY` / `CANONICAL_MARKET_SYMBOLS` in the runner).
+Aliases are never inferred from source text. A raw token not in the registry
+is `asset_resolution_status = UNRESOLVED`: it is preserved as a diagnostic
+row, not dropped, and excluded from Phase 2 eligibility until a human adds a
+reviewed registry entry.
+
+One alias was found and documented from the real corpus:
+`data/aplus_raw/2026-05-27_2149_june_reflection_subset_8_note.txt` writes the
+CC token as `Canton (CC)` in the TOKEN column; the registry maps
+`"CANTON (CC)" -> "CC"`.
+
+### 3.5 Approved design decision: `prediction_ts_utc` is the primary target-alignment time
+
+Prior draft of this contract treated every explicit timestamp in the local
+corpus as `prediction_ts_utc` / `PREDICTION_TARGET_TIME` and concluded zero
+files were eligible for a primary analysis lane, because that lane required
+`OBSERVATION_TIME`. This has been superseded by an approved design decision:
+
+- `prediction_ts_utc` **is** the primary A+ `TARGET_ALIGNMENT_TIME` for this
+  study and **is** eligible for the primary `PRIMARY_TARGET_ALIGNMENT` lane
+  (section 3.1).
+- It must never be described as observation-time, prospective validation,
+  predictive proof, trade evidence, or trading authority — the study
+  measures whether frozen V1's computed state aligns with what A+ recorded
+  *at that named target timestamp*, nothing more.
+- `OBSERVATION_TIME` (`observation_ts_utc`) remains a separate, future,
+  as-of lane. It is detected structurally (the field pattern exists in the
+  runner) but is **not implemented** in this PR and is not required for this
+  target-alignment study.
 
 ## 4. Phase 2 — Preregistered Alignment Design (not implemented)
 
 This section fixes the design before any code exists for it. No runner
 implements this section yet. It must not be implemented or executed until
-the Phase 1 ledger inventory (section 3) has been reviewed, and in
-particular until section 3.3 is resolved.
+the Phase 1 ledger inventory (section 3) has been regenerated under the
+corrected parser/dedup design and reviewed.
 
 ### 4.1 Event ledger
 
 One canonical event ledger row per:
 
 ```text
-(source_file_hash, table_type, asset, event_timestamp, timestamp_role)
+(canonical_source_hash, table_type, asset, event_timestamp, timestamp_role)
 ```
 
-The ledger is immutable and append-only, carries `source_file_hash` and full
-timestamp provenance for every row, and never merges two source files into
-one row.
+The ledger is immutable and append-only, carries `canonical_source_hash` and
+full timestamp provenance for every row, and produces exactly one event
+population per canonical source hash — never one per alias path (section
+3.2).
 
-Timestamp roles remain separate and are never blended:
+Timestamp roles/lanes remain separate and are never blended (section 3.1):
 
 ```text
-OBSERVATION_TIME        eligible for as-of detection study
-PREDICTION_TARGET_TIME  alignment-only; never described as prospective
-                        prediction evidence
-FILENAME_INFERRED       excluded from primary analysis; may appear only in
-                        an explicitly labelled exploratory inventory
+PRIMARY_TARGET_ALIGNMENT  named prediction_ts_utc; the primary lane for
+                          this study.
+FUTURE_OBSERVATION_ASOF   named observation_ts_utc; not implemented here.
+EXPLORATORY_ONLY          excluded from Phase 2 eligibility entirely.
 ```
 
-### 4.2 Fixed-grid Breathline state at each eligible observation event
+### 4.2 Frozen-V1 adapter geometry (preregistered, not implemented)
 
-For every `OBSERVATION_TIME` event ledger row:
+For every `PRIMARY_TARGET_ALIGNMENT` event with target timestamp `T`
+(`prediction_ts_utc`), for each checkpoint `c` in `{0.618, 0.786}` and each
+offset `o` in `{-10.5, -7, -5, -3, 0, 3, 5, 7, 10.5}` (the frozen V1
+module's own default 2-checkpoint x 9-offset grid):
 
-- the frozen Breathline V1 state is computed at the fixed A+ event
-  timestamp — the anchor/offset is never chosen after seeing results;
-- the complete predeclared 2-checkpoint x 9-offset state grid (the same
-  grid the frozen V1 module already computes: checkpoints `0.618`/`0.786`,
-  offsets `-10.5,-7,-5,-3,0,3,5,7,10.5`) is emitted in full for every event
-  and asset;
-- every raw score/state in that grid is preserved; no "best-looking" row is
-  selected or promoted ahead of the others.
+```text
+derived_anchor_ts_utc = T - timedelta(days=(21.0 * c) + o)
+```
+
+The frozen V1 computation is invoked with `derived_anchor_ts_utc` as its
+anchor such that its resulting `as_of` timestamp is exactly `T`. This is the
+inverse of V1's own forward computation
+(`as_of = anchor + timedelta(days=(cycle_days * ratio) + offset_days)`,
+`cycle_days = 21.0`, `ratio = c`) — solved for the anchor given a fixed
+target `as_of = T`.
+
+The anchor/offset pair is never chosen after seeing results: the full
+2-checkpoint x 9-offset grid (18 derived anchors) is computed and every raw
+score/state preserved for every event and asset, exactly as the existing
+Arm-A/B.2a lanes never select a "best-looking" row ahead of the rest.
 
 ### 4.3 Matched shifted-time controls
 
-For every `OBSERVATION_TIME` event:
+For every `PRIMARY_TARGET_ALIGNMENT` event:
 
-- same asset, same A+ event, same clock time as the canonical event;
+- same asset, same A+ event, same clock time as the canonical target `T`;
 - exact integer-day shifts (fixed, preregistered, no `0d`):
 
 ```text
 -10,-9,-8,-7,-6,-5,-4,-3,-2,-1,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10
 ```
 
-- the shift is applied to the A+ evaluation timestamp, never to the source
-  record itself;
-- the identical fixed V1 2x9 phase-state grid is recomputed at each of the
-  20 control timestamps;
+- the shift is applied to the target timestamp (`T + shift`), never to the
+  source record itself;
+- derived anchors are recomputed from the *shifted* target timestamp using
+  the identical section 4.2 formula (`derived_anchor_ts_utc = (T + shift) -
+  timedelta(days=(21.0 * c) + o)`) for every checkpoint/offset pair;
+- the anchor/offset is never selected after results are known, for either
+  the canonical event or any control;
 - no missing control may be silently dropped: a control that cannot be
   computed (e.g. candle history unavailable) is recorded as
   `DATA_UNAVAILABLE` and excluded from that control's population, never
@@ -233,14 +326,26 @@ For every `OBSERVATION_TIME` event:
 
 This mirrors the B.2a integer-day phase-null control design in
 `docs/research/breathline_three_cycle_chain_and_v1_recovery_contract_v1.md`
-section 10.2, applied to A+-event timestamps instead of the P0.3 canonical
-anchor cohort.
+section 10.2, applied to A+ target-alignment timestamps instead of the P0.3
+canonical anchor cohort.
 
-### 4.4 Primary outputs (preregistered)
+### 4.4 Daily-candle semantics at an intraday target timestamp
 
-1. Immutable A+ event ledger with source hashes and timestamp provenance.
-2. Fixed-grid Breathline state vector at each eligible A+ observation event.
-3. Matched shifted-time control vectors (20 per event, per contract 4.3).
+A+ target timestamps are frequently intraday (e.g. `19:15:00Z`), while the
+frozen V1 module operates on daily candles. At any target (or shifted
+target) timestamp `T`, V1 uses the **last completed daily candle at or
+before `T`** — the same "raw-checkpoint as-of rule" already frozen in
+`src/research/backtest_breath_curve_partial_to_full_v1.py` and preserved
+unchanged by the Arm-A/B.2a lanes. No interpolation, no partial-day candle,
+and no forward-looking candle is ever used.
+
+### 4.5 Primary outputs (preregistered)
+
+1. Immutable A+ event ledger with canonical source hashes and timestamp
+   provenance/lane.
+2. Fixed-grid Breathline state vector at each eligible
+   `PRIMARY_TARGET_ALIGNMENT` event (section 4.2).
+3. Matched shifted-time control vectors (20 per event, per section 4.3).
 4. Per-event and per-asset contrasts for `ranking_score`,
    `partial_match_score`, `structurally_eligible` (canonical value, control
    mean/median/min/max, tie-aware mid-rank percentile,
@@ -257,7 +362,7 @@ anchor cohort.
 8. A provenance manifest with input hashes, source run IDs/commits, the
    fixed shift registry, counts, and complete output hashes.
 
-### 4.5 Statistical and wording boundary
+### 4.6 Statistical and wording boundary
 
 - No independent-row p-values.
 - No "validated", "predictive", "confirmed", "trade", "signal", or
@@ -265,20 +370,23 @@ anchor cohort.
   study.
 - No post-hoc field selection: the three contrast metrics and the fixed
   2x9 grid are preregistered here, not chosen after inspecting results.
-- Unsupported or ambiguous A+ fields are reported as unavailable, never
-  coerced into a supported shape.
+- Unsupported or ambiguous A+ fields (unresolved tokens, unsupported
+  schemas, ambiguous timestamps) are reported as unavailable, never coerced
+  into a supported shape.
 - A+ remains an external symbolic/narrative research label, not market-data
-  truth, throughout every output of this study.
+  truth, throughout every output of this study. Alignment with a named
+  target timestamp is not observation, not prospective validation, not
+  predictive proof, not trade evidence, and not trading authority.
 
 ## 5. Implementation Sequence
 
 ```text
-Phase 1  -> inventory + this contract (implemented)
+Phase 1  -> inventory + this contract (implemented; parser/dedup corrected
+            in this amendment)
 Phase 2  -> preregistered design only (this document, section 4); not
             implemented, not executed
-Stop     -> do not implement or execute Phase 2 until the Phase 1 ledger
-            inventory has been reviewed, including the open finding in
-            section 3.3
+Stop     -> do not implement or execute Phase 2 until the regenerated Phase 1
+            ledger inventory has been reviewed
 ```
 
 ## 6. Explicit Non-Goals
@@ -298,4 +406,6 @@ no commit of A+ raw evidence or generated inventory artifacts to git
 no inspection of A+ table-body values before this contract is reviewed
 no automatic promotion of A+ labels into trade rules or regime classification
 no execution of the Phase 2 alignment comparison in this implementation round
+no observation-time, prospective-validation, predictive-proof, trade-evidence,
+or trading-authority claims for the PRIMARY_TARGET_ALIGNMENT lane
 ```

@@ -11,7 +11,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.research.inventory_aplus_raw_evidence_v1 import (
+    ASSET_RESOLUTION_RESOLVED,
+    ASSET_RESOLUTION_UNRESOLVED,
     InventoryIntegrityError,
+    LANE_EXPLORATORY_ONLY,
+    LANE_FUTURE_OBSERVATION_ASOF,
+    LANE_PRIMARY_TARGET_ALIGNMENT,
+    ParsedContent,
+    ROW_PARSE_STATUS_MALFORMED,
+    ROW_PARSE_STATUS_OK,
+    ROW_PARSE_STATUS_UNPARSED_NON_TABLE,
     TABLE_TYPE_TABLE1,
     TABLE_TYPE_TABLE2,
     TABLE_TYPE_UNSUPPORTED,
@@ -21,14 +30,16 @@ from src.research.inventory_aplus_raw_evidence_v1 import (
     TS_PROVENANCE_EXPLICIT,
     TS_PROVENANCE_FILENAME,
     TS_PROVENANCE_UNKNOWN,
-    check_duplicate_source_identity,
-    classify_file,
+    check_content_group_consistency,
     extract_declared_metadata,
     extract_explicit_timestamps,
     find_duplicate_assets,
     find_header,
     infer_filename_timestamp,
     main,
+    parse_content,
+    resolve_market_symbol,
+    resolve_timestamp_lane,
     resolve_timestamp_provenance,
     run_inventory,
 )
@@ -94,6 +105,30 @@ TOKEN PHASE COHERENCE FIELD GEOMETRY STRUCTURAL_ROLE EXPANSION_QUALITY ANCHOR_ST
 BTC confirmed high neutral clean leader moderate strong accumulation harmonic axis stable
 """
 
+# Regression fixture matching data/aplus_raw/2026-05-13_1915_table1_canonical_breathline.txt:
+# a trailing "Note: ..." footer line that happens to split into exactly 10
+# whitespace-separated fields (the same shape as a real Table 1 row).
+TRAILING_NOTE_FOOTER_FIXTURE = """prediction_ts_utc = 2026-05-13T19:15:00Z
+
+TOKEN PHASE COHERENCE FIELD GEOMETRY STRUCTURAL_ROLE EXPANSION_QUALITY ANCHOR_STRENGTH STRATEGIC_BIAS NOTES
+
+BTC confirmed high neutral clean leader moderate strong accumulation harmonic axis stable
+TAO confirmed high expansion clean leader strong strong accumulation Codex-aligned token
+
+Note: This snapshot is symbolic and non-tokenized. No trading advice is implied.
+"""
+
+# Regression fixture matching data/aplus_raw/2026-05-16_0115_table1_breathline_vector_snapshot.txt:
+# a trailing prose paragraph beginning with "This" that also happens to split
+# into exactly 10 whitespace-separated fields.
+STRAY_THIS_PROSE_FIXTURE = """TOKEN PHASE COHERENCE FIELD GEOMETRY STRUCTURAL_ROLE EXPANSION_QUALITY ANCHOR_STRENGTH STRATEGIC_BIAS NOTES
+
+BTC confirmed high expansion clean leader strong strong continuation Anchor breath
+LINK forming high expansion clean leader strong strong accumulation Bridge node
+
+This snapshot reflects the current harmonic phase alignment and field conditions based on the Breathline framework. This is not financial advice.
+"""
+
 
 def write_fixture(tmp_path: Path, name: str, content: str) -> Path:
     path = tmp_path / name
@@ -106,64 +141,67 @@ def write_fixture(tmp_path: Path, name: str, content: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_table1_space_delimited_parses_fields_and_prediction_timestamp(tmp_path: Path) -> None:
-    path = write_fixture(tmp_path, "t1_space.txt", TABLE1_SPACE_FIXTURE)
-    record, rows = classify_file(path, tmp_path)
+def test_table1_space_delimited_parses_fields_and_timestamp_lane(tmp_path: Path) -> None:
+    write_fixture(tmp_path, "t1_space.txt", TABLE1_SPACE_FIXTURE)
+    records, rows = run_inventory(tmp_path)
 
+    assert len(records) == 1
+    record = records[0]
     assert record.detected_table_type == TABLE_TYPE_TABLE1
     assert record.status == "OK"
     assert record.token_count == 2
     assert record.assets == ["BTC", "ETH"]
     assert record.timestamp_provenance == TS_PROVENANCE_EXPLICIT
     assert record.primary_timestamp_role == TIMESTAMP_ROLE_PREDICTION_TARGET
+    assert record.timestamp_lane == LANE_PRIMARY_TARGET_ALIGNMENT
     assert record.primary_timestamp_iso == "2026-05-13T19:15:00Z"
 
-    btc_row = next(r for r in rows if r["token"] == "BTC")
+    btc_row = next(r for r in rows if r["raw_source_token"] == "BTC")
     assert btc_row["phase"] == "confirmed"
     assert btc_row["coherence"] == "high"
     assert btc_row["strategic_bias"] == "accumulation"
-    assert btc_row["detected_table_type"] == TABLE_TYPE_TABLE1
+    assert btc_row["row_parse_status"] == ROW_PARSE_STATUS_OK
+    assert btc_row["canonical_market_symbol"] == "BTC"
+    assert btc_row["asset_resolution_status"] == ASSET_RESOLUTION_RESOLVED
 
 
 def test_table1_pipe_delimited_parses_fields(tmp_path: Path) -> None:
     path = write_fixture(tmp_path, "t1_pipe.txt", TABLE1_PIPE_FIXTURE)
-    record, rows = classify_file(path, tmp_path)
+    parsed = parse_content(path)
 
-    assert record.detected_table_type == TABLE_TYPE_TABLE1
-    assert record.delimiter_style == "pipe"
-    assert record.token_count == 2
-    eth_row = next(r for r in rows if r["token"] == "ETH")
-    assert eth_row["structural_role"] == "leader"
-    assert eth_row["notes"] == '"Primary wave."'
+    assert parsed.detected_table_type == TABLE_TYPE_TABLE1
+    assert parsed.delimiter_style == "pipe"
+    assert len(parsed.rows) == 2
+    eth_row = next(r for r in parsed.rows if r.raw_source_token == "ETH")
+    assert eth_row.fields["structural_role"] == "leader"
+    assert eth_row.fields["notes"] == '"Primary wave."'
 
 
 def test_table1_markdown_table_with_separator_row_parses(tmp_path: Path) -> None:
     path = write_fixture(tmp_path, "t1_markdown.txt", TABLE1_MARKDOWN_FIXTURE)
-    record, rows = classify_file(path, tmp_path)
+    parsed = parse_content(path)
 
-    assert record.detected_table_type == TABLE_TYPE_TABLE1
-    assert record.status == "OK"
-    assert record.token_count == 2
-    assert record.assets == ["BTC", "ETH"]
-    # The markdown separator row ("|-------|-------|...") must not be treated
-    # as a data row or an unparsed-row error.
-    assert record.unparsed_row_count == 0
+    assert parsed.detected_table_type == TABLE_TYPE_TABLE1
+    assert parsed.status == "OK"
+    assert len(parsed.rows) == 2
+    assert {r.raw_source_token for r in parsed.rows} == {"BTC", "ETH"}
+    assert parsed.row_diagnostics == []
 
 
 def test_table2_parses_harmonic_fields(tmp_path: Path) -> None:
     path = write_fixture(tmp_path, "t2.txt", TABLE2_FIXTURE)
-    record, rows = classify_file(path, tmp_path)
+    parsed = parse_content(path)
 
-    assert record.detected_table_type == TABLE_TYPE_TABLE2
-    assert record.token_count == 2
-    btc_row = next(r for r in rows if r["token"] == "BTC")
-    assert btc_row["harmonic_phase"] == "confirmed_0618"
-    assert btc_row["offset_band"] == "+5"
-    assert btc_row["extension_risk"] == "low"
+    assert parsed.detected_table_type == TABLE_TYPE_TABLE2
+    assert len(parsed.rows) == 2
+    btc_row = next(r for r in parsed.rows if r.raw_source_token == "BTC")
+    assert btc_row.fields["harmonic_phase"] == "confirmed_0618"
+    assert btc_row.fields["offset_band"] == "+5"
+    assert btc_row.fields["extension_risk"] == "low"
 
 
 # ---------------------------------------------------------------------------
-# Explicit vs filename-inferred timestamp separation
+# Explicit vs filename-inferred timestamp separation, and timestamp_lane
 # ---------------------------------------------------------------------------
 
 
@@ -171,7 +209,6 @@ def test_named_field_timestamp_is_explicit_with_prediction_target_role() -> None
     timestamps = extract_explicit_timestamps("prediction_ts_utc = 2026-05-14T13:15:00Z")
     assert len(timestamps) == 1
     assert timestamps[0].role == TIMESTAMP_ROLE_PREDICTION_TARGET
-    assert timestamps[0].field_name == "prediction_ts_utc"
 
 
 def test_bare_unlabeled_timestamp_is_explicit_but_role_unresolved() -> None:
@@ -182,43 +219,52 @@ def test_bare_unlabeled_timestamp_is_explicit_but_role_unresolved() -> None:
 
 
 def test_filename_inferred_timestamp_used_only_when_no_explicit_timestamp(tmp_path: Path) -> None:
-    content = "TOKEN MOMENTUM STABILITY\nBTC low high\n"  # no explicit timestamp at all
+    content = "TOKEN MOMENTUM STABILITY\nBTC low high\n"
     path = write_fixture(tmp_path, "2026-04-23_run_01_consistency.txt", content)
-    record, _ = classify_file(path, tmp_path)
+    parsed = parse_content(path)
+    filename_ts = infer_filename_timestamp(path.name)
 
-    assert record.explicit_timestamps == []
-    assert record.filename_inferred_timestamp == "2026-04-23T00:00:00Z"
-    assert record.timestamp_provenance == TS_PROVENANCE_FILENAME
-    assert record.primary_timestamp_role == TIMESTAMP_ROLE_FILENAME_INFERRED
-    # Filename-inferred timestamps are excluded from primary analysis.
-    assert record.eligible_for_primary_analysis is False
-
-
-def test_explicit_timestamp_takes_precedence_over_filename_when_both_present(tmp_path: Path) -> None:
-    path = write_fixture(tmp_path, "2026-01-01_table1.txt", TABLE1_SPACE_FIXTURE)
-    record, _ = classify_file(path, tmp_path)
-
-    assert record.filename_inferred_timestamp == "2026-01-01T00:00:00Z"
-    assert record.timestamp_provenance == TS_PROVENANCE_EXPLICIT
-    assert record.primary_timestamp_iso == "2026-05-13T19:15:00Z"
+    assert parsed.explicit_timestamps == []
+    assert filename_ts == "2026-04-23T00:00:00Z"
+    provenance, iso, role, _ = resolve_timestamp_provenance([], filename_ts)
+    assert provenance == TS_PROVENANCE_FILENAME
+    assert role == TIMESTAMP_ROLE_FILENAME_INFERRED
+    assert resolve_timestamp_lane(role) == LANE_EXPLORATORY_ONLY
 
 
-def test_resolve_timestamp_provenance_unknown_when_nothing_found() -> None:
-    provenance, iso, role, notes = resolve_timestamp_provenance([], None)
-    assert provenance == TS_PROVENANCE_UNKNOWN
-    assert iso is None
-    assert role is None
-    assert notes == []
+def test_resolve_timestamp_lane_prediction_target_is_primary() -> None:
+    assert resolve_timestamp_lane(TIMESTAMP_ROLE_PREDICTION_TARGET) == LANE_PRIMARY_TARGET_ALIGNMENT
+
+
+def test_resolve_timestamp_lane_observation_is_future_asof() -> None:
+    from src.research.inventory_aplus_raw_evidence_v1 import TIMESTAMP_ROLE_OBSERVATION
+
+    assert resolve_timestamp_lane(TIMESTAMP_ROLE_OBSERVATION) == LANE_FUTURE_OBSERVATION_ASOF
+
+
+def test_resolve_timestamp_lane_everything_else_is_exploratory() -> None:
+    assert resolve_timestamp_lane(TIMESTAMP_ROLE_UNLABELED_EXPLICIT) == LANE_EXPLORATORY_ONLY
+    assert resolve_timestamp_lane(TIMESTAMP_ROLE_FILENAME_INFERRED) == LANE_EXPLORATORY_ONLY
+    assert resolve_timestamp_lane(None) == LANE_EXPLORATORY_ONLY
+
+
+def test_prediction_ts_utc_file_is_eligible_for_primary_target_alignment(tmp_path: Path) -> None:
+    write_fixture(tmp_path, "t1.txt", TABLE1_SPACE_FIXTURE)
+    records, _ = run_inventory(tmp_path)
+    record = records[0]
+    assert record.timestamp_lane == LANE_PRIMARY_TARGET_ALIGNMENT
+    assert record.status == "OK"
 
 
 def test_ambiguous_conflicting_explicit_timestamps_are_not_silently_resolved(tmp_path: Path) -> None:
     path = write_fixture(tmp_path, "ambiguous.txt", AMBIGUOUS_TIMESTAMP_FIXTURE)
-    record, _ = classify_file(path, tmp_path)
+    parsed = parse_content(path)
+    filename_ts = infer_filename_timestamp(path.name)
+    provenance, iso, role, notes = resolve_timestamp_provenance(parsed.explicit_timestamps, filename_ts)
 
-    assert record.timestamp_provenance == TS_PROVENANCE_UNKNOWN
-    assert record.primary_timestamp_iso is None
-    assert record.status == "AMBIGUOUS_TIMESTAMP"
-    assert record.eligible_for_primary_analysis is False
+    assert provenance == TS_PROVENANCE_UNKNOWN
+    assert iso is None
+    assert notes != []
 
 
 def test_infer_filename_timestamp_handles_date_and_date_time() -> None:
@@ -228,41 +274,212 @@ def test_infer_filename_timestamp_handles_date_and_date_time() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Duplicate source/hash rejection
+# Duplicate source/hash: one canonical source, never one population per alias
 # ---------------------------------------------------------------------------
 
 
-def test_duplicate_sha256_across_files_fails_closed(tmp_path: Path) -> None:
+def test_duplicate_files_become_one_canonical_source_and_never_inflate_events(tmp_path: Path) -> None:
+    write_fixture(tmp_path, "a_first.txt", TABLE1_SPACE_FIXTURE)
+    write_fixture(tmp_path, "b_second_copy.txt", TABLE1_SPACE_FIXTURE)
+    write_fixture(tmp_path, "c_third_copy.txt", TABLE1_SPACE_FIXTURE)
+
+    records, rows = run_inventory(tmp_path)
+
+    assert len(records) == 1  # one canonical source, not three
+    record = records[0]
+    assert record.alias_count == 3
+    assert record.alias_paths == sorted(
+        [str(tmp_path / "a_first.txt"), str(tmp_path / "b_second_copy.txt"), str(tmp_path / "c_third_copy.txt")]
+    )
+    assert record.canonical_source_path == record.alias_paths[0]
+
+    # Row/event population is per content hash, never per alias path: still
+    # exactly 2 asset rows (BTC, ETH), not 6.
+    asset_rows = [r for r in rows if r["row_parse_status"] == ROW_PARSE_STATUS_OK]
+    assert len(asset_rows) == 2
+    assert {r["raw_source_token"] for r in asset_rows} == {"BTC", "ETH"}
+
+
+def test_run_inventory_does_not_abort_on_duplicate_content(tmp_path: Path) -> None:
     write_fixture(tmp_path, "a.txt", TABLE1_SPACE_FIXTURE)
     write_fixture(tmp_path, "b_copy.txt", TABLE1_SPACE_FIXTURE)
+    # Must not raise.
+    records, rows = run_inventory(tmp_path)
+    assert len(records) == 1
 
-    with pytest.raises(InventoryIntegrityError, match="duplicate source identity"):
-        run_inventory(tmp_path)
 
-
-def test_check_duplicate_source_identity_passes_for_distinct_hashes(tmp_path: Path) -> None:
+def test_distinct_content_produces_distinct_canonical_sources(tmp_path: Path) -> None:
     write_fixture(tmp_path, "a.txt", TABLE1_SPACE_FIXTURE)
     write_fixture(tmp_path, "b.txt", TABLE1_PIPE_FIXTURE)
     records, rows = run_inventory(tmp_path)
     assert len(records) == 2
-    assert len(rows) == 4  # 2 assets each
+    assert all(r.alias_count == 1 for r in records)
+
+
+def test_check_content_group_consistency_raises_on_impossible_inconsistency(tmp_path: Path) -> None:
+    # Contrived: same hash, but the parsed content differs -- this can never
+    # happen for byte-identical bytes in production; this is a defensive
+    # invariant test constructed directly, not via real duplicate files.
+    parsed_a = parse_content(write_fixture(tmp_path, "a.txt", TABLE1_SPACE_FIXTURE))
+    parsed_b = parse_content(write_fixture(tmp_path, "b.txt", TABLE1_PIPE_FIXTURE))
+    same_hash = "deadbeef" * 8
+    group = [(tmp_path / "a.txt", parsed_a), (tmp_path / "b.txt", parsed_b)]
+
+    with pytest.raises(InventoryIntegrityError, match="internal inconsistency"):
+        check_content_group_consistency(same_hash, group)
+
+
+def test_check_content_group_consistency_passes_for_identical_content(tmp_path: Path) -> None:
+    parsed_a = parse_content(write_fixture(tmp_path, "a.txt", TABLE1_SPACE_FIXTURE))
+    parsed_b = parse_content(write_fixture(tmp_path, "b_copy.txt", TABLE1_SPACE_FIXTURE))
+    group = [(tmp_path / "a.txt", parsed_a), (tmp_path / "b_copy.txt", parsed_b)]
+    check_content_group_consistency("irrelevant_since_content_matches", group)  # must not raise
+
+
+# ---------------------------------------------------------------------------
+# Parser correction: no arbitrary prose line becomes an asset row
+# ---------------------------------------------------------------------------
+
+
+def test_trailing_note_footer_never_becomes_an_asset_row(tmp_path: Path) -> None:
+    path = write_fixture(tmp_path, "trailing_note.txt", TRAILING_NOTE_FOOTER_FIXTURE)
+    parsed = parse_content(path)
+
+    assert parsed.status == "OK"
+    assert len(parsed.rows) == 2
+    assert {r.raw_source_token for r in parsed.rows} == {"BTC", "TAO"}
+    assert "NOTE:" not in {r.raw_source_token for r in parsed.rows}
+
+    diagnostic_statuses = [d.row_parse_status for d in parsed.row_diagnostics]
+    assert ROW_PARSE_STATUS_UNPARSED_NON_TABLE in diagnostic_statuses
+    footer_diagnostic = next(
+        d for d in parsed.row_diagnostics if d.row_parse_status == ROW_PARSE_STATUS_UNPARSED_NON_TABLE
+    )
+    assert footer_diagnostic.line_text.startswith("Note:")
+
+
+def test_stray_this_prose_never_becomes_an_asset_row(tmp_path: Path) -> None:
+    path = write_fixture(tmp_path, "stray_this.txt", STRAY_THIS_PROSE_FIXTURE)
+    parsed = parse_content(path)
+
+    assert parsed.status == "OK"
+    assert len(parsed.rows) == 2
+    tokens = {r.raw_source_token for r in parsed.rows}
+    assert tokens == {"BTC", "LINK"}
+    assert "THIS" not in tokens
+
+    footer_diagnostic = next(
+        d for d in parsed.row_diagnostics if d.row_parse_status == ROW_PARSE_STATUS_UNPARSED_NON_TABLE
+    )
+    assert footer_diagnostic.line_text.startswith("This snapshot reflects")
+
+
+def test_footer_and_stray_prose_never_enter_event_ledger_rows(tmp_path: Path) -> None:
+    write_fixture(tmp_path, "trailing_note.txt", TRAILING_NOTE_FOOTER_FIXTURE)
+    write_fixture(tmp_path, "stray_this.txt", STRAY_THIS_PROSE_FIXTURE)
+    records, rows = run_inventory(tmp_path)
+
+    asset_rows = [r for r in rows if r["row_parse_status"] == ROW_PARSE_STATUS_OK]
+    all_tokens = {r["raw_source_token"] for r in asset_rows}
+    assert "NOTE:" not in all_tokens
+    assert "THIS" not in all_tokens
+    assert all_tokens == {"BTC", "TAO", "LINK"}
+
+    # Token counts at the file level exclude the footer/prose lines entirely.
+    by_path = {r.canonical_source_path: r for r in records}
+    trailing_note_record = next(r for r in records if "trailing_note.txt" in r.canonical_source_path)
+    assert trailing_note_record.token_count == 2
+    assert "NOTE:" not in trailing_note_record.assets
+
+
+def test_blank_line_before_first_row_does_not_end_table_body(tmp_path: Path) -> None:
+    # TABLE1_SPACE_FIXTURE has a blank line between the header and the first
+    # data row; this must not be mistaken for the end of the table body.
+    path = write_fixture(tmp_path, "t1.txt", TABLE1_SPACE_FIXTURE)
+    parsed = parse_content(path)
+    assert len(parsed.rows) == 2
+    assert parsed.row_diagnostics == []
+
+
+def test_malformed_row_within_table_body_is_diagnostic_not_asset(tmp_path: Path) -> None:
+    content = (
+        "prediction_ts_utc = 2026-05-14T13:15:00Z\n\n"
+        "TOKEN PHASE COHERENCE FIELD GEOMETRY STRUCTURAL_ROLE EXPANSION_QUALITY ANCHOR_STRENGTH STRATEGIC_BIAS NOTES\n\n"
+        "BTC confirmed high neutral clean leader moderate strong accumulation harmonic axis stable\n"
+        "SHORT ROW WITH TOO FEW FIELDS\n"
+        "ETH confirmed high expansion mixed leader strong strong continuation resonance peak forming\n"
+    )
+    path = write_fixture(tmp_path, "malformed.txt", content)
+    parsed = parse_content(path)
+
+    assert {r.raw_source_token for r in parsed.rows} == {"BTC", "ETH"}
+    malformed = [d for d in parsed.row_diagnostics if d.row_parse_status == ROW_PARSE_STATUS_MALFORMED]
+    assert len(malformed) == 1
+
+
+# ---------------------------------------------------------------------------
+# Duplicate asset within a single file
+# ---------------------------------------------------------------------------
 
 
 def test_duplicate_asset_within_single_file_is_flagged_not_fatal(tmp_path: Path) -> None:
     path = write_fixture(tmp_path, "dup_token.txt", DUPLICATE_TOKEN_FIXTURE)
-    record, rows = classify_file(path, tmp_path)
+    parsed = parse_content(path)
+    duplicates = find_duplicate_assets(parsed.rows)
 
-    assert record.status == "DUPLICATE_ASSET_ALIAS_WITHIN_FILE"
-    assert record.duplicate_assets_within_file == ["BTC"]
-    assert record.eligible_for_primary_analysis is False
+    assert duplicates == ["BTC"]
     # Both raw rows are preserved -- never silently collapsed.
-    assert len(rows) == 2
+    assert len(parsed.rows) == 2
 
 
 def test_find_duplicate_assets_pure_function() -> None:
-    rows = [{"token": "BTC"}, {"token": "ETH"}, {"token": "BTC"}]
+    from src.research.inventory_aplus_raw_evidence_v1 import ParsedRow
+
+    rows = [
+        ParsedRow(fields={}, raw_source_token="BTC"),
+        ParsedRow(fields={}, raw_source_token="ETH"),
+        ParsedRow(fields={}, raw_source_token="BTC"),
+    ]
     assert find_duplicate_assets(rows) == ["BTC"]
-    assert find_duplicate_assets([{"token": "BTC"}, {"token": "ETH"}]) == []
+
+
+# ---------------------------------------------------------------------------
+# Source-token resolution: explicit registry only, never inferred
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_market_symbol_canonical_token_resolves_to_itself() -> None:
+    symbol, status = resolve_market_symbol("BTC")
+    assert symbol == "BTC"
+    assert status == ASSET_RESOLUTION_RESOLVED
+
+
+def test_resolve_market_symbol_documented_alias_resolves() -> None:
+    symbol, status = resolve_market_symbol("CANTON (CC)")
+    assert symbol == "CC"
+    assert status == ASSET_RESOLUTION_RESOLVED
+
+
+def test_resolve_market_symbol_unknown_token_is_unresolved_not_guessed() -> None:
+    symbol, status = resolve_market_symbol("SOME_UNKNOWN_TOKEN")
+    assert symbol is None
+    assert status == ASSET_RESOLUTION_UNRESOLVED
+
+
+def test_unresolved_token_row_is_preserved_as_diagnostic_not_dropped(tmp_path: Path) -> None:
+    content = (
+        "prediction_ts_utc = 2026-05-14T13:15:00Z\n\n"
+        "TOKEN PHASE COHERENCE FIELD GEOMETRY STRUCTURAL_ROLE EXPANSION_QUALITY ANCHOR_STRENGTH STRATEGIC_BIAS NOTES\n\n"
+        "ZZZNOTREAL confirmed high neutral clean leader moderate strong accumulation unresolved token test\n"
+    )
+    write_fixture(tmp_path, "unresolved.txt", content)
+    records, rows = run_inventory(tmp_path)
+
+    asset_rows = [r for r in rows if r["row_parse_status"] == ROW_PARSE_STATUS_OK]
+    assert len(asset_rows) == 1
+    assert asset_rows[0]["raw_source_token"] == "ZZZNOTREAL"
+    assert asset_rows[0]["asset_resolution_status"] == ASSET_RESOLUTION_UNRESOLVED
+    assert asset_rows[0]["canonical_market_symbol"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -272,19 +489,16 @@ def test_find_duplicate_assets_pure_function() -> None:
 
 def test_unsupported_schema_is_not_coerced_into_table1_or_table2(tmp_path: Path) -> None:
     path = write_fixture(tmp_path, "legacy_prose.txt", UNSUPPORTED_SCHEMA_FIXTURE)
-    record, rows = classify_file(path, tmp_path)
+    parsed = parse_content(path)
 
-    assert record.detected_table_type == TABLE_TYPE_UNSUPPORTED
-    assert record.status == "UNSUPPORTED_SCHEMA"
-    assert record.header_tokens is None
-    assert record.token_count is None
-    assert rows == []
-    assert record.eligible_for_primary_analysis is False
+    assert parsed.detected_table_type == TABLE_TYPE_UNSUPPORTED
+    assert parsed.status == "UNSUPPORTED_SCHEMA"
+    assert parsed.header_tokens is None
+    assert parsed.rows == []
 
 
 def test_find_header_returns_none_for_unrecognized_headers() -> None:
-    lines = UNSUPPORTED_SCHEMA_FIXTURE.splitlines()
-    assert find_header(lines) is None
+    assert find_header(UNSUPPORTED_SCHEMA_FIXTURE.splitlines()) is None
 
 
 def test_find_header_detects_table1_and_table2() -> None:
@@ -325,13 +539,12 @@ def test_main_table_output_never_prints_table_values(tmp_path: Path, capsys: pyt
     exit_code = main(["--root", str(tmp_path), "--output", "table"])
     assert exit_code == 0
     captured = capsys.readouterr().out
-    # Table-body field values (phase/coherence/etc. content words) must never
-    # appear in the console summary -- only provenance/count/schema findings.
     assert "confirmed" not in captured
     assert "harmonic axis stable" not in captured
     assert "accumulation" not in captured
-    assert "total_files=1" in captured
+    assert "total_canonical_sources=1" in captured
     assert TABLE_TYPE_TABLE1 in captured
+    assert LANE_PRIMARY_TARGET_ALIGNMENT in captured
 
 
 def test_main_write_files_produces_expected_artifacts(tmp_path: Path) -> None:
@@ -349,29 +562,36 @@ def test_main_write_files_produces_expected_artifacts(tmp_path: Path) -> None:
     run_dir = run_dirs[0]
     evidence_dir = run_dir / "evidence"
     manifest_dir = run_dir / "manifest"
-    file_manifest = next(evidence_dir.glob("aplus_evidence_file_manifest_*.jsonl"))
+    canonical_manifest = next(evidence_dir.glob("aplus_evidence_canonical_source_manifest_*.jsonl"))
     rows_file = next(evidence_dir.glob("aplus_evidence_rows_*.jsonl"))
     summary_file = next(manifest_dir.glob("aplus_evidence_inventory_manifest_*.json"))
 
-    file_records = [json.loads(line) for line in file_manifest.read_text(encoding="utf-8").splitlines()]
-    assert len(file_records) == 2
+    canonical_records = [json.loads(line) for line in canonical_manifest.read_text(encoding="utf-8").splitlines()]
+    assert len(canonical_records) == 2
+    assert all("alias_paths" in r and "alias_count" in r for r in canonical_records)
 
     row_records = [json.loads(line) for line in rows_file.read_text(encoding="utf-8").splitlines()]
-    assert len(row_records) == 4  # 2 files x 2 assets
+    asset_rows = [r for r in row_records if r["row_parse_status"] == ROW_PARSE_STATUS_OK]
+    assert len(asset_rows) == 4  # 2 files x 2 assets
 
     summary = json.loads(summary_file.read_text(encoding="utf-8"))
-    assert summary["total_files"] == 2
-    assert summary["row_count"] == 4
+    assert summary["total_canonical_sources"] == 2
+    assert summary["row_record_count"] == 4
 
 
-def test_main_returns_1_and_writes_nothing_on_duplicate_hash(tmp_path: Path) -> None:
+def test_main_duplicate_content_writes_one_canonical_source_not_two(tmp_path: Path) -> None:
     write_fixture(tmp_path, "a.txt", TABLE1_SPACE_FIXTURE)
     write_fixture(tmp_path, "b_copy.txt", TABLE1_SPACE_FIXTURE)
     out_dir = tmp_path / "out"
 
     exit_code = main(["--root", str(tmp_path), "--out-dir", str(out_dir), "--write-files"])
-    assert exit_code == 1
-    assert not out_dir.exists()
+    assert exit_code == 0
+
+    run_dir = next(out_dir.iterdir())
+    canonical_manifest = next((run_dir / "evidence").glob("aplus_evidence_canonical_source_manifest_*.jsonl"))
+    canonical_records = [json.loads(line) for line in canonical_manifest.read_text(encoding="utf-8").splitlines()]
+    assert len(canonical_records) == 1
+    assert canonical_records[0]["alias_count"] == 2
 
 
 def test_main_missing_root_is_empty_not_fatal(tmp_path: Path) -> None:

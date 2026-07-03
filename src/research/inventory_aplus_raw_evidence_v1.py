@@ -2,7 +2,7 @@
 A+ raw evidence inventory (Phase 1 of the A+ / Breathline V1 alignment study).
 
 Research-only, read-only. Recursively inspects data/aplus_raw/ (or an explicit
---root) and produces a hashed, schema-classified, timestamp-provenance-tagged
+--root) and produces a hashed, schema-classified, timestamp-lane-tagged
 inventory of candidate A+ source files. This is a survey tool: it does not
 select an anchor, does not compute a Breathline state, does not join to
 market data, and does not draw any conclusion. See
@@ -13,6 +13,12 @@ renames, moves, or edits anything under the scanned root; it only reads.
 Generated inventory artifacts are written under
 data/research/aplus_breathline_alignment_v1/<run_id>/ and are not meant to be
 committed to git.
+
+Content identity is canonical by sha256: identical bytes discovered at
+multiple paths are one canonical source with multiple alias_paths, never
+multiple ledger populations. This never aborts an inventory run; only a
+genuine internal inconsistency (the same hash producing different parsed
+content) does.
 
 Safety markers:
   broker_private_calls=0
@@ -38,7 +44,7 @@ from typing import Any
 
 
 REPORT_NAME = "aplus_breathline_alignment_inventory_v1"
-VERSION = "0.1"
+VERSION = "0.2"
 
 DEFAULT_ROOT = "data/aplus_raw"
 DEFAULT_OUT_BASE = "data/research/aplus_breathline_alignment_v1"
@@ -94,6 +100,13 @@ FIELD_NAMES_BY_TABLE_TYPE = {
     ],
 }
 
+# Maximum consecutive trailing non-blank lines (footer prose, a second
+# unsupported table, etc.) recorded as UNPARSED_NON_TABLE_LINE diagnostics
+# after the table body has ended. Bounded to avoid pathological blow-up; the
+# observed anomalies (a one-paragraph footer note) are 1-2 lines.
+MAX_TRAILING_DIAGNOSTIC_LINES = 50
+MAX_DIAGNOSTIC_LINE_TEXT_CHARS = 500
+
 TS_PROVENANCE_EXPLICIT = "EXPLICIT_SOURCE_TIMESTAMP"
 TS_PROVENANCE_FILENAME = "FILENAME_INFERRED_TIMESTAMP"
 TS_PROVENANCE_UNKNOWN = "UNKNOWN"
@@ -105,6 +118,14 @@ TIMESTAMP_ROLE_FILENAME_INFERRED = "FILENAME_INFERRED"
 # (e.g. a bare "(2026-05-15T12:44:48Z)" in a title line). Never coerced into
 # OBSERVATION_TIME or PREDICTION_TARGET_TIME without a named field as evidence.
 TIMESTAMP_ROLE_UNLABELED_EXPLICIT = "UNLABELED_EXPLICIT"
+
+# Timestamp lanes (contract section 3.1 / 4.1). PRIMARY_TARGET_ALIGNMENT is
+# the only lane this study actively analyzes; FUTURE_OBSERVATION_ASOF is
+# detected structurally but not implemented in this PR; everything else is
+# exploratory only and excluded from Phase 2 eligibility.
+LANE_PRIMARY_TARGET_ALIGNMENT = "PRIMARY_TARGET_ALIGNMENT"
+LANE_FUTURE_OBSERVATION_ASOF = "FUTURE_OBSERVATION_ASOF"
+LANE_EXPLORATORY_ONLY = "EXPLORATORY_ONLY"
 
 # Named explicit-timestamp field patterns and the role each field name
 # establishes. Add new named fields here only when a source explicitly labels
@@ -126,9 +147,36 @@ FILENAME_TS_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})(?:_(\d{2})(\d{2}))?")
 DECLARED_METADATA_LINE_RE = re.compile(r"^([a-z_][a-z0-9_]*)\s*=\s*(.+)$", re.IGNORECASE)
 MARKDOWN_SEPARATOR_CELL_RE = re.compile(r"^:?-+:?$")
 
+# Explicit, documented market-symbol alias registry. Never inferred from
+# source text -- extend only with a specific, reviewed entry citing where the
+# alias was observed. Resolution against this registry is the only path from
+# a raw source token to a canonical_market_symbol.
+MARKET_SYMBOL_ALIAS_REGISTRY: dict[str, str] = {
+    # Observed in data/aplus_raw/2026-05-27_2149_june_reflection_subset_8_note.txt:
+    # the TOKEN column literally reads "Canton (CC)" for the CC token.
+    "CANTON (CC)": "CC",
+}
+CANONICAL_MARKET_SYMBOLS: frozenset[str] = frozenset(
+    {
+        "AAVE", "ADA", "ALGO", "BTC", "CC", "CRV", "DEEP", "DOT", "ETH", "FET",
+        "FIL", "FLOKI", "HBAR", "HNT", "HOT", "HYPE", "ICP", "INJ", "IOST",
+        "LDO", "LINK", "LTC", "MOG", "NEAR", "NOT", "ONDO", "PEPE", "POL",
+        "QNT", "RED", "RENDER", "RLC", "SOL", "SUI", "TAO", "VET", "WAL",
+        "WLD", "XLM", "XPL", "XRP",
+    }
+)
+
+ASSET_RESOLUTION_RESOLVED = "RESOLVED"
+ASSET_RESOLUTION_UNRESOLVED = "UNRESOLVED"
+
+ROW_PARSE_STATUS_OK = "OK"
+ROW_PARSE_STATUS_MALFORMED = "MALFORMED_TABLE_BODY"
+ROW_PARSE_STATUS_UNPARSED_NON_TABLE = "UNPARSED_NON_TABLE_LINE"
+
 
 class InventoryIntegrityError(RuntimeError):
-    """Raised for run-level fail-closed conditions (never partially resolved)."""
+    """Raised only for a genuine internal inconsistency, never for a benign
+    duplicate. See check_content_group_consistency."""
 
 
 @dataclass
@@ -140,10 +188,42 @@ class ExplicitTimestamp:
 
 
 @dataclass
-class FileRecord:
-    file_path: str
-    file_name: str
+class ParsedRow:
+    fields: dict[str, str]
+    raw_source_token: str
+
+
+@dataclass
+class RowDiagnostic:
+    line_index: int
+    line_text: str
+    row_parse_status: str
+
+
+@dataclass
+class ParsedContent:
+    """Everything derivable from file bytes alone -- independent of which
+    alias path the bytes were read from."""
+
     sha256: str
+    file_size_bytes: int
+    detected_table_type: str
+    header_tokens: list[str] | None
+    delimiter_style: str | None
+    declared_metadata: dict[str, str]
+    rows: list[ParsedRow]
+    row_diagnostics: list[RowDiagnostic]
+    explicit_timestamps: list[ExplicitTimestamp]
+    status: str
+    status_notes: list[str]
+
+
+@dataclass
+class CanonicalSourceRecord:
+    canonical_source_hash: str
+    canonical_source_path: str
+    alias_paths: list[str]
+    alias_count: int
     file_size_bytes: int
     detected_table_type: str
     header_tokens: list[str] | None
@@ -155,12 +235,12 @@ class FileRecord:
     timestamp_provenance: str
     primary_timestamp_iso: str | None
     primary_timestamp_role: str | None
+    timestamp_lane: str
     assets: list[str]
     duplicate_assets_within_file: list[str]
     unparsed_row_count: int
     status: str
     status_notes: list[str] = field(default_factory=list)
-    eligible_for_primary_analysis: bool = False
 
 
 def sha256_file(path: Path) -> str:
@@ -266,25 +346,65 @@ def split_data_row(line: str, delimiter_style: str, table_type: str) -> list[str
 
 def parse_table_rows(
     lines: list[str], header: HeaderMatch
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[ParsedRow], list[RowDiagnostic]]:
+    """Parse the contiguous table body immediately following the header.
+
+    Table rows in this corpus are always contiguous: once at least one row
+    has been parsed, the first blank line ends the table body. Anything
+    after that boundary (a footer note, stray prose, a second unsupported
+    table) is never a candidate asset row -- it is recorded only as an
+    UNPARSED_NON_TABLE_LINE diagnostic, bounded by
+    MAX_TRAILING_DIAGNOSTIC_LINES. A non-blank line inside the contiguous
+    body that fails to match the expected column shape is recorded as
+    MALFORMED_TABLE_BODY. Neither diagnostic ever becomes an asset row.
+    """
     field_names = FIELD_NAMES_BY_TABLE_TYPE[header.table_type]
-    rows: list[dict[str, Any]] = []
-    unparsed_row_count = 0
-    for line in lines[header.line_index + 1 :]:
+    rows: list[ParsedRow] = []
+    diagnostics: list[RowDiagnostic] = []
+    table_body_ended = False
+    trailing_diagnostic_count = 0
+
+    for offset, line in enumerate(lines[header.line_index + 1 :]):
+        line_index = header.line_index + 1 + offset
         stripped = line.strip()
         if not stripped:
+            if rows:
+                table_body_ended = True
             continue
-        raw_tokens, delimiter_style = tokenize_line(stripped)
+
+        if table_body_ended:
+            if trailing_diagnostic_count < MAX_TRAILING_DIAGNOSTIC_LINES:
+                diagnostics.append(
+                    RowDiagnostic(
+                        line_index=line_index,
+                        line_text=stripped[:MAX_DIAGNOSTIC_LINE_TEXT_CHARS],
+                        row_parse_status=ROW_PARSE_STATUS_UNPARSED_NON_TABLE,
+                    )
+                )
+                trailing_diagnostic_count += 1
+            continue
+
+        raw_tokens, _ = tokenize_line(stripped)
         if is_markdown_separator_row(raw_tokens):
             continue
+
         parts = split_data_row(stripped, header.delimiter_style, header.table_type)
         if parts is None:
-            unparsed_row_count += 1
+            diagnostics.append(
+                RowDiagnostic(
+                    line_index=line_index,
+                    line_text=stripped[:MAX_DIAGNOSTIC_LINE_TEXT_CHARS],
+                    row_parse_status=ROW_PARSE_STATUS_MALFORMED,
+                )
+            )
             continue
-        row = {name: value for name, value in zip(field_names, parts)}
-        row["token"] = row["token"].upper()
-        rows.append(row)
-    return rows, unparsed_row_count
+
+        row_fields = {name: value for name, value in zip(field_names, parts)}
+        raw_source_token = row_fields["token"].upper()
+        row_fields["token"] = raw_source_token
+        rows.append(ParsedRow(fields=row_fields, raw_source_token=raw_source_token))
+
+    return rows, diagnostics
 
 
 def extract_declared_metadata(text: str) -> dict[str, str]:
@@ -390,15 +510,36 @@ def resolve_timestamp_provenance(
     return TS_PROVENANCE_UNKNOWN, None, None, notes
 
 
-def find_duplicate_assets(rows: list[dict[str, Any]]) -> list[str]:
+def resolve_timestamp_lane(primary_role: str | None) -> str:
+    if primary_role == TIMESTAMP_ROLE_PREDICTION_TARGET:
+        return LANE_PRIMARY_TARGET_ALIGNMENT
+    if primary_role == TIMESTAMP_ROLE_OBSERVATION:
+        return LANE_FUTURE_OBSERVATION_ASOF
+    return LANE_EXPLORATORY_ONLY
+
+
+def resolve_market_symbol(raw_source_token: str) -> tuple[str | None, str]:
+    """Resolve a raw source token against the explicit alias registry only.
+
+    Never infers an alias from the source text. Returns
+    (canonical_market_symbol_or_None, asset_resolution_status).
+    """
+    if raw_source_token in CANONICAL_MARKET_SYMBOLS:
+        return raw_source_token, ASSET_RESOLUTION_RESOLVED
+    alias_target = MARKET_SYMBOL_ALIAS_REGISTRY.get(raw_source_token)
+    if alias_target is not None:
+        return alias_target, ASSET_RESOLUTION_RESOLVED
+    return None, ASSET_RESOLUTION_UNRESOLVED
+
+
+def find_duplicate_assets(rows: list[ParsedRow]) -> list[str]:
     seen: dict[str, int] = {}
     for row in rows:
-        token = row["token"]
-        seen[token] = seen.get(token, 0) + 1
+        seen[row.raw_source_token] = seen.get(row.raw_source_token, 0) + 1
     return sorted(token for token, count in seen.items() if count > 1)
 
 
-def classify_file(path: Path, root: Path) -> tuple[FileRecord, list[dict[str, Any]]]:
+def parse_content(path: Path) -> ParsedContent:
     stat = path.stat()
     digest = sha256_file(path)
     text = read_text_safe(path)
@@ -407,14 +548,11 @@ def classify_file(path: Path, root: Path) -> tuple[FileRecord, list[dict[str, An
     delimiter_style: str | None = None
     table_type = TABLE_TYPE_UNSUPPORTED
     declared_metadata: dict[str, str] = {}
-    rows: list[dict[str, Any]] = []
-    unparsed_row_count = 0
-    duplicate_assets: list[str] = []
+    rows: list[ParsedRow] = []
+    row_diagnostics: list[RowDiagnostic] = []
     status = "OK"
     status_notes: list[str] = []
-
     explicit_timestamps: list[ExplicitTimestamp] = []
-    filename_ts = infer_filename_timestamp(path.name)
 
     if text is None:
         status = "UNREADABLE"
@@ -431,7 +569,7 @@ def classify_file(path: Path, root: Path) -> tuple[FileRecord, list[dict[str, An
             table_type = header.table_type
             header_tokens = header.header_tokens
             delimiter_style = header.delimiter_style
-            rows, unparsed_row_count = parse_table_rows(lines, header)
+            rows, row_diagnostics = parse_table_rows(lines, header)
             if not rows:
                 status = "EMPTY_TABLE_BODY"
                 status_notes.append("header matched but no parseable data rows were found")
@@ -442,98 +580,179 @@ def classify_file(path: Path, root: Path) -> tuple[FileRecord, list[dict[str, An
                     status_notes.append(
                         f"duplicate asset token(s) within one file: {', '.join(duplicate_assets)}"
                     )
-            if unparsed_row_count:
-                status_notes.append(f"unparsed_row_count={unparsed_row_count} (skipped, not fabricated)")
+            malformed_count = sum(
+                1 for d in row_diagnostics if d.row_parse_status == ROW_PARSE_STATUS_MALFORMED
+            )
+            trailing_count = sum(
+                1 for d in row_diagnostics if d.row_parse_status == ROW_PARSE_STATUS_UNPARSED_NON_TABLE
+            )
+            if malformed_count:
+                status_notes.append(f"malformed_table_body_count={malformed_count} (skipped, not fabricated)")
+            if trailing_count:
+                status_notes.append(
+                    f"unparsed_non_table_line_count={trailing_count} (footer/trailing content, not fabricated as rows)"
+                )
 
-    provenance, primary_iso, primary_role, ts_notes = resolve_timestamp_provenance(
-        explicit_timestamps, filename_ts
-    )
-    if ts_notes:
-        status = "AMBIGUOUS_TIMESTAMP" if status == "OK" else status
-        status_notes.extend(ts_notes)
-
-    eligible = (
-        provenance == TS_PROVENANCE_EXPLICIT
-        and primary_role == TIMESTAMP_ROLE_OBSERVATION
-        and status == "OK"
-    )
-
-    record = FileRecord(
-        file_path=str(path),
-        file_name=path.name,
+    return ParsedContent(
         sha256=digest,
         file_size_bytes=int(stat.st_size),
         detected_table_type=table_type,
         header_tokens=header_tokens,
         delimiter_style=delimiter_style,
         declared_metadata=declared_metadata,
-        token_count=len(rows) if rows else (0 if status == "EMPTY_TABLE_BODY" else None),
+        rows=rows,
+        row_diagnostics=row_diagnostics,
+        explicit_timestamps=explicit_timestamps,
+        status=status,
+        status_notes=status_notes,
+    )
+
+
+def content_identity_key(parsed: ParsedContent) -> tuple[Any, ...]:
+    """Fields that must be identical for byte-identical content. Excludes
+    anything derived from a path (e.g. filename-inferred timestamps)."""
+    return (
+        parsed.detected_table_type,
+        tuple(parsed.header_tokens) if parsed.header_tokens else None,
+        parsed.delimiter_style,
+        tuple(sorted(parsed.declared_metadata.items())),
+        tuple((r.raw_source_token, tuple(sorted(r.fields.items()))) for r in parsed.rows),
+        tuple((ts.field_name, ts.iso, ts.role) for ts in parsed.explicit_timestamps),
+        parsed.status,
+    )
+
+
+def check_content_group_consistency(digest: str, group: list[tuple[Path, ParsedContent]]) -> None:
+    if len(group) < 2:
+        return
+    keys = {content_identity_key(parsed) for _, parsed in group}
+    if len(keys) > 1:
+        paths = sorted(str(path) for path, _ in group)
+        raise InventoryIntegrityError(
+            f"internal inconsistency: sha256 {digest[:16]}... produced non-identical parsed "
+            f"content across paths (this should be impossible for byte-identical content): {paths}"
+        )
+
+
+def build_canonical_record(
+    digest: str, alias_paths: list[str], parsed: ParsedContent
+) -> CanonicalSourceRecord:
+    canonical_source_path = alias_paths[0]
+    filename_ts = infer_filename_timestamp(Path(canonical_source_path).name)
+
+    provenance, primary_iso, primary_role, ts_notes = resolve_timestamp_provenance(
+        parsed.explicit_timestamps, filename_ts
+    )
+    status = parsed.status
+    status_notes = list(parsed.status_notes)
+    if ts_notes:
+        status = "AMBIGUOUS_TIMESTAMP" if status == "OK" else status
+        status_notes.extend(ts_notes)
+
+    timestamp_lane = resolve_timestamp_lane(primary_role)
+    duplicate_assets = find_duplicate_assets(parsed.rows)
+    unparsed_row_count = len(parsed.row_diagnostics)
+
+    return CanonicalSourceRecord(
+        canonical_source_hash=digest,
+        canonical_source_path=canonical_source_path,
+        alias_paths=alias_paths,
+        alias_count=len(alias_paths),
+        file_size_bytes=parsed.file_size_bytes,
+        detected_table_type=parsed.detected_table_type,
+        header_tokens=parsed.header_tokens,
+        delimiter_style=parsed.delimiter_style,
+        declared_metadata=parsed.declared_metadata,
+        token_count=len(parsed.rows) if parsed.rows else (0 if status == "EMPTY_TABLE_BODY" else None),
         explicit_timestamps=[
             {"field_name": ts.field_name, "raw": ts.raw, "iso": ts.iso, "role": ts.role}
-            for ts in explicit_timestamps
+            for ts in parsed.explicit_timestamps
         ],
         filename_inferred_timestamp=filename_ts,
         timestamp_provenance=provenance,
         primary_timestamp_iso=primary_iso,
         primary_timestamp_role=primary_role,
-        assets=sorted({row["token"] for row in rows}),
+        timestamp_lane=timestamp_lane,
+        assets=sorted({row.raw_source_token for row in parsed.rows}),
         duplicate_assets_within_file=duplicate_assets,
         unparsed_row_count=unparsed_row_count,
         status=status,
         status_notes=status_notes,
-        eligible_for_primary_analysis=eligible,
     )
 
+
+def build_row_records(record: CanonicalSourceRecord, parsed: ParsedContent) -> list[dict[str, Any]]:
+    if record.detected_table_type == TABLE_TYPE_UNSUPPORTED or record.status == "UNREADABLE":
+        return []
     row_records: list[dict[str, Any]] = []
-    if table_type != TABLE_TYPE_UNSUPPORTED and status not in {"UNREADABLE"}:
-        for index, row in enumerate(rows):
-            row_records.append(
-                {
-                    "source_file_hash": digest,
-                    "source_file_path": str(path),
-                    "source_file_name": path.name,
-                    "detected_table_type": table_type,
-                    "row_index_in_file": index,
-                    "primary_timestamp_iso": primary_iso,
-                    "timestamp_provenance": provenance,
-                    "primary_timestamp_role": primary_role,
-                    **row,
-                }
-            )
-
-    return record, row_records
-
-
-def check_duplicate_source_identity(records: list[FileRecord]) -> None:
-    by_hash: dict[str, list[str]] = {}
-    for record in records:
-        by_hash.setdefault(record.sha256, []).append(record.file_path)
-    duplicates = {digest: paths for digest, paths in by_hash.items() if len(paths) > 1}
-    if duplicates:
-        details = "; ".join(
-            f"{digest[:12]}...: {sorted(paths)}" for digest, paths in sorted(duplicates.items())
+    for index, row in enumerate(parsed.rows):
+        canonical_symbol, resolution_status = resolve_market_symbol(row.raw_source_token)
+        row_records.append(
+            {
+                "canonical_source_hash": record.canonical_source_hash,
+                "canonical_source_path": record.canonical_source_path,
+                "detected_table_type": record.detected_table_type,
+                "row_index_in_file": index,
+                "primary_timestamp_iso": record.primary_timestamp_iso,
+                "timestamp_provenance": record.timestamp_provenance,
+                "primary_timestamp_role": record.primary_timestamp_role,
+                "timestamp_lane": record.timestamp_lane,
+                "raw_source_token": row.raw_source_token,
+                "canonical_market_symbol": canonical_symbol,
+                "asset_resolution_status": resolution_status,
+                "row_parse_status": ROW_PARSE_STATUS_OK,
+                **row.fields,
+            }
         )
-        raise InventoryIntegrityError(
-            f"duplicate source identity: identical sha256 content found at multiple paths ({details})"
+    for diagnostic in parsed.row_diagnostics:
+        row_records.append(
+            {
+                "canonical_source_hash": record.canonical_source_hash,
+                "canonical_source_path": record.canonical_source_path,
+                "detected_table_type": record.detected_table_type,
+                "row_index_in_file": None,
+                "primary_timestamp_iso": record.primary_timestamp_iso,
+                "timestamp_provenance": record.timestamp_provenance,
+                "primary_timestamp_role": record.primary_timestamp_role,
+                "timestamp_lane": record.timestamp_lane,
+                "raw_source_token": None,
+                "canonical_market_symbol": None,
+                "asset_resolution_status": None,
+                "row_parse_status": diagnostic.row_parse_status,
+                "line_index": diagnostic.line_index,
+                "line_text": diagnostic.line_text,
+            }
         )
+    return row_records
 
 
-def run_inventory(root: Path) -> tuple[list[FileRecord], list[dict[str, Any]]]:
-    file_records: list[FileRecord] = []
-    row_records: list[dict[str, Any]] = []
+def run_inventory(root: Path) -> tuple[list[CanonicalSourceRecord], list[dict[str, Any]]]:
+    by_hash: dict[str, list[tuple[Path, ParsedContent]]] = {}
     for path in iter_files(root):
-        record, rows = classify_file(path, root)
-        file_records.append(record)
-        row_records.extend(rows)
-    check_duplicate_source_identity(file_records)
-    return file_records, row_records
+        parsed = parse_content(path)
+        by_hash.setdefault(parsed.sha256, []).append((path, parsed))
+
+    canonical_records: list[CanonicalSourceRecord] = []
+    all_row_records: list[dict[str, Any]] = []
+
+    for digest in sorted(by_hash):
+        group = by_hash[digest]
+        check_content_group_consistency(digest, group)
+        alias_paths = sorted(str(path) for path, _ in group)
+        _, representative_parsed = group[0]
+        record = build_canonical_record(digest, alias_paths, representative_parsed)
+        canonical_records.append(record)
+        all_row_records.extend(build_row_records(record, representative_parsed))
+
+    return canonical_records, all_row_records
 
 
-def build_summary(records: list[FileRecord], root: Path) -> dict[str, Any]:
+def build_summary(records: list[CanonicalSourceRecord], row_records: list[dict[str, Any]], root: Path) -> dict[str, Any]:
     table_type_counts: dict[str, int] = {}
     status_counts: dict[str, int] = {}
     provenance_counts: dict[str, int] = {}
     role_counts: dict[str, int] = {}
+    lane_counts: dict[str, int] = {}
 
     for record in records:
         table_type_counts[record.detected_table_type] = table_type_counts.get(record.detected_table_type, 0) + 1
@@ -541,20 +760,45 @@ def build_summary(records: list[FileRecord], root: Path) -> dict[str, Any]:
         provenance_counts[record.timestamp_provenance] = provenance_counts.get(record.timestamp_provenance, 0) + 1
         role_key = record.primary_timestamp_role or "NONE"
         role_counts[role_key] = role_counts.get(role_key, 0) + 1
+        lane_counts[record.timestamp_lane] = lane_counts.get(record.timestamp_lane, 0) + 1
 
-    eligible = [r.file_path for r in records if r.eligible_for_primary_analysis]
+    valid_primary_target_alignment_events = [
+        record.canonical_source_path
+        for record in records
+        if record.timestamp_lane == LANE_PRIMARY_TARGET_ALIGNMENT and record.status == "OK"
+    ]
+
+    resolution_counts: dict[str, int] = {}
+    row_parse_status_counts: dict[str, int] = {}
+    for row in row_records:
+        row_parse_status_counts[row["row_parse_status"]] = row_parse_status_counts.get(row["row_parse_status"], 0) + 1
+        resolution_status = row.get("asset_resolution_status")
+        if resolution_status is not None:
+            resolution_counts[resolution_status] = resolution_counts.get(resolution_status, 0) + 1
+
+    alias_groups = [
+        {"canonical_source_hash": r.canonical_source_hash, "alias_paths": r.alias_paths}
+        for r in records
+        if r.alias_count > 1
+    ]
 
     return {
         "report": REPORT_NAME,
         "version": VERSION,
         "root": str(root),
-        "total_files": len(records),
+        "total_canonical_sources": len(records),
+        "total_discovered_paths": sum(r.alias_count for r in records),
+        "alias_group_count": len(alias_groups),
+        "alias_groups": alias_groups,
         "table_type_counts": dict(sorted(table_type_counts.items())),
         "status_counts": dict(sorted(status_counts.items())),
         "timestamp_provenance_counts": dict(sorted(provenance_counts.items())),
         "timestamp_role_counts": dict(sorted(role_counts.items())),
-        "primary_analysis_eligible_count": len(eligible),
-        "primary_analysis_eligible_files": sorted(eligible),
+        "timestamp_lane_counts": dict(sorted(lane_counts.items())),
+        "valid_primary_target_alignment_event_count": len(valid_primary_target_alignment_events),
+        "valid_primary_target_alignment_sources": sorted(valid_primary_target_alignment_events),
+        "row_parse_status_counts": dict(sorted(row_parse_status_counts.items())),
+        "asset_resolution_counts": dict(sorted(resolution_counts.items())),
     }
 
 
@@ -571,11 +815,12 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
         handle.write(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False, default=str) + "\n")
 
 
-def file_record_to_dict(record: FileRecord) -> dict[str, Any]:
+def canonical_record_to_dict(record: CanonicalSourceRecord) -> dict[str, Any]:
     return {
-        "file_path": record.file_path,
-        "file_name": record.file_name,
-        "sha256": record.sha256,
+        "canonical_source_hash": record.canonical_source_hash,
+        "canonical_source_path": record.canonical_source_path,
+        "alias_paths": record.alias_paths,
+        "alias_count": record.alias_count,
         "file_size_bytes": record.file_size_bytes,
         "detected_table_type": record.detected_table_type,
         "header_tokens": record.header_tokens,
@@ -587,12 +832,12 @@ def file_record_to_dict(record: FileRecord) -> dict[str, Any]:
         "timestamp_provenance": record.timestamp_provenance,
         "primary_timestamp_iso": record.primary_timestamp_iso,
         "primary_timestamp_role": record.primary_timestamp_role,
+        "timestamp_lane": record.timestamp_lane,
         "assets": record.assets,
         "duplicate_assets_within_file": record.duplicate_assets_within_file,
         "unparsed_row_count": record.unparsed_row_count,
         "status": record.status,
         "status_notes": record.status_notes,
-        "eligible_for_primary_analysis": record.eligible_for_primary_analysis,
     }
 
 
@@ -605,7 +850,13 @@ def render_table_summary(summary: dict[str, Any], output_paths: dict[str, str], 
         "selection_engine=none decision_gate=none execution_planner=none executor=none"
     )
     lines.append(f"root={summary['root']}")
-    lines.append(f"total_files={summary['total_files']}")
+    lines.append(f"total_canonical_sources={summary['total_canonical_sources']}")
+    lines.append(f"total_discovered_paths={summary['total_discovered_paths']}")
+    lines.append(f"alias_group_count={summary['alias_group_count']}")
+    for group in summary["alias_groups"]:
+        lines.append(f"  {group['canonical_source_hash'][:12]}...: {len(group['alias_paths'])} paths")
+        for p in group["alias_paths"]:
+            lines.append(f"    - {p}")
     lines.append("")
     lines.append("--- detected_table_type counts ---")
     for key, value in summary["table_type_counts"].items():
@@ -619,12 +870,22 @@ def render_table_summary(summary: dict[str, Any], output_paths: dict[str, str], 
     for key, value in summary["timestamp_provenance_counts"].items():
         lines.append(f"  {key}={value}")
     lines.append("")
-    lines.append("--- timestamp_role counts ---")
-    for key, value in summary["timestamp_role_counts"].items():
+    lines.append("--- timestamp_lane counts ---")
+    for key, value in summary["timestamp_lane_counts"].items():
         lines.append(f"  {key}={value}")
     lines.append("")
-    lines.append(f"primary_analysis_eligible_count={summary['primary_analysis_eligible_count']}")
-    for path in summary["primary_analysis_eligible_files"]:
+    lines.append("--- row_parse_status counts ---")
+    for key, value in summary["row_parse_status_counts"].items():
+        lines.append(f"  {key}={value}")
+    lines.append("")
+    lines.append("--- asset_resolution counts ---")
+    for key, value in summary["asset_resolution_counts"].items():
+        lines.append(f"  {key}={value}")
+    lines.append("")
+    lines.append(
+        f"valid_primary_target_alignment_event_count={summary['valid_primary_target_alignment_event_count']}"
+    )
+    for path in summary["valid_primary_target_alignment_sources"]:
         lines.append(f"  {path}")
     lines.append("")
     lines.append(f"wrote_files={wrote}")
@@ -661,13 +922,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"FAILED {exc}", flush=True)
         return 1
 
-    summary = build_summary(records, root)
+    summary = build_summary(records, row_records, root)
 
     started_at = datetime.now(timezone.utc)
     run_id = f"aplus_inventory_{started_at.strftime('%Y%m%dT%H%M%SZ')}"
     out_dir = Path(args.out_dir) / run_id
     output_paths = {
-        "file_manifest_jsonl": str(out_dir / "evidence" / f"aplus_evidence_file_manifest_{run_id}.jsonl"),
+        "canonical_source_manifest_jsonl": str(
+            out_dir / "evidence" / f"aplus_evidence_canonical_source_manifest_{run_id}.jsonl"
+        ),
         "rows_jsonl": str(out_dir / "evidence" / f"aplus_evidence_rows_{run_id}.jsonl"),
         "summary_json": str(out_dir / "manifest" / f"aplus_evidence_inventory_manifest_{run_id}.json"),
     }
@@ -678,7 +941,7 @@ def main(argv: list[str] | None = None) -> int:
         "generated_at_utc": started_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "output_paths": output_paths,
         "wrote_files": bool(args.write_files),
-        "row_count": len(row_records),
+        "row_record_count": len(row_records),
         "safety_markers": {
             "broker_calls": 0,
             "broker_writes": 0,
@@ -696,7 +959,10 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     if args.write_files:
-        write_jsonl(Path(output_paths["file_manifest_jsonl"]), [file_record_to_dict(r) for r in records])
+        write_jsonl(
+            Path(output_paths["canonical_source_manifest_jsonl"]),
+            [canonical_record_to_dict(r) for r in records],
+        )
         write_jsonl(Path(output_paths["rows_jsonl"]), row_records)
         write_json(Path(output_paths["summary_json"]), payload)
 
