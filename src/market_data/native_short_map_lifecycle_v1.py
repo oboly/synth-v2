@@ -159,8 +159,8 @@ class NativeShortMapRecord:
     source_support_candle_ts_utc: datetime | None = None
     source_primary_ref: str = ""
     source_support_ref: str = ""
-    source_primary_candle_count: int = 0
-    source_support_candle_count: int = 0
+    source_primary_candle_count: int | None = None
+    source_support_candle_count: int | None = None
     map_payload_json: str = "{}"
 
 

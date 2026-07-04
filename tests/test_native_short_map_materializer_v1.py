@@ -108,6 +108,8 @@ def _available_row(symbol: str = "BTC", *, high_price: Decimal = Decimal("0.120"
         previous_map_lifecycle_state="",
         rollover_state="SINGLE_MAP",
         selection_reason="Single active map selected",
+        source_primary_candle_count=73,
+        source_support_candle_count=219,
     )
 
 
@@ -153,6 +155,8 @@ def _unavailable_row(symbol: str = "BTC", status: str = STATUS_INSUFFICIENT_4H) 
         previous_map_lifecycle_state="",
         rollover_state="NO_VALID_MAP",
         selection_reason="",
+        source_primary_candle_count=12,
+        source_support_candle_count=144,
     )
 
 
@@ -224,7 +228,7 @@ class _RecordingCursor:
 
     def fetchall(self) -> list[dict[str, Any]]:
         if "FROM native_short_map_scope_v1" in self._last_sql:
-            return [{"scope_id": 1}]
+            return [{"scope_id": 1, "scope_support_state": "SUPPORTED"}]
         return []
 
     def __enter__(self) -> "_RecordingCursor":
@@ -291,6 +295,8 @@ class _RunnerCursor:
 
     def fetchall(self) -> list[dict[str, Any]]:
         if "FROM native_short_map_scope_v1" in self._last_sql:
+            if "FOR UPDATE" in self._last_sql and self._conn.lock_scope_rows is not None:
+                return self._conn.lock_scope_rows
             return self._conn.scope_rows
         return []
 
@@ -307,8 +313,14 @@ class _RunnerCursor:
 
 
 class _RunnerConn:
-    def __init__(self, *, scope_rows: list[dict[str, Any]] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        scope_rows: list[dict[str, Any]] | None = None,
+        lock_scope_rows: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.scope_rows = scope_rows or []
+        self.lock_scope_rows = lock_scope_rows
         self.log: list[tuple[str, Any]] = []
         self.next_id = 0
         self.begin_count = 0
@@ -555,6 +567,33 @@ def test_runner_write_commits_once_after_materializer_success(
     assert run_conn.tx_log == ["begin", "commit", "close"]
 
 
+def test_runner_write_rejects_scope_state_drift_under_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scope_conn = _RunnerConn(scope_rows=[_scope_row("BTC")])
+    run_conn = _RunnerConn(
+        lock_scope_rows=[{"scope_id": 1, "scope_support_state": "NOT_APPLICABLE"}]
+    )
+    opened = [scope_conn, run_conn]
+
+    def fake_get_connection() -> _RunnerConn:
+        return opened.pop(0)
+
+    monkeypatch.setattr(runner, "get_connection", fake_get_connection)
+    monkeypatch.setattr(
+        runner,
+        "build_rows_for_symbols",
+        lambda *, venue, symbols, now_utc: [_available_row("BTC")],
+    )
+
+    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary"]) == 1
+    assert run_conn.begin_count == 1
+    assert run_conn.commit_count == 0
+    assert run_conn.rollback_count == 1
+    assert all("INSERT INTO" not in sql for sql, _ in run_conn.log)
+    assert any("FOR UPDATE" in sql for sql, _ in run_conn.log)
+
+
 def test_structure_hash_is_deterministic() -> None:
     row = _available_row()
     assert _structure_hash(row) == _structure_hash(row)
@@ -590,6 +629,85 @@ def test_available_dry_run_does_not_insert_rows() -> None:
     assert conn.insert_log("native_short_map_lifecycle_event_v1") == []
 
 
+def test_context_symbol_mismatch_fails_before_lock_or_ledger_reads() -> None:
+    conn = _RecordingConn()
+    with pytest.raises(ValueError, match="CONTEXT_SCOPE_MISMATCH field=symbol"):
+        materialize_scope_symbol(
+            conn,
+            scope_support=_supported("BTC"),
+            context_row=_available_row("ETH"),
+            now_utc=_NOW,
+            write=True,
+        )
+
+    assert conn.log == []
+
+
+def test_context_interval_mismatch_fails_before_lock_or_ledger_reads() -> None:
+    conn = _RecordingConn()
+    row = NativeShortContextRow(**{**_available_row().__dict__, "primary_interval": "1h"})
+    with pytest.raises(ValueError, match="CONTEXT_SCOPE_MISMATCH field=primary_interval"):
+        materialize_scope_symbol(
+            conn,
+            scope_support=_supported("BTC"),
+            context_row=row,
+            now_utc=_NOW,
+            write=True,
+        )
+
+    assert conn.log == []
+
+
+def test_missing_source_candle_count_fails_before_lock_or_ledger_reads() -> None:
+    conn = _RecordingConn()
+    row = NativeShortContextRow(
+        **{**_available_row().__dict__, "source_primary_candle_count": None}
+    )
+    with pytest.raises(ValueError, match="SOURCE_CANDLE_COUNT_UNAVAILABLE"):
+        materialize_scope_symbol(
+            conn,
+            scope_support=_supported(),
+            context_row=row,
+            now_utc=_NOW,
+            write=True,
+        )
+
+    assert conn.log == []
+
+
+def test_locked_scope_duplicate_rows_fail_before_ledger_insert() -> None:
+    conn = _RunnerConn(
+        lock_scope_rows=[
+            {"scope_id": 1, "scope_support_state": "SUPPORTED"},
+            {"scope_id": 2, "scope_support_state": "SUPPORTED"},
+        ]
+    )
+    with pytest.raises(ValueError, match="LOCKED_SCOPE_ROW_COUNT_INVALID"):
+        materialize_scope_symbol(
+            conn,
+            scope_support=_supported(),
+            context_row=_available_row(),
+            now_utc=_NOW,
+            write=True,
+        )
+
+    assert all("INSERT INTO" not in sql for sql, _ in conn.log)
+
+
+def test_locked_scope_zero_rows_fail_before_ledger_insert() -> None:
+    conn = _RunnerConn(lock_scope_rows=[])
+    with pytest.raises(ValueError, match="LOCKED_SCOPE_ROW_COUNT_INVALID"):
+        materialize_scope_symbol(
+            conn,
+            scope_support=_supported(),
+            context_row=_available_row(),
+            now_utc=_NOW,
+            write=True,
+        )
+
+    assert all("INSERT INTO" not in sql for sql, _ in conn.log)
+
+
 def test_write_available_first_map_publishes_map_generation_and_lifecycle() -> None:
     conn = _RecordingConn()
     result = materialize_scope_symbol(
@@ -607,6 +725,12 @@ def test_write_available_first_map_publishes_map_generation_and_lifecycle() -> N
     assert len(conn.insert_log("native_short_map_v1")) == 1
     assert len(conn.insert_log("native_short_map_generation_event_v1")) == 2
     assert len(conn.insert_log("native_short_map_lifecycle_event_v1")) == 1
+    map_params = conn.insert_log("native_short_map_v1")[0][1]
+    generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
+    assert map_params[29] == 73
+    assert map_params[30] == 219
+    assert [params[21] for params in generation_params] == [73, 73]
+    assert [params[22] for params in generation_params] == [219, 219]
 
 
 def test_same_structure_hash_is_idempotent_without_skip_event(monkeypatch: pytest.MonkeyPatch) -> None:

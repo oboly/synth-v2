@@ -75,6 +75,8 @@ def test_valid_4h_with_aligned_1h_is_native_short_available() -> None:
     assert row.context_status == STATUS_AVAILABLE
     assert row.primary_interval == "4h"
     assert row.supporting_interval == "1h"
+    assert row.source_primary_candle_count == len(primary)
+    assert row.source_support_candle_count == len(support)
     assert row.supporting_1h_state == "ALIGNED_WITH_4H"
     assert row.anchor_low_price is not None
     assert row.anchor_high_price is not None
@@ -341,6 +343,8 @@ def test_rows_round_trip_from_csv() -> None:
         loaded, missing = load_native_short_context_rows(paths["rows_csv"])
         assert missing is False
         assert loaded["WLD"].context_status == STATUS_AVAILABLE
+        assert loaded["WLD"].source_primary_candle_count == len(primary)
+        assert loaded["WLD"].source_support_candle_count == len(support)
         payload = json.loads(loaded["WLD"].to_csv_row()["active_target_levels_json"])
         assert isinstance(payload, list)
 

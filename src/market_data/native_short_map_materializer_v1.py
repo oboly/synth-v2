@@ -62,6 +62,8 @@ REASON_DRY_RUN = "DRY_RUN_WRITE_DISABLED"
 REASON_STRUCTURE_UNCHANGED = "STRUCTURE_HASH_UNCHANGED"
 REASON_PRIOR_REJECTION_UNCHANGED = "PRIOR_REJECTION_UNCHANGED"
 REASON_SCOPE_NOT_SUPPORTED = "SCOPE_NOT_SUPPORTED"
+REASON_CONTEXT_SCOPE_MISMATCH = "CONTEXT_SCOPE_MISMATCH"
+REASON_SOURCE_CANDLE_COUNT_UNAVAILABLE = "SOURCE_CANDLE_COUNT_UNAVAILABLE"
 
 _CONTEXT_STATUS_TO_REJECTION_REASON: dict[str, str] = {
     "INSUFFICIENT_4H_HISTORY": "CANDLES_INSUFFICIENT",
@@ -216,7 +218,7 @@ def fetch_supported_scopes(
 
 def _lock_scope(conn: Any, key: NativeShortMapScopeKey) -> None:
     sql = """
-    SELECT scope_id
+    SELECT scope_id, scope_support_state
     FROM native_short_map_scope_v1
     WHERE venue = %s AND symbol = %s AND quote_currency = %s
       AND fib_trading_horizon = %s AND primary_interval = %s AND supporting_interval = %s
@@ -235,8 +237,71 @@ def _lock_scope(conn: Any, key: NativeShortMapScopeKey) -> None:
             ),
         )
         rows = list(cur.fetchall())
-    if not rows:
-        raise ValueError(f"SCOPE_NOT_FOUND_FOR_WRITE symbol={key.symbol} venue={key.venue}")
+    if len(rows) != 1:
+        raise ValueError(
+            "LOCKED_SCOPE_ROW_COUNT_INVALID "
+            f"symbol={key.symbol} venue={key.venue} count={len(rows)}"
+        )
+    locked_state = str(rows[0].get("scope_support_state") or "")
+    if locked_state != NativeShortMapScopeSupportState.SUPPORTED.value:
+        raise ValueError(
+            "LOCKED_SCOPE_NOT_SUPPORTED "
+            f"symbol={key.symbol} venue={key.venue} scope_support_state={locked_state}"
+        )
+
+
+def _validate_context_matches_scope(
+    *,
+    key: NativeShortMapScopeKey,
+    context_row: NativeShortContextRow,
+) -> None:
+    expected = {
+        "venue": key.venue,
+        "symbol": key.symbol,
+        "quote_currency": key.quote_currency,
+        "fib_trading_horizon": key.fib_trading_horizon,
+        "primary_interval": key.primary_interval,
+        "supporting_interval": key.supporting_interval,
+    }
+    actual = {
+        "venue": context_row.venue,
+        "symbol": context_row.symbol,
+        "quote_currency": context_row.quote_currency,
+        "fib_trading_horizon": context_row.fib_trading_horizon,
+        "primary_interval": context_row.primary_interval,
+        "supporting_interval": context_row.supporting_interval,
+    }
+    for field_name, expected_value in expected.items():
+        actual_value = str(actual[field_name])
+        if actual_value != expected_value:
+            raise ValueError(
+                f"{REASON_CONTEXT_SCOPE_MISMATCH} field={field_name} "
+                f"scope={expected_value} context={actual_value}"
+            )
+
+
+def _require_context_candle_counts(context_row: NativeShortContextRow) -> tuple[int, int]:
+    primary_count = context_row.source_primary_candle_count
+    support_count = context_row.source_support_candle_count
+    if primary_count is None or support_count is None or primary_count <= 0 or support_count <= 0:
+        raise ValueError(
+            f"{REASON_SOURCE_CANDLE_COUNT_UNAVAILABLE} symbol={context_row.symbol} "
+            f"source_primary_candle_count={primary_count} "
+            f"source_support_candle_count={support_count}"
+        )
+    return primary_count, support_count
+
+
+def _require_row_candle_count(row: dict[str, Any], column_name: str, *, map_id: Any) -> int:
+    value = row.get(column_name)
+    if value is None:
+        raise ValueError(f"MAP_SOURCE_CANDLE_COUNT_MISSING map_id={map_id} column={column_name}")
+    count = int(value)
+    if count <= 0:
+        raise ValueError(
+            f"MAP_SOURCE_CANDLE_COUNT_INVALID map_id={map_id} column={column_name} value={count}"
+        )
+    return count
 
 
 def _fetch_maps_for_scope(conn: Any, key: NativeShortMapScopeKey) -> list[NativeShortMapRecord]:
@@ -307,8 +372,12 @@ def _fetch_maps_for_scope(conn: Any, key: NativeShortMapScopeKey) -> list[Native
             source_support_candle_ts_utc=_ensure_utc(row.get("source_support_candle_ts_utc")),
             source_primary_ref=row.get("source_primary_ref") or "",
             source_support_ref=row.get("source_support_ref") or "",
-            source_primary_candle_count=int(row.get("source_primary_candle_count") or 0),
-            source_support_candle_count=int(row.get("source_support_candle_count") or 0),
+            source_primary_candle_count=_require_row_candle_count(
+                row, "source_primary_candle_count", map_id=row["map_id"]
+            ),
+            source_support_candle_count=_require_row_candle_count(
+                row, "source_support_candle_count", map_id=row["map_id"]
+            ),
             map_payload_json=row.get("map_payload_json") or "{}",
         )
         for row in rows
@@ -574,6 +643,8 @@ def _insert_map_row(
     *,
     key: NativeShortMapScopeKey,
     context_row: NativeShortContextRow,
+    source_primary_candle_count: int,
+    source_support_candle_count: int,
     attempt_id: str,
     structure_hash: str,
     now_utc: datetime,
@@ -704,8 +775,8 @@ def _insert_map_row(
                 context_row.latest_support_close_ts_utc,
                 context_row.source_primary_ref,
                 context_row.source_support_ref,
-                0,
-                0,
+                source_primary_candle_count,
+                source_support_candle_count,
                 map_payload_json,
             ),
         )
@@ -754,6 +825,8 @@ def _new_map_record(
     map_id: int,
     key: NativeShortMapScopeKey,
     context_row: NativeShortContextRow,
+    source_primary_candle_count: int,
+    source_support_candle_count: int,
     attempt_id: str,
     structure_hash: str,
     now_utc: datetime,
@@ -784,6 +857,8 @@ def _new_map_record(
         source_support_candle_ts_utc=context_row.latest_support_close_ts_utc,
         source_primary_ref=context_row.source_primary_ref,
         source_support_ref=context_row.source_support_ref,
+        source_primary_candle_count=source_primary_candle_count,
+        source_support_candle_count=source_support_candle_count,
         map_payload_json=_json_dumps(context_row.to_csv_row()),
     )
 
@@ -798,6 +873,10 @@ def materialize_scope_symbol(
 ) -> ScopeMaterializationResult:
     key = scope_support.key
     symbol = key.symbol
+    _validate_context_matches_scope(key=key, context_row=context_row)
+    source_primary_candle_count, source_support_candle_count = _require_context_candle_counts(
+        context_row
+    )
     if scope_support.support_state != NativeShortMapScopeSupportState.SUPPORTED:
         return ScopeMaterializationResult(
             symbol=symbol,
@@ -869,6 +948,8 @@ def materialize_scope_symbol(
             latest_support_close_ts_utc=context_row.latest_support_close_ts_utc,
             source_primary_ref=context_row.source_primary_ref,
             source_support_ref=context_row.source_support_ref,
+            source_primary_candle_count=source_primary_candle_count,
+            source_support_candle_count=source_support_candle_count,
         )
         rejected_event_id = _insert_generation_event(
             conn,
@@ -883,6 +964,8 @@ def materialize_scope_symbol(
             latest_support_close_ts_utc=context_row.latest_support_close_ts_utc,
             source_primary_ref=context_row.source_primary_ref,
             source_support_ref=context_row.source_support_ref,
+            source_primary_candle_count=source_primary_candle_count,
+            source_support_candle_count=source_support_candle_count,
         )
         new_generation_events = [
             NativeShortMapGenerationEvent(
@@ -891,6 +974,8 @@ def materialize_scope_symbol(
                 attempt_id=attempt_id,
                 event_type=NativeShortMapGenerationEventType.ATTEMPT_STARTED,
                 event_ts_utc=now_utc,
+                source_primary_candle_count=source_primary_candle_count,
+                source_support_candle_count=source_support_candle_count,
             ),
             NativeShortMapGenerationEvent(
                 generation_event_id=rejected_event_id,
@@ -899,6 +984,8 @@ def materialize_scope_symbol(
                 event_type=NativeShortMapGenerationEventType.REJECTED,
                 event_ts_utc=now_utc,
                 reason_code=reason_code,
+                source_primary_candle_count=source_primary_candle_count,
+                source_support_candle_count=source_support_candle_count,
             ),
         ]
         validate_native_short_map_write_intent(
@@ -996,11 +1083,15 @@ def materialize_scope_symbol(
         latest_primary_close_price=context_row.latest_primary_close_price,
         source_primary_ref=context_row.source_primary_ref,
         source_support_ref=context_row.source_support_ref,
+        source_primary_candle_count=source_primary_candle_count,
+        source_support_candle_count=source_support_candle_count,
     )
     new_map_id = _insert_map_row(
         conn,
         key=key,
         context_row=context_row,
+        source_primary_candle_count=source_primary_candle_count,
+        source_support_candle_count=source_support_candle_count,
         attempt_id=attempt_id,
         structure_hash=structure_hash,
         now_utc=now_utc,
@@ -1023,6 +1114,8 @@ def materialize_scope_symbol(
         latest_primary_close_price=context_row.latest_primary_close_price,
         source_primary_ref=context_row.source_primary_ref,
         source_support_ref=context_row.source_support_ref,
+        source_primary_candle_count=source_primary_candle_count,
+        source_support_candle_count=source_support_candle_count,
     )
     activated_lifecycle_id = _insert_lifecycle_event(
         conn,
@@ -1066,6 +1159,8 @@ def materialize_scope_symbol(
         map_id=new_map_id,
         key=key,
         context_row=context_row,
+        source_primary_candle_count=source_primary_candle_count,
+        source_support_candle_count=source_support_candle_count,
         attempt_id=attempt_id,
         structure_hash=structure_hash,
         now_utc=now_utc,
@@ -1079,6 +1174,8 @@ def materialize_scope_symbol(
             attempt_id=attempt_id,
             event_type=NativeShortMapGenerationEventType.ATTEMPT_STARTED,
             event_ts_utc=now_utc,
+            source_primary_candle_count=source_primary_candle_count,
+            source_support_candle_count=source_support_candle_count,
         ),
         NativeShortMapGenerationEvent(
             generation_event_id=published_event_id,
@@ -1087,6 +1184,8 @@ def materialize_scope_symbol(
             event_type=NativeShortMapGenerationEventType.PUBLISHED,
             event_ts_utc=now_utc,
             map_id=new_map_id,
+            source_primary_candle_count=source_primary_candle_count,
+            source_support_candle_count=source_support_candle_count,
         ),
     ]
     validate_native_short_map_write_intent(
