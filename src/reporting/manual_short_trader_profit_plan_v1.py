@@ -2303,7 +2303,10 @@ def build_profit_plan_card(
     breath_curve: dict[str, Any] | None = None,
     evidence: CardEvidence | None = None,
 ) -> ProfitPlanCard:
-    if current_price_status == "STALE_CURRENT_PRICE":
+    unusable_price_status = current_price_status
+    if current_price is None and unusable_price_status not in {"STALE_CURRENT_PRICE", "MISSING_CURRENT_PRICE"}:
+        unusable_price_status = "MISSING_CURRENT_PRICE"
+    if unusable_price_status in {"STALE_CURRENT_PRICE", "MISSING_CURRENT_PRICE"}:
         order_summary = build_order_summary(
             None,
             (),
@@ -2319,20 +2322,24 @@ def build_profit_plan_card(
             short_context_coverage_status=short_context_coverage_status,
             short_context_display_state=short_context_display_state,
             current_price=None,
-            current_price_status=current_price_status,
+            current_price_status=unusable_price_status,
             current_price_age_min=current_price_age_min,
             history_high_since_activation=history_high_since_activation,
             history_low_since_activation=history_low_since_activation,
             all_sell_targets_completed=False,
-        scenario_type="NO_CURRENT_PRICE",
-        action_label="NO_CURRENT_PRICE",
-        actionability_state=CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
-        timeframe_label="review blocked",
+            scenario_type="NO_CURRENT_PRICE",
+            action_label="NO_CURRENT_PRICE",
+            actionability_state=CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+            timeframe_label="review blocked",
             buy_zone=(),
             sell_zone=(),
             invalidation_level=None,
             reasons=(
-                "Current public price snapshot is stale.",
+                (
+                    "Current public price snapshot is stale."
+                    if unusable_price_status == "STALE_CURRENT_PRICE"
+                    else "Current public price snapshot is missing."
+                ),
                 "Do not use percentage distance, action labels, or scenario recommendation until price refresh succeeds.",
             ),
             order_summary=order_summary,
@@ -2344,9 +2351,12 @@ def build_profit_plan_card(
             distance_to_target_pct=None,
             distance_to_reload_pct=None,
             distance_to_invalidation_pct=None,
-            primary_state="STALE_CURRENT_PRICE",
+            primary_state=unusable_price_status,
             secondary_state=None,
-            suggested_manual_attention_label=STATE_LABELS["STALE_CURRENT_PRICE"],
+            suggested_manual_attention_label=STATE_LABELS.get(
+                unusable_price_status,
+                unusable_price_status.replace("_", " "),
+            ),
             setup_state="MINIMAL_CONTEXT",
             event_state="CONTEXT_UNAVAILABLE",
             ladder_states=("ORDER_DATA_UNAVAILABLE",),
@@ -2354,7 +2364,10 @@ def build_profit_plan_card(
             is_relevant=False,
             presentation_mode=presentation_mode,
             breath_curve=breath_curve,
-            evidence=evidence or CardEvidence(),
+            evidence=dataclasses.replace(
+                evidence or CardEvidence(),
+                price_freshness_state=unusable_price_status,
+            ),
         )
     if (
         fib_ext is None

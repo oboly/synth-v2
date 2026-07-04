@@ -611,7 +611,9 @@ def test_do_nothing_for_neutral_valid_state() -> None:
 
 def test_insufficient_data_when_zones_are_missing() -> None:
     card = _make_card(current_price=None)
-    assert card.primary_state == "INSUFFICIENT_DATA"
+    assert card.primary_state == "MISSING_CURRENT_PRICE"
+    assert card.action_label == "NO_CURRENT_PRICE"
+    assert card.current_price is None
 
 
 def test_plume_without_fib_row_shows_truthful_short_context_gap() -> None:
@@ -814,10 +816,82 @@ def test_p0c_stale_price_json_and_html_suppress_action_like_distance_semantics()
     html = render_plan_card(card, buy_orders=(), sell_orders=())
 
     assert row["action_label"] == "NO_CURRENT_PRICE"
+    assert row["current_price_status"] == "STALE_CURRENT_PRICE"
+    assert row["primary_state"] == "STALE_CURRENT_PRICE"
+    assert row["actionability_state"] != "ACTIVE_TRADE_SETUP"
+    assert row["reload_reentry_zone"] == []
+    assert row["invalidation_risk_zone"] is None
     assert row["active_target"] is None
     assert row["target_exit_zone"] == []
     assert row["distance_to_target_pct"] is None
     assert row["distance_to_reload_pct"] is None
+    assert row["distance_to_invalidation_pct"] is None
+    assert row["evidence"]["price_freshness_state"] == "STALE_CURRENT_PRICE"
+    assert "data-filter-action='take_profit" not in html
+    assert "data-filter-action='buy" not in html
+    assert "FIX LADDER" not in html
+
+
+def test_p0c_missing_price_status_fail_closes_without_action_like_output() -> None:
+    card = build_profit_plan_card(
+        symbol="MISS",
+        market="MISS-EUR",
+        current_price=None,
+        current_price_status="MISSING_CURRENT_PRICE",
+        fib_ext=_wld_fib_ext(),
+        reentry=_fet_reentry(),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=CardEvidence(price_freshness_state="FRESH"),
+    )
+    row = _json_row_for(card)
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+
+    assert row["current_price"] is None
+    assert row["current_price_status"] == "MISSING_CURRENT_PRICE"
+    assert row["primary_state"] == "MISSING_CURRENT_PRICE"
+    assert row["action_label"] == "NO_CURRENT_PRICE"
+    assert row["actionability_state"] != "ACTIVE_TRADE_SETUP"
+    assert row["target_exit_zone"] == []
+    assert row["reload_reentry_zone"] == []
+    assert row["invalidation_risk_zone"] is None
+    assert row["distance_to_target_pct"] is None
+    assert row["distance_to_reload_pct"] is None
+    assert row["distance_to_invalidation_pct"] is None
+    assert row["evidence"]["price_freshness_state"] == "MISSING_CURRENT_PRICE"
+    assert "data-filter-action='take_profit" not in html
+    assert "data-filter-action='buy" not in html
+    assert "FIX LADDER" not in html
+
+
+def test_p0c_missing_price_without_status_defensively_normalizes_to_missing_current_price() -> None:
+    card = build_profit_plan_card(
+        symbol="DEF",
+        market="DEF-EUR",
+        current_price=None,
+        fib_ext=_wld_fib_ext(),
+        reentry=_fet_reentry(),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+    )
+    row = _json_row_for(card)
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+
+    assert row["current_price"] is None
+    assert row["current_price_status"] == "MISSING_CURRENT_PRICE"
+    assert row["primary_state"] == "MISSING_CURRENT_PRICE"
+    assert row["action_label"] == "NO_CURRENT_PRICE"
+    assert row["actionability_state"] != "ACTIVE_TRADE_SETUP"
+    assert row["active_target"] is None
+    assert row["target_exit_zone"] == []
+    assert row["reload_reentry_zone"] == []
+    assert row["invalidation_risk_zone"] is None
+    assert row["distance_to_target_pct"] is None
+    assert row["distance_to_reload_pct"] is None
+    assert row["distance_to_invalidation_pct"] is None
+    assert row["evidence"]["price_freshness_state"] == "MISSING_CURRENT_PRICE"
     assert "data-filter-action='take_profit" not in html
     assert "data-filter-action='buy" not in html
     assert "FIX LADDER" not in html
