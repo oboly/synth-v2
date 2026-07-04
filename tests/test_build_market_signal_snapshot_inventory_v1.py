@@ -215,6 +215,40 @@ def test_stale_and_partial_source_status_remain_visible_without_fallback(tmp_pat
     assert partial["coverage_status"] == "PARTIAL"
 
 
+def test_native_short_row_after_as_of_fails_closed_and_manifest_states_temporal_model(tmp_path: Path) -> None:
+    result = _build(
+        tmp_path,
+        native_rows={
+            "BTC": _native_row(
+                "BTC",
+                latest_primary_offset_hours=4,
+                latest_support_offset_hours=1,
+            )
+        },
+    )
+    row = _find_row(result, symbol="BTC", signal_id="native_short_context_status", timeframe="4h+1h")
+    assert row["availability_status"] == "DATA_UNAVAILABLE"
+    assert row["coverage_status"] == "DATA_UNAVAILABLE"
+    assert row["normalized_state"] == "DATA_UNAVAILABLE"
+    assert row["raw_value"] is None
+    assert row["freshness_ts_utc"] is None
+    assert row["error_status"] == "SOURCE_AFTER_AS_OF"
+    temporal_validation = row["source_lineage"]["temporal_validation"]
+    assert temporal_validation["status"] == "SOURCE_AFTER_AS_OF"
+    assert temporal_validation["historical_as_of_capable"] is False
+    assert {
+        item["field"]
+        for item in temporal_validation["future_timestamp_fields"]
+    } == {"latest_primary_close_ts_utc", "latest_support_close_ts_utc"}
+
+    manifest = json.loads((result.output_dir / "manifest.json").read_text(encoding="utf-8"))
+    temporal_model = manifest["native_context_source_temporal_model"]
+    assert temporal_model["temporal_model"] == "current_snapshot"
+    assert temporal_model["historical_as_of_capable"] is False
+    assert temporal_model["publication_timestamp_field"] is None
+    assert temporal_model["market_snapshot_timestamp_field"] is None
+
+
 def test_candle_input_excludes_candles_after_as_of_ts(tmp_path: Path) -> None:
     result = _build(
         tmp_path,

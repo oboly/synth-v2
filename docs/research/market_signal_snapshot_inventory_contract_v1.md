@@ -131,9 +131,23 @@ Native SHORT missing-data behavior:
   `availability_status=DATA_UNAVAILABLE`;
 - if the source file exists but a symbol row is missing, that symbol still emits
   native rows with explicit unavailable state;
+- if any validated native row timestamp is after `as_of_ts_utc`, native rows for
+  that symbol fail closed with `coverage_status=DATA_UNAVAILABLE`,
+  `availability_status=DATA_UNAVAILABLE`, `normalized_state=DATA_UNAVAILABLE`,
+  and `error_status=SOURCE_AFTER_AS_OF`;
 - native lineage is preserved when present: `map_cycle_id`, current map status,
   previous map cycle/state, rollover state, selection reason, source references,
   source name/version, 4h lifecycle, and 1h support state.
+
+The native SHORT CSV source is treated as a current snapshot artifact, not as a
+proven historical-as-of source. In v1 the row has no explicit publication
+timestamp or market-snapshot timestamp field. The runner validates these native
+row timestamps against `as_of_ts_utc` where present:
+
+- `anchor_start_ts_utc`
+- `anchor_end_ts_utc`
+- `latest_primary_close_ts_utc`
+- `latest_support_close_ts_utc`
 
 Candle behavior:
 
@@ -197,6 +211,7 @@ Manifest fields:
 - `venue`
 - `explicit_symbols`
 - `source_artifact_paths`
+- `native_context_source_temporal_model`
 - `source_module_versions`
 - `row_counts`
 - `artifact_filenames`

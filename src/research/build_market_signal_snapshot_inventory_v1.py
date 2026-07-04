@@ -55,6 +55,26 @@ NATIVE_PARTIAL_STATUSES = frozenset({"INSUFFICIENT_4H_HISTORY", "INSUFFICIENT_1H
 STATE_STALE = "STALE"
 STATE_NO_DATA = "NO_DATA"
 STATE_LOW_CONFIDENCE = "LOW_CONFIDENCE"
+ERROR_SOURCE_AFTER_AS_OF = "SOURCE_AFTER_AS_OF"
+
+NATIVE_CONTEXT_TIMESTAMP_FIELDS = (
+    "anchor_start_ts_utc",
+    "anchor_end_ts_utc",
+    "latest_primary_close_ts_utc",
+    "latest_support_close_ts_utc",
+)
+NATIVE_CONTEXT_SOURCE_TEMPORAL_MODEL = {
+    "source_artifact": "native_short_context_rows_csv",
+    "temporal_model": "current_snapshot",
+    "historical_as_of_capable": False,
+    "publication_timestamp_field": None,
+    "market_snapshot_timestamp_field": None,
+    "validated_timestamp_fields": list(NATIVE_CONTEXT_TIMESTAMP_FIELDS),
+    "as_of_rule": (
+        "A native SHORT row is treated as unavailable when any validated row timestamp "
+        "is after as_of_ts_utc; the CSV artifact itself is not proof of historical as-of state."
+    ),
+}
 
 SAFETY_STATEMENT = (
     "research-only, market-only, read-only, non-predictive; creates no strategy logic, "
@@ -438,10 +458,40 @@ def _native_source_record_id(row: NativeShortContextRow | None) -> str | None:
     return row.symbol
 
 
-def _native_lineage(row: NativeShortContextRow | None) -> dict[str, Any] | None:
+def _native_temporal_violation(
+    row: NativeShortContextRow | None,
+    *,
+    as_of_ts_utc: datetime,
+) -> dict[str, Any] | None:
     if row is None:
         return None
+    future_fields: list[dict[str, str]] = []
+    for field_name in NATIVE_CONTEXT_TIMESTAMP_FIELDS:
+        value = getattr(row, field_name)
+        if value is None:
+            continue
+        value_utc = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+        if value_utc > as_of_ts_utc:
+            future_fields.append({"field": field_name, "timestamp": format_ts(value_utc) or ""})
+    if not future_fields:
+        return None
     return {
+        "status": ERROR_SOURCE_AFTER_AS_OF,
+        "as_of_ts_utc": format_ts(as_of_ts_utc),
+        "future_timestamp_fields": future_fields,
+        "native_context_source_temporal_model": NATIVE_CONTEXT_SOURCE_TEMPORAL_MODEL["temporal_model"],
+        "historical_as_of_capable": NATIVE_CONTEXT_SOURCE_TEMPORAL_MODEL["historical_as_of_capable"],
+    }
+
+
+def _native_lineage(
+    row: NativeShortContextRow | None,
+    *,
+    temporal_violation: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if row is None:
+        return None
+    lineage = {
         "map_cycle_id": row.map_cycle_id,
         "current_map_status": row.current_map_status,
         "previous_map_cycle_id": row.previous_map_cycle_id,
@@ -455,6 +505,9 @@ def _native_lineage(row: NativeShortContextRow | None) -> dict[str, Any] | None:
         "source_name": row.source_name,
         "source_version": row.source_version,
     }
+    if temporal_violation is not None:
+        lineage["temporal_validation"] = temporal_violation
+    return lineage
 
 
 def _native_freshness(row: NativeShortContextRow | None, timeframe: str) -> datetime | None:
@@ -469,9 +522,16 @@ def _native_freshness(row: NativeShortContextRow | None, timeframe: str) -> date
     return max(present) if present else None
 
 
-def _native_coverage(row: NativeShortContextRow | None, *, source_missing: bool) -> str:
+def _native_coverage(
+    row: NativeShortContextRow | None,
+    *,
+    source_missing: bool,
+    temporal_violation: dict[str, Any] | None = None,
+) -> str:
     if source_missing or row is None:
         return COVERAGE_SOURCE_MISSING
+    if temporal_violation is not None:
+        return COVERAGE_DATA_UNAVAILABLE
     if row.context_status == NATIVE_AVAILABLE_STATUS:
         return COVERAGE_AVAILABLE
     if row.context_status == NATIVE_STALE_STATUS or row.context_freshness_status.startswith("STALE"):
@@ -483,8 +543,18 @@ def _native_coverage(row: NativeShortContextRow | None, *, source_missing: bool)
     return COVERAGE_DATA_UNAVAILABLE
 
 
-def _native_availability(row: NativeShortContextRow | None, *, source_missing: bool) -> str:
-    if source_missing or row is None or row.context_status == NATIVE_MISSING_STATUS:
+def _native_availability(
+    row: NativeShortContextRow | None,
+    *,
+    source_missing: bool,
+    temporal_violation: dict[str, Any] | None = None,
+) -> str:
+    if (
+        source_missing
+        or row is None
+        or temporal_violation is not None
+        or row.context_status == NATIVE_MISSING_STATUS
+    ):
         return AVAILABILITY_DATA_UNAVAILABLE
     return AVAILABILITY_AVAILABLE
 
@@ -598,13 +668,29 @@ def build_snapshot_rows(
 
     for symbol in symbols:
         native_row = native_rows.get(symbol)
-        native_coverage = _native_coverage(native_row, source_missing=native_source_missing)
-        native_availability = _native_availability(native_row, source_missing=native_source_missing)
-        native_lineage = _native_lineage(native_row)
+        native_temporal_violation = _native_temporal_violation(
+            native_row,
+            as_of_ts_utc=as_of_ts_utc,
+        )
+        native_coverage = _native_coverage(
+            native_row,
+            source_missing=native_source_missing,
+            temporal_violation=native_temporal_violation,
+        )
+        native_availability = _native_availability(
+            native_row,
+            source_missing=native_source_missing,
+            temporal_violation=native_temporal_violation,
+        )
+        native_lineage = _native_lineage(native_row, temporal_violation=native_temporal_violation)
         native_record_id = _native_source_record_id(native_row)
 
         def add_native(signal_id: str, timeframe: str, raw_value: Any, normalized_state: str) -> None:
             entry = registry_by_key[(signal_id, timeframe)]
+            effective_raw_value = None if native_temporal_violation is not None else raw_value
+            effective_normalized_state = (
+                "DATA_UNAVAILABLE" if native_temporal_violation is not None else normalized_state
+            )
             rows.append(
                 _row(
                     symbol=symbol,
@@ -612,14 +698,17 @@ def build_snapshot_rows(
                     timeframe=timeframe,
                     signal_id=signal_id,
                     signal_family=entry["signal_family"],
-                    raw_value=raw_value,
-                    normalized_state=normalized_state,
+                    raw_value=effective_raw_value,
+                    normalized_state=effective_normalized_state,
                     source_module=entry["source_module"],
                     source_record_id=native_record_id,
                     source_lineage=native_lineage,
-                    freshness_ts_utc=_native_freshness(native_row, timeframe),
+                    freshness_ts_utc=(
+                        None if native_temporal_violation is not None else _native_freshness(native_row, timeframe)
+                    ),
                     coverage_status=native_coverage,
                     availability_status=native_availability,
+                    error_status=ERROR_SOURCE_AFTER_AS_OF if native_temporal_violation is not None else ERROR_OK,
                 )
             )
 
@@ -971,6 +1060,7 @@ def build_inventory(
             "native_short_context_rows": str(native_short_rows_path),
             "obs_market_candle": "database:obs_market_candle",
         },
+        "native_context_source_temporal_model": NATIVE_CONTEXT_SOURCE_TEMPORAL_MODEL,
         "source_module_versions": {
             "src.research.build_market_signal_snapshot_inventory_v1": RUNNER_VERSION,
             SHORT_CONTEXT_SOURCE_NAME: SHORT_CONTEXT_VERSION,
