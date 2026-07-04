@@ -102,6 +102,8 @@ CSV_FIELDS = [
     "source_version",
     "source_primary_ref",
     "source_support_ref",
+    "source_primary_candle_count",
+    "source_support_candle_count",
     "current_map_status",
     "previous_map_cycle_id",
     "previous_map_lifecycle_state",
@@ -161,6 +163,8 @@ class NativeShortContextRow:
     previous_map_lifecycle_state: str
     rollover_state: str
     selection_reason: str
+    source_primary_candle_count: int | None = None
+    source_support_candle_count: int | None = None
 
     def to_csv_row(self) -> dict[str, str]:
         def _fmt_ts(value: datetime | None) -> str:
@@ -208,6 +212,12 @@ class NativeShortContextRow:
             "source_version": self.source_version,
             "source_primary_ref": self.source_primary_ref,
             "source_support_ref": self.source_support_ref,
+            "source_primary_candle_count": (
+                "" if self.source_primary_candle_count is None else str(self.source_primary_candle_count)
+            ),
+            "source_support_candle_count": (
+                "" if self.source_support_candle_count is None else str(self.source_support_candle_count)
+            ),
             "current_map_status": self.current_map_status,
             "previous_map_cycle_id": self.previous_map_cycle_id,
             "previous_map_lifecycle_state": self.previous_map_lifecycle_state,
@@ -330,6 +340,8 @@ def _base_row(
     primary_state: str = "UNKNOWN",
     support_state: str = SUPPORT_STATE_UNKNOWN,
     freshness_status: str = FRESHNESS_FRESH,
+    source_primary_candle_count: int | None = None,
+    source_support_candle_count: int | None = None,
 ) -> NativeShortContextRow:
     return NativeShortContextRow(
         symbol=symbol.upper(),
@@ -367,6 +379,8 @@ def _base_row(
         source_version=SHORT_CONTEXT_VERSION,
         source_primary_ref="obs_market_candle:4h",
         source_support_ref="obs_market_candle:1h",
+        source_primary_candle_count=source_primary_candle_count,
+        source_support_candle_count=source_support_candle_count,
         current_map_status="NO_VALID_MAP",
         previous_map_cycle_id="",
         previous_map_lifecycle_state="",
@@ -568,12 +582,28 @@ def build_native_short_context_row(
     support_stale_after: timedelta = timedelta(hours=DEFAULT_SUPPORT_STALE_HOURS),
 ) -> NativeShortContextRow:
     symbol = symbol.upper()
+    source_primary_candle_count = len(primary_candles)
+    source_support_candle_count = len(support_candles)
     if len(primary_candles) < min_primary_candles:
-        return _base_row(symbol=symbol, venue=venue, status=STATUS_INSUFFICIENT_4H, primary_state="UNKNOWN")
+        return _base_row(
+            symbol=symbol,
+            venue=venue,
+            status=STATUS_INSUFFICIENT_4H,
+            primary_state="UNKNOWN",
+            source_primary_candle_count=source_primary_candle_count,
+            source_support_candle_count=source_support_candle_count,
+        )
 
     swings = _detect_swings(primary_candles, pivot_span)
     if not swings:
-        return _base_row(symbol=symbol, venue=venue, status=STATUS_STALE_OR_INVALID, primary_state="UNKNOWN")
+        return _base_row(
+            symbol=symbol,
+            venue=venue,
+            status=STATUS_STALE_OR_INVALID,
+            primary_state="UNKNOWN",
+            source_primary_candle_count=source_primary_candle_count,
+            source_support_candle_count=source_support_candle_count,
+        )
 
     latest_primary = primary_candles[-1]
     if now_utc - latest_primary.close_ts_utc > primary_stale_after:
@@ -583,6 +613,8 @@ def build_native_short_context_row(
             status=STATUS_STALE_OR_INVALID,
             primary_state="UNKNOWN",
             freshness_status=FRESHNESS_STALE_PRIMARY,
+            source_primary_candle_count=source_primary_candle_count,
+            source_support_candle_count=source_support_candle_count,
         )
 
     candidate, all_candidates = _select_best_candidate(symbol=symbol, primary_candles=primary_candles, swings=swings)
@@ -691,6 +723,8 @@ def build_native_short_context_row(
         source_version=SHORT_CONTEXT_VERSION,
         source_primary_ref="obs_market_candle:4h",
         source_support_ref="obs_market_candle:1h",
+        source_primary_candle_count=source_primary_candle_count,
+        source_support_candle_count=source_support_candle_count,
         current_map_status=current_map_status,
         previous_map_cycle_id=previous_map_cycle_id,
         previous_map_lifecycle_state=previous_map_lifecycle_state,
@@ -812,6 +846,16 @@ def load_native_short_context_rows(path: Path) -> tuple[dict[str, NativeShortCon
                 source_version=str(raw.get("source_version") or SHORT_CONTEXT_VERSION),
                 source_primary_ref=str(raw.get("source_primary_ref") or "obs_market_candle:4h"),
                 source_support_ref=str(raw.get("source_support_ref") or "obs_market_candle:1h"),
+                source_primary_candle_count=(
+                    int(raw["source_primary_candle_count"])
+                    if str(raw.get("source_primary_candle_count") or "").strip()
+                    else None
+                ),
+                source_support_candle_count=(
+                    int(raw["source_support_candle_count"])
+                    if str(raw.get("source_support_candle_count") or "").strip()
+                    else None
+                ),
                 current_map_status=str(raw.get("current_map_status") or ""),
                 previous_map_cycle_id=str(raw.get("previous_map_cycle_id") or ""),
                 previous_map_lifecycle_state=str(raw.get("previous_map_lifecycle_state") or ""),
