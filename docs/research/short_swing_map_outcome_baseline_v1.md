@@ -1,16 +1,22 @@
 # Short Swing Map Outcome Baseline V1
 
-**Type:** Research-only baseline  
-**Status:** P0-A implementation contract  
+**Type:** Research-only append-only native map replay foundation
+**Status:** PUBLISHED_EVENT sample-mode contract
 **Safety:** market-only, SELECT-only, no DB writes, no broker calls, no orders
 
 ## Purpose
 
-Build a replay-safe baseline for native `SHORT` swing map outcomes.
+Build a replay-safe append-only foundation for native `SHORT` swing map
+publication outcomes.
 
-V1 reconstructs the native map known at replay timestamp `T`, extracts target,
-reload, and invalidation levels from native history payload only, then measures
-forward `4h` candle outcomes.
+V1 sample mode is explicitly named `PUBLISHED_EVENT`. It reconstructs the native
+map known at each sampled publication timestamp `T`, extracts target, reload,
+and invalidation levels from native history payload only, then measures forward
+`4h` candle outcomes.
+
+This is not yet a full Profit Plan card baseline across the active map
+lifecycle. V1 does not sample candle-grid points, reload-first states, future
+lifecycle outcomes, MFE/MAE, or card/UI behavior.
 
 ## Source-Of-Truth Rule
 
@@ -94,6 +100,32 @@ For each `(symbol, T)` sample:
 
 No current snapshot is used as a fallback.
 
+## Sample Mode
+
+`PUBLISHED_EVENT` is the only V1 sample mode.
+
+It samples map publication moments only, using append-only
+`native_short_map_generation_event_v1` rows with:
+
+- `event_type = 'PUBLISHED'`
+- `event_ts_utc >= start_ts_utc`
+- `event_ts_utc <= end_ts_utc`
+- `created_at_utc <= event_ts_utc`
+
+Sample points are deduplicated deterministically by `(symbol, event_ts_utc)`.
+When duplicate `PUBLISHED` ledger rows exist for the same symbol and timestamp,
+they create one replay sample. The representative `generation_event_id` is only
+used as a deterministic ordering tie-breaker inside the sample query and does
+not create an additional sample.
+
+Boundary:
+
+```text
+sample_mode=PUBLISHED_EVENT
+samples=map_publication_moments_only
+not_full_profit_plan_card_active_lifecycle_baseline=true
+```
+
 ## Replay Population
 
 Default symbol discovery uses only append-only `PUBLISHED` generation rows
@@ -103,13 +135,14 @@ observable inside the requested replay window:
 - `event_ts_utc <= end_ts_utc`
 - `created_at_utc <= event_ts_utc`
 
-Sample points use the same rule. A later-recorded ledger row with an effective
-event timestamp inside the window must not create a historical `(symbol, T)`
-sample. A symbol first introduced after the replay window must not enter the
-default symbol universe or consume a default slot.
+Sample points use the `PUBLISHED_EVENT` rule. A later-recorded ledger row with
+an effective event timestamp inside the window must not create a historical
+`(symbol, T)` sample. A symbol first introduced after the replay window must not
+enter the default symbol universe or consume a default slot.
 
 Explicit `--symbols` remains an explicit user-supplied scope, but samples still
-come only from observable in-window `PUBLISHED` generation rows.
+come only from observable in-window `PUBLISHED` generation rows deduplicated by
+`(symbol, event_ts_utc)`.
 
 ## Selected-Context Provenance
 
@@ -160,6 +193,7 @@ Runner:
 python -m src.research.run_short_swing_map_outcome_baseline_v1 \
   --start-ts 2026-06-01T00:00:00Z \
   --end-ts 2026-07-01T00:00:00Z \
+  --sample-mode PUBLISHED_EVENT \
   --symbols WLD,NEAR \
   --write-files
 ```

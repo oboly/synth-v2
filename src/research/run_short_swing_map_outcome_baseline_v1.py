@@ -25,6 +25,16 @@ DEFAULT_PRIMARY_INTERVAL = "4h"
 DEFAULT_SUPPORTING_INTERVAL = "1h"
 DEFAULT_FORWARD_CANDLES = 12
 FETCH_BATCH_ROWS = 1000
+SAMPLE_MODE_PUBLISHED_EVENT = "PUBLISHED_EVENT"
+SAMPLE_MODES = (SAMPLE_MODE_PUBLISHED_EVENT,)
+
+SAMPLE_MODE_DESCRIPTIONS = {
+    SAMPLE_MODE_PUBLISHED_EVENT: (
+        "Samples native map publication moments only, using append-only PUBLISHED "
+        "generation events deduplicated by (symbol, event_ts_utc). This is not a "
+        "full Profit Plan card baseline across the active map lifecycle."
+    ),
+}
 
 STATUS_OK = "OK"
 STATUS_HISTORY_INCOMPLETE = "HISTORY_INCOMPLETE"
@@ -277,6 +287,7 @@ def _published_generation_event_known(
 def build_sample_points_from_generation_events(
     *,
     generation_events: Sequence[GenerationHistoryEvent],
+    sample_mode: str,
     venue: str,
     quote_currency: str,
     symbols: Sequence[str],
@@ -284,6 +295,8 @@ def build_sample_points_from_generation_events(
     end_ts: datetime,
     max_samples: int,
 ) -> list[tuple[str, datetime]]:
+    if sample_mode != SAMPLE_MODE_PUBLISHED_EVENT:
+        raise ValueError(f"Unsupported sample_mode: {sample_mode}")
     symbol_set = {symbol.upper() for symbol in symbols}
     rows = [
         event
@@ -299,6 +312,12 @@ def build_sample_points_from_generation_events(
         and _utc(event.created_at_utc) <= _utc(event.event_ts_utc)
     ]
     rows.sort(key=lambda event: (event.event_ts_utc, event.symbol, event.generation_event_id))
+    deduped: dict[tuple[str, datetime], GenerationHistoryEvent] = {}
+    for event in rows:
+        key = (event.symbol.upper(), _utc(event.event_ts_utc))
+        if key not in deduped:
+            deduped[key] = event
+    rows = list(deduped.values())
     if max_samples > 0:
         rows = rows[:max_samples]
     return [(event.symbol.upper(), _utc(event.event_ts_utc)) for event in rows]
@@ -751,7 +770,17 @@ def build_summary_rows(rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def deterministic_run_id(*, venue: str, symbols: Sequence[str], start_ts: datetime, end_ts: datetime, forward_candles: int) -> str:
+def deterministic_run_id(
+    *,
+    venue: str,
+    symbols: Sequence[str],
+    start_ts: datetime,
+    end_ts: datetime,
+    forward_candles: int,
+    sample_mode: str,
+) -> str:
+    if sample_mode != SAMPLE_MODE_PUBLISHED_EVENT:
+        raise ValueError(f"Unsupported sample_mode: {sample_mode}")
     payload = json.dumps(
         {
             "venue": venue,
@@ -759,6 +788,7 @@ def deterministic_run_id(*, venue: str, symbols: Sequence[str], start_ts: dateti
             "start_ts": fmt_ts(start_ts),
             "end_ts": fmt_ts(end_ts),
             "forward_candles": forward_candles,
+            "sample_mode": sample_mode,
             "runner": RUNNER_NAME,
             "version": RUNNER_VERSION,
         },
@@ -777,10 +807,13 @@ def build_manifest(
     venue: str,
     quote_currency: str,
     forward_candles: int,
+    sample_mode: str,
     rows: Sequence[dict[str, Any]],
     artifact_paths: dict[str, Path],
     generated_at_ts_utc: datetime,
 ) -> dict[str, Any]:
+    if sample_mode != SAMPLE_MODE_PUBLISHED_EVENT:
+        raise ValueError(f"Unsupported sample_mode: {sample_mode}")
     artifact_hashes = {
         name: _sha256_file(path)
         for name, path in artifact_paths.items()
@@ -803,6 +836,13 @@ def build_manifest(
             "start_ts_utc": fmt_ts(start_ts),
             "end_ts_utc": fmt_ts(end_ts),
             "forward_candles": forward_candles,
+            "sample_mode": sample_mode,
+            "sample_mode_description": SAMPLE_MODE_DESCRIPTIONS[sample_mode],
+            "sample_mode_boundary": (
+                "PUBLISHED_EVENT samples map publication moments only and is not a "
+                "full Profit Plan card baseline across the active lifecycle."
+            ),
+            "sample_point_dedupe_key": ["symbol", "event_ts_utc"],
         },
         "known_by_t_rule": KNOWN_BY_T_RULE,
         "source_table_inventory": list(SOURCE_TABLE_INVENTORY),
@@ -1031,6 +1071,7 @@ def fetch_lifecycle_events(conn: Any, *, map_ids: Sequence[int], end_ts: datetim
 def fetch_sample_points(
     conn: Any,
     *,
+    sample_mode: str,
     venue: str,
     quote_currency: str,
     symbols: Sequence[str],
@@ -1038,6 +1079,8 @@ def fetch_sample_points(
     end_ts: datetime,
     max_samples: int,
 ) -> list[tuple[str, datetime]]:
+    if sample_mode != SAMPLE_MODE_PUBLISHED_EVENT:
+        raise ValueError(f"Unsupported sample_mode: {sample_mode}")
     placeholders = ",".join(["%s"] * len(symbols))
     limit_clause = "" if max_samples <= 0 else "LIMIT %s"
     params: list[Any] = [
@@ -1053,7 +1096,7 @@ def fetch_sample_points(
     if max_samples > 0:
         params.append(max_samples)
     sql = f"""
-        SELECT symbol, event_ts_utc
+        SELECT UPPER(symbol) AS symbol, event_ts_utc, MIN(generation_event_id) AS representative_generation_event_id
         FROM native_short_map_generation_event_v1
         WHERE venue = %s
           AND quote_currency = %s
@@ -1065,7 +1108,8 @@ def fetch_sample_points(
           AND event_ts_utc >= %s
           AND event_ts_utc <= %s
           AND created_at_utc <= event_ts_utc
-        ORDER BY event_ts_utc ASC, symbol ASC, generation_event_id ASC
+        GROUP BY UPPER(symbol), event_ts_utc
+        ORDER BY event_ts_utc ASC, symbol ASC, representative_generation_event_id ASC
         {limit_clause}
     """
     rows = _fetch_batched(conn, sql, params)
@@ -1120,8 +1164,9 @@ def parse_symbols_arg(value: str | None) -> list[str] | None:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Build a replay-safe native SHORT swing map outcome baseline from append-only native "
-            "map lifecycle/history tables only. Research-only, SELECT-only, no CSV fallback."
+            "Build the PUBLISHED_EVENT replay foundation for native SHORT swing map "
+            "publication outcomes from append-only native map lifecycle/history tables "
+            "only. Research-only, SELECT-only, no CSV fallback."
         )
     )
     parser.add_argument("--venue", default=DEFAULT_VENUE)
@@ -1130,6 +1175,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--start-ts", required=True)
     parser.add_argument("--end-ts", required=True)
     parser.add_argument("--forward-candles", type=int, default=DEFAULT_FORWARD_CANDLES)
+    parser.add_argument(
+        "--sample-mode",
+        choices=SAMPLE_MODES,
+        default=SAMPLE_MODE_PUBLISHED_EVENT,
+        help=(
+            "Sampling mode. PUBLISHED_EVENT samples map publication moments only; "
+            "it is not a full Profit Plan card lifecycle baseline."
+        ),
+    )
     parser.add_argument("--max-symbols", type=int, default=25)
     parser.add_argument("--max-samples", type=int, default=100)
     parser.add_argument("--database", default=None)
@@ -1181,6 +1235,7 @@ def run_baseline(args: argparse.Namespace, *, generated_at_ts_utc: datetime | No
         )
         sample_points = fetch_sample_points(
             conn,
+            sample_mode=args.sample_mode,
             venue=args.venue,
             quote_currency=args.quote_currency,
             symbols=symbols,
@@ -1217,6 +1272,7 @@ def run_baseline(args: argparse.Namespace, *, generated_at_ts_utc: datetime | No
         start_ts=start_ts,
         end_ts=end_ts,
         forward_candles=args.forward_candles,
+        sample_mode=args.sample_mode,
     )
     output_dir = Path(args.output_dir) / run_id
     artifact_paths = {
@@ -1238,6 +1294,7 @@ def run_baseline(args: argparse.Namespace, *, generated_at_ts_utc: datetime | No
         venue=args.venue,
         quote_currency=args.quote_currency,
         forward_candles=args.forward_candles,
+        sample_mode=args.sample_mode,
         rows=rows,
         artifact_paths=artifact_paths,
         generated_at_ts_utc=(generated_at_ts_utc or datetime.now(UTC)).replace(microsecond=0),
@@ -1259,6 +1316,7 @@ def print_summary(result: dict[str, Any]) -> None:
     print(f"version={RUNNER_VERSION}")
     print(f"run_id={result['run_id']}")
     print(f"output_dir={result['output_dir']}")
+    print(f"sample_mode={manifest['scope']['sample_mode']}")
     print(f"baseline_row_count={len(result['rows'])}")
     print(f"history_status_distribution={manifest['history_status_distribution']}")
     print(f"outcome_state_distribution={manifest['outcome_state_distribution']}")

@@ -5,6 +5,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from src.research import run_short_swing_map_outcome_baseline_v1 as baseline
 
 
@@ -185,12 +187,34 @@ def test_post_t_published_generation_event_does_not_create_sample_point() -> Non
 
     samples = baseline.build_sample_points_from_generation_events(
         generation_events=events,
+        sample_mode=baseline.SAMPLE_MODE_PUBLISHED_EVENT,
         venue="bitvavo",
         quote_currency="EUR",
         symbols=["WLD"],
         start_ts=_ts(0),
         end_ts=_ts(4),
         max_samples=0,
+    )
+
+    assert samples == [("WLD", _ts(1))]
+
+
+def test_duplicate_published_events_same_symbol_and_timestamp_create_one_sample_point() -> None:
+    events = [
+        _published_event(1, event_id=11, event_ts=_ts(1), created_at=_ts(1)),
+        _published_event(2, event_id=12, event_ts=_ts(1), created_at=_ts(1)),
+        _published_event(3, event_id=13, event_ts=_ts(2), created_at=_ts(2)),
+    ]
+
+    samples = baseline.build_sample_points_from_generation_events(
+        generation_events=events,
+        sample_mode=baseline.SAMPLE_MODE_PUBLISHED_EVENT,
+        venue="bitvavo",
+        quote_currency="EUR",
+        symbols=["WLD"],
+        start_ts=_ts(0),
+        end_ts=_ts(4),
+        max_samples=1,
     )
 
     assert samples == [("WLD", _ts(1))]
@@ -366,6 +390,7 @@ def test_manifest_records_safety_and_no_csv_diagnostic() -> None:
         venue="bitvavo",
         quote_currency="EUR",
         forward_candles=3,
+        sample_mode=baseline.SAMPLE_MODE_PUBLISHED_EVENT,
         rows=rows,
         artifact_paths={},
         generated_at_ts_utc=_ts(5),
@@ -373,5 +398,21 @@ def test_manifest_records_safety_and_no_csv_diagnostic() -> None:
 
     assert manifest["current_snapshot_csv_usage"] == "PROHIBITED_FOR_HISTORICAL_RECONSTRUCTION"
     assert manifest["non_historical_diagnostic_cross_check_used"] is False
+    assert manifest["scope"]["sample_mode"] == baseline.SAMPLE_MODE_PUBLISHED_EVENT
+    assert manifest["scope"]["sample_point_dedupe_key"] == ["symbol", "event_ts_utc"]
+    assert "publication moments only" in manifest["scope"]["sample_mode_description"]
+    assert "not a full Profit Plan card baseline" in manifest["scope"]["sample_mode_boundary"]
     assert manifest["safety_markers"]["db_writes"] == 0
     assert manifest["safety_markers"]["decision_gate"] == "none"
+
+
+def test_cli_help_names_published_event_sample_mode_boundary(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        baseline.parse_args(["--help"])
+
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    help_text_normalized = " ".join(help_text.split())
+    assert "--sample-mode" in help_text
+    assert baseline.SAMPLE_MODE_PUBLISHED_EVENT in help_text
+    assert "not a full Profit Plan card lifecycle baseline" in help_text_normalized
