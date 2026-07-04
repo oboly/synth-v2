@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import tempfile
 from datetime import UTC, datetime
@@ -21,15 +22,19 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     CARD_MODE_POSITION_HELD,
     CARD_MODE_WATCH_ONLY_ROTATION,
     ActiveOrderSummary,
+    CardDelta,
+    CardEvidence,
     FibExtContext,
     FibNavContext,
     OrderRow,
     ProfitPlanCard,
     ReentryContext,
     TargetHistoryCandle,
+    apply_card_deltas,
     build_card_search_text,
     build_json_snapshot,
     build_profit_plan_card,
+    compare_card_delta,
     derive_quality_state,
     filter_cards_for_view,
     format_current_price_line,
@@ -606,7 +611,9 @@ def test_do_nothing_for_neutral_valid_state() -> None:
 
 def test_insufficient_data_when_zones_are_missing() -> None:
     card = _make_card(current_price=None)
-    assert card.primary_state == "INSUFFICIENT_DATA"
+    assert card.primary_state == "MISSING_CURRENT_PRICE"
+    assert card.action_label == "NO_CURRENT_PRICE"
+    assert card.current_price is None
 
 
 def test_plume_without_fib_row_shows_truthful_short_context_gap() -> None:
@@ -691,6 +698,242 @@ def test_stale_current_price_blocks_actionable_profit_plan_outputs() -> None:
     assert card.action_label == "NO_CURRENT_PRICE"
     assert card.distance_to_target_pct is None
     assert card.current_price is None
+
+
+def _evidence_card() -> ProfitPlanCard:
+    evidence = CardEvidence(
+        map_cycle_id="WLD|SHORT|4h|demo",
+        native_map_id="DATA_UNAVAILABLE",
+        selected_map_reason="Single active map selected",
+        selected_map_tier="CURRENT_ACTIVE_MAP",
+        lifecycle_state="TARGET_ACTIVE",
+        map_age_min="120.0",
+        anchor_start_ts_utc="2026-06-01T00:00:00Z",
+        anchor_end_ts_utc="2026-06-02T00:00:00Z",
+        anchor_low_price="0.3000",
+        anchor_high_price="0.3800",
+        price_ts_utc="2026-06-05T12:00:00Z",
+        price_freshness_state="FRESH",
+        order_snapshot_ts_utc="2026-06-05T12:00:00Z",
+        order_coverage_ts_utc="2026-06-05T12:00:00Z",
+        context_ts_utc="2026-06-05T08:00:00Z",
+        update_ts_utc="2026-06-05T08:00:00Z",
+    )
+    return build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.4800"),
+        fib_ext=_wld_fib_ext(),
+        reentry=_fet_reentry(),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=evidence,
+    )
+
+
+def _json_row_for(card: ProfitPlanCard) -> dict:
+    snapshot = build_json_snapshot(
+        [card],
+        snapshot_ts="2026-06-05T12:00:00Z",
+        generated_ts_utc="2026-06-05T12:00:00Z",
+        render_id="render-fixed",
+        writer_instance_id="writer-fixed",
+    )
+    return snapshot["symbols"][0]
+
+
+def test_p0c_selected_map_identity_appears_in_canonical_json_and_html_evidence_attrs() -> None:
+    card = _evidence_card()
+    row = _json_row_for(card)
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+
+    assert row["evidence"]["map_cycle_id"] == "WLD|SHORT|4h|demo"
+    assert row["evidence"]["native_map_id"] == "DATA_UNAVAILABLE"
+    assert row["evidence"]["selected_map_reason"] == "Single active map selected"
+    assert row["evidence"]["lifecycle_state"] == "TARGET_ACTIVE"
+    assert "data-map-cycle-id='WLD|SHORT|4h|demo'" in html
+    assert "data-native-map-id='DATA_UNAVAILABLE'" in html
+    assert "data-selected-map-reason='Single active map selected'" in html
+    assert "data-map-lifecycle-state='TARGET_ACTIVE'" in html
+
+
+def test_p0c_no_previous_snapshot_is_explicit() -> None:
+    card = apply_card_deltas([_evidence_card()], previous_snapshot=None)[0]
+    row = _json_row_for(card)
+    assert row["delta"]["delta_status"] == "NO_PREVIOUS_SNAPSHOT"
+    assert row["delta"]["material_delta_types"] == []
+    assert row["delta"]["changed_fields"] == []
+
+
+def test_p0c_each_material_delta_type_is_deterministic_from_explicit_input() -> None:
+    previous = _json_row_for(_evidence_card())
+    cases = {
+        "MAP_CHANGED": ("evidence", "map_cycle_id", "WLD|SHORT|4h|next"),
+        "MAP_LIFECYCLE_CHANGED": ("evidence", "lifecycle_state", "MAP_COMPLETED"),
+        "TARGET_CHANGED": ("active_target", None, "0.6200"),
+        "RELOAD_ZONE_CHANGED": ("reload_reentry_zone", None, ["0.3494"]),
+        "INVALIDATION_CHANGED": ("invalidation_level", None, "0.2999"),
+        "PRICE_MATERIAL_CHANGE": ("current_price", None, "0.4900"),
+        "ORDER_COVERAGE_CHANGED": ("order_summary", "matching_buys", 99),
+        "SIGNAL_CONTEXT_CHANGED": ("primary_state", None, "RELOAD_ZONE_APPROACHING"),
+        "DATA_FRESHNESS_CHANGED": ("current_price_status", None, "STALE_CURRENT_PRICE"),
+    }
+    for expected_delta, (field, nested, value) in cases.items():
+        current = json.loads(json.dumps(previous))
+        if nested is None:
+            current[field] = value
+            expected_field = field
+        else:
+            current[field][nested] = value
+            expected_field = f"{field}.{nested}"
+        delta = compare_card_delta(current_card_json=current, previous_card_json=previous)
+        assert delta.delta_status == "UPDATED_NOW"
+        assert expected_delta in delta.material_delta_types
+        assert expected_field in delta.changed_fields
+
+
+def test_p0c_unchanged_card_yields_no_material_delta() -> None:
+    previous = _json_row_for(_evidence_card())
+    delta = compare_card_delta(current_card_json=json.loads(json.dumps(previous)), previous_card_json=previous)
+    assert delta.delta_status == "UNCHANGED"
+    assert delta.material_delta_types == ()
+    assert delta.changed_fields == ()
+
+
+def test_p0c_stale_price_json_and_html_suppress_action_like_distance_semantics() -> None:
+    card = build_profit_plan_card(
+        symbol="HOME",
+        market="HOME-EUR",
+        current_price=Decimal("1.30"),
+        current_price_status="STALE_CURRENT_PRICE",
+        current_price_age_min=Decimal("2880"),
+        fib_ext=_wld_fib_ext(),
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=CardEvidence(price_freshness_state="STALE_CURRENT_PRICE"),
+    )
+    row = _json_row_for(card)
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+
+    assert row["action_label"] == "NO_CURRENT_PRICE"
+    assert row["current_price_status"] == "STALE_CURRENT_PRICE"
+    assert row["primary_state"] == "STALE_CURRENT_PRICE"
+    assert row["actionability_state"] != "ACTIVE_TRADE_SETUP"
+    assert row["reload_reentry_zone"] == []
+    assert row["invalidation_risk_zone"] is None
+    assert row["active_target"] is None
+    assert row["target_exit_zone"] == []
+    assert row["distance_to_target_pct"] is None
+    assert row["distance_to_reload_pct"] is None
+    assert row["distance_to_invalidation_pct"] is None
+    assert row["evidence"]["price_freshness_state"] == "STALE_CURRENT_PRICE"
+    assert "data-filter-action='take_profit" not in html
+    assert "data-filter-action='buy" not in html
+    assert "FIX LADDER" not in html
+
+
+def test_p0c_missing_price_status_fail_closes_without_action_like_output() -> None:
+    card = build_profit_plan_card(
+        symbol="MISS",
+        market="MISS-EUR",
+        current_price=None,
+        current_price_status="MISSING_CURRENT_PRICE",
+        fib_ext=_wld_fib_ext(),
+        reentry=_fet_reentry(),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=CardEvidence(price_freshness_state="FRESH"),
+    )
+    row = _json_row_for(card)
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+
+    assert row["current_price"] is None
+    assert row["current_price_status"] == "MISSING_CURRENT_PRICE"
+    assert row["primary_state"] == "MISSING_CURRENT_PRICE"
+    assert row["action_label"] == "NO_CURRENT_PRICE"
+    assert row["actionability_state"] != "ACTIVE_TRADE_SETUP"
+    assert row["target_exit_zone"] == []
+    assert row["reload_reentry_zone"] == []
+    assert row["invalidation_risk_zone"] is None
+    assert row["distance_to_target_pct"] is None
+    assert row["distance_to_reload_pct"] is None
+    assert row["distance_to_invalidation_pct"] is None
+    assert row["evidence"]["price_freshness_state"] == "MISSING_CURRENT_PRICE"
+    assert "data-filter-action='take_profit" not in html
+    assert "data-filter-action='buy" not in html
+    assert "FIX LADDER" not in html
+
+
+def test_p0c_missing_price_without_status_defensively_normalizes_to_missing_current_price() -> None:
+    card = build_profit_plan_card(
+        symbol="DEF",
+        market="DEF-EUR",
+        current_price=None,
+        fib_ext=_wld_fib_ext(),
+        reentry=_fet_reentry(),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+    )
+    row = _json_row_for(card)
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+
+    assert row["current_price"] is None
+    assert row["current_price_status"] == "MISSING_CURRENT_PRICE"
+    assert row["primary_state"] == "MISSING_CURRENT_PRICE"
+    assert row["action_label"] == "NO_CURRENT_PRICE"
+    assert row["actionability_state"] != "ACTIVE_TRADE_SETUP"
+    assert row["active_target"] is None
+    assert row["target_exit_zone"] == []
+    assert row["reload_reentry_zone"] == []
+    assert row["invalidation_risk_zone"] is None
+    assert row["distance_to_target_pct"] is None
+    assert row["distance_to_reload_pct"] is None
+    assert row["distance_to_invalidation_pct"] is None
+    assert row["evidence"]["price_freshness_state"] == "MISSING_CURRENT_PRICE"
+    assert "data-filter-action='take_profit" not in html
+    assert "data-filter-action='buy" not in html
+    assert "FIX LADDER" not in html
+
+
+def test_p0c_completed_or_invalidated_lifecycle_delta_does_not_make_card_active() -> None:
+    card = dataclasses.replace(
+        _evidence_card(),
+        actionability_state="INVALIDATED",
+        primary_state="INVALIDATED",
+        suggested_manual_attention_label="Invalidated",
+        evidence=dataclasses.replace(_evidence_card().evidence, lifecycle_state="INVALIDATED"),
+        delta=CardDelta(
+            delta_status="UPDATED_NOW",
+            material_delta_types=("MAP_LIFECYCLE_CHANGED",),
+            changed_fields=("evidence.lifecycle_state",),
+            comparison_key="WLD|WLD-EUR|SHORT",
+        ),
+    )
+    row = _json_row_for(card)
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    assert row["actionability_state"] == "INVALIDATED"
+    assert row["delta"]["delta_status"] == "UPDATED_NOW"
+    assert "UPDATED NOW" in html
+    assert "ACTIVE_TRADE_SETUP" not in row["actionability_state"]
+    assert "SETUP LADDER" not in html
+
+
+def test_p0c_data_unavailable_is_explicit_without_fallback_truth() -> None:
+    card = build_profit_plan_card(
+        symbol="MISS",
+        market="MISS-EUR",
+        current_price=Decimal("1.00"),
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        short_context_coverage_status="CONTEXT_INVALID_OR_STALE",
+        evidence=CardEvidence(),
+    )
+    row = _json_row_for(card)
+    assert row["evidence"]["map_cycle_id"] == "DATA_UNAVAILABLE"
+    assert row["evidence"]["native_map_id"] == "DATA_UNAVAILABLE"
+    assert row["evidence"]["price_ts_utc"] == "DATA_UNAVAILABLE"
+    assert row["evidence"]["lifecycle_state"] == "DATA_UNAVAILABLE"
 
 
 def test_render_full_html_uses_profit_plan_title_and_public_monitor_href() -> None:

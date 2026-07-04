@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import html as _html
 import uuid
 from dataclasses import dataclass, field
@@ -13,6 +14,7 @@ from src.reporting.dashboard_time_v1 import format_ui_now
 
 REPORT_NAME = "manual_short_trader_profit_plan_v1"
 REPORT_VERSION = "0.1"
+DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
 
 ORDER_MATCH_TOLERANCE_PCT = Decimal("3")
 TAKE_PROFIT_WAITING_THRESHOLD_PCT = Decimal("3")
@@ -253,6 +255,35 @@ class TargetLevelStatus:
 
 
 @dataclass(frozen=True)
+class CardEvidence:
+    map_cycle_id: str = DATA_UNAVAILABLE
+    native_map_id: str = DATA_UNAVAILABLE
+    selected_map_reason: str = DATA_UNAVAILABLE
+    selected_map_tier: str = DATA_UNAVAILABLE
+    lifecycle_state: str = DATA_UNAVAILABLE
+    map_age_min: str = DATA_UNAVAILABLE
+    anchor_start_ts_utc: str = DATA_UNAVAILABLE
+    anchor_end_ts_utc: str = DATA_UNAVAILABLE
+    anchor_low_price: str = DATA_UNAVAILABLE
+    anchor_high_price: str = DATA_UNAVAILABLE
+    price_ts_utc: str = DATA_UNAVAILABLE
+    price_freshness_state: str = DATA_UNAVAILABLE
+    order_snapshot_ts_utc: str = DATA_UNAVAILABLE
+    order_coverage_ts_utc: str = DATA_UNAVAILABLE
+    context_ts_utc: str = DATA_UNAVAILABLE
+    generation_ts_utc: str = DATA_UNAVAILABLE
+    update_ts_utc: str = DATA_UNAVAILABLE
+
+
+@dataclass(frozen=True)
+class CardDelta:
+    delta_status: str = "NO_PREVIOUS_SNAPSHOT"
+    material_delta_types: tuple[str, ...] = ()
+    changed_fields: tuple[str, ...] = ()
+    comparison_key: str = DATA_UNAVAILABLE
+
+
+@dataclass(frozen=True)
 class ProfitPlanCard:
     symbol: str
     market: str
@@ -295,6 +326,8 @@ class ProfitPlanCard:
     fib_nav_context: FibNavContext | None = None
     render_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     breath_curve: dict[str, Any] | None = None
+    evidence: CardEvidence = field(default_factory=CardEvidence)
+    delta: CardDelta = field(default_factory=CardDelta)
 
 
 @dataclass(frozen=True)
@@ -356,6 +389,199 @@ def _fmt_pct_number(v: Any) -> str:
         return f"{float(v):.1f}%"
     except (TypeError, ValueError):
         return "—"
+
+
+def _value_or_data_unavailable(value: Any) -> str:
+    if value is None:
+        return DATA_UNAVAILABLE
+    text = str(value).strip()
+    return text if text else DATA_UNAVAILABLE
+
+
+def _evidence_json(evidence: CardEvidence) -> dict[str, str]:
+    return dataclasses.asdict(evidence)
+
+
+def _delta_json(delta: CardDelta) -> dict[str, Any]:
+    return {
+        "delta_status": delta.delta_status,
+        "material_delta_types": list(delta.material_delta_types),
+        "changed_fields": list(delta.changed_fields),
+        "comparison_key": delta.comparison_key,
+    }
+
+
+def card_identity_key(card_json: dict[str, Any]) -> str:
+    symbol = _value_or_data_unavailable(card_json.get("symbol"))
+    market = _value_or_data_unavailable(card_json.get("market"))
+    horizon = _value_or_data_unavailable(card_json.get("fib_trading_horizon"))
+    return "|".join((symbol, market, horizon))
+
+
+def _extract_previous_symbol_rows(previous_snapshot: dict[str, Any] | None) -> dict[str, dict[str, Any]]:
+    if not previous_snapshot:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for row in previous_snapshot.get("symbols") or []:
+        if not isinstance(row, dict):
+            continue
+        out[card_identity_key(row)] = row
+    return out
+
+
+_DELTA_FIELD_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "MAP_CHANGED",
+        (
+            "evidence.map_cycle_id",
+            "evidence.native_map_id",
+            "evidence.selected_map_reason",
+            "evidence.selected_map_tier",
+        ),
+    ),
+    ("MAP_LIFECYCLE_CHANGED", ("evidence.lifecycle_state", "actionability_state", "all_sell_targets_completed")),
+    ("TARGET_CHANGED", ("target_exit_zone", "active_target", "target_level_statuses")),
+    ("RELOAD_ZONE_CHANGED", ("reload_reentry_zone", "buy_zone")),
+    ("INVALIDATION_CHANGED", ("invalidation_level", "invalidation_risk_zone")),
+    ("PRICE_MATERIAL_CHANGE", ("current_price",)),
+    (
+        "ORDER_COVERAGE_CHANGED",
+        (
+            "order_summary.matching_buys",
+            "order_summary.matching_sells",
+            "order_summary.missing_suggested",
+            "order_summary.existing_open_orders_summary",
+            "ladder_states",
+        ),
+    ),
+    (
+        "SIGNAL_CONTEXT_CHANGED",
+        (
+            "short_context_input_status",
+            "short_context_coverage_status",
+            "short_context_display_state",
+            "scenario_type",
+            "setup_state",
+            "event_state",
+            "primary_state",
+            "secondary_state",
+        ),
+    ),
+    (
+        "DATA_FRESHNESS_CHANGED",
+        (
+            "current_price_status",
+            "current_price_age_min",
+            "evidence.price_ts_utc",
+            "evidence.price_freshness_state",
+            "evidence.order_snapshot_ts_utc",
+            "evidence.order_coverage_ts_utc",
+            "evidence.context_ts_utc",
+            "evidence.generation_ts_utc",
+            "evidence.update_ts_utc",
+        ),
+    ),
+)
+
+
+def _semantic_field_value(card_json: dict[str, Any], field_path: str) -> Any:
+    value: Any = card_json
+    for part in field_path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+
+def compare_card_delta(
+    *,
+    current_card_json: dict[str, Any],
+    previous_card_json: dict[str, Any] | None,
+) -> CardDelta:
+    comparison_key = card_identity_key(current_card_json)
+    if previous_card_json is None:
+        return CardDelta(delta_status="NO_PREVIOUS_SNAPSHOT", comparison_key=comparison_key)
+
+    material_types: list[str] = []
+    changed_fields: list[str] = []
+    for delta_type, field_paths in _DELTA_FIELD_GROUPS:
+        group_changed: list[str] = []
+        for field_path in field_paths:
+            if _semantic_field_value(current_card_json, field_path) != _semantic_field_value(previous_card_json, field_path):
+                group_changed.append(field_path)
+        if group_changed:
+            material_types.append(delta_type)
+            changed_fields.extend(group_changed)
+
+    if not material_types:
+        return CardDelta(delta_status="UNCHANGED", comparison_key=comparison_key)
+    return CardDelta(
+        delta_status="UPDATED_NOW",
+        material_delta_types=tuple(material_types),
+        changed_fields=tuple(dict.fromkeys(changed_fields)),
+        comparison_key=comparison_key,
+    )
+
+
+def _card_delta_payload(card: "ProfitPlanCard") -> dict[str, Any]:
+    return {
+        "symbol": card.symbol,
+        "market": card.market,
+        "fib_trading_horizon": card.fib_trading_horizon,
+        "short_context_input_status": card.short_context_input_status,
+        "short_context_coverage_status": card.short_context_coverage_status,
+        "short_context_display_state": card.short_context_display_state,
+        "current_price": str(card.current_price) if card.current_price is not None else None,
+        "current_price_status": card.current_price_status,
+        "current_price_age_min": str(card.current_price_age_min) if card.current_price_age_min is not None else None,
+        "all_sell_targets_completed": card.all_sell_targets_completed,
+        "scenario_type": card.scenario_type,
+        "actionability_state": card.actionability_state,
+        "buy_zone": [str(p) for p in card.buy_zone],
+        "invalidation_level": str(card.invalidation_level) if card.invalidation_level is not None else None,
+        "target_exit_zone": [str(p) for p in card.target_exit_zone],
+        "active_target": str(card.active_target) if card.active_target is not None else None,
+        "target_level_statuses": [
+            {
+                "level": str(level.level),
+                "lifecycle_state": level.lifecycle_state,
+                "coverage_state": level.coverage_state,
+                "is_active_target": level.is_active_target,
+            }
+            for level in card.target_level_statuses
+        ],
+        "reload_reentry_zone": [str(p) for p in card.reload_reentry_zone],
+        "invalidation_risk_zone": str(card.invalidation_risk_zone) if card.invalidation_risk_zone is not None else None,
+        "primary_state": card.primary_state,
+        "secondary_state": card.secondary_state,
+        "setup_state": card.setup_state,
+        "event_state": card.event_state,
+        "ladder_states": list(card.ladder_states),
+        "order_summary": {
+            "matching_buys": card.order_summary.matching_buys,
+            "matching_sells": card.order_summary.matching_sells,
+            "missing_suggested": list(card.order_summary.missing_suggested),
+            "existing_open_orders_summary": card.order_summary.existing_open_orders_summary,
+        },
+        "evidence": _evidence_json(card.evidence),
+    }
+
+
+def apply_card_deltas(
+    cards: list["ProfitPlanCard"],
+    *,
+    previous_snapshot: dict[str, Any] | None,
+) -> list["ProfitPlanCard"]:
+    previous_rows = _extract_previous_symbol_rows(previous_snapshot)
+    out: list[ProfitPlanCard] = []
+    for card in cards:
+        current_payload = _card_delta_payload(card)
+        delta = compare_card_delta(
+            current_card_json=current_payload,
+            previous_card_json=previous_rows.get(card_identity_key(current_payload)),
+        )
+        out.append(dataclasses.replace(card, delta=delta))
+    return out
 
 
 def _breath_curve_availability(payload: dict[str, Any] | None) -> str:
@@ -1571,6 +1797,7 @@ def _short_context_gap_card(
     history_low_since_activation: Decimal | None,
     presentation_mode: str = CARD_MODE_MARKET_SELECTED,
     breath_curve: dict[str, Any] | None = None,
+    evidence: CardEvidence | None = None,
 ) -> ProfitPlanCard:
     order_summary = build_order_summary(
         current_price,
@@ -1635,6 +1862,7 @@ def _short_context_gap_card(
         is_relevant=True,
         presentation_mode=presentation_mode,
         breath_curve=breath_curve,
+        evidence=evidence or CardEvidence(),
     )
 
 
@@ -1964,6 +2192,60 @@ def _actionability_display_bundle(card: ProfitPlanCard) -> tuple[str, str, str, 
     return reentry_label, target_label, order_ladder_label, open_orders_label, reentry_line, target_line
 
 
+def _evidence_state_class(card: ProfitPlanCard) -> str:
+    if card.actionability_state == CARD_ACTIONABILITY_INVALIDATED or card.primary_state in {"INVALIDATED", "MAP_COMPLETED", "MAP_RECOMPUTE_NEEDED"}:
+        return "evidence-red"
+    missing_values = {
+        card.evidence.map_cycle_id,
+        card.evidence.price_ts_utc,
+        card.evidence.price_freshness_state,
+    }
+    if DATA_UNAVAILABLE in missing_values or card.current_price_status in {"STALE_CURRENT_PRICE", "MISSING_CURRENT_PRICE"}:
+        return "evidence-amber"
+    if card.delta.delta_status == "UPDATED_NOW":
+        return "evidence-green"
+    return "evidence-neutral"
+
+
+def _delta_summary_text(delta: CardDelta) -> str:
+    if delta.delta_status == "NO_PREVIOUS_SNAPSHOT":
+        return "NO_PREVIOUS_SNAPSHOT"
+    if delta.delta_status == "UNCHANGED":
+        return "UNCHANGED"
+    changed = ", ".join(delta.changed_fields[:4])
+    suffix = "…" if len(delta.changed_fields) > 4 else ""
+    return f"UPDATED NOW · {changed}{suffix}" if changed else "UPDATED NOW"
+
+
+def _card_evidence_html(card: ProfitPlanCard) -> str:
+    evidence_items = (
+        ("Map cycle", card.evidence.map_cycle_id),
+        ("Native map", card.evidence.native_map_id),
+        ("Tier", card.evidence.selected_map_tier),
+        ("Reason", card.evidence.selected_map_reason),
+        ("Lifecycle", card.evidence.lifecycle_state),
+        ("Map age", card.evidence.map_age_min),
+        ("Anchor", f"{card.evidence.anchor_start_ts_utc} → {card.evidence.anchor_end_ts_utc}"),
+        ("Anchor prices", f"{card.evidence.anchor_low_price} / {card.evidence.anchor_high_price}"),
+        ("Price source", f"{card.evidence.price_freshness_state} · {card.evidence.price_ts_utc}"),
+        ("Orders", card.evidence.order_snapshot_ts_utc),
+        ("Context", card.evidence.context_ts_utc),
+    )
+    rows = "".join(
+        f"<div class='evidence-row'><span>{esc(label)}</span><code>{esc(value)}</code></div>"
+        for label, value in evidence_items
+    )
+    delta_types = ", ".join(card.delta.material_delta_types) or "none"
+    changed = ", ".join(card.delta.changed_fields) or "none"
+    return (
+        f"<div class='card-evidence {_evidence_state_class(card)}'>"
+        f"<div class='evidence-header'><span>Evidence</span><strong>{esc(_delta_summary_text(card.delta))}</strong></div>"
+        f"<div class='evidence-grid'>{rows}</div>"
+        f"<div class='evidence-delta muted small'>Delta: {esc(delta_types)} · Fields: {esc(changed)}</div>"
+        "</div>"
+    )
+
+
 # ---------------------------------------------------------------------------
 # User action override: FIX LADDER beats WAIT when orders need attention
 # ---------------------------------------------------------------------------
@@ -2019,8 +2301,12 @@ def build_profit_plan_card(
     fib_nav_context: FibNavContext | None = None,
     presentation_mode: str = CARD_MODE_MARKET_SELECTED,
     breath_curve: dict[str, Any] | None = None,
+    evidence: CardEvidence | None = None,
 ) -> ProfitPlanCard:
-    if current_price_status == "STALE_CURRENT_PRICE":
+    unusable_price_status = current_price_status
+    if current_price is None and unusable_price_status not in {"STALE_CURRENT_PRICE", "MISSING_CURRENT_PRICE"}:
+        unusable_price_status = "MISSING_CURRENT_PRICE"
+    if unusable_price_status in {"STALE_CURRENT_PRICE", "MISSING_CURRENT_PRICE"}:
         order_summary = build_order_summary(
             None,
             (),
@@ -2036,20 +2322,24 @@ def build_profit_plan_card(
             short_context_coverage_status=short_context_coverage_status,
             short_context_display_state=short_context_display_state,
             current_price=None,
-            current_price_status=current_price_status,
+            current_price_status=unusable_price_status,
             current_price_age_min=current_price_age_min,
             history_high_since_activation=history_high_since_activation,
             history_low_since_activation=history_low_since_activation,
             all_sell_targets_completed=False,
-        scenario_type="NO_CURRENT_PRICE",
-        action_label="NO_CURRENT_PRICE",
-        actionability_state=CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
-        timeframe_label="review blocked",
+            scenario_type="NO_CURRENT_PRICE",
+            action_label="NO_CURRENT_PRICE",
+            actionability_state=CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+            timeframe_label="review blocked",
             buy_zone=(),
             sell_zone=(),
             invalidation_level=None,
             reasons=(
-                "Current public price snapshot is stale.",
+                (
+                    "Current public price snapshot is stale."
+                    if unusable_price_status == "STALE_CURRENT_PRICE"
+                    else "Current public price snapshot is missing."
+                ),
                 "Do not use percentage distance, action labels, or scenario recommendation until price refresh succeeds.",
             ),
             order_summary=order_summary,
@@ -2061,9 +2351,12 @@ def build_profit_plan_card(
             distance_to_target_pct=None,
             distance_to_reload_pct=None,
             distance_to_invalidation_pct=None,
-            primary_state="STALE_CURRENT_PRICE",
+            primary_state=unusable_price_status,
             secondary_state=None,
-            suggested_manual_attention_label=STATE_LABELS["STALE_CURRENT_PRICE"],
+            suggested_manual_attention_label=STATE_LABELS.get(
+                unusable_price_status,
+                unusable_price_status.replace("_", " "),
+            ),
             setup_state="MINIMAL_CONTEXT",
             event_state="CONTEXT_UNAVAILABLE",
             ladder_states=("ORDER_DATA_UNAVAILABLE",),
@@ -2071,6 +2364,10 @@ def build_profit_plan_card(
             is_relevant=False,
             presentation_mode=presentation_mode,
             breath_curve=breath_curve,
+            evidence=dataclasses.replace(
+                evidence or CardEvidence(),
+                price_freshness_state=unusable_price_status,
+            ),
         )
     if (
         fib_ext is None
@@ -2096,6 +2393,7 @@ def build_profit_plan_card(
             history_low_since_activation=history_low_since_activation,
             presentation_mode=presentation_mode,
             breath_curve=breath_curve,
+            evidence=evidence,
         )
     (
         scenario_type,
@@ -2300,6 +2598,7 @@ def build_profit_plan_card(
         fib_nav_context=fib_nav_context,
         presentation_mode=presentation_mode,
         breath_curve=breath_curve,
+        evidence=evidence or CardEvidence(),
     )
 
 
@@ -2535,6 +2834,25 @@ _CSS = """
     .quality-warn { background: rgba(255,209,102,.12); color: var(--warn); border: 1px solid rgba(255,209,102,.3); }
     .quality-fail { background: rgba(255,113,113,.12); color: var(--bad);  border: 1px solid rgba(255,113,113,.3); }
     .quality-reason { font-size: 11px; color: var(--muted); }
+    .card-evidence {
+      border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+      margin-top: 10px; font-size: 11px; background: rgba(255,255,255,.025);
+    }
+    .card-evidence.evidence-green { border-color: rgba(102,223,178,.35); background: rgba(102,223,178,.08); }
+    .card-evidence.evidence-red { border-color: rgba(255,113,113,.40); background: rgba(255,113,113,.08); }
+    .card-evidence.evidence-amber { border-color: rgba(255,209,102,.42); background: rgba(255,209,102,.08); }
+    .card-evidence.evidence-neutral { border-color: var(--line); }
+    .evidence-header { display:flex; justify-content:space-between; gap:10px; margin-bottom:6px; }
+    .evidence-header strong { color: var(--ok); font-size: 11px; text-align:right; }
+    .evidence-red .evidence-header strong { color: var(--bad); }
+    .evidence-amber .evidence-header strong { color: var(--warn); }
+    .evidence-grid {
+      display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:4px 10px;
+    }
+    .evidence-row { display:flex; justify-content:space-between; gap:8px; min-width:0; }
+    .evidence-row span { color: var(--muted); }
+    .evidence-row code { color: var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .evidence-delta { margin-top:6px; overflow-wrap:anywhere; }
     .order-section { margin-top: 10px; }
     .order-section-header {
       display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap;
@@ -3430,6 +3748,7 @@ def render_plan_card(
         )
 
     reasons_html = "".join(f"<li>{esc(r)}</li>" for r in card.reasons)
+    evidence_html = _card_evidence_html(card)
 
     return (
         f"<section class='card plan-card'"
@@ -3460,6 +3779,15 @@ def render_plan_card(
         f" data-bc-btc-relation='{esc(_breath_curve_btc_relation_text(breath_curve_payload))}'"
         f" data-bc-source-ts='{esc(str(breath_curve_payload.get('source_candle_ts_utc') or '—'))}'"
         f" data-bc-freshness='{esc(_breath_curve_freshness_text(breath_curve_payload))}'"
+        f" data-map-cycle-id='{esc(card.evidence.map_cycle_id)}'"
+        f" data-native-map-id='{esc(card.evidence.native_map_id)}'"
+        f" data-selected-map-reason='{esc(card.evidence.selected_map_reason)}'"
+        f" data-selected-map-tier='{esc(card.evidence.selected_map_tier)}'"
+        f" data-map-lifecycle-state='{esc(card.evidence.lifecycle_state)}'"
+        f" data-price-source-ts='{esc(card.evidence.price_ts_utc)}'"
+        f" data-price-freshness-state='{esc(card.evidence.price_freshness_state)}'"
+        f" data-delta-status='{esc(card.delta.delta_status)}'"
+        f" data-delta-types='{esc(','.join(card.delta.material_delta_types))}'"
         f" data-render-id='{esc(card.render_id)}'>"
         "<div class='card-head'>"
         "<div class='card-head-left'>"
@@ -3482,6 +3810,7 @@ def render_plan_card(
         f"</div>"
         "</div>"
         f"<div class='field-grid'>{metrics_html}</div>"
+        f"{evidence_html}"
         f"{breath_curve_section_html}"
         f"{order_section_html}"
         f"<ul class='reasons'>{reasons_html}</ul>"
@@ -3782,6 +4111,8 @@ def build_json_snapshot(
                 "short_context_input_status": c.short_context_input_status,
                 "short_context_coverage_status": c.short_context_coverage_status,
                 "short_context_display_state": c.short_context_display_state,
+                "evidence": _evidence_json(c.evidence),
+                "delta": _delta_json(c.delta),
                 "current_price": str(c.current_price) if c.current_price is not None else None,
                 "current_price_status": c.current_price_status,
                 "current_price_age_min": str(c.current_price_age_min) if c.current_price_age_min is not None else None,

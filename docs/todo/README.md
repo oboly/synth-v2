@@ -55,6 +55,7 @@ Do not bypass layers.
 |---|---:|---|
 | `workflow_standard.md` | standard | TODO creation, update, closure, priority, boundary, and commit rules |
 | `profit_plan_live_ladder.md` | **active P0** | Shortest safe route from Profit Plan detail-page ladder rows to authenticated preview, decision gate, execution plan, executor, and a one-account live limit-order canary; cosmetics follow afterward |
+| `profit_plan_card_evidence_delta_visibility_v1.md` | done / parked | P0-C card evidence and deterministic current-vs-previous snapshot delta visibility; read-only presentation only |
 | `manual_ladder_dashboard.md` | superseded for active priority / historical source | Earlier read-only manual ladder dashboard direction; retain as historical design input, but active Profit Plan work is tracked in `profit_plan_live_ladder.md` |
 | `market_breath.md` | characterized/parked | Market Breath V1 characterized as a regime-dependent rhythm/phase sensor; reopen only for downstream regime/profile use-cases |
 | `regime_research.md` | parked while P0 executes | Rotation replay, discovered regime review, symbol breath profile design, and regime interaction audits |

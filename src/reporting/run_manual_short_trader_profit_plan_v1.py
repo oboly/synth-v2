@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import dataclasses
 import json
 import os
 import sys
@@ -66,11 +67,13 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     CARD_MODE_MARKET_SELECTED,
     CARD_MODE_POSITION_HELD,
     CARD_MODE_WATCH_ONLY_ROTATION,
+    CardEvidence,
     FibExtContext,
     FibNavContext,
     ProfitPlanCard,
     ReentryContext,
     TargetHistoryCandle,
+    apply_card_deltas,
     apply_price_tick_normalization,
     build_json_snapshot,
     build_profit_plan_card,
@@ -111,6 +114,7 @@ class ZoneContextLoadResult:
     source_missing: bool
     native_source_missing: bool = False
     prior_map_meta_by_symbol: dict[str, PriorMapMeta] = field(default_factory=dict)
+    evidence_by_symbol: dict[str, CardEvidence] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -200,6 +204,12 @@ def parse_args() -> argparse.Namespace:
         help="Canonical native SHORT context rows path. Native 4h+1h rows are preferred when available.",
     )
     parser.add_argument(
+        "--previous-json",
+        default=None,
+        metavar="PATH",
+        help="Optional explicit previous canonical Profit Plan JSON snapshot for deterministic card deltas.",
+    )
+    parser.add_argument(
         "--fib-map-rows",
         default=str(DEFAULT_FIB_MAP_ROWS),
         help="Optional: path to fibo_target_map_rows_v1.csv for read-only zone context.",
@@ -254,6 +264,71 @@ def _parse_iso_ts(value: Any) -> datetime | None:
         return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
     except Exception:
         return None
+
+
+def _fmt_ts(value: datetime | None) -> str:
+    if value is None:
+        return "DATA_UNAVAILABLE"
+    value_utc = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return value_utc.isoformat().replace("+00:00", "Z")
+
+
+def _fmt_dec(value: Decimal | None) -> str:
+    return "DATA_UNAVAILABLE" if value is None else format(value, "f")
+
+
+def _fmt_unavailable(value: Any) -> str:
+    text = str(value or "").strip()
+    return text if text else "DATA_UNAVAILABLE"
+
+
+def _map_age_min(*, anchor_end_ts_utc: datetime | None, now_utc: datetime) -> str:
+    if anchor_end_ts_utc is None:
+        return "DATA_UNAVAILABLE"
+    anchor = anchor_end_ts_utc.replace(tzinfo=UTC) if anchor_end_ts_utc.tzinfo is None else anchor_end_ts_utc.astimezone(UTC)
+    minutes = (now_utc - anchor).total_seconds() / 60
+    return f"{max(minutes, 0):.1f}"
+
+
+def _latest_ts(*values: datetime | None) -> datetime | None:
+    present = [
+        value.replace(tzinfo=UTC) if value is not None and value.tzinfo is None else value.astimezone(UTC)
+        for value in values
+        if value is not None
+    ]
+    return max(present) if present else None
+
+
+def _evidence_from_native_row(native_row: Any, *, now_utc: datetime) -> CardEvidence:
+    latest_context_ts = _latest_ts(
+        native_row.latest_primary_close_ts_utc,
+        native_row.latest_support_close_ts_utc,
+    )
+    return CardEvidence(
+        map_cycle_id=_fmt_unavailable(native_row.map_cycle_id),
+        native_map_id="DATA_UNAVAILABLE",
+        selected_map_reason=_fmt_unavailable(native_row.selection_reason),
+        selected_map_tier=_fmt_unavailable(native_row.current_map_status),
+        lifecycle_state=_fmt_unavailable(native_row.primary_4h_lifecycle_state),
+        map_age_min=_map_age_min(anchor_end_ts_utc=native_row.anchor_end_ts_utc, now_utc=now_utc),
+        anchor_start_ts_utc=_fmt_ts(native_row.anchor_start_ts_utc),
+        anchor_end_ts_utc=_fmt_ts(native_row.anchor_end_ts_utc),
+        anchor_low_price=_fmt_dec(native_row.anchor_low_price),
+        anchor_high_price=_fmt_dec(native_row.anchor_high_price),
+        context_ts_utc=_fmt_ts(latest_context_ts),
+        update_ts_utc=_fmt_ts(latest_context_ts),
+    )
+
+
+def _load_previous_json_snapshot(path_text: str | None) -> dict[str, Any] | None:
+    if not path_text:
+        return None
+    path = Path(path_text)
+    with path.open(encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError("--previous-json must contain a JSON object")
+    return payload
 
 
 def _resolve_native_short_context_rows_path(
@@ -550,6 +625,7 @@ def load_zone_contexts(
     coverage_status_by_symbol: dict[str, str] = {}
     display_state_by_symbol: dict[str, str] = {}
     prior_map_meta_by_symbol: dict[str, PriorMapMeta] = {}
+    evidence_by_symbol: dict[str, CardEvidence] = {}
 
     for market in markets:
         symbol = market.split("-")[0].upper()
@@ -599,6 +675,7 @@ def load_zone_contexts(
         native_row = native_rows_by_symbol.get(symbol)
         native_reference_only = native_row is not None and native_row.context_status != NATIVE_SHORT_CONTEXT_AVAILABLE
         if native_row is not None:
+            evidence_by_symbol[symbol] = _evidence_from_native_row(native_row, now_utc=_now)
             input_status_by_symbol[symbol] = native_row.context_status
             coverage_status_by_symbol[symbol] = native_row.context_status
             display_state_by_symbol[symbol] = (
@@ -752,6 +829,7 @@ def load_zone_contexts(
         source_missing=source_missing,
         native_source_missing=native_source_missing,
         prior_map_meta_by_symbol=prior_map_meta_by_symbol,
+        evidence_by_symbol=evidence_by_symbol,
     )
 
 
@@ -997,6 +1075,9 @@ def build_cards(
     inclusion_reasons_by_market: Mapping[str, frozenset[str]] | None = None,
     account_plan_policy_by_market: Mapping[str, AccountPlanPolicy] | None = None,
     breath_curve_by_symbol: Mapping[str, dict[str, Any]] | None = None,
+    evidence_by_symbol: Mapping[str, CardEvidence] | None = None,
+    price_ts_by_market: Mapping[str, datetime | None] | None = None,
+    order_snapshot_ts_utc: datetime | None = None,
 ) -> list[ProfitPlanCard]:
     _prior = prior_map_meta_by_symbol or {}
     _now = now_utc or datetime.now(UTC)
@@ -1006,6 +1087,14 @@ def build_cards(
         current = prices.get(market)
         buy_orders, sell_orders = orders_by_symbol.get(symbol, ((), ()))
         history = history_by_symbol.get(symbol)
+        base_evidence = (evidence_by_symbol or {}).get(symbol, CardEvidence())
+        card_evidence = dataclasses.replace(
+            base_evidence,
+            price_ts_utc=_fmt_ts((price_ts_by_market or {}).get(market)),
+            price_freshness_state=price_status_by_market.get(market, "DATA_UNAVAILABLE"),
+            order_snapshot_ts_utc=_fmt_ts(order_snapshot_ts_utc),
+            order_coverage_ts_utc=_fmt_ts(order_snapshot_ts_utc),
+        )
 
         # Candle-driven nav rebuild: primary path uses history candles to detect a fresh
         # swing (build_fib_navigation_map); anchor-only fallback when candles are
@@ -1048,6 +1137,7 @@ def build_cards(
                     account_plan_policy=(account_plan_policy_by_market or {}).get(market),
                 ),
                 breath_curve=(breath_curve_by_symbol or {}).get(symbol),
+                evidence=card_evidence,
             )
         )
     return cards
@@ -1152,6 +1242,14 @@ def main() -> int:
         for market, display in price_display_by_market.items()
         if display.safe_price is not None
     }
+    price_ts_by_market = {
+        market: (
+            context.market_price_by_symbol.get(market.split("-", 1)[0].upper()).source_ts_utc
+            if context.market_price_by_symbol.get(market.split("-", 1)[0].upper()) is not None
+            else None
+        )
+        for market in context.markets
+    }
     sections = build_all_sections(
         list(context.orders),
         list(context.balances),
@@ -1217,6 +1315,9 @@ def main() -> int:
         inclusion_reasons_by_market=context.market_inclusion_reasons_by_market,
         account_plan_policy_by_market=context.account_plan_policy_by_market,
         breath_curve_by_symbol=breath_curve_by_symbol,
+        evidence_by_symbol=zone_contexts.evidence_by_symbol,
+        price_ts_by_market=price_ts_by_market,
+        order_snapshot_ts_utc=context.latest_order_snapshot_ts_utc,
     )
 
     # Load market tick rules from DB and apply price normalization to all cards.
@@ -1240,6 +1341,13 @@ def main() -> int:
         tick_rules_by_market=tick_rules_by_market,
         venue=args.venue,
     )
+
+    try:
+        previous_snapshot = _load_previous_json_snapshot(getattr(args, "previous_json", None))
+    except Exception as exc:
+        print(f"[error] previous JSON snapshot load failed: {exc}", file=sys.stderr)
+        return 1
+    cards = apply_card_deltas(cards, previous_snapshot=previous_snapshot)
 
     # Pipeline health gate: expose machine-readable health in JSON and HTML.
     # If native SHORT context is globally unavailable (CSV missing), show one
