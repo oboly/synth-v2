@@ -44,7 +44,7 @@ reads/handles MAP_EXPIRED correctly if one is ever appended by a future lane.
 
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Callable, Sequence
 
 from src.market_data.native_short_fib_context_v1 import (
@@ -384,6 +384,20 @@ _SCOPE_KEY_COLUMNS = (
 _SCOPE_KEY_WHERE = " AND ".join(f"{column} = %s" for column in _SCOPE_KEY_COLUMNS)
 
 
+def _ensure_utc(value: datetime | None) -> datetime | None:
+    """MariaDB DATETIME columns round-trip through pymysql as timezone-naive
+    datetimes. Every timestamp handed to the pure projection engine must be
+    UTC-aware (it compares directly against as_of_utc, which is always
+    UTC-aware), so every DB-fetched datetime is normalized here before it
+    reaches a fact dataclass. Mirrors the identical helper already used by
+    native_short_map_materializer_v1.fetch functions for the same reason."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _scope_key_params(key: NativeShortMapScopeKey) -> tuple[str, ...]:
     return (
         key.venue,
@@ -409,7 +423,7 @@ def fetch_scope_support_events(conn: Any, key: NativeShortMapScopeKey) -> list[S
         ScopeSupportEventFact(
             scope_support_event_id=int(row["scope_support_event_id"]),
             scope_support_state=str(row["scope_support_state"]),
-            event_ts_utc=row["event_ts_utc"],
+            event_ts_utc=_ensure_utc(row["event_ts_utc"]),
         )
         for row in rows
     ]
@@ -435,8 +449,8 @@ def fetch_cadence_configs(conn: Any, key: NativeShortMapScopeKey) -> list[Cadenc
             supporting_source_freshness_limit_seconds=int(row["supporting_source_freshness_limit_seconds"]),
             evaluation_grace_seconds=int(row["evaluation_grace_seconds"]),
             recent_scope_grace_seconds=int(row["recent_scope_grace_seconds"]),
-            effective_from_utc=row["effective_from_utc"],
-            effective_to_utc=row.get("effective_to_utc"),
+            effective_from_utc=_ensure_utc(row["effective_from_utc"]),
+            effective_to_utc=_ensure_utc(row.get("effective_to_utc")),
         )
         for row in rows
     ]
@@ -456,7 +470,7 @@ def fetch_scope_observations(conn: Any, key: NativeShortMapScopeKey) -> list[Obs
         ObservationFact(
             scope_observation_id=int(row["scope_observation_id"]),
             run_id=int(row["run_id"]),
-            observed_at_utc=row["observed_at_utc"],
+            observed_at_utc=_ensure_utc(row["observed_at_utc"]),
             observation_status=row.get("observation_status"),
             observation_reason_code=row.get("observation_reason_code"),
         )

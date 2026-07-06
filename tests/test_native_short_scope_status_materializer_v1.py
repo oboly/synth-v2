@@ -12,7 +12,10 @@ from src.market_data.native_short_fib_context_v1 import (
     STATUS_AVAILABLE,
     NativeShortContextRow,
 )
-from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapLifecycleEventType
+from src.market_data.native_short_map_lifecycle_v1 import (
+    NativeShortMapLifecycleEventType,
+    NativeShortMapScopeKey,
+)
 from src.market_data.native_short_map_materializer_v1 import (
     REASON_PRIOR_REJECTION_UNCHANGED,
     REASON_STRUCTURE_UNCHANGED,
@@ -24,6 +27,9 @@ from src.market_data.native_short_scope_status_materializer_v1 import (
     build_configuration_unavailable_observation,
     build_normal_observation,
     decide_genuine_lifecycle_transition,
+    fetch_cadence_configs,
+    fetch_scope_observations,
+    fetch_scope_support_events,
     map_geometry_action,
 )
 from src.market_data.native_short_scope_status_projection_v1 import MapFact
@@ -311,6 +317,122 @@ def test_build_normal_observation_records_map_ids_and_lifecycle_event() -> None:
     assert record.lifecycle_event_id == 99
     assert record.lifecycle_state_after == "MAP_INVALIDATED"
     assert record.geometry_action == "UNCHANGED_GEOMETRY"
+
+
+# --- DB-fetched datetimes are normalized to UTC-aware -----------------------
+#
+# pymysql returns DATETIME columns as timezone-naive datetime objects (MariaDB
+# DATETIME has no timezone concept). The pure projection engine requires every
+# timestamp to be UTC-aware, since it compares directly against an aware
+# as_of_utc. A naive value reaching it raises
+# `TypeError: can't compare offset-naive and offset-aware datetimes`. These
+# fetch functions must normalize every datetime column they read, mirroring
+# the `_ensure_utc` pattern already used by native_short_map_materializer_v1's
+# own fetch functions for the identical reason.
+
+
+class _NaiveDatetimeCursor:
+    """Returns rows exactly as pymysql would for DATETIME columns: naive
+    datetimes, with no tzinfo at all."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def execute(self, sql: str, params: object = None) -> None:
+        pass
+
+    def fetchall(self) -> list[dict]:
+        return self._rows
+
+    def __enter__(self) -> "_NaiveDatetimeCursor":
+        return self
+
+    def __exit__(self, *args: object) -> bool:
+        return False
+
+
+class _NaiveDatetimeConn:
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+
+    def cursor(self) -> _NaiveDatetimeCursor:
+        return _NaiveDatetimeCursor(self._rows)
+
+
+def test_fetch_scope_support_events_normalizes_naive_db_datetimes() -> None:
+    naive_ts = datetime(2026, 7, 6, 12, 0)  # no tzinfo, exactly as pymysql returns it
+    assert naive_ts.tzinfo is None
+    conn = _NaiveDatetimeConn(
+        [{"scope_support_event_id": 1, "scope_support_state": "SUPPORTED", "event_ts_utc": naive_ts}]
+    )
+    facts = fetch_scope_support_events(conn, NativeShortMapScopeKey(venue="bitvavo", symbol="BTC"))
+    assert len(facts) == 1
+    assert facts[0].event_ts_utc.tzinfo is not None
+    assert facts[0].event_ts_utc == naive_ts.replace(tzinfo=UTC)
+    # This is the exact comparison that previously raised TypeError.
+    assert facts[0].event_ts_utc <= datetime(2026, 7, 6, 13, 0, tzinfo=UTC)
+
+
+def test_fetch_cadence_configs_normalizes_naive_db_datetimes() -> None:
+    naive_from = datetime(2026, 6, 1, 0, 0)
+    naive_to = datetime(2026, 8, 1, 0, 0)
+    conn = _NaiveDatetimeConn(
+        [
+            {
+                "cadence_contract_version": "v1",
+                "target_evaluation_interval": "1h",
+                "primary_source_freshness_limit_seconds": 43200,
+                "supporting_source_freshness_limit_seconds": 10800,
+                "evaluation_grace_seconds": 900,
+                "recent_scope_grace_seconds": 3600,
+                "effective_from_utc": naive_from,
+                "effective_to_utc": naive_to,
+            }
+        ]
+    )
+    facts = fetch_cadence_configs(conn, NativeShortMapScopeKey(venue="bitvavo", symbol="BTC"))
+    assert len(facts) == 1
+    assert facts[0].effective_from_utc.tzinfo is not None
+    assert facts[0].effective_to_utc.tzinfo is not None
+    assert facts[0].effective_from_utc <= datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
+
+
+def test_fetch_cadence_configs_normalizes_null_effective_to() -> None:
+    conn = _NaiveDatetimeConn(
+        [
+            {
+                "cadence_contract_version": "v1",
+                "target_evaluation_interval": "1h",
+                "primary_source_freshness_limit_seconds": 43200,
+                "supporting_source_freshness_limit_seconds": 10800,
+                "evaluation_grace_seconds": 900,
+                "recent_scope_grace_seconds": 3600,
+                "effective_from_utc": datetime(2026, 6, 1, 0, 0),
+                "effective_to_utc": None,
+            }
+        ]
+    )
+    facts = fetch_cadence_configs(conn, NativeShortMapScopeKey(venue="bitvavo", symbol="BTC"))
+    assert facts[0].effective_to_utc is None
+
+
+def test_fetch_scope_observations_normalizes_naive_db_datetimes() -> None:
+    naive_ts = datetime(2026, 7, 6, 11, 30)
+    conn = _NaiveDatetimeConn(
+        [
+            {
+                "scope_observation_id": 1,
+                "run_id": 1,
+                "observed_at_utc": naive_ts,
+                "observation_status": "EVALUATED",
+                "observation_reason_code": None,
+            }
+        ]
+    )
+    facts = fetch_scope_observations(conn, NativeShortMapScopeKey(venue="bitvavo", symbol="BTC"))
+    assert len(facts) == 1
+    assert facts[0].observed_at_utc.tzinfo is not None
+    assert facts[0].observed_at_utc <= datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
 
 
 # --- boundary scan -------------------------------------------------------------
