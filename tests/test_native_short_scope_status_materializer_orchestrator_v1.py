@@ -39,9 +39,12 @@ from src.market_data.native_short_map_materializer_v1 import (
     ScopeMaterializationResult,
 )
 from src.market_data.native_short_scope_status_materializer_v1 import (
+    NativeShortRunTerminalizationConflictError,
+    _finalize_run,
     evaluate_scope,
     run_native_short_scope_status_materializer,
 )
+from src.market_data.native_short_scope_status_v1 import NativeShortMaterializerRunRecord
 
 _AS_OF = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
 
@@ -102,6 +105,7 @@ class _FakeCursor:
         self._conn = conn
         self._last_sql = ""
         self._result: list[dict[str, Any]] = []
+        self._rowcount = 0
 
     def execute(self, sql: str, params: Any = None) -> None:
         stripped = sql.strip()
@@ -126,10 +130,18 @@ class _FakeCursor:
             return
 
         if "UPDATE native_short_materializer_run_v1" in stripped:
+            # Mirrors the real CAS WHERE clause: only matches (and updates) a
+            # row that is still non-terminal.
             run_id = params[-1]
-            run = next(r for r in self._conn.runs if r["run_id"] == run_id)
-            if run["terminal_status"] is not None:
-                self._conn.finalize_calls_after_terminal += 1
+            run = next((r for r in self._conn.runs if r["run_id"] == run_id), None)
+            already_terminal = run is not None and (
+                run["terminal_status"] is not None or run["finished_at_utc"] is not None
+            )
+            if run is None or already_terminal:
+                if already_terminal:
+                    self._conn.finalize_calls_after_terminal += 1
+                self._rowcount = 0
+                return
             run["finished_at_utc"] = params[0]
             run["terminal_status"] = params[1]
             run["observed_scope_count"] = params[2]
@@ -138,6 +150,7 @@ class _FakeCursor:
             run["failed_scope_count"] = params[5]
             run["failure_reason_code"] = params[6]
             run["failure_detail"] = params[7]
+            self._rowcount = 1
             return
 
         if "INSERT INTO native_short_scope_observation_v1" in stripped:
@@ -235,6 +248,10 @@ class _FakeCursor:
     @property
     def lastrowid(self) -> int:
         return self._conn.last_id
+
+    @property
+    def rowcount(self) -> int:
+        return self._rowcount
 
     def __enter__(self) -> "_FakeCursor":
         return self
@@ -837,3 +854,100 @@ def test_projection_as_of_utc_is_independent_of_operational_clock() -> None:
     assert run["finished_at_utc"] != _AS_OF
     assert run["finished_at_utc"] >= run["started_at_utc"]
     assert run["finished_at_utc"] != run["started_at_utc"]
+
+
+# --- DB compare-and-set terminalization -------------------------------------
+
+
+def _conflicting_record(run: dict[str, Any], *, finished_at_utc: datetime) -> NativeShortMaterializerRunRecord:
+    """A deliberately different record than what is already stored, used to
+    prove a second terminalization attempt is rejected and changes nothing."""
+    return NativeShortMaterializerRunRecord(
+        run_uuid=run["run_uuid"],
+        runner_name=run["runner_name"],
+        runner_version=run["runner_version"],
+        contract_version=run["contract_version"],
+        trigger_type=run["trigger_type"],
+        started_at_utc=run["started_at_utc"],
+        requested_scope_count=run["requested_scope_count"],
+        terminal_status="FINISHED",
+        finished_at_utc=finished_at_utc,
+        observed_scope_count=999,
+        published_map_count=999,
+        lifecycle_event_count=999,
+        failed_scope_count=999,
+        failure_reason_code="SHOULD_NOT_BE_STORED",
+        failure_detail="SHOULD_NOT_BE_STORED",
+    )
+
+
+def test_second_direct_terminalization_cannot_overwrite_first_finished_values() -> None:
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(key)
+
+    run_native_short_scope_status_materializer(
+        conn,
+        scopes=[key],
+        as_of_utc=_AS_OF,
+        trigger_type="MANUAL",
+        operational_clock=_fixed_clock(_AS_OF),
+        fetch_context_row=lambda k, t: _context_row(),
+        fetch_existing_maps=_no_maps,
+        fetch_existing_generation_events=_no_generation_events,
+        fetch_existing_lifecycle_events=_no_lifecycle_events,
+        fetch_primary_candle_close_timestamps=_fresh_candles,
+        fetch_supporting_candle_close_timestamps=_fresh_candles,
+        materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
+    )
+
+    run = conn.runs[0]
+    first_snapshot = dict(run)
+
+    conflicting = _conflicting_record(run, finished_at_utc=_AS_OF + timedelta(days=1))
+    with pytest.raises(NativeShortRunTerminalizationConflictError, match="RUN_TERMINALIZATION_CONFLICT"):
+        _finalize_run(conn, run["run_id"], conflicting)
+
+    # Stored status, timestamp, counters, reason, and detail remain exactly
+    # from the first write; the conflicting second attempt changed nothing.
+    assert run == first_snapshot
+    assert run["terminal_status"] == "FINISHED"
+    assert conn.finalize_calls_after_terminal == 1
+
+
+def test_failed_run_terminalizes_exactly_once_and_rejects_second_attempt() -> None:
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(key)
+
+    def raising_context_row(k: NativeShortMapScopeKey, t: datetime) -> NativeShortContextRow:
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_native_short_scope_status_materializer(
+            conn,
+            scopes=[key],
+            as_of_utc=_AS_OF,
+            trigger_type="MANUAL",
+            operational_clock=_fixed_clock(_AS_OF),
+            fetch_context_row=raising_context_row,
+            fetch_existing_maps=_no_maps,
+            fetch_existing_generation_events=_no_generation_events,
+            fetch_existing_lifecycle_events=_no_lifecycle_events,
+            fetch_primary_candle_close_timestamps=_fresh_candles,
+            fetch_supporting_candle_close_timestamps=_fresh_candles,
+        )
+
+    run = conn.runs[0]
+    assert run["terminal_status"] == "FAILED"
+    first_snapshot = dict(run)
+
+    conflicting = _conflicting_record(run, finished_at_utc=_AS_OF + timedelta(days=2))
+    with pytest.raises(NativeShortRunTerminalizationConflictError, match="RUN_TERMINALIZATION_CONFLICT"):
+        _finalize_run(conn, run["run_id"], conflicting)
+
+    assert run == first_snapshot
+    assert run["terminal_status"] == "FAILED"  # never became FINISHED via the conflicting attempt
+    assert conn.finalize_calls_after_terminal == 1

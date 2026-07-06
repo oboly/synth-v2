@@ -93,6 +93,7 @@ from src.market_data.native_short_scope_status_v1 import (
 __all__ = [
     "CONTRACT_VERSION",
     "NativeShortRunBuilder",
+    "NativeShortRunTerminalizationConflictError",
     "ScopeEvaluationOutcome",
     "build_configuration_unavailable_observation",
     "build_normal_observation",
@@ -105,6 +106,13 @@ __all__ = [
 RUNNER_NAME = "native_short_scope_status_materializer_v1"
 RUNNER_VERSION = "0.1"
 CONTRACT_VERSION = "native_short_scope_status_contract_v1"
+
+
+class NativeShortRunTerminalizationConflictError(RuntimeError):
+    """Raised when a terminalization UPDATE affects zero rows: the run was
+    already terminal (or does not exist), so the compare-and-set condition
+    (`terminal_status IS NULL AND finished_at_utc IS NULL`) failed. Terminal
+    run fields are immutable after the first successful terminalization."""
 
 _TERMINAL_LIFECYCLE_EVENT_TYPE_VALUES = frozenset(
     {
@@ -512,6 +520,13 @@ def _insert_run(conn: Any, record: NativeShortMaterializerRunRecord) -> int:
 
 
 def _finalize_run(conn: Any, run_id: int, record: NativeShortMaterializerRunRecord) -> None:
+    """Compare-and-set terminalization: the UPDATE only ever matches a row
+    that is still non-terminal (`terminal_status IS NULL AND
+    finished_at_utc IS NULL`). This makes terminal fields immutable once set:
+    a second call for the same run_id — whether from a genuine double
+    finalization bug or a concurrent writer — always affects zero rows and
+    never overwrites the first terminal values.
+    """
     sql = """
     UPDATE native_short_materializer_run_v1
     SET finished_at_utc = %s,
@@ -523,6 +538,8 @@ def _finalize_run(conn: Any, run_id: int, record: NativeShortMaterializerRunReco
         failure_reason_code = %s,
         failure_detail = %s
     WHERE run_id = %s
+      AND terminal_status IS NULL
+      AND finished_at_utc IS NULL
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -538,6 +555,11 @@ def _finalize_run(conn: Any, run_id: int, record: NativeShortMaterializerRunReco
                 record.failure_detail,
                 run_id,
             ),
+        )
+        affected_rows = cur.rowcount
+    if affected_rows != 1:
+        raise NativeShortRunTerminalizationConflictError(
+            f"RUN_TERMINALIZATION_CONFLICT run_id={run_id} affected_rows={affected_rows}"
         )
 
 
