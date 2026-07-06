@@ -473,6 +473,197 @@ Boundary:
 - no replacement for `execution_planner`
 - no dashboard zone recomputation
 
+## Linked-Profile Account Dashboard Pipeline (Short Swing)
+
+This section covers the Joost/Hugo linked-profile Short Swing pipeline
+(Wallet, Open Orders Monitor, Profit Plan) as a distinct runtime lane from
+the market-only 4h/paper-advice chain documented above. It was extended
+following the incident recorded in:
+
+```text
+docs/incidents/2026-07-05_odroid_disk_exhaustion_and_stale_short_swing_data.md
+```
+
+and the follow-up backlog in:
+
+```text
+docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md
+```
+
+### Pipeline Ownership
+
+Strict ownership, in order:
+
+1. **Public market ingestion** — `src/market_data/run_market_price_snapshot_v1.py`.
+   Market-only, account-agnostic. Public Bitvavo `GET /ticker/price` only.
+   See `docs/ops/market_price_snapshot_v1.md`.
+2. **Read-only account snapshot ingestion** — `src/account/run_account_wallet_refresh_v1.py`
+   (wrapped by `scripts/odroid/run_account_wallet_refresh_once.sh`).
+   Authenticated private read-only balances/open-orders only. No broker
+   writes, no order submission. See `docs/ops/multi_account_wallet_refresh_v1.md`.
+3. **Linked-profile dashboard render** — `scripts/odroid/run_account_wallet_dashboard_render_once.sh`
+   (called per profile by `scripts/odroid/run_linked_profile_dashboard_refresh_once.sh`).
+   Reads persisted DB snapshots only. `broker_private_calls=0`. See
+   `docs/ops/account_wallet_dashboard_v1.md` and
+   `docs/ops/manual_short_trader_profit_plan_v1.md`.
+4. **`selection_engine`** — market-only, account-agnostic. Not part of this
+   pipeline; must never receive wallet/order state from it.
+5. **`decision_gate`** — owns account-aware freshness/action permission and
+   fails closed. Consumes the freshness contract from stage 3; does not
+   perform ingestion itself.
+6. **`execution_planner` / executor** — unchanged by this pipeline. No order
+   placement, cancellation, or broker writes occur anywhere in stages 1–3.
+
+The renderer (stage 3) must never privately poll Bitvavo. Wallet/open-order
+freshness is entirely the responsibility of stage 2; if stage 2 has not run
+recently, stage 3 must show stale account data as stale, not silently reuse
+old rows as if current (see the freshness contract in the backlog, P1-B).
+
+### Current Implementation Status (verified, as of this writing)
+
+- Stage 1 and stage 3 are consolidated today by
+  `scripts/odroid/run_linked_profile_dashboard_refresh_once.sh`, which
+  refreshes public prices once, discovers linked profiles via
+  `src/account/run_linked_profile_dashboard_refresh_v1.py`, builds a shared
+  native SHORT context, then renders each profile via
+  `scripts/odroid/run_account_wallet_dashboard_render_once.sh`.
+- **Documented gap:** `run_linked_profile_dashboard_refresh_once.sh` has
+  **no systemd unit** in this repository. Neither `docs/ops/systemd/` nor
+  `scripts/odroid/systemd/` contains one. Its production scheduling
+  mechanism (if any, beyond manual invocation) is not captured in this
+  repository. This is tracked as backlog item P0-B.
+- Stage 2 (private wallet/order refresh) has an existing per-profile
+  template pair, `docs/ops/systemd/synth-account-wallet-refresh@.service` /
+  `.timer` (`OnUnitActiveSec=5min`), documented in
+  `docs/ops/multi_account_wallet_refresh_v1.md`.
+- A separate, older per-profile render-only template pair also exists,
+  `docs/ops/systemd/synth-account-wallet-dashboard@.service` / `.timer`
+  (`OnUnitActiveSec=5min`). **Documented gap:** this timer and the
+  wallet-refresh timer above are two independent timers with no explicit
+  ordering between them — each runs on its own 5-minute interval with no
+  `After=`/dependency relationship guaranteeing wallet-refresh completes
+  before wallet-dashboard renders. This is exactly the anti-pattern
+  flagged in backlog item P0-B and must not be treated as a safe pipeline
+  as-is.
+- Do not assume which of these mechanisms is actually active on the Odroid
+  host right now without checking (see "Current-State Inspection Commands"
+  below). This document describes what exists in the repository, not a
+  live status feed.
+
+### Active/Disabled Timer Treatment
+
+- `synth-paper-advice-lifecycle-refresh.timer` was stopped during the
+  2026-07-05 incident and is **intentionally left disabled**. Do not
+  re-enable it until backlog item P0-A is verified.
+- This document's description of any other timer's enabled/disabled state
+  reflects what was true at incident time or at last inspection, not
+  necessarily the current live state. **Always re-verify current state with
+  the commands below before acting.**
+
+### Current-State Inspection Commands
+
+Run on the Odroid host:
+
+```bash
+systemctl list-timers --all | grep -i synth
+systemctl status synth-paper-advice-lifecycle-refresh.timer
+systemctl status synth-paper-advice-dashboard-render.timer
+systemctl status synth-account-wallet-refresh@joost.timer
+systemctl status synth-account-wallet-refresh@hugo.timer
+systemctl status synth-account-wallet-dashboard@joost.timer
+systemctl status synth-account-wallet-dashboard@hugo.timer
+systemctl status synth-4h-market-chain.timer
+```
+
+Recent logs for a specific unit:
+
+```bash
+journalctl -u synth-paper-advice-lifecycle-refresh.service -n 200 --no-pager
+journalctl -u synth-account-wallet-refresh@joost.service -n 100 --no-pager
+journalctl -u synth-account-wallet-dashboard@joost.service -n 100 --no-pager
+```
+
+### Manual Recovery Path
+
+The actual script used during the 2026-07-05 recovery:
+
+```bash
+cd /home/theone/projects/synth-v2
+scripts/odroid/run_linked_profile_dashboard_refresh_once.sh
+```
+
+This refreshes public prices once, discovers all active linked profiles,
+and renders each profile's Wallet, Open Orders Monitor, and Profit Plan
+pages from persisted DB snapshots. It does **not** refresh wallet/open-order
+data — run the private read-only refresh separately per profile first if
+account data is also stale:
+
+```bash
+scripts/odroid/run_account_wallet_refresh_once.sh joost
+scripts/odroid/run_account_wallet_refresh_once.sh hugo
+```
+
+### Freshness Verification Procedure
+
+Read-only audit runner (does not call brokers, does not write the DB):
+
+```bash
+python -m src.operations.run_runtime_freshness_audit_v1 --venue bitvavo --output table
+```
+
+Direct checks:
+
+- `market_price_snapshot` latest `snapshot_ts_utc` per symbol.
+- `trading_account_balance_snapshot` / `account_open_order_snapshot` latest
+  observed timestamp per `trading_account_id`.
+- Rendered JSON per profile
+  (`/var/www/html/synth/accounts/<profile>/profit-plan.json`) already
+  carries `generated_ts_utc`, `account_snapshot_ts_utc`,
+  `order_snapshot_ts_utc`, and `market_price_snapshot_ts_utc` — compare each
+  against wall-clock time to judge freshness until the P1-B
+  `FRESH`/`STALE`/`MISSING`/`UNAVAILABLE` contract lands.
+
+### Disk, Filesystem, Journal, Syslog, Logrotate, Service-Log Verification
+
+Inspect before changing any global logging configuration — do not assume
+current rsyslog/logrotate/journald config without reading it:
+
+```bash
+df -h /
+du -sh /var/log
+ls -lh /var/log/syslog /var/log/syslog.1 2>/dev/null
+du -sh /var/log/syslog* 2>/dev/null
+journalctl --disk-usage
+cat /etc/logrotate.d/rsyslog 2>/dev/null
+systemctl cat rsyslog 2>/dev/null | head -30
+du -sh /tmp
+df -i /
+```
+
+### Rollback Procedure
+
+If a newly installed orchestration timer (P0-B) misbehaves:
+
+```bash
+systemctl stop <new-orchestrator>.timer
+systemctl disable <new-orchestrator>.timer
+```
+
+Then fall back to the manual recovery path above. Rollback must **not**
+silently re-enable `synth-paper-advice-lifecycle-refresh.timer` — that stays
+disabled independently until P0-A is verified, regardless of orchestrator
+rollback.
+
+### Explicit Warnings
+
+- Do not delete market data, database data, research outputs, or dashboard
+  artifacts as part of any recovery or log-reduction step. Only rotated/old
+  log files are safe to reduce, and only after confirming they are not the
+  only copy of information needed elsewhere.
+- The renderer (stage 3 above) must never make private Bitvavo calls. If a
+  future change adds a broker call inside a renderer script, that is an
+  architecture violation of this pipeline, not a valid freshness fix.
+
 ## Boundaries
 
 - Docs / ops plan only.
@@ -487,3 +678,6 @@ Boundary:
 - No DB schema migrations.
 - No asset metadata changes.
 - No selection/advice/decision/execution logic changes.
+- No private broker polling inside any renderer script.
+- No re-enabling `synth-paper-advice-lifecycle-refresh.timer` before backlog
+  item P0-A is verified.
