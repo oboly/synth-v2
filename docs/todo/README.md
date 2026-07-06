@@ -61,6 +61,7 @@ Do not bypass layers.
 | `regime_research.md` | parked while P0 executes | Rotation replay, discovered regime review, symbol breath profile design, and regime interaction audits |
 | `watchlist_candidates.md` | open intake | User-thesis watchlist candidates such as KITE before validation/promotion |
 | `deploy_runtime.md` | MVP cockpit implemented / ops follow-up | Odroid cockpit runner, dashboard render path, and related operational follow-ups |
+| `native_short_runtime_owner_and_scope_status_v1.md` | queued / parallel PR A | Canonical market-only runtime-owner and scope-status plan; PR B deployment waits for P0-A containment |
 | `fibo_zones.md` | open research | Fib target maps, leak-free zone/fib touch evaluation, zone context guardrails, exit ladder profiles, and zone UI overlays |
 | `ui_webview.md` | open / secondary | UI/Webview upgrades and styling; non-blocking cosmetics stay behind live ladder repair |
 | `signal_matrix_dashboard.md` | parked while P0 executes | Transparent per-asset/per-timeframe primitive signal inventory |
