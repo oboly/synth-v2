@@ -2,7 +2,14 @@
 
 ## Status
 
-active
+queued / PR A may proceed in parallel; PR B blocked on P0-A
+
+## Sequencing / P0-A dependency
+
+- PR A — native-map status semantics may proceed in parallel with P0-A because it has no wrapper, timer, service, systemd, broker, or production deployment action.
+- PR B — runtime-owner deployment is blocked until P0-A / PR #54 is merged and its bounded logging plus disk/log health containment is accepted.
+- Do not deploy any recurring native SHORT runtime, wrapper, service, or timer before PR B is unblocked.
+- PR C remains dependent on PR A.
 
 ## Sources
 
