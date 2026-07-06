@@ -157,7 +157,7 @@ Fields:
 | `observed_at_utc` | `DATETIME(6)` | yes | materializer runtime | UTC timestamp of scope evaluation | immutable |
 | `evaluation_due_at_utc` | `DATETIME(6)` | no | materializer runtime | Expected due time under cadence/grace contract | immutable |
 | `cadence_contract_version` | `VARCHAR(32)` | yes | materializer runtime | Version of cadence/grace config used | immutable |
-| `observation_status` | `VARCHAR(64)` | yes | materializer runtime | `EVALUATED`, `FAILED`, `SKIPPED_SCOPE_NOT_APPLICABLE`, or `SKIPPED_SOURCE_UNAVAILABLE` | immutable |
+| `observation_status` | `VARCHAR(64)` | yes | materializer runtime | `EVALUATED`, `FAILED`, or `SKIPPED_SOURCE_UNAVAILABLE` | immutable |
 | `observation_reason_code` | `VARCHAR(96)` | no | materializer runtime | Stable reason for failure or skip | immutable |
 | `observation_detail` | `TEXT` | no | materializer runtime | Bounded non-secret diagnostic detail | immutable |
 | `source_state` | `VARCHAR(64)` | yes | materializer runtime | `SOURCE_CURRENT`, `SOURCE_STALE`, or `SOURCE_UNAVAILABLE` | immutable |
@@ -195,6 +195,22 @@ The table is not authoritative history.
 Retention: current-row projection only. Historical status is reconstructed from
 run, observation, map, generation, lifecycle, and candle facts.
 
+Projection time contract:
+
+- Every projection rebuild accepts an explicit UTC `as_of_utc`.
+- `as_of_utc` is the sole clock used for source freshness, observation overdue
+  calculation, recently-added-scope grace, next expected evaluation, and
+  overdue-after calculation.
+- Deterministic projection logic must not call implicit `datetime.now()` or
+  database `NOW()`.
+- `native_short_scope_status_v1` includes
+  `projection_as_of_utc DATETIME(6) NOT NULL`.
+- Live runtime supplies explicit current UTC once per bounded run.
+- Future replay supplies its virtual historical clock as `as_of_utc`. This
+  contract does not implement replay.
+- `rebuilt_at_utc` is operational metadata only and must not affect semantic
+  status output.
+
 Keys and indexes:
 
 - Primary key: `scope_status_id`; canonical uniqueness remains the full scope key.
@@ -222,7 +238,7 @@ Fields:
 | `observation_freshness_state` | `VARCHAR(64)` | yes | projection rebuild process | `OBSERVATION_CURRENT`, `OBSERVATION_OVERDUE`, or `NO_OBSERVATION` | rebuildable |
 | `source_freshness_state` | `VARCHAR(64)` | yes | projection rebuild process | `SOURCE_CURRENT`, `SOURCE_STALE`, or `SOURCE_UNAVAILABLE` | rebuildable |
 | `actionability_state` | `VARCHAR(64)` | yes | projection rebuild process | Human-safe market-only actionability classification | rebuildable |
-| `current_map_id` | `BIGINT UNSIGNED` | no | projection rebuild process | Current active or latest terminal map id, if any | rebuildable |
+| `current_map_id` | `BIGINT UNSIGNED` | no | projection rebuild process | Deterministically selected current map id, or NULL when no current map exists | rebuildable |
 | `current_map_cycle_id` | `VARCHAR(255)` | no | projection rebuild process | Map cycle id for the current map | rebuildable |
 | `current_map_published_at_utc` | `DATETIME(6)` | no | projection rebuild process | Immutable map publication timestamp | rebuildable |
 | `current_map_structure_hash` | `CHAR(64)` | no | projection rebuild process | Current map structure hash | rebuildable |
@@ -238,8 +254,9 @@ Fields:
 | `primary_source_freshness_limit_seconds` | `INT UNSIGNED` | yes | projection rebuild process | Active primary source freshness bound | rebuildable |
 | `supporting_source_freshness_limit_seconds` | `INT UNSIGNED` | yes | projection rebuild process | Active supporting source freshness bound | rebuildable |
 | `cadence_contract_version` | `VARCHAR(32)` | yes | projection rebuild process | Cadence/grace config version applied | rebuildable |
+| `projection_as_of_utc` | `DATETIME(6)` | yes | projection rebuild process | Explicit semantic clock used for projection calculations | rebuildable |
 | `status_payload_json` | `JSON` | no | projection rebuild process | Bounded deterministic diagnostics for reporting | rebuildable |
-| `rebuilt_at_utc` | `DATETIME(6)` | yes | projection rebuild process | Projection rebuild timestamp | rebuildable |
+| `rebuilt_at_utc` | `DATETIME(6)` | yes | projection rebuild process | Operational projection rebuild timestamp; not semantic input | rebuildable |
 
 ## Cadence And Grace Configuration Ownership
 
@@ -262,13 +279,16 @@ Recommended keys and indexes:
 - Index: full canonical scope key plus `effective_from_utc`.
 - Index: `(is_active)`.
 
+V1 cadence config is exact full canonical scope key only. Wildcard/default
+inheritance is out of scope until separately specified.
+
 Required configuration fields:
 
 | Field | Type intent for MariaDB | Required | Writer | Meaning | Mutability |
 |---|---|---:|---|---|---|
 | `cadence_config_id` | `BIGINT UNSIGNED AUTO_INCREMENT` | yes | migration/config owner | Surrogate config id | immutable |
-| `venue` | `VARCHAR(32)` | yes | migration/config owner | Canonical scope key or wildcard only if explicitly supported | immutable per version |
-| `symbol` | `VARCHAR(32)` | yes | migration/config owner | Canonical scope key or wildcard only if explicitly supported | immutable per version |
+| `venue` | `VARCHAR(32)` | yes | migration/config owner | Exact canonical scope key | immutable per version |
+| `symbol` | `VARCHAR(32)` | yes | migration/config owner | Exact canonical scope key | immutable per version |
 | `quote_currency` | `VARCHAR(16)` | yes | migration/config owner | Canonical scope key | immutable per version |
 | `fib_trading_horizon` | `VARCHAR(32)` | yes | migration/config owner | Canonical scope key | immutable per version |
 | `primary_interval` | `VARCHAR(16)` | yes | migration/config owner | Canonical scope key; native default `4h` | immutable per version |
@@ -301,22 +321,25 @@ projection may expose separate lifecycle, observation freshness, source
 freshness, and actionability fields, but the top-level code must be deterministic
 when multiple conditions exist.
 
+`native_short_scope_status_v1` is strictly one row per SUPPORTED scope. No
+status row exists for a non-SUPPORTED scope. Unsupported or not-applicable
+reporting is scope-inventory or health-report information derived directly from
+`native_short_map_scope_v1`, not a scope-status projection row.
+
 Precedence from highest to lowest:
 
-1. `SCOPE_NOT_APPLICABLE`
-2. `SOURCE_UNAVAILABLE`
-3. `SOURCE_STALE`
-4. `MAP_INVALIDATED`
-5. `MAP_COMPLETED`
-6. `SCOPE_RECENTLY_ADDED`
-7. `OBSERVATION_OVERDUE`
-8. `CURRENT_EVALUATION`
+1. `SOURCE_UNAVAILABLE`
+2. `SOURCE_STALE`
+3. `MAP_INVALIDATED`
+4. `MAP_COMPLETED`
+5. `SCOPE_RECENTLY_ADDED`
+6. `OBSERVATION_OVERDUE`
+7. `CURRENT_EVALUATION`
 
 Meanings:
 
 | Code | Mutually exclusive meaning |
 |---|---|
-| `SCOPE_NOT_APPLICABLE` | Scope is not currently `SUPPORTED` or cannot be evaluated under the native SHORT scope contract. No current map is actionable. |
 | `SOURCE_UNAVAILABLE` | Required persisted candle source data is absent or insufficient to determine current source freshness. This is about market input availability, not runtime cadence. |
 | `SOURCE_STALE` | Required candle source exists but latest primary or supporting candle violates its configured freshness bound. This is market-data staleness, even if the runtime ran on time. |
 | `MAP_INVALIDATED` | Current map has a terminal invalidation lifecycle event. Lifecycle terminal state outranks overdue observation because the map is no longer active. |
@@ -327,8 +350,8 @@ Meanings:
 
 Lifecycle state versus observation/freshness state:
 
-- `map_lifecycle_state` describes the current map only: active, invalidated,
-  completed, expired, superseded, or no map.
+- `map_lifecycle_state` describes the selected current map only: active,
+  invalidated, completed, expired, or `NO_CURRENT_MAP`.
 - `observation_freshness_state` describes whether the materializer evaluated the
   scope within the cadence/grace contract.
 - `source_freshness_state` describes persisted candle availability and age.
@@ -339,10 +362,11 @@ Actionability state:
 
 - `ACTIONABLE_ACTIVE_MAP`: non-terminal current map, current source, current observation.
 - `NO_ACTIONABLE_MAP`: no current map exists, but the scope is otherwise current.
-- `TERMINAL_MAP`: current map is completed, invalidated, expired, or superseded.
+- `TERMINAL_MAP`: selected current map is completed, invalidated, or expired.
 - `BLOCKED_SOURCE`: source is stale or unavailable.
 - `BLOCKED_OBSERVATION`: runtime observation is overdue.
-- `BLOCKED_SCOPE`: scope is not applicable or recently added inside grace.
+- `BLOCKED_SCOPE`: SUPPORTED scope is recently added inside grace and lacks
+  sufficient observation history.
 
 When multiple conditions exist, the canonical current row stores the highest
 precedence `scope_status_code`, while the separate state fields preserve the
@@ -374,20 +398,38 @@ Authoritative inputs:
 
 Deterministic rebuild ordering for each canonical scope:
 
-1. Load SUPPORTED scope rows from `native_short_map_scope_v1` using full key ordering.
-2. Load active cadence/grace config by full key and effective timestamp.
-3. Load latest scope observation by `(observed_at_utc, scope_observation_id)`.
-4. Load candidate current map by immutable map facts and lifecycle terminal state.
-5. Load latest generation event by `(generation_event_id)` for the scope.
-6. Load latest lifecycle event by `(lifecycle_event_id)` for the chosen map.
-7. Load latest primary and supporting candle timestamps.
-8. Compute source freshness, observation freshness, lifecycle state, actionability, and top-level status by precedence.
-9. Write exactly one projection row for the SUPPORTED scope.
+1. Accept explicit UTC `as_of_utc`; do not read wall-clock time inside projection logic.
+2. Load SUPPORTED scope rows from `native_short_map_scope_v1` using full key ordering.
+3. Load active cadence/grace config by full key and effective timestamp.
+4. Load latest scope observation by `(observed_at_utc, scope_observation_id)`.
+5. Select the current map by the deterministic current-map selection rule below.
+6. Load latest generation event by `(generation_event_id)` for the scope.
+7. Resolve lifecycle state only for the selected map using its latest lifecycle event by `(event_ts_utc, lifecycle_event_id)`.
+8. Load latest primary and supporting candle timestamps.
+9. Compute source freshness, observation freshness, lifecycle state, actionability, and top-level status by precedence using `as_of_utc`.
+10. Write exactly one projection row for the SUPPORTED scope.
+
+Current-map selection rule:
+
+1. First identify maps superseded by a later authoritative `SUPERSEDED`
+   lifecycle event and exclude them from current-map selection.
+2. Among remaining maps, choose the latest map by `published_at_utc`, then
+   `map_id` as deterministic tie-breaker.
+3. Resolve lifecycle state only for that selected map using its latest lifecycle
+   event by `event_ts_utc`, then `lifecycle_event_id` as deterministic
+   tie-breaker.
+4. A terminal older map must never override a newer non-terminal selected map.
+5. `current_map_id`, lifecycle state, actionability, and top-level status derive
+   only from the selected map.
+6. If no non-superseded map exists because all maps are superseded, set
+   `map_lifecycle_state=NO_CURRENT_MAP` and `current_map_id=NULL`; source and
+   observation precedence still applies.
 
 Idempotency:
 
-- Rebuilding the projection from unchanged authoritative inputs must produce the
-  same canonical rows except `rebuilt_at_utc`.
+- Rebuilding the projection from unchanged authoritative inputs plus identical
+  `as_of_utc` must produce identical semantic rows.
+- `rebuilt_at_utc` may differ between otherwise identical semantic rebuilds.
 - Rebuild logic must not insert generation events, lifecycle events, maps, or
   observations.
 - Rebuild logic must not mutate immutable map timestamps.
@@ -404,17 +446,18 @@ Delete/rebuild versus upsert:
 Required behavior:
 
 - One canonical row exists per SUPPORTED scope.
-- If no map exists, set `map_lifecycle_state=NO_MAP` and use `CURRENT_EVALUATION`
+- No status row exists for a non-SUPPORTED scope.
+- If no selected map exists, set `map_lifecycle_state=NO_CURRENT_MAP` and use `CURRENT_EVALUATION`
   only when source and observation are current; otherwise apply source/observation
   precedence.
 - If latest observation failed, preserve the failure reason in
   `scope_status_reason_code` and status payload. Classify by source state first,
   then overdue/current observation rules, unless the failure proves
   `SOURCE_UNAVAILABLE`.
-- If a map is terminal, set `MAP_INVALIDATED` or `MAP_COMPLETED` when applicable;
-  expired/superseded terminal maps use `map_lifecycle_state` plus
-  `actionability_state=TERMINAL_MAP` and the highest matching status code defined
-  above.
+- If the selected map is terminal, set `MAP_INVALIDATED` or `MAP_COMPLETED` when
+  applicable. Expired terminal maps use `map_lifecycle_state=EXPIRED` plus
+  `actionability_state=TERMINAL_MAP` and source/observation precedence unless a
+  higher explicit terminal status is later added to this contract.
 - A newly added SUPPORTED scope with insufficient observation evidence is
   `SCOPE_RECENTLY_ADDED` until recent-scope grace expires. After grace, if source
   exists and is current but no observation exists, it becomes `OBSERVATION_OVERDUE`.
