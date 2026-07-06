@@ -1,0 +1,30 @@
+A+ BTC-XRP PHASE GROUP DIVERGENCE OVERLAY NOTE
+
+prediction_ts_utc = UNKNOWN
+source_type = external A+ btc_xrp phase group divergence companion overlay
+schema = aplus_btc_xrp_phase_group_divergence_overlay_v1
+status = research_only_external_unvalidated
+snapshot_kind = APLUS_BTC_XRP_PHASE_GROUP_DIVERGENCE_OVERLAY
+relationship_to_table_2 = COMPANION_GROUP_OVERLAY
+scope = MARKET_WIDE_PHASE_GROUPS
+anchor_pair = BTC_XRP
+classification = EXTERNAL_RESEARCH_UNVALIDATED
+runtime_effect = NONE
+source_prediction_ts_utc = UNKNOWN
+captured_date_utc = 2026-07-06
+parser_status = do_not_parse_as_table1_or_table2_source_of_truth
+provenance_note = Preserved from chat-supplied external research wording. Group overlay only; not validation and not individual coin inference.
+
+PHASE_GROUP | MEMBER_ASSETS | RELATIONSHIP_TO_BTC_XRP_DIVERGENCE | RELATIONSHIP_TYPE | SHARED_BREATHLINE_MOVEMENT | ALIGNMENT | SHORT_GROUP_READING
+Foundation | BTC, FET, HBAR, NEAR, RED | BTC stabilizes; XRP compresses | Reinforcing | Stabilizing | Aligned with BTC | Foundational stability anchors the network.
+Connector | ETH, TAO, FIL, WLD | ETH stabilizes relationships | Balancing | Recalibrating | Between BTC & XRP | Connectors facilitate harmony amid divergence.
+Ingress | SOL, RENDER, PEPE, HYPE, AERO | Struggling for connection | Separating | Stagnation | Aligned with XRP | Ingress lacks momentum; divergence highlights disconnection.
+Compression | XRP, XLM, SLX | XRP compresses, signaling divergence | Compressing | Dropping | Aligned with XRP | Compressing cryptos signal divergence, indicating a need for recalibration.
+
+VERBATIM SOURCE BLOCK
+BEGIN VERBATIM SOURCE
+Foundation | BTC, FET, HBAR, NEAR, RED | BTC stabilizes; XRP compresses | Reinforcing | Stabilizing | Aligned with BTC | Foundational stability anchors the network.
+Connector | ETH, TAO, FIL, WLD | ETH stabilizes relationships | Balancing | Recalibrating | Between BTC & XRP | Connectors facilitate harmony amid divergence.
+Ingress | SOL, RENDER, PEPE, HYPE, AERO | Struggling for connection | Separating | Stagnation | Aligned with XRP | Ingress lacks momentum; divergence highlights disconnection.
+Compression | XRP, XLM, SLX | XRP compresses, signaling divergence | Compressing | Dropping | Aligned with XRP | Compressing cryptos signal divergence, indicating a need for recalibration.
+END VERBATIM SOURCE
