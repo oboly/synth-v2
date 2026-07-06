@@ -91,6 +91,9 @@ def test_run_market_interval_excludes_incomplete_current_week() -> None:
         etl.fetch_bitvavo_candles = original_fetch
 
     assert result["written_rows"] == 0
+    assert result["raw_payload_rows"] == 1
+    assert result["accepted_rows"] == 1
+    assert result["dropped_rows"] == 0
     assert captured_calls == [
         (
             etl.dt_to_ms(datetime(2025, 5, 19, 0, 0, tzinfo=UTC)),
@@ -98,6 +101,32 @@ def test_run_market_interval_excludes_incomplete_current_week() -> None:
             "1w",
         )
     ]
+
+
+def test_run_market_interval_reports_filtering_drops() -> None:
+    original_fetch = etl.fetch_bitvavo_candles
+    try:
+        etl.fetch_bitvavo_candles = lambda **_kwargs: [
+            [1748217600000, "1.0", "2.0", "0.5", "1.5", "12.0"],
+            [1748822400000, "1.0", "2.0", "0.5", "1.5", "12.0"],
+        ]
+        result = etl.run_market_interval(
+            conn=_FakeConn(),
+            session=object(),
+            asset_id=1,
+            market="WLD-EUR",
+            venue="bitvavo",
+            interval_code="1w",
+            start_dt=datetime(2025, 5, 19, 0, 0, tzinfo=UTC),
+            end_dt=datetime(2025, 6, 2, 0, 0, tzinfo=UTC),
+            dry_run=True,
+        )
+    finally:
+        etl.fetch_bitvavo_candles = original_fetch
+
+    assert result["raw_payload_rows"] == 2
+    assert result["accepted_rows"] == 1
+    assert result["dropped_rows"] == 1
 
 
 def _week_gap_rows() -> list[etl.CandleRow]:

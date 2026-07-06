@@ -6,6 +6,8 @@ import inspect
 import json
 import os
 import signal
+import re
+import hashlib
 import sys
 import tempfile
 import time
@@ -27,7 +29,9 @@ from src.etl.bitvavo.etl_bitvavo_candles import debug_logging_enabled as _etl_de
 DEFAULT_CONFIG_PATH = "configs/etl_bitvavo_candles.yaml"
 DEFAULT_VENUE = "bitvavo"
 DEFAULT_QUOTE_ASSET = "EUR"
-DEFAULT_CHECKPOINT_STATE_PATH = "/tmp/synth_runtime/run_candles_etl_last_checkpoint.json"
+DEFAULT_CHECKPOINT_STATE_ROOT = Path("/tmp/synth_runtime")
+DEFAULT_CHECKPOINT_STATE_ENV_VAR = "SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH"
+UNAVAILABLE_SAMPLE_LIMIT = 5
 
 # Bounded-by-default per-task logging (P0-A). Verified measurement: the
 # enabled asset universe is in the hundreds (429 at incident-follow-up
@@ -106,18 +110,66 @@ class CheckpointState:
     interval: str
     completed: int
     total: int
-    rows_written: int
+    rows_written: int | None
     skipped: int
     gap_warnings: int
 
 
-def checkpoint_state_path() -> Path:
-    return Path(
-        os.environ.get(
-            "SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH",
-            DEFAULT_CHECKPOINT_STATE_PATH,
-        )
+def _slugify_checkpoint_component(value: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", value.strip()).strip("-")
+    return slug or "default"
+
+
+def _normalized_config_path_identity(config_path: str) -> tuple[str, str]:
+    normalized = Path(os.path.normpath(config_path)).as_posix()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:8]
+    return normalized, digest
+
+
+def _default_checkpoint_state_path(
+    *,
+    config_path: str,
+    intervals: list[str],
+    wanted_symbols: set[str] | None,
+) -> Path:
+    normalized_config_path, config_hash = _normalized_config_path_identity(config_path)
+    config_slug = _slugify_checkpoint_component(normalized_config_path)
+    interval_slug = _slugify_checkpoint_component(",".join(intervals) if intervals else "none")
+    scope_slug = _slugify_checkpoint_component(
+        ",".join(sorted(wanted_symbols)) if wanted_symbols else "all-enabled"
     )
+    file_name = (
+        f"run_candles_etl__config-{config_slug}-{config_hash}"
+        f"__intervals-{interval_slug}"
+        f"__scope-{scope_slug}.json"
+    )
+    return DEFAULT_CHECKPOINT_STATE_ROOT / file_name
+
+
+def resolve_checkpoint_state_path(
+    *,
+    args: argparse.Namespace,
+    intervals: list[str],
+    wanted_symbols: set[str] | None,
+) -> Path:
+    if args.checkpoint_state_path:
+        return Path(args.checkpoint_state_path)
+    env_override = os.environ.get(DEFAULT_CHECKPOINT_STATE_ENV_VAR)
+    if env_override:
+        return Path(env_override)
+    return _default_checkpoint_state_path(
+        config_path=args.config,
+        intervals=intervals,
+        wanted_symbols=wanted_symbols,
+    )
+
+
+def _fsync_directory(path: Path) -> None:
+    dir_fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def write_checkpoint_state_atomic(path: Path, state: CheckpointState) -> None:
@@ -135,6 +187,7 @@ def write_checkpoint_state_atomic(path: Path, state: CheckpointState) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
+        _fsync_directory(path.parent)
     finally:
         if temp_path.exists():
             temp_path.unlink()
@@ -146,7 +199,7 @@ def checkpoint_identity(state: CheckpointState | None) -> str:
     return (
         f"{state.market}:{state.interval}"
         f"@{state.completed}/{state.total}"
-        f":rows={state.rows_written}"
+        f":rows={'unknown' if state.rows_written is None else state.rows_written}"
         f":gaps={state.gap_warnings}"
     )
 
@@ -194,6 +247,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "the bounded default summary logging. Equivalent to setting "
             f"{DEBUG_ENV_VAR}=1. Use only for manual debugging; do not enable "
             "by default in a scheduled/production run."
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-state-path",
+        default=None,
+        help=(
+            "Explicit checkpoint artifact path. Overrides "
+            f"{DEFAULT_CHECKPOINT_STATE_ENV_VAR} and the derived default."
         ),
     )
     return parser.parse_args(argv)
@@ -501,6 +562,32 @@ def extract_gap_warnings(result: Any) -> int:
     return 0
 
 
+def extract_quality_count(result: Any, key: str) -> int:
+    if isinstance(result, dict):
+        value = result.get(key)
+        if isinstance(value, int):
+            return value
+    return 0
+
+
+def format_unavailable_market_sample(
+    unavailable_market_errors: list[dict[str, str]],
+    *,
+    limit: int = UNAVAILABLE_SAMPLE_LIMIT,
+) -> str:
+    if not unavailable_market_errors:
+        return "[]"
+    sample_entries = [
+        f"{entry['market']}:{entry['interval']}@{entry['http_status']}"
+        for entry in unavailable_market_errors[:limit]
+    ]
+    sample = ", ".join(sample_entries)
+    remainder = len(unavailable_market_errors) - len(sample_entries)
+    if remainder > 0:
+        sample = f"{sample} (+{remainder} more)"
+    return f"[{sample}]"
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     started_at = time.perf_counter()
@@ -514,18 +601,16 @@ def main(argv: list[str] | None = None) -> int:
         os.environ[DEBUG_ENV_VAR] = "1"
     debug = debug_logging_enabled(args)
     progress_every = _progress_every()
-    checkpoint_path = checkpoint_state_path()
-    latest_checkpoint_state: CheckpointState | None = None
 
     wanted_symbols = {value.upper() for value in args.asset} if args.asset else None
     scope = ",".join(sorted(wanted_symbols)) if wanted_symbols else "ALL_ENABLED"
     requested_intervals = [value.strip() for value in args.interval] if args.interval else None
+    latest_checkpoint_state: CheckpointState | None = None
     emit(
         "STARTED run_candles_etl "
         f"ts={run_started_ts} mode={'dry_run' if args.dry_run else 'write'} "
         f"scope={scope} intervals={','.join(requested_intervals or ['FROM_CONFIG'])} "
         f"workers=1 logging_mode={'debug' if debug else 'bounded'} "
-        f"progress_every={progress_every} checkpoint_state_path={checkpoint_path} "
         "broker_private_calls=0 broker_writes=0 order_submission=0 "
         "live_orders=0 decision_gate=none execution_planner=none executor=none"
     )
@@ -540,6 +625,16 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         intervals = requested_intervals or config.intervals
+        checkpoint_path = resolve_checkpoint_state_path(
+            args=args,
+            intervals=intervals,
+            wanted_symbols=wanted_symbols,
+        )
+        emit(
+            "RUN_CONTEXT run_candles_etl "
+            f"resolved_intervals={','.join(intervals)} "
+            f"progress_every={progress_every} checkpoint_state_path={checkpoint_path}"
+        )
         conn = get_db_connection()
     except Exception as exc:
         elapsed = time.perf_counter() - started_at
@@ -581,6 +676,7 @@ def main(argv: list[str] | None = None) -> int:
         # Filter assets to active/trading markets before ETL begins.
         # Fail-open: if the market metadata fetch fails, proceed with all assets.
         skipped_market_errors: list[dict[str, str]] = []
+        unavailable_market_errors: list[dict[str, str]] = []
         active_market_filter_fn = getattr(module, "fetch_active_bitvavo_markets", None)
         if callable(active_market_filter_fn):
             try:
@@ -624,6 +720,9 @@ def main(argv: list[str] | None = None) -> int:
 
         total_written = 0
         total_gap_warnings = 0
+        total_raw_payload_rows = 0
+        total_accepted_rows = 0
+        total_dropped_rows = 0
         total_tasks = len(assets) * len(intervals)
         completed_tasks = 0
         skipped_tasks = 0
@@ -666,34 +765,47 @@ def main(argv: list[str] | None = None) -> int:
                         dry_run=args.dry_run,
                     )
                 except MarketUnavailableError as exc:
-                    emit(
-                        f"SKIPPED_MARKET_ERROR market={asset.market} "
-                        f"interval={interval_code} "
-                        f"reason=MARKET_UNAVAILABLE "
-                        f"http_status={exc.http_status}"
-                    )
-                    skipped_market_errors.append(
-                        {
-                            "market": asset.market,
-                            "interval": interval_code,
-                            "reason": "MARKET_UNAVAILABLE",
-                            "http_status": str(exc.http_status),
-                        }
-                    )
+                    unavailable_entry = {
+                        "market": asset.market,
+                        "interval": interval_code,
+                        "reason": "MARKET_UNAVAILABLE",
+                        "http_status": str(exc.http_status),
+                    }
+                    if debug:
+                        emit(
+                            f"SKIPPED_MARKET_ERROR market={asset.market} "
+                            f"interval={interval_code} "
+                            f"reason=MARKET_UNAVAILABLE "
+                            f"http_status={exc.http_status}"
+                        )
+                    skipped_market_errors.append(unavailable_entry)
+                    unavailable_market_errors.append(unavailable_entry)
                     skipped_tasks += 1
                     completed_tasks += 1
-                    emit(
-                        f"PROGRESS run_candles_etl completed={completed_tasks}/{total_tasks} "
-                        f"skipped={skipped_tasks} total_rows={total_written} "
-                        f"gap_warnings={total_gap_warnings} "
-                        f"checkpoint_state_path={checkpoint_path} "
-                        f"latest_checkpoint={checkpoint_identity(latest_checkpoint_state)} "
-                        f"elapsed_s={time.perf_counter() - started_at:.3f}"
+                    emit_task_detail = debug or _should_emit_task_heartbeat(
+                        completed_tasks, total_tasks, progress_every
                     )
+                    if emit_task_detail:
+                        emit(
+                            f"PROGRESS run_candles_etl completed={completed_tasks}/{total_tasks} "
+                            f"skipped={skipped_tasks} total_rows={total_written} "
+                            f"raw_payload_rows={total_raw_payload_rows} "
+                            f"accepted_rows={total_accepted_rows} "
+                            f"dropped_rows={total_dropped_rows} "
+                            f"gap_warnings={total_gap_warnings} "
+                            f"unavailable_market_errors={len(unavailable_market_errors)} "
+                            f"unavailable_market_sample={format_unavailable_market_sample(unavailable_market_errors)} "
+                            f"checkpoint_state_path={checkpoint_path} "
+                            f"latest_checkpoint={checkpoint_identity(latest_checkpoint_state)} "
+                            f"elapsed_s={time.perf_counter() - started_at:.3f}"
+                        )
                     continue
 
                 written = extract_written_rows(result)
                 total_gap_warnings += extract_gap_warnings(result)
+                total_raw_payload_rows += extract_quality_count(result, "raw_payload_rows")
+                total_accepted_rows += extract_quality_count(result, "accepted_rows")
+                total_dropped_rows += extract_quality_count(result, "dropped_rows")
                 if written is not None:
                     total_written += written
                     if written == 0:
@@ -711,7 +823,7 @@ def main(argv: list[str] | None = None) -> int:
                         interval=interval_code,
                         completed=completed_tasks + 1,
                         total=total_tasks,
-                        rows_written=written if written >= 0 else 0,
+                        rows_written=written if written >= 0 else None,
                         skipped=skipped_tasks,
                         gap_warnings=total_gap_warnings,
                     )
@@ -736,7 +848,12 @@ def main(argv: list[str] | None = None) -> int:
                     emit(
                         f"PROGRESS run_candles_etl completed={completed_tasks}/{total_tasks} "
                         f"skipped={skipped_tasks} total_rows={total_written} "
+                        f"raw_payload_rows={total_raw_payload_rows} "
+                        f"accepted_rows={total_accepted_rows} "
+                        f"dropped_rows={total_dropped_rows} "
                         f"gap_warnings={total_gap_warnings} "
+                        f"unavailable_market_errors={len(unavailable_market_errors)} "
+                        f"unavailable_market_sample={format_unavailable_market_sample(unavailable_market_errors)} "
                         f"checkpoint_state_path={checkpoint_path} "
                         f"latest_checkpoint={checkpoint_identity(latest_checkpoint_state)} "
                         f"elapsed_s={time.perf_counter() - started_at:.3f}"
@@ -745,7 +862,12 @@ def main(argv: list[str] | None = None) -> int:
         emit(
             f"FINISHED run_candles_etl elapsed_s={time.perf_counter() - started_at:.3f} "
             f"task_count={completed_tasks} total_rows={total_written} skipped={skipped_tasks} "
+            f"raw_payload_rows={total_raw_payload_rows} "
+            f"accepted_rows={total_accepted_rows} "
+            f"dropped_rows={total_dropped_rows} "
             f"skipped_market_errors={len(skipped_market_errors)} "
+            f"unavailable_market_errors={len(unavailable_market_errors)} "
+            f"unavailable_market_sample={format_unavailable_market_sample(unavailable_market_errors)} "
             f"gap_warnings_total={total_gap_warnings} logging_mode={'debug' if debug else 'bounded'} "
             f"checkpoint_state_path={checkpoint_path} "
             f"latest_checkpoint={checkpoint_identity(latest_checkpoint_state)}"

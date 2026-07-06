@@ -79,34 +79,51 @@ Tasks and evidence:
 - **Implemented** bounded default production output: phase start/end,
   aggregate counts, elapsed time, concise failure summary. No per-market
   candle chunk rows, no repeated per-gap warning lines, and no per-commit
-  checkpoint syslog flood in normal mode.
+  checkpoint syslog flood in normal mode. `STARTED run_candles_etl` now
+  emits immediately before config load with the already-known request
+  context; a later `RUN_CONTEXT run_candles_etl` line records resolved
+  intervals and the effective checkpoint artifact path.
   (`src/etl/bitvavo/run_candles_etl.py`, `src/etl/bitvavo/etl_bitvavo_candles.py`)
 - **Implemented** exact per-commit checkpoint preservation without journal
   spam: after every successful DB commit, `run_candles_etl.py` atomically
-  replaces a single last-success artifact at
-  `/tmp/synth_runtime/run_candles_etl_last_checkpoint.json` by default
-  (override via `SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH`). It records the
+  replaces a single last-success artifact whose default path is derived per
+  effective config path, interval set, and scope under `/tmp/synth_runtime/`.
+  Path precedence is explicit CLI `--checkpoint-state-path`, then
+  `SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH`, then the derived default. The
+  paper-advice wrapper passes its own explicit stable path via
+  `SYNTH_PAPER_ADVICE_LIFECYCLE_CHECKPOINT_STATE_PATH`. The JSON records the
   run identifier, status, UTC timestamp, venue, market, interval,
-  completed/total, rows written, skipped count, and aggregate gap-warning
-  count. The file is intentionally preserved across interruption/failure so
-  operators can inspect the exact final successful checkpoint after a run
-  aborts.
+  completed/total, `rows_written` (using JSON `null` when unknown), skipped
+  count, and aggregate gap-warning count. The temp file is fsynced, then
+  replaced, then the parent directory is fsynced; pre-replace failures leave
+  the prior valid artifact intact. The file is intentionally preserved across
+  interruption/failure so operators can inspect the exact final successful
+  checkpoint after a run aborts.
 - **Implemented** gap-warning aggregation: each chunk's gap count is summed
   into a single `gap_warnings_total=N` on the run's `FINISHED` line, instead
   of one `[ETL][WARN]` line per gap.
+- **Implemented** row-quality aggregate visibility in normal bounded mode:
+  `raw_payload_rows`, `accepted_rows`, and `dropped_rows` are summed into the
+  bounded heartbeat and final summary lines.
 - **Implemented** an explicit debug switch (`SYNTH_CANDLES_ETL_DEBUG=1` env
   var, or `--debug-logging` CLI flag) that restores the full original
   per-task/per-chunk/per-gap verbose output for manual debugging only.
+- **Implemented** bounded unavailable-market reporting:
+  `MarketUnavailableError` rows are aggregated in normal mode as
+  `unavailable_market_errors=N unavailable_market_sample=[...]`, while debug
+  mode emits one `SKIPPED_MARKET_ERROR ...` line per market/interval.
 - **Implemented** a disk/log health check
   (`src/operations/run_runtime_disk_log_health_v1.py`) and wired it into
   `scripts/odroid/run_paper_advice_lifecycle_refresh_once.sh` immediately
   after lock acquisition, before any candle ETL. Read-only
-  (`shutil.disk_usage` / `os.path.getsize`; no DB, no network, no broker
-  call). Reports `OK`/`WARN`/`CRITICAL` for the filesystem backing the repo
-  directory, with an optional named-log-file size check and optional
+  (`os.statvfs` using `f_bavail` writer-available capacity, plus optional
+  `os.path.getsize`; no DB, no network, no broker call). Reports
+  `OK`/`WARN`/`CRITICAL` for the filesystem backing the repo directory,
+  treating reserved capacity as unavailable to the non-root runtime user, so
+  `CRITICAL` can surface before the service user hits `ENOSPC`. Optional
   `SYNTH_DISK_HEALTH_LOG_WARN_BYTES` /
-  `SYNTH_DISK_HEALTH_LOG_CRITICAL_BYTES` overrides forwarded through to the
-  runner. On `CRITICAL`, the
+  `SYNTH_DISK_HEALTH_LOG_CRITICAL_BYTES` overrides are forwarded through to
+  the runner. On `CRITICAL`, the
   wrapper prints `[DISK_HEALTH][CRITICAL]` and exits non-zero **before**
   reaching the ETL window computation — confirmed by a local smoke test
   that forced `CRITICAL` via threshold override and observed the script

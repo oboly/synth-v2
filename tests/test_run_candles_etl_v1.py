@@ -88,15 +88,43 @@ def test_runner_emits_started_progress_checkpoint_and_finished_summary() -> None
 
     assert code == 0
     assert "STARTED run_candles_etl" in text
+    assert "intervals=1w" in text.splitlines()[0]
+    assert "RUN_CONTEXT run_candles_etl resolved_intervals=1w" in text
     assert "PHASE_STARTED load_assets" in text
     assert "QUERY_RESULT name=load_assets rows=1" in text
     assert "PROGRESS run_candles_etl completed=1/1" in text
     assert "checkpoint_state_path=" in text
     assert "latest_checkpoint=SYM1-EUR:1w@1/1:rows=3:gaps=0" in text
+    assert "raw_payload_rows=0 accepted_rows=0 dropped_rows=0" in text
     assert "FINISHED run_candles_etl" in text
     assert conn.commits == 1
     assert conn.rollbacks == 0
     assert conn.closed is True
+
+
+def test_started_is_emitted_before_config_failure_and_failed_summary_is_unique() -> None:
+    originals = {
+        "load_config": runner.load_config,
+        "get_db_connection": runner.get_db_connection,
+    }
+    try:
+        runner.load_config = lambda _path: (_ for _ in ()).throw(FileNotFoundError("missing config"))
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w"])
+        text = buf.getvalue()
+    finally:
+        for name, value in originals.items():
+            setattr(runner, name, value)
+        os.environ.pop("SYNTH_CANDLES_ETL_DEBUG", None)
+        os.environ.pop("SYNTH_CANDLES_ETL_PROGRESS_EVERY", None)
+        os.environ.pop("SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH", None)
+
+    lines = text.splitlines()
+    assert code == 1
+    assert lines[0].startswith("STARTED run_candles_etl ")
+    assert lines[-1].startswith("FAILED run_candles_etl ")
+    assert text.count("FAILED run_candles_etl ") == 1
 
 
 def test_bounded_default_mode_suppresses_per_task_chatter_and_heartbeats() -> None:
@@ -132,6 +160,7 @@ def test_bounded_default_mode_suppresses_per_task_chatter_and_heartbeats() -> No
     assert "FINISHED run_candles_etl" in text
     assert "task_count=120" in text
     assert "total_rows=120" in text
+    assert "raw_payload_rows=0 accepted_rows=0 dropped_rows=0" in text
 
 
 def test_debug_mode_preserves_full_per_task_detail() -> None:
@@ -188,6 +217,28 @@ def test_gap_warnings_are_aggregated_in_progress_and_finished_lines() -> None:
 
     assert code == 0
     assert "gap_warnings_total=4" in text
+
+
+def test_quality_aggregates_are_summed_in_progress_and_finished_lines() -> None:
+    def fake_call(_etl_fn, *, asset, **_kwargs):
+        return {
+            "written_rows": 1,
+            "gap_warnings": 0,
+            "raw_payload_rows": 5,
+            "accepted_rows": 3,
+            "dropped_rows": 2,
+        }
+
+    with _patched_runner(asset_count=4, call_etl_result=fake_call):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w", "--debug-logging"])
+        text = buf.getvalue()
+
+    assert code == 0
+    assert "raw_payload_rows=20" in text
+    assert "accepted_rows=12" in text
+    assert "dropped_rows=8" in text
 
 
 def test_each_successful_commit_updates_checkpoint_state_between_heartbeats(tmp_path: Path) -> None:
@@ -272,10 +323,88 @@ def test_interruption_retains_exact_final_successful_checkpoint(tmp_path: Path) 
     assert "latest_checkpoint=SYM2-EUR:1w@2/5:rows=1:gaps=0" in text
 
 
+def test_checkpoint_json_preserves_unknown_rows_written(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "runtime" / "last_checkpoint.json"
+    with _patched_runner(asset_count=1, call_etl_result={"gap_warnings": 0}) as conn:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(
+                ["--interval", "1w", "--checkpoint-state-path", str(checkpoint_path)]
+            )
+        text = buf.getvalue()
+
+    payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert code == 0
+    assert conn.commits == 1
+    assert payload["rows_written"] is None
+    assert "latest_checkpoint=SYM1-EUR:1w@1/1:rows=unknown:gaps=0" in text
+
+
+def test_cli_checkpoint_state_path_overrides_env(tmp_path: Path) -> None:
+    env_path = tmp_path / "env.json"
+    cli_path = tmp_path / "cli.json"
+    os.environ["SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH"] = str(env_path)
+    with _patched_runner(asset_count=1, call_etl_result={"written_rows": 1}) as conn:
+        code = runner.main(
+            ["--interval", "1w", "--checkpoint-state-path", str(cli_path)]
+        )
+    assert code == 0
+    assert conn.commits == 1
+    assert cli_path.exists()
+    assert not env_path.exists()
+
+
+def test_default_checkpoint_state_path_is_scope_and_interval_specific() -> None:
+    args = runner.parse_args(
+        [
+            "--config",
+            "configs/etl_bitvavo_candles.yaml",
+            "--asset",
+            "BTC",
+            "--asset",
+            "ETH",
+            "--interval",
+            "1h",
+            "--interval",
+            "4h",
+        ]
+    )
+    path = runner.resolve_checkpoint_state_path(
+        args=args,
+        intervals=["1h", "4h"],
+        wanted_symbols={"BTC", "ETH"},
+    )
+    normalized, digest = runner._normalized_config_path_identity("configs/etl_bitvavo_candles.yaml")
+    config_slug = runner._slugify_checkpoint_component(normalized)
+    assert path == Path(
+        "/tmp/synth_runtime/"
+        f"run_candles_etl__config-{config_slug}-{digest}__intervals-1h-4h__scope-BTC-ETH.json"
+    )
+
+
+def test_default_checkpoint_state_path_does_not_collide_for_same_basename() -> None:
+    args_one = runner.parse_args(["--config", "configs/etl/candles.yaml", "--interval", "1h"])
+    args_two = runner.parse_args(["--config", "other/candles.yaml", "--interval", "1h"])
+    path_one = runner.resolve_checkpoint_state_path(
+        args=args_one,
+        intervals=["1h"],
+        wanted_symbols=None,
+    )
+    path_two = runner.resolve_checkpoint_state_path(
+        args=args_two,
+        intervals=["1h"],
+        wanted_symbols=None,
+    )
+    assert path_one != path_two
+    assert path_one.name.startswith("run_candles_etl__config-configs-etl-candles.yaml-")
+    assert path_two.name.startswith("run_candles_etl__config-other-candles.yaml-")
+
+
 def test_checkpoint_artifact_writes_are_atomic(tmp_path: Path, monkeypatch) -> None:
     checkpoint_path = tmp_path / "runtime" / "last_checkpoint.json"
     os.environ["SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH"] = str(checkpoint_path)
     replace_calls: list[tuple[str, str]] = []
+    fsync_dirs: list[Path] = []
     original_replace = runner.os.replace
 
     def fake_replace(src, dst):
@@ -285,6 +414,7 @@ def test_checkpoint_artifact_writes_are_atomic(tmp_path: Path, monkeypatch) -> N
         original_replace(src, dst)
 
     monkeypatch.setattr(runner.os, "replace", fake_replace)
+    monkeypatch.setattr(runner, "_fsync_directory", lambda path: fsync_dirs.append(path))
     with _patched_runner(asset_count=3, call_etl_result={"written_rows": 1, "gap_warnings": 0}) as conn:
         code = runner.main(["--interval", "1w"])
 
@@ -292,9 +422,29 @@ def test_checkpoint_artifact_writes_are_atomic(tmp_path: Path, monkeypatch) -> N
     assert conn.commits == 3
     assert len(replace_calls) == 3
     assert all(dst == str(checkpoint_path) for _, dst in replace_calls)
+    assert fsync_dirs == [checkpoint_path.parent, checkpoint_path.parent, checkpoint_path.parent]
     assert checkpoint_path.exists()
     leftovers = [p for p in checkpoint_path.parent.iterdir() if p.name != checkpoint_path.name]
     assert leftovers == []
+
+
+def test_checkpoint_write_failure_preserves_prior_valid_artifact(tmp_path: Path, monkeypatch) -> None:
+    checkpoint_path = tmp_path / "runtime" / "last_checkpoint.json"
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_text('{"status":"prior","rows_written":7}\n', encoding="utf-8")
+    os.environ["SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH"] = str(checkpoint_path)
+    monkeypatch.setattr(runner.os, "replace", lambda *_args: (_ for _ in ()).throw(OSError("replace failed")))
+
+    with _patched_runner(asset_count=1, call_etl_result={"written_rows": 1}) as conn:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w"])
+        text = buf.getvalue()
+
+    assert code == 1
+    assert conn.commits == 1
+    assert checkpoint_path.read_text(encoding="utf-8") == '{"status":"prior","rows_written":7}\n'
+    assert "FAILED run_candles_etl" in text
 
 
 def test_dry_run_does_not_claim_db_checkpoint_write(tmp_path: Path) -> None:
@@ -335,6 +485,67 @@ def test_inactive_markets_aggregated_by_default_not_one_line_each() -> None:
     assert code == 0
     assert "SKIPPED_MARKET market=" not in text  # no per-market lines by default
     assert "SKIPPED_MARKETS_INACTIVE count=14" in text
+
+
+def test_unavailable_markets_are_aggregated_in_bounded_mode() -> None:
+    def fake_call(_etl_fn, *, asset, interval_code, **_kwargs):
+        raise runner.MarketUnavailableError(
+            market=asset.market,
+            interval_code=interval_code,
+            http_status=404,
+        )
+
+    with _patched_runner(asset_count=12, call_etl_result=fake_call):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w"])
+        text = buf.getvalue()
+
+    assert code == 0
+    assert "SKIPPED_MARKET_ERROR market=" not in text
+    assert "unavailable_market_errors=12" in text
+    assert "unavailable_market_sample=[SYM1-EUR:1w@404" in text
+    assert "(+7 more)]" in text
+
+
+def test_unavailable_markets_debug_mode_preserves_detail() -> None:
+    def fake_call(_etl_fn, *, asset, interval_code, **_kwargs):
+        raise runner.MarketUnavailableError(
+            market=asset.market,
+            interval_code=interval_code,
+            http_status=400,
+        )
+
+    with _patched_runner(asset_count=2, call_etl_result=fake_call):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w", "--debug-logging"])
+        text = buf.getvalue()
+
+    assert code == 0
+    assert text.count("SKIPPED_MARKET_ERROR market=") == 2
+
+
+def test_large_unavailable_market_run_output_remains_bounded() -> None:
+    def fake_call(_etl_fn, *, asset, interval_code, **_kwargs):
+        raise runner.MarketUnavailableError(
+            market=asset.market,
+            interval_code=interval_code,
+            http_status=404,
+        )
+
+    with _patched_runner(asset_count=250, call_etl_result=fake_call):
+        os.environ["SYNTH_CANDLES_ETL_PROGRESS_EVERY"] = "50"
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w"])
+        text = buf.getvalue()
+
+    assert code == 0
+    progress_lines = [line for line in text.splitlines() if line.startswith("PROGRESS run_candles_etl")]
+    assert len(progress_lines) == 6
+    assert "unavailable_market_errors=250" in text
+    assert text.count("SKIPPED_MARKET_ERROR market=") == 0
 
 
 def test_runner_has_no_forbidden_imports_or_order_strings() -> None:

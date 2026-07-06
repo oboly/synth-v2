@@ -72,6 +72,71 @@ def test_wrapper_forwards_log_threshold_overrides(tmp_path: Path) -> None:
     assert "222" in args
 
 
+def test_wrapper_passes_explicit_stable_checkpoint_state_path(tmp_path: Path) -> None:
+    repo_dir = Path.cwd()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    capture_path = tmp_path / "capture.json"
+    fake_python = fake_bin / "python"
+    fake_python.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env python3",
+                "from __future__ import annotations",
+                "import json",
+                "import os",
+                "import sys",
+                "from pathlib import Path",
+                "capture = Path(os.environ['FAKE_PYTHON_CAPTURE_PATH'])",
+                "args = sys.argv[1:]",
+                "if args[:2] == ['-m', 'src.operations.run_runtime_disk_log_health_v1']:",
+                "    raise SystemExit(0)",
+                "if args[:2] == ['-m', 'src.etl.bitvavo.run_candles_etl']:",
+                "    capture.write_text(json.dumps(args), encoding='utf-8')",
+                "    raise SystemExit(0)",
+                "if args and args[0] == '-':",
+                "    if len(args) == 2:",
+                "        print('2026-07-01T00:00:00+00:00 2026-07-01T06:00:00+00:00')",
+                "    raise SystemExit(0)",
+                "raise SystemExit(0)",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(fake_python.stat().st_mode | stat.S_IEXEC)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "VIRTUAL_ENV": str(tmp_path / "venv"),
+            "SYNTH_REPO_DIR": str(repo_dir),
+            "SYNTH_PAPER_ADVICE_LIFECYCLE_LOCK": str(tmp_path / "lock"),
+            "SYNTH_DISK_HEALTH_PATH": str(repo_dir),
+            "SYNTH_PAPER_ADVICE_LIFECYCLE_CHECKPOINT_STATE_PATH": str(
+                tmp_path / "custom-checkpoint.json"
+            ),
+            "FAKE_PYTHON_CAPTURE_PATH": str(capture_path),
+            "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT_PATH)],
+        cwd=repo_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    args = json.loads(capture_path.read_text(encoding="utf-8"))
+    assert result.returncode == 0
+    assert "--checkpoint-state-path" in args
+    idx = args.index("--checkpoint-state-path")
+    assert args[idx + 1] == str(tmp_path / "custom-checkpoint.json")
+
+
 def test_wrapper_does_not_silently_ignore_invalid_log_threshold_overrides(tmp_path: Path) -> None:
     repo_dir = Path.cwd()
     env = os.environ.copy()

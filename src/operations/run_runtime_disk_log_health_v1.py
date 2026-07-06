@@ -27,7 +27,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
@@ -63,8 +62,11 @@ class DiskHealthResult:
     exists: bool
     total_bytes: int
     used_bytes: int
-    free_bytes: int
-    used_pct: float
+    root_free_bytes: int
+    writer_available_bytes: int
+    reserved_unavailable_bytes: int
+    writer_available_pct: float
+    writer_used_pct: float
     warn_pct: float
     critical_pct: float
     status: str
@@ -118,17 +120,29 @@ def check_disk_health(
         )
 
     exists = os.path.exists(path)
-    usage = shutil.disk_usage(path)
-    used_pct = (usage.used / usage.total * 100.0) if usage.total > 0 else 0.0
-    status = _status_for_ratio(used_pct, warn_pct, critical_pct)
+    stat = os.statvfs(path)
+    block_size = stat.f_frsize or stat.f_bsize
+    total_bytes = stat.f_blocks * block_size
+    root_free_bytes = stat.f_bfree * block_size
+    writer_available_bytes = stat.f_bavail * block_size
+    reserved_unavailable_bytes = max(root_free_bytes - writer_available_bytes, 0)
+    used_bytes = max(total_bytes - root_free_bytes, 0)
+    writer_available_pct = (
+        writer_available_bytes / total_bytes * 100.0 if total_bytes > 0 else 0.0
+    )
+    writer_used_pct = 100.0 - writer_available_pct if total_bytes > 0 else 0.0
+    status = _status_for_ratio(writer_used_pct, warn_pct, critical_pct)
 
     return DiskHealthResult(
         path=path,
         exists=exists,
-        total_bytes=usage.total,
-        used_bytes=usage.used,
-        free_bytes=usage.free,
-        used_pct=round(used_pct, 2),
+        total_bytes=total_bytes,
+        used_bytes=used_bytes,
+        root_free_bytes=root_free_bytes,
+        writer_available_bytes=writer_available_bytes,
+        reserved_unavailable_bytes=reserved_unavailable_bytes,
+        writer_available_pct=round(writer_available_pct, 2),
+        writer_used_pct=round(writer_used_pct, 2),
         warn_pct=warn_pct,
         critical_pct=critical_pct,
         status=status,
@@ -175,7 +189,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=(
             "Deterministic read-only disk/log health check. Does not call any "
             "broker, does not write the database, does not rotate or delete "
-            "any log. broker_calls=0 broker_writes=0 order_submission=0 "
+            "any log. broker_private_calls=0 broker_writes=0 order_submission=0 "
             "decision_gate=none execution_planner=none executor=none"
         )
     )
@@ -203,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"STARTED {RUNNER_NAME} version={RUNNER_VERSION} path={args.path} "
         f"log_paths={','.join(args.log_path) if args.log_path else 'NONE'} "
-        "broker_calls=0 broker_writes=0 order_submission=0 live_orders=0 "
+        "broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0 "
         "decision_gate=none execution_planner=none executor=none"
     )
 
@@ -241,7 +255,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(
             f"DISK path={disk_result.path} status={disk_result.status} "
-            f"used_pct={disk_result.used_pct} free_bytes={disk_result.free_bytes} "
+            f"writer_used_pct={disk_result.writer_used_pct} "
+            f"writer_available_pct={disk_result.writer_available_pct} "
+            f"writer_available_bytes={disk_result.writer_available_bytes} "
+            f"root_free_bytes={disk_result.root_free_bytes} "
+            f"reserved_unavailable_bytes={disk_result.reserved_unavailable_bytes} "
             f"total_bytes={disk_result.total_bytes} warn_pct={disk_result.warn_pct} "
             f"critical_pct={disk_result.critical_pct}"
         )

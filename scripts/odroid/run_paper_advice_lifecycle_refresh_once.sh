@@ -5,12 +5,14 @@ REPO_DIR="${SYNTH_REPO_DIR:-$HOME/projects/synth-v2}"
 LOCK_FILE="${SYNTH_PAPER_ADVICE_LIFECYCLE_LOCK:-/tmp/synth-paper-advice-lifecycle-refresh.lock}"
 VENUE="${SYNTH_PAPER_ADVICE_VENUE:-bitvavo}"
 LIFECYCLE_CANDLE_INTERVAL="${SYNTH_PAPER_ADVICE_LIFECYCLE_INTERVAL:-15m}"
+CHECKPOINT_STATE_PATH="${SYNTH_PAPER_ADVICE_LIFECYCLE_CHECKPOINT_STATE_PATH:-/tmp/synth_runtime/paper_advice_lifecycle_refresh_${LIFECYCLE_CANDLE_INTERVAL}_checkpoint.json}"
 
 echo "paper_advice_lifecycle_refresh_once starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0"
 echo "decision_gate_changes=0 execution_planner_changes=0 executor_changes=0"
 echo "repo_dir=${REPO_DIR}"
 echo "lifecycle_candle_interval=${LIFECYCLE_CANDLE_INTERVAL}"
+echo "checkpoint_state_path=${CHECKPOINT_STATE_PATH}"
 
 cd "${REPO_DIR}"
 
@@ -95,7 +97,8 @@ echo "etl_window_end=${END}"
 python -m src.etl.bitvavo.run_candles_etl \
   --interval "${LIFECYCLE_CANDLE_INTERVAL}" \
   --start "${START}" \
-  --end "${END}"
+  --end "${END}" \
+  --checkpoint-state-path "${CHECKPOINT_STATE_PATH}"
 
 echo "--- lifecycle candle freshness ---"
 python - "${VENUE}" "${LIFECYCLE_CANDLE_INTERVAL}" <<'PY'

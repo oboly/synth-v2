@@ -192,24 +192,41 @@ lead, not a byte-for-byte proof of that specific incident's total growth.
   aggregate counts, elapsed duration, and a concise failure summary. No
   per-market candle chunk rows, no repeated per-gap warning lines, and no
   per-commit checkpoint stdout/syslog flood.
+- `STARTED run_candles_etl` is emitted immediately before config load with the
+  already-known request context (`ts`, mode, requested scope, requested
+  intervals or `FROM_CONFIG`, worker count, logging mode, safety markers).
+  After config load, a concise `RUN_CONTEXT run_candles_etl` line records the
+  resolved intervals plus the effective `checkpoint_state_path`.
 - Inactive/delisted markets are reported as one aggregate
   `SKIPPED_MARKETS_INACTIVE count=N sample=[...]` line instead of one line
   per market.
 - Gap warnings are counted per chunk and summed into `gap_warnings_total=N`
   on the `FINISHED` line, instead of one `[ETL][WARN]` line per gap.
+- Normal bounded `PROGRESS` / `FINISHED` output now also aggregates
+  `raw_payload_rows`, `accepted_rows`, and `dropped_rows` so row-quality drift
+  is visible without re-enabling per-chunk logs.
 - Exact per-commit checkpoint state is preserved separately in a single
-  atomically replaced artifact at
-  `/tmp/synth_runtime/run_candles_etl_last_checkpoint.json` by default
-  (override via `SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH`). It records the
-  last successful DB commit only, is updated after every commit, and is
-  intentionally retained across interruption/failure so operators can inspect
-  the exact final committed market/interval without relying on journal spam.
+  atomically replaced artifact whose default path is derived from the
+  effective config path, interval set, and scope under `/tmp/synth_runtime/`.
+  Precedence is: explicit `--checkpoint-state-path`, then
+  `SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH`, then the derived default. The
+  paper-advice wrapper intentionally passes its own explicit stable path via
+  `SYNTH_PAPER_ADVICE_LIFECYCLE_CHECKPOINT_STATE_PATH`. The JSON records the
+  last successful DB commit only, is updated after every commit, preserves
+  unknown `rows_written` as JSON `null` instead of silently coercing to zero,
+  and is intentionally retained across interruption/failure so operators can
+  inspect the exact final committed market/interval without relying on journal
+  spam.
+- Checkpoint durability is fail-visible: the temp file is flushed and fsynced,
+  then `os.replace(...)` swaps it into place, then the parent directory is
+  fsynced. A pre-replace failure preserves the prior valid artifact.
 - Bounded `PROGRESS` / `FINISHED` / `INTERRUPTED` / `FAILED` lines include
   both the checkpoint artifact path and the latest checkpoint identity so an
   interrupted run can be followed directly to the preserved artifact.
 - Genuine per-market failures (`MarketUnavailableError`, HTTP 400/404) remain
-  always visible via `SKIPPED_MARKET_ERROR` — failure visibility is not
-  reduced by this change.
+  visible without unbounded log growth: normal mode aggregates
+  `unavailable_market_errors=N unavailable_market_sample=[...]`, while debug
+  mode emits the individual `SKIPPED_MARKET_ERROR ...` lines.
 - Full original verbose per-task/per-chunk/per-gap detail is preserved
   behind an explicit debug switch: `SYNTH_CANDLES_ETL_DEBUG=1` (env var, read
   by both modules) or `--debug-logging` (CLI flag on `run_candles_etl.py`,
@@ -220,12 +237,16 @@ lead, not a byte-for-byte proof of that specific incident's total growth.
 wired into `scripts/odroid/run_paper_advice_lifecycle_refresh_once.sh`):
 
 - Runs immediately after lock acquisition, before any candle ETL.
-- Read-only: `shutil.disk_usage` / `os.path.getsize` only — no DB access, no
-  network call, no broker call, no deletion or rotation.
+- Read-only: `os.statvfs` (`f_bavail`-based writer-available capacity) plus
+  optional `os.path.getsize` for named logs — no DB access, no network call,
+  no broker call, no deletion or rotation.
 - Reports `OK` / `WARN` / `CRITICAL` for the filesystem backing the repo
-  directory (percentage-based thresholds, default warn=85%, critical=95% —
-  override via `SYNTH_DISK_HEALTH_WARN_PCT` / `SYNTH_DISK_HEALTH_CRITICAL_PCT`;
-  review these against the actual host's disk size before relying on them).
+  directory using non-root writer-available capacity (`f_bavail`) rather than
+  root-visible free space, so reserved blocks can trigger `CRITICAL` before a
+  normal runtime user hits `ENOSPC`. Thresholds remain percentage-based
+  (default warn=85%, critical=95% — override via
+  `SYNTH_DISK_HEALTH_WARN_PCT` / `SYNTH_DISK_HEALTH_CRITICAL_PCT`; review
+  these against the actual host's disk size before relying on them).
   An optional named log file can also be checked by absolute size via
   `SYNTH_DISK_HEALTH_LOG_PATH` (with `SYNTH_DISK_HEALTH_LOG_WARN_BYTES` /
   `SYNTH_DISK_HEALTH_LOG_CRITICAL_BYTES`, forwarded to the runner as

@@ -464,8 +464,9 @@ def run_market_interval(
 ) -> dict[str, int]:
     """Run ETL for one (asset, interval) pair.
 
-    Returns a dict with `written_rows`, `chunks`, and `gap_warnings` (always
-    present, even in the empty-window/no-op case) so the caller
+    Returns a dict with `written_rows`, `chunks`, `gap_warnings`,
+    `raw_payload_rows`, `accepted_rows`, and `dropped_rows` (always present,
+    even in the empty-window/no-op case) so the caller
     (run_candles_etl.py) can build a bounded aggregate summary without
     relying on this function's own print statements, which are gated behind
     `debug_logging_enabled()` by default (P0-A).
@@ -482,7 +483,14 @@ def run_market_interval(
                 f"[ETL] skip market={market} interval={interval_code} "
                 f"reason=empty_window start={start_dt.isoformat()} end={end_dt.isoformat()}"
             )
-        return {"written_rows": 0, "chunks": 0, "gap_warnings": 0}
+        return {
+            "written_rows": 0,
+            "chunks": 0,
+            "gap_warnings": 0,
+            "raw_payload_rows": 0,
+            "accepted_rows": 0,
+            "dropped_rows": 0,
+        }
 
     interval_ms = interval_to_ms(interval_code)
     limit = min(batch_limit, BITVAVO_MAX_LIMIT)
@@ -494,6 +502,9 @@ def run_market_interval(
     window_start_ms = aligned_start_ms
     total_written = 0
     total_gap_warnings = 0
+    total_raw_payload_rows = 0
+    total_accepted_rows = 0
+    total_dropped_rows = 0
     chunk_idx = 0
 
     while window_start_ms < aligned_end_ms:
@@ -522,6 +533,12 @@ def run_market_interval(
             start_dt=ms_to_dt(window_start_ms),
             end_dt=ms_to_dt(window_end_ms),
         )
+        raw_count = len(raw_payload)
+        accepted_count = len(filtered_rows)
+        dropped_count = max(raw_count - accepted_count, 0)
+        total_raw_payload_rows += raw_count
+        total_accepted_rows += accepted_count
+        total_dropped_rows += dropped_count
 
         total_gap_warnings += validate_chunk_rows(
             rows=filtered_rows,
@@ -554,8 +571,9 @@ def run_market_interval(
                 f"[ETL] chunk={chunk_idx} market={market} interval={interval_code} "
                 f"window_start={ms_to_dt(window_start_ms).isoformat()} "
                 f"window_end={ms_to_dt(window_end_ms).isoformat()} "
-                f"raw_count={len(raw_payload)} "
-                f"filtered_count={len(filtered_rows)} "
+                f"raw_count={raw_count} "
+                f"accepted_count={accepted_count} "
+                f"dropped_count={dropped_count} "
                 f"first_raw_ts={first_raw_ts} "
                 f"last_raw_ts={last_raw_ts}"
             )
@@ -570,7 +588,17 @@ def run_market_interval(
             f"[ETL] done market={market} interval={interval_code} "
             f"start={start_dt.isoformat()} end={end_dt.isoformat()} "
             f"written={total_written} dry_run={dry_run} "
-            f"chunks={chunk_idx} gap_warnings={total_gap_warnings}"
+            f"chunks={chunk_idx} gap_warnings={total_gap_warnings} "
+            f"raw_payload_rows={total_raw_payload_rows} "
+            f"accepted_rows={total_accepted_rows} "
+            f"dropped_rows={total_dropped_rows}"
         )
 
-    return {"written_rows": total_written, "chunks": chunk_idx, "gap_warnings": total_gap_warnings}
+    return {
+        "written_rows": total_written,
+        "chunks": chunk_idx,
+        "gap_warnings": total_gap_warnings,
+        "raw_payload_rows": total_raw_payload_rows,
+        "accepted_rows": total_accepted_rows,
+        "dropped_rows": total_dropped_rows,
+    }
