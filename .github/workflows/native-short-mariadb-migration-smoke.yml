@@ -1,0 +1,341 @@
+name: Native SHORT MariaDB Migration Smoke
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - db/migrations/20260626_native_short_map_lifecycle_v1.sql
+      - db/migrations/20260706_native_short_scope_status_persistence_v1.sql
+      - .github/workflows/native-short-mariadb-migration-smoke.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:10.11
+        env:
+          MARIADB_ROOT_PASSWORD: native_short_ci_root_password
+          MARIADB_DATABASE: native_short_migration_smoke
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pnative_short_ci_root_password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "3306"
+      DB_NAME: native_short_migration_smoke
+      DB_USER: root
+      DB_PASSWORD: native_short_ci_root_password
+      BACKFILL_SOURCE_NAME: native_short_scope_status_persistence_v1_migration
+      BACKFILL_SOURCE_VERSION: "20260706"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select MariaDB client
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v mariadb >/dev/null 2>&1; then
+            client=mariadb
+          elif command -v mysql >/dev/null 2>&1; then
+            client=mysql
+          else
+            sudo apt-get update
+            sudo apt-get install -y mariadb-client
+            if command -v mariadb >/dev/null 2>&1; then
+              client=mariadb
+            else
+              client=mysql
+            fi
+          fi
+          echo "CLIENT=${client}" >> "$GITHUB_ENV"
+
+      - name: Wait for MariaDB service
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+              -h "$DB_HOST" \
+              -P "$DB_PORT" \
+              -u "$DB_USER" \
+              --protocol=TCP \
+              --batch \
+              --skip-column-names \
+              -e "SELECT 1" "$DB_NAME" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "MariaDB service did not become available within retry budget" >&2
+          exit 1
+
+      - name: Apply prerequisite migration and fixture scopes
+        shell: bash
+        run: |
+          set -euo pipefail
+          MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+            -h "$DB_HOST" \
+            -P "$DB_PORT" \
+            -u "$DB_USER" \
+            --protocol=TCP \
+            "$DB_NAME" < db/migrations/20260626_native_short_map_lifecycle_v1.sql
+
+          MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+            -h "$DB_HOST" \
+            -P "$DB_PORT" \
+            -u "$DB_USER" \
+            --protocol=TCP \
+            "$DB_NAME" <<'SQL'
+          INSERT INTO native_short_map_scope_v1 (
+              venue,
+              symbol,
+              quote_currency,
+              fib_trading_horizon,
+              primary_interval,
+              supporting_interval,
+              scope_support_state
+          ) VALUES
+              ('bitvavo', 'BTC', 'EUR', 'SHORT', '4h', '1h', 'SUPPORTED'),
+              ('bitvavo', 'ETH', 'EUR', 'SHORT', '4h', '1h', 'NOT_APPLICABLE');
+          SQL
+
+      - name: Apply A1 migration
+        shell: bash
+        run: |
+          set -euo pipefail
+          MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+            -h "$DB_HOST" \
+            -P "$DB_PORT" \
+            -u "$DB_USER" \
+            --protocol=TCP \
+            "$DB_NAME" < db/migrations/20260706_native_short_scope_status_persistence_v1.sql
+
+      - name: Verify first A1 migration application
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          query_scalar() {
+            MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+              -h "$DB_HOST" \
+              -P "$DB_PORT" \
+              -u "$DB_USER" \
+              --protocol=TCP \
+              --batch \
+              --skip-column-names \
+              -e "$1" "$DB_NAME"
+          }
+
+          assert_equals() {
+            local expected="$1"
+            local actual="$2"
+            local label="$3"
+            if [ "$actual" != "$expected" ]; then
+              echo "${label}: expected ${expected}, got ${actual}" >&2
+              exit 1
+            fi
+          }
+
+          a1_table_count="$(query_scalar "
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_schema = DATABASE()
+              AND table_name IN (
+                'native_short_materializer_run_v1',
+                'native_short_scope_observation_v1',
+                'native_short_scope_status_v1',
+                'native_short_scope_cadence_config_v1',
+                'native_short_scope_support_event_v1'
+              )
+          ")"
+          assert_equals "5" "$a1_table_count" "A1 table count"
+
+          backfill_total="$(query_scalar "
+            SELECT COUNT(*)
+            FROM native_short_scope_support_event_v1
+            WHERE source_name = '$BACKFILL_SOURCE_NAME'
+              AND source_version = '$BACKFILL_SOURCE_VERSION'
+          ")"
+          assert_equals "2" "$backfill_total" "first-run support-event backfill total"
+
+          btc_backfill_count="$(query_scalar "
+            SELECT COUNT(*)
+            FROM native_short_scope_support_event_v1
+            WHERE venue = 'bitvavo'
+              AND symbol = 'BTC'
+              AND quote_currency = 'EUR'
+              AND fib_trading_horizon = 'SHORT'
+              AND primary_interval = '4h'
+              AND supporting_interval = '1h'
+              AND source_name = '$BACKFILL_SOURCE_NAME'
+              AND source_version = '$BACKFILL_SOURCE_VERSION'
+          ")"
+          assert_equals "1" "$btc_backfill_count" "BTC full-scope backfill count"
+
+          eth_backfill_count="$(query_scalar "
+            SELECT COUNT(*)
+            FROM native_short_scope_support_event_v1
+            WHERE venue = 'bitvavo'
+              AND symbol = 'ETH'
+              AND quote_currency = 'EUR'
+              AND fib_trading_horizon = 'SHORT'
+              AND primary_interval = '4h'
+              AND supporting_interval = '1h'
+              AND source_name = '$BACKFILL_SOURCE_NAME'
+              AND source_version = '$BACKFILL_SOURCE_VERSION'
+          ")"
+          assert_equals "1" "$eth_backfill_count" "ETH full-scope backfill count"
+
+          null_event_ts_count="$(query_scalar "
+            SELECT COUNT(*)
+            FROM native_short_scope_support_event_v1
+            WHERE source_name = '$BACKFILL_SOURCE_NAME'
+              AND source_version = '$BACKFILL_SOURCE_VERSION'
+              AND event_ts_utc IS NULL
+          ")"
+          assert_equals "0" "$null_event_ts_count" "null support-event timestamp count"
+
+          status_ddl="$(MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+            -h "$DB_HOST" \
+            -P "$DB_PORT" \
+            -u "$DB_USER" \
+            --protocol=TCP \
+            --batch \
+            --raw \
+            --skip-column-names \
+            -e "SHOW CREATE TABLE native_short_scope_status_v1" "$DB_NAME" | cut -f2-)"
+          observation_ddl="$(MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+            -h "$DB_HOST" \
+            -P "$DB_PORT" \
+            -u "$DB_USER" \
+            --protocol=TCP \
+            --batch \
+            --raw \
+            --skip-column-names \
+            -e "SHOW CREATE TABLE native_short_scope_observation_v1" "$DB_NAME" | cut -f2-)"
+
+          printf '%s\n' "$status_ddl" | grep -qi '`projection_as_of_utc` datetime(6) NOT NULL'
+          printf '%s\n' "$status_ddl" | grep -q 'chk_native_short_scope_status_v1_map_lifecycle'
+          printf '%s\n' "$observation_ddl" | grep -q 'fk_native_short_scope_observation_v1_run'
+          printf '%s\n' "$observation_ddl" | grep -q 'REFERENCES `native_short_materializer_run_v1`'
+
+          set +e
+          MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+            -h "$DB_HOST" \
+            -P "$DB_PORT" \
+            -u "$DB_USER" \
+            --protocol=TCP \
+            "$DB_NAME" <<'SQL'
+          INSERT INTO native_short_scope_support_event_v1 (
+              venue,
+              symbol,
+              quote_currency,
+              fib_trading_horizon,
+              primary_interval,
+              supporting_interval,
+              scope_support_state,
+              event_ts_utc,
+              source_name,
+              source_version,
+              created_at_utc
+          ) VALUES (
+              'bitvavo',
+              'DOGE',
+              'EUR',
+              'SHORT',
+              '4h',
+              '1h',
+              'UNKNOWN',
+              UTC_TIMESTAMP(6),
+              'constraint_smoke',
+              '20260706',
+              UTC_TIMESTAMP(6)
+          );
+          SQL
+          invalid_insert_rc=$?
+          set -e
+          if [ "$invalid_insert_rc" -eq 0 ]; then
+            echo "invalid support-state insert unexpectedly succeeded" >&2
+            exit 1
+          fi
+
+      - name: Reapply A1 migration and verify idempotency
+        shell: bash
+        run: |
+          set -euo pipefail
+          MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+            -h "$DB_HOST" \
+            -P "$DB_PORT" \
+            -u "$DB_USER" \
+            --protocol=TCP \
+            "$DB_NAME" < db/migrations/20260706_native_short_scope_status_persistence_v1.sql
+
+          query_scalar() {
+            MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+              -h "$DB_HOST" \
+              -P "$DB_PORT" \
+              -u "$DB_USER" \
+              --protocol=TCP \
+              --batch \
+              --skip-column-names \
+              -e "$1" "$DB_NAME"
+          }
+
+          assert_equals() {
+            local expected="$1"
+            local actual="$2"
+            local label="$3"
+            if [ "$actual" != "$expected" ]; then
+              echo "${label}: expected ${expected}, got ${actual}" >&2
+              exit 1
+            fi
+          }
+
+          second_total="$(query_scalar "
+            SELECT COUNT(*)
+            FROM native_short_scope_support_event_v1
+            WHERE source_name = '$BACKFILL_SOURCE_NAME'
+              AND source_version = '$BACKFILL_SOURCE_VERSION'
+          ")"
+          assert_equals "2" "$second_total" "second-run support-event backfill total"
+
+          btc_second_count="$(query_scalar "
+            SELECT COUNT(*)
+            FROM native_short_scope_support_event_v1
+            WHERE venue = 'bitvavo'
+              AND symbol = 'BTC'
+              AND quote_currency = 'EUR'
+              AND fib_trading_horizon = 'SHORT'
+              AND primary_interval = '4h'
+              AND supporting_interval = '1h'
+              AND source_name = '$BACKFILL_SOURCE_NAME'
+              AND source_version = '$BACKFILL_SOURCE_VERSION'
+          ")"
+          assert_equals "1" "$btc_second_count" "second-run BTC full-scope backfill count"
+
+          eth_second_count="$(query_scalar "
+            SELECT COUNT(*)
+            FROM native_short_scope_support_event_v1
+            WHERE venue = 'bitvavo'
+              AND symbol = 'ETH'
+              AND quote_currency = 'EUR'
+              AND fib_trading_horizon = 'SHORT'
+              AND primary_interval = '4h'
+              AND supporting_interval = '1h'
+              AND source_name = '$BACKFILL_SOURCE_NAME'
+              AND source_version = '$BACKFILL_SOURCE_VERSION'
+          ")"
+          assert_equals "1" "$eth_second_count" "second-run ETH full-scope backfill count"
