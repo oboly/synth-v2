@@ -8,11 +8,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from src.research.htf_fib_extension_confluence_v1 import (
+from src.market_models.htf_fib_extension_confluence_v1 import (
     HtfSwingInput,
     build_htf_extension_map,
 )
-from src.research.htf_fib_reentry_ladder_v1 import (
+from src.market_models.htf_fib_reentry_ladder_v1 import (
     HtfReentryInput,
     build_fib_retrace_ladder,
 )

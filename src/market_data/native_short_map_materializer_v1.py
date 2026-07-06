@@ -151,6 +151,22 @@ def _ensure_utc(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
+def _require_ledger_timestamp(
+    value: datetime | None,
+    *,
+    table: str,
+    field: str,
+    record_identifier: str,
+) -> datetime:
+    timestamp = _ensure_utc(value)
+    if timestamp is None:
+        raise ValueError(
+            "REQUIRED_LEDGER_TIMESTAMP_MISSING "
+            f"table={table} field={field} {record_identifier}"
+        )
+    return timestamp
+
+
 def _dec(value: Any) -> Decimal | None:
     return None if value is None else Decimal(str(value))
 
@@ -345,7 +361,12 @@ def _fetch_maps_for_scope(conn: Any, key: NativeShortMapScopeKey) -> list[Native
         NativeShortMapRecord(
             map_id=int(row["map_id"]),
             key=key,
-            published_at_utc=_ensure_utc(row["published_at_utc"]) or datetime.now(UTC),
+            published_at_utc=_require_ledger_timestamp(
+                row.get("published_at_utc"),
+                table="native_short_map_v1",
+                field="published_at_utc",
+                record_identifier=f"map_id={row['map_id']}",
+            ),
             structure_hash=str(row["structure_hash"]),
             generator_name=str(row["generator_name"]),
             generator_version=str(row["generator_version"]),
@@ -424,7 +445,12 @@ def _fetch_generation_events_for_scope(
             key=key,
             attempt_id=str(row["generation_attempt_id"]),
             event_type=NativeShortMapGenerationEventType(str(row["event_type"])),
-            event_ts_utc=_ensure_utc(row["event_ts_utc"]) or datetime.now(UTC),
+            event_ts_utc=_require_ledger_timestamp(
+                row.get("event_ts_utc"),
+                table="native_short_map_generation_event_v1",
+                field="event_ts_utc",
+                record_identifier=f"generation_event_id={row['generation_event_id']}",
+            ),
             reason_code=row.get("reason_code"),
             map_id=int(row["map_id"]) if row.get("map_id") is not None else None,
             trigger_type=row.get("trigger_type"),
@@ -482,7 +508,12 @@ def _fetch_lifecycle_events_for_map_ids(
             lifecycle_event_id=int(row["lifecycle_event_id"]),
             map_id=int(row["map_id"]),
             event_type=NativeShortMapLifecycleEventType(str(row["lifecycle_event_type"])),
-            event_ts_utc=_ensure_utc(row["event_ts_utc"]) or datetime.now(UTC),
+            event_ts_utc=_require_ledger_timestamp(
+                row.get("event_ts_utc"),
+                table="native_short_map_lifecycle_event_v1",
+                field="event_ts_utc",
+                record_identifier=f"lifecycle_event_id={row['lifecycle_event_id']}",
+            ),
             reason_code=row.get("reason_code"),
             successor_map_id=(
                 int(row["successor_map_id"]) if row.get("successor_map_id") is not None else None

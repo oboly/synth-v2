@@ -41,6 +41,7 @@ from src.market_data.native_short_map_materializer_v1 import (
     materialize_scope_symbol,
 )
 from src.market_data.run_native_short_map_materializer_v1 import parse_args, parse_symbols
+from src.market_data import native_short_map_materializer_v1 as materializer
 from src.market_data import run_native_short_map_materializer_v1 as runner
 
 _NOW = datetime(2026, 7, 4, 12, 0, 0, tzinfo=UTC)
@@ -347,6 +348,187 @@ class _RunnerConn:
     def close(self) -> None:
         self.close_count += 1
         self.tx_log.append("close")
+
+
+class _LedgerReadCursor:
+    def __init__(self, conn: "_LedgerReadConn") -> None:
+        self._conn = conn
+
+    def execute(self, sql: str, params: Any = None) -> None:
+        self._conn.log.append((sql.strip(), params))
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._conn.rows
+
+    def __enter__(self) -> "_LedgerReadCursor":
+        return self
+
+    def __exit__(self, *args: Any) -> bool:
+        return False
+
+
+class _LedgerReadConn:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.log: list[tuple[str, Any]] = []
+
+    def cursor(self) -> _LedgerReadCursor:
+        return _LedgerReadCursor(self)
+
+
+def _map_ledger_row(**overrides: Any) -> dict[str, Any]:
+    row = _available_row()
+    values: dict[str, Any] = {
+        "map_id": 7,
+        "venue": "bitvavo",
+        "symbol": "BTC",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h",
+        "structure_hash": _structure_hash(row),
+        "generator_name": GENERATOR_NAME,
+        "generator_version": GENERATOR_VERSION,
+        "fib_model_name": FIB_MODEL_NAME,
+        "fib_model_version": FIB_MODEL_VERSION,
+        "published_generation_attempt_id": "attempt-1",
+        "previous_map_id": None,
+        "previous_map_cycle_id": None,
+        "map_cycle_id": row.map_cycle_id,
+        "market_snapshot_ts_utc": None,
+        "published_at_utc": datetime(2026, 7, 4, 10, 30, 0),
+        "anchor_low_ts_utc": row.anchor_start_ts_utc,
+        "anchor_low_price": row.anchor_low_price,
+        "anchor_high_ts_utc": row.anchor_end_ts_utc,
+        "anchor_high_price": row.anchor_high_price,
+        "retrace_ratio": None,
+        "retrace_price": None,
+        "fib_ratios_json": None,
+        "target_levels_json": None,
+        "invalidation_price": row.invalidation_price,
+        "invalidation_rule": None,
+        "source_primary_candle_ts_utc": None,
+        "source_support_candle_ts_utc": None,
+        "source_primary_ref": None,
+        "source_support_ref": None,
+        "source_primary_candle_count": 73,
+        "source_support_candle_count": 219,
+        "map_payload_json": None,
+    }
+    values.update(overrides)
+    return values
+
+
+def _generation_ledger_row(**overrides: Any) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "generation_event_id": 11,
+        "venue": "bitvavo",
+        "symbol": "BTC",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h",
+        "generation_attempt_id": "attempt-1",
+        "event_type": "PUBLISHED",
+        "event_ts_utc": datetime(2026, 7, 4, 10, 31, 0),
+        "reason_code": None,
+        "map_id": 7,
+        "trigger_type": None,
+        "candidate_map_cycle_id": None,
+        "candidate_previous_map_id": None,
+        "candidate_primary_lifecycle_state": None,
+        "candidate_current_map_status": None,
+        "latest_primary_close_ts_utc": None,
+        "latest_support_close_ts_utc": None,
+        "latest_primary_close_price": None,
+        "source_primary_ref": None,
+        "source_support_ref": None,
+        "source_primary_candle_count": None,
+        "source_support_candle_count": None,
+    }
+    values.update(overrides)
+    return values
+
+
+def _lifecycle_ledger_row(**overrides: Any) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "lifecycle_event_id": 13,
+        "map_id": 7,
+        "lifecycle_event_type": "ACTIVATED",
+        "event_ts_utc": datetime(2026, 7, 4, 10, 32, 0),
+        "reason_code": None,
+        "successor_map_id": None,
+        "observed_current_price": None,
+        "observed_max_high_since_anchor": None,
+        "observed_min_low_since_anchor": None,
+        "latest_primary_close_ts_utc": None,
+        "latest_support_close_ts_utc": None,
+        "observer_name": None,
+        "observer_version": None,
+    }
+    values.update(overrides)
+    return values
+
+
+def test_fetch_map_missing_published_at_fails_closed() -> None:
+    conn = _LedgerReadConn([_map_ledger_row(published_at_utc=None)])
+
+    with pytest.raises(ValueError) as exc:
+        materializer._fetch_maps_for_scope(conn, _scope())
+
+    assert str(exc.value) == (
+        "REQUIRED_LEDGER_TIMESTAMP_MISSING "
+        "table=native_short_map_v1 field=published_at_utc map_id=7"
+    )
+
+
+def test_fetch_generation_event_missing_event_ts_fails_closed() -> None:
+    conn = _LedgerReadConn([_generation_ledger_row(event_ts_utc=None)])
+
+    with pytest.raises(ValueError) as exc:
+        materializer._fetch_generation_events_for_scope(conn, _scope())
+
+    assert str(exc.value) == (
+        "REQUIRED_LEDGER_TIMESTAMP_MISSING "
+        "table=native_short_map_generation_event_v1 "
+        "field=event_ts_utc generation_event_id=11"
+    )
+
+
+def test_fetch_lifecycle_event_missing_event_ts_fails_closed() -> None:
+    conn = _LedgerReadConn([_lifecycle_ledger_row(event_ts_utc=None)])
+
+    with pytest.raises(ValueError) as exc:
+        materializer._fetch_lifecycle_events_for_map_ids(conn, [7])
+
+    assert str(exc.value) == (
+        "REQUIRED_LEDGER_TIMESTAMP_MISSING "
+        "table=native_short_map_lifecycle_event_v1 "
+        "field=event_ts_utc lifecycle_event_id=13"
+    )
+
+
+def test_valid_ledger_timestamps_normalize_naive_values_and_keep_optional_fields_optional() -> None:
+    map_row = _map_ledger_row(published_at_utc=datetime(2026, 7, 4, 10, 30, 0))
+    generation_row = _generation_ledger_row(event_ts_utc=datetime(2026, 7, 4, 10, 31, 0))
+    lifecycle_row = _lifecycle_ledger_row(event_ts_utc=datetime(2026, 7, 4, 10, 32, 0))
+
+    maps = materializer._fetch_maps_for_scope(_LedgerReadConn([map_row]), _scope())
+    generation_events = materializer._fetch_generation_events_for_scope(
+        _LedgerReadConn([generation_row]),
+        _scope(),
+    )
+    lifecycle_events = materializer._fetch_lifecycle_events_for_map_ids(
+        _LedgerReadConn([lifecycle_row]),
+        [7],
+    )
+
+    assert maps[0].published_at_utc == datetime(2026, 7, 4, 10, 30, 0, tzinfo=UTC)
+    assert maps[0].market_snapshot_ts_utc is None
+    assert generation_events[0].event_ts_utc == datetime(2026, 7, 4, 10, 31, 0, tzinfo=UTC)
+    assert generation_events[0].latest_primary_close_ts_utc is None
+    assert lifecycle_events[0].event_ts_utc == datetime(2026, 7, 4, 10, 32, 0, tzinfo=UTC)
+    assert lifecycle_events[0].latest_support_close_ts_utc is None
 
 
 def test_runner_defaults_to_dry_run_and_requires_explicit_write() -> None:
@@ -983,6 +1165,7 @@ FORBIDDEN_IMPORTS = {
     "src.executor",
     "src.portfolio",
     "src.reporting",
+    "src.research",
     "src.selection",
     "src.market_data.run_native_short_fib_context_v1",
 }
@@ -1062,12 +1245,14 @@ def test_canary_reachable_import_graph_excludes_forbidden_layers() -> None:
 
 
 def test_canary_modules_import_without_forbidden_runtime_modules() -> None:
+    before_import = set(sys.modules)
     materializer_module = importlib.import_module("src.market_data.native_short_map_materializer_v1")
     runner_module = importlib.import_module("src.market_data.run_native_short_map_materializer_v1")
+    newly_imported = set(sys.modules) - before_import
 
     assert materializer_module.GENERATOR_NAME == GENERATOR_NAME
     assert runner_module.RUNNER_NAME == "run_native_short_map_materializer_v1"
-    assert "src.market_data.run_native_short_fib_context_v1" not in sys.modules
+    assert "src.market_data.run_native_short_fib_context_v1" not in newly_imported
 
 
 def test_canary_sources_include_safety_markers() -> None:
