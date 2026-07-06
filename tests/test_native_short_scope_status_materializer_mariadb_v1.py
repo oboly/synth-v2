@@ -21,16 +21,28 @@ deliberately avoids seeding native_short_map_scope_v1 / native_short_map_v1 /
 generation-event data, since that geometry-materializer machinery is already
 covered by its own existing test suite and is not this module's concern.
 
+Test isolation boundary (important):
+This test must never reach any configured/project database. It does not
+import src.common.db or dotenv, and does not read a .env file. It connects
+only via `pymysql.connect(...)` using explicit, test-only
+`SYNTH_TEST_MARIADB_*` environment variables that a caller (GitHub Actions,
+or a developer who deliberately opts in) must supply in full. If any of them
+is absent, or if `SYNTH_TEST_MARIADB_DISPOSABLE` is not exactly "1", the test
+skips before ever constructing a database connection.
+
 Gated behind RUN_MARIADB_DDL_TEST=1, matching the existing convention, so it
 is opt-in locally and runs for real in the hosted GitHub Actions workflow.
 """
 
+import ast
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import pymysql
 import pytest
+from pymysql.cursors import DictCursor
 
 from src.market_data.native_short_fib_context_v1 import STATUS_AVAILABLE, NativeShortContextRow
 from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapScopeKey
@@ -49,6 +61,65 @@ A1B_MIGRATION_PATH = Path("db/migrations/20260707_native_short_cadence_unavailab
 TEMP_DB_NAME = "synth_a2_native_short_scope_status_materializer_tmp"
 
 _AS_OF = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
+
+_REQUIRED_ENV_VARS = (
+    "SYNTH_TEST_MARIADB_HOST",
+    "SYNTH_TEST_MARIADB_PORT",
+    "SYNTH_TEST_MARIADB_USER",
+    "SYNTH_TEST_MARIADB_PASSWORD",
+    "SYNTH_TEST_MARIADB_ADMIN_DATABASE",
+)
+
+
+def _require_test_mariadb_config() -> dict[str, str]:
+    """Returns the complete explicit test-only MariaDB connection config, or
+    calls pytest.skip() before returning if any required
+    SYNTH_TEST_MARIADB_* variable is absent.
+
+    Reads only these five explicit variables. Never reads DB_HOST/DB_USER/
+    DB_PASSWORD/DB_NAME, never loads a .env file, and never falls back to
+    project configuration, localhost defaults, or production-like
+    credentials.
+    """
+    values: dict[str, str] = {}
+    missing: list[str] = []
+    for name in _REQUIRED_ENV_VARS:
+        value = os.environ.get(name)
+        if value is None or value == "":
+            missing.append(name)
+        else:
+            values[name] = value
+    if missing:
+        pytest.skip(
+            "No disposable test MariaDB configuration was supplied; missing: "
+            f"{', '.join(missing)}. This test connects only via explicit "
+            "SYNTH_TEST_MARIADB_* variables and never falls back to project "
+            "configuration, .env, or default credentials."
+        )
+    return values
+
+
+def _require_disposable_flag() -> None:
+    """Refuses to let the test proceed to a connection attempt unless the
+    caller has explicitly asserted the target database is disposable."""
+    if os.environ.get("SYNTH_TEST_MARIADB_DISPOSABLE") != "1":
+        pytest.skip(
+            "SYNTH_TEST_MARIADB_DISPOSABLE=1 is required before this test may "
+            "CREATE/DROP a database; refusing to open a connection without it."
+        )
+
+
+def _connect(config: dict[str, str], *, database: str) -> Any:
+    return pymysql.connect(
+        host=config["SYNTH_TEST_MARIADB_HOST"],
+        port=int(config["SYNTH_TEST_MARIADB_PORT"]),
+        user=config["SYNTH_TEST_MARIADB_USER"],
+        password=config["SYNTH_TEST_MARIADB_PASSWORD"],
+        database=database,
+        charset="utf8mb4",
+        cursorclass=DictCursor,
+        autocommit=False,
+    )
 
 
 def _split_sql_statements(sql_text: str) -> list[str]:
@@ -201,40 +272,26 @@ def _stub_materialize(*args: Any, **kwargs: Any) -> ScopeMaterializationResult:
     reason="Set RUN_MARIADB_DDL_TEST=1 to run A2 orchestrator integration against a disposable MariaDB schema.",
 )
 def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
-    from pymysql.err import OperationalError
+    config = _require_test_mariadb_config()
+    _require_disposable_flag()
 
-    from src.common.db import get_connection
-
+    admin_database = config["SYNTH_TEST_MARIADB_ADMIN_DATABASE"]
     temp_db_name = _temp_db_name()
     schema_conn = None
     try:
-        admin_conn = get_connection(database="information_schema")
+        admin_conn = _connect(config, database=admin_database)
         try:
             with admin_conn.cursor() as cur:
-                try:
-                    cur.execute(f"DROP DATABASE IF EXISTS `{temp_db_name}`")
-                    cur.execute(
-                        f"CREATE DATABASE `{temp_db_name}` "
-                        "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-                    )
-                except OperationalError as exc:
-                    if exc.args and exc.args[0] == 1044:
-                        pytest.skip(
-                            "Configured DB user lacks CREATE/DROP DATABASE privilege for disposable schema validation."
-                        )
-                    raise
+                cur.execute(f"DROP DATABASE IF EXISTS `{temp_db_name}`")
+                cur.execute(
+                    f"CREATE DATABASE `{temp_db_name}` "
+                    "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+                )
             admin_conn.commit()
         finally:
             admin_conn.close()
 
-        try:
-            schema_conn = get_connection(database=temp_db_name)
-        except OperationalError as exc:
-            if exc.args and exc.args[0] == 1044:
-                pytest.skip(
-                    "Configured DB user lacks access privilege on the newly created disposable schema."
-                )
-            raise
+        schema_conn = _connect(config, database=temp_db_name)
         with schema_conn.cursor() as cur:
             for migration_path in (PREREQUISITE_MIGRATION_PATH, A1_MIGRATION_PATH, A1B_MIGRATION_PATH):
                 for statement in _split_sql_statements(migration_path.read_text(encoding="utf-8")):
@@ -397,18 +454,99 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
     finally:
         if schema_conn is not None:
             schema_conn.close()
-        cleanup_conn = get_connection(database="information_schema")
+        cleanup_conn = _connect(config, database=admin_database)
         try:
             with cleanup_conn.cursor() as cur:
                 cur.execute(f"DROP DATABASE IF EXISTS `{temp_db_name}`")
             cleanup_conn.commit()
-        except OperationalError as exc:
-            # If we never had (or lost) privilege to reach this disposable
-            # schema, there is nothing to clean up and no error to surface:
-            # doing so here would silently replace an in-flight
-            # pytest.skip()/exception from the try block above (a finally
-            # block's own exception always wins over one already propagating).
-            if not (exc.args and exc.args[0] == 1044):
-                raise
         finally:
             cleanup_conn.close()
+
+
+# --- test isolation regression coverage -------------------------------------
+
+
+def test_missing_test_mariadb_config_skips_before_any_connection_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With RUN_MARIADB_DDL_TEST=1 but no explicit SYNTH_TEST_MARIADB_*
+    variables at all, the config gate must skip before ever constructing a
+    connection: pymysql.connect must never be called."""
+    monkeypatch.setenv("RUN_MARIADB_DDL_TEST", "1")
+    for name in _REQUIRED_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("SYNTH_TEST_MARIADB_DISPOSABLE", raising=False)
+
+    def _forbidden_connect(*args: object, **kwargs: object) -> None:
+        raise AssertionError(
+            "pymysql.connect must not be called when explicit test MariaDB config is absent"
+        )
+
+    monkeypatch.setattr(pymysql, "connect", _forbidden_connect)
+
+    with pytest.raises(pytest.skip.Exception):
+        _require_test_mariadb_config()
+
+
+def test_partial_test_mariadb_config_skips_before_any_connection_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A partially supplied configuration (e.g. host present but password
+    missing) must still skip rather than attempt to connect with an
+    incomplete/implicit value."""
+    monkeypatch.setenv("RUN_MARIADB_DDL_TEST", "1")
+    monkeypatch.setenv("SYNTH_TEST_MARIADB_HOST", "127.0.0.1")
+    monkeypatch.setenv("SYNTH_TEST_MARIADB_PORT", "3306")
+    monkeypatch.setenv("SYNTH_TEST_MARIADB_USER", "root")
+    monkeypatch.delenv("SYNTH_TEST_MARIADB_PASSWORD", raising=False)
+    monkeypatch.delenv("SYNTH_TEST_MARIADB_ADMIN_DATABASE", raising=False)
+
+    def _forbidden_connect(*args: object, **kwargs: object) -> None:
+        raise AssertionError("pymysql.connect must not be called with a partial test MariaDB config")
+
+    monkeypatch.setattr(pymysql, "connect", _forbidden_connect)
+
+    with pytest.raises(pytest.skip.Exception):
+        _require_test_mariadb_config()
+
+
+def test_missing_disposable_flag_skips_before_any_connection_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Even with a fully populated connection configuration, the disposable
+    flag gate must skip before a connection is opened unless it is exactly
+    "1"."""
+    monkeypatch.setenv("SYNTH_TEST_MARIADB_DISPOSABLE", "0")
+
+    def _forbidden_connect(*args: object, **kwargs: object) -> None:
+        raise AssertionError(
+            "pymysql.connect must not be called when SYNTH_TEST_MARIADB_DISPOSABLE != '1'"
+        )
+
+    monkeypatch.setattr(pymysql, "connect", _forbidden_connect)
+
+    with pytest.raises(pytest.skip.Exception):
+        _require_disposable_flag()
+
+
+def test_integration_test_module_never_imports_project_db_config() -> None:
+    """This file must connect only through explicit SYNTH_TEST_MARIADB_*
+    variables: it must never import src.common.db (which loads .env and
+    falls back to configured Synth DB defaults) or dotenv directly."""
+    source = Path("tests/test_native_short_scope_status_materializer_mariadb_v1.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    imported_modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_modules.add(node.module)
+
+    forbidden_prefixes = ("src.common.db", "dotenv")
+    for module_name in imported_modules:
+        for forbidden in forbidden_prefixes:
+            assert not module_name.startswith(forbidden), (
+                f"forbidden import found: {module_name} (matches {forbidden})"
+            )

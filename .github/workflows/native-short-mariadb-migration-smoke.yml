@@ -577,7 +577,20 @@ jobs:
           python -m pip install -r requirements.txt pytest
 
       - name: Run A2 orchestrator disposable MariaDB integration test
+        env:
+          RUN_MARIADB_DDL_TEST: "1"
+          # Explicit, test-only connection variables for this ephemeral
+          # service only. Deliberately distinct names from DB_HOST/DB_USER/
+          # DB_PASSWORD/DB_NAME above: this test must never resolve project
+          # configuration, .env, or a configured Synth DB default, only what
+          # is explicitly supplied here for this disposable service.
+          SYNTH_TEST_MARIADB_HOST: 127.0.0.1
+          SYNTH_TEST_MARIADB_PORT: "3306"
+          SYNTH_TEST_MARIADB_USER: root
+          SYNTH_TEST_MARIADB_PASSWORD: native_short_ci_root_password
+          SYNTH_TEST_MARIADB_ADMIN_DATABASE: information_schema
+          SYNTH_TEST_MARIADB_DISPOSABLE: "1"
         run: |
-          RUN_MARIADB_DDL_TEST=1 python -m pytest \
+          python -m pytest \
             tests/test_native_short_scope_status_materializer_mariadb_v1.py \
             -v
