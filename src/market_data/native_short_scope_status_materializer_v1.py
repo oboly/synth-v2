@@ -105,7 +105,7 @@ __all__ = [
 
 RUNNER_NAME = "native_short_scope_status_materializer_v1"
 RUNNER_VERSION = "0.1"
-CONTRACT_VERSION = "native_short_scope_status_contract_v1"
+CONTRACT_VERSION = "native_short_scope_status_v1"  # must fit VARCHAR(32): native_short_materializer_run_v1.contract_version
 
 
 class NativeShortRunTerminalizationConflictError(RuntimeError):
