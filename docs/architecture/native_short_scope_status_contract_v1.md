@@ -38,7 +38,8 @@ executor=none
 The status projection is derived from existing native SHORT and candle facts.
 Authoritative sources are:
 
-- `native_short_map_scope_v1`: supported scope inventory and canonical scope key.
+- `native_short_map_scope_v1`: mutable current scope registry for ordinary live operation.
+- `native_short_scope_support_event_v1`: append-only support-state provenance for cutoff/historical reconstruction.
 - `native_short_map_v1`: immutable map geometry and publication facts.
 - `native_short_map_generation_event_v1`: publication/rejection/failure provenance.
 - `native_short_map_lifecycle_event_v1`: lifecycle transitions.
@@ -181,6 +182,69 @@ Fields:
 | `source_primary_candle_count` | `INT UNSIGNED` | no | materializer runtime | Primary candles available to context builder | immutable |
 | `source_support_candle_count` | `INT UNSIGNED` | no | materializer runtime | Supporting candles available to context builder | immutable |
 | `created_at_utc` | `DATETIME(6)` | yes | materializer runtime | Row creation timestamp | immutable |
+
+## Entity: native_short_scope_support_event_v1
+
+Purpose: append-only provenance for native SHORT scope support-state changes over
+time. This event ledger is required because the existing
+`native_short_map_scope_v1` table is a mutable current registry with
+`created_at_utc` and `updated_at_utc`, but no append-only support-state history.
+
+Relationship to `native_short_map_scope_v1`:
+
+- `native_short_map_scope_v1` remains the mutable current scope registry for
+  ordinary live operation.
+- `native_short_map_scope_v1` is not authoritative for historical `as_of_utc`
+  reconstruction.
+- Do not use `updated_at_utc` as historical support-state evidence.
+- PR A1 migration must backfill exactly one initial support event per existing
+  scope, with state copied from the current registry.
+- The backfill event timestamp must be an explicitly documented
+  migration/backfill timestamp.
+- Historical support state before the backfill timestamp is `UNKNOWN`, not
+  inferred.
+- Do not invent historical support transitions from `updated_at_utc`.
+
+Mutability: append-only. Rows are inserted only; no updates are allowed.
+
+Retention: permanent provenance. These rows are required for cutoff-aware
+projection and future historical replay.
+
+Keys and indexes:
+
+- Primary key: `scope_support_event_id`.
+- Index: full canonical scope key plus `(event_ts_utc, scope_support_event_id)`.
+- Index: full canonical scope key plus `(scope_support_state, event_ts_utc)`.
+- Deterministic support-state tie-breaker: `event_ts_utc`, then
+  `scope_support_event_id`.
+- Exact full-key identity only. No symbol-only lookup.
+
+Allowed V1 support states:
+
+```text
+SUPPORTED
+NOT_APPLICABLE
+```
+
+Fields:
+
+| Field | Type intent for MariaDB | Required | Writer | Meaning | Mutability |
+|---|---|---:|---|---|---|
+| `scope_support_event_id` | `BIGINT UNSIGNED AUTO_INCREMENT` | yes | MariaDB | Surrogate event id and deterministic tie-breaker | immutable |
+| `venue` | `VARCHAR(32)` | yes | scope support writer / A1 backfill | Canonical scope key | immutable |
+| `symbol` | `VARCHAR(32)` | yes | scope support writer / A1 backfill | Canonical scope key | immutable |
+| `quote_currency` | `VARCHAR(16)` | yes | scope support writer / A1 backfill | Canonical scope key | immutable |
+| `fib_trading_horizon` | `VARCHAR(32)` | yes | scope support writer / A1 backfill | Canonical scope key; `SHORT` is tactical horizon | immutable |
+| `primary_interval` | `VARCHAR(16)` | yes | scope support writer / A1 backfill | Canonical scope key | immutable |
+| `supporting_interval` | `VARCHAR(16)` | yes | scope support writer / A1 backfill | Canonical scope key | immutable |
+| `scope_support_state` | `VARCHAR(32)` | yes | scope support writer / A1 backfill | `SUPPORTED` or `NOT_APPLICABLE` | immutable |
+| `event_ts_utc` | `DATETIME(6)` | yes | scope support writer / A1 backfill | Authoritative timestamp for support-state change | immutable |
+| `reason_code` | `VARCHAR(64)` | no | scope support writer / A1 backfill | Stable reason for the support-state event | immutable |
+| `reason_detail` | `VARCHAR(255)` | no | scope support writer / A1 backfill | Bounded non-secret detail | immutable |
+| `source_name` | `VARCHAR(96)` | yes | scope support writer / A1 backfill | Source that created the event | immutable |
+| `source_version` | `VARCHAR(32)` | yes | scope support writer / A1 backfill | Source version that created the event | immutable |
+| `event_metadata_json` | `JSON` or `LONGTEXT` | no | scope support writer / A1 backfill | Optional deterministic metadata payload | immutable |
+| `created_at_utc` | `DATETIME(6)` | yes | scope support writer / A1 backfill | Row creation timestamp | immutable |
 
 ## Entity: native_short_scope_status_v1
 
@@ -386,7 +450,8 @@ Exact stale-versus-overdue distinction:
 
 Authoritative inputs:
 
-- `native_short_map_scope_v1`
+- `native_short_map_scope_v1` for live/current scope inventory only
+- `native_short_scope_support_event_v1` for cutoff/historical support-state provenance
 - cadence/grace configuration owner
 - `native_short_materializer_run_v1`
 - `native_short_scope_observation_v1`
@@ -408,9 +473,16 @@ where `as_of_utc` is virtual historical UTC.
 
 Eligibility rules:
 
-- Scope inventory: select scope rows whose support/config state is effective at
-  `as_of_utc`. Do not use a scope support change that occurred after
-  `as_of_utc`.
+- Scope inventory: for live/current projection, the current scope registry may
+  be used as the source of current scope inventory. For cutoff/historical
+  projection, select the latest eligible scope-support event with
+  `event_ts_utc <= as_of_utc`, ordered by `event_ts_utc DESC,
+  scope_support_event_id DESC`. Only scopes whose selected event is `SUPPORTED`
+  receive a projection row. If no eligible support event exists, no projection
+  row is created and scope support is `UNKNOWN_AT_AS_OF`; this is
+  inventory/history evidence, not a projection status code. Do not use a scope
+  support change that occurred after `as_of_utc`, and do not use current
+  registry `updated_at_utc` as historical evidence.
 - Cadence configuration: select only the exact full-key config version effective
   at `as_of_utc`: `effective_from_utc <= as_of_utc` and
   `effective_to_utc IS NULL OR effective_to_utc > as_of_utc`. Do not use a
@@ -439,7 +511,7 @@ Eligibility rules:
 Deterministic rebuild ordering for each canonical scope:
 
 1. Accept explicit UTC `as_of_utc`; do not read wall-clock time inside projection logic.
-2. Load SUPPORTED scope rows effective at `as_of_utc` from `native_short_map_scope_v1` using full key ordering.
+2. For live/current projection, load current SUPPORTED scope rows from `native_short_map_scope_v1` using full key ordering. For cutoff/historical projection, derive SUPPORTED scope rows from latest eligible `native_short_scope_support_event_v1` events at `as_of_utc`.
 3. Load active cadence/grace config by full key and effective timestamp at `as_of_utc`.
 4. Load latest eligible scope observation by `(observed_at_utc, scope_observation_id)`.
 5. Select the current map by the deterministic current-map selection rule below.
@@ -485,8 +557,9 @@ Delete/rebuild versus upsert:
 
 Required behavior:
 
-- One canonical row exists per SUPPORTED scope.
-- No status row exists for a non-SUPPORTED scope.
+- One canonical row exists per SUPPORTED scope at the chosen `as_of_utc`.
+- No status row exists for a non-SUPPORTED or `UNKNOWN_AT_AS_OF` scope.
+- `SCOPE_NOT_APPLICABLE` remains excluded from projection status codes.
 - If no selected map exists, set `map_lifecycle_state=NO_CURRENT_MAP` and use `CURRENT_EVALUATION`
   only when source and observation are current; otherwise apply source/observation
   precedence.
@@ -522,7 +595,11 @@ Rules:
 ### PR A1 — Migrations And Types Only
 
 - Add MariaDB migrations only for the persistence contract.
-- Add model and validation types for run, observation, cadence, and status rows.
+- Include migration for `native_short_scope_support_event_v1`.
+- Backfill exactly one initial support event per existing scope from the current
+  scope registry, with a documented migration/backfill timestamp.
+- Add model and validation types for run, observation, scope support event,
+  cadence, and status rows.
 - No materializer runner integration.
 - No lifecycle transition detection.
 - No health-report switch.
@@ -533,6 +610,8 @@ Rules:
 - Record materializer run rows.
 - Record per-scope observation rows.
 - Implement projection rebuild logic for `native_short_scope_status_v1`.
+- Use `native_short_scope_support_event_v1` for cutoff-aware projection
+  selection.
 - Implement lifecycle transition detection that appends only real transition events.
 - No systemd, timer, wrapper, or runtime deployment.
 - No dashboard/UI work.
@@ -554,10 +633,19 @@ Rules:
 
 PR A1 acceptance:
 
-- MariaDB migration defines run, observation, projection, and cadence/grace
-  persistence using the full canonical scope key.
+- MariaDB migration defines run, observation, projection, scope support event,
+  and cadence/grace persistence using the full canonical scope key.
+- Migration includes `native_short_scope_support_event_v1`.
+- Migration performs an initial explicit backfill from existing scope registry:
+  exactly one event per existing scope, current state copied from the registry,
+  and a documented migration/backfill timestamp.
 - Migration tests or SQL inspections prove required keys and indexes exist.
-- Model/validation tests reject symbol-only identity.
+- Model/validation tests cover scope support events and reject symbol-only identity.
+- Tests prove current registry updates are not used as historical evidence.
+- Tests prove support-state selection is cutoff bounded.
+- Tests prove same-timestamp support events resolve by `scope_support_event_id`.
+- Tests prove absent pre-backfill history yields `UNKNOWN_AT_AS_OF`, not inferred
+  support.
 - No runner code imports or writes the new tables.
 - No health report reads the new projection.
 - No scheduler, service, timer, wrapper, broker, execution, or UI files change.
@@ -571,6 +659,8 @@ PR A2 acceptance:
 - Tests prove unchanged geometry can still append exactly one real lifecycle
   transition event.
 - Tests prove projection rebuild is idempotent from authoritative inputs.
+- Tests prove projection selection uses `native_short_scope_support_event_v1` for
+  cutoff/historical support-state reconstruction.
 - Tests cover no-map, failed-observation, terminal-map, source-stale,
   source-unavailable, observation-overdue, and recently-added-scope cases.
 - No systemd, timer, wrapper, broker, execution, or UI files change.
