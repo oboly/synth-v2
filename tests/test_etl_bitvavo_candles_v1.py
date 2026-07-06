@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import io
+import os
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -99,8 +100,8 @@ def test_run_market_interval_excludes_incomplete_current_week() -> None:
     ]
 
 
-def test_validate_chunk_rows_reports_week_gap() -> None:
-    rows = [
+def _week_gap_rows() -> list[etl.CandleRow]:
+    return [
         etl.CandleRow(
             asset_id=1,
             venue="bitvavo",
@@ -126,10 +127,17 @@ def test_validate_chunk_rows_reports_week_gap() -> None:
             volume=Decimal("10.0"),
         ),
     ]
+
+
+def test_validate_chunk_rows_returns_gap_count_and_is_silent_by_default() -> None:
+    """P0-A bounded logging: gap detection is always counted, but the
+    per-gap print is gated behind debug_logging_enabled() so a production
+    run over hundreds of assets does not emit one line per gap by default."""
+    os.environ.pop(etl.DEBUG_ENV_VAR, None)
     buf = io.StringIO()
     with redirect_stdout(buf):
-        etl.validate_chunk_rows(
-            rows=rows,
+        gap_count = etl.validate_chunk_rows(
+            rows=_week_gap_rows(),
             market="WLD-EUR",
             asset_id=1,
             interval_code="1w",
@@ -137,6 +145,27 @@ def test_validate_chunk_rows_reports_week_gap() -> None:
             start_dt=datetime(2025, 5, 19, 0, 0, tzinfo=UTC),
             end_dt=datetime(2025, 6, 9, 0, 0, tzinfo=UTC),
         )
+    assert gap_count == 1
+    assert "intra-chunk gap detected" not in buf.getvalue()
+
+
+def test_validate_chunk_rows_prints_gap_detail_in_debug_mode() -> None:
+    os.environ[etl.DEBUG_ENV_VAR] = "1"
+    try:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            gap_count = etl.validate_chunk_rows(
+                rows=_week_gap_rows(),
+                market="WLD-EUR",
+                asset_id=1,
+                interval_code="1w",
+                chunk_index=1,
+                start_dt=datetime(2025, 5, 19, 0, 0, tzinfo=UTC),
+                end_dt=datetime(2025, 6, 9, 0, 0, tzinfo=UTC),
+            )
+    finally:
+        os.environ.pop(etl.DEBUG_ENV_VAR, None)
+    assert gap_count == 1
     assert "intra-chunk gap detected" in buf.getvalue()
 
 
@@ -182,7 +211,8 @@ def main() -> None:
     test_floor_to_week_handles_year_boundary()
     test_parse_weekly_payload_sets_close_to_plus_seven_days()
     test_run_market_interval_excludes_incomplete_current_week()
-    test_validate_chunk_rows_reports_week_gap()
+    test_validate_chunk_rows_returns_gap_count_and_is_silent_by_default()
+    test_validate_chunk_rows_prints_gap_detail_in_debug_mode()
     test_upsert_weekly_candles_uses_idempotent_sql()
     test_etl_module_has_no_forbidden_imports_or_order_strings()
 

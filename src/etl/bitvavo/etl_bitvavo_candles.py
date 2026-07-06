@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -10,6 +11,23 @@ import requests
 
 BITVAVO_BASE_URL = "https://api.bitvavo.com/v2"
 BITVAVO_MAX_LIMIT = 1440
+
+# Bounded-by-default logging (P0-A). Per-chunk and per-gap diagnostic lines
+# are noisy at production asset-universe scale (hundreds of enabled assets
+# every 5 minutes) and were a suspected contributor to Odroid root-filesystem
+# exhaustion on 2026-07-05. Default production output aggregates these into
+# counts returned from run_market_interval(); full per-chunk/per-gap detail
+# is only printed when debug logging is explicitly enabled.
+DEBUG_ENV_VAR = "SYNTH_CANDLES_ETL_DEBUG"
+
+
+def debug_logging_enabled() -> bool:
+    """Explicit debug mode switch for verbose per-chunk/per-gap ETL logging.
+
+    Read fresh on every call (not cached at import time) so tests and
+    callers can toggle it via monkeypatched environment without reload.
+    """
+    return os.environ.get(DEBUG_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
 
 
 class MarketUnavailableError(Exception):
@@ -268,9 +286,22 @@ def validate_chunk_rows(
     chunk_index: int,
     start_dt: datetime,
     end_dt: datetime,
-) -> None:
+) -> int:
+    """Validate OHLC/timestamp integrity for one fetched chunk.
+
+    Returns the number of intra-chunk gaps detected (0 if none). Raises
+    RuntimeError on hard data-integrity violations (duplicate/non-monotonic
+    timestamps, misaligned candles, invalid OHLC geometry, negative volume) —
+    those remain fatal and always visible regardless of debug mode.
+
+    Gap-detection lines are diagnostic, not fatal, and are gated behind
+    `debug_logging_enabled()` (see module docstring / DEBUG_ENV_VAR) so a
+    multi-asset production run does not emit one line per gap by default.
+    The caller must still receive the count to include in its own bounded
+    aggregate summary.
+    """
     if not rows:
-        return
+        return 0
 
     interval_delta = interval_to_delta(interval_code)
     interval_ms = interval_to_ms(interval_code)
@@ -335,16 +366,21 @@ def validate_chunk_rows(
                 f"Negative volume: interval={interval_code} ts={row.open_ts_utc.isoformat()}"
             )
 
+    gap_count = 0
     if len(rows) >= 2:
         for prev_row, row in zip(rows[:-1], rows[1:]):
             diff_ms = int((row.open_ts_utc - prev_row.open_ts_utc).total_seconds() * 1000)
             if diff_ms != interval_ms:
-                print(
-                    f"[ETL][WARN] intra-chunk gap detected "
-                    f"market={market} asset_id={asset_id} chunk={chunk_index} "
-                    f"interval={interval_code} prev={prev_row.open_ts_utc.isoformat()} "
-                    f"current={row.open_ts_utc.isoformat()} diff_ms={diff_ms}"
-                )
+                gap_count += 1
+                if debug_logging_enabled():
+                    print(
+                        f"[ETL][WARN] intra-chunk gap detected "
+                        f"market={market} asset_id={asset_id} chunk={chunk_index} "
+                        f"interval={interval_code} prev={prev_row.open_ts_utc.isoformat()} "
+                        f"current={row.open_ts_utc.isoformat()} diff_ms={diff_ms}"
+                    )
+
+    return gap_count
 
 
 def upsert_candles(conn, rows: list[CandleRow]) -> int:
@@ -426,6 +462,14 @@ def run_market_interval(
     dry_run: bool = False,
     **_: Any,
 ) -> dict[str, int]:
+    """Run ETL for one (asset, interval) pair.
+
+    Returns a dict with `written_rows`, `chunks`, and `gap_warnings` (always
+    present, even in the empty-window/no-op case) so the caller
+    (run_candles_etl.py) can build a bounded aggregate summary without
+    relying on this function's own print statements, which are gated behind
+    `debug_logging_enabled()` by default (P0-A).
+    """
     del sleep_seconds
     interval_code = normalize_interval_code(interval_code)
 
@@ -433,11 +477,12 @@ def run_market_interval(
     end_dt = floor_to_interval(end_dt, interval_code)
 
     if end_dt <= start_dt:
-        print(
-            f"[ETL] skip market={market} interval={interval_code} "
-            f"reason=empty_window start={start_dt.isoformat()} end={end_dt.isoformat()}"
-        )
-        return {"written_rows": 0}
+        if debug_logging_enabled():
+            print(
+                f"[ETL] skip market={market} interval={interval_code} "
+                f"reason=empty_window start={start_dt.isoformat()} end={end_dt.isoformat()}"
+            )
+        return {"written_rows": 0, "chunks": 0, "gap_warnings": 0}
 
     interval_ms = interval_to_ms(interval_code)
     limit = min(batch_limit, BITVAVO_MAX_LIMIT)
@@ -448,6 +493,7 @@ def run_market_interval(
 
     window_start_ms = aligned_start_ms
     total_written = 0
+    total_gap_warnings = 0
     chunk_idx = 0
 
     while window_start_ms < aligned_end_ms:
@@ -477,7 +523,7 @@ def run_market_interval(
             end_dt=ms_to_dt(window_end_ms),
         )
 
-        validate_chunk_rows(
+        total_gap_warnings += validate_chunk_rows(
             rows=filtered_rows,
             market=str(
                 locals().get("market")
@@ -501,28 +547,30 @@ def run_market_interval(
             end_dt=ms_to_dt(window_end_ms),
             )
 
-        first_raw_ts = raw_payload[0][0] if raw_payload else None
-        last_raw_ts = raw_payload[-1][0] if raw_payload else None
-
-        print(
-            f"[ETL] chunk={chunk_idx} market={market} interval={interval_code} "
-            f"window_start={ms_to_dt(window_start_ms).isoformat()} "
-            f"window_end={ms_to_dt(window_end_ms).isoformat()} "
-            f"raw_count={len(raw_payload)} "
-            f"filtered_count={len(filtered_rows)} "
-            f"first_raw_ts={first_raw_ts} "
-            f"last_raw_ts={last_raw_ts}"
-        )
+        if debug_logging_enabled():
+            first_raw_ts = raw_payload[0][0] if raw_payload else None
+            last_raw_ts = raw_payload[-1][0] if raw_payload else None
+            print(
+                f"[ETL] chunk={chunk_idx} market={market} interval={interval_code} "
+                f"window_start={ms_to_dt(window_start_ms).isoformat()} "
+                f"window_end={ms_to_dt(window_end_ms).isoformat()} "
+                f"raw_count={len(raw_payload)} "
+                f"filtered_count={len(filtered_rows)} "
+                f"first_raw_ts={first_raw_ts} "
+                f"last_raw_ts={last_raw_ts}"
+            )
 
         if not dry_run:
             total_written += upsert_candles(conn, filtered_rows)
 
         window_start_ms = window_end_ms
 
-    print(
-        f"[ETL] done market={market} interval={interval_code} "
-        f"start={start_dt.isoformat()} end={end_dt.isoformat()} "
-        f"written={total_written} dry_run={dry_run}"
-    )
+    if debug_logging_enabled():
+        print(
+            f"[ETL] done market={market} interval={interval_code} "
+            f"start={start_dt.isoformat()} end={end_dt.isoformat()} "
+            f"written={total_written} dry_run={dry_run} "
+            f"chunks={chunk_idx} gap_warnings={total_gap_warnings}"
+        )
 
-    return {"written_rows": total_written}
+    return {"written_rows": total_written, "chunks": chunk_idx, "gap_warnings": total_gap_warnings}

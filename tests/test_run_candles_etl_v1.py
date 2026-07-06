@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import io
+import json
+import os
 from contextlib import redirect_stdout
 from pathlib import Path
 
@@ -24,16 +27,30 @@ class _FakeConn:
         self.closed = True
 
 
-def test_runner_emits_started_progress_checkpoint_and_finished_summary() -> None:
-    original_load_config = runner.load_config
-    original_get_db_connection = runner.get_db_connection
-    original_load_assets = runner.load_assets
-    original_resolve_etl_module = runner.resolve_etl_module
-    original_resolve_etl_callable = runner.resolve_etl_callable
-    original_build_session = runner.build_session
-    original_call_etl_function = runner.call_etl_function
+@contextlib.contextmanager
+def _patched_runner(*, asset_count: int, call_etl_result):
+    """Patch runner's DB/config/asset-loading/ETL-call seams with fakes so
+    main() can be exercised end-to-end without a real DB or network call.
+
+    call_etl_result may be a dict (returned for every task) or a callable
+    taking the same kwargs as call_etl_function and returning a dict, so
+    tests can vary the result per asset (e.g. to vary gap_warnings).
+    """
+    originals = {
+        "load_config": runner.load_config,
+        "get_db_connection": runner.get_db_connection,
+        "load_assets": runner.load_assets,
+        "resolve_etl_module": runner.resolve_etl_module,
+        "resolve_etl_callable": runner.resolve_etl_callable,
+        "build_session": runner.build_session,
+        "call_etl_function": runner.call_etl_function,
+    }
+    conn = _FakeConn()
+    assets = [
+        runner.AssetRow(asset_id=i, symbol=f"SYM{i}", market=f"SYM{i}-EUR")
+        for i in range(1, asset_count + 1)
+    ]
     try:
-        conn = _FakeConn()
         runner.load_config = lambda path: runner.EtlConfig(
             venue="bitvavo",
             quote_asset="EUR",
@@ -45,37 +62,279 @@ def test_runner_emits_started_progress_checkpoint_and_finished_summary() -> None
             raw={"etl": {}},
         )
         runner.get_db_connection = lambda: conn
-        runner.load_assets = lambda _conn, quote_asset, wanted_symbols=None: [
-            runner.AssetRow(asset_id=1, symbol="WLD", market="WLD-EUR")
-        ]
+        runner.load_assets = lambda _conn, quote_asset, wanted_symbols=None: assets
         runner.resolve_etl_module = lambda: object()
         runner.resolve_etl_callable = lambda _module: object()
         runner.build_session = lambda _module: object()
-        runner.call_etl_function = lambda *args, **kwargs: {"written_rows": 3}
+        if callable(call_etl_result) and not isinstance(call_etl_result, dict):
+            runner.call_etl_function = call_etl_result
+        else:
+            runner.call_etl_function = lambda *args, **kwargs: dict(call_etl_result)
+        yield conn
+    finally:
+        for name, value in originals.items():
+            setattr(runner, name, value)
+        os.environ.pop("SYNTH_CANDLES_ETL_DEBUG", None)
+        os.environ.pop("SYNTH_CANDLES_ETL_PROGRESS_EVERY", None)
+        os.environ.pop("SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH", None)
 
+
+def test_runner_emits_started_progress_checkpoint_and_finished_summary() -> None:
+    with _patched_runner(asset_count=1, call_etl_result={"written_rows": 3}) as conn:
         buf = io.StringIO()
         with redirect_stdout(buf):
             code = runner.main(["--interval", "1w"])
         text = buf.getvalue()
-    finally:
-        runner.load_config = original_load_config
-        runner.get_db_connection = original_get_db_connection
-        runner.load_assets = original_load_assets
-        runner.resolve_etl_module = original_resolve_etl_module
-        runner.resolve_etl_callable = original_resolve_etl_callable
-        runner.build_session = original_build_session
-        runner.call_etl_function = original_call_etl_function
 
     assert code == 0
     assert "STARTED run_candles_etl" in text
     assert "PHASE_STARTED load_assets" in text
     assert "QUERY_RESULT name=load_assets rows=1" in text
-    assert "CHECKPOINT_WRITTEN market=WLD-EUR interval=1w rows=3" in text
     assert "PROGRESS run_candles_etl completed=1/1" in text
+    assert "checkpoint_state_path=" in text
+    assert "latest_checkpoint=SYM1-EUR:1w@1/1:rows=3:gaps=0" in text
     assert "FINISHED run_candles_etl" in text
     assert conn.commits == 1
     assert conn.rollbacks == 0
     assert conn.closed is True
+
+
+def test_bounded_default_mode_suppresses_per_task_chatter_and_heartbeats() -> None:
+    """P0-A: with many enabled assets (verified production measurement: 429
+    enabled assets at incident-follow-up time), default logging must not
+    emit one PHASE_STARTED/CHECKPOINT_WRITTEN/PROGRESS line per asset. It
+    must instead emit a bounded heartbeat: first task, every Nth task, and
+    the last task."""
+    with _patched_runner(
+        asset_count=120, call_etl_result={"written_rows": 1, "gap_warnings": 0}
+    ):
+        os.environ["SYNTH_CANDLES_ETL_PROGRESS_EVERY"] = "50"
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w"])
+        text = buf.getvalue()
+
+    assert code == 0
+    assert "logging_mode=bounded" in text
+    # No per-task phase-start chatter at all in bounded mode.
+    assert "PHASE_STARTED market_interval" not in text
+    assert "PHASE_FINISHED market_interval" not in text
+    # Heartbeat fires at completed=1, 50, 100, and the final task (120).
+    progress_lines = [line for line in text.splitlines() if line.startswith("PROGRESS run_candles_etl")]
+    assert len(progress_lines) == 4, progress_lines
+    assert "completed=1/120" in progress_lines[0]
+    assert "completed=50/120" in progress_lines[1]
+    assert "completed=100/120" in progress_lines[2]
+    assert "completed=120/120" in progress_lines[3]
+    checkpoint_lines = [line for line in text.splitlines() if line.startswith("CHECKPOINT_WRITTEN")]
+    assert checkpoint_lines == []
+    assert "latest_checkpoint=SYM120-EUR:1w@120/120:rows=1:gaps=0" in text
+    assert "FINISHED run_candles_etl" in text
+    assert "task_count=120" in text
+    assert "total_rows=120" in text
+
+
+def test_debug_mode_preserves_full_per_task_detail() -> None:
+    """--debug-logging must restore exactly the original fully-verbose
+    per-task behavior for manual debugging."""
+    with _patched_runner(
+        asset_count=5, call_etl_result={"written_rows": 1, "gap_warnings": 0}
+    ):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w", "--debug-logging"])
+        text = buf.getvalue()
+
+    assert code == 0
+    assert "logging_mode=debug" in text
+    assert text.count("PHASE_STARTED market_interval") == 5
+    assert text.count("PHASE_FINISHED market_interval") == 5
+    assert text.count("CHECKPOINT_WRITTEN") == 5
+    assert text.count("PROGRESS run_candles_etl") == 5
+
+
+def test_debug_env_var_has_same_effect_as_cli_flag() -> None:
+    os.environ["SYNTH_CANDLES_ETL_DEBUG"] = "1"
+    try:
+        with _patched_runner(
+            asset_count=3, call_etl_result={"written_rows": 1, "gap_warnings": 0}
+        ):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                code = runner.main(["--interval", "1w"])
+            text = buf.getvalue()
+    finally:
+        os.environ.pop("SYNTH_CANDLES_ETL_DEBUG", None)
+
+    assert code == 0
+    assert "logging_mode=debug" in text
+    assert text.count("PHASE_STARTED market_interval") == 3
+
+
+def test_gap_warnings_are_aggregated_in_progress_and_finished_lines() -> None:
+    """Per-asset gap_warnings returned by the ETL callable must be summed
+    into a single running total, not reported as N separate lines."""
+
+    def fake_call(_etl_fn, *, asset, **_kwargs):
+        # Two of five assets report 2 gaps each; total should be 4.
+        gaps = 2 if asset.asset_id in (1, 3) else 0
+        return {"written_rows": 1, "gap_warnings": gaps}
+
+    with _patched_runner(asset_count=5, call_etl_result=fake_call):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w", "--debug-logging"])
+        text = buf.getvalue()
+
+    assert code == 0
+    assert "gap_warnings_total=4" in text
+
+
+def test_each_successful_commit_updates_checkpoint_state_between_heartbeats(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "runtime" / "last_checkpoint.json"
+    os.environ["SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH"] = str(checkpoint_path)
+    with _patched_runner(
+        asset_count=120, call_etl_result={"written_rows": 1, "gap_warnings": 0}
+    ) as conn:
+        os.environ["SYNTH_CANDLES_ETL_PROGRESS_EVERY"] = "50"
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w"])
+        text = buf.getvalue()
+
+    payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert code == 0
+    assert conn.commits == 120
+    assert payload["status"] == "committed"
+    assert payload["market"] == "SYM120-EUR"
+    assert payload["interval"] == "1w"
+    assert payload["completed"] == 120
+    assert payload["total"] == 120
+    assert payload["rows_written"] == 1
+    assert payload["skipped"] == 0
+    assert payload["gap_warnings"] == 0
+    assert f"checkpoint_state_path={checkpoint_path}" in text
+    assert "latest_checkpoint=SYM120-EUR:1w@120/120:rows=1:gaps=0" in text
+
+
+def test_failure_retains_exact_final_successful_checkpoint(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "runtime" / "last_checkpoint.json"
+    os.environ["SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH"] = str(checkpoint_path)
+
+    def fake_call(_etl_fn, *, asset, **_kwargs):
+        if asset.asset_id == 3:
+            raise RuntimeError("boom")
+        return {"written_rows": asset.asset_id, "gap_warnings": asset.asset_id - 1}
+
+    with _patched_runner(asset_count=5, call_etl_result=fake_call) as conn:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w"])
+        text = buf.getvalue()
+
+    payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert code == 1
+    assert conn.commits == 2
+    assert conn.rollbacks == 1
+    assert payload["market"] == "SYM2-EUR"
+    assert payload["completed"] == 2
+    assert payload["rows_written"] == 2
+    assert payload["gap_warnings"] == 1
+    assert payload["status"] == "committed"
+    assert f"checkpoint_state_path={checkpoint_path}" in text
+    assert "latest_checkpoint=SYM2-EUR:1w@2/5:rows=2:gaps=1" in text
+    assert "FAILED run_candles_etl" in text
+
+
+def test_interruption_retains_exact_final_successful_checkpoint(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "runtime" / "last_checkpoint.json"
+    os.environ["SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH"] = str(checkpoint_path)
+
+    def fake_call(_etl_fn, *, asset, **_kwargs):
+        if asset.asset_id == 3:
+            raise KeyboardInterrupt("SIGINT")
+        return {"written_rows": 1, "gap_warnings": 0}
+
+    with _patched_runner(asset_count=5, call_etl_result=fake_call) as conn:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w"])
+        text = buf.getvalue()
+
+    payload = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert code == 130
+    assert conn.commits == 2
+    assert conn.rollbacks == 1
+    assert payload["market"] == "SYM2-EUR"
+    assert payload["completed"] == 2
+    assert payload["status"] == "committed"
+    assert "INTERRUPTED run_candles_etl" in text
+    assert "latest_checkpoint=SYM2-EUR:1w@2/5:rows=1:gaps=0" in text
+
+
+def test_checkpoint_artifact_writes_are_atomic(tmp_path: Path, monkeypatch) -> None:
+    checkpoint_path = tmp_path / "runtime" / "last_checkpoint.json"
+    os.environ["SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH"] = str(checkpoint_path)
+    replace_calls: list[tuple[str, str]] = []
+    original_replace = runner.os.replace
+
+    def fake_replace(src, dst):
+        replace_calls.append((str(src), str(dst)))
+        assert str(src) != str(dst)
+        assert Path(src).exists()
+        original_replace(src, dst)
+
+    monkeypatch.setattr(runner.os, "replace", fake_replace)
+    with _patched_runner(asset_count=3, call_etl_result={"written_rows": 1, "gap_warnings": 0}) as conn:
+        code = runner.main(["--interval", "1w"])
+
+    assert code == 0
+    assert conn.commits == 3
+    assert len(replace_calls) == 3
+    assert all(dst == str(checkpoint_path) for _, dst in replace_calls)
+    assert checkpoint_path.exists()
+    leftovers = [p for p in checkpoint_path.parent.iterdir() if p.name != checkpoint_path.name]
+    assert leftovers == []
+
+
+def test_dry_run_does_not_claim_db_checkpoint_write(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "runtime" / "last_checkpoint.json"
+    os.environ["SYNTH_CANDLES_ETL_CHECKPOINT_STATE_PATH"] = str(checkpoint_path)
+    with _patched_runner(asset_count=3, call_etl_result={"written_rows": 1, "gap_warnings": 0}) as conn:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w", "--dry-run"])
+        text = buf.getvalue()
+
+    assert code == 0
+    assert conn.commits == 0
+    assert "CHECKPOINT_WRITTEN" not in text
+    assert "latest_checkpoint=none" in text
+    assert not checkpoint_path.exists()
+
+
+def test_inactive_markets_aggregated_by_default_not_one_line_each() -> None:
+    """filter_active_markets skip lines must be aggregated into one bounded
+    line in default mode, with full per-market detail only in debug mode."""
+
+    class _ModuleWithActiveFilter:
+        @staticmethod
+        def fetch_active_bitvavo_markets(*, session, timeout_seconds):
+            # Only SYM1-EUR is active; the rest are inactive/delisted.
+            return {"SYM1-EUR"}
+
+    with _patched_runner(
+        asset_count=15, call_etl_result={"written_rows": 1, "gap_warnings": 0}
+    ):
+        runner.resolve_etl_module = lambda: _ModuleWithActiveFilter()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = runner.main(["--interval", "1w"])
+        text = buf.getvalue()
+
+    assert code == 0
+    assert "SKIPPED_MARKET market=" not in text  # no per-market lines by default
+    assert "SKIPPED_MARKETS_INACTIVE count=14" in text
 
 
 def test_runner_has_no_forbidden_imports_or_order_strings() -> None:
@@ -93,6 +352,11 @@ def test_runner_has_no_forbidden_imports_or_order_strings() -> None:
 
 def main() -> None:
     test_runner_emits_started_progress_checkpoint_and_finished_summary()
+    test_bounded_default_mode_suppresses_per_task_chatter_and_heartbeats()
+    test_debug_mode_preserves_full_per_task_detail()
+    test_debug_env_var_has_same_effect_as_cli_flag()
+    test_gap_warnings_are_aggregated_in_progress_and_finished_lines()
+    test_inactive_markets_aggregated_by_default_not_one_line_each()
     test_runner_has_no_forbidden_imports_or_order_strings()
 
 
