@@ -107,6 +107,7 @@ scope/configuration contract. They must not be inferred only from systemd.
 The contract must distinguish:
 
 ```text
+CONFIGURATION_UNAVAILABLE
 CURRENT_EVALUATION
 OBSERVATION_OVERDUE
 SOURCE_STALE
@@ -116,6 +117,14 @@ SCOPE_NOT_APPLICABLE
 MAP_INVALIDATED
 MAP_COMPLETED
 ```
+
+`CONFIGURATION_UNAVAILABLE` is the highest-precedence state: a SUPPORTED scope
+with no eligible exact full-key cadence configuration at `as_of_utc`. It is a
+configuration defect, never a source/candle-availability or runtime-cadence
+defect, and it must never be reported as `SOURCE_UNAVAILABLE`, `SOURCE_STALE`,
+or `OBSERVATION_OVERDUE`. See the Amendment 1 addendum in
+`docs/architecture/native_short_scope_status_contract_v1.md` for the full
+reason code, enum, and schema-nullability decisions.
 
 Current source rules:
 
@@ -217,6 +226,13 @@ Additional historical evidence:
 
 - PR A depends on agreeing the canonical scope/config cadence contract and
   projection shape before any runtime owner is deployed.
+- Within PR A, the materializer-integration/projection slice (contract PR A2)
+  is blocked on a new narrow contract PR A1b: a schema/type-only change that
+  relaxes `NOT NULL` on cadence version, freshness-limit, source-state, and
+  geometry-action columns to conditional-nullable for the new
+  configuration-unavailable state, per Amendment 1 in
+  `docs/architecture/native_short_scope_status_contract_v1.md`. PR A2 must not
+  begin implementation until PR A1b merges.
 - PR B depends on PR A landing first; runtime ownership must not ship before the
   projection semantics exist.
 - PR C depends on PR A; Profit Plan must read the projection instead of joining
