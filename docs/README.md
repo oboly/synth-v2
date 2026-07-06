@@ -4,6 +4,9 @@ This is the top-level documentation index for Synth v2.5.
 
 Synth is a layered quantitative crypto trading and research system.
 
+Before designing, implementing, or reviewing any lane, read:
+docs/SYSTEM_FACTS.md
+
 The current focus is:
 
 - data correctness
