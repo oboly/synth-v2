@@ -215,6 +215,46 @@ def test_completed_transition_decided_once() -> None:
     assert decision_again is None
 
 
+def test_completed_map_never_receives_invalidated_transition() -> None:
+    """A map that already reached COMPLETED must never receive INVALIDATED
+    later, even if the market subsequently classifies the same cycle as
+    invalidated: a map has exactly one terminal state, and appending a
+    second one would trip
+    native_short_map_lifecycle_v1's LIFECYCLE_EVENT_AFTER_TERMINAL rule on
+    every future evaluation of this scope."""
+    row = _context_row(lifecycle_state=PRIMARY_LIFECYCLE_INVALIDATED)
+    decision = decide_genuine_lifecycle_transition(
+        selected_map=_map(),
+        context_row=row,
+        existing_lifecycle_event_types_for_map=frozenset({"COMPLETED"}),
+    )
+    assert decision is None
+
+
+def test_invalidated_map_never_receives_completed_transition() -> None:
+    row = _context_row(lifecycle_state=PRIMARY_LIFECYCLE_COMPLETED)
+    decision = decide_genuine_lifecycle_transition(
+        selected_map=_map(),
+        context_row=row,
+        existing_lifecycle_event_types_for_map=frozenset({"INVALIDATED"}),
+    )
+    assert decision is None
+
+
+@pytest.mark.parametrize("existing_terminal_type", ["SUPERSEDED", "EXPIRED"])
+def test_superseded_or_expired_map_never_receives_a_second_terminal_transition(
+    existing_terminal_type: str,
+) -> None:
+    for candidate_state in (PRIMARY_LIFECYCLE_INVALIDATED, PRIMARY_LIFECYCLE_COMPLETED):
+        row = _context_row(lifecycle_state=candidate_state)
+        decision = decide_genuine_lifecycle_transition(
+            selected_map=_map(),
+            context_row=row,
+            existing_lifecycle_event_types_for_map=frozenset({existing_terminal_type}),
+        )
+        assert decision is None
+
+
 def test_no_transition_for_ordinary_non_terminal_lifecycle_state() -> None:
     row = _context_row(lifecycle_state="TARGET_ACTIVE")
     decision = decide_genuine_lifecycle_transition(

@@ -23,16 +23,23 @@ from typing import Any
 import pytest
 
 from src.market_data.native_short_fib_context_v1 import (
+    PRIMARY_LIFECYCLE_COMPLETED,
     PRIMARY_LIFECYCLE_INVALIDATED,
     STATUS_AVAILABLE,
     STATUS_SYMBOL_MISSING,
     NativeShortContextRow,
 )
 from src.market_data.native_short_map_lifecycle_v1 import (
+    NativeShortMapGenerationEvent,
+    NativeShortMapGenerationEventType,
     NativeShortMapLifecycleEvent,
     NativeShortMapLifecycleEventType,
+    NativeShortMapLifecycleValidationError,
     NativeShortMapRecord,
     NativeShortMapScopeKey,
+    NativeShortMapScopeSupport,
+    NativeShortMapScopeSupportState,
+    validate_native_short_map_write_intent,
 )
 from src.market_data.native_short_map_materializer_v1 import (
     REASON_STRUCTURE_UNCHANGED,
@@ -42,6 +49,7 @@ from src.market_data.native_short_scope_status_materializer_v1 import (
     NativeShortRunTerminalizationConflictError,
     _finalize_run,
     evaluate_scope,
+    rebuild_scope_projection,
     run_native_short_scope_status_materializer,
 )
 from src.market_data.native_short_scope_status_v1 import NativeShortMaterializerRunRecord
@@ -223,7 +231,7 @@ class _FakeCursor:
                 "next_expected_evaluation_at_utc", "observation_overdue_after_utc",
                 "primary_latest_candle_ts_utc", "supporting_latest_candle_ts_utc",
                 "primary_source_freshness_limit_seconds", "supporting_source_freshness_limit_seconds",
-                "cadence_contract_version", "projection_as_of_utc", "status_payload_json",
+                "cadence_contract_version", "projection_as_of_utc", "status_payload_json", "rebuilt_at_utc",
             )
             self._conn.status_rows[key_tuple] = dict(zip(columns, params))
             self._conn.status_upsert_count += 1
@@ -477,10 +485,25 @@ def test_unknown_at_as_of_scope_writes_no_observation_and_no_status_row() -> Non
 
 
 def test_configuration_unavailable_scope_writes_blocked_observation_and_status_row() -> None:
+    """Candle callbacks raise if called at all: a configuration-blocked scope
+    must never reach context/candle/geometry/lifecycle work, so this proves
+    the run still succeeds and neither callback was ever invoked, not merely
+    that they returned harmless values."""
     conn = _FakeConn()
     key = _key()
     conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
     # No cadence config seeded at all.
+
+    def _raising_context_row(k: NativeShortMapScopeKey, t: datetime) -> NativeShortContextRow:
+        raise AssertionError("fetch_context_row must not be called when config is unavailable")
+
+    def _raising_primary_candles(k: NativeShortMapScopeKey, t: datetime) -> list[datetime]:
+        raise AssertionError("fetch_primary_candle_close_timestamps must not be called when config is unavailable")
+
+    def _raising_supporting_candles(k: NativeShortMapScopeKey, t: datetime) -> list[datetime]:
+        raise AssertionError(
+            "fetch_supporting_candle_close_timestamps must not be called when config is unavailable"
+        )
 
     run_native_short_scope_status_materializer(
         conn,
@@ -488,12 +511,12 @@ def test_configuration_unavailable_scope_writes_blocked_observation_and_status_r
         as_of_utc=_AS_OF,
         trigger_type="MANUAL",
         operational_clock=_fixed_clock(_AS_OF),
-        fetch_context_row=lambda k, t: _context_row(),
+        fetch_context_row=_raising_context_row,
         fetch_existing_maps=_no_maps,
         fetch_existing_generation_events=_no_generation_events,
         fetch_existing_lifecycle_events=_no_lifecycle_events,
-        fetch_primary_candle_close_timestamps=_fresh_candles,
-        fetch_supporting_candle_close_timestamps=_fresh_candles,
+        fetch_primary_candle_close_timestamps=_raising_primary_candles,
+        fetch_supporting_candle_close_timestamps=_raising_supporting_candles,
     )
 
     assert len(conn.observations) == 1
@@ -506,6 +529,8 @@ def test_configuration_unavailable_scope_writes_blocked_observation_and_status_r
     status_row = next(iter(conn.status_rows.values()))
     assert status_row["scope_status_code"] == "CONFIGURATION_UNAVAILABLE"
     assert status_row["scope_status_reason_code"] == "NO_ELIGIBLE_CADENCE_CONFIG"
+    assert status_row["primary_latest_candle_ts_utc"] is None
+    assert status_row["supporting_latest_candle_ts_utc"] is None
 
 
 # --- unchanged geometry: no duplicate map/generation heartbeat --------------
@@ -620,6 +645,132 @@ def test_genuine_lifecycle_transition_appended_once_across_repeated_runs() -> No
     assert conn.runs[0]["lifecycle_event_count"] == 1
     assert conn.runs[1]["lifecycle_event_count"] == 0
     assert conn.observations[0]["lifecycle_event_id"] == conn.lifecycle_events[0]["lifecycle_event_id"]
+
+
+def test_completed_then_collapsed_map_never_receives_a_second_terminal_event() -> None:
+    """Run 1: market evidence classifies COMPLETED, genuine transition
+    appended. Run 2: the same map/cycle later classifies INVALIDATED (e.g.
+    price collapses below the invalidation break after targets were already
+    reached). The map must never receive a second terminal lifecycle event,
+    and the resulting ledger must remain writable by
+    native_short_map_lifecycle_v1's own terminal-exclusivity validator —
+    proving no LIFECYCLE_EVENT_AFTER_TERMINAL path is reachable for this
+    scope going forward."""
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(key)
+
+    existing_map = NativeShortMapRecord(
+        map_id=1,
+        key=key,
+        published_at_utc=_AS_OF - timedelta(hours=5),
+        structure_hash="hash-1",
+        generator_name="native_short_map_materializer_v1",
+        generator_version="0.1",
+        fib_model_name="native_short_fib_context_v1",
+        fib_model_version="0.1",
+        published_generation_attempt_id="attempt-1",
+        map_cycle_id="cyc1",
+    )
+
+    def fetch_maps(conn: Any, k: NativeShortMapScopeKey) -> list[Any]:
+        return [existing_map]
+
+    lifecycle_state: dict[str, list[Any]] = {"events": []}
+
+    def fetch_lifecycle(conn: Any, map_ids: list[int]) -> list[Any]:
+        return list(lifecycle_state["events"])
+
+    def stub_materialize(*args: Any, **kwargs: Any) -> ScopeMaterializationResult:
+        return _unchanged_geometry_result(map_id=1)
+
+    completed_row = _context_row(lifecycle_state=PRIMARY_LIFECYCLE_COMPLETED, map_cycle_id="cyc1")
+    invalidated_row = _context_row(lifecycle_state=PRIMARY_LIFECYCLE_INVALIDATED, map_cycle_id="cyc1")
+
+    for context_row in (completed_row, invalidated_row):
+        run_native_short_scope_status_materializer(
+            conn,
+            scopes=[key],
+            as_of_utc=_AS_OF,
+            trigger_type="MANUAL",
+            operational_clock=_fixed_clock(_AS_OF),
+            fetch_context_row=lambda k, t, row=context_row: row,
+            fetch_existing_maps=fetch_maps,
+            fetch_existing_generation_events=_no_generation_events,
+            fetch_existing_lifecycle_events=fetch_lifecycle,
+            fetch_primary_candle_close_timestamps=_fresh_candles,
+            fetch_supporting_candle_close_timestamps=_fresh_candles,
+            materialize_scope_symbol_fn=stub_materialize,
+        )
+        if conn.lifecycle_events and not lifecycle_state["events"]:
+            lifecycle_state["events"] = [
+                NativeShortMapLifecycleEvent(
+                    lifecycle_event_id=row["lifecycle_event_id"],
+                    map_id=row["map_id"],
+                    event_type=NativeShortMapLifecycleEventType(row["lifecycle_event_type"]),
+                    event_ts_utc=row["event_ts_utc"],
+                )
+                for row in conn.lifecycle_events
+            ]
+
+    # Exactly one terminal event ever exists, and it is the first one
+    # (COMPLETED), never overwritten or supplemented by a second.
+    assert len(conn.lifecycle_events) == 1
+    assert conn.lifecycle_events[0]["lifecycle_event_type"] == "COMPLETED"
+    assert conn.runs[0]["lifecycle_event_count"] == 1
+    assert conn.runs[1]["lifecycle_event_count"] == 0
+
+    # Generation provenance required by the map itself (unrelated to the
+    # lifecycle-terminal-exclusivity behavior under test, but required for
+    # validate_native_short_map_write_intent to accept this map at all).
+    generation_events = [
+        NativeShortMapGenerationEvent(
+            generation_event_id=1,
+            key=key,
+            attempt_id="attempt-1",
+            event_type=NativeShortMapGenerationEventType.ATTEMPT_STARTED,
+            event_ts_utc=_AS_OF - timedelta(hours=5),
+        ),
+        NativeShortMapGenerationEvent(
+            generation_event_id=2,
+            key=key,
+            attempt_id="attempt-1",
+            event_type=NativeShortMapGenerationEventType.PUBLISHED,
+            event_ts_utc=_AS_OF - timedelta(hours=5),
+            map_id=existing_map.map_id,
+        ),
+    ]
+    scope_support = NativeShortMapScopeSupport(key=key, support_state=NativeShortMapScopeSupportState.SUPPORTED)
+
+    # No LIFECYCLE_EVENT_AFTER_TERMINAL path is reachable: the actual
+    # persisted ledger validates cleanly against the real map-materializer
+    # write-intent validator.
+    validate_native_short_map_write_intent(
+        scope_support=scope_support,
+        maps=[existing_map],
+        generation_events=generation_events,
+        lifecycle_events=lifecycle_state["events"],
+    )
+
+    # Demonstrates exactly the bug this guards against: a ledger with BOTH
+    # terminal events (what the old same-type-only check would have allowed)
+    # is rejected by the real validator, permanently poisoning the scope.
+    poisoned_ledger = list(lifecycle_state["events"]) + [
+        NativeShortMapLifecycleEvent(
+            lifecycle_event_id=999,
+            map_id=existing_map.map_id,
+            event_type=NativeShortMapLifecycleEventType.INVALIDATED,
+            event_ts_utc=_AS_OF,
+        )
+    ]
+    with pytest.raises(NativeShortMapLifecycleValidationError, match="LIFECYCLE_EVENT_AFTER_TERMINAL"):
+        validate_native_short_map_write_intent(
+            scope_support=scope_support,
+            maps=[existing_map],
+            generation_events=generation_events,
+            lifecycle_events=poisoned_ledger,
+        )
     assert conn.observations[1]["lifecycle_event_id"] is None
 
 
@@ -652,6 +803,53 @@ def test_projection_upsert_writes_only_status_table_not_source_ledgers() -> None
     assert conn.status_upsert_count == 1
     assert len(conn.support_events) == 1
     assert len(conn.cadence_configs) == 1
+
+
+def test_second_projection_rebuild_updates_rebuilt_at_utc_and_preserves_projected_fields() -> None:
+    """rebuilt_at_utc is operational metadata only, but it must still persist
+    on INSERT and be refreshed on every ON DUPLICATE KEY UPDATE — otherwise a
+    row's rebuilt_at_utc silently freezes at its first-ever value forever.
+    Two rebuilds at the same as_of_utc (same semantic cutoff) but different
+    rebuilt_at_utc must update that one operational column while leaving
+    every deterministic projected field unchanged."""
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(key)
+
+    first_rebuilt_at = _AS_OF
+    second_rebuilt_at = _AS_OF + timedelta(hours=1)
+    rebuild_kwargs = dict(
+        key=key,
+        as_of_utc=_AS_OF,
+        existing_maps=[],
+        existing_generation_events=[],
+        existing_lifecycle_events=[],
+        primary_candle_close_timestamps=[_AS_OF - timedelta(hours=1)],
+        supporting_candle_close_timestamps=[_AS_OF - timedelta(minutes=20)],
+    )
+
+    first_record = rebuild_scope_projection(conn, rebuilt_at_utc=first_rebuilt_at, **rebuild_kwargs)
+    second_record = rebuild_scope_projection(conn, rebuilt_at_utc=second_rebuilt_at, **rebuild_kwargs)
+
+    assert conn.status_upsert_count == 2
+    status_row = next(iter(conn.status_rows.values()))
+    assert status_row["rebuilt_at_utc"] == second_rebuilt_at
+    assert status_row["rebuilt_at_utc"] != first_rebuilt_at
+
+    for field_name in (
+        "scope_status_code",
+        "scope_status_reason_code",
+        "map_lifecycle_state",
+        "observation_freshness_state",
+        "source_freshness_state",
+        "actionability_state",
+        "current_map_id",
+        "cadence_contract_version",
+        "next_expected_evaluation_at_utc",
+        "observation_overdue_after_utc",
+    ):
+        assert getattr(first_record, field_name) == getattr(second_record, field_name), field_name
 
 
 # --- source-unavailable path: candles totally missing ------------------------

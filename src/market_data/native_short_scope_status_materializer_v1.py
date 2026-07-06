@@ -222,7 +222,13 @@ def decide_genuine_lifecycle_transition(
     currently selected map warrants a genuine COMPLETED or INVALIDATED
     transition. Returns None when there is nothing to append: no selected
     map, no context evidence, the context's evaluated swing does not match
-    the selected map's geometry, or the transition was already recorded.
+    the selected map's geometry, the map already has *any* terminal
+    lifecycle event (COMPLETED/EXPIRED/INVALIDATED/SUPERSEDED — a map may
+    only ever reach one terminal state, matching
+    `native_short_map_lifecycle_v1.validate_native_short_map_write_intent`'s
+    LIFECYCLE_EVENT_AFTER_TERMINAL rule, which would otherwise permanently
+    reject all future writes for this map), or the candidate transition
+    itself was already recorded.
 
     No EXPIRED detection: no deterministic expiry predicate exists anywhere
     in the codebase, so this function never invents one.
@@ -231,13 +237,11 @@ def decide_genuine_lifecycle_transition(
         return None
     if not context_row.map_cycle_id or context_row.map_cycle_id != selected_map.map_cycle_id:
         return None
+    if existing_lifecycle_event_types_for_map & _TERMINAL_LIFECYCLE_EVENT_TYPE_VALUES:
+        return None
     if context_row.primary_4h_lifecycle_state == PRIMARY_LIFECYCLE_INVALIDATED:
-        if NativeShortMapLifecycleEventType.INVALIDATED.value in existing_lifecycle_event_types_for_map:
-            return None
         return NativeShortMapLifecycleEventType.INVALIDATED
     if context_row.primary_4h_lifecycle_state == PRIMARY_LIFECYCLE_COMPLETED:
-        if NativeShortMapLifecycleEventType.COMPLETED.value in existing_lifecycle_event_types_for_map:
-            return None
         return NativeShortMapLifecycleEventType.COMPLETED
     return None
 
@@ -367,6 +371,7 @@ class ScopeEvaluationOutcome:
     published_map: bool
     lifecycle_event_appended: bool
     failed: bool
+    configuration_unavailable: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +682,7 @@ def upsert_scope_status_projection(conn: Any, record: NativeShortScopeStatusReco
         next_expected_evaluation_at_utc, observation_overdue_after_utc,
         primary_latest_candle_ts_utc, supporting_latest_candle_ts_utc,
         primary_source_freshness_limit_seconds, supporting_source_freshness_limit_seconds,
-        cadence_contract_version, projection_as_of_utc, status_payload_json
+        cadence_contract_version, projection_as_of_utc, status_payload_json, rebuilt_at_utc
     ) VALUES (
         %s, %s, %s, %s, %s, %s,
         %s, %s, %s,
@@ -688,7 +693,7 @@ def upsert_scope_status_projection(conn: Any, record: NativeShortScopeStatusReco
         %s, %s,
         %s, %s,
         %s, %s,
-        %s, %s, %s
+        %s, %s, %s, %s
     )
     ON DUPLICATE KEY UPDATE
         scope_support_state = VALUES(scope_support_state),
@@ -715,7 +720,8 @@ def upsert_scope_status_projection(conn: Any, record: NativeShortScopeStatusReco
         supporting_source_freshness_limit_seconds = VALUES(supporting_source_freshness_limit_seconds),
         cadence_contract_version = VALUES(cadence_contract_version),
         projection_as_of_utc = VALUES(projection_as_of_utc),
-        status_payload_json = VALUES(status_payload_json)
+        status_payload_json = VALUES(status_payload_json),
+        rebuilt_at_utc = VALUES(rebuilt_at_utc)
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -752,6 +758,7 @@ def upsert_scope_status_projection(conn: Any, record: NativeShortScopeStatusReco
                 record.cadence_contract_version,
                 record.projection_as_of_utc,
                 record.status_payload_json,
+                record.rebuilt_at_utc,
             ),
         )
 
@@ -838,6 +845,7 @@ def evaluate_scope(
             published_map=False,
             lifecycle_event_appended=False,
             failed=False,
+            configuration_unavailable=True,
         )
 
     existing_maps = fetch_existing_maps(conn, key)
@@ -1048,11 +1056,27 @@ def run_native_short_scope_status_materializer(
                 failed=outcome.failed,
             )
 
+            # Independently known map/lifecycle facts are always fetched:
+            # A1b requires map_lifecycle_state/current_map_id to keep
+            # reflecting them even for a CONFIGURATION_UNAVAILABLE row.
             existing_maps = fetch_existing_maps(conn, key)
             existing_generation_events = fetch_existing_generation_events(conn, key)
             existing_lifecycle_events = fetch_existing_lifecycle_events(
                 conn, [item.map_id for item in existing_maps]
             )
+
+            if outcome.configuration_unavailable:
+                # No candle fetch for a configuration-blocked scope: source
+                # freshness can never be classified without the missing
+                # cadence thresholds, so the callbacks must never even be
+                # invoked here (the pure projection engine also independently
+                # nulls these fields on this path as defense in depth).
+                primary_candle_close_timestamps: Sequence[datetime] = ()
+                supporting_candle_close_timestamps: Sequence[datetime] = ()
+            else:
+                primary_candle_close_timestamps = fetch_primary_candle_close_timestamps(key, as_of_utc)
+                supporting_candle_close_timestamps = fetch_supporting_candle_close_timestamps(key, as_of_utc)
+
             rebuild_scope_projection(
                 conn,
                 key=key,
@@ -1061,8 +1085,8 @@ def run_native_short_scope_status_materializer(
                 existing_maps=existing_maps,
                 existing_generation_events=existing_generation_events,
                 existing_lifecycle_events=existing_lifecycle_events,
-                primary_candle_close_timestamps=fetch_primary_candle_close_timestamps(key, as_of_utc),
-                supporting_candle_close_timestamps=fetch_supporting_candle_close_timestamps(key, as_of_utc),
+                primary_candle_close_timestamps=primary_candle_close_timestamps,
+                supporting_candle_close_timestamps=supporting_candle_close_timestamps,
             )
     except Exception as exc:
         failed_record = builder.finish(

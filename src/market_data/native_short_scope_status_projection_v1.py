@@ -404,8 +404,6 @@ def project_native_short_scope_status(
     )
     latest_generation_event = _select_latest_generation_event(generation_events, as_of_utc)
     latest_observation = _select_latest_observation(observations, as_of_utc)
-    primary_latest_ts = _latest_candle_ts(primary_candle_close_timestamps, as_of_utc)
-    supporting_latest_ts = _latest_candle_ts(supporting_candle_close_timestamps, as_of_utc)
 
     common_fields: dict[str, object] = dict(
         key=key,
@@ -428,16 +426,22 @@ def project_native_short_scope_status(
         latest_observed_at_utc=(
             latest_observation.observed_at_utc if latest_observation is not None else None
         ),
-        primary_latest_candle_ts_utc=primary_latest_ts,
-        supporting_latest_candle_ts_utc=supporting_latest_ts,
         projection_as_of_utc=as_of_utc,
         rebuilt_at_utc=rebuilt_at_utc,
     )
 
     cadence_config = select_eligible_cadence_config(cadence_configs, as_of_utc)
     if cadence_config is None:
+        # No candle timestamp is computed or read on this path at all (not
+        # merely nulled afterward): a scope with no eligible cadence config
+        # never reaches source-freshness classification, so it must never
+        # persist a candle timestamp either. `primary_candle_close_timestamps`/
+        # `supporting_candle_close_timestamps` are deliberately never touched
+        # here, regardless of what the caller passed in.
         return NativeShortScopeStatusRecord(
             **common_fields,
+            primary_latest_candle_ts_utc=None,
+            supporting_latest_candle_ts_utc=None,
             scope_status_code=NativeShortScopeStatusCode.CONFIGURATION_UNAVAILABLE,
             scope_status_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
             observation_freshness_state=NativeShortObservationFreshnessState.OBSERVATION_CONFIGURATION_UNAVAILABLE,
@@ -451,6 +455,8 @@ def project_native_short_scope_status(
             status_payload_json=_configuration_unavailable_payload(key, as_of_utc),
         )
 
+    primary_latest_ts = _latest_candle_ts(primary_candle_close_timestamps, as_of_utc)
+    supporting_latest_ts = _latest_candle_ts(supporting_candle_close_timestamps, as_of_utc)
     source_state = classify_source_freshness(
         primary_latest_ts=primary_latest_ts,
         supporting_latest_ts=supporting_latest_ts,
@@ -488,6 +494,8 @@ def project_native_short_scope_status(
 
     return NativeShortScopeStatusRecord(
         **common_fields,
+        primary_latest_candle_ts_utc=primary_latest_ts,
+        supporting_latest_candle_ts_utc=supporting_latest_ts,
         scope_status_code=scope_status_code,
         scope_status_reason_code=scope_status_reason_code,
         observation_freshness_state=observation_freshness_state,

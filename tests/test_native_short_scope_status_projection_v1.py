@@ -128,6 +128,11 @@ def test_cadence_effective_window_selects_currently_active_version() -> None:
 
 
 def test_no_eligible_cadence_config_yields_configuration_unavailable() -> None:
+    # _project's defaults pass non-empty primary/supporting candle
+    # timestamps: this deliberately proves the config-unavailable branch
+    # nulls the persisted candle timestamps itself (defense in depth) even
+    # when real candle evidence was supplied, not merely when the caller
+    # happens to pass empty lists.
     record = _project(cadence_configs=[])
     assert record is not None
     assert record.scope_status_code == "CONFIGURATION_UNAVAILABLE"
@@ -140,6 +145,8 @@ def test_no_eligible_cadence_config_yields_configuration_unavailable() -> None:
     assert record.source_freshness_state is None
     assert record.next_expected_evaluation_at_utc is None
     assert record.observation_overdue_after_utc is None
+    assert record.primary_latest_candle_ts_utc is None
+    assert record.supporting_latest_candle_ts_utc is None
     assert record.status_payload_json is not None
 
 

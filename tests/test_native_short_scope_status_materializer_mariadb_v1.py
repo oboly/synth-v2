@@ -242,8 +242,11 @@ def _no_lifecycle_events(conn: Any, map_ids: list[int]) -> list[Any]:
     return []
 
 
-def _no_candles(key: NativeShortMapScopeKey, as_of_utc: datetime) -> list[datetime]:
-    return []
+def _raising_candles(key: NativeShortMapScopeKey, as_of_utc: datetime) -> list[datetime]:
+    raise AssertionError(
+        "candle callback must not be called for a CONFIGURATION_UNAVAILABLE scope: "
+        "source freshness can never be classified without the missing cadence thresholds."
+    )
 
 
 def _fresh_candles(key: NativeShortMapScopeKey, as_of_utc: datetime) -> list[datetime]:
@@ -312,8 +315,8 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
             fetch_existing_maps=_no_maps,
             fetch_existing_generation_events=_no_generation_events,
             fetch_existing_lifecycle_events=_no_lifecycle_events,
-            fetch_primary_candle_close_timestamps=_no_candles,
-            fetch_supporting_candle_close_timestamps=_no_candles,
+            fetch_primary_candle_close_timestamps=_raising_candles,
+            fetch_supporting_candle_close_timestamps=_raising_candles,
         )
         schema_conn.commit()
 
@@ -358,6 +361,8 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
             assert status["source_freshness_state"] is None
             assert status["next_expected_evaluation_at_utc"] is None
             assert status["observation_overdue_after_utc"] is None
+            assert status["primary_latest_candle_ts_utc"] is None
+            assert status["supporting_latest_candle_ts_utc"] is None
 
         # --- Scenario B: SUPPORTED scope, eligible cadence config -----------
         eth = _key("ETH")
