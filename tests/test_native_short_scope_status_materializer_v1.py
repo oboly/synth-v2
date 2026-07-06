@@ -339,7 +339,15 @@ def test_materializer_module_imports_no_forbidden_layers() -> None:
 
 
 def test_materializer_module_has_no_wallclock_calls() -> None:
+    """AST-based (not raw-text) check: the module's own docstrings legitimately
+    *describe* this boundary in prose, so a substring scan would false-positive
+    on the documentation itself. What must never appear is an actual call
+    expression invoking datetime.now()/utcnow()/NOW()."""
     source = Path("src/market_data/native_short_scope_status_materializer_v1.py").read_text(encoding="utf-8")
-    assert "datetime.now(" not in source
-    assert "utcnow(" not in source
-    assert "NOW()" not in source
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+        assert name not in ("now", "utcnow", "NOW"), ast.dump(node)

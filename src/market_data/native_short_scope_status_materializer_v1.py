@@ -941,12 +941,16 @@ def evaluate_scope(
     )
 
 
+_MAX_FAILURE_DETAIL_LENGTH = 2000
+
+
 def run_native_short_scope_status_materializer(
     conn: Any,
     *,
     scopes: Sequence[NativeShortMapScopeKey],
     as_of_utc: datetime,
     trigger_type: str,
+    operational_clock: Callable[[], datetime],
     fetch_context_row: Callable[[NativeShortMapScopeKey, datetime], NativeShortContextRow | None],
     fetch_existing_maps: Callable[[Any, NativeShortMapScopeKey], list[Any]],
     fetch_existing_generation_events: Callable[[Any, NativeShortMapScopeKey], list[Any]],
@@ -959,60 +963,81 @@ def run_native_short_scope_status_materializer(
     """Bounded run over an explicit scope list at one explicit as_of_utc.
 
     Exactly one native_short_materializer_run_v1 row is inserted at start and
-    finalized once at the end. Every SUPPORTED scope gets exactly one
-    append-only observation and, when SUPPORTED, one rebuilt/upserted
-    projection row; NOT_APPLICABLE/UNKNOWN_AT_AS_OF scopes get neither.
+    finalized exactly once, either FINISHED (success) or FAILED (any normal
+    Exception escaping scope evaluation or projection rebuild). Every
+    SUPPORTED scope gets exactly one append-only observation and, when
+    SUPPORTED, one rebuilt/upserted projection row; NOT_APPLICABLE/
+    UNKNOWN_AT_AS_OF scopes get neither.
+
+    `as_of_utc` is the sole cutoff for all market/projection semantics
+    (evaluate_scope, rebuild_scope_projection); it is never used for the run
+    row's own operational bookkeeping. `operational_clock` supplies the run's
+    `started_at_utc`/`finished_at_utc` operational timestamps instead: this
+    module never calls `datetime.now()`, `utcnow()`, or database `NOW()`
+    itself, so the caller controls exactly when those two timestamps are
+    captured.
     """
+    started_at_utc = operational_clock()
     builder = NativeShortRunBuilder(
         run_uuid=run_uuid or str(uuid.uuid4()),
         runner_name=RUNNER_NAME,
         runner_version=RUNNER_VERSION,
         contract_version=CONTRACT_VERSION,
         trigger_type=trigger_type,
-        started_at_utc=as_of_utc,
+        started_at_utc=started_at_utc,
         requested_scope_count=len(scopes),
     )
     run_id = _insert_run(conn, builder.started_record())
 
-    for key in scopes:
-        outcome = evaluate_scope(
-            conn,
-            key=key,
-            as_of_utc=as_of_utc,
-            run_id=run_id,
-            run_uuid=builder.run_uuid,
-            fetch_context_row=fetch_context_row,
-            fetch_existing_maps=fetch_existing_maps,
-            fetch_existing_generation_events=fetch_existing_generation_events,
-            fetch_existing_lifecycle_events=fetch_existing_lifecycle_events,
-            materialize_scope_symbol_fn=materialize_scope_symbol_fn,
-        )
-        if outcome.skipped_not_supported:
-            continue
+    try:
+        for key in scopes:
+            outcome = evaluate_scope(
+                conn,
+                key=key,
+                as_of_utc=as_of_utc,
+                run_id=run_id,
+                run_uuid=builder.run_uuid,
+                fetch_context_row=fetch_context_row,
+                fetch_existing_maps=fetch_existing_maps,
+                fetch_existing_generation_events=fetch_existing_generation_events,
+                fetch_existing_lifecycle_events=fetch_existing_lifecycle_events,
+                materialize_scope_symbol_fn=materialize_scope_symbol_fn,
+            )
+            if outcome.skipped_not_supported:
+                continue
 
-        builder.record_scope_outcome(
-            published_map=outcome.published_map,
-            lifecycle_event_appended=outcome.lifecycle_event_appended,
-            failed=outcome.failed,
-        )
+            builder.record_scope_outcome(
+                published_map=outcome.published_map,
+                lifecycle_event_appended=outcome.lifecycle_event_appended,
+                failed=outcome.failed,
+            )
 
-        existing_maps = fetch_existing_maps(conn, key)
-        existing_generation_events = fetch_existing_generation_events(conn, key)
-        existing_lifecycle_events = fetch_existing_lifecycle_events(
-            conn, [item.map_id for item in existing_maps]
+            existing_maps = fetch_existing_maps(conn, key)
+            existing_generation_events = fetch_existing_generation_events(conn, key)
+            existing_lifecycle_events = fetch_existing_lifecycle_events(
+                conn, [item.map_id for item in existing_maps]
+            )
+            rebuild_scope_projection(
+                conn,
+                key=key,
+                as_of_utc=as_of_utc,
+                rebuilt_at_utc=as_of_utc,
+                existing_maps=existing_maps,
+                existing_generation_events=existing_generation_events,
+                existing_lifecycle_events=existing_lifecycle_events,
+                primary_candle_close_timestamps=fetch_primary_candle_close_timestamps(key, as_of_utc),
+                supporting_candle_close_timestamps=fetch_supporting_candle_close_timestamps(key, as_of_utc),
+            )
+    except Exception as exc:
+        failed_record = builder.finish(
+            finished_at_utc=operational_clock(),
+            terminal_status=NativeShortRunTerminalStatus.FAILED,
+            failure_reason_code=type(exc).__name__,
+            failure_detail=str(exc)[:_MAX_FAILURE_DETAIL_LENGTH],
         )
-        rebuild_scope_projection(
-            conn,
-            key=key,
-            as_of_utc=as_of_utc,
-            rebuilt_at_utc=as_of_utc,
-            existing_maps=existing_maps,
-            existing_generation_events=existing_generation_events,
-            existing_lifecycle_events=existing_lifecycle_events,
-            primary_candle_close_timestamps=fetch_primary_candle_close_timestamps(key, as_of_utc),
-            supporting_candle_close_timestamps=fetch_supporting_candle_close_timestamps(key, as_of_utc),
-        )
+        _finalize_run(conn, run_id, failed_record)
+        raise
 
-    finished_record = builder.finish(finished_at_utc=as_of_utc)
+    finished_record = builder.finish(finished_at_utc=operational_clock())
     _finalize_run(conn, run_id, finished_record)
     return finished_record

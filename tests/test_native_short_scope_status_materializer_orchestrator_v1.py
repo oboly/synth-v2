@@ -314,6 +314,25 @@ def _fresh_candles(key: NativeShortMapScopeKey, as_of_utc: datetime) -> list[dat
     return [as_of_utc - timedelta(hours=1)]
 
 
+def _fixed_clock(ts: datetime):
+    return lambda: ts
+
+
+def _sequential_clock(*timestamps: datetime):
+    """Returns a distinct timestamp on each call, in order; raises if called
+    more times than timestamps were supplied. Used to prove started_at_utc
+    and finished_at_utc are independent operational reads, not the same
+    wall-clock instant, and that finished_at_utc >= started_at_utc."""
+    remaining = list(timestamps)
+
+    def _next() -> datetime:
+        if not remaining:
+            raise AssertionError("operational clock called more times than expected")
+        return remaining.pop(0)
+
+    return _next
+
+
 def _unchanged_geometry_result(*, map_id: int = 1) -> ScopeMaterializationResult:
     return ScopeMaterializationResult(
         symbol="BTC",
@@ -340,6 +359,7 @@ def test_one_run_row_inserted_and_finalized_once() -> None:
         scopes=[key],
         as_of_utc=_AS_OF,
         trigger_type="MANUAL",
+        operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
         fetch_existing_generation_events=_no_generation_events,
@@ -371,6 +391,7 @@ def test_one_observation_written_per_supported_scope_per_run() -> None:
         scopes=[key],
         as_of_utc=_AS_OF,
         trigger_type="MANUAL",
+        operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
         fetch_existing_generation_events=_no_generation_events,
@@ -398,6 +419,7 @@ def test_not_applicable_scope_writes_no_observation_and_no_status_row() -> None:
         scopes=[key],
         as_of_utc=_AS_OF,
         trigger_type="MANUAL",
+        operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
         fetch_existing_generation_events=_no_generation_events,
@@ -421,6 +443,7 @@ def test_unknown_at_as_of_scope_writes_no_observation_and_no_status_row() -> Non
         scopes=[key],
         as_of_utc=_AS_OF,
         trigger_type="MANUAL",
+        operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
         fetch_existing_generation_events=_no_generation_events,
@@ -447,6 +470,7 @@ def test_configuration_unavailable_scope_writes_blocked_observation_and_status_r
         scopes=[key],
         as_of_utc=_AS_OF,
         trigger_type="MANUAL",
+        operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
         fetch_existing_generation_events=_no_generation_events,
@@ -493,6 +517,7 @@ def test_unchanged_geometry_across_two_runs_does_not_duplicate_map(monkeypatch: 
             scopes=[key],
             as_of_utc=_AS_OF,
             trigger_type="MANUAL",
+            operational_clock=_fixed_clock(_AS_OF),
             fetch_context_row=lambda k, t: _context_row(),
             fetch_existing_maps=_no_maps,
             fetch_existing_generation_events=_no_generation_events,
@@ -551,6 +576,7 @@ def test_genuine_lifecycle_transition_appended_once_across_repeated_runs() -> No
             scopes=[key],
             as_of_utc=_AS_OF,
             trigger_type="MANUAL",
+            operational_clock=_fixed_clock(_AS_OF),
             fetch_context_row=lambda k, t: invalidated_row,
             fetch_existing_maps=fetch_maps,
             fetch_existing_generation_events=_no_generation_events,
@@ -594,6 +620,7 @@ def test_projection_upsert_writes_only_status_table_not_source_ledgers() -> None
         scopes=[key],
         as_of_utc=_AS_OF,
         trigger_type="MANUAL",
+        operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
         fetch_existing_generation_events=_no_generation_events,
@@ -628,6 +655,7 @@ def test_source_unavailable_when_context_symbol_missing() -> None:
         scopes=[key],
         as_of_utc=_AS_OF,
         trigger_type="MANUAL",
+        operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=missing_context_row,
         fetch_existing_maps=_no_maps,
         fetch_existing_generation_events=_no_generation_events,
@@ -640,3 +668,172 @@ def test_source_unavailable_when_context_symbol_missing() -> None:
     observation = conn.observations[0]
     assert observation["observation_status"] == "SKIPPED_SOURCE_UNAVAILABLE"
     assert observation["source_state"] == "SOURCE_UNAVAILABLE"
+
+
+# --- failure terminalization: run must never be left non-terminal ----------
+
+
+def test_failure_before_materialization_terminalizes_run_as_failed() -> None:
+    """fetch_context_row raises before materialize_scope_symbol_fn is ever
+    reached (the "context/candle callback before materialization" case)."""
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(key)
+
+    op_start = _AS_OF + timedelta(days=3)
+    op_finish = _AS_OF + timedelta(days=3, minutes=5)
+
+    def raising_context_row(k: NativeShortMapScopeKey, as_of: datetime) -> NativeShortContextRow:
+        raise RuntimeError("candle fetch exploded before materialization")
+
+    with pytest.raises(RuntimeError, match="candle fetch exploded before materialization"):
+        run_native_short_scope_status_materializer(
+            conn,
+            scopes=[key],
+            as_of_utc=_AS_OF,
+            trigger_type="MANUAL",
+            operational_clock=_sequential_clock(op_start, op_finish),
+            fetch_context_row=raising_context_row,
+            fetch_existing_maps=_no_maps,
+            fetch_existing_generation_events=_no_generation_events,
+            fetch_existing_lifecycle_events=_no_lifecycle_events,
+            fetch_primary_candle_close_timestamps=_fresh_candles,
+            fetch_supporting_candle_close_timestamps=_fresh_candles,
+        )
+
+    assert len(conn.runs) == 1
+    run = conn.runs[0]
+    assert run["terminal_status"] == "FAILED"
+    assert run["failure_reason_code"] == "RuntimeError"
+    assert "candle fetch exploded before materialization" in run["failure_detail"]
+    # No scope could be evaluated to completion before the raise.
+    assert run["observed_scope_count"] == 0
+    assert conn.observations == []
+    assert conn.status_upsert_count == 0
+    # Terminal timestamps come from the operational clock, not as_of_utc.
+    assert run["started_at_utc"] == op_start
+    assert run["finished_at_utc"] == op_finish
+    assert run["finished_at_utc"] >= run["started_at_utc"]
+    # Exactly one terminal UPDATE: no second terminalization occurred.
+    assert conn.finalize_calls_after_terminal == 0
+
+
+def test_failure_in_projection_rebuild_after_scope_outcome_terminalizes_as_failed() -> None:
+    """A failure in the candle-timestamp fetch feeding projection rebuild,
+    occurring only for the second of two scopes, after both scopes'
+    evaluate_scope outcomes (including the first scope's full projection
+    upsert) already completed."""
+    conn = _FakeConn()
+    btc = _key("BTC")
+    eth = _key("ETH")
+    for key in (btc, eth):
+        conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+        conn.seed_cadence_config(key)
+
+    op_start = _AS_OF + timedelta(hours=6)
+    op_finish = _AS_OF + timedelta(hours=6, minutes=2)
+
+    def candles_raising_for_eth(key: NativeShortMapScopeKey, as_of_utc: datetime) -> list[datetime]:
+        if key.symbol == "ETH":
+            raise RuntimeError("candle timestamp fetch exploded during projection rebuild")
+        return [as_of_utc - timedelta(hours=1)]
+
+    with pytest.raises(RuntimeError, match="candle timestamp fetch exploded during projection rebuild"):
+        run_native_short_scope_status_materializer(
+            conn,
+            scopes=[btc, eth],
+            as_of_utc=_AS_OF,
+            trigger_type="MANUAL",
+            operational_clock=_sequential_clock(op_start, op_finish),
+            fetch_context_row=lambda k, t: _context_row(),
+            fetch_existing_maps=_no_maps,
+            fetch_existing_generation_events=_no_generation_events,
+            fetch_existing_lifecycle_events=_no_lifecycle_events,
+            fetch_primary_candle_close_timestamps=candles_raising_for_eth,
+            fetch_supporting_candle_close_timestamps=_fresh_candles,
+            materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
+        )
+
+    assert len(conn.runs) == 1
+    run = conn.runs[0]
+    assert run["terminal_status"] == "FAILED"
+    assert run["failure_reason_code"] == "RuntimeError"
+    # Both scopes' evaluate_scope outcomes were recorded before the raise;
+    # counters accumulated before failure must be preserved, not reset.
+    assert run["observed_scope_count"] == 2
+    assert len(conn.observations) == 2
+    # Only BTC's projection rebuild completed before ETH's candle fetch raised.
+    assert conn.status_upsert_count == 1
+    assert run["started_at_utc"] == op_start
+    assert run["finished_at_utc"] == op_finish
+    assert conn.finalize_calls_after_terminal == 0
+
+
+def test_success_path_still_terminalizes_exactly_once_with_finished() -> None:
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(key)
+
+    run_native_short_scope_status_materializer(
+        conn,
+        scopes=[key],
+        as_of_utc=_AS_OF,
+        trigger_type="MANUAL",
+        operational_clock=_fixed_clock(_AS_OF),
+        fetch_context_row=lambda k, t: _context_row(),
+        fetch_existing_maps=_no_maps,
+        fetch_existing_generation_events=_no_generation_events,
+        fetch_existing_lifecycle_events=_no_lifecycle_events,
+        fetch_primary_candle_close_timestamps=_fresh_candles,
+        fetch_supporting_candle_close_timestamps=_fresh_candles,
+        materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
+    )
+
+    assert len(conn.runs) == 1
+    assert conn.runs[0]["terminal_status"] == "FINISHED"
+    assert conn.finalize_calls_after_terminal == 0
+
+
+# --- semantic time (as_of_utc) vs operational timestamps --------------------
+
+
+def test_projection_as_of_utc_is_independent_of_operational_clock() -> None:
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(key)
+
+    op_start = _AS_OF + timedelta(days=3)
+    op_finish = _AS_OF + timedelta(days=3, minutes=5)
+
+    run_native_short_scope_status_materializer(
+        conn,
+        scopes=[key],
+        as_of_utc=_AS_OF,
+        trigger_type="MANUAL",
+        operational_clock=_sequential_clock(op_start, op_finish),
+        fetch_context_row=lambda k, t: _context_row(),
+        fetch_existing_maps=_no_maps,
+        fetch_existing_generation_events=_no_generation_events,
+        fetch_existing_lifecycle_events=_no_lifecycle_events,
+        fetch_primary_candle_close_timestamps=_fresh_candles,
+        fetch_supporting_candle_close_timestamps=_fresh_candles,
+        materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
+    )
+
+    # The semantic cutoff written into the projection is exactly the supplied
+    # as_of_utc, wholly unaffected by the operational clock.
+    status_row = next(iter(conn.status_rows.values()))
+    assert status_row["projection_as_of_utc"] == _AS_OF
+
+    # The run's own operational timestamps come from operational_clock, not
+    # as_of_utc, and the terminal timestamp is not earlier than the start.
+    run = conn.runs[0]
+    assert run["started_at_utc"] == op_start
+    assert run["finished_at_utc"] == op_finish
+    assert run["started_at_utc"] != _AS_OF
+    assert run["finished_at_utc"] != _AS_OF
+    assert run["finished_at_utc"] >= run["started_at_utc"]
+    assert run["finished_at_utc"] != run["started_at_utc"]
