@@ -184,6 +184,14 @@ CREATE TABLE IF NOT EXISTS native_short_scope_status_v1 (
             'OBSERVATION_OVERDUE',
             'CURRENT_EVALUATION'
         )),
+    CONSTRAINT chk_native_short_scope_status_v1_map_lifecycle
+        CHECK (map_lifecycle_state IN (
+            'MAP_ACTIVE',
+            'MAP_INVALIDATED',
+            'MAP_COMPLETED',
+            'MAP_EXPIRED',
+            'NO_CURRENT_MAP'
+        )),
     CONSTRAINT chk_native_short_scope_status_v1_observation_freshness
         CHECK (observation_freshness_state IN ('OBSERVATION_CURRENT', 'OBSERVATION_OVERDUE', 'NO_OBSERVATION')),
     CONSTRAINT chk_native_short_scope_status_v1_source_freshness

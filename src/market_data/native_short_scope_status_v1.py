@@ -22,6 +22,8 @@ __all__ = [
     "NativeShortRunTerminalStatus",
     "NativeShortScopeActionabilityState",
     "NativeShortScopeCadenceConfig",
+    "NativeShortScopeGeometryAction",
+    "NativeShortScopeMapLifecycleState",
     "NativeShortScopeObservationRecord",
     "NativeShortScopeObservationStatus",
     "NativeShortScopeSourceState",
@@ -55,6 +57,21 @@ class NativeShortScopeSourceState(StrEnum):
     SOURCE_CURRENT = "SOURCE_CURRENT"
     SOURCE_STALE = "SOURCE_STALE"
     SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
+
+
+class NativeShortScopeGeometryAction(StrEnum):
+    PUBLISHED_NEW_MAP = "PUBLISHED_NEW_MAP"
+    UNCHANGED_GEOMETRY = "UNCHANGED_GEOMETRY"
+    REJECTED_CONTEXT = "REJECTED_CONTEXT"
+    NO_MAP_AVAILABLE = "NO_MAP_AVAILABLE"
+
+
+class NativeShortScopeMapLifecycleState(StrEnum):
+    MAP_ACTIVE = "MAP_ACTIVE"
+    MAP_INVALIDATED = "MAP_INVALIDATED"
+    MAP_COMPLETED = "MAP_COMPLETED"
+    MAP_EXPIRED = "MAP_EXPIRED"
+    NO_CURRENT_MAP = "NO_CURRENT_MAP"
 
 
 class NativeShortScopeStatusCode(StrEnum):
@@ -186,6 +203,7 @@ class NativeShortMaterializerRunRecord:
 @dataclass(frozen=True)
 class NativeShortScopeObservationRecord:
     key: NativeShortMapScopeKey
+    run_id: int
     run_uuid: str
     observed_at_utc: datetime
     cadence_contract_version: str
@@ -193,18 +211,20 @@ class NativeShortScopeObservationRecord:
     source_state: NativeShortScopeSourceState | str
     primary_source_freshness_limit_seconds: int
     supporting_source_freshness_limit_seconds: int
-    geometry_action: str
+    geometry_action: NativeShortScopeGeometryAction | str
     evaluation_due_at_utc: datetime | None = None
 
     def __post_init__(self) -> None:
         validate_native_short_scope_key(self.key)
+        if self.run_id <= 0:
+            raise NativeShortScopeStatusValidationError("COUNT_NOT_POSITIVE field=run_id")
         _require_text(self.run_uuid, "run_uuid")
         _require_utc(self.observed_at_utc, "observed_at_utc")
         _optional_utc(self.evaluation_due_at_utc, "evaluation_due_at_utc")
         _require_text(self.cadence_contract_version, "cadence_contract_version")
         _coerce_enum(self.observation_status, NativeShortScopeObservationStatus, "observation_status")
         _coerce_enum(self.source_state, NativeShortScopeSourceState, "source_state")
-        _require_text(self.geometry_action, "geometry_action")
+        _coerce_enum(self.geometry_action, NativeShortScopeGeometryAction, "geometry_action")
         if self.primary_source_freshness_limit_seconds <= 0:
             raise NativeShortScopeStatusValidationError(
                 "COUNT_NOT_POSITIVE field=primary_source_freshness_limit_seconds"
@@ -218,8 +238,9 @@ class NativeShortScopeObservationRecord:
 @dataclass(frozen=True)
 class NativeShortScopeStatusRecord:
     key: NativeShortMapScopeKey
+    scope_support_state: NativeShortScopeSupportEventState | str
     scope_status_code: NativeShortScopeStatusCode | str
-    map_lifecycle_state: str
+    map_lifecycle_state: NativeShortScopeMapLifecycleState | str
     observation_freshness_state: NativeShortObservationFreshnessState | str
     source_freshness_state: NativeShortScopeSourceState | str
     actionability_state: NativeShortScopeActionabilityState | str
@@ -231,8 +252,17 @@ class NativeShortScopeStatusRecord:
 
     def __post_init__(self) -> None:
         validate_native_short_scope_key(self.key)
+        scope_support_state = _coerce_enum(
+            self.scope_support_state,
+            NativeShortScopeSupportEventState,
+            "scope_support_state",
+        )
+        if scope_support_state != NativeShortScopeSupportEventState.SUPPORTED:
+            raise NativeShortScopeStatusValidationError(
+                f"INVALID_SCOPE_SUPPORT_STATE_FOR_STATUS value={self.scope_support_state}"
+            )
         _coerce_enum(self.scope_status_code, NativeShortScopeStatusCode, "scope_status_code")
-        _require_text(self.map_lifecycle_state, "map_lifecycle_state")
+        _coerce_enum(self.map_lifecycle_state, NativeShortScopeMapLifecycleState, "map_lifecycle_state")
         _coerce_enum(
             self.observation_freshness_state,
             NativeShortObservationFreshnessState,

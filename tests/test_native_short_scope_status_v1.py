@@ -9,6 +9,8 @@ from src.market_data.native_short_scope_status_v1 import (
     NativeShortMaterializerRunRecord,
     NativeShortScopeActionabilityState,
     NativeShortScopeCadenceConfig,
+    NativeShortScopeGeometryAction,
+    NativeShortScopeMapLifecycleState,
     NativeShortScopeObservationRecord,
     NativeShortScopeObservationStatus,
     NativeShortScopeSourceState,
@@ -52,6 +54,7 @@ def test_valid_full_key_records_construct() -> None:
     )
     NativeShortScopeObservationRecord(
         key=key,
+        run_id=1,
         run_uuid="00000000-0000-0000-0000-000000000001",
         observed_at_utc=_TS,
         cadence_contract_version="v1",
@@ -59,12 +62,13 @@ def test_valid_full_key_records_construct() -> None:
         source_state=NativeShortScopeSourceState.SOURCE_CURRENT,
         primary_source_freshness_limit_seconds=43200,
         supporting_source_freshness_limit_seconds=10800,
-        geometry_action="UNCHANGED_GEOMETRY",
+        geometry_action=NativeShortScopeGeometryAction.UNCHANGED_GEOMETRY,
     )
     NativeShortScopeStatusRecord(
         key=key,
+        scope_support_state=NativeShortScopeSupportEventState.SUPPORTED,
         scope_status_code=NativeShortScopeStatusCode.CURRENT_EVALUATION,
-        map_lifecycle_state="MAP_ACTIVE",
+        map_lifecycle_state=NativeShortScopeMapLifecycleState.MAP_ACTIVE,
         observation_freshness_state="OBSERVATION_CURRENT",
         source_freshness_state="SOURCE_CURRENT",
         actionability_state=NativeShortScopeActionabilityState.ACTIONABLE_ACTIVE_MAP,
@@ -137,6 +141,75 @@ def test_invalid_enum_values_reject() -> None:
         )
 
 
+def test_invalid_geometry_action_rejects() -> None:
+    with pytest.raises(NativeShortScopeStatusValidationError, match="geometry_action"):
+        NativeShortScopeObservationRecord(
+            key=_key(),
+            run_id=1,
+            run_uuid="00000000-0000-0000-0000-000000000001",
+            observed_at_utc=_TS,
+            cadence_contract_version="v1",
+            observation_status="EVALUATED",
+            source_state="SOURCE_CURRENT",
+            primary_source_freshness_limit_seconds=43200,
+            supporting_source_freshness_limit_seconds=10800,
+            geometry_action="HEARTBEAT",
+        )
+
+
+@pytest.mark.parametrize("run_id", [0, -1])
+def test_zero_or_negative_observation_run_id_rejects(run_id: int) -> None:
+    with pytest.raises(NativeShortScopeStatusValidationError, match="run_id"):
+        NativeShortScopeObservationRecord(
+            key=_key(),
+            run_id=run_id,
+            run_uuid="00000000-0000-0000-0000-000000000001",
+            observed_at_utc=_TS,
+            cadence_contract_version="v1",
+            observation_status="EVALUATED",
+            source_state="SOURCE_CURRENT",
+            primary_source_freshness_limit_seconds=43200,
+            supporting_source_freshness_limit_seconds=10800,
+            geometry_action="UNCHANGED_GEOMETRY",
+        )
+
+
+def test_invalid_selected_map_lifecycle_state_rejects() -> None:
+    with pytest.raises(NativeShortScopeStatusValidationError, match="map_lifecycle_state"):
+        NativeShortScopeStatusRecord(
+            key=_key(),
+            scope_support_state="SUPPORTED",
+            scope_status_code="CURRENT_EVALUATION",
+            map_lifecycle_state="MAP_SUPERSEDED",
+            observation_freshness_state="OBSERVATION_CURRENT",
+            source_freshness_state="SOURCE_CURRENT",
+            actionability_state="ACTIONABLE_ACTIVE_MAP",
+            primary_source_freshness_limit_seconds=43200,
+            supporting_source_freshness_limit_seconds=10800,
+            cadence_contract_version="v1",
+            projection_as_of_utc=_TS,
+            rebuilt_at_utc=_TS,
+        )
+
+
+def test_status_row_rejects_not_applicable_scope_support() -> None:
+    with pytest.raises(NativeShortScopeStatusValidationError, match="INVALID_SCOPE_SUPPORT_STATE_FOR_STATUS"):
+        NativeShortScopeStatusRecord(
+            key=_key(),
+            scope_support_state="NOT_APPLICABLE",
+            scope_status_code="CURRENT_EVALUATION",
+            map_lifecycle_state="MAP_ACTIVE",
+            observation_freshness_state="OBSERVATION_CURRENT",
+            source_freshness_state="SOURCE_CURRENT",
+            actionability_state="ACTIONABLE_ACTIVE_MAP",
+            primary_source_freshness_limit_seconds=43200,
+            supporting_source_freshness_limit_seconds=10800,
+            cadence_contract_version="v1",
+            projection_as_of_utc=_TS,
+            rebuilt_at_utc=_TS,
+        )
+
+
 def test_naive_timestamps_reject_and_utc_timestamps_pass() -> None:
     NativeShortMaterializerRunRecord(
         run_uuid="00000000-0000-0000-0000-000000000001",
@@ -164,6 +237,7 @@ def test_status_row_requires_projection_as_of_utc() -> None:
     with pytest.raises(NativeShortScopeStatusValidationError, match="projection_as_of_utc"):
         NativeShortScopeStatusRecord(
             key=_key(),
+            scope_support_state="SUPPORTED",
             scope_status_code="CURRENT_EVALUATION",
             map_lifecycle_state="MAP_ACTIVE",
             observation_freshness_state="OBSERVATION_CURRENT",

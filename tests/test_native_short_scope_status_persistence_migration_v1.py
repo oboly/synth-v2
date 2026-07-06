@@ -52,6 +52,22 @@ def test_migration_contains_required_indexes_and_projection_clock() -> None:
         assert required in sql
 
 
+def test_migration_has_closed_selected_map_lifecycle_constraint() -> None:
+    sql = _sql()
+    status_section = sql.split("CREATE TABLE IF NOT EXISTS native_short_scope_status_v1", 1)[1]
+    status_section = status_section.split("CREATE TABLE IF NOT EXISTS native_short_scope_cadence_config_v1", 1)[0]
+    assert "CONSTRAINT chk_native_short_scope_status_v1_map_lifecycle" in status_section
+    for value in (
+        "MAP_ACTIVE",
+        "MAP_INVALIDATED",
+        "MAP_COMPLETED",
+        "MAP_EXPIRED",
+        "NO_CURRENT_MAP",
+    ):
+        assert value in status_section
+    assert "MAP_SUPERSEDED" not in status_section
+
+
 def test_migration_support_event_contract_and_tie_break_indexes() -> None:
     sql = _sql()
     support_section = sql.split("CREATE TABLE IF NOT EXISTS native_short_scope_support_event_v1", 1)[1]
