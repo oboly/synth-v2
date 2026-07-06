@@ -395,17 +395,57 @@ Authoritative inputs:
 - `native_short_map_lifecycle_event_v1`
 - persisted primary and supporting candles
 
+As-of knowledge-cutoff invariant:
+
+```text
+Projection state at T may depend only on persisted facts with authoritative timestamps <= T.
+```
+
+Every authoritative input used for one projection row must be eligible at or
+before that rebuild's explicit `as_of_utc`. This applies equally to live bounded
+runs, where `as_of_utc` is current explicit UTC, and future historical replay,
+where `as_of_utc` is virtual historical UTC.
+
+Eligibility rules:
+
+- Scope inventory: select scope rows whose support/config state is effective at
+  `as_of_utc`. Do not use a scope support change that occurred after
+  `as_of_utc`.
+- Cadence configuration: select only the exact full-key config version effective
+  at `as_of_utc`: `effective_from_utc <= as_of_utc` and
+  `effective_to_utc IS NULL OR effective_to_utc > as_of_utc`. Do not use a
+  future configuration version.
+- Maps: only maps with `published_at_utc <= as_of_utc` are eligible for
+  current-map selection. Apply supersession exclusion only from `SUPERSEDED`
+  lifecycle events with `event_ts_utc <= as_of_utc`.
+- Lifecycle: resolve selected-map lifecycle only from lifecycle events with
+  `event_ts_utc <= as_of_utc`. Continue using `(event_ts_utc,
+  lifecycle_event_id)` tie-break order.
+- Generation provenance: latest generation event must be limited to events known
+  at `as_of_utc`, using persisted `event_ts_utc <= as_of_utc`, then
+  `generation_event_id` as deterministic tie-breaker.
+- Observations: latest scope observation must satisfy
+  `observed_at_utc <= as_of_utc`. A future observation must never make an
+  earlier projection look current.
+- Candles: latest primary and supporting candle timestamps used for source
+  freshness must satisfy `close_ts_utc <= as_of_utc`. Never use future candle
+  rows relative to the projection clock.
+- Failure behavior: if no eligible cadence config exists at `as_of_utc`,
+  projection rebuild fails closed for that scope with a deterministic
+  configuration reason. Do not silently use the latest current config. If source
+  data exists only after `as_of_utc`, classify it as unavailable at that
+  projection time.
 
 Deterministic rebuild ordering for each canonical scope:
 
 1. Accept explicit UTC `as_of_utc`; do not read wall-clock time inside projection logic.
-2. Load SUPPORTED scope rows from `native_short_map_scope_v1` using full key ordering.
-3. Load active cadence/grace config by full key and effective timestamp.
-4. Load latest scope observation by `(observed_at_utc, scope_observation_id)`.
+2. Load SUPPORTED scope rows effective at `as_of_utc` from `native_short_map_scope_v1` using full key ordering.
+3. Load active cadence/grace config by full key and effective timestamp at `as_of_utc`.
+4. Load latest eligible scope observation by `(observed_at_utc, scope_observation_id)`.
 5. Select the current map by the deterministic current-map selection rule below.
-6. Load latest generation event by `(generation_event_id)` for the scope.
-7. Resolve lifecycle state only for the selected map using its latest lifecycle event by `(event_ts_utc, lifecycle_event_id)`.
-8. Load latest primary and supporting candle timestamps.
+6. Load latest eligible generation event by `(event_ts_utc, generation_event_id)` for the scope.
+7. Resolve lifecycle state only for the selected map using its latest eligible lifecycle event by `(event_ts_utc, lifecycle_event_id)`.
+8. Load latest eligible primary and supporting candle timestamps.
 9. Compute source freshness, observation freshness, lifecycle state, actionability, and top-level status by precedence using `as_of_utc`.
 10. Write exactly one projection row for the SUPPORTED scope.
 
