@@ -163,6 +163,11 @@ with explicit grace.
 
 ## PR decomposition
 
+### PR A0 — Scope-status persistence contract
+
+- `docs/architecture/native_short_scope_status_contract_v1.md`
+- required before PR A1 migrations
+
 ### PR A — Native-map status semantics
 
 - persistent run and per-scope observation model
