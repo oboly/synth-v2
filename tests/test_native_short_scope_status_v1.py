@@ -6,7 +6,9 @@ import pytest
 
 from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapScopeKey
 from src.market_data.native_short_scope_status_v1 import (
+    NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
     NativeShortMaterializerRunRecord,
+    NativeShortObservationFreshnessState,
     NativeShortScopeActionabilityState,
     NativeShortScopeCadenceConfig,
     NativeShortScopeGeometryAction,
@@ -248,4 +250,362 @@ def test_status_row_requires_projection_as_of_utc() -> None:
             cadence_contract_version="v1",
             projection_as_of_utc=None,  # type: ignore[arg-type]
             rebuilt_at_utc=_TS,
+        )
+
+
+# --- PR A1b: cadence-configuration-unavailable state -----------------------
+
+
+def test_valid_configuration_unavailable_observation_is_accepted() -> None:
+    NativeShortScopeObservationRecord(
+        key=_key(),
+        run_id=1,
+        run_uuid="00000000-0000-0000-0000-000000000001",
+        observed_at_utc=_TS,
+        observation_status=NativeShortScopeObservationStatus.SKIPPED_CONFIGURATION_UNAVAILABLE,
+        observation_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+    )
+
+
+def test_valid_configuration_unavailable_status_is_accepted() -> None:
+    NativeShortScopeStatusRecord(
+        key=_key(),
+        scope_support_state=NativeShortScopeSupportEventState.SUPPORTED,
+        scope_status_code=NativeShortScopeStatusCode.CONFIGURATION_UNAVAILABLE,
+        map_lifecycle_state=NativeShortScopeMapLifecycleState.NO_CURRENT_MAP,
+        observation_freshness_state=NativeShortObservationFreshnessState.OBSERVATION_CONFIGURATION_UNAVAILABLE,
+        actionability_state=NativeShortScopeActionabilityState.BLOCKED_CONFIGURATION,
+        projection_as_of_utc=_TS,
+        rebuilt_at_utc=_TS,
+        scope_status_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+    )
+
+
+def test_configuration_unavailable_status_preserves_independently_known_map_lifecycle() -> None:
+    """map_lifecycle_state may still reflect a real, independently known map
+    lifecycle (e.g. MAP_ACTIVE) even while the top-level code is
+    CONFIGURATION_UNAVAILABLE, per the contract's Conditional Nullability and
+    Required Behavior sections."""
+    NativeShortScopeStatusRecord(
+        key=_key(),
+        scope_support_state=NativeShortScopeSupportEventState.SUPPORTED,
+        scope_status_code=NativeShortScopeStatusCode.CONFIGURATION_UNAVAILABLE,
+        map_lifecycle_state=NativeShortScopeMapLifecycleState.MAP_ACTIVE,
+        observation_freshness_state=NativeShortObservationFreshnessState.OBSERVATION_CONFIGURATION_UNAVAILABLE,
+        actionability_state=NativeShortScopeActionabilityState.BLOCKED_CONFIGURATION,
+        projection_as_of_utc=_TS,
+        rebuilt_at_utc=_TS,
+        scope_status_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+    )
+
+
+def test_configuration_unavailable_observation_rejects_non_null_cadence_version() -> None:
+    with pytest.raises(NativeShortScopeStatusValidationError, match="cadence_contract_version"):
+        NativeShortScopeObservationRecord(
+            key=_key(),
+            run_id=1,
+            run_uuid="00000000-0000-0000-0000-000000000001",
+            observed_at_utc=_TS,
+            observation_status=NativeShortScopeObservationStatus.SKIPPED_CONFIGURATION_UNAVAILABLE,
+            observation_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+            cadence_contract_version="v1",
+        )
+
+
+def test_configuration_unavailable_observation_rejects_non_null_source_state() -> None:
+    with pytest.raises(NativeShortScopeStatusValidationError, match="source_state"):
+        NativeShortScopeObservationRecord(
+            key=_key(),
+            run_id=1,
+            run_uuid="00000000-0000-0000-0000-000000000001",
+            observed_at_utc=_TS,
+            observation_status=NativeShortScopeObservationStatus.SKIPPED_CONFIGURATION_UNAVAILABLE,
+            observation_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+            source_state=NativeShortScopeSourceState.SOURCE_CURRENT,
+        )
+
+
+def test_configuration_unavailable_observation_rejects_non_null_geometry_action() -> None:
+    with pytest.raises(NativeShortScopeStatusValidationError, match="geometry_action"):
+        NativeShortScopeObservationRecord(
+            key=_key(),
+            run_id=1,
+            run_uuid="00000000-0000-0000-0000-000000000001",
+            observed_at_utc=_TS,
+            observation_status=NativeShortScopeObservationStatus.SKIPPED_CONFIGURATION_UNAVAILABLE,
+            observation_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+            geometry_action=NativeShortScopeGeometryAction.UNCHANGED_GEOMETRY,
+        )
+
+
+def test_configuration_unavailable_observation_rejects_non_null_freshness_limits() -> None:
+    with pytest.raises(
+        NativeShortScopeStatusValidationError, match="primary_source_freshness_limit_seconds"
+    ):
+        NativeShortScopeObservationRecord(
+            key=_key(),
+            run_id=1,
+            run_uuid="00000000-0000-0000-0000-000000000001",
+            observed_at_utc=_TS,
+            observation_status=NativeShortScopeObservationStatus.SKIPPED_CONFIGURATION_UNAVAILABLE,
+            observation_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+            primary_source_freshness_limit_seconds=43200,
+        )
+
+    with pytest.raises(
+        NativeShortScopeStatusValidationError, match="supporting_source_freshness_limit_seconds"
+    ):
+        NativeShortScopeObservationRecord(
+            key=_key(),
+            run_id=1,
+            run_uuid="00000000-0000-0000-0000-000000000001",
+            observed_at_utc=_TS,
+            observation_status=NativeShortScopeObservationStatus.SKIPPED_CONFIGURATION_UNAVAILABLE,
+            observation_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+            supporting_source_freshness_limit_seconds=10800,
+        )
+
+
+def test_configuration_unavailable_observation_rejects_non_null_evaluation_due_at_utc() -> None:
+    with pytest.raises(NativeShortScopeStatusValidationError, match="evaluation_due_at_utc"):
+        NativeShortScopeObservationRecord(
+            key=_key(),
+            run_id=1,
+            run_uuid="00000000-0000-0000-0000-000000000001",
+            observed_at_utc=_TS,
+            observation_status=NativeShortScopeObservationStatus.SKIPPED_CONFIGURATION_UNAVAILABLE,
+            observation_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+            evaluation_due_at_utc=_TS,
+        )
+
+
+def test_configuration_unavailable_observation_requires_exact_reason_code() -> None:
+    with pytest.raises(
+        NativeShortScopeStatusValidationError, match="CONFIGURATION_UNAVAILABLE_REQUIRES_REASON_CODE"
+    ):
+        NativeShortScopeObservationRecord(
+            key=_key(),
+            run_id=1,
+            run_uuid="00000000-0000-0000-0000-000000000001",
+            observed_at_utc=_TS,
+            observation_status=NativeShortScopeObservationStatus.SKIPPED_CONFIGURATION_UNAVAILABLE,
+            observation_reason_code="SOME_OTHER_REASON",
+        )
+
+    with pytest.raises(
+        NativeShortScopeStatusValidationError, match="CONFIGURATION_UNAVAILABLE_REQUIRES_REASON_CODE"
+    ):
+        NativeShortScopeObservationRecord(
+            key=_key(),
+            run_id=1,
+            run_uuid="00000000-0000-0000-0000-000000000001",
+            observed_at_utc=_TS,
+            observation_status=NativeShortScopeObservationStatus.SKIPPED_CONFIGURATION_UNAVAILABLE,
+        )
+
+
+def test_ordinary_observation_still_rejects_missing_cadence_source_geometry_fields() -> None:
+    base_kwargs = dict(
+        key=_key(),
+        run_id=1,
+        run_uuid="00000000-0000-0000-0000-000000000001",
+        observed_at_utc=_TS,
+        observation_status=NativeShortScopeObservationStatus.EVALUATED,
+    )
+
+    with pytest.raises(NativeShortScopeStatusValidationError, match="cadence_contract_version"):
+        NativeShortScopeObservationRecord(
+            **base_kwargs,
+            source_state=NativeShortScopeSourceState.SOURCE_CURRENT,
+            primary_source_freshness_limit_seconds=43200,
+            supporting_source_freshness_limit_seconds=10800,
+            geometry_action=NativeShortScopeGeometryAction.UNCHANGED_GEOMETRY,
+        )
+
+    with pytest.raises(NativeShortScopeStatusValidationError, match="source_state"):
+        NativeShortScopeObservationRecord(
+            **base_kwargs,
+            cadence_contract_version="v1",
+            primary_source_freshness_limit_seconds=43200,
+            supporting_source_freshness_limit_seconds=10800,
+            geometry_action=NativeShortScopeGeometryAction.UNCHANGED_GEOMETRY,
+        )
+
+    with pytest.raises(NativeShortScopeStatusValidationError, match="geometry_action"):
+        NativeShortScopeObservationRecord(
+            **base_kwargs,
+            cadence_contract_version="v1",
+            source_state=NativeShortScopeSourceState.SOURCE_CURRENT,
+            primary_source_freshness_limit_seconds=43200,
+            supporting_source_freshness_limit_seconds=10800,
+        )
+
+    with pytest.raises(
+        NativeShortScopeStatusValidationError, match="primary_source_freshness_limit_seconds"
+    ):
+        NativeShortScopeObservationRecord(
+            **base_kwargs,
+            cadence_contract_version="v1",
+            source_state=NativeShortScopeSourceState.SOURCE_CURRENT,
+            supporting_source_freshness_limit_seconds=10800,
+            geometry_action=NativeShortScopeGeometryAction.UNCHANGED_GEOMETRY,
+        )
+
+    with pytest.raises(
+        NativeShortScopeStatusValidationError, match="supporting_source_freshness_limit_seconds"
+    ):
+        NativeShortScopeObservationRecord(
+            **base_kwargs,
+            cadence_contract_version="v1",
+            source_state=NativeShortScopeSourceState.SOURCE_CURRENT,
+            primary_source_freshness_limit_seconds=43200,
+            geometry_action=NativeShortScopeGeometryAction.UNCHANGED_GEOMETRY,
+        )
+
+
+def test_configuration_unavailable_status_rejects_non_null_cadence_fields() -> None:
+    base_kwargs = dict(
+        key=_key(),
+        scope_support_state=NativeShortScopeSupportEventState.SUPPORTED,
+        scope_status_code=NativeShortScopeStatusCode.CONFIGURATION_UNAVAILABLE,
+        map_lifecycle_state=NativeShortScopeMapLifecycleState.NO_CURRENT_MAP,
+        observation_freshness_state=NativeShortObservationFreshnessState.OBSERVATION_CONFIGURATION_UNAVAILABLE,
+        actionability_state=NativeShortScopeActionabilityState.BLOCKED_CONFIGURATION,
+        projection_as_of_utc=_TS,
+        rebuilt_at_utc=_TS,
+        scope_status_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+    )
+
+    with pytest.raises(NativeShortScopeStatusValidationError, match="cadence_contract_version"):
+        NativeShortScopeStatusRecord(**base_kwargs, cadence_contract_version="v1")
+
+    with pytest.raises(
+        NativeShortScopeStatusValidationError, match="primary_source_freshness_limit_seconds"
+    ):
+        NativeShortScopeStatusRecord(**base_kwargs, primary_source_freshness_limit_seconds=43200)
+
+    with pytest.raises(
+        NativeShortScopeStatusValidationError, match="supporting_source_freshness_limit_seconds"
+    ):
+        NativeShortScopeStatusRecord(**base_kwargs, supporting_source_freshness_limit_seconds=10800)
+
+    with pytest.raises(NativeShortScopeStatusValidationError, match="source_freshness_state"):
+        NativeShortScopeStatusRecord(
+            **base_kwargs, source_freshness_state=NativeShortScopeSourceState.SOURCE_CURRENT
+        )
+
+
+def test_configuration_unavailable_status_requires_exact_reason_actionability_and_freshness() -> None:
+    base_kwargs = dict(
+        key=_key(),
+        scope_support_state=NativeShortScopeSupportEventState.SUPPORTED,
+        scope_status_code=NativeShortScopeStatusCode.CONFIGURATION_UNAVAILABLE,
+        map_lifecycle_state=NativeShortScopeMapLifecycleState.NO_CURRENT_MAP,
+        projection_as_of_utc=_TS,
+        rebuilt_at_utc=_TS,
+    )
+
+    with pytest.raises(
+        NativeShortScopeStatusValidationError, match="CONFIGURATION_UNAVAILABLE_REQUIRES_REASON_CODE"
+    ):
+        NativeShortScopeStatusRecord(
+            **base_kwargs,
+            observation_freshness_state=NativeShortObservationFreshnessState.OBSERVATION_CONFIGURATION_UNAVAILABLE,
+            actionability_state=NativeShortScopeActionabilityState.BLOCKED_CONFIGURATION,
+            scope_status_reason_code="SOME_OTHER_REASON",
+        )
+
+    with pytest.raises(
+        NativeShortScopeStatusValidationError, match="CONFIGURATION_UNAVAILABLE_REQUIRES_ACTIONABILITY"
+    ):
+        NativeShortScopeStatusRecord(
+            **base_kwargs,
+            observation_freshness_state=NativeShortObservationFreshnessState.OBSERVATION_CONFIGURATION_UNAVAILABLE,
+            actionability_state=NativeShortScopeActionabilityState.BLOCKED_SOURCE,
+            scope_status_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+        )
+
+    with pytest.raises(
+        NativeShortScopeStatusValidationError,
+        match="CONFIGURATION_UNAVAILABLE_REQUIRES_OBSERVATION_FRESHNESS",
+    ):
+        NativeShortScopeStatusRecord(
+            **base_kwargs,
+            observation_freshness_state=NativeShortObservationFreshnessState.NO_OBSERVATION,
+            actionability_state=NativeShortScopeActionabilityState.BLOCKED_CONFIGURATION,
+            scope_status_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+        )
+
+
+def test_ordinary_status_still_rejects_missing_cadence_and_source_freshness_fields() -> None:
+    base_kwargs = dict(
+        key=_key(),
+        scope_support_state=NativeShortScopeSupportEventState.SUPPORTED,
+        scope_status_code=NativeShortScopeStatusCode.CURRENT_EVALUATION,
+        map_lifecycle_state=NativeShortScopeMapLifecycleState.MAP_ACTIVE,
+        observation_freshness_state=NativeShortObservationFreshnessState.OBSERVATION_CURRENT,
+        actionability_state=NativeShortScopeActionabilityState.ACTIONABLE_ACTIVE_MAP,
+        projection_as_of_utc=_TS,
+        rebuilt_at_utc=_TS,
+    )
+
+    with pytest.raises(NativeShortScopeStatusValidationError, match="cadence_contract_version"):
+        NativeShortScopeStatusRecord(
+            **base_kwargs,
+            source_freshness_state=NativeShortScopeSourceState.SOURCE_CURRENT,
+            primary_source_freshness_limit_seconds=43200,
+            supporting_source_freshness_limit_seconds=10800,
+        )
+
+    with pytest.raises(NativeShortScopeStatusValidationError, match="source_freshness_state"):
+        NativeShortScopeStatusRecord(
+            **base_kwargs,
+            cadence_contract_version="v1",
+            primary_source_freshness_limit_seconds=43200,
+            supporting_source_freshness_limit_seconds=10800,
+        )
+
+    with pytest.raises(
+        NativeShortScopeStatusValidationError, match="primary_source_freshness_limit_seconds"
+    ):
+        NativeShortScopeStatusRecord(
+            **base_kwargs,
+            cadence_contract_version="v1",
+            source_freshness_state=NativeShortScopeSourceState.SOURCE_CURRENT,
+            supporting_source_freshness_limit_seconds=10800,
+        )
+
+    with pytest.raises(
+        NativeShortScopeStatusValidationError, match="supporting_source_freshness_limit_seconds"
+    ):
+        NativeShortScopeStatusRecord(
+            **base_kwargs,
+            cadence_contract_version="v1",
+            source_freshness_state=NativeShortScopeSourceState.SOURCE_CURRENT,
+            primary_source_freshness_limit_seconds=43200,
+        )
+
+
+def test_configuration_unavailable_enum_values_reject_invalid_strings() -> None:
+    with pytest.raises(NativeShortScopeStatusValidationError, match="INVALID_ENUM"):
+        NativeShortScopeObservationRecord(
+            key=_key(),
+            run_id=1,
+            run_uuid="00000000-0000-0000-0000-000000000001",
+            observed_at_utc=_TS,
+            observation_status="SKIPPED_CONFIG_MISSING",
+            observation_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
+        )
+
+    with pytest.raises(NativeShortScopeStatusValidationError, match="INVALID_ENUM"):
+        NativeShortScopeStatusRecord(
+            key=_key(),
+            scope_support_state=NativeShortScopeSupportEventState.SUPPORTED,
+            scope_status_code="CONFIG_MISSING",
+            map_lifecycle_state=NativeShortScopeMapLifecycleState.NO_CURRENT_MAP,
+            observation_freshness_state=NativeShortObservationFreshnessState.OBSERVATION_CONFIGURATION_UNAVAILABLE,
+            actionability_state=NativeShortScopeActionabilityState.BLOCKED_CONFIGURATION,
+            projection_as_of_utc=_TS,
+            rebuilt_at_utc=_TS,
+            scope_status_reason_code=NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE,
         )

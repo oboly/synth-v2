@@ -2,9 +2,9 @@ from __future__ import annotations
 
 """Pure native SHORT scope-status persistence contracts.
 
-This module defines validation-only types for PR A1 persistence rows. It does
-not open database connections, execute SQL, read wall-clock time, or integrate
-with runtime writers.
+This module defines validation-only types for PR A1/A1b persistence rows. It
+does not open database connections, execute SQL, read wall-clock time, or
+integrate with runtime writers.
 """
 
 from dataclasses import dataclass
@@ -17,6 +17,7 @@ from src.market_data.native_short_map_lifecycle_v1 import (
 )
 
 __all__ = [
+    "NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE",
     "NativeShortMaterializerRunRecord",
     "NativeShortObservationFreshnessState",
     "NativeShortRunTerminalStatus",
@@ -41,6 +42,12 @@ class NativeShortScopeStatusValidationError(ValueError):
     pass
 
 
+# Reason code for the PR A1b (Amendment 1) configuration-unavailable state:
+# no exact full-key native_short_scope_cadence_config_v1 version is eligible
+# at as_of_utc. This is configuration state, never candle/source state.
+NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE = "NO_ELIGIBLE_CADENCE_CONFIG"
+
+
 class NativeShortRunTerminalStatus(StrEnum):
     FINISHED = "FINISHED"
     FAILED = "FAILED"
@@ -51,6 +58,7 @@ class NativeShortScopeObservationStatus(StrEnum):
     EVALUATED = "EVALUATED"
     FAILED = "FAILED"
     SKIPPED_SOURCE_UNAVAILABLE = "SKIPPED_SOURCE_UNAVAILABLE"
+    SKIPPED_CONFIGURATION_UNAVAILABLE = "SKIPPED_CONFIGURATION_UNAVAILABLE"
 
 
 class NativeShortScopeSourceState(StrEnum):
@@ -75,6 +83,7 @@ class NativeShortScopeMapLifecycleState(StrEnum):
 
 
 class NativeShortScopeStatusCode(StrEnum):
+    CONFIGURATION_UNAVAILABLE = "CONFIGURATION_UNAVAILABLE"
     SOURCE_UNAVAILABLE = "SOURCE_UNAVAILABLE"
     SOURCE_STALE = "SOURCE_STALE"
     MAP_INVALIDATED = "MAP_INVALIDATED"
@@ -85,6 +94,7 @@ class NativeShortScopeStatusCode(StrEnum):
 
 
 class NativeShortScopeActionabilityState(StrEnum):
+    BLOCKED_CONFIGURATION = "BLOCKED_CONFIGURATION"
     ACTIONABLE_ACTIVE_MAP = "ACTIONABLE_ACTIVE_MAP"
     NO_ACTIONABLE_MAP = "NO_ACTIONABLE_MAP"
     TERMINAL_MAP = "TERMINAL_MAP"
@@ -97,6 +107,7 @@ class NativeShortObservationFreshnessState(StrEnum):
     OBSERVATION_CURRENT = "OBSERVATION_CURRENT"
     OBSERVATION_OVERDUE = "OBSERVATION_OVERDUE"
     NO_OBSERVATION = "NO_OBSERVATION"
+    OBSERVATION_CONFIGURATION_UNAVAILABLE = "OBSERVATION_CONFIGURATION_UNAVAILABLE"
 
 
 class NativeShortScopeSupportEventState(StrEnum):
@@ -111,6 +122,12 @@ def _coerce_enum(value: StrEnum | str, enum_type: type[StrEnum], field_name: str
         raise NativeShortScopeStatusValidationError(
             f"INVALID_ENUM field={field_name} value={value}"
         ) from exc
+
+
+def _require_enum(value: StrEnum | str | None, enum_type: type[StrEnum], field_name: str) -> StrEnum:
+    if value is None:
+        raise NativeShortScopeStatusValidationError(f"REQUIRED_FIELD_MISSING field={field_name}")
+    return _coerce_enum(value, enum_type, field_name)
 
 
 def _require_text(value: str | None, field_name: str) -> str:
@@ -132,6 +149,19 @@ def _optional_utc(value: datetime | None, field_name: str) -> datetime | None:
     if value is None:
         return None
     return _require_utc(value, field_name)
+
+
+def _require_positive_int(value: int | None, field_name: str) -> int:
+    if value is None or value <= 0:
+        raise NativeShortScopeStatusValidationError(f"COUNT_NOT_POSITIVE field={field_name}")
+    return value
+
+
+def _require_null(value: object, field_name: str) -> None:
+    if value is not None:
+        raise NativeShortScopeStatusValidationError(
+            f"CONFIGURATION_UNAVAILABLE_FIELD_MUST_BE_NULL field={field_name}"
+        )
 
 
 def validate_native_short_scope_key(key: NativeShortMapScopeKey) -> NativeShortMapScopeKey:
@@ -206,13 +236,14 @@ class NativeShortScopeObservationRecord:
     run_id: int
     run_uuid: str
     observed_at_utc: datetime
-    cadence_contract_version: str
     observation_status: NativeShortScopeObservationStatus | str
-    source_state: NativeShortScopeSourceState | str
-    primary_source_freshness_limit_seconds: int
-    supporting_source_freshness_limit_seconds: int
-    geometry_action: NativeShortScopeGeometryAction | str
+    cadence_contract_version: str | None = None
+    source_state: NativeShortScopeSourceState | str | None = None
+    primary_source_freshness_limit_seconds: int | None = None
+    supporting_source_freshness_limit_seconds: int | None = None
+    geometry_action: NativeShortScopeGeometryAction | str | None = None
     evaluation_due_at_utc: datetime | None = None
+    observation_reason_code: str | None = None
 
     def __post_init__(self) -> None:
         validate_native_short_scope_key(self.key)
@@ -220,19 +251,33 @@ class NativeShortScopeObservationRecord:
             raise NativeShortScopeStatusValidationError("COUNT_NOT_POSITIVE field=run_id")
         _require_text(self.run_uuid, "run_uuid")
         _require_utc(self.observed_at_utc, "observed_at_utc")
+        observation_status = _coerce_enum(
+            self.observation_status, NativeShortScopeObservationStatus, "observation_status"
+        )
+
+        if observation_status == NativeShortScopeObservationStatus.SKIPPED_CONFIGURATION_UNAVAILABLE:
+            if self.observation_reason_code != NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE:
+                raise NativeShortScopeStatusValidationError(
+                    "CONFIGURATION_UNAVAILABLE_REQUIRES_REASON_CODE field=observation_reason_code"
+                )
+            _require_null(self.cadence_contract_version, "cadence_contract_version")
+            _require_null(self.source_state, "source_state")
+            _require_null(self.primary_source_freshness_limit_seconds, "primary_source_freshness_limit_seconds")
+            _require_null(self.supporting_source_freshness_limit_seconds, "supporting_source_freshness_limit_seconds")
+            _require_null(self.geometry_action, "geometry_action")
+            _require_null(self.evaluation_due_at_utc, "evaluation_due_at_utc")
+            return
+
         _optional_utc(self.evaluation_due_at_utc, "evaluation_due_at_utc")
         _require_text(self.cadence_contract_version, "cadence_contract_version")
-        _coerce_enum(self.observation_status, NativeShortScopeObservationStatus, "observation_status")
-        _coerce_enum(self.source_state, NativeShortScopeSourceState, "source_state")
-        _coerce_enum(self.geometry_action, NativeShortScopeGeometryAction, "geometry_action")
-        if self.primary_source_freshness_limit_seconds <= 0:
-            raise NativeShortScopeStatusValidationError(
-                "COUNT_NOT_POSITIVE field=primary_source_freshness_limit_seconds"
-            )
-        if self.supporting_source_freshness_limit_seconds <= 0:
-            raise NativeShortScopeStatusValidationError(
-                "COUNT_NOT_POSITIVE field=supporting_source_freshness_limit_seconds"
-            )
+        _require_enum(self.source_state, NativeShortScopeSourceState, "source_state")
+        _require_enum(self.geometry_action, NativeShortScopeGeometryAction, "geometry_action")
+        _require_positive_int(
+            self.primary_source_freshness_limit_seconds, "primary_source_freshness_limit_seconds"
+        )
+        _require_positive_int(
+            self.supporting_source_freshness_limit_seconds, "supporting_source_freshness_limit_seconds"
+        )
 
 
 @dataclass(frozen=True)
@@ -242,13 +287,14 @@ class NativeShortScopeStatusRecord:
     scope_status_code: NativeShortScopeStatusCode | str
     map_lifecycle_state: NativeShortScopeMapLifecycleState | str
     observation_freshness_state: NativeShortObservationFreshnessState | str
-    source_freshness_state: NativeShortScopeSourceState | str
     actionability_state: NativeShortScopeActionabilityState | str
-    primary_source_freshness_limit_seconds: int
-    supporting_source_freshness_limit_seconds: int
-    cadence_contract_version: str
     projection_as_of_utc: datetime
     rebuilt_at_utc: datetime
+    source_freshness_state: NativeShortScopeSourceState | str | None = None
+    primary_source_freshness_limit_seconds: int | None = None
+    supporting_source_freshness_limit_seconds: int | None = None
+    cadence_contract_version: str | None = None
+    scope_status_reason_code: str | None = None
 
     def __post_init__(self) -> None:
         validate_native_short_scope_key(self.key)
@@ -261,26 +307,46 @@ class NativeShortScopeStatusRecord:
             raise NativeShortScopeStatusValidationError(
                 f"INVALID_SCOPE_SUPPORT_STATE_FOR_STATUS value={self.scope_support_state}"
             )
-        _coerce_enum(self.scope_status_code, NativeShortScopeStatusCode, "scope_status_code")
+        scope_status_code = _coerce_enum(self.scope_status_code, NativeShortScopeStatusCode, "scope_status_code")
         _coerce_enum(self.map_lifecycle_state, NativeShortScopeMapLifecycleState, "map_lifecycle_state")
-        _coerce_enum(
+        observation_freshness_state = _coerce_enum(
             self.observation_freshness_state,
             NativeShortObservationFreshnessState,
             "observation_freshness_state",
         )
-        _coerce_enum(self.source_freshness_state, NativeShortScopeSourceState, "source_freshness_state")
-        _coerce_enum(self.actionability_state, NativeShortScopeActionabilityState, "actionability_state")
-        _require_text(self.cadence_contract_version, "cadence_contract_version")
+        actionability_state = _coerce_enum(
+            self.actionability_state, NativeShortScopeActionabilityState, "actionability_state"
+        )
         _require_utc(self.projection_as_of_utc, "projection_as_of_utc")
         _require_utc(self.rebuilt_at_utc, "rebuilt_at_utc")
-        if self.primary_source_freshness_limit_seconds <= 0:
-            raise NativeShortScopeStatusValidationError(
-                "COUNT_NOT_POSITIVE field=primary_source_freshness_limit_seconds"
-            )
-        if self.supporting_source_freshness_limit_seconds <= 0:
-            raise NativeShortScopeStatusValidationError(
-                "COUNT_NOT_POSITIVE field=supporting_source_freshness_limit_seconds"
-            )
+
+        if scope_status_code == NativeShortScopeStatusCode.CONFIGURATION_UNAVAILABLE:
+            if self.scope_status_reason_code != NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE:
+                raise NativeShortScopeStatusValidationError(
+                    "CONFIGURATION_UNAVAILABLE_REQUIRES_REASON_CODE field=scope_status_reason_code"
+                )
+            if actionability_state != NativeShortScopeActionabilityState.BLOCKED_CONFIGURATION:
+                raise NativeShortScopeStatusValidationError(
+                    "CONFIGURATION_UNAVAILABLE_REQUIRES_ACTIONABILITY field=actionability_state"
+                )
+            if observation_freshness_state != NativeShortObservationFreshnessState.OBSERVATION_CONFIGURATION_UNAVAILABLE:
+                raise NativeShortScopeStatusValidationError(
+                    "CONFIGURATION_UNAVAILABLE_REQUIRES_OBSERVATION_FRESHNESS field=observation_freshness_state"
+                )
+            _require_null(self.cadence_contract_version, "cadence_contract_version")
+            _require_null(self.primary_source_freshness_limit_seconds, "primary_source_freshness_limit_seconds")
+            _require_null(self.supporting_source_freshness_limit_seconds, "supporting_source_freshness_limit_seconds")
+            _require_null(self.source_freshness_state, "source_freshness_state")
+            return
+
+        _require_text(self.cadence_contract_version, "cadence_contract_version")
+        _require_enum(self.source_freshness_state, NativeShortScopeSourceState, "source_freshness_state")
+        _require_positive_int(
+            self.primary_source_freshness_limit_seconds, "primary_source_freshness_limit_seconds"
+        )
+        _require_positive_int(
+            self.supporting_source_freshness_limit_seconds, "supporting_source_freshness_limit_seconds"
+        )
 
 
 @dataclass(frozen=True)

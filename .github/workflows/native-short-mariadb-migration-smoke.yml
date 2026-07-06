@@ -7,6 +7,7 @@ on:
     paths:
       - db/migrations/20260626_native_short_map_lifecycle_v1.sql
       - db/migrations/20260706_native_short_scope_status_persistence_v1.sql
+      - db/migrations/20260707_native_short_cadence_unavailable_v1.sql
       - .github/workflows/native-short-mariadb-migration-smoke.yml
   workflow_dispatch:
 
@@ -339,3 +340,224 @@ jobs:
               AND source_version = '$BACKFILL_SOURCE_VERSION'
           ")"
           assert_equals "1" "$eth_second_count" "second-run ETH full-scope backfill count"
+
+      - name: Apply A1b migration (cadence-unavailable state)
+        shell: bash
+        run: |
+          set -euo pipefail
+          MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+            -h "$DB_HOST" \
+            -P "$DB_PORT" \
+            -u "$DB_USER" \
+            --protocol=TCP \
+            "$DB_NAME" < db/migrations/20260707_native_short_cadence_unavailable_v1.sql
+
+      - name: Verify A1b domains, named constraints, and conditional nullability
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          run_sql() {
+            MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+              -h "$DB_HOST" \
+              -P "$DB_PORT" \
+              -u "$DB_USER" \
+              --protocol=TCP \
+              "$DB_NAME"
+          }
+
+          query_scalar() {
+            MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+              -h "$DB_HOST" \
+              -P "$DB_PORT" \
+              -u "$DB_USER" \
+              --protocol=TCP \
+              --batch \
+              --skip-column-names \
+              -e "$1" "$DB_NAME"
+          }
+
+          assert_equals() {
+            local expected="$1"
+            local actual="$2"
+            local label="$3"
+            if [ "$actual" != "$expected" ]; then
+              echo "${label}: expected ${expected}, got ${actual}" >&2
+              exit 1
+            fi
+          }
+
+          observation_ddl="$(MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+            -h "$DB_HOST" \
+            -P "$DB_PORT" \
+            -u "$DB_USER" \
+            --protocol=TCP \
+            --batch \
+            --raw \
+            --skip-column-names \
+            -e "SHOW CREATE TABLE native_short_scope_observation_v1" "$DB_NAME" | cut -f2-)"
+          status_ddl="$(MYSQL_PWD="$DB_PASSWORD" "$CLIENT" \
+            -h "$DB_HOST" \
+            -P "$DB_PORT" \
+            -u "$DB_USER" \
+            --protocol=TCP \
+            --batch \
+            --raw \
+            --skip-column-names \
+            -e "SHOW CREATE TABLE native_short_scope_status_v1" "$DB_NAME" | cut -f2-)"
+
+          printf '%s\n' "$observation_ddl" | grep -q 'SKIPPED_CONFIGURATION_UNAVAILABLE'
+          printf '%s\n' "$observation_ddl" | grep -q 'chk_native_short_scope_observation_v1_config_reason'
+          printf '%s\n' "$observation_ddl" | grep -q 'chk_native_short_scope_observation_v1_cadence_version'
+          printf '%s\n' "$observation_ddl" | grep -q 'chk_native_short_scope_observation_v1_freshness_limits'
+          printf '%s\n' "$status_ddl" | grep -q 'CONFIGURATION_UNAVAILABLE'
+          printf '%s\n' "$status_ddl" | grep -q 'BLOCKED_CONFIGURATION'
+          printf '%s\n' "$status_ddl" | grep -q 'OBSERVATION_CONFIGURATION_UNAVAILABLE'
+          printf '%s\n' "$status_ddl" | grep -q 'chk_native_short_scope_status_v1_config_reason'
+          printf '%s\n' "$status_ddl" | grep -q 'chk_native_short_scope_status_v1_config_cadence_version'
+
+          run_id="$(query_scalar "
+            INSERT INTO native_short_materializer_run_v1 (
+                run_uuid, runner_name, runner_version, contract_version,
+                trigger_type, started_at_utc, requested_scope_count
+            ) VALUES (
+                'bbbbbbbb-0000-0000-0000-000000000001',
+                'native_short_map_materializer_v1', '0.1',
+                'native_short_scope_status_contract_v1', 'MANUAL', UTC_TIMESTAMP(6), 1
+            );
+            SELECT LAST_INSERT_ID();
+          ")"
+
+          run_sql <<SQL
+          INSERT INTO native_short_scope_observation_v1 (
+              run_id, run_uuid, venue, symbol, quote_currency, fib_trading_horizon,
+              primary_interval, supporting_interval, observed_at_utc,
+              cadence_contract_version, observation_status, observation_reason_code,
+              source_state, primary_source_freshness_limit_seconds,
+              supporting_source_freshness_limit_seconds, geometry_action,
+              evaluation_due_at_utc
+          ) VALUES (
+              ${run_id}, 'bbbbbbbb-0000-0000-0000-000000000001', 'bitvavo', 'BTC', 'EUR',
+              'SHORT', '4h', '1h', UTC_TIMESTAMP(6),
+              NULL, 'SKIPPED_CONFIGURATION_UNAVAILABLE', 'NO_ELIGIBLE_CADENCE_CONFIG',
+              NULL, NULL, NULL, NULL, NULL
+          );
+          INSERT INTO native_short_scope_status_v1 (
+              venue, symbol, quote_currency, fib_trading_horizon, primary_interval,
+              supporting_interval, scope_support_state, scope_status_code,
+              scope_status_reason_code, map_lifecycle_state, observation_freshness_state,
+              source_freshness_state, actionability_state,
+              primary_source_freshness_limit_seconds, supporting_source_freshness_limit_seconds,
+              cadence_contract_version, projection_as_of_utc,
+              next_expected_evaluation_at_utc, observation_overdue_after_utc
+          ) VALUES (
+              'bitvavo', 'BTC', 'EUR', 'SHORT', '4h', '1h', 'SUPPORTED',
+              'CONFIGURATION_UNAVAILABLE', 'NO_ELIGIBLE_CADENCE_CONFIG', 'NO_CURRENT_MAP',
+              'OBSERVATION_CONFIGURATION_UNAVAILABLE', NULL, 'BLOCKED_CONFIGURATION',
+              NULL, NULL, NULL, UTC_TIMESTAMP(6), NULL, NULL
+          );
+          SQL
+
+          valid_observation_count="$(query_scalar "
+            SELECT COUNT(*)
+            FROM native_short_scope_observation_v1
+            WHERE run_id = ${run_id}
+              AND observation_status = 'SKIPPED_CONFIGURATION_UNAVAILABLE'
+          ")"
+          assert_equals "1" "$valid_observation_count" "valid configuration-unavailable observation count"
+
+          valid_status_count="$(query_scalar "
+            SELECT COUNT(*)
+            FROM native_short_scope_status_v1
+            WHERE venue = 'bitvavo' AND symbol = 'BTC'
+              AND scope_status_code = 'CONFIGURATION_UNAVAILABLE'
+          ")"
+          assert_equals "1" "$valid_status_count" "valid configuration-unavailable status count"
+
+          set +e
+          run_sql <<SQL
+          INSERT INTO native_short_scope_observation_v1 (
+              run_id, run_uuid, venue, symbol, quote_currency, fib_trading_horizon,
+              primary_interval, supporting_interval, observed_at_utc,
+              cadence_contract_version, observation_status, observation_reason_code,
+              source_state, primary_source_freshness_limit_seconds,
+              supporting_source_freshness_limit_seconds, geometry_action
+          ) VALUES (
+              ${run_id}, 'bbbbbbbb-0000-0000-0000-000000000001', 'bitvavo', 'ETH', 'EUR',
+              'SHORT', '4h', '1h', UTC_TIMESTAMP(6),
+              'v1', 'SKIPPED_CONFIGURATION_UNAVAILABLE', 'NO_ELIGIBLE_CADENCE_CONFIG',
+              NULL, NULL, NULL, NULL
+          );
+          SQL
+          blocked_with_cadence_version_rc=$?
+          set -e
+          if [ "$blocked_with_cadence_version_rc" -eq 0 ]; then
+            echo "blocked observation with non-null cadence_contract_version unexpectedly succeeded" >&2
+            exit 1
+          fi
+
+          set +e
+          run_sql <<SQL
+          INSERT INTO native_short_scope_observation_v1 (
+              run_id, run_uuid, venue, symbol, quote_currency, fib_trading_horizon,
+              primary_interval, supporting_interval, observed_at_utc,
+              cadence_contract_version, observation_status, source_state,
+              primary_source_freshness_limit_seconds,
+              supporting_source_freshness_limit_seconds, geometry_action
+          ) VALUES (
+              ${run_id}, 'bbbbbbbb-0000-0000-0000-000000000001', 'bitvavo', 'XRP', 'EUR',
+              'SHORT', '4h', '1h', UTC_TIMESTAMP(6),
+              NULL, 'EVALUATED', 'SOURCE_CURRENT', 43200, 10800, 'UNCHANGED_GEOMETRY'
+          );
+          SQL
+          ordinary_missing_cadence_version_rc=$?
+          set -e
+          if [ "$ordinary_missing_cadence_version_rc" -eq 0 ]; then
+            echo "ordinary observation with null cadence_contract_version unexpectedly succeeded" >&2
+            exit 1
+          fi
+
+          set +e
+          run_sql <<SQL
+          INSERT INTO native_short_scope_status_v1 (
+              venue, symbol, quote_currency, fib_trading_horizon, primary_interval,
+              supporting_interval, scope_support_state, scope_status_code,
+              map_lifecycle_state, observation_freshness_state, source_freshness_state,
+              actionability_state, primary_source_freshness_limit_seconds,
+              supporting_source_freshness_limit_seconds, cadence_contract_version,
+              projection_as_of_utc
+          ) VALUES (
+              'bitvavo', 'DOGE', 'EUR', 'SHORT', '4h', '1h', 'SUPPORTED',
+              'CURRENT_EVALUATION', 'MAP_ACTIVE', 'OBSERVATION_CURRENT', NULL,
+              'ACTIONABLE_ACTIVE_MAP', 43200, 10800, 'v1', UTC_TIMESTAMP(6)
+          );
+          SQL
+          ordinary_missing_source_freshness_rc=$?
+          set -e
+          if [ "$ordinary_missing_source_freshness_rc" -eq 0 ]; then
+            echo "ordinary status row with null source_freshness_state unexpectedly succeeded" >&2
+            exit 1
+          fi
+
+          set +e
+          run_sql <<SQL
+          INSERT INTO native_short_scope_status_v1 (
+              venue, symbol, quote_currency, fib_trading_horizon, primary_interval,
+              supporting_interval, scope_support_state, scope_status_code,
+              scope_status_reason_code, map_lifecycle_state, observation_freshness_state,
+              source_freshness_state, actionability_state,
+              primary_source_freshness_limit_seconds, supporting_source_freshness_limit_seconds,
+              cadence_contract_version, projection_as_of_utc
+          ) VALUES (
+              'bitvavo', 'LTC', 'EUR', 'SHORT', '4h', '1h', 'SUPPORTED',
+              'CONFIGURATION_UNAVAILABLE', 'SOME_OTHER_REASON', 'NO_CURRENT_MAP',
+              'OBSERVATION_CONFIGURATION_UNAVAILABLE', NULL, 'BLOCKED_CONFIGURATION',
+              NULL, NULL, NULL, UTC_TIMESTAMP(6)
+          );
+          SQL
+          blocked_wrong_reason_code_rc=$?
+          set -e
+          if [ "$blocked_wrong_reason_code_rc" -eq 0 ]; then
+            echo "configuration-unavailable status row with wrong reason code unexpectedly succeeded" >&2
+            exit 1
+          fi
