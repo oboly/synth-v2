@@ -300,7 +300,7 @@ def test_migration_executes_in_disposable_mariadb_schema() -> None:
                 ) VALUES (
                     'aaaaaaaa-0000-0000-0000-000000000001',
                     'native_short_map_materializer_v1', '0.1',
-                    'native_short_scope_status_contract_v1', 'MANUAL', %s, 1
+                    'v1', 'MANUAL', %s, 1
                 )
                 """,
                 (_ts(0),),
