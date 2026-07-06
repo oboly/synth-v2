@@ -198,6 +198,25 @@ def test_migration_adds_named_conditional_nullability_constraints() -> None:
         assert f"ADD CONSTRAINT {name}" in sql
 
 
+def test_conditional_check_predicates_guard_against_sql_null_passthrough() -> None:
+    """SQL three-valued logic: `col IN (...)` and `col = 'X'` evaluate to
+    UNKNOWN (not FALSE) when col is NULL, and a CHECK constraint only rejects
+    on FALSE — so an ordinary-branch predicate of the form
+    `status <> 'BLOCKED' AND col IN (...)` silently lets col=NULL through.
+    Every such predicate in this migration must guard with an explicit
+    `col IS NOT NULL AND` immediately before the `IN (` / `= 'NO_ELIGIBLE...'`
+    check, or it will incorrectly accept NULL in a required field."""
+    sql = _sql()
+    for guarded_clause in (
+        "source_state IS NOT NULL AND source_state IN (",
+        "geometry_action IS NOT NULL AND geometry_action IN (",
+        "source_freshness_state IS NOT NULL AND source_freshness_state IN (",
+        "observation_reason_code IS NOT NULL AND observation_reason_code = 'NO_ELIGIBLE_CADENCE_CONFIG'",
+        "scope_status_reason_code IS NOT NULL AND scope_status_reason_code = 'NO_ELIGIBLE_CADENCE_CONFIG'",
+    ):
+        assert guarded_clause in sql, f"missing NULL-safe guard: {guarded_clause}"
+
+
 def test_migration_conditional_constraints_enforce_both_branches() -> None:
     sql = _sql()
     # Each conditional CHECK must express both: the configuration-unavailable

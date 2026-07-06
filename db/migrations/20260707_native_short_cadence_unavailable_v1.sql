@@ -58,13 +58,13 @@ ALTER TABLE native_short_scope_observation_v1
         CHECK (
             (observation_status = 'SKIPPED_CONFIGURATION_UNAVAILABLE' AND source_state IS NULL)
             OR
-            (observation_status <> 'SKIPPED_CONFIGURATION_UNAVAILABLE' AND source_state IN ('SOURCE_CURRENT', 'SOURCE_STALE', 'SOURCE_UNAVAILABLE'))
+            (observation_status <> 'SKIPPED_CONFIGURATION_UNAVAILABLE' AND source_state IS NOT NULL AND source_state IN ('SOURCE_CURRENT', 'SOURCE_STALE', 'SOURCE_UNAVAILABLE'))
         ),
     ADD CONSTRAINT chk_native_short_scope_observation_v1_geometry
         CHECK (
             (observation_status = 'SKIPPED_CONFIGURATION_UNAVAILABLE' AND geometry_action IS NULL)
             OR
-            (observation_status <> 'SKIPPED_CONFIGURATION_UNAVAILABLE' AND geometry_action IN ('PUBLISHED_NEW_MAP', 'UNCHANGED_GEOMETRY', 'REJECTED_CONTEXT', 'NO_MAP_AVAILABLE'))
+            (observation_status <> 'SKIPPED_CONFIGURATION_UNAVAILABLE' AND geometry_action IS NOT NULL AND geometry_action IN ('PUBLISHED_NEW_MAP', 'UNCHANGED_GEOMETRY', 'REJECTED_CONTEXT', 'NO_MAP_AVAILABLE'))
         ),
     ADD CONSTRAINT chk_native_short_scope_observation_v1_cadence_version
         CHECK (
@@ -89,7 +89,7 @@ ALTER TABLE native_short_scope_observation_v1
     ADD CONSTRAINT chk_native_short_scope_observation_v1_config_reason
         CHECK (
             observation_status <> 'SKIPPED_CONFIGURATION_UNAVAILABLE'
-            OR observation_reason_code = 'NO_ELIGIBLE_CADENCE_CONFIG'
+            OR (observation_reason_code IS NOT NULL AND observation_reason_code = 'NO_ELIGIBLE_CADENCE_CONFIG')
         ),
     ADD CONSTRAINT chk_native_short_scope_observation_v1_config_due
         CHECK (
@@ -140,7 +140,7 @@ ALTER TABLE native_short_scope_status_v1
         CHECK (
             (scope_status_code = 'CONFIGURATION_UNAVAILABLE' AND source_freshness_state IS NULL)
             OR
-            (scope_status_code <> 'CONFIGURATION_UNAVAILABLE' AND source_freshness_state IN ('SOURCE_CURRENT', 'SOURCE_STALE', 'SOURCE_UNAVAILABLE'))
+            (scope_status_code <> 'CONFIGURATION_UNAVAILABLE' AND source_freshness_state IS NOT NULL AND source_freshness_state IN ('SOURCE_CURRENT', 'SOURCE_STALE', 'SOURCE_UNAVAILABLE'))
         ),
     ADD CONSTRAINT chk_native_short_scope_status_v1_actionability
         CHECK (actionability_state IN (
@@ -175,7 +175,7 @@ ALTER TABLE native_short_scope_status_v1
     ADD CONSTRAINT chk_native_short_scope_status_v1_config_reason
         CHECK (
             scope_status_code <> 'CONFIGURATION_UNAVAILABLE'
-            OR scope_status_reason_code = 'NO_ELIGIBLE_CADENCE_CONFIG'
+            OR (scope_status_reason_code IS NOT NULL AND scope_status_reason_code = 'NO_ELIGIBLE_CADENCE_CONFIG')
         ),
     ADD CONSTRAINT chk_native_short_scope_status_v1_config_actionability
         CHECK (
