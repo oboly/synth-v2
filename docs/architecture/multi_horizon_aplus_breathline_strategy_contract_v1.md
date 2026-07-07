@@ -2,20 +2,16 @@
 
 ## Purpose
 
-This document defines the canonical contract for:
+Canonical contract for:
 
-- SHORT / MEDIUM / LONG strategy horizons and their allowed inputs
-- A+ / universal Breathline cycle-context field contract
+- SHORT / MEDIUM / LONG strategy horizons and allowed inputs
+- A+ / universal Breathline cycle-context fields
 - Synth Confirmation sensor namespace, distinct from Breathline
 - future `HorizonStrategyState` schema
-- future market-observer horizon evidence boundary
-- forbidden flows across all layers for horizon and Breathline data
+- market-observer horizon evidence boundary
+- forbidden flows across horizon, Breathline, selection, permission, and execution
 
-It extends `breath_fibo_synth_framework_contract_v1.md` and `pipeline_contracts.md`. It does not replace them.
-
-No PR may add Breathline fields, rename horizon labels, introduce `HorizonStrategyState` fields, or treat observer context as horizon ownership without updating this document.
-
----
+It extends `breath_fibo_synth_framework_contract_v1.md` and `pipeline_contracts.md`.
 
 ## Horizon Definitions
 
@@ -25,9 +21,13 @@ No PR may add Breathline fields, rename horizon labels, introduce `HorizonStrate
 FIB_TRADING_HORIZONS = ("SHORT", "MEDIUM", "LONG")
 ```
 
-Canonical code source: `src/research/multi_horizon_fib_contract_v1.py::HORIZON_MATRIX`.
+This document is the current canonical definition of the horizon vocabulary.
 
-Interval is the candle granularity used to measure a condition. Horizon is the strategy classification and intended holding window. They must not be conflated.
+`src/research/multi_horizon_fib_contract_v1.py::HORIZON_MATRIX` is a **research reference only**, not a runtime-wide contract source. No runtime module may import a shared horizon contract from `src.research`.
+
+Before any runtime consumer is introduced, a bounded code PR must move the shared horizon constant and definition to a neutral contracts namespace, add a runtime-to-research import guard, and update this document with the new code source. This docs-only PR does not perform that migration.
+
+Interval is candle granularity. Horizon is strategy classification and intended holding window. They must not be conflated.
 
 ### SHORT
 
@@ -59,54 +59,36 @@ Interval is the candle granularity used to measure a condition. Horizon is the s
 - Allowed market inputs: fib map, impulse health, macro regime, long-term MA context, read-only Breathline context
 - Forbidden: account state, balances, positions, open orders, broker calls
 
-Guard: `test_interval_role_is_separate_from_trading_horizon` in `tests/test_multi_horizon_fib_contract_v1.py`.
-
----
-
 ## A+ / Universal Breathline Data Contract
 
-### Layer identity
+A+ Breathline is market-cycle context originating from external symbolic research. It may be forwarded read-only into market context or selection context.
 
-A+ Breathline is a market-cycle context layer originating from external symbolic research. It feeds into `src/aplus/` and may be forwarded read-only into market context or selection context.
+Allowed fields:
 
-Allowed market-only fields:
+```text
+universal_breath_phase: EXPANSION | COMPRESSION | ACCUMULATION | RESET | UNKNOWN
+universal_breath_direction: BULLISH | BEARISH | NEUTRAL
+universal_breath_confidence: HIGH | MEDIUM | LOW | NONE
+cycle_window: WEEKLY | MONTHLY | MULTI_MONTH
+risk_climate: RISK_ON | RISK_OFF | TRANSITIONING | UNKNOWN
+asset_breath_sync: IN_SYNC | DIVERGING | LAGGING | LEADING | UNKNOWN
+asset_relative_phase: narrative label
+phase_offset: optional label
+freshness_state: FRESH | AGING | STALE | VERY_STALE
+```
 
-- `universal_breath_phase`: EXPANSION | COMPRESSION | ACCUMULATION | RESET | UNKNOWN
-- `universal_breath_direction`: BULLISH | BEARISH | NEUTRAL
-- `universal_breath_confidence`: HIGH | MEDIUM | LOW | NONE
-- `cycle_window`: WEEKLY | MONTHLY | MULTI_MONTH
-- `risk_climate`: RISK_ON | RISK_OFF | TRANSITIONING | UNKNOWN
-- `asset_breath_sync`: IN_SYNC | DIVERGING | LAGGING | LEADING | UNKNOWN
-- `asset_relative_phase`: narrative phase label
-- `phase_offset`: optional offset label
-- `freshness_state`: FRESH | AGING | STALE | VERY_STALE
+Existing factor names `breathline_phase` and `breathline_direction` in `src/aplus/factor_extractor.py` are live representations and must not be renamed.
 
-Existing factor names `breathline_phase` and `breathline_direction` in `src/aplus/factor_extractor.py` are the live representations and must not be renamed.
+Breathline must not provide exact entries, exits, targets, invalidations, ladders, allocation, broker actions, or duplicated local technical sensors. EMA/MA alignment, ATR distance, slope, volume, RSI, ADX, and price-action sensing remain Synth Confirmation ownership.
 
-### `symbolic_target_price` — research-only
-
-`symbolic_target_price` is A+ source vocabulary only.
-
-It may appear in research/reporting context but must not flow into an executable target, decision gate, execution planner, executor, order, ladder, or allocation.
-
-### Forbidden from Breathline contract
-
-The following belong to Fibo, strategy, or execution layers, not Breathline:
-
-- exact entries, exits, targets, invalidations, or ladders
-- order size or capital allocation
-- broker/executor actions
-
----
+`symbolic_target_price` remains research-only source vocabulary. It cannot flow into selection entry levels, decision gate, execution planner, executor, order, ladder, or allocation.
 
 ## Synth Confirmation Sensor Namespace
 
-Synth Confirmation sensors are measurable indicator states. They are not Breathline.
-
 Canonical values live in `src/market_context/contracts_v1.py`.
 
-- `local_ma_atr_state` (`LocalMaAtrState`): ABOVE_MA, TESTING_MA, BELOW_MA, RECLAIMING_MA, EXTENDED_ABOVE_MA, SPIKE_COOLING
-- `impulse_health_state` (`ImpulseHealthState`): HEALTHY_IMPULSE, EARLY_IMPULSE, EXTENDED_IMPULSE, BLOW_OFF_SPIKE, DISTRIBUTION_RISK, COOLING_PULLBACK, SECOND_BUMP_POSSIBLE, FAILED_RECLAIM
+- `local_ma_atr_state` (`LocalMaAtrState`)
+- `impulse_health_state` (`ImpulseHealthState`)
 - EMA/MA alignment
 - RSI
 - ADX
@@ -114,58 +96,39 @@ Canonical values live in `src/market_context/contracts_v1.py`.
 - slope
 - price-action pattern
 
-None may carry order-action semantics.
-
----
+They are measurable market states, not Breathline, and carry no order-action semantics.
 
 ## Market Observer Horizon Evidence
 
-A future `MarketObserverSnapshot` may expose cross-market evidence at one or more horizons, for example:
+A future `MarketObserverSnapshot` may expose cross-market evidence at declared intervals and optional horizon tags: BTC range stability, ETH/BTC relative strength, sector breadth, or per-symbol reclaim/pullback context.
 
-- BTC range stability measured on an intraday interval
-- ETH/BTC relative strength measured on a daily interval
-- sector breadth measured on a declared interval
-- per-symbol pullback/reclaim state linked to its source interval
+It does not choose an account horizon, own `HorizonStrategyState`, relabel an interval as a horizon, produce execution instruction, or bypass selection/decision/execution boundaries.
 
-It does not:
+Every evidence item preserves source interval, as-of, freshness, and explicit horizon tag where applicable. A `15m` reading cannot silently become a MEDIUM or LONG conclusion.
 
-- select SHORT, MEDIUM, or LONG for an account
-- own `HorizonStrategyState`
-- relabel an interval as a strategy horizon
-- turn a horizon observation into a buy/sell instruction
-- bypass selection, decision gate, or execution planner
-
-Any observer evidence item must preserve its source interval, observation as-of, freshness, and, when applicable, explicit horizon tag. A `15m` reading cannot silently become a MEDIUM or LONG conclusion.
-
-The observer may forward canonical regime and Breathline context as opaque read-only evidence. It must not redefine their labels.
-
----
-
-## Future `HorizonStrategyState` Schema
+## Future `HorizonStrategyState`
 
 Status: documented only; not implemented.
 
-Future output of a market-only selection-engine horizon scorer:
+This is the horizon-specific Strategy State emitted within `selection_engine`, not a layer between selection and decision gate.
+
+Fields:
 
 - `symbol`
 - `fib_trading_horizon`: SHORT | MEDIUM | LONG
 - `strategy_family`
 - `setup_classification`
 - `breathline_context`: forwarded read-only context
-- `synth_confirmation`: summary of measurable confirmation signals
+- `synth_confirmation`: summary of measurable sensors
 - `fib_map_state`
 - `timing_state`
 - `validation_state`: VALID | PARTIAL | INVALID | NO_DATA
 - `computed_at_utc`
 - `horizon_end_ts_utc`
 
-It must not contain balance, position, sleeve, order ID, execution intent, broker fields, entry price, exit price, stop price, or allocation.
+It must not contain balance, position, sleeve, order ID, execution intent, broker fields, entry/exit/stop price, or allocation.
 
-`fib_trading_horizon` belongs to this future schema. It is not added to `MarketNavigationState` or a future observer snapshot as an inferred execution instruction.
-
----
-
-## Data Flow
+## Canonical Data Flow
 
 ```text
 A+ Breathline
@@ -173,39 +136,34 @@ A+ Breathline
        -> Synth Confirmation sensors
        -> Fibo map state
        -> canonical regime context
-       -> optional future MarketObserverSnapshot
+       -> optional MarketObserverSnapshot
   -> selection_engine
-       -> future HorizonStrategyState
+       -> Strategy State / future HorizonStrategyState
   -> decision_gate
   -> execution_planner
   -> executor / broker
 ```
 
-The observer is inside market context. It is not a new authority between selection and decision gate.
-
----
+Observer stays inside market context. Strategy State stays inside selection. Decision Gate remains the only account-aware permission layer.
 
 ## Forbidden Shortcuts
 
 ```text
 symbolic_target_price     -> selection entry level or execution price
 breathline / A+ phase     -> direct entry / exit / order
+breathline                -> duplicated local technical sensor
 MarketObserverSnapshot    -> trade permission or execution intent
 observer horizon evidence -> account horizon choice
+runtime module            -> src.research shared-contract import
 selection_engine          -> account state / balances / positions
-decision_gate             -> Fibo zone or MA/ATR recomputation
+decision_gate             -> Fibo, MA/ATR, impulse, breadth, or observer recomputation
 execution_planner         -> market_context / features / selection / aplus
 executor                  -> selection / aplus / market_context
-src.aplus                 -> decision_gate / execution_planner / executor
 ```
-
----
 
 ## Guard Expectations
 
-Guard test file: `tests/test_multi_horizon_aplus_breathline_contract_v1.py`.
-
-Existing and future guards must preserve:
+Existing/future guards must preserve:
 
 1. selection engine has no account/balance/execution/broker imports
 2. decision gate has no market-structure computation imports
@@ -213,10 +171,9 @@ Existing and future guards must preserve:
 4. executor has no strategy/selection/aplus imports
 5. `src.aplus` has no execution/broker imports
 6. horizon set is exactly SHORT / MEDIUM / LONG
-7. A+ factor names contain no runtime execution-price terms
-8. any future observer implementation stays market-only and does not import decision, planning, execution, broker, or account modules
-
----
+7. A+ factors contain no runtime execution-price terms
+8. observer stays market-only
+9. runtime modules cannot import shared contracts from `src.research`
 
 ## Related Documents
 
@@ -224,6 +181,5 @@ Existing and future guards must preserve:
 - `docs/architecture/pipeline_contracts.md`
 - `docs/architecture/market_observer_contract_v1.md`
 - `docs/architecture/external_research_overlay_contract_v1.md`
-- `src/research/multi_horizon_fib_contract_v1.py`
 - `src/market_context/contracts_v1.py`
 - `src/aplus/factor_extractor.py`
