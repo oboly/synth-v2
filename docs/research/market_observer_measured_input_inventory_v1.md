@@ -2,9 +2,13 @@
 
 ## Status
 
-Docs-only evidence inventory. No `market_observer` implementation, sector
-implementation, external-overlay ingestion, dashboard change, DB change,
-migration, scheduler work, deployment, or execution-related code is
+P0-B is implemented only as the research-only, read-only
+`MarketObserverEvidencePreview` in
+`src/research/market_observer_evidence_preview_v1.py`.
+
+This document does not mark `MarketObserverSnapshot` as implemented. No
+sector implementation, external-overlay ingestion, dashboard change, DB
+change, migration, scheduler work, deployment, or execution-related code is
 introduced by this document.
 
 ## Purpose
@@ -248,6 +252,13 @@ P0-B scope is intentionally narrower than the future observer contract:
    using a preview-local regime-row locator.
 4. **Explicit research-only / partial framing** so the artifact does not imply
    completeness, readiness, or promotion into runtime layers.
+
+Implementation status:
+
+- implemented as `MarketObserverEvidencePreview` only
+- not attached to the live-like shadow chain yet
+- no runtime consumer, no observer snapshot, no shared generic
+  `evidence_refs` contract
 
 Required P0-B provenance shape for every emitted preview value:
 

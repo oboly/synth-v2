@@ -13,6 +13,9 @@ This is orchestration of the existing preview adapters only.
 
 The chain runner executes the four existing shadow-safe research runners in sequence and writes one aggregate chain summary.
 
+`MarketObserverEvidencePreview` is not attached to this chain yet. The current
+chain remains limited to the four existing preview adapters above.
+
 It is not:
 
 - paper trading
@@ -95,5 +98,8 @@ Manifest markers include:
 This completes the live-like shadow chain.
 
 The next possible step is a static shadow dashboard or report that reads the chain and sub-run artifacts together.
+
+Attaching `MarketObserverEvidencePreview` to the chain is a separate deferred
+research step, not part of the current chain contract.
 
 The next step is not executor enablement.
