@@ -2,49 +2,62 @@
 
 ## Status
 
-queued / PR A may proceed in parallel; PR B blocked on P0-A
+```text
+PR A0–A3: completed and merged
+PR B: runtime-owner deployment remains blocked on P0-A / PR #54 acceptance
+PR C: Short Swing read-only consumption is scoped by
+      docs/architecture/native_short_scope_status_profit_plan_consumer_contract_v1.md
+```
 
 ## Sequencing / P0-A dependency
 
-- PR A — native-map status semantics may proceed in parallel with P0-A because it has no wrapper, timer, service, systemd, broker, or production deployment action.
-- PR B — runtime-owner deployment is blocked until P0-A / PR #54 is merged and its bounded logging plus disk/log health containment is accepted.
-- Do not deploy any recurring native SHORT runtime, wrapper, service, or timer before PR B is unblocked.
-- PR C remains dependent on PR A.
+- PR A0–A3 may remain fully operational without systemd, timer, service, wrapper,
+  or host deployment work.
+- PR B is blocked until P0-A / PR #54 is merged and its bounded logging plus
+  disk/log health containment is accepted.
+- Do not deploy any recurring native SHORT runtime, wrapper, service, or timer
+  before PR B is unblocked.
+- PR C depends on the completed A0–A3 scope-status contract. Full ladder coverage
+  semantics additionally depend on a future native per-map-level lifecycle read
+  model; see the consumer contract.
 
 ## Sources
 
-- Source: agreed runtime-owner plan from recent chat, canonicalized here.
-- `docs/ops/native_short_map_materializer_canary_v1.md`
+- `docs/architecture/native_short_scope_status_contract_v1.md`
+- `docs/architecture/native_short_scope_status_profit_plan_consumer_contract_v1.md`
 - `docs/ops/native_short_map_ledger_health_report_v1.md`
-- `docs/research/native_short_map_ledger_population_audit_v1.md`
-- `src/market_data/native_short_map_materializer_v1.py`
-- `src/market_data/run_native_short_map_materializer_v1.py`
-- `src/market_data/native_short_map_lifecycle_v1.py`
+- `src/market_data/native_short_scope_status_projection_v1.py`
+- `src/market_data/native_short_scope_status_materializer_v1.py`
+- `src/reporting/native_short_map_ledger_health_report_v1.py`
 - `db/migrations/20260626_native_short_map_lifecycle_v1.sql`
+- `db/migrations/20260706_native_short_scope_status_persistence_v1.sql`
 
 ## Purpose
 
-Define the durable market-only runtime lane that evaluates native SHORT maps from
-persisted public candles, observes lifecycle transitions, and exposes one
-rebuildable current scope-status projection for reporting/UI.
+Define the durable market-only native SHORT lane that evaluates native maps from
+persisted public candles, records lifecycle/runtime evidence, and exposes one
+rebuildable current scope-status projection for reporting/UI consumers.
 
 ## Current state / facts
 
-- The existing native SHORT materializer runner is market-only and reusable.
-- The current ledger contract has no explicit runtime wrapper or scheduler owner.
-- Immutable native map rows must never have source timestamps mutated to simulate
-  freshness.
-- Unchanged geometry must not publish duplicate maps.
-- Generation and lifecycle ledgers must not be overloaded with hourly heartbeat
-  rows.
-- Current reporting and health semantics currently risk conflating immutable map
-  geometry vintage with current evaluation freshness.
-- A map may remain structurally active while its real lifecycle has not been
-  recently observed; that is a user-facing correctness risk.
+- Native SHORT materialization, lifecycle observation, and the persisted
+  `native_short_scope_status_v1` projection are implemented.
+- Health reporting consumes the projection instead of independently joining map,
+  generation, lifecycle, and candle ledgers.
+- The projection keeps immutable map geometry vintage separate from current
+  evaluation, source freshness, observation freshness, lifecycle, and actionability.
+- `CONFIGURATION_UNAVAILABLE` is represented distinctly from source unavailability,
+  source staleness, and observation overdue.
+- Immutable native map rows are never mutated to simulate current freshness.
+- Unchanged geometry does not publish duplicate maps or generation-heartbeat rows.
+- Runtime ownership/deployment remains intentionally absent.
+- Profit Plan currently requires a read-only consumer migration. Its future current
+  map/freshness authority is the scope-status projection, not legacy context files
+  or reporting-side candle reconstruction.
 
 ## Required architecture
 
-Distinct layers must remain separate:
+Distinct layers remain separate:
 
 ```text
 Immutable facts
@@ -63,48 +76,48 @@ Operational runtime evidence
 - native_short materializer run records
 - per-scope materializer observations
 
-Mutable/rebuildable market projection
+Mutable/rebuildable current market projection
 - native_short_scope_status_v1
-- one canonical current row per SUPPORTED scope
+- exactly one canonical current row per SUPPORTED scope
 ```
 
-The UI and reporting layer must consume `native_short_scope_status_v1`. It must
-not independently join map/event ledgers or invent its own freshness rules.
+Reporting/UI consumes `native_short_scope_status_v1` for current-map resolution and
+freshness/status facts. It must not independently join map/event ledgers or use
+candles to create a second current-state authority.
 
 ## Required semantics
 
-The canonical scope-status projection must separate:
+The canonical scope-status projection separates:
 
 ```text
 map geometry vintage
 latest materializer evaluation
 current source freshness
 map lifecycle state
-actionability state
+market-only actionability state
 ```
 
-A normal unchanged-geometry evaluation must:
+A normal unchanged-geometry evaluation:
 
 ```text
-evaluate current persisted 4h/1h candles
-record operational observation evidence
-retain existing immutable map unchanged
-update/rebuild scope status
-not emit a duplicate map
-not mutate map timestamps
-not emit a generation-event heartbeat
+evaluates persisted 4h/1h candles
+records operational observation evidence
+retains the immutable map unchanged
+rebuilds scope status
+emits no duplicate map
+mutates no map timestamp
+emits no generation-event heartbeat
 ```
 
-A normal evaluation must also observe the current active map for terminal
-lifecycle transitions. If target completion, invalidation, or expiry occurs, the
-runtime appends exactly one lifecycle event even when geometry remains unchanged.
+A normal evaluation can append one real terminal lifecycle event when canonical
+market evidence proves completion or invalidation.
 
 ## Persistent cadence contract
 
-Expected evaluation cadence and grace must be persisted in a market-data
-scope/configuration contract. They must not be inferred only from systemd.
+Expected evaluation cadence and grace are persisted in the market-data scope/config
+contract, never inferred from systemd alone.
 
-The contract must distinguish:
+The contract distinguishes:
 
 ```text
 CONFIGURATION_UNAVAILABLE
@@ -113,18 +126,13 @@ OBSERVATION_OVERDUE
 SOURCE_STALE
 SOURCE_UNAVAILABLE
 SCOPE_RECENTLY_ADDED
-SCOPE_NOT_APPLICABLE
 MAP_INVALIDATED
 MAP_COMPLETED
 ```
 
-`CONFIGURATION_UNAVAILABLE` is the highest-precedence state: a SUPPORTED scope
-with no eligible exact full-key cadence configuration at `as_of_utc`. It is a
-configuration defect, never a source/candle-availability or runtime-cadence
-defect, and it must never be reported as `SOURCE_UNAVAILABLE`, `SOURCE_STALE`,
-or `OBSERVATION_OVERDUE`. See the Amendment 1 addendum in
-`docs/architecture/native_short_scope_status_contract_v1.md` for the full
-reason code, enum, and schema-nullability decisions.
+`CONFIGURATION_UNAVAILABLE` is the highest-precedence state for a supported scope
+without an eligible exact full-key cadence configuration at `as_of_utc`. It is never
+reported as `SOURCE_UNAVAILABLE`, `SOURCE_STALE`, or `OBSERVATION_OVERDUE`.
 
 Current source rules:
 
@@ -135,79 +143,102 @@ supporting interval: 1h
 supporting freshness bound: 3h
 ```
 
-Target cadence: once after each expected closed 1h candle persistence window,
-with explicit grace.
+Target cadence: after each expected persisted closed 1h candle window, with explicit
+grace.
 
 ## Open tasks by priority
 
 ### P0 — Canonical status semantics
 
-- Add persistent native SHORT materializer run records.
-- Add persistent per-scope materializer observation records.
-- Add a persistent cadence/grace contract at market-data scope level.
-- Add lifecycle observation logic that emits only real transition events.
-- Add rebuildable `native_short_scope_status_v1` with one canonical current row
-  per `SUPPORTED` scope.
-- Correct health reporting to consume `native_short_scope_status_v1` instead of
-  inferring freshness from immutable map timestamps.
-- Add tests for unchanged-geometry evaluations, lifecycle transition capture,
-  stale/overdue/source-unavailable separation, and projection rebuild behavior.
+Completed:
+
+- persistent native SHORT materializer-run records
+- persistent per-scope materializer observations
+- market-data cadence/grace contract
+- lifecycle observation that emits real transition events only
+- rebuildable `native_short_scope_status_v1` per supported scope
+- health-report consumption of the projection
+- tests for unchanged geometry, lifecycle transition capture, source/observation
+  separation, configuration unavailable, and projection rebuild behavior
 
 ### P1 — Runtime owner deployment
 
-- Add one Odroid wrapper for the native SHORT runtime owner.
-- Add one service/timer pair for the wrapper.
-- Use a host singleton lock plus the existing per-scope DB lock.
-- Evaluate all existing `SUPPORTED` scopes only.
-- Keep logs bounded and operationally readable.
-- Support non-blocking, read-only health observation.
-- Roll back by disabling or removing the runtime owner only; never mutate ledger
-  history.
+Blocked on P0-A / PR #54 acceptance:
 
-### P2 — Profit Plan read-only consumption
+- one Odroid wrapper
+- one service/timer pair
+- host singleton lock plus existing per-scope DB lock
+- all existing supported scopes only
+- bounded and operationally readable logs
+- non-blocking read-only health observation
+- rollback by disabling/removing runtime owner only; never mutate ledger history
 
-- Make Profit Plan consume `native_short_scope_status_v1`.
-- Resolve the active native-map reference from the projection.
-- Use deterministic ladder IDs derived from the resolved current reference.
+### P2 — Short Swing / Profit Plan read-only consumption
+
+Lane B sequence:
+
+1. Resolve current native map only from `native_short_scope_status_v1`.
+2. Read immutable geometry only by projection `current_map_id` plus full scope key.
+3. Use projection `current_map_cycle_id` as the canonical market-only cycle identity.
+4. Replace render UUID row authority with deterministic map-level row identity.
+5. Render explicit blocked/review states for missing, invalid, stale, terminal, or
+   configuration-unavailable projection state.
+6. Do not make level-coverage claims until a native per-map-level lifecycle read
+   model supplies current `ACTIVE` / `REACHED_OR_PASSED` / `COMPLETED` / `HISTORICAL`
+   state under the native evaluation clock.
+
+The P2 consumer boundary and row-identity rules are canonicalized in:
+
+```text
+docs/architecture/native_short_scope_status_profit_plan_consumer_contract_v1.md
+```
 
 ## PR decomposition
 
 ### PR A0 — Scope-status persistence contract
 
-- `docs/architecture/native_short_scope_status_contract_v1.md`
-- required before PR A1 migrations
+Completed.
 
-### PR A — Native-map status semantics
+### PR A1 / A1b — Persistence and configuration-unavailable representation
 
-- persistent run and per-scope observation model
-- persistent cadence contract
-- lifecycle observer
-- rebuildable `native_short_scope_status_v1`
-- health-report correction to consume projection
-- tests
-- no systemd or wrapper deployment
+Completed.
 
-### PR B — Runtime owner deployment
+### PR A2 — Materializer integration and projection
+
+Completed.
+
+### PR A3 — Health-report projection consumption
+
+Completed.
+
+### PR B — Runtime-owner deployment
+
+Blocked. Scope:
 
 - one Odroid wrapper
 - one service/timer pair
 - host singleton lock plus existing per-scope DB lock
-- evaluates all existing `SUPPORTED` scopes only
+- evaluates supported scopes only
 - bounded logs
 - non-blocking read-only health observation
-- rollback by disabling/removing owner, never mutating ledger history
+- rollback only removes runtime ownership; it never mutates history
 
 ### PR C — Profit Plan read-only consumption
 
+Not yet implemented. Scope:
+
 - Profit Plan consumes scope-status projection
-- resolved native-map reference
-- deterministic ladder IDs
-- no UI mutation, server preview, sizing, decision gate, planner, executor, or
-  broker writes
+- projection-selected immutable native-map reference
+- canonical map-cycle identity
+- deterministic read-only ladder row identity
+- no UI mutation, server preview, sizing, decision gate, planner, executor, or broker
+  writes
 
-## Current BTC evidence
+Full `MISSING` / `ARMED` / `STALE` per-level coverage semantics are blocked until
+native current per-level lifecycle status exists. Reporting must not approximate that
+state from its own candle history.
 
-Historical evidence to preserve:
+## Historical BTC evidence
 
 ```text
 Root cause: MATERIALIZER_NOT_RUNNING
@@ -216,42 +247,24 @@ map_id=1 was SUPERSEDED.
 BTC map_id=2 became MAP_ACTIVE and ledger health was HEALTHY immediately after publication.
 ```
 
-Additional historical evidence:
-
-- A later health check exposed the current report's timestamp-conflation problem.
-- A newer 1h candle by itself must not make an unchanged immutable map stale
-  when no source-SLA breach exists.
-
-## Blockers / dependencies
-
-- PR A depends on agreeing the canonical scope/config cadence contract and
-  projection shape before any runtime owner is deployed.
-- Within PR A, the materializer-integration/projection slice (contract PR A2)
-  is blocked on a new narrow contract PR A1b: a schema/type-only change that
-  relaxes `NOT NULL` on cadence version, freshness-limit, source-state, and
-  geometry-action columns to conditional-nullable for the new
-  configuration-unavailable state, per Amendment 1 in
-  `docs/architecture/native_short_scope_status_contract_v1.md`. PR A2 must not
-  begin implementation until PR A1b merges.
-- PR B depends on PR A landing first; runtime ownership must not ship before the
-  projection semantics exist.
-- PR C depends on PR A; Profit Plan must read the projection instead of joining
-  ledgers directly.
+A later health check exposed timestamp conflation. A newer 1h candle alone must not
+make an unchanged immutable map stale when the configured source SLA is still met.
 
 ## Boundary
 
-- market-only
-- account-agnostic
-- public persisted candle inputs only
-- no broker/private account calls
-- no broker writes
-- no wallet/dashboard/UI changes in PR A or PR B
-- no decision_gate changes
-- no execution_planner changes
-- no executor changes
-- no live trading enablement
+```text
+market-only
+account-agnostic
+public persisted candle inputs only
+no broker/private account calls
+no broker writes
+no decision_gate changes
+no execution_planner changes
+no executor changes
+no live trading enablement
+```
 
-Safety markers for this lane:
+Safety markers:
 
 ```text
 broker_private_calls=0
@@ -266,9 +279,12 @@ executor=none
 ## Non-goals
 
 - No P0-A / PR #54 changes.
-- No broker/private account calls.
-- No wallet/dashboard/UI changes in PR A or PR B.
-- No automatic scope seeding.
+- No systemd, timer, service, wrapper, or Odroid deployment work.
+- No broker/private-account calls.
+- No account-snapshot/freshness orchestration changes owned by Lane A.
+- No wallet/dashboard mutation path.
+- No selection_engine changes.
+- No decision_gate, execution_planner, or executor changes.
 - No duplicate map publication for unchanged geometry.
 - No manual BTC rematerialization.
 - No A+, Breathline, Elliott Wave, replay, or execution work.
