@@ -18,10 +18,7 @@ db_writes=0
 
 Reads:
 - native_short_map_scope_v1
-- native_short_map_v1
-- native_short_map_generation_event_v1
-- native_short_map_lifecycle_event_v1
-- obs_market_candle (latest closed primary/supporting candle timestamp only)
+- native_short_scope_status_v1
 
 Writes: none.
 """

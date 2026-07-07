@@ -209,6 +209,51 @@ def test_current_evaluation_is_healthy() -> None:
     assert report.overall_health_reason_codes == []
 
 
+def test_current_evaluation_forwards_projection_fields() -> None:
+    row = _status_row(
+        current_map_id=12345,
+        current_map_cycle_id="cycle-forwarded",
+        current_map_published_at_utc=datetime(2018, 6, 1, tzinfo=UTC),
+        current_map_structure_hash="structure-forwarded",
+        latest_run_id=88,
+        latest_observation_id=99,
+        latest_observed_at_utc=T2,
+        next_expected_evaluation_at_utc=T3,
+        observation_overdue_after_utc=T3 + timedelta(minutes=30),
+        primary_latest_candle_ts_utc=T1,
+        supporting_latest_candle_ts_utc=T2,
+        primary_source_freshness_limit_seconds=43200,
+        supporting_source_freshness_limit_seconds=10800,
+        cadence_contract_version="cadence-forwarded",
+        projection_as_of_utc=T3,
+        rebuilt_at_utc=T3 + timedelta(seconds=5),
+        status_payload_json='{"source": "projection"}',
+    )
+    report = _build(scope_rows=[_scope_row()], scope_status_row=row)
+    assert report.scope_status_code == "CURRENT_EVALUATION"
+    assert report.map_lifecycle_state == "MAP_ACTIVE"
+    assert report.observation_freshness_state == "OBSERVATION_CURRENT"
+    assert report.source_freshness_state == "SOURCE_CURRENT"
+    assert report.actionability_state == "ACTIONABLE_ACTIVE_MAP"
+    assert report.current_map_id == 12345
+    assert report.current_map_cycle_id == "cycle-forwarded"
+    assert report.current_map_published_at_utc == datetime(2018, 6, 1, tzinfo=UTC)
+    assert report.current_map_structure_hash == "structure-forwarded"
+    assert report.latest_run_id == 88
+    assert report.latest_observation_id == 99
+    assert report.latest_observed_at_utc == T2
+    assert report.next_expected_evaluation_at_utc == T3
+    assert report.observation_overdue_after_utc == T3 + timedelta(minutes=30)
+    assert report.primary_latest_candle_ts_utc == T1
+    assert report.supporting_latest_candle_ts_utc == T2
+    assert report.primary_source_freshness_limit_seconds == 43200
+    assert report.supporting_source_freshness_limit_seconds == 10800
+    assert report.cadence_contract_version == "cadence-forwarded"
+    assert report.projection_as_of_utc == T3
+    assert report.projection_rebuilt_at_utc == T3 + timedelta(seconds=5)
+    assert report.status_payload_json == '{"source": "projection"}'
+
+
 def test_configuration_unavailable_is_distinct_from_source_and_observation_states() -> None:
     report = _build(scope_rows=[_scope_row()], scope_status_row=_configuration_unavailable_row())
     assert report.scope_status_code == "CONFIGURATION_UNAVAILABLE"
@@ -336,6 +381,28 @@ def test_immutable_map_published_at_does_not_drive_health_freshness() -> None:
     assert report.overall_health_status == report_mod.OVERALL_HEALTH_HEALTHY
 
 
+def test_report_does_not_reimplement_projection_precedence_from_lower_fields() -> None:
+    """The report trusts the projection's top-level status code instead of
+    rebuilding precedence from lifecycle/source/observation fields."""
+    report = _build(
+        scope_rows=[_scope_row()],
+        scope_status_row=_status_row(
+            scope_status_code="CURRENT_EVALUATION",
+            map_lifecycle_state="MAP_COMPLETED",
+            observation_freshness_state="OBSERVATION_OVERDUE",
+            source_freshness_state="SOURCE_STALE",
+            actionability_state="TERMINAL_MAP",
+        ),
+    )
+    assert report.scope_status_code == "CURRENT_EVALUATION"
+    assert report.map_lifecycle_state == "MAP_COMPLETED"
+    assert report.observation_freshness_state == "OBSERVATION_OVERDUE"
+    assert report.source_freshness_state == "SOURCE_STALE"
+    assert report.actionability_state == "TERMINAL_MAP"
+    assert report.overall_health_status == report_mod.OVERALL_HEALTH_HEALTHY
+    assert report.overall_health_reason_codes == []
+
+
 def test_report_source_no_longer_reads_map_or_ledger_join_tables() -> None:
     """Static proof that the ad-hoc ledger joins this PR removes are gone.
 
@@ -352,6 +419,19 @@ def test_report_source_no_longer_reads_map_or_ledger_join_tables() -> None:
     ):
         assert f"FROM {forbidden_table}" not in src, f"health report still queries {forbidden_table}"
     assert "FROM native_short_scope_status_v1" in src
+
+
+def test_runner_source_no_longer_documents_raw_table_reads() -> None:
+    root = Path(__file__).parent.parent
+    src = (root / "src/reporting/run_native_short_map_ledger_health_report_v1.py").read_text()
+    assert "native_short_scope_status_v1" in src
+    for forbidden_table in (
+        "native_short_map_v1",
+        "native_short_map_generation_event_v1",
+        "native_short_map_lifecycle_event_v1",
+        "obs_market_candle",
+    ):
+        assert forbidden_table not in src
 
 
 # ---------------------------------------------------------------------------
