@@ -113,16 +113,16 @@ fresh `origin/main`).
 
 | Attribute | Finding |
 |---|---|
-| Availability | **PARTIAL** (numerically close to complete) |
+| Availability | **PARTIAL** (numeric evidence available; classification intentionally deferred) |
 | Owner module/symbol | `run_active_regime_observation_v1.py::build_observations` already computes `relative_class_vs_btc_24h_pct` for the `ETH` asset-class row (`class_return_24h_pct - btc_return_24h_pct`) and persists it |
 | Source data / venue | same `active_regime_observation` row already covers ETH as its own asset class |
 | Interval / as-of | same as canonical regime (interval-specific, `asof_ts_utc`) |
 | Freshness behavior | same `UNKNOWN`-until-defined rule |
 | Deterministic inputs already available | `relative_class_vs_btc_24h_pct` for `asset_class="ETH"` is a ready-made, already-persisted ETH-vs-BTC relative return |
-| Missing primitives | a bounded threshold classifier turning that already-stored numeric value into `OUTPERFORMING_BTC` / `NEUTRAL_TO_BTC` / `UNDERPERFORMING_BTC` (no new data fetch required) |
+| Missing primitives | preregistered threshold values, explicit tie behavior, stale/no-data handling, versioning, and validation methodology for any future classifier turning that stored numeric value into observer-state buckets |
 | Forbidden dependencies | none |
-| Shadow-writer eligible | **YES**, once the small threshold mapping exists — this is the smallest gap of any non-forwarding field found |
-| Note | No inferred or invented capabilities; only bucketing an existing number. |
+| Shadow-writer eligible | **NOT YET** — P0-B may forward the numeric evidence only; state classification is deferred until the classifier contract is preregistered and validated |
+| Note | No inferred or invented capabilities; the measured number exists, but any observer-state interpretation remains out of scope for P0-B. |
 
 ### `alt_breadth_state`
 
@@ -133,7 +133,7 @@ fresh `origin/main`).
 | Source data / venue | same candle source, same row |
 | Interval / as-of | same as canonical regime |
 | Freshness behavior | same `UNKNOWN`-until-defined rule |
-| Deterministic inputs already available | `avg_alt_return_24h_pct`; `src/features/relative_strength_snapshot.py` also computes per-asset `rank_pct`/`zscore` against the full universe on `1d` closes (table `relative_strength_snapshot`, migration not found in `db/migrations/` — schema provenance unverified in this repo) |
+| Deterministic inputs already available | `avg_alt_return_24h_pct`; `src/features/relative_strength_snapshot.py` also computes per-asset `rank_pct`/`zscore` against the full universe on `1d` closes (table `relative_strength_snapshot`; **PARTIAL — code present, schema/deployment provenance unverified**) |
 | Missing primitives | a breadth **ratio** (`coins_up / coins_active`, per the pattern documented in `sector_module_design.md`) is not computed anywhere; only the mean return is available, not participation width |
 | Forbidden dependencies | none |
 | Shadow-writer eligible | **NOT YET** — the mean-return field alone cannot distinguish `NARROW` from `BROADENING`; the up/down ratio must be added (small, bounded — the per-asset return dict already exists in-memory inside `build_observations` and is discarded) |
@@ -188,16 +188,16 @@ fresh `origin/main`).
 
 | Attribute | Finding |
 |---|---|
-| Availability | **MISSING** as a shared schema |
+| Availability | **MISSING** as a shared schema; **buildable** as a preview-local provenance shape |
 | Owner module/symbol | none. Grep for `evidence_ref`/`evidence_note`/`provenance` found only informal, ad hoc field names inside a few `src/reporting/` and `src/research/` scripts (`account_scoped_short_trader_dashboard_v1.py`, `run_manual_short_trader_profit_plan_v1.py`, `run_canonical_fib_map_source_audit_v1.py`, `run_canonical_fib_zone_map_writer_preview_v1.py`, `run_breathline_v1_recovery_orchestration_v1.py`) — no shared dataclass/type |
 | Source data / venue | closest existing pattern: `source_ref_json` in `active_regime_observation` (a free-form JSON dict of safety markers, not an evidence-reference schema) |
 | Interval / as-of | n/a |
 | Freshness behavior | n/a |
-| Deterministic inputs already available | every candidate upstream table already carries its own natural reference (table name, row key, `asof_ts_utc`) that a small `evidence_ref` type could wrap |
-| Missing primitives | a small, shared `evidence_ref` dataclass (e.g. table/module name, scope key, source timestamp, `computed_at_utc`) — genuinely tiny and bounded |
+| Deterministic inputs already available | every canonical regime value already comes from a specific `active_regime_observation` row whose locator fields can be forwarded exactly |
+| Missing primitives | a preview-local regime-row locator shape for P0-B. This is not yet the future shared generic `evidence_refs` type and should not be presented as that contract |
 | Forbidden dependencies | none |
-| Shadow-writer eligible | **YES**, as a small new bounded type, once at least one other field exists to reference |
-| Note | No inferred or invented capabilities; this is a new small type, explicitly flagged as new rather than presented as existing. |
+| Shadow-writer eligible | **YES**, for a research-only preview-local provenance payload attached to forwarded regime rows |
+| Note | No inferred or invented capabilities; P0-B can require resolvable per-row provenance without claiming the future generic `evidence_refs` contract is implemented. |
 
 ---
 
@@ -206,10 +206,10 @@ fresh `origin/main`).
 | # | Prerequisite | Availability | Evidence |
 |---|---|---|---|
 | 1 | BTC range/volatility/breakout state | **PARTIAL** | Generic deterministic builders exist (`local_ma_atr_context_v1.py`, `impulse_health_state_v1.py`); no BTC-specific state name or classifier exists. |
-| 2 | ETH relative strength vs BTC | **PARTIAL, nearly complete** | `relative_class_vs_btc_24h_pct` already computed and persisted for the `ETH` asset-class row in `active_regime_observation`; only a threshold-bucketing function is missing. |
-| 3 | BTC dominance availability | **IMPLEMENTED (raw data only)** | `src/etl/coingecko/etl_coingecko_global.py` writes `btc_dominance_pct`/`eth_dominance_pct`/`total_market_cap_usd` to table `market_global_snapshot` (no migration file found under `db/migrations/` — schema provenance unverified in this repo scan) from the public CoinGecko `/global` endpoint. No interpretation/regime layer reads this yet. |
+| 2 | ETH relative strength vs BTC | **PARTIAL** | `relative_class_vs_btc_24h_pct` already computed and persisted for the `ETH` asset-class row in `active_regime_observation`; any threshold/state classifier is explicitly deferred pending preregistration of thresholds, tie behavior, stale/no-data handling, versioning, and validation methodology. |
+| 3 | BTC dominance availability | **PARTIAL — code present, schema/deployment provenance unverified** | `src/etl/coingecko/etl_coingecko_global.py` writes `btc_dominance_pct`/`eth_dominance_pct`/`total_market_cap_usd` to table `market_global_snapshot` (no migration file found under `db/migrations/`; live schema/writer ownership not verified in this repo scan) from the public CoinGecko `/global` endpoint. No interpretation/regime layer reads this yet. |
 | 4 | Universe-wide return breadth | **PARTIAL** | `avg_alt_return_24h_pct` (mean) already persisted; no `coins_up / coins_active` ratio computed anywhere. |
-| 5 | Volume participation breadth | **PARTIAL/MISSING as aggregate** | `src/features/volume_confirmation_snapshot.py` computes per-asset volume ratio/zscore vs. that asset's own history only; no cross-sectional "% of universe with volume expansion" aggregate exists. |
+| 5 | Volume participation breadth | **PARTIAL — code present, schema/deployment provenance unverified for stored output; aggregate missing** | `src/features/volume_confirmation_snapshot.py` computes per-asset volume ratio/zscore vs. that asset's own history only; no cross-sectional "% of universe with volume expansion" aggregate exists. Any persisted storage/writer ownership for this feature remains unverified in this repo scan. |
 | 6 | Sector taxonomy and asset-sector map | **MISSING** | No `sector`/`asset_sector_map` tables; `sector_group_code` explicitly null in `asset_profile`. Fully described only in `docs/research/sector_module_design.md`. |
 | 7 | Sector leader contribution / anti-single-coin-pump control | **MISSING** | `leader_contribution_pct` is a *suggested* field in `sector_module_design.md`; not implemented anywhere. |
 | 8 | Canonical regime forwarding | **IMPLEMENTED** | See `canonical_global_regime` / `canonical_asset_class_regimes` above; join rule fully documented in `canonical_regime_context_source_v1.md`. |
@@ -225,46 +225,78 @@ fresh `origin/main`).
 | `canonical_global_regime` | Ready to forward | none |
 | `canonical_asset_class_regimes` | Ready to forward | `classify_asset_class` lives in a `run_` script, not a shared module (cosmetic) |
 | `btc_structure_state` | Blocked | no observer-vocabulary mapping over existing sensors |
-| `eth_relative_strength_state` | Nearly ready | needs only a threshold-bucketing function over an already-stored field |
+| `eth_relative_strength_state` | Deferred from P0-B | numeric evidence exists, but the classifier contract is not preregistered |
 | `alt_breadth_state` | Blocked | breadth ratio (coins-up/coins-active) not computed anywhere |
 | `sector_rotation_states` | Blocked | entire sector chain unimplemented |
 | `symbol_contexts` | Blocked | no `MarketNavigationState` assembler; only 3 of 6 sub-states have builders |
 | `freshness_state` | Blocked (as a rollup) | depends on which underlying fields are actually populated |
-| `evidence_refs` | Buildable now | needs one small new shared type |
+| `evidence_refs` | Buildable now (preview-local only) | needs one preview-local regime-row locator, not the future shared generic type |
 
 ## Part 4 — Smallest Viable P0-B Implementation Bundle
 
-Given the gap matrix, the only fields that satisfy "already exists or has a
-tiny bounded primitive gap" without any new market/strategy logic are:
+P0-B must be a research-only `MarketObserverEvidencePreview`, not a
+`MarketObserverSnapshot`.
 
-1. **Canonical global + asset-class regime forwarding** (`canonical_global_regime`,
-   `canonical_asset_class_regimes`) — pure read of `active_regime_observation`
-   using the documented join rule.
-2. **ETH relative-strength bucketing** (`eth_relative_strength_state`) — a pure
-   threshold function over the already-persisted `relative_class_vs_btc_24h_pct`
-   value for the `ETH` asset-class row. No new data fetch.
-3. **`evidence_refs`** — a small new shared reference type wrapping the table/row/
-   timestamp of whichever of the above two a given snapshot actually used.
+P0-B scope is intentionally narrower than the future observer contract:
 
-**`symbol_contexts` (`MarketNavigationState` forwarding) is explicitly excluded
-from P0-B**, contrary to a plain reading of "existing MarketNavigationState
-forwarding" — there is nothing to forward yet. Building the assembler is a
-reasonable *next* bounded task, but it requires a genuine classification
-decision (`navigation_regime`, `timing_state`) and is therefore larger than
-what P0-B's minimality constraint allows.
+1. **Exact read/forward of canonical global regime evidence** from
+   `active_regime_observation`, with no remapping beyond the documented join
+   rule.
+2. **Exact read/forward of canonical asset-class regime evidence** from the
+   same canonical regime source, again with no observer-state classification.
+3. **Per-source-row resolvable provenance** for every emitted preview value,
+   using a preview-local regime-row locator.
+4. **Explicit research-only / partial framing** so the artifact does not imply
+   completeness, readiness, or promotion into runtime layers.
 
-`btc_structure_state` and `alt_breadth_state` are also excluded: both need a
-small but real new mapping/aggregation step beyond pure forwarding/bucketing.
+Required P0-B provenance shape for every emitted preview value:
+
+```text
+source_kind = ACTIVE_REGIME_OBSERVATION
+active_regime_observation_id
+venue
+interval_code
+asof_ts_utc
+asset_class
+global_regime_version
+asset_class_regime_version
+source_candle_ts_utc
+```
+
+This locator is a **P0-B preview-local provenance shape only**. It is not the
+future shared generic `evidence_refs` contract and should not be represented as
+that contract in code or docs.
+
+P0-B must **not** do any of the following:
+
+- classify observer states
+- imply that the full observer snapshot contract is complete
+- feed `selection_engine`, `decision_gate`, `execution_planner`, `executor`,
+  dashboards, or runtime policy
+
+Explicitly deferred beyond P0-B:
+
+- `MarketObserverSnapshot`
+- `eth_relative_strength_state` threshold bucketing
+- `MarketNavigationState` assembly
+- BTC structure mapping
+- alt breadth ratio
+- sector implementation
+- top-level observer freshness rollup
+- shared generic `evidence_refs` contract
+- external overlays
 
 ## Part 5 — Allowed Modified/Added Files for P0-B
 
 ```text
-src/market_context/market_observer_v1.py          (new — research-only snapshot writer)
-src/market_context/contracts_v1.py                (extend only: add MarketObserverSnapshot,
-                                                     eth_relative_strength_state enum, evidence_ref type)
-tests/test_market_observer_v1.py                   (new)
-docs/architecture/market_observer_contract_v1.md   (status update only, if promoted beyond docs-only)
+src/research/market_observer_evidence_preview_v1.py
+tests/test_market_observer_evidence_preview_v1.py
+docs/research/market_observer_measured_input_inventory_v1.md
+docs/research/live_like_shadow_chain_v1.md
 ```
+
+Do not add `MarketObserverSnapshot` to `contracts_v1.py`. Do not update
+`market_observer_contract_v1.md` status as implemented.
 
 No migration, no dashboard, no scheduler, no `src/selection/`,
 `src/decision_gate/`, `src/execution_planner/`, or `src/executor/` file.
@@ -275,28 +307,28 @@ No migration, no dashboard, no scheduler, no `src/selection/`,
 - No FFG or external-flow parsing.
 - No external fib/overlay ingestion.
 - No narrative scoring.
+- No `MarketObserverSnapshot`.
+- No `eth_relative_strength_state` threshold classifier.
 - No `selection_engine` changes.
 - No `decision_gate` changes.
 - No execution-layer changes of any kind.
 - No `MarketNavigationState` assembler (deferred; see Part 4).
+- No BTC structure mapping.
+- No alt breadth ratio.
+- No top-level observer freshness rollup.
+- No shared generic `evidence_refs` contract.
 - No BTC dominance regime/interpretation layer (raw metric only, per prerequisite 3).
 
 ## Part 7 — Required Shadow-Validation Cohorts
 
-Per `market_observer_contract_v1.md`'s shadow-first validation requirement,
-before any P0-B field reaches `selection_engine`:
+P0-B validation is limited to preview integrity and boundary enforcement:
 
-- canonical regime forwarding: baseline check that forwarded values exactly
-  match `active_regime_observation` for the same venue/interval/asset_class
-  (no transformation drift).
-- `eth_relative_strength_state`: `OUTPERFORMING_BTC` vs. `UNDERPERFORMING_BTC`
-  vs. `NEUTRAL_TO_BTC` cohorts, measured against forward BTC/ETH relative
-  return using the same outcome-validation approach as
-  `shadow_heartbeat_outcome_validation_v1.md` (15m/30m/1h/2h/4h/8h/24h
-  horizons, MFE/MAE, hit rates).
-- `evidence_refs` completeness: percentage of emitted snapshots where every
-  non-trivial field carries a resolvable evidence reference (should be 100%
-  by construction; track as a diagnostic, not a study).
+- preview fields exactly equal their selected `active_regime_observation`
+  source rows (no transformation drift)
+- every emitted value has a resolvable regime-row locator
+- preview output is explicitly marked research-only and partial
+- no `selection_engine`, `decision_gate`, `execution_planner`, `executor`,
+  broker, DB-write, or scheduler path imports or consumes it
 
 ## Part 8 — Architecture Risks / Conflicts Found
 
@@ -319,16 +351,13 @@ before any P0-B field reaches `selection_engine`:
    alongside P0-B, though not a hard blocker.
 4. **`market_global_snapshot`, `relative_strength_snapshot`, and the
    volume-confirmation table have no discoverable migration file** under
-   `db/migrations/`. Their schema provenance could not be verified from this
-   repo scan; anyone consuming these tables from `market_observer` should
-   confirm the live schema against the actual database before relying on
-   column names cited here.
+   `db/migrations/`. Treat them as **PARTIAL — code present,
+   schema/deployment provenance unverified** until live schema and writer
+   ownership are confirmed against the actual database/runtime deployment.
 5. **`sector_group_code` is a live, already-shipped column that is always
-   `None`.** Any future sector work must populate this existing column (or
-   formally deprecate it) rather than create a second, parallel sector field
-   on a different table.
-6. **No shared `evidence_ref` type exists anywhere**, despite `evidence_refs`
-   being named as a required `MarketObserverSnapshot` field in the contract
-   and referenced by the sector design doc. This is a one-time, small,
-   shared-type gap common to nearly every future observer field — worth
-   building once, early, rather than reinventing per field.
+   `None`.** It must be evaluated for compatibility with a future versioned
+   `asset_sector_map` contract and must not become a parallel, unversioned
+   taxonomy source.
+6. **No shared generic `evidence_refs` type exists anywhere.** P0-B should use
+   a preview-local regime-row locator only, without claiming the future shared
+   provenance contract is implemented.
