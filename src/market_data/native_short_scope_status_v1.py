@@ -215,6 +215,15 @@ class NativeShortMaterializerRunRecord:
     requested_scope_count: int
     terminal_status: NativeShortRunTerminalStatus | str | None = None
     finished_at_utc: datetime | None = None
+    trigger_ref: str | None = None
+    host_name: str | None = None
+    process_id: int | None = None
+    observed_scope_count: int | None = None
+    published_map_count: int | None = None
+    lifecycle_event_count: int | None = None
+    failed_scope_count: int | None = None
+    failure_reason_code: str | None = None
+    failure_detail: str | None = None
 
     def __post_init__(self) -> None:
         _require_text(self.run_uuid, "run_uuid")
@@ -228,6 +237,15 @@ class NativeShortMaterializerRunRecord:
             raise NativeShortScopeStatusValidationError("COUNT_NEGATIVE field=requested_scope_count")
         if self.terminal_status is not None:
             _coerce_enum(self.terminal_status, NativeShortRunTerminalStatus, "terminal_status")
+        for field_name in (
+            "observed_scope_count",
+            "published_map_count",
+            "lifecycle_event_count",
+            "failed_scope_count",
+        ):
+            value = getattr(self, field_name)
+            if value is not None and value < 0:
+                raise NativeShortScopeStatusValidationError(f"COUNT_NEGATIVE field={field_name}")
 
 
 @dataclass(frozen=True)
@@ -244,6 +262,23 @@ class NativeShortScopeObservationRecord:
     geometry_action: NativeShortScopeGeometryAction | str | None = None
     evaluation_due_at_utc: datetime | None = None
     observation_reason_code: str | None = None
+    observation_detail: str | None = None
+    primary_latest_candle_ts_utc: datetime | None = None
+    supporting_latest_candle_ts_utc: datetime | None = None
+    primary_source_age_seconds: int | None = None
+    supporting_source_age_seconds: int | None = None
+    context_status: str | None = None
+    current_map_id_before: int | None = None
+    current_map_id_after: int | None = None
+    published_map_id: int | None = None
+    generation_attempt_id: str | None = None
+    generation_event_id: int | None = None
+    lifecycle_event_id: int | None = None
+    lifecycle_state_before: str | None = None
+    lifecycle_state_after: str | None = None
+    structure_hash: str | None = None
+    source_primary_candle_count: int | None = None
+    source_support_candle_count: int | None = None
 
     def __post_init__(self) -> None:
         validate_native_short_scope_key(self.key)
@@ -295,6 +330,20 @@ class NativeShortScopeStatusRecord:
     supporting_source_freshness_limit_seconds: int | None = None
     cadence_contract_version: str | None = None
     scope_status_reason_code: str | None = None
+    current_map_id: int | None = None
+    current_map_cycle_id: str | None = None
+    current_map_published_at_utc: datetime | None = None
+    current_map_structure_hash: str | None = None
+    latest_generation_event_id: int | None = None
+    latest_lifecycle_event_id: int | None = None
+    latest_observation_id: int | None = None
+    latest_run_id: int | None = None
+    latest_observed_at_utc: datetime | None = None
+    next_expected_evaluation_at_utc: datetime | None = None
+    observation_overdue_after_utc: datetime | None = None
+    primary_latest_candle_ts_utc: datetime | None = None
+    supporting_latest_candle_ts_utc: datetime | None = None
+    status_payload_json: str | None = None
 
     def __post_init__(self) -> None:
         validate_native_short_scope_key(self.key)
@@ -337,6 +386,8 @@ class NativeShortScopeStatusRecord:
             _require_null(self.primary_source_freshness_limit_seconds, "primary_source_freshness_limit_seconds")
             _require_null(self.supporting_source_freshness_limit_seconds, "supporting_source_freshness_limit_seconds")
             _require_null(self.source_freshness_state, "source_freshness_state")
+            _require_null(self.next_expected_evaluation_at_utc, "next_expected_evaluation_at_utc")
+            _require_null(self.observation_overdue_after_utc, "observation_overdue_after_utc")
             return
 
         _require_text(self.cadence_contract_version, "cadence_contract_version")
