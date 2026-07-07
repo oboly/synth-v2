@@ -1,324 +1,230 @@
-SYNTH SECTOR MODULE – ONTWERP SAMENVATTING
-==========================================
+# Sector Observation and Rotation Module — Design v1
 
-DOEL
-----
-De sector module voegt een extra analyzelaag toe aan de Synth trading bot.
-Naast individuele coin-signalen kan het systeem hiermee:
+## Status
 
-- sector momentum meten
-- sector rotaties detecteren
-- narratives herkennen
-- asset ranking verbeteren met marktcontext
+Design only. No sector table, builder, runtime ranking weight, decision-gate rule, execution behavior, or broker action is introduced by this document.
 
-Voorbeeld:
-RENDER stijgt + sector AI stijgt → sterk signaal
-RENDER stijgt + sector AI zwak → zwakker signaal
+## Purpose
 
+The sector module adds a market-only observation layer above individual asset features.
 
-ALGEMENE ARCHITECTUUR
----------------------
+It must answer measurable questions:
 
-De sectoranalyse wordt opgebouwd in vier stappen:
+- is a sector moving broadly or because of one leader?
+- which sectors are leading, improving, weakening, or lagging?
+- is participation rotating across sectors?
+- does a symbol perform differently when its sector has breadth and persistence?
 
-asset signals
-      ↓
-asset → sector mapping
-      ↓
-sector snapshots
-      ↓
-sector regime interpretatie
+It does not define an automatic trade rule.
 
-Of:
+## Architecture Position
 
-asset data → sector metrics → sector regime → trading signals
+```text
+candles / ticker / volume
+  -> asset returns and volume features
+  -> asset-to-sector map
+  -> sector snapshots
+  -> sector breadth / persistence / leadership features
+  -> sector rotation state
+  -> future MarketObserverSnapshot
+  -> shadow outcome validation
+  -> possible future feature-promotion proposal
+```
 
+Sector observation belongs in market context/research. It is account-agnostic and must not be implemented in decision-gate, execution-planner, executor, or broker layers.
 
-DATABASE ONTWERP
-----------------
+## Data Model
 
-1. sector
----------
-Definitie van sectoren.
+### `sector`
 
-Voorbeelden:
+Defines sector taxonomy.
 
+Examples:
+
+```text
 AI
 DEFI
-L1
-NFT
-MEME
-DATA
-DEX
-PERPS
-BTC_ECOSYSTEM
-
-Velden:
-
-sector_id
-sector_code
-sector_name
-created_at
-
-
-2. asset_sector_map
--------------------
-
-Koppelt assets (coins) aan sectoren.
-
-Many-to-many structuur omdat een coin meerdere sectoren kan hebben.
-
-Voorbeelden:
-
-RENDER → AI (0.7)
-RENDER → DATA (0.3)
-
-HYPE → PERPS (0.6)
-HYPE → DEX (0.4)
-
-Velden:
-
-asset_id
-sector_id
-weight
-classification_type  (primary / secondary)
-
-
-3. sector_snapshot
-------------------
-
-Hier wordt per tijdframe de sectorprestatie opgeslagen.
-
-Metrics die worden opgeslagen:
-
-coin_count
-breadth_ratio
-avg_return_pct
-volume_ratio
-sector_score
-market_relative_score
-leader_asset_id
-laggard_asset_id
-
-Breadth definitie:
-
-breadth_ratio =
-coins_up / coins_active
-
-Dit voorkomt dat één coin een sectorbeweging domineert.
-
-
-4. sector_regime
-----------------
-
-Interpretatie van sectorstatus.
-
-Regime labels:
-
-leading
-improving
-neutral
-weakening
-lagging
-breakout
-exhaustion
-
-Velden:
-
-sector_id
-ts_utc
-timeframe
-regime_label
-confidence_score
-persistence_bars
-rank_in_market
-
-
-SECTOR SCORE LOGICA
--------------------
-
-Sector sterkte wordt berekend met een gecombineerde score.
-
-Basisformule:
-
-sector_score =
-0.35 * weighted_return
-+ 0.25 * breadth
-+ 0.20 * volume_ratio
-+ 0.20 * persistence
-
-Waarbij:
-
-weighted_return
-= gemiddelde return van sectorcoins
-
-breadth
-= hoeveel coins meedoen aan de move
-
-volume_ratio
-= stijgt volume mee
-
-persistence
-= hoe lang loopt de sector al
-
-
-MARKET RELATIVE STRENGTH
-------------------------
-
-Sectoren worden ook vergeleken met de totale markt.
-
-market_rel_score =
-sector_score − market_baseline
-
-Hierdoor lijken bij een algemene pump niet alle sectoren automatisch sterk.
-
-
-SECTOR LEADER DETECTION
------------------------
-
-Bij elke snapshot slaan we ook op:
-
-leader_asset_id
-laggard_asset_id
-
-Hiermee kan later worden geanalyseerd:
-
-- welke coin een sector startte
-- welke coins volgden
-- sector breadth vs single leader pumps
-
-
-SECTOR USE CASES IN SYNTH
--------------------------
-
-1. Asset ranking verbetering
-
-Nieuwe formule:
-
-final_asset_score =
-0.55 * asset_signal
-+ 0.25 * sector_strength
-+ 0.10 * sector_breadth
-+ 0.10 * market_context
-
-Coins krijgen dus een bonus wanneer hun sector sterk is.
-
-
-2. Narrative detection
-
-Voorbeeld:
-
-AI sector → leading
-DeFi → improving
-NFT → lagging
-
-Dit helpt bij het herkennen van altcoin rotaties.
-
-
-3. Capital rotation tracking
-
-Sector snapshots kunnen worden gebruikt om rotaties te detecteren:
-
-AI → DeFi → Gaming → Memes
-
-Dit patroon komt vaak voor tijdens altcoin cycles.
-
-
-DATA PIPELINE
--------------
-
-De sector module hangt achter de bestaande feature pipeline.
-
-candles
-   ↓
-candle_feat
-   ↓
-asset returns
-   ↓
-sector aggregation
-   ↓
-sector_snapshot
-   ↓
-sector_regime
-
-Sectoranalyse gebruikt dus bestaande asset features.
-
-
-SECTOR TAXONOMY (VOORBEELD)
----------------------------
-
 L1
 L2
-AI
 DATA
-DEFI
 DEX
 PERPS
-NFT
+RWA
+PAYMENTS
+PRIVACY
+ORACLE
 GAMING
 MEME
-ORACLE
-PRIVACY
-PAYMENTS
 BTC_ECOSYSTEM
-RWA
+```
 
-Coins kunnen meerdere sectoren hebben.
+Suggested fields:
 
+- `sector_id`
+- `sector_code`
+- `sector_name`
+- `taxonomy_version`
+- `created_at`
 
-ONTWERPKEUZE
-------------
+### `asset_sector_map`
 
-Sector classificatie start handmatig.
+Maps an asset to one or more sectors.
 
-Voordelen:
+Suggested fields:
 
-- stabiel
-- uitlegbaar
-- minder ruis
+- `asset_id`
+- `sector_id`
+- `weight`
+- `classification_type`: PRIMARY | SECONDARY
+- `taxonomy_version`
+- `effective_from_utc`
+- `effective_to_utc`
 
-Later kunnen dynamische overlays worden toegevoegd:
+Classification starts manually and versioned. Dynamic narrative clustering is a later research overlay, not a silent replacement for taxonomy.
 
-AI narrative
-Solana ecosystem
-Meme cycle
-Exchange tokens
+### `sector_snapshot`
 
+One row per `(venue, interval, asof_ts_utc, sector, taxonomy_version)`.
 
-VERWACHTE VOORDELEN VOOR SYNTH
--------------------------------
+Suggested measured fields:
 
-De sector module maakt het mogelijk om:
+- `coin_count`
+- `active_coin_count`
+- `breadth_ratio`
+- `weighted_return_pct`
+- `median_return_pct`
+- `volume_ratio`
+- `persistence_bars`
+- `market_relative_return_pct`
+- `leader_asset_id`
+- `laggard_asset_id`
+- `leader_contribution_pct`
+- `freshness_state`
+- `coverage_state`
 
-- sector leadership te detecteren
-- sector rotaties te herkennen
-- narrative momentum te analyseren
-- portfolio sector exposure te meten
+Breadth definition:
 
-Dit is een grote verbetering t.o.v. alleen indicator-based trading.
+```text
+breadth_ratio = coins_up / coins_active
+```
 
+`leader_contribution_pct` is required so a single-asset pump cannot masquerade as sector rotation.
 
-VOLGENDE ONTWIKKELSTAPPEN
--------------------------
+### `sector_rotation_state`
 
-1. sector tabellen integreren in MariaDB
-2. asset_sector_map vullen
-3. sector_snapshot builder implementeren
-4. sector_regime classificatie toevoegen
-5. sector leaderboards bouwen
-6. sector score integreren in asset ranking
+A descriptive, market-only interpretation of measured snapshots.
 
+Allowed labels:
 
-LANGE TERMIJN UITBREIDINGEN
----------------------------
+```text
+UNKNOWN
+LEADING
+IMPROVING
+NEUTRAL
+WEAKENING
+LAGGING
+BREAKOUT
+EXHAUSTION
+STALE
+```
 
-sector momentum dashboard
-capital rotation index
-narrative detector
-ecosystem strength analyse (Solana / ETH etc)
-ML sector clustering
+Suggested fields:
 
+- `sector_id`
+- `asof_ts_utc`
+- `interval`
+- `regime_label`
+- `confidence_score`
+- `persistence_bars`
+- `rank_in_market`
+- `evidence_refs`
 
-Dit document beschrijft het volledige ontwerp van de Synth sector module
-zoals besproken in deze chat en kan direct als context worden gebruikt
-in een nieuwe Synth ontwikkelchat.
+## Measurement Rules
+
+A sector state must state its inputs and coverage. No hidden score formula is allowed.
+
+A transparent research score may be calculated for ranking snapshots, but it is not a selection-engine score:
+
+```text
+sector_observation_score =
+  documented_return_component
++ documented_breadth_component
++ documented_volume_component
++ documented_persistence_component
+```
+
+Any component, normalization method, missing-data treatment, and threshold must be versioned and visible in research output.
+
+Market-relative context is required so a broad market pump does not label every sector `LEADING`:
+
+```text
+market_relative_return = sector_return - comparable_market_baseline
+```
+
+## Rotation Interpretation
+
+Capital-rotation sequences are hypotheses to measure, not predefined market laws.
+
+Examples worth measuring:
+
+```text
+L1 / infrastructure -> DeFi -> RWA -> small-cap beta
+AI -> data -> compute -> privacy
+BTC stability -> ETH relative strength -> broadening alt breadth
+```
+
+The module may observe these sequences only after the underlying sector snapshots exist. It must not encode a preferred narrative sequence as runtime policy.
+
+## Relation to Market Observer
+
+A future `MarketObserverSnapshot` may read sector states and report:
+
+- which sectors are leading or improving
+- whether breadth is narrow, selective, or broadening
+- whether sector signals agree with BTC/ETH context
+- whether a symbol's local setup aligns with its sector
+
+It must not use sector labels as automatic buy/sell, allocation, or trade-permission instructions.
+
+## Validation Plan
+
+Before any use in `selection_engine`, test whether sector features add value beyond individual symbol context.
+
+Minimum studies:
+
+- symbol setup outcomes with matching versus non-matching sector state
+- high breadth versus leader-dominated sector moves
+- sector `LEADING` persistence across intervals
+- sector state interaction with canonical global regime
+- incremental outcome value against a no-sector baseline
+- out-of-sample validation with explicit overlap control
+
+Expected outcome measurements include return, MFE, MAE, invalidation-before-target rate, and horizon-aligned completeness.
+
+## Forbidden Shortcuts
+
+```text
+sector state          -> direct order
+sector score          -> hidden selection weight
+sector rotation       -> account allocation
+sector narrative      -> decision-gate permission
+external flow snapshot -> sector truth without provenance
+```
+
+## Future Implementation Order
+
+1. Canonical taxonomy and versioned asset-sector map.
+2. Deterministic sector snapshots from existing market data.
+3. Coverage, leader-contribution, and freshness diagnostics.
+4. Descriptive sector-rotation state.
+5. Research-only market-observer integration.
+6. Shadow outcome validation.
+7. Explicit feature-promotion proposal only after evidence.
+
+## Related Documents
+
+- `docs/architecture/pipeline_contracts.md`
+- `docs/architecture/module_architecture.md`
+- `docs/architecture/market_observer_contract_v1.md`
+- `docs/research/canonical_regime_context_source_v1.md`
+- `docs/research/shadow_heartbeat_outcome_validation_v1.md`

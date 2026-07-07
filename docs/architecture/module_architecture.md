@@ -1,104 +1,153 @@
-# SYNTH — MODULE ARCHITECTURE
+# Synth — Module Architecture
 
-## 1. CORE PRINCIPLE
+## Purpose
 
-Synth is designed as a full modular system.
+Module inventory, ownership, and implementation posture for Synth v2.
 
-Modules may be unimplemented,
-but must never be undefined.
+Modules may be unimplemented, but they must never be undefined. `pipeline_contracts.md` remains authoritative for import direction and execution boundaries.
 
-The architecture defines all modules up front.
-Implementation follows in phases.
+Every module declares purpose, inputs, outputs, layer, dependencies, forbidden dependencies, status, canonical documentation, and validation path before runtime promotion.
 
----
+## Canonical Module Statuses
 
-## 2. DESIGN-FIRST RULE
+| Status | Meaning |
+|---|---|
+| `IMPLEMENTED` | Exists in maintained runtime/research code with an owned contract. |
+| `IMPLEMENTED_EVOLVING` | Exists, but its bounded contract or implementation is still under active revision. |
+| `DOCS_ONLY` | A contract/design exists; no implementation is implied. |
+| `PLANNED` | Required next-stage module; no implementation exists yet. |
+| `RESEARCH_ONLY` | May exist only in research/shadow context and cannot affect selection, permission, planning, or execution. |
+| `PLANNED_FUTURE` | Recognized architecture component, deliberately not scheduled for the next implementation stage. |
+| `DEPRECATED` | Retained only for migration/history; no new use permitted. |
 
-All major modules must exist in the design,
-even if not implemented yet.
+No alternate status strings may be introduced without updating this table.
 
----
+## Module Layers
 
-## 3. REQUIRED MODULES
+| Layer | Meaning |
+|---|---|
+| OBSERVATION | Raw, timestamped market or external-source facts with provenance. |
+| FEATURE | Deterministic narrow measurements from observation. |
+| INTERPRETATION | Market-only descriptive states from features and canonical context. |
+| PROJECTION | Bounded research hypotheses/scenario context; never execution instruction. |
+| SELECTION | Market-only candidate ranking and strategy-state interpretation after validated promotion. |
+| PERMISSION | Account-aware constraints in `decision_gate`. |
+| EXECUTION | Execution-plan and order handling only. |
 
-- alt_market_phase_detector  
-- wave_rotation_classifier  
-- breathline_feat  
-- thesis_bias  
-- trend_volume_classifier  
+## Required and Planned Modules
 
----
+| Module | Layer | Status | Responsibility |
+|---|---|---|---|
+| `market_data` | OBSERVATION | `IMPLEMENTED` | Candles, ticker price, volume, normalization, freshness. |
+| `local_ma_atr_context` | FEATURE | `IMPLEMENTED_EVOLVING` | Per-symbol MA position measured in ATR context. |
+| `impulse_health_state` | INTERPRETATION | `IMPLEMENTED_EVOLVING` | Per-symbol impulse/cooling/distribution condition. |
+| `fib_navigation_map` | INTERPRETATION | `IMPLEMENTED_EVOLVING` | Structural zones, map lifecycle, confidence. |
+| `active_regime_observation` | INTERPRETATION | `IMPLEMENTED` | Canonical market-wide/asset-class regime source. |
+| `market_observer_v1` | INTERPRETATION | `DOCS_ONLY` | Cross-market aggregate of measured context and provenance-tagged overlays. |
+| `sector_snapshot_v1` | FEATURE | `PLANNED` | Sector return, breadth, volume, persistence, leader/laggard measurement. |
+| `sector_rotation_state_v1` | INTERPRETATION | `PLANNED` | Descriptive sector leadership/rotation from measured snapshots. |
+| `alt_market_phase_detector` | INTERPRETATION | `PLANNED_FUTURE` | Participation/phase classifier that reuses canonical regime. |
+| `wave_rotation_classifier` | INTERPRETATION | `PLANNED_FUTURE` | Descriptive sequence/rotation classifier, not an order engine. |
+| `universal_breathline_context` | PROJECTION | `RESEARCH_ONLY` | Market-cycle context, separate from local technical sensors. |
+| `breathline_feat` | — | `DEPRECATED` | Legacy planning name. Do not use for a context/projection module; it falsely implies a measurable local feature. |
+| `thesis_bias` | PROJECTION | `RESEARCH_ONLY` | Inspectable scenario hypothesis, never hidden selection weight. |
+| `trend_volume_classifier` | INTERPRETATION | `PLANNED_FUTURE` | Market-only trend and participation classifier. |
 
-## 4. MODULE LAYERS
+## Market Observer Ownership
 
-OBSERVATION  
-FEATURE  
-INTERPRETATION  
-PROJECTION  
+`market_observer_v1` belongs under `src/market_context/` when implemented.
 
----
+It may read deterministic features, `MarketNavigationState`, canonical regime observations, future sector/breadth snapshots, and registered external overlays.
 
-## 5. EXAMPLE PLACEMENT
+It may emit `MarketObserverSnapshot`, descriptive BTC/ETH/breadth/sector/symbol context, freshness, confidence, warnings, and evidence references.
 
-alt_market_phase_detector → INTERPRETATION  
-wave_rotation_classifier → INTERPRETATION  
-breathline_feat → FEATURE  
-thesis_bias → PROJECTION  
-trend_volume_classifier → INTERPRETATION  
+It may not emit permission, account allocation, execution intent/plans, broker actions, or unproven scoring bonuses.
 
----
+`agent` is not the ownership name: executor/agent namespaces remain reserved for order handling.
 
-## 6. MODULE CONTRACT
+## External Research Overlay Ownership
 
-Each module defines:
+External research is an OBSERVATION/PROJECTION overlay, not a market-data replacement. A future adapter preserves original source/time, venue/pair/timeframe when known, source currency and FX conversion, source-confidence prior, independent verification, freshness/expiry, and map/anchor provenance.
 
-- purpose  
-- inputs  
-- outputs  
-- dependencies  
-- layer  
-- status  
+It does not belong in selection, decision gate, execution planner, executor, or broker modules.
 
----
+## Sector and Breadth Ownership
 
-## 7. STATUS TYPES
+```text
+asset returns and volume
+  -> sector snapshot
+  -> sector breadth / leader / persistence features
+  -> sector rotation state
+  -> market observer context
+  -> shadow outcome validation
+  -> possible future selection promotion
+```
 
-implemented  
-planned_v1_next  
-planned_future  
+No direct score weight enters `selection_engine` before documented definition, baseline, horizon, sample policy, and out-of-sample outcome evidence.
 
----
+## Dependency Rules
 
-## 8. HARD RULE
+```text
+market_data
+  -> observation / features
+  -> interpretation / market_context
+  -> selection_engine
+       -> Strategy State
+  -> decision_gate
+  -> execution_planner
+  -> executor / broker
+```
 
-Do not design based on what exists.  
-Design based on what must exist.  
+Forbidden shortcuts:
 
----
+```text
+market_observer      -> account state, decision permission, execution intent
+external overlay     -> direct selection bonus
+sector rotation      -> direct order
+thesis_bias          -> account allocation
+executor / agent     -> market-context calculation
+runtime module       -> src.research import for shared contracts
+```
 
-## 9. IMPLEMENTATION MODEL
+## Implementation Model
 
-Phase-based:
+### Phase 1 — deterministic foundations
 
-Phase 1  
-- ETL  
-- base features  
+- market data
+- base technical features
+- navigation state
+- canonical regime observations
 
-Phase 2  
-- structure  
-- zones  
+### Phase 2 — structural market context
 
-Phase 3  
-- alignment  
-- advanced interpreters  
+- fib map lifecycle
+- zones/invalidation state
+- local trend/impulse context
+- observer contract and deterministic inputs
 
-Phase 4  
-- optimization / ML  
+### Phase 3 — breadth and cross-market interpretation
 
----
+- sector snapshots
+- BTC/ETH relative context
+- breadth/participation measurements
+- research-only observer writer
+- shadow validation
 
-## 10. SUMMARY
+### Phase 4 — evidence-led promotion
 
-Design breadth first.  
-Implement in phases.  
-Do not let v1 constrain the system.  
+- preregistered validation studies
+- explicit promotion proposals
+- limited selection integration only where evidence survives review
+
+### Phase 5 — optimization / ML
+
+Only after deterministic feature inventory and validation data mature. No hidden-state replacement for transparent market context.
+
+## Related Documents
+
+- `docs/architecture/pipeline_contracts.md`
+- `docs/architecture/market_observer_contract_v1.md`
+- `docs/architecture/external_research_overlay_contract_v1.md`
+- `docs/architecture/breath_fibo_synth_framework_contract_v1.md`
+- `docs/research/canonical_regime_context_source_v1.md`
+- `docs/research/sector_module_design.md`

@@ -2,217 +2,136 @@
 
 ## Purpose
 
-This document defines the canonical concept boundaries for the Synth v2 framework layers.
-It is the reference for naming decisions, PR reviews, Claude/agent implementation bundles,
-and UI/label policy.
+Canonical concept boundaries for Synth v2. No concept may be renamed, reused, or extended without updating this document.
 
-No PR may rename, reuse, or extend a concept defined here without updating this document.
-
----
-
-## Canonical Layer Definitions
+## Layers
 
 ### Breathline / Market Breath
 
-Breathline is a **market-cycle context layer**.
+Breathline is probabilistic market-cycle and timing context from external symbolic research or validated market-breath models.
 
-Breathline describes **probabilistic cycle phase and timing context** derived from external
-symbolic research (A+, Codex-style output) or validated market-breath models.
+It may provide cycle phase, directional bias, timing confidence, and inhale/exhale/spike/distribution labels.
 
-Breathline provides:
-- cycle phase (e.g. compression, expansion, peak, reversion)
-- macro rhythm / directional bias
-- timing confidence
-- inhale / exhale / spike / distribution phase labels
-
-Breathline does **NOT**:
-- produce exact price levels, entries, exits, targets, ladders, or invalidations
-- replace or duplicate moving averages, EMA alignment, ATR distance, or slope sensors
-- act as a decision gate
-- place orders
-- create execution intent
+It must not provide price levels, entries, exits, targets, ladders, invalidations, account permission, execution intent, or broker actions. It must not replace or duplicate moving averages, EMA alignment, ATR distance, slope, volume, RSI, ADX, or price-action sensors.
 
 ### Fibo Framework
 
-Fibo defines the **structural map**.
+Fibo is the structural map: reload, breakout, target, invalidation zones, extension levels, and structural lifecycle.
 
-Fibo provides:
-- zone boundaries (reload / breakout / target / invalidation)
-- extension levels (1.272, 1.618, 2.0, etc.)
-- structural lifecycle (UPCOMING / NEAR / PASSED / COMPLETED)
-- navigation map and invalidation levels
+It must not provide market-cycle timing, local momentum/EMA/ATR sensing, account permission, or broker actions.
 
-Fibo does **NOT**:
-- provide market-cycle timing context
-- assess momentum, ATR distance, or EMA alignment
-- produce account-aware permission
+### Synth Confirmation / Local Market Context
 
-### Synth Confirmation Signals / Local Market Context
+Measurable, per-symbol indicator state: EMA alignment/slope, ATR distance, RSI, ADX, volume, price action, and local trend strength.
 
-Synth Confirmation describes **measurable indicator state**.
+Canonical sensors are `local_ma_atr_context` (`LocalMaAtrState`) and `impulse_health_state` (`ImpulseHealthState`). They are not Breathline and carry no order semantics.
 
-This includes:
-- EMA alignment (price vs EMA20, EMA50, spread)
-- EMA slope
-- ATR distance (`distance_atr`)
-- RSI, ADX, volume context
-- price action patterns
-- local trend strength
+### Market Observer
 
-These live in `src/market_context/` and `src/features/` as bounded sensor modules.
+Market-only aggregation/read model inside `market_context`. It may aggregate canonical regime forwarding, BTC structure, ETH relative strength, breadth, sector rotation, per-symbol structure, and provenance-tagged external overlays.
 
-The canonical local MA/ATR sensor is `local_ma_atr_context` (`LocalMaAtrState`).
-The canonical impulse health sensor is `impulse_health_state` (`ImpulseHealthState`).
+It may emit descriptive states only. It must not read account state, replace canonical regime, rebuild fib maps outside their builder, convert an external map into measured truth, grant permission, create execution intent, or emit allocation/order labels.
 
-Synth Confirmation Signals **confirm or reject** a framework setup. They are not Breathline.
+Canonical contract: `docs/architecture/market_observer_contract_v1.md`.
+
+### External Research Overlay
+
+Traceable source overlay, not market truth. It preserves source time, venue/pair/timeframe when known, source currency/conversion, verification, freshness, expiry, and provenance.
+
+Source confidence prior is distinct from Synth validation status.
+
+Canonical contract: `docs/architecture/external_research_overlay_contract_v1.md`.
 
 ### Strategy State
 
-Strategy State **interprets** framework context + confirmation signals into an action state.
+Market-only interpretation produced inside `selection_engine`. It converts market context and confirmation signals into setup classification, event state, and display/manual-support labels. `HorizonStrategyState` is its future horizon-specific schema.
 
-Strategy State provides:
-- setup classification (BREAKOUT_RETEST, REENTRY_WAIT, EXTENSION_SWING, etc.)
-- event state (TAKE_PROFIT_WAITING, RELOAD_ZONE_APPROACHING, etc.)
-- action label (for display and manual decision support)
-
-Strategy State does **NOT**:
-- place orders
-- bypass Decision Gate
-- apply account-level permission
+Strategy State is not an independent pipeline layer between `selection_engine` and `decision_gate`.
 
 ### Decision Gate
 
-Decision Gate is the **account-aware permission layer**.
+`decision_gate` is the account-aware permission layer and the **only** layer allowed to combine market-only upstream context with balances, sleeves, positions, active plans, open orders, or duplicate exposure.
 
-Decision Gate:
-- checks balance, sleeve, position, active plan, open order, duplicate exposure
-- produces allowed/blocked decision state or execution intent
-- is the only layer that combines market context with account state
+It may allow or block a proposal. It must not recalculate regime, fib, MA/ATR, impulse, breadth, or observer context; create an execution plan; or call a broker.
 
-Decision Gate does **NOT**:
-- apply market-regime logic
-- place orders directly
+No observer, selection, planner, executor, reporting, or external-overlay module may become account-aware by combining market context with account state.
 
 ### Execution Planner
 
-Execution Planner converts **approved execution intent** into an execution plan.
-
-Execution Planner decides:
-- passive vs urgent limit
-- laddering, tick placement, repricing controls, urgency, spread capture
-
-Execution Planner does **NOT**:
-- place orders
-- call broker/exchange
-- apply account-level permission
-- bypass Decision Gate
+Converts an approved decision into a proposed execution plan. It may not call a broker, apply account permission, or bypass Decision Gate.
 
 ### Executor / Broker
 
-Executor and broker layers handle **order execution only**.
+Handles order submission/cancel/monitoring, idempotency, and failures only. It must not contain strategy, allocation, fib/profile interpretation, or market observation.
 
-They:
-- place, cancel, and monitor orders
-- write execution events and order state
-- handle idempotency and failure
+## Fibo Map Provenance
 
-They do **NOT**:
-- contain strategy logic
-- perform account allocation logic
-- apply target selection or fib/profile interpretation
+Map references must be `INTERNAL_REBUILT`, `EXTERNAL`, or `UNVERIFIED`. Source/conversion data remain separate from internal map data.
 
----
+A screenshot zoom change does not create a new map. Similar maps must not be merged without matching pair, venue, timeframe, anchors, and construction. External ABC/reclaim/extension annotations remain source claims until reconstructed or outcome-validated.
 
-## Naming Rules
+## Naming and UI Rules
 
-### Local MA/ATR state values
+`LocalMaAtrState` uses MA-centric names:
 
-`LocalMaAtrState` enum values describe **price position relative to the EMA/MA line**.
-They must use MA-centric terminology, not breathline terminology.
+```text
+ABOVE_MA
+TESTING_MA
+BELOW_MA
+RECLAIMING_MA
+EXTENDED_ABOVE_MA
+SPIKE_COOLING
+```
 
-Canonical values:
+A+ factor names `breathline_phase` and `breathline_direction` remain correct and must not be renamed. `model_variant="8.5D_breathline"` remains an A+ model identifier.
 
-    ABOVE_MA
-    TESTING_MA
-    BELOW_MA
-    RECLAIMING_MA
-    EXTENDED_ABOVE_MA
-    SPIKE_COOLING
+Correct labels:
 
-These describe where price sits relative to the local moving average, measured in ATR units.
-They are **not** breathline states. They are **not** cycle phase labels.
-
-### A+ / Breathline phase factors
-
-A+ output factors use `breathline_phase` and `breathline_direction` as factor names.
-These are correct — they describe A+ model output, which is a genuine breathline concept.
-
-`model_variant="8.5D_breathline"` in the A+ parser is the A+ model identifier. Keep as-is.
-
-### UI and report labels
-
-UI sections and labels must reflect the **layer that produces them**:
-
-| Section content | Correct label |
+| Content | Label |
 |---|---|
-| A+ phase, breath cycle, market breath | `A+ Phase / Market Breath` |
-| EMA/ATR sensor state | `Local MA Context` or `Trend Sensor` |
-| Fibo zone map | `Fibo / Zone Map` |
-| Regime interpretation | `Regime` |
-
-Labels must not imply that an MA sensor is a breathline, or that a breathline produces zones.
-
----
+| A+ phase / market breath | `A+ Phase / Market Breath` |
+| EMA/ATR state | `Local MA Context` or `Trend Sensor` |
+| Fibo zones | `Fibo / Zone Map` |
+| Canonical regime | `Regime` |
+| BTC/ETH/breadth/sector aggregate | `Market Overview / Rotation Context` |
+| Source charts, catalysts, flow, external levels | `External Research Overlay` |
 
 ## Prevention Rules
 
-1. Concept terms must have entries in this doc or `docs/architecture/pipeline_contracts.md`
-   before being used in code or reports.
+1. Concepts require an entry in this document or `pipeline_contracts.md` before use.
+2. Sensors must be named after what they measure.
+3. Working indicator logic must not hide behind higher-level terminology; Breathline must not duplicate local technical sensors.
+4. UI labels must reflect the producing layer.
+5. `market_observer` must not become a shadow decision gate or executor.
+6. Only `decision_gate` may combine market context with account state.
+7. Implementation bundles touching local sensors, Breathline research, fib maps, observer, breadth, or external overlays must cite this document and the relevant specific contract.
 
-2. No PR may silently reuse a concept name for a different sensor without updating this doc.
+## Canonical Data Flow
 
-3. `LocalMaAtrState` enum values must not embed higher-level concept names
-   (breathline, regime, fibo, etc.). Name values after what the sensor measures.
-
-4. UI/report labels must align with the layer that produces them, not with a higher-level concept.
-
-5. Claude/agent implementation bundles must include a reference to this contract doc before
-   implementing any work that touches `local_ma_atr_context`, `impulse_health_state`,
-   breathline research, or market breath labels.
-
-6. Useful sensors must be named after what they measure (EMA/MA position),
-   not after the concept they support (breathline, cycle phase).
-
-7. Working indicator logic must not be hidden behind higher-level concept names.
-   If a sensor computes EMA distance, name it EMA distance — not breathline distance.
-
----
-
-## Correct Data Flow
-
-```
+```text
 Market observation
-→ Feature (EMA, ATR, volume, price action)
-→ Synth Confirmation Signal / Local Market Context
-  (local_ma_atr_context, impulse_health_state, price_vs_ema*)
-→ Market-only candidate/ranking (selection_engine)
-→ Optional: A+ / Breathline phase context (research/symbolic lane)
-→ Optional: Fibo structural map (FibNavigationMap, FibExtContext)
-→ Strategy State (interprets context + confirmation)
-→ Decision Gate (account-aware permission)
-→ Execution Planner (execution intent)
-→ Executor (order handling)
-→ Broker (exchange API)
+-> features and local market context
+-> fib structure and canonical regime
+-> optional provenance-tagged external overlay
+-> optional MarketObserverSnapshot
+-> selection_engine
+     -> Strategy State / future HorizonStrategyState
+-> decision_gate
+-> execution_planner
+-> executor
+-> broker
 ```
 
 Forbidden shortcuts:
 
-```
-breathline / A+ phase  →  direct entry/exit/order
-local_ma_atr_context   →  order placement
-fibo zone              →  account permission
-reporting/dashboard    →  broker call or execution intent
-executor               →  strategy decision
+```text
+breathline              -> direct execution or duplicate local sensor
+fibo zone               -> account permission
+external overlay        -> direct execution or hidden selection bonus
+market observer         -> account state, permission, or execution intent
+selection_engine        -> account state
+execution_planner       -> permission or market-feature recomputation
+executor                -> strategy decision
 ```
 
-For the expanded A+ / universal Breathline field contract and per-horizon allowed inputs, see `docs/architecture/multi_horizon_aplus_breathline_strategy_contract_v1.md`.
+See `docs/architecture/multi_horizon_aplus_breathline_strategy_contract_v1.md` for horizon and A+ field rules.
