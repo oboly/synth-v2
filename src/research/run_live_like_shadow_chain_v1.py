@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict
-from datetime import datetime
+import re
+from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+from src.common.db import get_connection
+from src.research.market_observer_evidence_preview_v1 import (
+    MarketObserverEvidencePreviewAmbiguityError,
+    MarketObserverEvidencePreviewMalformedTagsError,
+    MarketObserverEvidencePreviewNoSourceError,
+    build_market_observer_evidence_preview,
+)
 from src.research import run_intraday_retest_reclaim_candidate_v1 as candidate_runner
 from src.research import run_live_like_decision_preview_v1 as decision_runner
 from src.research import run_live_like_execution_plan_preview_v1 as execution_runner
@@ -21,6 +29,69 @@ DEFAULT_RUN_DIR_PREFIX = "run_"
 CHAIN_SUMMARY_JSON = "chain_summary_v1.json"
 CHAIN_SUMMARY_JSONL = "chain_summary_v1.jsonl"
 MANIFEST_JSON = "manifest_v1.json"
+MARKET_OBSERVER_EVIDENCE_PREVIEW_JSON = "market_observer_evidence_preview_v1.json"
+
+MARKET_OBSERVER_EVIDENCE_STATUS = Literal[
+    "DISABLED",
+    "AVAILABLE",
+    "NO_SOURCE",
+    "AMBIGUOUS",
+    "MALFORMED_TAGS",
+    "DB_READ_ERROR",
+    "UNEXPECTED_ERROR",
+]
+
+_STRICT_UTC_Z_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
+
+
+@dataclass(frozen=True)
+class MarketObserverEvidenceSidecar:
+    enabled: bool
+    status: MARKET_OBSERVER_EVIDENCE_STATUS
+    requested_inputs: dict[str, Any]
+    db_reads: int
+    db_writes: int = 0
+    warnings: tuple[str, ...] = ()
+    exception_class: str | None = None
+    preview: dict[str, Any] | None = None
+    source_locator: dict[str, Any] | None = None
+    path: str | None = None
+
+    def to_payload(self) -> dict[str, Any]:
+        payload = {
+            "enabled": self.enabled,
+            "status": self.status,
+            "requested_inputs": self.requested_inputs,
+            "warnings": list(self.warnings),
+            "db_reads": self.db_reads,
+            "db_writes": self.db_writes,
+        }
+        if self.exception_class is not None:
+            payload["exception_class"] = self.exception_class
+        if self.preview is not None:
+            payload["preview"] = self.preview
+        if self.source_locator is not None:
+            payload["source_locator"] = self.source_locator
+        return payload
+
+    def to_compact_summary(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "status": self.status,
+            "warnings": list(self.warnings),
+        }
+        if self.exception_class is not None:
+            payload["exception_class"] = self.exception_class
+        if self.preview is not None:
+            payload.update(
+                {
+                    "requested_event_ts_utc": self.preview["requested_event_ts_utc"],
+                    "canonical_global_regime": self.preview["canonical_global_regime"],
+                    "canonical_asset_class": self.preview["canonical_asset_class"],
+                    "canonical_asset_class_regime": self.preview["canonical_asset_class_regime"],
+                    "validation_status": self.preview["validation_status"],
+                }
+            )
+        return payload
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -39,7 +110,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--write-files", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--output-root", default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--output", choices=("table", "json"), default="table")
-    return parser.parse_args(argv)
+    parser.add_argument("--include-market-observer-evidence-preview", action="store_true")
+    parser.add_argument("--canonical-asset-class", default=None)
+    parser.add_argument("--canonical-regime-interval", default="4h")
+    args = parser.parse_args(argv)
+    if args.include_market_observer_evidence_preview and not args.canonical_asset_class:
+        parser.error(
+            "--canonical-asset-class is required when "
+            "--include-market-observer-evidence-preview is enabled."
+        )
+    return args
 
 
 def resolve_output_dir(*, output_root: str, run_id: str) -> Path:
@@ -64,8 +144,192 @@ def write_jsonl(path: Path, row: dict[str, Any]) -> None:
 
 def chain_json_default(value: Any) -> Any:
     if isinstance(value, datetime):
-        return candidate_runner.fmt_ts(value)
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
     return value
+
+
+def parse_strategy_candidate_created_at_utc(value: Any) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError("StrategyCandidate.created_at_utc must be a string.")
+    if not _STRICT_UTC_Z_RE.fullmatch(value):
+        raise ValueError(
+            "StrategyCandidate.created_at_utc must be an explicit UTC Z timestamp."
+        )
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+
+
+def build_market_observer_requested_inputs(
+    *,
+    args: argparse.Namespace,
+    candidate: Any,
+) -> dict[str, Any]:
+    return {
+        "venue": str(args.venue),
+        "canonical_asset_class": args.canonical_asset_class,
+        "canonical_regime_interval": str(args.canonical_regime_interval),
+        "strategy_candidate_created_at_utc": candidate.created_at_utc,
+    }
+
+
+def build_unexpected_market_observer_sidecar(
+    *,
+    requested_inputs: dict[str, Any],
+    sidecar_path: Path,
+    db_reads: int,
+    warning: str,
+    exception_class: str,
+) -> MarketObserverEvidenceSidecar:
+    return MarketObserverEvidenceSidecar(
+        enabled=True,
+        status="UNEXPECTED_ERROR",
+        requested_inputs=requested_inputs,
+        db_reads=db_reads,
+        warnings=(warning,),
+        exception_class=exception_class,
+        path=str(sidecar_path),
+    )
+
+
+def close_market_observer_connection(conn: Any) -> None:
+    try:
+        conn.close()
+    except Exception:
+        return None
+
+
+def resolve_market_observer_evidence_sidecar(
+    *,
+    args: argparse.Namespace,
+    output_dir: Path,
+    candidate: Any,
+) -> MarketObserverEvidenceSidecar:
+    sidecar_path = output_dir / MARKET_OBSERVER_EVIDENCE_PREVIEW_JSON
+    requested_inputs = build_market_observer_requested_inputs(args=args, candidate=candidate)
+    if not args.include_market_observer_evidence_preview:
+        return MarketObserverEvidenceSidecar(
+            enabled=False,
+            status="DISABLED",
+            requested_inputs=requested_inputs,
+            db_reads=0,
+        )
+
+    try:
+        event_ts_utc = parse_strategy_candidate_created_at_utc(candidate.created_at_utc)
+    except Exception as exc:
+        return build_unexpected_market_observer_sidecar(
+            requested_inputs=requested_inputs,
+            sidecar_path=sidecar_path,
+            db_reads=0,
+            warning=(
+                "MarketObserverEvidencePreview was not attached because "
+                "StrategyCandidate.created_at_utc was not an explicit UTC Z timestamp."
+            ),
+            exception_class=exc.__class__.__name__,
+        )
+
+    conn = None
+    try:
+        conn = get_connection()
+    except Exception as exc:
+        return MarketObserverEvidenceSidecar(
+            enabled=True,
+            status="DB_READ_ERROR",
+            requested_inputs=requested_inputs,
+            db_reads=0,
+            warnings=(
+                "Read-only canonical active_regime_observation connection setup failed. "
+                "The four-stage shadow chain continued unchanged.",
+            ),
+            exception_class=exc.__class__.__name__,
+            path=str(sidecar_path),
+        )
+
+    try:
+        try:
+            preview = build_market_observer_evidence_preview(
+                conn=conn,
+                venue=str(args.venue),
+                interval_code=str(args.canonical_regime_interval),
+                asset_class=str(args.canonical_asset_class),
+                event_ts_utc=event_ts_utc,
+            )
+        except MarketObserverEvidencePreviewNoSourceError:
+            return MarketObserverEvidenceSidecar(
+                enabled=True,
+                status="NO_SOURCE",
+                requested_inputs=requested_inputs,
+                db_reads=1,
+                warnings=(
+                    "No canonical active_regime_observation row was available at-or-before the "
+                    "candidate event timestamp.",
+                ),
+                path=str(sidecar_path),
+            )
+        except MarketObserverEvidencePreviewAmbiguityError:
+            return MarketObserverEvidenceSidecar(
+                enabled=True,
+                status="AMBIGUOUS",
+                requested_inputs=requested_inputs,
+                db_reads=1,
+                warnings=(
+                    "Multiple canonical active_regime_observation rows matched the selected "
+                    "event timestamp.",
+                ),
+                path=str(sidecar_path),
+            )
+        except MarketObserverEvidencePreviewMalformedTagsError:
+            return MarketObserverEvidenceSidecar(
+                enabled=True,
+                status="MALFORMED_TAGS",
+                requested_inputs=requested_inputs,
+                db_reads=1,
+                warnings=(
+                    "Canonical active_regime_observation tags could not be decoded safely for "
+                    "the evidence sidecar.",
+                ),
+                path=str(sidecar_path),
+            )
+        except Exception as exc:
+            return MarketObserverEvidenceSidecar(
+                enabled=True,
+                status="DB_READ_ERROR",
+                requested_inputs=requested_inputs,
+                db_reads=1,
+                warnings=(
+                    "Read-only canonical active_regime_observation lookup failed. "
+                    "The four-stage shadow chain continued unchanged.",
+                ),
+                exception_class=exc.__class__.__name__,
+                path=str(sidecar_path),
+            )
+        try:
+            preview_payload = asdict(preview)
+            source_locator = dict(preview_payload["source_locator"])
+        except Exception as exc:
+            return build_unexpected_market_observer_sidecar(
+                requested_inputs=requested_inputs,
+                sidecar_path=sidecar_path,
+                db_reads=1,
+                warning=(
+                    "MarketObserverEvidencePreview resolved, but sidecar serialization failed. "
+                    "The four-stage shadow chain continued unchanged."
+                ),
+                exception_class=exc.__class__.__name__,
+            )
+    finally:
+        if conn is not None:
+            close_market_observer_connection(conn)
+
+    return MarketObserverEvidenceSidecar(
+        enabled=True,
+        status="AVAILABLE",
+        requested_inputs=requested_inputs,
+        db_reads=1,
+        warnings=tuple(str(value) for value in preview_payload.get("warnings", ())),
+        preview=preview_payload,
+        source_locator=source_locator,
+        path=str(sidecar_path),
+    )
 
 
 def run_candidate_stage(args: argparse.Namespace) -> tuple[Path, Any, dict[str, Any]]:
@@ -232,8 +496,9 @@ def build_chain_summary(
     candidate: Any,
     decision_preview: Any,
     execution_plan_preview: Any,
+    market_observer_sidecar: MarketObserverEvidenceSidecar,
 ) -> dict[str, Any]:
-    return {
+    summary = {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
         "mode": str(args.mode),
@@ -256,7 +521,18 @@ def build_chain_summary(
         "executor": "none",
         "executor_enabled": False,
         "account_tables_used": False,
+        "market_observer_evidence_preview_enabled": market_observer_sidecar.enabled,
+        "market_observer_evidence_preview_status": market_observer_sidecar.status,
+        "market_observer_evidence_preview_path": market_observer_sidecar.path,
+        "market_observer_canonical_asset_class": args.canonical_asset_class,
+        "market_observer_canonical_regime_interval": str(args.canonical_regime_interval),
+        "market_observer_db_reads": market_observer_sidecar.db_reads,
+        "market_observer_db_writes": market_observer_sidecar.db_writes,
+        "market_observer_evidence_preview": market_observer_sidecar.to_compact_summary(),
     }
+    if market_observer_sidecar.source_locator is not None:
+        summary["market_observer_evidence_preview_source_locator"] = market_observer_sidecar.source_locator
+    return summary
 
 
 def build_chain_manifest(
@@ -265,10 +541,11 @@ def build_chain_manifest(
     run_id: str,
     output_dir: Path,
     chain_summary: dict[str, Any],
+    market_observer_sidecar: MarketObserverEvidenceSidecar,
     run_started_at: datetime,
     run_finished_at: datetime,
 ) -> dict[str, Any]:
-    return {
+    manifest = {
         **chain_summary,
         "run_id": run_id,
         "output_dir": str(output_dir),
@@ -286,6 +563,9 @@ def build_chain_manifest(
             "manifest_json": str(output_dir / MANIFEST_JSON),
         },
     }
+    if market_observer_sidecar.path is not None:
+        manifest["output_paths"]["market_observer_evidence_preview_json"] = market_observer_sidecar.path
+    return manifest
 
 
 def print_summary(*, args: argparse.Namespace, chain_summary: dict[str, Any]) -> None:
@@ -303,6 +583,8 @@ def print_summary(*, args: argparse.Namespace, chain_summary: dict[str, Any]) ->
         "executor": "none",
         "no_order_submitted": True,
     }
+    if chain_summary["market_observer_evidence_preview_enabled"]:
+        payload["market_observer_evidence_preview_status"] = chain_summary["market_observer_evidence_preview_status"]
     if args.output == "json":
         print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=True))
         return
@@ -314,6 +596,11 @@ def print_summary(*, args: argparse.Namespace, chain_summary: dict[str, Any]) ->
     )
     print(f"execution_plan_state={payload['execution_plan_state']}")
     print(f"shadow_event_run_dir={payload['shadow_event_run_dir']}")
+    if "market_observer_evidence_preview_status" in payload:
+        print(
+            "market_observer_evidence_preview_status="
+            f"{payload['market_observer_evidence_preview_status']}"
+        )
     print("broker_writes=0 order_submission=0 executor=none")
     print("no_order_submitted=true")
 
@@ -333,6 +620,11 @@ def main(argv: list[str] | None = None) -> int:
         decision_run_dir,
         execution_plan_run_dir,
     )
+    market_observer_sidecar = resolve_market_observer_evidence_sidecar(
+        args=args,
+        output_dir=output_dir,
+        candidate=candidate,
+    )
 
     chain_summary = build_chain_summary(
         args=args,
@@ -343,6 +635,7 @@ def main(argv: list[str] | None = None) -> int:
         candidate=candidate,
         decision_preview=decision_preview,
         execution_plan_preview=execution_plan_preview,
+        market_observer_sidecar=market_observer_sidecar,
     )
     run_finished_at = candidate_runner.utc_now()
     manifest = build_chain_manifest(
@@ -350,11 +643,14 @@ def main(argv: list[str] | None = None) -> int:
         run_id=run_id,
         output_dir=output_dir,
         chain_summary=chain_summary,
+        market_observer_sidecar=market_observer_sidecar,
         run_started_at=run_started_at,
         run_finished_at=run_finished_at,
     )
 
     if args.write_files:
+        if market_observer_sidecar.enabled and market_observer_sidecar.path is not None:
+            write_json(output_dir / MARKET_OBSERVER_EVIDENCE_PREVIEW_JSON, market_observer_sidecar.to_payload())
         write_json(output_dir / CHAIN_SUMMARY_JSON, chain_summary)
         write_jsonl(output_dir / CHAIN_SUMMARY_JSONL, chain_summary)
         write_json(output_dir / MANIFEST_JSON, manifest)
