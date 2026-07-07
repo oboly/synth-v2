@@ -83,6 +83,8 @@ EXTENDED_ABOVE_MA
 SPIKE_COOLING
 ```
 
+A+ factor names `breathline_phase` and `breathline_direction` remain correct and must not be renamed. `model_variant="8.5D_breathline"` remains an A+ model identifier.
+
 Correct labels:
 
 | Content | Label |
@@ -102,6 +104,7 @@ Correct labels:
 4. UI labels must reflect the producing layer.
 5. `market_observer` must not become a shadow decision gate or executor.
 6. Only `decision_gate` may combine market context with account state.
+7. Implementation bundles touching local sensors, Breathline research, fib maps, observer, breadth, or external overlays must cite this document and the relevant specific contract.
 
 ## Canonical Data Flow
 
