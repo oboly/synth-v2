@@ -256,9 +256,21 @@ P0-B scope is intentionally narrower than the future observer contract:
 Implementation status:
 
 - implemented as `MarketObserverEvidencePreview` only
-- not attached to the live-like shadow chain yet
+- attachable to the live-like shadow chain only as an explicit opt-in sidecar
+- default heartbeat behavior remains unchanged when the sidecar is not enabled
 - no runtime consumer, no observer snapshot, no shared generic
   `evidence_refs` contract
+
+Sidecar attachment rules:
+
+- caller must enable `--include-market-observer-evidence-preview`
+- caller must provide the canonical asset class explicitly
+- caller may choose the canonical regime source grain with
+  `--canonical-regime-interval` (default `4h`)
+- canonical asset class and canonical regime interval are caller-provided only,
+  not inferred
+- missing, ambiguous, malformed, or DB-unavailable canonical evidence is
+  recorded as unavailable sidecar evidence and does not alter chain behavior
 
 Required P0-B provenance shape for every emitted preview value:
 
@@ -301,7 +313,9 @@ Explicitly deferred beyond P0-B:
 
 ```text
 src/research/market_observer_evidence_preview_v1.py
+src/research/run_live_like_shadow_chain_v1.py
 tests/test_market_observer_evidence_preview_v1.py
+tests/test_live_like_shadow_chain_market_observer_evidence_preview_v1.py
 docs/research/market_observer_measured_input_inventory_v1.md
 docs/research/live_like_shadow_chain_v1.md
 ```
