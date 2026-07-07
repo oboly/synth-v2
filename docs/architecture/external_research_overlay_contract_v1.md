@@ -12,7 +12,7 @@ External research may contain structural maps, catalyst observations, money-flow
 
 External research is not a substitute for public market data, internally rebuilt structure, canonical regime observations, account-aware permission, execution planning, or broker execution.
 
-`source_confidence_prior` and `synth_validation_status` are distinct. A source may have a high confidence prior while its Synth validation remains unvalidated.
+`source_confidence_prior` and `synth_validation_status` are distinct.
 
 ## Allowed Overlay Types
 
@@ -36,22 +36,56 @@ No type implies `BUY_READY`, `SELL_READY`, sizing, allocation, stop placement, o
 Each record requires:
 
 - `overlay_id`, `overlay_type`, `asset_or_scope`
-- `source_name`, `source_artifact_ref`, `source_published_at_utc` or `UNKNOWN`, `ingested_at_utc`
+- `source_name`, `source_artifact_ref`, `ingested_at_utc`
+- `source_published_at_utc` or `UNKNOWN`
+- `source_event_at_utc` or `UNKNOWN`
+- `market_observation_asof_utc` or `UNKNOWN`
+- `timestamp_quality`
 - `source_venue`, `source_pair`, `source_timeframe`, `source_quote_currency` or `UNKNOWN`
-- `source_confidence_prior`
-- `verification_status`
-- `synth_validation_status`
-- `freshness_state`
-- `expiry_policy`
-- `evidence_note`
+- `source_confidence_prior`, `verification_status`, `synth_validation_status`
+- `freshness_state`, `expiry_policy`, `evidence_note`
 
 Price-level records also require `level_role`, source level/zone, runtime currency, conversion method and FX as-of when available, `anchor_definition` or `UNKNOWN`, and map provenance: `EXTERNAL`, `INTERNAL_REBUILT`, or `UNVERIFIED`.
+
+## Timestamp Semantics
+
+One artifact can have three different relevant times:
+
+- `source_published_at_utc`: when the article/note became available.
+- `source_event_at_utc`: when its underlying interview, meeting, video, or research call happened.
+- `market_observation_asof_utc`: when its price, signal, chart, flow, or factual market claim was observed.
+
+For price, technical-signal, map, and flow currentness, freshness is derived from `market_observation_asof_utc`, **not** publication time.
+
+### `timestamp_quality`
+
+```text
+EXACT
+INFERRED
+PARTIAL
+CONFLICTING
+UNKNOWN
+```
+
+A newer article must never refresh an older market snapshot. A source can be new as an artifact while its embedded technical claim is stale.
+
+When an article contains claims with different market as-of times, create separate overlay assertions/subrecords. Do not store a historical chart reading and a future timing thesis as one current-market record.
+
+Example:
+
+```text
+source_published_at_utc: 2026-07-07
+source_event_at_utc: 2026-06-06
+market_observation_asof_utc: 2026-06-06
+```
+
+The price/signal claim ages from June 6; a July/August timing-window hypothesis receives its own explicit expiry policy.
 
 ## Verification and Freshness Are Separate
 
 ### `verification_status`
 
-Verification answers whether source facts were checked. It must not change merely because an overlay becomes old.
+Verification answers whether source facts were checked. It does not change merely because an overlay becomes old.
 
 ```text
 SOURCE_RECORDED
@@ -71,8 +105,6 @@ MEASURED_MARKET_CONFIRMED
 MEASURED_MARKET_REJECTED
 ```
 
-A factual catalyst can remain `VERIFIED_FACTUAL_EVENT` while its implied forecast remains `UNVALIDATED` or later `MEASURED_MARKET_REJECTED`.
-
 ### `freshness_state`
 
 Freshness answers whether an overlay is current enough to influence present observation.
@@ -85,17 +117,18 @@ EXPIRED
 UNKNOWN
 ```
 
-Expiry must never erase verification or validation history. A UI must be able to show `VERIFIED_FACTUAL_EVENT + STALE` and `MEASURED_MARKET_CONFIRMED + EXPIRED`.
+Expiry never erases verification or validation history. A UI must represent `VERIFIED_FACTUAL_EVENT + STALE` and `MEASURED_MARKET_CONFIRMED + EXPIRED`.
 
 ## Freshness and Expiry Policy
 
-- flow snapshot: expires after its declared observation window
-- catalyst: remains historically verified; its impact context ages or expires unless refreshed
-- intraday map: expires on invalidation, rebuild, or declared elapsed window
+- flow snapshot: expires after its declared observation window, measured from market as-of
+- catalyst: remains historically verified; its impact context ages/expires unless refreshed
+- intraday map: expires on invalidation, rebuild, or declared elapsed window, measured from market as-of
 - medium/long-horizon map: remains visible with explicit aging
 - narrative thesis: remains archived until independently refreshed
+- timing-window hypothesis: exposes its source/event time and an explicit expiry/review window
 
-`UNKNOWN` freshness lowers confidence and must not inherit freshness from current market data.
+`UNKNOWN` freshness lowers confidence and must not inherit freshness from current market data or a newer publication timestamp.
 
 ## Fibo Map Separation
 
@@ -105,7 +138,7 @@ Preserve source levels unchanged; store FX conversion separately; keep external 
 
 ## Observer Usage
 
-A future observer may expose overlay descriptions such as:
+A future observer may expose:
 
 ```text
 FLOW_SUPPORTIVE
@@ -117,24 +150,18 @@ OVERLAY_CONFLICT
 NO_CURRENT_OVERLAY
 ```
 
-It may not emit trade commands from an overlay. Measured context and overlay context remain separately inspectable.
-
-```text
-external map: reclaim zone
-measured market: no reclaim confirmation yet
-```
-
-That disagreement is evidence, not a reason to overwrite either source.
+It may not emit trade commands. Measured context and overlay context remain separately inspectable.
 
 ## Outcome Validation
 
 Validation records touch/reach time, reaction, maximum adverse excursion, target/invalidation order, time-to-target, horizon-aligned return/MFE/MAE, measured confirmation, and overlap handling.
 
-Broad long-horizon zones must not be marked failed solely because a short validation window passed.
+Use `market_observation_asof_utc` as the outcome anchor unless a more specific event timestamp is recorded.
 
 ## Forbidden Shortcuts
 
 ```text
+publication timestamp    -> freshness override for older market observation
 external fib target       -> sell order
 external support zone     -> buy order
 flow snapshot             -> automatic selection bonus
