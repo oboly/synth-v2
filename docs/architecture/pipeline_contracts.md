@@ -12,12 +12,14 @@ Navigation availability is not trade permission.
 
 Market-context modules describe market structure only. Account permission, execution intent, and broker actions belong to separate layers.
 
+A `MarketObserverSnapshot` is market observation, not trade permission.
+
 ## Layer responsibilities
 
 | Layer | Modules | Responsibility | Must not do |
 |---|---|---|---|
 | market_data | `src/market_data/` | Candles, ticker/current price, volume, freshness, symbol normalization | Account logic, scoring, ladders, orders |
-| market_context / features | `src/market_context/`, `src/features/`, `src/measurement/` | Market-only deterministic feature objects | Account state, orders, decision_gate, execution planning, broker calls |
+| market_context / features | `src/market_context/`, `src/features/`, `src/measurement/` | Market-only deterministic feature objects, market navigation, canonical regime forwarding, future market-observer aggregation | Account state, orders, decision_gate, execution planning, broker calls |
 | selection_engine | `src/selection/` | Market-only ranking and setup classification | Balances, exposure, open orders, broker calls |
 | decision_gate | `src/decision_gate/` | Account-aware permission checks | Fibs, local MA/ATR context, impulse, timing, order placement |
 | execution_planner | `src/execution_planner/` | Execution intent and proposed plans only | Broker calls, market feature calculation, permission bypass |
@@ -57,6 +59,8 @@ Pipeline dependencies must flow one way:
       -> executor / agents / execution
       -> broker / exchange
 
+`market_observer` is an aggregate inside `market_context / features`; it is not an additional execution layer.
+
 UI/reporting may read prepared payloads, but must not calculate market features or create hidden order behavior.
 
 ## Forbidden imports
@@ -73,7 +77,7 @@ UI/reporting may read prepared payloads, but must not calculate market features 
 
 ## MarketNavigationState contract
 
-`MarketNavigationState` is the top-level market-context aggregate object.
+`MarketNavigationState` is the top-level symbol-level market-context aggregate object.
 
 It must be account-agnostic and market-only.
 
@@ -92,6 +96,35 @@ It aggregates:
 
 `computed_at_utc` must be an ISO-8601 UTC string so the object is JSON-safe without a custom serializer.
 
+## MarketObserverSnapshot contract
+
+`MarketObserverSnapshot` is the future market-wide / cross-symbol aggregate object. It belongs inside `market_context`; it does not replace `MarketNavigationState`.
+
+It may aggregate:
+
+    canonical global and asset-class regime context
+    BTC structure and range state
+    ETH relative-strength state
+    alt breadth and participation state
+    sector leadership and rotation state
+    per-symbol descriptive setup context
+    external research overlay references
+    freshness, warnings, and evidence references
+
+It must remain account-agnostic, market-only, evidence-linked, and descriptive.
+
+It must not:
+
+    grant permission
+    emit BUY or SELL commands
+    emit allocation or sizing
+    create execution intent
+    call a broker
+    overwrite canonical regime observations
+    silently treat external research as measured market truth
+
+The canonical contract is `docs/architecture/market_observer_contract_v1.md`.
+
 ## Always-emitted rule
 
 Every candidate/card must be able to emit a `MarketNavigationState`.
@@ -104,6 +137,8 @@ If data is unavailable, stale, or unreliable, emit explicit sentinel states:
 
 Do not return `None` in place of market navigation.
 
+A future market observer must follow the same explicit-state rule. It must emit an evidence/freshness downgrade rather than silently invent a market-wide conclusion.
+
 ## Navigation vs permission
 
 These are market observations:
@@ -111,6 +146,8 @@ These are market observations:
     navigation_regime = BULLISH
     timing_state = PULLBACK_ENTRY_ZONE
     timing_state = RECLAIM_CONFIRMED
+    rotation_observation_state = SELECTIVE_ROTATION
+    alt_breadth_state = EXPANDING_SELECTIVELY
 
 They do not mean:
 
@@ -133,6 +170,8 @@ Completed or exhausted targets mean the old target lifecycle is complete. They d
 A stale or exhausted fib map should trigger a refresh attempt when market data allows it.
 
 A map rebuild must not automatically cancel, replace, or submit orders. It may emit warnings for human review.
+
+External level maps remain external overlays until a dedicated builder or validation lane establishes their relation to an internal map. A chart zoom change does not create a new map by itself.
 
 ## Canonical market-context states
 
@@ -196,3 +235,5 @@ Do not do these from market-context, docs, tests, or rendering work:
 All live execution requires explicit user action, broker write permission, decision_gate re-check, idempotency, and executor boundary.
 
 For SHORT / MEDIUM / LONG horizon ownership and the A+ / universal Breathline strategy contract, see `docs/architecture/multi_horizon_aplus_breathline_strategy_contract_v1.md`.
+
+For future cross-market observation ownership, see `docs/architecture/market_observer_contract_v1.md`.
