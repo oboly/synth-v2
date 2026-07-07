@@ -3,8 +3,7 @@ from __future__ import annotations
 import ast
 import io
 import sys
-from datetime import UTC, datetime
-from decimal import Decimal
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -12,20 +11,19 @@ import pytest
 
 from src.reporting import native_short_map_ledger_health_report_v1 as report_mod
 from src.reporting import run_native_short_map_ledger_health_report_v1 as runner
-from src.market_data.native_short_map_lifecycle_v1 import (
-    NativeShortMapGenerationEvent,
-    NativeShortMapGenerationEventType,
-    NativeShortMapLifecycleEvent,
-    NativeShortMapLifecycleEventType,
-    NativeShortMapRecord,
-    NativeShortMapScopeKey,
-)
+from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapScopeKey
 
 KEY = NativeShortMapScopeKey(venue="bitvavo", symbol="BTC")
 T0 = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
 T1 = datetime(2026, 1, 1, 4, 0, tzinfo=UTC)
 T2 = datetime(2026, 1, 1, 8, 0, tzinfo=UTC)
 T3 = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+
+# A deliberately ancient map-geometry vintage timestamp. Used to prove that
+# immutable map publication timestamps no longer drive health freshness: a
+# ten-year-old current_map_published_at_utc must not, by itself, make a
+# CURRENT_EVALUATION projection row NEEDS_REVIEW.
+ANCIENT_MAP_PUBLISHED_AT = datetime(2016, 1, 1, tzinfo=UTC)
 
 
 def _scope_row(
@@ -49,105 +47,93 @@ def _scope_row(
     }
 
 
-def _map_record(
+def _status_row(
     *,
-    map_id: int = 9001,
-    published_at_utc: datetime = T1,
-    structure_hash: str = "hash-a",
-    attempt_id: str = "attempt-1",
-    previous_map_id: int | None = None,
-    source_primary_candle_ts_utc: datetime | None = T1,
-    source_support_candle_ts_utc: datetime | None = T1,
-    invalidation_price: Decimal | None = Decimal("10000"),
-) -> NativeShortMapRecord:
-    return NativeShortMapRecord(
-        map_id=map_id,
-        key=KEY,
-        published_at_utc=published_at_utc,
-        structure_hash=structure_hash,
-        generator_name="native_short_map_materializer_v1",
-        generator_version="0.1",
-        fib_model_name="native_short_fib_context_v1",
-        fib_model_version="0.1",
-        published_generation_attempt_id=attempt_id,
-        previous_map_id=previous_map_id,
-        anchor_low_ts_utc=T0,
-        anchor_low_price=Decimal("9000"),
-        anchor_high_ts_utc=T1,
-        anchor_high_price=Decimal("11000"),
-        target_levels_json="[]",
-        invalidation_price=invalidation_price,
-        invalidation_rule="CLOSE_BELOW_ANCHOR_LOW",
-        source_primary_candle_ts_utc=source_primary_candle_ts_utc,
-        source_support_candle_ts_utc=source_support_candle_ts_utc,
-        source_primary_candle_count=100,
-        source_support_candle_count=100,
+    scope_status_code: str = "CURRENT_EVALUATION",
+    scope_status_reason_code: str | None = None,
+    map_lifecycle_state: str = "MAP_ACTIVE",
+    observation_freshness_state: str = "OBSERVATION_CURRENT",
+    source_freshness_state: str | None = "SOURCE_CURRENT",
+    actionability_state: str = "ACTIONABLE_ACTIVE_MAP",
+    current_map_id: int | None = 9001,
+    current_map_cycle_id: str | None = "cycle-1",
+    current_map_published_at_utc: datetime | None = ANCIENT_MAP_PUBLISHED_AT,
+    current_map_structure_hash: str | None = "hash-a",
+    latest_generation_event_id: int | None = 1,
+    latest_lifecycle_event_id: int | None = 1,
+    latest_observation_id: int | None = 42,
+    latest_run_id: int | None = 7,
+    latest_observed_at_utc: datetime | None = T3,
+    next_expected_evaluation_at_utc: datetime | None = T3 + timedelta(hours=1),
+    observation_overdue_after_utc: datetime | None = T3 + timedelta(hours=2),
+    primary_latest_candle_ts_utc: datetime | None = T3,
+    supporting_latest_candle_ts_utc: datetime | None = T3,
+    primary_source_freshness_limit_seconds: int | None = 12 * 3600,
+    supporting_source_freshness_limit_seconds: int | None = 3 * 3600,
+    cadence_contract_version: str | None = "v1",
+    projection_as_of_utc: datetime = T3,
+    rebuilt_at_utc: datetime = T3,
+    status_payload_json: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "scope_status_id": 1,
+        "venue": KEY.venue,
+        "symbol": KEY.symbol,
+        "quote_currency": KEY.quote_currency,
+        "fib_trading_horizon": KEY.fib_trading_horizon,
+        "primary_interval": KEY.primary_interval,
+        "supporting_interval": KEY.supporting_interval,
+        "scope_support_state": "SUPPORTED",
+        "scope_status_code": scope_status_code,
+        "scope_status_reason_code": scope_status_reason_code,
+        "map_lifecycle_state": map_lifecycle_state,
+        "observation_freshness_state": observation_freshness_state,
+        "source_freshness_state": source_freshness_state,
+        "actionability_state": actionability_state,
+        "current_map_id": current_map_id,
+        "current_map_cycle_id": current_map_cycle_id,
+        "current_map_published_at_utc": current_map_published_at_utc,
+        "current_map_structure_hash": current_map_structure_hash,
+        "latest_generation_event_id": latest_generation_event_id,
+        "latest_lifecycle_event_id": latest_lifecycle_event_id,
+        "latest_observation_id": latest_observation_id,
+        "latest_run_id": latest_run_id,
+        "latest_observed_at_utc": latest_observed_at_utc,
+        "next_expected_evaluation_at_utc": next_expected_evaluation_at_utc,
+        "observation_overdue_after_utc": observation_overdue_after_utc,
+        "primary_latest_candle_ts_utc": primary_latest_candle_ts_utc,
+        "supporting_latest_candle_ts_utc": supporting_latest_candle_ts_utc,
+        "primary_source_freshness_limit_seconds": primary_source_freshness_limit_seconds,
+        "supporting_source_freshness_limit_seconds": supporting_source_freshness_limit_seconds,
+        "cadence_contract_version": cadence_contract_version,
+        "projection_as_of_utc": projection_as_of_utc,
+        "status_payload_json": status_payload_json,
+        "rebuilt_at_utc": rebuilt_at_utc,
+    }
+
+
+def _configuration_unavailable_row(**overrides: Any) -> dict[str, Any]:
+    base = _status_row(
+        scope_status_code="CONFIGURATION_UNAVAILABLE",
+        scope_status_reason_code="NO_ELIGIBLE_CADENCE_CONFIG",
+        observation_freshness_state="OBSERVATION_CONFIGURATION_UNAVAILABLE",
+        source_freshness_state=None,
+        actionability_state="BLOCKED_CONFIGURATION",
+        next_expected_evaluation_at_utc=None,
+        observation_overdue_after_utc=None,
+        primary_source_freshness_limit_seconds=None,
+        supporting_source_freshness_limit_seconds=None,
+        cadence_contract_version=None,
+        status_payload_json='{"reason_code": "NO_ELIGIBLE_CADENCE_CONFIG"}',
     )
-
-
-def _gen_event(
-    *,
-    generation_event_id: int,
-    attempt_id: str = "attempt-1",
-    event_type: NativeShortMapGenerationEventType,
-    event_ts_utc: datetime = T1,
-    map_id: int | None = None,
-    reason_code: str | None = None,
-) -> NativeShortMapGenerationEvent:
-    return NativeShortMapGenerationEvent(
-        generation_event_id=generation_event_id,
-        key=KEY,
-        attempt_id=attempt_id,
-        event_type=event_type,
-        event_ts_utc=event_ts_utc,
-        map_id=map_id,
-        reason_code=reason_code,
-    )
-
-
-def _lifecycle_event(
-    *,
-    lifecycle_event_id: int,
-    map_id: int,
-    event_type: NativeShortMapLifecycleEventType,
-    event_ts_utc: datetime = T2,
-    successor_map_id: int | None = None,
-) -> NativeShortMapLifecycleEvent:
-    return NativeShortMapLifecycleEvent(
-        lifecycle_event_id=lifecycle_event_id,
-        map_id=map_id,
-        event_type=event_type,
-        event_ts_utc=event_ts_utc,
-        successor_map_id=successor_map_id,
-    )
-
-
-def _healthy_chain(map_id: int = 9001, attempt_id: str = "attempt-1") -> list[NativeShortMapGenerationEvent]:
-    return [
-        _gen_event(
-            generation_event_id=1,
-            attempt_id=attempt_id,
-            event_type=NativeShortMapGenerationEventType.ATTEMPT_STARTED,
-            event_ts_utc=T1,
-        ),
-        _gen_event(
-            generation_event_id=2,
-            attempt_id=attempt_id,
-            event_type=NativeShortMapGenerationEventType.PUBLISHED,
-            event_ts_utc=T1,
-            map_id=map_id,
-        ),
-    ]
+    base.update(overrides)
+    return base
 
 
 def _build(
     *,
     scope_rows: list[dict[str, Any]],
-    maps: list[NativeShortMapRecord],
-    generation_events: list[NativeShortMapGenerationEvent],
-    lifecycle_events: list[NativeShortMapLifecycleEvent],
-    latest_primary_candle_ts_utc: datetime | None = T1,
-    latest_support_candle_ts_utc: datetime | None = T1,
+    scope_status_row: dict[str, Any] | None,
 ):
     return report_mod.build_ledger_health_report(
         venue=KEY.venue,
@@ -158,54 +144,21 @@ def _build(
         supporting_interval=KEY.supporting_interval,
         generated_at_utc=T3,
         scope_rows=scope_rows,
-        maps=maps,
-        generation_events=generation_events,
-        lifecycle_events=lifecycle_events,
-        latest_primary_candle_ts_utc=latest_primary_candle_ts_utc,
-        latest_support_candle_ts_utc=latest_support_candle_ts_utc,
+        scope_status_row=scope_status_row,
     )
 
 
 # ---------------------------------------------------------------------------
-# Healthy canary state
-# ---------------------------------------------------------------------------
-
-
-def test_healthy_canonical_btc_like_state_is_healthy() -> None:
-    map_record = _map_record()
-    report = _build(
-        scope_rows=[_scope_row()],
-        maps=[map_record],
-        generation_events=_healthy_chain(),
-        lifecycle_events=[
-            _lifecycle_event(
-                lifecycle_event_id=1,
-                map_id=map_record.map_id,
-                event_type=NativeShortMapLifecycleEventType.ACTIVATED,
-            )
-        ],
-    )
-    assert report.scope_status == report_mod.SCOPE_STATUS_SUPPORTED
-    assert report.lifecycle_state == "MAP_ACTIVE"
-    assert report.active_map_id == map_record.map_id
-    assert report.active_map_resolution_status == report_mod.ACTIVE_MAP_RESOLUTION_SINGLE
-    assert report.generation_chain_integrity_status == report_mod.CHAIN_STATUS_OK
-    assert report.source_freshness_state == report_mod.FRESHNESS_CURRENT
-    assert report.overall_health_status == report_mod.OVERALL_HEALTH_HEALTHY
-    assert report.overall_health_reason_codes == []
-
-
-# ---------------------------------------------------------------------------
-# Scope states
+# Scope registration states (unchanged: scope-inventory concern, not the
+# projection's job per contract)
 # ---------------------------------------------------------------------------
 
 
 def test_missing_scope() -> None:
-    report = _build(scope_rows=[], maps=[], generation_events=[], lifecycle_events=[])
+    report = _build(scope_rows=[], scope_status_row=None)
     assert report.scope_status == report_mod.SCOPE_STATUS_MISSING
     assert report.scope_row_count == 0
-    assert report.lifecycle_evaluated is False
-    assert report.lifecycle_state == "NOT_EVALUATED"
+    assert report.projection_status == report_mod.PROJECTION_STATUS_NOT_EVALUATED
     assert report.overall_health_status == report_mod.OVERALL_HEALTH_NEEDS_REVIEW
     assert "SCOPE_MISSING" in report.overall_health_reason_codes
 
@@ -213,13 +166,10 @@ def test_missing_scope() -> None:
 def test_not_applicable_scope() -> None:
     report = _build(
         scope_rows=[_scope_row(state="NOT_APPLICABLE", reason_code="ASSET_NOT_ENABLED")],
-        maps=[],
-        generation_events=[],
-        lifecycle_events=[],
+        scope_status_row=None,
     )
     assert report.scope_status == report_mod.SCOPE_STATUS_NOT_APPLICABLE
-    assert report.lifecycle_evaluated is True
-    assert report.lifecycle_state == "MAP_NOT_APPLICABLE"
+    assert report.projection_status == report_mod.PROJECTION_STATUS_NOT_EVALUATED
     assert report.overall_health_status == report_mod.OVERALL_HEALTH_NOT_APPLICABLE
     assert report.overall_health_reason_codes == []
 
@@ -227,13 +177,10 @@ def test_not_applicable_scope() -> None:
 def test_duplicate_canonical_scope_same_state_is_ambiguous() -> None:
     report = _build(
         scope_rows=[_scope_row(scope_id=1), _scope_row(scope_id=2)],
-        maps=[],
-        generation_events=[],
-        lifecycle_events=[],
+        scope_status_row=None,
     )
     assert report.scope_row_count == 2
     assert report.scope_status == report_mod.SCOPE_STATUS_AMBIGUOUS
-    assert report.lifecycle_evaluated is False
     assert "SCOPE_AMBIGUOUS" in report.overall_health_reason_codes
 
 
@@ -243,244 +190,248 @@ def test_duplicate_canonical_scope_conflicting_states() -> None:
             _scope_row(scope_id=1, state="SUPPORTED"),
             _scope_row(scope_id=2, state="NOT_APPLICABLE"),
         ],
-        maps=[],
-        generation_events=[],
-        lifecycle_events=[],
+        scope_status_row=None,
     )
     assert report.scope_status == report_mod.SCOPE_STATUS_CONFLICTING
     assert "SCOPE_CONFLICTING" in report.overall_health_reason_codes
 
 
 # ---------------------------------------------------------------------------
-# Active map resolution
+# Required PR A3 projection-consumption scenarios
 # ---------------------------------------------------------------------------
 
 
-def test_no_active_map() -> None:
-    report = _build(scope_rows=[_scope_row()], maps=[], generation_events=[], lifecycle_events=[])
-    assert report.lifecycle_state == "MAP_REBUILD_REQUIRED"
-    assert report.active_map_resolution_status == report_mod.ACTIVE_MAP_RESOLUTION_NO_ACTIVE_MAP
-    assert report.active_map_id is None
-    assert report.generation_chain_integrity_status == report_mod.CHAIN_STATUS_NO_ACTIVE_MAP
-    assert report.source_freshness_state == report_mod.FRESHNESS_NO_ACTIVE_MAP
-    assert "LIFECYCLE_STATE_MAP_REBUILD_REQUIRED" in report.overall_health_reason_codes
+def test_current_evaluation_is_healthy() -> None:
+    report = _build(scope_rows=[_scope_row()], scope_status_row=_status_row())
+    assert report.projection_status == report_mod.PROJECTION_STATUS_FOUND
+    assert report.scope_status_code == "CURRENT_EVALUATION"
+    assert report.overall_health_status == report_mod.OVERALL_HEALTH_HEALTHY
+    assert report.overall_health_reason_codes == []
 
 
-def test_ambiguous_active_map_projection() -> None:
-    map_a = _map_record(map_id=1, published_at_utc=T1, attempt_id="attempt-a")
-    map_b = _map_record(map_id=2, published_at_utc=T2, attempt_id="attempt-b")
+def test_current_evaluation_forwards_projection_fields() -> None:
+    row = _status_row(
+        current_map_id=12345,
+        current_map_cycle_id="cycle-forwarded",
+        current_map_published_at_utc=datetime(2018, 6, 1, tzinfo=UTC),
+        current_map_structure_hash="structure-forwarded",
+        latest_run_id=88,
+        latest_observation_id=99,
+        latest_observed_at_utc=T2,
+        next_expected_evaluation_at_utc=T3,
+        observation_overdue_after_utc=T3 + timedelta(minutes=30),
+        primary_latest_candle_ts_utc=T1,
+        supporting_latest_candle_ts_utc=T2,
+        primary_source_freshness_limit_seconds=43200,
+        supporting_source_freshness_limit_seconds=10800,
+        cadence_contract_version="cadence-forwarded",
+        projection_as_of_utc=T3,
+        rebuilt_at_utc=T3 + timedelta(seconds=5),
+        status_payload_json='{"source": "projection"}',
+    )
+    report = _build(scope_rows=[_scope_row()], scope_status_row=row)
+    assert report.scope_status_code == "CURRENT_EVALUATION"
+    assert report.map_lifecycle_state == "MAP_ACTIVE"
+    assert report.observation_freshness_state == "OBSERVATION_CURRENT"
+    assert report.source_freshness_state == "SOURCE_CURRENT"
+    assert report.actionability_state == "ACTIONABLE_ACTIVE_MAP"
+    assert report.current_map_id == 12345
+    assert report.current_map_cycle_id == "cycle-forwarded"
+    assert report.current_map_published_at_utc == datetime(2018, 6, 1, tzinfo=UTC)
+    assert report.current_map_structure_hash == "structure-forwarded"
+    assert report.latest_run_id == 88
+    assert report.latest_observation_id == 99
+    assert report.latest_observed_at_utc == T2
+    assert report.next_expected_evaluation_at_utc == T3
+    assert report.observation_overdue_after_utc == T3 + timedelta(minutes=30)
+    assert report.primary_latest_candle_ts_utc == T1
+    assert report.supporting_latest_candle_ts_utc == T2
+    assert report.primary_source_freshness_limit_seconds == 43200
+    assert report.supporting_source_freshness_limit_seconds == 10800
+    assert report.cadence_contract_version == "cadence-forwarded"
+    assert report.projection_as_of_utc == T3
+    assert report.projection_rebuilt_at_utc == T3 + timedelta(seconds=5)
+    assert report.status_payload_json == '{"source": "projection"}'
+
+
+def test_configuration_unavailable_is_distinct_from_source_and_observation_states() -> None:
+    report = _build(scope_rows=[_scope_row()], scope_status_row=_configuration_unavailable_row())
+    assert report.scope_status_code == "CONFIGURATION_UNAVAILABLE"
+    assert report.actionability_state == "BLOCKED_CONFIGURATION"
+    assert report.observation_freshness_state == "OBSERVATION_CONFIGURATION_UNAVAILABLE"
+    assert report.source_freshness_state is None
+    assert report.overall_health_status == report_mod.OVERALL_HEALTH_NEEDS_REVIEW
+    assert report.overall_health_reason_codes == ["SCOPE_STATUS_CONFIGURATION_UNAVAILABLE"]
+    # Never reported as source-unavailable, source-stale, or observation-overdue.
+    assert "SCOPE_STATUS_SOURCE_UNAVAILABLE" not in report.overall_health_reason_codes
+    assert "SCOPE_STATUS_SOURCE_STALE" not in report.overall_health_reason_codes
+    assert "SCOPE_STATUS_OBSERVATION_OVERDUE" not in report.overall_health_reason_codes
+    # Independently known map/lifecycle facts are still retained.
+    assert report.current_map_id == 9001
+    assert report.map_lifecycle_state == "MAP_ACTIVE"
+
+
+def test_source_stale() -> None:
     report = _build(
         scope_rows=[_scope_row()],
-        maps=[map_a, map_b],
-        generation_events=_healthy_chain(map_id=1, attempt_id="attempt-a")
-        + _healthy_chain(map_id=2, attempt_id="attempt-b"),
-        lifecycle_events=[],
+        scope_status_row=_status_row(
+            scope_status_code="SOURCE_STALE",
+            source_freshness_state="SOURCE_STALE",
+        ),
     )
-    assert report.active_map_resolution_status == report_mod.ACTIVE_MAP_RESOLUTION_AMBIGUOUS
-    assert report.active_map_candidate_ids == [1, 2]
-    assert "AMBIGUOUS_ACTIVE_MAP_CANDIDATES" in report.overall_health_reason_codes
+    assert report.scope_status_code == "SOURCE_STALE"
+    assert report.source_freshness_state == "SOURCE_STALE"
+    assert report.overall_health_status == report_mod.OVERALL_HEALTH_NEEDS_REVIEW
+    assert report.overall_health_reason_codes == ["SCOPE_STATUS_SOURCE_STALE"]
 
 
-# ---------------------------------------------------------------------------
-# Generation-chain integrity
-# ---------------------------------------------------------------------------
-
-
-def test_missing_attempt_started() -> None:
-    map_record = _map_record()
+def test_source_unavailable() -> None:
     report = _build(
         scope_rows=[_scope_row()],
-        maps=[map_record],
-        generation_events=[
-            _gen_event(
-                generation_event_id=1,
-                event_type=NativeShortMapGenerationEventType.PUBLISHED,
-                map_id=map_record.map_id,
-            )
-        ],
-        lifecycle_events=[
-            _lifecycle_event(
-                lifecycle_event_id=1,
-                map_id=map_record.map_id,
-                event_type=NativeShortMapLifecycleEventType.ACTIVATED,
-            )
-        ],
+        scope_status_row=_status_row(
+            scope_status_code="SOURCE_UNAVAILABLE",
+            source_freshness_state="SOURCE_UNAVAILABLE",
+            primary_latest_candle_ts_utc=None,
+            supporting_latest_candle_ts_utc=None,
+        ),
     )
-    assert report.generation_chain_integrity_status == report_mod.CHAIN_STATUS_ATTEMPT_STARTED_MISSING
-    assert "GENERATION_CHAIN_ATTEMPT_STARTED_MISSING" in report.overall_health_reason_codes
+    assert report.scope_status_code == "SOURCE_UNAVAILABLE"
+    assert report.source_freshness_state == "SOURCE_UNAVAILABLE"
+    assert report.overall_health_status == report_mod.OVERALL_HEALTH_NEEDS_REVIEW
+    assert report.overall_health_reason_codes == ["SCOPE_STATUS_SOURCE_UNAVAILABLE"]
 
 
-def test_missing_published() -> None:
-    map_record = _map_record()
+def test_observation_overdue() -> None:
     report = _build(
         scope_rows=[_scope_row()],
-        maps=[map_record],
-        generation_events=[
-            _gen_event(
-                generation_event_id=1,
-                event_type=NativeShortMapGenerationEventType.ATTEMPT_STARTED,
-            )
-        ],
-        lifecycle_events=[
-            _lifecycle_event(
-                lifecycle_event_id=1,
-                map_id=map_record.map_id,
-                event_type=NativeShortMapLifecycleEventType.ACTIVATED,
-            )
-        ],
+        scope_status_row=_status_row(
+            scope_status_code="OBSERVATION_OVERDUE",
+            observation_freshness_state="OBSERVATION_OVERDUE",
+        ),
     )
-    assert report.generation_chain_integrity_status == report_mod.CHAIN_STATUS_PUBLISHED_EVENT_MISSING
-    assert "GENERATION_CHAIN_PUBLISHED_EVENT_MISSING" in report.overall_health_reason_codes
+    assert report.scope_status_code == "OBSERVATION_OVERDUE"
+    assert report.observation_freshness_state == "OBSERVATION_OVERDUE"
+    # Source can still be current even while observation is overdue -- these
+    # are stored separately, never conflated.
+    assert report.source_freshness_state == "SOURCE_CURRENT"
+    assert report.overall_health_status == report_mod.OVERALL_HEALTH_NEEDS_REVIEW
+    assert report.overall_health_reason_codes == ["SCOPE_STATUS_OBSERVATION_OVERDUE"]
 
 
-def test_published_map_id_mismatch() -> None:
-    map_record = _map_record(map_id=9001)
+def test_map_invalidated() -> None:
     report = _build(
         scope_rows=[_scope_row()],
-        maps=[map_record],
-        generation_events=[
-            _gen_event(
-                generation_event_id=1,
-                event_type=NativeShortMapGenerationEventType.ATTEMPT_STARTED,
-            ),
-            _gen_event(
-                generation_event_id=2,
-                event_type=NativeShortMapGenerationEventType.PUBLISHED,
-                map_id=4242,
-            ),
-        ],
-        lifecycle_events=[
-            _lifecycle_event(
-                lifecycle_event_id=1,
-                map_id=map_record.map_id,
-                event_type=NativeShortMapLifecycleEventType.ACTIVATED,
-            )
-        ],
+        scope_status_row=_status_row(
+            scope_status_code="MAP_INVALIDATED",
+            map_lifecycle_state="MAP_INVALIDATED",
+            actionability_state="TERMINAL_MAP",
+        ),
     )
-    assert report.generation_chain_integrity_status == report_mod.CHAIN_STATUS_PUBLISHED_MAP_ID_MISMATCH
-    assert "GENERATION_CHAIN_PUBLISHED_MAP_ID_MISMATCH" in report.overall_health_reason_codes
+    assert report.scope_status_code == "MAP_INVALIDATED"
+    assert report.map_lifecycle_state == "MAP_INVALIDATED"
+    assert report.overall_health_status == report_mod.OVERALL_HEALTH_NEEDS_REVIEW
+    assert report.overall_health_reason_codes == ["SCOPE_STATUS_MAP_INVALIDATED"]
 
 
-# ---------------------------------------------------------------------------
-# Source freshness
-# ---------------------------------------------------------------------------
-
-
-def test_missing_primary_source_timestamp() -> None:
-    map_record = _map_record(source_primary_candle_ts_utc=None)
+def test_map_completed() -> None:
     report = _build(
         scope_rows=[_scope_row()],
-        maps=[map_record],
-        generation_events=_healthy_chain(),
-        lifecycle_events=[
-            _lifecycle_event(
-                lifecycle_event_id=1,
-                map_id=map_record.map_id,
-                event_type=NativeShortMapLifecycleEventType.ACTIVATED,
-            )
-        ],
+        scope_status_row=_status_row(
+            scope_status_code="MAP_COMPLETED",
+            map_lifecycle_state="MAP_COMPLETED",
+            actionability_state="TERMINAL_MAP",
+        ),
     )
-    assert report.primary_source_freshness_state == report_mod.FRESHNESS_MISSING
-    assert report.source_freshness_state == report_mod.FRESHNESS_MISSING
-    assert "SOURCE_FRESHNESS_MISSING" in report.overall_health_reason_codes
+    assert report.scope_status_code == "MAP_COMPLETED"
+    assert report.map_lifecycle_state == "MAP_COMPLETED"
+    assert report.overall_health_status == report_mod.OVERALL_HEALTH_NEEDS_REVIEW
+    assert report.overall_health_reason_codes == ["SCOPE_STATUS_MAP_COMPLETED"]
 
 
-def test_missing_supporting_source_timestamp() -> None:
-    map_record = _map_record(source_support_candle_ts_utc=None)
+def test_missing_projection_row_is_not_fabricated_healthy() -> None:
+    """A SUPPORTED scope with no native_short_scope_status_v1 row must be an
+    explicit, observable report state -- never defaulted to healthy."""
+    report = _build(scope_rows=[_scope_row()], scope_status_row=None)
+    assert report.projection_status == report_mod.PROJECTION_STATUS_MISSING
+    assert report.scope_status_code is None
+    assert report.overall_health_status == report_mod.OVERALL_HEALTH_NEEDS_REVIEW
+    assert report.overall_health_reason_codes == ["PROJECTION_ROW_MISSING"]
+
+
+def test_invalid_projection_row_is_not_fabricated_healthy() -> None:
+    """A row that fails contract validation must also never present as
+    healthy -- surfaced distinctly from a missing row."""
+    bad_row = _status_row()
+    bad_row["scope_status_code"] = "NOT_A_REAL_CODE"
+    report = _build(scope_rows=[_scope_row()], scope_status_row=bad_row)
+    assert report.projection_status == report_mod.PROJECTION_STATUS_INVALID
+    assert report.overall_health_status == report_mod.OVERALL_HEALTH_NEEDS_REVIEW
+    assert report.overall_health_reason_codes == ["PROJECTION_ROW_INVALID"]
+
+
+def test_immutable_map_published_at_does_not_drive_health_freshness() -> None:
+    """Proof: an ancient current_map_published_at_utc (map geometry vintage)
+    must not, by itself, make a CURRENT_EVALUATION projection NEEDS_REVIEW.
+    The field is reported for identity/context only."""
     report = _build(
         scope_rows=[_scope_row()],
-        maps=[map_record],
-        generation_events=_healthy_chain(),
-        lifecycle_events=[
-            _lifecycle_event(
-                lifecycle_event_id=1,
-                map_id=map_record.map_id,
-                event_type=NativeShortMapLifecycleEventType.ACTIVATED,
-            )
-        ],
+        scope_status_row=_status_row(current_map_published_at_utc=ANCIENT_MAP_PUBLISHED_AT),
     )
-    assert report.supporting_source_freshness_state == report_mod.FRESHNESS_MISSING
-    assert report.source_freshness_state == report_mod.FRESHNESS_MISSING
+    assert report.current_map_published_at_utc == ANCIENT_MAP_PUBLISHED_AT
+    assert report.overall_health_status == report_mod.OVERALL_HEALTH_HEALTHY
 
 
-def test_stale_primary_source() -> None:
-    map_record = _map_record(source_primary_candle_ts_utc=T1)
+def test_report_does_not_reimplement_projection_precedence_from_lower_fields() -> None:
+    """The report trusts the projection's top-level status code instead of
+    rebuilding precedence from lifecycle/source/observation fields."""
     report = _build(
         scope_rows=[_scope_row()],
-        maps=[map_record],
-        generation_events=_healthy_chain(),
-        lifecycle_events=[
-            _lifecycle_event(
-                lifecycle_event_id=1,
-                map_id=map_record.map_id,
-                event_type=NativeShortMapLifecycleEventType.ACTIVATED,
-            )
-        ],
-        latest_primary_candle_ts_utc=T2,
+        scope_status_row=_status_row(
+            scope_status_code="CURRENT_EVALUATION",
+            map_lifecycle_state="MAP_COMPLETED",
+            observation_freshness_state="OBSERVATION_OVERDUE",
+            source_freshness_state="SOURCE_STALE",
+            actionability_state="TERMINAL_MAP",
+        ),
     )
-    assert report.primary_source_freshness_state == report_mod.FRESHNESS_STALE
-    assert report.source_freshness_state == report_mod.FRESHNESS_STALE
-    assert "SOURCE_FRESHNESS_STALE" in report.overall_health_reason_codes
+    assert report.scope_status_code == "CURRENT_EVALUATION"
+    assert report.map_lifecycle_state == "MAP_COMPLETED"
+    assert report.observation_freshness_state == "OBSERVATION_OVERDUE"
+    assert report.source_freshness_state == "SOURCE_STALE"
+    assert report.actionability_state == "TERMINAL_MAP"
+    assert report.overall_health_status == report_mod.OVERALL_HEALTH_HEALTHY
+    assert report.overall_health_reason_codes == []
 
 
-def test_stale_supporting_source() -> None:
-    map_record = _map_record(source_support_candle_ts_utc=T1)
-    report = _build(
-        scope_rows=[_scope_row()],
-        maps=[map_record],
-        generation_events=_healthy_chain(),
-        lifecycle_events=[
-            _lifecycle_event(
-                lifecycle_event_id=1,
-                map_id=map_record.map_id,
-                event_type=NativeShortMapLifecycleEventType.ACTIVATED,
-            )
-        ],
-        latest_support_candle_ts_utc=T2,
-    )
-    assert report.supporting_source_freshness_state == report_mod.FRESHNESS_STALE
-    assert report.source_freshness_state == report_mod.FRESHNESS_STALE
+def test_report_source_no_longer_reads_map_or_ledger_join_tables() -> None:
+    """Static proof that the ad-hoc ledger joins this PR removes are gone.
+
+    Checks for an actual SQL FROM-reference, not incidental prose mentions
+    (the module docstring explains the PR A3 correction and legitimately
+    names the removed tables in that historical-context sentence)."""
+    root = Path(__file__).parent.parent
+    src = (root / "src/reporting/native_short_map_ledger_health_report_v1.py").read_text()
+    for forbidden_table in (
+        "native_short_map_v1",
+        "native_short_map_generation_event_v1",
+        "native_short_map_lifecycle_event_v1",
+        "obs_market_candle",
+    ):
+        assert f"FROM {forbidden_table}" not in src, f"health report still queries {forbidden_table}"
+    assert "FROM native_short_scope_status_v1" in src
 
 
-def test_unavailable_latest_candle_context() -> None:
-    map_record = _map_record()
-    report = _build(
-        scope_rows=[_scope_row()],
-        maps=[map_record],
-        generation_events=_healthy_chain(),
-        lifecycle_events=[
-            _lifecycle_event(
-                lifecycle_event_id=1,
-                map_id=map_record.map_id,
-                event_type=NativeShortMapLifecycleEventType.ACTIVATED,
-            )
-        ],
-        latest_primary_candle_ts_utc=None,
-        latest_support_candle_ts_utc=None,
-    )
-    assert report.primary_source_freshness_state == report_mod.FRESHNESS_UNAVAILABLE
-    assert report.source_freshness_state == report_mod.FRESHNESS_UNAVAILABLE
-    assert "SOURCE_FRESHNESS_UNAVAILABLE" in report.overall_health_reason_codes
-
-
-def test_stored_source_ahead_of_available_context() -> None:
-    map_record = _map_record(source_primary_candle_ts_utc=T2)
-    report = _build(
-        scope_rows=[_scope_row()],
-        maps=[map_record],
-        generation_events=_healthy_chain(),
-        lifecycle_events=[
-            _lifecycle_event(
-                lifecycle_event_id=1,
-                map_id=map_record.map_id,
-                event_type=NativeShortMapLifecycleEventType.ACTIVATED,
-            )
-        ],
-        latest_primary_candle_ts_utc=T1,
-    )
-    assert report.primary_source_freshness_state == report_mod.FRESHNESS_AHEAD_OR_INCONSISTENT
-    assert report.source_freshness_state == report_mod.FRESHNESS_AHEAD_OR_INCONSISTENT
-    assert "SOURCE_FRESHNESS_AHEAD_OR_INCONSISTENT" in report.overall_health_reason_codes
+def test_runner_source_no_longer_documents_raw_table_reads() -> None:
+    root = Path(__file__).parent.parent
+    src = (root / "src/reporting/run_native_short_map_ledger_health_report_v1.py").read_text()
+    assert "native_short_scope_status_v1" in src
+    for forbidden_table in (
+        "native_short_map_v1",
+        "native_short_map_generation_event_v1",
+        "native_short_map_lifecycle_event_v1",
+        "obs_market_candle",
+    ):
+        assert forbidden_table not in src
 
 
 # ---------------------------------------------------------------------------
@@ -507,25 +458,6 @@ class _FakeCursor:
     def execute(self, sql: str, params: Any = None) -> None:
         normalized = " ".join(sql.split())
         self._conn.executions.append((normalized, params))
-        if "FROM native_short_map_generation_event_v1" in sql:
-            venue, symbol, quote_currency, horizon, primary, support = params
-            self._rows = [
-                dict(row)
-                for row in self._conn.generation_event_rows
-                if row["venue"] == venue
-                and row["symbol"] == symbol
-                and row["quote_currency"] == quote_currency
-                and row["fib_trading_horizon"] == horizon
-                and row["primary_interval"] == primary
-                and row["supporting_interval"] == support
-            ]
-            return
-        if "FROM native_short_map_lifecycle_event_v1" in sql:
-            map_ids = set(params)
-            self._rows = [
-                dict(row) for row in self._conn.lifecycle_event_rows if row["map_id"] in map_ids
-            ]
-            return
         if "FROM native_short_map_scope_v1" in sql:
             venue, symbol, quote_currency, horizon, primary, support = params
             self._rows = [
@@ -539,11 +471,11 @@ class _FakeCursor:
                 and row["supporting_interval"] == support
             ]
             return
-        if "FROM native_short_map_v1" in sql:
+        if "FROM native_short_scope_status_v1" in sql:
             venue, symbol, quote_currency, horizon, primary, support = params
             self._rows = [
                 dict(row)
-                for row in self._conn.map_rows
+                for row in self._conn.scope_status_rows
                 if row["venue"] == venue
                 and row["symbol"] == symbol
                 and row["quote_currency"] == quote_currency
@@ -551,16 +483,6 @@ class _FakeCursor:
                 and row["primary_interval"] == primary
                 and row["supporting_interval"] == support
             ]
-            return
-        if "FROM obs_market_candle" in sql:
-            venue, interval_code, symbol = params
-            matches = [
-                dict(row)
-                for row in self._conn.candle_rows
-                if row["venue"] == venue and row["interval_code"] == interval_code and row["symbol"] == symbol
-            ]
-            matches.sort(key=lambda row: row["close_ts_utc"], reverse=True)
-            self._rows = matches[:1]
             return
         raise AssertionError(f"Unexpected SQL: {normalized}")
 
@@ -579,16 +501,10 @@ class _FakeConn:
         self,
         *,
         scope_rows: list[dict[str, Any]] | None = None,
-        map_rows: list[dict[str, Any]] | None = None,
-        generation_event_rows: list[dict[str, Any]] | None = None,
-        lifecycle_event_rows: list[dict[str, Any]] | None = None,
-        candle_rows: list[dict[str, Any]] | None = None,
+        scope_status_rows: list[dict[str, Any]] | None = None,
     ) -> None:
         self.scope_rows = list(scope_rows or [])
-        self.map_rows = list(map_rows or [])
-        self.generation_event_rows = list(generation_event_rows or [])
-        self.lifecycle_event_rows = list(lifecycle_event_rows or [])
-        self.candle_rows = list(candle_rows or [])
+        self.scope_status_rows = list(scope_status_rows or [])
         self.executions: list[tuple[str, Any]] = []
         self.commit_count = 0
         self.rollback_count = 0
@@ -607,53 +523,6 @@ class _FakeConn:
         self.close_count += 1
 
 
-def _map_row_dict(
-    *,
-    map_id: int = 9001,
-    attempt_id: str = "attempt-1",
-    published_at_utc: datetime = T1,
-    source_primary_candle_ts_utc: datetime | None = T1,
-    source_support_candle_ts_utc: datetime | None = T1,
-) -> dict[str, Any]:
-    return {
-        "map_id": map_id,
-        "venue": KEY.venue,
-        "symbol": KEY.symbol,
-        "quote_currency": KEY.quote_currency,
-        "fib_trading_horizon": KEY.fib_trading_horizon,
-        "primary_interval": KEY.primary_interval,
-        "supporting_interval": KEY.supporting_interval,
-        "structure_hash": "hash-a",
-        "generator_name": "native_short_map_materializer_v1",
-        "generator_version": "0.1",
-        "fib_model_name": "native_short_fib_context_v1",
-        "fib_model_version": "0.1",
-        "published_generation_attempt_id": attempt_id,
-        "previous_map_id": None,
-        "previous_map_cycle_id": None,
-        "map_cycle_id": None,
-        "market_snapshot_ts_utc": None,
-        "published_at_utc": published_at_utc,
-        "anchor_low_ts_utc": T0,
-        "anchor_low_price": Decimal("9000"),
-        "anchor_high_ts_utc": T1,
-        "anchor_high_price": Decimal("11000"),
-        "retrace_ratio": None,
-        "retrace_price": None,
-        "fib_ratios_json": "[]",
-        "target_levels_json": "[]",
-        "invalidation_price": Decimal("8500"),
-        "invalidation_rule": "CLOSE_BELOW_ANCHOR_LOW",
-        "source_primary_candle_ts_utc": source_primary_candle_ts_utc,
-        "source_support_candle_ts_utc": source_support_candle_ts_utc,
-        "source_primary_ref": "ref",
-        "source_support_ref": "ref",
-        "source_primary_candle_count": 100,
-        "source_support_candle_count": 100,
-        "map_payload_json": "{}",
-    }
-
-
 def test_fetch_scope_rows_preserves_duplicates() -> None:
     conn = _FakeConn(scope_rows=[_scope_row(scope_id=1), _scope_row(scope_id=2)])
     rows = report_mod.fetch_scope_rows(conn, KEY)
@@ -661,107 +530,22 @@ def test_fetch_scope_rows_preserves_duplicates() -> None:
     assert not any(sql.startswith("INSERT") or sql.startswith("UPDATE") or sql.startswith("DELETE") for sql, _ in conn.executions)
 
 
-def test_fetch_maps_for_scope_tolerates_null_source_counts() -> None:
-    row = _map_row_dict()
-    row["source_primary_candle_count"] = None
-    conn = _FakeConn(map_rows=[row])
-    maps = report_mod.fetch_maps_for_scope(conn, KEY)
-    assert len(maps) == 1
-    assert maps[0].source_primary_candle_count is None
+def test_fetch_scope_status_row_returns_none_when_absent() -> None:
+    conn = _FakeConn(scope_status_rows=[])
+    assert report_mod.fetch_scope_status_row(conn, KEY) is None
 
 
-def test_fetch_latest_closed_candle_ts_returns_max() -> None:
-    conn = _FakeConn(
-        candle_rows=[
-            {"venue": "bitvavo", "symbol": "BTC", "interval_code": "4h", "close_ts_utc": T1},
-            {"venue": "bitvavo", "symbol": "BTC", "interval_code": "4h", "close_ts_utc": T2},
-        ]
-    )
-    latest = report_mod.fetch_latest_closed_candle_ts(
-        conn, venue="bitvavo", symbol="BTC", interval_code="4h"
-    )
-    assert latest == T2
+def test_fetch_scope_status_row_returns_the_row() -> None:
+    conn = _FakeConn(scope_status_rows=[_status_row()])
+    row = report_mod.fetch_scope_status_row(conn, KEY)
+    assert row is not None
+    assert row["scope_status_code"] == "CURRENT_EVALUATION"
 
 
 def test_generate_report_for_symbol_full_healthy_wiring() -> None:
     conn = _FakeConn(
         scope_rows=[_scope_row()],
-        map_rows=[_map_row_dict()],
-        generation_event_rows=[
-            {
-                "generation_event_id": 1,
-                "venue": KEY.venue,
-                "symbol": KEY.symbol,
-                "quote_currency": KEY.quote_currency,
-                "fib_trading_horizon": KEY.fib_trading_horizon,
-                "primary_interval": KEY.primary_interval,
-                "supporting_interval": KEY.supporting_interval,
-                "generation_attempt_id": "attempt-1",
-                "event_type": "ATTEMPT_STARTED",
-                "event_ts_utc": T1,
-                "reason_code": None,
-                "map_id": None,
-                "trigger_type": None,
-                "candidate_map_cycle_id": None,
-                "candidate_previous_map_id": None,
-                "candidate_primary_lifecycle_state": None,
-                "candidate_current_map_status": None,
-                "latest_primary_close_ts_utc": None,
-                "latest_support_close_ts_utc": None,
-                "latest_primary_close_price": None,
-                "source_primary_ref": None,
-                "source_support_ref": None,
-                "source_primary_candle_count": None,
-                "source_support_candle_count": None,
-            },
-            {
-                "generation_event_id": 2,
-                "venue": KEY.venue,
-                "symbol": KEY.symbol,
-                "quote_currency": KEY.quote_currency,
-                "fib_trading_horizon": KEY.fib_trading_horizon,
-                "primary_interval": KEY.primary_interval,
-                "supporting_interval": KEY.supporting_interval,
-                "generation_attempt_id": "attempt-1",
-                "event_type": "PUBLISHED",
-                "event_ts_utc": T1,
-                "reason_code": None,
-                "map_id": 9001,
-                "trigger_type": None,
-                "candidate_map_cycle_id": None,
-                "candidate_previous_map_id": None,
-                "candidate_primary_lifecycle_state": None,
-                "candidate_current_map_status": None,
-                "latest_primary_close_ts_utc": None,
-                "latest_support_close_ts_utc": None,
-                "latest_primary_close_price": None,
-                "source_primary_ref": None,
-                "source_support_ref": None,
-                "source_primary_candle_count": None,
-                "source_support_candle_count": None,
-            },
-        ],
-        lifecycle_event_rows=[
-            {
-                "lifecycle_event_id": 1,
-                "map_id": 9001,
-                "lifecycle_event_type": "ACTIVATED",
-                "event_ts_utc": T2,
-                "reason_code": None,
-                "successor_map_id": None,
-                "observed_current_price": None,
-                "observed_max_high_since_anchor": None,
-                "observed_min_low_since_anchor": None,
-                "latest_primary_close_ts_utc": None,
-                "latest_support_close_ts_utc": None,
-                "observer_name": None,
-                "observer_version": None,
-            }
-        ],
-        candle_rows=[
-            {"venue": "bitvavo", "symbol": "BTC", "interval_code": "4h", "close_ts_utc": T1},
-            {"venue": "bitvavo", "symbol": "BTC", "interval_code": "1h", "close_ts_utc": T1},
-        ],
+        scope_status_rows=[_status_row()],
     )
     report = report_mod.generate_report_for_symbol(
         conn, venue=KEY.venue, symbol=KEY.symbol, generated_at_utc=T3
@@ -774,16 +558,31 @@ def test_generate_report_for_symbol_full_healthy_wiring() -> None:
     )
 
 
+def test_generate_report_for_symbol_does_not_query_projection_when_not_applicable() -> None:
+    """No scope_status lookup should be attempted for a non-SUPPORTED scope."""
+    conn = _FakeConn(
+        scope_rows=[_scope_row(state="NOT_APPLICABLE")],
+        scope_status_rows=[_status_row()],  # present in DB but must not be read
+    )
+    report = report_mod.generate_report_for_symbol(
+        conn, venue=KEY.venue, symbol=KEY.symbol, generated_at_utc=T3
+    )
+    assert report.projection_status == report_mod.PROJECTION_STATUS_NOT_EVALUATED
+    assert not any("native_short_scope_status_v1" in sql for sql, _ in conn.executions)
+
+
 # ---------------------------------------------------------------------------
 # CLI: STARTED/RESULT/FINISHED, ordering, no writes
 # ---------------------------------------------------------------------------
 
 
 def test_cli_emits_started_result_finished_in_sorted_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    btc_conn = _FakeConn(scope_rows=[_scope_row()])
+    btc_conn = _FakeConn(scope_rows=[_scope_row()], scope_status_rows=[_status_row()])
     eth_key_row = _scope_row()
     eth_key_row["symbol"] = "ETH"
-    eth_conn = _FakeConn(scope_rows=[eth_key_row])
+    eth_status_row = _status_row()
+    eth_status_row["symbol"] = "ETH"
+    eth_conn = _FakeConn(scope_rows=[eth_key_row], scope_status_rows=[eth_status_row])
 
     order = ["BTC", "ETH"]
     conns = {"BTC": btc_conn, "ETH": eth_conn}
@@ -808,7 +607,7 @@ def test_cli_emits_started_result_finished_in_sorted_order(monkeypatch: pytest.M
 
 
 def test_cli_never_writes_and_always_rolls_back(monkeypatch: pytest.MonkeyPatch) -> None:
-    conn = _FakeConn(scope_rows=[_scope_row()])
+    conn = _FakeConn(scope_rows=[_scope_row()], scope_status_rows=[_status_row()])
     monkeypatch.setattr(runner, "get_connection", lambda: conn)
 
     stdout = io.StringIO()
@@ -832,11 +631,6 @@ def test_cli_never_writes_and_always_rolls_back(monkeypatch: pytest.MonkeyPatch)
 # Static safety checks
 # ---------------------------------------------------------------------------
 
-MODULE_PATHS = [
-    "src/reporting/native_short_map_ledger_health_report_v1.py",
-    "src/reporting/run_native_short_map_ledger_health_report_v1.py",
-]
-
 # This lane now lives in src/reporting itself, so bare "src.reporting" cannot
 # be forbidden outright (the runner legitimately imports its sibling core
 # module). Same-lane imports are checked precisely in
@@ -859,17 +653,81 @@ FORBIDDEN_IMPORT_PREFIXES = (
     "src.market_data.run_native_short_map_scope_seed_canary_v1",
     "src.market_data.native_short_fib_context_v1",
     "src.market_data.run_native_short_fib_context_v1",
+    "src.market_data.native_short_scope_status_materializer_v1",
+    "src.market_data.native_short_scope_status_projection_v1",
 )
 
-# The only market_data dependency this lane may take: the shared, DB-free
-# lifecycle contract (dataclasses/enums + the pure projection function). It
-# is not a market-data producer/acquisition module.
-ALLOWED_MARKET_DATA_IMPORT = "src.market_data.native_short_map_lifecycle_v1"
+# The only market_data dependencies this lane may take: shared, DB-free
+# contract modules (dataclasses/enums, no I/O). Neither is a market-data
+# producer/acquisition module.
+ALLOWED_MARKET_DATA_IMPORTS = {
+    "src.market_data.native_short_map_lifecycle_v1",
+    "src.market_data.native_short_scope_status_v1",
+}
 
 THIS_LANE_MODULES = {
     "src.reporting.native_short_map_ledger_health_report_v1",
     "src.reporting.run_native_short_map_ledger_health_report_v1",
 }
+
+MODULE_PATHS = [
+    "src/reporting/native_short_map_ledger_health_report_v1.py",
+    "src/reporting/run_native_short_map_ledger_health_report_v1.py",
+]
+
+
+def test_lifecycle_contract_module_has_no_db_access() -> None:
+    """The one shared market_data dependency must stay a pure, DB-free contract."""
+    root = Path(__file__).parent.parent
+    src = (root / "src/market_data/native_short_map_lifecycle_v1.py").read_text()
+    for token in ("cur.execute", "pymysql", "get_connection", "INSERT INTO", "UPDATE ", "DELETE FROM"):
+        assert token not in src
+
+
+def test_scope_status_contract_module_has_no_db_access() -> None:
+    """The projection contract module this PR newly depends on must also stay
+    a pure, DB-free validation-only type module."""
+    root = Path(__file__).parent.parent
+    src = (root / "src/market_data/native_short_scope_status_v1.py").read_text()
+    for token in ("cur.execute", "pymysql", "get_connection", "INSERT INTO", "UPDATE ", "DELETE FROM"):
+        assert token not in src
+
+
+def test_no_market_data_producer_imports_this_reporting_lane() -> None:
+    """Reverse-direction check: no market_data producer may import this lane."""
+    root = Path(__file__).parent.parent
+    producer_paths = [
+        "src/market_data/native_short_map_materializer_v1.py",
+        "src/market_data/run_native_short_map_materializer_v1.py",
+        "src/market_data/run_native_short_map_scope_seed_canary_v1.py",
+        "src/market_data/native_short_fib_context_v1.py",
+        "src/market_data/native_short_map_lifecycle_v1.py",
+        "src/market_data/native_short_scope_status_v1.py",
+        "src/market_data/native_short_scope_status_projection_v1.py",
+        "src/market_data/native_short_scope_status_materializer_v1.py",
+    ]
+    for rel_path in producer_paths:
+        path = root / rel_path
+        if not path.exists():
+            continue
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            else:
+                continue
+            for name in names:
+                assert not name.startswith("src.reporting"), (
+                    f"{rel_path} (market_data producer) imports src.reporting module {name}"
+                )
+
+
+def test_no_report_lane_files_remain_under_market_data() -> None:
+    root = Path(__file__).parent.parent
+    assert not (root / "src/market_data/native_short_map_ledger_health_report_v1.py").exists()
+    assert not (root / "src/market_data/run_native_short_map_ledger_health_report_v1.py").exists()
 
 
 @pytest.mark.parametrize("rel_path", MODULE_PATHS)
@@ -916,8 +774,10 @@ def test_reporting_imports_are_limited_to_this_lane(rel_path: str) -> None:
 
 
 @pytest.mark.parametrize("rel_path", MODULE_PATHS)
-def test_market_data_dependency_is_limited_to_lifecycle_contract(rel_path: str) -> None:
-    """The only src.market_data import allowed is the DB-free lifecycle contract."""
+def test_market_data_dependency_is_limited_to_pure_contract_modules(rel_path: str) -> None:
+    """Only the two shared, DB-free contract modules may be imported from
+    src.market_data -- never a materializer, canary, runner, or projection
+    rebuild module."""
     root = Path(__file__).parent.parent
     tree = ast.parse((root / rel_path).read_text())
     for node in ast.walk(tree):
@@ -929,51 +789,9 @@ def test_market_data_dependency_is_limited_to_lifecycle_contract(rel_path: str) 
             continue
         for name in names:
             if name.startswith("src.market_data"):
-                assert name == ALLOWED_MARKET_DATA_IMPORT, (
+                assert name in ALLOWED_MARKET_DATA_IMPORTS, (
                     f"{rel_path} imports disallowed market_data module {name}"
                 )
-
-
-def test_lifecycle_contract_module_has_no_db_access() -> None:
-    """The one shared market_data dependency must stay a pure, DB-free contract."""
-    root = Path(__file__).parent.parent
-    src = (root / "src/market_data/native_short_map_lifecycle_v1.py").read_text()
-    for token in ("cur.execute", "pymysql", "get_connection", "INSERT INTO", "UPDATE ", "DELETE FROM"):
-        assert token not in src
-
-
-def test_no_market_data_producer_imports_this_reporting_lane() -> None:
-    """Reverse-direction check: no market_data producer may import this lane."""
-    root = Path(__file__).parent.parent
-    producer_paths = [
-        "src/market_data/native_short_map_materializer_v1.py",
-        "src/market_data/run_native_short_map_materializer_v1.py",
-        "src/market_data/run_native_short_map_scope_seed_canary_v1.py",
-        "src/market_data/native_short_fib_context_v1.py",
-        "src/market_data/native_short_map_lifecycle_v1.py",
-    ]
-    for rel_path in producer_paths:
-        path = root / rel_path
-        if not path.exists():
-            continue
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                names = [node.module or ""]
-            else:
-                continue
-            for name in names:
-                assert not name.startswith("src.reporting"), (
-                    f"{rel_path} (market_data producer) imports src.reporting module {name}"
-                )
-
-
-def test_no_report_lane_files_remain_under_market_data() -> None:
-    root = Path(__file__).parent.parent
-    assert not (root / "src/market_data/native_short_map_ledger_health_report_v1.py").exists()
-    assert not (root / "src/market_data/run_native_short_map_ledger_health_report_v1.py").exists()
 
 
 def _local_module_path(root: Path, module: str) -> Path | None:

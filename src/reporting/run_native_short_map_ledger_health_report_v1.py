@@ -18,10 +18,7 @@ db_writes=0
 
 Reads:
 - native_short_map_scope_v1
-- native_short_map_v1
-- native_short_map_generation_event_v1
-- native_short_map_lifecycle_event_v1
-- obs_market_candle (latest closed primary/supporting candle timestamp only)
+- native_short_scope_status_v1
 
 Writes: none.
 """
@@ -149,9 +146,11 @@ def _emit_result(report: LedgerHealthReport, *, output: str) -> None:
     else:
         print(
             f"{report.overall_health_status} symbol={report.symbol} "
-            f"scope_status={report.scope_status} lifecycle_state={report.lifecycle_state} "
-            f"active_map_id={report.active_map_id} "
-            f"generation_chain={report.generation_chain_integrity_status} "
+            f"scope_status={report.scope_status} projection_status={report.projection_status} "
+            f"scope_status_code={report.scope_status_code} "
+            f"map_lifecycle_state={report.map_lifecycle_state} "
+            f"actionability_state={report.actionability_state} "
+            f"current_map_id={report.current_map_id} "
             f"source_freshness={report.source_freshness_state} "
             f"reasons={','.join(report.overall_health_reason_codes)}"
         )
