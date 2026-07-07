@@ -2,149 +2,135 @@
 
 ## Status
 
-Design contract only. This document adds no runtime feed, parser, database table, selection behavior, decision permission, execution behavior, broker call, or order behavior.
+Design contract only. No runtime feed, parser, database table, selection behavior, decision permission, execution behavior, broker call, or order behavior is introduced here.
 
 ## Purpose
 
-External research can contain valuable structural maps, catalyst observations, money-flow snapshots, and narrative hypotheses. It must enter Synth as a traceable overlay, never as hidden market truth and never as a direct trade command.
-
-This contract governs overlay material used by future `market_observer` and research-validation lanes.
+External research may contain structural maps, catalyst observations, money-flow snapshots, and narrative hypotheses. It enters Synth as a traceable overlay, never as hidden market truth or a direct trade command.
 
 ## Hard Boundary
 
-External research is not a substitute for:
+External research is not a substitute for public market data, internally rebuilt structure, canonical regime observations, account-aware permission, execution planning, or broker execution.
 
-- public market data
-- internally rebuilt market structure
-- canonical active-regime observations
-- account-aware decision permission
-- execution planning
-- broker execution
-
-Source confidence and Synth validation are separate fields.
-
-A source may have a high user/source-confidence prior while its Synth validation status remains `UNVALIDATED`.
+`source_confidence_prior` and `synth_validation_status` are distinct. A source may have a high confidence prior while its Synth validation remains unvalidated.
 
 ## Allowed Overlay Types
 
-- `FLOW_SNAPSHOT`
-- `CATALYST_EVENT`
-- `EXTERNAL_LEVEL_MAP`
-- `SUPPORT_ZONE`
-- `RETEST_ZONE`
-- `TARGET_ZONE`
-- `INVALIDATION_ZONE`
-- `TIMING_WINDOW`
-- `NARRATIVE_THESIS`
-- `MACRO_CONTEXT`
+```text
+FLOW_SNAPSHOT
+CATALYST_EVENT
+EXTERNAL_LEVEL_MAP
+SUPPORT_ZONE
+RETEST_ZONE
+TARGET_ZONE
+INVALIDATION_ZONE
+TIMING_WINDOW
+NARRATIVE_THESIS
+MACRO_CONTEXT
+```
 
-No type implies `BUY_READY`, `SELL_READY`, position sizing, allocation, stop placement, or order intent.
+No type implies `BUY_READY`, `SELL_READY`, sizing, allocation, stop placement, or order intent.
 
 ## Required Provenance
 
-Each overlay record must carry:
+Each record requires:
 
-- `overlay_id`
-- `overlay_type`
-- `source_name`
-- `source_artifact_ref`
-- `source_published_at_utc` or `UNKNOWN`
-- `ingested_at_utc`
-- `asset_or_scope`
-- `source_venue` or `UNKNOWN`
-- `source_pair` or `UNKNOWN`
-- `source_timeframe` or `UNKNOWN`
-- `source_quote_currency` or `UNKNOWN`
+- `overlay_id`, `overlay_type`, `asset_or_scope`
+- `source_name`, `source_artifact_ref`, `source_published_at_utc` or `UNKNOWN`, `ingested_at_utc`
+- `source_venue`, `source_pair`, `source_timeframe`, `source_quote_currency` or `UNKNOWN`
 - `source_confidence_prior`
 - `verification_status`
+- `synth_validation_status`
 - `freshness_state`
 - `expiry_policy`
 - `evidence_note`
 
-For price levels, additionally require:
+Price-level records also require `level_role`, source level/zone, runtime currency, conversion method and FX as-of when available, `anchor_definition` or `UNKNOWN`, and map provenance: `EXTERNAL`, `INTERNAL_REBUILT`, or `UNVERIFIED`.
 
-- `level_role`
-- `source_level_single` or `source_zone_low` + `source_zone_high`
-- `runtime_quote_currency`
-- conversion method and FX as-of when conversion is available
-- `anchor_definition` or `UNKNOWN`
-- map provenance: `EXTERNAL`, `INTERNAL_REBUILT`, or `UNVERIFIED`
+## Verification and Freshness Are Separate
 
-## Verification States
+### `verification_status`
 
-- `SOURCE_RECORDED`
-- `PARTIALLY_VERIFIED`
-- `VERIFIED_FACTUAL_EVENT`
-- `MEASURED_MARKET_CONFIRMATION_PENDING`
-- `MEASURED_MARKET_CONFIRMED`
-- `EXPIRED`
-- `REJECTED`
+Verification answers whether source facts were checked. It must not change merely because an overlay becomes old.
 
-A factual event may be verified while its forecast, map, or market implication remains unvalidated.
+```text
+SOURCE_RECORDED
+PARTIALLY_VERIFIED
+VERIFIED_FACTUAL_EVENT
+REJECTED
+```
 
-## Freshness and Expiry
+### `synth_validation_status`
 
-An overlay must not be treated as current merely because it exists in storage.
+Synth validation answers whether the asserted market implication has been measured.
 
-Suggested policies:
+```text
+UNVALIDATED
+MEASURED_MARKET_CONFIRMATION_PENDING
+MEASURED_MARKET_CONFIRMED
+MEASURED_MARKET_REJECTED
+```
+
+A factual catalyst can remain `VERIFIED_FACTUAL_EVENT` while its implied forecast remains `UNVALIDATED` or later `MEASURED_MARKET_REJECTED`.
+
+### `freshness_state`
+
+Freshness answers whether an overlay is current enough to influence present observation.
+
+```text
+FRESH
+AGING
+STALE
+EXPIRED
+UNKNOWN
+```
+
+Expiry must never erase verification or validation history. A UI must be able to show `VERIFIED_FACTUAL_EVENT + STALE` and `MEASURED_MARKET_CONFIRMED + EXPIRED`.
+
+## Freshness and Expiry Policy
 
 - flow snapshot: expires after its declared observation window
-- catalyst event: stays historical, but impact state expires unless refreshed
-- intraday map: expires on invalidation, rebuild, or defined elapsed window
-- medium/long-horizon map: remains visible with an explicit aging state
-- narrative thesis: remains an archived hypothesis until independently refreshed
+- catalyst: remains historically verified; its impact context ages or expires unless refreshed
+- intraday map: expires on invalidation, rebuild, or declared elapsed window
+- medium/long-horizon map: remains visible with explicit aging
+- narrative thesis: remains archived until independently refreshed
 
-`UNKNOWN` freshness must lower confidence, not silently inherit fresh status from current market data.
+`UNKNOWN` freshness lowers confidence and must not inherit freshness from current market data.
 
 ## Fibo Map Separation
 
-One screenshot zoom level does not create a second map. Conversely, visually similar maps must not be merged unless their anchors, pair, venue, timeframe, and construction are known to match.
+A screenshot zoom level does not create a new map. Similar maps must not be merged unless anchors, pair, venue, timeframe, and construction match.
 
-Rules:
-
-- preserve the original source levels unchanged
-- store conversion separately from source currency
-- keep external and internal-rebuilt maps distinct
-- keep map anchors and construction method explicit or `UNKNOWN`
-- treat retracement, reclaim, extension, and ABC-wave annotations as source claims until independently reconstructed or outcome-validated
+Preserve source levels unchanged; store FX conversion separately; keep external and internal maps distinct; record anchors/construction or `UNKNOWN`; treat ABC, reclaim, retracement, and extension annotations as source claims until independently reconstructed or outcome-validated.
 
 ## Observer Usage
 
-A future market observer may attach overlay state such as:
-
-- `FLOW_SUPPORTIVE`
-- `CATALYST_ACTIVE`
-- `EXTERNAL_MAP_AVAILABLE`
-- `EXTERNAL_MAP_AGING`
-- `EXTERNAL_MAP_INVALIDATED`
-- `OVERLAY_CONFLICT`
-- `NO_CURRENT_OVERLAY`
-
-It may not emit trade commands from an overlay.
-
-Measured market context must remain separately inspectable so the UI can show:
+A future observer may expose overlay descriptions such as:
 
 ```text
-external map says: reclaim zone
-measured market says: no reclaim confirmation yet
+FLOW_SUPPORTIVE
+CATALYST_ACTIVE
+EXTERNAL_MAP_AVAILABLE
+EXTERNAL_MAP_AGING
+EXTERNAL_MAP_INVALIDATED
+OVERLAY_CONFLICT
+NO_CURRENT_OVERLAY
 ```
 
-This disagreement is useful evidence, not a reason to overwrite either source.
+It may not emit trade commands from an overlay. Measured context and overlay context remain separately inspectable.
+
+```text
+external map: reclaim zone
+measured market: no reclaim confirmation yet
+```
+
+That disagreement is evidence, not a reason to overwrite either source.
 
 ## Outcome Validation
 
-External overlays are testable research inputs. Validation must record:
+Validation records touch/reach time, reaction, maximum adverse excursion, target/invalidation order, time-to-target, horizon-aligned return/MFE/MAE, measured confirmation, and overlap handling.
 
-- touch/reach time
-- reaction after touch
-- maximum adverse excursion before reaction
-- target/invalidation order
-- time-to-target
-- return and MFE/MAE at horizon-aligned windows
-- measured confirmation present or absent
-- overlapping-event handling
-
-Broad, long-horizon zones must not be marked failed merely because a short validation window elapsed.
+Broad long-horizon zones must not be marked failed solely because a short validation window passed.
 
 ## Forbidden Shortcuts
 
