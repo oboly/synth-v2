@@ -2,23 +2,23 @@
 
 ## Status
 
-Design contract only. No runtime module, database schema, dashboard output, selection behavior, decision-gate behavior, execution-plan behavior, broker call, or order behavior is introduced by this document.
+Design contract only. No runtime module, schema, dashboard output, selection behavior, decision-gate behavior, execution-plan behavior, broker call, or order behavior is introduced here.
 
 ## Purpose
 
-`market_observer` is the market-only aggregation layer that turns already-owned observations into one explainable market snapshot.
+`market_observer` is the market-only aggregation layer that turns already-owned observations into one explainable cross-market snapshot.
 
-It is the place for the cross-market reasoning that is currently done manually:
+It aggregates context currently read manually:
 
 - BTC structure and range stability
-- ETH relative strength
-- ETH/BTC and BTC-dominance context
+- ETH relative strength and ETH/BTC
+- BTC-dominance context
 - alt breadth and participation
 - sector leadership and rotation
 - per-symbol structural context
-- external research overlays with explicit provenance
+- external overlays with explicit provenance
 
-It does not decide whether an account may trade. It does not create an order plan. It does not submit or cancel orders.
+It does not decide whether an account may trade, create an order plan, or submit/cancel orders.
 
 ## Placement
 
@@ -32,183 +32,159 @@ market_data
        -> future sector/breadth observations
        -> market_observer
   -> selection_engine
+       -> Strategy State / future HorizonStrategyState
   -> decision_gate
   -> execution_planner
   -> executor / broker
 ```
 
-`executor / agents` remains reserved for order handling. A market observer must never be implemented under `src/executor/`, `src/execution/`, or an order-handling agent namespace.
+`executor / agents` remains reserved for order handling. Market observation must never be implemented in `src/executor/`, `src/execution/`, or an order-handling agent namespace.
 
 ## Hard Boundaries
 
 `market_observer` may:
 
 - read public market data and deterministic market-context features
-- read canonical regime observations without redefining them
-- read symbol-level `MarketNavigationState` values
-- read future sector and breadth observations
+- forward canonical regime observations without redefining them
+- read symbol-level `MarketNavigationState`
+- read future sector/breadth observations
 - attach external research as explicitly non-canonical overlays
 - emit descriptive state, freshness, confidence, warnings, and evidence references
 - write research-only artifacts in a future shadow implementation
 
-`market_observer` must not:
+It must not:
 
-- read account balances, positions, sleeves, open orders, or account tables
+- read balances, positions, sleeves, open orders, or account tables
+- combine market context with account state
 - grant or deny trade permission
-- produce `BUY`, `SELL`, allocation, sizing, stop, target, or order labels
+- produce `BUY`, `SELL`, sizing, allocation, stop, target, or order labels
 - create execution intent or an execution plan
 - import decision-gate, execution-planner, executor, broker, or account modules
-- silently convert an external source claim into measured market truth
-- replace the canonical `active_regime_observation` source
-- apply hidden score weights or hidden policy thresholds
+- silently convert an external claim into measured market truth
+- replace `active_regime_observation`
+- apply hidden score weights or policy thresholds
 
 ## Input Channels
 
-### 1. Measured Market Context
+### Measured Market Context
 
-Measured context is deterministic, market-only, timestamped, and sourced from canonical or explicitly versioned feature builders.
-
-Expected inputs include:
+Deterministic, market-only, timestamped inputs from canonical or versioned feature builders:
 
 - canonical global and asset-class regime observations
 - BTC range, breakout, breakdown-risk, and volatility observations
-- ETH relative-strength observations
-- breadth and participation observations
-- sector snapshots and sector-leadership observations when implemented
+- ETH relative strength
+- breadth and participation
+- future sector snapshots/leadership
 - symbol-level `MarketNavigationState`
-- fib-map state and confidence, not undocumented manually inferred levels
-- local MA/ATR, impulse-health, timing, freshness, and warning states
+- fib-map state/confidence and explicitly registered map references
+- local MA/ATR, impulse, timing, freshness, and warnings
 
-### 2. External Research Overlay
+### External Research Overlay
 
-External overlay inputs may include:
+May include FFG flow snapshots, source charts/external fib maps, catalyst/news events, manually extracted zones, and source-specific narrative classifications.
 
-- FFG money-flow snapshots
-- source charts and externally supplied fib maps
-- catalyst/news events
-- manually extracted support, retest, target, and invalidation zones
-- source-specific narrative classifications
+Every overlay carries provenance, source as-of, venue/pair/timeframe when known, verification, freshness, and expiry. It never substitutes for measured context.
 
-Every overlay item must carry source provenance, source as-of time, venue/pair/timeframe when known, verification status, freshness, and expiry policy. External overlay is never a substitute for measured context.
-
-The detailed overlay boundary is defined in `external_research_overlay_contract_v1.md`.
+See `external_research_overlay_contract_v1.md`.
 
 ## Future Output Contract
 
-The future aggregate object is `MarketObserverSnapshot`.
+`MarketObserverSnapshot` requires:
 
-Required fields:
+- `schema_version`, `computed_at_utc`, `venue`, `quote_currency`, `freshness_state`
+- `canonical_global_regime`, `canonical_asset_class_regimes`
+- `rotation_observation_state`, `btc_structure_state`, `eth_relative_strength_state`, `alt_breadth_state`, `sector_rotation_states`
+- `symbol_contexts`, `external_overlay_state`, `warnings`, `evidence_refs`
 
-- `schema_version`
-- `computed_at_utc`
-- `venue`
-- `quote_currency`
-- `freshness_state`
-- `canonical_global_regime`
-- `canonical_asset_class_regimes`
-- `rotation_observation_state`
-- `btc_structure_state`
-- `eth_relative_strength_state`
-- `alt_breadth_state`
-- `sector_rotation_states`
-- `symbol_contexts`
-- `external_overlay_state`
-- `warnings`
-- `evidence_refs`
-
-`evidence_refs` must identify the input artifact or canonical observation used for every nontrivial state. A snapshot without enough evidence must downgrade its confidence/freshness rather than imply certainty.
+Every nontrivial state requires evidence references. Insufficient evidence must downgrade freshness/confidence rather than imply certainty.
 
 ## State Names
 
-These are observer descriptions, not execution labels.
+Observer labels are descriptive and distinct from canonical regime and A+ vocabulary.
 
 ### `rotation_observation_state`
 
-- `UNKNOWN`
-- `NO_ROTATION`
-- `SELECTIVE_ROTATION`
-- `ROTATION_BROADENING`
-- `BROAD_RISK_ON`
-- `FRAGILE_ROTATION`
-- `STALE`
+```text
+UNKNOWN
+NO_ROTATION
+SELECTIVE_ROTATION
+ROTATION_BROADENING
+BROAD_PARTICIPATION
+FRAGILE_ROTATION
+STALE
+```
+
+`BROAD_PARTICIPATION` describes breadth only. It is not `GLOBAL_RISK_ON` and not A+ `risk_climate=RISK_ON`.
 
 ### `btc_structure_state`
 
-- `UNKNOWN`
-- `RANGE_STABLE`
-- `RANGE_UNRESOLVED`
-- `BREAKOUT_UP`
-- `BREAKDOWN_RISK`
-- `BREAKDOWN_CONFIRMED`
-- `STALE`
+```text
+UNKNOWN
+RANGE_STABLE
+RANGE_UNRESOLVED
+BREAKOUT_UP
+BREAKDOWN_RISK
+BREAKDOWN_CONFIRMED
+STALE
+```
 
 ### `eth_relative_strength_state`
 
-- `UNKNOWN`
-- `OUTPERFORMING_BTC`
-- `NEUTRAL_TO_BTC`
-- `UNDERPERFORMING_BTC`
-- `STALE`
+```text
+UNKNOWN
+OUTPERFORMING_BTC
+NEUTRAL_TO_BTC
+UNDERPERFORMING_BTC
+STALE
+```
 
 ### `alt_breadth_state`
 
-- `UNKNOWN`
-- `NARROW`
-- `EXPANDING_SELECTIVELY`
-- `BROADENING`
-- `CONTRACTING`
-- `STALE`
+```text
+UNKNOWN
+NARROW
+EXPANDING_SELECTIVELY
+BROADENING
+CONTRACTING
+STALE
+```
 
 ### Per-symbol descriptive context
 
-A symbol context may describe states such as:
+```text
+UPTREND_CONTINUATION
+PULLBACK_AFTER_EXTENSION
+TARGET_BREAK_ACCEPTANCE_PENDING
+RECLAIM_PENDING
+RECLAIM_CONFIRMED
+INVALIDATION_RISK
+```
 
-- `UPTREND_CONTINUATION`
-- `PULLBACK_AFTER_EXTENSION`
-- `TARGET_BREAK_ACCEPTANCE_PENDING`
-- `RECLAIM_PENDING`
-- `RECLAIM_CONFIRMED`
-- `INVALIDATION_RISK`
-
-These labels remain descriptive. They do not mean that a purchase, sale, allocation, or order is allowed.
+None means purchase, sale, allocation, or order permission.
 
 ## Canonical Regime Rule
 
-The observer must forward the existing canonical global and asset-class regimes. It may add a separate `rotation_observation_state`, but it must not rename, overwrite, or synthesize replacements for canonical regime values.
+Observer forwards existing canonical global/asset-class regimes. It may add `rotation_observation_state`; it must not rename, overwrite, synthesize, or visually substitute canonical regime values.
 
-`GLOBAL_ROTATION_WINDOW` and `GLOBAL_RISK_ON` remain owned by the canonical regime source, not by the observer.
+`GLOBAL_ROTATION_WINDOW` and `GLOBAL_RISK_ON` remain owned by the canonical regime source. A+ `risk_climate` remains A+ context. UI must render these fields as separate provenance-tagged concepts.
 
 ## Fibo and External-Level Rule
 
-Fibo map ownership remains with the fib/navigation layer.
+Fibo ownership remains with its navigation/builder layer. Observer may read `FibMapState`, confidence, lifecycle, and registered map references.
 
-The observer may read:
+It must not rebuild a map without a dedicated builder, merge incompatible external maps because their visual zoom differs, or turn a target/zone into an execution instruction.
 
-- `FibMapState`
-- map confidence
-- structural lifecycle
-- explicitly registered level-map references
-
-The observer must not:
-
-- rebuild a fib map without a dedicated fib builder
-- merge incompatible external maps because their visual zoom differs
-- turn a target or extension level into a direct sell instruction
-- turn an external zone into a direct buy instruction
-
-External level maps must remain separate from internally rebuilt maps and must declare their provenance.
+External and internal maps remain separate with declared provenance.
 
 ## Horizon Rule
 
-The observer may display evidence across SHORT, MEDIUM, and LONG contexts. It does not own `HorizonStrategyState`, choose a holding horizon, or replace a horizon scorer.
+Observer may display evidence across SHORT, MEDIUM, and LONG contexts. It does not choose a holding horizon, own `HorizonStrategyState`, or replace a horizon scorer.
 
-A per-symbol observer context must preserve the source interval and any relevant horizon tag so a 15m observation is never silently represented as a MEDIUM or LONG conclusion.
+Per-symbol context preserves source interval, as-of, freshness, and explicit horizon tag when applicable. A `15m` observation cannot silently become a MEDIUM or LONG conclusion.
 
 ## Shadow-First Validation
 
-The first implementation must be shadow-only.
-
-Required sequence:
+First implementation is shadow-only.
 
 ```text
 MarketObserverSnapshot
@@ -219,24 +195,24 @@ MarketObserverSnapshot
   -> forward outcome validation
 ```
 
-The observer must first prove incremental value against baseline cohorts. Suggested comparisons include:
+Test incremental value against baselines, including:
 
-- `SELECTIVE_ROTATION` versus `NO_ROTATION`
-- `EXPANDING_SELECTIVELY` versus `NARROW`
-- `RANGE_STABLE` versus `BREAKDOWN_RISK`
-- symbol setup with and without matching sector breadth
-- external-map reaction state with and without measured confirmation
+- `SELECTIVE_ROTATION` vs `NO_ROTATION`
+- `EXPANDING_SELECTIVELY` vs `NARROW`
+- `RANGE_STABLE` vs `BREAKDOWN_RISK`
+- symbol setup with/without matching sector breadth
+- external-map reaction with/without measured confirmation
 
-No observer field may be promoted into `selection_engine` until its definition, sample rules, expected horizon, baseline, and out-of-sample outcome are documented.
+No observer field reaches `selection_engine` without documented definition, sample rules, expected horizon, baseline, and out-of-sample evidence.
 
 ## Implementation Sequence
 
-1. Docs-only contract and architecture alignment.
-2. Deterministic measured inputs only.
+1. Docs-only contract alignment.
+2. Deterministic measured inputs.
 3. Research-only snapshot writer.
-4. Shadow-chain attachment with no behavior change downstream.
-5. Outcome validation and cohort reports.
-6. Explicit feature-promotion proposal, only after evidence.
+4. Shadow-chain attachment without downstream behavior change.
+5. Outcome validation/cohort reports.
+6. Explicit evidence-led promotion proposal.
 
 ## Related Documents
 
