@@ -2,238 +2,144 @@
 
 ## Purpose
 
-This document defines the canonical layer responsibilities, allowed dependencies, forbidden dependencies, and contract rules for the Synth v2 pipeline.
+Canonical layer responsibilities, dependencies, and contract rules. This is the reference for architecture guard tests and implementation bundles.
 
-It is the reference for architecture guard tests and Claude implementation bundles.
+## Core Rules
 
-## Core rule
+- Market observation is not trade permission.
+- `MarketObserverSnapshot` is market observation, not trade permission.
+- `decision_gate` is the **only** layer allowed to combine upstream market context with account state.
+- Execution intent belongs only to `execution_planner`.
+- Broker writes belong only to executor/agent order-handling modules.
 
-Navigation availability is not trade permission.
-
-Market-context modules describe market structure only. Account permission, execution intent, and broker actions belong to separate layers.
-
-A `MarketObserverSnapshot` is market observation, not trade permission.
-
-## Layer responsibilities
+## Layer Responsibilities
 
 | Layer | Modules | Responsibility | Must not do |
 |---|---|---|---|
-| market_data | `src/market_data/` | Candles, ticker/current price, volume, freshness, symbol normalization | Account logic, scoring, ladders, orders |
-| market_context / features | `src/market_context/`, `src/features/`, `src/measurement/` | Market-only deterministic feature objects, market navigation, canonical regime forwarding, future market-observer aggregation | Account state, orders, decision_gate, execution planning, broker calls |
-| selection_engine | `src/selection/` | Market-only ranking and setup classification | Balances, exposure, open orders, broker calls |
-| decision_gate | `src/decision_gate/` | Account-aware permission checks | Fibs, local MA/ATR context, impulse, timing, order placement |
-| execution_planner | `src/execution_planner/` | Execution intent and proposed plans only | Broker calls, market feature calculation, permission bypass |
-| executor / agents | `src/executor/`, `src/execution/` | Broker/order handling, idempotency, audit, failure handling | Market scoring, feature calculation, strategy selection |
-| UI / dashboard | `apps/`, `src/reporting/` | Display payload and explicit manual user actions | Hidden order logic, market feature calculation, permission inference |
+| market_data | `src/market_data/` | Candles, price, volume, freshness, normalization | Account logic, strategy, ladders, orders |
+| market_context / features | `src/market_context/`, `src/features/`, `src/measurement/` | Market-only features, navigation, canonical-regime forwarding, future observer aggregation | Account state, permission, plans, broker calls |
+| selection_engine | `src/selection/` | Market-only ranking, setup classification, Strategy State interpretation | Account state, permission, execution, broker calls |
+| decision_gate | `src/decision_gate/` | Only account-aware permission layer | Market-feature recomputation, execution planning, broker calls |
+| execution_planner | `src/execution_planner/` | Proposed execution intent/plan after approval | Market-feature calculation, permission, broker calls |
+| executor / agents | `src/executor/`, `src/execution/` | Broker/order handling, idempotency, audit, failures | Market scoring, feature calculation, strategy selection |
+| UI / dashboard | `apps/`, `src/reporting/` | Prepared payload display and explicit manual actions | Hidden market logic, permission inference, broker writes |
 
-## Module ownership rule
+## Canonical Flow
 
-Each market-context feature must have a clear contract and must be developed through its own bounded bundle.
+```text
+market_data
+  -> market_context / features
+       -> MarketNavigationState
+       -> canonical active-regime observation
+       -> future sector/breadth observations
+       -> future MarketObserverSnapshot
+  -> selection_engine
+       -> Strategy State / future HorizonStrategyState
+  -> decision_gate
+  -> execution_planner
+  -> executor / agents
+  -> broker / exchange
+```
 
-Allowed market-context module group pattern:
+`market_observer` is an aggregate inside `market_context`; it is not a new execution layer. Strategy State is a market-only selection output, not a separate layer between selection and decision gate.
 
-    contracts/model file
-    pure builder file
-    serializer/adapter file if required
-    matching unit test file
-    one canonical docs section
+## Import and Account Boundaries
 
-Claude implementation bundles must explicitly list allowed modified files. All other files are inspect-only.
-
-Bundle 1 may only modify:
-
-    docs/architecture/pipeline_contracts.md
-    src/market_context/__init__.py
-    src/market_context/contracts_v1.py
-    tests/test_pipeline_contract_boundaries_v1.py
-
-## Allowed import direction
-
-Pipeline dependencies must flow one way:
-
-    market_data
-      -> market_context / features
-      -> selection_engine
-      -> decision_gate
-      -> execution_planner
-      -> executor / agents / execution
-      -> broker / exchange
-
-`market_observer` is an aggregate inside `market_context / features`; it is not an additional execution layer.
-
-UI/reporting may read prepared payloads, but must not calculate market features or create hidden order behavior.
-
-## Forbidden imports
-
-| Layer | Forbidden imports |
+| Layer | Forbidden imports/dependencies |
 |---|---|
-| market_data | decision_gate, execution_planner, executor, agents, execution, broker, account, balance, orders, dashboard, view, apps |
-| market_context / features | decision_gate, execution_planner, executor, agents, execution, broker, account, balance, orders, dashboard, view, apps |
-| selection_engine | decision_gate, execution_planner, executor, agents, execution, broker, account, balance, orders |
-| decision_gate | execution_planner, executor, agents, execution, broker |
-| execution_planner | executor, agents, execution, broker, market feature builders |
-| executor / agents | selection_engine, market_context feature builders, strategy scoring |
-| UI / reporting | broker write APIs, executor submit/cancel calls, decision_gate mutation, execution_planner mutation |
+| market_data | decision, planning, execution, broker, account, balance, orders, dashboard/apps |
+| market_context / features | decision, planning, execution, broker, account, balance, orders, dashboard/apps |
+| selection_engine | decision, planning, execution, broker, account, balance, orders |
+| decision_gate | execution planner, executor, broker; market-feature builders |
+| execution_planner | executor, broker, market-feature builders, selection/market context recomputation |
+| executor / agents | selection, market-context builders, strategy scoring |
+| UI / reporting | broker writes, executor submit/cancel, decision mutation, planner mutation |
 
-## MarketNavigationState contract
+No runtime module may import a shared contract from `src.research`; research code is not a neutral runtime-contract namespace.
 
-`MarketNavigationState` is the top-level symbol-level market-context aggregate object.
+## `MarketNavigationState`
 
-It must be account-agnostic and market-only.
+Top-level symbol-level market-context aggregate. It is account-agnostic and market-only.
 
-It aggregates:
+```text
+symbol
+navigation_regime
+fib_map_state
+fib_map_confidence
+local_ma_atr_state
+impulse_health_state
+timing_state
+freshness_state
+warnings
+computed_at_utc
+```
 
-    symbol
-    navigation_regime
-    fib_map_state
-    fib_map_confidence
-    local_ma_atr_state
-    impulse_health_state
-    timing_state
-    freshness_state
-    warnings
-    computed_at_utc
+`computed_at_utc` is ISO-8601 UTC.
 
-`computed_at_utc` must be an ISO-8601 UTC string so the object is JSON-safe without a custom serializer.
+## `MarketObserverSnapshot`
 
-## MarketObserverSnapshot contract
+Future market-wide/cross-symbol aggregate. It does not replace `MarketNavigationState`.
 
-`MarketObserverSnapshot` is the future market-wide / cross-symbol aggregate object. It belongs inside `market_context`; it does not replace `MarketNavigationState`.
-
-It may aggregate:
-
-    canonical global and asset-class regime context
-    BTC structure and range state
-    ETH relative-strength state
-    alt breadth and participation state
-    sector leadership and rotation state
-    per-symbol descriptive setup context
-    external research overlay references
-    freshness, warnings, and evidence references
+It may aggregate canonical global/asset-class regime, BTC structure, ETH relative strength, alt breadth, sector rotation, per-symbol context, external-overlay references, freshness, warnings, and evidence references.
 
 It must remain account-agnostic, market-only, evidence-linked, and descriptive.
 
-It must not:
+It must not read account state, grant permission, emit buy/sell/sizing/allocation labels, create execution intent, call a broker, overwrite canonical regime, or silently treat external research as measured truth.
 
-    grant permission
-    emit BUY or SELL commands
-    emit allocation or sizing
-    create execution intent
-    call a broker
-    overwrite canonical regime observations
-    silently treat external research as measured market truth
+Canonical contract: `docs/architecture/market_observer_contract_v1.md`.
 
-The canonical contract is `docs/architecture/market_observer_contract_v1.md`.
+## Explicit-State Rule
 
-## Always-emitted rule
+Every candidate/card emits `MarketNavigationState`. Data problems use explicit sentinels:
 
-Every candidate/card must be able to emit a `MarketNavigationState`.
+```text
+NO_DATA
+STALE
+LOW_CONFIDENCE
+```
 
-If data is unavailable, stale, or unreliable, emit explicit sentinel states:
+Do not return `None` for market navigation. Future observer snapshots apply the same rule: missing evidence downgrades freshness/confidence; it does not invent a conclusion.
 
-    NO_DATA
-    STALE
-    LOW_CONFIDENCE
+## Navigation vs Permission
 
-Do not return `None` in place of market navigation.
+The following are observations only:
 
-A future market observer must follow the same explicit-state rule. It must emit an evidence/freshness downgrade rather than silently invent a market-wide conclusion.
+```text
+navigation_regime = BULLISH
+timing_state = PULLBACK_ENTRY_ZONE
+timing_state = RECLAIM_CONFIRMED
+rotation_observation_state = SELECTIVE_ROTATION
+alt_breadth_state = EXPANDING_SELECTIVELY
+```
 
-## Navigation vs permission
+They do not mean allowed to buy, submit an order, or permission granted.
 
-These are market observations:
+## Fibo Lifecycle
 
-    navigation_regime = BULLISH
-    timing_state = PULLBACK_ENTRY_ZONE
-    timing_state = RECLAIM_CONFIRMED
-    rotation_observation_state = SELECTIVE_ROTATION
-    alt_breadth_state = EXPANDING_SELECTIVELY
+Target lifecycle and fib-map lifecycle are separate. A completed/exhausted target does not erase market navigation. A stale/exhausted map may request a refresh, but a rebuild may not cancel, replace, or submit orders.
 
-They do not mean:
+External maps remain overlays until a dedicated builder or validation lane establishes their relation to an internal map. A chart zoom change does not itself create a new map.
 
-    allowed to buy
-    submit a buy order
-    permission granted
+## Canonical Local States
 
-Trade permission belongs only to `decision_gate`.
+`local_ma_atr_context` is local MA/ATR context, not Breathline. `breathline` is reserved for universal market-cycle/A+ phase context.
 
-Execution intent belongs only to `execution_planner`.
+Examples:
 
-Broker writes belong only to `executor / agents`.
+```text
+Local MA/ATR: ABOVE_MA, TESTING_MA, BELOW_MA, RECLAIMING_MA, EXTENDED_ABOVE_MA, SPIKE_COOLING
+Impulse: HEALTHY_IMPULSE, EARLY_IMPULSE, EXTENDED_IMPULSE, BLOW_OFF_SPIKE, DISTRIBUTION_RISK, COOLING_PULLBACK, SECOND_BUMP_POSSIBLE, FAILED_RECLAIM
+Timing: WAIT_FOR_PULLBACK, WAIT_FOR_BREAKOUT, WAIT_FOR_RECLAIM, RECLAIM_CONFIRMED, BREAKOUT_CONFIRMED, PULLBACK_ENTRY_ZONE, NO_CHASE_EXTENDED, TOO_LATE, FAILED_RECLAIM
+```
 
-## Target lifecycle vs fib-map lifecycle
+## Live Safety
 
-Target lifecycle and fib-map lifecycle are separate.
+Market-context/docs/tests/rendering work must not deploy to Odroid, restart services, write public output, enable broker writes, submit/cancel orders, bypass `decision_gate`, or call broker APIs.
 
-Completed or exhausted targets mean the old target lifecycle is complete. They do not mean market navigation disappears.
+Live execution always requires explicit user action, broker-write permission, decision-gate re-check, idempotency, and executor boundary.
 
-A stale or exhausted fib map should trigger a refresh attempt when market data allows it.
+## Related Documents
 
-A map rebuild must not automatically cancel, replace, or submit orders. It may emit warnings for human review.
-
-External level maps remain external overlays until a dedicated builder or validation lane establishes their relation to an internal map. A chart zoom change does not create a new map by itself.
-
-## Canonical market-context states
-
-Market-context contracts must use explicit states aligned with the golden cases.
-
-Required sentinel states:
-
-    NO_DATA
-    STALE
-    LOW_CONFIDENCE
-
-`local_ma_atr_context` is local per-symbol MA/ATR trend context. It is not the future universal breathline model.
-
-`breathline` is reserved for a future universal market breathline / A+ phase model and must not be used for per-symbol MA/ATR context naming.
-
-Local MA/ATR examples:
-
-    ABOVE_MA
-    TESTING_MA
-    BELOW_MA
-    RECLAIMING_MA
-    EXTENDED_ABOVE_MA
-    SPIKE_COOLING
-
-Impulse health examples:
-
-    HEALTHY_IMPULSE
-    EARLY_IMPULSE
-    EXTENDED_IMPULSE
-    BLOW_OFF_SPIKE
-    DISTRIBUTION_RISK
-    COOLING_PULLBACK
-    SECOND_BUMP_POSSIBLE
-    FAILED_RECLAIM
-
-Timing examples:
-
-    WAIT_FOR_PULLBACK
-    WAIT_FOR_BREAKOUT
-    WAIT_FOR_RECLAIM
-    RECLAIM_CONFIRMED
-    BREAKOUT_CONFIRMED
-    PULLBACK_ENTRY_ZONE
-    NO_CHASE_EXTENDED
-    TOO_LATE
-    FAILED_RECLAIM
-
-## Live safety
-
-Do not do these from market-context, docs, tests, or rendering work:
-
-    deploy to Odroid
-    restart services
-    write to /var/www/html
-    enable broker writes
-    submit orders
-    cancel orders
-    bypass decision_gate
-    call broker APIs
-
-All live execution requires explicit user action, broker write permission, decision_gate re-check, idempotency, and executor boundary.
-
-For SHORT / MEDIUM / LONG horizon ownership and the A+ / universal Breathline strategy contract, see `docs/architecture/multi_horizon_aplus_breathline_strategy_contract_v1.md`.
-
-For future cross-market observation ownership, see `docs/architecture/market_observer_contract_v1.md`.
+- `docs/architecture/market_observer_contract_v1.md`
+- `docs/architecture/external_research_overlay_contract_v1.md`
+- `docs/architecture/multi_horizon_aplus_breathline_strategy_contract_v1.md`
