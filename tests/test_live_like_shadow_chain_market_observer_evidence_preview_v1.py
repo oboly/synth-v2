@@ -189,6 +189,12 @@ class _FakeConnection:
         self.closed += 1
 
 
+class _CloseFailConnection(_FakeConnection):
+    def close(self) -> None:
+        self.closed += 1
+        raise RuntimeError("close failed")
+
+
 def _run_chain_case(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -348,10 +354,9 @@ def test_enabled_available_sidecar_preserves_exact_preview_values_and_event_time
         ("no_source", MarketObserverEvidencePreviewNoSourceError, "NO_SOURCE"),
         ("ambiguous", MarketObserverEvidencePreviewAmbiguityError, "AMBIGUOUS"),
         ("malformed_tags", MarketObserverEvidencePreviewMalformedTagsError, "MALFORMED_TAGS"),
-        ("db_read_error", RuntimeError, "DB_READ_ERROR"),
     ],
 )
-def test_unavailable_evidence_statuses_continue_chain_and_emit_sidecar(
+def test_explicit_unavailable_evidence_statuses_continue_chain_and_emit_sidecar(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     case_name: str,
@@ -383,6 +388,108 @@ def test_unavailable_evidence_statuses_continue_chain_and_emit_sidecar(
     assert result["sidecar"] is not None
     assert result["sidecar"]["status"] == expected_status
     assert result["sidecar"]["requested_inputs"]["strategy_candidate_created_at_utc"] == FIXED_CANDIDATE_CREATED_AT
+    assert "preview" not in result["sidecar"]
+
+
+def test_get_connection_failure_emits_db_read_error_with_zero_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def get_connection_impl() -> Any:
+        raise ConnectionError("connect failed")
+
+    result = _run_chain_case(
+        monkeypatch,
+        tmp_path,
+        case_name="connection_failure",
+        cli_args=[
+            "--include-market-observer-evidence-preview",
+            "--canonical-asset-class",
+            "L1_L2",
+        ],
+        get_connection_impl=get_connection_impl,
+    )
+
+    assert result["exit_code"] == 0
+    assert result["counts"] == {"get_connection": 1, "build_preview": 0}
+    assert result["summary"]["candidate_state"] == "ENTRY_CANDIDATE"
+    assert result["summary"]["decision_state"] == "SHADOW_REVIEW"
+    assert result["summary"]["execution_plan_state"] == "PLAN_READY"
+    assert result["summary"]["market_observer_evidence_preview_status"] == "DB_READ_ERROR"
+    assert result["summary"]["market_observer_db_reads"] == 0
+    assert result["summary"]["market_observer_db_writes"] == 0
+    assert result["sidecar"] is not None
+    assert result["sidecar"]["status"] == "DB_READ_ERROR"
+    assert result["sidecar"]["db_reads"] == 0
+    assert result["sidecar"]["db_writes"] == 0
+    assert result["sidecar"]["exception_class"] == "ConnectionError"
+
+
+def test_preview_builder_query_failure_after_connection_emits_db_read_error_with_one_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_conn = _FakeConnection()
+
+    def build_preview(**kwargs: Any) -> Any:
+        raise RuntimeError("query failed")
+
+    result = _run_chain_case(
+        monkeypatch,
+        tmp_path,
+        case_name="lookup_failure",
+        cli_args=[
+            "--include-market-observer-evidence-preview",
+            "--canonical-asset-class",
+            "L1_L2",
+        ],
+        build_preview=build_preview,
+        get_connection_impl=lambda: fake_conn,
+    )
+
+    assert result["exit_code"] == 0
+    assert fake_conn.closed == 1
+    assert result["summary"]["market_observer_evidence_preview_status"] == "DB_READ_ERROR"
+    assert result["summary"]["market_observer_db_reads"] == 1
+    assert result["summary"]["market_observer_db_writes"] == 0
+    assert result["sidecar"] is not None
+    assert result["sidecar"]["status"] == "DB_READ_ERROR"
+    assert result["sidecar"]["db_reads"] == 1
+    assert result["sidecar"]["db_writes"] == 0
+    assert result["sidecar"]["exception_class"] == "RuntimeError"
+    assert "preview" not in result["sidecar"]
+
+
+def test_unexpected_post_query_serialization_failure_emits_unexpected_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fake_conn = _FakeConnection()
+
+    result = _run_chain_case(
+        monkeypatch,
+        tmp_path,
+        case_name="post_query_unexpected",
+        cli_args=[
+            "--include-market-observer-evidence-preview",
+            "--canonical-asset-class",
+            "L1_L2",
+        ],
+        build_preview=lambda **kwargs: {"not": "a dataclass"},
+        get_connection_impl=lambda: fake_conn,
+    )
+
+    assert result["exit_code"] == 0
+    assert fake_conn.closed == 1
+    assert result["summary"]["market_observer_evidence_preview_status"] == "UNEXPECTED_ERROR"
+    assert result["summary"]["market_observer_db_reads"] == 1
+    assert result["summary"]["market_observer_db_writes"] == 0
+    assert result["summary"]["db_writes"] == 0
+    assert result["sidecar"] is not None
+    assert result["sidecar"]["status"] == "UNEXPECTED_ERROR"
+    assert result["sidecar"]["db_reads"] == 1
+    assert result["sidecar"]["db_writes"] == 0
+    assert result["sidecar"]["exception_class"] == "TypeError"
     assert "preview" not in result["sidecar"]
 
 
@@ -507,6 +614,84 @@ def test_chain_state_artifacts_remain_unchanged_between_available_and_unavailabl
         available_result["summary"]["execution_plan_state"]
         == unavailable_result["summary"]["execution_plan_state"]
     )
+
+
+def test_connection_close_failure_does_not_block_chain_outputs_or_stage_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    available_preview = MarketObserverEvidencePreview(
+        schema_version="1.0",
+        requested_event_ts_utc=datetime(2026, 7, 7, 11, 22, 33, tzinfo=UTC),
+        canonical_global_regime="GLOBAL_ROTATION_WINDOW",
+        global_regime_version="1.1",
+        canonical_asset_class="L1_L2",
+        canonical_asset_class_regime="CLASS_LEADERSHIP",
+        asset_class_regime_version="1.1",
+        canonical_global_class_regime="GLOBAL_ROTATION_WINDOW|CLASS_LEADERSHIP",
+        validation_status="H1_CONTEXT_VALIDATED",
+        validated_hypothesis_tags=("H1_BTC_MILD_DECLINE_4H_BOUNCE_CONTEXT",),
+        source_locator=ActiveRegimeObservationLocator(
+            active_regime_observation_id=901,
+            venue="bitvavo",
+            interval_code="4h",
+            asof_ts_utc=datetime(2026, 7, 7, 8, 0, 0, tzinfo=UTC),
+            asset_class="L1_L2",
+            global_regime_version="1.1",
+            asset_class_regime_version="1.1",
+            source_candle_ts_utc=datetime(2026, 7, 7, 8, 0, 0, tzinfo=UTC),
+        ),
+        warnings=(),
+    )
+    normal_conn = _FakeConnection()
+    close_fail_conn = _CloseFailConnection()
+
+    normal_result = _run_chain_case(
+        monkeypatch,
+        tmp_path,
+        case_name="close_normal",
+        cli_args=[
+            "--include-market-observer-evidence-preview",
+            "--canonical-asset-class",
+            "L1_L2",
+        ],
+        build_preview=lambda **kwargs: available_preview,
+        get_connection_impl=lambda: normal_conn,
+    )
+
+    close_fail_result = _run_chain_case(
+        monkeypatch,
+        tmp_path,
+        case_name="close_failure",
+        cli_args=[
+            "--include-market-observer-evidence-preview",
+            "--canonical-asset-class",
+            "L1_L2",
+        ],
+        build_preview=lambda **kwargs: available_preview,
+        get_connection_impl=lambda: close_fail_conn,
+    )
+
+    assert normal_conn.closed == 1
+    assert close_fail_conn.closed == 1
+    assert close_fail_result["exit_code"] == 0
+    assert close_fail_result["summary"]["market_observer_evidence_preview_status"] == "AVAILABLE"
+    assert close_fail_result["summary"]["market_observer_db_writes"] == 0
+    assert (close_fail_result["chain_dir"] / chain.CHAIN_SUMMARY_JSON).exists()
+    assert (close_fail_result["chain_dir"] / chain.MANIFEST_JSON).exists()
+
+    artifact_names = (
+        ("candidate", chain.candidate_runner.STRATEGY_CANDIDATE_JSON),
+        ("decision", chain.decision_runner.DECISION_PREVIEW_JSON),
+        ("execution", chain.execution_runner.EXECUTION_PLAN_JSON),
+        ("shadow", chain.shadow_runner.SHADOW_EVENT_JSON),
+    )
+    for stage_name, artifact_name in artifact_names:
+        normal_artifact = (normal_result["stage_dirs"][stage_name] / artifact_name).read_text(encoding="utf-8")
+        close_fail_artifact = (
+            close_fail_result["stage_dirs"][stage_name] / artifact_name
+        ).read_text(encoding="utf-8")
+        assert normal_artifact == close_fail_artifact
 
 
 def test_boundary_scan_blocks_forbidden_sidecar_imports_and_write_sql() -> None:

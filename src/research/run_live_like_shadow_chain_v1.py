@@ -171,6 +171,32 @@ def build_market_observer_requested_inputs(
     }
 
 
+def build_unexpected_market_observer_sidecar(
+    *,
+    requested_inputs: dict[str, Any],
+    sidecar_path: Path,
+    db_reads: int,
+    warning: str,
+    exception_class: str,
+) -> MarketObserverEvidenceSidecar:
+    return MarketObserverEvidenceSidecar(
+        enabled=True,
+        status="UNEXPECTED_ERROR",
+        requested_inputs=requested_inputs,
+        db_reads=db_reads,
+        warnings=(warning,),
+        exception_class=exception_class,
+        path=str(sidecar_path),
+    )
+
+
+def close_market_observer_connection(conn: Any) -> None:
+    try:
+        conn.close()
+    except Exception:
+        return None
+
+
 def resolve_market_observer_evidence_sidecar(
     *,
     args: argparse.Namespace,
@@ -190,93 +216,120 @@ def resolve_market_observer_evidence_sidecar(
     try:
         event_ts_utc = parse_strategy_candidate_created_at_utc(candidate.created_at_utc)
     except Exception as exc:
-        return MarketObserverEvidenceSidecar(
-            enabled=True,
-            status="UNEXPECTED_ERROR",
+        return build_unexpected_market_observer_sidecar(
             requested_inputs=requested_inputs,
+            sidecar_path=sidecar_path,
             db_reads=0,
-            warnings=(
+            warning=(
                 "MarketObserverEvidencePreview was not attached because "
-                "StrategyCandidate.created_at_utc was not an explicit UTC Z timestamp.",
+                "StrategyCandidate.created_at_utc was not an explicit UTC Z timestamp."
             ),
             exception_class=exc.__class__.__name__,
-            path=str(sidecar_path),
         )
 
     conn = None
     try:
         conn = get_connection()
-        preview = build_market_observer_evidence_preview(
-            conn=conn,
-            venue=str(args.venue),
-            interval_code=str(args.canonical_regime_interval),
-            asset_class=str(args.canonical_asset_class),
-            event_ts_utc=event_ts_utc,
-        )
-        preview_payload = asdict(preview)
-        source_locator = dict(preview_payload["source_locator"])
-        return MarketObserverEvidenceSidecar(
-            enabled=True,
-            status="AVAILABLE",
-            requested_inputs=requested_inputs,
-            db_reads=1,
-            warnings=tuple(str(value) for value in preview_payload.get("warnings", ())),
-            preview=preview_payload,
-            source_locator=source_locator,
-            path=str(sidecar_path),
-        )
-    except MarketObserverEvidencePreviewNoSourceError:
-        return MarketObserverEvidenceSidecar(
-            enabled=True,
-            status="NO_SOURCE",
-            requested_inputs=requested_inputs,
-            db_reads=1,
-            warnings=(
-                "No canonical active_regime_observation row was available at-or-before the "
-                "candidate event timestamp.",
-            ),
-            path=str(sidecar_path),
-        )
-    except MarketObserverEvidencePreviewAmbiguityError:
-        return MarketObserverEvidenceSidecar(
-            enabled=True,
-            status="AMBIGUOUS",
-            requested_inputs=requested_inputs,
-            db_reads=1,
-            warnings=(
-                "Multiple canonical active_regime_observation rows matched the selected "
-                "event timestamp.",
-            ),
-            path=str(sidecar_path),
-        )
-    except MarketObserverEvidencePreviewMalformedTagsError:
-        return MarketObserverEvidenceSidecar(
-            enabled=True,
-            status="MALFORMED_TAGS",
-            requested_inputs=requested_inputs,
-            db_reads=1,
-            warnings=(
-                "Canonical active_regime_observation tags could not be decoded safely for "
-                "the evidence sidecar.",
-            ),
-            path=str(sidecar_path),
-        )
     except Exception as exc:
         return MarketObserverEvidenceSidecar(
             enabled=True,
             status="DB_READ_ERROR",
             requested_inputs=requested_inputs,
-            db_reads=1,
+            db_reads=0,
             warnings=(
-                "Read-only canonical active_regime_observation lookup failed. "
+                "Read-only canonical active_regime_observation connection setup failed. "
                 "The four-stage shadow chain continued unchanged.",
             ),
             exception_class=exc.__class__.__name__,
             path=str(sidecar_path),
         )
+
+    try:
+        try:
+            preview = build_market_observer_evidence_preview(
+                conn=conn,
+                venue=str(args.venue),
+                interval_code=str(args.canonical_regime_interval),
+                asset_class=str(args.canonical_asset_class),
+                event_ts_utc=event_ts_utc,
+            )
+        except MarketObserverEvidencePreviewNoSourceError:
+            return MarketObserverEvidenceSidecar(
+                enabled=True,
+                status="NO_SOURCE",
+                requested_inputs=requested_inputs,
+                db_reads=1,
+                warnings=(
+                    "No canonical active_regime_observation row was available at-or-before the "
+                    "candidate event timestamp.",
+                ),
+                path=str(sidecar_path),
+            )
+        except MarketObserverEvidencePreviewAmbiguityError:
+            return MarketObserverEvidenceSidecar(
+                enabled=True,
+                status="AMBIGUOUS",
+                requested_inputs=requested_inputs,
+                db_reads=1,
+                warnings=(
+                    "Multiple canonical active_regime_observation rows matched the selected "
+                    "event timestamp.",
+                ),
+                path=str(sidecar_path),
+            )
+        except MarketObserverEvidencePreviewMalformedTagsError:
+            return MarketObserverEvidenceSidecar(
+                enabled=True,
+                status="MALFORMED_TAGS",
+                requested_inputs=requested_inputs,
+                db_reads=1,
+                warnings=(
+                    "Canonical active_regime_observation tags could not be decoded safely for "
+                    "the evidence sidecar.",
+                ),
+                path=str(sidecar_path),
+            )
+        except Exception as exc:
+            return MarketObserverEvidenceSidecar(
+                enabled=True,
+                status="DB_READ_ERROR",
+                requested_inputs=requested_inputs,
+                db_reads=1,
+                warnings=(
+                    "Read-only canonical active_regime_observation lookup failed. "
+                    "The four-stage shadow chain continued unchanged.",
+                ),
+                exception_class=exc.__class__.__name__,
+                path=str(sidecar_path),
+            )
+        try:
+            preview_payload = asdict(preview)
+            source_locator = dict(preview_payload["source_locator"])
+        except Exception as exc:
+            return build_unexpected_market_observer_sidecar(
+                requested_inputs=requested_inputs,
+                sidecar_path=sidecar_path,
+                db_reads=1,
+                warning=(
+                    "MarketObserverEvidencePreview resolved, but sidecar serialization failed. "
+                    "The four-stage shadow chain continued unchanged."
+                ),
+                exception_class=exc.__class__.__name__,
+            )
     finally:
         if conn is not None:
-            conn.close()
+            close_market_observer_connection(conn)
+
+    return MarketObserverEvidenceSidecar(
+        enabled=True,
+        status="AVAILABLE",
+        requested_inputs=requested_inputs,
+        db_reads=1,
+        warnings=tuple(str(value) for value in preview_payload.get("warnings", ())),
+        preview=preview_payload,
+        source_locator=source_locator,
+        path=str(sidecar_path),
+    )
 
 
 def run_candidate_stage(args: argparse.Namespace) -> tuple[Path, Any, dict[str, Any]]:
