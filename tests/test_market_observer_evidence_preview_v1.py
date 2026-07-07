@@ -121,6 +121,7 @@ def test_forwards_exact_values_and_locator_identity() -> None:
     assert preview.research_only is True
     assert preview.partial is True
     assert preview.requested_event_ts_utc == datetime(2026, 5, 14, 12, 30, tzinfo=UTC)
+    assert preview.requested_event_ts_utc.tzinfo == UTC
     assert preview.canonical_global_regime == source_row["global_regime"]
     assert preview.global_regime_version == source_row["global_regime_version"]
     assert preview.canonical_asset_class == source_row["asset_class"]
@@ -137,11 +138,14 @@ def test_forwards_exact_values_and_locator_identity() -> None:
     assert locator.active_regime_observation_id == source_row["active_regime_observation_id"]
     assert locator.venue == source_row["venue"]
     assert locator.interval_code == source_row["interval_code"]
-    assert locator.asof_ts_utc == source_row["asof_ts_utc"]
+    assert locator.asof_ts_utc == source_row["asof_ts_utc"].replace(tzinfo=UTC)
+    assert locator.asof_ts_utc.tzinfo == UTC
     assert locator.asset_class == source_row["asset_class"]
     assert locator.global_regime_version == source_row["global_regime_version"]
     assert locator.asset_class_regime_version == source_row["asset_class_regime_version"]
-    assert locator.source_candle_ts_utc == source_row["source_candle_ts_utc"]
+    assert locator.source_candle_ts_utc == source_row["source_candle_ts_utc"].replace(tzinfo=UTC)
+    assert locator.source_candle_ts_utc is not None
+    assert locator.source_candle_ts_utc.tzinfo == UTC
 
     assert len(conn.calls) == 1
     sql, params = conn.calls[0]
@@ -178,6 +182,20 @@ def test_latest_at_or_before_event_timestamp_is_selected() -> None:
 
     assert preview.source_locator.active_regime_observation_id == 202
     assert preview.canonical_global_regime == "GLOBAL_RISK_ON"
+
+
+def test_null_source_candle_timestamp_remains_none() -> None:
+    conn = _FakeConnection([_row(source_candle_ts_utc=None)])
+
+    preview = build_market_observer_evidence_preview(
+        conn=conn,
+        venue="bitvavo",
+        interval_code="4h",
+        asset_class="ETH",
+        event_ts_utc=datetime(2026, 5, 14, 12, 30, tzinfo=UTC),
+    )
+
+    assert preview.source_locator.source_candle_ts_utc is None
 
 
 def test_no_row_fails_closed() -> None:

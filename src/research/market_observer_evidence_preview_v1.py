@@ -182,7 +182,7 @@ def _require_datetime(row: dict[str, Any], field_name: str) -> datetime:
         raise MarketObserverEvidencePreviewError(
             f"{field_name} must be a datetime in active_regime_observation."
         )
-    return value
+    return _normalize_db_utc_datetime(value=value, field_name=field_name)
 
 
 def _require_optional_datetime(row: dict[str, Any], field_name: str) -> datetime | None:
@@ -193,7 +193,18 @@ def _require_optional_datetime(row: dict[str, Any], field_name: str) -> datetime
         raise MarketObserverEvidencePreviewError(
             f"{field_name} must be a datetime or null in active_regime_observation."
         )
-    return value
+    return _normalize_db_utc_datetime(value=value, field_name=field_name)
+
+
+def _normalize_db_utc_datetime(value: datetime, field_name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    try:
+        return value.astimezone(UTC)
+    except ValueError as exc:
+        raise MarketObserverEvidencePreviewError(
+            f"{field_name} must be a UTC-compatible datetime in active_regime_observation."
+        ) from exc
 
 
 def _require_int(row: dict[str, Any], field_name: str) -> int:
