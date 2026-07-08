@@ -88,7 +88,7 @@ def test_migration_uses_full_scope_key_and_projection_selected_map_identity() ->
     assert "map_cycle_id   VARCHAR(255) NOT NULL" in sql
 
 
-def test_migration_has_closed_domains_and_terminal_gates() -> None:
+def test_migration_has_closed_domains_reasons_and_terminal_gates() -> None:
     sql = _sql()
     for required in (
         "SELL_EXT_1_272",
@@ -100,6 +100,9 @@ def test_migration_has_closed_domains_and_terminal_gates() -> None:
         "PASSED",
         "COMPLETED",
         "HISTORICAL",
+        "NO_PRIMARY_HIGH_REACHED_LEVEL",
+        "PRIMARY_HIGH_REACHED_WITHOUT_CLOSE_ABOVE",
+        "PRIMARY_CLOSE_PASSED_LEVEL",
         "PRIMARY_4H_CLOSED_CANDLES",
         "MAP_LIFECYCLE_EVENT",
         "CURRENT_EVALUATION",
@@ -109,6 +112,7 @@ def test_migration_has_closed_domains_and_terminal_gates() -> None:
         "MAP_EXPIRED",
     ):
         assert required in sql
+    assert "CONSTRAINT chk_native_short_map_level_status_v1_dynamic_reason" in sql
 
 
 def test_migration_preserves_tick_evidence_without_using_it_as_lifecycle_identity() -> None:
@@ -193,6 +197,22 @@ def test_dynamic_states_require_current_active_projection_gate(
             reason_code=reason,
             projection_scope_status_code=NativeShortScopeStatusCode.SOURCE_STALE,
         )
+
+
+@pytest.mark.parametrize(
+    "state,bad_reason",
+    [
+        (NativeShortMapLevelLifecycleState.ACTIVE, "PRIMARY_HIGH_REACHED_WITHOUT_CLOSE_ABOVE"),
+        (NativeShortMapLevelLifecycleState.REACHED, "PRIMARY_CLOSE_PASSED_LEVEL"),
+        (NativeShortMapLevelLifecycleState.PASSED, "NO_PRIMARY_HIGH_REACHED_LEVEL"),
+    ],
+)
+def test_dynamic_states_require_state_specific_reason_code(
+    state: NativeShortMapLevelLifecycleState,
+    bad_reason: str,
+) -> None:
+    with pytest.raises(NativeShortMapLevelStatusValidationError):
+        _record(level_lifecycle_state=state, reason_code=bad_reason)
 
 
 def test_completed_state_requires_map_terminal_completion() -> None:
