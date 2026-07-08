@@ -1,0 +1,36 @@
+[Unit]
+Description=Synth linked-profile runtime refresh orchestrator
+Documentation=docs/ops/linked_profile_runtime_orchestrator_v1.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=theone
+WorkingDirectory=/home/theone/projects/synth-v2
+Environment=SYNTH_REPO_DIR=/home/theone/projects/synth-v2
+Environment=SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT=/var/www/html/synth
+Environment=SYNTH_ACCOUNT_WALLET_VENUE=bitvavo
+Environment=SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE=EUR
+Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
+Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
+EnvironmentFile=/home/theone/.config/synth/web-auth.env
+ExecStart=/bin/bash -lc 'scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh'
+Restart=no
+Nice=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=synth-linked-profile-runtime-refresh
+
+# Safety boundary:
+# - public price snapshot refresh is public market-data only
+# - account refresh uses read-only private calls only
+# - renderer reads persisted snapshots only
+# - no native SHORT context build/publish in render stage
+# - no broker writes, no order submission, no executor
+
+[Install]
+WantedBy=multi-user.target
