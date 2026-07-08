@@ -137,7 +137,17 @@ No dashboard zone recomputation.
 
 ## P2 — Paper advice dashboard lifecycle refresh runner
 
-Status: done / systemd timer active on Odroid.
+Status: **timer was stopped during the 2026-07-05 incident** (verified
+recovery action), pending log-containment fix. Previously: done / systemd
+timer active on Odroid. Its current `active`/`enabled` state must be
+checked on-host (`systemctl is-active` / `systemctl is-enabled`; see
+`docs/ops/synth_runtime_runners_v1.md`) rather than assumed from this line.
+Required policy regardless of current live state: do not start or
+re-enable `synth-paper-advice-lifecycle-refresh.timer` until
+`docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`
+P0-A is verified. See
+`docs/incidents/2026-07-05_odroid_disk_exhaustion_and_stale_short_swing_data.md`
+for the incident record.
 
 Script:
 
