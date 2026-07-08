@@ -15,7 +15,7 @@ Environment=SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE=EUR
 Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
 Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
 EnvironmentFile=/home/theone/.config/synth/web-auth.env
-ExecStart=/bin/bash -lc 'scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh'
+ExecStart=/bin/bash -lc 'bash scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh'
 Restart=no
 Nice=5
 UMask=0077
