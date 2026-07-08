@@ -61,6 +61,8 @@ def _row(
     tick_status: str = NORM_STATUS_APPLIED,
     tick_source: str = TICK_RULE_SOURCE_DB,
     map_lifecycle: NativeShortScopeMapLifecycleState = NativeShortScopeMapLifecycleState.MAP_ACTIVE,
+    scope_status: NativeShortScopeStatusCode = NativeShortScopeStatusCode.CURRENT_EVALUATION,
+    actionability: NativeShortScopeActionabilityState = NativeShortScopeActionabilityState.ACTIONABLE_ACTIVE_MAP,
     evaluation_reference: NativeShortMapLevelEvaluationReference = NativeShortMapLevelEvaluationReference.PRIMARY_4H_CLOSED_CANDLES,
     reason_code: str = REASON_NO_PRIMARY_HIGH_REACHED_LEVEL,
 ) -> NativeShortMapLevelStatusRecord:
@@ -78,9 +80,9 @@ def _row(
         level_status_as_of_utc=datetime(2026, 7, 8, 2, 0, tzinfo=UTC),
         evaluation_reference=evaluation_reference,
         reason_code=reason_code,
-        projection_scope_status_code=NativeShortScopeStatusCode.CURRENT_EVALUATION,
+        projection_scope_status_code=scope_status,
         projection_map_lifecycle_state=map_lifecycle,
-        projection_actionability_state=NativeShortScopeActionabilityState.ACTIONABLE_ACTIVE_MAP,
+        projection_actionability_state=actionability,
         rebuilt_at_utc=datetime(2026, 7, 8, 2, 1, tzinfo=UTC),
     )
 
@@ -170,12 +172,18 @@ def test_non_terminal_level_states_require_active_projection(
 ) -> None:
     with pytest.raises(NativeShortMapLevelStatusPersistenceError, match="ACTIVE_MAP_PROJECTION"):
         _row(state=state, map_lifecycle=NativeShortScopeMapLifecycleState.MAP_COMPLETED)
+    with pytest.raises(NativeShortMapLevelStatusPersistenceError, match="CURRENT_EVALUATION"):
+        _row(state=state, scope_status=NativeShortScopeStatusCode.SOURCE_STALE)
+    with pytest.raises(NativeShortMapLevelStatusPersistenceError, match="ACTIONABLE_ACTIVE_MAP"):
+        _row(state=state, actionability=NativeShortScopeActionabilityState.BLOCKED_SOURCE)
 
 
-def test_terminal_completed_requires_map_lifecycle_reference() -> None:
+def test_terminal_completed_requires_completed_projection_context() -> None:
     row = _row(
         state=NativeShortMapLevelState.COMPLETED,
         map_lifecycle=NativeShortScopeMapLifecycleState.MAP_COMPLETED,
+        scope_status=NativeShortScopeStatusCode.MAP_COMPLETED,
+        actionability=NativeShortScopeActionabilityState.TERMINAL_MAP,
         evaluation_reference=NativeShortMapLevelEvaluationReference.MAP_LIFECYCLE_EVENT,
         reason_code=REASON_MAP_COMPLETED,
     )
