@@ -252,12 +252,13 @@ class NativeShortMapLevelStatusRecord:
                     "APPLIED_TICK_RULE_REQUIRES_ROUNDED_PRICE field=canonical_tick_rounded_price"
                 )
 
-        active_states = {
-            NativeShortMapLevelLifecycleState.ACTIVE,
-            NativeShortMapLevelLifecycleState.REACHED,
-            NativeShortMapLevelLifecycleState.PASSED,
+        dynamic_reason_by_state = {
+            NativeShortMapLevelLifecycleState.ACTIVE: REASON_NO_PRIMARY_HIGH_REACHED_LEVEL,
+            NativeShortMapLevelLifecycleState.REACHED: REASON_PRIMARY_HIGH_REACHED_WITHOUT_CLOSE_ABOVE,
+            NativeShortMapLevelLifecycleState.PASSED: REASON_PRIMARY_CLOSE_PASSED_LEVEL,
         }
-        if lifecycle_state in active_states:
+        expected_dynamic_reason = dynamic_reason_by_state.get(lifecycle_state)
+        if expected_dynamic_reason is not None:
             if evaluation_reference != NativeShortMapLevelEvaluationReference.PRIMARY_4H_CLOSED_CANDLES:
                 raise NativeShortMapLevelStatusValidationError(
                     "DYNAMIC_LEVEL_STATE_REQUIRES_PRIMARY_EVALUATION field=evaluation_reference"
@@ -273,6 +274,10 @@ class NativeShortMapLevelStatusRecord:
             if projection_actionability_state != NativeShortScopeActionabilityState.ACTIONABLE_ACTIVE_MAP:
                 raise NativeShortMapLevelStatusValidationError(
                     "DYNAMIC_LEVEL_STATE_REQUIRES_ACTIONABLE_ACTIVE_MAP field=projection_actionability_state"
+                )
+            if self.reason_code != expected_dynamic_reason:
+                raise NativeShortMapLevelStatusValidationError(
+                    "DYNAMIC_LEVEL_STATE_REQUIRES_STATE_REASON field=reason_code"
                 )
 
         if lifecycle_state == NativeShortMapLevelLifecycleState.COMPLETED:
