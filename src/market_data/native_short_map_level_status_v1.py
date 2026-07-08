@@ -253,7 +253,7 @@ class NativeShortMapLevelStatusRecord:
             raise NativeShortMapLevelStatusPersistenceError(
                 f"INVALID_REASON_CODE value={self.reason_code}"
             )
-        _coerce_enum(
+        scope_status = _coerce_enum(
             self.projection_scope_status_code,
             NativeShortScopeStatusCode,
             "projection_scope_status_code",
@@ -263,7 +263,7 @@ class NativeShortMapLevelStatusRecord:
             NativeShortScopeMapLifecycleState,
             "projection_map_lifecycle_state",
         )
-        _coerce_enum(
+        actionability = _coerce_enum(
             self.projection_actionability_state,
             NativeShortScopeActionabilityState,
             "projection_actionability_state",
@@ -281,11 +281,43 @@ class NativeShortMapLevelStatusRecord:
                 raise NativeShortMapLevelStatusPersistenceError(
                     "NON_TERMINAL_LEVEL_STATE_REQUIRES_ACTIVE_MAP_PROJECTION"
                 )
-        if state in {NativeShortMapLevelState.COMPLETED, NativeShortMapLevelState.HISTORICAL}:
+            if scope_status != NativeShortScopeStatusCode.CURRENT_EVALUATION:
+                raise NativeShortMapLevelStatusPersistenceError(
+                    "NON_TERMINAL_LEVEL_STATE_REQUIRES_CURRENT_EVALUATION"
+                )
+            if actionability != NativeShortScopeActionabilityState.ACTIONABLE_ACTIVE_MAP:
+                raise NativeShortMapLevelStatusPersistenceError(
+                    "NON_TERMINAL_LEVEL_STATE_REQUIRES_ACTIONABLE_ACTIVE_MAP"
+                )
+        if state == NativeShortMapLevelState.COMPLETED:
             if evaluation_reference != NativeShortMapLevelEvaluationReference.MAP_LIFECYCLE_EVENT:
                 raise NativeShortMapLevelStatusPersistenceError(
                     "TERMINAL_LEVEL_STATE_REQUIRES_MAP_LIFECYCLE_REFERENCE"
                 )
+            if map_lifecycle != NativeShortScopeMapLifecycleState.MAP_COMPLETED:
+                raise NativeShortMapLevelStatusPersistenceError("COMPLETED_LEVEL_REQUIRES_COMPLETED_MAP")
+            if scope_status != NativeShortScopeStatusCode.MAP_COMPLETED:
+                raise NativeShortMapLevelStatusPersistenceError("COMPLETED_LEVEL_REQUIRES_MAP_COMPLETED_STATUS")
+            if actionability != NativeShortScopeActionabilityState.TERMINAL_MAP:
+                raise NativeShortMapLevelStatusPersistenceError("TERMINAL_LEVEL_REQUIRES_TERMINAL_MAP_ACTIONABILITY")
+            if self.reason_code != REASON_MAP_COMPLETED:
+                raise NativeShortMapLevelStatusPersistenceError("COMPLETED_LEVEL_REQUIRES_MAP_COMPLETED_REASON")
+        if state == NativeShortMapLevelState.HISTORICAL:
+            if evaluation_reference != NativeShortMapLevelEvaluationReference.MAP_LIFECYCLE_EVENT:
+                raise NativeShortMapLevelStatusPersistenceError(
+                    "TERMINAL_LEVEL_STATE_REQUIRES_MAP_LIFECYCLE_REFERENCE"
+                )
+            if map_lifecycle not in {
+                NativeShortScopeMapLifecycleState.MAP_INVALIDATED,
+                NativeShortScopeMapLifecycleState.MAP_EXPIRED,
+            }:
+                raise NativeShortMapLevelStatusPersistenceError("HISTORICAL_LEVEL_REQUIRES_TERMINAL_HISTORICAL_MAP")
+            if actionability != NativeShortScopeActionabilityState.TERMINAL_MAP:
+                raise NativeShortMapLevelStatusPersistenceError("TERMINAL_LEVEL_REQUIRES_TERMINAL_MAP_ACTIONABILITY")
+            if map_lifecycle == NativeShortScopeMapLifecycleState.MAP_INVALIDATED and self.reason_code != REASON_MAP_INVALIDATED:
+                raise NativeShortMapLevelStatusPersistenceError("INVALIDATED_HISTORICAL_LEVEL_REQUIRES_INVALIDATED_REASON")
+            if map_lifecycle == NativeShortScopeMapLifecycleState.MAP_EXPIRED and self.reason_code != REASON_MAP_EXPIRED:
+                raise NativeShortMapLevelStatusPersistenceError("EXPIRED_HISTORICAL_LEVEL_REQUIRES_EXPIRED_REASON")
 
 
 def serialize_native_short_map_level_status_record(
