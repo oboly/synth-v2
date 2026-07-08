@@ -4,13 +4,11 @@
 --   Persist rebuildable per-level status rows for the projection-selected
 --   native SHORT current map.
 -- Non-goals:
---   - no materializer runner integration
+--   - no runner integration
 --   - no candle lifecycle evaluation logic
---   - no reporting/UI consumer
---   - no account/order coverage
---   - no broker calls or writes
---   - no decision/execution/selection changes
---   - no scheduler, timer, service, wrapper, or deployment wiring
+--   - no presentation consumer
+--   - no trading-layer changes
+--   - no runtime deployment wiring
 
 CREATE TABLE IF NOT EXISTS native_short_map_level_status_v1 (
     map_level_status_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
