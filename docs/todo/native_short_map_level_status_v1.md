@@ -2,7 +2,24 @@
 
 ## Status
 
-Design/contract slice open for review.
+B0 contract accepted and merged via PR #68.
+
+Current slice:
+
+```text
+feat: add native short map level status persistence or projection
+```
+
+This slice adds only:
+
+```text
+- rebuildable current table definition
+- pure validation/type contract
+- persistence/import-boundary tests
+```
+
+It intentionally does not add a materializer, candle evaluator, runner hook, UI
+consumer, or order-related behavior.
 
 Canonical contract:
 
@@ -61,18 +78,22 @@ implementation convenience heuristic. A separate native contract is required.
 
 ## Implementation PR Sequence
 
-1. `feat: add native short map level status persistence or projection`
+1. `docs: define native short current map level status contract`
+   - status: merged as PR #68
+
+2. `feat: add native short map level status persistence or projection`
+   - status: current slice
    - migration/model types only
    - one rebuildable status collection
    - no runner integration
 
-2. `feat: materialize current native short map level status`
+3. `feat: materialize current native short map level status`
    - pure lifecycle evaluator
    - MariaDB reader/writer
    - use existing explicit scope-status `projection_as_of_utc`
    - no scheduler/deployment change
 
-3. `test: cover native short map level lifecycle read model`
+4. `test: cover native short map level lifecycle read model`
    - deterministic identities
    - active/reached/passed/completed/historical
    - projection fail-closed and configuration distinction
