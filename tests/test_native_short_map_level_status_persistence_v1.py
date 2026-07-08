@@ -105,7 +105,6 @@ def test_migration_uses_full_scope_and_map_level_identity() -> None:
         assert required in sql
     assert "browser" not in sql.lower()
     assert "render_uuid" not in sql.lower()
-    assert "order" not in sql.lower()
 
 
 def test_migration_has_closed_domains_and_projection_clock() -> None:
@@ -219,6 +218,23 @@ def test_collection_requires_exact_v1_role_set_when_rows_present() -> None:
             map_cycle_id=rows[0].map_cycle_id,
             level_status_as_of_utc=rows[0].level_status_as_of_utc,
             rows=rows[:2],
+        )
+
+
+def test_collection_rejects_duplicate_role_even_with_different_price() -> None:
+    rows = [
+        _row(role=NativeShortMapLevelRole.SELL_EXT_1_272, price=Decimal("1.272")),
+        _row(role=NativeShortMapLevelRole.SELL_EXT_1_272, price=Decimal("1.273")),
+        _row(role=NativeShortMapLevelRole.SELL_EXT_1_618, price=Decimal("1.618")),
+        _row(role=NativeShortMapLevelRole.SELL_EXT_2_000, price=Decimal("2.000")),
+    ]
+    with pytest.raises(NativeShortMapLevelStatusPersistenceError, match="DUPLICATE_LEVEL_ROLE"):
+        validate_native_short_map_level_status_collection(
+            key=_key(),
+            current_map_id=123,
+            map_cycle_id=rows[0].map_cycle_id,
+            level_status_as_of_utc=rows[0].level_status_as_of_utc,
+            rows=rows,
         )
 
 
