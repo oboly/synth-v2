@@ -342,8 +342,8 @@ def validate_native_short_map_level_status_collection(
     _require_utc(level_status_as_of_utc, "level_status_as_of_utc")
 
     materialized = tuple(rows)
-    seen: set[tuple[int, str, str, str]] = set()
-    roles: set[NativeShortMapLevelRole] = set()
+    seen_identities: set[tuple[int, str, str, str]] = set()
+    seen_roles: set[NativeShortMapLevelRole] = set()
     for row in materialized:
         if row.key != key:
             raise NativeShortMapLevelStatusPersistenceError("COLLECTION_SCOPE_KEY_MISMATCH")
@@ -354,21 +354,23 @@ def validate_native_short_map_level_status_collection(
         if row.level_status_as_of_utc != level_status_as_of_utc:
             raise NativeShortMapLevelStatusPersistenceError("COLLECTION_AS_OF_MISMATCH")
         role = NativeShortMapLevelRole(_enum_value(row.canonical_map_level_role))
-        roles.add(role)
+        if role in seen_roles:
+            raise NativeShortMapLevelStatusPersistenceError(f"DUPLICATE_LEVEL_ROLE role={role.value}")
+        seen_roles.add(role)
         identity = (
             row.current_map_id,
             role.value,
             _enum_value(row.side),
             str(row.canonical_unrounded_price),
         )
-        if identity in seen:
+        if identity in seen_identities:
             raise NativeShortMapLevelStatusPersistenceError(
                 f"DUPLICATE_LEVEL_IDENTITY role={role.value} price={row.canonical_unrounded_price}"
             )
-        seen.add(identity)
-    if roles and roles != set(V1_NATIVE_SHORT_SELL_LEVEL_ROLES):
-        missing = sorted(role.value for role in set(V1_NATIVE_SHORT_SELL_LEVEL_ROLES) - roles)
-        extra = sorted(role.value for role in roles - set(V1_NATIVE_SHORT_SELL_LEVEL_ROLES))
+        seen_identities.add(identity)
+    if seen_roles and seen_roles != set(V1_NATIVE_SHORT_SELL_LEVEL_ROLES):
+        missing = sorted(role.value for role in set(V1_NATIVE_SHORT_SELL_LEVEL_ROLES) - seen_roles)
+        extra = sorted(role.value for role in seen_roles - set(V1_NATIVE_SHORT_SELL_LEVEL_ROLES))
         raise NativeShortMapLevelStatusPersistenceError(
             f"V1_ROLE_SET_INCOMPLETE missing={missing} extra={extra}"
         )
@@ -417,7 +419,7 @@ def replace_native_short_map_level_status_for_scope(
     """Atomically replace current level-status rows for one exact scope.
 
     The caller owns the transaction boundary. This helper intentionally does not
-    commit, rollback, select maps, evaluate candles, or call any broker/account
+    commit, rollback, select maps, evaluate candles, or call any external trading
     code. Passing an empty row collection is valid and represents a fail-closed
     blocked projection collection replacement.
     """
