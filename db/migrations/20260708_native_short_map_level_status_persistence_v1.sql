@@ -141,6 +141,14 @@ CREATE TABLE IF NOT EXISTS native_short_map_level_status_v1 (
                 AND projection_actionability_state = 'ACTIONABLE_ACTIVE_MAP'
             )
         ),
+    CONSTRAINT chk_native_short_map_level_status_v1_dynamic_reason
+        CHECK (
+            (level_lifecycle_state <> 'ACTIVE' OR reason_code = 'NO_PRIMARY_HIGH_REACHED_LEVEL')
+            AND
+            (level_lifecycle_state <> 'REACHED' OR reason_code = 'PRIMARY_HIGH_REACHED_WITHOUT_CLOSE_ABOVE')
+            AND
+            (level_lifecycle_state <> 'PASSED' OR reason_code = 'PRIMARY_CLOSE_PASSED_LEVEL')
+        ),
     CONSTRAINT chk_native_short_map_level_status_v1_completed_gate
         CHECK (
             level_lifecycle_state <> 'COMPLETED'
