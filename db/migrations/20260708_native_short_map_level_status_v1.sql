@@ -73,16 +73,33 @@ CREATE TABLE IF NOT EXISTS native_short_map_level_status_v1 (
         CHECK (canonical_unrounded_price > 0),
     CONSTRAINT chk_native_short_map_level_status_v1_tick_positive
         CHECK (canonical_tick_rounded_price IS NULL OR canonical_tick_rounded_price > 0),
+    CONSTRAINT chk_native_short_map_level_status_v1_tick_status
+        CHECK (tick_rule_status IN ('TICK_RULE_APPLIED', 'MISSING_TICK_RULE')),
+    CONSTRAINT chk_native_short_map_level_status_v1_tick_source
+        CHECK (tick_rule_source IN ('TICK_RULE_FROM_DB', 'TICK_RULE_FROM_STATIC', 'MISSING_TICK_RULE')),
     CONSTRAINT chk_native_short_map_level_status_v1_tick_missing_null
         CHECK (
-            (tick_rule_status = 'MISSING_TICK_RULE' AND canonical_tick_rounded_price IS NULL)
+            (tick_rule_status = 'MISSING_TICK_RULE'
+                AND tick_rule_source = 'MISSING_TICK_RULE'
+                AND canonical_tick_rounded_price IS NULL)
             OR
-            (tick_rule_status <> 'MISSING_TICK_RULE' AND canonical_tick_rounded_price IS NOT NULL)
+            (tick_rule_status = 'TICK_RULE_APPLIED'
+                AND tick_rule_source IN ('TICK_RULE_FROM_DB', 'TICK_RULE_FROM_STATIC')
+                AND canonical_tick_rounded_price IS NOT NULL)
         ),
     CONSTRAINT chk_native_short_map_level_status_v1_lifecycle
         CHECK (level_lifecycle_state IN ('ACTIVE', 'REACHED', 'PASSED', 'COMPLETED', 'HISTORICAL')),
     CONSTRAINT chk_native_short_map_level_status_v1_eval_ref
         CHECK (evaluation_reference IN ('PRIMARY_4H_CLOSED_CANDLES', 'MAP_LIFECYCLE_EVENT')),
+    CONSTRAINT chk_native_short_map_level_status_v1_reason
+        CHECK (reason_code IN (
+            'NO_PRIMARY_HIGH_REACHED_LEVEL',
+            'PRIMARY_HIGH_REACHED_WITHOUT_CLOSE_ABOVE',
+            'PRIMARY_CLOSE_PASSED_LEVEL',
+            'MAP_COMPLETED',
+            'MAP_INVALIDATED',
+            'MAP_EXPIRED'
+        )),
     CONSTRAINT chk_native_short_map_level_status_v1_projection_code
         CHECK (projection_scope_status_code IN (
             'CONFIGURATION_UNAVAILABLE',
