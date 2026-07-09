@@ -1,0 +1,15 @@
+[Unit]
+Description=Run Synth linked-profile runtime refresh every 5 minutes
+Documentation=docs/ops/linked_profile_runtime_orchestrator_v1.md
+Requires=synth-linked-profile-runtime-refresh.service
+
+[Timer]
+OnBootSec=120s
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+RandomizedDelaySec=20
+Unit=synth-linked-profile-runtime-refresh.service
+
+[Install]
+WantedBy=timers.target
