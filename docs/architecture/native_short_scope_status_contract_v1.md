@@ -491,6 +491,29 @@ supporting source freshness: 3h
 target evaluation: after each persisted closed 1h candle plus explicit grace
 ```
 
+### Canonical Native SHORT V1 Cadence Profile
+
+The config owner has authorized the following as the first canonical native
+SHORT cadence/grace profile, seeded via exact full-key rows only (no
+wildcard/default inheritance) for every scope that is `SUPPORTED` at
+`fib_trading_horizon=SHORT`:
+
+| Field | Value | Rationale |
+|---|---|---|
+| `cadence_contract_version` | `native_short_cadence_v1` | First canonical version label for this profile. |
+| `primary_interval` | `4h` | Canonical scope key; matches native default above. |
+| `supporting_interval` | `1h` | Canonical scope key; matches native default above. |
+| `target_evaluation_interval` | `1h` | Matches native default above. |
+| `primary_source_freshness_limit_seconds` | `43200` (12h) | Matches native default above, expressed in seconds. |
+| `supporting_source_freshness_limit_seconds` | `10800` (3h) | Matches native default above, expressed in seconds. |
+| `evaluation_grace_seconds` | `900` (15m) | 15 minutes after the expected persisted closed 1h candle before overdue classification. |
+| `recent_scope_grace_seconds` | `3600` (1h) | One full 1h cycle of grace for newly supported scopes before overdue classification. |
+
+These are explicit config-owner defaults, not inferred from test fixtures.
+The seed migration (`db/migrations/20260709_native_short_cadence_v1_seed.sql`)
+inserts one exact full-key row per currently `SUPPORTED` native SHORT scope
+using this profile.
+
 ## Status Precedence
 
 `native_short_scope_status_v1.scope_status_code` is a single canonical code. The
