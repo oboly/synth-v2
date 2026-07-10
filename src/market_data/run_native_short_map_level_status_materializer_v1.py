@@ -13,10 +13,13 @@ executor=none
 """
 
 import argparse
+import dataclasses
 import json
+import signal
 import sys
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Any, Callable
 
 from src.common.db import get_connection
@@ -37,6 +40,7 @@ RUNNER_VERSION = "0.1"
 EXPECTED_LEVEL_ROW_COUNT = 3
 
 SAFETY_MARKERS: dict[str, int | str] = {
+    "broker_calls": 0,
     "broker_private_calls": 0,
     "broker_writes": 0,
     "order_submission": 0,
@@ -63,6 +67,41 @@ class ScopeRunResult:
     current_map_id: int | None
     map_cycle_id: str | None
     level_status_as_of_utc: datetime | None
+    rows_read: int = 0
+    rows_written: int = 0
+    elapsed_ms: int = 0
+    phase_elapsed_ms_by_name: dict[str, int] | None = None
+    query_elapsed_ms_by_name: dict[str, int] | None = None
+
+
+@dataclass
+class InterruptionController:
+    """Signal state only; handlers never print or perform database work."""
+    interruption_signal: str | None = None
+
+    @property
+    def requested(self) -> bool:
+        return self.interruption_signal is not None
+
+    @property
+    def exit_code(self) -> int:
+        return 130 if self.interruption_signal == "SIGINT" else 143
+
+    def request(self, signum: int) -> None:
+        if self.interruption_signal is None:
+            self.interruption_signal = signal.Signals(signum).name
+
+    def request_keyboard_interrupt(self) -> None:
+        if self.interruption_signal is None:
+            self.interruption_signal = "SIGINT"
+
+
+def _elapsed_ms(start_monotonic: float, *, clock: Callable[[], float] = monotonic) -> int:
+    return max(0, round((clock() - start_monotonic) * 1000))
+
+
+def _record_elapsed(timings: dict[str, int], name: str, elapsed_ms: int) -> None:
+    timings[name] = timings.get(name, 0) + elapsed_ms
 
 
 def _required_text(value: str) -> str:
@@ -175,32 +214,169 @@ def _failed_result(key: NativeShortMapScopeKey, exc: Exception) -> ScopeRunResul
     )
 
 
+def _interrupted_result(
+    key: NativeShortMapScopeKey,
+    *,
+    elapsed_ms: int,
+    phase_elapsed_ms_by_name: dict[str, int],
+    query_elapsed_ms_by_name: dict[str, int],
+) -> ScopeRunResult:
+    return ScopeRunResult(
+        venue=key.venue,
+        symbol=key.symbol,
+        quote_currency=key.quote_currency,
+        fib_trading_horizon=key.fib_trading_horizon,
+        primary_interval=key.primary_interval,
+        supporting_interval=key.supporting_interval,
+        status="interrupted",
+        branch=None,
+        reason_code="INTERRUPTED",
+        detail="cooperative shutdown requested before symbol commit",
+        row_count=0,
+        current_map_id=None,
+        map_cycle_id=None,
+        level_status_as_of_utc=None,
+        elapsed_ms=elapsed_ms,
+        phase_elapsed_ms_by_name=phase_elapsed_ms_by_name,
+        query_elapsed_ms_by_name=query_elapsed_ms_by_name,
+    )
+
+
 def run_scope(
     *,
     key: NativeShortMapScopeKey,
     operational_clock: Callable[[], datetime],
+    interruption: InterruptionController | None = None,
+    monotonic_clock: Callable[[], float] = monotonic,
 ) -> ScopeRunResult:
+    interruption = interruption or InterruptionController()
+    started_monotonic = monotonic_clock()
+    phase_elapsed_ms_by_name: dict[str, int] = {}
+    query_elapsed_ms_by_name: dict[str, int] = {}
     conn = None
     try:
+        if interruption.requested:
+            return _interrupted_result(
+                key,
+                elapsed_ms=_elapsed_ms(started_monotonic, clock=monotonic_clock),
+                phase_elapsed_ms_by_name=phase_elapsed_ms_by_name,
+                query_elapsed_ms_by_name=query_elapsed_ms_by_name,
+            )
         conn = get_connection()
         conn.begin()
+        if interruption.requested:
+            rollback_started = monotonic_clock()
+            conn.rollback()
+            _record_elapsed(
+                phase_elapsed_ms_by_name,
+                "ROLLBACK_SYMBOL",
+                _elapsed_ms(rollback_started, clock=monotonic_clock),
+            )
+            return _interrupted_result(
+                key,
+                elapsed_ms=_elapsed_ms(started_monotonic, clock=monotonic_clock),
+                phase_elapsed_ms_by_name=phase_elapsed_ms_by_name,
+                query_elapsed_ms_by_name=query_elapsed_ms_by_name,
+            )
+
+        # The materializer owns the bounded scope queries.  This runner records
+        # the complete query/materialization phase without changing its semantics.
+        materialize_started = monotonic_clock()
         outcome = materialize_native_short_map_level_status_for_scope(
             conn,
             key=key,
             operational_clock=operational_clock,
         )
+        materialize_elapsed_ms = _elapsed_ms(materialize_started, clock=monotonic_clock)
+        _record_elapsed(phase_elapsed_ms_by_name, "MATERIALIZE_LEVEL_STATUS", materialize_elapsed_ms)
+        _record_elapsed(query_elapsed_ms_by_name, "MATERIALIZE_LEVEL_STATUS", materialize_elapsed_ms)
+
+        if interruption.requested:
+            rollback_started = monotonic_clock()
+            conn.rollback()
+            _record_elapsed(
+                phase_elapsed_ms_by_name,
+                "ROLLBACK_SYMBOL",
+                _elapsed_ms(rollback_started, clock=monotonic_clock),
+            )
+            return _interrupted_result(
+                key,
+                elapsed_ms=_elapsed_ms(started_monotonic, clock=monotonic_clock),
+                phase_elapsed_ms_by_name=phase_elapsed_ms_by_name,
+                query_elapsed_ms_by_name=query_elapsed_ms_by_name,
+            )
+
         result = _result_from_outcome(outcome)
         if result.status == "failed":
+            rollback_started = monotonic_clock()
             conn.rollback()
+            _record_elapsed(
+                phase_elapsed_ms_by_name,
+                "ROLLBACK_SYMBOL",
+                _elapsed_ms(rollback_started, clock=monotonic_clock),
+            )
         else:
             # A blocked materialization deliberately deletes stale scope rows,
             # so its bounded cleanup must commit even though the CLI exits 1.
+            if interruption.requested:
+                rollback_started = monotonic_clock()
+                conn.rollback()
+                _record_elapsed(
+                    phase_elapsed_ms_by_name,
+                    "ROLLBACK_SYMBOL",
+                    _elapsed_ms(rollback_started, clock=monotonic_clock),
+                )
+                return _interrupted_result(
+                    key,
+                    elapsed_ms=_elapsed_ms(started_monotonic, clock=monotonic_clock),
+                    phase_elapsed_ms_by_name=phase_elapsed_ms_by_name,
+                    query_elapsed_ms_by_name=query_elapsed_ms_by_name,
+                )
+            commit_started = monotonic_clock()
             conn.commit()
-        return result
+            _record_elapsed(
+                phase_elapsed_ms_by_name,
+                "COMMIT_SYMBOL",
+                _elapsed_ms(commit_started, clock=monotonic_clock),
+            )
+        return dataclasses.replace(
+            result,
+            rows_written=result.row_count if result.status == "materialized" else 0,
+            elapsed_ms=_elapsed_ms(started_monotonic, clock=monotonic_clock),
+            phase_elapsed_ms_by_name=phase_elapsed_ms_by_name,
+            query_elapsed_ms_by_name=query_elapsed_ms_by_name,
+        )
+    except KeyboardInterrupt:
+        interruption.request_keyboard_interrupt()
+        if conn is not None:
+            rollback_started = monotonic_clock()
+            conn.rollback()
+            _record_elapsed(
+                phase_elapsed_ms_by_name,
+                "ROLLBACK_SYMBOL",
+                _elapsed_ms(rollback_started, clock=monotonic_clock),
+            )
+        return _interrupted_result(
+            key,
+            elapsed_ms=_elapsed_ms(started_monotonic, clock=monotonic_clock),
+            phase_elapsed_ms_by_name=phase_elapsed_ms_by_name,
+            query_elapsed_ms_by_name=query_elapsed_ms_by_name,
+        )
     except Exception as exc:
         if conn is not None:
+            rollback_started = monotonic_clock()
             conn.rollback()
-        return _failed_result(key, exc)
+            _record_elapsed(
+                phase_elapsed_ms_by_name,
+                "ROLLBACK_SYMBOL",
+                _elapsed_ms(rollback_started, clock=monotonic_clock),
+            )
+        return dataclasses.replace(
+            _failed_result(key, exc),
+            elapsed_ms=_elapsed_ms(started_monotonic, clock=monotonic_clock),
+            phase_elapsed_ms_by_name=phase_elapsed_ms_by_name,
+            query_elapsed_ms_by_name=query_elapsed_ms_by_name,
+        )
     finally:
         if conn is not None:
             conn.close()
@@ -269,27 +445,115 @@ def _emit_result(result: ScopeRunResult, output: str) -> None:
     sys.stdout.flush()
 
 
-def _emit_finished(results: list[ScopeRunResult], output: str) -> None:
-    materialized = sum(result.status == "materialized" for result in results)
-    blocked = sum(result.status == "blocked" for result in results)
-    failed = sum(result.status == "failed" for result in results)
-    event = "FINISHED" if blocked == 0 and failed == 0 else "FAILED"
+def _sum_named_timings(results: list[ScopeRunResult], attribute: str) -> dict[str, int]:
+    total: dict[str, int] = {}
+    for result in results:
+        for name, elapsed_ms in (getattr(result, attribute) or {}).items():
+            _record_elapsed(total, name, elapsed_ms)
+    return dict(sorted(total.items()))
+
+
+def _emit_heartbeat(
+    *,
+    output: str,
+    current_symbol: str | None,
+    symbol_index: int,
+    symbols_total: int,
+    symbols_completed: int,
+    current_phase: str,
+    phase_elapsed_ms: int,
+    total_elapsed_ms: int,
+    rows_read: int,
+    rows_written: int,
+) -> None:
     payload = {
-        "event": event,
+        "event": "HEARTBEAT",
         "runner": RUNNER_NAME,
-        "requested": len(results),
-        "materialized": materialized,
-        "blocked": blocked,
-        "failed": failed,
+        "current_symbol": current_symbol,
+        "symbol_index": symbol_index,
+        "symbols_total": symbols_total,
+        "symbols_completed": symbols_completed,
+        "current_phase": current_phase,
+        "phase_elapsed_ms": phase_elapsed_ms,
+        "total_elapsed_ms": total_elapsed_ms,
+        "rows_read": rows_read,
+        "rows_written": rows_written,
     }
     if output == "jsonl":
         _emit_json(payload)
         return
     print(
-        f"{event} runner={RUNNER_NAME} requested={len(results)} "
-        f"materialized={materialized} blocked={blocked} failed={failed}"
+        "HEARTBEAT "
+        + " ".join(f"{key}={value}" for key, value in payload.items() if key not in {"event", "runner"})
     )
     sys.stdout.flush()
+
+
+def _emit_terminal(
+    *,
+    results: list[ScopeRunResult],
+    output: str,
+    symbols_requested: int,
+    interruption: InterruptionController,
+    total_elapsed_ms: int,
+) -> None:
+    materialized = sum(result.status == "materialized" for result in results)
+    blocked = sum(result.status == "blocked" for result in results)
+    failed = sum(result.status == "failed" for result in results)
+    interrupted = interruption.requested
+    status = "INTERRUPTED" if interrupted else ("SUCCESS" if blocked == 0 and failed == 0 else "FAILED")
+    event = "INTERRUPTED" if interrupted else ("FINISHED" if status == "SUCCESS" else "FAILED")
+    rows_read = sum(result.rows_read for result in results)
+    rows_written = sum(result.rows_written for result in results)
+    payload = {
+        "event": event,
+        "status": status,
+        "runner": RUNNER_NAME,
+        "requested": symbols_requested,
+        "symbols_requested": symbols_requested,
+        "symbols_completed": materialized,
+        "symbols_remaining": symbols_requested - materialized,
+        "materialized": materialized,
+        "blocked": blocked,
+        "failed": failed,
+        "interrupted": interrupted,
+        "interruption_signal": interruption.interruption_signal,
+        "rows_read": rows_read,
+        "rows_written": rows_written,
+        "elapsed_ms": total_elapsed_ms,
+        "phase_elapsed_ms_by_name": _sum_named_timings(results, "phase_elapsed_ms_by_name"),
+        "query_elapsed_ms_by_name": _sum_named_timings(results, "query_elapsed_ms_by_name"),
+        "per_symbol_elapsed_ms": {
+            result.symbol: result.elapsed_ms
+            for result in results
+        },
+        **SAFETY_MARKERS,
+    }
+    if output == "jsonl":
+        _emit_json(payload)
+        return
+    print(
+        f"{event} runner={RUNNER_NAME} status={status} requested={symbols_requested} "
+        f"materialized={materialized} blocked={blocked} failed={failed} elapsed_ms={total_elapsed_ms}"
+    )
+    sys.stdout.flush()
+
+
+def _install_signal_handlers(controller: InterruptionController) -> dict[int, Any]:
+    previous: dict[int, Any] = {}
+
+    def request_shutdown(signum: int, _frame: Any) -> None:
+        controller.request(signum)
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous[signum] = signal.getsignal(signum)
+        signal.signal(signum, request_shutdown)
+    return previous
+
+
+def _restore_signal_handlers(previous: dict[int, Any]) -> None:
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -300,28 +564,72 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
+    controller = InterruptionController()
+    previous_signal_handlers = _install_signal_handlers(controller)
+    started_monotonic = monotonic()
     _emit_started(args, symbols)
     results: list[ScopeRunResult] = []
-    for symbol in symbols:
-        key = NativeShortMapScopeKey(
-            venue=args.venue,
-            symbol=symbol,
-            quote_currency=args.quote_currency,
-            fib_trading_horizon=args.fib_trading_horizon,
-            primary_interval=args.primary_interval,
-            supporting_interval=args.supporting_interval,
-        )
-        result = run_scope(key=key, operational_clock=utc_now)
-        results.append(result)
-        _emit_result(result, args.output)
-        if result.status != "materialized":
-            print(
-                f"{result.status.upper()} {symbol}: "
-                f"{result.reason_code or 'UNKNOWN'}: {result.detail or ''}",
-                file=sys.stderr,
+    try:
+        for index, symbol in enumerate(symbols, start=1):
+            if controller.requested:
+                break
+            _emit_heartbeat(
+                output=args.output,
+                current_symbol=symbol,
+                symbol_index=index,
+                symbols_total=len(symbols),
+                symbols_completed=sum(result.status == "materialized" for result in results),
+                current_phase="BEFORE_SYMBOL",
+                phase_elapsed_ms=0,
+                total_elapsed_ms=_elapsed_ms(started_monotonic),
+                rows_read=sum(result.rows_read for result in results),
+                rows_written=sum(result.rows_written for result in results),
             )
+            key = NativeShortMapScopeKey(
+                venue=args.venue,
+                symbol=symbol,
+                quote_currency=args.quote_currency,
+                fib_trading_horizon=args.fib_trading_horizon,
+                primary_interval=args.primary_interval,
+                supporting_interval=args.supporting_interval,
+            )
+            result = run_scope(key=key, operational_clock=utc_now, interruption=controller)
+            results.append(result)
+            _emit_result(result, args.output)
+            _emit_heartbeat(
+                output=args.output,
+                current_symbol=symbol,
+                symbol_index=index,
+                symbols_total=len(symbols),
+                symbols_completed=sum(item.status == "materialized" for item in results),
+                current_phase="SYMBOL_COMPLETED" if result.status == "materialized" else result.status.upper(),
+                phase_elapsed_ms=result.elapsed_ms,
+                total_elapsed_ms=_elapsed_ms(started_monotonic),
+                rows_read=sum(item.rows_read for item in results),
+                rows_written=sum(item.rows_written for item in results),
+            )
+            if result.status != "materialized" and result.status != "interrupted":
+                print(
+                    f"{result.status.upper()} {symbol}: "
+                    f"{result.reason_code or 'UNKNOWN'}: {result.detail or ''}",
+                    file=sys.stderr,
+                )
+            if controller.requested:
+                break
+    except KeyboardInterrupt:
+        controller.request_keyboard_interrupt()
+    finally:
+        _emit_terminal(
+            results=results,
+            output=args.output,
+            symbols_requested=len(symbols),
+            interruption=controller,
+            total_elapsed_ms=_elapsed_ms(started_monotonic),
+        )
+        _restore_signal_handlers(previous_signal_handlers)
 
-    _emit_finished(results, args.output)
+    if controller.requested:
+        return controller.exit_code
     return 0 if all(result.status == "materialized" for result in results) else 1
 
 

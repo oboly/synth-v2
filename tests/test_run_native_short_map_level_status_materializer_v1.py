@@ -87,6 +87,14 @@ def _outcome(key: Any, *, branch: str = ACTIVE_EVALUATION, row_count: int = 3):
     )
 
 
+def _records_for_event(output: str, event: str) -> list[dict[str, Any]]:
+    return [
+        record
+        for record in (json.loads(line) for line in output.splitlines())
+        if record["event"] == event
+    ]
+
+
 def test_parse_args_accepts_exact_btc_scope() -> None:
     args = runner.parse_args(_BTC_ARGS)
 
@@ -213,7 +221,7 @@ def test_runner_reports_blocked_states_as_failure(
     code, out, err = _capture_main(monkeypatch, _BTC_ARGS)
 
     assert code == 1
-    result = json.loads(out.splitlines()[1])
+    result = _records_for_event(out, "RESULT")[0]
     assert result["status"] == "blocked"
     assert result["row_count"] == 0
     assert expected_detail in result["detail"]
@@ -241,7 +249,7 @@ def test_runner_reports_missing_persistence_table_and_rolls_back(
     code, out, err = _capture_main(monkeypatch, _BTC_ARGS)
 
     assert code == 1
-    result = json.loads(out.splitlines()[1])
+    result = _records_for_event(out, "RESULT")[0]
     assert result["status"] == "failed"
     assert "native_short_map_level_status_v1" in result["detail"]
     assert "doesn't exist" in err
@@ -264,10 +272,127 @@ def test_runner_rolls_back_unexpected_success_row_count(
     code, out, _ = _capture_main(monkeypatch, _BTC_ARGS)
 
     assert code == 1
-    result = json.loads(out.splitlines()[1])
+    result = _records_for_event(out, "RESULT")[0]
     assert result["reason_code"] == "UNEXPECTED_ROW_COUNT"
     assert conn.commit_count == 0
     assert conn.rollback_count == 1
+
+
+def test_sigint_multi_symbol_run_emits_one_interrupted_summary_and_preserves_prior_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conns = [_FakeConn(), _FakeConn()]
+    opened = iter(conns)
+    monkeypatch.setattr(runner, "get_connection", lambda: next(opened))
+    calls = 0
+
+    def interrupt_second_symbol(conn: Any, *, key: Any, operational_clock: Any):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            runner.signal.raise_signal(runner.signal.SIGINT)
+        return _outcome(key)
+
+    monkeypatch.setattr(runner, "materialize_native_short_map_level_status_for_scope", interrupt_second_symbol)
+    argv = list(_BTC_ARGS)
+    argv[argv.index("--symbols") + 1] = "BTC,ETH"
+
+    code, out, err = _capture_main(monkeypatch, argv)
+
+    assert code == 130
+    assert err == ""
+    interrupted = _records_for_event(out, "INTERRUPTED")
+    assert len(interrupted) == 1
+    terminal = interrupted[0]
+    assert terminal["status"] == "INTERRUPTED"
+    assert terminal["interruption_signal"] == "SIGINT"
+    assert terminal["symbols_requested"] == 2
+    assert terminal["symbols_completed"] == 1
+    assert terminal["symbols_remaining"] == 1
+    assert conns[0].commit_count == 1
+    assert conns[1].commit_count == 0
+    assert conns[1].rollback_count == 1
+    assert "Traceback" not in out + err
+
+
+def test_sigterm_run_emits_one_interrupted_summary_and_rolls_back_active_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _FakeConn()
+    monkeypatch.setattr(runner, "get_connection", lambda: conn)
+
+    def interrupt_active_symbol(conn: Any, *, key: Any, operational_clock: Any):
+        runner.signal.raise_signal(runner.signal.SIGTERM)
+        return _outcome(key)
+
+    monkeypatch.setattr(runner, "materialize_native_short_map_level_status_for_scope", interrupt_active_symbol)
+
+    code, out, err = _capture_main(monkeypatch, _BTC_ARGS)
+
+    assert code == 143
+    assert err == ""
+    interrupted = _records_for_event(out, "INTERRUPTED")
+    assert len(interrupted) == 1
+    terminal = interrupted[0]
+    assert terminal["interruption_signal"] == "SIGTERM"
+    assert terminal["symbols_completed"] == 0
+    assert terminal["symbols_remaining"] == 1
+    assert conn.commit_count == 0
+    assert conn.rollback_count == 1
+    assert "Traceback" not in out + err
+
+
+def test_successful_multi_symbol_run_reports_heartbeat_and_elapsed_timings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conns = [_FakeConn(), _FakeConn()]
+    opened = iter(conns)
+    monkeypatch.setattr(runner, "get_connection", lambda: next(opened))
+    monkeypatch.setattr(
+        runner,
+        "materialize_native_short_map_level_status_for_scope",
+        lambda conn, *, key, operational_clock: _outcome(key),
+    )
+    argv = list(_BTC_ARGS)
+    argv[argv.index("--symbols") + 1] = "BTC,ETH"
+
+    code, out, err = _capture_main(monkeypatch, argv)
+
+    assert code == 0
+    assert err == ""
+    heartbeats = _records_for_event(out, "HEARTBEAT")
+    assert len(heartbeats) == 4
+    assert heartbeats[0]["current_phase"] == "BEFORE_SYMBOL"
+    assert heartbeats[-1]["current_phase"] == "SYMBOL_COMPLETED"
+    assert all({"rows_read", "rows_written", "total_elapsed_ms"} <= heartbeat.keys() for heartbeat in heartbeats)
+    terminal = _records_for_event(out, "FINISHED")
+    assert len(terminal) == 1
+    assert terminal[0]["status"] == "SUCCESS"
+    assert "MATERIALIZE_LEVEL_STATUS" in terminal[0]["phase_elapsed_ms_by_name"]
+    assert "COMMIT_SYMBOL" in terminal[0]["phase_elapsed_ms_by_name"]
+    assert "MATERIALIZE_LEVEL_STATUS" in terminal[0]["query_elapsed_ms_by_name"]
+    assert terminal[0]["elapsed_ms"] >= 0
+    assert set(terminal[0]["per_symbol_elapsed_ms"]) == {"BTC", "ETH"}
+
+
+def test_single_symbol_run_emits_one_success_terminal_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _FakeConn()
+    monkeypatch.setattr(runner, "get_connection", lambda: conn)
+    monkeypatch.setattr(
+        runner,
+        "materialize_native_short_map_level_status_for_scope",
+        lambda conn, *, key, operational_clock: _outcome(key),
+    )
+
+    code, out, err = _capture_main(monkeypatch, _BTC_ARGS)
+
+    assert code == 0
+    assert err == ""
+    terminal = _records_for_event(out, "FINISHED")
+    assert len(terminal) == 1
+    assert terminal[0]["symbols_requested"] == 1
+    assert terminal[0]["symbols_completed"] == 1
+    assert terminal[0]["symbols_remaining"] == 0
 
 
 def test_runner_reports_all_required_safety_markers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -284,6 +409,8 @@ def test_runner_reports_all_required_safety_markers(monkeypatch: pytest.MonkeyPa
     assert code == 0
     started = json.loads(out.splitlines()[0])
     assert {key: started[key] for key in runner.SAFETY_MARKERS} == runner.SAFETY_MARKERS
+    terminal = _records_for_event(out, "FINISHED")[0]
+    assert {key: terminal[key] for key in runner.SAFETY_MARKERS} == runner.SAFETY_MARKERS
 
 
 def test_runner_has_no_forbidden_imports_or_broad_materialization() -> None:
