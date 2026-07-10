@@ -1103,6 +1103,7 @@ def build_cards(
             price_freshness_state=price_status_by_market.get(market, "DATA_UNAVAILABLE"),
             order_snapshot_ts_utc=_fmt_ts(order_snapshot_ts_utc),
             order_coverage_ts_utc=_fmt_ts(order_snapshot_ts_utc),
+            generation_ts_utc=_fmt_ts(_now),
         )
 
         # Candle-driven nav rebuild: primary path uses history candles to detect a fresh
