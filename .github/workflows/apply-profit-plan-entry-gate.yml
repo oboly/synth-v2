@@ -1,11 +1,13 @@
 name: Apply Profit Plan entry-above-current gate
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/profit-plan-entry-above-current-actionable-ppp-v1
-    paths:
-      - .github/workflows/apply-profit-plan-entry-gate.yml
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
 
 permissions:
   contents: write
