@@ -16,6 +16,16 @@ REPORT_NAME = "manual_short_trader_profit_plan_v1"
 REPORT_VERSION = "0.1"
 DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
 
+# Breathline / Breath Curve is research context only until separately validated and
+# promoted. It contributes zero selection/action/decision weight and must never affect
+# primary action, sorting, PPP, urgency, setup state or ladder state.
+BREATHLINE_DISPLAY_STATE = "RESEARCH_ONLY_DISABLED"
+BREATHLINE_DISABLED_SHORT = "Research context only — disabled"
+BREATHLINE_DISABLED_NOTE = "Breathline: research context only — disabled for actions"
+BREATHLINE_SELECTION_WEIGHT = 0
+BREATHLINE_ACTION_WEIGHT = 0
+BREATHLINE_DECISION_WEIGHT = 0
+
 ORDER_MATCH_TOLERANCE_PCT = Decimal("3")
 TAKE_PROFIT_WAITING_THRESHOLD_PCT = Decimal("3")
 RELOAD_ZONE_APPROACHING_THRESHOLD_PCT = Decimal("3")
@@ -145,6 +155,9 @@ _NO_ACCOUNT_STATE_MODES: frozenset[str] = frozenset({
 # Zero-count options remain visible (may be muted); unknown render-derived values appended after.
 CANONICAL_ACTION_FILTER: tuple[tuple[str, str], ...] = (
     ("fix_ladder", "Fix ladder"),
+    ("review_context", "Review context"),
+    ("map_switch_review", "Map switch review"),
+    ("wait_for_entry", "Wait for entry"),
     ("take_profit_near", "Take profit"),
     ("between_levels", "Between levels"),
     ("map_expired", "Map expired"),
@@ -258,9 +271,17 @@ class TargetLevelStatus:
 class CardEvidence:
     map_cycle_id: str = DATA_UNAVAILABLE
     native_map_id: str = DATA_UNAVAILABLE
+    native_map_status: str = DATA_UNAVAILABLE
     selected_map_reason: str = DATA_UNAVAILABLE
     selected_map_tier: str = DATA_UNAVAILABLE
     lifecycle_state: str = DATA_UNAVAILABLE
+    rollover_state: str = DATA_UNAVAILABLE
+    previous_map_cycle_id: str = DATA_UNAVAILABLE
+    previous_map_lifecycle_state: str = DATA_UNAVAILABLE
+    # Account/order snapshot freshness for this card. Until Lane A plumbs a fresh
+    # per-account snapshot, this stays DATA_UNAVAILABLE and account-specific repair
+    # actions (FIX LADDER) fail closed.
+    account_order_snapshot_status: str = DATA_UNAVAILABLE
     map_age_min: str = DATA_UNAVAILABLE
     anchor_start_ts_utc: str = DATA_UNAVAILABLE
     anchor_end_ts_utc: str = DATA_UNAVAILABLE
@@ -435,8 +456,12 @@ _DELTA_FIELD_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "evidence.map_cycle_id",
             "evidence.native_map_id",
+            "evidence.native_map_status",
             "evidence.selected_map_reason",
             "evidence.selected_map_tier",
+            "evidence.rollover_state",
+            "evidence.previous_map_cycle_id",
+            "evidence.previous_map_lifecycle_state",
         ),
     ),
     ("MAP_LIFECYCLE_CHANGED", ("evidence.lifecycle_state", "actionability_state", "all_sell_targets_completed")),
@@ -692,11 +717,16 @@ def _breath_curve_detail_html(payload: dict[str, Any] | None) -> str:
         _metric_block("Freshness", _breath_curve_freshness_text(payload)),
         _metric_block("Data coverage", _breath_curve_data_coverage_text(payload)),
     )
+    # Demoted: research-only, muted/greyed, zero action weight.
     return (
-        "<div class='market-breath-section breath-curve-section'>"
-        "<div class='market-breath-header'>Breath Curve</div>"
+        "<div class='market-breath-section breath-curve-section breath-curve-disabled disabled muted'>"
+        "<div class='market-breath-header'>Breathline context"
+        f" <span class='breath-disabled-tag'>{esc(BREATHLINE_DISPLAY_STATE)}</span></div>"
+        f"<div class='market-breath-note muted small'>{esc(BREATHLINE_DISABLED_NOTE)}</div>"
         f"<div class='market-breath-grid'>{''.join(blocks)}</div>"
-        f"<div class='market-breath-note muted small'>Warnings: {esc(warnings_text)}. Context only, not forecast or execution advice.</div>"
+        f"<div class='market-breath-note muted small'>Warnings: {esc(warnings_text)}."
+        " Research context only — selection_weight=0 · action_weight=0 · decision_weight=0."
+        " Not a forecast or execution input.</div>"
         "</div>"
     )
 
@@ -741,18 +771,242 @@ def _profit_plan_target_levels(card: ProfitPlanCard) -> tuple[Decimal, ...]:
 
 
 def _profit_plan_potential_pct(card: ProfitPlanCard) -> Decimal | None:
+    """Planning PPP: lowest planned entry to highest planned target.
+
+    Theoretical map potential / plan reference quality. Reference display only —
+    must never promote a card into the actionable bucket.
+    """
     return _profit_plan_potential_pct_from_levels(
         card.reload_reentry_zone or card.buy_zone,
         _profit_plan_target_levels(card),
     )
 
 
-def _format_ppp_ppt_ppv_line(card: ProfitPlanCard) -> str:
-    ppp = _profit_plan_potential_pct(card)
-    if ppp is None:
-        return "— / — = —"
-    # PPT/PPV require a deterministic time-to-target source; do not fake it.
-    return f"{_pct(ppp)} / — = —"
+# Public alias — user-facing terminology is "Planning PPP".
+def _planning_ppp(card: ProfitPlanCard) -> Decimal | None:
+    return _profit_plan_potential_pct(card)
+
+
+# ---------------------------------------------------------------------------
+# Actionable PPP eligibility (v2)
+#
+# Actionable PPP = (highest active target - current price) / current price * 100
+# but only when canonical evidence proves the current setup was activated inside
+# the current map cycle. Otherwise actionable_ppp is None (fail closed).
+# ---------------------------------------------------------------------------
+
+_UNAVAILABLE_TOKENS: frozenset[str] = frozenset({"", DATA_UNAVAILABLE, "NONE", "NULL"})
+
+# Target lifecycle states that constitute canonical, map-cycle-scoped proof that
+# the setup advanced (a target was reached/passed/filled within the current
+# cycle), which necessarily means the entry was activated earlier in the cycle.
+_ACTIVATED_TARGET_LIFECYCLE: frozenset[str] = frozenset({
+    "PASSED",
+    "REACHED",
+    "REACHED_FILLED",
+    "COMPLETED",
+})
+
+# Previous-map lifecycle states that prove a rollover completion.
+_COMPLETED_ROLLOVER_LIFECYCLE: frozenset[str] = frozenset({
+    "MAP_COMPLETED",
+    "COMPLETED",
+    "TARGET_REACHED_OR_PASSED",
+    "PASSED",
+    "INVALIDATED",
+    "MAP_INVALIDATED",
+})
+
+# Explicit rollover_state values that indicate a map switch to a newer/other map.
+_ROLLOVER_INDICATING_STATES: frozenset[str] = frozenset({
+    "CASE_A_NEWER_ACTIVE_SELECTED",
+    "CASE_C_INVALIDATED_FALLBACK",
+})
+
+# Selected-map reason tokens that imply a newer map / rollover / replacement / switch.
+_ROLLOVER_REASON_TOKENS: tuple[str, ...] = (
+    "newer",
+    "rollover",
+    "roll over",
+    "rolled over",
+    "replace",
+    "replacement",
+    "map switch",
+    "switched",
+    "supersed",
+)
+
+# Lifecycle / actionability states that mean the map is expired, completed or
+# invalidated and therefore cannot support an actionable claim.
+_ACTION_BLOCKING_PRIMARY_STATES: frozenset[str] = frozenset({
+    "MAP_RECOMPUTE_NEEDED",
+    "POST_EXTENSION_PULLBACK",
+    "INVALIDATED",
+    "MAP_COMPLETED",
+})
+_ACTION_BLOCKING_LIFECYCLE_STATES: frozenset[str] = frozenset({
+    "MAP_COMPLETED",
+    "MAP_EXPIRED",
+    "MAP_INVALIDATED",
+    "COMPLETED",
+    "INVALIDATED",
+    "EXPIRED",
+})
+
+
+def _is_unavailable(value: Any) -> bool:
+    return str(value or "").strip().upper() in _UNAVAILABLE_TOKENS
+
+
+def _native_map_status(card: ProfitPlanCard) -> str:
+    """Native scope-status projection availability for this card.
+
+    Prefers the explicit ``native_map_status`` evidence field; falls back to a
+    real ``native_map_id``. Returns DATA_UNAVAILABLE when neither proves a
+    current native projection (the safe default until the Lane B read model is
+    wired into the runner).
+    """
+    status = str(card.evidence.native_map_status or "").strip().upper()
+    if status and status not in _UNAVAILABLE_TOKENS:
+        return status
+    if not _is_unavailable(card.evidence.native_map_id):
+        return "AVAILABLE"
+    return DATA_UNAVAILABLE
+
+
+def _price_is_fresh_enough(card: ProfitPlanCard) -> bool:
+    if card.current_price is None or card.current_price <= 0:
+        return False
+    return card.current_price_status not in {"STALE_CURRENT_PRICE", "MISSING_CURRENT_PRICE"}
+
+
+def _map_lifecycle_blocks_action(card: ProfitPlanCard) -> bool:
+    """True when the map is expired/completed/invalidated (no actionable claim)."""
+    if card.all_sell_targets_completed:
+        return True
+    if card.actionability_state in {
+        CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+        CARD_ACTIONABILITY_INVALIDATED,
+        CARD_ACTIONABILITY_HISTORICAL_REFERENCE,
+        CARD_ACTIONABILITY_NAVIGATION_ONLY,
+    }:
+        return True
+    if card.primary_state in _ACTION_BLOCKING_PRIMARY_STATES:
+        return True
+    if str(card.evidence.lifecycle_state or "").strip().upper() in _ACTION_BLOCKING_LIFECYCLE_STATES:
+        return True
+    return False
+
+
+def _selected_map_indicates_rollover(card: ProfitPlanCard) -> bool:
+    """True when the selected-map reason/state implies a newer map / rollover."""
+    if str(card.evidence.rollover_state or "").strip().upper() in _ROLLOVER_INDICATING_STATES:
+        return True
+    reason = str(card.evidence.selected_map_reason or "").lower()
+    return any(token in reason for token in _ROLLOVER_REASON_TOKENS)
+
+
+def _rollover_verified(card: ProfitPlanCard) -> bool:
+    """A rollover is verified only when canonical previous/current cycle evidence exists."""
+    if _native_map_status(card) != "AVAILABLE":
+        return False
+    if _is_unavailable(card.evidence.map_cycle_id):
+        return False
+    if _is_unavailable(card.evidence.previous_map_cycle_id):
+        return False
+    prev_lifecycle = str(card.evidence.previous_map_lifecycle_state or "").strip().upper()
+    if prev_lifecycle in _UNAVAILABLE_TOKENS:
+        return False
+    # Completion evidence: the previous map must be completed/passed/invalidated.
+    return prev_lifecycle in _COMPLETED_ROLLOVER_LIFECYCLE
+
+
+def _map_switch_review_required(card: ProfitPlanCard) -> bool:
+    """True when a map switch is indicated but not verifiable from evidence.
+
+    Fails closed: an indicated rollover with a DATA_UNAVAILABLE native projection
+    or missing previous/current cycle evidence must be reviewed, not repaired.
+    """
+    if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+        return False
+    if not _selected_map_indicates_rollover(card):
+        return False
+    return not _rollover_verified(card)
+
+
+def _highest_active_target(card: ProfitPlanCard) -> Decimal | None:
+    levels = [level for level in card.target_exit_zone if level is not None and level > 0]
+    return max(levels) if levels else None
+
+
+def _entry_activation_proof(card: ProfitPlanCard) -> bool:
+    """Canonical proof that the setup was activated inside the current map cycle.
+
+    Proof = at least one target level shows a first-cross timestamp or an
+    activated lifecycle (reached/passed/filled/completed) derived from the
+    since-activation history window. This is map-cycle-scoped and timestamped/
+    canonical. Being merely below or above an entry level is NOT proof.
+    """
+    for level in card.target_level_statuses:
+        if level.first_cross_ts_utc is not None:
+            return True
+        if level.lifecycle_state in _ACTIVATED_TARGET_LIFECYCLE:
+            return True
+    return False
+
+
+def _actionable_ppp_eligible(card: ProfitPlanCard) -> bool:
+    if not _price_is_fresh_enough(card):
+        return False
+    if card.actionability_state != CARD_ACTIONABILITY_ACTIVE:
+        return False
+    if _is_unavailable(card.evidence.map_cycle_id):
+        return False
+    if _map_lifecycle_blocks_action(card):
+        return False
+    if _highest_active_target(card) is None:
+        return False
+    if _map_switch_review_required(card):
+        return False
+    if not _entry_activation_proof(card):
+        return False
+    return True
+
+
+def _actionable_ppp(card: ProfitPlanCard) -> Decimal | None:
+    """Actionable PPP: current price to highest active target, gated by evidence."""
+    if not _actionable_ppp_eligible(card):
+        return None
+    target = _highest_active_target(card)
+    if target is None or card.current_price is None or card.current_price <= 0:
+        return None
+    return (target - card.current_price) / card.current_price * Decimal("100")
+
+
+def _entry_wait_label(card: ProfitPlanCard) -> str:
+    """Human-readable reason Actionable PPP is unavailable for an active-ish card."""
+    if _map_switch_review_required(card):
+        return "Review map"
+    entry_levels = tuple(level for level in (card.reload_reentry_zone or card.buy_zone) if level is not None)
+    if entry_levels and card.current_price is not None:
+        highest_entry = max(entry_levels)
+        if highest_entry > card.current_price:
+            return "Entry above current — wait for reclaim"
+    return "WAIT FOR ENTRY"
+
+
+def _format_planning_ppp(card: ProfitPlanCard) -> str:
+    ppp = _planning_ppp(card)
+    return _pct(ppp) if ppp is not None else "—"
+
+
+def _format_actionable_ppp(card: ProfitPlanCard) -> str:
+    ppp = _actionable_ppp(card)
+    if ppp is not None:
+        return _pct(ppp)
+    if card.actionability_state == CARD_ACTIONABILITY_ACTIVE:
+        return f"— · {_entry_wait_label(card)}"
+    return "—"
 
 
 def _short_context_display_label(state: str) -> str:
@@ -941,7 +1195,8 @@ def sort_cards_action_priority(cards: list[ProfitPlanCard]) -> list[ProfitPlanCa
     """Default UI sort: portfolio position cards first, then watch-only rotation cards last."""
     def key(card: ProfitPlanCard) -> tuple[int, bool, int, Decimal, Decimal, str]:
         dist = _nearest_distance(card)
-        ppp = _profit_plan_potential_pct(card)
+        # Actionable PPP (not Planning PPP) is the only PPP allowed to influence ranking.
+        ppp = _actionable_ppp(card)
         return (
             _PRESENTATION_MODE_SORT_RANK.get(card.presentation_mode, 99),
             not card.is_relevant,
@@ -974,6 +1229,9 @@ _FILTER_LABEL_OVERRIDES: dict[str, str] = {
     "MANUAL REVIEW": "Manual review",
     "MAP EXPIRED": "Map expired",
     "BETWEEN LEVELS": "Between levels",
+    "REVIEW CONTEXT": "Review context",
+    "MAP SWITCH REVIEW": "Map switch review",
+    "WAIT FOR ENTRY": "Wait for entry",
     "REENTRY_SETUP": "Re-entry setup",
     "EXTENSION_SETUP": "Extension setup",
     "BREAKOUT_SETUP": "Breakout setup",
@@ -1031,6 +1289,77 @@ def _collect_filter_options(items: list[tuple[str, str]]) -> tuple[_FilterOption
     )
 
 
+_LADDER_ATTENTION_STATES: frozenset[str] = frozenset({
+    "LADDER_MISSING",
+    "LADDER_INCOMPLETE",
+    "STALE_ORDERS_PRESENT",
+})
+
+# Strong workflow overrides — the single primary action for the card.
+_STRONG_OVERRIDE_ACTIONS: frozenset[str] = frozenset({
+    "FIX LADDER",
+    "REVIEW CONTEXT",
+    "MAP SWITCH REVIEW",
+    "WAIT FOR ENTRY",
+})
+
+# Weak no-op market states that must not coexist with a strong override action.
+_WEAK_NOOP_PRIMARY_STATES: frozenset[str] = frozenset({
+    "DO_NOTHING",
+    "INSUFFICIENT_DATA",
+})
+
+
+def _card_has_loaded_entry(card: ProfitPlanCard) -> bool:
+    return bool(card.buy_zone or card.reload_reentry_zone)
+
+
+def _ladder_needs_attention(card: ProfitPlanCard) -> bool:
+    return any(state in _LADDER_ATTENTION_STATES for state in card.ladder_states)
+
+
+def _fix_ladder_allowed(card: ProfitPlanCard) -> bool:
+    """Reporting-only guard: FIX LADDER may claim a broken account ladder only
+    when the evidence available to the renderer proves it is safe.
+
+    Fails closed whenever native scope-status, price freshness, current map
+    identity, per-level truth, rollover verification or a loaded entry is
+    missing. Account/order freshness is not yet plumbed into the card, so the
+    native_map_status gate keeps the account-specific repair claim suppressed
+    until the Lane B read model is wired in.
+    """
+    if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+        return False
+    if card.actionability_state != CARD_ACTIONABILITY_ACTIVE:
+        return False
+    if not _price_is_fresh_enough(card):
+        return False
+    # Placeholder / stale / unavailable account+order truth suppresses account-specific
+    # repair claims (the wallet/position/order panels are placeholders until Lane A).
+    if str(card.evidence.account_order_snapshot_status or "").strip().upper() != "FRESH":
+        return False
+    if _native_map_status(card) != "AVAILABLE":
+        return False
+    if _is_unavailable(card.evidence.map_cycle_id):
+        return False
+    if str(card.evidence.selected_map_tier or "").strip().upper() != "CURRENT_ACTIVE_MAP":
+        return False
+    if _map_lifecycle_blocks_action(card):
+        return False
+    if _map_switch_review_required(card):
+        return False
+    # A target without a loaded entry is not a broken ladder — it is wait-for-entry.
+    if not _card_has_loaded_entry(card) and card.target_exit_zone:
+        return False
+    # Only an activated setup can have a broken ladder to repair. Without proof the
+    # entry was activated in the current cycle, this is wait-for-entry, not a fix.
+    if not _entry_activation_proof(card):
+        return False
+    if not _ladder_needs_attention(card):
+        return False
+    return True
+
+
 def _effective_workflow_action(card: ProfitPlanCard) -> str:
     """
     Single source of truth for the rendered workflow action.
@@ -1043,19 +1372,29 @@ def _effective_workflow_action(card: ProfitPlanCard) -> str:
     - selector action label
 
     Reference-only/historical remains actionability context, not a workflow action.
+    Action claims fail closed: FIX LADDER only appears when evidence proves it.
     """
     if card.actionability_state == CARD_ACTIONABILITY_INVALIDATED:
         return "INVALIDATED"
 
+    if _map_switch_review_required(card):
+        return "MAP SWITCH REVIEW"
+
+    if _fix_ladder_allowed(card):
+        return "FIX LADDER"
+
+    # Ladder attention exists but the fix claim is not proven safe: fail closed.
     if (
         card.presentation_mode not in _NO_ACCOUNT_STATE_MODES
         and card.actionability_state == CARD_ACTIONABILITY_ACTIVE
-        and any(
-            state in {"LADDER_MISSING", "LADDER_INCOMPLETE", "STALE_ORDERS_PRESENT"}
-            for state in card.ladder_states
-        )
+        and _ladder_needs_attention(card)
     ):
-        return "FIX LADDER"
+        # No loaded entry, or no proof the entry was activated → wait for entry/reclaim.
+        if not _card_has_loaded_entry(card) and card.target_exit_zone:
+            return "WAIT FOR ENTRY"
+        if not _entry_activation_proof(card):
+            return "WAIT FOR ENTRY"
+        return "REVIEW CONTEXT"
 
     return _ACTION_DISPLAY_MAP.get(
         card.action_label,
@@ -1076,33 +1415,44 @@ def _card_filter_action_option(card: ProfitPlanCard) -> tuple[str, str]:
 
 def _workflow_sort_bucket(card: ProfitPlanCard) -> int:
     """
-    Explicit workflow bucket used by PPP sort.
+    Explicit workflow bucket used by PPP sort (v2 ordering):
 
-    This prevents completed/navigation-only maps with large theoretical PPP from
-    outranking active trade setups.
+      0 actionable setups with a valid Actionable PPP
+      1 waiting-for-entry / waiting-for-reclaim (active setup, no Actionable PPP)
+      2 map-switch review (unverified rollover)
+      3 needs recompute / map expired / post-extension
+      4 navigation-only / historical / completed
+      8 no native short context / minimal
+      9 not relevant
+
+    Planning PPP (theoretical map potential) must never promote a card into an
+    earlier bucket.
     """
     if not card.is_relevant:
         return 9
-    if (
+    if _map_switch_review_required(card):
+        return 2
+    active_setup = (
         card.actionability_state == CARD_ACTIONABILITY_ACTIVE
         and card.setup_state in {"REENTRY_SETUP", "EXTENSION_SETUP", "BREAKOUT_SETUP", "RANGE_SETUP"}
-    ):
-        return 0
+    )
+    if active_setup:
+        return 0 if _actionable_ppp(card) is not None else 1
     if (
         card.actionability_state == CARD_ACTIONABILITY_NEEDS_RECOMPUTE
         or card.action_label == "WAIT_FOR_NEW_MAP"
         or card.primary_state in {"MAP_RECOMPUTE_NEEDED", "POST_EXTENSION_PULLBACK"}
     ):
-        return 1
+        return 3
     if (
         card.actionability_state in {CARD_ACTIONABILITY_NAVIGATION_ONLY, CARD_ACTIONABILITY_HISTORICAL_REFERENCE}
         or card.setup_state == "MAP_COMPLETED"
         or card.action_label == "NAVIGATION_ONLY"
     ):
-        return 2
+        return 4
     if card.short_context_display_state != "HAS_NATIVE_SHORT_FIB_CONTEXT":
         return 8
-    return 4
+    return 5
 
 
 def build_profit_plan_filter_reference_lists(cards: list[ProfitPlanCard]) -> dict[str, tuple[_FilterOption, ...]]:
@@ -2218,11 +2568,16 @@ def _delta_summary_text(delta: CardDelta) -> str:
 
 
 def _card_evidence_html(card: ProfitPlanCard) -> str:
+    rollover_value = card.evidence.rollover_state
+    if card.evidence.previous_map_cycle_id not in {DATA_UNAVAILABLE, ""}:
+        rollover_value = f"{card.evidence.rollover_state} · prev {card.evidence.previous_map_cycle_id} ({card.evidence.previous_map_lifecycle_state})"
     evidence_items = (
         ("Map cycle", card.evidence.map_cycle_id),
         ("Native map", card.evidence.native_map_id),
+        ("Native map status", _native_map_status(card)),
         ("Tier", card.evidence.selected_map_tier),
         ("Reason", card.evidence.selected_map_reason),
+        ("Rollover", rollover_value),
         ("Lifecycle", card.evidence.lifecycle_state),
         ("Map age", card.evidence.map_age_min),
         ("Anchor", f"{card.evidence.anchor_start_ts_utc} → {card.evidence.anchor_end_ts_utc}"),
@@ -2746,6 +3101,16 @@ _CSS = """
       margin-bottom: 8px;
     }
     .market-breath-note { line-height: 1.4; }
+    .breath-curve-disabled {
+      opacity: .55; filter: grayscale(1);
+      border-style: dashed;
+    }
+    .breath-curve-disabled .market-breath-header { color: var(--muted); }
+    .breath-disabled-tag {
+      font-size: 10px; font-weight: 700; letter-spacing: .05em;
+      color: var(--muted); border: 1px solid var(--line); border-radius: 5px;
+      padding: 1px 6px; margin-left: 6px; text-transform: none;
+    }
     .zones {
       display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
       margin: 10px 0;
@@ -3076,7 +3441,7 @@ def _build_client_js(storage_scope: str) -> str:
       item.innerHTML =
         "<div class='pp-selector-symbol'>" + symbol + "</div>" +
         "<div class='pp-selector-meta'>" + action + (ppp ? ' \xb7 ' + ppp : '') + "</div>" +
-        "<div class='pp-selector-breath'>" + breath + " \xb7 " + trajectory + "</div>";
+        "<div class='pp-selector-breath muted'>Breathline ctx: " + breath + " \xb7 " + trajectory + "</div>";
       item.addEventListener('click', function() {{
         selectProfitPlanCard(item.dataset.renderId);
       }});
@@ -3090,8 +3455,8 @@ def _build_client_js(storage_scope: str) -> str:
     var symbol = (card.dataset.sortSymbol || '?').toUpperCase();
     var action = card.dataset.filterActionLabel || card.dataset.filterAction || '—';
     var setup = card.dataset.filterSetup || '—';
-    var ppp = card.dataset.sortPpp && card.dataset.sortPpp !== '-999999'
-      ? card.dataset.sortPpp + '%' : '—';
+    var planningPpp = card.dataset.planningPpp || '—';
+    var actionablePpp = card.dataset.actionablePpp || '—';
     var bcAvailability = card.dataset.bcAvailability || 'UNAVAILABLE';
     var bcCurrent = card.dataset.bcCurrentCheckpoint || 'UNAVAILABLE';
     var bcBand = card.dataset.bcOffsetBand || '—';
@@ -3108,8 +3473,10 @@ def _build_client_js(storage_scope: str) -> str:
       "<div class='small muted' style='margin-bottom:10px'>" + market + "</div>" +
       "<div style='margin-bottom:6px'><span class='muted small'>Action: </span>" + action + "</div>" +
       "<div style='margin-bottom:6px'><span class='muted small'>Setup: </span>" + setup + "</div>" +
-      "<div style='margin-bottom:14px'><span class='muted small'>PPP: </span>" + ppp + "</div>" +
-      "<h3>Breath Curve</h3>" +
+      "<div style='margin-bottom:6px'><span class='muted small'>Planning PPP: </span>" + planningPpp + "</div>" +
+      "<div style='margin-bottom:14px'><span class='muted small'>Actionable PPP: </span>" + actionablePpp + "</div>" +
+      "<h3 class='muted'>Breathline context — research only</h3>" +
+      "<div class='muted small' style='margin-bottom:6px'>Research context only — disabled for actions (weights 0).</div>" +
       "<div style='margin-bottom:6px'><span class='muted small'>Availability: </span>" + bcAvailability + "</div>" +
       "<div style='margin-bottom:6px'><span class='muted small'>Current checkpoint: </span>" + bcCurrent + "</div>" +
       "<div style='margin-bottom:6px'><span class='muted small'>Offset band: </span>" + bcBand + "</div>" +
@@ -3639,15 +4006,16 @@ def render_plan_card(
         _actionability_display_bundle(card)
     )
     invalidation_line = format_invalidation_line(card.invalidation_risk_zone, card.distance_to_invalidation_pct)
-    ppp_line = _format_ppp_ppt_ppv_line(card)
+    planning_ppp_text = _format_planning_ppp(card)
+    actionable_ppp_text = _format_actionable_ppp(card)
 
     event_label = STATE_LABELS.get(card.event_state, card.event_state.replace("_", " "))
     metrics_blocks = [
         _metric_block("Current price", price_line),
         _metric_block("Setup", card.setup_state),
         _metric_block("Actionability", card.actionability_state),
-        _metric_block("Breath Curve", _breath_curve_compact_summary(breath_curve_payload)),
-        _metric_block("Next checkpoint", _breath_curve_next_checkpoint_text(breath_curve_payload)),
+        # Breathline is research-only / disabled for actions — presented as muted context.
+        _metric_block("Breathline context", BREATHLINE_DISABLED_SHORT),
     ]
     if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
         metrics_blocks.append(_metric_block("Market event", event_label))
@@ -3655,7 +4023,8 @@ def render_plan_card(
         _metric_block(reentry_label, reentry_line),
         _metric_block(target_label, target_line),
         _metric_block("Invalidation", invalidation_line),
-        _metric_block("PPP / PPT = PPV", ppp_line),
+        _metric_block("Planning PPP", planning_ppp_text),
+        _metric_block("Actionable PPP", actionable_ppp_text),
     ))
     metrics_html = "".join(metrics_blocks)
 
@@ -3679,8 +4048,14 @@ def render_plan_card(
     presentation_sort_value = _presentation_mode_sort_rank(card)
     action_sort_value = _card_action_sort_value(card)
     setup_sort_value = _setup_sort_priority(card)
-    ppp_pct = _profit_plan_potential_pct(card)
-    ppp_sort_value = ppp_pct if ppp_pct is not None else Decimal("-999999")
+    # data-sort-ppp carries Actionable PPP only — Planning PPP must never drive ranking.
+    actionable_ppp_pct = _actionable_ppp(card)
+    planning_ppp_pct = _planning_ppp(card)
+    ppp_sort_value = actionable_ppp_pct if actionable_ppp_pct is not None else Decimal("-999999")
+    planning_ppp_attr = _pct(planning_ppp_pct) if planning_ppp_pct is not None else "—"
+    actionable_ppp_attr = _pct(actionable_ppp_pct) if actionable_ppp_pct is not None else "—"
+    map_switch_review_attr = str(_map_switch_review_required(card)).lower()
+    native_map_status_attr = _native_map_status(card)
     workflow_sort_bucket = _workflow_sort_bucket(card)
 
     # Event + order-ladder state above order ladder.
@@ -3750,6 +4125,23 @@ def render_plan_card(
     reasons_html = "".join(f"<li>{esc(r)}</li>" for r in card.reasons)
     evidence_html = _card_evidence_html(card)
 
+    # Primary-action consistency: a card has exactly one primary action. When a
+    # stronger workflow override is shown, do not also render a weak no-op market
+    # state ("Do nothing") that would read as a second, conflicting action.
+    state_label_text = card.suggested_manual_attention_label
+    if displayed_action == "MAP SWITCH REVIEW":
+        state_label_text = "Review map"
+    elif (
+        displayed_action in _STRONG_OVERRIDE_ACTIONS
+        and card.primary_state in _WEAK_NOOP_PRIMARY_STATES
+    ):
+        state_label_text = ""
+    state_label_html = (
+        f"<div class='state-label {_state_class(card.primary_state)}'>{esc(state_label_text)}</div>"
+        if state_label_text
+        else ""
+    )
+
     return (
         f"<section class='card plan-card'"
         f" data-attention='{str(card.is_relevant).lower()}'"
@@ -3768,6 +4160,10 @@ def render_plan_card(
         f" data-sort-action='{esc(action_sort_value)}'"
         f" data-sort-setup='{esc(setup_sort_value)}'"
         f" data-sort-ppp='{esc(ppp_sort_value)}'"
+        f" data-planning-ppp='{esc(planning_ppp_attr)}'"
+        f" data-actionable-ppp='{esc(actionable_ppp_attr)}'"
+        f" data-map-switch-review='{esc(map_switch_review_attr)}'"
+        f" data-native-map-status='{esc(native_map_status_attr)}'"
         f" data-sort-symbol='{esc(card.symbol.lower())}'"
         f" data-bc-availability='{esc(_breath_curve_availability(breath_curve_payload))}'"
         f" data-bc-phase-marker='{esc(_breath_curve_phase_marker_text(breath_curve_payload))}'"
@@ -3803,7 +4199,7 @@ def render_plan_card(
         "</div>"
         f"<div style='text-align:right'>"
         f"{_scenario_badge(card.scenario_type)}"
-        f"<div class='state-label {_state_class(card.primary_state)}'>{esc(card.suggested_manual_attention_label)}</div>"
+        f"{state_label_html}"
         f"{secondary_state_html}"
         f"<div class='action-label {'action-wait' if card.presentation_mode in _NO_ACCOUNT_STATE_MODES or card.actionability_state != CARD_ACTIONABILITY_ACTIVE else _action_class(card.action_label)}'>{esc(displayed_action)}</div>"
         f"<div class='tf-label'>{esc(card.timeframe_label)}</div>"
@@ -4158,6 +4554,19 @@ def build_json_snapshot(
                 "relevance_reasons": list(c.relevance_reasons),
                 "reasons": list(c.reasons),
                 "is_relevant": c.is_relevant,
+                "planning_ppp_pct": (str(_planning_ppp(c)) if _planning_ppp(c) is not None else None),
+                "actionable_ppp_pct": (str(_actionable_ppp(c)) if _actionable_ppp(c) is not None else None),
+                "actionable_ppp_available": _actionable_ppp(c) is not None,
+                "effective_action": _effective_workflow_action(c),
+                "fix_ladder_allowed": _fix_ladder_allowed(c),
+                "map_switch_review_required": _map_switch_review_required(c),
+                "native_map_status": _native_map_status(c),
+                "breathline_display_state": BREATHLINE_DISPLAY_STATE,
+                "breathline_weights": {
+                    "selection_weight": BREATHLINE_SELECTION_WEIGHT,
+                    "action_weight": BREATHLINE_ACTION_WEIGHT,
+                    "decision_weight": BREATHLINE_DECISION_WEIGHT,
+                },
                 "order_summary": {
                     "open_buy_orders": c.order_summary.open_buy_orders,
                     "open_sell_orders": c.order_summary.open_sell_orders,

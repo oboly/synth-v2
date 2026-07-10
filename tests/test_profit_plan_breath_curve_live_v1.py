@@ -319,7 +319,9 @@ def test_profit_plan_json_and_html_include_breath_curve_payload() -> None:
     assert "data-bc-next-checkpoint='MAIN_PULSE_TP_HIGH'" in html
     assert "data-mb-phase" not in html
     assert "data-mb-trajectory" not in html
-    assert "Breath Curve" in html
+    # Breathline is demoted to research-only muted context (label + disabled state).
+    assert "Breathline context" in html
+    assert "RESEARCH_ONLY_DISABLED" in html
     assert "MAIN_PULSE_TP_HIGH" in html
 
 
