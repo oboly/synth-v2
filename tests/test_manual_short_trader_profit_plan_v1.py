@@ -4,7 +4,7 @@ import ast
 import dataclasses
 import json
 import tempfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -136,6 +136,8 @@ def _fix_ladder_ready_evidence() -> CardEvidence:
         rollover_state="SINGLE_MAP",
         account_order_snapshot_status="FRESH",
         price_freshness_state="FRESH",
+        order_snapshot_ts_utc="2026-06-05T12:00:00Z",
+        generation_ts_utc="2026-06-05T12:00:00Z",
     )
 
 
@@ -4077,6 +4079,74 @@ def test_fix_ladder_filter_action_still_works_for_active_missing_ladder() -> Non
     )
     result = _pp_module._effective_workflow_action(card)
     assert result == "FIX LADDER"
+
+
+def _card_with_order_snapshot(order_snapshot_ts_utc: str) -> "ProfitPlanCard":
+    card = dataclasses.replace(
+        _make_card(
+            current_price="0.458790",
+            fib_ext=_wld_fib_ext(),
+            short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+            short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        ),
+        actionability_state=_pp_module.CARD_ACTIONABILITY_ACTIVE,
+        ladder_states=("LADDER_MISSING",),
+        buy_zone=(Decimal("0.4000"),),
+        reload_reentry_zone=(Decimal("0.4000"),),
+        evidence=dataclasses.replace(
+            _fix_ladder_ready_evidence(),
+            order_snapshot_ts_utc=order_snapshot_ts_utc,
+        ),
+    )
+    return card
+
+
+def test_old_order_snapshot_suppresses_fix_ladder() -> None:
+    card = _card_with_order_snapshot("2026-06-05T11:44:59Z")
+
+    assert _pp_module._order_snapshot_authority_status(card.evidence) == "STALE"
+    assert _pp_module._effective_workflow_action(card) == "REVIEW CONTEXT"
+
+
+def test_order_snapshot_at_freshness_boundary_allows_fix_ladder() -> None:
+    card = _card_with_order_snapshot("2026-06-05T11:45:00Z")
+
+    assert _pp_module.ORDER_SNAPSHOT_FRESH_AFTER == timedelta(minutes=15)
+    assert _pp_module._order_snapshot_authority_status(card.evidence) == "FRESH"
+    assert _pp_module._effective_workflow_action(card) == "FIX LADDER"
+
+
+def test_order_snapshot_just_beyond_freshness_boundary_is_review_context() -> None:
+    card = _card_with_order_snapshot("2026-06-05T11:44:59.999999Z")
+
+    assert _pp_module._order_snapshot_authority_status(card.evidence) == "STALE"
+    assert _pp_module._effective_workflow_action(card) == "REVIEW CONTEXT"
+
+
+def test_malformed_order_snapshot_suppresses_fix_ladder() -> None:
+    card = _card_with_order_snapshot("2026-06-05 12:00:00")
+
+    assert _pp_module._order_snapshot_authority_status(card.evidence) == "STALE"
+    assert _pp_module._effective_workflow_action(card) == "REVIEW CONTEXT"
+
+
+def test_order_snapshot_beyond_future_skew_suppresses_fix_ladder() -> None:
+    card = _card_with_order_snapshot("2026-06-05T12:00:31Z")
+
+    assert _pp_module.ORDER_SNAPSHOT_MAX_FUTURE_SKEW == timedelta(seconds=30)
+    assert _pp_module._order_snapshot_authority_status(card.evidence) == "STALE"
+    assert _pp_module._effective_workflow_action(card) == "REVIEW CONTEXT"
+
+
+def test_map_lifecycle_wins_over_stale_order_snapshot() -> None:
+    card = dataclasses.replace(
+        _card_with_order_snapshot("2026-06-05T11:44:59Z"),
+        actionability_state=_pp_module.CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+        action_label="WAIT_FOR_NEW_MAP",
+    )
+
+    assert _pp_module._effective_workflow_action(card) == "MAP EXPIRED"
 
 
 def test_no_filter_action_drift_between_count_and_dom() -> None:

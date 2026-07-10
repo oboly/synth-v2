@@ -4,12 +4,13 @@ import dataclasses
 import html as _html
 import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from src.reporting.dashboard_style_v1 import synth_favicon_head_html
 from src.reporting.dashboard_time_v1 import format_ui_now
+from src.reporting.current_price_snapshot_v1 import DEFAULT_CURRENT_PRICE_FRESH_AFTER
 
 
 REPORT_NAME = "manual_short_trader_profit_plan_v1"
@@ -33,6 +34,12 @@ INVALIDATION_NEAR_THRESHOLD_PCT = Decimal("3")
 PRICE_RAN_AWAY_THRESHOLD_PCT = Decimal("12")
 ORDER_STALE_DISTANCE_PCT = Decimal("12")
 TARGET_LEVEL_NEAR_THRESHOLD_PCT = Decimal("1")
+
+# Keep order authority on the same 15-minute reporting freshness window as the
+# current-price snapshot. A small future allowance tolerates bounded clock skew
+# without accepting a snapshot that cannot be authoritative for this render.
+ORDER_SNAPSHOT_FRESH_AFTER = DEFAULT_CURRENT_PRICE_FRESH_AFTER
+ORDER_SNAPSHOT_MAX_FUTURE_SKEW = timedelta(seconds=30)
 
 STATE_LABELS: dict[str, str] = {
     "STALE_CURRENT_PRICE": "Stale current price",
@@ -1318,6 +1325,37 @@ def _ladder_needs_attention(card: ProfitPlanCard) -> bool:
     return any(state in _LADDER_ATTENTION_STATES for state in card.ladder_states)
 
 
+def _parse_canonical_utc_timestamp(value: str) -> datetime | None:
+    """Parse the runner's canonical ``...Z`` UTC timestamp without guessing."""
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return None
+    if parsed.tzinfo != UTC:
+        return None
+    canonical = parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    return parsed if canonical == value else None
+
+
+def _order_snapshot_authority_status(evidence: CardEvidence) -> str:
+    """Return FRESH, STALE, or DATA_UNAVAILABLE using deterministic evidence.
+
+    Freshness is evaluated against the card generation timestamp, never the
+    renderer's wall clock.
+    """
+    snapshot_ts = _parse_canonical_utc_timestamp(evidence.order_snapshot_ts_utc)
+    generation_ts = _parse_canonical_utc_timestamp(evidence.generation_ts_utc)
+    if snapshot_ts is None or generation_ts is None:
+        return DATA_UNAVAILABLE if evidence.order_snapshot_ts_utc == DATA_UNAVAILABLE else "STALE"
+    if snapshot_ts - generation_ts > ORDER_SNAPSHOT_MAX_FUTURE_SKEW:
+        return "STALE"
+    if generation_ts - snapshot_ts > ORDER_SNAPSHOT_FRESH_AFTER:
+        return "STALE"
+    return "FRESH"
+
+
 def _fix_ladder_allowed(card: ProfitPlanCard) -> bool:
     """Reporting-only guard: FIX LADDER may claim a broken account ladder only
     when the evidence available to the renderer proves it is safe.
@@ -1337,6 +1375,8 @@ def _fix_ladder_allowed(card: ProfitPlanCard) -> bool:
     # Placeholder / stale / unavailable account+order truth suppresses account-specific
     # repair claims (the wallet/position/order panels are placeholders until Lane A).
     if str(card.evidence.account_order_snapshot_status or "").strip().upper() != "FRESH":
+        return False
+    if _order_snapshot_authority_status(card.evidence) != "FRESH":
         return False
     if _native_map_status(card) != "AVAILABLE":
         return False
