@@ -75,6 +75,43 @@ Placeholder account/order panels must drive account-context unavailable or stale
 Breathline/Breath Curve must not visually imply active action authority.
 ```
 
+### RED extension card
+
+Observed state:
+
+```text
+Setup: EXTENSION_SETUP
+Badge: EXTENSION RUNNER
+Target zone: present
+Invalidation: present
+Re-entry zone: No levels loaded
+PPP/PPT/PPV: empty
+Action text still includes FIX LADDER
+```
+
+What is correct:
+
+```text
+Extension context appears to recompute target and invalidation without inventing entry levels.
+No re-entry level is loaded, and PPP remains empty.
+```
+
+What needs cleanup:
+
+```text
+FIX LADDER is too strong when the user is looking for an entry and no re-entry levels are loaded.
+A target without a sell order is not automatically a broken ladder.
+```
+
+Required behavior:
+
+```text
+Action: WAIT_FOR_ENTRY or REVIEW_ENTRY
+Target: open / no sell order at target
+Re-entry: unavailable
+Fix ladder: disabled unless the user explicitly chooses target-order repair later
+```
+
 ## Hard architecture boundary
 
 ```text
@@ -83,6 +120,7 @@ reporting = display and fail-closed action-state rendering only
 account freshness = Lane A persisted snapshot contract
 native current map/level truth = Lane B / Lane B0 read model
 Breathline = research context only until separately validated and promoted
+entry filter research = future measured candidate lane, not BUY_READY
 ```
 
 Forbidden in this bundle:
@@ -131,6 +169,11 @@ if current_per_level_status_model_missing:
 if map_lifecycle_state in MAP_COMPLETED / MAP_EXPIRED / MAP_INVALIDATED:
     action = MAP_EXPIRED or NEEDS_RECOMPUTE or ROTATE_MAP as appropriate
     fix_ladder_enabled = false
+
+if setup_type == EXTENSION_SETUP and re_entry_levels_missing:
+    action = WAIT_FOR_ENTRY or REVIEW_ENTRY
+    reason includes ENTRY_LEVELS_UNAVAILABLE
+    fix_ladder_enabled = false
 ```
 
 `FIX_LADDER` may appear only when all of these are true:
@@ -153,6 +196,7 @@ Acceptance criteria:
 ```text
 LDO-like case renders REVIEW_CONTEXT, not FIX_LADDER.
 NEAR MAP_EXPIRED case stays NEEDS_RECOMPUTE / map expired, not FIX_LADDER.
+RED EXTENSION_SETUP with target/invalidation but no re-entry levels renders WAIT_FOR_ENTRY or REVIEW_ENTRY, not FIX_LADDER.
 Any placeholder wallet/position/order panel suppresses account-specific action claims.
 ```
 
@@ -303,6 +347,70 @@ PPP renders as 13.79% or 13.8%, not long raw Decimal output.
 The sidebar and card use the same formatting rules.
 ```
 
+## P2 — Future entry candidate filter research note
+
+Status: recorded as future research/design only.
+
+User preference from 2026-07-10:
+
+```text
+Do not treat every possible setup as an entry.
+Wait for entries with at least 4% upside to the nearest valid target.
+Across dozens of coins, the system should be selective enough that something better should exist.
+```
+
+Important terminology:
+
+```text
+4% is a minimum upside-to-target gate, not a reward/risk ratio.
+```
+
+Future research concept:
+
+```text
+BEST_ENTRY_FILTER_V1
+```
+
+Candidate rule for research/backtest only:
+
+```text
+candidate_entry only if:
+- nearest_valid_target_upside_pct >= 4.0
+- entry is not already too close to target
+- invalidation is clear
+- price is not already extended without reclaim/pullback confirmation
+- native map and per-level status are fresh/canonical
+- account/order freshness is available only later in decision_gate context
+```
+
+Do not remove risk controls. Minimum 4% upside is necessary but not sufficient.
+A candidate with 4% upside and excessive downside remains unattractive.
+
+Architecture boundary:
+
+```text
+entry candidate research -> backtest -> replay-safe validation -> paper candidate -> decision_gate -> execution_planner -> trading agent/executor
+```
+
+Not:
+
+```text
+manual dashboard context -> BUY_READY
+4% upside -> direct order
+research filter -> execution
+```
+
+Suggested dashboard wording for RED-like cases:
+
+```text
+WAIT FOR ENTRY
+Target open
+No re-entry levels loaded
+Current upside-to-target below entry threshold or entry unavailable
+```
+
+This note is not runtime logic, not a signal, not advice_engine output, and not an order instruction.
+
 ## P2 — NEAR manual context note
 
 Status: recorded as manual context only.
@@ -349,6 +457,14 @@ canonical map_cycle_id consumption
 deterministic ladder-row identities
 ```
 
+Future entry filter lane:
+
+```text
+BEST_ENTRY_FILTER_V1 research/backtest
+minimum target-upside threshold >= 4.0%
+no BUY_READY without validation and downstream account-aware gates
+```
+
 This bundle must not implement around those missing authorities in reporting.
 
 ## Suggested PR split
@@ -359,6 +475,7 @@ This bundle must not implement around those missing authorities in reporting.
 3. ui: normalize profit plan evidence-card authority rows
 4. ui: clean profit plan numeric precision
 5. ui: replace server-baked relative freshness labels with absolute timestamp/status display
+6. research: design best entry filter validation with min target upside threshold
 ```
 
 ## Definition of done
@@ -366,9 +483,11 @@ This bundle must not implement around those missing authorities in reporting.
 ```text
 LDO-like stale/unavailable cases no longer show FIX_LADDER.
 NEAR-like map-expired cases remain NEEDS_RECOMPUTE / MAP_EXPIRED.
+RED-like extension cases with no re-entry levels show WAIT_FOR_ENTRY / REVIEW_ENTRY, not FIX_LADDER.
 Breathline is visibly research-only and contributes zero action weight.
 Evidence rows are separated by authority and cannot imply false freshness.
 PPP and percent values are human-readable.
 Static freshness display cannot repeat the 2026-07-05 stale-age failure mode.
+Future entry filtering records minimum target upside >= 4.0% as research/backtest input, not BUY_READY.
 No broker/private/execution path is touched.
 ```
