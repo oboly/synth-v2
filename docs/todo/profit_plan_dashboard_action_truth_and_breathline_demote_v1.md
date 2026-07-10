@@ -8,6 +8,35 @@ This bundle records the 2026-07-09 manual dashboard review of the Profit Plan / 
 
 It is not a trading decision, signal, order instruction, or live-ladder enablement task.
 
+## Implementation status (2026-07-10)
+
+Branch `fix/profit-plan-actionable-ppp-map-rollover-review-v1` — reporting-only:
+
+- DONE — PPP v2: split into Planning PPP (reference) and Actionable PPP
+  (current price → highest active target, gated by current-cycle entry-activation
+  evidence). `PPP high-low` sort and ranking use Actionable PPP only; cards with
+  no Actionable PPP sort behind. Planning PPP may display but never promotes.
+- DONE — HOT-like map-switch review gate: an indicated rollover (newer/replacement
+  reason or `CASE_A_*` state) that is not verifiable from previous/current
+  `map_cycle_id` + completion evidence, or with `native_map_status=DATA_UNAVAILABLE`,
+  renders `MAP SWITCH REVIEW` / `Review map`, disables Fix ladder and suppresses
+  Actionable PPP.
+- DONE — Fail-closed FIX_LADDER: `FIX LADDER` only when native scope-status is
+  available, account/order snapshot is `FRESH`, the map cycle is current/active,
+  the rollover is verified/not-applicable, the map is not expired/completed/
+  invalidated, the entry is loaded and activated, and a genuine level is missing or
+  order stale. Otherwise `REVIEW CONTEXT` / `WAIT FOR ENTRY` / `MAP SWITCH REVIEW`.
+  Since account/native truth is still placeholder in this runner, FIX_LADDER stays
+  suppressed in production until Lane A/Lane B are wired in.
+- DONE — Breathline demotion: rendered as muted `Breathline context`
+  (`RESEARCH_ONLY_DISABLED`, weights 0). Proven to not affect action, PPP, sorting,
+  urgency, setup state or ladder state.
+- DEFERRED (separate PRs) — P1 freshness display (Lane A absolute-timestamp
+  contract), P1 evidence-row authority normalization, P1 numeric precision, and the
+  P2 future best-entry (>=4% upside) research lane. This PR depends on the Lane A
+  absolute timestamp/status contract for real account/order freshness and on the
+  Lane B native scope-status projection to ever enable FIX_LADDER.
+
 ## Purpose
 
 Prevent the Profit Plan dashboard from presenting action states that are stronger than the available evidence supports.

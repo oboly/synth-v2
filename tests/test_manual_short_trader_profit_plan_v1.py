@@ -122,6 +122,23 @@ def _native_short_row(
     )
 
 
+def _fix_ladder_ready_evidence() -> CardEvidence:
+    """Evidence that proves an account-specific ladder repair is safe to claim:
+    fresh account/order snapshot, available native scope-status projection, a
+    current active map cycle and a non-rollover (or verified) map selection."""
+    return CardEvidence(
+        map_cycle_id="WLD|SHORT|4h|demo",
+        native_map_id="WLD-4h-map-001",
+        native_map_status="AVAILABLE",
+        selected_map_reason="Single active map selected",
+        selected_map_tier="CURRENT_ACTIVE_MAP",
+        lifecycle_state="TARGET_ACTIVE",
+        rollover_state="SINGLE_MAP",
+        account_order_snapshot_status="FRESH",
+        price_freshness_state="FRESH",
+    )
+
+
 class _FakeOrder:
     def __init__(self, price: str, side: str = "buy", created_at_ms: int | None = None) -> None:
         self.limit_price = Decimal(price)
@@ -3603,8 +3620,12 @@ def test_ppp_ppt_ppv_display_uses_real_ppp_and_unknown_time_fields() -> None:
     )
     html = render_plan_card(card)
 
-    assert "PPP / PPT = PPV" in html
-    assert "33.33% / — = —" in html
+    # PPP v2: Planning PPP is the theoretical map potential; Actionable PPP is separate.
+    assert "Planning PPP" in html
+    assert "Actionable PPP" in html
+    assert "33.33%" in html
+    # The old combined "PPP / PPT = PPV" product concept is gone.
+    assert "PPP / PPT = PPV" not in html
 
 
 def test_action_priority_sort_puts_missing_ladder_before_armed_ladder() -> None:
@@ -3696,6 +3717,9 @@ def test_dynamic_filter_reference_lists_are_derived_from_cards() -> None:
         base,
         actionability_state=_pp_module.CARD_ACTIONABILITY_ACTIVE,
         ladder_states=("LADDER_MISSING",),
+        buy_zone=(Decimal("0.4000"),),
+        reload_reentry_zone=(Decimal("0.4000"),),
+        evidence=_fix_ladder_ready_evidence(),
     )
 
     refs = _pp_module.build_profit_plan_filter_reference_lists([card])
@@ -3900,12 +3924,19 @@ def test_cockpit_cards_in_profit_plan_main_container() -> None:
 def test_workflow_sort_bucket_keeps_completed_maps_below_active_ppp_setups() -> None:
     from dataclasses import replace
 
-    active = _make_card(
-        current_price="0.458790",
+    # Active setup with a proven activated entry (first target passed via history)
+    # and a canonical map cycle → valid Actionable PPP → bucket 0.
+    active = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.458790"),
         fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.470000"),
         short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=_fix_ladder_ready_evidence(),
     )
     completed = replace(
         active,
@@ -3914,8 +3945,11 @@ def test_workflow_sort_bucket_keeps_completed_maps_below_active_ppp_setups() -> 
         actionability_state=_pp_module.CARD_ACTIONABILITY_NAVIGATION_ONLY,
     )
 
+    assert _pp_module._actionable_ppp(active) is not None
     assert _pp_module._workflow_sort_bucket(active) == 0
-    assert _pp_module._workflow_sort_bucket(completed) == 2
+    # Completed / navigation-only maps sort into bucket 4, strictly below active setups.
+    assert _pp_module._workflow_sort_bucket(completed) == 4
+    assert _pp_module._workflow_sort_bucket(active) < _pp_module._workflow_sort_bucket(completed)
 
 
 # ---------------------------------------------------------------------------
@@ -4030,7 +4064,17 @@ def test_fix_ladder_filter_action_still_works_for_active_missing_ladder() -> Non
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
     )
-    card = replace(base, actionability_state=_pp_module.CARD_ACTIONABILITY_ACTIVE, ladder_states=("LADDER_MISSING",))
+    # FIX LADDER now requires proven-safe evidence: a loaded entry, a fresh
+    # account/order snapshot, an available native scope-status projection and a
+    # current active (non-rollover) map cycle.
+    card = replace(
+        base,
+        actionability_state=_pp_module.CARD_ACTIONABILITY_ACTIVE,
+        ladder_states=("LADDER_MISSING",),
+        buy_zone=(Decimal("0.4000"),),
+        reload_reentry_zone=(Decimal("0.4000"),),
+        evidence=_fix_ladder_ready_evidence(),
+    )
     result = _pp_module._effective_workflow_action(card)
     assert result == "FIX LADDER"
 
