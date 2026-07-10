@@ -1,0 +1,162 @@
+name: Apply Profit Plan entry-above-current gate
+
+on:
+  push:
+    branches:
+      - fix/profit-plan-entry-above-current-actionable-ppp-v1
+    paths:
+      - .github/workflows/apply-profit-plan-entry-gate.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/profit-plan-entry-above-current-actionable-ppp-v1
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Apply fail-closed entry gate and regression test
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          source_path = Path("src/reporting/manual_short_trader_profit_plan_v1.py")
+          source = source_path.read_text()
+
+          helper_anchor = '''def _highest_active_target(card: ProfitPlanCard) -> Decimal | None:
+              levels = [level for level in card.target_exit_zone if level is not None and level > 0]
+              return max(levels) if levels else None
+
+
+          def _entry_activation_proof(card: ProfitPlanCard) -> bool:
+          '''
+          helper_replacement = '''def _highest_active_target(card: ProfitPlanCard) -> Decimal | None:
+              levels = [level for level in card.target_exit_zone if level is not None and level > 0]
+              return max(levels) if levels else None
+
+
+          def _entry_above_current(card: ProfitPlanCard) -> bool:
+              """True when the highest loaded entry remains above current price.
+
+              Entry-above-current is a waiting/reclaim state, never an actionable PPP
+              state, even when historical target evidence proves an earlier activation.
+              """
+              if card.current_price is None or card.current_price <= 0:
+                  return False
+              entry_levels = tuple(
+                  level
+                  for level in (card.reload_reentry_zone or card.buy_zone)
+                  if level is not None and level > 0
+              )
+              return bool(entry_levels) and max(entry_levels) > card.current_price
+
+
+          def _entry_activation_proof(card: ProfitPlanCard) -> bool:
+          '''
+          if source.count(helper_anchor) != 1:
+              raise SystemExit("helper insertion anchor mismatch")
+          source = source.replace(helper_anchor, helper_replacement, 1)
+
+          eligibility_anchor = '''    if _highest_active_target(card) is None:
+              return False
+          if _map_switch_review_required(card):
+              return False
+          '''
+          eligibility_replacement = '''    if _highest_active_target(card) is None:
+              return False
+          if _entry_above_current(card):
+              return False
+          if _map_switch_review_required(card):
+              return False
+          '''
+          if source.count(eligibility_anchor) != 1:
+              raise SystemExit("eligibility anchor mismatch")
+          source = source.replace(eligibility_anchor, eligibility_replacement, 1)
+
+          label_anchor = '''    entry_levels = tuple(level for level in (card.reload_reentry_zone or card.buy_zone) if level is not None)
+              if entry_levels and card.current_price is not None:
+                  highest_entry = max(entry_levels)
+                  if highest_entry > card.current_price:
+                      return "Entry above current — wait for reclaim"
+              return "WAIT FOR ENTRY"
+          '''
+          label_replacement = '''    if _entry_above_current(card):
+                  return "Entry above current — wait for reclaim"
+              return "WAIT FOR ENTRY"
+          '''
+          if source.count(label_anchor) != 1:
+              raise SystemExit("entry wait label anchor mismatch")
+          source = source.replace(label_anchor, label_replacement, 1)
+          source_path.write_text(source)
+
+          test_path = Path("tests/test_profit_plan_action_truth_v1.py")
+          tests = test_path.read_text()
+          test_anchor = '''def test_aero_actionable_display_says_wait_for_reclaim() -> None:
+              card = _aero_card()
+              text = pp._format_actionable_ppp(card)
+              assert "Entry above current — wait for reclaim" in text
+
+
+          def test_aero_does_not_rank_above_actionable_setups() -> None:
+          '''
+          test_replacement = '''def test_aero_actionable_display_says_wait_for_reclaim() -> None:
+              card = _aero_card()
+              text = pp._format_actionable_ppp(card)
+              assert "Entry above current — wait for reclaim" in text
+
+
+          def test_aero_entry_above_current_stays_non_actionable_even_with_activation_evidence() -> None:
+              card = _aero_card()
+              first_status, *remaining_statuses = card.target_level_statuses
+              activated_status = replace(
+                  first_status,
+                  lifecycle_state="PASSED",
+                  first_cross_ts_utc=datetime(2026, 6, 3, 16, 0, tzinfo=UTC),
+              )
+              card = replace(
+                  card,
+                  target_level_statuses=(activated_status, *remaining_statuses),
+              )
+
+              assert pp._entry_activation_proof(card) is True
+              assert pp._entry_above_current(card) is True
+              assert pp._actionable_ppp(card) is None
+              assert pp._workflow_sort_bucket(card) == 1
+              assert "Entry above current — wait for reclaim" in pp._format_actionable_ppp(card)
+
+
+          def test_aero_does_not_rank_above_actionable_setups() -> None:
+          '''
+          if tests.count(test_anchor) != 1:
+              raise SystemExit("test insertion anchor mismatch")
+          tests = tests.replace(test_anchor, test_replacement, 1)
+          test_path.write_text(tests)
+
+          Path(".github/workflows/apply-profit-plan-entry-gate.yml").unlink()
+          PY
+
+      - name: Run targeted Profit Plan tests
+        shell: bash
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          python -m pytest -q tests/test_profit_plan_action_truth_v1.py
+
+      - name: Commit patch to branch
+        shell: bash
+        run: |
+          git config user.name "synth-v2 automation"
+          git config user.email "actions@users.noreply.github.com"
+          git add src/reporting/manual_short_trader_profit_plan_v1.py tests/test_profit_plan_action_truth_v1.py .github/workflows/apply-profit-plan-entry-gate.yml
+          git commit -m "Fix actionable PPP entry-above-current gate"
+          git push origin HEAD:fix/profit-plan-entry-above-current-actionable-ppp-v1
