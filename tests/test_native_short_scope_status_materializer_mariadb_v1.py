@@ -45,6 +45,10 @@ import pytest
 from pymysql.cursors import DictCursor
 
 from src.market_data.native_short_fib_context_v1 import STATUS_AVAILABLE, NativeShortContextRow
+from src.market_data.native_short_map_level_status_materializer_v1 import (
+    ACTIVE_EVALUATION,
+    MapLevelStatusMaterializationOutcome,
+)
 from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapScopeKey
 from src.market_data.native_short_map_materializer_v1 import ScopeMaterializationResult
 from src.market_data.native_short_scope_status_materializer_v1 import (
@@ -270,6 +274,23 @@ def _stub_materialize(*args: Any, **kwargs: Any) -> ScopeMaterializationResult:
     )
 
 
+def _stub_level_status(
+    conn: Any,
+    *,
+    key: NativeShortMapScopeKey,
+    operational_clock: Any,
+) -> MapLevelStatusMaterializationOutcome:
+    return MapLevelStatusMaterializationOutcome(
+        key=key,
+        branch=ACTIVE_EVALUATION,
+        reason_code=None,
+        row_count=3,
+        current_map_id=1,
+        map_cycle_id="test-cycle",
+        level_status_as_of_utc=_AS_OF,
+    )
+
+
 @pytest.mark.skipif(
     os.getenv("RUN_MARIADB_DDL_TEST") != "1",
     reason="Set RUN_MARIADB_DDL_TEST=1 to run A2 orchestrator integration against a disposable MariaDB schema.",
@@ -317,6 +338,7 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
             fetch_existing_lifecycle_events=_no_lifecycle_events,
             fetch_primary_candle_close_timestamps=_raising_candles,
             fetch_supporting_candle_close_timestamps=_raising_candles,
+            materialize_map_level_status_fn=_stub_level_status,
         )
         schema_conn.commit()
 
@@ -382,6 +404,7 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
             fetch_primary_candle_close_timestamps=_fresh_candles,
             fetch_supporting_candle_close_timestamps=_fresh_candles,
             materialize_scope_symbol_fn=_stub_materialize,
+            materialize_map_level_status_fn=_stub_level_status,
         )
         schema_conn.commit()
 
