@@ -4,7 +4,6 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${SYNTH_REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 LOCK_FILE="${SYNTH_ROTATION_PRESSURE_LOCK:-/tmp/synth-market-rotation-pressure-v1.lock}"
-OUTPUT_ROOT="${SYNTH_ROTATION_PRESSURE_OUTPUT_ROOT:-/var/www/html/synth}"
 VENUE="${SYNTH_ROTATION_PRESSURE_VENUE:-bitvavo}"
 started_epoch="$(date +%s)"
 
@@ -18,9 +17,10 @@ if [[ "${1:-}" != "--write-db" || "$#" -ne 1 ]]; then
 fi
 
 echo "STARTED runner=run_market_rotation_pressure_once mode=market_data_write ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-echo "venue=${VENUE} output_root=${OUTPUT_ROOT} lock_file=${LOCK_FILE}"
+echo "venue=${VENUE} lock_file=${LOCK_FILE}"
 echo "broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0"
 echo "selection_engine=none decision_gate=none execution_planner=none executor=none"
+echo "reporting=none dashboard_publish=none"
 
 cd "${REPO_DIR}" || exit 1
 
@@ -70,14 +70,6 @@ if [[ "${status}" -eq 0 ]]; then
         python -m src.research.run_market_rotation_pressure_v1 \
         --venue "${VENUE}" \
         --write-db || status=$?
-fi
-
-if [[ "${status}" -eq 0 ]]; then
-    run_step rotation_dashboard \
-        python -m src.reporting.run_market_rotation_pressure_dashboard_v1 \
-        --venue "${VENUE}" \
-        --output-root "${OUTPUT_ROOT}" \
-        --output summary || status=$?
 fi
 
 elapsed_sec=$(( $(date +%s) - started_epoch ))
