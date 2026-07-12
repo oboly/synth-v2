@@ -3829,6 +3829,15 @@ def _build_client_js(storage_scope: str) -> str:
     return null;
   }}
 
+  function _ppEscapeHtml(value) {{
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }}
+
   // Renders one normalized evidence-authority row in full: label, canonical
   // status, authority owner, observed timestamp (if any) and the COMPLETE
   // reason-code list — never truncated, per the P1 evidence-normalization rule.
@@ -3836,13 +3845,13 @@ def _build_client_js(storage_scope: str) -> str:
     if (!row) {{
       return "<div class='muted small' style='margin-bottom:10px'>DATA_UNAVAILABLE</div>";
     }}
-    var observed = row.observed_ts ? (" \xb7 " + row.observed_ts) : "";
+    var observed = row.observed_ts ? (" \xb7 " + _ppEscapeHtml(row.observed_ts)) : "";
     var reasons = (row.reason_codes && row.reason_codes.length)
-      ? "<div class='muted small'>Reasons: " + row.reason_codes.join(', ') + "</div>"
+      ? "<div class='muted small'>Reasons: " + row.reason_codes.map(_ppEscapeHtml).join(', ') + "</div>"
       : "";
     return (
-      "<div style='margin-bottom:2px'><strong>" + row.status + "</strong>" +
-      "<span class='muted small'> \xb7 " + row.authority + observed + "</span></div>" +
+      "<div style='margin-bottom:2px'><strong>" + _ppEscapeHtml(row.status) + "</strong>" +
+      "<span class='muted small'> \xb7 " + _ppEscapeHtml(row.authority) + observed + "</span></div>" +
       reasons
     );
   }}
@@ -3851,7 +3860,7 @@ def _build_client_js(storage_scope: str) -> str:
     return rows.map(function(row) {{
       return (
         "<div style='margin-bottom:10px'>" +
-        "<div class='muted small'>" + row.label + "</div>" +
+        "<div class='muted small'>" + _ppEscapeHtml(row.label) + "</div>" +
         _ppEvidenceRowHtml(row) +
         "</div>"
       );
