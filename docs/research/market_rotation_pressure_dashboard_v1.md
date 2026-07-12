@@ -34,7 +34,7 @@ Ownership is strict:
 - rotation pressure owns score and state computation;
 - dashboard reporting only reads and renders persisted pressure state;
 - the dashboard does not recompute scores;
-- the wrapper only sequences the three owners.
+- the market-data writer and dashboard publisher are separate runtime owners.
 
 No component touches:
 
@@ -50,8 +50,9 @@ No component touches:
 |---|---|
 | `src/reporting/market_rotation_pressure_dashboard_v1.py` | pure read-model normalization, freshness, JSON projection, and HTML rendering |
 | `src/reporting/run_market_rotation_pressure_dashboard_v1.py` | read-only DB adapter and atomic HTML/JSON publication |
-| `scripts/run_market_rotation_pressure_once.sh` | locked history -> pressure -> dashboard sequence |
-| `tests/test_market_rotation_pressure_dashboard_v1.py` | focused fail-closed and rendering tests |
+| `scripts/run_market_rotation_pressure_once.sh` | locked market-data history -> pressure writer sequence; no reporting |
+| `scripts/odroid/run_market_rotation_pressure_dashboard_render_once.sh` | locked read-only Odroid HTML/JSON publication |
+| `tests/test_market_rotation_pressure_dashboard_v1.py` | focused fail-closed, rendering, and ownership tests |
 
 ## Published Artifacts
 
@@ -62,7 +63,7 @@ Default output:
 /var/www/html/synth/rotation-pressure.json
 ```
 
-The HTML refreshes itself every five minutes. New data only appears after the market-only wrapper writes a new hourly pressure snapshot.
+The HTML refreshes itself every five minutes. New data only appears after the market-data owner writes a new hourly pressure snapshot and the Odroid publisher rerenders it.
 
 ## Light Bar Contract
 
@@ -105,34 +106,52 @@ The dashboard refuses publication when:
 
 An existing good page is not overwritten by a failed render.
 
-## Runtime Wrapper
+## Runtime Ownership
 
-The wrapper requires explicit `--write-db`:
+The market-data writer requires explicit `--write-db`:
 
 ```bash
 bash scripts/run_market_rotation_pressure_once.sh --write-db
 ```
 
-Sequence:
+Market-data sequence:
 
 1. `run_market_rotation_history_v1 --write-db`;
-2. `run_market_rotation_pressure_v1 --write-db`;
-3. `run_market_rotation_pressure_dashboard_v1` read-only publication.
+2. `run_market_rotation_pressure_v1 --write-db`.
 
-The wrapper:
+It does not import or invoke reporting. The canonical market-data runtime host owns these writes.
+
+The Odroid publisher is separate and read-only:
+
+```bash
+bash scripts/odroid/run_market_rotation_pressure_dashboard_render_once.sh
+```
+
+It reads persisted pressure rows and publishes local HTML/JSON. It never passes `--write-db` and must not become the writer owner.
+
+The market-data writer:
 
 - uses a non-blocking host lock;
 - fails fast on phase failure;
 - emits bounded phase and safety markers;
 - activates `venv` or `.venv` when needed;
 - has no implicit write mode;
-- does not install or enable a scheduler.
+- does not install or enable a scheduler;
+- does not render or publish dashboard artifacts.
 
-Environment overrides:
+Market-data writer overrides:
 
 ```text
 SYNTH_REPO_DIR
 SYNTH_ROTATION_PRESSURE_LOCK
+SYNTH_ROTATION_PRESSURE_VENUE
+```
+
+Odroid read-only publisher overrides:
+
+```text
+SYNTH_REPO_DIR
+SYNTH_ROTATION_PRESSURE_DASHBOARD_LOCK
 SYNTH_ROTATION_PRESSURE_OUTPUT_ROOT
 SYNTH_ROTATION_PRESSURE_VENUE
 ```
@@ -144,14 +163,15 @@ Repository merge does not authorize production deployment by itself.
 Operator sequence:
 
 1. apply `db/migrations/20260712_market_rotation_pressure_v1.sql` through the canonical migration process;
-2. run the history runner with `--dry-run`;
-3. run the pressure runner with `--dry-run`;
+2. run the history runner with `--dry-run` on the canonical market-data host;
+3. run the pressure runner with `--dry-run` on that same host;
 4. inspect universe size, missing-pair count, score distribution, top IN/OUT, and freshness;
-5. run the locked wrapper once with explicit `--write-db`;
-6. verify HTML and JSON output plus DB idempotency with a second same-hour run;
-7. choose a canonical existing hourly owner or add a separately reviewed timer only after runtime ownership is confirmed.
+5. run the locked market-data writer once with explicit `--write-db`;
+6. rerun it in the same hour and verify DB idempotency;
+7. run the Odroid read-only publisher and verify HTML/JSON output;
+8. choose canonical existing writer and publisher owners, or add separately reviewed timers only after runtime ownership is confirmed.
 
-Do not silently attach this writer to Profit Plan rendering. Reporting must never become the owner of market-data writes.
+Do not silently attach the market-data writer to Profit Plan rendering. Reporting must never become the owner of market-data writes.
 
 ## Deferred Follow-up
 
