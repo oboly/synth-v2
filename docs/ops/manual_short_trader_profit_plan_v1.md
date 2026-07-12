@@ -358,6 +358,19 @@ Zone-context input preference:
 Open orders are enrichment only. A card can remain visible without open orders when
 current price and zone context exist.
 
+Price-input provenance:
+
+- the canonical price input is the account-scoped DB context returned by
+  `load_account_scoped_short_dashboard_context()`;
+- `classify_market_prices_by_market()` applies the shared freshness policy and
+  supplies the safe price values used by both the Profit Plan runner and this audit;
+- direct ticker fetching is intentionally not part of the production runner or audit.
+  The old `fetch_ticker_prices` dependency became stale when production moved to
+  persisted `market_price_snapshot` rows, because retaining it would bypass the
+  canonical source timestamp/freshness and provenance path.
+- this audit remains read-only: `broker_private_calls=0`, `broker_writes=0`,
+  `order_submission=0`, and `executor=none`.
+
 Open-order input preference:
 
 - first: existing DB-backed `account_open_order_snapshot` read-only snapshot source
