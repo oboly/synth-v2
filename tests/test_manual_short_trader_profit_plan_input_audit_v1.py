@@ -32,6 +32,8 @@ class _RawOrder:
 
 def _fib_ext() -> FibExtContext:
     return FibExtContext(
+        local_reaction_price=Decimal("0.40"),
+        anchor_end_ts_utc=None,
         ext_1_272=Decimal("0.49"),
         ext_1_618=Decimal("0.65"),
         ext_2_000=Decimal("0.80"),
@@ -70,6 +72,17 @@ def _build_rows_for_card(
         symbol=market.split("-")[0],
         market=market,
         current_price=Decimal(current_price) if current_price is not None else None,
+        short_context_input_status=zone_context_input_status,
+        short_context_coverage_status=(
+            "NATIVE_SHORT_CONTEXT_AVAILABLE"
+            if zone_context_input_status == "HAS_ZONE_CONTEXT"
+            else "CONTEXT_INVALID_OR_STALE"
+        ),
+        short_context_display_state=(
+            "HAS_NATIVE_SHORT_FIB_CONTEXT"
+            if zone_context_input_status == "HAS_ZONE_CONTEXT"
+            else "NO_NATIVE_SHORT_FIB_CONTEXT"
+        ),
         fib_ext=fib_ext,
         reentry=reentry,
         buy_orders=buy_orders,
@@ -226,6 +239,14 @@ def test_runner_has_no_forbidden_imports() -> None:
             module = node.module or ""
             for item in forbidden:
                 assert item not in module, f"forbidden import '{item}' in audit runner"
+
+
+def test_runner_uses_canonical_db_price_input_without_ticker_compatibility_shim() -> None:
+    source = Path("src/reporting/run_manual_short_trader_profit_plan_input_audit_v1.py").read_text(encoding="utf-8")
+    assert "fetch_ticker_prices" not in source
+    assert "load_account_scoped_short_dashboard_context" in source
+    assert "classify_market_prices_by_market" in source
+    assert "src.execution" not in source
 
 
 def test_runner_has_no_order_mutation_strings() -> None:
