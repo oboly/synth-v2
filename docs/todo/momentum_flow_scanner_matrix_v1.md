@@ -2,129 +2,77 @@
 
 ## Status
 
-Open research / read-only scanner lane.
-
-This bundle records the 2026-07-10 review of the FFG-style crypto overview showing RSI/MFI-style momentum and money-flow context across lists of coins.
-
-This is not a trading decision, not a signal promotion, not order logic, and not an execution lane.
+```text
+open P3 research / read-only scanner
+non-blocking for Synth v2.23 P1 lanes
+```
 
 ## Purpose
 
-Build a compact read-only scanner that helps find the best entry candidates across many coins instead of chasing every active map.
+Build a compact multi-asset, multi-timeframe research scanner that finds candidates worthy of human review without promoting them to trading decisions.
 
-The scanner should answer:
+Question owned by this lane:
 
 ```text
-Which coins have enough upside-to-target, acceptable risk, and short-timeframe reset/momentum conditions to deserve human review?
+Which markets have enough target room, acceptable risk context, and supportive reset/momentum/flow evidence to justify research review?
 ```
 
-It must not answer:
+Question not owned by this lane:
 
 ```text
-What should the bot buy now?
+What should the bot buy or execute now?
 ```
 
-## Current Synth coverage
+## Sources
 
-Synth already has candle-level RSI and several volume/flow-like features in `feat_candle`:
+- Existing `feat_candle` RSI, volume-ratio, dollar-volume, OBV, and slope features.
+- Native map/target/invalidation context.
+- Market price snapshots.
+- FFG-style overview as external presentation inspiration only.
+- `docs/research/market_rotation_pressure_v1.md` for Synth-native inferred rotation-pressure research.
+
+External labels or curated lists are inputs to research provenance, not execution authority.
+
+## Research contract
+
+Working output:
 
 ```text
-rsi_14
-volume_ratio_20
-volume_zscore_20
-obv
-obv_slope_5
-dollar_volume_ratio_20
+momentum_flow_scanner_snapshot_v1
 ```
 
-MFI / Money Flow Index is not currently treated as a first-class feature in the scanner/dashboard contract.
-
-## Target concept
-
-Working name:
+Candidate fields:
 
 ```text
-MOMENTUM_FLOW_SCANNER_MATRIX_V1
-```
-
-Dashboard style:
-
-```text
-FFG-style compact matrix
-multi-asset
-multi-timeframe
-read-only
-fast visual scan
-```
-
-Candidate columns:
-
-```text
-symbol
-market
+symbol / market / venue
+observed timestamps and freshness
 price
-1d RSI
-1d MFI
-4h RSI
-4h MFI
-1h RSI
-1h MFI
-15m RSI
-15m MFI
+RSI: 1d / 4h / 1h / 15m
+MFI: 1d / 4h / 1h / 15m
 volume_ratio_20
 dollar_volume_ratio_20
 native map status
 nearest valid target upside %
 invalidation downside %
-entry/reset state
+entry/reset research state
 scanner bucket
 reason codes
-observed_ts_utc
 ```
 
-## Minimum upside gate
+No server-baked relative age may be the sole freshness evidence.
 
-The user-selected research threshold is:
+## Minimum target-room gate
+
+User-selected research threshold:
 
 ```text
 nearest_valid_target_upside_pct >= 4.0
 ```
 
-Interpretation:
+This is a minimum upside-to-target gate, not reward/risk.
+Risk and invalidation remain separate and can reject a candidate that passes 4% target room.
 
-```text
-If there is not at least 4% room from candidate entry/current planning price to the nearest valid target, wait.
-```
-
-This is a minimum target-upside gate, not reward/risk.
-
-Risk must remain separate.
-
-Bad candidate example:
-
-```text
-target upside: +4.2%
-invalidation downside: -9.0%
-result: reject or warn; upside gate alone is not enough
-```
-
-## Research-only entry candidate logic
-
-Initial candidate rule shape for backtesting only:
-
-```text
-candidate_entry_context only if:
-- nearest_valid_target_upside_pct >= 4.0
-- invalidation is present and not excessive
-- current price is not already extended into/near target
-- native map is fresh enough for research evaluation
-- short timeframe reset or reclaim condition exists
-- volume/money-flow condition is supportive or at least not hostile
-```
-
-No `BUY_READY` state is allowed in this lane.
-
-Allowed states:
+## Allowed research states
 
 ```text
 NO_EDGE
@@ -132,6 +80,7 @@ WATCH
 RESET_READY
 ENTRY_CANDIDATE_RESEARCH
 OVERHEATED
+ACCUMULATION_FLOW
 DISTRIBUTION_RISK
 DATA_UNAVAILABLE
 ```
@@ -145,287 +94,85 @@ EXECUTE
 FIX_LADDER
 ```
 
-## Suggested buckets
+## P3-A — Deterministic MFI feature
 
-### RESET_READY
+Add `mfi_14` only as a market-data feature when this lane is selected for implementation.
 
-Meaning:
+Owner split:
 
 ```text
-Higher timeframe still constructive, lower timeframe cooled down, enough target room remains.
+feature ETL       = deterministic candle calculation
+feat_candle       = persisted feature value
+scanner/read-model = read-only aggregation and presentation
 ```
 
-Example research shape:
+Minimum tests:
+
+- deterministic fixed fixture;
+- zero-volume/flat-window handling;
+- warmup nulls;
+- bounded 0..100 values when calculable;
+- no regression to existing RSI/ATR/volume features.
+
+## P3-B — Read-only scanner builder
+
+Build rows from canonical feature, price, and native-map sources.
+Fail closed to `DATA_UNAVAILABLE` or `NO_EDGE` for stale/missing inputs.
+Do not reconstruct candle features in reporting when a canonical feature source exists.
+
+## P3-C — Replay/backtest validation
+
+Before any promotion toward `selection_engine`, measure:
+
+- bucket counts;
+- forward returns;
+- MFE/MAE;
+- target-before-invalidation rate;
+- time to target;
+- false-positive rate;
+- symbol/timeframe breakdown;
+- random/control comparison;
+- incremental value of MFI beyond RSI + volume features + map context;
+- effect of the 4% target-room gate.
+
+Any later feature promotion requires a separate explicit proposal and must remain market-only.
+
+## P3-D — Read-only dashboard
+
+Only after the read model and validation exist, add a compact matrix with filters/sorts for bucket, target room, reset readiness, flow, map freshness, and data availability.
+
+## Relationship to FFG / rotation research
+
+FFG-curated universes, external inflow/outflow narratives, and Synth-native rotation pressure may provide research context.
+They do not directly set scanner states or trading actions.
+Avoid duplicating a separate FFG execution lane; normalize external evidence into this research path or its canonical rotation-pressure source.
+
+## Boundary
 
 ```text
-1d RSI: constructive / not broken
-1h RSI: cooled down
-15m RSI: reset or recovering
-MFI: recovering or supportive
-nearest valid target upside >= 4.0%
-```
-
-### OVERHEATED
-
-Meaning:
-
-```text
-Momentum is already hot and target room may be too small for a new entry.
-```
-
-Example research shape:
-
-```text
-1h/15m RSI high
-15m/1h MFI high or exhausted
-price close to target
-upside-to-target < 4.0%
-```
-
-### ACCUMULATION_FLOW
-
-Meaning:
-
-```text
-Money-flow improves before price momentum fully responds.
-```
-
-Example research shape:
-
-```text
-MFI rising
-RSI neutral or recovering
-volume/dollar-volume supportive
-price not yet extended
-```
-
-### DISTRIBUTION_RISK
-
-Meaning:
-
-```text
-Price momentum is high, but money-flow or volume behavior suggests weakening participation.
-```
-
-Example research shape:
-
-```text
-RSI high
-MFI diverging down or no longer confirming
-volume spike exhaustion or weak follow-through
-```
-
-### NO_EDGE
-
-Meaning:
-
-```text
-No clear entry context, insufficient upside, stale data, conflicting momentum/flow, or map unavailable.
-```
-
-## MFI feature scope
-
-Add MFI only as a market-data feature.
-
-Likely feature name:
-
-```text
-mfi_14
-```
-
-Layer ownership:
-
-```text
-src/features/etl_candle_feat.py owns feature calculation
-feat_candle owns persisted per-candle feature value
-scanner/read-model owns read-only aggregation/presentation
-```
-
-MFI must not be added to account-aware layers.
-
-MFI calculation should use candle high/low/close/volume and be deterministic.
-
-Required tests:
-
-```text
-MFI deterministic on fixed candle fixture
-MFI handles flat/zero-volume windows safely
-MFI warmup produces null until enough bars exist
-MFI values stay within 0..100 when calculable
-existing RSI/ATR/volume features remain unchanged
-```
-
-## Scanner read-model scope
-
-The scanner should consume existing candle features and native map context without changing trading policy.
-
-Possible output contract:
-
-```text
-momentum_flow_scanner_snapshot_v1
-```
-
-Minimum fields:
-
-```text
-symbol
-venue
-market
-interval_set
-observed_ts_utc
-price_observed_ts_utc
-feature_observed_ts_utc
-map_observed_ts_utc
-rsi_1d
-mfi_1d
-rsi_4h
-mfi_4h
-rsi_1h
-mfi_1h
-rsi_15m
-mfi_15m
-nearest_valid_target_upside_pct
-invalidation_downside_pct
-entry_context_state
-scanner_bucket
-reason_codes
-```
-
-Freshness:
-
-```text
-Each row must expose observed timestamps.
-Stale or missing features must render DATA_UNAVAILABLE or NO_EDGE.
-No server-baked relative freshness as sole evidence.
-```
-
-## Dashboard scope
-
-Add a read-only compact scanner page or section.
-
-Possible title:
-
-```text
-Momentum / Flow Scanner
-```
-
-Suggested sort options:
-
-```text
-Best entry context
-Target upside high-low
-Reset readiness
-Flow improving
-Overheated first
-Data unavailable last
-```
-
-Suggested filters:
-
-```text
-bucket
-minimum target upside
-market
-interval completeness
-map freshness
-RSI/MFI regime
-```
-
-Suggested row text:
-
-```text
-RESET_READY — target room 5.8%, 1h cooled, 15m recovering, MFI supportive
-OVERHEATED — target room 1.2%, 15m RSI/MFI hot
-NO_EDGE — target room below 4% threshold
-DATA_UNAVAILABLE — missing MFI 15m or stale map
-```
-
-## Backtest / validation lane
-
-Before any scanner bucket can influence candidate selection, validate it with replay/backtest.
-
-Required validation questions:
-
-```text
-Does target-upside >= 4% improve outcome quality versus all maps?
-Do RESET_READY buckets outperform OVERHEATED buckets?
-Does MFI add predictive value beyond RSI + volume_ratio_20 + map context?
-Which intervals matter most by strategy family?
-What is the false-positive rate per bucket?
-How often does waiting for 4% target room skip winners versus avoid low-edge trades?
-```
-
-Minimum outputs:
-
-```text
-bucket counts
-forward return distribution
-MFE/MAE
-hit target before invalidation rate
-time-to-target
-false positives
-symbol/timeframe breakdown
-random/control comparison
-```
-
-## Hard architecture boundary
-
-```text
-selection_engine remains market-only and unchanged unless a later validated promotion explicitly scopes it.
-decision_gate remains account-aware and unchanged.
-execution_planner remains execution-intent only and unchanged.
-executor/agents remain order-handling only and unchanged.
+research-only
+market-only
+account-agnostic
+selection_engine unchanged unless a later validated promotion is approved
+decision_gate unchanged
+execution_planner unchanged
+executor/agents unchanged
 ```
 
 Forbidden:
 
-```text
-no live trading
-no broker calls
-no broker writes
-no order submission
-no decision_gate changes
-no execution_planner changes
-no executor changes
-no account-specific sizing
-no BUY_READY label
-no automatic entry promotion
-no reporting-side candle reconstruction if a canonical feature/read model exists
-```
-
-## Dependency notes
-
-Useful upstream sources:
-
-```text
-feat_candle RSI/volume/OBV/dollar-volume features
-native map / target / invalidation context
-market price snapshot
-future current per-level status read model where available
-```
-
-This lane does not depend on live ladder work.
-
-It may run in parallel as research/read-only work as long as it does not mutate trading policy or execution layers.
-
-## Suggested PR split
-
-```text
-1. docs: document momentum/flow scanner matrix contract
-2. feat: add deterministic mfi_14 to candle feature ETL and schema migration
-3. research: add read-only momentum_flow_scanner_snapshot_v1 builder
-4. research: backtest scanner buckets and 4% target-upside threshold
-5. ui: add read-only Momentum / Flow Scanner dashboard page
-```
+- live trading;
+- broker calls or writes;
+- order submission;
+- account-specific sizing;
+- `BUY_READY` or execution language;
+- automatic entry promotion;
+- research-to-decision or research-to-execution shortcuts.
 
 ## Definition of done
 
-```text
-RSI and MFI are available per required interval where data exists.
-Scanner exposes compact multi-asset/multi-timeframe rows.
-Rows include absolute observed timestamps and data availability status.
-Minimum target-upside >= 4.0% is represented as a research gate.
-Risk/invalidation remains separate from target-upside.
-No BUY_READY or execution implication exists.
-Backtest evidence exists before any promotion to candidate selection.
-```
+- required RSI/MFI fields exist where data supports them;
+- rows expose absolute timestamps and availability;
+- target room and risk remain distinct;
+- buckets have replay evidence;
+- no promotion to selection or execution is implied.

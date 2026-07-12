@@ -2,29 +2,29 @@
 
 ## Status
 
-Design/contract slice open for review.
+```text
+done / parked
+```
 
-Canonical contract:
+The V1 contract and implementation sequence are complete.
+
+## Canonical contract
 
 ```text
 docs/architecture/native_short_map_level_status_contract_v1.md
 ```
 
-## Goal
+## Completed scope
 
-Provide a rebuildable, market-only current level-status read model for the
-projection-selected native SHORT map:
+The rebuildable market-only current collection is implemented for the projection-selected native SHORT map:
 
 ```text
 native_short_scope_status_v1
 -> current_map_id / current_map_cycle_id
 -> native_short_map_level_status_v1
--> later Short Swing read-only consumption
 ```
 
-## Approved V1 Boundary
-
-V1 covers only named immutable extension SELL levels:
+V1 roles remain deliberately closed:
 
 ```text
 SELL_EXT_1_272
@@ -32,20 +32,33 @@ SELL_EXT_1_618
 SELL_EXT_2_000
 ```
 
-V1 uses explicit, closed 4h candle semantics:
+Lifecycle semantics remain:
 
 ```text
-ACTIVE  = no high reaches the level
-REACHED = high reaches level; no closed 4h candle closes above it
-PASSED  = at least one closed 4h candle closes above it
+ACTIVE  = no authoritative high reaches the level
+REACHED = authoritative high reaches the level without the required closed-4h continuation
+PASSED  = at least one authoritative closed 4h candle closes above the level
 ```
 
-`COMPLETED` remains a canonical map-terminal fact, not a synonym for touch.
-`HISTORICAL` is used for selected invalidated/expired map context.
+`COMPLETED` is a map-terminal fact. `HISTORICAL` is audit context for terminal/previous maps.
 
-## Blocked / Out Of Scope
+## Completion evidence
 
-No contract currently exists for lifecycle semantics of:
+```text
+PR #68 contract
+PR #71 persistence and validation
+PR #76 materializer
+PR #77 runner
+PR #81 interruption and observability follow-up
+PR #79 scope-status-chain integration
+PR #87 canonical runtime-owner wiring and acceptance
+```
+
+The persistence, evaluator, MariaDB adapter, runner, deterministic identities, exact-scope replacement, failure handling, tests, and runtime integration are no longer open tasks.
+
+## Out of scope by design
+
+No lifecycle contract was introduced for:
 
 ```text
 BUY_RELOAD_R382
@@ -56,37 +69,36 @@ BREAKOUT_GATE
 INVALIDATION
 ```
 
-Do not introduce their current-state semantics in reporting or under an
-implementation convenience heuristic. A separate native contract is required.
+A future extension requires a separate explicit native contract. Reporting must not invent those states.
 
-## Implementation PR Sequence
+## Downstream ownership
 
-1. `feat: add native short map level status persistence or projection`
-   - migration/model types only
-   - one rebuildable status collection
-   - no runner integration
-
-2. `feat: materialize current native short map level status`
-   - pure lifecycle evaluator
-   - MariaDB reader/writer
-   - use existing explicit scope-status `projection_as_of_utc`
-   - no scheduler/deployment change
-
-3. `test: cover native short map level lifecycle read model`
-   - deterministic identities
-   - active/reached/passed/completed/historical
-   - projection fail-closed and configuration distinction
-   - import boundaries and immutable-ledger non-mutation
-
-## Non-Goals
+Profit Plan read-only consumption and deterministic actionable ladder identity are tracked only in:
 
 ```text
-no Profit Plan resolver migration
-no reporting/UI work
-no account/order snapshot work
+docs/todo/profit_plan_live_ladder.md
+```
+
+Target crossing/history correctness is tracked only in:
+
+```text
+docs/todo/profit_plan_target_lifecycle_history_truth_v1.md
+```
+
+## Boundary
+
+```text
+market-only
+account-agnostic
+no reporting/UI mutation
 no broker calls or writes
 no order submission
-no decision_gate/execution_planner/executor changes
-no systemd/timer/service/wrapper/Odroid deployment
-no selection_engine change
+no decision_gate changes
+no execution_planner changes
+no executor changes
+no selection_engine changes
 ```
+
+## Reopen criteria
+
+Reopen only for a demonstrated defect in persistence identity, lifecycle evaluation, exact-scope rebuild, idempotency, projection linkage, or runtime invocation.
