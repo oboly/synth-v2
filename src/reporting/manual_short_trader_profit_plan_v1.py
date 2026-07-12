@@ -6,7 +6,7 @@ import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from src.reporting.dashboard_style_v1 import synth_favicon_head_html
@@ -404,7 +404,12 @@ class OrderRow:
 # Scenario classification
 # ---------------------------------------------------------------------------
 
+def _is_nan_or_inf(v: Decimal) -> bool:
+    return v.is_nan() or v.is_infinite()
+
+
 def _strip_decimal_zeros(v: Decimal) -> str:
+    # format(v, "f") always renders fixed-point (never scientific notation).
     text = format(v, "f")
     if "." not in text:
         return text
@@ -414,23 +419,73 @@ def _strip_decimal_zeros(v: Decimal) -> str:
     return text
 
 
+def _price_decimal_places(v: Decimal) -> int:
+    """Deterministic magnitude-based decimal-place fallback for prices with no
+    exchange/tick metadata (see src/market_rules/price_tick_normalization_v1.py
+    for the tick-aware path used upstream when a market's tick rule is known).
+
+    Never inferred from a real tick size — this is only the display fallback
+    for values that reach here without one (e.g. MISSING_TICK_RULE). Chosen to
+    always cover at least the canonical tick precisions used across markets
+    (2/4/5/6/8 dp) so no meaningful digit is lost; trailing zeros are stripped
+    by the caller.
+    """
+    if v == 0:
+        return 2
+    exponent = v.adjusted()  # position of the most significant digit
+    if exponent >= 2:
+        return 2
+    if exponent >= 0:
+        return 4
+    return max(6, -exponent + 4)
+
+
 def _fmt_p(v: Decimal | None) -> str:
     if v is None:
         return "?"
-    # Preserve useful small-price precision, but strip display-only zero noise.
-    _sign, _digits, exponent = v.as_tuple()
-    native_dp = -exponent if exponent < 0 else 0
-    if native_dp > 6:
-        return _strip_decimal_zeros(v)
-    if abs(v) < Decimal("1"):
-        return _strip_decimal_zeros(v.quantize(Decimal("0.000001")))
-    return _strip_decimal_zeros(v.quantize(Decimal("0.01")))
+    if _is_nan_or_inf(v):
+        return "?"
+    if v == 0:
+        return "0"
+    dp = _price_decimal_places(v)
+    quantizer = Decimal(1).scaleb(-dp)
+    return _strip_decimal_zeros(v.quantize(quantizer, rounding=ROUND_HALF_UP))
+
+
+def _format_percent_value(v: Decimal) -> str:
+    """Max 2 decimals, no fixed-width zero padding; extends precision only far
+    enough to avoid a non-zero value misleadingly rendering as 0%."""
+    quantized = v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    if quantized != 0 or v == 0:
+        return _strip_decimal_zeros(quantized)
+    for dp in range(3, 11):
+        finer = v.quantize(Decimal(1).scaleb(-dp), rounding=ROUND_HALF_UP)
+        if finer != 0:
+            return _strip_decimal_zeros(finer)
+    return _strip_decimal_zeros(v.quantize(Decimal(1).scaleb(-10), rounding=ROUND_HALF_UP))
 
 
 def _pct(v: Decimal | None) -> str:
     if v is None:
         return "?"
-    return f"{v.quantize(Decimal('0.01'))}%"
+    if _is_nan_or_inf(v):
+        return "?"
+    return f"{_format_percent_value(v)}%"
+
+
+def _price_display(v: Decimal | None) -> str:
+    """JSON display companion for a price field. DATA_UNAVAILABLE for missing,
+    matching the evidence-row convention used elsewhere in this snapshot."""
+    if v is None or _is_nan_or_inf(v):
+        return DATA_UNAVAILABLE
+    return _fmt_p(v)
+
+
+def _pct_display(v: Decimal | None) -> str:
+    """JSON display companion for a percent field. DATA_UNAVAILABLE for missing."""
+    if v is None or _is_nan_or_inf(v):
+        return DATA_UNAVAILABLE
+    return _pct(v)
 
 
 def _fmt_pct_number(v: Any) -> str:
@@ -2801,7 +2856,7 @@ def _format_zone_endpoint(price: "Decimal", current_price: "Decimal | None") -> 
         return price_str
     pct = (price - current_price) / current_price * Decimal("100")
     sign = "+" if pct >= 0 else ""
-    return f"{price_str} ({sign}{pct.quantize(Decimal('0.01'))}%)"
+    return f"{price_str} ({sign}{_pct(pct)})"
 
 
 def _format_zone_range(zone: "tuple[Decimal, ...]", current_price: "Decimal | None") -> str:
@@ -3803,7 +3858,7 @@ def _build_client_js(storage_scope: str) -> str:
       var symbol = (card.dataset.sortSymbol || '?').toUpperCase();
       var action = card.dataset.filterActionLabel || card.dataset.filterAction || '';
       var ppp = card.dataset.sortPpp && card.dataset.sortPpp !== '-999999'
-        ? card.dataset.sortPpp + '%' : '';
+        ? card.dataset.actionablePpp : '';
       var breath = card.dataset.bcCurrentCheckpoint || 'UNAVAILABLE';
       var trajectory = card.dataset.bcNextCheckpoint || 'UNAVAILABLE';
       item.innerHTML =
@@ -4935,6 +4990,7 @@ def build_json_snapshot(
                 "evidence_rows": evidence_rows_to_json(build_card_evidence_rows(c)),
                 "delta": _delta_json(c.delta),
                 "current_price": str(c.current_price) if c.current_price is not None else None,
+                "current_price_display": _price_display(c.current_price),
                 "current_price_status": c.current_price_status,
                 "current_price_age_min": str(c.current_price_age_min) if c.current_price_age_min is not None else None,
                 "history_high_since_activation": str(c.history_high_since_activation) if c.history_high_since_activation is not None else None,
@@ -4945,19 +5001,26 @@ def build_json_snapshot(
                 "actionability_state": c.actionability_state,
                 "timeframe_label": c.timeframe_label,
                 "buy_zone": [str(p) for p in c.buy_zone],
+                "buy_zone_display": [_price_display(p) for p in c.buy_zone],
                 "sell_zone": [str(p) for p in c.sell_zone],
+                "sell_zone_display": [_price_display(p) for p in c.sell_zone],
                 "invalidation_level": str(c.invalidation_level) if c.invalidation_level is not None else None,
+                "invalidation_level_display": _price_display(c.invalidation_level),
                 "target_exit_zone": [str(p) for p in c.target_exit_zone],
+                "target_exit_zone_display": [_price_display(p) for p in c.target_exit_zone],
                 "active_target": str(c.active_target) if c.active_target is not None else None,
+                "active_target_display": _price_display(c.active_target),
                 "target_level_statuses": [
                     {
                         "level": str(level.level),
+                        "level_display": _price_display(level.level),
                         "lifecycle_state": level.lifecycle_state,
                         "coverage_state": level.coverage_state,
                         "human_label": level.human_label,
                         "retest_context": level.retest_context,
                         "first_cross_ts_utc": level.first_cross_ts_utc.isoformat() if level.first_cross_ts_utc is not None else None,
                         "distance_pct": str(level.distance_pct) if level.distance_pct is not None else None,
+                        "distance_pct_display": _pct_display(level.distance_pct),
                         "matching_open_sell_orders": level.matching_open_sell_orders,
                         "nearest_open_sell_price": str(level.nearest_open_sell_price) if level.nearest_open_sell_price is not None else None,
                         "nearest_open_sell_distance_pct": str(level.nearest_open_sell_distance_pct) if level.nearest_open_sell_distance_pct is not None else None,
@@ -4966,10 +5029,15 @@ def build_json_snapshot(
                     for level in c.target_level_statuses
                 ],
                 "reload_reentry_zone": [str(p) for p in c.reload_reentry_zone],
+                "reload_reentry_zone_display": [_price_display(p) for p in c.reload_reentry_zone],
                 "invalidation_risk_zone": str(c.invalidation_risk_zone) if c.invalidation_risk_zone is not None else None,
+                "invalidation_risk_zone_display": _price_display(c.invalidation_risk_zone),
                 "distance_to_target_pct": str(c.distance_to_target_pct) if c.distance_to_target_pct is not None else None,
+                "distance_to_target_pct_display": _pct_display(c.distance_to_target_pct),
                 "distance_to_reload_pct": str(c.distance_to_reload_pct) if c.distance_to_reload_pct is not None else None,
+                "distance_to_reload_pct_display": _pct_display(c.distance_to_reload_pct),
                 "distance_to_invalidation_pct": str(c.distance_to_invalidation_pct) if c.distance_to_invalidation_pct is not None else None,
+                "distance_to_invalidation_pct_display": _pct_display(c.distance_to_invalidation_pct),
                 "primary_state": c.primary_state,
                 "secondary_state": c.secondary_state,
                 "suggested_manual_attention_label": c.suggested_manual_attention_label,
@@ -4980,7 +5048,9 @@ def build_json_snapshot(
                 "reasons": list(c.reasons),
                 "is_relevant": c.is_relevant,
                 "planning_ppp_pct": (str(_planning_ppp(c)) if _planning_ppp(c) is not None else None),
+                "planning_ppp_display": _pct_display(_planning_ppp(c)),
                 "actionable_ppp_pct": (str(_actionable_ppp(c)) if _actionable_ppp(c) is not None else None),
+                "actionable_ppp_display": _pct_display(_actionable_ppp(c)),
                 "actionable_ppp_available": _actionable_ppp(c) is not None,
                 "effective_action": _effective_workflow_action(c),
                 "fix_ladder_allowed": _fix_ladder_allowed(c),

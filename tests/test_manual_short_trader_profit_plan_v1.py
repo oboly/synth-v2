@@ -2466,8 +2466,8 @@ def test_format_reentry_zone_line_shows_first_last_with_signed_pct() -> None:
     result = format_reentry_zone_line(zone, Decimal("100.00"))
     assert "€96" in result
     assert "€92" in result
-    assert "(-4.00%)" in result
-    assert "(-8.00%)" in result
+    assert "(-4%)" in result
+    assert "(-8%)" in result
     assert "% away" not in result
     assert "nearest" not in result
 
@@ -2489,7 +2489,7 @@ def test_format_reentry_zone_line_single_level() -> None:
     zone = (Decimal("96.00"),)
     result = format_reentry_zone_line(zone, Decimal("100.00"))
     assert "€96" in result
-    assert "(-4.00%)" in result
+    assert "(-4%)" in result
     assert "–" not in result
 
 
@@ -2512,8 +2512,8 @@ def test_format_target_zone_line_shows_first_last_with_signed_pct() -> None:
     result = format_target_zone_line(zone, Decimal("100.00"))
     assert "€104" in result
     assert "€108" in result
-    assert "(+4.00%)" in result
-    assert "(+8.00%)" in result
+    assert "(+4%)" in result
+    assert "(+8%)" in result
     assert "nearest" not in result
     assert "% away" not in result
 
@@ -2530,7 +2530,7 @@ def test_format_target_zone_line_single_level() -> None:
     zone = (Decimal("104.00"),)
     result = format_target_zone_line(zone, Decimal("100.00"))
     assert "€104" in result
-    assert "(+4.00%)" in result
+    assert "(+4%)" in result
     assert "–" not in result
 
 
@@ -5640,3 +5640,215 @@ def test_market_selected_action_gate_is_not_applicable_and_has_no_reasons() -> N
     row = _row_by_key(build_card_evidence_rows(card), "action_gate")
     assert row.status == "NOT_APPLICABLE"
     assert row.reason_codes == ()
+
+
+# ---------------------------------------------------------------------------
+# P1 — Numeric formatting cleanup
+# ---------------------------------------------------------------------------
+
+def test_pct_long_decimal_raw_unchanged_display_max_two_decimals() -> None:
+    raw = Decimal("13.7868945064256409518429600")
+    assert _pp_module._pct(raw) == "13.79%"
+    # Raw source Decimal is never mutated by formatting.
+    assert raw == Decimal("13.7868945064256409518429600")
+
+
+def test_pct_trailing_zero_percentages_render_without_padding() -> None:
+    assert _pp_module._pct(Decimal("5.9000")) == "5.9%"
+    assert _pp_module._pct(Decimal("4.000")) == "4%"
+
+
+def test_pct_tiny_nonzero_value_does_not_misleadingly_render_as_zero() -> None:
+    result = _pp_module._pct(Decimal("0.0042"))
+    assert result not in {"0%", "0.00%"}
+    assert Decimal(result.rstrip("%")) != 0
+
+
+def test_pct_true_zero_renders_as_zero() -> None:
+    assert _pp_module._pct(Decimal("0")) == "0%"
+
+
+def test_pct_and_fmt_p_never_render_nan_or_infinite() -> None:
+    assert _pp_module._fmt_p(Decimal("NaN")) == "?"
+    assert _pp_module._fmt_p(Decimal("Infinity")) == "?"
+    assert _pp_module._pct(Decimal("NaN")) == "?"
+    assert _pp_module._pct(Decimal("Infinity")) == "?"
+
+
+def test_fmt_p_high_priced_asset_no_excess_tail_no_scientific_notation() -> None:
+    result = _pp_module._fmt_p(Decimal("64250.123456"))
+    assert result == "64250.12"
+    assert "e" not in result.lower()
+
+
+def test_fmt_p_mid_priced_asset_rounds_to_tick_like_precision() -> None:
+    assert _pp_module._fmt_p(Decimal("2.12345678")) == "2.1235"
+
+
+def test_fmt_p_low_priced_asset_retains_enough_precision_to_distinguish_levels() -> None:
+    result = _pp_module._fmt_p(Decimal("0.012345678"))
+    assert result == "0.012346"
+    # Two nearby low-priced levels must not collapse to the same display value.
+    other = _pp_module._fmt_p(Decimal("0.012445678"))
+    assert result != other
+
+
+def test_fmt_p_micro_priced_asset_keeps_meaningful_significant_decimals() -> None:
+    result = _pp_module._fmt_p(Decimal("0.000012345678"))
+    assert result not in {"0", "0.00", "0.000000"}
+    assert "e" not in result.lower()
+    assert result.startswith("0.0000123")
+
+
+def test_fmt_p_zero_remains_zero() -> None:
+    assert _pp_module._fmt_p(Decimal("0")) == "0"
+
+
+def test_fmt_p_preserves_8dp_pepe_price_after_magnitude_fallback_rewrite() -> None:
+    # Locks in the same contract as the pre-existing PEPE micro-price test above,
+    # now driven by the deterministic magnitude-based fallback instead of the
+    # old "native_dp > 6 => passthrough" shortcut.
+    result = _pp_module._fmt_p(Decimal("0.00000756"))
+    assert result == "0.00000756"
+
+
+def test_card_and_sidebar_ppp_render_identically_for_same_raw_value() -> None:
+    """The compact card metric block and the data-* attributes that feed the
+    sidebar/detail panel and selector must show the same formatted string."""
+    card = _fresh_canonical_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    actionable = _pp_module._pct(_pp_module._actionable_ppp(card))
+    planning = _pp_module._pct(_pp_module._planning_ppp(card))
+    assert f"data-actionable-ppp='{actionable}'" in html
+    assert f"data-planning-ppp='{planning}'" in html
+    assert f"<div class='field-value mono'>{actionable}</div>" in html
+    assert f"<div class='field-value mono'>{planning}</div>" in html
+
+
+def test_selector_label_js_reuses_canonical_actionable_ppp_not_raw_sort_value() -> None:
+    """Regression: the profit-plan selector list used to rebuild its own PPP
+    text from the raw sort value (data-sort-ppp + '%'), bypassing the
+    canonical formatter and showing full raw precision. It must now reuse the
+    already-formatted data-actionable-ppp attribute."""
+    html = render_full_html([_fresh_canonical_card()], rendered_at="now", broker_mode="test")
+    assert "card.dataset.sortPpp + '%'" not in html
+    assert "card.dataset.actionablePpp" in html
+
+
+def test_json_snapshot_preserves_raw_ppp_and_adds_display_companions() -> None:
+    card = _fresh_canonical_card()
+    snapshot = build_json_snapshot([card])
+    row = snapshot["symbols"][0]
+    raw_actionable = _pp_module._actionable_ppp(card)
+    raw_planning = _pp_module._planning_ppp(card)
+    assert row["actionable_ppp_pct"] == str(raw_actionable)
+    assert row["planning_ppp_pct"] == str(raw_planning)
+    assert row["actionable_ppp_display"] == _pp_module._pct(raw_actionable)
+    assert row["planning_ppp_display"] == _pp_module._pct(raw_planning)
+    # Display fields are normalized text, never the raw Decimal string.
+    assert row["actionable_ppp_display"] != row["actionable_ppp_pct"]
+
+
+def test_json_snapshot_price_display_companions_preserve_raw_values() -> None:
+    card = _fresh_canonical_card()
+    snapshot = build_json_snapshot([card])
+    row = snapshot["symbols"][0]
+    assert row["current_price"] == str(card.current_price)
+    assert row["current_price_display"] == _pp_module._fmt_p(card.current_price)
+    assert row["target_exit_zone"] == [str(p) for p in card.target_exit_zone]
+    assert row["target_exit_zone_display"] == [_pp_module._fmt_p(p) for p in card.target_exit_zone]
+    assert row["reload_reentry_zone"] == [str(p) for p in card.reload_reentry_zone]
+    assert row["reload_reentry_zone_display"] == [_pp_module._fmt_p(p) for p in card.reload_reentry_zone]
+
+
+def test_json_snapshot_missing_price_display_uses_data_unavailable_not_none_text() -> None:
+    card = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=None,
+        fib_trading_horizon="SHORT",
+        short_context_input_status="HAS_ZONE_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        presentation_mode=CARD_MODE_MARKET_SELECTED,
+    )
+    snapshot = build_json_snapshot([card])
+    row = snapshot["symbols"][0]
+    assert row["current_price"] is None
+    assert row["current_price_display"] == "DATA_UNAVAILABLE"
+    assert "None" not in row["current_price_display"]
+
+
+def test_ladder_rows_entry_target_invalidation_use_canonical_price_formatter() -> None:
+    card = _fresh_canonical_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    for level in card.target_exit_zone:
+        assert _pp_module._fmt_p(level) in html
+    for level in card.reload_reentry_zone:
+        assert _pp_module._fmt_p(level) in html
+
+
+def test_actionable_ppp_sort_uses_raw_numeric_value_not_display_string() -> None:
+    """Two cards whose active-target Decimal differs only in trailing-zero
+    precision (equal numeric meaning) must produce equal Actionable PPP and
+    identical display text — sorting must not be swayed by string formatting."""
+    card_a = _fresh_canonical_card()
+    card_b = dataclasses.replace(
+        card_a,
+        target_exit_zone=(Decimal("0.500000"), Decimal("0.6200000000")),
+        target_level_statuses=(
+            _passed_level_status(Decimal("0.500000"), first_cross_ts_utc=datetime(2026, 6, 3, tzinfo=UTC)),
+            _active_level_status(Decimal("0.6200000000")),
+        ),
+    )
+    ppp_a = _pp_module._actionable_ppp(card_a)
+    ppp_b = _pp_module._actionable_ppp(card_b)
+    assert ppp_a is not None and ppp_b is not None
+    assert ppp_a == ppp_b
+    assert _pp_module._pct(ppp_a) == _pp_module._pct(ppp_b)
+    sort_key_a = _pp_module._card_action_sort_value  # sanity: helper still importable
+    assert callable(sort_key_a)
+    ordered_ab = sort_cards_action_priority([card_a, card_b])
+    ordered_ba = sort_cards_action_priority([card_b, card_a])
+    assert [c.render_id for c in ordered_ab] == [card_a.render_id, card_b.render_id]
+    assert [c.render_id for c in ordered_ba] == [card_b.render_id, card_a.render_id]
+
+
+def test_action_truth_unchanged_by_numeric_formatting_cleanup() -> None:
+    """REVIEW_CONTEXT / FIX_LADDER / MAP_EXPIRED / NEEDS_RECOMPUTE precedence
+    must be identical before and after the formatting-only cleanup."""
+    ldo = _ldo_like_card()
+    fresh = _fresh_canonical_card()
+    assert _pp_module._effective_workflow_action(ldo) != "FIX LADDER"
+    assert _pp_module._effective_workflow_action(fresh) == "FIX LADDER"
+    assert _pp_module._fix_ladder_allowed(fresh) is True
+    assert _pp_module._fix_ladder_allowed(ldo) is False
+
+
+def test_evidence_row_semantics_unchanged_by_numeric_formatting_cleanup() -> None:
+    """EvidenceRow authority/status semantics from the PR #84 normalization
+    must be untouched by display-only numeric formatting changes."""
+    card = _ldo_like_card()
+    rows = build_card_evidence_rows(card)
+    assert {row.key for row in rows} >= {
+        "projection_status",
+        "current_map_selection",
+        "map_lifecycle",
+        "per_level_status",
+        "price_snapshot",
+        "wallet_snapshot",
+        "position_snapshot",
+        "open_order_snapshot",
+        "dashboard_render",
+        "action_gate",
+    }
+    for row in rows:
+        assert row.status != ""
+
+
+def test_json_snapshot_safety_markers_present_after_formatting_cleanup() -> None:
+    card = _fresh_canonical_card()
+    snapshot = build_json_snapshot([card])
+    assert snapshot["broker_writes"] == 0
+    assert snapshot["order_submission"] == 0
+    assert snapshot["executor"] == "none"
