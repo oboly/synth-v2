@@ -824,6 +824,7 @@ def evaluate_scope(
     as_of_utc: datetime,
     run_id: int,
     run_uuid: str,
+    trigger_type: str,
     fetch_context_row: Callable[[NativeShortMapScopeKey, datetime], NativeShortContextRow | None],
     fetch_existing_maps: Callable[[Any, NativeShortMapScopeKey], list[Any]],
     fetch_existing_generation_events: Callable[[Any, NativeShortMapScopeKey], list[Any]],
@@ -903,6 +904,7 @@ def evaluate_scope(
             context_row=context_row,
             now_utc=as_of_utc,
             write=True,
+            trigger_type=trigger_type,
         )
     except Exception as exc:  # noqa: BLE001 - preserved as observation evidence, not swallowed
         observation = NativeShortScopeObservationRecord(
@@ -1067,6 +1069,7 @@ def run_native_short_scope_status_materializer(
                 as_of_utc=as_of_utc,
                 run_id=run_id,
                 run_uuid=builder.run_uuid,
+                trigger_type=trigger_type,
                 fetch_context_row=fetch_context_row,
                 fetch_existing_maps=fetch_existing_maps,
                 fetch_existing_generation_events=fetch_existing_generation_events,

@@ -915,6 +915,49 @@ def test_write_available_first_map_publishes_map_generation_and_lifecycle() -> N
     assert [params[22] for params in generation_params] == [219, 219]
 
 
+def test_write_available_first_map_defaults_trigger_type_to_manual_canary() -> None:
+    """Callers that omit trigger_type (e.g. the manual canary runner) must
+    keep getting the existing MANUAL_NATIVE_SHORT_MAP_LEDGER_CANARY label on
+    both the ATTEMPT_STARTED and PUBLISHED events, not NULL provenance on
+    the published row."""
+    from src.market_data.native_short_map_materializer_v1 import TRIGGER_TYPE
+
+    conn = _RecordingConn()
+    materialize_scope_symbol(
+        conn,
+        scope_support=_supported(),
+        context_row=_available_row(),
+        now_utc=_NOW,
+        write=True,
+    )
+
+    generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
+    assert len(generation_params) == 2
+    assert [params[11] for params in generation_params] == [TRIGGER_TYPE, TRIGGER_TYPE]
+
+
+def test_write_available_first_map_propagates_explicit_scheduled_trigger_type() -> None:
+    """An explicit runtime trigger_type (e.g. the scheduled 4h chain) must
+    reach both the ATTEMPT_STARTED and PUBLISHED generation events instead
+    of the hardcoded manual-canary constant or NULL."""
+    conn = _RecordingConn()
+    materialize_scope_symbol(
+        conn,
+        scope_support=_supported(),
+        context_row=_available_row(),
+        now_utc=_NOW,
+        write=True,
+        trigger_type="SCHEDULED_4H_MARKET_CHAIN",
+    )
+
+    generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
+    assert len(generation_params) == 2
+    assert [params[11] for params in generation_params] == [
+        "SCHEDULED_4H_MARKET_CHAIN",
+        "SCHEDULED_4H_MARKET_CHAIN",
+    ]
+
+
 def test_same_structure_hash_is_idempotent_without_skip_event(monkeypatch: pytest.MonkeyPatch) -> None:
     row = _available_row()
     existing_map = _map_record(7, row)
@@ -1063,6 +1106,27 @@ def test_new_unavailable_write_records_rejected_attempt_without_lifecycle() -> N
     assert len(conn.insert_log("native_short_map_generation_event_v1")) == 2
     assert conn.insert_log("native_short_map_v1") == []
     assert conn.insert_log("native_short_map_lifecycle_event_v1") == []
+
+
+def test_new_unavailable_write_propagates_explicit_trigger_type_to_rejected_event() -> None:
+    """The REJECTED event on the insufficient-context path must also carry
+    the caller's runtime trigger_type, not just the ATTEMPT_STARTED event."""
+    conn = _RecordingConn()
+    materialize_scope_symbol(
+        conn,
+        scope_support=_supported(),
+        context_row=_unavailable_row(status=STATUS_STALE_OR_INVALID),
+        now_utc=_NOW,
+        write=True,
+        trigger_type="SCHEDULED_4H_MARKET_CHAIN",
+    )
+
+    generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
+    assert len(generation_params) == 2
+    assert [params[11] for params in generation_params] == [
+        "SCHEDULED_4H_MARKET_CHAIN",
+        "SCHEDULED_4H_MARKET_CHAIN",
+    ]
 
 
 def test_supersedes_previous_active_map_without_duplicate_activation(

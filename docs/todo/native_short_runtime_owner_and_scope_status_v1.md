@@ -2,13 +2,14 @@
 
 ## Status
 
-queued / PR A may proceed in parallel; PR B blocked on P0-A
+active / PR B runtime wiring implemented for review; deployment not activated
 
 ## Sequencing / P0-A dependency
 
 - PR A — native-map status semantics may proceed in parallel with P0-A because it has no wrapper, timer, service, systemd, broker, or production deployment action.
-- PR B — runtime-owner deployment is blocked until P0-A / PR #54 is merged and its bounded logging plus disk/log health containment is accepted.
-- Do not deploy any recurring native SHORT runtime, wrapper, service, or timer before PR B is unblocked.
+- PR B — runtime-owner repository wiring now uses the existing canonical 4h
+  market-chain timer and adds no second scheduler. Host deployment/activation
+  remains a separate reviewed operation.
 - PR C remains dependent on PR A.
 
 ## Sources
@@ -30,8 +31,9 @@ rebuildable current scope-status projection for reporting/UI.
 
 ## Current state / facts
 
-- The existing native SHORT materializer runner is market-only and reusable.
-- The current ledger contract has no explicit runtime wrapper or scheduler owner.
+- The native SHORT materializer chain is market-only and reusable.
+- Repository runtime ownership is now explicit: the existing canonical 4h
+  market-chain timer calls one locked native SHORT wrapper after candle ETL.
 - Immutable native map rows must never have source timestamps mutated to simulate
   freshness.
 - Unchanged geometry must not publish duplicate maps.
@@ -155,11 +157,11 @@ with explicit grace.
 
 ### P1 — Runtime owner deployment
 
-- Add one Odroid wrapper for the native SHORT runtime owner.
-- Add one service/timer pair for the wrapper.
-- Use a host singleton lock plus the existing per-scope DB lock.
-- Evaluate all existing `SUPPORTED` scopes only.
-- Keep logs bounded and operationally readable.
+- [x] Add one runtime wrapper for the native SHORT runtime owner.
+- [x] Reuse the existing `synth-chain-4h` service/timer; do not add a second scheduler.
+- [x] Use a host singleton lock plus the existing per-scope DB lock.
+- [x] Evaluate exact existing `SUPPORTED` scopes only, with optional explicit-symbol narrowing.
+- [x] Keep logs bounded and operationally readable.
 - Support non-blocking, read-only health observation.
 - Roll back by disabling or removing the runtime owner only; never mutate ledger
   history.
@@ -189,8 +191,8 @@ with explicit grace.
 
 ### PR B — Runtime owner deployment
 
-- one Odroid wrapper
-- one service/timer pair
+- one market-data runtime wrapper
+- reuse the existing canonical `synth-chain-4h` service/timer; no second scheduler
 - host singleton lock plus existing per-scope DB lock
 - evaluates all existing `SUPPORTED` scopes only
 - bounded logs
@@ -233,8 +235,8 @@ Additional historical evidence:
   configuration-unavailable state, per Amendment 1 in
   `docs/architecture/native_short_scope_status_contract_v1.md`. PR A2 must not
   begin implementation until PR A1b merges.
-- PR B depends on PR A landing first; runtime ownership must not ship before the
-  projection semantics exist.
+- PR B repository wiring depends on PR A landing first; host deployment remains
+  a separate reviewed operation after repository validation.
 - PR C depends on PR A; Profit Plan must read the projection instead of joining
   ledgers directly.
 
