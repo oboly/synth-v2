@@ -69,6 +69,9 @@ Branch `fix/profit-plan-evidence-semantic-normalization-v1` — reporting-only:
     `FIX_LADDER`), fresh canonical (`FIX_LADDER` allowed, all rows fresh),
     mixed account freshness (wallet/position/orders differ), JSON/HTML
     evidence-row equality, and untruncated reason codes.
+- P1 follow-up: derive evidence container severity/class from normalized
+  EvidenceRow statuses so visual severity has the same authority source as
+  evidence row content.
 
 ## Purpose
 
