@@ -5,6 +5,7 @@ import dataclasses
 import html as html_lib
 import json
 import re
+import subprocess
 import tempfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -5499,6 +5500,96 @@ def test_json_snapshot_and_html_data_attr_expose_identical_evidence_rows() -> No
 
     assert html_rows == json_rows
     assert [row["key"] for row in json_rows] == list(_EVIDENCE_ROW_KEYS_IN_ORDER)
+
+
+def test_sidebar_evidence_html_escapes_normalized_rows_while_json_remains_raw(
+    monkeypatch,
+) -> None:
+    """Evidence JSON remains structured data; both HTML renderers escape at output."""
+    raw_row = EvidenceRow(
+        key="evidence<script>alert(\"x\")</script>",
+        label='<script>alert("x")</script>',
+        authority="A&B",
+        status='"value"',
+        observed_ts="'quoted'",
+        reason_codes=(
+            '<script>alert("x")</script>',
+            "A&B",
+            '"value"',
+            "'quoted'",
+        ),
+    )
+    card = _fresh_canonical_card()
+    monkeypatch.setattr(_pp_module, "build_card_evidence_rows", lambda _card: (raw_row,))
+
+    compact_html = render_plan_card(card, buy_orders=(), sell_orders=())
+    snapshot = build_json_snapshot([card])
+    full_html = render_full_html([card], rendered_at="now", broker_mode="test")
+    script_match = re.search(r"<script>(.*?)</script>", full_html, re.DOTALL)
+    assert script_match is not None
+
+    node_source = (
+        "var document = {addEventListener: function() {}};\n"
+        + script_match.group(1)
+        + "\nvar row = "
+        + json.dumps(evidence_rows_to_json((raw_row,))[0])
+        + ";\nconsole.log(JSON.stringify([_ppEvidenceRowHtml(row), _ppEvidenceSectionHtml([row])]));"
+    )
+    completed = subprocess.run(
+        ["node", "-e", node_source],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    sidebar_row_html, sidebar_section_html = json.loads(completed.stdout)
+
+    # The compact card and executed sidebar JavaScript both render the same
+    # normalized values as HTML-safe text, including every reason-code value.
+    compact_escaped = {
+        "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;",
+        "A&amp;B",
+        "&quot;value&quot;",
+        "&#x27;quoted&#x27;",
+    }
+    sidebar_escaped = {
+        "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;",
+        "A&amp;B",
+        "&quot;value&quot;",
+        "&#39;quoted&#39;",
+    }
+    for value in compact_escaped:
+        assert value in compact_html
+    for value in sidebar_escaped:
+        assert value in sidebar_row_html
+        assert value in sidebar_section_html
+
+    raw_html_values = (
+        raw_row.key,
+        raw_row.label,
+        raw_row.authority,
+        raw_row.status,
+        raw_row.observed_ts,
+        *raw_row.reason_codes,
+    )
+    for value in raw_html_values:
+        assert value not in sidebar_row_html
+        assert value not in sidebar_section_html
+
+    # The JSON snapshot remains raw structured evidence, not HTML-entity data.
+    assert snapshot["symbols"][0]["evidence_rows"] == evidence_rows_to_json((raw_row,))
+    assert "&lt;script&gt;" not in json.dumps(snapshot["symbols"][0]["evidence_rows"])
+
+
+def test_evidence_html_escaping_does_not_change_action_gate_or_row_statuses() -> None:
+    card = _fresh_canonical_card()
+    rows_before_render = build_card_evidence_rows(card)
+    action_before_render = _pp_module._effective_workflow_action(card)
+
+    render_full_html([card], rendered_at="now", broker_mode="test")
+
+    assert build_card_evidence_rows(card) == rows_before_render
+    assert _pp_module._effective_workflow_action(card) == action_before_render
+    assert _pp_module._fix_ladder_allowed(card) is True
 
 
 def test_action_gate_reason_codes_are_not_truncated_in_json_or_html() -> None:
