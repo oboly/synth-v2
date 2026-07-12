@@ -480,6 +480,40 @@ def test_chain_materializes_level_status_after_projection_for_exact_explicit_sco
     assert [key for phase, key in calls if phase == "level"] == scopes
 
 
+def test_chain_propagates_run_trigger_type_into_map_materializer_call() -> None:
+    """The bounded chain's own trigger_type (e.g. the scheduled-runner's
+    SCHEDULED_4H_MARKET_CHAIN) must reach materialize_scope_symbol_fn so
+    nested map generation events carry genuine runtime provenance instead of
+    materialize_scope_symbol's own hardcoded manual-canary default."""
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(key)
+
+    captured_trigger_types: list[str | None] = []
+
+    def record_trigger_type(*args: Any, **kwargs: Any) -> ScopeMaterializationResult:
+        captured_trigger_types.append(kwargs.get("trigger_type"))
+        return _unchanged_geometry_result()
+
+    run_native_short_scope_status_materializer(
+        conn,
+        scopes=[key],
+        as_of_utc=_AS_OF,
+        trigger_type="SCHEDULED_4H_MARKET_CHAIN",
+        operational_clock=_fixed_clock(_AS_OF),
+        fetch_context_row=lambda k, t: _context_row(),
+        fetch_existing_maps=_no_maps,
+        fetch_existing_generation_events=_no_generation_events,
+        fetch_existing_lifecycle_events=_no_lifecycle_events,
+        fetch_primary_candle_close_timestamps=_fresh_candles,
+        fetch_supporting_candle_close_timestamps=_fresh_candles,
+        materialize_scope_symbol_fn=record_trigger_type,
+    )
+
+    assert captured_trigger_types == ["SCHEDULED_4H_MARKET_CHAIN"]
+
+
 def test_chain_surfaces_blocked_level_status_as_failed_market_data_run() -> None:
     conn = _FakeConn()
     key = NativeShortMapScopeKey(

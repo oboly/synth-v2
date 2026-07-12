@@ -305,6 +305,14 @@ MVP cockpit render:
 
 - timer cadence: 12 minutes after each 4h UTC candle close
 - service command: `scripts/run_chain_4h.sh`
+- after successful 4h candle ETL, invokes the locked
+  `scripts/run_native_short_scope_status_chain_once.sh` market-data writer
+- native SHORT scope is the exact persisted `SUPPORTED` registry for the
+  canonical `bitvavo/EUR/SHORT/4h/1h` key; `--symbols` is an optional bounded
+  operator restriction, not an enabled-asset expansion
+- native SHORT orchestration order is map evaluation, scope-status projection,
+  then map-level status projection; failure or lock contention fails the 4h
+  chain visibly
 - source of setup / policy / zone / `paper_advice_observation` snapshots
 - must remain market-only with decision/execution disabled
 - must not enable broker writes

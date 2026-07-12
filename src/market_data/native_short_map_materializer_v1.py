@@ -901,6 +901,7 @@ def materialize_scope_symbol(
     context_row: NativeShortContextRow,
     now_utc: datetime,
     write: bool,
+    trigger_type: str = TRIGGER_TYPE,
 ) -> ScopeMaterializationResult:
     key = scope_support.key
     symbol = key.symbol
@@ -974,7 +975,7 @@ def materialize_scope_symbol(
             attempt_id=attempt_id,
             event_type=NativeShortMapGenerationEventType.ATTEMPT_STARTED,
             event_ts_utc=now_utc,
-            trigger_type=TRIGGER_TYPE,
+            trigger_type=trigger_type,
             latest_primary_close_ts_utc=context_row.latest_primary_close_ts_utc,
             latest_support_close_ts_utc=context_row.latest_support_close_ts_utc,
             source_primary_ref=context_row.source_primary_ref,
@@ -990,6 +991,7 @@ def materialize_scope_symbol(
             event_ts_utc=now_utc,
             reason_code=reason_code,
             reason_detail=context_row.context_status,
+            trigger_type=trigger_type,
             candidate_current_map_status=context_row.current_map_status,
             latest_primary_close_ts_utc=context_row.latest_primary_close_ts_utc,
             latest_support_close_ts_utc=context_row.latest_support_close_ts_utc,
@@ -1104,7 +1106,7 @@ def materialize_scope_symbol(
         attempt_id=attempt_id,
         event_type=NativeShortMapGenerationEventType.ATTEMPT_STARTED,
         event_ts_utc=now_utc,
-        trigger_type=TRIGGER_TYPE,
+        trigger_type=trigger_type,
         candidate_map_cycle_id=context_row.map_cycle_id,
         candidate_previous_map_id=previous_map_id,
         candidate_primary_lifecycle_state=context_row.primary_4h_lifecycle_state,
@@ -1136,6 +1138,7 @@ def materialize_scope_symbol(
         event_type=NativeShortMapGenerationEventType.PUBLISHED,
         event_ts_utc=now_utc,
         map_id=new_map_id,
+        trigger_type=trigger_type,
         candidate_map_cycle_id=context_row.map_cycle_id,
         candidate_previous_map_id=previous_map_id,
         candidate_primary_lifecycle_state=context_row.primary_4h_lifecycle_state,

@@ -11,6 +11,9 @@ refresh.
 ## Canonical Ownership
 
 - candles ETL is owned by market chain / ETL timers
+- native SHORT map evaluation, scope-status projection, and map-level status
+  projection are owned by the existing 4h market chain after candle ETL; no
+  second native SHORT timer or dashboard-side writer is permitted
 - `feat_candle` is owned by the feature chain
 - `signal_state` is owned by the signal chain / 4h chain
 - downstream strategy and selection snapshots are owned by their chain runners

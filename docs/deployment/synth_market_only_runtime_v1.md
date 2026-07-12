@@ -8,7 +8,7 @@ This guide and these systemd files are for the **24/7 runtime host only** (likel
 
 ## Purpose
 
-Run the Synth 4h market-only chain automatically after each 4h candle closes. The chain collects market data, runs the selection engine, and writes paper advice. It does not place orders, write to any broker API, activate the decision gate, or touch the execution planner or executor.
+Run the Synth 4h market-only chain automatically after each 4h candle closes. The chain collects market data, refreshes the persisted native SHORT scope-status and map-level status projections, runs the selection engine, and writes paper advice. It does not place orders, write to any broker API, activate the decision gate, or touch the execution planner or executor.
 
 **Hard boundaries enforced by environment variables in the service unit:**
 
@@ -28,8 +28,46 @@ No live trading. No broker writes. No order submission. No decision_gate activat
 |---|---|
 | `deploy/systemd/synth-chain-4h.service` | oneshot service — runs `scripts/run_chain_4h.sh` |
 | `deploy/systemd/synth-chain-4h.timer` | calendar timer — fires at 00:08, 04:08, 08:08, 12:08, 16:08, 20:08 UTC |
+| `scripts/run_native_short_scope_status_chain_once.sh` | locked native SHORT runtime wrapper owned by the 4h chain |
+| `src/market_data/run_native_short_scope_status_chain_v1.py` | bounded adapter from persisted `SUPPORTED` scopes to the canonical scope-status orchestrator |
 
 Timer fires 8 minutes after each 4h candle close to allow candle ETL to complete. `Persistent=true` ensures a missed fire (host was off) runs on next boot. `RandomizedDelaySec=120` spreads load across a 2-minute jitter window.
+
+The native SHORT runtime does not add a timer or service. Canonical ownership is:
+
+```text
+synth-chain-4h.timer
+-> synth-chain-4h.service
+-> scripts/run_chain_4h.sh
+-> 4h candle ETL
+-> scripts/run_native_short_scope_status_chain_once.sh
+-> run_native_short_scope_status_materializer
+-> native_short_scope_status_v1
+-> native_short_map_level_status_v1
+-> remaining 4h chain stages
+```
+
+The wrapper uses `/tmp/synth-native-short-scope-status-chain-v1.lock` by
+default. Lock contention and materializer failure are fail-fast and therefore
+fail the owning 4h chain visibly. Runtime scope defaults to the exact current
+`SUPPORTED` rows in `native_short_map_scope_v1` for
+`bitvavo/EUR/SHORT/4h/1h`; it does not expand to every enabled asset.
+
+Bounded BTC verification remains available without changing scheduler scope:
+
+```bash
+bash scripts/run_native_short_scope_status_chain_once.sh \
+  --venue bitvavo \
+  --symbols BTC \
+  --quote-currency EUR \
+  --fib-trading-horizon SHORT \
+  --primary-interval 4h \
+  --supporting-interval 1h
+```
+
+This is a market-data writer. It emits `STARTED`, `FINISHED`/`FAILED`, scope,
+run, row-count, elapsed-time, and safety markers. It makes no private broker
+calls and has no decision, execution, order, account, or reporting ownership.
 
 ---
 
