@@ -32,10 +32,43 @@ Branch `fix/profit-plan-actionable-ppp-map-rollover-review-v1` — reporting-onl
   (`RESEARCH_ONLY_DISABLED`, weights 0). Proven to not affect action, PPP, sorting,
   urgency, setup state or ladder state.
 - DEFERRED (separate PRs) — P1 freshness display (Lane A absolute-timestamp
-  contract), P1 evidence-row authority normalization, P1 numeric precision, and the
-  P2 future best-entry (>=4% upside) research lane. This PR depends on the Lane A
-  absolute timestamp/status contract for real account/order freshness and on the
-  Lane B native scope-status projection to ever enable FIX_LADDER.
+  contract), P1 numeric precision, and the P2 future best-entry (>=4% upside)
+  research lane. This PR depends on the Lane A absolute timestamp/status
+  contract for real account/order freshness and on the Lane B native
+  scope-status projection to ever enable FIX_LADDER.
+
+## Implementation status (2026-07-12)
+
+Branch `fix/profit-plan-evidence-semantic-normalization-v1` — reporting-only:
+
+- DONE — P1 evidence-card semantic normalization: added `EvidenceRow` and
+  `build_card_evidence_rows()` as the single normalized model for the ten
+  required independent authority rows (projection status, current map
+  selection, map lifecycle, per-level status, price snapshot, wallet
+  snapshot, position snapshot, open-order snapshot, dashboard render, action
+  gate). Card HTML, the sidebar/detail panel, and the JSON snapshot all read
+  from the same `build_card_evidence_rows()` output — no renderer re-derives
+  a status independently.
+  - A `DATA_UNAVAILABLE` native projection can no longer be visually paired
+    with a confirmed `CURRENT_ACTIVE_MAP` claim: when the projection is
+    unavailable, `current_map_selection` renders `REPORTING_FALLBACK` (or
+    `UNKNOWN`) and carries the raw reported tier as a reason code instead of
+    displaying it as confirmed truth. Map lifecycle continues to render
+    independently (e.g. `MAP_EXPIRED`) from its own authority.
+  - Added `wallet_snapshot_status` / `position_snapshot_status` to
+    `CardEvidence` so wallet, position, and open-order authority can render
+    independently instead of collapsing into one generic account label; all
+    three default `DATA_UNAVAILABLE` until Lane A is wired in.
+  - Added a read-only `action_gate` row driven by the existing
+    `_effective_workflow_action` / `_fix_ladder_allowed` resolver (PR #75,
+    unchanged) plus a parallel, read-only reason-code helper
+    (`_action_gate_blocking_reason_codes`) that exposes the complete,
+    untruncated set of blocking reasons without altering resolver precedence.
+  - Tests: LDO-like (`REPORTING_FALLBACK`, `REVIEW_CONTEXT`, reasons
+    visible), NEAR-like (`MAP_EXPIRED` independent of projection, no
+    `FIX_LADDER`), fresh canonical (`FIX_LADDER` allowed, all rows fresh),
+    mixed account freshness (wallet/position/orders differ), JSON/HTML
+    evidence-row equality, and untruncated reason codes.
 
 ## Purpose
 
