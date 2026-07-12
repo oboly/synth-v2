@@ -17,6 +17,7 @@ from src.research.run_market_rotation_pressure_v1 import (
     compute_persistence_score,
     raw_direction_pressure,
     signed_volume_factor,
+    zero_centered_robust_scores,
 )
 
 
@@ -100,6 +101,23 @@ def test_centered_percentile_scores_all_equal_are_neutral():
 def test_centered_percentile_rejects_non_finite():
     with pytest.raises(ValueError, match="non-finite"):
         centered_percentile_scores([1.0, float("nan")])
+
+
+def test_zero_centered_robust_scores_preserve_direction():
+    scores = zero_centered_robust_scores([-4.0, -1.0, 0.0, 1.0, 4.0], floor_scale=1.0)
+    assert scores[0] < scores[1] < 0
+    assert scores[2] == 0.0
+    assert 0 < scores[3] < scores[4]
+
+
+def test_zero_centered_robust_scores_all_positive_stay_positive():
+    scores = zero_centered_robust_scores([0.5, 1.0, 2.0], floor_scale=1.0)
+    assert all(score > 0 for score in scores)
+
+
+def test_zero_centered_robust_scores_reject_invalid_floor():
+    with pytest.raises(ValueError, match="floor_scale"):
+        zero_centered_robust_scores([1.0], floor_scale=0.0)
 
 
 def test_signed_volume_positive_move_high_volume():
@@ -269,3 +287,31 @@ def test_build_market_aggregate_mixed_has_no_lights():
     aggregate = build_market_aggregate(observations, prior_market_score=0)
     assert aggregate.market_direction == "MIXED"
     assert aggregate.evidence_light_count == 0
+
+
+def test_all_positive_market_does_not_get_cross_sectionally_flattened():
+    pairs = [
+        _pair(1, "A-EUR", 1.0, 1.4, 4.0, 1.2),
+        _pair(2, "B-EUR", 2.0, 1.8, 8.0, 1.5),
+        _pair(3, "C-EUR", 4.0, 2.2, 12.0, 1.8),
+        _pair(4, "D-EUR", 6.0, 2.5, 18.0, 2.0),
+    ]
+    observations = build_pressure_observations(pairs, {}, AS_OF)
+    aggregate = build_market_aggregate(observations, prior_market_score=None)
+    assert all(obs.score_total > 0 for obs in observations)
+    assert aggregate.market_score > 0
+    assert aggregate.market_direction == "ROTATION_IN"
+
+
+def test_all_negative_market_does_not_get_cross_sectionally_flattened():
+    pairs = [
+        _pair(1, "A-EUR", -1.0, 1.4, -4.0, 1.2),
+        _pair(2, "B-EUR", -2.0, 1.8, -8.0, 1.5),
+        _pair(3, "C-EUR", -4.0, 2.2, -12.0, 1.8),
+        _pair(4, "D-EUR", -6.0, 2.5, -18.0, 2.0),
+    ]
+    observations = build_pressure_observations(pairs, {}, AS_OF)
+    aggregate = build_market_aggregate(observations, prior_market_score=None)
+    assert all(obs.score_total < 0 for obs in observations)
+    assert aggregate.market_score < 0
+    assert aggregate.market_direction == "ROTATION_OUT"
