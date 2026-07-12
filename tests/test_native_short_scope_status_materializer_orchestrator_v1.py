@@ -22,6 +22,7 @@ from typing import Any
 
 import pytest
 
+from src.market_data import native_short_scope_status_materializer_v1 as orchestrator
 from src.market_data.native_short_fib_context_v1 import (
     PRIMARY_LIFECYCLE_COMPLETED,
     PRIMARY_LIFECYCLE_INVALIDATED,
@@ -45,7 +46,13 @@ from src.market_data.native_short_map_materializer_v1 import (
     REASON_STRUCTURE_UNCHANGED,
     ScopeMaterializationResult,
 )
+from src.market_data.native_short_map_level_status_materializer_v1 import (
+    ACTIVE_EVALUATION,
+    BLOCKED,
+    MapLevelStatusMaterializationOutcome,
+)
 from src.market_data.native_short_scope_status_materializer_v1 import (
+    NativeShortMapLevelStatusBlockedError,
     NativeShortRunTerminalizationConflictError,
     _finalize_run,
     evaluate_scope,
@@ -368,6 +375,168 @@ def _unchanged_geometry_result(*, map_id: int = 1) -> ScopeMaterializationResult
         reason_code=REASON_STRUCTURE_UNCHANGED,
         generation_event_type="PUBLISHED",
     )
+
+
+def _successful_level_status(
+    conn: Any,
+    *,
+    key: NativeShortMapScopeKey,
+    operational_clock: Any,
+) -> MapLevelStatusMaterializationOutcome:
+    return MapLevelStatusMaterializationOutcome(
+        key=key,
+        branch=ACTIVE_EVALUATION,
+        reason_code=None,
+        row_count=3,
+        current_map_id=1,
+        map_cycle_id="cyc1",
+        level_status_as_of_utc=_AS_OF,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _stub_default_level_status_materializer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep pre-chain orchestration tests focused on their existing contract."""
+    monkeypatch.setattr(
+        orchestrator,
+        "materialize_native_short_map_level_status_for_scope",
+        _successful_level_status,
+    )
+
+
+def test_chain_materializes_level_status_after_projection_for_exact_explicit_scopes() -> None:
+    conn = _FakeConn()
+    scopes = [
+        NativeShortMapScopeKey(
+            venue="bitvavo",
+            symbol=symbol,
+            quote_currency="EUR",
+            fib_trading_horizon="SHORT",
+            primary_interval="4h",
+            supporting_interval="1h",
+        )
+        for symbol in ("ETH", "BTC")
+    ]
+    for key in scopes:
+        conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+        conn.seed_cadence_config(key)
+
+    calls: list[tuple[str, NativeShortMapScopeKey]] = []
+    chain_clock = _fixed_clock(_AS_OF)
+
+    def record_map(*args: Any, **kwargs: Any) -> ScopeMaterializationResult:
+        key = kwargs["scope_support"].key
+        calls.append(("map", key))
+        return _unchanged_geometry_result()
+
+    def record_level(
+        conn: _FakeConn,
+        *,
+        key: NativeShortMapScopeKey,
+        operational_clock: Any,
+    ) -> MapLevelStatusMaterializationOutcome:
+        assert tuple(
+            (
+                key.venue,
+                key.symbol,
+                key.quote_currency,
+                key.fib_trading_horizon,
+                key.primary_interval,
+                key.supporting_interval,
+            )
+        ) in conn.status_rows
+        assert operational_clock is chain_clock
+        assert operational_clock() == _AS_OF
+        calls.append(("level", key))
+        return _successful_level_status(
+            conn,
+            key=key,
+            operational_clock=operational_clock,
+        )
+
+    run = run_native_short_scope_status_materializer(
+        conn,
+        scopes=scopes,
+        as_of_utc=_AS_OF,
+        trigger_type="MANUAL",
+        operational_clock=chain_clock,
+        fetch_context_row=lambda k, t: _context_row(),
+        fetch_existing_maps=_no_maps,
+        fetch_existing_generation_events=_no_generation_events,
+        fetch_existing_lifecycle_events=_no_lifecycle_events,
+        fetch_primary_candle_close_timestamps=_fresh_candles,
+        fetch_supporting_candle_close_timestamps=_fresh_candles,
+        materialize_scope_symbol_fn=record_map,
+        materialize_map_level_status_fn=record_level,
+    )
+
+    assert run.terminal_status == "FINISHED"
+    assert [(phase, key.symbol) for phase, key in calls] == [
+        ("map", "ETH"),
+        ("level", "ETH"),
+        ("map", "BTC"),
+        ("level", "BTC"),
+    ]
+    assert [key for phase, key in calls if phase == "level"] == scopes
+
+
+def test_chain_surfaces_blocked_level_status_as_failed_market_data_run() -> None:
+    conn = _FakeConn()
+    key = NativeShortMapScopeKey(
+        venue="bitvavo",
+        symbol="BTC",
+        quote_currency="EUR",
+        fib_trading_horizon="SHORT",
+        primary_interval="4h",
+        supporting_interval="1h",
+    )
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(key)
+
+    def blocked_level(
+        conn: Any,
+        *,
+        key: NativeShortMapScopeKey,
+        operational_clock: Any,
+    ) -> MapLevelStatusMaterializationOutcome:
+        return MapLevelStatusMaterializationOutcome(
+            key=key,
+            branch=BLOCKED,
+            reason_code="SOURCE_STALE",
+            row_count=0,
+            current_map_id=1,
+            map_cycle_id="cyc1",
+            level_status_as_of_utc=None,
+        )
+
+    with pytest.raises(
+        NativeShortMapLevelStatusBlockedError,
+        match=(
+            "MAP_LEVEL_STATUS_BLOCKED.*venue=bitvavo.*symbol=BTC.*"
+            "quote_currency=EUR.*fib_trading_horizon=SHORT.*"
+            "primary_interval=4h.*supporting_interval=1h.*reason_code=SOURCE_STALE"
+        ),
+    ):
+        run_native_short_scope_status_materializer(
+            conn,
+            scopes=[key],
+            as_of_utc=_AS_OF,
+            trigger_type="MANUAL",
+            operational_clock=_fixed_clock(_AS_OF),
+            fetch_context_row=lambda k, t: _context_row(),
+            fetch_existing_maps=_no_maps,
+            fetch_existing_generation_events=_no_generation_events,
+            fetch_existing_lifecycle_events=_no_lifecycle_events,
+            fetch_primary_candle_close_timestamps=_fresh_candles,
+            fetch_supporting_candle_close_timestamps=_fresh_candles,
+            materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
+            materialize_map_level_status_fn=blocked_level,
+        )
+
+    assert conn.status_upsert_count == 1
+    assert conn.runs[0]["terminal_status"] == "FAILED"
+    assert conn.runs[0]["failure_reason_code"] == "NativeShortMapLevelStatusBlockedError"
+    assert "reason_code=SOURCE_STALE" in conn.runs[0]["failure_detail"]
 
 
 # --- one run row per invocation; terminal fields set once ------------------

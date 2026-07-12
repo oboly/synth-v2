@@ -31,7 +31,9 @@ This module has two clearly separated layers:
    the bounded-run orchestrator that wires the pure logic to real reads/writes
    and reuses the existing `native_short_map_materializer_v1.materialize_scope_symbol`
    geometry path unchanged (no duplicate maps/generation heartbeats, by
-   construction of that existing function).
+   construction of that existing function), then invokes the bounded
+   `native_short_map_level_status_materializer_v1` only after the canonical
+   scope projection has been rebuilt for the same explicit scope.
 
 Genuine lifecycle transition detection reuses the existing deterministic
 `native_short_fib_context_v1` predicate (`primary_4h_lifecycle_state`,
@@ -58,6 +60,11 @@ from src.market_data.native_short_map_lifecycle_v1 import (
     NativeShortMapScopeKey,
     NativeShortMapScopeSupport,
     NativeShortMapScopeSupportState,
+)
+from src.market_data.native_short_map_level_status_materializer_v1 import (
+    BLOCKED as MAP_LEVEL_STATUS_BLOCKED,
+    MapLevelStatusMaterializationOutcome,
+    materialize_native_short_map_level_status_for_scope,
 )
 from src.market_data.native_short_map_materializer_v1 import (
     REASON_PRIOR_REJECTION_UNCHANGED,
@@ -92,6 +99,8 @@ from src.market_data.native_short_scope_status_v1 import (
 
 __all__ = [
     "CONTRACT_VERSION",
+    "NativeShortMapLevelStatusBlockedError",
+    "NativeShortMapLevelStatusChainError",
     "NativeShortRunBuilder",
     "NativeShortRunTerminalizationConflictError",
     "ScopeEvaluationOutcome",
@@ -106,6 +115,15 @@ __all__ = [
 RUNNER_NAME = "native_short_scope_status_materializer_v1"
 RUNNER_VERSION = "0.1"
 CONTRACT_VERSION = "native_short_scope_status_v1"  # must fit VARCHAR(32): native_short_materializer_run_v1.contract_version
+EXPECTED_MAP_LEVEL_STATUS_ROW_COUNT = 3
+
+
+class NativeShortMapLevelStatusChainError(RuntimeError):
+    pass
+
+
+class NativeShortMapLevelStatusBlockedError(NativeShortMapLevelStatusChainError):
+    pass
 
 
 class NativeShortRunTerminalizationConflictError(RuntimeError):
@@ -1003,12 +1021,16 @@ def run_native_short_scope_status_materializer(
     fetch_supporting_candle_close_timestamps: Callable[[NativeShortMapScopeKey, datetime], list[datetime]],
     run_uuid: str | None = None,
     materialize_scope_symbol_fn: Callable[..., ScopeMaterializationResult] = materialize_scope_symbol,
+    materialize_map_level_status_fn: Callable[
+        ..., MapLevelStatusMaterializationOutcome
+    ] | None = None,
 ) -> NativeShortMaterializerRunRecord:
     """Bounded run over an explicit scope list at one explicit as_of_utc.
 
     Exactly one native_short_materializer_run_v1 row is inserted at start and
     finalized exactly once, either FINISHED (success) or FAILED (any normal
-    Exception escaping scope evaluation or projection rebuild). Every
+    Exception escaping scope evaluation, projection rebuild, or map-level
+    status rebuild). Every
     SUPPORTED scope gets exactly one append-only observation and, when
     SUPPORTED, one rebuilt/upserted projection row; NOT_APPLICABLE/
     UNKNOWN_AT_AS_OF scopes get neither.
@@ -1021,6 +1043,10 @@ def run_native_short_scope_status_materializer(
     itself, so the caller controls exactly when those two timestamps are
     captured.
     """
+    materialize_map_level_status_fn = (
+        materialize_map_level_status_fn
+        or materialize_native_short_map_level_status_for_scope
+    )
     started_at_utc = operational_clock()
     builder = NativeShortRunBuilder(
         run_uuid=run_uuid or str(uuid.uuid4()),
@@ -1088,6 +1114,34 @@ def run_native_short_scope_status_materializer(
                 primary_candle_close_timestamps=primary_candle_close_timestamps,
                 supporting_candle_close_timestamps=supporting_candle_close_timestamps,
             )
+
+            # The level-status materializer consumes only the projection's
+            # selected current_map_id/full scope identity, so it must run
+            # strictly after the canonical projection rebuild. Its semantic
+            # cutoff remains projection_as_of_utc; the chain clock supplies
+            # only rebuilt-at operational metadata.
+            level_status_outcome = materialize_map_level_status_fn(
+                conn,
+                key=key,
+                operational_clock=operational_clock,
+            )
+            if level_status_outcome.branch == MAP_LEVEL_STATUS_BLOCKED:
+                raise NativeShortMapLevelStatusBlockedError(
+                    "MAP_LEVEL_STATUS_BLOCKED "
+                    f"venue={key.venue} symbol={key.symbol} "
+                    f"quote_currency={key.quote_currency} "
+                    f"fib_trading_horizon={key.fib_trading_horizon} "
+                    f"primary_interval={key.primary_interval} "
+                    f"supporting_interval={key.supporting_interval} "
+                    f"reason_code={level_status_outcome.reason_code or 'UNKNOWN'}"
+                )
+            if level_status_outcome.row_count != EXPECTED_MAP_LEVEL_STATUS_ROW_COUNT:
+                raise NativeShortMapLevelStatusChainError(
+                    "MAP_LEVEL_STATUS_UNEXPECTED_ROW_COUNT "
+                    f"venue={key.venue} symbol={key.symbol} "
+                    f"expected={EXPECTED_MAP_LEVEL_STATUS_ROW_COUNT} "
+                    f"actual={level_status_outcome.row_count}"
+                )
     except Exception as exc:
         failed_record = builder.finish(
             finished_at_utc=operational_clock(),

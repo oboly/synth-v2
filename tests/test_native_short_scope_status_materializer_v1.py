@@ -495,9 +495,30 @@ def test_materializer_module_imports_no_forbidden_layers() -> None:
             "src.exec" + "ution",
             "src.exec" + "ution_planner",
             "src.decision" + "_gate",
+            "src.select" + "ion_engine",
+            "src.agents",
             "src.reporting",
+            "src.ui",
+            "src.web",
+            "src.deployment",
         ):
             assert not module_name.startswith(forbidden), module_name
+
+
+def test_materializer_module_preserves_required_safety_markers() -> None:
+    source = Path("src/market_data/native_short_scope_status_materializer_v1.py").read_text(
+        encoding="utf-8"
+    )
+    for marker in (
+        "broker_private_calls=0",
+        "broker_writes=0",
+        "order_submission=0",
+        "live_orders=0",
+        "decision_gate=none",
+        "execution_planner=none",
+        "executor=none",
+    ):
+        assert marker in source
 
 
 def test_materializer_module_has_no_wallclock_calls() -> None:
