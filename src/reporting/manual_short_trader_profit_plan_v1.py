@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import html as _html
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -289,6 +290,12 @@ class CardEvidence:
     # per-account snapshot, this stays DATA_UNAVAILABLE and account-specific repair
     # actions (FIX LADDER) fail closed.
     account_order_snapshot_status: str = DATA_UNAVAILABLE
+    # Per-authority account evidence (P1 evidence-card normalization). Distinct from
+    # the combined account_order_snapshot_status above so wallet/position/order truth
+    # can be displayed independently and never compressed into one generic label.
+    # Stays DATA_UNAVAILABLE until Lane A plumbs a real per-authority snapshot.
+    wallet_snapshot_status: str = DATA_UNAVAILABLE
+    position_snapshot_status: str = DATA_UNAVAILABLE
     map_age_min: str = DATA_UNAVAILABLE
     anchor_start_ts_utc: str = DATA_UNAVAILABLE
     anchor_end_ts_utc: str = DATA_UNAVAILABLE
@@ -309,6 +316,20 @@ class CardDelta:
     material_delta_types: tuple[str, ...] = ()
     changed_fields: tuple[str, ...] = ()
     comparison_key: str = DATA_UNAVAILABLE
+
+
+@dataclass(frozen=True)
+class EvidenceRow:
+    """One normalized, independently-owned evidence authority row (P1 evidence-card
+    semantic normalization). Each row carries exactly one authority owner and one
+    canonical status, and must not infer its status from unrelated rows. The same
+    rows drive card HTML, sidebar/detail HTML, and the JSON snapshot."""
+    key: str
+    label: str
+    authority: str
+    status: str
+    observed_ts: str | None = None
+    reason_codes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1447,6 +1468,281 @@ def _effective_workflow_action(card: ProfitPlanCard) -> str:
         card.action_label,
         card.action_label.replace("_", " "),
     )
+
+
+# ---------------------------------------------------------------------------
+# P1 — Evidence-card semantic normalization
+#
+# One normalized row per independent authority. No row infers its status from
+# another row: a DATA_UNAVAILABLE projection must never be paired with a
+# confirmed CURRENT_ACTIVE_MAP current-map-selection status. Reporting/display
+# only — does not alter the fail-closed action resolver above.
+# ---------------------------------------------------------------------------
+
+def _action_gate_blocking_reason_codes(card: ProfitPlanCard) -> tuple[str, ...]:
+    """Read-only explanatory reason codes for the action-gate evidence row.
+
+    Mirrors the existing fail-closed checks (_fix_ladder_allowed /
+    _map_switch_review_required / _effective_workflow_action, PR #75) without
+    altering their precedence or outcome. Returns the complete, untruncated set
+    of reasons the action gate is not ACTIONABLE/FIX_LADDER.
+    """
+    if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+        return ()
+    if card.actionability_state == CARD_ACTIONABILITY_INVALIDATED:
+        return ("CONTEXT_INVALIDATED",)
+    if _map_switch_review_required(card):
+        codes = ["MAP_SWITCH_UNVERIFIED"]
+        if _native_map_status(card) != "AVAILABLE":
+            codes.append("NATIVE_MAP_DATA_UNAVAILABLE")
+        return tuple(codes)
+    if _fix_ladder_allowed(card):
+        return ()
+    if not (card.actionability_state == CARD_ACTIONABILITY_ACTIVE and _ladder_needs_attention(card)):
+        return ()
+    codes: list[str] = []
+    if not _price_is_fresh_enough(card):
+        codes.append("STALE_CURRENT_PRICE")
+    if str(card.evidence.account_order_snapshot_status or "").strip().upper() != "FRESH":
+        codes.append("ACCOUNT_ORDER_DATA_UNAVAILABLE")
+    if _order_snapshot_authority_status(card.evidence) != "FRESH":
+        codes.append("STALE_OR_UNAVAILABLE_ORDER_SNAPSHOT")
+    if _native_map_status(card) != "AVAILABLE":
+        codes.append("NATIVE_MAP_DATA_UNAVAILABLE")
+    if _is_unavailable(card.evidence.map_cycle_id):
+        codes.append("MAP_CYCLE_UNAVAILABLE")
+    if str(card.evidence.selected_map_tier or "").strip().upper() != "CURRENT_ACTIVE_MAP":
+        codes.append("MAP_TIER_NOT_CONFIRMED_CURRENT")
+    if _map_lifecycle_blocks_action(card):
+        codes.append("MAP_LIFECYCLE_BLOCKS_ACTION")
+    if not _card_has_loaded_entry(card) and card.target_exit_zone:
+        codes.append("ENTRY_LEVELS_UNAVAILABLE")
+    if not _entry_activation_proof(card):
+        codes.append("ENTRY_ACTIVATION_UNPROVEN")
+    return tuple(codes)
+
+
+def _evidence_observed_ts(value: str | None) -> str | None:
+    return value if value is not None and not _is_unavailable(value) else None
+
+
+def _projection_status_row(card: ProfitPlanCard) -> EvidenceRow:
+    status = _native_map_status(card)
+    reason_codes = () if status == "AVAILABLE" else ("NATIVE_MAP_DATA_UNAVAILABLE",)
+    return EvidenceRow(
+        key="projection_status",
+        label="Projection status",
+        authority="Native scope-status projection (Lane B)",
+        status=status,
+        reason_codes=reason_codes,
+    )
+
+
+def _current_map_selection_row(card: ProfitPlanCard) -> EvidenceRow:
+    raw_tier = str(card.evidence.selected_map_tier or "").strip().upper()
+    authority = "Selected-map tier (map-selection authority)"
+    if raw_tier in _UNAVAILABLE_TOKENS:
+        return EvidenceRow(
+            key="current_map_selection",
+            label="Current map selection",
+            authority=authority,
+            status="UNKNOWN",
+            reason_codes=("MAP_SELECTION_UNAVAILABLE",),
+        )
+    if _native_map_status(card) == "AVAILABLE":
+        return EvidenceRow(
+            key="current_map_selection",
+            label="Current map selection",
+            authority=authority,
+            status=raw_tier,
+            reason_codes=(),
+        )
+    # Native projection truth is unavailable: a reported tier must never be shown
+    # as confirmed CURRENT_ACTIVE_MAP truth. Fail closed to an explicit fallback
+    # status while preserving the underlying reported value as a reason code.
+    return EvidenceRow(
+        key="current_map_selection",
+        label="Current map selection",
+        authority=authority,
+        status="REPORTING_FALLBACK",
+        reason_codes=("NATIVE_MAP_DATA_UNAVAILABLE", f"REPORTED_TIER_{raw_tier}"),
+    )
+
+
+def _map_lifecycle_row(card: ProfitPlanCard) -> EvidenceRow:
+    status = str(card.evidence.lifecycle_state or "").strip().upper() or DATA_UNAVAILABLE
+    if status in _UNAVAILABLE_TOKENS:
+        status = DATA_UNAVAILABLE
+    reason_codes = () if status != DATA_UNAVAILABLE else ("MAP_LIFECYCLE_UNAVAILABLE",)
+    return EvidenceRow(
+        key="map_lifecycle",
+        label="Map lifecycle",
+        authority="Map-cycle lifecycle authority",
+        status=status,
+        reason_codes=reason_codes,
+    )
+
+
+_PER_LEVEL_COMPLETED_STATES: frozenset[str] = frozenset({"COMPLETED", "REACHED_FILLED"})
+_PER_LEVEL_HISTORICAL_STATES: frozenset[str] = frozenset({"PASSED", "COMPLETED", "REACHED_FILLED"})
+
+
+def _per_level_status_row(card: ProfitPlanCard) -> EvidenceRow:
+    # Locally derived from reporting-side target-level history, not a native Lane B0
+    # per-level authority. Always disclosed via reason code so this row is never
+    # mistaken for canonical native level-status evidence.
+    authority = "Reporting-derived per-level rollup (not native canonical)"
+    statuses = card.target_level_statuses
+    if not statuses:
+        return EvidenceRow(
+            key="per_level_status",
+            label="Per-level status",
+            authority=authority,
+            status=DATA_UNAVAILABLE,
+            reason_codes=("LEVEL_STATUS_UNAVAILABLE",),
+        )
+    if any(level.is_active_target for level in statuses):
+        status = "CURRENT"
+    elif all(level.lifecycle_state in _PER_LEVEL_COMPLETED_STATES for level in statuses):
+        status = "COMPLETED"
+    elif all(level.lifecycle_state in _PER_LEVEL_HISTORICAL_STATES for level in statuses):
+        status = "HISTORICAL"
+    else:
+        status = "CURRENT"
+    return EvidenceRow(
+        key="per_level_status",
+        label="Per-level status",
+        authority=authority,
+        status=status,
+        reason_codes=("REPORTING_DERIVED_NOT_NATIVE_CANONICAL",),
+    )
+
+
+def _price_snapshot_row(card: ProfitPlanCard) -> EvidenceRow:
+    if card.current_price is None or card.current_price_status == "MISSING_CURRENT_PRICE":
+        status = "MISSING"
+    elif card.current_price_status == "STALE_CURRENT_PRICE":
+        status = "STALE"
+    else:
+        status = "FRESH"
+    reason_codes = () if status == "FRESH" else ("STALE_OR_MISSING_CURRENT_PRICE",)
+    return EvidenceRow(
+        key="price_snapshot",
+        label="Price snapshot",
+        authority="Current-price snapshot",
+        status=status,
+        observed_ts=_evidence_observed_ts(card.evidence.price_ts_utc),
+        reason_codes=reason_codes,
+    )
+
+
+def _wallet_snapshot_row(card: ProfitPlanCard) -> EvidenceRow:
+    status = str(card.evidence.wallet_snapshot_status or "").strip().upper() or DATA_UNAVAILABLE
+    reason_codes = () if status == "FRESH" else (
+        ("WALLET_DATA_UNAVAILABLE",) if status == DATA_UNAVAILABLE else ("STALE_WALLET_DATA",)
+    )
+    return EvidenceRow(
+        key="wallet_snapshot",
+        label="Wallet snapshot",
+        authority="Wallet balance snapshot (Lane A)",
+        status=status,
+        reason_codes=reason_codes,
+    )
+
+
+def _position_snapshot_row(card: ProfitPlanCard) -> EvidenceRow:
+    status = str(card.evidence.position_snapshot_status or "").strip().upper() or DATA_UNAVAILABLE
+    reason_codes = () if status == "FRESH" else (
+        ("POSITION_DATA_UNAVAILABLE",) if status == DATA_UNAVAILABLE else ("STALE_POSITION_DATA",)
+    )
+    return EvidenceRow(
+        key="position_snapshot",
+        label="Position snapshot",
+        authority="Position snapshot (Lane A)",
+        status=status,
+        reason_codes=reason_codes,
+    )
+
+
+def _open_order_snapshot_row(card: ProfitPlanCard) -> EvidenceRow:
+    status = _order_snapshot_authority_status(card.evidence)
+    reason_codes = () if status == "FRESH" else (
+        ("STALE_OPEN_ORDER_SNAPSHOT",) if status == "STALE" else ("OPEN_ORDER_DATA_UNAVAILABLE",)
+    )
+    return EvidenceRow(
+        key="open_order_snapshot",
+        label="Open-order snapshot",
+        authority="Open-order snapshot (Lane A)",
+        status=status,
+        observed_ts=_evidence_observed_ts(card.evidence.order_snapshot_ts_utc),
+        reason_codes=reason_codes,
+    )
+
+
+def _dashboard_render_row(card: ProfitPlanCard) -> EvidenceRow:
+    return EvidenceRow(
+        key="dashboard_render",
+        label="Dashboard render",
+        authority="Dashboard renderer (this process, read-only)",
+        status="RENDERED",
+        observed_ts=_evidence_observed_ts(card.evidence.generation_ts_utc),
+        reason_codes=(),
+    )
+
+
+def _action_gate_row(card: ProfitPlanCard) -> EvidenceRow:
+    authority = "Action-gate resolver (fail-closed precedence, PR #75)"
+    if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+        return EvidenceRow(
+            key="action_gate",
+            label="Action gate",
+            authority=authority,
+            status="NOT_APPLICABLE",
+            reason_codes=(),
+        )
+    status = _effective_workflow_action(card).strip().upper().replace(" ", "_")
+    return EvidenceRow(
+        key="action_gate",
+        label="Action gate",
+        authority=authority,
+        status=status,
+        reason_codes=_action_gate_blocking_reason_codes(card),
+    )
+
+
+def build_card_evidence_rows(card: ProfitPlanCard) -> tuple[EvidenceRow, ...]:
+    """Single source of truth for normalized evidence authority rows.
+
+    Produces the ten required independent authority rows in fixed order. The
+    same tuple must drive card HTML, sidebar/detail HTML, and the JSON
+    snapshot — no renderer may re-derive a status independently.
+    """
+    return (
+        _projection_status_row(card),
+        _current_map_selection_row(card),
+        _map_lifecycle_row(card),
+        _per_level_status_row(card),
+        _price_snapshot_row(card),
+        _wallet_snapshot_row(card),
+        _position_snapshot_row(card),
+        _open_order_snapshot_row(card),
+        _dashboard_render_row(card),
+        _action_gate_row(card),
+    )
+
+
+def evidence_rows_to_json(rows: tuple[EvidenceRow, ...]) -> list[dict[str, Any]]:
+    return [
+        {
+            "key": row.key,
+            "label": row.label,
+            "authority": row.authority,
+            "status": row.status,
+            "observed_ts": row.observed_ts,
+            "reason_codes": list(row.reason_codes),
+        }
+        for row in rows
+    ]
 
 
 def _card_displayed_action_for_filter(card: ProfitPlanCard) -> str:
@@ -2614,35 +2910,48 @@ def _delta_summary_text(delta: CardDelta) -> str:
     return f"UPDATED NOW · {changed}{suffix}" if changed else "UPDATED NOW"
 
 
-def _card_evidence_html(card: ProfitPlanCard) -> str:
-    rollover_value = card.evidence.rollover_state
-    if card.evidence.previous_map_cycle_id not in {DATA_UNAVAILABLE, ""}:
-        rollover_value = f"{card.evidence.rollover_state} · prev {card.evidence.previous_map_cycle_id} ({card.evidence.previous_map_lifecycle_state})"
-    evidence_items = (
-        ("Map cycle", card.evidence.map_cycle_id),
-        ("Native map", card.evidence.native_map_id),
-        ("Native map status", _native_map_status(card)),
-        ("Tier", card.evidence.selected_map_tier),
-        ("Reason", card.evidence.selected_map_reason),
-        ("Rollover", rollover_value),
-        ("Lifecycle", card.evidence.lifecycle_state),
-        ("Map age", card.evidence.map_age_min),
-        ("Anchor", f"{card.evidence.anchor_start_ts_utc} → {card.evidence.anchor_end_ts_utc}"),
-        ("Anchor prices", f"{card.evidence.anchor_low_price} / {card.evidence.anchor_high_price}"),
-        ("Price source", f"{card.evidence.price_freshness_state} · {card.evidence.price_ts_utc}"),
-        ("Orders", card.evidence.order_snapshot_ts_utc),
-        ("Context", card.evidence.context_ts_utc),
+_EVIDENCE_ROW_WARN_STATUSES: frozenset[str] = frozenset({
+    DATA_UNAVAILABLE, "UNKNOWN", "MISSING", "STALE", "REPORTING_FALLBACK",
+})
+
+
+def _evidence_authority_row_class(row: EvidenceRow) -> str:
+    if row.reason_codes or row.status in _EVIDENCE_ROW_WARN_STATUSES:
+        return "evidence-authority-row-warn"
+    return "evidence-authority-row-ok"
+
+
+def _evidence_authority_row_html(row: EvidenceRow) -> str:
+    observed_html = f" · {esc(row.observed_ts)}" if row.observed_ts else ""
+    reasons_html = (
+        f"<div class='evidence-row-reasons muted small'>Reasons: {esc(', '.join(row.reason_codes))}</div>"
+        if row.reason_codes
+        else ""
     )
-    rows = "".join(
-        f"<div class='evidence-row'><span>{esc(label)}</span><code>{esc(value)}</code></div>"
-        for label, value in evidence_items
+    return (
+        f"<div class='evidence-authority-row {_evidence_authority_row_class(row)}'>"
+        "<div class='evidence-row-head'>"
+        f"<span class='evidence-row-label'>{esc(row.label)}</span>"
+        f"<code class='evidence-row-status'>{esc(row.status)}</code>"
+        "</div>"
+        f"<div class='evidence-row-authority muted small'>{esc(row.authority)}{observed_html}</div>"
+        f"{reasons_html}"
+        "</div>"
     )
+
+
+def _card_evidence_html(rows: tuple[EvidenceRow, ...], card: ProfitPlanCard) -> str:
+    """Render the normalized evidence-authority rows (P1). Each row has exactly
+    one authority owner and one canonical status — no row is inferred from, or
+    visually compressed with, an unrelated row (e.g. a DATA_UNAVAILABLE
+    projection is never paired with a confirmed CURRENT_ACTIVE_MAP claim)."""
+    rows_html = "".join(_evidence_authority_row_html(row) for row in rows)
     delta_types = ", ".join(card.delta.material_delta_types) or "none"
     changed = ", ".join(card.delta.changed_fields) or "none"
     return (
         f"<div class='card-evidence {_evidence_state_class(card)}'>"
         f"<div class='evidence-header'><span>Evidence</span><strong>{esc(_delta_summary_text(card.delta))}</strong></div>"
-        f"<div class='evidence-grid'>{rows}</div>"
+        f"<div class='evidence-authority-rows'>{rows_html}</div>"
         f"<div class='evidence-delta muted small'>Delta: {esc(delta_types)} · Fields: {esc(changed)}</div>"
         "</div>"
     )
@@ -3265,6 +3574,18 @@ _CSS = """
     .evidence-row span { color: var(--muted); }
     .evidence-row code { color: var(--text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .evidence-delta { margin-top:6px; overflow-wrap:anywhere; }
+    .evidence-authority-rows { display:flex; flex-direction:column; gap:6px; }
+    .evidence-authority-row {
+      border: 1px solid var(--line); border-radius: 6px; padding: 5px 7px;
+      background: rgba(255,255,255,.02);
+    }
+    .evidence-authority-row-warn { border-color: rgba(255,209,102,.35); background: rgba(255,209,102,.06); }
+    .evidence-authority-row-ok { border-color: rgba(102,223,178,.25); }
+    .evidence-row-head { display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
+    .evidence-row-label { color: var(--muted); }
+    .evidence-row-status { color: var(--text); overflow-wrap:anywhere; white-space:normal; text-align:right; }
+    .evidence-row-authority { overflow-wrap:anywhere; white-space:normal; margin-top:2px; }
+    .evidence-row-reasons { overflow-wrap:anywhere; white-space:normal; margin-top:2px; }
     .order-section { margin-top: 10px; }
     .order-section-header {
       display: flex; gap: 14px; align-items: baseline; flex-wrap: wrap;
@@ -3496,6 +3817,47 @@ def _build_client_js(storage_scope: str) -> str:
     }});
   }}
 
+  function _ppParseEvidenceRows(card) {{
+    var raw = card.dataset.evidenceRows || '[]';
+    try {{ return JSON.parse(raw) || []; }} catch(e) {{ return []; }}
+  }}
+
+  function _ppEvidenceRowByKey(rows, key) {{
+    for (var i = 0; i < rows.length; i++) {{
+      if (rows[i].key === key) return rows[i];
+    }}
+    return null;
+  }}
+
+  // Renders one normalized evidence-authority row in full: label, canonical
+  // status, authority owner, observed timestamp (if any) and the COMPLETE
+  // reason-code list — never truncated, per the P1 evidence-normalization rule.
+  function _ppEvidenceRowHtml(row) {{
+    if (!row) {{
+      return "<div class='muted small' style='margin-bottom:10px'>DATA_UNAVAILABLE</div>";
+    }}
+    var observed = row.observed_ts ? (" \xb7 " + row.observed_ts) : "";
+    var reasons = (row.reason_codes && row.reason_codes.length)
+      ? "<div class='muted small'>Reasons: " + row.reason_codes.join(', ') + "</div>"
+      : "";
+    return (
+      "<div style='margin-bottom:2px'><strong>" + row.status + "</strong>" +
+      "<span class='muted small'> \xb7 " + row.authority + observed + "</span></div>" +
+      reasons
+    );
+  }}
+
+  function _ppEvidenceSectionHtml(rows) {{
+    return rows.map(function(row) {{
+      return (
+        "<div style='margin-bottom:10px'>" +
+        "<div class='muted small'>" + row.label + "</div>" +
+        _ppEvidenceRowHtml(row) +
+        "</div>"
+      );
+    }}).join('');
+  }}
+
   function _ppUpdateDetailPanel(card) {{
     var panel = document.getElementById('profit-plan-detail-panel');
     if (!panel) return;
@@ -3515,6 +3877,7 @@ def _build_client_js(storage_scope: str) -> str:
     var bcFreshness = card.dataset.bcFreshness || 'UNAVAILABLE';
     var marketEl = card.querySelector('.card-row1 .muted.small');
     var market = marketEl ? marketEl.textContent.trim() : '';
+    var evidenceRows = _ppParseEvidenceRows(card);
     panel.innerHTML =
       "<h3>" + symbol + "</h3>" +
       "<div class='small muted' style='margin-bottom:10px'>" + market + "</div>" +
@@ -3532,10 +3895,12 @@ def _build_client_js(storage_scope: str) -> str:
       "<div style='margin-bottom:6px'><span class='muted small'>BTC relation: </span>" + bcRelation + "</div>" +
       "<div style='margin-bottom:6px'><span class='muted small'>Match quality: </span>" + bcMatch + "</div>" +
       "<div style='margin-bottom:12px'><span class='muted small'>Source / freshness: </span>" + bcSourceTs + " \xb7 " + bcFreshness + "</div>" +
-      "<h3>Wallet</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
-      "<h3>Position</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
-      "<h3>Orders</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
-      "<h3>Context</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>";
+      "<h3>Evidence</h3>" +
+      "<div style='margin-bottom:6px'>" + _ppEvidenceSectionHtml(evidenceRows) + "</div>" +
+      "<h3>Wallet</h3>" + _ppEvidenceRowHtml(_ppEvidenceRowByKey(evidenceRows, 'wallet_snapshot')) +
+      "<h3>Position</h3>" + _ppEvidenceRowHtml(_ppEvidenceRowByKey(evidenceRows, 'position_snapshot')) +
+      "<h3>Orders</h3>" + _ppEvidenceRowHtml(_ppEvidenceRowByKey(evidenceRows, 'open_order_snapshot')) +
+      "<h3>Context</h3>" + _ppEvidenceRowHtml(_ppEvidenceRowByKey(evidenceRows, 'map_lifecycle'));
   }}
 
   function selectProfitPlanCard(renderId) {{
@@ -4170,7 +4535,9 @@ def render_plan_card(
         )
 
     reasons_html = "".join(f"<li>{esc(r)}</li>" for r in card.reasons)
-    evidence_html = _card_evidence_html(card)
+    evidence_rows = build_card_evidence_rows(card)
+    evidence_html = _card_evidence_html(evidence_rows, card)
+    evidence_rows_json_attr = json.dumps(evidence_rows_to_json(evidence_rows), separators=(",", ":"))
 
     # Primary-action consistency: a card has exactly one primary action. When a
     # stronger workflow override is shown, do not also render a weak no-op market
@@ -4231,6 +4598,7 @@ def render_plan_card(
         f" data-price-freshness-state='{esc(card.evidence.price_freshness_state)}'"
         f" data-delta-status='{esc(card.delta.delta_status)}'"
         f" data-delta-types='{esc(','.join(card.delta.material_delta_types))}'"
+        f" data-evidence-rows='{esc(evidence_rows_json_attr)}'"
         f" data-render-id='{esc(card.render_id)}'>"
         "<div class='card-head'>"
         "<div class='card-head-left'>"
@@ -4555,6 +4923,7 @@ def build_json_snapshot(
                 "short_context_coverage_status": c.short_context_coverage_status,
                 "short_context_display_state": c.short_context_display_state,
                 "evidence": _evidence_json(c.evidence),
+                "evidence_rows": evidence_rows_to_json(build_card_evidence_rows(c)),
                 "delta": _delta_json(c.delta),
                 "current_price": str(c.current_price) if c.current_price is not None else None,
                 "current_price_status": c.current_price_status,

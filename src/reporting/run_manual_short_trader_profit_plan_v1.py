@@ -319,6 +319,10 @@ def _evidence_from_native_row(native_row: Any, *, now_utc: datetime) -> CardEvid
         # Account/order snapshot freshness (Lane A) is not yet plumbed; kept
         # DATA_UNAVAILABLE so placeholder account panels cannot enable FIX LADDER.
         account_order_snapshot_status="DATA_UNAVAILABLE",
+        # Per-authority wallet/position evidence (Lane A) is not yet plumbed either;
+        # kept independently DATA_UNAVAILABLE for the P1 evidence-card normalization.
+        wallet_snapshot_status="DATA_UNAVAILABLE",
+        position_snapshot_status="DATA_UNAVAILABLE",
         map_age_min=_map_age_min(anchor_end_ts_utc=native_row.anchor_end_ts_utc, now_utc=now_utc),
         anchor_start_ts_utc=_fmt_ts(native_row.anchor_start_ts_utc),
         anchor_end_ts_utc=_fmt_ts(native_row.anchor_end_ts_utc),

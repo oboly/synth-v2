@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import html as html_lib
 import json
+import re
 import tempfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -24,6 +26,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     ActiveOrderSummary,
     CardDelta,
     CardEvidence,
+    EvidenceRow,
     FibExtContext,
     FibNavContext,
     OrderRow,
@@ -31,10 +34,12 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     ReentryContext,
     TargetHistoryCandle,
     apply_card_deltas,
+    build_card_evidence_rows,
     build_card_search_text,
     build_json_snapshot,
     build_profit_plan_card,
     compare_card_delta,
+    evidence_rows_to_json,
     derive_quality_state,
     filter_cards_for_view,
     format_current_price_line,
@@ -5206,3 +5211,341 @@ class TestMarketSelectedFieldGrid:
         card = self._make_market_selected()
         html = render_plan_card(card, buy_orders=(), sell_orders=())
         assert "data-presentation-mode='MARKET_SELECTED_NO_ACCOUNT_STATE'" in html
+
+
+# ---------------------------------------------------------------------------
+# P1 — Evidence-card semantic normalization
+# ---------------------------------------------------------------------------
+
+_EVIDENCE_ROW_KEYS_IN_ORDER = (
+    "projection_status",
+    "current_map_selection",
+    "map_lifecycle",
+    "per_level_status",
+    "price_snapshot",
+    "wallet_snapshot",
+    "position_snapshot",
+    "open_order_snapshot",
+    "dashboard_render",
+    "action_gate",
+)
+
+
+def _passed_level_status(level: Decimal, *, first_cross_ts_utc: datetime) -> "_pp_module.TargetLevelStatus":
+    return _pp_module.TargetLevelStatus(
+        level=level,
+        lifecycle_state="PASSED",
+        coverage_state="PASSED_OPEN_ORDER",
+        human_label="passed sell level with open order",
+        retest_context=None,
+        first_cross_ts_utc=first_cross_ts_utc,
+        distance_pct=None,
+        matching_open_sell_orders=1,
+        nearest_open_sell_price=level,
+        nearest_open_sell_distance_pct=Decimal("1"),
+        is_active_target=False,
+    )
+
+
+def _active_level_status(level: Decimal) -> "_pp_module.TargetLevelStatus":
+    return _pp_module.TargetLevelStatus(
+        level=level,
+        lifecycle_state="UPCOMING",
+        coverage_state="ORDER_ABSENT",
+        human_label="upcoming sell level",
+        retest_context=None,
+        first_cross_ts_utc=None,
+        distance_pct=Decimal("10"),
+        matching_open_sell_orders=0,
+        nearest_open_sell_price=None,
+        nearest_open_sell_distance_pct=None,
+        is_active_target=True,
+    )
+
+
+def _ldo_like_card() -> ProfitPlanCard:
+    """LDO-like: native projection unavailable, but a fallback tier metadata value
+    ('CURRENT_ACTIVE_MAP') and account/order evidence are placeholders."""
+    evidence = CardEvidence(
+        map_cycle_id="LDO|SHORT|4h|demo",
+        selected_map_reason="Single active map selected",
+        selected_map_tier="CURRENT_ACTIVE_MAP",
+        lifecycle_state="TARGET_ACTIVE",
+        rollover_state="SINGLE_MAP",
+        price_freshness_state="FRESH",
+        price_ts_utc="2026-06-05T12:00:00Z",
+    )
+    base = build_profit_plan_card(
+        symbol="LDO",
+        market="LDO-EUR",
+        current_price=Decimal("1.00"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        history_high_since_activation=Decimal("1.10"),
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=evidence,
+    )
+    return dataclasses.replace(
+        base,
+        actionability_state=_pp_module.CARD_ACTIONABILITY_ACTIVE,
+        primary_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        buy_zone=(Decimal("0.90"),),
+        reload_reentry_zone=(Decimal("0.90"),),
+        target_exit_zone=(Decimal("1.05"),),
+        target_level_statuses=(_passed_level_status(Decimal("1.05"), first_cross_ts_utc=datetime(2026, 6, 3, tzinfo=UTC)),),
+        ladder_states=("LADDER_MISSING",),
+    )
+
+
+def _near_like_card() -> ProfitPlanCard:
+    """NEAR-like: native projection unavailable AND the map lifecycle is
+    independently expired — the two facts must render as separate rows, never
+    combined, and must not produce FIX_LADDER."""
+    evidence = CardEvidence(
+        map_cycle_id="NEAR|SHORT|4h|demo",
+        selected_map_reason="Single active map selected",
+        selected_map_tier="CURRENT_ACTIVE_MAP",
+        lifecycle_state="MAP_EXPIRED",
+        rollover_state="SINGLE_MAP",
+        price_freshness_state="FRESH",
+        price_ts_utc="2026-06-05T12:00:00Z",
+    )
+    base = build_profit_plan_card(
+        symbol="NEAR",
+        market="NEAR-EUR",
+        current_price=Decimal("1.70"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=evidence,
+    )
+    return dataclasses.replace(
+        base,
+        actionability_state=_pp_module.CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+        primary_state="MAP_RECOMPUTE_NEEDED",
+        action_label="WAIT_FOR_NEW_MAP",
+        setup_state="MAP_COMPLETED",
+        all_sell_targets_completed=True,
+        ladder_states=("LADDER_NOT_REQUIRED",),
+    )
+
+
+def _fresh_canonical_card() -> ProfitPlanCard:
+    """Fresh canonical case: every authority is independently fresh/confirmed and
+    FIX_LADDER may legitimately appear under the existing resolver contract."""
+    evidence = dataclasses.replace(
+        _fix_ladder_ready_evidence(),
+        wallet_snapshot_status="FRESH",
+        position_snapshot_status="FRESH",
+    )
+    base = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.4600"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        history_high_since_activation=Decimal("0.5200"),
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=evidence,
+    )
+    return dataclasses.replace(
+        base,
+        actionability_state=_pp_module.CARD_ACTIONABILITY_ACTIVE,
+        primary_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        buy_zone=(Decimal("0.4000"),),
+        reload_reentry_zone=(Decimal("0.4000"),),
+        target_exit_zone=(Decimal("0.5000"), Decimal("0.6200")),
+        target_level_statuses=(
+            _passed_level_status(Decimal("0.5000"), first_cross_ts_utc=datetime(2026, 6, 3, tzinfo=UTC)),
+            _active_level_status(Decimal("0.6200")),
+        ),
+        ladder_states=("LADDER_MISSING",),
+    )
+
+
+def _mixed_account_freshness_card() -> ProfitPlanCard:
+    evidence = CardEvidence(
+        wallet_snapshot_status="FRESH",
+        position_snapshot_status=DATA_UNAVAILABLE_CONST,
+        order_snapshot_ts_utc="2026-06-05T11:00:00Z",
+        generation_ts_utc="2026-06-05T12:00:00Z",
+    )
+    return build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.4600"),
+        fib_trading_horizon="SHORT",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=evidence,
+    )
+
+
+DATA_UNAVAILABLE_CONST = _pp_module.DATA_UNAVAILABLE
+
+
+def _row_by_key(rows: tuple[EvidenceRow, ...], key: str) -> EvidenceRow:
+    for row in rows:
+        if row.key == key:
+            return row
+    raise AssertionError(f"missing evidence row: {key}")
+
+
+def test_evidence_rows_cover_all_ten_required_authorities_in_order() -> None:
+    rows = build_card_evidence_rows(_fresh_canonical_card())
+    assert tuple(row.key for row in rows) == _EVIDENCE_ROW_KEYS_IN_ORDER
+    for row in rows:
+        assert row.authority
+        assert row.status
+
+
+def test_ldo_like_projection_unavailable_does_not_confirm_current_active_map() -> None:
+    card = _ldo_like_card()
+    rows = build_card_evidence_rows(card)
+
+    projection = _row_by_key(rows, "projection_status")
+    current_map = _row_by_key(rows, "current_map_selection")
+
+    assert projection.status == DATA_UNAVAILABLE_CONST
+    # The raw reported tier is CURRENT_ACTIVE_MAP, but native projection truth is
+    # unavailable — the row must not claim CURRENT_ACTIVE_MAP as confirmed.
+    assert current_map.status != "CURRENT_ACTIVE_MAP"
+    assert current_map.status == "REPORTING_FALLBACK"
+    assert "NATIVE_MAP_DATA_UNAVAILABLE" in current_map.reason_codes
+
+    action_gate = _row_by_key(rows, "action_gate")
+    assert action_gate.status == "REVIEW_CONTEXT"
+    assert action_gate.status != "FIX_LADDER"
+    assert set(action_gate.reason_codes) == {
+        "ACCOUNT_ORDER_DATA_UNAVAILABLE",
+        "STALE_OR_UNAVAILABLE_ORDER_SNAPSHOT",
+        "NATIVE_MAP_DATA_UNAVAILABLE",
+    }
+
+
+def test_ldo_like_html_does_not_pair_unavailable_with_confirmed_current_map() -> None:
+    card = _ldo_like_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    # The compact evidence grid must show the fallback status, not a bare
+    # CURRENT_ACTIVE_MAP claim next to DATA_UNAVAILABLE.
+    assert "REPORTING_FALLBACK" in html
+    assert "Current map selection" in html
+    assert "Projection status" in html
+
+
+def test_near_like_map_expired_is_independent_of_projection_and_blocks_fix_ladder() -> None:
+    card = _near_like_card()
+    rows = build_card_evidence_rows(card)
+
+    projection = _row_by_key(rows, "projection_status")
+    lifecycle = _row_by_key(rows, "map_lifecycle")
+    current_map = _row_by_key(rows, "current_map_selection")
+    action_gate = _row_by_key(rows, "action_gate")
+
+    assert projection.status == DATA_UNAVAILABLE_CONST
+    # Lifecycle is independently available/expired regardless of projection status.
+    assert lifecycle.status == "MAP_EXPIRED"
+    # Current map selection must still fail closed to a fallback, not a confirmed claim.
+    assert current_map.status != "CURRENT_ACTIVE_MAP"
+    assert action_gate.status != "FIX_LADDER"
+    assert action_gate.status == "MAP_EXPIRED"
+
+
+def test_fresh_canonical_case_shows_independent_fresh_rows_and_allows_fix_ladder() -> None:
+    card = _fresh_canonical_card()
+    rows = build_card_evidence_rows(card)
+
+    assert _row_by_key(rows, "projection_status").status == "AVAILABLE"
+    assert _row_by_key(rows, "current_map_selection").status == "CURRENT_ACTIVE_MAP"
+    assert _row_by_key(rows, "price_snapshot").status == "FRESH"
+    assert _row_by_key(rows, "wallet_snapshot").status == "FRESH"
+    assert _row_by_key(rows, "position_snapshot").status == "FRESH"
+    assert _row_by_key(rows, "open_order_snapshot").status == "FRESH"
+
+    action_gate = _row_by_key(rows, "action_gate")
+    assert action_gate.status == "FIX_LADDER"
+    assert action_gate.reason_codes == ()
+    assert _pp_module._fix_ladder_allowed(card) is True
+
+
+def test_mixed_account_freshness_renders_wallet_position_orders_independently() -> None:
+    card = _mixed_account_freshness_card()
+    rows = build_card_evidence_rows(card)
+
+    wallet = _row_by_key(rows, "wallet_snapshot")
+    position = _row_by_key(rows, "position_snapshot")
+    orders = _row_by_key(rows, "open_order_snapshot")
+
+    assert wallet.status == "FRESH"
+    assert position.status == DATA_UNAVAILABLE_CONST
+    assert orders.status == "STALE"
+    assert len({wallet.status, position.status, orders.status}) == 3
+
+
+def test_json_snapshot_and_html_data_attr_expose_identical_evidence_rows() -> None:
+    card = _ldo_like_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    snapshot = build_json_snapshot([card], snapshot_ts="2026-06-05T12:00:00Z")
+    json_rows = snapshot["symbols"][0]["evidence_rows"]
+
+    match = re.search(r"data-evidence-rows='([^']*)'", html)
+    assert match is not None
+    html_rows = json.loads(html_lib.unescape(match.group(1)))
+
+    assert html_rows == json_rows
+    assert [row["key"] for row in json_rows] == list(_EVIDENCE_ROW_KEYS_IN_ORDER)
+
+
+def test_action_gate_reason_codes_are_not_truncated_in_json_or_html() -> None:
+    card = _ldo_like_card()
+    rows = build_card_evidence_rows(card)
+    action_gate = _row_by_key(rows, "action_gate")
+    assert len(action_gate.reason_codes) >= 3
+
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    match = re.search(r"data-evidence-rows='([^']*)'", html)
+    html_rows = json.loads(html_lib.unescape(match.group(1)))
+    action_gate_json = next(row for row in html_rows if row["key"] == "action_gate")
+    assert set(action_gate_json["reason_codes"]) == set(action_gate.reason_codes)
+
+    # The compact evidence grid must render every reason code, not an ellipsis.
+    assert "…" not in html.split("Reasons:")[1][:400] if "Reasons:" in html else True
+    for code in action_gate.reason_codes:
+        assert code in html
+
+
+def test_evidence_rows_json_includes_safety_markers() -> None:
+    card = _fresh_canonical_card()
+    snapshot = build_json_snapshot([card])
+    assert snapshot["broker_writes"] == 0
+    assert snapshot["order_submission"] == 0
+    assert snapshot["executor"] == "none"
+
+
+def test_per_level_status_row_is_disclosed_as_reporting_derived_not_native() -> None:
+    card = _fresh_canonical_card()
+    row = _row_by_key(build_card_evidence_rows(card), "per_level_status")
+    assert row.status == "CURRENT"
+    assert "REPORTING_DERIVED_NOT_NATIVE_CANONICAL" in row.reason_codes
+    assert "not native canonical" in row.authority.lower()
+
+
+def test_market_selected_action_gate_is_not_applicable_and_has_no_reasons() -> None:
+    card = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.5"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="HAS_ZONE_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        presentation_mode=CARD_MODE_MARKET_SELECTED,
+    )
+    row = _row_by_key(build_card_evidence_rows(card), "action_gate")
+    assert row.status == "NOT_APPLICABLE"
+    assert row.reason_codes == ()
