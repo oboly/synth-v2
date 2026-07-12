@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from src.reporting.market_rotation_pressure_dashboard_v1 import (
     build_dashboard,
@@ -153,3 +154,18 @@ def test_json_payload_exposes_safety_and_raw_rows():
     assert payload["rows"][0]["market"] == "AERO-EUR"
     assert payload["safety"]["broker_writes"] == 0
     assert payload["safety"]["decision_gate"] == "none"
+
+
+def test_market_writer_wrapper_has_no_reporting_ownership():
+    text = Path("scripts/run_market_rotation_pressure_once.sh").read_text(encoding="utf-8")
+    assert "run_market_rotation_history_v1" in text
+    assert "run_market_rotation_pressure_v1" in text
+    assert "run_market_rotation_pressure_dashboard_v1" not in text
+    assert "reporting=none dashboard_publish=none" in text
+
+
+def test_odroid_dashboard_wrapper_is_read_only():
+    text = Path("scripts/odroid/run_market_rotation_pressure_dashboard_render_once.sh").read_text(encoding="utf-8")
+    assert "run_market_rotation_pressure_dashboard_v1" in text
+    assert "--write-db" not in text
+    assert "market_data_writes=0 pressure_writes=0" in text
