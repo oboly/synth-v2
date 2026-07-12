@@ -3711,6 +3711,7 @@ def test_dynamic_filter_reference_lists_are_derived_from_cards() -> None:
     base = _make_card(
         current_price="0.458790",
         fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.470000"),
         short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
@@ -4062,6 +4063,7 @@ def test_fix_ladder_filter_action_still_works_for_active_missing_ladder() -> Non
     base = _make_card(
         current_price="0.458790",
         fib_ext=_wld_fib_ext(),
+        history_high_since_activation=Decimal("0.470000"),
         short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
@@ -4086,6 +4088,7 @@ def _card_with_order_snapshot(order_snapshot_ts_utc: str) -> "ProfitPlanCard":
         _make_card(
             current_price="0.458790",
             fib_ext=_wld_fib_ext(),
+            history_high_since_activation=Decimal("0.470000"),
             short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
             short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
             short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
