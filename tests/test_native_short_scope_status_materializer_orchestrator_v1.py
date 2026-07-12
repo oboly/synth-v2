@@ -422,6 +422,7 @@ def test_chain_materializes_level_status_after_projection_for_exact_explicit_sco
         conn.seed_cadence_config(key)
 
     calls: list[tuple[str, NativeShortMapScopeKey]] = []
+    chain_clock = _fixed_clock(_AS_OF)
 
     def record_map(*args: Any, **kwargs: Any) -> ScopeMaterializationResult:
         key = kwargs["scope_support"].key
@@ -444,6 +445,7 @@ def test_chain_materializes_level_status_after_projection_for_exact_explicit_sco
                 key.supporting_interval,
             )
         ) in conn.status_rows
+        assert operational_clock is chain_clock
         assert operational_clock() == _AS_OF
         calls.append(("level", key))
         return _successful_level_status(
@@ -457,7 +459,7 @@ def test_chain_materializes_level_status_after_projection_for_exact_explicit_sco
         scopes=scopes,
         as_of_utc=_AS_OF,
         trigger_type="MANUAL",
-        operational_clock=_fixed_clock(_AS_OF),
+        operational_clock=chain_clock,
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
         fetch_existing_generation_events=_no_generation_events,

@@ -1118,12 +1118,12 @@ def run_native_short_scope_status_materializer(
             # The level-status materializer consumes only the projection's
             # selected current_map_id/full scope identity, so it must run
             # strictly after the canonical projection rebuild. Its semantic
-            # cutoff remains projection_as_of_utc; the explicit as_of_utc is
-            # used only for deterministic rebuilt-at metadata in this chain.
+            # cutoff remains projection_as_of_utc; the chain clock supplies
+            # only rebuilt-at operational metadata.
             level_status_outcome = materialize_map_level_status_fn(
                 conn,
                 key=key,
-                operational_clock=lambda: as_of_utc,
+                operational_clock=operational_clock,
             )
             if level_status_outcome.branch == MAP_LEVEL_STATUS_BLOCKED:
                 raise NativeShortMapLevelStatusBlockedError(
