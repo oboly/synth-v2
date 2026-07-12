@@ -73,6 +73,52 @@ Branch `fix/profit-plan-evidence-semantic-normalization-v1` — reporting-only:
   EvidenceRow statuses so visual severity has the same authority source as
   evidence row content.
 
+## Implementation status (2026-07-12, numeric formatting)
+
+Branch `fix/profit-plan-numeric-formatting-v1` — reporting-only, display formatting only:
+
+- DONE — P1 numeric formatting cleanup: `_pct()` now renders percent metrics
+  (Planning/Actionable PPP, target-upside percentages, percentage deltas) at
+  max 2 decimals, strips fixed-width zero padding (`5.9000%` → `5.9%`,
+  `4.000%` → `4%`), and extends precision only far enough to keep a genuinely
+  non-zero tiny value from misleadingly rendering as `0%`. Raw Decimal
+  sources are never mutated.
+- DONE — `_fmt_p()` price formatter rewritten around a deterministic
+  magnitude-based fallback (`_price_decimal_places()`) instead of the old
+  "skip rounding above 6 native decimal places" shortcut, which could leak
+  long raw Decimal tails for un-tick-normalized prices. Existing tick-aware
+  normalization in `apply_price_tick_normalization()` /
+  `src/market_rules/price_tick_normalization_v1.py` is unchanged and remains
+  the preferred path when a market's tick rule is known; `_fmt_p` is only the
+  fallback formatter. Never renders `NaN`/`Infinity`/scientific notation; `0`
+  stays `0`.
+- DONE — Removed the one duplicate percent-formatting path found outside the
+  canonical helpers: `_format_zone_endpoint()` (re-entry/target zone lines)
+  now calls `_pct()` instead of its own `quantize(Decimal('0.01'))` literal.
+- DONE — Fixed a selector-label bypass: the profit-plan card selector list
+  used to rebuild its own PPP text client-side from the raw sort value
+  (`card.dataset.sortPpp + '%'`), showing unrounded raw precision instead of
+  the canonical formatted string. It now reuses the already-formatted
+  `data-actionable-ppp` attribute, matching the compact card and sidebar.
+- DONE — JSON snapshot: added `_display` companions
+  (`planning_ppp_display`, `actionable_ppp_display`, `current_price_display`,
+  `*_zone_display`, `active_target_display`, `invalidation_*_display`,
+  `distance_to_*_pct_display`, per-level `level_display` /
+  `distance_pct_display`) alongside every existing raw numeric field. Raw
+  fields are untouched; missing values render `DATA_UNAVAILABLE` in the
+  display companion rather than `None`.
+- Not touched: Actionable/Planning PPP computation, PPP sorting, the
+  action-truth resolver, `FIX_LADDER` gating, `MAP_EXPIRED` /
+  `NEEDS_RECOMPUTE` precedence, `EvidenceRow` semantics, Breathline behavior,
+  market-selection logic, and `apply_price_tick_normalization()` itself.
+- Tests: long-decimal PPP, trailing-zero PPP, tiny-value PPP, true-zero PPP,
+  NaN/Infinite guards, high/mid/low/micro-priced `_fmt_p` fallback tiers
+  (incl. the pre-existing 8dp PEPE-precision regression), card/sidebar
+  display consistency, selector-label bypass regression, JSON raw-vs-display
+  contract, ladder-row canonical formatting, sort-by-raw-value-not-string
+  regression (equal-value, different-precision Decimals), action-truth and
+  evidence-row-semantics non-regression, and JSON safety markers.
+
 ## Purpose
 
 Prevent the Profit Plan dashboard from presenting action states that are stronger than the available evidence supports.
