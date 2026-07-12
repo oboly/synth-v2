@@ -67,6 +67,9 @@ def _active_map_evidence(**overrides: str) -> CardEvidence:
         rollover_state="SINGLE_MAP",
         account_order_snapshot_status="FRESH",
         price_freshness_state="FRESH",
+        anchor_start_ts_utc="2026-06-01T00:00:00Z",
+        order_snapshot_ts_utc="2026-06-05T12:00:00Z",
+        generation_ts_utc="2026-06-05T12:00:00Z",
     )
     base.update(overrides)
     return CardEvidence(**base)
@@ -310,6 +313,59 @@ def test_ldo_placeholder_account_snapshot_suppresses_fix_ladder() -> None:
     )
     assert pp._fix_ladder_allowed(card) is False
     assert pp._effective_workflow_action(card) == "REVIEW CONTEXT"
+
+
+def test_ldo_raw_current_price_above_target_is_not_activation_proof() -> None:
+    card = replace(
+        _active_ladder_missing_card(_active_map_evidence(map_cycle_id="LDO|SHORT|4h|demo")),
+        history_high_since_activation=None,
+    )
+
+    assert card.current_price > card.target_level_statuses[0].level
+    assert pp._entry_activation_proof(card) is False
+    assert pp._fix_ladder_allowed(card) is False
+
+
+def test_ldo_previous_cycle_crossing_is_not_activation_proof() -> None:
+    base = _active_ladder_missing_card(_active_map_evidence(map_cycle_id="LDO|SHORT|4h|demo"))
+    card = replace(
+        base,
+        history_high_since_activation=None,
+        target_level_statuses=tuple(
+            replace(level, first_cross_ts_utc=datetime(2026, 5, 31, 23, 59, tzinfo=UTC))
+            for level in base.target_level_statuses
+        ),
+    )
+
+    assert pp._entry_activation_proof(card) is False
+    assert pp._fix_ladder_allowed(card) is False
+
+
+def test_ldo_native_map_unavailable_suppresses_fix_ladder() -> None:
+    card = _active_ladder_missing_card(
+        _active_map_evidence(
+            map_cycle_id="LDO|SHORT|4h|demo",
+            native_map_id="DATA_UNAVAILABLE",
+            native_map_status="DATA_UNAVAILABLE",
+        )
+    )
+
+    assert pp._fix_ladder_allowed(card) is False
+
+
+def test_ldo_unverified_rollover_suppresses_fix_ladder() -> None:
+    card = _active_ladder_missing_card(
+        _active_map_evidence(
+            map_cycle_id="LDO|SHORT|4h|new",
+            selected_map_reason="Newer active map selected",
+            rollover_state="CASE_A_NEWER_ACTIVE_SELECTED",
+            previous_map_cycle_id="DATA_UNAVAILABLE",
+            previous_map_lifecycle_state="DATA_UNAVAILABLE",
+        )
+    )
+
+    assert pp._map_switch_review_required(card) is True
+    assert pp._fix_ladder_allowed(card) is False
 
 
 def test_near_map_expired_stays_needs_recompute_not_fix_ladder() -> None:

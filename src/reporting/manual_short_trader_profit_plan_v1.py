@@ -949,15 +949,23 @@ def _highest_active_target(card: ProfitPlanCard) -> Decimal | None:
 def _entry_activation_proof(card: ProfitPlanCard) -> bool:
     """Canonical proof that the setup was activated inside the current map cycle.
 
-    Proof = at least one target level shows a first-cross timestamp or an
-    activated lifecycle (reached/passed/filled/completed) derived from the
-    since-activation history window. This is map-cycle-scoped and timestamped/
-    canonical. Being merely below or above an entry level is NOT proof.
+    Proof = a reached/passed target lifecycle corroborated by the current-cycle
+    ``history_high_since_activation`` summary, or a timestamped target crossing
+    at or after the map anchor. A lifecycle inferred from the current price alone
+    is not proof.
     """
+    history_high = card.history_high_since_activation
+    anchor_start = _parse_canonical_utc_timestamp(card.evidence.anchor_start_ts_utc)
     for level in card.target_level_statuses:
-        if level.first_cross_ts_utc is not None:
+        if level.lifecycle_state not in _ACTIVATED_TARGET_LIFECYCLE:
+            continue
+        if history_high is not None and history_high >= level.level:
             return True
-        if level.lifecycle_state in _ACTIVATED_TARGET_LIFECYCLE:
+        if (
+            level.first_cross_ts_utc is not None
+            and anchor_start is not None
+            and level.first_cross_ts_utc >= anchor_start
+        ):
             return True
     return False
 
@@ -1362,9 +1370,8 @@ def _fix_ladder_allowed(card: ProfitPlanCard) -> bool:
 
     Fails closed whenever native scope-status, price freshness, current map
     identity, per-level truth, rollover verification or a loaded entry is
-    missing. Account/order freshness is not yet plumbed into the card, so the
-    native_map_status gate keeps the account-specific repair claim suppressed
-    until the Lane B read model is wired in.
+    missing. Account/order freshness requires both a FRESH status and canonical
+    snapshot/generation timestamps.
     """
     if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
         return False
