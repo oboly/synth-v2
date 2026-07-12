@@ -84,19 +84,28 @@ score_total =
   + 0.05 * score_persistence
 ```
 
-## Cross-Sectional Normalization
+## Factor Normalization
 
-Current-snapshot factors are converted to deterministic tie-aware percentile midranks:
+Absolute directional factors use zero-centered robust scaling:
 
 ```text
-lowest factor  -> -100
-median factor  -> approximately 0
-highest factor -> +100
+scale = max(median(abs(factor_values)), versioned_floor)
+score = 100 * tanh(raw_value / scale)
 ```
 
-Equal values receive the same midrank. If all eligible assets have the same factor value, that component is neutral for all assets.
+Versioned floors prevent tiny moves in a quiet market from becoming artificial strong signals:
 
-This avoids fixed thresholds that behave differently for BTC, liquid majors, and volatile small caps.
+| Factor | Minimum scale |
+|---|---:|
+| 24h return | 1.0 percentage point |
+| 24h signed relative volume | 0.15 log units |
+| 7d return | 3.0 percentage points |
+| 7d signed relative volume | 0.15 log units |
+| acceleration | 1.0 percentage point |
+
+This preserves absolute direction: when the whole market rises, all valid directional scores can remain positive. A purely cross-sectional rank would incorrectly force half the universe negative and flatten the market light bar.
+
+Only the market-relative component uses deterministic tie-aware percentile midranks in `[-100, +100]`, because that component explicitly measures relative leadership rather than absolute direction.
 
 ## Signed Relative Volume
 
