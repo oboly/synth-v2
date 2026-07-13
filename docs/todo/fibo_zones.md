@@ -164,6 +164,104 @@ No paper/live promotion.
 No order creation.
 ```
 
+## P2 — Native map level calibration / signed price bias
+
+Status: observation logged / requires replay and backtest.
+
+Observed example:
+
+```text
+date: 2026-07-13
+market: RED-EUR
+chart interval: 1h
+exchange chart current: approximately 0.09834
+visible resting limit: 0.09730
+Profit Plan current snapshot: 0.09785
+invalidated re-entry zone: 0.10238 -> 0.10137
+invalidation: below 0.09893
+card state: INVALIDATED
+map authority: reporting fallback / native map data unavailable
+```
+
+Initial user observation:
+
+```text
+Entry, target, and invalidation levels sometimes appear slightly too high,
+possibly around 1% in some examples.
+```
+
+This is a calibration hypothesis, not a confirmed defect. The RED example is not clean proof because the card is already invalidated and its evidence shows fallback/unavailable native-map authority. Possible causes include:
+
+- genuine systematic upward level bias;
+- stale or superseded map geometry;
+- current-price/reference-timestamp mismatch;
+- chart candle versus persisted snapshot timing difference;
+- invalidated-map display semantics;
+- setup-family or timeframe-specific calibration error;
+- volatility/regime-dependent top and bottom placement.
+
+Required research tasks:
+
+- Replay immutable published map levels against later realized price paths without look-ahead leakage.
+- Evaluate entry, target, and invalidation separately.
+- Compute signed level error, not only absolute error:
+  - `(published_level - realized_reference) / realized_reference`;
+  - positive values indicate levels placed too high;
+  - negative values indicate levels placed too low.
+- Define realized references explicitly per level type:
+  - entry: first valid pullback/re-entry low or accepted touch band;
+  - target: subsequent local high / target touch;
+  - invalidation: structural break low, not arbitrary next-candle noise.
+- Stratify results by:
+  - regime: `TREND_UP`, `TREND_DOWN`, `RANGE`;
+  - volatility bucket;
+  - setup family;
+  - primary/supporting timeframe;
+  - asset liquidity and price scale;
+  - map age and freshness;
+  - current versus terminal/invalidated map state;
+  - native authority versus reporting fallback.
+- Test whether the error is:
+  - a fixed percentage offset;
+  - ATR-normalized;
+  - proportional to swing size;
+  - asymmetric for tops versus bottoms;
+  - regime-dependent;
+  - only a stale-data or fallback artifact.
+- Compare uncorrected geometry with candidate research corrections:
+  - fixed percentage shift;
+  - ATR-based shift;
+  - regime-specific shift;
+  - setup/timeframe-specific shift.
+- Require out-of-sample improvement before any promotion.
+- Preserve original immutable map levels. Any correction must be a separate, versioned research projection; never rewrite historical map geometry.
+
+Minimum outputs:
+
+```text
+sample count
+median signed error
+mean signed error
+MAE
+error quantiles
+entry touch rate
+target touch rate
+target-before-invalidation rate
+false invalidation rate
+time-to-touch
+breakdown by regime / volatility / setup / timeframe / authority
+uncorrected versus corrected out-of-sample comparison
+```
+
+Guardrail:
+
+```text
+Do not apply an assumed -1% dashboard correction.
+Do not tune from isolated screenshots.
+Do not mutate selection_engine, decision_gate, execution_planner, or executor behavior.
+Research evidence must precede any map-generation calibration change.
+```
+
 ## P3 — Fibo/zone UI overlays
 
 Status: open / parked behind UI/Webview lane.
