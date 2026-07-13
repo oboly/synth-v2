@@ -43,13 +43,13 @@ Reporting/UI may never call the broker directly.
 
 ## Synth v2.23 reconciled priority
 
-| Priority | Lane | Board state | Next decision |
-|---:|---|---|---|
-| P0 | TODO reconciliation / board cleanup | in review; closes when this reconciliation merges | Make the repository board authoritative before opening more work chats. |
-| P1 | Profit Plan Live Ladder prerequisites | active | Complete canonical read-model consumption, deterministic row identity, freshness authority, and authenticated preview/audit prerequisites before any mutation path. |
-| P1 | IOST target lifecycle history truth | active correctness lane | Prove map-cycle-aligned target history and prevent `PASSED`/`REACHED` targets regressing to `UPCOMING`. |
-| P2 | Short Swing / Odroid freshness hygiene | open operational lane | Keep repository implementation separate from installed-host activation; verify ownership, timestamps, disk/log bounds, and multi-cycle freshness. |
-| P3 | Research / FFG / scanner | open, non-blocking | Continue read-only rotation and momentum-flow research only after P1 work is controlled. |
+| Priority | Lane | What it is for | Board state | Next decision |
+|---:|---|---|---|---|
+| P0 | TODO reconciliation / board cleanup | Keep the repository board truthful so completed work, open work, and priorities are not lost or duplicated across chats. | done — merged in PR #92 | Keep `README.md` and each lane TODO synchronized when status or priority changes. |
+| P1 | Profit Plan Live Ladder prerequisites | Make **Fix selected ladder** safe: trustworthy current-map rows, stable identities, fresh account data, and a reviewable server preview before any order mutation. | active | Complete canonical read-model consumption, deterministic row identity, freshness authority, and authenticated preview/audit prerequisites before any mutation path. |
+| P1 | IOST target lifecycle history truth | Stop a target that was already reached or passed from appearing as still `UPCOMING` after price pulls back below it. | active correctness lane | Prove map-cycle-aligned target history and prevent `PASSED`/`REACHED` targets regressing to `UPCOMING`. |
+| P2 | Short Swing / Odroid freshness hygiene | Make sure the displayed pages are genuinely fresh and that disk, timer, or runtime failures cannot silently leave frozen data looking current. | open operational lane | Keep repository implementation separate from installed-host activation; verify ownership, timestamps, disk/log bounds, and multi-cycle freshness. |
+| P3 | Research / FFG / scanner | Find coins with improving flow, momentum reset, and enough target room across the market without giving research or the scanner trading authority. | open, non-blocking | Continue read-only rotation and momentum-flow research only after P1 work is controlled. |
 
 Priority is execution order, not architectural importance.
 
@@ -110,7 +110,7 @@ Installed-host service/timer activation was not part of that closure. Any activa
 
 ## Next-step rule
 
-After this reconciliation merges:
+With the reconciliation merged:
 
 1. Do not reopen native SHORT implementation work unless new evidence identifies a concrete defect.
 2. Choose one P1 implementation slice from `profit_plan_live_ladder.md`, or run the bounded IOST forensic audit from `profit_plan_target_lifecycle_history_truth_v1.md`.
