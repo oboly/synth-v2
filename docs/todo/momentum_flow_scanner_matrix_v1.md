@@ -2,129 +2,85 @@
 
 ## Status
 
-Open research / read-only scanner lane.
-
-This bundle records the 2026-07-10 review of the FFG-style crypto overview showing RSI/MFI-style momentum and money-flow context across lists of coins.
-
-This is not a trading decision, not a signal promotion, not order logic, and not an execution lane.
+```text
+open P3 research / read-only scanner
+non-blocking for Synth v2.23 P1 lanes
+```
 
 ## Purpose
 
-Build a compact read-only scanner that helps find the best entry candidates across many coins instead of chasing every active map.
+Build a compact multi-asset, multi-timeframe research scanner that finds candidates worthy of human review without promoting them to trading decisions.
 
-The scanner should answer:
+Question owned by this lane:
 
 ```text
-Which coins have enough upside-to-target, acceptable risk, and short-timeframe reset/momentum conditions to deserve human review?
+Which markets have enough target room, acceptable risk context, and supportive reset/momentum/flow evidence to justify research review?
 ```
 
-It must not answer:
+Question not owned by this lane:
 
 ```text
-What should the bot buy now?
+What should the bot buy or execute now?
 ```
 
-## Current Synth coverage
+## Sources
 
-Synth already has candle-level RSI and several volume/flow-like features in `feat_candle`:
+- Existing `feat_candle` RSI, volume-ratio, dollar-volume, OBV, and slope features.
+- Native map/target/invalidation context.
+- Market price snapshots.
+- FFG-style overview as external presentation inspiration only.
+- `docs/research/market_rotation_pressure_v1.md` for Synth-native inferred rotation-pressure research.
+- Profit Plan Actionable PPP as the current user-facing remaining-target-potential concept.
+
+External labels or curated lists are inputs to research provenance, not execution authority.
+
+## Research contract
+
+Working output:
 
 ```text
-rsi_14
-volume_ratio_20
-volume_zscore_20
-obv
-obv_slope_5
-dollar_volume_ratio_20
+momentum_flow_scanner_snapshot_v1
 ```
 
-MFI / Money Flow Index is not currently treated as a first-class feature in the scanner/dashboard contract.
-
-## Target concept
-
-Working name:
+Candidate fields:
 
 ```text
-MOMENTUM_FLOW_SCANNER_MATRIX_V1
-```
-
-Dashboard style:
-
-```text
-FFG-style compact matrix
-multi-asset
-multi-timeframe
-read-only
-fast visual scan
-```
-
-Candidate columns:
-
-```text
-symbol
-market
+symbol / market / venue
+observed timestamps and freshness
 price
-1d RSI
-1d MFI
-4h RSI
-4h MFI
-1h RSI
-1h MFI
-15m RSI
-15m MFI
+RSI: 1d / 4h / 1h / 15m
+MFI: 1d / 4h / 1h / 15m
 volume_ratio_20
 dollar_volume_ratio_20
 native map status
 nearest valid target upside %
+actionable_ppp
 invalidation downside %
-entry/reset state
+rotation pressure / flow state
+trend state
+reset / reclaim state
+liquidity quality
+risk / overextension penalty
+opportunity score
+entry/reset research state
 scanner bucket
 reason codes
-observed_ts_utc
 ```
 
-## Minimum upside gate
+No server-baked relative age may be the sole freshness evidence.
 
-The user-selected research threshold is:
+## Minimum target-room gate
+
+User-selected research threshold:
 
 ```text
 nearest_valid_target_upside_pct >= 4.0
 ```
 
-Interpretation:
+This is a minimum upside-to-target gate, not reward/risk.
+Risk and invalidation remain separate and can reject a candidate that passes 4% target room.
 
-```text
-If there is not at least 4% room from candidate entry/current planning price to the nearest valid target, wait.
-```
-
-This is a minimum target-upside gate, not reward/risk.
-
-Risk must remain separate.
-
-Bad candidate example:
-
-```text
-target upside: +4.2%
-invalidation downside: -9.0%
-result: reject or warn; upside gate alone is not enough
-```
-
-## Research-only entry candidate logic
-
-Initial candidate rule shape for backtesting only:
-
-```text
-candidate_entry_context only if:
-- nearest_valid_target_upside_pct >= 4.0
-- invalidation is present and not excessive
-- current price is not already extended into/near target
-- native map is fresh enough for research evaluation
-- short timeframe reset or reclaim condition exists
-- volume/money-flow condition is supportive or at least not hostile
-```
-
-No `BUY_READY` state is allowed in this lane.
-
-Allowed states:
+## Allowed research states
 
 ```text
 NO_EDGE
@@ -132,6 +88,7 @@ WATCH
 RESET_READY
 ENTRY_CANDIDATE_RESEARCH
 OVERHEATED
+ACCUMULATION_FLOW
 DISTRIBUTION_RISK
 DATA_UNAVAILABLE
 ```
@@ -145,287 +102,376 @@ EXECUTE
 FIX_LADDER
 ```
 
-## Suggested buckets
+## P3-A — Deterministic MFI feature
 
-### RESET_READY
+Add `mfi_14` only as a market-data feature when this lane is selected for implementation.
 
-Meaning:
+Owner split:
 
 ```text
-Higher timeframe still constructive, lower timeframe cooled down, enough target room remains.
+feature ETL        = deterministic candle calculation
+feat_candle        = persisted feature value
+scanner/read-model = read-only aggregation and presentation
 ```
 
-Example research shape:
+Minimum tests:
+
+- deterministic fixed fixture;
+- zero-volume/flat-window handling;
+- warmup nulls;
+- bounded 0..100 values when calculable;
+- no regression to existing RSI/ATR/volume features.
+
+## P3-B — Read-only scanner builder
+
+Build rows from canonical feature, price, and native-map sources.
+Fail closed to `DATA_UNAVAILABLE` or `NO_EDGE` for stale/missing inputs.
+Do not reconstruct candle features in reporting when a canonical feature source exists.
+
+## P3-C — Replay/backtest validation
+
+Before any promotion toward `selection_engine`, measure:
+
+- bucket counts;
+- forward returns;
+- MFE/MAE;
+- target-before-invalidation rate;
+- time to target;
+- false-positive rate;
+- symbol/timeframe breakdown;
+- random/control comparison;
+- incremental value of MFI beyond RSI + volume features + map context;
+- effect of the 4% target-room gate.
+
+Any later feature promotion requires a separate explicit proposal and must remain market-only.
+
+## P3-D — Read-only dashboard
+
+Only after the read model and validation exist, add a compact matrix with filters/sorts for bucket, target room, reset readiness, flow, map freshness, and data availability.
+
+## P3-E — Profit Plan Opportunity Rank
+
+Status: accepted product/research direction; implementation and weighting require replay validation.
+
+### Goal
+
+Keep `Actionable PPP` as the primary user scan value while adding one secondary market-only quality measure that answers:
 
 ```text
-1d RSI: constructive / not broken
-1h RSI: cooled down
-15m RSI: reset or recovering
-MFI: recovering or supportive
-nearest valid target upside >= 4.0%
+The target room exists, but is this market also receiving participation,
+trending constructively, and offering a reasonable entry timing?
 ```
 
-### OVERHEATED
-
-Meaning:
+Use the user-facing name:
 
 ```text
-Momentum is already hot and target room may be too small for a new entry.
+Opportunity Rank
 ```
 
-Example research shape:
+Do not call this `Profit Advice`.
+`Advice` implies account suitability, permission, sizing, or execution authority that this market-only research score does not own.
+
+### Primary scan order
+
+Default Profit Plan ordering remains:
 
 ```text
-1h/15m RSI high
-15m/1h MFI high or exhausted
-price close to target
-upside-to-target < 4.0%
+1. cards with Actionable PPP, descending
+2. cards without Actionable PPP, after all actionable cards
+3. deterministic secondary ordering for equal or unavailable values
 ```
 
-### ACCUMULATION_FLOW
+`Map PPP` / theoretical map potential is display context only and must never promote a card above a card with real Actionable PPP.
 
-Meaning:
+When every matching card has unavailable Actionable PPP:
 
 ```text
-Money-flow improves before price momentum fully responds.
+show: 0 actionable candidates
+avoid implying that the first source-order card is the best PPP candidate
+use an explicitly named secondary order
 ```
 
-Example research shape:
+The selector/list view should make Actionable PPP the primary numeric value because users scan many familiar coin cards rapidly.
+
+Suggested compact row:
 
 ```text
-MFI rising
-RSI neutral or recovering
-volume/dollar-volume supportive
-price not yet extended
+POL    8.4 | 76
+HYPE   6.7 | 84
+BTC      — | 61
 ```
 
-### DISTRIBUTION_RISK
-
-Meaning:
+Suggested label/tooltip contract:
 
 ```text
-Price momentum is high, but money-flow or volume behavior suggests weakening participation.
+ACTIONABLE PPP | OPPORTUNITY  ⓘ
+8.4            | 76
 ```
 
-Example research shape:
+The existing full card may continue to show `MAP | ACTIONABLE PPP`; Opportunity Rank is a separate scanner/list value and sort option.
+
+### Gate before rank
+
+Opportunity Rank must not rescue invalid or unavailable market truth.
+
+Minimum gate:
 
 ```text
-RSI high
-MFI diverging down or no longer confirming
-volume spike exhaustion or weak follow-through
+actionable target room available
+current canonical map/lifecycle available
+active target still valid
+fresh required market inputs
+minimum liquidity coverage available
 ```
 
-### NO_EDGE
-
-Meaning:
+Fail-closed outcomes:
 
 ```text
-No clear entry context, insufficient upside, stale data, conflicting momentum/flow, or map unavailable.
+Actionable PPP unavailable -> no actionable promotion
+stale/missing map or price  -> DATA_UNAVAILABLE / NO_EDGE
+passed/terminal target      -> exclude remaining target room
+insufficient liquidity      -> block or penalize explicitly
 ```
 
-## MFI feature scope
+### Opportunity components
 
-Add MFI only as a market-data feature.
+Keep the components separate and inspectable before combining them.
 
-Likely feature name:
+#### 1. Remaining opportunity — Actionable PPP
+
+Primary concept:
 
 ```text
-mfi_14
+remaining usable potential from current price to the highest valid active target,
+subject to current-cycle activation and lifecycle evidence
 ```
 
-Layer ownership:
+The scanner must consume one canonical market-opportunity value or persisted read-model field.
+It must not independently reimplement Profit Plan PPP semantics in a second renderer-specific path.
+
+#### 2. Participation — Synth Rotation Pressure
+
+Candidate evidence:
 
 ```text
-src/features/etl_candle_feat.py owns feature calculation
-feat_candle owns persisted per-candle feature value
-scanner/read-model owns read-only aggregation/presentation
+24h relative return
+7d relative return
+signed relative volume
+volume acceleration
+market-relative strength
+persistence
+breadth / concentration context where applicable
 ```
 
-MFI must not be added to account-aware layers.
+Use the Synth-native persisted rotation-pressure source when available.
+Do not label inferred pressure as verified fund inflow.
+FFG-like `inflow/outflow` is presentation inspiration, not source truth.
 
-MFI calculation should use candle high/low/close/volume and be deterministic.
-
-Required tests:
+Avoid double counting:
 
 ```text
-MFI deterministic on fixed candle fixture
-MFI handles flat/zero-volume windows safely
-MFI warmup produces null until enough bars exist
-MFI values stay within 0..100 when calculable
-existing RSI/ATR/volume features remain unchanged
+When 24h/7d return and relative volume already contribute to Rotation Pressure,
+do not add the same raw measurements again as independent full-weight features.
 ```
 
-## Scanner read-model scope
+#### 3. Trend quality — moving-average context
 
-The scanner should consume existing candle features and native map context without changing trading policy.
+Use moving averages as a trend filter, not as a standalone buy signal.
 
-Possible output contract:
+Initial research fields:
 
 ```text
-momentum_flow_scanner_snapshot_v1
+4h close versus EMA20
+4h EMA20 slope
+4h EMA20 versus EMA50
+1d trend confirmation
 ```
 
-Minimum fields:
+Compact derived state:
 
 ```text
-symbol
-venue
-market
-interval_set
-observed_ts_utc
-price_observed_ts_utc
-feature_observed_ts_utc
-map_observed_ts_utc
-rsi_1d
-mfi_1d
-rsi_4h
-mfi_4h
-rsi_1h
-mfi_1h
-rsi_15m
-mfi_15m
-nearest_valid_target_upside_pct
-invalidation_downside_pct
-entry_context_state
-scanner_bucket
-reason_codes
+TREND_SUPPORTIVE
+TREND_NEUTRAL
+TREND_HOSTILE
+DATA_UNAVAILABLE
 ```
 
-Freshness:
+No single MA cross is canonical until replay proves its value by setup family and regime.
+
+#### 4. Timing — reset / reclaim quality
+
+Candidate evidence:
 
 ```text
-Each row must expose observed timestamps.
-Stale or missing features must render DATA_UNAVAILABLE or NO_EDGE.
-No server-baked relative freshness as sole evidence.
+1h and 15m RSI cooled or recovering
+1h and 15m MFI stabilizing or turning upward
+volume participation returning
+short structure reclaim or accepted retest
+price not already overextended into target
 ```
 
-## Dashboard scope
-
-Add a read-only compact scanner page or section.
-
-Possible title:
+The desired pattern is:
 
 ```text
-Momentum / Flow Scanner
+higher-timeframe trend intact
++ lower-timeframe reset
++ renewed participation
 ```
 
-Suggested sort options:
+High RSI by itself is not positive evidence.
+
+#### 5. Risk and tradability
+
+Keep risk as a separate penalty/gate rather than hiding it inside target room.
+
+Candidate evidence:
 
 ```text
-Best entry context
-Target upside high-low
-Reset readiness
-Flow improving
-Overheated first
-Data unavailable last
+invalidation distance
+ATR-normalized invalidation risk
+spread / liquidity quality when canonical data exists
+slippage proxy when canonical data exists
+distance above recent structure
+overextension into target
 ```
 
-Suggested filters:
+A higher Actionable PPP must not automatically outrank a materially worse invalidation or liquidity profile in the separate Opportunity Rank view.
+
+### Seed weighting for replay only
+
+Initial transparent seed for comparison:
 
 ```text
-bucket
-minimum target upside
-market
-interval completeness
-map freshness
-RSI/MFI regime
+Opportunity Score =
+  35% actionable target room
++ 25% rotation pressure
++ 15% trend quality
++ 15% entry timing
++ 10% liquidity quality
+- explicit risk / overextension penalty
 ```
 
-Suggested row text:
+These are experiment weights, not product truth.
+Do not ship them as authoritative until ablation and out-of-sample replay show stability.
+
+Required comparisons:
 
 ```text
-RESET_READY — target room 5.8%, 1h cooled, 15m recovering, MFI supportive
-OVERHEATED — target room 1.2%, 15m RSI/MFI hot
-NO_EDGE — target room below 4% threshold
-DATA_UNAVAILABLE — missing MFI 15m or stale map
+Actionable PPP only
+Opportunity Score without MFI
+Opportunity Score without MA trend
+Opportunity Score without Rotation Pressure
+Opportunity Score without risk penalty
+equal weights versus seed weights
+regime-specific versus global weights
 ```
 
-## Backtest / validation lane
+### Sort and display behavior
 
-Before any scanner bucket can influence candidate selection, validate it with replay/backtest.
-
-Required validation questions:
+Required sort options:
 
 ```text
-Does target-upside >= 4% improve outcome quality versus all maps?
-Do RESET_READY buckets outperform OVERHEATED buckets?
-Does MFI add predictive value beyond RSI + volume_ratio_20 + map context?
-Which intervals matter most by strategy family?
-What is the false-positive rate per bucket?
-How often does waiting for 4% target room skip winners versus avoid low-edge trades?
+Actionable PPP high-low      = default
+Opportunity Rank high-low   = separate research sort
+Rotation Pressure high-low  = diagnostic sort
+Target room high-low        = diagnostic sort
 ```
 
-Minimum outputs:
+For the default Actionable PPP sort:
+
+- null/unavailable values always sort last;
+- equal values use Opportunity Rank as a secondary tie-break only after validation;
+- before validation, use a deterministic neutral tie-break such as symbol/market;
+- source order must never silently masquerade as PPP rank;
+- display the count of cards with real Actionable PPP.
+
+### Replay and acceptance
+
+Minimum validation:
+
+- forward return distribution by Opportunity Rank decile;
+- MFE/MAE by decile;
+- target-before-invalidation rate;
+- time to target;
+- false-positive and missed-opportunity rate;
+- calibration by symbol, liquidity, setup, timeframe, and regime;
+- stability of score components and weights out of sample;
+- incremental value above Actionable PPP alone;
+- incremental value above Rotation Pressure alone;
+- sensitivity to stale/missing fields;
+- proof that duplicate return/volume inputs are not overweighted.
+
+Promotion rule:
 
 ```text
-bucket counts
-forward return distribution
-MFE/MAE
-hit target before invalidation rate
-time-to-target
-false positives
-symbol/timeframe breakdown
-random/control comparison
+read-only research score
+-> replay evidence
+-> shadow comparison
+-> explicit market-only feature-promotion proposal
+-> optional selection_engine use
 ```
 
-## Hard architecture boundary
+Never:
 
 ```text
-selection_engine remains market-only and unchanged unless a later validated promotion explicitly scopes it.
-decision_gate remains account-aware and unchanged.
-execution_planner remains execution-intent only and unchanged.
-executor/agents remain order-handling only and unchanged.
+Opportunity Rank
+-> decision_gate approval
+-> execution plan
+-> order
+```
+
+### Architecture ownership
+
+```text
+canonical market inputs      = market-data / market-model owners
+Rotation Pressure            = market-only persisted research/read-model owner
+Opportunity Rank research    = research/scanner owner
+Profit Plan presentation     = reporting consumes values; does not recompute score
+selection_engine             = unchanged until separate validated promotion
+decision_gate                = account-aware permission only
+execution_planner            = execution intent only
+executor / agents            = order handling only
+```
+
+Do not create a dependency where `selection_engine` imports the Profit Plan renderer.
+If Actionable PPP or its components become shared market features, extract or persist a neutral canonical contract rather than coupling strategy code to presentation code.
+
+## Relationship to FFG / rotation research
+
+FFG-curated universes, external inflow/outflow narratives, and Synth-native rotation pressure may provide research context.
+They do not directly set scanner states or trading actions.
+Avoid duplicating a separate FFG execution lane; normalize external evidence into this research path or its canonical rotation-pressure source.
+
+## Boundary
+
+```text
+research-only
+market-only
+account-agnostic
+selection_engine unchanged unless a later validated promotion is approved
+decision_gate unchanged
+execution_planner unchanged
+executor/agents unchanged
 ```
 
 Forbidden:
 
-```text
-no live trading
-no broker calls
-no broker writes
-no order submission
-no decision_gate changes
-no execution_planner changes
-no executor changes
-no account-specific sizing
-no BUY_READY label
-no automatic entry promotion
-no reporting-side candle reconstruction if a canonical feature/read model exists
-```
-
-## Dependency notes
-
-Useful upstream sources:
-
-```text
-feat_candle RSI/volume/OBV/dollar-volume features
-native map / target / invalidation context
-market price snapshot
-future current per-level status read model where available
-```
-
-This lane does not depend on live ladder work.
-
-It may run in parallel as research/read-only work as long as it does not mutate trading policy or execution layers.
-
-## Suggested PR split
-
-```text
-1. docs: document momentum/flow scanner matrix contract
-2. feat: add deterministic mfi_14 to candle feature ETL and schema migration
-3. research: add read-only momentum_flow_scanner_snapshot_v1 builder
-4. research: backtest scanner buckets and 4% target-upside threshold
-5. ui: add read-only Momentum / Flow Scanner dashboard page
-```
+- live trading;
+- broker calls or writes;
+- order submission;
+- account-specific sizing;
+- `BUY_READY` or execution language;
+- automatic entry promotion;
+- research-to-decision or research-to-execution shortcuts.
 
 ## Definition of done
 
-```text
-RSI and MFI are available per required interval where data exists.
-Scanner exposes compact multi-asset/multi-timeframe rows.
-Rows include absolute observed timestamps and data availability status.
-Minimum target-upside >= 4.0% is represented as a research gate.
-Risk/invalidation remains separate from target-upside.
-No BUY_READY or execution implication exists.
-Backtest evidence exists before any promotion to candidate selection.
-```
+- required RSI/MFI fields exist where data supports them;
+- rows expose absolute timestamps and availability;
+- target room and risk remain distinct;
+- Actionable PPP is the primary scan/sort value and unavailable values sort last;
+- Opportunity Rank components remain inspectable and avoid double counting;
+- MA context is a trend filter, not a standalone action;
+- buckets and Opportunity Rank have replay evidence;
+- incremental value above Actionable PPP alone is demonstrated before promotion;
+- no promotion to selection or execution is implied.

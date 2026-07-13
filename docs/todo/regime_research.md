@@ -82,6 +82,71 @@ Future measurement design note:
 
 These must remain separate from coverage or measurement-availability fields.
 
+## P2 — BTC-to-alt shock propagation / lead-lag replay
+
+Status: observation logged / research design required.
+
+Observed example:
+
+```text
+date: 2026-07-13
+timezone: Europe/Amsterdam, to be verified against source timestamps
+anchor event: BTC dip around 02:00
+follower event: HYPE dip around 06:00
+observed lag: approximately 4 hours
+```
+
+Interpretation:
+
+This is a potentially useful leader-follower observation, not evidence of causality or a stable 4-hour rule. It may reflect genuine delayed propagation, different liquidity and participant composition, exchange/session timing, candle alignment, or coincidence.
+
+Research target:
+
+Design `btc_alt_shock_propagation_replay_v1` as a leak-free, market-only replay that measures whether BTC downside and upside shocks systematically reach individual altcoins with repeatable delays.
+
+Required measurements:
+
+- detect BTC anchor events using explicit, versioned shock definitions;
+- measure follower response windows at 0h, 1h, 2h, 4h, 6h, 8h, 12h, and 24h;
+- evaluate downside and upside propagation separately;
+- measure lag to first material move, lag to maximum response, response magnitude, recovery time, and direction agreement;
+- compare raw returns with BTC-beta-adjusted and market-relative returns;
+- test event-time alignment on 5m, 15m, 1h, and 4h bars where coverage permits;
+- stratify by symbol, liquidity, volatility, sector/theme, market regime, BTC dominance context, and session/time-of-day;
+- test whether lag behavior changes during broad risk-off, selective rotation, and strong alt-participation regimes;
+- distinguish direct BTC response from delayed sector/leader propagation;
+- include HYPE as the seed example, then evaluate the full eligible universe;
+- use multiple-testing controls and out-of-sample windows before interpreting stable leader-follower edges.
+
+Minimum outputs:
+
+```text
+anchor_event_count
+follower_event_count
+median_lag_to_first_response
+median_lag_to_max_response
+lag_distribution
+direction_agreement_rate
+response_magnitude
+beta_adjusted_response
+false_propagation_rate
+regime_breakdown
+symbol_breakdown
+timeframe_breakdown
+session_breakdown
+out_of_sample_stability
+```
+
+Guardrails:
+
+```text
+No fixed 4-hour delay may be assumed from one observation.
+No look-ahead event matching.
+BTC context remains global market context, not a per-asset account signal.
+No selection_engine, decision_gate, execution_planner, executor, broker, order, or account changes.
+Any later runtime use requires a separately validated promotion contract.
+```
+
 ## P2 — Regime interaction audit design
 
 Status: design next.

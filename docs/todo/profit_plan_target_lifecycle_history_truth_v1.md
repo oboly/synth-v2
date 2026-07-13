@@ -2,36 +2,81 @@
 
 ## Status
 
-- Status: open
-- Priority: P1
-- Target release: Synth v2.23
-- Owner layer: market-data history truth + reporting
+```text
+active P1
+Target release: Synth v2.23
+Owner: market-data history truth + reporting consumption
+```
 
 ## Sources
 
-- User-observed IOST/EUR Profit Plan card and TradingView chart on 2026-07-11.
+- User-observed IOST/EUR Profit Plan card and chart on 2026-07-11.
 - `src/reporting/manual_short_trader_profit_plan_v1.py`
 - `src/reporting/run_manual_short_trader_profit_plan_v1.py`
 - `tests/test_manual_short_trader_profit_plan_v1.py`
 - `tests/test_profit_plan_action_truth_v1.py`
-- `docs/ops/manual_short_trader_profit_plan_v1.md`
+- `docs/architecture/native_short_map_level_status_contract_v1.md`
+- `docs/todo/native_short_map_level_status_v1.md`
 
 ## Current state / facts
 
-Observed IOST/EUR card:
+Observed card state:
 
-- main sell target: `0.0006392232`
-- card lifecycle: `UPCOMING`
-- card order guidance: `missing: sell @ 0.0006392232`
-- current price had pulled back below the target
+```text
+market: IOST-EUR
+target: 0.0006392232
+lifecycle: UPCOMING
+guidance: missing sell @ 0.0006392232
+```
 
-Observed market chart:
+Observed chart context showed candles above the same target followed by a pullback below it.
+Chart appearance is diagnostic evidence only; runtime truth must come from persisted authoritative history aligned to the exact active map cycle.
 
-- multiple candles traded above `0.0006392232`
-- at least one recent candle also appears to have crossed the target
-- current price later returned below the target
+The native infrastructure gap is closed:
 
-Expected lifecycle, when a crossing occurred inside the same active map cycle:
+- canonical `current_map_cycle_id` exists in scope-status truth;
+- `native_short_map_level_status_v1` persistence, materializer, runner, chain integration, and runtime wiring are merged and accepted;
+- V1 target roles have explicit `ACTIVE` / `REACHED` / `PASSED` semantics.
+
+The remaining defect is therefore not “build a level-status subsystem.” It is to prove the exact IOST history boundary and make Profit Plan consume monotonic canonical lifecycle truth without fallback regression.
+
+## P1 — Forensic IOST audit
+
+For the active IOST map, record:
+
+- full scope identity;
+- `current_map_id` and `current_map_cycle_id`;
+- `anchor_end_ts_utc` / activation boundary;
+- exact canonical target role and unrounded value;
+- latest projection and map-level rebuild timestamps;
+- latest included authoritative candle timestamp;
+- maximum authoritative high since activation;
+- first touch/cross timestamp;
+- first qualifying closed-4h continuation timestamp, when applicable;
+- whether any visible crossing occurred before activation;
+- whether the latest crossing exists only in an open candle not yet represented by the chosen authority.
+
+Audit only. No mutation and no chart-derived code path.
+
+## P1 — Monotonic lifecycle invariant
+
+Required invariant:
+
+```text
+authoritative high >= target after activation -> at least REACHED
+qualifying authoritative closed 4h close > target -> PASSED
+REACHED / PASSED / COMPLETED never regress to ACTIVE / NEAR / UPCOMING after pullback
+```
+
+A reached or passed target must not:
+
+- become `active_target` again;
+- return to `active_target_exit_zone`;
+- produce `missing sell` as though the target is still ahead;
+- contribute upcoming-target PPP or urgency;
+- sort as remaining actionable upside.
+
+Expected unfilled passed-level context:
 
 ```text
 lifecycle_state=PASSED
@@ -40,118 +85,88 @@ retest_context=PULLBACK_BELOW_PASSED_LEVEL
 is_active_target=false
 ```
 
-The current classifier already supports history-aware `REACHED` and `PASSED` states. The likely defect is upstream history authority, activation-boundary selection, or closed-candle freshness rather than simple UI wording.
+## P1 — Fail closed on incomplete history
 
-## Open tasks by priority
-
-### P1 — Forensic IOST lifecycle audit
-
-For the active IOST map, record:
-
-- `map_cycle_id`
-- `anchor_end_ts_utc`
-- exact target value
-- exact maximum market high since activation
-- timestamp of first crossing
-- latest included history candle timestamp
-- whether the crossing occurred in a still-open candle
-- whether the visible crossing occurred before or after the active map boundary
-
-Do not infer lifecycle from the chart alone in code. Resolve it from authoritative persisted market history and explicit map-cycle identity.
-
-### P1 — Preserve monotonic target lifecycle
-
-Required invariant:
-
-```text
-authoritative high >= target after map activation -> at least REACHED
-authoritative high > target after map activation  -> PASSED
-REACHED/PASSED/COMPLETED never regress to NEAR/UPCOMING after pullback
-```
-
-A previously reached or passed level must not:
-
-- become `active_target` again
-- remain in `active_target_exit_zone`
-- produce a `missing sell` instruction as though the target were still ahead
-- contribute upcoming-target PPP or urgency
-
-### P1 — Fail closed when target history is incomplete
-
-When target-history authority is missing, stale, truncated, or does not cover the complete active map period:
+When authoritative history is missing, stale, truncated, starts after activation, or omits the selected current-candle authority:
 
 ```text
 TARGET_LIFECYCLE_UNVERIFIED
 ```
 
-Do not silently classify the target as `UPCOMING` merely because no crossing was found in incomplete history.
+Do not default to `UPCOMING` merely because no crossing was found in incomplete data.
 
-Expose enough evidence in JSON and HTML inspection fields to distinguish:
+Expose enough structured evidence to distinguish:
 
-- verified upcoming
-- verified reached/passed
-- history unavailable
-- history stale
-- history coverage starts after map activation
-- current/open candle not yet represented
+- verified active/upcoming;
+- verified reached;
+- verified passed;
+- history unavailable;
+- history stale;
+- history begins after activation;
+- current/open candle not represented;
+- map-level projection stale or scope-mismatched.
 
-### P1 — Resolve open-candle crossing semantics
+## P1 — Open-candle contract
 
-Choose and document one deterministic authority contract:
+Choose and document one deterministic authority:
 
-1. closed-candle-only lifecycle with explicit `TARGET_LIFECYCLE_UNVERIFIED_CURRENT_CANDLE`, or
-2. persisted authoritative intraperiod high merged with closed-candle history.
+1. closed-candle-only lifecycle with an explicit current-candle-unverified state; or
+2. a persisted authoritative intraperiod high merged with closed-candle continuation truth.
 
-Do not use browser chart state or direct broker reads inside reporting.
+Reporting must not read browser chart state or call the broker to resolve this.
 
-### P1 — Regression coverage
+## P1 — Regression coverage
 
 Add focused tests for:
 
-- target crossed, price pulls back below target, lifecycle remains `PASSED`
-- target touched exactly, lifecycle becomes `REACHED`
-- target crossed in latest authoritative intraperiod data
-- target crossing before current map activation does not contaminate the new map cycle
-- history begins after map activation -> fail-closed unverified state
-- passed level is removed from active target zone
-- passed unfilled target renders `missed sell level`, not `missing sell`
-- PPP and action sorting do not treat a passed target as actionable upside
+- crossed target, later pullback, lifecycle remains `PASSED`;
+- exact touch becomes `REACHED`;
+- qualifying close above becomes `PASSED`;
+- open-candle-only crossing follows the selected fail-closed contract;
+- crossing before activation does not contaminate the new map cycle;
+- history starts after activation and fails closed;
+- stale/scope-mismatched map-level rows fail closed;
+- passed level leaves active target zone;
+- unfilled passed target renders missed/passed context, not missing/upcoming;
+- PPP and sorting exclude passed target upside.
 
-### P2 — Production evidence audit
+## P2 — Read-only production evidence
 
-After implementation, run a read-only audit for IOST and a small sample of other cards with pullbacks below prior targets. Record:
+After implementation, audit IOST plus a small sample of pullback-below-target cards and record map-cycle identity, lifecycle evidence, current target selection, and rendered guidance.
 
-- map identity
-- activation timestamp
-- target lifecycle evidence
-- first-cross timestamp
-- current target selection
-- rendered order guidance
+No broker calls or writes.
 
-## Blockers / dependencies
+## Dependencies / blockers
 
-- Canonical active map-cycle identity must be available to the runner.
-- Target-history coverage must be provably aligned to that exact map cycle.
-- Any native per-level lifecycle projection used as authority must expose freshness and scope identity.
+No longer blocked on creating native map-level persistence, materialization, runner, chain integration, or runtime wiring.
+
+Remaining dependencies:
+
+- Profit Plan must consume the canonical projection-selected map and current map-level status rather than reconstruct lifecycle independently;
+- history coverage must be demonstrably aligned to the exact map activation boundary;
+- the selected open-candle authority contract must be explicit;
+- scope identity and freshness must fail closed.
+
+These dependencies are implementation prerequisites, not reasons to leave the forensic audit undefined.
 
 ## Boundary
 
-- market-data history truth and reporting only
-- read-only market/account inspection
-- no broker calls
-- no broker writes
-- no order submission
-- no selection_engine changes
-- no decision_gate changes
-- no execution_planner changes
-- no executor or agent changes
-- no shortcut that lets reporting invent execution intent
+- market-data history truth and reporting consumption only;
+- read-only forensic inspection;
+- no broker calls;
+- no broker writes;
+- no order submission;
+- no fib target mathematics change;
+- no map selection policy change;
+- no `selection_engine` change;
+- no `decision_gate` change;
+- no `execution_planner` change;
+- no executor/agent change;
+- no reporting shortcut that invents execution intent.
 
 ## Non-goals
 
-- changing fib target mathematics
-- changing map selection policy
-- repairing or placing orders
-- treating TradingView as runtime authority
-- carrying lifecycle evidence across unrelated map cycles
-- solving this by changing only the visible `UPCOMING` label
+- repairing or placing orders;
+- treating TradingView as runtime authority;
+- carrying target evidence across unrelated map cycles;
+- solving the regression by changing only the visible label.

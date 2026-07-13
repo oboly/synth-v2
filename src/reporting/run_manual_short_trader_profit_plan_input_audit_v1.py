@@ -7,19 +7,18 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from src.execution.bitvavo_client import BitvavoClient
 from src.reporting.manual_short_trader_dashboard_v1 import (
     BrokerOrderRow,
     LadderOrderRow,
     build_all_sections,
-    normalize_broker_balance,
-    normalize_broker_order,
+)
+from src.reporting.account_scoped_short_trader_dashboard_v1 import (
+    classify_market_prices_by_market,
+    load_account_scoped_short_dashboard_context,
 )
 from src.reporting.run_manual_short_trader_profit_plan_v1 import (
     _parse_kv_list,
     build_cards,
-    fetch_ticker_prices,
-    load_open_order_inputs,
     load_zone_contexts,
 )
 
@@ -71,9 +70,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help=(
-            "Enable broker private read calls (get_open_orders, get_balance). "
-            "Requires SYNTH_BROKER_PRIVATE_READ_PERMISSION env gate."
+            "Deprecated compatibility option; broker reads are not supported by this audit."
         ),
+    )
+    parser.add_argument(
+        "--account-profile",
+        default="audit",
+        help="Profile label for the canonical account-scoped read-only context.",
     )
     parser.add_argument(
         "--account-code",
@@ -263,37 +266,40 @@ def write_outputs(
 def main() -> int:
     args = parse_args()
 
-    client = BitvavoClient()
-    prices = fetch_ticker_prices(client, args.markets)
+    if args.live_broker:
+        print("[error] --live-broker is not supported; use DB snapshots only", file=sys.stderr)
+        return 1
 
     try:
-        open_order_inputs = load_open_order_inputs(
-            client=client,
+        context = load_account_scoped_short_dashboard_context(
+            profile=args.account_profile,
             account_code=args.account_code,
             venue=args.venue,
-            allow_live_broker=args.live_broker,
         )
-    except PermissionError as exc:
-        print(f"[error] Broker private read blocked: {exc}", file=sys.stderr)
-        return 1
     except Exception as exc:
-        print(f"[error] Open-order input load failed: {exc}", file=sys.stderr)
+        print(f"[error] account-scoped input load failed: {exc}", file=sys.stderr)
         return 1
 
-    orders = open_order_inputs.orders
-    balances = open_order_inputs.balances
-    broker_mode = "live_read_only" if open_order_inputs.source_name == "live_broker_private_read" else "offline"
-    extra_markets = sorted({order.market for order in orders} - set(prices.keys()))
-    if extra_markets:
-        prices = {**prices, **fetch_ticker_prices(client, extra_markets)}
+    markets = [market.upper() for market in args.markets]
+    price_display_by_market = classify_market_prices_by_market(context=context)
+    prices = {
+        market: display.safe_price
+        for market, display in price_display_by_market.items()
+        if display.safe_price is not None
+    }
+    orders = list(context.orders)
+    balances = list(context.balances)
+    broker_mode = "db_snapshot"
+    open_order_source_missing = context.latest_order_snapshot_ts_utc is None
 
     swing_anchors = _parse_kv_list(args.swing_anchors, 3)
     recent_lows = _parse_kv_list(args.recent_lows, 2)
     zone_contexts = load_zone_contexts(
-        markets=args.markets,
+        markets=markets,
         prices=prices,
         swing_anchors=swing_anchors,
         recent_lows=recent_lows,
+        native_short_rows_path=Path("data/research/native_short_fib_context_v1/native_short_fib_context_rows_v1.csv"),
         fib_map_rows_path=Path(args.fib_map_rows),
     )
     fib_ext_by_symbol = zone_contexts.fib_ext_by_symbol
@@ -311,21 +317,40 @@ def main() -> int:
         raw_orders_by_symbol[symbol] = raw_orders_by_symbol[symbol] + (order,)
 
     cards = build_cards(
-        args.markets,
+        markets,
         prices,
+        {market: display.status for market, display in price_display_by_market.items()},
+        {market: display.age_min for market, display in price_display_by_market.items()},
+        zone_contexts.input_status_by_symbol,
+        zone_contexts.coverage_status_by_symbol,
+        zone_contexts.display_state_by_symbol,
         fib_ext_by_symbol,
         reentry_by_symbol,
+        {},
         orders_by_symbol,
+        prior_map_meta_by_symbol=zone_contexts.prior_map_meta_by_symbol,
+        inclusion_reasons_by_market=context.market_inclusion_reasons_by_market,
+        account_plan_policy_by_market=context.account_plan_policy_by_market,
+        evidence_by_symbol=zone_contexts.evidence_by_symbol,
+        price_ts_by_market={
+            market: (
+                context.market_price_by_symbol.get(market.split("-", 1)[0]).source_ts_utc
+                if context.market_price_by_symbol.get(market.split("-", 1)[0]) is not None
+                else None
+            )
+            for market in markets
+        },
+        order_snapshot_ts_utc=context.latest_order_snapshot_ts_utc,
     )
     rows = build_profit_plan_input_audit_rows(
-        markets=args.markets,
+        markets=markets,
         prices=prices,
         cards=cards,
         fib_ext_by_symbol=fib_ext_by_symbol,
         reentry_by_symbol=reentry_by_symbol,
         orders_by_symbol=orders_by_symbol,
         raw_orders_by_symbol=raw_orders_by_symbol,
-        open_order_source_missing=open_order_inputs.source_missing,
+        open_order_source_missing=open_order_source_missing,
         zone_context_status_by_symbol=zone_contexts.input_status_by_symbol,
     )
 

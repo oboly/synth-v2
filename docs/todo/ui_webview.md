@@ -122,6 +122,51 @@ Final simplified user dashboard:
 - Markers for entry, current price, target, invalidation, reclaim, and recompute.
 - Compact state plus human-readable reason.
 
+### Profit Plan coin-card scanability decisions
+
+Status: accepted design / implementation later.
+
+The primary user already knows the card semantics and scans many coins rapidly. Compact, fixed-position values take priority over repeating explanatory text inside each value.
+
+PPP display:
+
+```text
+label: MAP | ACTIONABLE PPP  ⓘ
+value: 99,9 | —
+```
+
+Rules:
+
+- `MAP PPP` is the user-facing name for the current theoretical map potential formerly presented as Planning PPP.
+- `Actionable PPP` remains the current evidence-gated potential used for actionable ranking/sorting.
+- Render both values in one fixed-width field separated by `|`.
+- Do not repeat `Map`, `Planning`, `Actionable`, `P`, or `A` inside the value line.
+- Use `—` for unavailable values.
+- Use tabular numerals and stable column widths so cards remain visually aligned.
+- Keep sorting on Actionable PPP; this UI compaction must not change calculation or ranking semantics.
+- Preserve existing structured field names for compatibility unless a separately reviewed data-contract migration renames them.
+
+Tooltip:
+
+- Add one information icon to the combined label.
+- Tooltip explains that Map PPP is theoretical potential from the current map and Actionable PPP is the currently usable potential after evidence/activation gates.
+- Later generalize label tooltips through one central field-definition registry reused by card, sidebar, and detail view.
+- Do not duplicate tooltip strings independently in multiple renderers.
+
+Price presentation:
+
+- Remove the duplicate `Current price` body tile because price is already present in the card header.
+- Increase the header-price font size and weight for faster scanning.
+- Keep freshness/age visually secondary beside or below the header price.
+
+Variable-field alignment follow-up:
+
+- Optional rows such as `Market Event` currently cause later fields to shift between cards.
+- Later evaluate fixed semantic groups or two stable definition lists instead of independently flowing tiles.
+- Candidate grouping: setup/market context versus trade plan.
+- Until redesigned, optional fields should reserve stable layout space or render an explicit `—` rather than shifting subsequent content.
+- This is presentation-only; no market, action, decision, or execution semantics may change.
+
 Boundary:
 
 - UI/reporting only.
