@@ -2,9 +2,7 @@
 
 ## Purpose
 
-Define how Synth v2 TODOs are created, organized, updated, and closed.
-
-The goal is to avoid TODO drift across chat history, temporary notes, stale research docs, and branch-specific handoffs.
+Define how Synth v2 TODOs are created, indexed, prioritized, updated, and closed without drifting into chat-only state.
 
 ## Canonical location
 
@@ -14,62 +12,35 @@ Active or parked TODOs belong under:
 docs/todo/
 ```
 
-The folder index is:
+The cross-lane index and execution order live in:
 
 ```text
 docs/todo/README.md
 ```
 
-Canonical design details may remain in source docs under:
+Design and evidence may remain under `docs/research/`, `docs/status/`, `docs/architecture/`, or `docs/ops/`, but active tracking must point back to one TODO lane.
 
-```text
-docs/research/
-docs/status/
-docs/architecture/
-docs/ops/
-```
+## Lane ownership
 
-But active task tracking belongs in `docs/todo/`.
+Use one TODO file per coherent lane or operational category.
 
-## When to create a TODO file
-
-Create or update a TODO file when a task is:
+Create or update a TODO when work is:
 
 - active
-- parked but likely to resume
-- cross-lane
-- referenced from chat handoff
-- important enough that losing it would break continuity
+- parked but expected to resume
 - blocked by another lane
-- a safety or architecture guardrail that must be remembered
+- a cross-lane safety or architecture guardrail
+- important enough that losing chat history would break continuity
 
-Do not create a TODO for one-off work that is already completed in the same turn unless it leaves follow-up work.
+Do not create a new lane when an existing file already owns the task.
+Do not retain a TODO for one-off work completed in the same change unless follow-up remains.
 
-## File structure
+## Minimum lane structure
 
-Use one file per lane or operational category.
-
-Examples:
-
-```text
-docs/todo/market_breath.md
-docs/todo/fibo_zones.md
-docs/todo/ui_webview.md
-docs/todo/breath_curve.md
-docs/todo/dev_ops_hygiene.md
-```
-
-Avoid dumping unrelated work into one giant list.
-
-If a lane grows too large, split it by sub-lane and update `docs/todo/README.md`.
-
-## Required sections
-
-Each TODO file should include:
+Each lane should contain the sections that materially apply:
 
 ```text
 # TODO — <Lane Name>
-
 ## Status
 ## Sources
 ## Current state / facts
@@ -78,8 +49,6 @@ Each TODO file should include:
 ## Boundary
 ## Non-goals
 ```
-
-Use only the sections that matter, but every file should at least include `Status`, `Sources`, open tasks, and `Boundary`.
 
 ## Status labels
 
@@ -98,45 +67,41 @@ future design
 Meaning:
 
 - `active`: current working lane.
-- `open`: valid task, not necessarily current focus.
-- `parked`: intentionally paused, preserved for later.
-- `blocked`: cannot proceed until another task is done.
-- `done / parked`: resolved enough; keep only standing hygiene notes.
-- `backlog`: low-priority idea or future research lane.
-- `future design`: architecture concept allowed later, no implementation now.
+- `open`: valid work, not necessarily current focus.
+- `parked`: intentionally paused and preserved.
+- `blocked`: cannot proceed until a named dependency is satisfied.
+- `done / parked`: implementation is closed; retain only evidence and standing hygiene.
+- `backlog`: low-priority future work.
+- `future design`: architecture concept only; no implementation authority.
 
 ## Priority labels
 
-Use simple priority labels:
-
 ```text
-P0 = current blocker / next required cleanup
-P1 = next review / decision
-P2 = useful continuation after active lane stabilizes
-P3 = future design / later adapter / parked operational work
+P0 = current board blocker or required cleanup
+P1 = next implementation/review decision
+P2 = operational or useful continuation after P1 is controlled
+P3 = research, future design, or non-blocking work
 P4 = backlog
 ```
 
-Priority is not importance. Priority is execution order.
+Priority is execution order, not importance.
 
-## Boundary rules
+## Architecture boundaries
 
-Every TODO file must state its architecture boundary.
+Every TODO must name its owner and forbidden shortcuts.
 
-Use explicit statements like:
+Default safety wording:
 
 ```text
 No live trading.
-No broker calls.
 No broker writes.
 No order submission.
 No decision_gate bypass.
-No execution_planner shortcuts.
-No executor/order changes.
-No runtime promotion.
+No execution_planner bypass.
+No executor shortcut.
 ```
 
-For research lanes, also state:
+Research lanes also state:
 
 ```text
 research-only
@@ -144,120 +109,87 @@ market-only
 account-agnostic
 ```
 
-For UI lanes, state:
+UI/reporting lanes also state:
 
 ```text
-read-only display / inspection only
-no writes to decision, execution, order, account, balance, or position tables
+read-only display or untrusted user input only
+no direct broker access
+no authority derived from HTML/JSON presentation
 ```
 
-For external narrative lanes, state:
+Architecture split:
 
 ```text
-external note -> normalized research label -> validation report -> optional feature candidate after validation
-not external note -> buy/sell/order logic
+selection_engine  = market-only candidate ranking
+decision_gate     = account-aware permission and conflict resolution
+execution_planner = execution intent only
+executor / agents = order handling only
 ```
 
-## Source references
-
-Each TODO must cite source files or source lanes.
-
-Examples:
-
-```text
-docs/research/market_breath_v1_1_calibration_audit.md
-src/research/run_market_breath_v1_1_calibration_audit.py
-docs/status/synth_v2_5_todo.md
-docs/research/fib_exit_ladder_v1_findings.md
-```
-
-If the source is only from chat, write:
-
-```text
-Source: recent chat handoff, not yet canonicalized elsewhere.
-```
-
-Then canonicalize it when practical.
-
-## Updating TODOs
+## Updating status or priority
 
 When work changes state:
 
-1. Update the lane TODO file.
-2. Update `docs/todo/README.md` if the file list, active priority, or lane status changed.
-3. Do not duplicate the same task in multiple files.
-4. If a task moves to another file, leave a short pointer or remove the old copy.
-5. Commit TODO updates separately from code changes when practical.
+1. Update the owning lane TODO.
+2. Update `docs/todo/README.md` in the same change when lane status, priority, or execution order changes.
+3. Remove or replace duplicate bullets in other files with one pointer to the owner.
+4. Preserve exact merged PRs, commits, acceptance evidence, and unresolved risks.
+5. Do not convert unverified host state into an accepted fact.
 
-## Closing TODOs
+## Closing work
 
-When a TODO is completed:
+When a task or lane completes:
 
-- Move it to a `Done` or `Done / Parked` section.
-- Keep only useful historical facts, outputs, commit references, and standing hygiene notes.
-- Remove obsolete action bullets.
-- If the entire lane is obsolete, move the source design doc to `docs/archive/` only if that doc is no longer canonical.
+- move the result to `done / parked`;
+- record the decisive PRs and acceptance evidence;
+- remove obsolete open action bullets;
+- retain only standing hygiene, rollback, or future defect-reopen criteria;
+- move obsolete source material to `docs/archive/` only when it is no longer canonical.
 
-Do not leave stale `open` tasks that are actually done. Stale TODOs are technical debt with a moustache.
+A completed implementation must not remain labelled `active` or `open` merely because host activation, product consumption, or later research is still separate. Track each remaining responsibility in its actual owner lane.
+
+## Source references
+
+Each TODO cites its canonical sources or merged PR evidence.
+When the source is initially chat-only, state that explicitly and canonicalize it as soon as practical.
 
 ## Branch and commit rules
 
-Preferred commit pattern:
-
-```text
-Add <lane> TODO file
-Update <lane> TODO status
-Mark <lane> TODO parked
-Organize TODO workflow standard
-```
-
-Do not mix unrelated runtime/code changes with TODO cleanup unless the TODO update documents exactly the same change.
-
-Before committing:
+Prefer docs-only TODO reconciliation commits that do not mix runtime or feature changes.
+Before publishing, verify:
 
 ```bash
 git status --short
-git diff --cached --name-only
+git diff --check
 ```
 
-Do not use broad staging commands such as:
-
-```bash
-git add data/
-git add .
-```
-
-unless the branch is clean and the intent is explicit.
+Stage only intended paths. Avoid broad staging when unrelated changes exist.
 
 ## Active-lane rule
 
-The active lane gets priority in `docs/todo/README.md`.
+`docs/todo/README.md` is the sole owner of the current cross-lane priority order.
 
-Current active direction:
+This workflow standard must not hardcode a particular current research or product lane. That would create a second, stale board.
 
-```text
-Market Breath native market-data analysis.
-```
-
-Parked lanes should stay parked unless they directly unblock or support the active lane.
+Parked lanes remain parked unless they directly unblock an indexed higher-priority lane.
 
 ## Review cadence
 
-Review `docs/todo/README.md` when:
+Reconcile the board:
 
-- starting a new research lane
-- closing a branch
-- creating a handoff bundle
-- after 2-3 days of heavy chat-driven work
-- before merging a branch that introduced TODO changes
+- after a major PR chain closes;
+- before creating several new work chats;
+- when a lane changes priority;
+- after 2–3 days of heavy chat-driven work;
+- before merging TODO changes that alter active direction.
 
 ## Non-goals
 
 The TODO system is not:
 
-- a project-management platform
-- a replacement for canonical research docs
-- a place for raw notes
-- a place for secrets, credentials, logs, dumps, or generated artifacts
+- a project-management platform;
+- a substitute for canonical design documents;
+- a raw-notes directory;
+- a place for secrets, credentials, logs, dumps, or generated artifacts.
 
-It is a compact working board for memory, sequence, and boundaries.
+It is the compact repository authority for work state, order, ownership, and boundaries.
