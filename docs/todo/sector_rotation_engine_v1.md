@@ -1,0 +1,176 @@
+# Sector Rotation Engine v1
+
+## Purpose
+
+Build a research-only, explainable sector analytics engine that measures participation, relative strength, volume confirmation, and rotation state across canonical Synth sectors.
+
+This phase depends on the taxonomy and database seed from `sector_taxonomy_database_seed_v1.md`.
+
+## Inputs
+
+- `asset_cluster_membership`;
+- enabled/research-universe asset set;
+- market candles;
+- quote volume;
+- BTC and ETH benchmark returns;
+- liquidity/profile metadata where available;
+- optional existing momentum features, kept read-only.
+
+## Required timeframes
+
+At minimum:
+
+- 1h
+- 4h
+- 1d
+- 7d
+
+## Sector metrics
+
+For each sector, venue, timeframe, and as-of timestamp compute:
+
+- weighted return;
+- median return;
+- positive breadth percentage;
+- negative breadth percentage;
+- relative strength versus BTC;
+- relative strength versus ETH;
+- sector volume share;
+- change in sector volume share;
+- momentum-positive percentage;
+- dispersion;
+- member count;
+- eligible member count;
+- effective weighted member count;
+- data coverage ratio;
+- liquidity quality;
+- persistence across prior snapshots.
+
+## Rotation score v1
+
+Use an explicit, versioned, explainable formula. Initial proposal:
+
+```text
+30% relative strength
+25% breadth
+20% volume-share change
+15% momentum persistence
+10% liquidity quality
+```
+
+The exact weights must be constants tied to a model version and covered by tests.
+
+## States and terminology
+
+Allowed research states should include:
+
+- `MARKET_ACTIVITY_RISING`
+- `MARKET_ACTIVITY_COOLING`
+- `ROTATION_INFLOW_PROXY`
+- `ROTATION_OUTFLOW_PROXY`
+- `LEADING`
+- `IMPROVING`
+- `NEUTRAL`
+- `WEAKENING`
+- `LAGGING`
+- `NO_CONFIRMATION`
+- `INSUFFICIENT_BREADTH`
+- `DATA_UNAVAILABLE`
+
+Do not call price/volume-derived behavior measured inflow or outflow.
+
+Measured external/public flows remain separately typed:
+
+- `MEASURED_ONCHAIN_FLOW`
+- `MEASURED_ETF_FLOW`
+- `EXTERNAL_RESEARCH_FLOW`
+
+## Proposed snapshot table
+
+### `sector_rotation_snapshot`
+
+```sql
+sector_code              VARCHAR(...)
+venue                    VARCHAR(...)
+interval_code            VARCHAR(...)
+asof_ts_utc              DATETIME
+return_weighted          DECIMAL(...)
+return_median            DECIMAL(...)
+breadth_positive_pct     DECIMAL(...)
+breadth_negative_pct     DECIMAL(...)
+rs_vs_btc                DECIMAL(...)
+rs_vs_eth                DECIMAL(...)
+volume_share             DECIMAL(...)
+volume_share_change      DECIMAL(...)
+momentum_positive_pct    DECIMAL(...)
+dispersion               DECIMAL(...)
+liquidity_quality        DECIMAL(...)
+rotation_score           DECIMAL(...)
+rotation_state           VARCHAR(...)
+confidence               DECIMAL(...)
+member_count             INT
+eligible_member_count    INT
+effective_member_count   DECIMAL(...)
+coverage_ratio           DECIMAL(...)
+model_version            VARCHAR(...)
+notes                     TEXT NULL
+```
+
+Use a deterministic uniqueness key over sector, venue, interval, as-of timestamp, and model version.
+
+## Guardrails
+
+- Require a minimum eligible member count.
+- Cap single-asset contribution.
+- Cap liquidity weighting.
+- A one-coin spike must not generate high sector breadth.
+- Missing benchmark data must fail closed.
+- Low coverage must produce `DATA_UNAVAILABLE` or `INSUFFICIENT_BREADTH`.
+- Keep timeframes separate; do not silently average them.
+- Preserve raw score components for auditability.
+- No automatic selection or trading impact.
+
+## Validation scenarios
+
+Synthetic tests must cover:
+
+1. Broad sector advance with rising volume.
+2. One-coin spike while peers are flat or down.
+3. Broad sector cooling after prior leadership.
+4. BTC decline with alts declining harder.
+5. ETH-led DeFi improvement.
+6. Missing members and stale candles.
+7. Dominant large-cap member with capped influence.
+8. Conflicting 1h and 1d states.
+
+## Backtest and research output
+
+Provide a replay or backfill runner that can:
+
+- generate historical snapshots;
+- compare state transitions with subsequent returns;
+- measure false-positive rotation signals;
+- inspect persistence requirements;
+- export audit-friendly research rows.
+
+## Acceptance
+
+- Reproducible snapshots exist for at least 1h, 4h, and 1d.
+- Initial outputs cover DeFi, RWA, AI/Compute, L2, and Perp DEX.
+- Score components are explainable and stored.
+- One-coin spikes do not masquerade as broad sector rotation.
+- Risk-off alt underperformance is classified correctly.
+- Stale or insufficient data fails closed.
+- Backfill/replay is deterministic.
+- No changes to `selection_engine`, `decision_gate`, `execution_planner`, executor, or broker paths.
+
+## Layer and boundaries
+
+```text
+Owner: research / analytics
+Depends on: Sector Taxonomy & Database Seed v1
+DB writes: expected analytics snapshots only
+Broker writes: 0
+Order submissions: 0
+Execution impact: none
+```
