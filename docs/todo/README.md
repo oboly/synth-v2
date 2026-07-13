@@ -91,6 +91,24 @@ E = ongoing board maintenance
 A + D = later
 ```
 
+## Sequencing rationale
+
+B and C are intentionally completed before A:
+
+- **B is a bounded correctness repair.** The native map-level infrastructure already exists; remaining work is the IOST forensic audit, monotonic lifecycle truth, fail-closed history handling, and focused regression coverage.
+- **C is a bounded operational prerequisite.** It establishes absolute freshness, installed-host ownership, disk/log bounds, and multi-cycle acceptance that A must later trust. Its implementation surface is smaller than A, although multi-cycle observation may require elapsed runtime rather than more code.
+- **A is the larger and higher-risk lane.** It spans canonical ladder consumption, deterministic row identity, authenticated preview, `decision_gate`, `execution_planner`, executor behavior, broker mutation, reconciliation, and a controlled live canary.
+
+Therefore the working order remains:
+
+```text
+B correctness truth
+-> C freshness and host acceptance
+-> A manual ladder-to-trade path
+```
+
+Completing B and C first reduces ambiguity and prevents A from building execution authority on lifecycle or freshness assumptions that are still unresolved.
+
 ## Native SHORT baseline
 
 The native SHORT map-level runtime line is **done / accepted** in repository scope.
@@ -143,7 +161,7 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `strategy_candidates.md` | parked / open research | Strategy audit and later classifier/policy research |
 | `multi_horizon_fib_dashboard_backlog.md` | parked | Dashboard follow-up depending on fib research outputs |
 | `paper_candidate_contract.md` | future design | Safe adapter from validated research candidates to `decision_gate` |
-| `dev_ops_hygiene.md` | mostly parked | Development, database-access, backup, and worktree hygiene |
+| `dev_ops_hygiene.md` | mostly parked | Development, database-access, backup, worktree hygiene |
 | `parked_backlog.md` | backlog | Archived A+ and external-narrative follow-ups |
 | `watchlist_candidates.md` | open intake | Human-thesis watchlist intake before validation |
 
