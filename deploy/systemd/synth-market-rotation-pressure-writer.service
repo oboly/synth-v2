@@ -15,7 +15,12 @@ Restart=no
 Nice=5
 UMask=0077
 NoNewPrivileges=true
-PrivateTmp=true
+# PrivateTmp intentionally disabled: the wrapper's flock lock file
+# (default /tmp/synth-market-rotation-pressure-v1.lock) must be visible in
+# the host-wide /tmp namespace so a timer-triggered run and a manual
+# invocation of the same wrapper serialize against the same lock file
+# instead of silently running concurrently in separate private /tmp views.
+PrivateTmp=false
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=synth-market-rotation-pressure-writer

@@ -260,6 +260,63 @@ def test_no_combined_cross_host_orchestrator_introduced():
 
 
 # ---------------------------------------------------------------------------
+# Lock isolation (shared /tmp namespace between systemd and manual runs)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_LOCK_RE = re.compile(r'LOCK_FILE="\$\{[A-Z_]+:-([^}]+)\}"')
+
+
+def _default_lock_path(wrapper: Path) -> str:
+    match = _DEFAULT_LOCK_RE.search(wrapper.read_text())
+    assert match is not None, f"{wrapper} must define a default LOCK_FILE fallback"
+    return match.group(1)
+
+
+def test_writer_service_does_not_set_private_tmp_true():
+    sections = _parse_unit(WRITER_SERVICE)
+    assert _get(sections, "Service", "PrivateTmp") != "true"
+
+
+def test_publisher_service_does_not_set_private_tmp_true():
+    sections = _parse_unit(PUBLISHER_SERVICE)
+    assert _get(sections, "Service", "PrivateTmp") != "true"
+
+
+def test_wrappers_still_use_existing_default_tmp_lock_paths():
+    assert _default_lock_path(WRITER_WRAPPER) == "/tmp/synth-market-rotation-pressure-v1.lock"
+    assert _default_lock_path(PUBLISHER_WRAPPER) == "/tmp/synth-market-rotation-pressure-dashboard-v1.lock"
+
+
+def test_services_do_not_override_wrapper_lock_env_vars():
+    # No Environment= line overrides the lock-path env var, so each service
+    # invocation resolves the wrapper's own /tmp default at runtime.
+    writer_sections = _parse_unit(WRITER_SERVICE)
+    writer_env = _get_all(writer_sections, "Service", "Environment")
+    assert not any(v.startswith("SYNTH_ROTATION_PRESSURE_LOCK=") for v in writer_env)
+
+    publisher_sections = _parse_unit(PUBLISHER_SERVICE)
+    publisher_env = _get_all(publisher_sections, "Service", "Environment")
+    assert not any(v.startswith("SYNTH_ROTATION_PRESSURE_DASHBOARD_LOCK=") for v in publisher_env)
+
+
+def test_committed_services_share_host_tmp_namespace_with_manual_invocation():
+    """A timer-triggered run and a manual `bash <wrapper>` invocation must
+    contend for the same flock lock file. That requires: (a) the service
+    does not set PrivateTmp=true (which would give the service its own
+    private /tmp mount), and (b) the service does not override the
+    wrapper's default lock-path env var to something private-tmp-only."""
+    for service, wrapper, lock_env_prefix in (
+        (WRITER_SERVICE, WRITER_WRAPPER, "SYNTH_ROTATION_PRESSURE_LOCK="),
+        (PUBLISHER_SERVICE, PUBLISHER_WRAPPER, "SYNTH_ROTATION_PRESSURE_DASHBOARD_LOCK="),
+    ):
+        sections = _parse_unit(service)
+        assert _get(sections, "Service", "PrivateTmp") != "true"
+        env_values = _get_all(sections, "Service", "Environment")
+        assert not any(v.startswith(lock_env_prefix) for v in env_values)
+        assert _default_lock_path(wrapper).startswith("/tmp/")
+
+
+# ---------------------------------------------------------------------------
 # Documentation
 # ---------------------------------------------------------------------------
 

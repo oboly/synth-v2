@@ -30,6 +30,32 @@ separate systemd units and separate timers. Neither unit declares a
 cross-host or cross-service `Requires=`/`After=` dependency. No SSH
 orchestration is introduced by this lane.
 
+## Lock Isolation (PrivateTmp)
+
+Both services set `PrivateTmp=false` deliberately. Each wrapper takes a
+non-blocking `flock` on a default lock file under the host `/tmp` namespace:
+
+```text
+writer:    /tmp/synth-market-rotation-pressure-v1.lock
+publisher: /tmp/synth-market-rotation-pressure-dashboard-v1.lock
+```
+
+Neither wrapper's lock path is changed by this lane. If a service instead
+ran with `PrivateTmp=true`, systemd would give that service invocation its
+own private `/tmp` mount namespace; a timer-triggered run and a manual
+`bash scripts/run_market_rotation_pressure_once.sh --write-db` (or the
+publisher equivalent) invoked directly in a shell would then resolve the
+"same" default lock path to two different underlying files, and the
+non-blocking `flock` would never see the other invocation — defeating the
+lock and allowing concurrent execution. `PrivateTmp=false` keeps one
+host-wide lock domain per wrapper, so systemd-triggered and manually
+invoked runs of the same wrapper always contend for the same lock file.
+
+This is the only hardening directive intentionally weakened from the usual
+per-service default. `NoNewPrivileges=true`, `UMask=0077`, the dedicated
+`User=` (`gurk` for the writer, `theone` for the publisher), and all other
+hardening remain intact.
+
 ## Evidence
 
 ### Accepted production evidence (devlap writer)
