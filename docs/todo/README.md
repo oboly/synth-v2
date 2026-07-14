@@ -74,7 +74,9 @@ This entry is the canonical execution order for the accepted Rotation Pressure d
    - run the writer in a controlled way;
    - reconstruct devlap acceptance evidence (idempotency and reconciliation);
    - make no timer changes.
-2. **Separate Runtime Owner PR**
+2. **Separate Runtime Owner PR** — repository-reviewed candidate recorded in
+   `docs/ops/market_rotation_pressure_runtime_owners_v1.md`; no host unit
+   installed or enabled yet.
    - assign devlap writer ownership;
    - assign Odroid publisher ownership on its own separate timer;
    - specify exact rollback;

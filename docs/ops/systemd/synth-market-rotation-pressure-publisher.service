@@ -1,0 +1,40 @@
+[Unit]
+Description=Synth Market Rotation Pressure publisher (Odroid runtime owner, read-only)
+Documentation=docs/ops/market_rotation_pressure_runtime_owners_v1.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=theone
+WorkingDirectory=/home/theone/projects/synth-v2
+ExecStart=/bin/bash -lc 'source venv/bin/activate && bash scripts/odroid/run_market_rotation_pressure_dashboard_render_once.sh'
+Restart=no
+Nice=5
+UMask=0077
+NoNewPrivileges=true
+# PrivateTmp intentionally disabled: the wrapper's flock lock file
+# (default /tmp/synth-market-rotation-pressure-dashboard-v1.lock) must be
+# visible in the host-wide /tmp namespace so a timer-triggered run and a
+# manual invocation of the same wrapper serialize against the same lock
+# file instead of silently running concurrently in separate private /tmp
+# views.
+PrivateTmp=false
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=synth-market-rotation-pressure-publisher
+
+# read-only persisted Rotation Pressure -> HTML/JSON publication
+#
+# Safety boundary:
+# - no --write-db, no history runner, no pressure writer
+# - no market-data mutation
+# - no broker/account calls
+# - independent of the devlap writer timer: this unit does not declare
+#   Requires=/After= on the writer and performs no remote/SSH orchestration;
+#   a failed or delayed writer cycle does not fail this service, it only
+#   causes the publisher to republish the last valid persisted snapshot
+#   (subject to the reporting layer's own freshness/fail-closed rules)
+
+[Install]
+WantedBy=multi-user.target
