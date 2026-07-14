@@ -49,7 +49,7 @@ Reference letters are stable names for easy discussion. Table order is the curre
 |---:|---:|---|---|---|---|
 | **B** | P1 | IOST target lifecycle history truth | Stop a target that was already reached or passed from appearing as still `UPCOMING` after price pulls back below it. | active correctness lane — first | Prove map-cycle-aligned target history and prevent `PASSED`/`REACHED` targets regressing to `UPCOMING`. |
 | **C** | P2 | Short Swing / Odroid freshness hygiene | Make sure the displayed pages are genuinely fresh and that disk, timer, or runtime failures cannot silently leave frozen data looking current. | open operational lane — second | Keep repository implementation separate from installed-host activation; verify ownership, timestamps, disk/log bounds, and multi-cycle freshness. |
-| **E** | P0 | TODO reconciliation / board maintenance | Keep the repository board truthful so completed work, open work, and priorities are not lost or duplicated across chats. | ongoing maintenance; reconciliation merged in PR #92 | Keep `README.md` and each lane TODO synchronized whenever status or priority changes. |
+| **E** | P0 | TODO reconciliation / board maintenance | Keep the repository board truthful so completed work, open work, priorities, and accepted deployment roadmaps are not lost or duplicated across chats. | ongoing maintenance; reconciliation merged in PR #92 | Keep `README.md` and each lane TODO synchronized whenever status, priority, or accepted deployment sequence changes. |
 | **A** | P1 | Profit Plan Live Ladder prerequisites | Make **Fix selected ladder** safe: trustworthy current-map rows, stable identities, fresh account data, and a reviewable server preview before any order mutation. | active, deliberately later | Resume after B/C unless a new dependency changes the order. |
 | **D** | P3 | Research / FFG / scanner | Find coins with improving flow, momentum reset, and enough target room across the market without giving research or the scanner trading authority. | open, read-only, deliberately later | Resume as non-blocking research after B/C are controlled. |
 
@@ -64,6 +64,34 @@ A + D = later
 ```
 
 Rotation Pressure runtime ownership, timers, freshness, disk/log bounds, rollback, and multi-cycle host acceptance belong to **C**. Rotation Pressure research remains in **D**. Profit Plan **A** may later consume persisted pressure state read-only, but it must never trigger or own the writer.
+
+## Lane C — Rotation Pressure runtime-owner operational sequence
+
+This entry is the canonical execution order for the accepted Rotation Pressure deployment strategy in `docs/research/market_rotation_pressure_dashboard_v1.md`, owned by lane **C** (installed-host freshness/runtime acceptance). It preserves strict runtime-owner separation: devlap owns hourly rotation history ingestion and the persisted rotation pressure writes; the Odroid publisher owns only read-only consumption of that persisted pressure and its HTML/JSON publication. Writer and publisher run on separate timers so a publisher failure can never stall or duplicate writer state.
+
+1. **Devlap acceptance**
+   - use existing implementation only;
+   - run the writer in a controlled way;
+   - reconstruct devlap acceptance evidence (idempotency and reconciliation);
+   - make no timer changes.
+2. **Separate Runtime Owner PR**
+   - assign devlap writer ownership;
+   - assign Odroid publisher ownership on its own separate timer;
+   - specify exact rollback;
+   - assign no reporting ownership;
+   - assign no Profit Plan ownership.
+3. **Separate host acceptance**
+   - accept the devlap writer first;
+   - accept the Odroid publisher second;
+   - observe multiple cycles;
+   - verify multi-cycle freshness, idempotency, duplicate prevention, lock behavior, and disk/log growth bounds;
+   - verify rollback.
+4. **Profit Plan lightbar**
+   - remains deferred, reporting-only follow-up work;
+   - consumes persisted data only, read-only;
+   - must never trigger or own the writer.
+
+No timer installation, enablement, or runtime-owner change is implied by this board entry. Keep this sequence synchronized with the implementation roadmap; do not create a duplicate Rotation Pressure TODO.
 
 ## Sequencing rationale
 
