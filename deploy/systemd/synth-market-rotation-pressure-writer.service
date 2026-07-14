@@ -1,0 +1,33 @@
+[Unit]
+Description=Synth Market Rotation Pressure writer (devlap runtime owner)
+Documentation=docs/ops/market_rotation_pressure_runtime_owners_v1.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=gurk
+WorkingDirectory=/home/gurk/projects/synth-v2
+Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
+Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
+ExecStart=/bin/bash -lc 'source venv/bin/activate && bash scripts/run_market_rotation_pressure_once.sh --write-db'
+Restart=no
+Nice=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=synth-market-rotation-pressure-writer
+
+# Safety boundary:
+# - writes only Rotation History and Rotation Pressure market-data state
+#   through the existing writer wrapper (run_market_rotation_pressure_once.sh)
+# - does not invoke reporting or dashboard publication
+# - does not SSH or otherwise reach the Odroid publisher host
+# - does not invoke Profit Plan
+# - does not invoke selection_engine, decision_gate, execution_planner, or executor
+# - no broker calls, no order submission
+
+[Install]
+WantedBy=multi-user.target

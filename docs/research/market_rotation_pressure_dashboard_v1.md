@@ -171,6 +171,12 @@ Operator sequence:
 7. run the Odroid read-only publisher and verify HTML/JSON output;
 8. choose canonical existing writer and publisher owners, or add separately reviewed timers only after runtime ownership is confirmed.
 
+A reviewed runtime-owner candidate (devlap writer timer, Odroid read-only
+publisher timer, cadence evidence, installation, and rollback) is recorded in
+`docs/ops/market_rotation_pressure_runtime_owners_v1.md`. That document is a
+repository-reviewed candidate only; it does not itself authorize host
+installation or timer enablement.
+
 Do not silently attach the market-data writer to Profit Plan rendering. Reporting must never become the owner of market-data writes.
 
 ## Deferred Follow-up
