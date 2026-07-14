@@ -41,36 +41,8 @@ executor / agents = order handling only
 
 Reporting/UI may never call the broker directly.
 
-## Synth v2.23 reconciled priority
+## Synth v2.23 execution order
 
-| File | Status | Purpose |
-|---|---:|---|
-| `workflow_standard.md` | standard | TODO creation, update, closure, priority, boundary, and commit rules |
-| `short_swing_linked_profile_freshness_and_disk_reliability_v1.md` | **active P0/P1** | 2026-07-05 Odroid disk-exhaustion incident follow-up: paper-advice log containment, linked-profile scheduler ownership, read-only account snapshot ingestion, static UI freshness contract, rollout/rollback, deferred runtime-host decision |
-| `profit_plan_live_ladder.md` | **active P0** | Shortest safe route from Profit Plan detail-page ladder rows to authenticated preview, decision gate, execution plan, executor, and a one-account live limit-order canary; cosmetics follow afterward |
-| `profit_plan_dashboard_action_truth_and_breathline_demote_v1.md` | **active P0 guardrail** | Profit Plan dashboard action fail-closed gates, Breathline research-only demotion, stale/current evidence cleanup, and numeric/freshness display correctness before live ladder work |
-| `profit_plan_target_lifecycle_history_truth_v1.md` | **open P1 / Synth v2.23** | IOST-discovered target lifecycle regression: verify map-cycle history authority, prevent reached/passed targets returning to UPCOMING after pullback, and fail closed when lifecycle history is incomplete |
-| `momentum_flow_scanner_matrix_v1.md` | open research / scanner | FFG-style read-only RSI/MFI momentum-flow matrix, 4% minimum target-upside research gate, scanner buckets, and backtest path for best-entry discovery |
-| `ffg_curated_rotation_radar_v1.md` | open research / dashboard | Curated-universe laggard/runner interpretation, normalized flow and RSI/MFI confirmation, market-only rotation classifications, and separate account ownership overlay |
-| `profit_plan_card_evidence_delta_visibility_v1.md` | done / parked | P0-C card evidence and deterministic current-vs-previous snapshot delta visibility; read-only presentation only |
-| `manual_ladder_dashboard.md` | superseded for active priority / historical source | Earlier read-only manual ladder dashboard direction; retain as historical design input, but active Profit Plan work is tracked in `profit_plan_live_ladder.md` |
-| `market_breath.md` | characterized/parked | Market Breath V1 characterized as a regime-dependent rhythm/phase sensor; reopen only for downstream regime/profile use-cases |
-| `regime_research.md` | parked while P0 executes | Rotation replay, discovered regime review, symbol breath profile design, and regime interaction audits |
-| `watchlist_candidates.md` | open intake | User-thesis watchlist candidates such as KITE before validation/promotion |
-| `deploy_runtime.md` | MVP cockpit implemented / ops follow-up | Odroid cockpit runner, dashboard render path, and related operational follow-ups |
-| `native_short_runtime_owner_and_scope_status_v1.md` | active / PR B review | Existing 4h market-chain owner now wires the locked native SHORT scope-status and map-level status chain; host deployment remains separate |
-| `fibo_zones.md` | open research | Fib target maps, leak-free zone/fib touch evaluation, zone context guardrails, exit ladder profiles, and zone UI overlays |
-| `ui_webview.md` | open / secondary | UI/Webview upgrades and styling; non-blocking cosmetics stay behind live ladder repair |
-| `signal_matrix_dashboard.md` | parked while P0 executes | Transparent per-asset/per-timeframe primitive signal inventory |
-| `breath_curve.md` | parked/open | Breath Curve baseline, non-overlap follow-up, partial-cycle, and regime-gated validation continuation |
-| `strategy_candidates.md` | parked/open research | Strategy audit, horizon buckets, later classifier/policy research, and research-lead follow-ups |
-| `position_rotation_preview.md` | MVP implemented / parked follow-up | Account-aware read-only cockpit/rotation preview with current price and distance semantics |
-| `multi_horizon_fib_dashboard_backlog.md` | parked/foundation follow-up | Read-only dashboard backlog depending on multi-horizon fib research outputs |
-| `paper_candidate_contract.md` | future design | Safe adapter path from research candidates to decision_gate; not the Profit Plan ladder-repair mutation contract |
-| `dev_ops_hygiene.md` | mostly parked | Codex smoke state, DBeaver/MariaDB access recovery, backup/export hygiene, local untracked-file hygiene |
-| `parked_backlog.md` | parked/backlog | A+ archive state and external PRO narrative backlog |
-
-## Active next-step recommendation
 Reference letters are stable names for easy discussion. Table order is the current execution order.
 
 | Ref | Priority | Lane | What it is for | Board state | Next decision |
@@ -90,6 +62,8 @@ B -> C first
 E = ongoing board maintenance
 A + D = later
 ```
+
+Rotation Pressure runtime ownership, timers, freshness, disk/log bounds, rollback, and multi-cycle host acceptance belong to **C**. Rotation Pressure research remains in **D**. Profit Plan **A** may later consume persisted pressure state read-only, but it must never trigger or own the writer.
 
 ## Sequencing rationale
 
@@ -145,6 +119,7 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `profit_plan_target_lifecycle_history_truth_v1.md` | **B — active P1 / first** | IOST-discovered lifecycle regression: map-cycle-aligned target history, monotonic reached/passed truth, and fail-closed incomplete-history handling |
 | `short_swing_linked_profile_freshness_and_disk_reliability_v1.md` | **C — open P2 / second** | Odroid/runtime ownership, absolute freshness timestamps, disk/log containment verification, rollout, and rollback hygiene |
 | `momentum_flow_scanner_matrix_v1.md` | **D — open P3 research / later** | Read-only RSI/MFI momentum-flow scanner, target-room research gate, and validation path |
+| `ffg_curated_rotation_radar_v1.md` | **D — open P3 research / later** | Curated-universe rotation radar, normalized flow and RSI/MFI confirmation, market-only classifications, and separate account ownership overlay |
 | `profit_plan_dashboard_action_truth_and_breathline_demote_v1.md` | done / parked | Completed Profit Plan action fail-closed, PPP, map-switch, Breathline, evidence-row, and formatting guardrails |
 | `native_short_runtime_owner_and_scope_status_v1.md` | done / accepted; host activation separate | Completed native SHORT scope-status, map-level status, chain integration, and canonical runtime ownership |
 | `native_short_map_level_status_v1.md` | done / parked | Completed native SHORT current map-level status contract and implementation evidence |
