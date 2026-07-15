@@ -51,7 +51,7 @@ Reference letters are stable names for easy discussion. Table order is the curre
 | **C** | P2 | Short Swing / Odroid freshness hygiene | Make sure the displayed pages are genuinely fresh and that disk, timer, or runtime failures cannot silently leave frozen data looking current. | open operational lane — second | Keep repository implementation separate from installed-host activation; verify ownership, timestamps, disk/log bounds, and multi-cycle freshness. |
 | **E** | P0 | TODO reconciliation / board maintenance | Keep the repository board truthful so completed work, open work, priorities, and accepted deployment roadmaps are not lost or duplicated across chats. | ongoing maintenance; reconciliation merged in PR #92 | Keep `README.md` and each lane TODO synchronized whenever status, priority, or accepted deployment sequence changes. |
 | **A** | P1 | Profit Plan Live Ladder prerequisites | Make **Fix selected ladder** safe: trustworthy current-map rows, stable identities, fresh account data, and a reviewable server preview before any order mutation. | active, deliberately later | Resume after B/C unless a new dependency changes the order. |
-| **D** | P3 | Research / FFG / scanner | Find coins with improving flow, momentum reset, and enough target room across the market without giving research or the scanner trading authority. | open, read-only, deliberately later | Resume as non-blocking research after B/C are controlled. |
+| **D** | P3 | Research / FFG / scanners / cross-asset rotation | Find markets with improving participation, momentum reset, and enough target room without giving research or a scanner trading authority. | open, read-only, deliberately later | Resume as non-blocking research after B/C are controlled. |
 
 Priority is execution order, not architectural importance.
 
@@ -63,7 +63,7 @@ E = ongoing board maintenance
 A + D = later
 ```
 
-Rotation Pressure runtime ownership, timers, freshness, disk/log bounds, rollback, and multi-cycle host acceptance belong to **C**. Rotation Pressure research remains in **D**. Profit Plan **A** may later consume persisted pressure state read-only, but it must never trigger or own the writer.
+Rotation Pressure runtime ownership, timers, freshness, disk/log bounds, rollback, and multi-cycle host acceptance belong to **C**. Rotation Pressure and cross-asset rotation research remain in **D**. Profit Plan **A** may later consume persisted pressure state read-only, but it must never trigger or own the writer.
 
 ## Lane C — Rotation Pressure runtime-owner operational sequence
 
@@ -150,6 +150,7 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `short_swing_linked_profile_freshness_and_disk_reliability_v1.md` | **C — open P2 / second** | Odroid/runtime ownership, absolute freshness timestamps, disk/log containment verification, rollout, and rollback hygiene |
 | `momentum_flow_scanner_matrix_v1.md` | **D — open P3 research / later** | Read-only RSI/MFI momentum-flow scanner, target-room research gate, and validation path |
 | `ffg_curated_rotation_radar_v1.md` | **D — open P3 research / later** | Curated-universe rotation radar, normalized flow and RSI/MFI confirmation, market-only classifications, and separate account ownership overlay |
+| `cross_asset_metals_miners_food_rotation_v1.md` | **D — open P3 research / later** | Public-data-first metals, miners, and food/agriculture rotation research with manual broker execution and optional future IBKR API work in a separate lane |
 | `profit_plan_dashboard_action_truth_and_breathline_demote_v1.md` | done / parked | Completed Profit Plan action fail-closed, PPP, map-switch, Breathline, evidence-row, and formatting guardrails |
 | `native_short_runtime_owner_and_scope_status_v1.md` | done / accepted; host activation separate | Completed native SHORT scope-status, map-level status, chain integration, and canonical runtime ownership |
 | `native_short_map_level_status_v1.md` | done / parked | Completed native SHORT current map-level status contract and implementation evidence |
