@@ -67,33 +67,43 @@ Rotation Pressure runtime ownership, timers, freshness, disk/log bounds, rollbac
 
 ## Lane C — Rotation Pressure runtime-owner operational sequence
 
+**Steps 1-3 below (the Rotation Pressure runtime-owner operational sequence
+itself) are CLOSED.** This closes only that specific sequence, not the
+broader **C** lane (Short Swing / Odroid freshness hygiene), which may still
+have unrelated open work tracked elsewhere. Full acceptance evidence is
+recorded in `docs/ops/market_rotation_pressure_runtime_owners_v1.md`
+("Host Activation & Multi-Cycle Acceptance Evidence").
+
 This entry is the canonical execution order for the accepted Rotation Pressure deployment strategy in `docs/research/market_rotation_pressure_dashboard_v1.md`, owned by lane **C** (installed-host freshness/runtime acceptance). It preserves strict runtime-owner separation: devlap owns hourly rotation history ingestion and the persisted rotation pressure writes; the Odroid publisher owns only read-only consumption of that persisted pressure and its HTML/JSON publication. Writer and publisher run on separate timers so a publisher failure can never stall or duplicate writer state.
 
-1. **Devlap acceptance**
+1. **Devlap acceptance** — DONE
    - use existing implementation only;
    - run the writer in a controlled way;
    - reconstruct devlap acceptance evidence (idempotency and reconciliation);
    - make no timer changes.
-2. **Separate Runtime Owner PR** — repository-reviewed candidate recorded in
-   `docs/ops/market_rotation_pressure_runtime_owners_v1.md`; no host unit
-   installed or enabled yet.
+2. **Separate Runtime Owner PR** — DONE — repository-reviewed candidate
+   recorded in `docs/ops/market_rotation_pressure_runtime_owners_v1.md`
+   (merged PR #101).
    - assign devlap writer ownership;
    - assign Odroid publisher ownership on its own separate timer;
    - specify exact rollback;
    - assign no reporting ownership;
    - assign no Profit Plan ownership.
-3. **Separate host acceptance**
+3. **Separate host acceptance** — DONE
    - accept the devlap writer first;
    - accept the Odroid publisher second;
-   - observe multiple cycles;
-   - verify multi-cycle freshness, idempotency, duplicate prevention, lock behavior, and disk/log growth bounds;
-   - verify rollback.
-4. **Profit Plan lightbar**
+   - observe multiple cycles — 3 of 3 real cycles PASS (18:00, 19:00, 20:00
+     UTC on 2026-07-15), independently verified via per-invocation
+     `LastTriggerUSec`/`InvocationID` correlation, not `TriggeredBy=` alone;
+   - verify multi-cycle freshness, idempotency, duplicate prevention, lock behavior, and disk/log growth bounds — all PASS;
+   - verify rollback — canonical rollback commands confirmed available and
+     correctly scoped; not exercised (no failure occurred requiring it).
+4. **Profit Plan lightbar** — remains DEFERRED
    - remains deferred, reporting-only follow-up work;
    - consumes persisted data only, read-only;
    - must never trigger or own the writer.
 
-No timer installation, enablement, or runtime-owner change is implied by this board entry. Keep this sequence synchronized with the implementation roadmap; do not create a duplicate Rotation Pressure TODO.
+Keep this sequence synchronized with the implementation roadmap; do not create a duplicate Rotation Pressure TODO.
 
 ## Sequencing rationale
 
