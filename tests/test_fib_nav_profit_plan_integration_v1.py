@@ -16,6 +16,7 @@ from src.market_data.fib_navigation_map_v1 import (
     build_fib_navigation_map_from_anchor,
 )
 from src.reporting.manual_short_trader_profit_plan_v1 import (
+    CardEvidence,
     FibExtContext,
     FibNavContext,
     ProfitPlanCard,
@@ -182,6 +183,15 @@ def _make_completed_card(fib_nav_context: FibNavContext | None = None) -> Profit
         history_low_since_activation=Decimal("0.008000"),
         history_candles_since_activation=history,
         fib_nav_context=fib_nav_context,
+        evidence=CardEvidence(
+            map_cycle_id="SXT|SHORT|4h|canonical",
+            native_map_id="SXT-map-01",
+            native_map_status="AVAILABLE",
+            selected_map_reason="Single active map selected",
+            selected_map_tier="CURRENT_ACTIVE_MAP",
+            lifecycle_state="TARGET_ACTIVE",
+            rollover_state="SINGLE_MAP",
+        ),
     )
 
 

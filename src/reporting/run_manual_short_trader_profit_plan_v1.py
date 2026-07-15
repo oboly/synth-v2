@@ -305,17 +305,18 @@ def _evidence_from_native_row(native_row: Any, *, now_utc: datetime) -> CardEvid
         native_row.latest_support_close_ts_utc,
     )
     return CardEvidence(
+        # Preserve the bridge cycle only as non-canonical reference metadata.
         map_cycle_id=_fmt_unavailable(native_row.map_cycle_id),
         # Native scope-status projection (Lane B) is not yet wired into this runner;
         # it remains DATA_UNAVAILABLE so account-specific repair actions fail closed.
         native_map_id="DATA_UNAVAILABLE",
         native_map_status="DATA_UNAVAILABLE",
-        selected_map_reason=_fmt_unavailable(native_row.selection_reason),
-        selected_map_tier=_fmt_unavailable(native_row.current_map_status),
-        lifecycle_state=_fmt_unavailable(native_row.primary_4h_lifecycle_state),
-        rollover_state=_fmt_unavailable(native_row.rollover_state),
-        previous_map_cycle_id=_fmt_unavailable(native_row.previous_map_cycle_id),
-        previous_map_lifecycle_state=_fmt_unavailable(native_row.previous_map_lifecycle_state),
+        selected_map_reason=f"TRANSIENT_NON_CANONICAL_REFERENCE: {_fmt_unavailable(native_row.selection_reason)}",
+        selected_map_tier="TRANSIENT_NON_CANONICAL_REFERENCE",
+        lifecycle_state="DATA_UNAVAILABLE",
+        rollover_state="DATA_UNAVAILABLE",
+        previous_map_cycle_id="DATA_UNAVAILABLE",
+        previous_map_lifecycle_state="DATA_UNAVAILABLE",
         # Account/order snapshot freshness (Lane A) is not yet plumbed; kept
         # DATA_UNAVAILABLE so placeholder account panels cannot enable FIX LADDER.
         account_order_snapshot_status="DATA_UNAVAILABLE",
@@ -689,10 +690,14 @@ def load_zone_contexts(
         native_reference_only = native_row is not None and native_row.context_status != NATIVE_SHORT_CONTEXT_AVAILABLE
         if native_row is not None:
             evidence_by_symbol[symbol] = _evidence_from_native_row(native_row, now_utc=_now)
-            input_status_by_symbol[symbol] = native_row.context_status
-            coverage_status_by_symbol[symbol] = native_row.context_status
+            input_status_by_symbol[symbol] = (
+                "TRANSIENT_NON_CANONICAL_CONTEXT_AVAILABLE"
+                if native_row.context_status == NATIVE_SHORT_CONTEXT_AVAILABLE
+                else native_row.context_status
+            )
+            coverage_status_by_symbol[symbol] = input_status_by_symbol[symbol]
             display_state_by_symbol[symbol] = (
-                "HAS_NATIVE_SHORT_FIB_CONTEXT"
+                "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT"
                 if native_row.context_status == NATIVE_SHORT_CONTEXT_AVAILABLE
                 else "NO_NATIVE_SHORT_FIB_CONTEXT"
             )
