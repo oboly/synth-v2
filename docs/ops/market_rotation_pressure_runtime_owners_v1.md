@@ -2,13 +2,16 @@
 
 ## Status
 
-Repository-reviewed deployment candidate only. No host systemd unit has been
-installed, enabled, started, or restarted as part of this document or its
-companion unit files. Separate host activation and multi-cycle acceptance are
-still required (see Activation Order and Multi-Cycle Acceptance below).
+**CLOSED — host activation and three-cycle acceptance PASS.** Both systemd
+units are installed, enabled, and active on their respective hosts, and three
+consecutive real hourly writer(:20 UTC)→publisher(:35 UTC) cycles have been
+independently verified against per-invocation timer-origin evidence (not
+`TriggeredBy=` alone). See "Host Activation & Multi-Cycle Acceptance
+Evidence" below for the full record.
 
-This is step 2 ("Separate Runtime Owner PR") of the Lane C operational
-sequence recorded in `docs/todo/README.md`.
+This closes step 3 ("Separate host acceptance") of the Lane C operational
+sequence recorded in `docs/todo/README.md`. This document itself remains the
+repository record for step 2 ("Separate Runtime Owner PR").
 
 ## Ownership
 
@@ -177,8 +180,9 @@ before the writer under normal `RandomizedDelaySec` bounds.
 
 ## Installation Commands
 
-Do not execute these commands as part of this task. They are recorded for a
-separate, explicitly approved host-activation operation.
+These commands were executed as the separate, explicitly approved
+host-activation operation. See "Host Activation & Multi-Cycle Acceptance
+Evidence" below for the resulting deployed commits and timer state.
 
 ### Devlap installation
 
@@ -236,14 +240,140 @@ Before any enablement:
 ## Activation Order
 
 ```text
-1. install and accept devlap writer
-2. observe successful writer cycle
-3. install and accept Odroid publisher
-4. observe multiple complete cycles
+1. install and accept devlap writer            -- DONE
+2. observe successful writer cycle              -- DONE
+3. install and accept Odroid publisher          -- DONE
+4. observe multiple complete cycles             -- DONE (3 of 3 real cycles)
 ```
 
-Do not install or enable the publisher before the writer has an observed
-successful cycle. Do not perform any of these steps in this repository task.
+The publisher was not installed or enabled before the writer had an observed
+successful cycle. See "Host Activation & Multi-Cycle Acceptance Evidence"
+below for the complete record.
+
+## Host Activation & Multi-Cycle Acceptance Evidence
+
+### Deployed commits
+
+- devlap: `4dce01998328d7215d40451e77eb5e121d8483d3` (origin/main, clean
+  worktree, fast-forward only)
+- Odroid: `4dce01998328d7215d40451e77eb5e121d8483d3` (origin/main, clean
+  worktree, fast-forwarded from `84c78162a5da8c6b4defb1aa43f22c8b402f0347`)
+
+### Installed/enabled/active timer evidence
+
+- `synth-market-rotation-pressure-writer.timer` — devlap — installed,
+  `enabled`, `active`; `OnCalendar=*:20:00 UTC`, `RandomizedDelaySec=180`,
+  `User=gurk`, `WorkingDirectory=/home/gurk/projects/synth-v2`; `ExecStart`
+  invokes only `scripts/run_market_rotation_pressure_once.sh --write-db`; no
+  remote/reporting/Profit Plan/broker reference.
+- `synth-market-rotation-pressure-publisher.timer` — Odroid — installed,
+  `enabled`, `active`; `OnCalendar=*:35:00 UTC`, `RandomizedDelaySec=180`,
+  `User=theone`, `WorkingDirectory=/home/theone/projects/synth-v2`;
+  `ExecStart` invokes only
+  `scripts/odroid/run_market_rotation_pressure_dashboard_render_once.sh`
+  (no `--write-db`); no history/pressure-writer invocation, no cross-host
+  dependency.
+- No duplicate owner existed on either host prior to installation
+  (`systemctl list-unit-files` / `systemctl --user list-unit-files` /
+  `systemctl list-timers --all`, checked on both hosts before install).
+
+Two `Persistent=true` catch-up invocations occurred at enable time (writer:
+started ~14:48 UTC vs. its `14:20:00-14:23:00` window; publisher: started
+~16:40:21 UTC vs. its `16:35:00-16:38:00` window). Both were excluded from
+the three-cycle count below; they served only as install-time functional
+proof that each unit fires and completes successfully.
+
+### Three real qualifying cycles
+
+Acceptance standard per cycle (both writer and publisher): timer
+`LastTriggerUSec`, service `ExecMainStartTimestamp`/`ExecMainExitTimestamp`,
+`InvocationID`, `Result`, `ExecMainStatus`; journal retrieved by exact
+`_SYSTEMD_INVOCATION_ID` match (not `TriggeredBy=` alone, which only proves a
+static unit relationship, not which invocation is being inspected);
+`ExecMainStartTimestamp` inside the expected `RandomizedDelaySec` window
+(writer `HH:20:00-HH:23:00` UTC, publisher `HH:35:00-HH:38:00` UTC);
+`LastTriggerUSec` within 5s of `ExecMainStartTimestamp`; published JSON
+`header.as_of_ts_utc` equal to the expected cycle hour.
+
+| Cycle | as_of (UTC) | Writer start (UTC) | Writer window check | Writer trigger-match | Publisher start (UTC) | Publisher window check | Publisher trigger-match | DB obs==eligible | Duplicate assets | Duplicate headers | Score bounded | Freshness |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 18:00 | 18:21:02 | PASS | PASS (0s) | 18:36:49 | PASS | PASS (0s) | 114==114 | 0 | 0 | -3.4093 | FRESH |
+| 2 | 19:00 | 19:22:19 | PASS | PASS (0s) | 19:37:39 | PASS | PASS (0s) | 111==111 | 0 | 0 | +0.7575 | FRESH |
+| 3 | 20:00 | 20:21:19 | PASS | PASS (0s) | 20:35:22 | PASS | PASS (0s) | 110==110 | 0 | 0 | -8.2390 | FRESH |
+
+All three cycles: `Result=success` / `ExecMainStatus=0` on both writer and
+publisher; unique `InvocationID` per run; `pressure_snapshot_id` values 11,
+12, 13 respectively, each the sole header for its `(venue, as_of_ts_utc,
+model_version)`; zero duplicate header groups across all persisted snapshots
+at each check.
+
+A fourth candidate hour (17:00 UTC, `pressure_snapshot_id=10`) also ran
+successfully with clean DB evidence (114==114 observations, no duplicates,
+score -13.3437 bounded), but its live `systemctl` invocation properties were
+already overwritten by later cycles before it could be captured. Its
+timer-origin reconstruction (journal time-window search, embedded
+application timestamps, in-window presence) did not reach the same
+evidentiary standard as the three counted cycles above — specifically, its
+historical `LastTriggerUSec` could not be retrieved for correlation, since
+that property only ever reflects the most recent invocation. It is retained
+here as corroborating reference only and is **not** counted toward the
+three-cycle requirement.
+
+### Database idempotency and duplicate evidence
+
+- Devlap manual acceptance (pre-timer): writer run, then rerun within the
+  same source hour; second run reported `NOOP_ALREADY_COMPLETE` on both the
+  rotation-history and rotation-pressure phases (0 rows written); DB state
+  unchanged between runs.
+- Across all snapshots inspected at each of the three cycle checks:
+  `duplicate_header_groups_all_time=0`; `duplicate_asset_rows=0` for every
+  inspected `pressure_snapshot_id`.
+
+### Freshness evidence
+
+Odroid published JSON `freshness_state=FRESH` and `status=AVAILABLE` at
+every one of the three cycle checks, with `header.as_of_ts_utc` matching the
+expected cycle hour exactly each time (`AS_OF_MATCH_CHECK=PASS`).
+
+### Lock evidence
+
+No `LOCK_HELD` journal entries at any writer or publisher invocation
+inspected (install catch-ups, the three real cycles, or the reconstructed
+17:00 candidate). No overlapping runs observed on either host.
+
+### Disk and journal bounds
+
+- devlap: `943G` avail / `2%` used throughout; journal held at `525.3M`
+  across all checks (no growth observed in the acceptance window).
+- Odroid: `2.1-2.2G` avail / `86%` used throughout (pre-existing tight
+  baseline, unchanged by this lane); journal grew modestly from `183.0M`
+  baseline to `199.0M` across the acceptance window, then held steady.
+
+### Rollback verification
+
+The canonical rollback commands (see "Rollback" below) were not exercised,
+because no failure occurred that required rollback. Both hosts' installed
+unit files, `systemd-analyze verify` output, and `daemon-reload` state were
+independently confirmed read-only at each check; the documented rollback
+commands target only the two files each lane installed
+(`synth-market-rotation-pressure-writer.{service,timer}` on devlap,
+`synth-market-rotation-pressure-publisher.{service,timer}` on Odroid) and
+remain available unchanged for future use if ever needed.
+
+### Architecture boundaries
+
+At every checked invocation, both units logged
+`broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0`
+and `selection_engine=none decision_gate=none execution_planner=none
+executor=none`; the publisher additionally logged `market_data_writes=0
+pressure_writes=0`. No cross-host `Requires=`/`After=` dependency exists
+between the two timers. No Profit Plan file was touched.
+
+### Final classification
+
+**PASS.** Three real, independently verified, per-invocation-proven writer→
+publisher cycles (18:00, 19:00, 20:00 UTC) meet every criterion in
+"Multi-Cycle Acceptance" below.
 
 ## Multi-Cycle Acceptance
 
