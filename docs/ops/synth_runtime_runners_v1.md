@@ -689,7 +689,11 @@ not a source that `decision_gate` reads from.
 - Do not assume which of these mechanisms is actually active on the Odroid
   host right now without checking (see "Current-State Inspection Commands"
   below). This document describes what exists in the repository, not a
-  live status feed.
+  live status feed. A 2026-07-15 read-only audit of the live owner state
+  (both the safe system-level orchestrator and the legacy **user-level**
+  `synth-account-wallet-dashboard@` render path were active in parallel) is
+  recorded in
+  `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`.
 
 ### Timer State: Verified Facts vs. Required Policy vs. Live State
 

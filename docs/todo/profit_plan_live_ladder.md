@@ -360,3 +360,5 @@ canonical Profit Plan consumer of scope-status + map-level status
 ```
 
 No new feature branch should mix that consumer slice with live execution implementation.
+
+The read-only render-owner form of that consumer slice — a single-owner Profit Plan renderer that consumes a persisted native SHORT snapshot and loads the previous canonical `profit-plan.json` for card deltas — is specified as **PR B**, with its market-only input **PR A**, in `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`. Those two PRs are prerequisites for this lane and must land before ladder-repair mutation work; they implement no mutation, `decision_gate`, `execution_planner`, or executor path.

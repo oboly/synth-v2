@@ -69,6 +69,8 @@ It deliberately does **not**:
 
 Profit Plan / Short Swing remains blocked for this orchestrated path until its native SHORT/freshness input is promoted to a persisted snapshot contract. That is a later slice, not a renderer-side shortcut.
 
+The concrete "later slice" is specified as **PR A** (a market-only persisted native SHORT rows snapshot owned by the 4h chain) and **PR B** (a separate single-writer Profit Plan runner invoked as an explicit stage by this orchestrator after all account-refresh stages succeed — the orchestrator only sequences it and absorbs no reporting logic, adding no second timer) in `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`.
+
 ## Why the older linked wrapper is not reused
 
 ```text
@@ -176,6 +178,8 @@ new orchestrator timer enabled  => old account refresh/dashboard timers disabled
 old account timers enabled      => new orchestrator timer disabled
 never both silently active
 ```
+
+Proven (2026-07-15 read-only audit): on the current Odroid this rule is violated. The system-level `synth-linked-profile-runtime-refresh.timer` (safe) runs in parallel with **both** user-level (`systemctl --user`) families it supersedes — `synth-account-wallet-dashboard@{joost,hugo}.timer` (legacy — renders Profit Plan without deltas and duplicates wallet/open-orders) and `synth-account-wallet-refresh@{joost,hugo}.timer` (duplicate account refresh). Retiring both is a separate host rollout with per-family rollback; the ownership proof and rollout are recorded in `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`.
 
 ## Acceptance checklist
 

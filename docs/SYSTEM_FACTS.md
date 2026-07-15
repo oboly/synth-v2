@@ -161,6 +161,21 @@ deterministic ladder-row identity or authenticated repair preview is
 promoted. Canonical context: `docs/todo/profit_plan_live_ladder.md`,
 `docs/architecture/native_short_fib_context_bridge_v1.md`.
 
+**Known open correction — Profit Plan delta freshness and runtime ownership.**
+
+The runtime Profit Plan writer renders without a previous canonical snapshot,
+so every card shows `delta_status=NO_PREVIOUS_SNAPSHOT` and no
+`UPDATED_NOW`/`UNCHANGED` freshness. Proven (2026-07-15 read-only audit): the
+live writer is the legacy **user-level** `synth-account-wallet-dashboard@`
+render path (builds native SHORT in-render, calls the writer without
+`--previous-json`), running in parallel with the safe system-level orchestrator
+that intentionally excludes Profit Plan.
+
+The fix is not a renderer-side shortcut: a market-only persisted native SHORT
+snapshot (PR A) plus a safe single-owner Profit Plan renderer that loads the
+previous canonical `profit-plan.json` and records delta counts (PR B). Canonical
+plan: `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`.
+
 **Known open correction — runtime/research import boundary.**
 
 Market runtime and native-map materialization must not import `src.research`.
