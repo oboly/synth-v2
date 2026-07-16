@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -264,6 +265,95 @@ def test_empty_database_plan_is_all_inserts(seed: dict) -> None:
     assert plan.asset_sector_unchanged == 429
 
 
+def _sector_write_seed(symbol: str, proposed_sector: str) -> dict:
+    return {
+        "assets": [
+            {
+                "asset_symbol": symbol,
+                "primary_sector": proposed_sector,
+            }
+        ]
+    }
+
+
+def _sector_asset_row(symbol: str, current_sector: str | None) -> dict[str, dict]:
+    return {
+        symbol: {
+            "asset_id": 7,
+            "symbol": symbol,
+            "sector": current_sector,
+            "asset_class": "MID_ALT",
+        }
+    }
+
+
+def test_existing_classified_sector_is_never_downgraded_to_unclassified() -> None:
+    seed = _sector_write_seed("ADA", "UNCLASSIFIED")
+    rows = _sector_asset_row("ADA", "L1")
+    audit = importer.build_asset_sector_audit(seed, rows)
+    assert audit.count(importer.ASSET_SECTOR_PRESERVED_FROM_UNCLASSIFIED) == 1
+    assert audit.safe_update_count == 0
+
+    conn = RecordingApplyConnection()
+    importer.apply_asset_sector_updates(conn, seed, rows)
+    assert not [sql for sql, _ in conn.statements if sql.startswith("UPDATE asset SET sector")]
+
+
+def test_null_or_empty_sector_may_become_unclassified() -> None:
+    for current in (None, "", "   "):
+        seed = _sector_write_seed("NEW", "UNCLASSIFIED")
+        rows = _sector_asset_row("NEW", current)
+        audit = importer.build_asset_sector_audit(seed, rows)
+        assert audit.count(importer.ASSET_SECTOR_EMPTY_TO_UNCLASSIFIED) == 1
+
+        conn = RecordingApplyConnection()
+        importer.apply_asset_sector_updates(conn, seed, rows)
+        statements = [
+            (sql, params)
+            for sql, params in conn.statements
+            if sql.startswith("UPDATE asset SET sector")
+        ]
+        assert len(statements) == 1
+        assert "sector IS NULL OR TRIM(sector) = ''" in statements[0][0]
+        assert statements[0][1] == ("UNCLASSIFIED", 7)
+
+
+def test_unclassified_write_fails_closed_if_sector_changed_after_audit() -> None:
+    seed = _sector_write_seed("NEW", "UNCLASSIFIED")
+    rows = _sector_asset_row("NEW", None)
+    conn = RecordingApplyConnection(asset_update_rowcount=0)
+    with pytest.raises(importer.TaxonomyPreflightError, match="changed after audit"):
+        importer.apply_asset_sector_updates(conn, seed, rows)
+
+
+def test_classified_to_classified_change_is_deterministic() -> None:
+    seed = _sector_write_seed("PYTH", "ORACLE")
+    rows = _sector_asset_row("PYTH", "oracle")
+    audit = importer.build_asset_sector_audit(seed, rows)
+    assert audit.count(importer.ASSET_SECTOR_CLASSIFIED_TO_CLASSIFIED) == 1
+
+    first = RecordingApplyConnection()
+    second = RecordingApplyConnection()
+    importer.apply_asset_sector_updates(first, seed, rows)
+    importer.apply_asset_sector_updates(second, seed, rows)
+    assert first.statements == second.statements
+    assert first.statements == [
+        ("UPDATE asset SET sector = %s WHERE asset_id = %s", ("ORACLE", 7))
+    ]
+
+
+def test_asset_class_is_never_modified_by_sector_reconciliation() -> None:
+    seed = _sector_write_seed("PYTH", "ORACLE")
+    rows = _sector_asset_row("PYTH", "oracle")
+    original = copy.deepcopy(rows)
+    conn = RecordingApplyConnection()
+    importer.apply_asset_sector_updates(conn, seed, rows)
+    assert rows == original
+    assert all("asset_class" not in sql.lower() for sql, _ in conn.statements)
+    source = Path(importer.__file__).read_text(encoding="utf-8").lower()
+    assert "update asset set asset_class" not in source
+
+
 def test_second_plan_is_deterministically_unchanged(seed: dict) -> None:
     asset_rows = _asset_rows(seed)
     sectors = importer.normalized_sector_rows(seed)
@@ -302,6 +392,7 @@ class RecordingCursor:
     def __init__(self, conn: "RecordingApplyConnection") -> None:
         self.conn = conn
         self.results: list[dict] = []
+        self.rowcount = 1
 
     def __enter__(self) -> "RecordingCursor":
         return self
@@ -312,6 +403,9 @@ class RecordingCursor:
     def execute(self, sql: str, params=None) -> None:
         normalized = " ".join(sql.split())
         self.conn.statements.append((normalized, params))
+        self.rowcount = 1
+        if normalized.startswith("UPDATE asset SET sector") and self.conn.asset_update_rowcount is not None:
+            self.rowcount = self.conn.asset_update_rowcount
         if normalized.startswith("SELECT * FROM asset_cluster_membership"):
             self.results = copy.deepcopy(self.conn.active_memberships)
         elif normalized.startswith("SELECT GET_LOCK"):
@@ -329,9 +423,15 @@ class RecordingCursor:
 
 
 class RecordingApplyConnection:
-    def __init__(self, active_memberships: list[dict] | None = None, lock_result: int = 1) -> None:
+    def __init__(
+        self,
+        active_memberships: list[dict] | None = None,
+        lock_result: int = 1,
+        asset_update_rowcount: int | None = None,
+    ) -> None:
         self.active_memberships = active_memberships or []
         self.lock_result = lock_result
+        self.asset_update_rowcount = asset_update_rowcount
         self.statements: list[tuple[str, object]] = []
 
     def cursor(self) -> RecordingCursor:
@@ -378,7 +478,7 @@ def test_apply_plan_expires_changed_and_stale_then_inserts(seed: dict) -> None:
     assert len(membership_inserts) == 472
     assert len(membership_expiries) == 2
     assert len(profile_scope_reconciliations) == 1
-    assert len(asset_sector_updates) == 429
+    assert len(asset_sector_updates) == 0
 
 
 def test_apply_plan_rejects_non_monotonic_validity(seed: dict) -> None:
@@ -437,6 +537,32 @@ def test_sector_rotation_public_contract_uses_participation_terms() -> None:
     assert "INSUFFICIENT_PARTICIPATION" in engine
 
 
+def test_phase_a_does_not_touch_trading_authority_layers() -> None:
+    root = Path(__file__).resolve().parents[1]
+    commands = (
+        ["git", "diff", "--name-only", "origin/main...HEAD"],
+        ["git", "diff", "--name-only"],
+        ["git", "diff", "--cached", "--name-only"],
+    )
+    changed: set[str] = set()
+    for command in commands:
+        result = subprocess.run(command, cwd=root, check=True, capture_output=True, text=True)
+        changed.update(line for line in result.stdout.splitlines() if line)
+    forbidden_prefixes = (
+        "src/selection/",
+        "src/selection_engine/",
+        "src/decision_gate/",
+        "src/execution_planner/",
+        "src/executor/",
+        "src/agents/",
+    )
+    assert not {
+        path
+        for path in changed
+        if path.startswith(forbidden_prefixes)
+    }
+
+
 class MainConnection:
     def __init__(self) -> None:
         self.commits = 0
@@ -455,7 +581,7 @@ class MainConnection:
 
 def _empty_plan() -> importer.ImportPlan:
     empty = importer.ReconciliationCounts()
-    return importer.ImportPlan(empty, empty, empty, empty, 0, 0, ())
+    return importer.ImportPlan(empty, empty, empty, empty, importer.AssetSectorAudit(), ())
 
 
 def test_validate_only_never_opens_database(seed: dict) -> None:

@@ -66,6 +66,11 @@ REQUIRED_CC_SECONDARIES = {
 PRECHECK_FAILURE_EXIT_CODE = 2
 IMPORT_LOCK_NAME = "sector_taxonomy_import_v1"
 ASSET_SECTOR_MAX_LENGTH = 32
+ASSET_SECTOR_UNCHANGED = "unchanged"
+ASSET_SECTOR_EMPTY_TO_CLASSIFIED = "null_empty_to_classified"
+ASSET_SECTOR_EMPTY_TO_UNCLASSIFIED = "null_empty_to_unclassified"
+ASSET_SECTOR_CLASSIFIED_TO_CLASSIFIED = "existing_classified_to_different_classified"
+ASSET_SECTOR_PRESERVED_FROM_UNCLASSIFIED = "existing_classified_to_unclassified"
 
 
 class TaxonomyPreflightError(ValueError):
@@ -81,14 +86,46 @@ class ReconciliationCounts:
 
 
 @dataclass(frozen=True)
+class AssetSectorMutation:
+    asset_id: int
+    asset_symbol: str
+    current_sector: str
+    proposed_sector: str
+    category: str
+
+
+@dataclass(frozen=True)
+class AssetSectorAudit:
+    mutations: tuple[AssetSectorMutation, ...] = ()
+
+    def count(self, category: str) -> int:
+        return sum(row.category == category for row in self.mutations)
+
+    @property
+    def safe_update_count(self) -> int:
+        return sum(
+            row.category
+            not in {ASSET_SECTOR_UNCHANGED, ASSET_SECTOR_PRESERVED_FROM_UNCLASSIFIED}
+            for row in self.mutations
+        )
+
+
+@dataclass(frozen=True)
 class ImportPlan:
     sectors: ReconciliationCounts
     liquidity: ReconciliationCounts
     profiles: ReconciliationCounts
     memberships: ReconciliationCounts
-    asset_sector_updates: int
-    asset_sector_unchanged: int
+    asset_sectors: AssetSectorAudit
     target_tables_missing: tuple[str, ...]
+
+    @property
+    def asset_sector_updates(self) -> int:
+        return self.asset_sectors.safe_update_count
+
+    @property
+    def asset_sector_unchanged(self) -> int:
+        return self.asset_sectors.count(ASSET_SECTOR_UNCHANGED)
 
 
 def _upper(value: Any, field: str) -> str:
@@ -496,6 +533,42 @@ def _definition_counts(
     return ReconciliationCounts(inserts, updates, unchanged, stale)
 
 
+def build_asset_sector_audit(
+    seed: dict[str, Any],
+    asset_rows: dict[str, dict[str, Any]],
+) -> AssetSectorAudit:
+    mutations: list[AssetSectorMutation] = []
+    for asset in sorted(seed["assets"], key=lambda row: _upper(row["asset_symbol"], "asset_symbol")):
+        symbol = _upper(asset["asset_symbol"], "asset_symbol")
+        local = asset_rows.get(symbol)
+        if local is None:
+            continue
+        current = str(local.get("sector") or "").strip()
+        proposed = _upper(asset["primary_sector"], "primary_sector")
+        if current == proposed:
+            category = ASSET_SECTOR_UNCHANGED
+        elif not current:
+            category = (
+                ASSET_SECTOR_EMPTY_TO_UNCLASSIFIED
+                if proposed == UNCLASSIFIED
+                else ASSET_SECTOR_EMPTY_TO_CLASSIFIED
+            )
+        elif proposed == UNCLASSIFIED:
+            category = ASSET_SECTOR_PRESERVED_FROM_UNCLASSIFIED
+        else:
+            category = ASSET_SECTOR_CLASSIFIED_TO_CLASSIFIED
+        mutations.append(
+            AssetSectorMutation(
+                asset_id=int(local["asset_id"]),
+                asset_symbol=symbol,
+                current_sector=current,
+                proposed_sector=proposed,
+                category=category,
+            )
+        )
+    return AssetSectorAudit(tuple(mutations))
+
+
 def build_plan(
     seed: dict[str, Any],
     asset_rows: dict[str, dict[str, Any]],
@@ -557,18 +630,6 @@ def build_plan(
     membership_unchanged = len(memberships) - membership_inserts - membership_updates
     membership_stale = sum(key not in memberships for key in active_membership_map)
 
-    asset_sector_updates = 0
-    asset_sector_unchanged = 0
-    for asset in seed["assets"]:
-        symbol = _upper(asset["asset_symbol"], "asset_symbol")
-        local = asset_rows.get(symbol)
-        if local is None:
-            continue
-        if str(local.get("sector") or "").upper() == _upper(asset["primary_sector"], "primary_sector"):
-            asset_sector_unchanged += 1
-        else:
-            asset_sector_updates += 1
-
     return ImportPlan(
         sectors=_definition_counts(existing_sector_map, sectors, sector_fields),
         liquidity=_definition_counts(existing_liquidity_map, liquidity, liquidity_fields),
@@ -578,8 +639,7 @@ def build_plan(
         memberships=ReconciliationCounts(
             membership_inserts, membership_updates, membership_unchanged, membership_stale
         ),
-        asset_sector_updates=asset_sector_updates,
-        asset_sector_unchanged=asset_sector_unchanged,
+        asset_sectors=build_asset_sector_audit(seed, asset_rows),
         target_tables_missing=target_tables_missing,
     )
 
@@ -638,6 +698,42 @@ def _upsert_definitions(conn: Any, seed: dict[str, Any]) -> None:
             f"UPDATE liquidity_market_cap_definition SET is_active = 0 WHERE is_active = 1 AND liquidity_market_cap_code NOT IN ({placeholders})",
             codes,
         )
+
+
+def apply_asset_sector_updates(
+    conn: Any,
+    seed: dict[str, Any],
+    asset_rows: dict[str, dict[str, Any]],
+) -> AssetSectorAudit:
+    audit = build_asset_sector_audit(seed, asset_rows)
+    with conn.cursor() as cur:
+        for row in audit.mutations:
+            if row.category in {
+                ASSET_SECTOR_UNCHANGED,
+                ASSET_SECTOR_PRESERVED_FROM_UNCLASSIFIED,
+            }:
+                continue
+            if row.proposed_sector == UNCLASSIFIED:
+                cur.execute(
+                    """
+                    UPDATE asset
+                    SET sector = %s
+                    WHERE asset_id = %s
+                      AND (sector IS NULL OR TRIM(sector) = '')
+                    """,
+                    (row.proposed_sector, row.asset_id),
+                )
+                if getattr(cur, "rowcount", 1) == 0:
+                    raise TaxonomyPreflightError(
+                        "asset.sector changed after audit; refusing UNCLASSIFIED write "
+                        f"for {row.asset_symbol}"
+                    )
+                continue
+            cur.execute(
+                "UPDATE asset SET sector = %s WHERE asset_id = %s",
+                (row.proposed_sector, row.asset_id),
+            )
+    return audit
 
 
 def apply_plan(conn: Any, seed: dict[str, Any], asset_rows: dict[str, dict[str, Any]]) -> None:
@@ -740,14 +836,7 @@ def apply_plan(conn: Any, seed: dict[str, Any], asset_rows: dict[str, dict[str, 
                 row,
             )
 
-        for asset in seed["assets"]:
-            symbol = _upper(asset["asset_symbol"], "asset_symbol")
-            if symbol not in asset_rows:
-                continue
-            cur.execute(
-                "UPDATE asset SET sector = %s WHERE asset_id = %s",
-                (_upper(asset["primary_sector"], "primary_sector"), asset_rows[symbol]["asset_id"]),
-            )
+    apply_asset_sector_updates(conn, seed, asset_rows)
 
 
 def acquire_import_lock(conn: Any) -> None:
@@ -775,10 +864,32 @@ def _print_plan(plan: ImportPlan) -> None:
     _print_counts("liquidity_definitions", plan.liquidity)
     _print_counts("asset_profiles", plan.profiles)
     _print_counts("memberships", plan.memberships)
+    audit = plan.asset_sectors
+    print(f"  asset_primary_sectors: unchanged={audit.count(ASSET_SECTOR_UNCHANGED)}")
     print(
-        "  asset_primary_sectors: "
-        f"updates={plan.asset_sector_updates} unchanged={plan.asset_sector_unchanged}"
+        "  asset_primary_sectors: null_empty_to_classified="
+        f"{audit.count(ASSET_SECTOR_EMPTY_TO_CLASSIFIED)}"
     )
+    print(
+        "  asset_primary_sectors: null_empty_to_unclassified="
+        f"{audit.count(ASSET_SECTOR_EMPTY_TO_UNCLASSIFIED)}"
+    )
+    print(
+        "  asset_primary_sectors: existing_classified_to_different_classified="
+        f"{audit.count(ASSET_SECTOR_CLASSIFIED_TO_CLASSIFIED)}"
+    )
+    print(
+        "  asset_primary_sectors: existing_classified_to_unclassified_preserved="
+        f"{audit.count(ASSET_SECTOR_PRESERVED_FROM_UNCLASSIFIED)}"
+    )
+    for row in audit.mutations:
+        if row.category == ASSET_SECTOR_PRESERVED_FROM_UNCLASSIFIED:
+            print(
+                "  asset_primary_sector_preserved: "
+                f"symbol={row.asset_symbol} current={row.current_sector} "
+                f"taxonomy_status={row.proposed_sector}"
+            )
+    print(f"  asset_primary_sectors: safe_updates={audit.safe_update_count}")
     if plan.target_tables_missing:
         print(
             "  migration_required_for_write_db: "

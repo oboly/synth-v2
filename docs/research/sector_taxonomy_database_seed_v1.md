@@ -107,6 +107,51 @@ uses a named single-writer lock, and commits definitions, profiles,
 memberships, validity reconciliation, and `asset.sector` changes in one
 transaction.
 
+### `asset.sector` destructive-update guard
+
+The importer compares exact trimmed current values with proposed primary codes
+before writing:
+
+- a classified seed value may populate or replace `asset.sector`;
+- `UNCLASSIFIED` may populate a NULL or empty `asset.sector`;
+- `UNCLASSIFIED` never erases a non-empty existing `asset.sector`;
+- preserved conflicts remain unresolved in `asset_taxonomy_profile` and the
+  active `asset_cluster_membership` only;
+- the guarded SQL for empty-to-`UNCLASSIFIED` rechecks the current DB value and
+  rolls back if it changed after the audit;
+- `asset.asset_class` is read-only and is never updated.
+
+Bounded read-only audit against the canonical database on 2026-07-16:
+
+```text
+audit scope:                                      429
+unchanged:                                          4
+NULL/empty -> classified:                          92
+NULL/empty -> UNCLASSIFIED:                       325
+existing classified -> different classified:       4
+existing classified -> UNCLASSIFIED, preserved:     4
+safe asset.sector updates:                         421
+destructive downgrades:                              0
+```
+
+Preserved conflicts:
+
+```text
+ADA    L1      -> UNCLASSIFIED taxonomy status; asset.sector remains L1
+BTC    Other   -> UNCLASSIFIED taxonomy status; asset.sector remains Other
+CARDS  cards   -> UNCLASSIFIED taxonomy status; asset.sector remains cards
+SXT    zkdata  -> UNCLASSIFIED taxonomy status; asset.sector remains zkdata
+```
+
+Intentional classified-to-classified normalizations remain deterministic:
+
+```text
+KITE  Other    -> DECENTRALIZED_AI
+PYTH  oracle   -> ORACLE
+TAO   Other    -> DECENTRALIZED_AI
+TIA   modular  -> MODULAR_BLOCKCHAIN
+```
+
 Stale active memberships are expired at the seed validity timestamp. Changed
 memberships are expired and replaced. Unchanged memberships retain their
 original validity start. A seed timestamp that cannot produce a valid interval
@@ -125,6 +170,8 @@ explicit UNCLASSIFIED:             345
 active memberships planned:        473
 sector/cluster definitions:         29
 liquidity/market-cap definitions:     7
+safe asset.sector updates:          421
+preserved non-empty sectors:          4
 ```
 
 `UNCLASSIFIED` is intentional, not a missing value. Each such row has a

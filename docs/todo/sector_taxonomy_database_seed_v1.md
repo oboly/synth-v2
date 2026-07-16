@@ -204,7 +204,10 @@ canonical assets=448
 reviewed named classifications=103
 explicit UNCLASSIFIED=345
 planned memberships=473
-focused tests=48 passed
+safe asset.sector updates=421
+preserved existing sectors=4
+destructive downgrades=0
+focused tests=54 passed
 ```
 
 - All enabled assets have a primary sector or an explicit `UNCLASSIFIED` status.
