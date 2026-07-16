@@ -160,10 +160,10 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `short_swing_linked_profile_freshness_and_disk_reliability_v1.md` | **C — open P2 / second** | Odroid/runtime ownership, absolute freshness timestamps, disk/log containment verification, rollout, and rollback hygiene |
 | `momentum_flow_scanner_matrix_v1.md` | **D — open P3 research / later** | Read-only RSI/MFI momentum-flow scanner, target-room research gate, and validation path |
 | `ffg_curated_rotation_radar_v1.md` | **D — open P3 research / later** | Curated-universe rotation radar, normalized flow and RSI/MFI confirmation, market-only classifications, and separate account ownership overlay |
-| `sector_rotation_master_plan_v1.md` | **D — Phase A done / accepted; Phases B-D not started** | Research-only sector taxonomy, analytics, dashboard, and optional future context sequence |
+| `sector_rotation_master_plan_v1.md` | **D — Phase A accepted; Phase B implementation complete for review** | Research-only sector taxonomy, analytics, dashboard, and optional future context sequence |
 | `sector_taxonomy_database_seed_v1.md` | **D — Phase A done / accepted and activated** | Deterministic taxonomy, full enabled/research coverage, multi-cluster membership, and transactional metadata import |
-| `sector_rotation_engine_v1.md` | **D — Phase A dependency satisfied; Phase B not started** | Participation, relative-strength, persistence, and rotation-proxy analytics |
-| `sector_rotation_dashboard_v1.md` | **D — blocked on future Phase B snapshots** | Future read-only taxonomy and sector-rotation inspection surface |
+| `sector_rotation_engine_v1.md` | **D — Phase B implementation complete for review; migration/write pending** | Participation, relative-strength, persistence, and proxy-rotation analytics |
+| `sector_rotation_dashboard_v1.md` | **D — open / next after accepted Phase B snapshots** | Future read-only taxonomy and sector-rotation inspection surface |
 | `cross_asset_metals_miners_food_rotation_v1.md` | **D — open P3 research / later** | Public-data-first metals, miners, and food/agriculture rotation research with manual broker execution and optional future IBKR API work in a separate lane |
 | `profit_plan_dashboard_action_truth_and_breathline_demote_v1.md` | done / parked | Completed Profit Plan action fail-closed, PPP, map-switch, Breathline, evidence-row, and formatting guardrails |
 | `native_short_runtime_owner_and_scope_status_v1.md` | done / accepted; host activation separate | Completed native SHORT scope-status, map-level status, chain integration, and canonical runtime ownership |
