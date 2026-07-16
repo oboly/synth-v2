@@ -47,19 +47,20 @@ Reference letters are stable names for easy discussion. Table order is the curre
 
 | Ref | Priority | Lane | What it is for | Board state | Next decision |
 |---:|---:|---|---|---|---|
-| **B** | P1 | IOST target lifecycle history truth | Stop a target that was already reached or passed from appearing as still `UPCOMING` after price pulls back below it. | active correctness lane — first | Prove map-cycle-aligned target history and prevent `PASSED`/`REACHED` targets regressing to `UPCOMING`. |
-| **C** | P2 | Short Swing / Odroid freshness hygiene | Make sure the displayed pages are genuinely fresh and that disk, timer, or runtime failures cannot silently leave frozen data looking current. | open operational lane — second; PR A repository implementation in review | Accept PR A's 4h-owned persisted native SHORT manifest/immutable rows contract, then build PR B as the orchestrator-sequenced single Profit Plan writer. Retirement of both legacy user-level families remains a separate host rollout with per-family rollback. |
+| **C** | P2 | Short Swing / Odroid freshness hygiene | Make sure the displayed pages are genuinely fresh and that disk, timer, or runtime failures cannot silently leave frozen data looking current. | current active lane — first; PR A repository implementation in review | Accept PR A's 4h-owned persisted native SHORT manifest/immutable rows contract, then build PR B as the orchestrator-sequenced single Profit Plan writer. Retirement of both legacy user-level families remains a separate host rollout with per-family rollback. |
 | **E** | P0 | TODO reconciliation / board maintenance | Keep the repository board truthful so completed work, open work, priorities, and accepted deployment roadmaps are not lost or duplicated across chats. | ongoing maintenance; reconciliation merged in PR #92 | Keep `README.md` and each lane TODO synchronized whenever status, priority, or accepted deployment sequence changes. |
-| **A** | P1 | Profit Plan Live Ladder prerequisites | Make **Fix selected ladder** safe: trustworthy current-map rows, stable identities, fresh account data, and a reviewable server preview before any order mutation. | active, deliberately later | Resume after B/C unless a new dependency changes the order. |
-| **D** | P3 | Research / FFG / scanners / cross-asset rotation | Find markets with improving participation, momentum reset, and enough target room without giving research or a scanner trading authority. | open, read-only, deliberately later | Resume as non-blocking research after B/C are controlled. |
+| **B** | P1 | IOST target lifecycle history truth | Stop a target that was already reached or passed from appearing as still `UPCOMING` after price pulls back below it. | contained / completed (original IOST defect) by PR #105; future monotonic hardening parked, evidence-gated | No active implementation PR. Reopen monotonic hardening only on real canonical evidence: a BTC `REACHED`/`PASSED`-then-pullback case or another explicitly approved canonical scope. |
+| **A** | P1 | Profit Plan Live Ladder prerequisites | Make **Fix selected ladder** safe: trustworthy current-map rows, stable identities, fresh account data, and a reviewable server preview before any order mutation. | active, deliberately later | Resume after C unless a new dependency changes the order. |
+| **D** | P3 | Research / FFG / scanners / cross-asset rotation | Find markets with improving participation, momentum reset, and enough target room without giving research or a scanner trading authority. | open, read-only, deliberately later | Resume as non-blocking research after C is controlled. |
 
 Priority is execution order, not architectural importance.
 
 Current shorthand:
 
 ```text
-B -> C first
+C first (current active lane)
 E = ongoing board maintenance
+B = contained; future evidence-gated hardening parked
 A + D = later
 ```
 
@@ -107,21 +108,21 @@ Keep this sequence synchronized with the implementation roadmap; do not create a
 
 ## Sequencing rationale
 
-B and C are intentionally completed before A:
+The original Lane-B correctness work is no longer a prerequisite for C:
 
-- **B is a bounded correctness repair.** The native map-level infrastructure already exists; remaining work is the IOST forensic audit, monotonic lifecycle truth, fail-closed history handling, and focused regression coverage.
-- **C is a bounded operational prerequisite.** It establishes absolute freshness, installed-host ownership, disk/log bounds, and multi-cycle acceptance that A must later trust. Its implementation surface is smaller than A, although multi-cycle observation may require elapsed runtime rather than more code.
-- **A is the larger and higher-risk lane.** It spans canonical ladder consumption, deterministic row identity, authenticated preview, `decision_gate`, `execution_planner`, executor behavior, broker mutation, reconciliation, and a controlled live canary.
+- **B is contained, not blocking.** PR #105 contained the non-canonical IOST reporting defect by failing closed when canonical native SHORT map and scope-status truth is unavailable. The accepted read-only forensic audit proved IOST never had a canonical scope, map, cycle, activation boundary, or lifecycle state — so there was no canonical lifecycle to regress and no active canonical IOST defect remains. Future monotonic-lifecycle hardening reopens only on real canonical evidence (a BTC `REACHED`/`PASSED`-then-pullback case or another explicitly approved canonical scope).
+- **C is the current operational prerequisite.** It establishes absolute freshness, installed-host ownership, disk/log bounds, and multi-cycle acceptance that A must later trust. Its implementation surface is smaller than A, although multi-cycle observation may require elapsed runtime rather than more code.
+- **A is the larger and higher-risk lane.** It spans canonical ladder consumption, deterministic row identity, authenticated preview, `decision_gate`, `execution_planner`, executor behavior, broker mutation, reconciliation, and a controlled live canary. C must still precede A so that A never builds execution authority on freshness or host-ownership assumptions that are still unresolved.
 
-Therefore the working order remains:
+Therefore the working order is:
 
 ```text
-B correctness truth
--> C freshness and host acceptance
+C freshness and host acceptance
 -> A manual ladder-to-trade path
+(B contained; future evidence-gated hardening parked)
 ```
 
-Completing B and C first reduces ambiguity and prevents A from building execution authority on lifecycle or freshness assumptions that are still unresolved.
+Making C the current active lane reduces ambiguity and prevents A from building execution authority on freshness or host-ownership assumptions that are still unresolved.
 
 ## Native SHORT baseline
 
@@ -163,8 +164,8 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `README.md` | **E — ongoing board maintenance** | Cross-lane execution order, status reconciliation, and stable A–E references |
 | `workflow_standard.md` | standard | TODO creation, update, closure, priority, boundary, and commit rules |
 | `profit_plan_live_ladder.md` | **A — active P1 / later** | Safe prerequisites and ordered path from canonical ladder truth to authenticated preview, decision gate, execution plan, executor, and a tightly controlled live canary |
-| `profit_plan_target_lifecycle_history_truth_v1.md` | **B — active P1 / first** | IOST-discovered lifecycle regression: map-cycle-aligned target history, monotonic reached/passed truth, and fail-closed incomplete-history handling |
-| `short_swing_linked_profile_freshness_and_disk_reliability_v1.md` | **C — open P2 / second** | Odroid/runtime ownership, absolute freshness timestamps, disk/log containment verification, rollout, and rollback hygiene |
+| `profit_plan_target_lifecycle_history_truth_v1.md` | **B — contained/completed (original IOST defect) by PR #105; future monotonic hardening parked, evidence-gated** | Closure record: IOST never had canonical map/lifecycle truth; the transient-bridge reporting defect is contained by fail-closed handling. Future monotonic reached/passed hardening reopens only on real canonical evidence |
+| `short_swing_linked_profile_freshness_and_disk_reliability_v1.md` | **C — open P2 / first (current active lane)** | Odroid/runtime ownership, absolute freshness timestamps, disk/log containment verification, rollout, and rollback hygiene |
 | `momentum_flow_scanner_matrix_v1.md` | **D — open P3 research / later** | Read-only RSI/MFI momentum-flow scanner, target-room research gate, and validation path |
 | `ffg_curated_rotation_radar_v1.md` | **D — open P3 research / later** | Curated-universe rotation radar, normalized flow and RSI/MFI confirmation, market-only classifications, and separate account ownership overlay |
 | `sector_rotation_master_plan_v1.md` | **D — Phase A accepted; Phase B implementation complete for review** | Research-only sector taxonomy, analytics, dashboard, and optional future context sequence |
@@ -197,10 +198,10 @@ Installed-host service/timer activation was not part of that closure. Any activa
 
 With the reconciliation merged:
 
-1. Execute B first.
-2. Execute C second.
-3. Keep E running as board maintenance.
-4. Keep A and D for later.
+1. Execute C first (current active lane).
+2. Keep E running as board maintenance.
+3. Keep A and D for later.
+4. Do not reopen B without real canonical lifecycle evidence — a BTC `REACHED`/`PASSED`-then-pullback case or another explicitly approved canonical scope.
 5. Do not reopen native SHORT implementation work unless new evidence identifies a concrete defect.
 6. Do not create several parallel implementation chats merely because the board lists several lanes.
 

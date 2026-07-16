@@ -3,14 +3,26 @@
 ## Status
 
 ```text
-active P1
+CONTAINED / COMPLETED (original IOST defect)
+Contained by: PR #105 (fail-closed when canonical map truth is unavailable)
+Active implementation PR: none justified
+Future work: canonical monotonic-lifecycle hardening — PARKED, evidence-gated
 Target release: Synth v2.23
 Owner: market-data history truth + reporting consumption
 ```
 
+This lane is no longer an active P1 correctness lane. The original IOST target
+"regression" was proven to be a non-canonical reporting-presentation symptom,
+not a canonical map lifecycle defect, and it is now contained by PR #105. No
+canonical IOST lifecycle bug remains open. Future monotonic-lifecycle hardening
+stays parked until real canonical evidence appears (see "Future monotonic
+invariant").
+
 ## Sources
 
 - User-observed IOST/EUR Profit Plan card and chart on 2026-07-11.
+- Accepted read-only forensic audit of the canonical MariaDB native SHORT tables (2026-07-16).
+- Read-only live Odroid Profit Plan artifact verification (2026-07-16).
 - `src/reporting/manual_short_trader_profit_plan_v1.py`
 - `src/reporting/run_manual_short_trader_profit_plan_v1.py`
 - `tests/test_manual_short_trader_profit_plan_v1.py`
@@ -18,9 +30,9 @@ Owner: market-data history truth + reporting consumption
 - `docs/architecture/native_short_map_level_status_contract_v1.md`
 - `docs/todo/native_short_map_level_status_v1.md`
 
-## Current state / facts
+## 1. Historical observation (retained as historical evidence)
 
-Observed card state:
+Original observed card state on 2026-07-11:
 
 ```text
 market: IOST-EUR
@@ -29,144 +41,150 @@ lifecycle: UPCOMING
 guidance: missing sell @ 0.0006392232
 ```
 
-Observed chart context showed candles above the same target followed by a pullback below it.
-Chart appearance is diagnostic evidence only; runtime truth must come from persisted authoritative history aligned to the exact active map cycle.
+The chart context showed candles above that target followed by a pullback below
+it.
 
-The native infrastructure gap is closed:
+This was a **real historical presentation symptom**: the card did display an
+`UPCOMING` target and a `missing sell` guidance line derived from that target.
+It was **not canonical lifecycle evidence**. Chart appearance is diagnostic
+only and is never runtime authority. The displayed target originated from
+transient/research bridge context, not from a persisted canonical map cycle.
 
-- canonical `current_map_cycle_id` exists in scope-status truth;
-- `native_short_map_level_status_v1` persistence, materializer, runner, chain integration, and runtime wiring are merged and accepted;
-- V1 target roles have explicit `ACTIVE` / `REACHED` / `PASSED` semantics.
+## 2. Canonical forensic result
 
-The remaining defect is therefore not “build a level-status subsystem.” It is to prove the exact IOST history boundary and make Profit Plan consume monotonic canonical lifecycle truth without fallback regression.
+The accepted read-only audit of the canonical native SHORT tables established,
+for IOST-EUR:
 
-## P1 — Forensic IOST audit
+- zero `native_short_map_scope_v1` rows;
+- zero `native_short_scope_support_event_v1` (scope support) events;
+- zero `native_short_map_v1` rows;
+- zero `native_short_map_generation_event_v1` (generation) events;
+- zero `native_short_map_lifecycle_event_v1` (lifecycle) events;
+- zero `native_short_scope_status_v1` (scope-status) rows;
+- zero `native_short_map_level_status_v1` (map-level status) rows;
+- no canonical map ID;
+- no canonical map cycle ID;
+- no canonical activation boundary (`anchor_end_ts_utc` / `ACTIVATED`);
+- no canonical lifecycle state that was ever capable of regressing.
 
-For the active IOST map, record:
+IOST has therefore **never** had a canonical native SHORT scope or map. There
+was no canonical activation, so questions such as "did the crossing precede
+activation" or "did a `REACHED`/`PASSED` row regress" are moot — no canonical
+lifecycle row ever existed for IOST.
 
-- full scope identity;
-- `current_map_id` and `current_map_cycle_id`;
-- `anchor_end_ts_utc` / activation boundary;
-- exact canonical target role and unrounded value;
-- latest projection and map-level rebuild timestamps;
-- latest included authoritative candle timestamp;
-- maximum authoritative high since activation;
-- first touch/cross timestamp;
-- first qualifying closed-4h continuation timestamp, when applicable;
-- whether any visible crossing occurred before activation;
-- whether the latest crossing exists only in an open candle not yet represented by the chosen authority.
+**BTC was the sole canonical control scope during the audit** and showed no
+equivalent regression: its single active map carried an intact `ACTIVATED`
+lifecycle state with a valid map ID and map cycle ID, and no `REACHED`/`PASSED`
+state reverted.
 
-Audit only. No mutation and no chart-derived code path.
+## 3. Root cause and classification
 
-## P1 — Monotonic lifecycle invariant
+- The displayed IOST target (~`0.0006392232`) originated from **transient /
+  research bridge context** — the market-only SHORT fib-context bridge / union
+  input the Profit Plan reporting surface consumed — not from a persisted
+  `native_short_map_v1` row.
+- Reporting previously treated this **non-canonical** bridge context as if it
+  carried canonical lifecycle and action authority, so a bridge-derived level
+  could render as an `UPCOMING` target with a `missing sell` instruction.
+- **PR #105 contains this defect.** Reporting now requires real canonical
+  status **plus** a real canonical map ID **plus** a real canonical map cycle
+  id before applying any canonical lifecycle semantics. When that canonical
+  truth is unavailable, the card fails closed to `CONTEXT_UNAVAILABLE` /
+  `REVIEW_CONTEXT`, and bridge geometry is disclosed as transient non-canonical
+  reference only.
 
-Required invariant:
+Accepted classification:
 
 ```text
-authoritative high >= target after activation -> at least REACHED
-qualifying authoritative closed 4h close > target -> PASSED
-REACHED / PASSED / COMPLETED never regress to ACTIVE / NEAR / UPCOMING after pullback
+NON_CANONICAL_REPORTING_DEFECT_CONTAINED_BY_PR105
 ```
 
-A reached or passed target must not:
+This is **not** an unresolved canonical IOST lifecycle bug. It was a
+non-canonical reporting-presentation defect, now contained.
 
-- become `active_target` again;
-- return to `active_target_exit_zone`;
-- produce `missing sell` as though the target is still ahead;
+## 4. Live acceptance evidence (read-only, 2026-07-16)
+
+Canonical published artifact (Odroid runtime host):
+
+```text
+artifact: /var/www/html/synth/accounts/joost/profit-plan.json
+owner/mode: theone:theone / 644
+mtime (UTC): 2026-07-16 20:16:40
+generated_ts_utc: 2026-07-16T20:16:40 UTC
+top-level render_id: 79d215e2-8790-4b39-9dc0-fef75a58540a
+report / version: manual_short_trader_profit_plan_v1 / 0.1
+runtime checkout commit: 6b5f3ee (post-PR #105; containment deployed)
+```
+
+Current IOST card — fail-closed, canonical semantics withheld:
+
+```text
+scenario_type      = CONTEXT_UNAVAILABLE
+action_label       = REVIEW_CONTEXT
+effective_action   = REVIEW CONTEXT
+event_state        = CONTEXT_UNAVAILABLE
+actionability_state= CONTEXT_UNAVAILABLE
+native_map_status  = DATA_UNAVAILABLE
+native map ID      = absent (no canonical map identity)
+map cycle ID       = absent (no canonical cycle identity)
+active_target      = None (active_target_display = DATA_UNAVAILABLE)
+actionable PPP     = actionable_ppp_available=false, pct=None, display=DATA_UNAVAILABLE
+target_level_statuses / sell_zone = empty
+short_context_display_state = TRANSIENT_NON_CANONICAL_SHORT_CONTEXT
+```
+
+No `UPCOMING` target-lifecycle claim and no `missing sell` instruction are
+derived from transient context; the card explicitly discloses that canonical
+native SHORT map and scope-status truth is unavailable and that displayed
+bridge levels are transient non-canonical reference context only.
+
+## 5. Future monotonic invariant (PARKED — evidence-gated)
+
+Preserved as future hardening, not active work. When canonical lifecycle
+evidence exists, reporting consumption of canonical map-level status must
+uphold:
+
+```text
+authoritative post-activation target touch      -> at least REACHED
+qualifying authoritative closed-candle continuation where the canonical
+    contract defines it                          -> PASSED
+REACHED / PASSED / COMPLETED never regress to ACTIVE / NEAR / UPCOMING
+    after a pullback
+```
+
+A `REACHED` / `PASSED` / `COMPLETED` target must not:
+
+- return as an `active_target`;
+- return as actionable upside;
 - contribute upcoming-target PPP or urgency;
-- sort as remaining actionable upside.
+- produce a `missing sell` instruction as though still ahead.
 
-Expected unfilled passed-level context:
+Implementation is justified **only** when real canonical evidence exists:
 
-```text
-lifecycle_state=PASSED
-coverage_state=PASSED_UNFILLED or MISSED_ORDER
-retest_context=PULLBACK_BELOW_PASSED_LEVEL
-is_active_target=false
-```
+- a BTC canonical `REACHED`/`PASSED`-then-pullback case; **or**
+- another explicitly approved canonical scope producing equivalent evidence.
 
-## P1 — Fail closed on incomplete history
+Multi-asset rollout is one possible source of such evidence but is **not** the
+sole trigger. A single canonical BTC case is sufficient to reopen this
+hardening.
 
-When authoritative history is missing, stale, truncated, starts after activation, or omits the selected current-candle authority:
+## 6. Architecture boundary (retained)
 
-```text
-TARGET_LIFECYCLE_UNVERIFIED
-```
-
-Do not default to `UPCOMING` merely because no crossing was found in incomplete data.
-
-Expose enough structured evidence to distinguish:
-
-- verified active/upcoming;
-- verified reached;
-- verified passed;
-- history unavailable;
-- history stale;
-- history begins after activation;
-- current/open candle not represented;
-- map-level projection stale or scope-mismatched.
-
-## P1 — Open-candle contract
-
-Choose and document one deterministic authority:
-
-1. closed-candle-only lifecycle with an explicit current-candle-unverified state; or
-2. a persisted authoritative intraperiod high merged with closed-candle continuation truth.
-
-Reporting must not read browser chart state or call the broker to resolve this.
-
-## P1 — Regression coverage
-
-Add focused tests for:
-
-- crossed target, later pullback, lifecycle remains `PASSED`;
-- exact touch becomes `REACHED`;
-- qualifying close above becomes `PASSED`;
-- open-candle-only crossing follows the selected fail-closed contract;
-- crossing before activation does not contaminate the new map cycle;
-- history starts after activation and fails closed;
-- stale/scope-mismatched map-level rows fail closed;
-- passed level leaves active target zone;
-- unfilled passed target renders missed/passed context, not missing/upcoming;
-- PPP and sorting exclude passed target upside.
-
-## P2 — Read-only production evidence
-
-After implementation, audit IOST plus a small sample of pullback-below-target cards and record map-cycle identity, lifecycle evidence, current target selection, and rendered guidance.
-
-No broker calls or writes.
-
-## Dependencies / blockers
-
-No longer blocked on creating native map-level persistence, materialization, runner, chain integration, or runtime wiring.
-
-Remaining dependencies:
-
-- Profit Plan must consume the canonical projection-selected map and current map-level status rather than reconstruct lifecycle independently;
-- history coverage must be demonstrably aligned to the exact map activation boundary;
-- the selected open-candle authority contract must be explicit;
-- scope identity and freshness must fail closed.
-
-These dependencies are implementation prerequisites, not reasons to leave the forensic audit undefined.
-
-## Boundary
-
-- market-data history truth and reporting consumption only;
-- read-only forensic inspection;
-- no broker calls;
-- no broker writes;
-- no order submission;
-- no fib target mathematics change;
-- no map selection policy change;
+- market-data history truth owns canonical lifecycle evidence;
+- reporting consumes that evidence read-only;
+- reporting must never reconstruct canonical lifecycle from browser charts or
+  transient bridge geometry;
 - no `selection_engine` change;
 - no `decision_gate` change;
 - no `execution_planner` change;
 - no executor/agent change;
-- no reporting shortcut that invents execution intent.
+- no broker calls or writes.
 
 ## Non-goals
 
-- repairing or placing orders;
-- treating TradingView as runtime authority;
+- reopening this lane on chart appearance or transient bridge geometry;
+- treating TradingView or any browser chart as runtime authority;
 - carrying target evidence across unrelated map cycles;
-- solving the regression by changing only the visible label.
+- solving a future regression by changing only the visible label;
+- duplicating the multi-asset rollout contract
+  (`native_short_multi_asset_rollout_contract_v1.md`) here.
