@@ -112,7 +112,8 @@ following hold:
 - exact generation and lifecycle provenance IDs resolve;
 - exactly one row exists for each closed V1 SELL role;
 - each level row matches map ID, cycle, projection as-of, and immutable named
-  geometry price;
+  geometry price numerically; differing MariaDB decimal scale/trailing zeros
+  are canonicalized without changing value;
 - persisted source and observation states are current;
 - projection lifecycle is `MAP_ACTIVE` or `MAP_COMPLETED`.
 
@@ -120,6 +121,12 @@ Missing authorities remain visible as a `MISSING` or `UNAVAILABLE` row. Stale
 persisted authority remains `STALE`. The producer never fills a missing source
 timestamp with `datetime.now()`, database `NOW()`, publication time, an
 immutable map timestamp, a CSV, or a research artifact.
+
+MariaDB stores these canonical UTC authorities as `DATETIME(6)`, and PyMySQL
+returns that SQL type without `tzinfo`. The DB boundary therefore types a
+present persisted `DATETIME(6)` value as UTC before it enters the pure contract.
+This conversion neither changes the stored clock value nor supplies a missing
+timestamp; SQL `NULL` remains `MISSING` and fails closed.
 
 ## Snapshot identity and canonical serialization
 
@@ -170,6 +177,13 @@ They never make a source fresh. Overall freshness uses fail-closed precedence:
 MISSING > UNAVAILABLE > STALE > FRESH
 ```
 
+This overall state is an observability summary over `SUPPORTED` rows only. A
+`NOT_APPLICABLE` inventory row remains counted as `UNAVAILABLE` but does not
+invalidate otherwise healthy supported rows. When no supported rows exist, the
+overall state is `UNAVAILABLE`. PR B must consume and gate each symbol row; it
+must not use the overall summary as permission for all symbols. A supported
+`MISSING`, `STALE`, or `UNAVAILABLE` row remains individually fail-closed.
+
 ## Atomic publication protocol
 
 The stable file is only the commit pointer:
@@ -202,6 +216,27 @@ damage or partially advance the last valid snapshot. A reader must resolve the
 CSV through `manifest_v1.json`; it must not scan `snapshots/` for the newest
 directory.
 
+Publication holds a non-blocking filesystem `flock` on
+`.native_short_context_snapshot_v1.publish.lock` for the complete read,
+validation, immutable-write, and commit-pointer sequence. A concurrent
+publisher fails closed before touching the manifest. A stale lock file is
+harmless because ownership belongs to the open file descriptor and the kernel
+releases it on process exit.
+
+Before returning `UNCHANGED`, the publisher requires both immutable artifacts,
+checks the CSV and bundle digests, validates the bundle/snapshot identity, and
+proves that both artifacts exactly represent the current semantic build. A
+self-consistent manifest cannot bless different row content. Corrupt or partial
+immutable directories are rejected. Temp files are removed after pre-replace
+failure. Snapshot and parent directories are fsynced before the manifest is
+replaced.
+
+Future consumers, including PR B, must use
+`resolve_manifest_artifact_paths(...)` or equivalent validation. Absolute
+paths, `..` traversal, snapshot-ID/path disagreement, and paths outside the
+configured output directory are invalid; consumers must fail closed without
+opening them.
+
 ## CLI
 
 Default execution is read-only/dry-run:
@@ -229,6 +264,37 @@ the referenced immutable `native_short_fib_context_rows_v1.csv` to the existing
 native SHORT CSV parser. It must not rebuild native context, select a map, join
 candles for geometry/lifecycle, or treat the unavailable legacy fields as
 authority.
+
+## Runtime deployment boundary
+
+Repository merge does not install, enable, restart, or mutate any host service,
+timer, cron entry, checkout, or production output. After an operator later
+updates the runtime checkout, the already-existing 4h chain will invoke the
+publisher automatically on its next permitted run because the producer is a
+normal step in `scripts/run_chain_4h.sh`; no new owner is required.
+
+Host rollout must preserve this order before the production owner is allowed to
+run the updated chain:
+
+1. run the producer manually without `--publish` against configured authorities;
+2. confirm supported-row freshness, authority identities, and zero DB writes;
+3. run a manual publish to an acceptance/temp output directory, never the
+   canonical production directory;
+4. validate the manifest schema/digests and its referenced immutable CSV/bundle;
+5. only then allow the existing 4h owner to use the canonical production path.
+
+Representative acceptance command for step 3:
+
+```bash
+python -m src.market_data.run_native_short_fib_context_snapshot_v1 \
+  --publish \
+  --output-dir /tmp/synth-native-short-context-snapshot-v1-acceptance \
+  --output jsonl
+```
+
+PR B remains blocked until this host acceptance proves one valid canonical
+manifest and referenced immutable CSV. This document performs and authorizes no
+host rollout.
 
 ## Safety markers
 

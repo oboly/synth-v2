@@ -8,11 +8,13 @@ lifecycle/freshness from wall-clock time.
 """
 
 import csv
+import fcntl
 import hashlib
 import io
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -34,6 +36,7 @@ PRODUCER_VERSION = "0.1"
 MANIFEST_NAME = "manifest_v1.json"
 ROWS_NAME = "native_short_fib_context_rows_v1.csv"
 BUNDLE_NAME = "snapshot_bundle_v1.json"
+PUBLICATION_LOCK_NAME = ".native_short_context_snapshot_v1.publish.lock"
 
 FRESH = "FRESH"
 STALE = "STALE"
@@ -190,6 +193,17 @@ def _iso(value: Any) -> str:
     return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+def persisted_db_datetime_utc(value: Any, *, table: str, field: str) -> datetime | None:
+    """Type a MariaDB UTC DATETIME value without inventing a missing timestamp."""
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        raise SnapshotContractError(f"{table}.{field} must be a persisted datetime")
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _decimal_text(value: Any) -> str:
     if value is None or value == "":
         return ""
@@ -199,7 +213,10 @@ def _decimal_text(value: Any) -> str:
         raise SnapshotContractError(f"invalid decimal: {value}") from exc
     if not parsed.is_finite() or parsed <= 0:
         raise SnapshotContractError(f"decimal must be finite and positive: {value}")
-    return format(parsed, "f")
+    text = format(parsed, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
 
 
 def _json_object(value: Any, *, field: str) -> dict[str, Any]:
@@ -537,10 +554,11 @@ def build_snapshot(
         counts[row["context_freshness_status"].lower()] += 1
         if row["scope_support_state"] == "SUPPORTED":
             counts["supported"] += 1
+    supported_rows = [row for row in rows if row["scope_support_state"] == "SUPPORTED"]
     overall = max(
-        (row["context_freshness_status"] for row in rows),
+        (row["context_freshness_status"] for row in supported_rows),
         key={FRESH: 0, STALE: 1, UNAVAILABLE: 2, MISSING: 3}.get,
-        default=MISSING,
+        default=UNAVAILABLE,
     )
     timestamp_fields = {
         "projection_as_of_max_utc": _max_timestamp(rows, "projection_as_of_utc"),
@@ -654,7 +672,65 @@ def _write_immutable(path: Path, payload: bytes) -> None:
     atomic_write_bytes(path, payload)
 
 
+@contextmanager
+def publication_lock(output_dir: Path):
+    output_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = output_dir / PUBLICATION_LOCK_NAME
+    handle = lock_path.open("a+b")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise SnapshotContractError("native SHORT snapshot publisher lock is already held") from exc
+        yield
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def resolve_manifest_artifact_paths(
+    output_dir: Path,
+    manifest: Mapping[str, Any],
+) -> tuple[Path, Path]:
+    snapshot_id = _text(manifest.get("snapshot_id"))
+    if not snapshot_id.startswith("nsctx-v1-") or "/" in snapshot_id or "\\" in snapshot_id:
+        raise SnapshotContractError("manifest snapshot_id is invalid")
+    expected_rows = Path("snapshots") / snapshot_id / ROWS_NAME
+    expected_bundle = Path("snapshots") / snapshot_id / BUNDLE_NAME
+    resolved_paths: list[Path] = []
+    for field, expected in (("rows_csv", expected_rows), ("snapshot_bundle", expected_bundle)):
+        raw = _text(manifest.get(field))
+        candidate = Path(raw)
+        if not raw or candidate.is_absolute() or ".." in candidate.parts:
+            raise SnapshotContractError(f"manifest {field} must be a safe relative path")
+        if candidate != expected:
+            raise SnapshotContractError(f"manifest {field} does not match snapshot identity")
+        resolved = (output_dir / candidate).resolve()
+        if not resolved.is_relative_to(output_dir.resolve()):
+            raise SnapshotContractError(f"manifest {field} escapes output directory")
+        resolved_paths.append(resolved)
+    return resolved_paths[0], resolved_paths[1]
+
+
 def publish_snapshot(
+    build: SnapshotBuild,
+    *,
+    output_dir: Path,
+    generated_ts_utc: datetime,
+    publication_ts_utc: datetime,
+) -> PublicationResult:
+    with publication_lock(output_dir):
+        return _publish_snapshot_locked(
+            build,
+            output_dir=output_dir,
+            generated_ts_utc=generated_ts_utc,
+            publication_ts_utc=publication_ts_utc,
+        )
+
+
+def _publish_snapshot_locked(
     build: SnapshotBuild,
     *,
     output_dir: Path,
@@ -668,19 +744,39 @@ def publish_snapshot(
         except (OSError, json.JSONDecodeError) as exc:
             raise SnapshotContractError("current snapshot manifest is unreadable") from exc
         if current.get("content_digest") == f"sha256:{build.content_digest}":
-            rows_path = output_dir / _text(current.get("rows_csv"))
-            bundle_path = output_dir / _text(current.get("snapshot_bundle"))
+            if current.get("schema_version") != SCHEMA_VERSION:
+                raise SnapshotContractError("current manifest schema version mismatch")
+            if current.get("snapshot_id") != build.snapshot_id:
+                raise SnapshotContractError("current manifest snapshot identity mismatch")
+            rows_path, bundle_path = resolve_manifest_artifact_paths(output_dir, current)
             if not rows_path.is_file() or not bundle_path.is_file():
                 raise SnapshotContractError("current manifest references missing immutable files")
-            rows_digest = f"sha256:{hashlib.sha256(rows_path.read_bytes()).hexdigest()}"
+            rows_payload = rows_path.read_bytes()
+            rows_digest = f"sha256:{hashlib.sha256(rows_payload).hexdigest()}"
             if rows_digest != current.get("rows_csv_digest"):
                 raise SnapshotContractError("current manifest rows digest mismatch")
+            if rows_payload != render_rows_csv(build.rows):
+                raise SnapshotContractError("current immutable rows do not match semantic snapshot")
             try:
-                bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+                bundle_payload = bundle_path.read_bytes()
+                bundle = json.loads(bundle_payload)
             except (OSError, json.JSONDecodeError) as exc:
                 raise SnapshotContractError("current snapshot bundle is unreadable") from exc
-            if bundle.get("envelope", {}).get("snapshot_id") != build.snapshot_id:
+            bundle_digest = f"sha256:{hashlib.sha256(bundle_payload).hexdigest()}"
+            if bundle_digest != current.get("snapshot_bundle_digest"):
+                raise SnapshotContractError("current manifest bundle digest mismatch")
+            envelope = bundle.get("envelope", {})
+            if envelope.get("snapshot_id") != build.snapshot_id:
                 raise SnapshotContractError("current manifest/bundle snapshot identity mismatch")
+            if envelope.get("content_digest") != f"sha256:{build.content_digest}":
+                raise SnapshotContractError("current manifest/bundle content digest mismatch")
+            if (
+                envelope.get("schema_version") != SCHEMA_VERSION
+                or envelope.get("row_schema_version") != ROW_SCHEMA_VERSION
+            ):
+                raise SnapshotContractError("current manifest/bundle schema version mismatch")
+            if envelope.get("row_count") != len(build.rows) or bundle.get("rows") != list(build.rows):
+                raise SnapshotContractError("current bundle does not match semantic snapshot")
             return PublicationResult(
                 "UNCHANGED",
                 build.snapshot_id,
@@ -702,6 +798,7 @@ def publish_snapshot(
     rows_payload = render_rows_csv(build.rows)
     rows_digest = hashlib.sha256(rows_payload).hexdigest()
     bundle_payload = canonical_json_bytes({"envelope": envelope, "rows": build.rows})
+    bundle_digest = hashlib.sha256(bundle_payload).hexdigest()
 
     _write_immutable(rows_path, rows_payload)
     _write_immutable(bundle_path, bundle_payload)
@@ -716,6 +813,7 @@ def publish_snapshot(
         "rows_csv": str(relative_dir / ROWS_NAME),
         "rows_csv_digest": f"sha256:{rows_digest}",
         "snapshot_bundle": str(relative_dir / BUNDLE_NAME),
+        "snapshot_bundle_digest": f"sha256:{bundle_digest}",
         "publication_result": "PUBLISHED",
     }
     atomic_write_bytes(manifest_path, canonical_json_bytes(manifest))
@@ -840,6 +938,44 @@ def load_persisted_authorities(
         """,
         key_params,
     )
+    for row in scopes:
+        for field in (
+            "latest_observed_at_utc",
+            "primary_latest_candle_ts_utc",
+            "supporting_latest_candle_ts_utc",
+            "projection_as_of_utc",
+            "rebuilt_at_utc",
+        ):
+            row[field] = persisted_db_datetime_utc(
+                row.get(field),
+                table="native_short_scope_status_v1",
+                field=field,
+            )
+    for row in maps:
+        for field in ("published_at_utc", "anchor_low_ts_utc", "anchor_high_ts_utc"):
+            row[field] = persisted_db_datetime_utc(
+                row.get(field),
+                table="native_short_map_v1",
+                field=field,
+            )
+    for row in levels:
+        row["level_status_as_of_utc"] = persisted_db_datetime_utc(
+            row.get("level_status_as_of_utc"),
+            table="native_short_map_level_status_v1",
+            field="level_status_as_of_utc",
+        )
+    for row in generation_events:
+        row["event_ts_utc"] = persisted_db_datetime_utc(
+            row.get("event_ts_utc"),
+            table="native_short_map_generation_event_v1",
+            field="event_ts_utc",
+        )
+    for row in lifecycle_events:
+        row["event_ts_utc"] = persisted_db_datetime_utc(
+            row.get("event_ts_utc"),
+            table="native_short_map_lifecycle_event_v1",
+            field="event_ts_utc",
+        )
     maps_by_id = {int(row["map_id"]): row for row in maps}
     levels_by_map_id: dict[int, list[dict[str, Any]]] = {}
     for row in levels:

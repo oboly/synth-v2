@@ -320,6 +320,13 @@ MVP cockpit render:
   dedicated `SYNTH_NATIVE_SHORT_CONTEXT_SNAPSHOT_DIR` override)
 - snapshot publication failure fails the 4h chain visibly through the existing
   `run_step` convention; no reporting fallback and no second scheduler exists
+- repository merge alone performs no host activation; once a runtime checkout
+  is deliberately updated, the existing 4h chain will call the publisher on
+  its next permitted run, so rollout must first prove a manual no-publish
+  authority dry-run and then a manual publish under an acceptance/temp path
+- the production canonical path is allowed only after that acceptance manifest,
+  CSV, bundle, and digests validate; PR B remains blocked until this host
+  acceptance is recorded
 - source of setup / policy / zone / `paper_advice_observation` snapshots
 - must remain market-only with decision/execution disabled
 - must not enable broker writes

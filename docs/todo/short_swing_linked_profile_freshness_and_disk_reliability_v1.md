@@ -179,6 +179,13 @@ market-data runner wired into the existing 4h owner. Merge/review acceptance and
 runtime-host publication remain separate; PR B must not start consuming the
 snapshot until PR A is merged and accepted.
 
+PR A acceptance has two distinct gates: repository review/merge, then host
+acceptance. Merge alone changes no installed checkout or owner. After the host
+checkout is deliberately updated, the existing 4h chain contains the publisher
+automatically; before that updated owner is permitted to use the canonical path,
+operators must run a manual no-publish dry-run and a manual publish to an
+acceptance/temp path and validate the manifest plus immutable CSV/bundle.
+
 - Owner: the existing 4h market chain (`synth-chain-4h` → `scripts/run_chain_4h.sh`, which already runs the native SHORT scope-status chain). No second scheduler.
 - Market-only and account-agnostic.
 - Publishes the canonical native SHORT rows snapshot **outside reporting**, replacing the forbidden in-render build. The renderer never writes market truth.
@@ -201,7 +208,8 @@ Implemented PR A dependency for PR B:
 
 The manifest is the only commit pointer. PR B must validate it and consume the
 referenced immutable CSV read-only; it must not select the newest directory by
-filesystem ordering.
+filesystem ordering. PR B remains blocked until PR A host acceptance has proven
+a valid canonical manifest and immutable CSV.
 
 ### PR B — safe Profit Plan render-owner
 
