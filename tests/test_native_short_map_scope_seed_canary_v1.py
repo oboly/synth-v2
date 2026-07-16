@@ -9,6 +9,32 @@ from typing import Any
 import pytest
 
 from src.market_data import run_native_short_map_scope_seed_canary_v1 as runner
+from src.market_data.native_short_writer_provenance_v1 import (
+    CANONICAL_REPOSITORY_WRITER_OWNER,
+    MANUAL_SCOPE_SEED_TRIGGER_TYPE,
+    NativeShortWriterExecutionMode,
+    NativeShortWriterProvenance,
+)
+
+
+_PROVENANCE = NativeShortWriterProvenance(
+    writer_entrypoint="src.market_data.run_native_short_map_scope_seed_canary_v1",
+    repository_writer_owner=CANONICAL_REPOSITORY_WRITER_OWNER,
+    runner_name=runner.RUNNER_NAME,
+    runner_version=runner.RUNNER_VERSION,
+    execution_mode=NativeShortWriterExecutionMode.MANUAL,
+    invocation_uuid="40000000-0000-4000-8000-000000000001",
+    repository_commit_sha="a" * 40,
+    host_name="test-host",
+    process_id=1,
+    trigger_type=MANUAL_SCOPE_SEED_TRIGGER_TYPE,
+    trigger_ref="scope-seed-test",
+)
+_PROVENANCE_ARGS = [
+    "--execution-mode", "MANUAL",
+    "--repository-commit", "a" * 40,
+    "--trigger-ref", "scope-seed-test",
+]
 
 
 def _market_row(
@@ -66,6 +92,12 @@ class _FakeCursor:
     def execute(self, sql: str, params: Any = None) -> None:
         normalized = " ".join(sql.split())
         self._conn.executions.append((normalized, params))
+        if normalized.startswith("INSERT INTO native_short_materializer_run_v1"):
+            self._rows = []
+            return
+        if normalized.startswith("UPDATE native_short_materializer_run_v1"):
+            self._rows = []
+            return
         if "FROM venue_market vm" in sql:
             venue, market, quote_currency, symbol = params
             self._rows = [
@@ -102,6 +134,7 @@ class _FakeCursor:
                 state,
                 reason_code,
                 reason_detail,
+                writer_invocation_uuid,
             ) = params
             self._conn.pending_inserts.append(
                 {
@@ -115,6 +148,7 @@ class _FakeCursor:
                     "scope_support_state": state,
                     "scope_reason_code": reason_code,
                     "scope_reason_detail": reason_detail,
+                    "writer_invocation_uuid": writer_invocation_uuid,
                 }
             )
             if self._conn.fail_insert:
@@ -125,6 +159,14 @@ class _FakeCursor:
 
     def fetchall(self) -> list[dict[str, Any]]:
         return list(self._rows)
+
+    @property
+    def lastrowid(self) -> int:
+        return 1
+
+    @property
+    def rowcount(self) -> int:
+        return 1
 
     def __enter__(self) -> "_FakeCursor":
         return self
@@ -184,7 +226,7 @@ def _capture_main(monkeypatch: pytest.MonkeyPatch, conn: _FakeConn, argv: list[s
     sys.stdout = stdout
     sys.stderr = stderr
     try:
-        code = runner.main(argv)
+        code = runner.main([*argv, *_PROVENANCE_ARGS])
     finally:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
@@ -203,7 +245,7 @@ def _capture_main_no_db(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> tup
     sys.stdout = stdout
     sys.stderr = stderr
     try:
-        code = runner.main(argv)
+        code = runner.main([*argv, *_PROVENANCE_ARGS])
     finally:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
@@ -472,7 +514,7 @@ def test_connection_failure_reports_failed_result(monkeypatch: pytest.MonkeyPatc
     old_stdout = sys.stdout
     sys.stdout = stdout
     try:
-        code = runner.main(["--symbols", "BTC", "--output", "summary"])
+        code = runner.main(["--symbols", "BTC", "--output", "summary", *_PROVENANCE_ARGS])
     finally:
         sys.stdout = old_stdout
     out = stdout.getvalue()
@@ -485,9 +527,16 @@ def test_connection_failure_reports_failed_result(monkeypatch: pytest.MonkeyPatc
 def test_write_scope_select_uses_for_update_lock() -> None:
     conn = _FakeConn(market_rows=[_market_row()])
 
-    runner.run_write_symbol(conn, venue="bitvavo", symbol="BTC", quote_currency="EUR")
+    runner.run_write_symbol(
+        conn,
+        venue="bitvavo",
+        symbol="BTC",
+        quote_currency="EUR",
+        provenance=_PROVENANCE,
+    )
 
     assert any("FROM native_short_map_scope_v1" in sql and "FOR UPDATE" in sql for sql, _ in conn.executions)
+    assert conn.committed_inserts[0]["writer_invocation_uuid"] == _PROVENANCE.invocation_uuid
 
 
 def test_dry_run_scope_select_has_no_lock() -> None:

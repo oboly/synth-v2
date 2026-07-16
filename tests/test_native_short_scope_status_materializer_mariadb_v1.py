@@ -57,14 +57,23 @@ from src.market_data.native_short_scope_status_materializer_v1 import (
     run_native_short_scope_status_materializer,
 )
 from src.market_data.native_short_scope_status_v1 import NativeShortMaterializerRunRecord
+from src.market_data.native_short_writer_provenance_v1 import build_explicit_test_provenance
 
 PREREQUISITE_MIGRATION_PATH = Path("db/migrations/20260626_native_short_map_lifecycle_v1.sql")
 A1_MIGRATION_PATH = Path("db/migrations/20260706_native_short_scope_status_persistence_v1.sql")
 A1B_MIGRATION_PATH = Path("db/migrations/20260707_native_short_cadence_unavailable_v1.sql")
+MAP_LEVEL_MIGRATION_PATH = Path("db/migrations/20260708_native_short_map_level_status_v1.sql")
+PROVENANCE_MIGRATION_PATH = Path("db/migrations/20260716_native_short_writer_provenance_v1.sql")
 
 TEMP_DB_NAME = "synth_a2_native_short_scope_status_materializer_tmp"
 
 _AS_OF = datetime(2026, 7, 7, 12, 0, tzinfo=UTC)
+_PROVENANCE_A = build_explicit_test_provenance(
+    invocation_uuid="00000000-0000-4000-8000-000000000001"
+)
+_PROVENANCE_B = build_explicit_test_provenance(
+    invocation_uuid="00000000-0000-4000-8000-000000000002"
+)
 
 _REQUIRED_ENV_VARS = (
     "SYNTH_TEST_MARIADB_HOST",
@@ -317,7 +326,13 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
 
         schema_conn = _connect(config, database=temp_db_name)
         with schema_conn.cursor() as cur:
-            for migration_path in (PREREQUISITE_MIGRATION_PATH, A1_MIGRATION_PATH, A1B_MIGRATION_PATH):
+            for migration_path in (
+                PREREQUISITE_MIGRATION_PATH,
+                A1_MIGRATION_PATH,
+                A1B_MIGRATION_PATH,
+                MAP_LEVEL_MIGRATION_PATH,
+                PROVENANCE_MIGRATION_PATH,
+            ):
                 for statement in _split_sql_statements(migration_path.read_text(encoding="utf-8")):
                     cur.execute(statement)
         schema_conn.commit()
@@ -330,7 +345,7 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
             schema_conn,
             scopes=[btc],
             as_of_utc=_AS_OF,
-            trigger_type="MANUAL_MARIADB_INTEGRATION_TEST",
+            provenance=_PROVENANCE_A,
             operational_clock=lambda: _AS_OF,
             fetch_context_row=_unreachable_context_row,
             fetch_existing_maps=_no_maps,
@@ -395,7 +410,7 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
             schema_conn,
             scopes=[eth],
             as_of_utc=_AS_OF,
-            trigger_type="MANUAL_MARIADB_INTEGRATION_TEST",
+            provenance=_PROVENANCE_B,
             operational_clock=lambda: _AS_OF,
             fetch_context_row=lambda k, t: _context_row(k.symbol),
             fetch_existing_maps=_no_maps,
@@ -449,11 +464,8 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
         # --- Scenario C: terminal compare-and-set ----------------------------
         assert run_b_id is not None
         conflicting = NativeShortMaterializerRunRecord(
-            run_uuid=run_b.run_uuid,
-            runner_name=run_b.runner_name,
-            runner_version=run_b.runner_version,
+            provenance=_PROVENANCE_B,
             contract_version=run_b.contract_version,
-            trigger_type=run_b.trigger_type,
             started_at_utc=run_b.started_at_utc,
             requested_scope_count=run_b.requested_scope_count,
             terminal_status="FAILED",

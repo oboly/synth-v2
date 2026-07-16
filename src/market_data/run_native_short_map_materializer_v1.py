@@ -43,6 +43,18 @@ from src.market_data.native_short_map_materializer_v1 import (
     fetch_supported_scopes,
     materialize_scope_symbol,
 )
+from src.market_data.native_short_scope_status_materializer_v1 import (
+    NativeShortRunBuilder,
+    _finalize_run,
+    _insert_run,
+)
+from src.market_data.native_short_scope_status_v1 import NativeShortRunTerminalStatus
+from src.market_data.native_short_writer_provenance_v1 import (
+    MANUAL_MAP_TRIGGER_TYPE,
+    NativeShortWriterExecutionMode,
+    NativeShortWriterProvenanceError,
+    build_process_provenance,
+)
 
 RUNNER_NAME = "run_native_short_map_materializer_v1"
 RUNNER_VERSION = "0.1"
@@ -62,6 +74,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help="Comma-separated symbols, e.g. BTC or BTC,ETH.",
     )
+    parser.add_argument(
+        "--execution-mode",
+        required=True,
+        choices=(NativeShortWriterExecutionMode.MANUAL.value,),
+    )
+    parser.add_argument("--repository-commit", required=True)
+    parser.add_argument("--trigger-ref", required=True)
     parser.add_argument(
         "--write",
         action="store_true",
@@ -266,6 +285,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2
 
+    try:
+        provenance = build_process_provenance(
+            writer_entrypoint="src.market_data.run_native_short_map_materializer_v1",
+            runner_name=RUNNER_NAME,
+            runner_version=RUNNER_VERSION,
+            execution_mode=args.execution_mode,
+            repository_commit_sha=args.repository_commit,
+            trigger_type=MANUAL_MAP_TRIGGER_TYPE,
+            trigger_ref=args.trigger_ref,
+        )
+    except NativeShortWriterProvenanceError as exc:
+        print(f"INVALID_PROVENANCE runner={RUNNER_NAME} detail={exc}", file=sys.stderr)
+        return 2
+
     now_utc = datetime.now(UTC)
     started_monotonic = time.monotonic()
 
@@ -362,14 +395,42 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if write:
                 conn.begin()
+                builder = NativeShortRunBuilder(
+                    provenance=provenance,
+                    contract_version="native_short_map_v1",
+                    started_at_utc=now_utc,
+                    requested_scope_count=1,
+                )
+                run_id = _insert_run(conn, builder.started_record())
             result = materialize_scope_symbol(
                 conn,
                 scope_support=scope,
                 context_row=context_row,
                 now_utc=now_utc,
                 write=write,
+                provenance=provenance,
             )
             if write:
+                builder.record_scope_outcome(
+                    published_map=result.status == "published",
+                    lifecycle_event_appended=bool(result.lifecycle_event_ids),
+                    failed=result.status == "failed",
+                )
+                terminal_status = (
+                    NativeShortRunTerminalStatus.FAILED
+                    if result.status == "failed"
+                    else NativeShortRunTerminalStatus.FINISHED
+                )
+                _finalize_run(
+                    conn,
+                    run_id,
+                    builder.finish(
+                        finished_at_utc=datetime.now(UTC),
+                        terminal_status=terminal_status,
+                        failure_reason_code=result.reason_code if result.status == "failed" else None,
+                        failure_detail=result.detail if result.status == "failed" else None,
+                    ),
+                )
                 conn.commit()
             else:
                 conn.rollback()

@@ -43,10 +43,49 @@ from src.market_data.native_short_map_materializer_v1 import (
 from src.market_data.run_native_short_map_materializer_v1 import parse_args, parse_symbols
 from src.market_data import native_short_map_materializer_v1 as materializer
 from src.market_data import run_native_short_map_materializer_v1 as runner
+from src.market_data.native_short_writer_provenance_v1 import (
+    CANONICAL_REPOSITORY_WRITER_OWNER,
+    CHAIN_TRIGGER_TYPE,
+    MANUAL_MAP_TRIGGER_TYPE,
+    NativeShortWriterExecutionMode,
+    NativeShortWriterProvenance,
+)
 
 _NOW = datetime(2026, 7, 4, 12, 0, 0, tzinfo=UTC)
 _LOW_TS = datetime(2026, 6, 20, 8, 0, 0, tzinfo=UTC)
 _HIGH_TS = datetime(2026, 6, 28, 16, 0, 0, tzinfo=UTC)
+_MANUAL_PROVENANCE = NativeShortWriterProvenance(
+    writer_entrypoint="src.market_data.run_native_short_map_materializer_v1",
+    repository_writer_owner=CANONICAL_REPOSITORY_WRITER_OWNER,
+    runner_name="run_native_short_map_materializer_v1",
+    runner_version="0.1",
+    execution_mode=NativeShortWriterExecutionMode.MANUAL,
+    invocation_uuid="10000000-0000-4000-8000-000000000001",
+    repository_commit_sha="a" * 40,
+    host_name="test-host",
+    process_id=1,
+    trigger_type=MANUAL_MAP_TRIGGER_TYPE,
+    trigger_ref="materializer-test",
+)
+_CHAIN_PROVENANCE = NativeShortWriterProvenance(
+    **{
+        **_MANUAL_PROVENANCE.__dict__,
+        "writer_entrypoint": "scripts/run_chain_4h.sh",
+        "runner_name": "run_native_short_scope_status_chain_v1",
+        "execution_mode": NativeShortWriterExecutionMode.CHAIN,
+        "invocation_uuid": "10000000-0000-4000-8000-000000000002",
+        "trigger_type": CHAIN_TRIGGER_TYPE,
+        "trigger_ref": "scripts/run_chain_4h.sh",
+    }
+)
+_MANUAL_CLI_ARGS = [
+    "--execution-mode",
+    "MANUAL",
+    "--repository-commit",
+    "a" * 40,
+    "--trigger-ref",
+    "materializer-test",
+]
 
 
 def _scope(symbol: str = "BTC") -> NativeShortMapScopeKey:
@@ -306,6 +345,10 @@ class _RunnerCursor:
         self._conn.next_id += 1
         return self._conn.next_id
 
+    @property
+    def rowcount(self) -> int:
+        return 1
+
     def __enter__(self) -> "_RunnerCursor":
         return self
 
@@ -532,7 +575,7 @@ def test_valid_ledger_timestamps_normalize_naive_values_and_keep_optional_fields
 
 
 def test_runner_defaults_to_dry_run_and_requires_explicit_write() -> None:
-    args = parse_args(["--symbols", "BTC"])
+    args = parse_args(["--symbols", "BTC", *_MANUAL_CLI_ARGS])
     assert args.write is False
     assert parse_symbols("btc,ETH") == ["BTC", "ETH"]
 
@@ -543,7 +586,7 @@ def test_write_rejects_multi_symbol_before_db(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(runner, "get_connection", fail_get_connection)
 
-    assert runner.main(["--symbols", "BTC,ETH", "--write"]) == 2
+    assert runner.main(["--symbols", "BTC,ETH", "--write", *_MANUAL_CLI_ARGS]) == 2
 
 
 def test_write_rejects_zero_symbol_before_db(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -552,7 +595,7 @@ def test_write_rejects_zero_symbol_before_db(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr(runner, "get_connection", fail_get_connection)
 
-    assert runner.main(["--symbols", "", "--write"]) == 2
+    assert runner.main(["--symbols", "", "--write", *_MANUAL_CLI_ARGS]) == 2
 
 
 def test_dry_run_accepts_multi_symbol(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -570,7 +613,7 @@ def test_dry_run_accepts_multi_symbol(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *, venue, symbols, now_utc: [_available_row(symbol) for symbol in symbols],
     )
 
-    assert runner.main(["--symbols", "BTC,ETH", "--output", "summary"]) == 0
+    assert runner.main(["--symbols", "BTC,ETH", "--output", "summary", *_MANUAL_CLI_ARGS]) == 0
     assert run_conns[0].commit_count == 0
     assert run_conns[1].commit_count == 0
     assert run_conns[0].rollback_count == 1
@@ -641,7 +684,7 @@ def test_runner_dry_run_invokes_no_insert_and_no_commit(monkeypatch: pytest.Monk
         lambda *, venue, symbols, now_utc: [_available_row("BTC")],
     )
 
-    assert runner.main(["--symbols", "BTC", "--output", "summary"]) == 0
+    assert runner.main(["--symbols", "BTC", "--output", "summary", *_MANUAL_CLI_ARGS]) == 0
     assert run_conn.commit_count == 0
     assert run_conn.rollback_count == 1
     assert all("INSERT INTO" not in sql for sql, _ in run_conn.log)
@@ -670,7 +713,7 @@ def test_runner_failure_after_map_insert_rolls_back_no_commit(
     )
     monkeypatch.setattr(runner, "materialize_scope_symbol", fail_after_map_insert)
 
-    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary"]) == 1
+    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary", *_MANUAL_CLI_ARGS]) == 1
     assert run_conn.begin_count == 1
     assert run_conn.commit_count == 0
     assert run_conn.rollback_count == 1
@@ -700,7 +743,7 @@ def test_runner_failure_after_generation_event_insert_rolls_back_no_commit(
     )
     monkeypatch.setattr(runner, "materialize_scope_symbol", fail_after_generation_insert)
 
-    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary"]) == 1
+    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary", *_MANUAL_CLI_ARGS]) == 1
     assert run_conn.begin_count == 1
     assert run_conn.commit_count == 0
     assert run_conn.rollback_count == 1
@@ -742,7 +785,7 @@ def test_runner_write_commits_once_after_materializer_success(
     )
     monkeypatch.setattr(runner, "materialize_scope_symbol", complete_materialization)
 
-    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary"]) == 0
+    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary", *_MANUAL_CLI_ARGS]) == 0
     assert run_conn.begin_count == 1
     assert run_conn.commit_count == 1
     assert run_conn.rollback_count == 0
@@ -768,11 +811,15 @@ def test_runner_write_rejects_scope_state_drift_under_lock(
         lambda *, venue, symbols, now_utc: [_available_row("BTC")],
     )
 
-    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary"]) == 1
+    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary", *_MANUAL_CLI_ARGS]) == 1
     assert run_conn.begin_count == 1
     assert run_conn.commit_count == 0
     assert run_conn.rollback_count == 1
-    assert all("INSERT INTO" not in sql for sql, _ in run_conn.log)
+    assert all(
+        "INSERT INTO native_short_map_" not in sql
+        and "INSERT INTO native_short_scope_" not in sql
+        for sql, _ in run_conn.log
+    )
     assert any("FOR UPDATE" in sql for sql, _ in run_conn.log)
 
 
@@ -800,6 +847,7 @@ def test_available_dry_run_does_not_insert_rows() -> None:
         scope_support=_supported(),
         context_row=_available_row(),
         now_utc=_NOW,
+        provenance=_MANUAL_PROVENANCE,
         write=False,
     )
 
@@ -819,6 +867,7 @@ def test_context_symbol_mismatch_fails_before_lock_or_ledger_reads() -> None:
             scope_support=_supported("BTC"),
             context_row=_available_row("ETH"),
             now_utc=_NOW,
+            provenance=_MANUAL_PROVENANCE,
             write=True,
         )
 
@@ -834,6 +883,7 @@ def test_context_interval_mismatch_fails_before_lock_or_ledger_reads() -> None:
             scope_support=_supported("BTC"),
             context_row=row,
             now_utc=_NOW,
+            provenance=_MANUAL_PROVENANCE,
             write=True,
         )
 
@@ -851,6 +901,7 @@ def test_missing_source_candle_count_fails_before_lock_or_ledger_reads() -> None
             scope_support=_supported(),
             context_row=row,
             now_utc=_NOW,
+            provenance=_MANUAL_PROVENANCE,
             write=True,
         )
 
@@ -870,6 +921,7 @@ def test_locked_scope_duplicate_rows_fail_before_ledger_insert() -> None:
             scope_support=_supported(),
             context_row=_available_row(),
             now_utc=_NOW,
+            provenance=_MANUAL_PROVENANCE,
             write=True,
         )
 
@@ -884,6 +936,7 @@ def test_locked_scope_zero_rows_fail_before_ledger_insert() -> None:
             scope_support=_supported(),
             context_row=_available_row(),
             now_utc=_NOW,
+            provenance=_MANUAL_PROVENANCE,
             write=True,
         )
 
@@ -897,6 +950,7 @@ def test_write_available_first_map_publishes_map_generation_and_lifecycle() -> N
         scope_support=_supported(),
         context_row=_available_row(),
         now_utc=_NOW,
+        provenance=_MANUAL_PROVENANCE,
         write=True,
     )
 
@@ -909,17 +963,22 @@ def test_write_available_first_map_publishes_map_generation_and_lifecycle() -> N
     assert len(conn.insert_log("native_short_map_lifecycle_event_v1")) == 1
     map_params = conn.insert_log("native_short_map_v1")[0][1]
     generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
-    assert map_params[29] == 73
-    assert map_params[30] == 219
-    assert [params[21] for params in generation_params] == [73, 73]
-    assert [params[22] for params in generation_params] == [219, 219]
+    lifecycle_params = conn.insert_log("native_short_map_lifecycle_event_v1")[0][1]
+    assert map_params[12] == _MANUAL_PROVENANCE.invocation_uuid
+    assert [params[7] for params in generation_params] == [
+        _MANUAL_PROVENANCE.invocation_uuid,
+        _MANUAL_PROVENANCE.invocation_uuid,
+    ]
+    assert lifecycle_params[4] == _MANUAL_PROVENANCE.invocation_uuid
+    assert map_params[30] == 73
+    assert map_params[31] == 219
+    assert [params[22] for params in generation_params] == [73, 73]
+    assert [params[23] for params in generation_params] == [219, 219]
 
 
 def test_write_available_first_map_defaults_trigger_type_to_manual_canary() -> None:
-    """Callers that omit trigger_type (e.g. the manual canary runner) must
-    keep getting the existing MANUAL_NATIVE_SHORT_MAP_LEDGER_CANARY label on
-    both the ATTEMPT_STARTED and PUBLISHED events, not NULL provenance on
-    the published row."""
+    """Explicit manual provenance retains the existing manual-canary trigger
+    on both ATTEMPT_STARTED and PUBLISHED evidence."""
     from src.market_data.native_short_map_materializer_v1 import TRIGGER_TYPE
 
     conn = _RecordingConn()
@@ -928,16 +987,17 @@ def test_write_available_first_map_defaults_trigger_type_to_manual_canary() -> N
         scope_support=_supported(),
         context_row=_available_row(),
         now_utc=_NOW,
+        provenance=_MANUAL_PROVENANCE,
         write=True,
     )
 
     generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
     assert len(generation_params) == 2
-    assert [params[11] for params in generation_params] == [TRIGGER_TYPE, TRIGGER_TYPE]
+    assert [params[12] for params in generation_params] == [TRIGGER_TYPE, TRIGGER_TYPE]
 
 
 def test_write_available_first_map_propagates_explicit_scheduled_trigger_type() -> None:
-    """An explicit runtime trigger_type (e.g. the scheduled 4h chain) must
+    """An explicit runtime provenance trigger (e.g. the scheduled 4h chain) must
     reach both the ATTEMPT_STARTED and PUBLISHED generation events instead
     of the hardcoded manual-canary constant or NULL."""
     conn = _RecordingConn()
@@ -946,13 +1006,13 @@ def test_write_available_first_map_propagates_explicit_scheduled_trigger_type() 
         scope_support=_supported(),
         context_row=_available_row(),
         now_utc=_NOW,
+        provenance=_CHAIN_PROVENANCE,
         write=True,
-        trigger_type="SCHEDULED_4H_MARKET_CHAIN",
     )
 
     generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
     assert len(generation_params) == 2
-    assert [params[11] for params in generation_params] == [
+    assert [params[12] for params in generation_params] == [
         "SCHEDULED_4H_MARKET_CHAIN",
         "SCHEDULED_4H_MARKET_CHAIN",
     ]
@@ -984,6 +1044,7 @@ def test_same_structure_hash_is_idempotent_without_skip_event(monkeypatch: pytes
         scope_support=_supported(),
         context_row=row,
         now_utc=_NOW,
+        provenance=_MANUAL_PROVENANCE,
         write=True,
     )
 
@@ -1014,6 +1075,7 @@ def test_duplicate_conflict_without_matching_identity_fails_closed(
             scope_support=_supported(),
             context_row=_available_row(),
             now_utc=_NOW,
+            provenance=_MANUAL_PROVENANCE,
             write=True,
         )
 
@@ -1042,6 +1104,7 @@ def test_prior_same_rejection_is_idempotent_without_new_attempt(monkeypatch: pyt
         scope_support=_supported(),
         context_row=_unavailable_row(status=STATUS_INSUFFICIENT_4H),
         now_utc=_NOW,
+        provenance=_MANUAL_PROVENANCE,
         write=True,
     )
 
@@ -1082,6 +1145,7 @@ def test_old_rejection_behind_newer_failure_does_not_suppress_attempt(
         scope_support=_supported(),
         context_row=_unavailable_row(status=STATUS_INSUFFICIENT_4H),
         now_utc=_NOW,
+        provenance=_MANUAL_PROVENANCE,
         write=True,
     )
 
@@ -1097,6 +1161,7 @@ def test_new_unavailable_write_records_rejected_attempt_without_lifecycle() -> N
         scope_support=_supported(),
         context_row=_unavailable_row(status=STATUS_STALE_OR_INVALID),
         now_utc=_NOW,
+        provenance=_MANUAL_PROVENANCE,
         write=True,
     )
 
@@ -1117,13 +1182,13 @@ def test_new_unavailable_write_propagates_explicit_trigger_type_to_rejected_even
         scope_support=_supported(),
         context_row=_unavailable_row(status=STATUS_STALE_OR_INVALID),
         now_utc=_NOW,
+        provenance=_CHAIN_PROVENANCE,
         write=True,
-        trigger_type="SCHEDULED_4H_MARKET_CHAIN",
     )
 
     generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
     assert len(generation_params) == 2
-    assert [params[11] for params in generation_params] == [
+    assert [params[12] for params in generation_params] == [
         "SCHEDULED_4H_MARKET_CHAIN",
         "SCHEDULED_4H_MARKET_CHAIN",
     ]
@@ -1166,6 +1231,7 @@ def test_supersedes_previous_active_map_without_duplicate_activation(
         scope_support=_supported(),
         context_row=new_row,
         now_utc=_NOW,
+        provenance=_MANUAL_PROVENANCE,
         write=True,
     )
 
@@ -1210,6 +1276,7 @@ def test_terminal_map_is_not_reopened_or_superseded(monkeypatch: pytest.MonkeyPa
         scope_support=_supported(),
         context_row=new_row,
         now_utc=_NOW,
+        provenance=_MANUAL_PROVENANCE,
         write=True,
     )
 

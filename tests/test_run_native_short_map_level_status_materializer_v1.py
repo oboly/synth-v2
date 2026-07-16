@@ -34,9 +34,35 @@ _BTC_ARGS = [
     "4h",
     "--supporting-interval",
     "1h",
+    "--execution-mode",
+    "MANUAL",
+    "--repository-commit",
+    "a" * 40,
+    "--trigger-ref",
+    "map-level-test",
     "--output",
     "jsonl",
 ]
+
+
+@pytest.fixture(autouse=True)
+def _stub_writer_run_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
+    def start(provenance: Any, *, requested_scope_count: int):
+        return (
+            runner.NativeShortRunBuilder(
+                provenance=provenance,
+                contract_version="native_short_map_level_status_v1",
+                started_at_utc=_AS_OF,
+                requested_scope_count=requested_scope_count,
+            ),
+            1,
+        )
+
+    def finish(builder: Any, run_id: int, *, terminal_status: Any) -> None:
+        builder.finish(finished_at_utc=_AS_OF, terminal_status=terminal_status)
+
+    monkeypatch.setattr(runner, "_start_writer_run", start)
+    monkeypatch.setattr(runner, "_finish_writer_run", finish)
 
 
 class _FakeConn:
@@ -150,7 +176,7 @@ def test_runner_calls_materializer_once_per_symbol_with_exact_full_scope(
     calls: list[tuple[Any, Any, Any]] = []
     monkeypatch.setattr(runner, "get_connection", lambda: next(opened))
 
-    def fake_materialize(conn: Any, *, key: Any, operational_clock: Any):
+    def fake_materialize(conn: Any, *, key: Any, operational_clock: Any, provenance: Any):
         calls.append((conn, key, operational_clock))
         assert operational_clock() == _AS_OF
         return _outcome(key)
@@ -201,7 +227,7 @@ def test_runner_reports_blocked_states_as_failure(
     conn = _FakeConn()
     monkeypatch.setattr(runner, "get_connection", lambda: conn)
 
-    def fake_materialize(conn: Any, *, key: Any, operational_clock: Any):
+    def fake_materialize(conn: Any, *, key: Any, operational_clock: Any, provenance: Any):
         return MapLevelStatusMaterializationOutcome(
             key=key,
             branch=BLOCKED,
@@ -237,7 +263,7 @@ def test_runner_reports_missing_persistence_table_and_rolls_back(
     conn = _FakeConn()
     monkeypatch.setattr(runner, "get_connection", lambda: conn)
 
-    def fail_missing_table(conn: Any, *, key: Any, operational_clock: Any):
+    def fail_missing_table(conn: Any, *, key: Any, operational_clock: Any, provenance: Any):
         raise RuntimeError("Table 'synth.native_short_map_level_status_v1' doesn't exist")
 
     monkeypatch.setattr(
@@ -266,7 +292,7 @@ def test_runner_rolls_back_unexpected_success_row_count(
     monkeypatch.setattr(
         runner,
         "materialize_native_short_map_level_status_for_scope",
-        lambda conn, *, key, operational_clock: _outcome(key, row_count=2),
+        lambda conn, *, key, operational_clock, provenance: _outcome(key, row_count=2),
     )
 
     code, out, _ = _capture_main(monkeypatch, _BTC_ARGS)
@@ -286,7 +312,7 @@ def test_sigint_multi_symbol_run_emits_one_interrupted_summary_and_preserves_pri
     monkeypatch.setattr(runner, "get_connection", lambda: next(opened))
     calls = 0
 
-    def interrupt_second_symbol(conn: Any, *, key: Any, operational_clock: Any):
+    def interrupt_second_symbol(conn: Any, *, key: Any, operational_clock: Any, provenance: Any):
         nonlocal calls
         calls += 1
         if calls == 2:
@@ -321,7 +347,7 @@ def test_sigterm_run_emits_one_interrupted_summary_and_rolls_back_active_symbol(
     conn = _FakeConn()
     monkeypatch.setattr(runner, "get_connection", lambda: conn)
 
-    def interrupt_active_symbol(conn: Any, *, key: Any, operational_clock: Any):
+    def interrupt_active_symbol(conn: Any, *, key: Any, operational_clock: Any, provenance: Any):
         runner.signal.raise_signal(runner.signal.SIGTERM)
         return _outcome(key)
 
@@ -351,7 +377,7 @@ def test_successful_multi_symbol_run_reports_heartbeat_and_elapsed_timings(
     monkeypatch.setattr(
         runner,
         "materialize_native_short_map_level_status_for_scope",
-        lambda conn, *, key, operational_clock: _outcome(key),
+        lambda conn, *, key, operational_clock, provenance: _outcome(key),
     )
     argv = list(_BTC_ARGS)
     argv[argv.index("--symbols") + 1] = "BTC,ETH"
@@ -381,7 +407,7 @@ def test_single_symbol_run_emits_one_success_terminal_summary(monkeypatch: pytes
     monkeypatch.setattr(
         runner,
         "materialize_native_short_map_level_status_for_scope",
-        lambda conn, *, key, operational_clock: _outcome(key),
+        lambda conn, *, key, operational_clock, provenance: _outcome(key),
     )
 
     code, out, err = _capture_main(monkeypatch, _BTC_ARGS)
@@ -401,7 +427,7 @@ def test_runner_reports_all_required_safety_markers(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         runner,
         "materialize_native_short_map_level_status_for_scope",
-        lambda conn, *, key, operational_clock: _outcome(key),
+        lambda conn, *, key, operational_clock, provenance: _outcome(key),
     )
 
     code, out, _ = _capture_main(monkeypatch, _BTC_ARGS)

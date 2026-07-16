@@ -33,6 +33,20 @@ from src.market_data.native_short_map_level_status_materializer_v1 import (
     materialize_native_short_map_level_status_for_scope,
 )
 from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapScopeKey
+from src.market_data.native_short_scope_status_materializer_v1 import (
+    NativeShortRunBuilder,
+    _finalize_run,
+    _insert_run,
+)
+from src.market_data.native_short_scope_status_v1 import NativeShortRunTerminalStatus
+from src.market_data.native_short_writer_provenance_v1 import (
+    MANUAL_MAP_LEVEL_TRIGGER_TYPE,
+    NativeShortWriterExecutionMode,
+    NativeShortWriterProvenance,
+    NativeShortWriterProvenanceError,
+    build_process_provenance,
+    validate_native_short_writer_provenance,
+)
 
 
 RUNNER_NAME = "run_native_short_map_level_status_materializer_v1"
@@ -129,6 +143,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fib-trading-horizon", required=True, type=_required_text)
     parser.add_argument("--primary-interval", required=True, type=_required_text)
     parser.add_argument("--supporting-interval", required=True, type=_required_text)
+    parser.add_argument(
+        "--execution-mode",
+        required=True,
+        choices=(NativeShortWriterExecutionMode.MANUAL.value,),
+    )
+    parser.add_argument("--repository-commit", required=True, type=_required_text)
+    parser.add_argument("--trigger-ref", required=True, type=_required_text)
     parser.add_argument(
         "--output",
         choices=("jsonl", "summary"),
@@ -246,9 +267,11 @@ def run_scope(
     *,
     key: NativeShortMapScopeKey,
     operational_clock: Callable[[], datetime],
+    provenance: NativeShortWriterProvenance,
     interruption: InterruptionController | None = None,
     monotonic_clock: Callable[[], float] = monotonic,
 ) -> ScopeRunResult:
+    validate_native_short_writer_provenance(provenance)
     interruption = interruption or InterruptionController()
     started_monotonic = monotonic_clock()
     phase_elapsed_ms_by_name: dict[str, int] = {}
@@ -286,6 +309,7 @@ def run_scope(
             conn,
             key=key,
             operational_clock=operational_clock,
+            provenance=provenance,
         )
         materialize_elapsed_ms = _elapsed_ms(materialize_started, clock=monotonic_clock)
         _record_elapsed(phase_elapsed_ms_by_name, "MATERIALIZE_LEVEL_STATUS", materialize_elapsed_ms)
@@ -556,6 +580,52 @@ def _restore_signal_handlers(previous: dict[int, Any]) -> None:
         signal.signal(signum, handler)
 
 
+def _start_writer_run(
+    provenance: NativeShortWriterProvenance,
+    *,
+    requested_scope_count: int,
+) -> tuple[NativeShortRunBuilder, int]:
+    builder = NativeShortRunBuilder(
+        provenance=provenance,
+        contract_version="native_short_map_level_status_v1",
+        started_at_utc=utc_now(),
+        requested_scope_count=requested_scope_count,
+    )
+    conn = get_connection()
+    try:
+        conn.begin()
+        run_id = _insert_run(conn, builder.started_record())
+        conn.commit()
+        return builder, run_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _finish_writer_run(
+    builder: NativeShortRunBuilder,
+    run_id: int,
+    *,
+    terminal_status: NativeShortRunTerminalStatus,
+) -> None:
+    conn = get_connection()
+    try:
+        conn.begin()
+        _finalize_run(
+            conn,
+            run_id,
+            builder.finish(finished_at_utc=utc_now(), terminal_status=terminal_status),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     try:
@@ -564,7 +634,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
+    try:
+        provenance = build_process_provenance(
+            writer_entrypoint="src.market_data.run_native_short_map_level_status_materializer_v1",
+            runner_name=RUNNER_NAME,
+            runner_version=RUNNER_VERSION,
+            execution_mode=args.execution_mode,
+            repository_commit_sha=args.repository_commit,
+            trigger_type=MANUAL_MAP_LEVEL_TRIGGER_TYPE,
+            trigger_ref=args.trigger_ref,
+        )
+    except NativeShortWriterProvenanceError as exc:
+        print(f"INVALID_PROVENANCE runner={RUNNER_NAME} detail={exc}", file=sys.stderr)
+        return 2
+
     controller = InterruptionController()
+    run_builder, run_id = _start_writer_run(provenance, requested_scope_count=len(symbols))
     previous_signal_handlers = _install_signal_handlers(controller)
     started_monotonic = monotonic()
     _emit_started(args, symbols)
@@ -593,8 +678,14 @@ def main(argv: list[str] | None = None) -> int:
                 primary_interval=args.primary_interval,
                 supporting_interval=args.supporting_interval,
             )
-            result = run_scope(key=key, operational_clock=utc_now, interruption=controller)
+            result = run_scope(
+                key=key,
+                operational_clock=utc_now,
+                provenance=provenance,
+                interruption=controller,
+            )
             results.append(result)
+            run_builder.record_scope_outcome(failed=result.status in {"blocked", "failed"})
             _emit_result(result, args.output)
             _emit_heartbeat(
                 output=args.output,
@@ -619,6 +710,16 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         controller.request_keyboard_interrupt()
     finally:
+        terminal_status = (
+            NativeShortRunTerminalStatus.INTERRUPTED
+            if controller.requested
+            else (
+                NativeShortRunTerminalStatus.FINISHED
+                if all(result.status == "materialized" for result in results)
+                else NativeShortRunTerminalStatus.FAILED
+            )
+        )
+        _finish_writer_run(run_builder, run_id, terminal_status=terminal_status)
         _emit_terminal(
             results=results,
             output=args.output,

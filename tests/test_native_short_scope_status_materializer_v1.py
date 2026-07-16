@@ -34,8 +34,10 @@ from src.market_data.native_short_scope_status_materializer_v1 import (
 )
 from src.market_data.native_short_scope_status_projection_v1 import MapFact
 from src.market_data.native_short_scope_status_v1 import NativeShortScopeSourceState
+from src.market_data.native_short_writer_provenance_v1 import build_explicit_test_provenance
 
 _AS_OF = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
+_PROVENANCE = build_explicit_test_provenance()
 
 
 def _map(map_id: int = 1, cycle_id: str = "cyc1") -> MapFact:
@@ -94,11 +96,8 @@ def _context_row(*, lifecycle_state: str, map_cycle_id: str = "cyc1") -> NativeS
 
 def test_run_builder_started_record_has_no_terminal_fields() -> None:
     builder = NativeShortRunBuilder(
-        run_uuid="00000000-0000-0000-0000-000000000001",
-        runner_name="runner",
-        runner_version="0.1",
+        provenance=_PROVENANCE,
         contract_version=CONTRACT_VERSION,
-        trigger_type="MANUAL",
         started_at_utc=_AS_OF,
         requested_scope_count=3,
     )
@@ -110,11 +109,8 @@ def test_run_builder_started_record_has_no_terminal_fields() -> None:
 
 def test_run_builder_aggregates_scope_outcomes_and_finishes_once() -> None:
     builder = NativeShortRunBuilder(
-        run_uuid="00000000-0000-0000-0000-000000000001",
-        runner_name="runner",
-        runner_version="0.1",
+        provenance=_PROVENANCE,
         contract_version=CONTRACT_VERSION,
-        trigger_type="MANUAL",
         started_at_utc=_AS_OF,
         requested_scope_count=3,
     )
@@ -133,11 +129,8 @@ def test_run_builder_aggregates_scope_outcomes_and_finishes_once() -> None:
 
 def test_run_builder_rejects_second_finish() -> None:
     builder = NativeShortRunBuilder(
-        run_uuid="00000000-0000-0000-0000-000000000001",
-        runner_name="runner",
-        runner_version="0.1",
+        provenance=_PROVENANCE,
         contract_version=CONTRACT_VERSION,
-        trigger_type="MANUAL",
         started_at_utc=_AS_OF,
         requested_scope_count=1,
     )
@@ -148,11 +141,8 @@ def test_run_builder_rejects_second_finish() -> None:
 
 def test_run_builder_rejects_recording_after_finish() -> None:
     builder = NativeShortRunBuilder(
-        run_uuid="00000000-0000-0000-0000-000000000001",
-        runner_name="runner",
-        runner_version="0.1",
+        provenance=_PROVENANCE,
         contract_version=CONTRACT_VERSION,
-        trigger_type="MANUAL",
         started_at_utc=_AS_OF,
         requested_scope_count=1,
     )

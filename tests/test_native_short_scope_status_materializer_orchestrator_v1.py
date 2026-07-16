@@ -60,8 +60,29 @@ from src.market_data.native_short_scope_status_materializer_v1 import (
     run_native_short_scope_status_materializer,
 )
 from src.market_data.native_short_scope_status_v1 import NativeShortMaterializerRunRecord
+from src.market_data.native_short_writer_provenance_v1 import (
+    CANONICAL_REPOSITORY_WRITER_OWNER,
+    CHAIN_TRIGGER_TYPE,
+    NativeShortWriterExecutionMode,
+    NativeShortWriterProvenance,
+    build_explicit_test_provenance,
+)
 
 _AS_OF = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
+_PROVENANCE = build_explicit_test_provenance()
+_CHAIN_PROVENANCE = NativeShortWriterProvenance(
+    writer_entrypoint="scripts/run_chain_4h.sh",
+    repository_writer_owner=CANONICAL_REPOSITORY_WRITER_OWNER,
+    runner_name="run_native_short_scope_status_chain_v1",
+    runner_version="0.1",
+    execution_mode=NativeShortWriterExecutionMode.CHAIN,
+    invocation_uuid="20000000-0000-4000-8000-000000000001",
+    repository_commit_sha="a" * 40,
+    host_name="test-host",
+    process_id=1,
+    trigger_type=CHAIN_TRIGGER_TYPE,
+    trigger_ref="scripts/run_chain_4h.sh",
+)
 
 
 def _key(symbol: str = "BTC") -> NativeShortMapScopeKey:
@@ -135,8 +156,16 @@ class _FakeCursor:
                 runner_version=params[2],
                 contract_version=params[3],
                 trigger_type=params[4],
-                started_at_utc=params[5],
-                requested_scope_count=params[6],
+                trigger_ref=params[5],
+                host_name=params[6],
+                process_id=params[7],
+                provenance_contract_version=params[8],
+                writer_entrypoint=params[9],
+                repository_writer_owner=params[10],
+                execution_mode=params[11],
+                repository_commit_sha=params[12],
+                started_at_utc=params[13],
+                requested_scope_count=params[14],
                 finished_at_utc=None,
                 terminal_status=None,
             )
@@ -234,7 +263,7 @@ class _FakeCursor:
                 "map_lifecycle_state", "observation_freshness_state", "source_freshness_state", "actionability_state",
                 "current_map_id", "current_map_cycle_id", "current_map_published_at_utc", "current_map_structure_hash",
                 "latest_generation_event_id", "latest_lifecycle_event_id",
-                "latest_observation_id", "latest_run_id", "latest_observed_at_utc",
+                "latest_observation_id", "latest_run_id", "writer_invocation_uuid", "latest_observed_at_utc",
                 "next_expected_evaluation_at_utc", "observation_overdue_after_utc",
                 "primary_latest_candle_ts_utc", "supporting_latest_candle_ts_utc",
                 "primary_source_freshness_limit_seconds", "supporting_source_freshness_limit_seconds",
@@ -382,6 +411,7 @@ def _successful_level_status(
     *,
     key: NativeShortMapScopeKey,
     operational_clock: Any,
+    provenance: Any,
 ) -> MapLevelStatusMaterializationOutcome:
     return MapLevelStatusMaterializationOutcome(
         key=key,
@@ -434,6 +464,7 @@ def test_chain_materializes_level_status_after_projection_for_exact_explicit_sco
         *,
         key: NativeShortMapScopeKey,
         operational_clock: Any,
+        provenance: Any,
     ) -> MapLevelStatusMaterializationOutcome:
         assert tuple(
             (
@@ -452,13 +483,14 @@ def test_chain_materializes_level_status_after_projection_for_exact_explicit_sco
             conn,
             key=key,
             operational_clock=operational_clock,
+            provenance=provenance,
         )
 
     run = run_native_short_scope_status_materializer(
         conn,
         scopes=scopes,
         as_of_utc=_AS_OF,
-        trigger_type="MANUAL",
+        provenance=_PROVENANCE,
         operational_clock=chain_clock,
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
@@ -493,14 +525,14 @@ def test_chain_propagates_run_trigger_type_into_map_materializer_call() -> None:
     captured_trigger_types: list[str | None] = []
 
     def record_trigger_type(*args: Any, **kwargs: Any) -> ScopeMaterializationResult:
-        captured_trigger_types.append(kwargs.get("trigger_type"))
+        captured_trigger_types.append(kwargs["provenance"].trigger_type)
         return _unchanged_geometry_result()
 
     run_native_short_scope_status_materializer(
         conn,
         scopes=[key],
         as_of_utc=_AS_OF,
-        trigger_type="SCHEDULED_4H_MARKET_CHAIN",
+        provenance=_CHAIN_PROVENANCE,
         operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
@@ -532,6 +564,7 @@ def test_chain_surfaces_blocked_level_status_as_failed_market_data_run() -> None
         *,
         key: NativeShortMapScopeKey,
         operational_clock: Any,
+        provenance: Any,
     ) -> MapLevelStatusMaterializationOutcome:
         return MapLevelStatusMaterializationOutcome(
             key=key,
@@ -555,7 +588,7 @@ def test_chain_surfaces_blocked_level_status_as_failed_market_data_run() -> None
             conn,
             scopes=[key],
             as_of_utc=_AS_OF,
-            trigger_type="MANUAL",
+            provenance=_PROVENANCE,
             operational_clock=_fixed_clock(_AS_OF),
             fetch_context_row=lambda k, t: _context_row(),
             fetch_existing_maps=_no_maps,
@@ -586,7 +619,7 @@ def test_one_run_row_inserted_and_finalized_once() -> None:
         conn,
         scopes=[key],
         as_of_utc=_AS_OF,
-        trigger_type="MANUAL",
+        provenance=_PROVENANCE,
         operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
@@ -602,6 +635,12 @@ def test_one_run_row_inserted_and_finalized_once() -> None:
     assert run["terminal_status"] == "FINISHED"
     assert run["finished_at_utc"] == _AS_OF
     assert run["requested_scope_count"] == 1
+    assert run["run_uuid"] == _PROVENANCE.invocation_uuid
+    assert run["provenance_contract_version"] == _PROVENANCE.provenance_contract_version
+    assert run["writer_entrypoint"] == _PROVENANCE.writer_entrypoint
+    assert run["repository_writer_owner"] == _PROVENANCE.repository_writer_owner
+    assert run["execution_mode"] == str(_PROVENANCE.execution_mode)
+    assert run["repository_commit_sha"] == _PROVENANCE.repository_commit_sha
     assert conn.finalize_calls_after_terminal == 0
 
 
@@ -618,7 +657,7 @@ def test_one_observation_written_per_supported_scope_per_run() -> None:
         conn,
         scopes=[key],
         as_of_utc=_AS_OF,
-        trigger_type="MANUAL",
+        provenance=_PROVENANCE,
         operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
@@ -631,6 +670,18 @@ def test_one_observation_written_per_supported_scope_per_run() -> None:
 
     assert len(conn.observations) == 1
     assert conn.observations[0]["observation_status"] == "EVALUATED"
+    assert conn.observations[0]["run_uuid"] == _PROVENANCE.invocation_uuid
+    status = conn.status_rows[
+        (
+            key.venue,
+            key.symbol,
+            key.quote_currency,
+            key.fib_trading_horizon,
+            key.primary_interval,
+            key.supporting_interval,
+        )
+    ]
+    assert status["writer_invocation_uuid"] == _PROVENANCE.invocation_uuid
     assert conn.status_upsert_count == 1
 
 
@@ -646,7 +697,7 @@ def test_not_applicable_scope_writes_no_observation_and_no_status_row() -> None:
         conn,
         scopes=[key],
         as_of_utc=_AS_OF,
-        trigger_type="MANUAL",
+        provenance=_PROVENANCE,
         operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
@@ -670,7 +721,7 @@ def test_unknown_at_as_of_scope_writes_no_observation_and_no_status_row() -> Non
         conn,
         scopes=[key],
         as_of_utc=_AS_OF,
-        trigger_type="MANUAL",
+        provenance=_PROVENANCE,
         operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
@@ -712,7 +763,7 @@ def test_configuration_unavailable_scope_writes_blocked_observation_and_status_r
         conn,
         scopes=[key],
         as_of_utc=_AS_OF,
-        trigger_type="MANUAL",
+        provenance=_PROVENANCE,
         operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=_raising_context_row,
         fetch_existing_maps=_no_maps,
@@ -761,7 +812,7 @@ def test_unchanged_geometry_across_two_runs_does_not_duplicate_map(monkeypatch: 
             conn,
             scopes=[key],
             as_of_utc=_AS_OF,
-            trigger_type="MANUAL",
+            provenance=_PROVENANCE,
             operational_clock=_fixed_clock(_AS_OF),
             fetch_context_row=lambda k, t: _context_row(),
             fetch_existing_maps=_no_maps,
@@ -820,7 +871,7 @@ def test_genuine_lifecycle_transition_appended_once_across_repeated_runs() -> No
             conn,
             scopes=[key],
             as_of_utc=_AS_OF,
-            trigger_type="MANUAL",
+            provenance=_PROVENANCE,
             operational_clock=_fixed_clock(_AS_OF),
             fetch_context_row=lambda k, t: invalidated_row,
             fetch_existing_maps=fetch_maps,
@@ -896,7 +947,7 @@ def test_completed_then_collapsed_map_never_receives_a_second_terminal_event() -
             conn,
             scopes=[key],
             as_of_utc=_AS_OF,
-            trigger_type="MANUAL",
+            provenance=_PROVENANCE,
             operational_clock=_fixed_clock(_AS_OF),
             fetch_context_row=lambda k, t, row=context_row: row,
             fetch_existing_maps=fetch_maps,
@@ -990,7 +1041,7 @@ def test_projection_upsert_writes_only_status_table_not_source_ledgers() -> None
         conn,
         scopes=[key],
         as_of_utc=_AS_OF,
-        trigger_type="MANUAL",
+        provenance=_PROVENANCE,
         operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
@@ -1030,6 +1081,7 @@ def test_second_projection_rebuild_updates_rebuilt_at_utc_and_preserves_projecte
         existing_lifecycle_events=[],
         primary_candle_close_timestamps=[_AS_OF - timedelta(hours=1)],
         supporting_candle_close_timestamps=[_AS_OF - timedelta(minutes=20)],
+        provenance=_PROVENANCE,
     )
 
     first_record = rebuild_scope_projection(conn, rebuilt_at_utc=first_rebuilt_at, **rebuild_kwargs)
@@ -1072,7 +1124,7 @@ def test_source_unavailable_when_context_symbol_missing() -> None:
         conn,
         scopes=[key],
         as_of_utc=_AS_OF,
-        trigger_type="MANUAL",
+        provenance=_PROVENANCE,
         operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=missing_context_row,
         fetch_existing_maps=_no_maps,
@@ -1110,7 +1162,7 @@ def test_failure_before_materialization_terminalizes_run_as_failed() -> None:
             conn,
             scopes=[key],
             as_of_utc=_AS_OF,
-            trigger_type="MANUAL",
+            provenance=_PROVENANCE,
             operational_clock=_sequential_clock(op_start, op_finish),
             fetch_context_row=raising_context_row,
             fetch_existing_maps=_no_maps,
@@ -1162,7 +1214,7 @@ def test_failure_in_projection_rebuild_after_scope_outcome_terminalizes_as_faile
             conn,
             scopes=[btc, eth],
             as_of_utc=_AS_OF,
-            trigger_type="MANUAL",
+            provenance=_PROVENANCE,
             operational_clock=_sequential_clock(op_start, op_finish),
             fetch_context_row=lambda k, t: _context_row(),
             fetch_existing_maps=_no_maps,
@@ -1198,7 +1250,7 @@ def test_success_path_still_terminalizes_exactly_once_with_finished() -> None:
         conn,
         scopes=[key],
         as_of_utc=_AS_OF,
-        trigger_type="MANUAL",
+        provenance=_PROVENANCE,
         operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
@@ -1230,7 +1282,7 @@ def test_projection_as_of_utc_is_independent_of_operational_clock() -> None:
         conn,
         scopes=[key],
         as_of_utc=_AS_OF,
-        trigger_type="MANUAL",
+        provenance=_PROVENANCE,
         operational_clock=_sequential_clock(op_start, op_finish),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
@@ -1264,11 +1316,8 @@ def _conflicting_record(run: dict[str, Any], *, finished_at_utc: datetime) -> Na
     """A deliberately different record than what is already stored, used to
     prove a second terminalization attempt is rejected and changes nothing."""
     return NativeShortMaterializerRunRecord(
-        run_uuid=run["run_uuid"],
-        runner_name=run["runner_name"],
-        runner_version=run["runner_version"],
+        provenance=_PROVENANCE,
         contract_version=run["contract_version"],
-        trigger_type=run["trigger_type"],
         started_at_utc=run["started_at_utc"],
         requested_scope_count=run["requested_scope_count"],
         terminal_status="FINISHED",
@@ -1292,7 +1341,7 @@ def test_second_direct_terminalization_cannot_overwrite_first_finished_values() 
         conn,
         scopes=[key],
         as_of_utc=_AS_OF,
-        trigger_type="MANUAL",
+        provenance=_PROVENANCE,
         operational_clock=_fixed_clock(_AS_OF),
         fetch_context_row=lambda k, t: _context_row(),
         fetch_existing_maps=_no_maps,
@@ -1331,7 +1380,7 @@ def test_failed_run_terminalizes_exactly_once_and_rejects_second_attempt() -> No
             conn,
             scopes=[key],
             as_of_utc=_AS_OF,
-            trigger_type="MANUAL",
+            provenance=_PROVENANCE,
             operational_clock=_fixed_clock(_AS_OF),
             fetch_context_row=raising_context_row,
             fetch_existing_maps=_no_maps,

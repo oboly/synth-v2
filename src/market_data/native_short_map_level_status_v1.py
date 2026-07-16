@@ -26,6 +26,10 @@ from enum import StrEnum
 from typing import Any, Iterable
 
 from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapScopeKey
+from src.market_data.native_short_writer_provenance_v1 import (
+    NativeShortWriterProvenance,
+    validate_native_short_writer_provenance,
+)
 from src.market_data.native_short_scope_status_v1 import (
     NativeShortScopeActionabilityState,
     NativeShortScopeMapLifecycleState,
@@ -413,7 +417,9 @@ def delete_native_short_map_level_status_for_scope(
     conn: Any,
     *,
     key: NativeShortMapScopeKey,
+    provenance: NativeShortWriterProvenance,
 ) -> int:
+    validate_native_short_writer_provenance(provenance)
     validate_native_short_scope_key(key)
     sql = """
     DELETE FROM native_short_map_level_status_v1
@@ -447,6 +453,7 @@ def replace_native_short_map_level_status_for_scope(
     map_cycle_id: str,
     level_status_as_of_utc: datetime,
     rows: Iterable[NativeShortMapLevelStatusRecord],
+    provenance: NativeShortWriterProvenance,
 ) -> int:
     """Atomically replace current level-status rows for one exact scope.
 
@@ -455,6 +462,7 @@ def replace_native_short_map_level_status_for_scope(
     code. Passing an empty row collection is valid and represents a fail-closed
     blocked projection collection replacement.
     """
+    validate_native_short_writer_provenance(provenance)
     materialized_rows = validate_native_short_map_level_status_collection(
         key=key,
         current_map_id=current_map_id,
@@ -462,7 +470,7 @@ def replace_native_short_map_level_status_for_scope(
         level_status_as_of_utc=level_status_as_of_utc,
         rows=rows,
     )
-    delete_native_short_map_level_status_for_scope(conn, key=key)
+    delete_native_short_map_level_status_for_scope(conn, key=key, provenance=provenance)
     if not materialized_rows:
         return 0
 
@@ -470,7 +478,7 @@ def replace_native_short_map_level_status_for_scope(
     INSERT INTO native_short_map_level_status_v1 (
         venue, symbol, quote_currency, fib_trading_horizon,
         primary_interval, supporting_interval,
-        current_map_id, map_cycle_id,
+        current_map_id, map_cycle_id, writer_invocation_uuid,
         canonical_map_level_role, side,
         canonical_unrounded_price, canonical_tick_rounded_price,
         tick_rule_status, tick_rule_source,
@@ -483,7 +491,7 @@ def replace_native_short_map_level_status_for_scope(
     ) VALUES (
         %(venue)s, %(symbol)s, %(quote_currency)s, %(fib_trading_horizon)s,
         %(primary_interval)s, %(supporting_interval)s,
-        %(current_map_id)s, %(map_cycle_id)s,
+        %(current_map_id)s, %(map_cycle_id)s, %(writer_invocation_uuid)s,
         %(canonical_map_level_role)s, %(side)s,
         %(canonical_unrounded_price)s, %(canonical_tick_rounded_price)s,
         %(tick_rule_status)s, %(tick_rule_source)s,
@@ -495,7 +503,13 @@ def replace_native_short_map_level_status_for_scope(
         %(rebuilt_at_utc)s
     )
     """
-    serialized = [serialize_native_short_map_level_status_record(row) for row in materialized_rows]
+    serialized = [
+        {
+            **serialize_native_short_map_level_status_record(row),
+            "writer_invocation_uuid": provenance.invocation_uuid,
+        }
+        for row in materialized_rows
+    ]
     with conn.cursor() as cur:
         cur.executemany(sql, serialized)
         return int(getattr(cur, "rowcount", 0) or len(serialized))

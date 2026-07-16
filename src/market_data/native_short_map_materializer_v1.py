@@ -51,6 +51,10 @@ from src.market_data.native_short_map_lifecycle_v1 import (
     NativeShortMapScopeSupportState,
     validate_native_short_map_write_intent,
 )
+from src.market_data.native_short_writer_provenance_v1 import (
+    NativeShortWriterProvenance,
+    validate_native_short_writer_provenance,
+)
 
 GENERATOR_NAME = "native_short_map_materializer_v1"
 GENERATOR_VERSION = "0.1"
@@ -590,6 +594,7 @@ def _insert_generation_event(
     attempt_id: str,
     event_type: NativeShortMapGenerationEventType,
     event_ts_utc: datetime,
+    provenance: NativeShortWriterProvenance,
     reason_code: str | None = None,
     reason_detail: str | None = None,
     map_id: int | None = None,
@@ -606,11 +611,12 @@ def _insert_generation_event(
     source_primary_candle_count: int | None = None,
     source_support_candle_count: int | None = None,
 ) -> int:
+    validate_native_short_writer_provenance(provenance)
     sql = """
     INSERT INTO native_short_map_generation_event_v1 (
         venue, symbol, quote_currency, fib_trading_horizon,
         primary_interval, supporting_interval,
-        generation_attempt_id, event_type, event_ts_utc,
+        generation_attempt_id, writer_invocation_uuid, event_type, event_ts_utc,
         reason_code, reason_detail, trigger_type,
         candidate_map_cycle_id, candidate_previous_map_id,
         candidate_primary_lifecycle_state, candidate_current_map_status,
@@ -621,7 +627,7 @@ def _insert_generation_event(
         map_id
     ) VALUES (
         %s, %s, %s, %s, %s, %s,
-        %s, %s, %s,
+        %s, %s, %s, %s,
         %s, %s, %s,
         %s, %s,
         %s, %s,
@@ -643,6 +649,7 @@ def _insert_generation_event(
                 key.primary_interval,
                 key.supporting_interval,
                 attempt_id,
+                provenance.invocation_uuid,
                 event_type.value,
                 event_ts_utc,
                 reason_code,
@@ -681,7 +688,9 @@ def _insert_map_row(
     now_utc: datetime,
     previous_map_id: int | None,
     previous_map_cycle_id: str | None,
+    provenance: NativeShortWriterProvenance,
 ) -> int:
+    validate_native_short_writer_provenance(provenance)
     fib_ratios_json = _json_dumps(
         {
             "breakout_gate": (
@@ -739,7 +748,7 @@ def _insert_map_row(
         primary_interval, supporting_interval,
         map_schema_version, generator_name, generator_version,
         fib_model_name, fib_model_version,
-        structure_hash, published_generation_attempt_id,
+        structure_hash, published_generation_attempt_id, writer_invocation_uuid,
         market_snapshot_ts_utc, published_at_utc,
         map_cycle_id, previous_map_id, previous_map_cycle_id,
         anchor_low_ts_utc, anchor_low_price,
@@ -753,7 +762,7 @@ def _insert_map_row(
     ) VALUES (
         %s, %s, %s, %s, %s, %s,
         'native_short_map_v1', %s, %s,
-        %s, %s,
+        %s, %s, %s,
         %s, %s,
         %s, %s,
         %s, %s, %s,
@@ -783,6 +792,7 @@ def _insert_map_row(
                 FIB_MODEL_VERSION,
                 structure_hash,
                 attempt_id,
+                provenance.invocation_uuid,
                 context_row.latest_primary_close_ts_utc,
                 now_utc,
                 context_row.map_cycle_id,
@@ -820,18 +830,20 @@ def _insert_lifecycle_event(
     map_id: int,
     event_type: NativeShortMapLifecycleEventType,
     event_ts_utc: datetime,
+    provenance: NativeShortWriterProvenance,
     successor_map_id: int | None = None,
     reason_code: str | None = None,
     latest_primary_close_ts_utc: datetime | None = None,
     latest_support_close_ts_utc: datetime | None = None,
 ) -> int:
+    validate_native_short_writer_provenance(provenance)
     sql = """
     INSERT INTO native_short_map_lifecycle_event_v1 (
         map_id, lifecycle_event_type, successor_map_id,
-        event_ts_utc, reason_code,
+        event_ts_utc, writer_invocation_uuid, reason_code,
         latest_primary_close_ts_utc, latest_support_close_ts_utc,
         observer_name, observer_version
-    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -841,6 +853,7 @@ def _insert_lifecycle_event(
                 event_type.value,
                 successor_map_id,
                 event_ts_utc,
+                provenance.invocation_uuid,
                 reason_code,
                 latest_primary_close_ts_utc,
                 latest_support_close_ts_utc,
@@ -901,8 +914,10 @@ def materialize_scope_symbol(
     context_row: NativeShortContextRow,
     now_utc: datetime,
     write: bool,
-    trigger_type: str = TRIGGER_TYPE,
+    provenance: NativeShortWriterProvenance,
 ) -> ScopeMaterializationResult:
+    validate_native_short_writer_provenance(provenance)
+    trigger_type = provenance.trigger_type
     key = scope_support.key
     symbol = key.symbol
     _validate_context_matches_scope(key=key, context_row=context_row)
@@ -971,6 +986,7 @@ def materialize_scope_symbol(
         attempt_id = str(uuid.uuid4())
         started_event_id = _insert_generation_event(
             conn,
+            provenance=provenance,
             key=key,
             attempt_id=attempt_id,
             event_type=NativeShortMapGenerationEventType.ATTEMPT_STARTED,
@@ -985,6 +1001,7 @@ def materialize_scope_symbol(
         )
         rejected_event_id = _insert_generation_event(
             conn,
+            provenance=provenance,
             key=key,
             attempt_id=attempt_id,
             event_type=NativeShortMapGenerationEventType.REJECTED,
@@ -1102,6 +1119,7 @@ def materialize_scope_symbol(
     attempt_id = str(uuid.uuid4())
     started_event_id = _insert_generation_event(
         conn,
+        provenance=provenance,
         key=key,
         attempt_id=attempt_id,
         event_type=NativeShortMapGenerationEventType.ATTEMPT_STARTED,
@@ -1121,6 +1139,7 @@ def materialize_scope_symbol(
     )
     new_map_id = _insert_map_row(
         conn,
+        provenance=provenance,
         key=key,
         context_row=context_row,
         source_primary_candle_count=source_primary_candle_count,
@@ -1133,6 +1152,7 @@ def materialize_scope_symbol(
     )
     published_event_id = _insert_generation_event(
         conn,
+        provenance=provenance,
         key=key,
         attempt_id=attempt_id,
         event_type=NativeShortMapGenerationEventType.PUBLISHED,
@@ -1153,6 +1173,7 @@ def materialize_scope_symbol(
     )
     activated_lifecycle_id = _insert_lifecycle_event(
         conn,
+        provenance=provenance,
         map_id=new_map_id,
         event_type=NativeShortMapLifecycleEventType.ACTIVATED,
         event_ts_utc=now_utc,
@@ -1171,6 +1192,7 @@ def materialize_scope_symbol(
     if current_active_map is not None:
         superseded_lifecycle_id = _insert_lifecycle_event(
             conn,
+            provenance=provenance,
             map_id=current_active_map.map_id,
             event_type=NativeShortMapLifecycleEventType.SUPERSEDED,
             event_ts_utc=now_utc,
