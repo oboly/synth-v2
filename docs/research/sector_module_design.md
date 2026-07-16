@@ -13,7 +13,7 @@ It must answer measurable questions:
 - is a sector moving broadly or because of one leader?
 - which sectors are leading, improving, weakening, or lagging?
 - is participation rotating across sectors?
-- does a symbol perform differently when its sector has breadth and persistence?
+- does a symbol perform differently when its sector has participation and persistence?
 
 It does not define an automatic trade rule.
 
@@ -24,7 +24,7 @@ candles / ticker / volume
   -> asset returns and volume features
   -> asset-to-sector map
   -> sector snapshots
-  -> sector breadth / persistence / leadership features
+  -> sector participation / persistence / leadership features
   -> sector rotation state
   -> future MarketObserverSnapshot
   -> shadow outcome validation
@@ -90,7 +90,9 @@ Suggested measured fields:
 
 - `coin_count`
 - `active_coin_count`
-- `breadth_ratio`
+- `positive_participation_pct`
+- `negative_participation_pct`
+- `participation_ratio`
 - `weighted_return_pct`
 - `median_return_pct`
 - `volume_ratio`
@@ -102,10 +104,10 @@ Suggested measured fields:
 - `freshness_state`
 - `coverage_state`
 
-Breadth definition:
+Sector participation is the conventional market-breadth concept, but this line uses participation terminology in all public and schema contracts.
 
 ```text
-breadth_ratio = coins_up / coins_active
+participation_ratio = participating_coins / active_coins
 ```
 
 `leader_contribution_pct` is required so a single-asset pump cannot masquerade as sector rotation.
@@ -148,7 +150,7 @@ A transparent research score may be calculated for ranking snapshots, but it is 
 ```text
 sector_observation_score =
   documented_return_component
-+ documented_breadth_component
++ documented_participation_component
 + documented_volume_component
 + documented_persistence_component
 ```
@@ -170,7 +172,7 @@ Examples worth measuring:
 ```text
 L1 / infrastructure -> DeFi -> RWA -> small-cap beta
 AI -> data -> compute -> privacy
-BTC stability -> ETH relative strength -> broadening alt breadth
+BTC stability -> ETH relative strength -> broadening alt participation
 ```
 
 The module may observe these sequences only after the underlying sector snapshots exist. It must not encode a preferred narrative sequence as runtime policy.
@@ -180,7 +182,7 @@ The module may observe these sequences only after the underlying sector snapshot
 A future `MarketObserverSnapshot` may read sector states and report:
 
 - which sectors are leading or improving
-- whether breadth is narrow, selective, or broadening
+- whether participation is narrow, selective, or broadening
 - whether sector signals agree with BTC/ETH context
 - whether a symbol's local setup aligns with its sector
 
@@ -193,7 +195,7 @@ Before any use in `selection_engine`, test whether sector features add value bey
 Minimum studies:
 
 - symbol setup outcomes with matching versus non-matching sector state
-- high breadth versus leader-dominated sector moves
+- high participation versus leader-dominated sector moves
 - sector `LEADING` persistence across intervals
 - sector state interaction with canonical global regime
 - incremental outcome value against a no-sector baseline

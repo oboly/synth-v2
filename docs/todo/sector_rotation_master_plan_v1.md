@@ -1,5 +1,11 @@
 # Sector Rotation Initiative v1
 
+## Status
+
+Phase A repository implementation is complete for review. Migration and
+transactional taxonomy import remain explicit post-merge actions. Phases B-D
+have not started.
+
 ## Goal
 
 Build a research-only sector intelligence layer above individual asset analysis so Synth can distinguish isolated coin moves from broader sector participation and rotation.
