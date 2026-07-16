@@ -2,8 +2,9 @@
 
 ## Status
 
-Repository implementation complete for review. Database migration and
-`--write-db` import remain explicit post-merge operator actions.
+Phase A is done / accepted and operationally activated on 2026-07-16 from
+merged main `794a03e014c44b5f01410a07bc5f24aa763715a8` against database `synth`
+on `gurkdb`. Phase B has not started.
 
 ## Boundary
 
@@ -182,6 +183,12 @@ spot order-book/liquidity role.
 
 ## Safety and follow-up
 
-Applying the migration and running `--write-db` are not host/runtime changes.
-They remain deliberate operator steps after merge. Phase B sector scoring must
-not begin until the imported taxonomy is reviewed and accepted.
+The migration and two transactional imports completed successfully. Final
+state is 29 sector definitions, 7 liquidity definitions, 448 taxonomy profiles,
+473 active memberships, and 448 active primary memberships. Primary
+violations, duplicate active memberships, and orphan references are all zero.
+
+The second import reported zero inserts, updates, stale rows, and
+`asset.sector` updates. The before/after `asset.asset_class` SHA-256 is
+`82651489c1b16f75511c23cfca9c694d6860034632be5ae8224f037f3162da75`.
+Phase B remains a separate, not-started implementation lane.

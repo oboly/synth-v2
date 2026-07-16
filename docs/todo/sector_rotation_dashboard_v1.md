@@ -2,8 +2,8 @@
 
 ## Status
 
-Blocked on accepted Phase A taxonomy data and Phase B analytics snapshots. No
-GUI implementation has started.
+Phase A taxonomy data is accepted. This phase remains blocked on future Phase B
+analytics snapshots. No GUI implementation has started.
 
 ## Purpose
 

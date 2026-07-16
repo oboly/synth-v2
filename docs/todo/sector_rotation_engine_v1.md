@@ -2,8 +2,9 @@
 
 ## Status
 
-Blocked on Phase A merge, database migration, taxonomy import, and review.
-No rotation scoring implementation has started.
+Phase A dependency is satisfied and accepted. Phase B has not started and
+requires a separate reviewed implementation request. No rotation scoring
+implementation has started.
 
 ## Purpose
 

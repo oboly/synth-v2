@@ -2,9 +2,10 @@
 
 ## Status
 
-Phase A repository implementation is complete for review. Migration and
-transactional taxonomy import remain explicit post-merge actions. Phases B-D
-have not started.
+Phase A is done / accepted and operationally activated from merged main
+`794a03e014c44b5f01410a07bc5f24aa763715a8`. Its migration, first import,
+post-write verification, and idempotent second import passed on 2026-07-16.
+Phases B-D have not started.
 
 ## Goal
 
