@@ -2,9 +2,15 @@
 
 ## Status
 
-Phase A dependency is satisfied and accepted. Phase B has not started and
-requires a separate reviewed implementation request. No rotation scoring
-implementation has started.
+**implementation complete for review** — Phase A is accepted. Phase B code,
+migration, current/as-of runner, replay runner, synthetic validation, and
+production-connected no-write evidence are complete on
+`agent/sector-rotation-engine-v1`. The migration has not been applied and no
+snapshot rows have been written. Canonical implementation contract:
+
+```text
+docs/research/sector_rotation_engine_v1.md
+```
 
 ## Purpose
 
@@ -171,6 +177,33 @@ Provide a replay or backfill runner that can:
 - Stale or insufficient data fails closed.
 - Backfill/replay is deterministic.
 - No changes to `selection_engine`, `decision_gate`, `execution_planner`, executor, or broker paths.
+
+## Repository acceptance evidence
+
+```text
+model_version=sector-rotation-v1.0.0
+windows=1h,4h,1d,7d
+score weights=30/25/20/15/10
+active sectors=29
+point-in-time memberships=473
+dry-run rows=116
+dry-run reconciliation=inserts 116, updates 0, unchanged 0, stale 0
+database writes=0
+migration applied=0
+```
+
+At `2026-07-16T18:00:00Z`, BTC and ETH benchmark timestamps matched exactly
+for all windows. Available / insufficient / unavailable counts were 17/11/1
+for 1h, 13/12/4 for 4h, 10/10/9 for 1d, and 8/10/11 for 7d. Single-member and
+dominant-member sectors failed closed. This is one current snapshot and makes
+no predictive-quality claim.
+
+## Remaining acceptance actions
+
+1. Review and merge this Phase B PR.
+2. Apply the reviewed migration in a separate operator action.
+3. Run first write, invariant checks, and an idempotent second write.
+4. Accept persisted snapshots before Phase C reads them.
 
 ## Layer and boundaries
 

@@ -5,7 +5,9 @@
 Phase A is done / accepted and operationally activated from merged main
 `794a03e014c44b5f01410a07bc5f24aa763715a8`. Its migration, first import,
 post-write verification, and idempotent second import passed on 2026-07-16.
-Phases B-D have not started.
+Phase B repository implementation is complete for review; its migration and
+snapshot writes remain separate post-merge acceptance actions. Phase C is next
+after persisted Phase B snapshots are accepted. Phase D has not started.
 
 ## Goal
 

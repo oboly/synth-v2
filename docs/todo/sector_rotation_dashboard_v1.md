@@ -2,8 +2,10 @@
 
 ## Status
 
-Phase A taxonomy data is accepted. This phase remains blocked on future Phase B
-analytics snapshots. No GUI implementation has started.
+**open / next after Phase B acceptance** — Phase A taxonomy data is accepted
+and the Phase B repository implementation is under review. This phase remains
+blocked on an applied Phase B migration and accepted persisted analytics
+snapshots. No GUI implementation has started in the Phase B PR.
 
 ## Purpose
 
