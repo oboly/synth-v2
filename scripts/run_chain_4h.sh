@@ -70,6 +70,10 @@ run_step python -m src.etl.bitvavo.run_candles_etl \
 
 run_step bash scripts/run_native_short_scope_status_chain_once.sh
 
+run_step python -m src.market_data.run_native_short_fib_context_snapshot_v1 \
+    --publish \
+    --output summary
+
 run_step python -m src.features.run_feat_candle \
     --interval 4h \
     --end "$CHAIN_4H_END_TS" \

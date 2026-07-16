@@ -176,6 +176,13 @@ snapshot (PR A) plus a safe single-owner Profit Plan renderer that loads the
 previous canonical `profit-plan.json` and records delta counts (PR B). Canonical
 plan: `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`.
 
+The repository now defines PR A's market-owned persisted contract in
+`docs/architecture/native_short_fib_context_snapshot_contract_v1.md` and
+publishes it from the existing 4h owner after the native SHORT scope/map-level
+projections. PR B remains a separate dependency and must resolve the immutable
+CSV only through the snapshot manifest; this does not authorize host activation
+or retirement of the legacy user-level writers.
+
 **Known open correction — runtime/research import boundary.**
 
 Market runtime and native-map materialization must not import `src.research`.

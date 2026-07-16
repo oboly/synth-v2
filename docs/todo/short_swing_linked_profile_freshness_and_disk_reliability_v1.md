@@ -173,6 +173,19 @@ Two separate repository PRs, sequenced PR A before PR B (PR B consumes PR A's sn
 
 ### PR A — market-only persisted native SHORT snapshot contract
 
+Repository implementation is now defined by
+`docs/architecture/native_short_fib_context_snapshot_contract_v1.md` and the
+market-data runner wired into the existing 4h owner. Merge/review acceptance and
+runtime-host publication remain separate; PR B must not start consuming the
+snapshot until PR A is merged and accepted.
+
+PR A acceptance has two distinct gates: repository review/merge, then host
+acceptance. Merge alone changes no installed checkout or owner. After the host
+checkout is deliberately updated, the existing 4h chain contains the publisher
+automatically; before that updated owner is permitted to use the canonical path,
+operators must run a manual no-publish dry-run and a manual publish to an
+acceptance/temp path and validate the manifest plus immutable CSV/bundle.
+
 - Owner: the existing 4h market chain (`synth-chain-4h` → `scripts/run_chain_4h.sh`, which already runs the native SHORT scope-status chain). No second scheduler.
 - Market-only and account-agnostic.
 - Publishes the canonical native SHORT rows snapshot **outside reporting**, replacing the forbidden in-render build. The renderer never writes market truth.
@@ -185,6 +198,18 @@ Two separate repository PRs, sequenced PR A before PR B (PR B consumes PR A's sn
 - No account, decision, planning, or execution logic; no broker calls. `broker_writes=0`, `order_submission=0`, `executor=none`.
 - New contract doc authored in PR A (e.g. `docs/architecture/native_short_fib_context_snapshot_contract_v1.md`); this extends — does not reopen — the accepted `native_short_runtime_owner_and_scope_status_v1.md` DB-authority lane.
 - Required tests: field-by-field source-mapping proof (every row field traced to a canonical persisted authority; no geometry recompute; no research/runtime fallback); deterministic projection from fixture DB rows; atomic publish; immutable identity / no duplicate on unchanged geometry; fail-closed on any missing authoritative field or source timestamp; freshness classification; no `src.reporting` / account / decision / planner / executor import.
+
+Implemented PR A dependency for PR B:
+
+```text
+/var/www/html/synth/_runtime/native_short_context_snapshot_v1/manifest_v1.json
+-> snapshots/<snapshot_id>/native_short_fib_context_rows_v1.csv
+```
+
+The manifest is the only commit pointer. PR B must validate it and consume the
+referenced immutable CSV read-only; it must not select the newest directory by
+filesystem ordering. PR B remains blocked until PR A host acceptance has proven
+a valid canonical manifest and immutable CSV.
 
 ### PR B — safe Profit Plan render-owner
 
