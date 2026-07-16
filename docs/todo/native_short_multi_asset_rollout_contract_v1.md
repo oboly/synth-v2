@@ -2,7 +2,7 @@
 
 ## Status
 
-`blocked` — PR 2a supplies the read-only readiness audit and canonical contract only. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
+`blocked` — PR 2b implements the repository writer-provenance contract and future fail-before-write enforcement only. No attributable production run has been operationally accepted. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
 
 ## Sources
 
@@ -11,6 +11,7 @@
 - `src/market_data/run_native_short_multi_asset_audit_v1.py`;
 - canonical native SHORT scope, map, lifecycle, generation, cadence, status, health-report, materializer, and 4h-owner implementation on `origin/main`;
 - read-only production evidence captured on 2026-07-16.
+- PR 2b writer-surface audit and repository implementation based on `0c3f2fd0d3f67b1f4a01396878016e6816e918d9`.
 
 ## Current state / facts
 
@@ -39,7 +40,47 @@ SOL -> ETH -> XRP
 
 This queue is a review order only. SOL, ETH, and XRP are not approved for production. Ranking occurs only after public-market eligibility, exact 4h/1h freshness, context availability, unambiguous tick metadata, and empty/unambiguous native SHORT ledger checks pass. Wallets, balances, orders, portfolio membership, Profit Plan state, account state, and `selection_engine` output are prohibited inputs.
 
-The successful BTC-only writer run `b5d9ca6b-ff24-46eb-8155-4e663b948ebc` at `2026-07-15 22:15:46Z` has `host_name=NULL` and is not attributable enough for expansion approval. Provenance remediation is a separate PR and must not be hidden inside cohort work.
+The successful BTC-only writer run `b5d9ca6b-ff24-46eb-8155-4e663b948ebc` at `2026-07-15 22:15:46Z` has `host_name=NULL` and is not attributable enough for expansion approval. All 42 of 42 observed pre-contract writer-run rows remain exactly as persisted and classify as `LEGACY_UNATTRIBUTED`. PR 2b does not update, backfill, repair, or infer ownership for any historical row.
+
+## Writer provenance contract
+
+Every future writer-capable invocation must supply one immutable `NativeShortWriterProvenance` object before any connection, transaction, lock, run insert, generation attempt, map/lifecycle write, scope write, scope-status upsert, or map-level delete/rebuild can occur.
+
+The independent fields are:
+
+- `writer_entrypoint`: closed stable repository entrypoint identifier;
+- `repository_writer_owner`: exactly the existing canonical repository owner, `synth-chain-4h`;
+- `runner_name` and `runner_version`: stable runner implementation identity;
+- `invocation_uuid`: canonical UUID, persisted as the run UUID and linked to produced writer evidence;
+- `execution_mode`: exactly `CHAIN`, `MANUAL`, or `TEST`, supplied explicitly;
+- `repository_commit_sha`: explicit validated 40-character source commit; production modes reject the deterministic test identity;
+- `host_name` and `process_id`: actual current-process host facts captured at invocation;
+- `trigger_type` and `trigger_ref`: explicit reviewed trigger metadata, never derived from cadence, process ancestry, systemd state, timestamps, ordering, file mtimes, or later host inspection;
+- `provenance_contract_version`: exactly `native_short_writer_provenance_v1`.
+
+Repository/build identity remains separate from installed-host identity. No service, timer, unit, invocation, or host-owner name is inferred. `trigger_ref` is not overloaded with the remaining contract.
+
+Persisted classification is deterministic:
+
+- `ATTRIBUTABLE`: every mandatory field is present, valid, and mutually consistent for its explicit mode;
+- `LEGACY_UNATTRIBUTED`: `provenance_contract_version` is absent on a historical row; partial historical host/trigger fields do not change that result;
+- `INVALID_PROVENANCE`: a row claims the new contract but its fields are missing, malformed, contradictory, or unsupported. Application writers reject this state before database mutation, so repository-controlled future writers cannot persist it.
+
+`TEST` is a distinct closed mode with a deterministic test commit identity and cannot use a production runner identity. It is never accepted as production provenance.
+
+## Audited writer entrypoints
+
+The complete reachable repository surface is:
+
+1. `scripts/run_chain_4h.sh` / shell entrypoint — indirectly invokes the canonical scope-status writer after candle ETL; owns the outer 4h lock/step ordering, creates no DB transaction or UUID itself, explicitly supplies `CHAIN`, the repository commit, `scripts/run_chain_4h.sh` entrypoint/ref, and the existing scheduled-chain trigger; repository 4h owner; inspected by runtime-wiring tests.
+2. `scripts/run_native_short_scope_status_chain_once.sh` / shell wrapper — indirectly invokes the Python scope-status runner; owns the native chain lock but no DB transaction; resolves or receives one explicit repository commit, supplies `CHAIN`, and can be called manually; invoked by the 4h chain and inspected by runtime-wiring tests.
+3. `src/market_data/run_native_short_scope_status_chain_v1.py` / `main` and `execute_runtime` — direct canonical writer; owns one bounded DB transaction, creates one invocation UUID, inserts/finalizes `native_short_materializer_run_v1`, and can mutate `native_short_scope_observation_v1`, `native_short_map_generation_event_v1`, `native_short_map_v1`, `native_short_map_lifecycle_event_v1`, `native_short_scope_status_v1`, and `native_short_map_level_status_v1`; callable directly in explicit `CHAIN` or `MANUAL` mode; invoked by the wrapper and directly by tests.
+4. `src/market_data/run_native_short_map_materializer_v1.py` / `main` — direct manual map-ledger writer; owns the exact-one-symbol write transaction, creates one invocation UUID/run row, and can mutate `native_short_materializer_run_v1`, `native_short_map_generation_event_v1`, `native_short_map_v1`, and `native_short_map_lifecycle_event_v1`; manual only, not invoked by the 4h chain, and directly tested.
+5. `src/market_data/run_native_short_map_level_status_materializer_v1.py` / `main` and `run_scope` — direct manual current-level writer; owns run start/final transactions plus the existing per-scope rebuild transaction, creates one invocation UUID/run row, and can mutate `native_short_materializer_run_v1` and `native_short_map_level_status_v1`; manual only, not invoked by the 4h chain, and directly tested.
+6. `src/market_data/run_native_short_map_scope_seed_canary_v1.py` / `main` and `run_write_symbol` — existing direct manual scope-registry canary; owns its existing exact-one-symbol write transaction, now creates one attributable invocation/run row, and can mutate `native_short_materializer_run_v1` and `native_short_map_scope_v1`; manual only, not invoked by the 4h chain, and directly tested. PR 2b does not invoke it or add any scope.
+7. Internal writer APIs and persistence helpers — `native_short_scope_status_materializer_v1.run_native_short_scope_status_materializer`, `evaluate_scope`, `rebuild_scope_projection`, `upsert_scope_status_projection`, `_insert_run`, `_finalize_run`, `_insert_observation`, and its lifecycle insert; `native_short_map_materializer_v1.materialize_scope_symbol` and its generation/map/lifecycle inserts; `native_short_map_level_status_materializer_v1.materialize_native_short_map_level_status_for_scope`; `native_short_map_level_status_v1.replace_native_short_map_level_status_for_scope` and `delete_native_short_map_level_status_for_scope`; and `run_native_short_map_scope_seed_canary_v1.run_write_symbol` and `insert_scope_row`. These are direct caller-owned-transaction helpers behind the reviewed runners. Each write boundary either requires and validates the immutable provenance object or accepts a run record that has already validated it; invocation UUID linkage is derived only from that object. Tests invoke the reusable boundaries directly with explicit `TEST` provenance.
+
+`run_native_short_fib_context_snapshot_v1` is also reached by `scripts/run_chain_4h.sh`, but it is a read-only database consumer and filesystem snapshot publisher, not a native SHORT ledger writer. It creates no ledger row and cannot bypass writer enforcement. Reporting health/audit runners are likewise SELECT-only consumers.
 
 ## Deterministic audit contract
 
@@ -73,16 +114,17 @@ The required later removal/rollback transaction must lock the same exact key, wi
 
 ## Open tasks by priority
 
-The required PR order is fixed:
+The remaining blocker order is fixed:
 
-1. **A — read-only audit merged.** Merge this audit and contract with no runtime mutation.
-2. **B — writer provenance attribution.** Make writer evidence attributable and re-audit it.
-3. **C — explicit single-scope promotion/removal contract.** Implement and test the transactions described above separately.
-4. **D — bootstrap orchestration correction.** Ensure `NO_CURRENT_MAP` is expected bootstrap state for a newly supported scope rather than a fatal orchestration error.
-5. **E — SOL canary.** Promote only SOL, then accept three consecutive real 4h cycles.
-6. **F — ETH canary.** Consider ETH only after SOL acceptance and removal readiness remain valid.
-7. **G — XRP canary.** Consider XRP only after ETH acceptance.
-8. **H — broader expansion.** Revisit only after measured capacity and tick-rule coverage improve.
+1. **Writer provenance repository implementation — PR 2b.** Implement the typed contract, one migration, propagation, enforcement, read-only audit fields, and repository tests.
+2. **Separate writer provenance operational acceptance.** After merge only: apply the migration, update the installed checkout, run one controlled production-capable invocation, prove persisted attributable provenance/linkage and no unintended writes, and record acceptance evidence. PR 2b does not perform or close this step.
+3. **Atomic single-scope promotion/removal contract.** Implement and test the transactions described above separately.
+4. **`NO_CURRENT_MAP` bootstrap semantics.** Make the expected newly supported bootstrap state non-fatal without hiding real failures.
+5. **Per-symbol failure isolation.** Prove one symbol cannot leave another symbol's partial evidence.
+6. **Sequential SOL review/canary.** Consider only SOL and accept three consecutive real 4h cycles.
+7. **ETH only after SOL acceptance.** Re-evaluate all gates before any ETH decision.
+8. **XRP only after ETH acceptance.** Re-evaluate all gates before any XRP decision.
+9. **Broader rollout.** Revisit only after measured capacity and tick-rule coverage improve.
 
 ## Blockers / dependencies
 
@@ -94,17 +136,27 @@ The required PR order is fixed:
 - one-scope current failure-domain-safe capacity;
 - 403 markets without database/static tick-rule coverage.
 
+PR 2b audit fields remain independent:
+
+```text
+provenance_contract_implemented=true
+attributable_production_run_observed=<persisted evidence only>
+operational_acceptance_completed=false
+writer_provenance_blocker_active=true
+```
+
+Code, tests, or a migration do not create operational evidence. Even one future attributable row does not by itself prove operational acceptance. `WRITER_PROVENANCE_UNATTRIBUTED` remains active until the separate post-merge acceptance is completed and reviewed.
+
 ## Boundary
 
 Owner: `market_data`, using public canonical market metadata, public candles, tick metadata, and native SHORT ledgers only.
 
-No live trading. No database mutation. No scope seeding. No materialization or lifecycle action. No account/private-broker reads. No broker writes. No order submission. No `selection_engine`, `decision_gate`, `execution_planner`, or executor input. No second timer or runtime owner.
+No live trading. No production database mutation in PR 2b. No scope seeding, promotion, or removal. No production materialization or lifecycle action. No account/private-broker reads. No broker writes. No order submission. No `selection_engine`, `decision_gate`, `execution_planner`, or executor input. No second timer or runtime owner.
 
 ## Non-goals
 
-- provenance remediation;
 - promotion or removal writes;
-- bootstrap/materializer/orchestrator changes;
+- bootstrap, map-geometry, lifecycle, or status-semantic changes;
 - multi-scope execution;
 - runtime deployment or service/timer changes;
 - Profit Plan changes;
