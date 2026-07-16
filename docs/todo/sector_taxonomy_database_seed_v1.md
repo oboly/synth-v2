@@ -2,13 +2,31 @@
 
 ## Status
 
-Implementation complete for review on the Phase A branch. Migration and
-transactional `--write-db` import remain post-merge operator actions. Canonical
-implementation contract and evidence:
+**done / accepted** — Phase A was activated on 2026-07-16 from merged main
+`794a03e014c44b5f01410a07bc5f24aa763715a8` against database `synth` on
+`gurkdb`. Phase B has not started. Canonical implementation contract and
+evidence:
 
 ```text
 docs/research/sector_taxonomy_database_seed_v1.md
 ```
+
+## Operational acceptance
+
+```text
+migration sha256=f2b8ba701dbca6249aa3f8fe665cb299deb57412bc4855865514c12bfd9d9dd3
+first write: sectors=29 liquidity=7 profiles=448 memberships=473
+first write: safe asset.sector updates=421 destructive downgrades=0
+second write: inserts=0 updates=0 stale=0 safe asset.sector updates=0
+final: active primary=448 primary violations=0 duplicate active memberships=0 orphans=0
+protected: ADA=L1 BTC=Other CARDS=cards SXT=zkdata
+accepted: KITE=DECENTRALIZED_AI PYTH=ORACLE TAO=DECENTRALIZED_AI TIA=MODULAR_BLOCKCHAIN
+asset_class sha256 before/after=82651489c1b16f75511c23cfca9c694d6860034632be5ae8224f037f3162da75
+focused tests=54 passed
+```
+
+No broker, account, order, selection, decision, planning, execution,
+reporting, systemd, or timer path was touched during activation.
 
 ## Purpose
 
@@ -203,7 +221,7 @@ research coverage=100/100
 canonical assets=448
 reviewed named classifications=103
 explicit UNCLASSIFIED=345
-planned memberships=473
+active memberships=473
 safe asset.sector updates=421
 preserved existing sectors=4
 destructive downgrades=0
