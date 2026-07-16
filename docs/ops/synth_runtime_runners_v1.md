@@ -313,6 +313,13 @@ MVP cockpit render:
 - native SHORT orchestration order is map evaluation, scope-status projection,
   then map-level status projection; failure or lock contention fails the 4h
   chain visibly
+- after that complete native SHORT authority chain, the same 4h owner invokes
+  `src.market_data.run_native_short_fib_context_snapshot_v1 --publish` exactly
+  once; it publishes the market-only manifest/immutable rows contract under
+  `/var/www/html/synth/_runtime/native_short_context_snapshot_v1/` (or the
+  dedicated `SYNTH_NATIVE_SHORT_CONTEXT_SNAPSHOT_DIR` override)
+- snapshot publication failure fails the 4h chain visibly through the existing
+  `run_step` convention; no reporting fallback and no second scheduler exists
 - source of setup / policy / zone / `paper_advice_observation` snapshots
 - must remain market-only with decision/execution disabled
 - must not enable broker writes
