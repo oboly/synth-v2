@@ -142,21 +142,32 @@ Rules:
 
 This requirement is a prerequisite for safe Profit Plan Live Ladder authority but remains operationally owned here rather than duplicated in its guardrail history file.
 
-### Implemented — pure freshness-status evaluator (repository)
+### Implemented — pure freshness-status classifier (repository)
 
 `src/operations/freshness_status_v1.py` implements the pure, deterministic P2-B
-authority: `evaluate_freshness(...)` classifies one source into `FRESH | STALE |
-MISSING | UNAVAILABLE`, and `evaluate_observation_classes(...)` reduces the five
-observation classes to an overall status plus an `account_action_permitted`
-gate. It has no DB, broker, account-mutation, rendering, or wall-clock
-dependency (`now` is always injected), so a stopped static renderer cannot
-fabricate freshness — a frozen `dashboard_generated_ts_utc` ages against an
-advancing `now` and deterministically becomes `STALE`. Freshness is computed
-from UTC source timestamps only, independent of display timezone. `decision_gate`
-and reporting may both import it (it lives outside both layers); renderer
-HTML/JSON is never an input. Boundary tests: `tests/test_freshness_status_v1.py`.
-This slice does **not** consume the PR A snapshot and does not wire the evaluator
-into a live gate; wiring into `decision_gate`/PR B renderers is a separate slice.
+classifier: `evaluate_freshness(...)` classifies one source into `FRESH | STALE |
+MISSING | UNAVAILABLE`, and `evaluate_observation_classes(...)` reduces
+caller-supplied classes to an overall freshness status. Scope is freshness only —
+it computes **no** account/ladder/order permission; account-aware permission
+stays exclusively in `decision_gate` (a later, separately reviewed wiring slice).
+
+- No DB, broker, account-mutation, rendering, permission, or wall-clock
+  dependency (`now` is always injected), so a stopped static renderer cannot
+  fabricate freshness — a frozen `dashboard_generated_ts_utc` ages against an
+  advancing `now` and deterministically becomes `STALE`.
+- No built-in staleness thresholds: no canonical doc defines per-class P2-B
+  limits (the only canonical freshness limits are native-SHORT-specific:
+  `native_short_scope_status_contract_v1.md`), so callers must pass explicit
+  `ObservationClassSpec` thresholds; the module ships none.
+- Fail-closed timestamps: requires timezone-aware UTC and rejects naive
+  datetimes with `ValueError`, matching the DB-boundary UTC-typing contract
+  (`native_short_fib_context_snapshot_contract_v1.md`) and `docs/coding_standards.md`
+  §3 ("never mix timezone-aware and naive timestamps in engine logic").
+
+`decision_gate` and reporting may both import it (it lives outside both layers);
+renderer HTML/JSON is never an input. Boundary tests:
+`tests/test_freshness_status_v1.py`. This slice does **not** consume the PR A
+snapshot and wires the classifier into no live gate.
 
 ## P2-C — Multi-cycle Odroid acceptance
 

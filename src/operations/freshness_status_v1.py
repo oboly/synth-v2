@@ -1,36 +1,43 @@
 from __future__ import annotations
 
-"""Pure freshness-status authority for Lane C P2-B.
+"""Pure freshness-status classifier for Lane C P2-B.
 
-This module is the single, deterministic evaluator for the P2-B absolute
+This module is the single, deterministic classifier for the P2-B absolute
 freshness contract.  Given an absolute UTC observation timestamp, a reference
-``now``, and a staleness threshold, it classifies a source into exactly one of:
+``now``, and a caller-supplied staleness threshold, it classifies a source into
+exactly one of:
 
 ``FRESH | STALE | MISSING | UNAVAILABLE``.
 
-It is intentionally free of side effects:
+Scope is deliberately narrow — it classifies freshness only.  It does **not**
+decide whether any account action, ladder action, order action, or other
+permission is allowed; account-aware permission belongs exclusively to
+``decision_gate``, which may consume this classifier (or persisted freshness
+authority) as an input.
+
+It is intentionally free of side effects and policy:
 
 - no database access
 - no broker calls
-- no account mutation
+- no account mutation or account-permission logic
 - no rendering / HTML / JSON emission
 - no implicit wall-clock reads (``now`` is always injected)
+- no built-in staleness thresholds (callers supply them explicitly)
 
 Because ``now`` and every observation timestamp are injected, a stopped static
 renderer cannot fabricate freshness: a frozen ``dashboard_generated_ts_utc`` ages
-against an advancing ``now`` and deterministically becomes ``STALE``.  Freshness
-is computed from UTC source timestamps only, independent of any display timezone
-(``docs/architecture/dashboard_time_display_policy_v1.md``).
+against an advancing ``now`` and deterministically becomes ``STALE``.
 
-Consumers:
+Timestamp handling is fail-closed.  Persisted authorities are UTC and the DB
+boundary types them as timezone-aware before they enter pure logic
+(`docs/architecture/native_short_fib_context_snapshot_contract_v1.md`, DB
+boundary), and engine logic must never mix aware/naive timestamps
+(`docs/coding_standards.md` §3).  This classifier therefore requires
+timezone-aware UTC datetimes and rejects naive datetimes with ``ValueError``
+rather than silently attaching UTC and concealing malformed source data.
 
-- ``decision_gate`` may consume this pure evaluator (or persisted freshness
-  authority) to gate account-aware permission; it must never consume renderer
-  HTML/JSON.
-- reporting may display the resulting statuses but must not invent authority.
-
-Placed in ``src/operations`` so both ``decision_gate`` and ``reporting`` can
-import it without either layer depending on the other.
+Placed in ``src/operations`` so both ``decision_gate`` and reporting can import
+it without either layer depending on the other.
 """
 
 from dataclasses import dataclass, field
@@ -47,7 +54,8 @@ UNAVAILABLE = "UNAVAILABLE"
 FRESHNESS_STATUSES: tuple[str, ...] = (FRESH, STALE, MISSING, UNAVAILABLE)
 
 # Severity ordering used to reduce many per-class statuses to one overall
-# status.  A larger rank is "worse".  FRESH is the only non-degraded state.
+# freshness status.  A larger rank is "worse".  FRESH is the only non-degraded
+# state.  This is a freshness reduction only, not a permission decision.
 _STATUS_SEVERITY: dict[str, int] = {
     FRESH: 0,
     STALE: 1,
@@ -63,7 +71,7 @@ REASON_WITHIN_THRESHOLD = "WITHIN_THRESHOLD"
 REASON_EXCEEDS_THRESHOLD = "EXCEEDS_THRESHOLD"
 REASON_FUTURE_TIMESTAMP = "FUTURE_TIMESTAMP"
 
-# --- Canonical P2-B observation class keys -----------------------------------
+# --- Canonical P2-B observation class keys (field names, not policy) ---------
 
 MARKET_PRICE = "market_price_observed_ts_utc"
 WALLET = "wallet_observed_ts_utc"
@@ -79,25 +87,20 @@ OBSERVATION_CLASS_KEYS: tuple[str, ...] = (
     DASHBOARD_GENERATED,
 )
 
-# Account-specific classes.  When any of these is not FRESH, account-specific
-# action / ladder claims must be suppressed (P2-B rule).
-ACCOUNT_OBSERVATION_CLASS_KEYS: tuple[str, ...] = (
-    WALLET,
-    POSITION,
-    OPEN_ORDERS,
-)
 
+def _require_utc(value: datetime, label: str) -> datetime:
+    """Return ``value`` as UTC, rejecting naive datetimes (fail-closed).
 
-def _normalize_utc(value: datetime) -> datetime:
-    """Return ``value`` as a timezone-aware UTC datetime.
-
-    Naive datetimes are assumed to be UTC because the system stores, queries,
-    and transports timestamps in UTC (dashboard time-display policy).  This
-    keeps freshness math deterministic and independent of the display timezone.
+    Persisted authorities are timezone-aware UTC by the time they reach engine
+    logic (DB boundary attaches UTC; `docs/coding_standards.md` §3 forbids
+    mixing aware/naive in engine logic).  A naive datetime here indicates
+    malformed/unconverted source data and must not be silently coerced.
     """
 
     if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
+        raise ValueError(
+            f"{label} must be timezone-aware UTC; received naive datetime"
+        )
     return value.astimezone(UTC)
 
 
@@ -126,6 +129,9 @@ def evaluate_freshness(
 ) -> FreshnessResult:
     """Classify one source into ``FRESH | STALE | MISSING | UNAVAILABLE``.
 
+    ``stale_after`` is required and caller-supplied; this module defines no
+    staleness policy of its own.
+
     Rules (fail-closed):
 
     - ``source_available=False`` -> ``UNAVAILABLE`` (source structurally absent
@@ -136,7 +142,8 @@ def evaluate_freshness(
       untrustworthy clock must never read as fresh).
     - ``now - observed_ts <= stale_after`` -> ``FRESH``; otherwise ``STALE``.
 
-    ``now`` is injected; this function never reads wall-clock time.
+    ``now`` and any present ``observed_ts`` must be timezone-aware UTC; a naive
+    datetime raises ``ValueError``.  ``now`` never reads wall-clock time.
     """
 
     if stale_after < timedelta(0):
@@ -164,8 +171,8 @@ def evaluate_freshness(
             stale_after_seconds=stale_after_seconds,
         )
 
-    observed_utc = _normalize_utc(observed_ts)
-    now_utc = _normalize_utc(now)
+    observed_utc = _require_utc(observed_ts, "observed_ts")
+    now_utc = _require_utc(now, "now")
     age_seconds = (now_utc - observed_utc).total_seconds()
 
     if age_seconds < -max_future_skew.total_seconds():
@@ -200,43 +207,32 @@ def evaluate_freshness(
 
 # --- Observation-class level evaluation --------------------------------------
 
-# Named default thresholds (module-level constants, not magic numbers).
-DEFAULT_MARKET_PRICE_STALE_AFTER = timedelta(minutes=15)
-DEFAULT_WALLET_STALE_AFTER = timedelta(minutes=15)
-DEFAULT_POSITION_STALE_AFTER = timedelta(minutes=15)
-DEFAULT_OPEN_ORDERS_STALE_AFTER = timedelta(minutes=15)
-DEFAULT_DASHBOARD_GENERATED_STALE_AFTER = timedelta(minutes=15)
-
 
 @dataclass(frozen=True)
 class ObservationClassSpec:
-    """Threshold + gating role for one P2-B observation class."""
+    """Caller-supplied threshold + reduction role for one observation class.
+
+    ``stale_after`` is required; this module ships no default thresholds because
+    no canonical doc defines per-class P2-B freshness limits.  Consumers own the
+    policy and must pass explicit specs.
+    """
 
     key: str
     stale_after: timedelta
     # When True this class participates in the overall status reduction.  A
-    # non-required class is still classified and reported but does not drag the
-    # overall status down (e.g. an absent optional source is UNAVAILABLE-but-ok).
+    # non-required class is still classified and reported but never worsens the
+    # overall status.
     required: bool = True
-
-
-DEFAULT_OBSERVATION_CLASS_SPECS: tuple[ObservationClassSpec, ...] = (
-    ObservationClassSpec(MARKET_PRICE, DEFAULT_MARKET_PRICE_STALE_AFTER),
-    ObservationClassSpec(WALLET, DEFAULT_WALLET_STALE_AFTER),
-    ObservationClassSpec(POSITION, DEFAULT_POSITION_STALE_AFTER),
-    ObservationClassSpec(OPEN_ORDERS, DEFAULT_OPEN_ORDERS_STALE_AFTER),
-    ObservationClassSpec(
-        DASHBOARD_GENERATED, DEFAULT_DASHBOARD_GENERATED_STALE_AFTER
-    ),
-)
 
 
 @dataclass(frozen=True)
 class ObservationFreshnessReport:
-    """Per-class freshness results plus a deterministic overall status."""
+    """Per-class freshness results plus a deterministic overall status.
+
+    This is a freshness aggregate only.  It carries no permission decision.
+    """
 
     overall_status: str
-    account_action_permitted: bool
     results: dict[str, FreshnessResult] = field(default_factory=dict)
 
     def status_of(self, key: str) -> str:
@@ -254,25 +250,22 @@ def _worst_status(statuses: Sequence[str]) -> str:
 def evaluate_observation_classes(
     observed: Mapping[str, datetime | None],
     now: datetime,
-    specs: Sequence[ObservationClassSpec] = DEFAULT_OBSERVATION_CLASS_SPECS,
+    specs: Sequence[ObservationClassSpec],
     *,
     source_available: Mapping[str, bool] | None = None,
     max_future_skew: timedelta = timedelta(seconds=0),
 ) -> ObservationFreshnessReport:
-    """Evaluate every configured observation class deterministically.
+    """Evaluate every caller-supplied observation class deterministically.
 
-    ``overall_status`` is the worst status among *required* classes.  A
-    non-required class is reported but never worsens the overall status.
-
-    ``account_action_permitted`` is True only when every account observation
-    class present in ``specs`` is ``FRESH`` (P2-B: stale account truth suppresses
-    account-specific ladder / action claims).
+    ``specs`` is required; the caller owns which classes and thresholds apply.
+    ``overall_status`` is the worst freshness status among *required* classes; a
+    non-required class is reported but never worsens the overall status.  No
+    permission is computed here.
     """
 
     availability = source_available or {}
     results: dict[str, FreshnessResult] = {}
     required_statuses: list[str] = []
-    account_statuses: list[str] = []
 
     for spec in specs:
         result = evaluate_freshness(
@@ -285,16 +278,10 @@ def evaluate_observation_classes(
         results[spec.key] = result
         if spec.required:
             required_statuses.append(result.status)
-        if spec.key in ACCOUNT_OBSERVATION_CLASS_KEYS:
-            account_statuses.append(result.status)
 
     overall_status = _worst_status(required_statuses) if required_statuses else FRESH
-    account_permitted = bool(account_statuses) and all(
-        status == FRESH for status in account_statuses
-    )
 
     return ObservationFreshnessReport(
         overall_status=overall_status,
-        account_action_permitted=account_permitted,
         results=results,
     )
