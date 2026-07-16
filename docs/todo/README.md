@@ -127,6 +127,13 @@ Completing B and C first reduces ambiguity and prevents A from building executio
 
 The native SHORT map-level runtime line is **done / accepted** in repository scope.
 
+Multi-asset expansion is a separate blocked lane owned by
+`native_short_multi_asset_rollout_contract_v1.md`. Its first proposed queue is
+SOL -> ETH -> XRP, strictly one symbol at a time; the queue is not production
+approval. Expansion remains blocked on attributable writer provenance,
+single-scope promotion/removal transactions, `NO_CURRENT_MAP` bootstrap
+semantics, and per-symbol failure isolation.
+
 Merged completion chain:
 
 ```text
@@ -168,6 +175,7 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `profit_plan_dashboard_action_truth_and_breathline_demote_v1.md` | done / parked | Completed Profit Plan action fail-closed, PPP, map-switch, Breathline, evidence-row, and formatting guardrails |
 | `native_short_runtime_owner_and_scope_status_v1.md` | done / accepted; host activation separate | Completed native SHORT scope-status, map-level status, chain integration, and canonical runtime ownership |
 | `native_short_map_level_status_v1.md` | done / parked | Completed native SHORT current map-level status contract and implementation evidence |
+| `native_short_multi_asset_rollout_contract_v1.md` | blocked; PR 2a read-only audit | Canonical multi-asset readiness audit, sequential SOL/ETH/XRP review queue, promotion acceptance, and blocked rollout sequence |
 | `position_rotation_preview.md` | MVP implemented / parked follow-up | Account-aware read-only cockpit/rotation preview; no active v2.23 priority |
 | `profit_plan_card_evidence_delta_visibility_v1.md` | done / parked | Deterministic current-vs-previous card evidence visibility |
 | `manual_ladder_dashboard.md` | historical source / superseded | Earlier read-only ladder direction; active ladder work is tracked only in `profit_plan_live_ladder.md` |
