@@ -163,7 +163,7 @@ def test_aero_does_not_show_buy_ready_or_fix_ladder() -> None:
 
 
 # ---------------------------------------------------------------------------
-# PR2 — HOT-like: unverified rollover must fail closed
+# PR2 — HOT-like: transient rollover text is non-canonical reference only
 # ---------------------------------------------------------------------------
 
 def _hot_card() -> pp.ProfitPlanCard:
@@ -202,19 +202,23 @@ def _hot_card() -> pp.ProfitPlanCard:
     )
 
 
-def test_hot_unverified_rollover_requires_map_switch_review() -> None:
+def test_hot_unavailable_native_truth_does_not_claim_map_switch_review() -> None:
     card = _hot_card()
-    assert pp._selected_map_indicates_rollover(card) is True
+    assert pp._selected_map_indicates_rollover(card) is True  # preserved raw bridge reference
     assert pp._rollover_verified(card) is False
-    assert pp._map_switch_review_required(card) is True
-    assert pp._effective_workflow_action(card) == "MAP SWITCH REVIEW"
+    assert pp._map_switch_review_required(card) is False
+    assert card.scenario_type == "CONTEXT_UNAVAILABLE"
+    assert card.event_state == "CONTEXT_UNAVAILABLE"
+    assert card.actionability_state == pp.CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE
+    assert pp._effective_workflow_action(card) == "REVIEW CONTEXT"
 
 
 def test_hot_renders_review_language_and_no_fix_ladder() -> None:
     card = _hot_card()
     html = render_plan_card(card)
-    assert "MAP SWITCH REVIEW" in html
-    assert "Review map" in html
+    assert "MAP SWITCH REVIEW" not in html
+    assert "REVIEW CONTEXT" in html
+    assert "Transient SHORT context (non-canonical reference)" in html
     assert "FIX LADDER" not in html
     # No account/order repair action must be enabled.
     assert "Fix selected" not in html or "disabled" in html

@@ -43,6 +43,8 @@ ORDER_SNAPSHOT_FRESH_AFTER = DEFAULT_CURRENT_PRICE_FRESH_AFTER
 ORDER_SNAPSHOT_MAX_FUTURE_SKEW = timedelta(seconds=30)
 
 STATE_LABELS: dict[str, str] = {
+    "CONTEXT_UNAVAILABLE": "Context unavailable",
+    "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT": "Transient SHORT context (non-canonical reference)",
     "STALE_CURRENT_PRICE": "Stale current price",
     "HAS_NATIVE_SHORT_FIB_CONTEXT": "Native SHORT fib context available",
     "NO_NATIVE_SHORT_FIB_CONTEXT": "No native SHORT fib context",
@@ -85,6 +87,7 @@ RELEVANT_STATES: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 
 SETUP_STATE_FROM_SCENARIO: dict[str, str] = {
+    "CONTEXT_UNAVAILABLE": "MINIMAL_CONTEXT",
     "EXTENSION_RUNNER": "EXTENSION_SETUP",
     "BREAKOUT_RETEST": "BREAKOUT_SETUP",
     "REENTRY_WAIT": "REENTRY_SETUP",
@@ -97,6 +100,7 @@ SETUP_STATE_FROM_SCENARIO: dict[str, str] = {
 }
 
 EVENT_STATE_FROM_PRIMARY: dict[str, str] = {
+    "CONTEXT_UNAVAILABLE": "CONTEXT_UNAVAILABLE",
     "RELOAD_ZONE_APPROACHING": "RELOAD_ZONE_APPROACHING",
     "TAKE_PROFIT_WAITING": "TARGET_APPROACHING",
     "MAP_RECOMPUTE_NEEDED": "MAP_EXPIRED",
@@ -130,6 +134,7 @@ RELEVANT_LADDER_STATES: frozenset[str] = frozenset({
 })
 
 _ACTION_DISPLAY_MAP: dict[str, str] = {
+    "REVIEW_CONTEXT": "REVIEW CONTEXT",
     "WAIT": "BETWEEN LEVELS",
     "NO_ACTION": "BETWEEN LEVELS",
     "DO_NOTHING": "BETWEEN LEVELS",
@@ -147,6 +152,7 @@ CARD_ACTIONABILITY_NAVIGATION_ONLY = "NAVIGATION_ONLY"
 CARD_ACTIONABILITY_HISTORICAL_REFERENCE = "HISTORICAL_REFERENCE"
 CARD_ACTIONABILITY_NEEDS_RECOMPUTE = "NEEDS_RECOMPUTE"
 CARD_ACTIONABILITY_INVALIDATED = "INVALIDATED"
+CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE = "CONTEXT_UNAVAILABLE"
 
 CARD_MODE_POSITION_HELD = "POSITION_HELD"
 CARD_MODE_ACCOUNT_ORDER_ONLY = "ACCOUNT_ORDER_ONLY"
@@ -176,6 +182,7 @@ CANONICAL_ACTION_FILTER: tuple[tuple[str, str], ...] = (
 )
 
 SHORT_CONTEXT_DISPLAY_LABELS: dict[str, str] = {
+    "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT": "Transient SHORT context (non-canonical reference)",
     "HAS_NATIVE_SHORT_FIB_CONTEXT": "Native SHORT fib context available",
     "NO_NATIVE_SHORT_FIB_CONTEXT": "No native SHORT fib context",
     "MARKET_DATA_MISSING": "Market data missing",
@@ -944,17 +951,28 @@ def _is_unavailable(value: Any) -> bool:
 def _native_map_status(card: ProfitPlanCard) -> str:
     """Native scope-status projection availability for this card.
 
-    Prefers the explicit ``native_map_status`` evidence field; falls back to a
-    real ``native_map_id``. Returns DATA_UNAVAILABLE when neither proves a
-    current native projection (the safe default until the Lane B read model is
-    wired into the runner).
+    Requires the explicit Lane B ``native_map_status`` evidence field. A map ID
+    alone cannot prove that the canonical scope-status projection is available.
     """
     status = str(card.evidence.native_map_status or "").strip().upper()
     if status and status not in _UNAVAILABLE_TOKENS:
         return status
-    if not _is_unavailable(card.evidence.native_map_id):
-        return "AVAILABLE"
     return DATA_UNAVAILABLE
+
+
+def _canonical_native_map_truth_available(evidence: CardEvidence) -> bool:
+    """True only when Lane B provides a coherent canonical map identity.
+
+    The transient SHORT bridge may carry a reporting cycle, selected tier, and
+    rollover text. None of those fields is canonical map/scope-status truth.
+    Reporting may use lifecycle semantics only when Lane B supplies an explicit
+    AVAILABLE projection plus real map and cycle identifiers.
+    """
+    return (
+        str(evidence.native_map_status or "").strip().upper() == "AVAILABLE"
+        and not _is_unavailable(evidence.native_map_id)
+        and not _is_unavailable(evidence.map_cycle_id)
+    )
 
 
 def _price_is_fresh_enough(card: ProfitPlanCard) -> bool:
@@ -968,6 +986,7 @@ def _map_lifecycle_blocks_action(card: ProfitPlanCard) -> bool:
     if card.all_sell_targets_completed:
         return True
     if card.actionability_state in {
+        CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE,
         CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
         CARD_ACTIONABILITY_INVALIDATED,
         CARD_ACTIONABILITY_HISTORICAL_REFERENCE,
@@ -991,7 +1010,7 @@ def _selected_map_indicates_rollover(card: ProfitPlanCard) -> bool:
 
 def _rollover_verified(card: ProfitPlanCard) -> bool:
     """A rollover is verified only when canonical previous/current cycle evidence exists."""
-    if _native_map_status(card) != "AVAILABLE":
+    if not _canonical_native_map_truth_available(card.evidence):
         return False
     if _is_unavailable(card.evidence.map_cycle_id):
         return False
@@ -1011,6 +1030,8 @@ def _map_switch_review_required(card: ProfitPlanCard) -> bool:
     or missing previous/current cycle evidence must be reviewed, not repaired.
     """
     if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
+        return False
+    if not _canonical_native_map_truth_available(card.evidence):
         return False
     if not _selected_map_indicates_rollover(card):
         return False
@@ -1112,7 +1133,10 @@ def _derive_card_actionability_state(
     primary_state: str,
     current_price: Decimal | None,
     invalidation_level: Decimal | None,
+    canonical_native_map_truth_available: bool,
 ) -> str:
+    if not canonical_native_map_truth_available:
+        return CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE
     if primary_state == "INVALIDATED":
         return CARD_ACTIONABILITY_INVALIDATED
     if (
@@ -1334,6 +1358,7 @@ _FILTER_LABEL_OVERRIDES: dict[str, str] = {
     CARD_ACTIONABILITY_HISTORICAL_REFERENCE: "Historical reference",
     CARD_ACTIONABILITY_NEEDS_RECOMPUTE: "Needs recompute",
     CARD_ACTIONABILITY_INVALIDATED: "Invalidated",
+    CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE: "Context unavailable",
 }
 
 
@@ -1497,6 +1522,12 @@ def _effective_workflow_action(card: ProfitPlanCard) -> str:
     Reference-only/historical remains actionability context, not a workflow action.
     Action claims fail closed: FIX LADDER only appears when evidence proves it.
     """
+    if not _canonical_native_map_truth_available(card.evidence):
+        return "REVIEW CONTEXT"
+
+    if card.actionability_state == CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE:
+        return "REVIEW CONTEXT"
+
     if card.actionability_state == CARD_ACTIONABILITY_INVALIDATED:
         return "INVALIDATED"
 
@@ -1544,6 +1575,8 @@ def _action_gate_blocking_reason_codes(card: ProfitPlanCard) -> tuple[str, ...]:
     """
     if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
         return ()
+    if card.actionability_state == CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE:
+        return ("NATIVE_MAP_DATA_UNAVAILABLE", "NON_CANONICAL_REFERENCE_ONLY")
     if card.actionability_state == CARD_ACTIONABILITY_INVALIDATED:
         return ("CONTEXT_INVALIDATED",)
     if _map_switch_review_required(card):
@@ -1625,6 +1658,14 @@ def _current_map_selection_row(card: ProfitPlanCard) -> EvidenceRow:
 
 
 def _map_lifecycle_row(card: ProfitPlanCard) -> EvidenceRow:
+    if not _canonical_native_map_truth_available(card.evidence):
+        return EvidenceRow(
+            key="map_lifecycle",
+            label="Map lifecycle",
+            authority="Canonical native map lifecycle authority (Lane B)",
+            status=DATA_UNAVAILABLE,
+            reason_codes=("NATIVE_MAP_DATA_UNAVAILABLE", "TRANSIENT_LIFECYCLE_NOT_CANONICAL"),
+        )
     status = str(card.evidence.lifecycle_state or "").strip().upper() or DATA_UNAVAILABLE
     if status in _UNAVAILABLE_TOKENS:
         status = DATA_UNAVAILABLE
@@ -1646,7 +1687,15 @@ def _per_level_status_row(card: ProfitPlanCard) -> EvidenceRow:
     # Locally derived from reporting-side target-level history, not a native Lane B0
     # per-level authority. Always disclosed via reason code so this row is never
     # mistaken for canonical native level-status evidence.
-    authority = "Reporting-derived per-level rollup (not native canonical)"
+    authority = "Reporting reference levels (not native canonical)"
+    if not _canonical_native_map_truth_available(card.evidence):
+        return EvidenceRow(
+            key="per_level_status",
+            label="Per-level status",
+            authority=authority,
+            status="NON_CANONICAL_REFERENCE" if card.sell_zone or card.buy_zone else DATA_UNAVAILABLE,
+            reason_codes=("NATIVE_LEVEL_STATUS_UNAVAILABLE", "TRANSIENT_LEVELS_REFERENCE_ONLY"),
+        )
     statuses = card.target_level_statuses
     if not statuses:
         return EvidenceRow(
@@ -2322,6 +2371,7 @@ def _target_retest_notes(target_levels: tuple[TargetLevelStatus, ...]) -> tuple[
 
 def _completed_map_override(
     *,
+    canonical_lifecycle_authoritative: bool,
     current_price: Decimal | None,
     sell_zone: tuple[Decimal, ...],
     target_level_statuses: tuple[TargetLevelStatus, ...],
@@ -2329,6 +2379,8 @@ def _completed_map_override(
     action_label: str,
     reasons: tuple[str, ...],
 ) -> tuple[bool, str, str, str | None, str, tuple[str, ...]]:
+    if not canonical_lifecycle_authoritative:
+        return False, scenario_type, action_label, None, "", reasons
     sell_level_statuses = tuple(level for level in target_level_statuses if level.level in sell_zone)
     if not sell_level_statuses:
         return False, scenario_type, action_label, None, "", reasons
@@ -2583,9 +2635,9 @@ def _short_context_gap_card(
         history_high_since_activation=history_high_since_activation,
         history_low_since_activation=history_low_since_activation,
         all_sell_targets_completed=False,
-        scenario_type="NO_SHORT_FIB_CONTEXT",
-        action_label="WAIT_FOR_SHORT_CONTEXT",
-        actionability_state=CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+        scenario_type="CONTEXT_UNAVAILABLE",
+        action_label="REVIEW_CONTEXT",
+        actionability_state=CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE,
         timeframe_label="SHORT 4h/1h",
         buy_zone=(),
         sell_zone=(),
@@ -2600,7 +2652,7 @@ def _short_context_gap_card(
         distance_to_target_pct=None,
         distance_to_reload_pct=None,
         distance_to_invalidation_pct=None,
-        primary_state=short_context_display_state,
+        primary_state="CONTEXT_UNAVAILABLE",
         secondary_state=None,
         suggested_manual_attention_label=_short_context_display_label(short_context_display_state),
         setup_state="MINIMAL_CONTEXT",
@@ -2779,6 +2831,7 @@ def _display_action_label(action_label: str) -> str:
 
 
 _NON_ACTIVE_DISPLAY_LABELS: dict[str, str] = {
+    CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE: "REVIEW CONTEXT",
     CARD_ACTIONABILITY_INVALIDATED: "INVALIDATED",
     CARD_ACTIONABILITY_NEEDS_RECOMPUTE: "REVIEW MAP",
     CARD_ACTIONABILITY_NAVIGATION_ONLY: "NAVIGATION ONLY",
@@ -2921,7 +2974,13 @@ def _actionability_display_bundle(card: ProfitPlanCard) -> tuple[str, str, str, 
     open_orders_label = "Existing open orders to review:"
     order_ladder_label = "Order review"
 
-    if card.actionability_state == CARD_ACTIONABILITY_NAVIGATION_ONLY:
+    if card.actionability_state == CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE:
+        reentry_label = "Non-canonical reference re-entry zone"
+        target_label = "Non-canonical reference target zone"
+        target_line = format_target_zone_line(card.sell_zone, card.current_price)
+        if not card.sell_zone:
+            target_line = "Canonical map context unavailable"
+    elif card.actionability_state == CARD_ACTIONABILITY_NAVIGATION_ONLY:
         target_label = "Navigation target zone"
         if not card.target_exit_zone:
             target_line = "Navigation only"
@@ -3069,6 +3128,15 @@ def build_profit_plan_card(
     breath_curve: dict[str, Any] | None = None,
     evidence: CardEvidence | None = None,
 ) -> ProfitPlanCard:
+    card_evidence = evidence or CardEvidence()
+    canonical_native_map_truth_available = _canonical_native_map_truth_available(card_evidence)
+    if not canonical_native_map_truth_available and (fib_ext is not None or reentry is not None):
+        short_context_display_state = "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT"
+        if short_context_coverage_status == "NATIVE_SHORT_CONTEXT_AVAILABLE":
+            short_context_coverage_status = "TRANSIENT_NON_CANONICAL_CONTEXT_AVAILABLE"
+        if short_context_input_status == "NATIVE_SHORT_CONTEXT_AVAILABLE":
+            short_context_input_status = "TRANSIENT_NON_CANONICAL_CONTEXT_AVAILABLE"
+
     unusable_price_status = current_price_status
     if current_price is None and unusable_price_status not in {"STALE_CURRENT_PRICE", "MISSING_CURRENT_PRICE"}:
         unusable_price_status = "MISSING_CURRENT_PRICE"
@@ -3093,9 +3161,13 @@ def build_profit_plan_card(
             history_high_since_activation=history_high_since_activation,
             history_low_since_activation=history_low_since_activation,
             all_sell_targets_completed=False,
-            scenario_type="NO_CURRENT_PRICE",
-            action_label="NO_CURRENT_PRICE",
-            actionability_state=CARD_ACTIONABILITY_NEEDS_RECOMPUTE,
+            scenario_type=("NO_CURRENT_PRICE" if canonical_native_map_truth_available else "CONTEXT_UNAVAILABLE"),
+            action_label=("NO_CURRENT_PRICE" if canonical_native_map_truth_available else "REVIEW_CONTEXT"),
+            actionability_state=(
+                CARD_ACTIONABILITY_NEEDS_RECOMPUTE
+                if canonical_native_map_truth_available
+                else CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE
+            ),
             timeframe_label="review blocked",
             buy_zone=(),
             sell_zone=(),
@@ -3117,7 +3189,7 @@ def build_profit_plan_card(
             distance_to_target_pct=None,
             distance_to_reload_pct=None,
             distance_to_invalidation_pct=None,
-            primary_state=unusable_price_status,
+            primary_state=(unusable_price_status if canonical_native_map_truth_available else "CONTEXT_UNAVAILABLE"),
             secondary_state=None,
             suggested_manual_attention_label=STATE_LABELS.get(
                 unusable_price_status,
@@ -3131,7 +3203,7 @@ def build_profit_plan_card(
             presentation_mode=presentation_mode,
             breath_curve=breath_curve,
             evidence=dataclasses.replace(
-                evidence or CardEvidence(),
+                card_evidence,
                 price_freshness_state=unusable_price_status,
             ),
         )
@@ -3219,6 +3291,7 @@ def build_profit_plan_card(
         completed_map_attention_label,
         reasons,
     ) = _completed_map_override(
+        canonical_lifecycle_authoritative=canonical_native_map_truth_available,
         current_price=current_price,
         sell_zone=sell_zone,
         target_level_statuses=target_level_statuses,
@@ -3314,6 +3387,36 @@ def build_profit_plan_card(
         ladder_states = _derive_ladder_states(_ladder_buy_zone, target_level_statuses, buy_orders, sell_orders, current_price)
         is_relevant, relevance_reasons = _derive_relevance_with_reasons(event_state, ladder_states, setup_state)
 
+    if not canonical_native_map_truth_available:
+        all_sell_targets_completed = False
+        scenario_type = "CONTEXT_UNAVAILABLE"
+        action_label = "REVIEW_CONTEXT"
+        primary_state = "CONTEXT_UNAVAILABLE"
+        secondary_state = None
+        suggested_manual_attention_label = STATE_LABELS["CONTEXT_UNAVAILABLE"]
+        setup_state = "MINIMAL_CONTEXT"
+        event_state = "CONTEXT_UNAVAILABLE"
+        ladder_states = ()
+        is_relevant = True
+        relevance_reasons = ("CONTEXT_UNAVAILABLE",)
+        reasons = (
+            "Canonical native SHORT map and scope-status truth is unavailable. No map lifecycle or successor state is inferred.",
+            "Displayed bridge levels are transient non-canonical reference context only.",
+        )
+        active_target_exit_zone = ()
+        active_target = None
+        target_level_statuses = ()
+        order_summary = build_order_summary(
+            current_price,
+            (),
+            (),
+            buy_orders,
+            sell_orders,
+        )
+        distance_to_target_pct = None
+        distance_to_reload_pct = None
+        distance_to_invalidation_pct = None
+
     actionability_state = _derive_card_actionability_state(
         scenario_type=scenario_type,
         action_label=action_label,
@@ -3321,6 +3424,7 @@ def build_profit_plan_card(
         primary_state=primary_state,
         current_price=current_price,
         invalidation_level=invalidation_level,
+        canonical_native_map_truth_available=canonical_native_map_truth_available,
     )
 
     return ProfitPlanCard(
@@ -3364,7 +3468,7 @@ def build_profit_plan_card(
         fib_nav_context=fib_nav_context,
         presentation_mode=presentation_mode,
         breath_curve=breath_curve,
-        evidence=evidence or CardEvidence(),
+        evidence=card_evidence,
     )
 
 
@@ -4493,12 +4597,21 @@ def render_plan_card(
         # Breathline is research-only / disabled for actions — presented as muted context.
         _metric_block("Breathline context", BREATHLINE_DISABLED_SHORT),
     ]
+    if card.short_context_display_state == "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT":
+        metrics_blocks.append(
+            _metric_block("Map context", _short_context_display_label(card.short_context_display_state))
+        )
     if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
         metrics_blocks.append(_metric_block("Market event", event_label))
+    invalidation_label = (
+        "Non-canonical reference invalidation"
+        if card.actionability_state == CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE
+        else "Invalidation"
+    )
     metrics_blocks.extend((
         _metric_block(reentry_label, reentry_line),
         _metric_block(target_label, target_line),
-        _metric_block("Invalidation", invalidation_line),
+        _metric_block(invalidation_label, invalidation_line),
         _metric_block("Planning PPP", planning_ppp_text),
         _metric_block("Actionable PPP", actionable_ppp_text),
     ))

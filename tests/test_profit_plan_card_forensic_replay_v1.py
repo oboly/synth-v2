@@ -102,10 +102,13 @@ def test_replay_uses_native_short_rank_for_rollover_selection(tmp_path: Path) ->
         by_id["target_changed_after_map_rollover"]["selected_map"]["map_cycle_id"]
         == "KKK|SHORT|4h|active-2"
     )
-    assert by_id["target_changed_after_map_rollover"]["card_semantics"]["active_target"] == "120.44"
+    rollover_card = by_id["target_changed_after_map_rollover"]["card_semantics"]
+    assert rollover_card["active_target"] is None
+    assert rollover_card["event_state"] == "CONTEXT_UNAVAILABLE"
+    assert rollover_card["action_label"] == "REVIEW_CONTEXT"
 
 
-def test_stale_old_map_order_is_recorded_as_lineage_violation(tmp_path: Path) -> None:
+def test_stale_old_map_order_does_not_create_lineage_claim_without_canonical_truth(tmp_path: Path) -> None:
     output_dir = _run(tmp_path)
     violations = _violations(output_dir / "invariant_violations.csv")
 
@@ -115,8 +118,7 @@ def test_stale_old_map_order_is_recorded_as_lineage_violation(tmp_path: Path) ->
         if row["fixture_id"] == "stale_open_order_at_old_map_level"
         and row["invariant_id"] == "I006_ORDER_ROWS_MATCH_ACTIVE_MAP_LINEAGE"
     ]
-    assert matching, "old-map order coverage must be recorded as a forensic violation"
-    assert matching[0]["severity"] == "HIGH"
+    assert not matching, "reporting must not evaluate active-map order lineage from transient map rows"
 
 
 def test_stale_current_price_fixture_blocks_action_semantics(tmp_path: Path) -> None:
@@ -124,8 +126,8 @@ def test_stale_current_price_fixture_blocks_action_semantics(tmp_path: Path) -> 
     by_id = {row["fixture_id"]: row for row in _jsonl(output_dir / "fixture_results.jsonl")}
     stale = by_id["stale_current_price"]["card_semantics"]
 
-    assert stale["primary_state"] == "STALE_CURRENT_PRICE"
-    assert stale["action_label"] == "NO_CURRENT_PRICE"
+    assert stale["primary_state"] == "CONTEXT_UNAVAILABLE"
+    assert stale["action_label"] == "REVIEW_CONTEXT"
     assert stale["active_target"] is None
     assert stale["target_exit_zone"] == []
     assert "ORDER_DATA_UNAVAILABLE" in stale["ladder_states"]
@@ -140,7 +142,7 @@ def test_contradictory_status_fixture_records_lifecycle_status_violation(tmp_pat
         if row["fixture_id"] == "contradictory_source_statuses_or_broken_lineage"
     }
 
-    assert "I003_INVALIDATED_MAP_NOT_ACTIVE_CONTEXT" in ids
+    assert "I003_INVALIDATED_MAP_NOT_ACTIVE_CONTEXT" not in ids
     assert "I008_LIFECYCLE_SOURCE_STATUS_COMPATIBILITY" in ids
 
 

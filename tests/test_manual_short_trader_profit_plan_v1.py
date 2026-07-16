@@ -171,6 +171,7 @@ def _make_card(
     history_candles_since_activation: tuple[TargetHistoryCandle, ...] = (),
     symbol: str = "WLD",
     market: str = "WLD-EUR",
+    evidence: CardEvidence | None = None,
 ) -> ProfitPlanCard:
     return build_profit_plan_card(
         symbol=symbol,
@@ -190,6 +191,7 @@ def _make_card(
         history_low_since_activation=history_low_since_activation,
         history_candles_since_activation=history_candles_since_activation,
         presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=evidence or _fix_ladder_ready_evidence(),
     )
 
 
@@ -325,10 +327,17 @@ def test_load_zone_contexts_prefers_native_short_rows() -> None:
             native_short_rows_path=native_paths["rows_csv"],
             fib_map_rows_path=fib_rows,
         )
-        assert result.input_status_by_symbol["WLD"] == "NATIVE_SHORT_CONTEXT_AVAILABLE"
-        assert result.coverage_status_by_symbol["WLD"] == "NATIVE_SHORT_CONTEXT_AVAILABLE"
-        assert result.display_state_by_symbol["WLD"] == "HAS_NATIVE_SHORT_FIB_CONTEXT"
+        assert result.input_status_by_symbol["WLD"] == "TRANSIENT_NON_CANONICAL_CONTEXT_AVAILABLE"
+        assert result.coverage_status_by_symbol["WLD"] == "TRANSIENT_NON_CANONICAL_CONTEXT_AVAILABLE"
+        assert result.display_state_by_symbol["WLD"] == "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT"
         assert result.fib_ext_by_symbol["WLD"].ext_1_618 == Decimal("0.515600")
+        evidence = result.evidence_by_symbol["WLD"]
+        assert evidence.native_map_id == "DATA_UNAVAILABLE"
+        assert evidence.native_map_status == "DATA_UNAVAILABLE"
+        assert evidence.selected_map_tier == "TRANSIENT_NON_CANONICAL_REFERENCE"
+        assert evidence.lifecycle_state == "DATA_UNAVAILABLE"
+        assert evidence.rollover_state == "DATA_UNAVAILABLE"
+        assert evidence.previous_map_cycle_id == "DATA_UNAVAILABLE"
 
 
 def test_load_zone_contexts_keeps_partial_native_gap_truthful_even_with_legacy_row() -> None:
@@ -652,8 +661,10 @@ def test_plume_without_fib_row_shows_truthful_short_context_gap() -> None:
         symbol="PLUME",
         market="PLUME-EUR",
     )
-    assert card.primary_state == "NO_NATIVE_SHORT_FIB_CONTEXT"
+    assert card.primary_state == "CONTEXT_UNAVAILABLE"
     assert card.primary_state != "INSUFFICIENT_DATA"
+    assert card.action_label == "REVIEW_CONTEXT"
+    assert card.actionability_state == "CONTEXT_UNAVAILABLE"
     assert card.current_price == Decimal("0.155000")
     assert card.short_context_coverage_status == "FIB_MAP_SYMBOL_MISSING"
 
@@ -718,6 +729,7 @@ def test_stale_current_price_blocks_actionable_profit_plan_outputs() -> None:
         current_price_age_min=Decimal("2880"),
         fib_ext=_wld_fib_ext(),
         presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=dataclasses.replace(_fix_ladder_ready_evidence(), price_freshness_state="STALE_CURRENT_PRICE"),
     )
     assert card.primary_state == "STALE_CURRENT_PRICE"
     assert card.action_label == "NO_CURRENT_PRICE"
@@ -766,6 +778,52 @@ def _json_row_for(card: ProfitPlanCard) -> dict:
         writer_instance_id="writer-fixed",
     )
     return snapshot["symbols"][0]
+
+
+def test_seven_unavailable_native_cards_fail_closed_with_reference_only_bridge() -> None:
+    for symbol in ("ETH", "HBAR", "LINK", "PLUME", "XLM", "FIL", "POL"):
+        card = _make_card(
+            symbol=symbol,
+            market=f"{symbol}-EUR",
+            current_price="0.7600",
+            fib_ext=_wld_fib_ext(),
+            reentry=_fet_reentry(),
+            history_high_since_activation=Decimal("0.7600"),
+            history_candles_since_activation=_COMPLETED_MAP_CANDLES,
+            evidence=CardEvidence(
+                map_cycle_id=f"{symbol}|SHORT|4h|bridge",
+                native_map_id="DATA_UNAVAILABLE",
+                native_map_status="DATA_UNAVAILABLE",
+                selected_map_reason="Newer active bridge map selected",
+                selected_map_tier="CURRENT_ACTIVE_MAP",
+                lifecycle_state="TARGET_REACHED_OR_PASSED",
+                rollover_state="CASE_A_NEWER_ACTIVE_SELECTED",
+            ),
+        )
+        row = _json_row_for(card)
+        html = render_plan_card(card, buy_orders=(), sell_orders=())
+        evidence_rows = {item["key"]: item for item in row["evidence_rows"]}
+
+        assert row["scenario_type"] == "CONTEXT_UNAVAILABLE"
+        assert row["action_label"] == "REVIEW_CONTEXT"
+        assert row["effective_action"] == "REVIEW CONTEXT"
+        assert row["event_state"] == "CONTEXT_UNAVAILABLE"
+        assert row["actionability_state"] == "CONTEXT_UNAVAILABLE"
+        assert row["all_sell_targets_completed"] is False
+        assert row["active_target"] is None
+        assert row["target_exit_zone"] == []
+        assert row["target_level_statuses"] == []
+        assert row["order_summary"]["missing_suggested"] == []
+        assert row["map_switch_review_required"] is False
+        assert row["sell_zone"]  # preserved bridge geometry, reference-only
+        assert evidence_rows["map_lifecycle"]["status"] == "DATA_UNAVAILABLE"
+        assert evidence_rows["per_level_status"]["status"] == "NON_CANONICAL_REFERENCE"
+        assert "Transient SHORT context (non-canonical reference)" in html
+        assert "Non-canonical reference target zone" in html
+        assert "MAP SWITCH REVIEW" not in html
+        assert "MAP EXPIRED" not in html
+        assert "WAIT FOR NEW MAP" not in html
+        assert "FIX LADDER" not in html
 
 
 def test_p0c_selected_map_identity_appears_in_canonical_json_and_html_evidence_attrs() -> None:
@@ -835,7 +893,7 @@ def test_p0c_stale_price_json_and_html_suppress_action_like_distance_semantics()
         current_price_age_min=Decimal("2880"),
         fib_ext=_wld_fib_ext(),
         presentation_mode=CARD_MODE_POSITION_HELD,
-        evidence=CardEvidence(price_freshness_state="STALE_CURRENT_PRICE"),
+        evidence=dataclasses.replace(_fix_ladder_ready_evidence(), price_freshness_state="STALE_CURRENT_PRICE"),
     )
     row = _json_row_for(card)
     html = render_plan_card(card, buy_orders=(), sell_orders=())
@@ -868,7 +926,7 @@ def test_p0c_missing_price_status_fail_closes_without_action_like_output() -> No
         short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         presentation_mode=CARD_MODE_POSITION_HELD,
-        evidence=CardEvidence(price_freshness_state="FRESH"),
+        evidence=dataclasses.replace(_fix_ladder_ready_evidence(), price_freshness_state="FRESH"),
     )
     row = _json_row_for(card)
     html = render_plan_card(card, buy_orders=(), sell_orders=())
@@ -900,6 +958,7 @@ def test_p0c_missing_price_without_status_defensively_normalizes_to_missing_curr
         short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=_fix_ladder_ready_evidence(),
     )
     row = _json_row_for(card)
     html = render_plan_card(card, buy_orders=(), sell_orders=())
@@ -1867,9 +1926,10 @@ def test_navigation_only_card_shows_navigation_wording() -> None:
         short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
-        fib_nav_context=_nav_context(),
-        presentation_mode=CARD_MODE_POSITION_HELD,
-    )
+            fib_nav_context=_nav_context(),
+            presentation_mode=CARD_MODE_POSITION_HELD,
+            evidence=_fix_ladder_ready_evidence(),
+        )
     html = render_plan_card(card)
     assert card.actionability_state == "NAVIGATION_ONLY"
     assert card.action_label == "NAVIGATION_ONLY"
@@ -2864,6 +2924,7 @@ def _ldo_card_with_prices(
             missed_main_rebuy_by_pct=None,
         ),
         presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=_fix_ladder_ready_evidence(),
     )
 
 
@@ -3033,9 +3094,10 @@ def test_analytical_source_prices_available_in_raw_card() -> None:
             price_band="BELOW_1272",
             ext_1_272_touched_and_rejected=False,
             retesting_breakout_gate=False,
-        ),
-        presentation_mode=CARD_MODE_POSITION_HELD,
-    )
+            ),
+            presentation_mode=CARD_MODE_POSITION_HELD,
+            evidence=_fix_ladder_ready_evidence(),
+        )
     # Raw card contains the original analytical values
     assert raw_1272 in card.target_exit_zone or raw_1618 in card.target_exit_zone
 
@@ -3153,9 +3215,10 @@ def test_needs_recompute_card_renders_action_label_not_review_map() -> None:
         short_context_input_status="HAS_ZONE_CONTEXT",
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
-        fib_ext=_wld_fib_ext(),
-        presentation_mode=CARD_MODE_POSITION_HELD,
-    )
+            fib_ext=_wld_fib_ext(),
+            presentation_mode=CARD_MODE_POSITION_HELD,
+            evidence=_fix_ladder_ready_evidence(),
+        )
     assert card.actionability_state == "NEEDS_RECOMPUTE"
     html = render_plan_card(card)
     assert "TAKE PROFIT NEAR" in html
@@ -3180,9 +3243,10 @@ def test_navigation_only_card_renders_navigation_map_label() -> None:
         reentry=_fet_reentry(),
         history_high_since_activation=Decimal("0.7600"),
         history_candles_since_activation=_COMPLETED_MAP_CANDLES,
-        fib_nav_context=_nav_context(),
-        presentation_mode=CARD_MODE_POSITION_HELD,
-    )
+            fib_nav_context=_nav_context(),
+            presentation_mode=CARD_MODE_POSITION_HELD,
+            evidence=_fix_ladder_ready_evidence(),
+        )
     assert card.actionability_state == "NAVIGATION_ONLY"
     html = render_plan_card(card)
     assert "NAVIGATION MAP" in html
@@ -3204,9 +3268,10 @@ def test_non_active_card_zones_do_not_emit_missing_row_states() -> None:
         short_context_input_status="HAS_ZONE_CONTEXT",
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
-        fib_ext=_wld_fib_ext(),
-        presentation_mode=CARD_MODE_POSITION_HELD,
-    )
+            fib_ext=_wld_fib_ext(),
+            presentation_mode=CARD_MODE_POSITION_HELD,
+            evidence=_fix_ladder_ready_evidence(),
+        )
     assert card.actionability_state == "NEEDS_RECOMPUTE"
     rows = build_order_rows(
         card_render_id=card.render_id,
@@ -3237,9 +3302,10 @@ def test_non_active_card_existing_orders_still_render_as_reference_rows() -> Non
         short_context_input_status="HAS_ZONE_CONTEXT",
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
-        fib_ext=_wld_fib_ext(),
-        presentation_mode=CARD_MODE_POSITION_HELD,
-    )
+            fib_ext=_wld_fib_ext(),
+            presentation_mode=CARD_MODE_POSITION_HELD,
+            evidence=_fix_ladder_ready_evidence(),
+        )
     assert card.actionability_state == "NEEDS_RECOMPUTE"
     existing_sell = (_FakeOrder("0.515600", side="sell"),)
     rows = build_order_rows(
@@ -3269,9 +3335,10 @@ def test_active_card_still_emits_missing_rows_and_select_menu() -> None:
         short_context_input_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
         short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
-        fib_ext=_wld_fib_ext(),
-        presentation_mode=CARD_MODE_POSITION_HELD,
-    )
+            fib_ext=_wld_fib_ext(),
+            presentation_mode=CARD_MODE_POSITION_HELD,
+            evidence=_fix_ladder_ready_evidence(),
+        )
     assert card.actionability_state == "ACTIVE_TRADE_SETUP"
     rows = build_order_rows(
         card_render_id=card.render_id,
@@ -4051,9 +4118,10 @@ def test_navigation_map_filter_action_value_matches_canonical() -> None:
         reentry=_fet_reentry(),
         history_high_since_activation=Decimal("0.7600"),
         history_candles_since_activation=_COMPLETED_MAP_CANDLES,
-        fib_nav_context=_nav_context(),
-        presentation_mode=CARD_MODE_POSITION_HELD,
-    )
+            fib_nav_context=_nav_context(),
+            presentation_mode=CARD_MODE_POSITION_HELD,
+            evidence=_fix_ladder_ready_evidence(),
+        )
     assert card.actionability_state == "NAVIGATION_ONLY"
     result = _pp_module._effective_workflow_action(card)
     assert result == "NAVIGATION MAP"
@@ -4481,6 +4549,7 @@ class TestWatchOnlyRotationCard:
             buy_orders=(),
             sell_orders=(),
             presentation_mode=CARD_MODE_WATCH_ONLY_ROTATION,
+            evidence=_fix_ladder_ready_evidence(),
         )
 
     def test_presentation_mode_is_watch_only_rotation(self) -> None:
@@ -4694,6 +4763,7 @@ class TestMarketSelectedCard:
             short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
             fib_ext=_wld_fib_ext(),
             presentation_mode=CARD_MODE_MARKET_SELECTED,
+            evidence=_fix_ladder_ready_evidence(),
         )
         html = render_plan_card(card, buy_orders=(), sell_orders=())
         assert ">NO ACCOUNT ACTION<" in html
@@ -5439,7 +5509,7 @@ def test_ldo_like_html_does_not_pair_unavailable_with_confirmed_current_map() ->
     assert "Projection status" in html
 
 
-def test_near_like_map_expired_is_independent_of_projection_and_blocks_fix_ladder() -> None:
+def test_near_like_transient_expiry_cannot_override_unavailable_projection() -> None:
     card = _near_like_card()
     rows = build_card_evidence_rows(card)
 
@@ -5449,12 +5519,12 @@ def test_near_like_map_expired_is_independent_of_projection_and_blocks_fix_ladde
     action_gate = _row_by_key(rows, "action_gate")
 
     assert projection.status == DATA_UNAVAILABLE_CONST
-    # Lifecycle is independently available/expired regardless of projection status.
-    assert lifecycle.status == "MAP_EXPIRED"
+    assert lifecycle.status == DATA_UNAVAILABLE_CONST
+    assert "TRANSIENT_LIFECYCLE_NOT_CANONICAL" in lifecycle.reason_codes
     # Current map selection must still fail closed to a fallback, not a confirmed claim.
     assert current_map.status != "CURRENT_ACTIVE_MAP"
     assert action_gate.status != "FIX_LADDER"
-    assert action_gate.status == "MAP_EXPIRED"
+    assert action_gate.status == "REVIEW_CONTEXT"
 
 
 def test_fresh_canonical_case_shows_independent_fresh_rows_and_allows_fix_ladder() -> None:
