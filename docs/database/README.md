@@ -195,3 +195,25 @@ Purpose:
 - future-aware labels where explicitly documented
 
 Research outputs must never be consumed by live inference unless transformed into a live-safe strategy and validated separately.
+
+### Sector Taxonomy Metadata
+
+Tables:
+
+```text
+sector_definition
+liquidity_market_cap_definition
+asset_taxonomy_profile
+asset_cluster_membership
+```
+
+Purpose:
+
+- versioned narrative sector and cross-cluster metadata
+- static reviewed liquidity/market-cap classification as a separate dimension
+- complete enabled and research-universe identity coverage
+- no scoring, selection, account, decision, planning, execution, order, or broker authority
+
+`asset.sector` is the local asset's canonical primary narrative sector.
+`asset_profile_snapshot.sector_group_code` remains a separate empirical
+co-movement field and must not be populated from narrative taxonomy.

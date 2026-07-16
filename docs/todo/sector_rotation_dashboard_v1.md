@@ -1,8 +1,13 @@
 # Sector Rotation Dashboard v1
 
+## Status
+
+Blocked on accepted Phase A taxonomy data and Phase B analytics snapshots. No
+GUI implementation has started.
+
 ## Purpose
 
-Expose sector taxonomy, cluster membership, sector scores, breadth, and rotation history in the Synth GUI without implying that price/volume proxies are measured capital flows.
+Expose sector taxonomy, cluster membership, sector scores, participation, and rotation history in the Synth GUI without implying that price/volume proxies are measured capital flows.
 
 This phase depends on:
 
@@ -29,7 +34,7 @@ For every sector show:
 - rotation score;
 - state;
 - confidence;
-- breadth;
+- participation;
 - volume confirmation;
 - timeframe;
 - last update timestamp;
@@ -70,7 +75,7 @@ Show member-level score components:
 Also show:
 
 - eligible versus total members;
-- breadth calculation;
+- participation calculation;
 - capped dominant-member contribution;
 - score component breakdown;
 - data coverage;
@@ -133,7 +138,7 @@ Support:
 
 - Missing sector metadata: `UNCLASSIFIED`.
 - Missing analytics snapshot: `DATA_UNAVAILABLE`.
-- Low breadth: `INSUFFICIENT_BREADTH`.
+- Low participation: `INSUFFICIENT_PARTICIPATION`.
 - Stale snapshot: show age and `STALE` prominently.
 - Never fall back to a previous score without visibly marking it stale.
 - Never show zero as a substitute for unavailable data.

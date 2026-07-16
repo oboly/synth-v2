@@ -1,5 +1,15 @@
 # Sector Taxonomy & Database Seed v1
 
+## Status
+
+Implementation complete for review on the Phase A branch. Migration and
+transactional `--write-db` import remain post-merge operator actions. Canonical
+implementation contract and evidence:
+
+```text
+docs/research/sector_taxonomy_database_seed_v1.md
+```
+
 ## Purpose
 
 Create a deterministic, reviewable taxonomy for Synth assets and load primary sectors plus multi-cluster memberships into the database.
@@ -79,7 +89,7 @@ memberships:
 - RWA_INFRA       0.65
 ```
 
-## Proposed schema
+## Implemented schema
 
 ### `sector_definition`
 
@@ -97,7 +107,8 @@ updated_ts           DATETIME
 ### `asset_cluster_membership`
 
 ```sql
-asset_id             BIGINT
+asset_symbol         VARCHAR(...)
+asset_id             INT NULL
 sector_code          VARCHAR(...)
 membership_weight    DECIMAL(...)
 membership_type      VARCHAR(...)
@@ -106,9 +117,28 @@ source               VARCHAR(...)
 valid_from_ts        DATETIME
 valid_to_ts          DATETIME NULL
 notes                TEXT NULL
+seed_schema_version  VARCHAR(...)
 ```
 
-Use `asset.sector` only for the canonical primary sector. Multi-cluster membership belongs in the separate table.
+Research-only symbols may not have a local `asset` row, so canonical
+`asset_symbol` is required and `asset_id` is nullable. The importer does not
+invent assets or venue mappings.
+
+Use `asset.sector` only for the canonical primary narrative sector.
+Multi-cluster membership belongs in the separate table.
+`asset_profile_snapshot.sector_group_code` remains empirical co-movement data
+and is not populated by this lane.
+
+### `liquidity_market_cap_definition`
+
+Separate static reviewed tier definitions. `SEMI_MAJOR` is valid only here and
+is rejected as a sector code.
+
+### `asset_taxonomy_profile`
+
+One canonical identity row stores nullable local `asset_id`, source aliases,
+enabled/research scope, the separate liquidity/market-cap code, provenance,
+reviewer notes, and seed version.
 
 ## Seed and importer
 
@@ -164,6 +194,21 @@ The stored metadata must support later display of:
 No GUI changes are part of this phase.
 
 ## Acceptance
+
+Repository acceptance evidence on 2026-07-16:
+
+```text
+enabled coverage=429/429
+research coverage=100/100
+canonical assets=448
+reviewed named classifications=103
+explicit UNCLASSIFIED=345
+planned memberships=473
+safe asset.sector updates=421
+preserved existing sectors=4
+destructive downgrades=0
+focused tests=54 passed
+```
 
 - All enabled assets have a primary sector or an explicit `UNCLASSIFIED` status.
 - All research-universe assets have a reviewed classification status.

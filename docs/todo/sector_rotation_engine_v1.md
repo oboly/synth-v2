@@ -1,5 +1,10 @@
 # Sector Rotation Engine v1
 
+## Status
+
+Blocked on Phase A merge, database migration, taxonomy import, and review.
+No rotation scoring implementation has started.
+
 ## Purpose
 
 Build a research-only, explainable sector analytics engine that measures participation, relative strength, volume confirmation, and rotation state across canonical Synth sectors.
@@ -31,8 +36,9 @@ For each sector, venue, timeframe, and as-of timestamp compute:
 
 - weighted return;
 - median return;
-- positive breadth percentage;
-- negative breadth percentage;
+- positive participation percentage;
+- negative participation percentage;
+- participation ratio;
 - relative strength versus BTC;
 - relative strength versus ETH;
 - sector volume share;
@@ -52,7 +58,7 @@ Use an explicit, versioned, explainable formula. Initial proposal:
 
 ```text
 30% relative strength
-25% breadth
+25% participation
 20% volume-share change
 15% momentum persistence
 10% liquidity quality
@@ -74,7 +80,7 @@ Allowed research states should include:
 - `WEAKENING`
 - `LAGGING`
 - `NO_CONFIRMATION`
-- `INSUFFICIENT_BREADTH`
+- `INSUFFICIENT_PARTICIPATION`
 - `DATA_UNAVAILABLE`
 
 Do not call price/volume-derived behavior measured inflow or outflow.
@@ -96,8 +102,9 @@ interval_code            VARCHAR(...)
 asof_ts_utc              DATETIME
 return_weighted          DECIMAL(...)
 return_median            DECIMAL(...)
-breadth_positive_pct     DECIMAL(...)
-breadth_negative_pct     DECIMAL(...)
+positive_participation_pct DECIMAL(...)
+negative_participation_pct DECIMAL(...)
+participation_ratio       DECIMAL(...)
 rs_vs_btc                DECIMAL(...)
 rs_vs_eth                DECIMAL(...)
 volume_share             DECIMAL(...)
@@ -123,9 +130,9 @@ Use a deterministic uniqueness key over sector, venue, interval, as-of timestamp
 - Require a minimum eligible member count.
 - Cap single-asset contribution.
 - Cap liquidity weighting.
-- A one-coin spike must not generate high sector breadth.
+- A one-coin spike must not generate high sector participation.
 - Missing benchmark data must fail closed.
-- Low coverage must produce `DATA_UNAVAILABLE` or `INSUFFICIENT_BREADTH`.
+- Low coverage must produce `DATA_UNAVAILABLE` or `INSUFFICIENT_PARTICIPATION`.
 - Keep timeframes separate; do not silently average them.
 - Preserve raw score components for auditability.
 - No automatic selection or trading impact.
