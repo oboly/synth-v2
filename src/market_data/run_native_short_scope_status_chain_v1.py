@@ -52,11 +52,16 @@ from src.market_data.native_short_scope_status_materializer_v1 import (
     run_native_short_scope_status_materializer,
 )
 from src.market_data.native_short_scope_status_v1 import NativeShortMaterializerRunRecord
+from src.market_data.native_short_repository_source_identity_v1 import (
+    NativeShortRepositorySourceInspector,
+    build_verified_process_provenance,
+    inspect_running_repository_source,
+)
 from src.market_data.native_short_writer_provenance_v1 import (
+    CHAIN_TRIGGER_TYPE,
     NativeShortWriterExecutionMode,
     NativeShortWriterProvenance,
     NativeShortWriterProvenanceError,
-    build_process_provenance,
     validate_native_short_writer_provenance,
 )
 
@@ -65,7 +70,7 @@ RUNNER_NAME = "run_native_short_scope_status_chain_v1"
 RUNNER_VERSION = "0.1"
 RUNTIME_MODE = "market_data_write"
 WORKER_COUNT = 1
-TRIGGER_TYPE = "SCHEDULED_4H_MARKET_CHAIN"
+TRIGGER_TYPE = CHAIN_TRIGGER_TYPE
 EXPECTED_LEVEL_ROWS_PER_OBSERVED_SCOPE = 3
 PRIMARY_LOOKBACK = timedelta(days=60)
 SUPPORTING_LOOKBACK = timedelta(days=21)
@@ -587,10 +592,16 @@ def _interruption_signal_name(exc: BaseException) -> str:
     return str(exc) or "SIGINT"
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    inspect_repository_source: NativeShortRepositorySourceInspector = (
+        inspect_running_repository_source
+    ),
+) -> int:
     args = parse_args(argv)
     try:
-        provenance = build_process_provenance(
+        provenance = build_verified_process_provenance(
             writer_entrypoint=args.writer_entrypoint,
             runner_name=RUNNER_NAME,
             runner_version=RUNNER_VERSION,
@@ -598,6 +609,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             repository_commit_sha=args.repository_commit,
             trigger_type=args.trigger_type,
             trigger_ref=args.trigger_ref,
+            inspect_repository_source=inspect_repository_source,
         )
     except NativeShortWriterProvenanceError as exc:
         print(f"INVALID_PROVENANCE runner={RUNNER_NAME} detail={exc}", file=sys.stderr, flush=True)

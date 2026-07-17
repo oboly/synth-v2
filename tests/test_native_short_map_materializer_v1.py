@@ -43,6 +43,9 @@ from src.market_data.native_short_map_materializer_v1 import (
 from src.market_data.run_native_short_map_materializer_v1 import parse_args, parse_symbols
 from src.market_data import native_short_map_materializer_v1 as materializer
 from src.market_data import run_native_short_map_materializer_v1 as runner
+from src.market_data.native_short_repository_source_identity_v1 import (
+    NativeShortRepositorySourceState,
+)
 from src.market_data.native_short_writer_provenance_v1 import (
     CANONICAL_REPOSITORY_WRITER_OWNER,
     CHAIN_TRIGGER_TYPE,
@@ -86,6 +89,16 @@ _MANUAL_CLI_ARGS = [
     "--trigger-ref",
     "materializer-test",
 ]
+
+
+def _run_main(argv: list[str]) -> int:
+    return runner.main(
+        argv,
+        inspect_repository_source=lambda: NativeShortRepositorySourceState(
+            head_sha="a" * 40,
+            status_porcelain="",
+        ),
+    )
 
 
 def _scope(symbol: str = "BTC") -> NativeShortMapScopeKey:
@@ -586,7 +599,7 @@ def test_write_rejects_multi_symbol_before_db(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(runner, "get_connection", fail_get_connection)
 
-    assert runner.main(["--symbols", "BTC,ETH", "--write", *_MANUAL_CLI_ARGS]) == 2
+    assert _run_main(["--symbols", "BTC,ETH", "--write", *_MANUAL_CLI_ARGS]) == 2
 
 
 def test_write_rejects_zero_symbol_before_db(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -595,7 +608,7 @@ def test_write_rejects_zero_symbol_before_db(monkeypatch: pytest.MonkeyPatch) ->
 
     monkeypatch.setattr(runner, "get_connection", fail_get_connection)
 
-    assert runner.main(["--symbols", "", "--write", *_MANUAL_CLI_ARGS]) == 2
+    assert _run_main(["--symbols", "", "--write", *_MANUAL_CLI_ARGS]) == 2
 
 
 def test_dry_run_accepts_multi_symbol(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -613,7 +626,7 @@ def test_dry_run_accepts_multi_symbol(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *, venue, symbols, now_utc: [_available_row(symbol) for symbol in symbols],
     )
 
-    assert runner.main(["--symbols", "BTC,ETH", "--output", "summary", *_MANUAL_CLI_ARGS]) == 0
+    assert _run_main(["--symbols", "BTC,ETH", "--output", "summary", *_MANUAL_CLI_ARGS]) == 0
     assert run_conns[0].commit_count == 0
     assert run_conns[1].commit_count == 0
     assert run_conns[0].rollback_count == 1
@@ -684,7 +697,7 @@ def test_runner_dry_run_invokes_no_insert_and_no_commit(monkeypatch: pytest.Monk
         lambda *, venue, symbols, now_utc: [_available_row("BTC")],
     )
 
-    assert runner.main(["--symbols", "BTC", "--output", "summary", *_MANUAL_CLI_ARGS]) == 0
+    assert _run_main(["--symbols", "BTC", "--output", "summary", *_MANUAL_CLI_ARGS]) == 0
     assert run_conn.commit_count == 0
     assert run_conn.rollback_count == 1
     assert all("INSERT INTO" not in sql for sql, _ in run_conn.log)
@@ -713,7 +726,7 @@ def test_runner_failure_after_map_insert_rolls_back_no_commit(
     )
     monkeypatch.setattr(runner, "materialize_scope_symbol", fail_after_map_insert)
 
-    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary", *_MANUAL_CLI_ARGS]) == 1
+    assert _run_main(["--symbols", "BTC", "--write", "--output", "summary", *_MANUAL_CLI_ARGS]) == 1
     assert run_conn.begin_count == 1
     assert run_conn.commit_count == 0
     assert run_conn.rollback_count == 1
@@ -743,7 +756,7 @@ def test_runner_failure_after_generation_event_insert_rolls_back_no_commit(
     )
     monkeypatch.setattr(runner, "materialize_scope_symbol", fail_after_generation_insert)
 
-    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary", *_MANUAL_CLI_ARGS]) == 1
+    assert _run_main(["--symbols", "BTC", "--write", "--output", "summary", *_MANUAL_CLI_ARGS]) == 1
     assert run_conn.begin_count == 1
     assert run_conn.commit_count == 0
     assert run_conn.rollback_count == 1
@@ -785,7 +798,7 @@ def test_runner_write_commits_once_after_materializer_success(
     )
     monkeypatch.setattr(runner, "materialize_scope_symbol", complete_materialization)
 
-    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary", *_MANUAL_CLI_ARGS]) == 0
+    assert _run_main(["--symbols", "BTC", "--write", "--output", "summary", *_MANUAL_CLI_ARGS]) == 0
     assert run_conn.begin_count == 1
     assert run_conn.commit_count == 1
     assert run_conn.rollback_count == 0
@@ -811,7 +824,7 @@ def test_runner_write_rejects_scope_state_drift_under_lock(
         lambda *, venue, symbols, now_utc: [_available_row("BTC")],
     )
 
-    assert runner.main(["--symbols", "BTC", "--write", "--output", "summary", *_MANUAL_CLI_ARGS]) == 1
+    assert _run_main(["--symbols", "BTC", "--write", "--output", "summary", *_MANUAL_CLI_ARGS]) == 1
     assert run_conn.begin_count == 1
     assert run_conn.commit_count == 0
     assert run_conn.rollback_count == 1
@@ -996,8 +1009,8 @@ def test_write_available_first_map_defaults_trigger_type_to_manual_canary() -> N
     assert [params[12] for params in generation_params] == [TRIGGER_TYPE, TRIGGER_TYPE]
 
 
-def test_write_available_first_map_propagates_explicit_scheduled_trigger_type() -> None:
-    """An explicit runtime provenance trigger (e.g. the scheduled 4h chain) must
+def test_write_available_first_map_propagates_explicit_repository_chain_trigger_type() -> None:
+    """An explicit runtime provenance trigger (the repository 4h chain) must
     reach both the ATTEMPT_STARTED and PUBLISHED generation events instead
     of the hardcoded manual-canary constant or NULL."""
     conn = _RecordingConn()
@@ -1013,8 +1026,8 @@ def test_write_available_first_map_propagates_explicit_scheduled_trigger_type() 
     generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
     assert len(generation_params) == 2
     assert [params[12] for params in generation_params] == [
-        "SCHEDULED_4H_MARKET_CHAIN",
-        "SCHEDULED_4H_MARKET_CHAIN",
+        CHAIN_TRIGGER_TYPE,
+        CHAIN_TRIGGER_TYPE,
     ]
 
 
@@ -1189,8 +1202,8 @@ def test_new_unavailable_write_propagates_explicit_trigger_type_to_rejected_even
     generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
     assert len(generation_params) == 2
     assert [params[12] for params in generation_params] == [
-        "SCHEDULED_4H_MARKET_CHAIN",
-        "SCHEDULED_4H_MARKET_CHAIN",
+        CHAIN_TRIGGER_TYPE,
+        CHAIN_TRIGGER_TYPE,
     ]
 
 

@@ -513,8 +513,8 @@ def test_chain_materializes_level_status_after_projection_for_exact_explicit_sco
 
 
 def test_chain_propagates_run_trigger_type_into_map_materializer_call() -> None:
-    """The bounded chain's own trigger_type (e.g. the scheduled-runner's
-    SCHEDULED_4H_MARKET_CHAIN) must reach materialize_scope_symbol_fn so
+    """The bounded chain's REPOSITORY_4H_MARKET_CHAIN trigger must reach
+    materialize_scope_symbol_fn so
     nested map generation events carry genuine runtime provenance instead of
     materialize_scope_symbol's own hardcoded manual-canary default."""
     conn = _FakeConn()
@@ -543,7 +543,7 @@ def test_chain_propagates_run_trigger_type_into_map_materializer_call() -> None:
         materialize_scope_symbol_fn=record_trigger_type,
     )
 
-    assert captured_trigger_types == ["SCHEDULED_4H_MARKET_CHAIN"]
+    assert captured_trigger_types == [CHAIN_TRIGGER_TYPE]
 
 
 def test_chain_surfaces_blocked_level_status_as_failed_market_data_run() -> None:

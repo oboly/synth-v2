@@ -12,6 +12,9 @@ from typing import Any
 import pytest
 
 from src.market_data import run_native_short_scope_status_chain_v1 as runner
+from src.market_data.native_short_repository_source_identity_v1 import (
+    NativeShortRepositorySourceState,
+)
 from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapScopeKey
 from src.market_data.native_short_scope_status_v1 import NativeShortMaterializerRunRecord
 from src.market_data.native_short_writer_provenance_v1 import (
@@ -59,6 +62,10 @@ _CLI_PROVENANCE_ARGS = [
 ]
 
 
+def _inspect_clean_source() -> NativeShortRepositorySourceState:
+    return NativeShortRepositorySourceState(head_sha="a" * 40, status_porcelain="")
+
+
 class _FakeConn:
     def __init__(self) -> None:
         self.begin_count = 0
@@ -100,9 +107,10 @@ def test_canonical_service_keeps_single_timer_and_invokes_native_chain_in_order(
     timer = TIMER_PATH.read_text(encoding="utf-8")
 
     etl = "python -m src.etl.bitvavo.run_candles_etl"
+    source_verification = "python -m src.market_data.native_short_repository_source_identity_v1"
     native = "bash scripts/run_native_short_scope_status_chain_once.sh"
     features = "python -m src.features.run_feat_candle"
-    assert chain.index(etl) < chain.index(native) < chain.index(features)
+    assert chain.index(source_verification) < chain.index(etl) < chain.index(native) < chain.index(features)
     assert "scripts/run_chain_4h.sh" in service
     assert "Unit=synth-chain-4h.service" in timer
     assert "native-short" not in service.lower()
@@ -127,10 +135,11 @@ def test_wrapper_has_native_lock_exact_scope_defaults_and_safety_markers() -> No
         "--execution-mode CHAIN",
         '--writer-entrypoint "${WRITER_ENTRYPOINT}"',
         '--repository-commit "${REPOSITORY_COMMIT}"',
-        "--trigger-type SCHEDULED_4H_MARKET_CHAIN",
+        "--trigger-type REPOSITORY_4H_MARKET_CHAIN",
         '--trigger-ref "${TRIGGER_REF}"',
     ):
         assert argument in source
+    assert "SCHEDULED_4H_MARKET_CHAIN" not in source
     assert "git rev-parse --verify HEAD" in source
     assert "systemctl" not in source
     for marker in (
@@ -230,7 +239,8 @@ def test_exact_btc_smoke_arguments_and_terminal_summary(
                 "--as-of-utc",
                 _AS_OF.isoformat(),
                 *_CLI_PROVENANCE_ARGS,
-            ]
+            ],
+            inspect_repository_source=_inspect_clean_source,
         )
     finally:
         sys.stdout = previous_stdout
@@ -566,7 +576,8 @@ def test_main_reports_sigint_with_exit_130(monkeypatch: pytest.MonkeyPatch) -> N
                 "--supporting-interval", "1h",
                 "--as-of-utc", _AS_OF.isoformat(),
                 *_CLI_PROVENANCE_ARGS,
-            ]
+            ],
+            inspect_repository_source=_inspect_clean_source,
         )
     finally:
         sys.stdout = previous_stdout
@@ -598,7 +609,8 @@ def test_main_reports_sigterm_with_exit_143(monkeypatch: pytest.MonkeyPatch) -> 
                 "--supporting-interval", "1h",
                 "--as-of-utc", _AS_OF.isoformat(),
                 *_CLI_PROVENANCE_ARGS,
-            ]
+            ],
+            inspect_repository_source=_inspect_clean_source,
         )
     finally:
         sys.stdout = previous_stdout
@@ -631,7 +643,8 @@ def test_main_installs_and_restores_sigterm_handler(monkeypatch: pytest.MonkeyPa
                 "--supporting-interval", "1h",
                 "--as-of-utc", _AS_OF.isoformat(),
                 *_CLI_PROVENANCE_ARGS,
-            ]
+            ],
+            inspect_repository_source=_inspect_clean_source,
         )
     finally:
         sys.stdout = previous_stdout

@@ -9,6 +9,9 @@ from typing import Any
 import pytest
 
 from src.market_data import run_native_short_map_scope_seed_canary_v1 as runner
+from src.market_data.native_short_repository_source_identity_v1 import (
+    NativeShortRepositorySourceState,
+)
 from src.market_data.native_short_writer_provenance_v1 import (
     CANONICAL_REPOSITORY_WRITER_OWNER,
     MANUAL_SCOPE_SEED_TRIGGER_TYPE,
@@ -35,6 +38,10 @@ _PROVENANCE_ARGS = [
     "--repository-commit", "a" * 40,
     "--trigger-ref", "scope-seed-test",
 ]
+
+
+def _inspect_clean_source() -> NativeShortRepositorySourceState:
+    return NativeShortRepositorySourceState(head_sha="a" * 40, status_porcelain="")
 
 
 def _market_row(
@@ -226,7 +233,10 @@ def _capture_main(monkeypatch: pytest.MonkeyPatch, conn: _FakeConn, argv: list[s
     sys.stdout = stdout
     sys.stderr = stderr
     try:
-        code = runner.main([*argv, *_PROVENANCE_ARGS])
+        code = runner.main(
+            [*argv, *_PROVENANCE_ARGS],
+            inspect_repository_source=_inspect_clean_source,
+        )
     finally:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
@@ -245,7 +255,10 @@ def _capture_main_no_db(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> tup
     sys.stdout = stdout
     sys.stderr = stderr
     try:
-        code = runner.main([*argv, *_PROVENANCE_ARGS])
+        code = runner.main(
+            [*argv, *_PROVENANCE_ARGS],
+            inspect_repository_source=_inspect_clean_source,
+        )
     finally:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
@@ -514,7 +527,10 @@ def test_connection_failure_reports_failed_result(monkeypatch: pytest.MonkeyPatc
     old_stdout = sys.stdout
     sys.stdout = stdout
     try:
-        code = runner.main(["--symbols", "BTC", "--output", "summary", *_PROVENANCE_ARGS])
+        code = runner.main(
+            ["--symbols", "BTC", "--output", "summary", *_PROVENANCE_ARGS],
+            inspect_repository_source=_inspect_clean_source,
+        )
     finally:
         sys.stdout = old_stdout
     out = stdout.getvalue()

@@ -11,6 +11,9 @@ from typing import Any
 import pytest
 
 from src.market_data import run_native_short_map_level_status_materializer_v1 as runner
+from src.market_data.native_short_repository_source_identity_v1 import (
+    NativeShortRepositorySourceState,
+)
 from src.market_data.native_short_map_level_status_materializer_v1 import (
     ACTIVE_EVALUATION,
     BLOCKED,
@@ -94,7 +97,13 @@ def _capture_main(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> tuple[int
     sys.stdout = stdout
     sys.stderr = stderr
     try:
-        code = runner.main(argv)
+        code = runner.main(
+            argv,
+            inspect_repository_source=lambda: NativeShortRepositorySourceState(
+                head_sha="a" * 40,
+                status_porcelain="",
+            ),
+        )
     finally:
         sys.stdout = old_stdout
         sys.stderr = old_stderr

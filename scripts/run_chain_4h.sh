@@ -51,6 +51,10 @@ run_step() {
     fi
 }
 
+NATIVE_SHORT_REPOSITORY_COMMIT="$(git rev-parse --verify HEAD)" || exit 2
+run_step python -m src.market_data.native_short_repository_source_identity_v1 \
+    --repository-commit "${NATIVE_SHORT_REPOSITORY_COMMIT}"
+
 CHAIN_4H_END_TS="$(
     python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); h=(n.hour//4)*4; print(n.replace(hour=h, minute=0, second=0, microsecond=0).isoformat())'
 )"
@@ -68,7 +72,6 @@ run_step python -m src.etl.bitvavo.run_candles_etl \
     --start "$CHAIN_4H_ETL_START_TS" \
     --end "$CHAIN_4H_END_TS"
 
-NATIVE_SHORT_REPOSITORY_COMMIT="$(git rev-parse --verify HEAD)" || exit 2
 run_step env \
     SYNTH_NATIVE_SHORT_REPOSITORY_COMMIT="${NATIVE_SHORT_REPOSITORY_COMMIT}" \
     SYNTH_NATIVE_SHORT_WRITER_ENTRYPOINT="scripts/run_chain_4h.sh" \

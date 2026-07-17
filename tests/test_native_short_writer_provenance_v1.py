@@ -26,6 +26,7 @@ from src.market_data.native_short_writer_provenance_v1 import (
     TEST_REPOSITORY_COMMIT_SHA,
     TEST_TRIGGER_TYPE,
     TEST_WRITER_ENTRYPOINT,
+    UNSUPPORTED_SCHEDULED_CHAIN_TRIGGER_TYPE,
     NativeShortWriterExecutionMode,
     NativeShortWriterProvenance,
     NativeShortWriterProvenanceError,
@@ -113,6 +114,36 @@ def test_valid_modes_are_explicit_and_distinct() -> None:
     for value in values:
         assert validate_native_short_writer_provenance(value) is value
     assert {str(value.execution_mode) for value in values} == {"CHAIN", "MANUAL", "TEST"}
+
+
+def test_chain_trigger_is_repository_truth_and_rejects_scheduler_claim() -> None:
+    assert CHAIN_TRIGGER_TYPE == "REPOSITORY_4H_MARKET_CHAIN"
+    original = chain_provenance()
+    with pytest.raises(NativeShortWriterProvenanceError, match="CHAIN_TRIGGER_CONTRADICTION"):
+        validate_native_short_writer_provenance(
+            NativeShortWriterProvenance(
+                **{
+                    **original.__dict__,
+                    "trigger_type": UNSUPPORTED_SCHEDULED_CHAIN_TRIGGER_TYPE,
+                }
+            )
+        )
+
+
+def test_chain_and_manual_paths_are_distinct_without_host_scheduler_identity() -> None:
+    chain = chain_provenance()
+    manual = manual_provenance()
+    assert (str(chain.execution_mode), chain.trigger_type) == (
+        "CHAIN",
+        "REPOSITORY_4H_MARKET_CHAIN",
+    )
+    assert (str(manual.execution_mode), manual.trigger_type) == (
+        "MANUAL",
+        MANUAL_MAP_TRIGGER_TYPE,
+    )
+    fields = NativeShortWriterProvenance.__dataclass_fields__
+    for unsupported_field in ("systemd_unit", "service_name", "timer_name", "scheduler_id"):
+        assert unsupported_field not in fields
 
 
 @pytest.mark.parametrize(

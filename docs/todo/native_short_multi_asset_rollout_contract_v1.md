@@ -11,7 +11,7 @@
 - `src/market_data/run_native_short_multi_asset_audit_v1.py`;
 - canonical native SHORT scope, map, lifecycle, generation, cadence, status, health-report, materializer, and 4h-owner implementation on `origin/main`;
 - read-only production evidence captured on 2026-07-16.
-- PR 2b writer-surface audit and repository implementation based on `0c3f2fd0d3f67b1f4a01396878016e6816e918d9`.
+- PR 2b writer-surface audit and repository implementation rebased onto `a72457ec09e321f54d87a93bdba4c0699b9ea739`.
 
 ## Current state / facts
 
@@ -53,12 +53,28 @@ The independent fields are:
 - `runner_name` and `runner_version`: stable runner implementation identity;
 - `invocation_uuid`: canonical UUID, persisted as the run UUID and linked to produced writer evidence;
 - `execution_mode`: exactly `CHAIN`, `MANUAL`, or `TEST`, supplied explicitly;
-- `repository_commit_sha`: explicit validated 40-character source commit; production modes reject the deterministic test identity;
+- `repository_commit_sha`: explicit validated 40-character source commit; production modes reject the deterministic test identity and require exact equality with the running checkout `HEAD`;
 - `host_name` and `process_id`: actual current-process host facts captured at invocation;
-- `trigger_type` and `trigger_ref`: explicit reviewed trigger metadata, never derived from cadence, process ancestry, systemd state, timestamps, ordering, file mtimes, or later host inspection;
+- `trigger_type` and `trigger_ref`: explicit reviewed trigger metadata, never derived from cadence, process ancestry, systemd state, timestamps, ordering, file mtimes, or later host inspection; the canonical repository chain uses `CHAIN` plus `REPOSITORY_4H_MARKET_CHAIN`, while direct writer runners remain `MANUAL` with their closed manual trigger types;
 - `provenance_contract_version`: exactly `native_short_writer_provenance_v1`.
 
 Repository/build identity remains separate from installed-host identity. No service, timer, unit, invocation, or host-owner name is inferred. `trigger_ref` is not overloaded with the remaining contract.
+
+### Repository source-identity boundary
+
+`native_short_repository_source_identity_v1` is the single explicit source-verification boundary used by every repository-controlled production writer entrypoint. After pure provenance construction and validation, but before any native SHORT database connection, transaction, run insert, or other mutation, it:
+
+1. resolves the repository root from the running source module and requires Git's reported top-level path to match it exactly;
+2. resolves `HEAD^{commit}` and requires one lowercase 40-character commit identity;
+3. requires the supplied `repository_commit_sha` to equal that exact `HEAD`;
+4. reads `git status --porcelain=v1 --untracked-files=all` and rejects every staged change, unstaged change, and untracked repository path;
+5. fails closed when Git, the repository root, `HEAD`, status, or any other source-identity input cannot be proven.
+
+The shell-provided commit value is a claim, not proof. `run_chain_4h.sh` invokes the same boundary before its first database-capable chain step, and the native SHORT Python writer independently re-verifies it immediately before its own DB access. This second check prevents changes introduced during earlier chain phases from reaching the writer. A dirty state is never persisted as attributable provenance. The inspector is injectable for deterministic tests, but production entrypoints use only the real running-checkout inspector.
+
+`TEST` remains a closed deterministic mode with the all-zero test commit and does not inspect or require a Git checkout. This exception cannot be selected by any production CLI.
+
+`CHAIN` identifies the canonical repository execution path only. `REPOSITORY_4H_MARKET_CHAIN` makes no scheduler claim. `SCHEDULED_4H_MARKET_CHAIN` is rejected because PR 2b supplies no reviewed installed-host scheduler evidence. Installed service/timer/unit identity remains absent and is not inferred. A manual start of either repository shell path is therefore described truthfully as the repository chain path, while direct manual Python writers remain distinguishable as `MANUAL`.
 
 Persisted classification is deterministic:
 
@@ -72,12 +88,12 @@ Persisted classification is deterministic:
 
 The complete reachable repository surface is:
 
-1. `scripts/run_chain_4h.sh` / shell entrypoint — indirectly invokes the canonical scope-status writer after candle ETL; owns the outer 4h lock/step ordering, creates no DB transaction or UUID itself, explicitly supplies `CHAIN`, the repository commit, `scripts/run_chain_4h.sh` entrypoint/ref, and the existing scheduled-chain trigger; repository 4h owner; inspected by runtime-wiring tests.
-2. `scripts/run_native_short_scope_status_chain_once.sh` / shell wrapper — indirectly invokes the Python scope-status runner; owns the native chain lock but no DB transaction; resolves or receives one explicit repository commit, supplies `CHAIN`, and can be called manually; invoked by the 4h chain and inspected by runtime-wiring tests.
-3. `src/market_data/run_native_short_scope_status_chain_v1.py` / `main` and `execute_runtime` — direct canonical writer; owns one bounded DB transaction, creates one invocation UUID, inserts/finalizes `native_short_materializer_run_v1`, and can mutate `native_short_scope_observation_v1`, `native_short_map_generation_event_v1`, `native_short_map_v1`, `native_short_map_lifecycle_event_v1`, `native_short_scope_status_v1`, and `native_short_map_level_status_v1`; callable directly in explicit `CHAIN` or `MANUAL` mode; invoked by the wrapper and directly by tests.
-4. `src/market_data/run_native_short_map_materializer_v1.py` / `main` — direct manual map-ledger writer; owns the exact-one-symbol write transaction, creates one invocation UUID/run row, and can mutate `native_short_materializer_run_v1`, `native_short_map_generation_event_v1`, `native_short_map_v1`, and `native_short_map_lifecycle_event_v1`; manual only, not invoked by the 4h chain, and directly tested.
-5. `src/market_data/run_native_short_map_level_status_materializer_v1.py` / `main` and `run_scope` — direct manual current-level writer; owns run start/final transactions plus the existing per-scope rebuild transaction, creates one invocation UUID/run row, and can mutate `native_short_materializer_run_v1` and `native_short_map_level_status_v1`; manual only, not invoked by the 4h chain, and directly tested.
-6. `src/market_data/run_native_short_map_scope_seed_canary_v1.py` / `main` and `run_write_symbol` — existing direct manual scope-registry canary; owns its existing exact-one-symbol write transaction, now creates one attributable invocation/run row, and can mutate `native_short_materializer_run_v1` and `native_short_map_scope_v1`; manual only, not invoked by the 4h chain, and directly tested. PR 2b does not invoke it or add any scope.
+1. `scripts/run_chain_4h.sh` / shell entrypoint — verifies the exact clean checkout through the shared boundary before its first database-capable step, then indirectly invokes the canonical scope-status writer after candle ETL; owns the outer 4h lock/step ordering, creates no native SHORT DB transaction or UUID itself, explicitly supplies `CHAIN`, the verified repository commit claim, `scripts/run_chain_4h.sh` entrypoint/ref, and the truthful `REPOSITORY_4H_MARKET_CHAIN` trigger; repository 4h owner; inspected by runtime-wiring tests.
+2. `scripts/run_native_short_scope_status_chain_once.sh` / shell wrapper — indirectly invokes the Python scope-status runner; owns the native chain lock but no DB transaction; resolves or receives one explicit repository commit claim, supplies `CHAIN` plus `REPOSITORY_4H_MARKET_CHAIN`, and can be called manually without fabricating scheduler provenance; invoked by the 4h chain and inspected by runtime-wiring tests.
+3. `src/market_data/run_native_short_scope_status_chain_v1.py` / `main` and `execute_runtime` — direct canonical writer; verifies exact clean repository source identity before DB access, owns one bounded DB transaction, creates one invocation UUID, inserts/finalizes `native_short_materializer_run_v1`, and can mutate `native_short_scope_observation_v1`, `native_short_map_generation_event_v1`, `native_short_map_v1`, `native_short_map_lifecycle_event_v1`, `native_short_scope_status_v1`, and `native_short_map_level_status_v1`; callable directly in explicit `CHAIN` or `MANUAL` mode; invoked by the wrapper and directly by tests.
+4. `src/market_data/run_native_short_map_materializer_v1.py` / `main` — direct manual map-ledger writer; verifies exact clean repository source identity before DB access, owns the exact-one-symbol write transaction, creates one invocation UUID/run row, and can mutate `native_short_materializer_run_v1`, `native_short_map_generation_event_v1`, `native_short_map_v1`, and `native_short_map_lifecycle_event_v1`; manual only, not invoked by the 4h chain, and directly tested.
+5. `src/market_data/run_native_short_map_level_status_materializer_v1.py` / `main` and `run_scope` — direct manual current-level writer; verifies exact clean repository source identity before DB access, owns run start/final transactions plus the existing per-scope rebuild transaction, creates one invocation UUID/run row, and can mutate `native_short_materializer_run_v1` and `native_short_map_level_status_v1`; manual only, not invoked by the 4h chain, and directly tested.
+6. `src/market_data/run_native_short_map_scope_seed_canary_v1.py` / `main` and `run_write_symbol` — existing direct manual scope-registry canary; verifies exact clean repository source identity before DB access, owns its existing exact-one-symbol write transaction, now creates one attributable invocation/run row, and can mutate `native_short_materializer_run_v1` and `native_short_map_scope_v1`; manual only, not invoked by the 4h chain, and directly tested. PR 2b does not invoke it or add any scope.
 7. Internal writer APIs and persistence helpers — `native_short_scope_status_materializer_v1.run_native_short_scope_status_materializer`, `evaluate_scope`, `rebuild_scope_projection`, `upsert_scope_status_projection`, `_insert_run`, `_finalize_run`, `_insert_observation`, and its lifecycle insert; `native_short_map_materializer_v1.materialize_scope_symbol` and its generation/map/lifecycle inserts; `native_short_map_level_status_materializer_v1.materialize_native_short_map_level_status_for_scope`; `native_short_map_level_status_v1.replace_native_short_map_level_status_for_scope` and `delete_native_short_map_level_status_for_scope`; and `run_native_short_map_scope_seed_canary_v1.run_write_symbol` and `insert_scope_row`. These are direct caller-owned-transaction helpers behind the reviewed runners. Each write boundary either requires and validates the immutable provenance object or accepts a run record that has already validated it; invocation UUID linkage is derived only from that object. Tests invoke the reusable boundaries directly with explicit `TEST` provenance.
 
 `run_native_short_fib_context_snapshot_v1` is also reached by `scripts/run_chain_4h.sh`, but it is a read-only database consumer and filesystem snapshot publisher, not a native SHORT ledger writer. It creates no ledger row and cannot bypass writer enforcement. Reporting health/audit runners are likewise SELECT-only consumers.

@@ -53,7 +53,7 @@ python -m src.market_data.run_native_short_scope_status_chain_v1 \
     --execution-mode CHAIN \
     --writer-entrypoint "${WRITER_ENTRYPOINT}" \
     --repository-commit "${REPOSITORY_COMMIT}" \
-    --trigger-type SCHEDULED_4H_MARKET_CHAIN \
+    --trigger-type REPOSITORY_4H_MARKET_CHAIN \
     --trigger-ref "${TRIGGER_REF}" \
     --output summary \
     "$@"

@@ -49,11 +49,15 @@ from src.market_data.native_short_scope_status_materializer_v1 import (
     _insert_run,
 )
 from src.market_data.native_short_scope_status_v1 import NativeShortRunTerminalStatus
+from src.market_data.native_short_repository_source_identity_v1 import (
+    NativeShortRepositorySourceInspector,
+    build_verified_process_provenance,
+    inspect_running_repository_source,
+)
 from src.market_data.native_short_writer_provenance_v1 import (
     MANUAL_MAP_TRIGGER_TYPE,
     NativeShortWriterExecutionMode,
     NativeShortWriterProvenanceError,
-    build_process_provenance,
 )
 
 RUNNER_NAME = "run_native_short_map_materializer_v1"
@@ -269,7 +273,13 @@ def build_rows_for_symbols(
     return rows
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    inspect_repository_source: NativeShortRepositorySourceInspector = (
+        inspect_running_repository_source
+    ),
+) -> int:
     args = parse_args(argv)
     try:
         symbols = parse_symbols(args.symbols)
@@ -286,7 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        provenance = build_process_provenance(
+        provenance = build_verified_process_provenance(
             writer_entrypoint="src.market_data.run_native_short_map_materializer_v1",
             runner_name=RUNNER_NAME,
             runner_version=RUNNER_VERSION,
@@ -294,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
             repository_commit_sha=args.repository_commit,
             trigger_type=MANUAL_MAP_TRIGGER_TYPE,
             trigger_ref=args.trigger_ref,
+            inspect_repository_source=inspect_repository_source,
         )
     except NativeShortWriterProvenanceError as exc:
         print(f"INVALID_PROVENANCE runner={RUNNER_NAME} detail={exc}", file=sys.stderr)
