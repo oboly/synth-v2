@@ -19,6 +19,7 @@ LOCK_FILE="${SYNTH_LINKED_PROFILE_RUNTIME_LOCK:-/tmp/synth-linked-profile-runtim
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACCOUNT_REFRESH_SCRIPT="${SYNTH_ACCOUNT_WALLET_REFRESH_SCRIPT:-${SCRIPT_DIR}/run_account_wallet_refresh_once.sh}"
 PROFILE_RENDER_SCRIPT="${SYNTH_LINKED_PROFILE_RENDER_SCRIPT:-${SCRIPT_DIR}/run_account_wallet_snapshot_dashboard_render_once.sh}"
+PROFIT_PLAN_RENDER_SCRIPT="${SYNTH_ACCOUNT_PROFIT_PLAN_RENDER_SCRIPT:-${SCRIPT_DIR}/run_account_profit_plan_snapshot_render_once.sh}"
 MARKET_PRICE_REFRESH_SCRIPT="${SYNTH_MARKET_PRICE_REFRESH_SCRIPT:-}"
 SKIP_DISK_HEALTH="${SYNTH_LINKED_PROFILE_RUNTIME_SKIP_DISK_HEALTH:-0}"
 RUN_ID="${SYNTH_LINKED_PROFILE_RUNTIME_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
@@ -147,11 +148,14 @@ write_metadata() {
   local account_failure="$8"
   local render_success="$9"
   local render_failure="${10}"
+  local profit_plan_success="${11}"
+  local profit_plan_failure="${12}"
 
   python - "${METADATA_PATH}" "${RUN_ID}" "${run_started_ts}" "${run_finished_ts}" \
     "${overall_result}" "${VENUE}" "${QUOTE}" "${profile_csv}" "${profile_count}" \
     "${public_price_result}" "${account_success}" "${account_failure}" \
-    "${render_success}" "${render_failure}" "${STAGES_TSV}" <<'PY'
+    "${render_success}" "${render_failure}" "${profit_plan_success}" \
+    "${profit_plan_failure}" "${STAGES_TSV}" <<'PY'
 from __future__ import annotations
 
 import json
@@ -175,6 +179,8 @@ from pathlib import Path
     account_failure,
     render_success,
     render_failure,
+    profit_plan_success,
+    profit_plan_failure,
     stages_tsv,
 ) = sys.argv[1:]
 
@@ -212,6 +218,10 @@ payload = {
     "snapshot_render": {
         "success": int(render_success),
         "failure": int(render_failure),
+    },
+    "profit_plan_render": {
+        "success": int(profit_plan_success),
+        "failure": int(profit_plan_failure),
     },
     "stages": stages,
     "safety": {
@@ -252,6 +262,7 @@ echo "run_id=${RUN_ID} venue=${VENUE} quote=${QUOTE} output_root=${OUTPUT_ROOT}"
 echo "broker_private_calls=account_refresh_only broker_writes=0 order_submission=0 live_orders=0"
 echo "decision_gate=none execution_planner=none executor=none"
 echo "renderer=${PROFILE_RENDER_SCRIPT}"
+echo "profit_plan_renderer=${PROFIT_PLAN_RENDER_SCRIPT}"
 
 cd "${REPO_DIR}"
 
@@ -295,6 +306,8 @@ account_success=0
 account_failure=0
 render_success=0
 render_failure=0
+profit_plan_success=0
+profit_plan_failure=0
 profile_csv=""
 
 for profile_code in "${profiles[@]}"; do
@@ -334,22 +347,46 @@ for profile_code in "${profiles[@]}"; do
   fi
 done
 
+# Profit Plan is a separate persisted-snapshot stage. It is deliberately
+# sequenced only after every required account-refresh stage has succeeded.
+for profile_code in "${profiles[@]}"; do
+  [[ -z "${profile_code}" ]] && continue
+  phase_epoch="$(date +%s)"
+  phase_ts="$(utc_now)"
+  phase_start "profit_plan_render" "${profile_code}"
+  if [[ "${account_failure}" -gt 0 || "${account_success}" -ne "${profile_count}" ]]; then
+    profit_plan_failure=$(( profit_plan_failure + 1 ))
+    phase_finished "profit_plan_render" "${profile_code}" "skipped_account_refresh" "${phase_ts}" "${phase_epoch}"
+    continue
+  fi
+  if SYNTH_REPO_DIR="${REPO_DIR}" \
+     SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT="${OUTPUT_ROOT}" \
+     SYNTH_ACCOUNT_WALLET_VENUE="${VENUE}" \
+     bash "${PROFIT_PLAN_RENDER_SCRIPT}" "${profile_code}"; then
+    profit_plan_success=$(( profit_plan_success + 1 ))
+    phase_finished "profit_plan_render" "${profile_code}" "ok" "${phase_ts}" "${phase_epoch}"
+  else
+    profit_plan_failure=$(( profit_plan_failure + 1 ))
+    phase_finished "profit_plan_render" "${profile_code}" "failed_continuing" "${phase_ts}" "${phase_epoch}"
+  fi
+done
+
 if [[ "${profile_count}" -eq 0 ]]; then
   echo "linked_profile_count=0 nothing_to_refresh"
 fi
 
 overall_result="ok"
-if [[ "${public_price_result}" != "ok" || "${account_failure}" -gt 0 || "${render_failure}" -gt 0 ]]; then
+if [[ "${public_price_result}" != "ok" || "${account_failure}" -gt 0 || "${render_failure}" -gt 0 || "${profit_plan_failure}" -gt 0 ]]; then
   overall_result="degraded"
 fi
 
 run_finished_ts="$(utc_now)"
 write_metadata "${run_started_ts}" "${run_finished_ts}" "${overall_result}" "${profile_csv}" \
   "${profile_count}" "${public_price_result}" "${account_success}" "${account_failure}" \
-  "${render_success}" "${render_failure}"
+  "${render_success}" "${render_failure}" "${profit_plan_success}" "${profit_plan_failure}"
 
 echo "metadata_path=${METADATA_PATH}"
-echo "linked_profile_count=${profile_count} account_success=${account_success} account_failure=${account_failure} render_success=${render_success} render_failure=${render_failure}"
+echo "linked_profile_count=${profile_count} account_success=${account_success} account_failure=${account_failure} render_success=${render_success} render_failure=${render_failure} profit_plan_success=${profit_plan_success} profit_plan_failure=${profit_plan_failure}"
 echo "linked_profile_runtime_orchestrator_once finished result=${overall_result} $(utc_now)"
 
 if [[ "${overall_result}" == "ok" ]]; then

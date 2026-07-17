@@ -9,6 +9,7 @@ from pathlib import Path
 
 ORCHESTRATOR = Path("scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh")
 SAFE_RENDERER = Path("scripts/odroid/run_account_wallet_snapshot_dashboard_render_once.sh")
+PROFIT_PLAN_RENDERER = Path("scripts/odroid/run_account_profit_plan_snapshot_render_once.sh")
 
 
 def _make_executable(path: Path, content: str) -> Path:
@@ -39,6 +40,16 @@ def test_orchestrator_uses_new_safe_renderer_not_legacy_native_short_wrapper() -
     assert "run_linked_profile_dashboard_refresh_v1" in text
     assert "flock -n 9" in text
     assert "native_short_context_build_in_render_stage" in text
+    assert text.count('phase_start "profit_plan_render"') == 1
+    assert "run_account_profit_plan_snapshot_render_once.sh" in text
+
+
+def test_profit_plan_owner_has_no_legacy_builder_or_independent_scheduler() -> None:
+    owner_text = PROFIT_PLAN_RENDERER.read_text(encoding="utf-8")
+    assert "run_native_short_fib_context_v1" not in owner_text
+    assert "run_manual_short_trader_profit_plan_v1" not in owner_text
+    assert "run_account_profit_plan_snapshot_render_owner_v1" in owner_text
+    assert not list(Path("docs/ops/systemd").glob("*profit-plan*snapshot*"))
 
 
 def test_orchestrator_smoke_records_metadata_and_runs_stages_in_order(tmp_path: Path) -> None:
@@ -68,6 +79,12 @@ def test_orchestrator_smoke_records_metadata_and_runs_stages_in_order(tmp_path: 
         "set -euo pipefail\n"
         f"echo render:$1 >> {calls_path}\n",
     )
+    profit_script = _make_executable(
+        tmp_path / "profit.sh",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"echo profit:$1 >> {calls_path}\n",
+    )
 
     env = os.environ.copy()
     env.update(
@@ -80,6 +97,7 @@ def test_orchestrator_smoke_records_metadata_and_runs_stages_in_order(tmp_path: 
             "SYNTH_MARKET_PRICE_REFRESH_SCRIPT": str(market_script),
             "SYNTH_ACCOUNT_WALLET_REFRESH_SCRIPT": str(account_script),
             "SYNTH_LINKED_PROFILE_RENDER_SCRIPT": str(render_script),
+            "SYNTH_ACCOUNT_PROFIT_PLAN_RENDER_SCRIPT": str(profit_script),
             "SYNTH_LINKED_PROFILE_RUNTIME_METADATA_PATH": str(metadata_path),
             "SYNTH_LINKED_PROFILE_RUNTIME_RUN_ID": "test-run-1",
         }
@@ -101,6 +119,8 @@ def test_orchestrator_smoke_records_metadata_and_runs_stages_in_order(tmp_path: 
         "render:joost",
         "account:hugo",
         "render:hugo",
+        "profit:joost",
+        "profit:hugo",
     ]
 
     payload = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -112,6 +132,7 @@ def test_orchestrator_smoke_records_metadata_and_runs_stages_in_order(tmp_path: 
     assert payload["public_price_result"] == "ok"
     assert payload["account_refresh"] == {"success": 2, "failure": 0}
     assert payload["snapshot_render"] == {"success": 2, "failure": 0}
+    assert payload["profit_plan_render"] == {"success": 2, "failure": 0}
     assert payload["safety"]["native_short_context_build_in_render_stage"] is False
     assert payload["safety"]["renderer_private_broker_calls"] == 0
     assert [stage["phase"] for stage in payload["stages"]] == [
@@ -122,6 +143,8 @@ def test_orchestrator_smoke_records_metadata_and_runs_stages_in_order(tmp_path: 
         "render_snapshot_dashboard",
         "refresh_account_snapshot",
         "render_snapshot_dashboard",
+        "profit_plan_render",
+        "profit_plan_render",
     ]
 
 
@@ -151,6 +174,12 @@ def test_orchestrator_degrades_but_continues_when_one_profile_fails(tmp_path: Pa
         "set -euo pipefail\n"
         f"echo render:$1 >> {calls_path}\n",
     )
+    profit_script = _make_executable(
+        tmp_path / "profit.sh",
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        f"echo profit:$1 >> {calls_path}\n",
+    )
 
     env = os.environ.copy()
     env.update(
@@ -163,6 +192,7 @@ def test_orchestrator_degrades_but_continues_when_one_profile_fails(tmp_path: Pa
             "SYNTH_MARKET_PRICE_REFRESH_SCRIPT": str(market_script),
             "SYNTH_ACCOUNT_WALLET_REFRESH_SCRIPT": str(account_script),
             "SYNTH_LINKED_PROFILE_RENDER_SCRIPT": str(render_script),
+            "SYNTH_ACCOUNT_PROFIT_PLAN_RENDER_SCRIPT": str(profit_script),
             "SYNTH_LINKED_PROFILE_RUNTIME_METADATA_PATH": str(metadata_path),
             "SYNTH_LINKED_PROFILE_RUNTIME_RUN_ID": "test-run-2",
         }
@@ -189,6 +219,8 @@ def test_orchestrator_degrades_but_continues_when_one_profile_fails(tmp_path: Pa
     assert payload["overall_result"] == "degraded"
     assert payload["account_refresh"] == {"success": 1, "failure": 1}
     assert payload["snapshot_render"] == {"success": 2, "failure": 0}
+    assert payload["profit_plan_render"] == {"success": 0, "failure": 2}
+    assert not any(line.startswith("profit:") for line in calls_path.read_text(encoding="utf-8").splitlines())
     assert any(
         stage["phase"] == "refresh_account_snapshot"
         and stage["profile"] == "hugo"
