@@ -184,6 +184,8 @@ Measure over several consecutive real cycles:
 
 A single manual run is not multi-cycle acceptance.
 
+Status (2026-07-17): manual host acceptance = PASS (two manual cycles + lock test, see P2-A/host rollout). Multi-cycle P2-C acceptance across several consecutive real scheduled cycles remains **OPEN** and must not be inferred from the two manual runs.
+
 ## P2-D — Deferred runtime-host capacity decision
 
 The Odroid remains the current runtime host until explicitly changed.
@@ -299,6 +301,18 @@ rollout remain separate and unauthorized here.
 4. rollback (per family, independent): systemctl --user enable --now the retired family if its replacement stage regresses.
 5. confirm one Profit Plan writer, deltas populated, no duplicate wallet/open-orders/account render, and rollback exercised.
 ```
+
+### Host rollout executed — 2026-07-17
+
+Executed on the Odroid (evidence: `docs/ops/mvp_cockpit_linked_profile_ownership_host_acceptance_20260717.md`):
+
+- host checkout already at the PR #113 merge (`587262e`); PR A (#115) and freshness classifier (#112) confirmed contained;
+- two manual orchestrator cycles PASS (all timers stopped): account 2/0, render 2/0, Profit Plan 2/0, `overall_result=ok`; Joost and Hugo previous→current render-ID chaining verified across cycles; deltas summed to card_count with no `NO_PREVIOUS_SNAPSHOT` reset; controlled lock test showed one owner `ok` and the second `skipped_locked`;
+- the four legacy user timers `synth-account-wallet-dashboard@{joost,hugo}.timer` and `synth-account-wallet-refresh@{joost,hugo}.timer` were disabled and stopped (unit files preserved); per-family rollback recorded;
+- system-level `synth-linked-profile-runtime-refresh.timer` re-enabled/active as the single owner; native SHORT publication remains `synth-4h-market-chain.timer`;
+- discovered and resolved a third, un-named duplicate: `synth-mvp-readonly-cockpit.timer` drove `run_linked_profile_dashboard_refresh_once.sh` (legacy Profit Plan/wallet writer + union native SHORT build). Decoupled in PR #117; guarded by tests. The MVP cockpit now owns only entry-candidates + about page.
+
+Single-ownership counts after rollout: Profit Plan writer = 1, linked-profile wallet render = 1, joost/hugo account refresh = 1, native SHORT publisher = 1.
 
 ## Boundary
 

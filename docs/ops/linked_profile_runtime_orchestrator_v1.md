@@ -42,7 +42,8 @@ Stage order:
 2. public price snapshot refresh via `src.market_data.run_market_price_snapshot_v1 --write-db`;
 3. linked-profile discovery via `src.account.run_linked_profile_dashboard_refresh_v1 --output profile-list`;
 4. read-only account refresh per linked profile via `scripts/odroid/run_account_wallet_refresh_once.sh`;
-5. safe snapshot render per linked profile via `scripts/odroid/run_account_wallet_snapshot_dashboard_render_once.sh`.
+5. safe snapshot render per linked profile via `scripts/odroid/run_account_wallet_snapshot_dashboard_render_once.sh`;
+6. safe Profit Plan render per linked profile via `scripts/odroid/run_account_profit_plan_snapshot_render_once.sh` (PR B), sequenced only after every required account-refresh stage has succeeded.
 
 The orchestrator does not absorb module responsibilities. It only orders existing stage runners, records result metadata, and fails visibly when any stage degrades.
 
@@ -67,9 +68,9 @@ It deliberately does **not**:
 - publish native SHORT runtime files;
 - render Profit Plan / Short Swing from generated native context.
 
-Profit Plan / Short Swing remains blocked for this orchestrated path until its native SHORT/freshness input is promoted to a persisted snapshot contract. That is a later slice, not a renderer-side shortcut.
+Profit Plan / Short Swing was blocked for this orchestrated path until its native SHORT/freshness input was promoted to a persisted snapshot contract. That promotion is now deployed, not a renderer-side shortcut.
 
-The concrete "later slice" is specified as **PR A** (a market-only persisted native SHORT rows snapshot owned by the 4h chain) and **PR B** (a separate single-writer Profit Plan runner invoked as an explicit stage by this orchestrator after all account-refresh stages succeed — the orchestrator only sequences it and absorbs no reporting logic, adding no second timer) in `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`.
+The concrete slices are now deployed: **PR A** (a market-only persisted native SHORT rows snapshot owned by the 4h chain) and **PR B** (a separate single-writer Profit Plan runner, `scripts/odroid/run_account_profit_plan_snapshot_render_once.sh` → `src.reporting.run_account_profit_plan_snapshot_render_owner_v1`, invoked as an explicit stage by this orchestrator after all account-refresh stages succeed — the orchestrator only sequences it and absorbs no reporting logic, adding no second timer). See `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`. The Profit Plan render owner reads persisted snapshots only: it makes no private broker calls and constructs no native SHORT context.
 
 ## Why the older linked wrapper is not reused
 
@@ -179,7 +180,31 @@ old account timers enabled      => new orchestrator timer disabled
 never both silently active
 ```
 
-Proven (2026-07-15 read-only audit): on the current Odroid this rule is violated. The system-level `synth-linked-profile-runtime-refresh.timer` (safe) runs in parallel with **both** user-level (`systemctl --user`) families it supersedes — `synth-account-wallet-dashboard@{joost,hugo}.timer` (legacy — renders Profit Plan without deltas and duplicates wallet/open-orders) and `synth-account-wallet-refresh@{joost,hugo}.timer` (duplicate account refresh). Retiring both is a separate host rollout with per-family rollback; the ownership proof and rollout are recorded in `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`.
+Proven (2026-07-15 read-only audit): on the Odroid this rule was violated — the system-level `synth-linked-profile-runtime-refresh.timer` (safe) ran in parallel with **both** user-level (`systemctl --user`) families it supersedes.
+
+Resolved (2026-07-17 host rollout): the four legacy user timers `synth-account-wallet-dashboard@{joost,hugo}.timer` and `synth-account-wallet-refresh@{joost,hugo}.timer` were disabled and stopped (unit templates preserved). The system-level `synth-linked-profile-runtime-refresh.timer` is the single enabled owner of joost/hugo account refresh, linked-profile wallet/open-orders render, and Profit Plan render. Evidence and per-family rollback are recorded in `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md` and the host-acceptance evidence document under `docs/ops/`.
+
+## Ownership contract (post 2026-07-17 host rollout)
+
+Single owners on the Odroid:
+
+```text
+joost/hugo account refresh            = synth-linked-profile-runtime-refresh.timer (linked-profile orchestrator)
+linked-profile wallet/open-orders     = synth-linked-profile-runtime-refresh.timer (safe snapshot renderer)
+Profit Plan render                    = synth-linked-profile-runtime-refresh.timer (PR B safe render owner)
+native SHORT snapshot publication     = synth-4h-market-chain.timer (only publisher)
+```
+
+MVP cockpit (`synth-mvp-readonly-cockpit.timer` → `scripts/odroid/run_mvp_dashboard_render_once.sh`) owns only its market-only surfaces:
+
+- entry-candidate dashboard (`entry-candidates.html`);
+- about page (`about.html`) and cockpit index.
+
+The MVP cockpit must **not** invoke the linked-profile refresh, must **not** render Profit Plan, must **not** render linked-profile wallet/open-orders, and must **not** build or publish native SHORT context. As of PR #117 (2026-07-17) `run_mvp_dashboard_render_once.sh` no longer calls `run_linked_profile_dashboard_refresh_once.sh`. This single ownership is guarded by `tests/test_run_mvp_dashboard_render_once_sh.py`, `tests/test_run_mvp_readonly_pipeline_once_sh.py`, and `tests/test_linked_profile_refresh_caller_ownership_v1.py`.
+
+`scripts/odroid/run_linked_profile_dashboard_refresh_once.sh` is retained as **manual/acceptance-only**. Its only executable caller is `scripts/odroid/run_odroid_deployment_acceptance_v1.sh` (an acceptance workflow, not scheduled); no systemd unit owns it. A guard test fails if any scheduled/runtime caller is added later.
+
+`entry-candidates.html` is a **market-only, account-agnostic** surface. It must never read, receive, render, or derive from account balances, wallets, positions, open orders, linked-profile account snapshots, private broker endpoints/clients, `decision_gate` output, execution plans, or executor state. This boundary is guarded by `tests/test_entry_candidate_dashboard_privacy_boundary_v1.py`.
 
 ## Acceptance checklist
 
