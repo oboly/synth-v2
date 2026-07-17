@@ -57,7 +57,10 @@ from src.market_data.native_short_scope_status_materializer_v1 import (
     run_native_short_scope_status_materializer,
 )
 from src.market_data.native_short_scope_status_v1 import NativeShortMaterializerRunRecord
-from src.market_data.native_short_writer_provenance_v1 import build_explicit_test_provenance
+from src.market_data.native_short_writer_provenance_v1 import (
+    NativeShortWriterProvenance,
+    build_explicit_test_provenance,
+)
 
 PREREQUISITE_MIGRATION_PATH = Path("db/migrations/20260626_native_short_map_lifecycle_v1.sql")
 A1_MIGRATION_PATH = Path("db/migrations/20260706_native_short_scope_status_persistence_v1.sql")
@@ -288,7 +291,9 @@ def _stub_level_status(
     *,
     key: NativeShortMapScopeKey,
     operational_clock: Any,
+    provenance: NativeShortWriterProvenance,
 ) -> MapLevelStatusMaterializationOutcome:
+    assert provenance in (_PROVENANCE_A, _PROVENANCE_B)
     return MapLevelStatusMaterializationOutcome(
         key=key,
         branch=ACTIVE_EVALUATION,
