@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import dataclasses
+import html
 import json
 import os
 import sys
@@ -202,6 +203,17 @@ def parse_args() -> argparse.Namespace:
         "--native-short-context-rows",
         default=None,
         help="Canonical native SHORT context rows path. Native 4h+1h rows are preferred when available.",
+    )
+    parser.add_argument(
+        "--native-short-snapshot-status",
+        choices=("loaded", "missing", "invalid", "unverified"),
+        default="unverified",
+        help="Manifest-validation status supplied by the persisted-snapshot render owner.",
+    )
+    parser.add_argument(
+        "--native-short-snapshot-id",
+        default=None,
+        help="Validated canonical native SHORT snapshot identity supplied by the render owner.",
     )
     parser.add_argument(
         "--previous-json",
@@ -413,6 +425,96 @@ def summarize_short_context_coverage(
         status = coverage_status_by_symbol.get(symbol, "CONTEXT_INVALID_OR_STALE")
         summary[status] = summary.get(status, 0) + 1
     return summary
+
+
+def summarize_native_short_snapshot_evidence(
+    *,
+    markets: list[str],
+    rows_path: Path,
+    canonical_status: str,
+    snapshot_id: str | None,
+) -> dict[str, Any]:
+    market_symbols = sorted({market.split("-", 1)[0].upper() for market in markets})
+    status = canonical_status
+    rows_by_symbol: dict[str, dict[str, str]] = {}
+    if not rows_path.is_file():
+        status = "missing" if status != "invalid" else status
+    else:
+        try:
+            with rows_path.open(encoding="utf-8", newline="") as handle:
+                for row in csv.DictReader(handle):
+                    symbol = str(row.get("symbol") or "").strip().upper()
+                    if symbol:
+                        rows_by_symbol[symbol] = {str(key): str(value or "") for key, value in row.items()}
+        except (OSError, UnicodeError, csv.Error):
+            status = "invalid"
+            rows_by_symbol = {}
+
+    supported_symbols = [
+        symbol
+        for symbol in market_symbols
+        if rows_by_symbol.get(symbol, {}).get("scope_support_state", "").upper() == "SUPPORTED"
+    ]
+    available_symbols = [
+        symbol
+        for symbol in market_symbols
+        if rows_by_symbol.get(symbol, {}).get("context_status", "").upper()
+        == NATIVE_SHORT_CONTEXT_AVAILABLE
+    ]
+    stale_supported_symbols = [
+        symbol
+        for symbol in supported_symbols
+        if rows_by_symbol[symbol].get("context_freshness_status", "").upper() == "STALE"
+    ]
+    unavailable_symbols = [
+        symbol
+        for symbol in market_symbols
+        if symbol not in supported_symbols or symbol not in available_symbols
+    ]
+    return {
+        "canonical_snapshot_status": status,
+        "native_short_snapshot_id": snapshot_id if status == "loaded" else None,
+        "native_context_available_count": len(available_symbols),
+        "native_context_supported_count": len(supported_symbols),
+        "native_context_total_count": len(market_symbols),
+        "supported_context_stale_count": len(stale_supported_symbols),
+        "supported_context_stale_markets": stale_supported_symbols,
+        "unsupported_or_unavailable_count": len(unavailable_symbols),
+        "unsupported_or_unavailable_markets": unavailable_symbols,
+    }
+
+
+def native_short_snapshot_banner(evidence: Mapping[str, Any]) -> str:
+    status = str(evidence["canonical_snapshot_status"])
+    if status in {"missing", "invalid"}:
+        return (
+            "<div class='pipeline-warn'>Canonical native SHORT snapshot missing or invalid. "
+            "Persisted native context was not loaded; no candle-pipeline cause is inferred.</div>"
+        )
+    if status == "unverified":
+        return (
+            "<div class='pipeline-warn'>Native SHORT rows were not verified through the canonical manifest. "
+            "Snapshot authority status is unavailable.</div>"
+        )
+
+    available = int(evidence["native_context_available_count"])
+    supported = int(evidence["native_context_supported_count"])
+    total = int(evidence["native_context_total_count"])
+    stale = int(evidence["supported_context_stale_count"])
+    unavailable = list(evidence["unsupported_or_unavailable_markets"])
+    details = [
+        "Canonical native SHORT snapshot loaded.",
+        f"Available {available} / supported {supported} / total {total} contexts.",
+    ]
+    if stale:
+        details.append(f"Supported context stale: {stale}.")
+    if unavailable:
+        details.append(
+            "Unsupported/unavailable markets: "
+            + ", ".join(html.escape(symbol) for symbol in unavailable)
+            + "."
+        )
+    return "<div class='pipeline-warn'>" + " ".join(details) + "</div>"
 
 
 def load_fib_map_rows(path: Path) -> tuple[dict[str, dict[str, str]], bool]:
@@ -1368,44 +1470,47 @@ def main() -> int:
         return 1
     cards = apply_card_deltas(cards, previous_snapshot=previous_snapshot)
 
-    # Pipeline health gate: expose machine-readable health in JSON and HTML.
-    # If native SHORT context is globally unavailable (CSV missing), show one
-    # top-level warning rather than per-coin FAIL labels without a global cause.
+    # Snapshot evidence is descriptive only. Absence of persisted native context
+    # does not identify a candle-ETL cause.
     native_context_count = sum(
         1 for s in zone_contexts.coverage_status_by_symbol.values()
         if s == "NATIVE_SHORT_CONTEXT_AVAILABLE"
     )
+    snapshot_evidence = summarize_native_short_snapshot_evidence(
+        markets=list(context.markets),
+        rows_path=native_short_rows_path,
+        canonical_status=getattr(args, "native_short_snapshot_status", "unverified"),
+        snapshot_id=getattr(args, "native_short_snapshot_id", None),
+    )
     pipeline_health: dict[str, object] = {
         "native_source_missing": zone_contexts.native_source_missing,
-        "native_context_available_count": native_context_count,
+        **snapshot_evidence,
         "native_context_globally_unavailable": (
             zone_contexts.native_source_missing or native_context_count == 0
         ),
         "pipeline_status": (
-            "ok" if native_context_count > 0
-            else ("source_missing" if zone_contexts.native_source_missing else "no_context")
+            "canonical_snapshot_missing_or_invalid"
+            if snapshot_evidence["canonical_snapshot_status"] in {"missing", "invalid"}
+            else (
+                "supported_context_stale"
+                if snapshot_evidence["supported_context_stale_count"]
+                else (
+                    "loaded" if snapshot_evidence["canonical_snapshot_status"] == "loaded"
+                    else "unverified"
+                )
+            )
         ),
         "blocking_reasons": (
-            ["NATIVE_SHORT_CONTEXT_SOURCE_MISSING"] if zone_contexts.native_source_missing
-            else ([] if native_context_count > 0 else ["NATIVE_SHORT_CONTEXT_UNAVAILABLE"])
+            ["CANONICAL_NATIVE_SHORT_SNAPSHOT_MISSING_OR_INVALID"]
+            if snapshot_evidence["canonical_snapshot_status"] in {"missing", "invalid"}
+            else (
+                ["SUPPORTED_NATIVE_SHORT_CONTEXT_STALE"]
+                if snapshot_evidence["supported_context_stale_count"]
+                else ([] if native_context_count > 0 else ["NATIVE_SHORT_CONTEXT_UNAVAILABLE"])
+            )
         ),
     }
-    pipeline_banner_html: str | None = None
-    if pipeline_health["native_context_globally_unavailable"]:
-        if zone_contexts.native_source_missing:
-            pipeline_banner_html = (
-                "<div class='pipeline-warn'>"
-                "Native SHORT context CSV missing — candle ETL may need to run. "
-                "All cards show NO_NATIVE_SHORT_FIB_CONTEXT until context is built."
-                "</div>"
-            )
-        else:
-            pipeline_banner_html = (
-                "<div class='pipeline-warn'>"
-                "Native SHORT context unavailable for all markets — "
-                "check candle ETL pipeline (1h/4h candles may be stale)."
-                "</div>"
-            )
+    pipeline_banner_html = native_short_snapshot_banner(snapshot_evidence)
 
     output_html.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(output_html.parent, 0o755)
