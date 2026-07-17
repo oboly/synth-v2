@@ -142,6 +142,33 @@ Rules:
 
 This requirement is a prerequisite for safe Profit Plan Live Ladder authority but remains operationally owned here rather than duplicated in its guardrail history file.
 
+### Implemented — pure freshness-status classifier (repository)
+
+`src/operations/freshness_status_v1.py` implements the pure, deterministic P2-B
+classifier: `evaluate_freshness(...)` classifies one source into `FRESH | STALE |
+MISSING | UNAVAILABLE`, and `evaluate_observation_classes(...)` reduces
+caller-supplied classes to an overall freshness status. Scope is freshness only —
+it computes **no** account/ladder/order permission; account-aware permission
+stays exclusively in `decision_gate` (a later, separately reviewed wiring slice).
+
+- No DB, broker, account-mutation, rendering, permission, or wall-clock
+  dependency (`now` is always injected), so a stopped static renderer cannot
+  fabricate freshness — a frozen `dashboard_generated_ts_utc` ages against an
+  advancing `now` and deterministically becomes `STALE`.
+- No built-in staleness thresholds: no canonical doc defines per-class P2-B
+  limits (the only canonical freshness limits are native-SHORT-specific:
+  `native_short_scope_status_contract_v1.md`), so callers must pass explicit
+  `ObservationClassSpec` thresholds; the module ships none.
+- Fail-closed timestamps: requires timezone-aware UTC and rejects naive
+  datetimes with `ValueError`, matching the DB-boundary UTC-typing contract
+  (`native_short_fib_context_snapshot_contract_v1.md`) and `docs/coding_standards.md`
+  §3 ("never mix timezone-aware and naive timestamps in engine logic").
+
+`decision_gate` and reporting may both import it (it lives outside both layers);
+renderer HTML/JSON is never an input. Boundary tests:
+`tests/test_freshness_status_v1.py`. This slice does **not** consume the PR A
+snapshot and wires the classifier into no live gate.
+
 ## P2-C — Multi-cycle Odroid acceptance
 
 Measure over several consecutive real cycles:
@@ -178,6 +205,30 @@ Repository implementation is now defined by
 market-data runner wired into the existing 4h owner. Merge/review acceptance and
 runtime-host publication remain separate; PR B must not start consuming the
 snapshot until PR A is merged and accepted.
+
+#### 2026-07-16 read-only reconciliation
+
+A read-only repository + Odroid audit updated the state below. No host unit,
+timer, checkout, or snapshot was mutated (`host_mutations=0`).
+
+- **Repository merged.** PR A merged as **PR #106** (`6b5f3ee`). The earlier
+  README/board wording "PR A repository implementation in review" is stale.
+- **Installed on host.** Odroid `/home/theone/projects/synth-v2` HEAD is exactly
+  `6b5f3ee` (the PR #106 merge; behind current `origin/main`). The publisher runs
+  as one step in `scripts/run_chain_4h.sh` under the single 4h scheduler
+  `synth-4h-market-chain.timer` — no second scheduler.
+- **Canonical output present and valid.** `/var/www/html/synth/_runtime/native_short_context_snapshot_v1/manifest_v1.json`
+  reports `publication_result=PUBLISHED`, `overall_freshness_state=FRESH`,
+  content digest, and an immutable `native_short_fib_context_rows_v1.csv` (BTC
+  row, `NATIVE_SHORT_CONTEXT_AVAILABLE`). At least five distinct `snapshot_id`
+  directories exist, i.e. multiple cycles have published. This supersedes the
+  2026-07-15 P2-A note that the orchestrator printed
+  `NATIVE_SHORT_SNAPSHOT_CONTRACT_NOT_PERSISTED`.
+- **Outstanding gate.** No repository or host record proves the documented
+  manual dry-run/temp-publication **acceptance procedure** was performed, so the
+  "manually accepted" and "multi-cycle accepted" states are not established here.
+  PR B implementation stays blocked until that acceptance is recorded; a valid
+  canonical manifest + immutable CSV is proven, the acceptance record is not.
 
 PR A acceptance has two distinct gates: repository review/merge, then host
 acceptance. Merge alone changes no installed checkout or owner. After the host
