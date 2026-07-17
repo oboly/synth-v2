@@ -52,12 +52,14 @@ run_step python -m src.reporting.run_synth_about_page_v1 \
   --output summary
 
 echo
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-echo "[MVP_DASHBOARD_RENDER][STEP] linked_profile_dashboard_refresh (market prices already refreshed)"
-SYNTH_SKIP_MARKET_PRICE_REFRESH=1 \
-SYNTH_ACCOUNT_WALLET_VENUE="${VENUE}" \
-bash "${SCRIPT_DIR}/run_linked_profile_dashboard_refresh_once.sh" || \
-  echo "[MVP_DASHBOARD_RENDER][WARN] linked_profile_dashboard_refresh failed (non-fatal)"
+# Linked-profile refresh/render ownership (account refresh, wallet/open-orders
+# render, Profit Plan render, and native SHORT context) belongs solely to the
+# linked-profile runtime orchestrator (synth-linked-profile-runtime-refresh.timer).
+# The MVP cockpit render path intentionally does NOT invoke
+# run_linked_profile_dashboard_refresh_once.sh (or any equivalent legacy path):
+# it must not write Profit Plan, must not write linked-profile wallet/open-orders,
+# and must not build or publish native SHORT context. This keeps single ownership.
+echo "[MVP_DASHBOARD_RENDER][OWNERSHIP] linked_profile_refresh=owned_by=synth-linked-profile-runtime-refresh.timer profit_plan_writer=none wallet_render=none native_short_build=none"
 
 echo
 echo "[MVP_DASHBOARD_RENDER][DONE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
