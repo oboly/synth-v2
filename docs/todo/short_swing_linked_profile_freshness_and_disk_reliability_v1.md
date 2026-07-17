@@ -224,11 +224,21 @@ timer, checkout, or snapshot was mutated (`host_mutations=0`).
   directories exist, i.e. multiple cycles have published. This supersedes the
   2026-07-15 P2-A note that the orchestrator printed
   `NATIVE_SHORT_SNAPSHOT_CONTRACT_NOT_PERSISTED`.
-- **Outstanding gate.** No repository or host record proves the documented
-  manual dry-run/temp-publication **acceptance procedure** was performed, so the
-  "manually accepted" and "multi-cycle accepted" states are not established here.
-  PR B implementation stays blocked until that acceptance is recorded; a valid
-  canonical manifest + immutable CSV is proven, the acceptance record is not.
+- **Host acceptance recorded — 2026-07-17.** The documented manual
+  dry-run/temp-publication acceptance procedure was performed on the Odroid and
+  passed; evidence is in
+  `docs/ops/native_short_context_snapshot_host_acceptance_20260717.md`. Installed
+  host HEAD `6b5f3ee` (== PR #106); single scheduler proven; manual no-publish
+  dry-run PASS (`DRY_RUN`, `db_writes=0`); isolated temp publication PASS
+  (`PUBLISHED` then `UNCHANGED` on unchanged inputs, no duplicate snapshot);
+  manifest/CSV/bundle contract and digests PASS; canonical output byte-identical
+  before/after (no scheduled cycle interfered). No host unit, timer, checkout, or
+  canonical output was mutated. This satisfies the single-cycle host-acceptance
+  gate; **multi-cycle operational acceptance (P2-C) remains OPEN.**
+- **PR B dependency unblocked for review.** With one valid canonical manifest +
+  immutable CSV proven and the acceptance recorded, PR #113 (safe Profit Plan
+  render owner) may proceed to rebase/repository review. Merge, deploy, and
+  legacy-unit retirement remain separate and unauthorized here.
 
 PR A acceptance has two distinct gates: repository review/merge, then host
 acceptance. Merge alone changes no installed checkout or owner. After the host
@@ -259,8 +269,11 @@ Implemented PR A dependency for PR B:
 
 The manifest is the only commit pointer. PR B must validate it and consume the
 referenced immutable CSV read-only; it must not select the newest directory by
-filesystem ordering. PR B remains blocked until PR A host acceptance has proven
-a valid canonical manifest and immutable CSV.
+filesystem ordering. PR A host acceptance is complete
+(`docs/ops/native_short_context_snapshot_host_acceptance_20260717.md`,
+2026-07-17): a valid canonical manifest and immutable CSV are proven, so PR B is
+unblocked for repository review. Multi-cycle operational acceptance and any host
+rollout remain separate and unauthorized here.
 
 ### PR B — safe Profit Plan render-owner
 
