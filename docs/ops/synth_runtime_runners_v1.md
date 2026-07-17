@@ -676,17 +676,30 @@ not a source that `decision_gate` reads from.
 
 ### Current Implementation Status (verified, as of this writing)
 
-- Stage 1 and stage 3 are consolidated today by
-  `scripts/odroid/run_linked_profile_dashboard_refresh_once.sh`, which
-  refreshes public prices once, discovers linked profiles via
-  `src/account/run_linked_profile_dashboard_refresh_v1.py`, builds a shared
-  native SHORT context, then renders each profile via
-  `scripts/odroid/run_account_wallet_dashboard_render_once.sh`.
-- **Documented gap:** `run_linked_profile_dashboard_refresh_once.sh` has
-  **no systemd unit** in this repository. Neither `docs/ops/systemd/` nor
-  `scripts/odroid/systemd/` contains one. Its production scheduling
-  mechanism (if any, beyond manual invocation) is not captured in this
-  repository. This is tracked as backlog item P0-B.
+- **Current production owner (as of 2026-07-17):** stages 1–3 plus the
+  Profit Plan render are owned by the linked-profile runtime orchestrator
+  `scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh`, scheduled
+  by the system-level `synth-linked-profile-runtime-refresh.timer`. That
+  orchestrator uses the safe snapshot renderer
+  (`run_account_wallet_snapshot_dashboard_render_once.sh`) and a separate
+  single-writer Profit Plan owner
+  (`run_account_profit_plan_snapshot_render_once.sh`); it does **not** build
+  native SHORT context in the render path. See
+  `docs/ops/linked_profile_runtime_orchestrator_v1.md` for the authoritative
+  ownership contract.
+- **Legacy/manual path:** `scripts/odroid/run_linked_profile_dashboard_refresh_once.sh`
+  (which refreshes public prices, builds a shared native SHORT context, then
+  renders each profile via `run_account_wallet_dashboard_render_once.sh`) is
+  retained as a **manual/acceptance-only** workflow. It has no systemd unit and
+  no scheduled/runtime caller; its only executable caller is the acceptance
+  script `scripts/odroid/run_odroid_deployment_acceptance_v1.sh`. A guard test
+  (`tests/test_linked_profile_refresh_caller_ownership_v1.py`) fails if a
+  scheduled/runtime caller is added.
+- **MVP cockpit:** `synth-mvp-readonly-cockpit.timer` →
+  `run_mvp_dashboard_render_once.sh` owns only the market-only entry-candidate
+  dashboard and about page. As of PR #117 it no longer invokes the
+  linked-profile refresh and never writes Profit Plan, linked-profile
+  wallet/open-orders, or native SHORT outputs.
 - Stage 2 (private wallet/order refresh) has an existing per-profile
   template pair, `docs/ops/systemd/synth-account-wallet-refresh@.service` /
   `.timer` (`OnUnitActiveSec=5min`), documented in

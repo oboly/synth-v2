@@ -101,10 +101,19 @@ def test_cockpit_renders_market_surfaces_and_never_touches_linked_profile() -> N
         env["SYNTH_COCKPIT_INDEX_HTML"] = str(cockpit_index)
         env["SYNTH_ABOUT_HERO_ASSET_OUTPUT"] = str(out / "hero.png")
 
+        # Run a copy in a venv-free tree so the script's own `.venv/bin/activate`
+        # step is skipped and the fake `python` on PATH is used deterministically,
+        # regardless of whether the checkout has a real .venv.
+        fake_repo = root / "repo"
+        script_copy = fake_repo / SCRIPT_PATH
+        script_copy.parent.mkdir(parents=True, exist_ok=True)
+        script_copy.write_text(SCRIPT_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        script_copy.chmod(0o755)
+
         proc = subprocess.run(
-            ["bash", str(SCRIPT_PATH)],
+            ["bash", str(script_copy)],
             env=env,
-            cwd=Path.cwd(),
+            cwd=fake_repo,
             capture_output=True,
             text=True,
         )
