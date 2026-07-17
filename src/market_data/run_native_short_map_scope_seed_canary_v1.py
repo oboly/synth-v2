@@ -27,6 +27,7 @@ import argparse
 import json
 import sys
 from dataclasses import asdict, dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 
 from src.common.db import get_connection
@@ -35,6 +36,23 @@ from src.market_data.native_short_map_lifecycle_v1 import (
     DEFAULT_PRIMARY_INTERVAL,
     DEFAULT_QUOTE_CURRENCY,
     DEFAULT_SUPPORTING_INTERVAL,
+)
+from src.market_data.native_short_scope_status_materializer_v1 import (
+    NativeShortRunBuilder,
+    _finalize_run,
+    _insert_run,
+)
+from src.market_data.native_short_repository_source_identity_v1 import (
+    NativeShortRepositorySourceInspector,
+    build_verified_process_provenance,
+    inspect_running_repository_source,
+)
+from src.market_data.native_short_writer_provenance_v1 import (
+    MANUAL_SCOPE_SEED_TRIGGER_TYPE,
+    NativeShortWriterExecutionMode,
+    NativeShortWriterProvenance,
+    NativeShortWriterProvenanceError,
+    validate_native_short_writer_provenance,
 )
 
 
@@ -102,6 +120,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--quote-currency", choices=(DEFAULT_QUOTE_CURRENCY,), default=DEFAULT_QUOTE_CURRENCY)
     parser.add_argument("--write", action="store_true", help="Insert the canonical SUPPORTED scope row.")
     parser.add_argument("--output", choices=("jsonl", "summary"), default="jsonl")
+    parser.add_argument(
+        "--execution-mode",
+        required=True,
+        choices=(NativeShortWriterExecutionMode.MANUAL.value,),
+    )
+    parser.add_argument("--repository-commit", required=True)
+    parser.add_argument("--trigger-ref", required=True)
     return parser.parse_args(argv)
 
 
@@ -319,7 +344,13 @@ def build_scope_seed_plan(
     )
 
 
-def insert_scope_row(conn: Any, plan: ScopeSeedPlan) -> None:
+def insert_scope_row(
+    conn: Any,
+    plan: ScopeSeedPlan,
+    *,
+    provenance: NativeShortWriterProvenance,
+) -> None:
+    validate_native_short_writer_provenance(provenance)
     sql = """
     INSERT INTO native_short_map_scope_v1 (
         venue,
@@ -330,9 +361,10 @@ def insert_scope_row(conn: Any, plan: ScopeSeedPlan) -> None:
         supporting_interval,
         scope_support_state,
         scope_reason_code,
-        scope_reason_detail
+        scope_reason_detail,
+        writer_invocation_uuid
     ) VALUES (
-        %s, %s, %s, %s, %s, %s, %s, %s, %s
+        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
     )
     """
     with conn.cursor() as cur:
@@ -348,6 +380,7 @@ def insert_scope_row(conn: Any, plan: ScopeSeedPlan) -> None:
                 SUPPORTED_STATE,
                 EXPECTED_REASON_CODE,
                 EXPECTED_REASON_DETAIL,
+                provenance.invocation_uuid,
             ),
         )
 
@@ -379,8 +412,16 @@ def run_dry_run_symbol(conn: Any, *, venue: str, symbol: str, quote_currency: st
     )
 
 
-def run_write_symbol(conn: Any, *, venue: str, symbol: str, quote_currency: str) -> ScopeSeedPlan:
+def run_write_symbol(
+    conn: Any,
+    *,
+    venue: str,
+    symbol: str,
+    quote_currency: str,
+    provenance: NativeShortWriterProvenance,
+) -> ScopeSeedPlan:
     """Single-transaction explicit write for exactly one accepted symbol."""
+    validate_native_short_writer_provenance(provenance)
     conn.begin()
     try:
         plan = build_scope_seed_plan(
@@ -391,7 +432,16 @@ def run_write_symbol(conn: Any, *, venue: str, symbol: str, quote_currency: str)
             for_update=True,
         )
         if plan.status == STATUS_PLANNED:
-            insert_scope_row(conn, plan)
+            builder = NativeShortRunBuilder(
+                provenance=provenance,
+                contract_version="native_short_map_scope_v1",
+                started_at_utc=datetime.now(UTC),
+                requested_scope_count=1,
+            )
+            run_id = _insert_run(conn, builder.started_record())
+            insert_scope_row(conn, plan, provenance=provenance)
+            builder.record_scope_outcome()
+            _finalize_run(conn, run_id, builder.finish(finished_at_utc=datetime.now(UTC)))
             conn.commit()
             return replace(plan, status=STATUS_SEEDED)
         conn.rollback()
@@ -479,7 +529,13 @@ def _print_finished(*, plans: list[ScopeSeedPlan], write: bool, output: str) -> 
     sys.stdout.flush()
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    inspect_repository_source: NativeShortRepositorySourceInspector = (
+        inspect_running_repository_source
+    ),
+) -> int:
     args = parse_args(argv)
     write = bool(args.write)
 
@@ -494,6 +550,21 @@ def main(argv: list[str] | None = None) -> int:
             f"ERROR: --write requires exactly one explicit symbol; parsed {len(symbols)}",
             file=sys.stderr,
         )
+        return 2
+
+    try:
+        provenance = build_verified_process_provenance(
+            writer_entrypoint="src.market_data.run_native_short_map_scope_seed_canary_v1",
+            runner_name=RUNNER_NAME,
+            runner_version=RUNNER_VERSION,
+            execution_mode=args.execution_mode,
+            repository_commit_sha=args.repository_commit,
+            trigger_type=MANUAL_SCOPE_SEED_TRIGGER_TYPE,
+            trigger_ref=args.trigger_ref,
+            inspect_repository_source=inspect_repository_source,
+        )
+    except NativeShortWriterProvenanceError as exc:
+        print(f"INVALID_PROVENANCE runner={RUNNER_NAME} detail={exc}", file=sys.stderr)
         return 2
 
     _print_started(symbols=symbols, write=write, output=args.output)
@@ -519,6 +590,7 @@ def main(argv: list[str] | None = None) -> int:
                     venue=args.venue,
                     symbol=symbol,
                     quote_currency=args.quote_currency,
+                    provenance=provenance,
                 )
             else:
                 plan = run_dry_run_symbol(

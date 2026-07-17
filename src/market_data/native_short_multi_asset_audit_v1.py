@@ -13,10 +13,15 @@ from src.market_data.native_short_fib_context_v1 import (
     Candle,
     build_native_short_context_row,
 )
+from src.market_data.native_short_writer_provenance_v1 import (
+    NativeShortWriterExecutionMode,
+    NativeShortWriterProvenanceState,
+    classify_persisted_native_short_writer_provenance,
+)
 from src.market_rules.price_tick_normalization_v1 import resolve_tick_rule_from_static
 
 
-AUDIT_VERSION = "0.1"
+AUDIT_VERSION = "0.2"
 VENUE = "bitvavo"
 QUOTE_CURRENCY = "EUR"
 FIB_TRADING_HORIZON = "SHORT"
@@ -199,9 +204,15 @@ class AuditReport:
     proposed_sequential_queue: tuple[str, ...]
     counts: Mapping[str, int]
     writer_run_count: int
-    unattributed_writer_run_count: int
+    attributable_writer_run_count: int
+    legacy_unattributed_writer_run_count: int
+    invalid_provenance_writer_run_count: int
     provenance_audit_run_found: bool
     provenance_audit_run_attributed: bool
+    provenance_contract_implemented: bool
+    attributable_production_run_observed: bool
+    operational_acceptance_completed: bool
+    writer_provenance_blocker_active: bool
     global_blocker_codes: tuple[str, ...]
 
     def to_dict(self) -> dict[str, Any]:
@@ -218,15 +229,40 @@ class AuditReport:
             ],
             "counts": dict(self.counts),
             "writer_run_count": self.writer_run_count,
-            "unattributed_writer_run_count": self.unattributed_writer_run_count,
+            "attributable_writer_run_count": self.attributable_writer_run_count,
+            "legacy_unattributed_writer_run_count": self.legacy_unattributed_writer_run_count,
+            "invalid_provenance_writer_run_count": self.invalid_provenance_writer_run_count,
             "provenance_audit_run_uuid": PROVENANCE_AUDIT_RUN_UUID,
             "provenance_audit_run_found": self.provenance_audit_run_found,
             "provenance_audit_run_attributed": self.provenance_audit_run_attributed,
+            "provenance_contract_implemented": self.provenance_contract_implemented,
+            "attributable_production_run_observed": self.attributable_production_run_observed,
+            "operational_acceptance_completed": self.operational_acceptance_completed,
+            "writer_provenance_blocker_active": self.writer_provenance_blocker_active,
             "global_blocker_codes": list(self.global_blocker_codes),
             "safe_max_simultaneous_cohort_size": 1,
             "proposed_sequential_queue": list(self.proposed_sequential_queue),
             "results": [item.to_dict() for item in self.results],
         }
+
+
+def summarize_writer_provenance(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[int, int, int, bool]:
+    states = [classify_persisted_native_short_writer_provenance(row) for row in rows]
+    attributable = sum(state == NativeShortWriterProvenanceState.ATTRIBUTABLE for state in states)
+    legacy = sum(state == NativeShortWriterProvenanceState.LEGACY_UNATTRIBUTED for state in states)
+    invalid = sum(state == NativeShortWriterProvenanceState.INVALID_PROVENANCE for state in states)
+    production_observed = any(
+        state == NativeShortWriterProvenanceState.ATTRIBUTABLE
+        and str(row.get("execution_mode"))
+        in {
+            NativeShortWriterExecutionMode.CHAIN.value,
+            NativeShortWriterExecutionMode.MANUAL.value,
+        }
+        for row, state in zip(rows, states, strict=True)
+    )
+    return attributable, legacy, invalid, production_observed
 
 
 def expected_closed_candle(as_of_utc: datetime, interval_hours: int) -> datetime:
@@ -593,7 +629,10 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
     writer_rows = _fetch_all(
         conn,
         """
-        SELECT run_uuid, host_name, process_id, trigger_ref
+        SELECT run_uuid, runner_name, runner_version, trigger_type, trigger_ref,
+               host_name, process_id, provenance_contract_version,
+               writer_entrypoint, repository_writer_owner, execution_mode,
+               repository_commit_sha
         FROM native_short_materializer_run_v1
         ORDER BY run_id
         """,
@@ -745,15 +784,13 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
         ),
         "tick_rule_ambiguous_count": sum(item.tick_rule_state == TICK_RULE_AMBIGUOUS for item in ranked),
     }
-    unattributed = sum(
-        not row.get("host_name")
-        or row.get("process_id") is None
-        or not row.get("trigger_ref")
-        for row in writer_rows
+    attributable, legacy_unattributed, invalid_provenance, production_observed = (
+        summarize_writer_provenance(writer_rows)
     )
     provenance_rows = [row for row in writer_rows if str(row["run_uuid"]) == PROVENANCE_AUDIT_RUN_UUID]
     provenance_attributed = bool(provenance_rows) and all(
-        row.get("host_name") and row.get("process_id") is not None and row.get("trigger_ref")
+        classify_persisted_native_short_writer_provenance(row)
+        == NativeShortWriterProvenanceState.ATTRIBUTABLE
         for row in provenance_rows
     )
     _phase(progress, "evaluation", len(ranked), started)
@@ -763,8 +800,14 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
         queue,
         counts,
         len(writer_rows),
-        unattributed,
+        attributable,
+        legacy_unattributed,
+        invalid_provenance,
         bool(provenance_rows),
         provenance_attributed,
+        True,
+        production_observed,
+        False,
+        True,
         GLOBAL_BLOCKERS,
     )

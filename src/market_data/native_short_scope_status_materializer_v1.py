@@ -44,7 +44,6 @@ attempt to detect or append EXPIRED transitions; the projection engine still
 reads/handles MAP_EXPIRED correctly if one is ever appended by a future lane.
 """
 
-import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Callable, Sequence
@@ -95,6 +94,11 @@ from src.market_data.native_short_scope_status_v1 import (
     NativeShortScopeSourceState,
     NativeShortScopeStatusRecord,
     NativeShortScopeSupportEventState,
+)
+from src.market_data.native_short_writer_provenance_v1 import (
+    NativeShortWriterProvenance,
+    NativeShortWriterProvenanceError,
+    validate_native_short_writer_provenance,
 )
 
 __all__ = [
@@ -157,11 +161,8 @@ class NativeShortRunBuilder:
     "started" record and updates it once from the record `finish()` returns.
     """
 
-    run_uuid: str
-    runner_name: str
-    runner_version: str
+    provenance: NativeShortWriterProvenance
     contract_version: str
-    trigger_type: str
     started_at_utc: datetime
     requested_scope_count: int
     observed_scope_count: int = field(default=0, init=False)
@@ -170,13 +171,14 @@ class NativeShortRunBuilder:
     failed_scope_count: int = field(default=0, init=False)
     _finished: bool = field(default=False, init=False, repr=False)
 
+    @property
+    def run_uuid(self) -> str:
+        return self.provenance.invocation_uuid
+
     def started_record(self) -> NativeShortMaterializerRunRecord:
         return NativeShortMaterializerRunRecord(
-            run_uuid=self.run_uuid,
-            runner_name=self.runner_name,
-            runner_version=self.runner_version,
+            provenance=self.provenance,
             contract_version=self.contract_version,
-            trigger_type=self.trigger_type,
             started_at_utc=self.started_at_utc,
             requested_scope_count=self.requested_scope_count,
         )
@@ -210,11 +212,8 @@ class NativeShortRunBuilder:
             raise ValueError("RUN_ALREADY_FINISHED")
         self._finished = True
         return NativeShortMaterializerRunRecord(
-            run_uuid=self.run_uuid,
-            runner_name=self.runner_name,
-            runner_version=self.runner_version,
+            provenance=self.provenance,
             contract_version=self.contract_version,
-            trigger_type=self.trigger_type,
             started_at_utc=self.started_at_utc,
             requested_scope_count=self.requested_scope_count,
             terminal_status=terminal_status,
@@ -537,8 +536,17 @@ def _insert_run(conn: Any, record: NativeShortMaterializerRunRecord) -> int:
     sql = """
     INSERT INTO native_short_materializer_run_v1 (
         run_uuid, runner_name, runner_version, contract_version, trigger_type,
+        trigger_ref, host_name, process_id,
+        provenance_contract_version, writer_entrypoint,
+        repository_writer_owner, execution_mode, repository_commit_sha,
         started_at_utc, requested_scope_count
-    ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+    ) VALUES (
+        %s, %s, %s, %s, %s,
+        %s, %s, %s,
+        %s, %s,
+        %s, %s, %s,
+        %s, %s
+    )
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -549,6 +557,14 @@ def _insert_run(conn: Any, record: NativeShortMaterializerRunRecord) -> int:
                 record.runner_version,
                 record.contract_version,
                 record.trigger_type,
+                record.trigger_ref,
+                record.host_name,
+                record.process_id,
+                record.provenance.provenance_contract_version,
+                record.provenance.writer_entrypoint,
+                record.provenance.repository_writer_owner,
+                str(record.provenance.execution_mode),
+                record.provenance.repository_commit_sha,
                 record.started_at_utc,
                 record.requested_scope_count,
             ),
@@ -600,7 +616,17 @@ def _finalize_run(conn: Any, run_id: int, record: NativeShortMaterializerRunReco
         )
 
 
-def _insert_observation(conn: Any, record: NativeShortScopeObservationRecord) -> int:
+def _insert_observation(
+    conn: Any,
+    record: NativeShortScopeObservationRecord,
+    *,
+    provenance: NativeShortWriterProvenance,
+) -> int:
+    validate_native_short_writer_provenance(provenance)
+    if record.run_uuid != provenance.invocation_uuid:
+        raise NativeShortWriterProvenanceError(
+            "OBSERVATION_INVOCATION_UUID_CONTRADICTION"
+        )
     sql = """
     INSERT INTO native_short_scope_observation_v1 (
         run_id, run_uuid, venue, symbol, quote_currency, fib_trading_horizon,
@@ -674,20 +700,39 @@ def _insert_lifecycle_event(
     map_id: int,
     event_type: NativeShortMapLifecycleEventType,
     event_ts_utc: datetime,
+    provenance: NativeShortWriterProvenance,
 ) -> int:
+    validate_native_short_writer_provenance(provenance)
     sql = """
     INSERT INTO native_short_map_lifecycle_event_v1 (
-        map_id, lifecycle_event_type, event_ts_utc, observer_name, observer_version
-    ) VALUES (%s, %s, %s, %s, %s)
+        map_id, lifecycle_event_type, event_ts_utc, writer_invocation_uuid,
+        observer_name, observer_version
+    ) VALUES (%s, %s, %s, %s, %s, %s)
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (map_id, event_type.value, event_ts_utc, RUNNER_NAME, RUNNER_VERSION))
+        cur.execute(
+            sql,
+            (
+                map_id,
+                event_type.value,
+                event_ts_utc,
+                provenance.invocation_uuid,
+                RUNNER_NAME,
+                RUNNER_VERSION,
+            ),
+        )
         return int(cur.lastrowid)
 
 
-def upsert_scope_status_projection(conn: Any, record: NativeShortScopeStatusRecord) -> None:
+def upsert_scope_status_projection(
+    conn: Any,
+    record: NativeShortScopeStatusRecord,
+    *,
+    provenance: NativeShortWriterProvenance,
+) -> None:
     """Deterministic per-scope upsert keyed on the full canonical scope key.
     Writes only native_short_scope_status_v1; never touches source ledgers."""
+    validate_native_short_writer_provenance(provenance)
     key = record.key
     sql = """
     INSERT INTO native_short_scope_status_v1 (
@@ -696,14 +741,14 @@ def upsert_scope_status_projection(conn: Any, record: NativeShortScopeStatusReco
         map_lifecycle_state, observation_freshness_state, source_freshness_state, actionability_state,
         current_map_id, current_map_cycle_id, current_map_published_at_utc, current_map_structure_hash,
         latest_generation_event_id, latest_lifecycle_event_id,
-        latest_observation_id, latest_run_id, latest_observed_at_utc,
+        latest_observation_id, latest_run_id, writer_invocation_uuid, latest_observed_at_utc,
         next_expected_evaluation_at_utc, observation_overdue_after_utc,
         primary_latest_candle_ts_utc, supporting_latest_candle_ts_utc,
         primary_source_freshness_limit_seconds, supporting_source_freshness_limit_seconds,
         cadence_contract_version, projection_as_of_utc, status_payload_json, rebuilt_at_utc
     ) VALUES (
         %s, %s, %s, %s, %s, %s,
-        %s, %s, %s,
+        %s, %s, %s, %s,
         %s, %s, %s, %s,
         %s, %s, %s, %s,
         %s, %s,
@@ -729,6 +774,7 @@ def upsert_scope_status_projection(conn: Any, record: NativeShortScopeStatusReco
         latest_lifecycle_event_id = VALUES(latest_lifecycle_event_id),
         latest_observation_id = VALUES(latest_observation_id),
         latest_run_id = VALUES(latest_run_id),
+        writer_invocation_uuid = VALUES(writer_invocation_uuid),
         latest_observed_at_utc = VALUES(latest_observed_at_utc),
         next_expected_evaluation_at_utc = VALUES(next_expected_evaluation_at_utc),
         observation_overdue_after_utc = VALUES(observation_overdue_after_utc),
@@ -766,6 +812,7 @@ def upsert_scope_status_projection(conn: Any, record: NativeShortScopeStatusReco
                 record.latest_lifecycle_event_id,
                 record.latest_observation_id,
                 record.latest_run_id,
+                provenance.invocation_uuid,
                 record.latest_observed_at_utc,
                 record.next_expected_evaluation_at_utc,
                 record.observation_overdue_after_utc,
@@ -792,10 +839,12 @@ def rebuild_scope_projection(
     existing_lifecycle_events: Sequence[Any],
     primary_candle_close_timestamps: Sequence[datetime],
     supporting_candle_close_timestamps: Sequence[datetime],
+    provenance: NativeShortWriterProvenance,
 ) -> NativeShortScopeStatusRecord | None:
     """Fetch cutoff-independent facts already held in memory plus the
     support-event/cadence-config/observation ledgers, project, and upsert.
     Read-only against every table except native_short_scope_status_v1."""
+    validate_native_short_writer_provenance(provenance)
     support_events = fetch_scope_support_events(conn, key)
     cadence_configs = fetch_cadence_configs(conn, key)
     observations = fetch_scope_observations(conn, key)
@@ -813,7 +862,7 @@ def rebuild_scope_projection(
         rebuilt_at_utc=rebuilt_at_utc,
     )
     if record is not None:
-        upsert_scope_status_projection(conn, record)
+        upsert_scope_status_projection(conn, record, provenance=provenance)
     return record
 
 
@@ -823,8 +872,7 @@ def evaluate_scope(
     key: NativeShortMapScopeKey,
     as_of_utc: datetime,
     run_id: int,
-    run_uuid: str,
-    trigger_type: str,
+    provenance: NativeShortWriterProvenance,
     fetch_context_row: Callable[[NativeShortMapScopeKey, datetime], NativeShortContextRow | None],
     fetch_existing_maps: Callable[[Any, NativeShortMapScopeKey], list[Any]],
     fetch_existing_generation_events: Callable[[Any, NativeShortMapScopeKey], list[Any]],
@@ -838,6 +886,7 @@ def evaluate_scope(
     module never fetches candles itself so it never risks reading future
     data relative to `as_of_utc`.
     """
+    validate_native_short_writer_provenance(provenance)
     support_events = fetch_scope_support_events(conn, key)
     support_state = resolve_scope_support_state_at_cutoff(support_events, as_of_utc)
     if support_state != NativeShortScopeSupportEventState.SUPPORTED:
@@ -854,9 +903,12 @@ def evaluate_scope(
     cadence_config = select_eligible_cadence_config(cadence_configs, as_of_utc)
     if cadence_config is None:
         observation = build_configuration_unavailable_observation(
-            key=key, run_id=run_id, run_uuid=run_uuid, observed_at_utc=as_of_utc
+            key=key,
+            run_id=run_id,
+            run_uuid=provenance.invocation_uuid,
+            observed_at_utc=as_of_utc,
         )
-        _insert_observation(conn, observation)
+        _insert_observation(conn, observation, provenance=provenance)
         return ScopeEvaluationOutcome(
             key=key,
             skipped_not_supported=False,
@@ -879,14 +931,14 @@ def evaluate_scope(
         observation = build_source_unavailable_observation(
             key=key,
             run_id=run_id,
-            run_uuid=run_uuid,
+            run_uuid=provenance.invocation_uuid,
             observed_at_utc=as_of_utc,
             cadence_contract_version=cadence_config.cadence_contract_version,
             primary_source_freshness_limit_seconds=cadence_config.primary_source_freshness_limit_seconds,
             supporting_source_freshness_limit_seconds=cadence_config.supporting_source_freshness_limit_seconds,
             current_map_id_before=map_before.map_id if map_before is not None else None,
         )
-        _insert_observation(conn, observation)
+        _insert_observation(conn, observation, provenance=provenance)
         return ScopeEvaluationOutcome(
             key=key,
             skipped_not_supported=False,
@@ -904,13 +956,13 @@ def evaluate_scope(
             context_row=context_row,
             now_utc=as_of_utc,
             write=True,
-            trigger_type=trigger_type,
+            provenance=provenance,
         )
     except Exception as exc:  # noqa: BLE001 - preserved as observation evidence, not swallowed
         observation = NativeShortScopeObservationRecord(
             key=key,
             run_id=run_id,
-            run_uuid=run_uuid,
+            run_uuid=provenance.invocation_uuid,
             observed_at_utc=as_of_utc,
             observation_status=NativeShortScopeObservationStatus.FAILED,
             cadence_contract_version=cadence_config.cadence_contract_version,
@@ -922,7 +974,7 @@ def evaluate_scope(
             observation_detail=str(exc),
             current_map_id_before=map_before.map_id if map_before is not None else None,
         )
-        _insert_observation(conn, observation)
+        _insert_observation(conn, observation, provenance=provenance)
         return ScopeEvaluationOutcome(
             key=key,
             skipped_not_supported=False,
@@ -961,7 +1013,11 @@ def evaluate_scope(
         )
         if transition is not None:
             lifecycle_event_id = _insert_lifecycle_event(
-                conn, map_id=map_after.map_id, event_type=transition, event_ts_utc=as_of_utc
+                conn,
+                map_id=map_after.map_id,
+                event_type=transition,
+                event_ts_utc=as_of_utc,
+                provenance=provenance,
             )
             lifecycle_event_appended = True
             map_lifecycle_state_after = (
@@ -974,7 +1030,7 @@ def evaluate_scope(
     observation = build_normal_observation(
         key=key,
         run_id=run_id,
-        run_uuid=run_uuid,
+        run_uuid=provenance.invocation_uuid,
         observed_at_utc=as_of_utc,
         cadence_contract_version=cadence_config.cadence_contract_version,
         source_state=source_state,
@@ -993,7 +1049,7 @@ def evaluate_scope(
         source_primary_candle_count=context_row.source_primary_candle_count,
         source_support_candle_count=context_row.source_support_candle_count,
     )
-    _insert_observation(conn, observation)
+    _insert_observation(conn, observation, provenance=provenance)
 
     return ScopeEvaluationOutcome(
         key=key,
@@ -1013,7 +1069,7 @@ def run_native_short_scope_status_materializer(
     *,
     scopes: Sequence[NativeShortMapScopeKey],
     as_of_utc: datetime,
-    trigger_type: str,
+    provenance: NativeShortWriterProvenance,
     operational_clock: Callable[[], datetime],
     fetch_context_row: Callable[[NativeShortMapScopeKey, datetime], NativeShortContextRow | None],
     fetch_existing_maps: Callable[[Any, NativeShortMapScopeKey], list[Any]],
@@ -1021,7 +1077,6 @@ def run_native_short_scope_status_materializer(
     fetch_existing_lifecycle_events: Callable[[Any, list[int]], list[Any]],
     fetch_primary_candle_close_timestamps: Callable[[NativeShortMapScopeKey, datetime], list[datetime]],
     fetch_supporting_candle_close_timestamps: Callable[[NativeShortMapScopeKey, datetime], list[datetime]],
-    run_uuid: str | None = None,
     materialize_scope_symbol_fn: Callable[..., ScopeMaterializationResult] = materialize_scope_symbol,
     materialize_map_level_status_fn: Callable[
         ..., MapLevelStatusMaterializationOutcome
@@ -1045,17 +1100,15 @@ def run_native_short_scope_status_materializer(
     itself, so the caller controls exactly when those two timestamps are
     captured.
     """
+    validate_native_short_writer_provenance(provenance)
     materialize_map_level_status_fn = (
         materialize_map_level_status_fn
         or materialize_native_short_map_level_status_for_scope
     )
     started_at_utc = operational_clock()
     builder = NativeShortRunBuilder(
-        run_uuid=run_uuid or str(uuid.uuid4()),
-        runner_name=RUNNER_NAME,
-        runner_version=RUNNER_VERSION,
+        provenance=provenance,
         contract_version=CONTRACT_VERSION,
-        trigger_type=trigger_type,
         started_at_utc=started_at_utc,
         requested_scope_count=len(scopes),
     )
@@ -1068,8 +1121,7 @@ def run_native_short_scope_status_materializer(
                 key=key,
                 as_of_utc=as_of_utc,
                 run_id=run_id,
-                run_uuid=builder.run_uuid,
-                trigger_type=trigger_type,
+                provenance=provenance,
                 fetch_context_row=fetch_context_row,
                 fetch_existing_maps=fetch_existing_maps,
                 fetch_existing_generation_events=fetch_existing_generation_events,
@@ -1116,6 +1168,7 @@ def run_native_short_scope_status_materializer(
                 existing_lifecycle_events=existing_lifecycle_events,
                 primary_candle_close_timestamps=primary_candle_close_timestamps,
                 supporting_candle_close_timestamps=supporting_candle_close_timestamps,
+                provenance=provenance,
             )
 
             # The level-status materializer consumes only the projection's
@@ -1127,6 +1180,7 @@ def run_native_short_scope_status_materializer(
                 conn,
                 key=key,
                 operational_clock=operational_clock,
+                provenance=provenance,
             )
             if level_status_outcome.branch == MAP_LEVEL_STATUS_BLOCKED:
                 raise NativeShortMapLevelStatusBlockedError(

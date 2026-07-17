@@ -12,8 +12,17 @@ from typing import Any
 import pytest
 
 from src.market_data import run_native_short_scope_status_chain_v1 as runner
+from src.market_data.native_short_repository_source_identity_v1 import (
+    NativeShortRepositorySourceState,
+)
 from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapScopeKey
 from src.market_data.native_short_scope_status_v1 import NativeShortMaterializerRunRecord
+from src.market_data.native_short_writer_provenance_v1 import (
+    CANONICAL_REPOSITORY_WRITER_OWNER,
+    CHAIN_TRIGGER_TYPE,
+    NativeShortWriterExecutionMode,
+    NativeShortWriterProvenance,
+)
 
 
 ROOT = Path(__file__).parent.parent
@@ -31,6 +40,30 @@ _BTC = NativeShortMapScopeKey(
     primary_interval="4h",
     supporting_interval="1h",
 )
+_PROVENANCE = NativeShortWriterProvenance(
+    writer_entrypoint="scripts/run_chain_4h.sh",
+    repository_writer_owner=CANONICAL_REPOSITORY_WRITER_OWNER,
+    runner_name=runner.RUNNER_NAME,
+    runner_version=runner.RUNNER_VERSION,
+    execution_mode=NativeShortWriterExecutionMode.CHAIN,
+    invocation_uuid="30000000-0000-4000-8000-000000000001",
+    repository_commit_sha="a" * 40,
+    host_name="test-host",
+    process_id=1,
+    trigger_type=CHAIN_TRIGGER_TYPE,
+    trigger_ref="scripts/run_chain_4h.sh",
+)
+_CLI_PROVENANCE_ARGS = [
+    "--execution-mode", "CHAIN",
+    "--writer-entrypoint", "scripts/run_chain_4h.sh",
+    "--repository-commit", "a" * 40,
+    "--trigger-type", CHAIN_TRIGGER_TYPE,
+    "--trigger-ref", "scripts/run_chain_4h.sh",
+]
+
+
+def _inspect_clean_source() -> NativeShortRepositorySourceState:
+    return NativeShortRepositorySourceState(head_sha="a" * 40, status_porcelain="")
 
 
 class _FakeConn:
@@ -55,11 +88,8 @@ class _FakeConn:
 
 def _finished_run() -> NativeShortMaterializerRunRecord:
     return NativeShortMaterializerRunRecord(
-        run_uuid="runtime-test-run",
-        runner_name="native_short_scope_status_materializer_v1",
-        runner_version="0.1",
+        provenance=_PROVENANCE,
         contract_version="native_short_scope_status_v1",
-        trigger_type=runner.TRIGGER_TYPE,
         started_at_utc=_AS_OF,
         requested_scope_count=1,
         terminal_status="FINISHED",
@@ -77,13 +107,17 @@ def test_canonical_service_keeps_single_timer_and_invokes_native_chain_in_order(
     timer = TIMER_PATH.read_text(encoding="utf-8")
 
     etl = "python -m src.etl.bitvavo.run_candles_etl"
+    source_verification = "python -m src.market_data.native_short_repository_source_identity_v1"
     native = "bash scripts/run_native_short_scope_status_chain_once.sh"
     features = "python -m src.features.run_feat_candle"
-    assert chain.index(etl) < chain.index(native) < chain.index(features)
+    assert chain.index(source_verification) < chain.index(etl) < chain.index(native) < chain.index(features)
     assert "scripts/run_chain_4h.sh" in service
     assert "Unit=synth-chain-4h.service" in timer
     assert "native-short" not in service.lower()
     assert "native-short" not in timer.lower()
+    assert 'NATIVE_SHORT_REPOSITORY_COMMIT="$(git rev-parse --verify HEAD)"' in chain
+    assert 'SYNTH_NATIVE_SHORT_WRITER_ENTRYPOINT="scripts/run_chain_4h.sh"' in chain
+    assert 'SYNTH_NATIVE_SHORT_TRIGGER_REF="scripts/run_chain_4h.sh"' in chain
 
 
 def test_wrapper_has_native_lock_exact_scope_defaults_and_safety_markers() -> None:
@@ -98,8 +132,16 @@ def test_wrapper_has_native_lock_exact_scope_defaults_and_safety_markers() -> No
         "--fib-trading-horizon SHORT",
         "--primary-interval 4h",
         "--supporting-interval 1h",
+        "--execution-mode CHAIN",
+        '--writer-entrypoint "${WRITER_ENTRYPOINT}"',
+        '--repository-commit "${REPOSITORY_COMMIT}"',
+        "--trigger-type REPOSITORY_4H_MARKET_CHAIN",
+        '--trigger-ref "${TRIGGER_REF}"',
     ):
         assert argument in source
+    assert "SCHEDULED_4H_MARKET_CHAIN" not in source
+    assert "git rev-parse --verify HEAD" in source
+    assert "systemctl" not in source
     for marker in (
         "broker_private_calls=0",
         "broker_writes=0",
@@ -140,7 +182,7 @@ def test_runtime_adapter_calls_pr79_orchestrator_for_supported_scope(
         primary_interval="4h",
         supporting_interval="1h",
         as_of_utc=_AS_OF,
-        trigger_type=runner.TRIGGER_TYPE,
+        provenance=_PROVENANCE,
     )
 
     assert captured["scopes"] == [_BTC]
@@ -196,7 +238,9 @@ def test_exact_btc_smoke_arguments_and_terminal_summary(
                 "1h",
                 "--as-of-utc",
                 _AS_OF.isoformat(),
-            ]
+                *_CLI_PROVENANCE_ARGS,
+            ],
+            inspect_repository_source=_inspect_clean_source,
         )
     finally:
         sys.stdout = previous_stdout
@@ -241,7 +285,7 @@ def test_runtime_adapter_commits_expected_domain_blocked_evidence(
             primary_interval="4h",
             supporting_interval="1h",
             as_of_utc=_AS_OF,
-            trigger_type=runner.TRIGGER_TYPE,
+            provenance=_PROVENANCE,
         )
 
     assert conn.commit_count == 1
@@ -274,7 +318,7 @@ def test_runtime_adapter_rolls_back_on_unexpected_orchestrator_exception(
             primary_interval="4h",
             supporting_interval="1h",
             as_of_utc=_AS_OF,
-            trigger_type=runner.TRIGGER_TYPE,
+            provenance=_PROVENANCE,
         )
 
     assert conn.commit_count == 0
@@ -306,7 +350,7 @@ def test_runtime_adapter_rolls_back_on_keyboard_interrupt(
             primary_interval="4h",
             supporting_interval="1h",
             as_of_utc=_AS_OF,
-            trigger_type=runner.TRIGGER_TYPE,
+            provenance=_PROVENANCE,
         )
 
     assert conn.commit_count == 0
@@ -397,7 +441,7 @@ def test_execute_runtime_reports_phase_start_and_end_when_progress_supplied(
         primary_interval="4h",
         supporting_interval="1h",
         as_of_utc=_AS_OF,
-        trigger_type=runner.TRIGGER_TYPE,
+        provenance=_PROVENANCE,
         progress=events.append,
     )
 
@@ -442,7 +486,7 @@ def test_execute_runtime_reports_bounded_candle_query_timings(
         primary_interval="4h",
         supporting_interval="1h",
         as_of_utc=_AS_OF,
-        trigger_type=runner.TRIGGER_TYPE,
+        provenance=_PROVENANCE,
         progress=events.append,
     )
 
@@ -478,7 +522,7 @@ def test_execute_runtime_without_progress_never_starts_heartbeat_thread(
         primary_interval="4h",
         supporting_interval="1h",
         as_of_utc=_AS_OF,
-        trigger_type=runner.TRIGGER_TYPE,
+        provenance=_PROVENANCE,
     )
     assert threading.active_count() == threads_before
 
@@ -531,7 +575,9 @@ def test_main_reports_sigint_with_exit_130(monkeypatch: pytest.MonkeyPatch) -> N
                 "--primary-interval", "4h",
                 "--supporting-interval", "1h",
                 "--as-of-utc", _AS_OF.isoformat(),
-            ]
+                *_CLI_PROVENANCE_ARGS,
+            ],
+            inspect_repository_source=_inspect_clean_source,
         )
     finally:
         sys.stdout = previous_stdout
@@ -562,7 +608,9 @@ def test_main_reports_sigterm_with_exit_143(monkeypatch: pytest.MonkeyPatch) -> 
                 "--primary-interval", "4h",
                 "--supporting-interval", "1h",
                 "--as-of-utc", _AS_OF.isoformat(),
-            ]
+                *_CLI_PROVENANCE_ARGS,
+            ],
+            inspect_repository_source=_inspect_clean_source,
         )
     finally:
         sys.stdout = previous_stdout
@@ -594,7 +642,9 @@ def test_main_installs_and_restores_sigterm_handler(monkeypatch: pytest.MonkeyPa
                 "--primary-interval", "4h",
                 "--supporting-interval", "1h",
                 "--as-of-utc", _AS_OF.isoformat(),
-            ]
+                *_CLI_PROVENANCE_ARGS,
+            ],
+            inspect_repository_source=_inspect_clean_source,
         )
     finally:
         sys.stdout = previous_stdout

@@ -24,9 +24,11 @@ from src.market_data.native_short_scope_status_v1 import (
     native_short_scope_key_from_parts,
     validate_native_short_scope_key,
 )
+from src.market_data.native_short_writer_provenance_v1 import build_explicit_test_provenance
 
 
 _TS = datetime(2026, 7, 6, 12, 0, tzinfo=UTC)
+_PROVENANCE = build_explicit_test_provenance()
 
 
 def _key() -> NativeShortMapScopeKey:
@@ -44,11 +46,8 @@ def test_valid_full_key_records_construct() -> None:
     key = _key()
 
     NativeShortMaterializerRunRecord(
-        run_uuid="00000000-0000-0000-0000-000000000001",
-        runner_name="native_short_map_materializer_v1",
-        runner_version="0.1",
+        provenance=_PROVENANCE,
         contract_version="native_short_scope_status_contract_v1",
-        trigger_type="MANUAL",
         started_at_utc=_TS,
         requested_scope_count=1,
         terminal_status="FINISHED",
@@ -214,22 +213,16 @@ def test_status_row_rejects_not_applicable_scope_support() -> None:
 
 def test_naive_timestamps_reject_and_utc_timestamps_pass() -> None:
     NativeShortMaterializerRunRecord(
-        run_uuid="00000000-0000-0000-0000-000000000001",
-        runner_name="native_short_map_materializer_v1",
-        runner_version="0.1",
+        provenance=_PROVENANCE,
         contract_version="native_short_scope_status_contract_v1",
-        trigger_type="MANUAL",
         started_at_utc=_TS,
         requested_scope_count=1,
     )
 
     with pytest.raises(NativeShortScopeStatusValidationError, match="TIMESTAMP_NOT_UTC"):
         NativeShortMaterializerRunRecord(
-            run_uuid="00000000-0000-0000-0000-000000000001",
-            runner_name="native_short_map_materializer_v1",
-            runner_version="0.1",
+            provenance=_PROVENANCE,
             contract_version="native_short_scope_status_contract_v1",
-            trigger_type="MANUAL",
             started_at_utc=datetime(2026, 7, 6, 12, 0),
             requested_scope_count=1,
         )

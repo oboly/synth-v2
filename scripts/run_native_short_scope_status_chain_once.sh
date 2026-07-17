@@ -15,6 +15,16 @@ echo "decision_gate=none execution_planner=none executor=none"
 
 cd "${REPO_DIR}" || exit 1
 
+REPOSITORY_COMMIT="${SYNTH_NATIVE_SHORT_REPOSITORY_COMMIT:-}"
+if [[ -z "${REPOSITORY_COMMIT}" ]]; then
+    if ! REPOSITORY_COMMIT="$(git rev-parse --verify HEAD 2>/dev/null)"; then
+        echo "FAILED runner=run_native_short_scope_status_chain_once reason=REPOSITORY_COMMIT_UNAVAILABLE exit_status=2" >&2
+        exit 2
+    fi
+fi
+WRITER_ENTRYPOINT="${SYNTH_NATIVE_SHORT_WRITER_ENTRYPOINT:-scripts/run_native_short_scope_status_chain_once.sh}"
+TRIGGER_REF="${SYNTH_NATIVE_SHORT_TRIGGER_REF:-scripts/run_native_short_scope_status_chain_once.sh}"
+
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
     if [[ -f "venv/bin/activate" ]]; then
         # shellcheck disable=SC1091
@@ -40,6 +50,11 @@ python -m src.market_data.run_native_short_scope_status_chain_v1 \
     --fib-trading-horizon SHORT \
     --primary-interval 4h \
     --supporting-interval 1h \
+    --execution-mode CHAIN \
+    --writer-entrypoint "${WRITER_ENTRYPOINT}" \
+    --repository-commit "${REPOSITORY_COMMIT}" \
+    --trigger-type REPOSITORY_4H_MARKET_CHAIN \
+    --trigger-ref "${TRIGGER_REF}" \
     --output summary \
     "$@"
 status=$?

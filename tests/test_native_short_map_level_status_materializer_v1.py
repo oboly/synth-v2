@@ -45,6 +45,7 @@ from src.market_data.native_short_scope_status_v1 import (
     NativeShortScopeStatusCode,
     NativeShortScopeStatusRecord,
 )
+from src.market_data.native_short_writer_provenance_v1 import build_explicit_test_provenance
 from src.market_rules.price_tick_normalization_v1 import (
     NORM_STATUS_APPLIED,
     NORM_STATUS_MISSING,
@@ -55,6 +56,7 @@ MODULE_PATH = Path("src/market_data/native_short_map_level_status_materializer_v
 
 _AS_OF = datetime(2026, 7, 10, 4, 0, tzinfo=UTC)
 _REBUILT_AT = datetime(2026, 7, 10, 4, 0, 5, tzinfo=UTC)
+_PROVENANCE = build_explicit_test_provenance()
 
 
 def _source(path: Path = MODULE_PATH) -> str:
@@ -733,7 +735,7 @@ def _map_row(**overrides) -> dict:
 def test_orchestrator_missing_projection_deletes_and_blocks() -> None:
     conn = _FakeConn({"scope_status": None})
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT
+        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == PROJECTION_MISSING
@@ -758,7 +760,7 @@ def test_orchestrator_configuration_unavailable_deletes_and_blocks() -> None:
         }
     )
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT
+        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == "CONFIGURATION_UNAVAILABLE"
@@ -774,7 +776,7 @@ def test_orchestrator_identity_mismatch_is_projection_invalid() -> None:
         }
     )
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT
+        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == PROJECTION_INVALID
@@ -784,7 +786,7 @@ def test_orchestrator_identity_mismatch_is_projection_invalid() -> None:
 def test_orchestrator_missing_map_row_is_projection_invalid() -> None:
     conn = _FakeConn({"scope_status": _scope_status_row(), "map": None})
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT
+        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == PROJECTION_INVALID
@@ -798,7 +800,7 @@ def test_orchestrator_malformed_geometry_is_geometry_invalid() -> None:
         }
     )
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT
+        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == GEOMETRY_INVALID
@@ -822,13 +824,16 @@ def test_orchestrator_active_evaluation_writes_three_rows() -> None:
         }
     )
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT
+        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
     )
     assert outcome.branch == ACTIVE_EVALUATION
     assert outcome.row_count == 3
     assert outcome.current_map_id == 42
     assert outcome.level_status_as_of_utc == _AS_OF
     assert len(conn.script["inserted_rows"]) == 3
+    assert {
+        row["writer_invocation_uuid"] for row in conn.script["inserted_rows"]
+    } == {_PROVENANCE.invocation_uuid}
     # replace_native_short_map_level_status_for_scope always deletes-then-inserts
     # atomically, so exactly one delete accompanies the three inserted rows.
     assert conn.script["delete_calls"] == 1
@@ -846,7 +851,7 @@ def test_orchestrator_terminal_completed_writes_three_completed_rows() -> None:
         }
     )
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT
+        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
     )
     assert outcome.branch == TERMINAL_COMPLETED
     assert outcome.row_count == 3

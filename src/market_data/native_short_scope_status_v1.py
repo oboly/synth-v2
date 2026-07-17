@@ -15,6 +15,10 @@ from src.market_data.native_short_map_lifecycle_v1 import (
     DEFAULT_FIB_TRADING_HORIZON,
     NativeShortMapScopeKey,
 )
+from src.market_data.native_short_writer_provenance_v1 import (
+    NativeShortWriterProvenance,
+    validate_native_short_writer_provenance,
+)
 
 __all__ = [
     "NO_ELIGIBLE_CADENCE_CONFIG_REASON_CODE",
@@ -206,18 +210,12 @@ def native_short_scope_key_from_parts(
 
 @dataclass(frozen=True)
 class NativeShortMaterializerRunRecord:
-    run_uuid: str
-    runner_name: str
-    runner_version: str
+    provenance: NativeShortWriterProvenance
     contract_version: str
-    trigger_type: str
     started_at_utc: datetime
     requested_scope_count: int
     terminal_status: NativeShortRunTerminalStatus | str | None = None
     finished_at_utc: datetime | None = None
-    trigger_ref: str | None = None
-    host_name: str | None = None
-    process_id: int | None = None
     observed_scope_count: int | None = None
     published_map_count: int | None = None
     lifecycle_event_count: int | None = None
@@ -226,11 +224,8 @@ class NativeShortMaterializerRunRecord:
     failure_detail: str | None = None
 
     def __post_init__(self) -> None:
-        _require_text(self.run_uuid, "run_uuid")
-        _require_text(self.runner_name, "runner_name")
-        _require_text(self.runner_version, "runner_version")
+        validate_native_short_writer_provenance(self.provenance)
         _require_text(self.contract_version, "contract_version")
-        _require_text(self.trigger_type, "trigger_type")
         _require_utc(self.started_at_utc, "started_at_utc")
         _optional_utc(self.finished_at_utc, "finished_at_utc")
         if self.requested_scope_count < 0:
@@ -246,6 +241,34 @@ class NativeShortMaterializerRunRecord:
             value = getattr(self, field_name)
             if value is not None and value < 0:
                 raise NativeShortScopeStatusValidationError(f"COUNT_NEGATIVE field={field_name}")
+
+    @property
+    def run_uuid(self) -> str:
+        return self.provenance.invocation_uuid
+
+    @property
+    def runner_name(self) -> str:
+        return self.provenance.runner_name
+
+    @property
+    def runner_version(self) -> str:
+        return self.provenance.runner_version
+
+    @property
+    def trigger_type(self) -> str:
+        return self.provenance.trigger_type
+
+    @property
+    def trigger_ref(self) -> str:
+        return self.provenance.trigger_ref
+
+    @property
+    def host_name(self) -> str:
+        return self.provenance.host_name
+
+    @property
+    def process_id(self) -> int:
+        return self.provenance.process_id
 
 
 @dataclass(frozen=True)

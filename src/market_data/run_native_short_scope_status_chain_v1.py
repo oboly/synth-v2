@@ -27,7 +27,6 @@ import signal
 import sys
 import threading
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -53,13 +52,25 @@ from src.market_data.native_short_scope_status_materializer_v1 import (
     run_native_short_scope_status_materializer,
 )
 from src.market_data.native_short_scope_status_v1 import NativeShortMaterializerRunRecord
+from src.market_data.native_short_repository_source_identity_v1 import (
+    NativeShortRepositorySourceInspector,
+    build_verified_process_provenance,
+    inspect_running_repository_source,
+)
+from src.market_data.native_short_writer_provenance_v1 import (
+    CHAIN_TRIGGER_TYPE,
+    NativeShortWriterExecutionMode,
+    NativeShortWriterProvenance,
+    NativeShortWriterProvenanceError,
+    validate_native_short_writer_provenance,
+)
 
 
 RUNNER_NAME = "run_native_short_scope_status_chain_v1"
 RUNNER_VERSION = "0.1"
 RUNTIME_MODE = "market_data_write"
 WORKER_COUNT = 1
-TRIGGER_TYPE = "SCHEDULED_4H_MARKET_CHAIN"
+TRIGGER_TYPE = CHAIN_TRIGGER_TYPE
 EXPECTED_LEVEL_ROWS_PER_OBSERVED_SCOPE = 3
 PRIMARY_LOOKBACK = timedelta(days=60)
 SUPPORTING_LOOKBACK = timedelta(days=21)
@@ -157,7 +168,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         choices=(DEFAULT_SUPPORTING_INTERVAL,),
     )
     parser.add_argument("--as-of-utc", type=_parse_as_of_utc)
-    parser.add_argument("--trigger-type", default=TRIGGER_TYPE, type=_required_text)
+    parser.add_argument(
+        "--execution-mode",
+        required=True,
+        choices=(
+            NativeShortWriterExecutionMode.CHAIN.value,
+            NativeShortWriterExecutionMode.MANUAL.value,
+        ),
+    )
+    parser.add_argument("--writer-entrypoint", required=True, type=_required_text)
+    parser.add_argument("--repository-commit", required=True, type=_required_text)
+    parser.add_argument("--trigger-type", required=True, type=_required_text)
+    parser.add_argument("--trigger-ref", required=True, type=_required_text)
     parser.add_argument("--output", choices=("jsonl", "summary"), default="summary")
     return parser.parse_args(argv)
 
@@ -394,9 +416,10 @@ def execute_runtime(
     primary_interval: str,
     supporting_interval: str,
     as_of_utc: datetime,
-    trigger_type: str,
+    provenance: NativeShortWriterProvenance,
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> RuntimeResult:
+    validate_native_short_writer_provenance(provenance)
     def _report(event: str, *, phase: str | None = None, **fields: Any) -> None:
         if progress is None:
             return
@@ -468,7 +491,7 @@ def execute_runtime(
                     conn,
                     scopes=scopes,
                     as_of_utc=as_of_utc,
-                    trigger_type=trigger_type,
+                    provenance=provenance,
                     operational_clock=utc_now,
                     fetch_context_row=market_data.context_row,
                     fetch_existing_maps=map_materializer._fetch_maps_for_scope,
@@ -480,7 +503,6 @@ def execute_runtime(
                     ),
                     fetch_primary_candle_close_timestamps=market_data.primary_timestamps,
                     fetch_supporting_candle_close_timestamps=market_data.supporting_timestamps,
-                    run_uuid=str(uuid.uuid4()),
                 )
             except NativeShortMapLevelStatusBlockedError:
                 # Explicit, already-designed domain-blocked contract: the
@@ -570,8 +592,28 @@ def _interruption_signal_name(exc: BaseException) -> str:
     return str(exc) or "SIGINT"
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    inspect_repository_source: NativeShortRepositorySourceInspector = (
+        inspect_running_repository_source
+    ),
+) -> int:
     args = parse_args(argv)
+    try:
+        provenance = build_verified_process_provenance(
+            writer_entrypoint=args.writer_entrypoint,
+            runner_name=RUNNER_NAME,
+            runner_version=RUNNER_VERSION,
+            execution_mode=args.execution_mode,
+            repository_commit_sha=args.repository_commit,
+            trigger_type=args.trigger_type,
+            trigger_ref=args.trigger_ref,
+            inspect_repository_source=inspect_repository_source,
+        )
+    except NativeShortWriterProvenanceError as exc:
+        print(f"INVALID_PROVENANCE runner={RUNNER_NAME} detail={exc}", file=sys.stderr, flush=True)
+        return 2
     symbols = parse_symbols(args.symbols)
     as_of_utc = args.as_of_utc or utc_now()
     scope_mode = "EXPLICIT_SYMBOLS" if symbols else "PERSISTED_SUPPORTED_SCOPES"
@@ -604,7 +646,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 primary_interval=args.primary_interval,
                 supporting_interval=args.supporting_interval,
                 as_of_utc=as_of_utc,
-                trigger_type=args.trigger_type,
+                provenance=provenance,
                 progress=lambda payload: _emit(payload, args.output),
             )
         except KeyboardInterrupt as exc:

@@ -23,6 +23,7 @@ from src.market_data.native_short_multi_asset_audit_v1 import (
     TICK_RULE_AMBIGUOUS,
     TICK_RULE_MISSING,
     WRITER_PROVENANCE_UNATTRIBUTED,
+    AuditReport,
     CandidateInput,
     CandleWindow,
     CanonicalScopeKey,
@@ -224,6 +225,35 @@ def test_global_blockers_prevent_production_promotion() -> None:
     assert result.global_rollout_status == "GLOBAL_ROLLOUT_BLOCKED"
     assert WRITER_PROVENANCE_UNATTRIBUTED in result.global_blocker_codes
     assert result.production_promotable is False
+
+
+def test_provenance_contract_and_operational_acceptance_are_independent() -> None:
+    report = AuditReport(
+        as_of_utc=AS_OF,
+        results=(),
+        proposed_sequential_queue=(),
+        counts={},
+        writer_run_count=42,
+        attributable_writer_run_count=0,
+        legacy_unattributed_writer_run_count=42,
+        invalid_provenance_writer_run_count=0,
+        provenance_audit_run_found=True,
+        provenance_audit_run_attributed=False,
+        provenance_contract_implemented=True,
+        attributable_production_run_observed=False,
+        operational_acceptance_completed=False,
+        writer_provenance_blocker_active=True,
+        global_blocker_codes=GLOBAL_BLOCKERS,
+    ).to_dict()
+    assert report["writer_run_count"] == 42
+    assert report["attributable_writer_run_count"] == 0
+    assert report["legacy_unattributed_writer_run_count"] == 42
+    assert report["invalid_provenance_writer_run_count"] == 0
+    assert report["provenance_contract_implemented"] is True
+    assert report["attributable_production_run_observed"] is False
+    assert report["operational_acceptance_completed"] is False
+    assert report["writer_provenance_blocker_active"] is True
+    assert WRITER_PROVENANCE_UNATTRIBUTED in report["global_blocker_codes"]
 
 
 def test_no_account_or_execution_imports() -> None:
