@@ -8,10 +8,14 @@ on:
       - db/migrations/20260626_native_short_map_lifecycle_v1.sql
       - db/migrations/20260706_native_short_scope_status_persistence_v1.sql
       - db/migrations/20260707_native_short_cadence_unavailable_v1.sql
+      - db/migrations/20260718_native_short_scope_administration_v1.sql
+      - src/market_data/native_short_scope_administration_v1.py
       - src/market_data/native_short_scope_status_v1.py
       - src/market_data/native_short_scope_status_projection_v1.py
       - src/market_data/native_short_scope_status_materializer_v1.py
       - tests/test_native_short_scope_status_materializer_mariadb_v1.py
+      - tests/test_native_short_scope_administration_v1.py
+      - tests/test_native_short_scope_administration_migration_v1.py
       - .github/workflows/native-short-mariadb-migration-smoke.yml
   workflow_dispatch:
 
@@ -576,7 +580,15 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pytest
 
-      - name: Run A2 orchestrator disposable MariaDB integration test
+      - name: Run Native SHORT pure contract tests
+        # DB-free unit tests for the pure administration contract module. Runs
+        # before the disposable MariaDB integration step; a failure here fails CI.
+        run: |
+          python -m pytest \
+            tests/test_native_short_scope_administration_v1.py \
+            -v
+
+      - name: Run Native SHORT disposable MariaDB integration tests
         env:
           RUN_MARIADB_DDL_TEST: "1"
           # Explicit, test-only connection variables for this ephemeral
@@ -593,4 +605,5 @@ jobs:
         run: |
           python -m pytest \
             tests/test_native_short_scope_status_materializer_mariadb_v1.py \
+            tests/test_native_short_scope_administration_migration_v1.py \
             -v

@@ -2,7 +2,7 @@
 
 ## Status
 
-`blocked` — PR 2b implements the repository writer-provenance contract and future fail-before-write enforcement only. No attributable production run has been operationally accepted. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
+`blocked` — the repository writer-provenance contract is implemented, and the first scope-administration boundary now defines pure request types plus forward-only schema constraints only. Runtime adoption, promotion, and removal transactions remain unimplemented. No attributable production run has been operationally accepted. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
 
 ## Sources
 
@@ -10,6 +10,8 @@
 - `src/market_data/native_short_multi_asset_audit_v1.py`;
 - `src/market_data/run_native_short_multi_asset_audit_v1.py`;
 - canonical native SHORT scope, map, lifecycle, generation, cadence, status, health-report, materializer, and 4h-owner implementation on `origin/main`;
+- `docs/architecture/native_short_scope_administration_contract_v1.md`;
+- `src/market_data/native_short_scope_administration_v1.py` and `db/migrations/20260718_native_short_scope_administration_v1.sql`;
 - read-only production evidence captured on 2026-07-16.
 - PR 2b writer-surface audit and repository implementation rebased onto `a72457ec09e321f54d87a93bdba4c0699b9ea739`.
 
@@ -124,7 +126,7 @@ A later single-symbol promotion may be accepted only when all of the following a
 - three consecutive real 4h cycles after promotion;
 - the existing 4h owner remains the only timer/runtime owner.
 
-The required later promotion transaction must lock and validate the exact key, establish the supported scope, append its support evidence, and activate its cadence atomically. It must not materialize a map inside that transaction. A retry must either observe the identical completed state or fail closed on conflict; it must never add a duplicate logical scope.
+The first administration boundary establishes `native_short_map_scope_v1` as the sole canonical identity and current support-generation owner, an attributable operation ledger, append-only generation-linked support evidence, and database-enforced single-active-cadence state. It performs no scope mutation. The required later promotion transaction must lock and validate the exact key, establish the supported scope, append its support evidence, and activate its cadence atomically. It must not materialize a map inside that transaction. A retry must either observe the identical completed state or fail closed on conflict; it must never add a duplicate logical scope.
 
 The required later removal/rollback transaction must lock the same exact key, withdraw support, deactivate cadence, and make the scope non-actionable atomically. It must retain immutable maps and append-only generation/lifecycle/observation/run history, must not mislabel removal as a market lifecycle outcome, and must leave the sole 4h owner able to continue without selecting the removed scope. Until schema and projection behavior can meet those exact semantics without partial state, removal remains blocked.
 
@@ -132,9 +134,9 @@ The required later removal/rollback transaction must lock the same exact key, wi
 
 The remaining blocker order is fixed:
 
-1. **Writer provenance repository implementation — PR 2b.** Implement the typed contract, one migration, propagation, enforcement, read-only audit fields, and repository tests.
-2. **Separate writer provenance operational acceptance.** After merge only: apply the migration, update the installed checkout, run one controlled production-capable invocation, prove persisted attributable provenance/linkage and no unintended writes, and record acceptance evidence. PR 2b does not perform or close this step.
-3. **Atomic single-scope promotion/removal contract.** Implement and test the transactions described above separately.
+1. **Scope-administration repository transactions.** Implement `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` separately against the accepted types and schema; include deterministic first-creation serialization and no map materialization.
+2. **Writer commit-time fencing.** Revalidate scope ID, support state, support generation, and active cadence immediately before the bounded writer transaction commits; no persistent fence ledger.
+3. **Separate writer provenance operational acceptance.** Apply and validate writer provenance only in its independent post-merge operational lane; this repository PR does not perform or close it.
 4. **`NO_CURRENT_MAP` bootstrap semantics.** Make the expected newly supported bootstrap state non-fatal without hiding real failures.
 5. **Per-symbol failure isolation.** Prove one symbol cannot leave another symbol's partial evidence.
 6. **Sequential SOL review/canary.** Consider only SOL and accept three consecutive real 4h cycles.
@@ -145,8 +147,8 @@ The remaining blocker order is fixed:
 ## Blockers / dependencies
 
 - `WRITER_PROVENANCE_UNATTRIBUTED`;
-- `PROMOTION_CONTRACT_MISSING`;
-- `REMOVAL_CONTRACT_MISSING`;
+- `PROMOTION_TRANSACTION_IMPLEMENTATION_MISSING`;
+- `REMOVAL_TRANSACTION_IMPLEMENTATION_MISSING`;
 - `BOOTSTRAP_ORCHESTRATION_BLOCKED`: current `NO_CURRENT_MAP` semantics are fatal for a new scope;
 - `MULTI_SCOPE_FAILURE_ISOLATION_MISSING`: current orchestration does not isolate failures by symbol;
 - one-scope current failure-domain-safe capacity;
@@ -167,7 +169,7 @@ Code, tests, or a migration do not create operational evidence. Even one future 
 
 Owner: `market_data`, using public canonical market metadata, public candles, tick metadata, and native SHORT ledgers only.
 
-No live trading. No production database mutation in PR 2b. No scope seeding, promotion, or removal. No production materialization or lifecycle action. No account/private-broker reads. No broker writes. No order submission. No `selection_engine`, `decision_gate`, `execution_planner`, or executor input. No second timer or runtime owner.
+No live trading. No production database mutation in this repository PR. No scope seeding, adoption, promotion, or removal. No production materialization or lifecycle action. No account/private-broker reads. No broker writes. No order submission. No `selection_engine`, `decision_gate`, `execution_planner`, or executor input. No second timer or runtime owner.
 
 ## Non-goals
 
