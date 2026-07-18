@@ -625,7 +625,7 @@ def test_fresh_migration_and_constraints_in_disposable_mariadb() -> None:
             lambda: _insert_cadence(
                 connection,
                 symbol="XLM",
-                version="managed_closed_without_effective_to",
+                version="managed_closed_missing_end",
                 effective_from="2026-07-01 00:00:00",
                 effective_to=None,
                 is_active=0,
