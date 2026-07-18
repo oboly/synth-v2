@@ -56,6 +56,7 @@ def test_devlap_public_price_writer_has_one_owner_and_one_lock() -> None:
     assert wrapper.count("--write-db") == 1
     assert service.count("scripts/run_market_price_snapshot_once.sh") == 1
     assert timer.count("Unit=synth-market-price-snapshot-writer.service") == 1
+    assert "Requires=synth-market-price-snapshot-writer.service" not in timer
 
 
 def test_devlap_candle_writer_has_one_owner_and_one_lock() -> None:
@@ -69,6 +70,7 @@ def test_devlap_candle_writer_has_one_owner_and_one_lock() -> None:
         assert interval in wrapper
     assert service.count("scripts/run_market_candle_freshness_once.sh") == 1
     assert timer.count("Unit=synth-market-candle-freshness-writer.service") == 1
+    assert "Requires=synth-market-candle-freshness-writer.service" not in timer
     chain = CHAIN_WRAPPER.read_text(encoding="utf-8")
     assert "src.etl.bitvavo.run_candles_etl" not in chain
     assert "src.operations.run_persisted_market_candle_freshness_v1" in chain

@@ -21,6 +21,12 @@ consume persisted rows through the SELECT-only
 malformed, future-dated, or stale rows block dependent stages; consumers never
 repair freshness.
 
+The batch validator proves writer liveness and timestamp freshness, not full
+asset coverage. A current non-empty batch can pass even when an account asset
+is absent. Wallet and Profit Plan consumers therefore retain independent
+per-asset `MISSING_CURRENT_PRICE` and `STALE_CURRENT_PRICE` fail-closed checks;
+the top-level gate must never replace those checks.
+
 Safety boundary:
 
 - public endpoint only;

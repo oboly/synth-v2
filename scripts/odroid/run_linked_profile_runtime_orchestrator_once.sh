@@ -228,7 +228,7 @@ with Path(stages_tsv).open(encoding="utf-8") as handle:
 
 profiles = [p for p in profile_csv.split(",") if p]
 payload = {
-    "schema": "linked_profile_runtime_orchestrator_v1",
+    "schema": "linked_profile_runtime_orchestrator_v2",
     "run_id": run_id,
     "started_ts_utc": started_ts,
     "finished_ts_utc": finished_ts,

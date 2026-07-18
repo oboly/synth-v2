@@ -65,6 +65,11 @@ Every completed or freshness-blocked cycle atomically writes
 `/var/www/html/synth/_runtime/linked_profile_orchestrator_v1/latest_run.json`
 unless `SYNTH_LINKED_PROFILE_RUNTIME_METADATA_PATH` overrides the output path.
 
+The metadata payload schema is `linked_profile_runtime_orchestrator_v2`. The
+version reflects the incompatible replacement of the former refresh-result
+field with persisted public-price validation, freshness, age, and row-count
+fields. No repository consumer depends on the retired v1 payload shape.
+
 Freshness fields are truthful validation fields, not refresh claims:
 
 ```json

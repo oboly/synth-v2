@@ -144,7 +144,7 @@ def test_orchestrator_smoke_records_metadata_and_runs_stages_in_order(tmp_path: 
     ]
 
     payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-    assert payload["schema"] == "linked_profile_runtime_orchestrator_v1"
+    assert payload["schema"] == "linked_profile_runtime_orchestrator_v2"
     assert payload["run_id"] == "test-run-1"
     assert payload["overall_result"] == "ok"
     assert payload["profiles"] == ["joost", "hugo"]

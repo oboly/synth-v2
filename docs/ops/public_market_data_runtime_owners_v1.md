@@ -135,6 +135,13 @@ A blocked validation writes truthful run metadata but stops before profile
 discovery, account refresh, wallet/open-order render, or Profit Plan render. It
 never attempts to repair persisted state.
 
+This batch-level check is a writer-liveness and timestamp-freshness gate only.
+It does not prove that every account asset exists in the newest persisted
+batch. Wallet and Profit Plan consumers must retain their independent
+per-asset `MISSING_CURRENT_PRICE` and `STALE_CURRENT_PRICE` fail-closed checks.
+Top-level batch freshness must never replace per-asset coverage validation, and
+account-specific coverage policy does not belong in this market-data validator.
+
 ## Separate account-domain work
 
 These remain account-domain questions and are not folded into this change:
