@@ -59,18 +59,14 @@ CHAIN_4H_END_TS="$(
     python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); h=(n.hour//4)*4; print(n.replace(hour=h, minute=0, second=0, microsecond=0).isoformat())'
 )"
 
-CHAIN_4H_ETL_START_TS="$(
-    python -c 'from datetime import datetime, timezone, timedelta; n=datetime.now(timezone.utc); h=(n.hour//4)*4; e=n.replace(hour=h, minute=0, second=0, microsecond=0); print((e - timedelta(days=21)).isoformat())'
-)"
-
 echo "[CHAIN][4h] START $(date -u +%F' '%T) UTC"
-echo "[CHAIN][4h] ETL window start=${CHAIN_4H_ETL_START_TS} end=${CHAIN_4H_END_TS}"
+echo "[CHAIN][4h] persisted candle boundary=${CHAIN_4H_END_TS}"
 echo "[CHAIN][4h] feature window lookback_hours=720 warmup_bars=300"
 
-run_step python -m src.etl.bitvavo.run_candles_etl \
+run_step python -m src.operations.run_persisted_market_candle_freshness_v1 \
+    --venue bitvavo \
     --interval 4h \
-    --start "$CHAIN_4H_ETL_START_TS" \
-    --end "$CHAIN_4H_END_TS"
+    --expected-close-ts "$CHAIN_4H_END_TS"
 
 run_step env \
     SYNTH_NATIVE_SHORT_REPOSITORY_COMMIT="${NATIVE_SHORT_REPOSITORY_COMMIT}" \

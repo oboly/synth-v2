@@ -20,7 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACCOUNT_REFRESH_SCRIPT="${SYNTH_ACCOUNT_WALLET_REFRESH_SCRIPT:-${SCRIPT_DIR}/run_account_wallet_refresh_once.sh}"
 PROFILE_RENDER_SCRIPT="${SYNTH_LINKED_PROFILE_RENDER_SCRIPT:-${SCRIPT_DIR}/run_account_wallet_snapshot_dashboard_render_once.sh}"
 PROFIT_PLAN_RENDER_SCRIPT="${SYNTH_ACCOUNT_PROFIT_PLAN_RENDER_SCRIPT:-${SCRIPT_DIR}/run_account_profit_plan_snapshot_render_once.sh}"
-MARKET_PRICE_REFRESH_SCRIPT="${SYNTH_MARKET_PRICE_REFRESH_SCRIPT:-}"
+PUBLIC_PRICE_MAX_AGE_SECONDS="${SYNTH_PERSISTED_PUBLIC_PRICE_MAX_AGE_SECONDS:-900}"
+PUBLIC_PRICE_MAX_FUTURE_SKEW_SECONDS="${SYNTH_PERSISTED_PUBLIC_PRICE_MAX_FUTURE_SKEW_SECONDS:-30}"
 SKIP_DISK_HEALTH="${SYNTH_LINKED_PROFILE_RUNTIME_SKIP_DISK_HEALTH:-0}"
 RUN_ID="${SYNTH_LINKED_PROFILE_RUNTIME_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 RUNTIME_DIR="${SYNTH_LINKED_PROFILE_RUNTIME_DIR:-${OUTPUT_ROOT}/_runtime/linked_profile_orchestrator_v1}"
@@ -94,32 +95,46 @@ run_disk_health() {
   return 1
 }
 
-run_market_price_refresh() {
+run_persisted_market_price_validation() {
   local started_ts
   local started_epoch
+  local validation_output
+  local validation_rc
   started_ts="$(utc_now)"
   started_epoch="$(date +%s)"
-  phase_start "refresh_public_prices"
+  phase_start "validate_persisted_public_prices"
 
-  if [[ -n "${MARKET_PRICE_REFRESH_SCRIPT}" ]]; then
-    if bash "${MARKET_PRICE_REFRESH_SCRIPT}" "${VENUE}" "${QUOTE}"; then
-      phase_finished "refresh_public_prices" "ALL" "ok" "${started_ts}" "${started_epoch}"
-      return 0
-    fi
+  if validation_output="$(python -m src.operations.run_persisted_market_price_freshness_v1 \
+    --venue "${VENUE}" \
+    --quote "${QUOTE}" \
+    --max-age-seconds "${PUBLIC_PRICE_MAX_AGE_SECONDS}" \
+    --max-future-skew-seconds "${PUBLIC_PRICE_MAX_FUTURE_SKEW_SECONDS}" \
+    --output tsv)"; then
+    validation_rc=0
   else
-    if python -m src.market_data.run_market_price_snapshot_v1 \
-      --venue "${VENUE}" \
-      --quote "${QUOTE}" \
-      --write-db \
-      --output none; then
-      phase_finished "refresh_public_prices" "ALL" "ok" "${started_ts}" "${started_epoch}"
-      return 0
-    fi
+    validation_rc=$?
   fi
 
-  echo "[WARN] public market price refresh failed; render stage must fail closed from persisted timestamp freshness."
-  phase_finished "refresh_public_prices" "ALL" "failed_continuing" "${started_ts}" "${started_epoch}"
-  return 1
+  IFS=$'\t' read -r \
+    public_price_validation_result \
+    freshness_classification \
+    public_price_validation_reason \
+    persisted_public_price_as_of_utc \
+    persisted_public_price_age_seconds \
+    persisted_public_price_snapshot_row_count <<< "${validation_output}"
+
+  if [[ -z "${public_price_validation_result:-}" || -z "${freshness_classification:-}" ]]; then
+    public_price_validation_result="BLOCKED"
+    freshness_classification="UNAVAILABLE"
+    public_price_validation_reason="MALFORMED_VALIDATOR_OUTPUT"
+    persisted_public_price_as_of_utc="not_available"
+    persisted_public_price_age_seconds="not_available"
+    persisted_public_price_snapshot_row_count="0"
+  fi
+
+  echo "public_price_validation_result=${public_price_validation_result} freshness_classification=${freshness_classification} reason=${public_price_validation_reason} persisted_public_price_as_of_utc=${persisted_public_price_as_of_utc} persisted_public_price_age_seconds=${persisted_public_price_age_seconds} snapshot_row_count=${persisted_public_price_snapshot_row_count} database_writes=0"
+  phase_finished "validate_persisted_public_prices" "ALL" "${public_price_validation_result}" "${started_ts}" "${started_epoch}"
+  [[ "${validation_rc}" -eq 0 && "${public_price_validation_result}" == "PASS" ]]
 }
 
 discover_profiles() {
@@ -143,17 +158,24 @@ write_metadata() {
   local overall_result="$3"
   local profile_csv="$4"
   local profile_count="$5"
-  local public_price_result="$6"
-  local account_success="$7"
-  local account_failure="$8"
-  local render_success="$9"
-  local render_failure="${10}"
-  local profit_plan_success="${11}"
-  local profit_plan_failure="${12}"
+  local validation_result="$6"
+  local public_price_as_of="$7"
+  local public_price_age_seconds="$8"
+  local freshness_classification="$9"
+  local validation_reason="${10}"
+  local snapshot_row_count="${11}"
+  local account_success="${12}"
+  local account_failure="${13}"
+  local render_success="${14}"
+  local render_failure="${15}"
+  local profit_plan_success="${16}"
+  local profit_plan_failure="${17}"
 
   python - "${METADATA_PATH}" "${RUN_ID}" "${run_started_ts}" "${run_finished_ts}" \
     "${overall_result}" "${VENUE}" "${QUOTE}" "${profile_csv}" "${profile_count}" \
-    "${public_price_result}" "${account_success}" "${account_failure}" \
+    "${validation_result}" "${public_price_as_of}" "${public_price_age_seconds}" \
+    "${freshness_classification}" "${validation_reason}" "${snapshot_row_count}" \
+    "${account_success}" "${account_failure}" \
     "${render_success}" "${render_failure}" "${profit_plan_success}" \
     "${profit_plan_failure}" "${STAGES_TSV}" <<'PY'
 from __future__ import annotations
@@ -174,7 +196,12 @@ from pathlib import Path
     quote,
     profile_csv,
     profile_count,
-    public_price_result,
+    validation_result,
+    public_price_as_of,
+    public_price_age_seconds,
+    freshness_classification,
+    validation_reason,
+    snapshot_row_count,
     account_success,
     account_failure,
     render_success,
@@ -210,7 +237,16 @@ payload = {
     "quote": quote,
     "profiles": profiles,
     "profile_count": int(profile_count),
-    "public_price_result": public_price_result,
+    "public_price_validation_result": validation_result,
+    "persisted_public_price_as_of_utc": (
+        None if public_price_as_of == "not_available" else public_price_as_of
+    ),
+    "persisted_public_price_age_seconds": (
+        None if public_price_age_seconds == "not_available" else float(public_price_age_seconds)
+    ),
+    "freshness_classification": freshness_classification,
+    "public_price_validation_reason": validation_reason,
+    "persisted_public_price_snapshot_row_count": int(snapshot_row_count),
     "account_refresh": {
         "success": int(account_success),
         "failure": int(account_failure),
@@ -233,6 +269,7 @@ payload = {
         "executor": "none",
         "renderer_private_broker_calls": 0,
         "native_short_context_build_in_render_stage": False,
+        "public_market_data_writes": 0,
     },
 }
 
@@ -286,9 +323,31 @@ fi
 run_started_ts="$(utc_now)"
 run_disk_health
 
-public_price_result="ok"
-if ! run_market_price_refresh; then
-  public_price_result="failed_continuing"
+public_price_validation_result="BLOCKED"
+freshness_classification="UNAVAILABLE"
+public_price_validation_reason="NOT_RUN"
+persisted_public_price_as_of_utc="not_available"
+persisted_public_price_age_seconds="not_available"
+persisted_public_price_snapshot_row_count="0"
+profile_count=0
+account_success=0
+account_failure=0
+render_success=0
+render_failure=0
+profit_plan_success=0
+profit_plan_failure=0
+profile_csv=""
+
+if ! run_persisted_market_price_validation; then
+  run_finished_ts="$(utc_now)"
+  write_metadata "${run_started_ts}" "${run_finished_ts}" "blocked_public_price_validation" "${profile_csv}" \
+    "${profile_count}" "${public_price_validation_result}" "${persisted_public_price_as_of_utc}" \
+    "${persisted_public_price_age_seconds}" "${freshness_classification}" \
+    "${public_price_validation_reason}" "${persisted_public_price_snapshot_row_count}" \
+    "${account_success}" "${account_failure}" "${render_success}" "${render_failure}" \
+    "${profit_plan_success}" "${profit_plan_failure}"
+  echo "FAILED linked_profile_runtime_orchestrator_once reason=PUBLIC_PRICE_VALIDATION_BLOCKED metadata_path=${METADATA_PATH}" >&2
+  exit 1
 fi
 
 phase_epoch="$(date +%s)"
@@ -301,14 +360,6 @@ linked_profiles="$(discover_profiles)" || {
 phase_finished "discover_linked_profiles" "ALL" "ok" "${phase_ts}" "${phase_epoch}"
 
 mapfile -t profiles <<< "${linked_profiles}"
-profile_count=0
-account_success=0
-account_failure=0
-render_success=0
-render_failure=0
-profit_plan_success=0
-profit_plan_failure=0
-profile_csv=""
 
 for profile_code in "${profiles[@]}"; do
   [[ -z "${profile_code}" ]] && continue
@@ -376,13 +427,16 @@ if [[ "${profile_count}" -eq 0 ]]; then
 fi
 
 overall_result="ok"
-if [[ "${public_price_result}" != "ok" || "${account_failure}" -gt 0 || "${render_failure}" -gt 0 || "${profit_plan_failure}" -gt 0 ]]; then
+if [[ "${account_failure}" -gt 0 || "${render_failure}" -gt 0 || "${profit_plan_failure}" -gt 0 ]]; then
   overall_result="degraded"
 fi
 
 run_finished_ts="$(utc_now)"
 write_metadata "${run_started_ts}" "${run_finished_ts}" "${overall_result}" "${profile_csv}" \
-  "${profile_count}" "${public_price_result}" "${account_success}" "${account_failure}" \
+  "${profile_count}" "${public_price_validation_result}" "${persisted_public_price_as_of_utc}" \
+  "${persisted_public_price_age_seconds}" "${freshness_classification}" \
+  "${public_price_validation_reason}" "${persisted_public_price_snapshot_row_count}" \
+  "${account_success}" "${account_failure}" \
   "${render_success}" "${render_failure}" "${profit_plan_success}" "${profit_plan_failure}"
 
 echo "metadata_path=${METADATA_PATH}"

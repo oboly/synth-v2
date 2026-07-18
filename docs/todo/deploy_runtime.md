@@ -4,6 +4,12 @@
 
 Active runtime operations lane. Initial Odroid runtime is deployed; follow-up work remains open for market damage hysteresis, A+ DB integration, dashboard quality display, and final ops cleanup.
 
+2026-07-18 ownership correction: any older section below that assigns public
+market-price or candle database writes to Odroid is historical deployment
+context, not the target contract. The repository target is devlap sole public
+market-data writer and Odroid persisted-state consumer/publisher. Host rollout
+remains pending under `docs/ops/public_market_data_runtime_owners_v1.md`.
+
 This lane tracks deployment of Synth runtime components to the Odroid and scheduled runners for market-data refresh and UI/webview data freshness.
 
 ## Sources

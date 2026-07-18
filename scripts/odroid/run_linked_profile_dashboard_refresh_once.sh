@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Canonical generic linked-profile dashboard refresh pipeline.
-# Refreshes market prices once, discovers all active explicitly-linked profiles
-# from DB, then renders account home + wallet + native short context +
+# Validates persisted market prices, discovers all active explicitly-linked
+# profiles from DB, then renders account home + wallet + native short context +
 # open orders monitor + profit plan for each profile independently.
 # One profile failure does not abort the pipeline.
 #
@@ -13,7 +13,6 @@ REPO_DIR="${SYNTH_REPO_DIR:-$HOME/projects/synth-v2}"
 OUTPUT_ROOT="${SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT:-/var/www/html/synth}"
 VENUE="${SYNTH_ACCOUNT_WALLET_VENUE:-bitvavo}"
 QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
-SKIP_MARKET_PRICE_REFRESH="${SYNTH_SKIP_MARKET_PRICE_REFRESH:-0}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "linked_profile_dashboard_refresh_once starting $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -34,20 +33,13 @@ else
   exit 1
 fi
 
-if [[ "${SKIP_MARKET_PRICE_REFRESH}" == "1" ]]; then
-  echo "market_price_refresh=skipped (SYNTH_SKIP_MARKET_PRICE_REFRESH=1)"
-else
-  phase_epoch="$(date +%s)"
-  echo "PHASE_STARTED phase=refresh_public_prices ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  if ! python -m src.market_data.run_market_price_snapshot_v1 \
-    --venue "${VENUE}" \
-    --quote "${QUOTE}" \
-    --write-db \
-    --output none; then
-    echo "Warning: public market price refresh failed; continuing with stale-price fail-closed rendering."
-  fi
-  echo "PHASE_FINISHED phase=refresh_public_prices elapsed_sec=$(( $(date +%s) - phase_epoch )) ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-fi
+phase_epoch="$(date +%s)"
+echo "PHASE_STARTED phase=validate_persisted_public_prices ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+python -m src.operations.run_persisted_market_price_freshness_v1 \
+  --venue "${VENUE}" \
+  --quote "${QUOTE}" \
+  --output table
+echo "PHASE_FINISHED phase=validate_persisted_public_prices result=PASS database_writes=0 elapsed_sec=$(( $(date +%s) - phase_epoch )) ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 echo "PHASE_STARTED phase=discover_linked_profiles ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 phase_epoch="$(date +%s)"
@@ -150,8 +142,7 @@ while IFS= read -r profile_code; do
   profile_count=$(( profile_count + 1 ))
   phase_epoch="$(date +%s)"
   echo "PHASE_STARTED phase=render_profile profile=${profile_code} ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  if SYNTH_SKIP_MARKET_PRICE_REFRESH=1 \
-     SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT="${OUTPUT_ROOT}" \
+  if SYNTH_ACCOUNT_WALLET_OUTPUT_ROOT="${OUTPUT_ROOT}" \
      SYNTH_ACCOUNT_WALLET_VENUE="${VENUE}" \
      SYNTH_REPO_DIR="${REPO_DIR}" \
      SYNTH_NATIVE_SHORT_ROWS_PATH="${UNION_NATIVE_ROWS_PATH}" \

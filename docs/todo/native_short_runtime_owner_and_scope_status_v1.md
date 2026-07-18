@@ -40,7 +40,7 @@ Repository ownership is explicit:
 
 ```text
 canonical synth-chain-4h owner
--> 4h candle ETL
+-> SELECT-only expected 4h candle boundary validation
 -> native SHORT scope-status chain
 -> current map-level status rebuild
 -> remaining market chain

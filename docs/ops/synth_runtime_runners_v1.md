@@ -291,7 +291,10 @@ MVP market context refresh:
 
 - timer cadence: every 5 minutes, offset before cockpit render
 - service command: `scripts/odroid/run_mvp_market_context_refresh_once.sh`
-- scope: `market_price_snapshot` plus bounded market-only structural/lifecycle refresh writes
+- scope: SELECT-only persisted `market_price_snapshot` freshness validation,
+  plus the existing bounded structural/lifecycle refresh responsibilities
+- excluded: public market-price writes, candle ETL, Native SHORT writers,
+  Rotation Pressure writers
 - excluded: HTML render, broker private calls, broker writes, decision, execution, orders
 
 MVP cockpit render:
@@ -303,10 +306,13 @@ MVP cockpit render:
 
 4h market chain:
 
+- runtime host owner: devlap
 - timer cadence: 12 minutes after each 4h UTC candle close
 - service command: `scripts/run_chain_4h.sh`
-- after successful 4h candle ETL, invokes the locked
-  `scripts/run_native_short_scope_status_chain_once.sh` market-data writer
+- after a SELECT-only check proves the expected 4h candle boundary was already
+  persisted by the devlap candle writer, invokes the locked
+  `scripts/run_native_short_scope_status_chain_once.sh` market-data writer;
+  this chain does not own candle ETL
 - native SHORT scope is the exact persisted `SUPPORTED` registry for the
   canonical `bitvavo/EUR/SHORT/4h/1h` key; `--symbols` is an optional bounded
   operator restriction, not an enabled-asset expansion
@@ -352,7 +358,8 @@ Rules:
 - acquire lock before any write
 - fail closed if the lock cannot be acquired
 - logs must show skipped duplicate runs
-- do not run duplicate candle/feature/signal writers from dev laptop and Odroid at the same time
+- devlap is the sole public market-data writer host; Odroid must not run candle,
+  public-price, Native SHORT, or Rotation Pressure writers
 - manual runs must either use the same lock or be run only after stopping timers
 
 ## Environment
@@ -637,23 +644,29 @@ docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md
 
 Strict ownership, in order:
 
-1. **Public market ingestion** — `src/market_data/run_market_price_snapshot_v1.py`.
-   Market-only, account-agnostic. Public Bitvavo `GET /ticker/price` only.
-   See `docs/ops/market_price_snapshot_v1.md`.
-2. **Read-only account snapshot ingestion** — `src/account/run_account_wallet_refresh_v1.py`
+1. **Public market ingestion** — devlap-owned
+   `scripts/run_market_price_snapshot_once.sh` and its dedicated timer.
+   Market-only, account-agnostic, public Bitvavo `GET /ticker/price` only.
+   Odroid does not invoke this stage. See
+   `docs/ops/public_market_data_runtime_owners_v1.md`.
+2. **Persisted public-price validation** — the Odroid linked-profile
+   orchestrator calls the fixed SELECT-only
+   `src.operations.run_persisted_market_price_freshness_v1` boundary and
+   stops before account/render stages unless the persisted batch is fresh.
+3. **Read-only account snapshot ingestion** — `src/account/run_account_wallet_refresh_v1.py`
    (wrapped by `scripts/odroid/run_account_wallet_refresh_once.sh`).
    Authenticated private read-only balances/open-orders only. No broker
    writes, no order submission. See `docs/ops/multi_account_wallet_refresh_v1.md`.
-3. **Linked-profile dashboard render** — `scripts/odroid/run_account_wallet_dashboard_render_once.sh`
+4. **Linked-profile dashboard render** — the safe persisted-snapshot renderer
    (called per profile by `scripts/odroid/run_linked_profile_dashboard_refresh_once.sh`).
    **Presentation-only.** Reads persisted public-price and account snapshot
    observations from the DB and displays their freshness; it does not
    originate freshness truth. `broker_private_calls=0`. See
    `docs/ops/account_wallet_dashboard_v1.md` and
    `docs/ops/manual_short_trader_profit_plan_v1.md`.
-4. **`selection_engine`** — market-only, account-agnostic. Not part of this
+5. **`selection_engine`** — market-only, account-agnostic. Not part of this
    pipeline; must never receive wallet/order state from it.
-5. **`decision_gate`** — owns account-aware freshness/action permission and
+6. **`decision_gate`** — owns account-aware freshness/action permission and
    fails closed. It consumes the same persisted snapshot
    timestamps/statuses that stage 3 reads (i.e. `market_price_snapshot`,
    `trading_account_balance_snapshot`, `account_open_order_snapshot`), or a
@@ -663,8 +676,8 @@ Strict ownership, in order:
    permission** — the renderer is a downstream display of the same
    underlying truth, not the source of it. It does not perform ingestion
    itself.
-6. **`execution_planner` / executor** — unchanged by this pipeline. No order
-   placement, cancellation, or broker writes occur anywhere in stages 1–3.
+7. **`execution_planner` / executor** — unchanged by this pipeline. No order
+   placement, cancellation, or broker writes occur anywhere in stages 1–4.
 
 The renderer (stage 3) must never privately poll Bitvavo. Wallet/open-order
 freshness is entirely the responsibility of stage 2; if stage 2 has not run
@@ -676,8 +689,9 @@ not a source that `decision_gate` reads from.
 
 ### Current Implementation Status (verified, as of this writing)
 
-- **Current production owner (as of 2026-07-17):** stages 1–3 plus the
-  Profit Plan render are owned by the linked-profile runtime orchestrator
+- **Repository target owner:** public ingestion is devlap-owned. Account
+  refresh plus wallet/open-order and Profit Plan render remain owned by the
+  linked-profile runtime orchestrator
   `scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh`, scheduled
   by the system-level `synth-linked-profile-runtime-refresh.timer`. That
   orchestrator uses the safe snapshot renderer
@@ -686,9 +700,9 @@ not a source that `decision_gate` reads from.
   (`run_account_profit_plan_snapshot_render_once.sh`); it does **not** build
   native SHORT context in the render path. See
   `docs/ops/linked_profile_runtime_orchestrator_v1.md` for the authoritative
-  ownership contract.
+  ownership contract. Host deployment is not inferred from repository state.
 - **Legacy/manual path:** `scripts/odroid/run_linked_profile_dashboard_refresh_once.sh`
-  (which refreshes public prices, builds a shared native SHORT context, then
+  (which validates persisted public prices, builds a shared native SHORT context, then
   renders each profile via `run_account_wallet_dashboard_render_once.sh`) is
   retained as a **manual/acceptance-only** workflow. It has no systemd unit and
   no scheduled/runtime caller; its only executable caller is the acceptance

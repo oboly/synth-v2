@@ -26,6 +26,11 @@ FORBIDDEN_TOKENS = (
     "run_native_short_fib_context_v1",
     "native_short_context_union",
     "run_account_wallet_refresh",
+    "run_market_price_snapshot_v1",
+    "run_candles_etl",
+    "run_chain_4h.sh",
+    "run_native_short_scope_status_chain",
+    "run_market_rotation_pressure_once",
 )
 
 

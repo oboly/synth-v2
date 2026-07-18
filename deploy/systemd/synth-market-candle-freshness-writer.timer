@@ -1,0 +1,13 @@
+[Unit]
+Description=Synth multi-interval candle freshness writer timer (devlap sole owner)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/public_market_data_runtime_owners_v1.md
+Requires=synth-market-candle-freshness-writer.service
+
+[Timer]
+OnCalendar=*-*-* *:02,17,32,47:00 UTC
+Persistent=true
+RandomizedDelaySec=30
+Unit=synth-market-candle-freshness-writer.service
+
+[Install]
+WantedBy=timers.target

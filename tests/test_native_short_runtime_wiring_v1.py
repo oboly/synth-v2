@@ -106,11 +106,12 @@ def test_canonical_service_keeps_single_timer_and_invokes_native_chain_in_order(
     service = SERVICE_PATH.read_text(encoding="utf-8")
     timer = TIMER_PATH.read_text(encoding="utf-8")
 
-    etl = "python -m src.etl.bitvavo.run_candles_etl"
+    candle_validation = "python -m src.operations.run_persisted_market_candle_freshness_v1"
     source_verification = "python -m src.market_data.native_short_repository_source_identity_v1"
     native = "bash scripts/run_native_short_scope_status_chain_once.sh"
     features = "python -m src.features.run_feat_candle"
-    assert chain.index(source_verification) < chain.index(etl) < chain.index(native) < chain.index(features)
+    assert chain.index(source_verification) < chain.index(candle_validation) < chain.index(native) < chain.index(features)
+    assert "src.etl.bitvavo.run_candles_etl" not in chain
     assert "scripts/run_chain_4h.sh" in service
     assert "Unit=synth-chain-4h.service" in timer
     assert "native-short" not in service.lower()

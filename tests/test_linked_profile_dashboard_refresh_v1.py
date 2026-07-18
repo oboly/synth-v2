@@ -64,21 +64,20 @@ def test_runner_no_broker_or_execution_imports() -> None:
             assert "bitvavo" not in node.module
 
 
-def test_shell_script_refreshes_prices_once() -> None:
-    assert "refresh_public_prices" in SHELL_SCRIPT
-    assert "SYNTH_SKIP_MARKET_PRICE_REFRESH" in SHELL_SCRIPT
+def test_shell_script_validates_persisted_prices_without_writing() -> None:
+    assert "validate_persisted_public_prices" in SHELL_SCRIPT
+    assert "run_persisted_market_price_freshness_v1" in SHELL_SCRIPT
+    assert "run_market_price_snapshot_v1" not in SHELL_SCRIPT
+    assert "--write-db" not in SHELL_SCRIPT
     assert "run_linked_profile_dashboard_refresh_v1" in SHELL_SCRIPT
     assert "profile-list" in SHELL_SCRIPT
     assert "run_account_wallet_dashboard_render_once.sh" in SHELL_SCRIPT
 
 
-def test_shell_script_propagates_price_skip_to_per_profile_render() -> None:
-    assert "SYNTH_SKIP_MARKET_PRICE_REFRESH=1" in SHELL_SCRIPT
-
-
-def test_render_script_supports_price_skip_flag() -> None:
-    assert "SYNTH_SKIP_MARKET_PRICE_REFRESH" in RENDER_SCRIPT
-    assert "market_price_refresh=skipped" in RENDER_SCRIPT
+def test_render_script_validates_persisted_prices_without_bypass() -> None:
+    assert "run_persisted_market_price_freshness_v1" in RENDER_SCRIPT
+    assert "SYNTH_SKIP_MARKET_PRICE_REFRESH" not in RENDER_SCRIPT
+    assert "run_market_price_snapshot_v1" not in RENDER_SCRIPT
 
 
 def test_no_hardcoded_profile_names_in_shell_scripts() -> None:
