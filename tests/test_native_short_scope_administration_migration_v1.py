@@ -242,6 +242,33 @@ def _insert_cadence(
         )
 
 
+def _insert_support_event(
+    connection: Any,
+    *,
+    symbol: str,
+    operation_id: int | None,
+    generation: int | None,
+    event_ts: str,
+    state: str = "SUPPORTED",
+    source_name: str = "admin_test",
+) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO native_short_scope_support_event_v1 (
+                venue, symbol, quote_currency, fib_trading_horizon,
+                primary_interval, supporting_interval, scope_support_state,
+                scope_admin_operation_id, support_generation, event_ts_utc,
+                source_name, source_version
+            ) VALUES (
+                'bitvavo', %s, 'EUR', 'SHORT', '4h', '1h', %s,
+                %s, %s, %s, %s, 'v1'
+            )
+            """,
+            (symbol, state, operation_id, generation, event_ts, source_name),
+        )
+
+
 def _expect_rejected(connection: Any, action: Any) -> Exception:
     with pytest.raises((IntegrityError, OperationalError)) as caught:
         action()
@@ -252,7 +279,9 @@ def _expect_rejected(connection: Any, action: Any) -> Exception:
 def test_migration_is_forward_only_legacy_safe_and_fail_closed() -> None:
     sql = _sql()
     assert MIGRATION.name.startswith("20260718_")
-    assert "CREATE TABLE native_short_scope_admin_operation_v1" in sql
+    # Forward-only, single-application: CREATE TABLE is idempotent (IF NOT
+    # EXISTS, per the schema-family convention) while ALTERs are not re-runnable.
+    assert "CREATE TABLE IF NOT EXISTS native_short_scope_admin_operation_v1" in sql
     assert "support_generation BIGINT UNSIGNED NULL" in sql
     assert "last_scope_admin_operation_id" not in sql
     assert "native_short_writer_scope_fence_v1" not in sql
@@ -275,6 +304,7 @@ def test_migration_declares_required_constraints_and_foreign_keys() -> None:
     sql = _sql()
     for expected in (
         "uq_native_short_scope_admin_operation_v1_uuid",
+        "uq_native_short_scope_admin_operation_v1_id_scope",
         "chk_native_short_scope_admin_operation_v1_terminal",
         "chk_native_short_scope_admin_operation_v1_generation",
         "fk_native_short_scope_support_event_v1_admin_operation",
@@ -287,8 +317,39 @@ def test_migration_declares_required_constraints_and_foreign_keys() -> None:
         "chk_native_short_scope_cadence_config_v1_activation_shape",
         "chk_native_short_scope_cadence_config_v1_deactivation_shape",
         "chk_native_short_scope_cadence_config_v1_managed_state",
+        # NULL-safe legacy slot + slot-based profile-generation uniqueness (Fix 1).
+        "effective_generation_slot",
+        "COALESCE(support_generation, 0)",
+        "uq_native_short_scope_cadence_config_v1_profile_generation",
+        "duplicate_legacy_cadence_profiles",
     ):
         assert expected in sql
+
+
+def test_migration_declares_scope_bound_operation_foreign_keys() -> None:
+    # Cross-scope attribution guard (Fix 2): the operation FKs must carry the full
+    # six-part scope key, not only the numeric operation id, and reference the
+    # scope-bound candidate key on the operation ledger.
+    sql = _sql()
+    scope_columns = (
+        "venue",
+        "symbol",
+        "quote_currency",
+        "fib_trading_horizon",
+        "primary_interval",
+        "supporting_interval",
+    )
+    for fk_column in (
+        "scope_admin_operation_id",
+        "activation_operation_id",
+        "deactivation_operation_id",
+    ):
+        assert fk_column in sql
+    # The scope-bound FK target candidate key must exist on the ledger.
+    assert "uq_native_short_scope_admin_operation_v1_id_scope" in sql
+    # Each scope column participates in the composite FK definitions.
+    for column in scope_columns:
+        assert column in sql
 
 
 @pytest.mark.skipif(
@@ -813,3 +874,310 @@ def test_failed_preflight_leaves_persistent_schema_and_data_unchanged() -> None:
                 """
             )
             assert cursor.fetchone()["column_count"] == 0
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_MARIADB_DDL_TEST") != "1",
+    reason="Set RUN_MARIADB_DDL_TEST=1 with explicit disposable MariaDB settings.",
+)
+def test_cadence_uniqueness_legacy_and_managed_generations_in_disposable_mariadb() -> None:
+    # Fix 1: the dropped uq_..._scope_version guard is replaced by a NULL-safe
+    # slot-based key that (B) still forbids duplicate legacy/unmanaged rows and
+    # (A) still allows distinct positive managed generations of one profile.
+    with _disposable_schema("cadence_uniqueness") as (connection, _config, _database):
+        _apply_prerequisites(connection)
+        _apply(connection, MIGRATION)
+
+        # (B) First legacy/unmanaged row (no operation, NULL generation) is allowed.
+        _insert_cadence(
+            connection,
+            symbol="LTC",
+            version="legacy_p",
+            effective_from="2026-07-01 00:00:00",
+            effective_to="2026-07-02 00:00:00",
+            is_active=0,
+            activation_operation_id=None,
+            deactivation_operation_id=None,
+            support_generation=None,
+        )
+        connection.commit()
+
+        # (B) A duplicate legacy row for the same scope + profile is rejected even
+        # though both carry support_generation=NULL (reserved legacy slot 0).
+        _expect_rejected(
+            connection,
+            lambda: _insert_cadence(
+                connection,
+                symbol="LTC",
+                version="legacy_p",
+                effective_from="2026-07-03 00:00:00",
+                effective_to="2026-07-04 00:00:00",
+                is_active=0,
+                activation_operation_id=None,
+                deactivation_operation_id=None,
+                support_generation=None,
+            ),
+        )
+
+        # A different legacy profile for the same scope remains allowed.
+        _insert_cadence(
+            connection,
+            symbol="LTC",
+            version="legacy_q",
+            effective_from="2026-07-03 00:00:00",
+            effective_to="2026-07-04 00:00:00",
+            is_active=0,
+            activation_operation_id=None,
+            deactivation_operation_id=None,
+            support_generation=None,
+        )
+        connection.commit()
+
+        doge_g5_activate = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000101",
+            symbol="DOGE",
+            generation_after=5,
+        )
+        doge_g5_deactivate = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000102",
+            symbol="DOGE",
+            operation_type="REMOVE_SCOPE",
+            generation_before=5,
+            generation_after=6,
+        )
+        doge_g7_activate = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000103",
+            symbol="DOGE",
+            generation_after=7,
+        )
+
+        # (A) generation 5 (inactive, closed) and generation 7 (active) of the
+        # SAME cadence profile version are both allowed.
+        _insert_cadence(
+            connection,
+            symbol="DOGE",
+            version="managed_p",
+            effective_from="2026-07-01 00:00:00",
+            effective_to="2026-07-02 00:00:00",
+            is_active=0,
+            activation_operation_id=doge_g5_activate,
+            deactivation_operation_id=doge_g5_deactivate,
+            support_generation=5,
+        )
+        _insert_cadence(
+            connection,
+            symbol="DOGE",
+            version="managed_p",
+            effective_from="2026-07-02 00:00:00",
+            effective_to=None,
+            is_active=1,
+            activation_operation_id=doge_g7_activate,
+            deactivation_operation_id=None,
+            support_generation=7,
+        )
+        connection.commit()
+
+        # A duplicate managed generation (5) of the same profile is rejected.
+        doge_g5_again = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000104",
+            symbol="DOGE",
+            generation_after=5,
+        )
+        doge_g5_again_deactivate = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000105",
+            symbol="DOGE",
+            operation_type="REMOVE_SCOPE",
+            generation_before=5,
+            generation_after=6,
+        )
+        _expect_rejected(
+            connection,
+            lambda: _insert_cadence(
+                connection,
+                symbol="DOGE",
+                version="managed_p",
+                effective_from="2026-07-05 00:00:00",
+                effective_to="2026-07-06 00:00:00",
+                is_active=0,
+                activation_operation_id=doge_g5_again,
+                deactivation_operation_id=doge_g5_again_deactivate,
+                support_generation=5,
+            ),
+        )
+
+        # A different inactive historical profile for the same scope is allowed.
+        doge_q_activate = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000106",
+            symbol="DOGE",
+            generation_after=9,
+        )
+        doge_q_deactivate = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000107",
+            symbol="DOGE",
+            operation_type="REMOVE_SCOPE",
+            generation_before=9,
+            generation_after=10,
+        )
+        _insert_cadence(
+            connection,
+            symbol="DOGE",
+            version="managed_q",
+            effective_from="2026-07-03 00:00:00",
+            effective_to="2026-07-04 00:00:00",
+            is_active=0,
+            activation_operation_id=doge_q_activate,
+            deactivation_operation_id=doge_q_deactivate,
+            support_generation=9,
+        )
+        connection.commit()
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS c FROM native_short_scope_cadence_config_v1 WHERE symbol='LTC'"
+            )
+            assert cursor.fetchone()["c"] == 2
+            cursor.execute(
+                "SELECT COUNT(*) AS c FROM native_short_scope_cadence_config_v1 WHERE symbol='DOGE'"
+            )
+            assert cursor.fetchone()["c"] == 3
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_MARIADB_DDL_TEST") != "1",
+    reason="Set RUN_MARIADB_DDL_TEST=1 with explicit disposable MariaDB settings.",
+)
+def test_cross_scope_operation_attribution_rejected_in_disposable_mariadb() -> None:
+    # Fix 2: scope-bound composite FKs prevent attributing one scope's operation
+    # to a different scope's support/cadence row, while NULL legacy references
+    # remain allowed.
+    with _disposable_schema("cross_scope") as (connection, config, _database):
+        _apply_prerequisites(connection)
+        _apply(connection, MIGRATION)
+
+        aaa_op = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000201",
+            symbol="AAA",
+            generation_after=1,
+        )
+        # Distinct, otherwise-unreferenced operations isolate the FK from the
+        # one-support-event-per-operation and one-activation-per-cadence guards.
+        aaa_op_support = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000202",
+            symbol="AAA",
+            generation_after=2,
+        )
+        aaa_op_activation = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000203",
+            symbol="AAA",
+            generation_after=3,
+        )
+
+        # Same-scope support-event attribution is allowed.
+        _insert_support_event(
+            connection,
+            symbol="AAA",
+            operation_id=aaa_op,
+            generation=1,
+            event_ts="2026-07-18 10:00:00",
+        )
+        connection.commit()
+
+        # Cross-scope support-event attribution is rejected by the composite FK
+        # (shape is valid: operation id and generation are both present).
+        _expect_rejected(
+            connection,
+            lambda: _insert_support_event(
+                connection,
+                symbol="BBB",
+                operation_id=aaa_op_support,
+                generation=2,
+                event_ts="2026-07-18 11:00:00",
+            ),
+        )
+
+        # Legacy NULL operation reference remains allowed.
+        _insert_support_event(
+            connection,
+            symbol="BBB",
+            operation_id=None,
+            generation=None,
+            event_ts="2026-07-18 12:00:00",
+        )
+        connection.commit()
+
+        # Cross-scope cadence activation attribution is rejected.
+        _expect_rejected(
+            connection,
+            lambda: _insert_cadence(
+                connection,
+                symbol="BBB",
+                version="activation_from_aaa",
+                effective_from="2026-07-18 10:00:00",
+                effective_to=None,
+                is_active=1,
+                activation_operation_id=aaa_op_activation,
+                deactivation_operation_id=None,
+                support_generation=3,
+            ),
+        )
+
+        # Same-scope cadence activation attribution is allowed.
+        bbb_op = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000204",
+            symbol="BBB",
+            generation_after=1,
+        )
+        _insert_cadence(
+            connection,
+            symbol="BBB",
+            version="managed_own",
+            effective_from="2026-07-18 10:00:00",
+            effective_to=None,
+            is_active=1,
+            activation_operation_id=bbb_op,
+            deactivation_operation_id=None,
+            support_generation=1,
+        )
+        connection.commit()
+
+        # Cross-scope cadence deactivation attribution is rejected: activation is
+        # CCC's own operation, but deactivation references a DDD operation.
+        ccc_activate = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000205",
+            symbol="CCC",
+            generation_after=1,
+        )
+        ddd_remove = _insert_operation(
+            connection,
+            operation_uuid="00000000-0000-4000-8000-000000000206",
+            symbol="DDD",
+            operation_type="REMOVE_SCOPE",
+            generation_before=1,
+            generation_after=2,
+        )
+        _expect_rejected(
+            connection,
+            lambda: _insert_cadence(
+                connection,
+                symbol="CCC",
+                version="managed_ccc",
+                effective_from="2026-07-18 10:00:00",
+                effective_to="2026-07-19 00:00:00",
+                is_active=0,
+                activation_operation_id=ccc_activate,
+                deactivation_operation_id=ddd_remove,
+                support_generation=1,
+            ),
+        )

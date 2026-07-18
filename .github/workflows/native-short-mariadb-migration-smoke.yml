@@ -580,6 +580,14 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pytest
 
+      - name: Run Native SHORT pure contract tests
+        # DB-free unit tests for the pure administration contract module. Runs
+        # before the disposable MariaDB integration step; a failure here fails CI.
+        run: |
+          python -m pytest \
+            tests/test_native_short_scope_administration_v1.py \
+            -v
+
       - name: Run Native SHORT disposable MariaDB integration tests
         env:
           RUN_MARIADB_DDL_TEST: "1"

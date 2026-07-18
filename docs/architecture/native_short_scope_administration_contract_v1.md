@@ -56,6 +56,16 @@ The table is not a second scope registry and has no mutable scope authority. The
 scope snapshot makes an operation auditable even for first creation and does not
 replace the unique canonical identity in `native_short_map_scope_v1`.
 
+The immutable scope snapshot is also a scope-bound foreign-key target. A
+composite candidate key `(scope_admin_operation_id, venue, symbol,
+quote_currency, fib_trading_horizon, primary_interval, supporting_interval)`
+lets support and cadence rows reference an operation *together with* its exact
+scope. This makes cross-scope attribution structurally impossible at the
+database layer — a support or cadence row for one scope cannot reference an
+operation recorded for a different scope — rather than relying on a future
+application convention. Legacy rows keep a NULL operation id, so the composite
+foreign key is simply not enforced for them (MariaDB `MATCH SIMPLE`).
+
 No historical operation rows are inserted. Administrative provenance is never
 inferred from runtime writer provenance.
 
@@ -68,7 +78,8 @@ generation for attributable administration evidence.
 
 The database permits at most one attributable support event per operation and
 at most one event per exact scope and positive generation. Multiple legacy NULL-
-generation events remain valid and unchanged.
+generation events remain valid and unchanged. Each attributable event's
+composite foreign key binds it to its operation's exact scope snapshot.
 
 ## Cadence authority and active-row invariant
 
@@ -87,18 +98,44 @@ otherwise. A unique key over the exact six-part scope plus `active_slot` uses
 MariaDB's unique-key NULL behavior to reject a second active row while allowing
 multiple inactive historical rows. Historical effective-window non-overlap is
 validated by migration preflight and must later be validated under deterministic
-transaction locks; no trigger is introduced.
+transaction locks; no trigger is introduced. Ongoing effective-window
+non-overlap enforcement is deliberately deferred to that later locked
+repository-transaction PR, not added as a trigger in this pure schema contract.
 
 The former scope-plus-cadence-version uniqueness is replaced by scope, cadence
-profile, and support generation uniqueness. This permits later activation of the
-same accepted profile in a new generation without reopening historical rows.
+profile, and generation uniqueness, but on a NULL-safe generation *slot* rather
+than the raw nullable `support_generation`. A stored generated
+`effective_generation_slot` projects `support_generation` onto the reserved
+legacy sentinel `0` when NULL (managed generations are always positive and can
+never collide with it). The profile-generation unique key is enforced on that
+slot, which:
+
+- permanently forbids a second legacy/unmanaged cadence row (slot `0`) for one
+  exact scope and cadence profile — restoring the invariant the dropped
+  `uq_native_short_scope_cadence_config_v1_scope_version` index enforced, which a
+  raw-nullable key would have silently lost (MariaDB treats NULLs as distinct);
+- still permits distinct positive managed generations of the same profile;
+- still rejects a duplicate managed generation of the same profile.
+
+The migration preflight additionally fails before persistent DDL if current data
+already holds duplicate legacy `(scope + cadence_contract_version)` rows.
 
 ## Forward-only and deferred work
 
 The migration is forward-only, non-destructive, and performs no historical
 backfill. It fails before persistent DDL if current cadence rows contain multiple
-active rows for one exact scope, contradictory active/effective state, or
-overlapping effective windows. It does not repair those conditions.
+active rows for one exact scope, contradictory active/effective state,
+overlapping effective windows, or duplicate legacy scope-and-profile rows. It
+does not repair those conditions.
+
+The migration is single-application, matching the Native SHORT schema-family
+convention: `CREATE TABLE` statements are idempotent (`IF NOT EXISTS`), while
+`ALTER TABLE ADD COLUMN / ADD CONSTRAINT / DROP INDEX` statements are not
+re-runnable (siblings `20260707` and `20260716` behave identically). A second
+application against an already-migrated schema fails loudly (duplicate column /
+duplicate key) rather than silently corrupting state; this is the intended guard
+against accidental reapplication and is asserted by the migration integration
+test. No migration-runner state table is introduced by this contract.
 
 The following remain explicitly deferred:
 

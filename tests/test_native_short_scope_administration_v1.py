@@ -140,6 +140,36 @@ def test_result_class_and_code_are_closed_and_consistent() -> None:
         replace(result, result_class=NativeShortScopeAdministrationResultClass.CONFLICT)
 
 
+def test_result_code_class_mapping_is_exhaustive() -> None:
+    # Fix 5: every declared result code maps to exactly one result class. This
+    # keeps the module-level fail-fast invariant honest and documents intent.
+    import src.market_data.native_short_scope_administration_v1 as module
+
+    assert set(module._RESULT_CODE_CLASS) == set(
+        NativeShortScopeAdministrationResultCode
+    )
+
+
+def test_unmapped_result_code_raises_typed_validation_error(monkeypatch) -> None:
+    # Fix 5: if the mapping ever drifts (a code without a class), construction
+    # raises the module's typed validation error, never a bare KeyError.
+    import src.market_data.native_short_scope_administration_v1 as module
+
+    reduced = dict(module._RESULT_CODE_CLASS)
+    del reduced[NativeShortScopeAdministrationResultCode.REMOVED_SCOPE]
+    monkeypatch.setattr(module, "_RESULT_CODE_CLASS", reduced)
+
+    with pytest.raises(
+        NativeShortScopeAdministrationValidationError, match="RESULT_CODE_UNMAPPED"
+    ):
+        NativeShortScopeAdministrationResult(
+            result_class=NativeShortScopeAdministrationResultClass.SUCCESS,
+            result_code=NativeShortScopeAdministrationResultCode.REMOVED_SCOPE,
+            support_generation_before=None,
+            support_generation_after=1,
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     (
@@ -162,6 +192,39 @@ def test_test_provenance_requires_both_explicit_test_enums() -> None:
         match="TEST_PROVENANCE_MUST_BE_EXPLICIT",
     ):
         _provenance(trigger_type=NativeShortScopeAdministrationTriggerType.MANUAL_CLI)
+
+
+def test_enum_field_rejects_foreign_enum_class_with_shared_value() -> None:
+    # Fix 3: a value that is an instance of a *different* StrEnum class must be
+    # rejected deterministically, even when its underlying string value matches a
+    # member of the target enum (the actor/trigger enums share a ``TEST`` value).
+    with pytest.raises(
+        NativeShortScopeAdministrationValidationError, match="INVALID_ENUM"
+    ):
+        _provenance(actor_type=NativeShortScopeAdministrationTriggerType.TEST)
+    with pytest.raises(
+        NativeShortScopeAdministrationValidationError, match="INVALID_ENUM"
+    ):
+        _provenance(trigger_type=NativeShortScopeAdministrationActorType.TEST)
+
+
+def test_enum_field_accepts_correct_enum_and_plain_canonical_string() -> None:
+    # The correct enum instance and the plain canonical string both remain valid.
+    from_enum = _provenance(
+        actor_type=NativeShortScopeAdministrationActorType.HUMAN_OPERATOR,
+        trigger_type=NativeShortScopeAdministrationTriggerType.MANUAL_CLI,
+    )
+    from_string = _provenance(actor_type="HUMAN_OPERATOR", trigger_type="MANUAL_CLI")
+    assert (
+        from_enum.actor_type
+        == from_string.actor_type
+        == NativeShortScopeAdministrationActorType.HUMAN_OPERATOR
+    )
+    assert (
+        from_enum.trigger_type
+        == from_string.trigger_type
+        == NativeShortScopeAdministrationTriggerType.MANUAL_CLI
+    )
 
 
 def test_metadata_serialization_and_digest_are_order_independent() -> None:

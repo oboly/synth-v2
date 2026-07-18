@@ -14,6 +14,25 @@
 --   - no scope adoption, promotion, removal, map generation, or projection work
 --   - no writer selection or commit-time fencing implementation
 --   - no account, broker, selection, decision, planning, execution, or reporting work
+-- Application contract (forward-only, single-application):
+--   This migration is forward-only and single-application, matching the Native
+--   SHORT schema-family convention: CREATE TABLE statements are idempotent via
+--   IF NOT EXISTS, while ALTER TABLE ADD COLUMN / ADD CONSTRAINT / DROP INDEX
+--   statements are not re-runnable (siblings 20260707 and 20260716 behave the
+--   same way). A second application against an already-migrated schema fails
+--   loudly (duplicate column / duplicate key) rather than silently corrupting;
+--   this is the intended guard against accidental reapplication and is proven by
+--   the migration integration test. No migration-runner state table is
+--   introduced here.
+-- Permanent cadence uniqueness invariant:
+--   Legacy/unmanaged cadence rows carry support_generation=NULL. To keep NULL
+--   support_generation from defeating uniqueness (MariaDB treats NULLs as
+--   distinct in a UNIQUE key), a generated effective_generation_slot column maps
+--   NULL to the reserved legacy sentinel 0 (positive managed generations can
+--   never collide with it), and the profile-generation UNIQUE key is enforced on
+--   the slot. This permanently forbids duplicate legacy rows for one exact scope
+--   and cadence profile while still allowing distinct positive managed
+--   generations of the same profile.
 
 -- Fail before persistent DDL when legacy cadence state is not coherent enough
 -- for the accepted constraints. The guard is connection-local and disappears
@@ -72,10 +91,39 @@ JOIN native_short_scope_cadence_config_v1 later
         TIMESTAMP('9999-12-31 23:59:59.999999')
      );
 
+-- Permanent legacy-duplicate invariant: at migration time every existing cadence
+-- row is legacy (no support_generation), so the reserved legacy slot must hold at
+-- most one row per exact scope and cadence profile. Fail before persistent DDL if
+-- current data already contains duplicate legacy (scope + cadence_contract_version)
+-- rows, which the replacement slot-based UNIQUE key would otherwise be unable to
+-- represent for the pre-existing population.
+INSERT INTO native_short_scope_admin_preflight_v1 (failure_count)
+SELECT COUNT(*)
+FROM (
+    SELECT
+        venue,
+        symbol,
+        quote_currency,
+        fib_trading_horizon,
+        primary_interval,
+        supporting_interval,
+        cadence_contract_version
+    FROM native_short_scope_cadence_config_v1
+    GROUP BY
+        venue,
+        symbol,
+        quote_currency,
+        fib_trading_horizon,
+        primary_interval,
+        supporting_interval,
+        cadence_contract_version
+    HAVING COUNT(*) > 1
+) duplicate_legacy_cadence_profiles;
+
 DROP TEMPORARY TABLE native_short_scope_admin_preflight_v1;
 
 
-CREATE TABLE native_short_scope_admin_operation_v1 (
+CREATE TABLE IF NOT EXISTS native_short_scope_admin_operation_v1 (
     scope_admin_operation_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
     operation_uuid CHAR(36) NOT NULL,
     operation_type VARCHAR(32) NOT NULL,
@@ -105,6 +153,18 @@ CREATE TABLE native_short_scope_admin_operation_v1 (
     support_generation_after BIGINT UNSIGNED NULL,
 
     UNIQUE KEY uq_native_short_scope_admin_operation_v1_uuid (operation_uuid),
+    -- Scope-bound composite candidate key: FK target that binds any referencing
+    -- support/cadence row to this operation's immutable canonical scope snapshot,
+    -- preventing cross-scope attribution structurally rather than by convention.
+    UNIQUE KEY uq_native_short_scope_admin_operation_v1_id_scope (
+        scope_admin_operation_id,
+        venue,
+        symbol,
+        quote_currency,
+        fib_trading_horizon,
+        primary_interval,
+        supporting_interval
+    ),
     KEY idx_native_short_scope_admin_operation_v1_scope_started (
         venue,
         symbol,
@@ -244,8 +304,24 @@ ALTER TABLE native_short_scope_support_event_v1
         scope_admin_operation_id
     ),
     ADD CONSTRAINT fk_native_short_scope_support_event_v1_admin_operation
-        FOREIGN KEY (scope_admin_operation_id)
-        REFERENCES native_short_scope_admin_operation_v1 (scope_admin_operation_id),
+        FOREIGN KEY (
+            scope_admin_operation_id,
+            venue,
+            symbol,
+            quote_currency,
+            fib_trading_horizon,
+            primary_interval,
+            supporting_interval
+        )
+        REFERENCES native_short_scope_admin_operation_v1 (
+            scope_admin_operation_id,
+            venue,
+            symbol,
+            quote_currency,
+            fib_trading_horizon,
+            primary_interval,
+            supporting_interval
+        ),
     ADD CONSTRAINT chk_native_short_scope_support_event_v1_admin_shape
         CHECK (
             (
@@ -278,16 +354,6 @@ ALTER TABLE native_short_scope_cadence_config_v1
         supporting_interval,
         active_slot
     ),
-    ADD UNIQUE KEY uq_native_short_scope_cadence_config_v1_profile_generation (
-        venue,
-        symbol,
-        quote_currency,
-        fib_trading_horizon,
-        primary_interval,
-        supporting_interval,
-        cadence_contract_version,
-        support_generation
-    ),
     ADD UNIQUE KEY uq_native_short_scope_cadence_config_v1_activation_operation (
         activation_operation_id
     ),
@@ -295,11 +361,43 @@ ALTER TABLE native_short_scope_cadence_config_v1
         deactivation_operation_id
     ),
     ADD CONSTRAINT fk_native_short_scope_cadence_config_v1_activation_operation
-        FOREIGN KEY (activation_operation_id)
-        REFERENCES native_short_scope_admin_operation_v1 (scope_admin_operation_id),
+        FOREIGN KEY (
+            activation_operation_id,
+            venue,
+            symbol,
+            quote_currency,
+            fib_trading_horizon,
+            primary_interval,
+            supporting_interval
+        )
+        REFERENCES native_short_scope_admin_operation_v1 (
+            scope_admin_operation_id,
+            venue,
+            symbol,
+            quote_currency,
+            fib_trading_horizon,
+            primary_interval,
+            supporting_interval
+        ),
     ADD CONSTRAINT fk_native_short_scope_cadence_config_v1_deactivation_operation
-        FOREIGN KEY (deactivation_operation_id)
-        REFERENCES native_short_scope_admin_operation_v1 (scope_admin_operation_id),
+        FOREIGN KEY (
+            deactivation_operation_id,
+            venue,
+            symbol,
+            quote_currency,
+            fib_trading_horizon,
+            primary_interval,
+            supporting_interval
+        )
+        REFERENCES native_short_scope_admin_operation_v1 (
+            scope_admin_operation_id,
+            venue,
+            symbol,
+            quote_currency,
+            fib_trading_horizon,
+            primary_interval,
+            supporting_interval
+        ),
     ADD CONSTRAINT chk_native_short_scope_cadence_config_v1_active_effective
         CHECK (is_active <> 1 OR effective_to_utc IS NULL),
     ADD CONSTRAINT chk_native_short_scope_cadence_config_v1_support_generation
@@ -335,7 +433,40 @@ ALTER TABLE native_short_scope_cadence_config_v1
             )
         );
 
+-- Permanent scope+profile+generation uniqueness on a NULL-safe slot. This
+-- replaces the dropped uq_native_short_scope_cadence_config_v1_scope_version
+-- guard. effective_generation_slot is a stored generated projection of
+-- support_generation onto the reserved legacy sentinel 0 when NULL; because
+-- managed support generations are always > 0 they can never collide with the
+-- legacy slot. The UNIQUE key therefore:
+--   * forbids a second legacy/unmanaged row (slot 0) for one exact scope and
+--     cadence profile (restores the invariant the dropped index enforced);
+--   * still permits distinct positive managed generations of the same profile;
+--   * still rejects a duplicate managed generation of the same profile.
+-- Kept in a separate ALTER so the generated column references support_generation
+-- only after it is persisted by the ALTER above.
+ALTER TABLE native_short_scope_cadence_config_v1
+    ADD COLUMN effective_generation_slot BIGINT UNSIGNED
+        GENERATED ALWAYS AS (COALESCE(support_generation, 0)) STORED
+        AFTER active_slot,
+    ADD UNIQUE KEY uq_native_short_scope_cadence_config_v1_profile_generation (
+        venue,
+        symbol,
+        quote_currency,
+        fib_trading_horizon,
+        primary_interval,
+        supporting_interval,
+        cadence_contract_version,
+        effective_generation_slot
+    );
+
 -- Duplicate attributable support generations are impossible on first
 -- application because both attribution columns were absent and are added NULL.
 -- The support-event unique key above enforces the preflight invariant from the
 -- first attributable event forward without assigning values to legacy rows.
+-- The cadence profile-generation unique key uses effective_generation_slot so
+-- the same NULL-safe protection covers legacy (slot 0) cadence rows too.
+-- Ongoing historical effective-window non-overlap enforcement is intentionally
+-- NOT added here: it remains a migration-preflight check plus a future
+-- locked repository-transaction validation (the deferred adoption/promotion/
+-- removal transaction PR), not a trigger in this pure schema-contract migration.

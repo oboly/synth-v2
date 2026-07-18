@@ -12,7 +12,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from enum import StrEnum
+from enum import Enum, StrEnum
 from types import MappingProxyType
 from typing import Mapping, TypeAlias
 
@@ -165,6 +165,23 @@ _RESULT_CODE_CLASS = {
 }
 
 
+# Fail-fast, module-level exhaustiveness invariant: every declared result code
+# must map to exactly one result class. If a future result code is added without
+# a mapping entry, importing this module raises immediately instead of deferring
+# the failure to a raw KeyError at first NativeShortScopeAdministrationResult
+# construction.
+_UNMAPPED_RESULT_CODES = tuple(
+    code
+    for code in NativeShortScopeAdministrationResultCode
+    if code not in _RESULT_CODE_CLASS
+)
+if _UNMAPPED_RESULT_CODES:
+    raise NativeShortScopeAdministrationValidationError(
+        "RESULT_CODE_MAPPING_INCOMPLETE missing="
+        + ",".join(sorted(code.value for code in _UNMAPPED_RESULT_CODES))
+    )
+
+
 def _required_text(value: object, field_name: str, *, maximum: int) -> str:
     if not isinstance(value, str):
         raise NativeShortScopeAdministrationValidationError(
@@ -183,12 +200,27 @@ def _required_text(value: object, field_name: str, *, maximum: int) -> str:
 
 
 def _coerce_enum(value: object, enum_type: type[StrEnum], field_name: str) -> StrEnum:
-    try:
-        return value if isinstance(value, enum_type) else enum_type(str(value))
-    except ValueError as exc:
+    if isinstance(value, enum_type):
+        return value
+    if isinstance(value, Enum):
+        # A value that is an instance of a *different* Enum/StrEnum class must be
+        # rejected deterministically, even when its underlying string value
+        # happens to match a member of enum_type (e.g. the shared ``TEST``
+        # member across actor and trigger enums). Never fall back to
+        # ``enum_type(str(value))`` for a foreign enum type.
         raise NativeShortScopeAdministrationValidationError(
-            f"INVALID_ENUM field={field_name} value={value}"
-        ) from exc
+            f"INVALID_ENUM field={field_name} value={value!r}"
+        )
+    if isinstance(value, str):
+        try:
+            return enum_type(value)
+        except ValueError as exc:
+            raise NativeShortScopeAdministrationValidationError(
+                f"INVALID_ENUM field={field_name} value={value}"
+            ) from exc
+    raise NativeShortScopeAdministrationValidationError(
+        f"INVALID_ENUM field={field_name} value={value!r}"
+    )
 
 
 def _require_utc(value: datetime, field_name: str) -> datetime:
@@ -480,7 +512,12 @@ class NativeShortScopeAdministrationResult:
             NativeShortScopeAdministrationResultCode,
             "result_code",
         )
-        if _RESULT_CODE_CLASS[result_code] != result_class:
+        expected_class = _RESULT_CODE_CLASS.get(result_code)
+        if expected_class is None:
+            raise NativeShortScopeAdministrationValidationError(
+                f"RESULT_CODE_UNMAPPED result_code={result_code.value}"
+            )
+        if expected_class != result_class:
             raise NativeShortScopeAdministrationValidationError(
                 "RESULT_CLASS_CODE_MISMATCH"
             )
