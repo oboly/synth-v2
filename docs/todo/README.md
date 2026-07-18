@@ -192,6 +192,7 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `signal_matrix_dashboard.md` | parked | Transparent primitive signal inventory |
 | `breath_curve.md` | parked / open | Breath Curve validation continuation |
 | `strategy_candidates.md` | parked / open research | Strategy audit and later classifier/policy research |
+| `replay_parameter_study_harness_v1.md` | **D — planning / strategy-validation sublane** | Minimal market-only replay contracts, immutable provenance, Selection v2 point-in-time adapter, versioned evaluator, and one bounded score-weight grid study |
 | `multi_horizon_fib_dashboard_backlog.md` | parked | Dashboard follow-up depending on fib research outputs |
 | `paper_candidate_contract.md` | future design | Safe adapter from validated research candidates to `decision_gate` |
 | `dev_ops_hygiene.md` | mostly parked | Development, database-access, backup, worktree hygiene |
