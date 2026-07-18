@@ -1,0 +1,12 @@
+[Unit]
+Description=Synth public market-price snapshot writer timer (devlap sole owner)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/public_market_data_runtime_owners_v1.md
+
+[Timer]
+OnCalendar=*-*-* *:00/5:00 UTC
+Persistent=true
+RandomizedDelaySec=30
+Unit=synth-market-price-snapshot-writer.service
+
+[Install]
+WantedBy=timers.target

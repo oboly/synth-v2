@@ -35,11 +35,10 @@ run_step() {
   fi
 }
 
-run_step python -m src.market_data.run_market_price_snapshot_v1 \
+run_step python -m src.operations.run_persisted_market_price_freshness_v1 \
   --venue "${VENUE}" \
   --quote "${QUOTE}" \
-  --write-db \
-  --output none
+  --output table
 
 if [ "${STRUCTURAL_MISSING_REFRESH_ENABLED}" = "0" ]; then
   echo

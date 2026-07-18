@@ -10,10 +10,17 @@ refresh.
 
 ## Canonical Ownership
 
-- candles ETL is owned by market chain / ETL timers
+- devlap is the sole public market-data database writer host; Odroid is a
+  persisted-state consumer and publisher
+- public prices are owned by
+  `synth-market-price-snapshot-writer.timer` on devlap
+- multi-interval candles are owned by
+  `synth-market-candle-freshness-writer.timer` on devlap
 - native SHORT map evaluation, scope-status projection, and map-level status
-  projection are owned by the existing 4h market chain after candle ETL; no
+  projection are owned by the existing devlap 4h market chain; no
   second native SHORT timer or dashboard-side writer is permitted
+- rotation-pressure persistence remains owned by its devlap writer; Odroid
+  owns only the read-only publisher
 - `feat_candle` is owned by the feature chain
 - `signal_state` is owned by the signal chain / 4h chain
 - downstream strategy and selection snapshots are owned by their chain runners
@@ -31,6 +38,8 @@ refresh.
 ## Disallowed Anti-Patterns
 
 - dashboard render triggers candle intake
+- account/render orchestration writes public prices
+- a stale-data check starts a repair writer instead of failing closed
 - dashboard render recomputes `signal_state`
 - dashboard render silently writes operational context
 - failed refresh leaves stale data looking live
@@ -70,3 +79,4 @@ For repo-wide runtime and dashboard boundary rules, also see:
 
 - `AGENTS.md`
 - `docs/ops/synth_runtime_runners_v1.md`
+- `docs/ops/public_market_data_runtime_owners_v1.md`

@@ -8,6 +8,26 @@ open P2 operational / freshness hygiene
 
 This lane originated from the 2026-07-05 Odroid disk-exhaustion and stale-static-page incident. Repository implementation has progressed, but installed-host activation and multi-cycle operational acceptance remain separate and must not be inferred from merged templates alone.
 
+## 2026-07-18 public market-data ownership correction
+
+Repository target: devlap is the sole public market-data database writer;
+Odroid validates and consumes persisted public prices/candles and retains only
+account-refresh, account-snapshot persistence, reporting, and publication
+responsibilities. The linked-profile orchestrator therefore keeps its intended
+account/render ownership but loses its public-price writer stage.
+
+Host rollout remains open and must follow
+`docs/ops/public_market_data_runtime_owners_v1.md`. No deployment or renewed
+Native SHORT operational acceptance is claimed by the repository change.
+
+Account-owner cleanup remains separate:
+
+- `synth-linked-profile-runtime-refresh.timer` remains the intended linked
+  profile account/render owner;
+- `synth-mvp-account-refresh.timer` is a distinct duplicate-account-owner
+  retirement task with its own evidence and rollback;
+- website registration ownership is unchanged.
+
 ## Sources
 
 ```text
@@ -106,6 +126,8 @@ Host retirement targets (separate rollout, not authorized here). Both user-level
 
 - `synth-account-wallet-dashboard@{joost,hugo}` — legacy render + Profit-Plan-without-deltas + duplicate wallet/open-orders render (duplicates the orchestrator's `render_snapshot_dashboard` stage).
 - `synth-account-wallet-refresh@{joost,hugo}` — private read-only account refresh (duplicates the orchestrator's `refresh_account_snapshot` stage).
+- `synth-mvp-account-refresh.timer` — separate account-snapshot owner whose
+  duplicate-owner retirement must not be folded into public market-data work.
 
 Each family has its own rollback: re-enable that specific user-level family (`systemctl --user enable --now …`) independently if the corresponding replacement stage regresses. No host unit is mutated by this lane.
 

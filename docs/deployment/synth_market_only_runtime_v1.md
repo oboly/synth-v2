@@ -27,11 +27,14 @@ No live trading. No broker writes. No order submission. No decision_gate activat
 | File | Purpose |
 |---|---|
 | `deploy/systemd/synth-chain-4h.service` | oneshot service — runs `scripts/run_chain_4h.sh` |
-| `deploy/systemd/synth-chain-4h.timer` | calendar timer — fires at 00:08, 04:08, 08:08, 12:08, 16:08, 20:08 UTC |
+| `deploy/systemd/synth-chain-4h.timer` | calendar timer — fires at 00:12, 04:12, 08:12, 12:12, 16:12, 20:12 UTC |
 | `scripts/run_native_short_scope_status_chain_once.sh` | locked native SHORT runtime wrapper owned by the 4h chain |
 | `src/market_data/run_native_short_scope_status_chain_v1.py` | bounded adapter from persisted `SUPPORTED` scopes to the canonical scope-status orchestrator |
 
-Timer fires 8 minutes after each 4h candle close to allow candle ETL to complete. `Persistent=true` ensures a missed fire (host was off) runs on next boot. `RandomizedDelaySec=120` spreads load across a 2-minute jitter window.
+Timer fires 12 minutes after each 4h candle close, after the separately owned
+devlap multi-interval candle writer. `Persistent=true` ensures a missed fire
+(host was off) runs on next boot. `RandomizedDelaySec=120` spreads load across a
+2-minute jitter window.
 
 The native SHORT runtime does not add a timer or service. Canonical ownership is:
 
@@ -39,7 +42,7 @@ The native SHORT runtime does not add a timer or service. Canonical ownership is
 synth-chain-4h.timer
 -> synth-chain-4h.service
 -> scripts/run_chain_4h.sh
--> 4h candle ETL
+-> SELECT-only expected 4h candle boundary validation
 -> scripts/run_native_short_scope_status_chain_once.sh
 -> run_native_short_scope_status_materializer
 -> native_short_scope_status_v1
@@ -151,7 +154,7 @@ sudo systemctl enable --now synth-chain-4h.timer
 systemctl list-timers 'synth-*'
 ```
 
-The timer starts immediately. The service will first fire at the next scheduled time (00:08, 04:08, 08:08, 12:08, 16:08, or 20:08 UTC, plus up to 120 s jitter).
+The timer starts immediately. The service will first fire at the next scheduled time (00:12, 04:12, 08:12, 12:12, 16:12, or 20:12 UTC, plus up to 120 s jitter).
 
 ---
 

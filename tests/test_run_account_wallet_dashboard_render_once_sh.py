@@ -48,7 +48,7 @@ if len(args) >= 2 and args[0] == "-m":
             if idx + 1 < len(argv):
                 return argv[idx + 1]
         return default
-    if module == "src.market_data.run_market_price_snapshot_v1":
+    if module == "src.operations.run_persisted_market_price_freshness_v1":
         raise SystemExit(0)
     if module == "src.market_data.run_native_short_fib_context_v1":
         out_dir = Path(arg_value("--output-dir"))

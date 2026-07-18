@@ -13,6 +13,9 @@ This closes step 3 ("Separate host acceptance") of the Lane C operational
 sequence recorded in `docs/todo/README.md`. This document itself remains the
 repository record for step 2 ("Separate Runtime Owner PR").
 
+No host systemd unit has been changed by the 2026-07-18 repository-only public
+market-data ownership correction.
+
 ## Ownership
 
 ```text
@@ -130,11 +133,11 @@ The rotation-pressure source chain is `obs_market_candle (1h)` ->
 `market_rotation_history_v1` -> `market_rotation_pressure_v1`
 (`CANDLE_INTERVAL = "1h"` in `src/research/run_market_rotation_history_v1.py`).
 
-`obs_market_candle` 1h-interval freshness is owned by the existing Odroid
-`synth-market-candle-freshness` user timer
-(`scripts/odroid/systemd/synth-market-candle-freshness.timer`,
-`OnBootSec=3min`, `OnUnitActiveSec=15min`), which refreshes `15m/1h/4h/1d/1w`
-candle coverage on an approximately 15-minute cadence.
+The repository target assigns `obs_market_candle` 1h-interval freshness to the
+devlap `synth-market-candle-freshness-writer.timer`, which refreshes
+`15m/1h/4h/1d/1w` through the canonical host-neutral wrapper. The prior Odroid
+timer evidence below is historical cadence evidence only; that timer is no
+longer a valid active owner and its repository templates are retired.
 
 Read-only journal evidence collected for this task
 (`ssh odroid 'journalctl --user -u synth-market-candle-freshness.service -n 40 --no-pager'`)
@@ -160,7 +163,7 @@ writer well before the top of the following cycle.
 Required relationship:
 
 ```text
-hourly source data available (candle freshness completes by ~HH:11-12)
+hourly source data available from the devlap candle owner
 -> safety margin
 -> devlap pressure writer:            HH:20:00 UTC
 -> additional separation

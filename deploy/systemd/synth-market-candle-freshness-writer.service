@@ -1,0 +1,24 @@
+[Unit]
+Description=Synth multi-interval candle freshness writer (devlap sole owner)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/public_market_data_runtime_owners_v1.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=gurk
+WorkingDirectory=/home/gurk/projects/synth-v2
+Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
+Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
+ExecStart=/bin/bash -lc 'bash scripts/run_market_candle_freshness_once.sh'
+Restart=no
+Nice=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=false
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=synth-market-candle-freshness-writer
+
+[Install]
+WantedBy=multi-user.target

@@ -13,7 +13,6 @@ export SYNTH_BROKER_WRITE_PERMISSION="${SYNTH_BROKER_WRITE_PERMISSION:-NOT_GRANT
 export SYNTH_PAPER_ADVICE_DASHBOARD_HTML="${SYNTH_PAPER_ADVICE_DASHBOARD_HTML:-/var/www/html/synth/paper-advice.html}"
 export SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML="${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML:-/var/www/html/synth/entry-candidates.html}"
 export SYNTH_COCKPIT_INDEX_HTML="${SYNTH_COCKPIT_INDEX_HTML:-/var/www/html/synth/index.html}"
-export SYNTH_MVP_RUN_MARKET_CHAIN="${SYNTH_MVP_RUN_MARKET_CHAIN:-0}"
 export SYNTH_MVP_WRITE_PAPER_ADVICE="${SYNTH_MVP_WRITE_PAPER_ADVICE:-0}"
 export SYNTH_MVP_RENDER_PAPER_DASHBOARD="${SYNTH_MVP_RENDER_PAPER_DASHBOARD:-0}"
 export SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
@@ -31,12 +30,6 @@ run_step() {
     exit "$status"
   fi
 }
-
-if [ "${SYNTH_MVP_RUN_MARKET_CHAIN}" = "1" ]; then
-  run_step bash scripts/run_chain_4h.sh
-else
-  echo "[MVP][SKIP] market chain skipped; set SYNTH_MVP_RUN_MARKET_CHAIN=1 to run scripts/run_chain_4h.sh"
-fi
 
 run_step python -m src.operations.run_broker_balance_snapshot_writer_v1 \
   --account-code bitvavo_synth_read \

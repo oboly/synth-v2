@@ -1,147 +1,123 @@
 # Linked-Profile Runtime Orchestrator v1
 
-Status: P0 implementation candidate.
+## Status
 
-This document defines the explicit linked-profile refresh owner for the public-price → account-snapshot → render pipeline.
+Repository contract updated for Odroid persisted-state consumption. Host
+deployment and acceptance remain separate.
 
-## Why this exists
+## Ownership
 
-The 2026-07-05 incident exposed two separate runtime risks:
+```text
+devlap public market-data owners
+  -> persist public prices, candles, Native SHORT state, rotation pressure
 
-1. public/account/dashboard stages could stall independently;
-2. rendered static pages could make stale data look fresh.
+Odroid linked-profile orchestrator
+  -> validate persisted public-price freshness (SELECT-only)
+  -> discover linked profiles
+  -> authenticated read-only account refresh and account-snapshot persistence
+  -> wallet/open-order persisted-snapshot render
+  -> Profit Plan persisted-snapshot render
+```
 
-The current backlog already requires one explicit orchestration owner for the linked-profile path: public price snapshot refresh, then read-only account snapshot refresh per linked profile, then dashboard render from persisted snapshots only. The backlog also explicitly forbids relying on two independent timers joined only by offsets or ordering assumptions.
+The orchestrator is account/render ownership, not public market-data ownership.
+Account snapshot persistence remains allowed and does not grant public market
+writer authority.
 
 ## Hard boundaries
 
-```text
-public market ingestion       = market-only, account-agnostic
-account snapshot ingestion    = authenticated read-only persistence only
-renderer                      = reads persisted snapshots only
-selection_engine              = unchanged
-decision_gate                 = unchanged in this slice
-execution_planner             = unchanged
-executor                      = unchanged
-broker writes                 = forbidden
-order submission              = forbidden
-live trading                  = out of scope
-```
+- no public exchange request;
+- no public market-price write;
+- no candle ETL;
+- no Native SHORT or rotation-pressure writer;
+- no arbitrary validation/writer command override;
+- no broker write, order submission, decision-gate mutation, planning, or
+  execution;
+- no SSH or cross-host systemd dependency;
+- reporting never repairs stale persisted state.
 
-## New owner
+## Stage order
 
-```text
-scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh
-```
+`scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh` owns one
+locked account/render cycle:
 
-This script owns one scheduled cycle. It uses a single global `flock` before running any stage.
+1. disk/log health check;
+2. fixed SELECT-only persisted public-price validation;
+3. linked-profile discovery;
+4. authenticated read-only account refresh per profile;
+5. wallet/open-order persisted-snapshot render per profile;
+6. Profit Plan persisted-snapshot render after all required account refreshes
+   succeed.
 
-Stage order:
-
-1. disk/log health check via `src.operations.run_runtime_disk_log_health_v1`;
-2. public price snapshot refresh via `src.market_data.run_market_price_snapshot_v1 --write-db`;
-3. linked-profile discovery via `src.account.run_linked_profile_dashboard_refresh_v1 --output profile-list`;
-4. read-only account refresh per linked profile via `scripts/odroid/run_account_wallet_refresh_once.sh`;
-5. safe snapshot render per linked profile via `scripts/odroid/run_account_wallet_snapshot_dashboard_render_once.sh`;
-6. safe Profit Plan render per linked profile via `scripts/odroid/run_account_profit_plan_snapshot_render_once.sh` (PR B), sequenced only after every required account-refresh stage has succeeded.
-
-The orchestrator does not absorb module responsibilities. It only orders existing stage runners, records result metadata, and fails visibly when any stage degrades.
-
-## Safe render successor
+The validation stage calls only:
 
 ```text
-scripts/odroid/run_account_wallet_snapshot_dashboard_render_once.sh
+python -m src.operations.run_persisted_market_price_freshness_v1
 ```
 
-This is intentionally not a rename of the older account wallet dashboard wrapper.
-
-It renders only pages that read persisted snapshots:
-
-- account wallet dashboard;
-- open-orders monitor.
-
-It deliberately does **not**:
-
-- refresh public prices;
-- make private broker calls;
-- build native SHORT context;
-- publish native SHORT runtime files;
-- render Profit Plan / Short Swing from generated native context.
-
-Profit Plan / Short Swing was blocked for this orchestrated path until its native SHORT/freshness input was promoted to a persisted snapshot contract. That promotion is now deployed, not a renderer-side shortcut.
-
-The concrete slices are now deployed: **PR A** (a market-only persisted native SHORT rows snapshot owned by the 4h chain) and **PR B** (a separate single-writer Profit Plan runner, `scripts/odroid/run_account_profit_plan_snapshot_render_once.sh` → `src.reporting.run_account_profit_plan_snapshot_render_owner_v1`, invoked as an explicit stage by this orchestrator after all account-refresh stages succeed — the orchestrator only sequences it and absorbs no reporting logic, adding no second timer). See `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`. The Profit Plan render owner reads persisted snapshots only: it makes no private broker calls and constructs no native SHORT context.
-
-## Why the older linked wrapper is not reused
-
-```text
-scripts/odroid/run_linked_profile_dashboard_refresh_once.sh
-```
-
-That wrapper refreshes public prices and then builds a union native SHORT context before per-profile render. It also passes a native SHORT rows file into the per-profile render wrapper.
-
-That behavior is useful as legacy operational evidence, but it is not a valid P0 orchestrator foundation because it mixes render orchestration with native SHORT context generation/publication.
-
-The new orchestrator avoids that shortcut by using the safe snapshot renderer.
+Defaults are a 900-second maximum age and 30-second maximum future skew. A
+missing, malformed, future-dated, unavailable, or stale latest price batch
+produces `BLOCKED`. The orchestrator records metadata and exits before profile
+discovery or any account/render stage. It never invokes a writer as fallback.
 
 ## Metadata contract
 
-Every orchestrator run atomically writes:
+Every completed or freshness-blocked cycle atomically writes
+`/var/www/html/synth/_runtime/linked_profile_orchestrator_v1/latest_run.json`
+unless `SYNTH_LINKED_PROFILE_RUNTIME_METADATA_PATH` overrides the output path.
 
-```text
-/var/www/html/synth/_runtime/linked_profile_orchestrator_v1/latest_run.json
-```
+The metadata payload schema is `linked_profile_runtime_orchestrator_v2`. The
+version reflects the incompatible replacement of the former refresh-result
+field with persisted public-price validation, freshness, age, and row-count
+fields. No repository consumer depends on the retired v1 payload shape.
 
-Override:
-
-```text
-SYNTH_LINKED_PROFILE_RUNTIME_METADATA_PATH=/custom/path/latest_run.json
-```
-
-Schema:
+Freshness fields are truthful validation fields, not refresh claims:
 
 ```json
 {
-  "schema": "linked_profile_runtime_orchestrator_v1",
-  "run_id": "...",
-  "started_ts_utc": "...",
-  "finished_ts_utc": "...",
-  "overall_result": "ok|degraded",
-  "venue": "bitvavo",
-  "quote": "EUR",
-  "profiles": ["joost", "hugo"],
-  "profile_count": 2,
-  "public_price_result": "ok|failed_continuing",
-  "account_refresh": {
-    "success": 2,
-    "failure": 0
-  },
-  "snapshot_render": {
-    "success": 2,
-    "failure": 0
-  },
-  "stages": [
-    {
-      "phase": "refresh_public_prices",
-      "profile": null,
-      "result": "ok",
-      "started_ts_utc": "...",
-      "finished_ts_utc": "...",
-      "elapsed_s": 1
-    }
-  ],
+  "public_price_validation_result": "PASS|BLOCKED",
+  "persisted_public_price_as_of_utc": "2026-07-18T12:00:00+00:00|null",
+  "persisted_public_price_age_seconds": 60.0,
+  "freshness_classification": "FRESH|STALE|MISSING|UNAVAILABLE",
+  "public_price_validation_reason": "WITHIN_THRESHOLD|EXCEEDS_THRESHOLD|FUTURE_TIMESTAMP|...",
+  "persisted_public_price_snapshot_row_count": 42,
   "safety": {
+    "public_market_data_writes": 0,
     "broker_writes": 0,
     "order_submission": 0,
     "live_orders": 0,
-    "decision_gate": "none",
-    "execution_planner": "none",
-    "executor": "none",
-    "renderer_private_broker_calls": 0,
     "native_short_context_build_in_render_stage": false
   }
 }
 ```
+
+`overall_result=blocked_public_price_validation` means no profile, account, or
+render stage ran. `overall_result=degraded` remains reserved for later-stage
+account/render failures after public-price validation passed.
+
+## Render paths
+
+The scheduled orchestrator continues to use:
+
+- `scripts/odroid/run_account_wallet_refresh_once.sh` for authenticated
+  read-only account refresh plus account-snapshot persistence;
+- `scripts/odroid/run_account_wallet_snapshot_dashboard_render_once.sh` for
+  wallet/open-order persisted-snapshot rendering;
+- `scripts/odroid/run_account_profit_plan_snapshot_render_once.sh` for the
+  persisted-snapshot-only Profit Plan owner.
+
+Profile discovery and those later responsibilities are unchanged.
+
+Legacy/manual wrappers now validate persisted public prices and contain no
+public market writer invocation. `run_mvp_dashboard_render_once.sh` remains
+entry-candidate/about publication only.
+
+## Account-owner boundary
+
+The installed `synth-linked-profile-runtime-refresh.timer` remains the intended
+linked-profile account/render owner after repository deployment.
+`synth-mvp-account-refresh.timer` is a separate duplicate-account-owner
+retirement task. This public market-data ownership change does not modify or
+disable either account unit and does not touch website registration.
 
 ## Systemd templates
 
@@ -150,77 +126,28 @@ docs/ops/systemd/synth-linked-profile-runtime-refresh.service
 docs/ops/systemd/synth-linked-profile-runtime-refresh.timer
 ```
 
-These are templates only. Do not install them blindly.
-
-Before installing on Odroid:
-
-1. verify `/home/theone/projects/synth-v2` is the intended checkout;
-2. verify `/home/theone/.config/synth/web-auth.env` contains the account credential master key source required by the account refresh runner;
-3. verify the old independent account timers are disabled or intentionally not installed;
-4. run a manual one-shot with the new timer disabled;
-5. inspect `latest_run.json` and static rendered outputs;
-6. only then consider enabling the new single timer.
-
-## Old timer disposition
-
-The old per-profile templates are superseded for the linked-profile runtime path:
-
-```text
-docs/ops/systemd/synth-account-wallet-refresh@.timer
-docs/ops/systemd/synth-account-wallet-dashboard@.timer
-```
-
-They may remain in the repository as manual/legacy templates, but they must not be enabled alongside the new orchestrator for the same linked-profile runtime path.
-
-Host rule:
-
-```text
-new orchestrator timer enabled  => old account refresh/dashboard timers disabled
-old account timers enabled      => new orchestrator timer disabled
-never both silently active
-```
-
-Proven (2026-07-15 read-only audit): on the Odroid this rule was violated — the system-level `synth-linked-profile-runtime-refresh.timer` (safe) ran in parallel with **both** user-level (`systemctl --user`) families it supersedes.
-
-Resolved (2026-07-17 host rollout): the four legacy user timers `synth-account-wallet-dashboard@{joost,hugo}.timer` and `synth-account-wallet-refresh@{joost,hugo}.timer` were disabled and stopped (unit templates preserved). The system-level `synth-linked-profile-runtime-refresh.timer` is the single enabled owner of joost/hugo account refresh, linked-profile wallet/open-orders render, and Profit Plan render. Evidence and per-family rollback are recorded in `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md` and the host-acceptance evidence document under `docs/ops/`.
-
-## Ownership contract (post 2026-07-17 host rollout)
-
-Single owners on the Odroid:
-
-```text
-joost/hugo account refresh            = synth-linked-profile-runtime-refresh.timer (linked-profile orchestrator)
-linked-profile wallet/open-orders     = synth-linked-profile-runtime-refresh.timer (safe snapshot renderer)
-Profit Plan render                    = synth-linked-profile-runtime-refresh.timer (PR B safe render owner)
-native SHORT snapshot publication     = synth-4h-market-chain.timer (only publisher)
-```
-
-MVP cockpit (`synth-mvp-readonly-cockpit.timer` → `scripts/odroid/run_mvp_dashboard_render_once.sh`) owns only its market-only surfaces:
-
-- entry-candidate dashboard (`entry-candidates.html`);
-- about page (`about.html`) and cockpit index.
-
-The MVP cockpit must **not** invoke the linked-profile refresh, must **not** render Profit Plan, must **not** render linked-profile wallet/open-orders, and must **not** build or publish native SHORT context. As of PR #117 (2026-07-17) `run_mvp_dashboard_render_once.sh` no longer calls `run_linked_profile_dashboard_refresh_once.sh`. This single ownership is guarded by `tests/test_run_mvp_dashboard_render_once_sh.py`, `tests/test_run_mvp_readonly_pipeline_once_sh.py`, and `tests/test_linked_profile_refresh_caller_ownership_v1.py`.
-
-`scripts/odroid/run_linked_profile_dashboard_refresh_once.sh` is retained as **manual/acceptance-only**. Its only executable caller is `scripts/odroid/run_odroid_deployment_acceptance_v1.sh` (an acceptance workflow, not scheduled); no systemd unit owns it. A guard test fails if any scheduled/runtime caller is added later.
-
-`entry-candidates.html` is a **market-only, account-agnostic** surface. It must never read, receive, render, or derive from account balances, wallets, positions, open orders, linked-profile account snapshots, private broker endpoints/clients, `decision_gate` output, execution plans, or executor state. This boundary is guarded by `tests/test_entry_candidate_dashboard_privacy_boundary_v1.py`.
+The templates contain no public writer command or test injection. Deploy only
+after both devlap public-price and candle writers are installed, manually
+validated, and proven fresh. See
+`docs/ops/public_market_data_runtime_owners_v1.md` for sequencing and rollback.
 
 ## Acceptance checklist
 
-- [ ] Unit/smoke tests pass for the orchestrator and safe snapshot renderer.
-- [ ] Manual Odroid one-shot succeeds with `synth-linked-profile-runtime-refresh.timer` disabled.
-- [ ] `latest_run.json` contains per-stage timestamps and results.
-- [ ] The old account refresh/dashboard timers are verified disabled or absent on Odroid.
-- [ ] No native SHORT context build/publish appears in the new render path.
-- [ ] No renderer private broker calls appear in logs.
-- [ ] No broker writes, order submission, decision gate, planner, or executor path appears in logs.
-- [ ] Several scheduled cycles show no overlap before this becomes the default runtime path.
+- [ ] Exact repository commit deployed on devlap and Odroid.
+- [ ] Devlap public-price and candle writers accepted first.
+- [ ] Persisted public prices classify `FRESH` within the 900-second contract.
+- [ ] Odroid metadata records validation fields above.
+- [ ] Stale/missing/future/malformed fixtures stop before account refresh.
+- [ ] Current data permits account refresh, wallet/open-order render, and
+      persisted-snapshot Profit Plan render in order.
+- [ ] Odroid public market-data writer count is zero.
+- [ ] No account duplicate is retired as an implicit side effect.
+- [ ] Native SHORT provenance acceptance is repeated only afterward.
 
 ## Non-goals
 
-- No decision gate implementation.
-- No selection engine change.
-- No execution planner or executor change.
-- No Profit Plan / Short Swing native map contract implementation.
-- No automatic re-enable of `synth-paper-advice-lifecycle-refresh.timer`.
+- no decision, planning, execution, broker-write, or order change;
+- no account-owner cleanup;
+- no website registration change;
+- no host activation in this repository change;
+- no Native SHORT scope expansion or blocker clearance.
