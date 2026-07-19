@@ -1,31 +1,8 @@
 [Unit]
-Description=Synth 4h market-only chain (setup/policy/zones snapshot)
-Documentation=docs/ops/synth_runtime_runners_v1.md
-After=network-online.target
-Wants=network-online.target
+Description=RETIRED legacy Synth 4h market-chain service template
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/synth_runtime_runners_v1.md
+RefuseManualStart=yes
 
 [Service]
 Type=oneshot
-# Odroid template default. Review host user/path before installing.
-User=theone
-WorkingDirectory=/home/theone/projects/synth-v2
-Environment=SYNTH_EXECUTION_MODE=paper
-Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
-Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
-Environment=SYNTH_PAPER_ADVICE_DASHBOARD_HTML=/var/www/html/synth/paper-advice.html
-ExecStart=/bin/bash -lc 'scripts/run_chain_4h.sh'
-Restart=no
-Nice=5
-
-# Safety boundary:
-# - market-only 4h chain refresh
-# - decision/execution/order permissions remain disabled
-# - no broker private writes
-# - no live orders
-
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=synth-4h-market-chain
-
-[Install]
-WantedBy=multi-user.target
+ExecStart=/usr/bin/false

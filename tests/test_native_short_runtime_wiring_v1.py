@@ -106,11 +106,21 @@ def test_canonical_service_keeps_single_timer_and_invokes_native_chain_in_order(
     service = SERVICE_PATH.read_text(encoding="utf-8")
     timer = TIMER_PATH.read_text(encoding="utf-8")
 
+    price_validation = "python -m src.operations.run_persisted_market_price_freshness_v1"
     candle_validation = "python -m src.operations.run_persisted_market_candle_freshness_v1"
     source_verification = "python -m src.market_data.native_short_repository_source_identity_v1"
     native = "bash scripts/run_native_short_scope_status_chain_once.sh"
+    snapshot = "python -m src.market_data.run_native_short_fib_context_snapshot_v1"
     features = "python -m src.features.run_feat_candle"
-    assert chain.index(source_verification) < chain.index(candle_validation) < chain.index(native) < chain.index(features)
+    assert (
+        chain.index(source_verification)
+        < chain.index(price_validation)
+        < chain.index(candle_validation)
+        < chain.index(native)
+        < chain.index(snapshot)
+        < chain.index(features)
+    )
+    assert "src.market_data.run_market_price_snapshot_v1" not in chain
     assert "src.etl.bitvavo.run_candles_etl" not in chain
     assert "scripts/run_chain_4h.sh" in service
     assert "Unit=synth-chain-4h.service" in timer
@@ -119,6 +129,32 @@ def test_canonical_service_keeps_single_timer_and_invokes_native_chain_in_order(
     assert 'NATIVE_SHORT_REPOSITORY_COMMIT="$(git rev-parse --verify HEAD)"' in chain
     assert 'SYNTH_NATIVE_SHORT_WRITER_ENTRYPOINT="scripts/run_chain_4h.sh"' in chain
     assert 'SYNTH_NATIVE_SHORT_TRIGGER_REF="scripts/run_chain_4h.sh"' in chain
+
+
+def test_canonical_service_and_chain_exclude_reporting_remote_and_account_paths() -> None:
+    combined = "\n".join(
+        (
+            CHAIN_PATH.read_text(encoding="utf-8"),
+            SERVICE_PATH.read_text(encoding="utf-8"),
+        )
+    ).lower()
+    for forbidden in (
+        "synth_paper_advice_dashboard",
+        "src.reporting",
+        "publish_paper_advice_dashboard_to_odroid",
+        "odroid",
+        "ssh",
+        "scp",
+        "src.account",
+        "decision_gate",
+        "execution_planner",
+        "src.executor",
+        "src.broker",
+        "order_submission",
+    ):
+        assert forbidden not in combined
+    assert "environment=synth_live_execution_permission=not_granted" in combined
+    assert "environment=synth_broker_write_permission=not_granted" in combined
 
 
 def test_wrapper_has_native_lock_exact_scope_defaults_and_safety_markers() -> None:

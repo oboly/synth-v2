@@ -135,11 +135,14 @@ docs/ops/systemd/synth-paper-advice-lifecycle-refresh.service
 docs/ops/systemd/synth-paper-advice-lifecycle-refresh.timer
 docs/ops/systemd/synth-paper-advice-dashboard-render.service
 docs/ops/systemd/synth-paper-advice-dashboard-render.timer
-docs/ops/systemd/synth-4h-market-chain.service
-docs/ops/systemd/synth-4h-market-chain.timer
 ```
 
 These files are templates only. They are not installed, copied to `/etc/systemd/system`, enabled, or started by this repository lane.
+
+The legacy `docs/ops/systemd/synth-4h-market-chain.service` and `.timer` files
+are retained only as non-startable retirement stubs. They contain no chain
+invocation, calendar schedule, or install target. The sole canonical 4h owner
+is `deploy/systemd/synth-chain-4h.service` / `.timer` on devlap.
 
 The templates use Odroid-oriented defaults:
 
@@ -601,7 +604,6 @@ Do not create these files in this lane. Intended future unit/timer names:
 - `synth-freshness-check.service` / `synth-freshness-check.timer`
 - `synth-paper-advice-dashboard-refresh.service` / `synth-paper-advice-dashboard-refresh.timer`
 - `synth-paper-advice-lifecycle-refresh.service` / `synth-paper-advice-lifecycle-refresh.timer`
-- `synth-4h-market-chain.service` / `synth-4h-market-chain.timer`
 - future `synth-market-trigger-engine.service`
 
 ## Market Trigger Engine Path

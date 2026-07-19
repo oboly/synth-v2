@@ -1,14 +1,25 @@
 # Synth Market-Only Runtime V1 — Deployment Guide
 
-## ⚠ DO NOT INSTALL ON DEV WSL
+## Status and host
 
-This guide and these systemd files are for the **24/7 runtime host only** (likely Odroid or equivalent Linux host). The dev WSL instance is code and git only. Do not run any `sudo cp`, `systemctl enable`, or `daemon-reload` commands on the dev machine.
+The canonical host is `devlap`, with the repository at
+`/home/gurk/projects/synth-v2`. Repository acceptance does not authorize host
+deployment or timer activation. `synth-chain-4h.timer` must remain disabled
+until the correction is merged and a separately authorized host preflight has
+verified the exact deployed commit, unit checksums, persisted-input freshness,
+and absence of a competing owner.
 
 ---
 
 ## Purpose
 
-Run the Synth 4h market-only chain automatically after each 4h candle closes. The chain collects market data, refreshes the persisted native SHORT scope-status and map-level status projections, runs the selection engine, and writes paper advice. It does not place orders, write to any broker API, activate the decision gate, or touch the execution planner or executor.
+Run the Synth 4h market-only chain after each 4h candle closes. Separate devlap
+timers own public-price ingestion and multi-interval candle ETL. This chain
+consumes those persisted inputs, fails closed unless both are fresh, publishes
+the canonical Native SHORT runtime state, and then runs the remaining
+market-only stages. It does not refresh public prices or candles, render or
+transport dashboards, place orders, write to a broker API, activate the
+decision gate, or touch the execution planner or executor.
 
 **Hard boundaries enforced by environment variables in the service unit:**
 
@@ -32,9 +43,11 @@ No live trading. No broker writes. No order submission. No decision_gate activat
 | `src/market_data/run_native_short_scope_status_chain_v1.py` | bounded adapter from persisted `SUPPORTED` scopes to the canonical scope-status orchestrator |
 
 Timer fires 12 minutes after each 4h candle close, after the separately owned
-devlap multi-interval candle writer. `Persistent=true` ensures a missed fire
-(host was off) runs on next boot. `RandomizedDelaySec=120` spreads load across a
-2-minute jitter window.
+devlap public-price and multi-interval candle writers. `Persistent=true`
+ensures a missed fire runs on next boot. `RandomizedDelaySec=120` spreads load
+across a 2-minute jitter window. The timer does not require either writer
+service; SELECT-only freshness validators are the fail-closed dependency
+boundary.
 
 The native SHORT runtime does not add a timer or service. Canonical ownership is:
 
@@ -42,11 +55,13 @@ The native SHORT runtime does not add a timer or service. Canonical ownership is
 synth-chain-4h.timer
 -> synth-chain-4h.service
 -> scripts/run_chain_4h.sh
+-> SELECT-only persisted public-price freshness validation
 -> SELECT-only expected 4h candle boundary validation
 -> scripts/run_native_short_scope_status_chain_once.sh
 -> run_native_short_scope_status_materializer
 -> native_short_scope_status_v1
 -> native_short_map_level_status_v1
+-> run_native_short_fib_context_snapshot_v1 --publish
 -> remaining 4h chain stages
 ```
 
@@ -68,9 +83,16 @@ bash scripts/run_native_short_scope_status_chain_once.sh \
   --supporting-interval 1h
 ```
 
-This is a market-data writer. It emits `STARTED`, `FINISHED`/`FAILED`, scope,
-run, row-count, elapsed-time, and safety markers. It makes no private broker
-calls and has no decision, execution, order, account, or reporting ownership.
+The Native SHORT stage is a market-data writer. It emits `STARTED`,
+`FINISHED`/`FAILED`, scope, run, row-count, elapsed-time, and safety markers. It
+makes no private broker calls and has no decision, execution, order, account,
+reporting, dashboard, or remote-transport ownership.
+
+Paper-advice dashboard rendering remains separately owned by the existing
+render-only consumer contract in
+`docs/ops/systemd/synth-paper-advice-dashboard-render.service`. That downstream
+path reads persisted state; the 4h chain neither calls it nor transports its
+output.
 
 ---
 
@@ -82,8 +104,7 @@ Complete every check before proceeding. Do not install if any check fails.
 
 ```bash
 hostname
-# expected: <runtime hostname, e.g. odroid>
-# NOT: dev WSL hostname
+# expected: devlap
 ```
 
 ### 2. Confirm repo exists at expected path
@@ -125,36 +146,43 @@ grep SYNTH_LIVE_EXECUTION_PERMISSION /home/gurk/projects/synth-v2/.env
 # must be NOT_GRANTED
 ```
 
-### 7. Confirm chain runs manually without error
+### 7. Confirm the repository boundary without invoking the chain
 
 ```bash
 cd /home/gurk/projects/synth-v2
-source venv/bin/activate
-bash scripts/run_chain_4h.sh
-# Check exit code: echo $?  → 0
-# Check output for broker_calls=0, order_submission=0
+bash -n scripts/run_chain_4h.sh
+systemd-analyze verify \
+  deploy/systemd/synth-chain-4h.service \
+  deploy/systemd/synth-chain-4h.timer
+grep -n 'run_persisted_market_.*freshness_v1' scripts/run_chain_4h.sh
 ```
+
+Do not manually start `synth-chain-4h.service` or invoke `run_chain_4h.sh` to
+manufacture operational acceptance. Acceptance requires a natural timer-driven
+cycle after separately authorized activation.
 
 ---
 
-## Install — target host only
+## Post-merge install and activation gate
 
-After all preflight checks pass:
+Do not execute these steps from a repository-only PR. After merge, a separately
+authorized devlap rollout may copy the exact accepted unit files and reload
+systemd. It must verify installed checksums before enabling the timer:
 
 ```bash
 # Copy unit files
 sudo cp /home/gurk/projects/synth-v2/deploy/systemd/synth-chain-4h.service /etc/systemd/system/
 sudo cp /home/gurk/projects/synth-v2/deploy/systemd/synth-chain-4h.timer /etc/systemd/system/
 
-# Reload systemd and enable the timer
+# Reload systemd; activation remains a separate explicit decision
 sudo systemctl daemon-reload
-sudo systemctl enable --now synth-chain-4h.timer
-
-# Confirm timer is active
-systemctl list-timers 'synth-*'
+sha256sum deploy/systemd/synth-chain-4h.service /etc/systemd/system/synth-chain-4h.service
+sha256sum deploy/systemd/synth-chain-4h.timer /etc/systemd/system/synth-chain-4h.timer
 ```
 
-The timer starts immediately. The service will first fire at the next scheduled time (00:12, 04:12, 08:12, 12:12, 16:12, or 20:12 UTC, plus up to 120 s jitter).
+Only after host preflight passes may the rollout lane explicitly authorize
+`systemctl enable --now synth-chain-4h.timer`. The service must not be started
+manually. Runtime acceptance then observes the next natural scheduled cycle.
 
 ---
 
@@ -168,7 +196,8 @@ git pull --ff-only origin main
 sudo cp deploy/systemd/synth-chain-4h.service /etc/systemd/system/
 sudo cp deploy/systemd/synth-chain-4h.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-# No need to re-enable; the timer is already enabled.
+# Do not enable the timer during repository deployment. Initial activation is
+# controlled by the separate post-merge host-acceptance lane above.
 ```
 
 ---
@@ -224,14 +253,8 @@ conn.close()
 "
 ```
 
-### Confirm dashboard safety marker
-
-Check the generated paper-advice dashboard HTML or chain log output for:
-```
-broker_calls=0
-order_submission=0
-live_orders=0
-```
+Dashboard freshness is verified under its separate reporting owner. Dashboard
+render or transport output is not 4h-chain acceptance evidence.
 
 ---
 
@@ -250,25 +273,33 @@ sudo systemctl disable --now synth-chain-4h.timer
 | Symptom | Check |
 |---|---|
 | Timer shows no LAST time | `journalctl -u synth-chain-4h.service` for errors |
-| `run_chain_4h.sh` exits non-zero | Run manually and inspect output |
+| `run_chain_4h.sh` exits non-zero | Inspect the natural service journal and the first failed gate |
 | DB connection error | Check `.env` DB credentials and host reachability |
 | venv not found | Confirm venv path; recreate if needed |
 | Permission denied on script | Check file permissions on `scripts/run_chain_4h.sh` |
-| Missing candles after run | Check ETL step in chain log |
+| Missing public prices | Check the separate public-price writer timer and its journal |
+| Missing candles | Check the separate candle writer timer and its journal |
 
 ---
 
 ## Architecture boundary reminder
 
-This service runs only:
+The ownership sequence is:
 
 ```
-ETL (market candles)
-  -> selection_engine (market-only, account-agnostic)
-  -> paper advice output
+separate public-price writer -> persisted prices
+separate candle writer -> persisted candles
+synth-chain-4h -> SELECT-only freshness gates
+  -> Native SHORT publication
+  -> market-only features/signals/selection/advice snapshots
 ```
 
 It does **not** run:
+- public-price refresh
+- candle ETL
+- reporting or dashboard render
+- `ssh`, `scp`, or other remote transport
+- account refresh
 - `decision_gate`
 - `execution_planner`
 - `executor`

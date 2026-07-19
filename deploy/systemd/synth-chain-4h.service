@@ -15,8 +15,6 @@ Nice=5
 Environment=SYNTH_EXECUTION_MODE=paper
 Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
 Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
-Environment=SYNTH_PAPER_ADVICE_DASHBOARD_REMOTE_HOST=odroid
-Environment=SYNTH_PAPER_ADVICE_DASHBOARD_REMOTE_PATH=/var/www/html/synth/paper-advice.html
 
 StandardOutput=journal
 StandardError=journal

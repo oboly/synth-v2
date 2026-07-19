@@ -60,8 +60,14 @@ CHAIN_4H_END_TS="$(
 )"
 
 echo "[CHAIN][4h] START $(date -u +%F' '%T) UTC"
+echo "[CHAIN][4h] persisted public-price freshness gate venue=bitvavo quote=EUR"
 echo "[CHAIN][4h] persisted candle boundary=${CHAIN_4H_END_TS}"
 echo "[CHAIN][4h] feature window lookback_hours=720 warmup_bars=300"
+
+run_step python -m src.operations.run_persisted_market_price_freshness_v1 \
+    --venue bitvavo \
+    --quote EUR \
+    --output table
 
 run_step python -m src.operations.run_persisted_market_candle_freshness_v1 \
     --venue bitvavo \
@@ -117,25 +123,9 @@ run_step python -m src.advice.run_paper_advice_policy_v1 \
   --write-db \
   --output table
 
-if [[ -n "${SYNTH_PAPER_ADVICE_DASHBOARD_HTML:-}" ]]; then
-    DASHBOARD_LIFECYCLE_INTERVAL="${SYNTH_PAPER_ADVICE_LIFECYCLE_INTERVAL:-15m}"
-
-    run_step python -m src.reporting.run_paper_advice_static_dashboard_v1 \
-      --venue bitvavo \
-      --interval 4h \
-      --lifecycle-candle-interval "${DASHBOARD_LIFECYCLE_INTERVAL}" \
-      --output-html "$SYNTH_PAPER_ADVICE_DASHBOARD_HTML" \
-      --output table
-fi
-
 run_step python -m src.strategy_runtime.run_strategy_runtime_snapshot \
     --interval 4h \
     --chain-name run_chain_4h \
     --notes "successful market-only chain run; decision/execution disabled"
-
-
-if [[ -n "${SYNTH_PAPER_ADVICE_DASHBOARD_REMOTE_HOST:-}" ]]; then
-    run_step scripts/publish_paper_advice_dashboard_to_odroid.sh
-fi
 
 echo "[CHAIN][4h] DONE  $(date -u +%F' '%T) UTC"
