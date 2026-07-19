@@ -46,12 +46,14 @@ def test_linked_profile_orchestrator_is_validation_then_account_then_render() ->
     assert "run_account_profit_plan_snapshot_render_once.sh" in source
 
 
-def test_devlap_public_price_writer_has_one_owner_and_one_lock() -> None:
+def test_public_price_writer_has_one_owner_and_one_lock() -> None:
     wrapper = PRICE_WRAPPER.read_text(encoding="utf-8")
     service = Path("deploy/systemd/synth-market-price-snapshot-writer.service").read_text(encoding="utf-8")
     timer = Path("deploy/systemd/synth-market-price-snapshot-writer.timer").read_text(encoding="utf-8")
     assert wrapper.count("flock -n 9") == 1
-    assert 'OWNER="devlap-public-market-data"' in wrapper
+    # Neutral, host-independent capability identity — no host name in the owner.
+    assert 'OWNER="${SYNTH_MARKET_PRICE_WRITER_OWNER:-public-price-snapshot-writer}"' in wrapper
+    assert "devlap-public-market-data" not in wrapper
     assert wrapper.count("src.market_data.run_market_price_snapshot_v1") == 1
     assert wrapper.count("--write-db") == 1
     assert service.count("scripts/run_market_price_snapshot_once.sh") == 1
@@ -59,12 +61,14 @@ def test_devlap_public_price_writer_has_one_owner_and_one_lock() -> None:
     assert "Requires=synth-market-price-snapshot-writer.service" not in timer
 
 
-def test_devlap_candle_writer_has_one_owner_and_one_lock() -> None:
+def test_candle_writer_has_one_owner_and_one_lock() -> None:
     wrapper = CANDLE_WRAPPER.read_text(encoding="utf-8")
     service = Path("deploy/systemd/synth-market-candle-freshness-writer.service").read_text(encoding="utf-8")
     timer = Path("deploy/systemd/synth-market-candle-freshness-writer.timer").read_text(encoding="utf-8")
     assert wrapper.count("flock -n 9") == 1
-    assert 'OWNER="devlap-public-market-data"' in wrapper
+    # Neutral, host-independent capability identity — no host name in the owner.
+    assert 'OWNER="${SYNTH_MARKET_CANDLE_WRITER_OWNER:-public-candle-freshness-writer}"' in wrapper
+    assert "devlap-public-market-data" not in wrapper
     assert wrapper.count("src.etl.bitvavo.run_candles_etl") == 1
     for interval in ('run_or_fail "15m"', 'run_or_fail "1h"', 'run_or_fail "4h"', 'run_or_fail "1d"', 'run_or_fail "1w"'):
         assert interval in wrapper

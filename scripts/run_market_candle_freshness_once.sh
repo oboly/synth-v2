@@ -5,7 +5,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${SYNTH_REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 LOCK_FILE="${SYNTH_MARKET_CANDLE_FRESHNESS_LOCK:-/tmp/synth-market-candle-freshness-writer-v1.lock}"
 CONFIG_PATH="${SYNTH_MARKET_CANDLE_FRESHNESS_CONFIG:-configs/etl_bitvavo_candles.yaml}"
-OWNER="devlap-public-market-data"
+# Neutral, host-independent capability identity. The production_runtime_owner
+# host is assigned by explicit host selection, not encoded here. See
+# docs/ops/writer_capability_host_ownership_contract_v1.md.
+OWNER="${SYNTH_MARKET_CANDLE_WRITER_OWNER:-public-candle-freshness-writer}"
 ASSET_ARGS=("$@")
 started_epoch="$(date +%s)"
 

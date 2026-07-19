@@ -1,6 +1,9 @@
 [Unit]
-Description=Synth multi-interval candle freshness writer (devlap sole owner)
-Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/public_market_data_runtime_owners_v1.md
+Description=Synth multi-interval candle freshness writer (capability public-candle-freshness-writer)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/writer_capability_host_ownership_contract_v1.md
+# production_runtime_owner is UNASSIGNED until an explicit host selection.
+# User= and WorkingDirectory= below are a candidate host binding assigned at
+# cutover, not a canonical property of this capability.
 After=network-online.target
 Wants=network-online.target
 

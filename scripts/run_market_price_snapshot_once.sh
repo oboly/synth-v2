@@ -6,7 +6,10 @@ REPO_DIR="${SYNTH_REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 LOCK_FILE="${SYNTH_MARKET_PRICE_SNAPSHOT_LOCK:-/tmp/synth-market-price-snapshot-writer-v1.lock}"
 VENUE="${SYNTH_MARKET_PRICE_SNAPSHOT_VENUE:-bitvavo}"
 QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
-OWNER="devlap-public-market-data"
+# Neutral, host-independent capability identity. The production_runtime_owner
+# host is assigned by explicit host selection, not encoded here. See
+# docs/ops/writer_capability_host_ownership_contract_v1.md.
+OWNER="${SYNTH_MARKET_PRICE_WRITER_OWNER:-public-price-snapshot-writer}"
 started_epoch="$(date +%s)"
 
 echo "STARTED runner=run_market_price_snapshot_once owner=${OWNER} mode=public_market_data_write venue=${VENUE} quote=${QUOTE} worker_count=1 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -309,7 +309,11 @@ MVP cockpit render:
 
 4h market chain:
 
-- runtime host owner: devlap
+- runtime host owner: UNASSIGNED — the `native_short_4h_chain` capability is
+  evaluated separately from the light DB writers (CPU/repository/publication/
+  artifact dependencies) and not auto-moved with them; see
+  `docs/ops/writer_capability_host_ownership_contract_v1.md`. devlap is a
+  candidate/acceptance host only
 - timer cadence: 12 minutes after each 4h UTC candle close
 - service command: non-login `/bin/bash` with the absolute canonical
   `/home/gurk/projects/synth-v2/scripts/run_chain_4h.sh` path
@@ -368,8 +372,13 @@ Rules:
 - acquire lock before any write
 - fail closed if the lock cannot be acquired
 - logs must show skipped duplicate runs
-- devlap is the sole public market-data writer host; Odroid must not run candle,
-  public-price, Native SHORT, or Rotation Pressure writers
+- each public market-data writer capability has exactly one
+  `production_runtime_owner`, assigned by explicit host selection and recorded in
+  `deploy/ownership/writer_capability_ownership_v1.json` (UNASSIGNED until then;
+  see `docs/ops/writer_capability_host_ownership_contract_v1.md`). devlap is a
+  candidate/acceptance host, not the canonical sole owner. Consumers, reporting,
+  and account runtimes must not run candle, public-price, Native SHORT, or
+  Rotation Pressure writers regardless of which host owns them
 - manual runs must either use the same lock or be run only after stopping timers
 
 ## Environment

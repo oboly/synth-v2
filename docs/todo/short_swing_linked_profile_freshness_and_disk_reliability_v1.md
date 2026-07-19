@@ -10,11 +10,21 @@ This lane originated from the 2026-07-05 Odroid disk-exhaustion and stale-static
 
 ## 2026-07-18 public market-data ownership correction
 
-Repository target: devlap is the sole public market-data database writer;
 Odroid validates and consumes persisted public prices/candles and retains only
 account-refresh, account-snapshot persistence, reporting, and publication
 responsibilities. The linked-profile orchestrator therefore keeps its intended
 account/render ownership but loses its public-price writer stage.
+
+## 2026-07-19 host-ownership contract correction
+
+The earlier "devlap is the sole public market-data database writer" target is
+retired. Each writer capability has exactly one `production_runtime_owner`,
+assigned only by explicit host selection plus acceptance (`UNASSIGNED` until
+then; rotation-pressure excepted per recorded PR #100/#101 acceptance). devlap
+is a candidate/acceptance host and gurkDB a preferred candidate, not a proven
+owner. See `docs/ops/writer_capability_host_ownership_contract_v1.md` and
+`deploy/ownership/writer_capability_ownership_v1.json`. The Odroid
+consumer/publisher split above is unchanged.
 
 Host rollout remains open and must follow
 `docs/ops/public_market_data_runtime_owners_v1.md`. No deployment or renewed

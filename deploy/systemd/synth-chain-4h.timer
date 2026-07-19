@@ -4,7 +4,10 @@ Documentation=https://github.com/oboly/synth-v2/blob/main/docs/deployment/synth_
 Requires=synth-chain-4h.service
 
 [Timer]
-# The devlap candle writer runs first; this chain validates persisted 4h data read-only.
+# The public-candle-freshness-writer capability runs first; this chain validates
+# persisted 4h data read-only. Its production_runtime_owner host is UNASSIGNED
+# and evaluated separately — see
+# docs/ops/writer_capability_host_ownership_contract_v1.md.
 OnCalendar=*-*-* 00,04,08,12,16,20:12:00 UTC
 Persistent=true
 RandomizedDelaySec=120

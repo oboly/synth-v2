@@ -5,6 +5,29 @@
 Repository implementation only. No host deployment, timer activation, writer
 invocation, database mutation, or operational acceptance is claimed here.
 
+## Ownership-contract correction (superseding note)
+
+This document historically named `devlap` the *sole public market-data database
+writer host* as the target for every writer capability. That was derived from an
+acceptance/development placement, not from a separate infrastructure decision,
+and is corrected. Production ownership is now an explicit, per-capability,
+separately evidenced decision. The authoritative contract and machine-readable
+registry are:
+
+```text
+docs/ops/writer_capability_host_ownership_contract_v1.md
+deploy/ownership/writer_capability_ownership_v1.json
+```
+
+Under the corrected model `production_runtime_owner` is `UNASSIGNED` for the
+public price snapshot, candle freshness, and Native SHORT 4h chain capabilities;
+only `market_rotation_pressure` carries a recorded separate host-acceptance
+decision (devlap, PR #100/#101). Where the graphs below still read "devlap: sole
+public market-data database writer host," treat that as the retired claim: devlap
+is at most a *candidate/acceptance* host, and gurkDB is a *preferred candidate,
+not a proven owner*. The wrapper and unit contracts below remain valid as the
+capability definitions; only the implicit permanent host assignment is removed.
+
 ## Domain boundary
 
 Public market-data database writes are distinct from other persistence:
@@ -16,9 +39,10 @@ Public market-data database writes are distinct from other persistence:
 - website registration: identity/application persistence;
 - publication: HTML/JSON or static-file output from persisted state.
 
-Only the first category belongs to the devlap public market-data writer owner.
-Account snapshot persistence may remain on Odroid and does not make Odroid a
-public market-data owner.
+Only the first category belongs to the public market-data writer capabilities
+(neutral, host-independent owner identities; `production_runtime_owner` assigned
+by explicit host selection). Account snapshot persistence may remain on Odroid
+and does not make Odroid a public market-data owner.
 
 ## Ownership graph before this repository change
 
@@ -53,7 +77,8 @@ that host evidence.
 ## Target ownership graph
 
 ```text
-devlap: sole public market-data database writer host
+public market-data writer capabilities (production_runtime_owner UNASSIGNED;
+candidate/acceptance host only — NOT a canonical sole-host assignment)
   synth-market-price-snapshot-writer.timer
     -> scripts/run_market_price_snapshot_once.sh
     -> run_market_price_snapshot_v1 --write-db
@@ -121,9 +146,14 @@ timer-owned invocation path. Linked-profile and reporting owners consume that
 persisted snapshot and must not reconstruct or publish Native SHORT state.
 
 Both wrappers are market-only and account-agnostic. They use public exchange
-endpoints, name `devlap-public-market-data` as owner, record repository commit
-identity, and contain no reporting, broker, account, decision, planning,
-execution, SSH, or remote-host invocation.
+endpoints, name a neutral host-independent capability identity as owner
+(`public-price-snapshot-writer` / `public-candle-freshness-writer`, overridable
+via `SYNTH_MARKET_PRICE_WRITER_OWNER` / `SYNTH_MARKET_CANDLE_WRITER_OWNER`),
+record repository commit identity, and contain no reporting, broker, account,
+decision, planning, execution, SSH, or remote-host invocation. The
+`/var/lib/synth-runtime-backups/devlap-public-market-data-v1/` backup path
+referenced below is a historical devlap acceptance-host artifact path, not a
+canonical production-owner assignment.
 
 ## Odroid freshness contract
 
