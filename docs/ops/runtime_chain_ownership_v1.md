@@ -19,6 +19,10 @@ refresh.
 - native SHORT map evaluation, scope-status projection, and map-level status
   projection are owned by the existing devlap 4h market chain; no
   second native SHORT timer or dashboard-side writer is permitted
+- the devlap 4h chain reads persisted public prices and candles through
+  SELECT-only fail-closed validators before Native SHORT publication
+- the devlap 4h chain does not refresh public prices or candles and does not
+  render or remotely transport dashboard output
 - rotation-pressure persistence remains owned by its devlap writer; Odroid
   owns only the read-only publisher
 - `feat_candle` is owned by the feature chain
@@ -38,6 +42,7 @@ refresh.
 ## Disallowed Anti-Patterns
 
 - dashboard render triggers candle intake
+- dashboard or linked-profile render reconstructs or publishes Native SHORT
 - account/render orchestration writes public prices
 - a stale-data check starts a repair writer instead of failing closed
 - dashboard render recomputes `signal_state`

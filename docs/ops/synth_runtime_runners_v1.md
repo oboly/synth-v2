@@ -135,11 +135,14 @@ docs/ops/systemd/synth-paper-advice-lifecycle-refresh.service
 docs/ops/systemd/synth-paper-advice-lifecycle-refresh.timer
 docs/ops/systemd/synth-paper-advice-dashboard-render.service
 docs/ops/systemd/synth-paper-advice-dashboard-render.timer
-docs/ops/systemd/synth-4h-market-chain.service
-docs/ops/systemd/synth-4h-market-chain.timer
 ```
 
 These files are templates only. They are not installed, copied to `/etc/systemd/system`, enabled, or started by this repository lane.
+
+The legacy `docs/ops/systemd/synth-4h-market-chain.service` and `.timer` files
+are retained only as non-startable retirement stubs. They contain no chain
+invocation, calendar schedule, or install target. The sole canonical 4h owner
+is `deploy/systemd/synth-chain-4h.service` / `.timer` on devlap.
 
 The templates use Odroid-oriented defaults:
 
@@ -308,7 +311,14 @@ MVP cockpit render:
 
 - runtime host owner: devlap
 - timer cadence: 12 minutes after each 4h UTC candle close
-- service command: `scripts/run_chain_4h.sh`
+- service command: non-login `/bin/bash` with the absolute canonical
+  `/home/gurk/projects/synth-v2/scripts/run_chain_4h.sh` path
+- discards inherited repository and lock redirects, then holds the fixed
+  `/tmp/synth_chain_4h.lock` path for the complete outer process lifetime;
+  concurrent outer invocations fail closed with status 75
+- source identity is strict except when this chain explicitly allows exactly
+  `docs/todo/replay_parameter_study_harness_v1.md`; tracked changes, staged
+  changes, similar paths, and all additional untracked paths remain forbidden
 - after a SELECT-only check proves the expected 4h candle boundary was already
   persisted by the devlap candle writer, invokes the locked
   `scripts/run_native_short_scope_status_chain_once.sh` market-data writer;
@@ -601,7 +611,6 @@ Do not create these files in this lane. Intended future unit/timer names:
 - `synth-freshness-check.service` / `synth-freshness-check.timer`
 - `synth-paper-advice-dashboard-refresh.service` / `synth-paper-advice-dashboard-refresh.timer`
 - `synth-paper-advice-lifecycle-refresh.service` / `synth-paper-advice-lifecycle-refresh.timer`
-- `synth-4h-market-chain.service` / `synth-4h-market-chain.timer`
 - future `synth-market-trigger-engine.service`
 
 ## Market Trigger Engine Path

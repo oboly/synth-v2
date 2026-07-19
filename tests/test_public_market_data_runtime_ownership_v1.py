@@ -76,6 +76,37 @@ def test_devlap_candle_writer_has_one_owner_and_one_lock() -> None:
     assert "src.operations.run_persisted_market_candle_freshness_v1" in chain
 
 
+def test_4h_chain_consumes_both_persisted_public_feeds_without_writer_repair() -> None:
+    chain = _executable_text(CHAIN_WRAPPER)
+    price_validation = "src.operations.run_persisted_market_price_freshness_v1"
+    candle_validation = "src.operations.run_persisted_market_candle_freshness_v1"
+    native_short = "scripts/run_native_short_scope_status_chain_once.sh"
+    assert chain.index(price_validation) < chain.index(candle_validation) < chain.index(native_short)
+    for forbidden in (
+        "src.market_data.run_market_price_snapshot_v1",
+        "src.etl.bitvavo.run_candles_etl",
+        "refresh_public_prices",
+        "scripts/run_market_price_snapshot_once.sh",
+        "scripts/run_market_candle_freshness_once.sh",
+    ):
+        assert forbidden not in chain
+
+
+def test_4h_owner_graph_has_no_reporting_or_remote_transport() -> None:
+    service = _executable_text(Path("deploy/systemd/synth-chain-4h.service"))
+    chain = _executable_text(CHAIN_WRAPPER)
+    combined = f"{service}\n{chain}".lower()
+    for forbidden in (
+        "src.reporting",
+        "publish_paper_advice_dashboard_to_odroid",
+        "synth_paper_advice_dashboard",
+        "odroid",
+        "ssh",
+        "scp",
+    ):
+        assert forbidden not in combined
+
+
 def test_devlap_writer_contracts_have_no_cross_host_or_account_dependency() -> None:
     paths = (
         PRICE_WRAPPER,

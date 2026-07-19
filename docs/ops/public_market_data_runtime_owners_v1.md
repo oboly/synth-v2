@@ -61,8 +61,11 @@ devlap: sole public market-data database writer host
     -> scripts/run_market_candle_freshness_once.sh
     -> run_candles_etl for 15m/1h/4h/1d/1w
   synth-chain-4h.timer
+    -> SELECT-only persisted public-price freshness validation
     -> SELECT-only persisted 4h candle boundary validation
-    -> existing Native SHORT and later 4h market chain stages
+    -> canonical Native SHORT scope/map publication
+    -> canonical Native SHORT context snapshot publication
+    -> later 4h market-only chain stages
   synth-market-rotation-pressure-writer.timer
     -> existing rotation history/pressure writer
 
@@ -78,8 +81,9 @@ Odroid: persisted-state consumer and publisher
     -> persisted-state publication only
 ```
 
-There is no SSH orchestration, remote systemd dependency, or reporting-triggered
-repair path in either new writer contract.
+There is no SSH orchestration, remote systemd dependency, dashboard render, or
+reporting-triggered repair path in any devlap writer or the 4h chain. Reporting
+transport is a downstream, separately owned persisted-state consumer.
 
 ## Devlap writer contracts
 
@@ -104,11 +108,17 @@ cadence=minutes 02,17,32,47 UTC, up to 30 seconds randomized delay
 intervals=15m,1h,4h,1d,1w
 ```
 
-The candle timer is the only scheduled caller of canonical candle ETL. The 4h
-chain no longer refreshes candles; it fails closed unless the expected 4h close
-is already persisted, then continues with Native SHORT and later market-only
-stages. Its repository timer fires at minute 12 after each 4h close, after the
+The price and candle timers are the only canonical ingestion owners. The 4h
+chain invokes the canonical SELECT-only public-price validator first and the
+expected 4h candle-boundary validator second. Either failure stops the chain
+before all Native SHORT work. The chain does not attempt writer repair. Its
+repository timer fires at minute 12 after each 4h close, after the
 multi-interval writer's minute-02 cycle.
+
+The 4h chain is the sole canonical Native SHORT runtime publisher owner. It
+publishes scope/map state and the persisted context snapshot through one
+timer-owned invocation path. Linked-profile and reporting owners consume that
+persisted snapshot and must not reconstruct or publish Native SHORT state.
 
 Both wrappers are market-only and account-agnostic. They use public exchange
 endpoints, name `devlap-public-market-data` as owner, record repository commit
@@ -157,17 +167,19 @@ These remain account-domain questions and are not folded into this change:
 
 No command in this section was executed by the repository change.
 
-1. Deploy the accepted repository commit without enabling new units.
-2. Install and manually validate the devlap public-price writer.
-3. Install and manually validate the devlap candle writer.
-4. Prove persisted price and candle freshness from SELECT-only evidence, then
-   install the updated minute-12 4h-chain timer definition without manually
+1. Merge the accepted 4h boundary correction.
+2. Deploy its exact accepted commit without enabling the 4h timer.
+3. Confirm the separately owned devlap public-price writer is active and fresh.
+4. Confirm the separately owned devlap candle writer is active and fresh.
+5. Prove persisted price and candle freshness from SELECT-only evidence, then
+   install the updated 4h-chain service and timer definitions without manually
    invoking the chain.
-5. Deploy the Odroid linked-profile SELECT-only validation path.
-6. Verify account refresh and all persisted-snapshot render stages.
-7. Confirm the Odroid public market-data writer count is zero.
-8. Only then repeat Native SHORT writer-provenance operational acceptance.
-9. Amend or replace PR #118 evidence after the successful repeat acceptance.
+6. Confirm downstream reporting and linked-profile paths remain consumers.
+7. Only after an explicit activation authorization, enable the 4h timer.
+8. Observe a natural scheduled cycle and repeat Native SHORT runtime acceptance.
+
+Timer activation remains blocked during repository review and until the
+post-merge host preflight passes.
 
 Repository-backed installation candidates, to be executed only in a separately
 authorized host rollout:

@@ -8,15 +8,16 @@ Wants=network-online.target
 Type=oneshot
 User=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
-ExecStart=/bin/bash -lc 'source venv/bin/activate && bash scripts/run_chain_4h.sh'
+ExecStart=/bin/bash /home/gurk/projects/synth-v2/scripts/run_chain_4h.sh
 Restart=no
 Nice=5
 
+Environment=SYNTH_REPO_DIR=/home/gurk/projects/synth-v2
+Environment=SYNTH_CHAIN_4H_LOCKED=0
+Environment=SYNTH_CHAIN_4H_LOCK_FILE=/tmp/synth_chain_4h.lock
 Environment=SYNTH_EXECUTION_MODE=paper
 Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
 Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
-Environment=SYNTH_PAPER_ADVICE_DASHBOARD_REMOTE_HOST=odroid
-Environment=SYNTH_PAPER_ADVICE_DASHBOARD_REMOTE_PATH=/var/www/html/synth/paper-advice.html
 
 StandardOutput=journal
 StandardError=journal

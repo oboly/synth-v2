@@ -6,16 +6,23 @@ if [ -z "${BASH_VERSION:-}" ]; then
     exec bash "$0" "$@"
 fi
 
-# Prevent overlapping 4h chain runs.
-# This protects DB writes and avoids duplicate/competing pipeline snapshots.
-if [ "${SYNTH_CHAIN_4H_LOCKED:-0}" != "1" ]; then
-    exec env SYNTH_CHAIN_4H_LOCKED=1 flock -n /tmp/synth_chain_4h.lock bash "$0" "$@"
-fi
-
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="${SYNTH_REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
+unset SYNTH_REPO_DIR
+unset SYNTH_CHAIN_4H_LOCKED
+unset SYNTH_CHAIN_4H_LOCK_FILE
+REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CHAIN_4H_LOCK_FILE="/tmp/synth_chain_4h.lock"
+CONTROLLED_UNTRACKED_PATH="docs/todo/replay_parameter_study_harness_v1.md"
+
+# Hold the outer overlap lock in this process for the complete chain. An
+# inherited environment marker can neither skip nor impersonate this lock.
+exec 8>"${CHAIN_4H_LOCK_FILE}"
+if ! flock -n 8; then
+    echo "[CHAIN][4h][FAIL] rc=75 reason=LOCK_HELD lock_file=${CHAIN_4H_LOCK_FILE}"
+    exit 75
+fi
 
 cd "${REPO_DIR}" || exit 1
 source scripts/synth_maintenance_guard.sh
@@ -53,15 +60,22 @@ run_step() {
 
 NATIVE_SHORT_REPOSITORY_COMMIT="$(git rev-parse --verify HEAD)" || exit 2
 run_step python -m src.market_data.native_short_repository_source_identity_v1 \
-    --repository-commit "${NATIVE_SHORT_REPOSITORY_COMMIT}"
+    --repository-commit "${NATIVE_SHORT_REPOSITORY_COMMIT}" \
+    --allowed-untracked-path "${CONTROLLED_UNTRACKED_PATH}"
 
 CHAIN_4H_END_TS="$(
     python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); h=(n.hour//4)*4; print(n.replace(hour=h, minute=0, second=0, microsecond=0).isoformat())'
 )"
 
 echo "[CHAIN][4h] START $(date -u +%F' '%T) UTC"
+echo "[CHAIN][4h] persisted public-price freshness gate venue=bitvavo quote=EUR"
 echo "[CHAIN][4h] persisted candle boundary=${CHAIN_4H_END_TS}"
 echo "[CHAIN][4h] feature window lookback_hours=720 warmup_bars=300"
+
+run_step python -m src.operations.run_persisted_market_price_freshness_v1 \
+    --venue bitvavo \
+    --quote EUR \
+    --output table
 
 run_step python -m src.operations.run_persisted_market_candle_freshness_v1 \
     --venue bitvavo \
@@ -72,7 +86,8 @@ run_step env \
     SYNTH_NATIVE_SHORT_REPOSITORY_COMMIT="${NATIVE_SHORT_REPOSITORY_COMMIT}" \
     SYNTH_NATIVE_SHORT_WRITER_ENTRYPOINT="scripts/run_chain_4h.sh" \
     SYNTH_NATIVE_SHORT_TRIGGER_REF="scripts/run_chain_4h.sh" \
-    bash scripts/run_native_short_scope_status_chain_once.sh
+    bash scripts/run_native_short_scope_status_chain_once.sh \
+    --allowed-untracked-path "${CONTROLLED_UNTRACKED_PATH}"
 
 run_step python -m src.market_data.run_native_short_fib_context_snapshot_v1 \
     --publish \
@@ -117,25 +132,9 @@ run_step python -m src.advice.run_paper_advice_policy_v1 \
   --write-db \
   --output table
 
-if [[ -n "${SYNTH_PAPER_ADVICE_DASHBOARD_HTML:-}" ]]; then
-    DASHBOARD_LIFECYCLE_INTERVAL="${SYNTH_PAPER_ADVICE_LIFECYCLE_INTERVAL:-15m}"
-
-    run_step python -m src.reporting.run_paper_advice_static_dashboard_v1 \
-      --venue bitvavo \
-      --interval 4h \
-      --lifecycle-candle-interval "${DASHBOARD_LIFECYCLE_INTERVAL}" \
-      --output-html "$SYNTH_PAPER_ADVICE_DASHBOARD_HTML" \
-      --output table
-fi
-
 run_step python -m src.strategy_runtime.run_strategy_runtime_snapshot \
     --interval 4h \
     --chain-name run_chain_4h \
     --notes "successful market-only chain run; decision/execution disabled"
-
-
-if [[ -n "${SYNTH_PAPER_ADVICE_DASHBOARD_REMOTE_HOST:-}" ]]; then
-    run_step scripts/publish_paper_advice_dashboard_to_odroid.sh
-fi
 
 echo "[CHAIN][4h] DONE  $(date -u +%F' '%T) UTC"
