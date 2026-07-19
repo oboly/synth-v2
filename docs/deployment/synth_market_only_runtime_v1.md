@@ -28,6 +28,9 @@ decision gate, or touch the execution planner or executor.
 | `SYNTH_EXECUTION_MODE` | `paper` |
 | `SYNTH_LIVE_EXECUTION_PERMISSION` | `NOT_GRANTED` |
 | `SYNTH_BROKER_WRITE_PERMISSION` | `NOT_GRANTED` |
+| `SYNTH_REPO_DIR` | `/home/gurk/projects/synth-v2` |
+| `SYNTH_CHAIN_4H_LOCKED` | `0` (inherited bypass state is discarded) |
+| `SYNTH_CHAIN_4H_LOCK_FILE` | `/tmp/synth_chain_4h.lock` |
 
 No live trading. No broker writes. No order submission. No decision_gate activation. No execution_planner activation. No executor activation.
 
@@ -70,6 +73,20 @@ default. Lock contention and materializer failure are fail-fast and therefore
 fail the owning 4h chain visibly. Runtime scope defaults to the exact current
 `SUPPORTED` rows in `native_short_map_scope_v1` for
 `bitvavo/EUR/SHORT/4h/1h`; it does not expand to every enabled asset.
+
+The system service invokes the repository script through non-login
+`/bin/bash`, with a fixed working directory and absolute script path. The
+script derives its repository root from its own path, discards inherited
+repository and lock values, and holds file descriptor 8 on the fixed
+`/tmp/synth_chain_4h.lock` path for its full lifetime. A second outer chain
+invocation exits with status 75; child stages run only while that outer process
+owns the lock.
+
+Production source identity remains strict by default. This chain alone passes
+one exact controlled-untracked exception:
+`docs/todo/replay_parameter_study_harness_v1.md`. Tracked or staged changes,
+any other untracked path, a similar path, or more than that one exact path fail
+closed before freshness validation or publication.
 
 Bounded BTC verification remains available without changing scheduler scope:
 
@@ -155,6 +172,9 @@ systemd-analyze verify \
   deploy/systemd/synth-chain-4h.service \
   deploy/systemd/synth-chain-4h.timer
 grep -n 'run_persisted_market_.*freshness_v1' scripts/run_chain_4h.sh
+python -m src.market_data.native_short_repository_source_identity_v1 \
+  --repository-commit "$(git rev-parse --verify HEAD)" \
+  --allowed-untracked-path docs/todo/replay_parameter_study_harness_v1.md
 ```
 
 Do not manually start `synth-chain-4h.service` or invoke `run_chain_4h.sh` to

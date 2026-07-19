@@ -180,6 +180,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--repository-commit", required=True, type=_required_text)
     parser.add_argument("--trigger-type", required=True, type=_required_text)
     parser.add_argument("--trigger-ref", required=True, type=_required_text)
+    parser.add_argument("--allowed-untracked-path")
     parser.add_argument("--output", choices=("jsonl", "summary"), default="summary")
     return parser.parse_args(argv)
 
@@ -609,6 +610,7 @@ def main(
             repository_commit_sha=args.repository_commit,
             trigger_type=args.trigger_type,
             trigger_ref=args.trigger_ref,
+            allowed_untracked_path=args.allowed_untracked_path,
             inspect_repository_source=inspect_repository_source,
         )
     except NativeShortWriterProvenanceError as exc:

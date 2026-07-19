@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -28,13 +29,39 @@ def _run_with_blocked_validator(
     tmp_path: Path,
     blocked_module: str,
 ) -> tuple[subprocess.CompletedProcess[str], list[str]]:
+    fake_chain, fake_repo, env, call_log = _prepare_fake_chain(tmp_path)
+    env["CHAIN_BLOCK_MODULE"] = blocked_module
+    result = subprocess.run(
+        ["bash", str(fake_chain)],
+        cwd=fake_repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    return result, calls
+
+
+def _prepare_fake_chain(
+    tmp_path: Path,
+) -> tuple[Path, Path, dict[str, str], Path]:
     fake_repo = tmp_path / "repo"
     fake_bin = tmp_path / "bin"
     call_log = tmp_path / "calls.log"
+    fake_chain = fake_repo / "scripts/run_chain_4h.sh"
+    chain_source = CHAIN.read_text(encoding="utf-8").replace(
+        'CHAIN_4H_LOCK_FILE="/tmp/synth_chain_4h.lock"',
+        f'CHAIN_4H_LOCK_FILE="{tmp_path / "chain-4h.lock"}"',
+    )
+    _write(fake_chain, chain_source, executable=True)
     _write(fake_repo / "scripts/synth_maintenance_guard.sh", "")
     _write(
         fake_repo / "scripts/run_native_short_scope_status_chain_once.sh",
-        '#!/usr/bin/env bash\necho "native_scope_runner" >> "$CHAIN_CALL_LOG"\n',
+        """#!/usr/bin/env bash
+echo "native_scope_runner" >> "$CHAIN_CALL_LOG"
+printf '%s\n' "$*" > "$CHAIN_NATIVE_ARGS_LOG"
+""",
         executable=True,
     )
     _write(
@@ -59,6 +86,12 @@ fi
 if [[ "${1:-}" == "-m" ]]; then
     module="${2:-}"
     echo "${module}" >> "${CHAIN_CALL_LOG}"
+    if [[ -n "${CHAIN_HOLD_MODULE:-}" && "${module}" == "${CHAIN_HOLD_MODULE}" ]]; then
+        : > "${CHAIN_HOLD_READY}"
+        while [[ ! -e "${CHAIN_HOLD_RELEASE}" ]]; do
+            sleep 0.02
+        done
+    fi
     if [[ "${module}" == "${CHAIN_BLOCK_MODULE}" ]]; then
         echo "validation_result=BLOCKED freshness_classification=STALE snapshot_row_count=0 database_writes=0"
         exit 37
@@ -71,24 +104,22 @@ exit 0
     env = os.environ.copy()
     env.update(
         {
-            "CHAIN_BLOCK_MODULE": blocked_module,
+            "CHAIN_BLOCK_MODULE": "",
             "CHAIN_CALL_LOG": str(call_log),
             "CHAIN_FAKE_BIN": str(fake_bin),
+            "CHAIN_HOLD_MODULE": "",
+            "CHAIN_HOLD_READY": str(tmp_path / "hold.ready"),
+            "CHAIN_HOLD_RELEASE": str(tmp_path / "hold.release"),
+            "CHAIN_NATIVE_ARGS_LOG": str(tmp_path / "native-args.log"),
             "SYNTH_CHAIN_4H_LOCKED": "1",
+            "SYNTH_CHAIN_4H_LOCK_FILE": str(
+                tmp_path / "inherited-lock-redirect-must-not-be-used"
+            ),
             "SYNTH_MAINTENANCE_LOCK": str(tmp_path / "no-maintenance-lock"),
-            "SYNTH_REPO_DIR": str(fake_repo),
+            "SYNTH_REPO_DIR": str(tmp_path / "inherited-redirect-must-not-be-used"),
         }
     )
-    result = subprocess.run(
-        ["bash", str(CHAIN)],
-        cwd=ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    calls = call_log.read_text(encoding="utf-8").splitlines()
-    return result, calls
+    return fake_chain, fake_repo, env, call_log
 
 
 @pytest.mark.parametrize(
@@ -120,6 +151,79 @@ def test_freshness_block_stops_before_all_native_short_publication(
     assert "database_writes=0" in result.stdout
 
 
+def test_inherited_repository_and_lock_guard_cannot_redirect_or_bypass_chain(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run_with_blocked_validator(tmp_path, PRICE_VALIDATOR)
+
+    assert result.returncode == 37
+    assert calls == [
+        "src.market_data.native_short_repository_source_identity_v1",
+        PRICE_VALIDATOR,
+    ]
+    assert "inherited-redirect-must-not-be-used" not in result.stderr
+
+
+def test_outer_lock_rejects_concurrent_invocation_and_keeps_nested_stages_working(
+    tmp_path: Path,
+) -> None:
+    fake_chain, fake_repo, env, call_log = _prepare_fake_chain(tmp_path)
+    ready = Path(env["CHAIN_HOLD_READY"])
+    release = Path(env["CHAIN_HOLD_RELEASE"])
+    env["CHAIN_HOLD_MODULE"] = (
+        "src.market_data.native_short_repository_source_identity_v1"
+    )
+    first = subprocess.Popen(
+        ["bash", str(fake_chain)],
+        cwd=fake_repo,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    first_stdout = ""
+    first_stderr = ""
+    try:
+        deadline = time.monotonic() + 5
+        while (
+            not ready.exists()
+            and first.poll() is None
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+        assert ready.exists(), (
+            "first chain did not acquire the lock and reach its hold point"
+        )
+
+        second = subprocess.run(
+            ["bash", str(fake_chain)],
+            cwd=fake_repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert second.returncode == 75
+        assert "reason=LOCK_HELD" in second.stdout
+    finally:
+        release.touch()
+        try:
+            first_stdout, first_stderr = first.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            first.kill()
+            first_stdout, first_stderr = first.communicate(timeout=5)
+    assert first.returncode == 0, first_stdout + first_stderr
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    assert calls.count("src.market_data.native_short_repository_source_identity_v1") == 1
+    assert calls.count("native_scope_runner") == 1
+    assert calls.count(NATIVE_SNAPSHOT_RUNNER) == 1
+    native_args = Path(env["CHAIN_NATIVE_ARGS_LOG"]).read_text(encoding="utf-8")
+    assert (
+        "--allowed-untracked-path "
+        "docs/todo/replay_parameter_study_harness_v1.md"
+    ) in native_args
+
+
 def test_exactly_one_canonical_native_short_owner_path() -> None:
     chain = CHAIN.read_text(encoding="utf-8")
     service = SERVICE.read_text(encoding="utf-8")
@@ -144,6 +248,32 @@ def test_exactly_one_canonical_native_short_owner_path() -> None:
     ):
         assert writer_unit not in service
         assert writer_unit not in timer
+
+
+def test_canonical_service_pins_non_login_environment_and_outer_lock() -> None:
+    chain = CHAIN.read_text(encoding="utf-8")
+    service = SERVICE.read_text(encoding="utf-8")
+
+    assert "ExecStart=/bin/bash -lc" not in service
+    assert (
+        "ExecStart=/bin/bash /home/gurk/projects/synth-v2/scripts/run_chain_4h.sh"
+        in service
+    )
+    assert "WorkingDirectory=/home/gurk/projects/synth-v2" in service
+    assert "Environment=SYNTH_REPO_DIR=/home/gurk/projects/synth-v2" in service
+    assert "Environment=SYNTH_CHAIN_4H_LOCKED=0" in service
+    assert "Environment=SYNTH_CHAIN_4H_LOCK_FILE=/tmp/synth_chain_4h.lock" in service
+    assert "unset SYNTH_REPO_DIR" in chain
+    assert "unset SYNTH_CHAIN_4H_LOCKED" in chain
+    assert "unset SYNTH_CHAIN_4H_LOCK_FILE" in chain
+    assert 'CHAIN_4H_LOCK_FILE="/tmp/synth_chain_4h.lock"' in chain
+    assert "${SYNTH_REPO_DIR" not in chain
+    assert "${SYNTH_CHAIN_4H_LOCK_FILE" not in chain
+    assert "flock -n 8" in chain
+    assert "reason=LOCK_HELD" in chain
+    assert 'if [ "${SYNTH_CHAIN_4H_LOCKED:-0}" != "1" ]' not in chain
+    assert chain.count("--allowed-untracked-path") == 2
+    assert "docs/todo/replay_parameter_study_harness_v1.md" in chain
 
 
 def test_legacy_4h_unit_templates_are_inert_retirement_stubs() -> None:

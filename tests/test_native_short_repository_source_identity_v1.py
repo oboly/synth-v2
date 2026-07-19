@@ -1,16 +1,21 @@
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from typing import Any, Callable
 
 import pytest
 
+from src.market_data import native_short_repository_source_identity_v1 as source_identity
 from src.market_data import run_native_short_map_level_status_materializer_v1 as level_runner
 from src.market_data import run_native_short_map_materializer_v1 as map_runner
 from src.market_data import run_native_short_map_scope_seed_canary_v1 as seed_runner
 from src.market_data import run_native_short_scope_status_chain_v1 as chain_runner
 from src.market_data.native_short_repository_source_identity_v1 import (
+    CONTROLLED_CHAIN_4H_UNTRACKED_PATH,
     NativeShortRepositorySourceIdentityError,
     NativeShortRepositorySourceState,
+    verify_repository_commit_sha,
     verify_native_short_repository_source_identity,
 )
 from src.market_data.native_short_writer_provenance_v1 import (
@@ -28,6 +33,41 @@ _CLEAN_SOURCE = NativeShortRepositorySourceState(
     head_sha=_COMMIT_SHA,
     status_porcelain="",
 )
+
+
+def _run_git(repository: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repository), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def _temporary_git_repository(tmp_path: Path) -> tuple[Path, str]:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _run_git(repository, "init", "--quiet")
+    _run_git(repository, "config", "user.name", "Synth Test")
+    _run_git(repository, "config", "user.email", "synth-test@example.invalid")
+    (repository / "tracked.txt").write_text("original\n", encoding="utf-8")
+    _run_git(repository, "add", "tracked.txt")
+    _run_git(repository, "commit", "--quiet", "-m", "initial")
+    return repository, _run_git(repository, "rev-parse", "HEAD")
+
+
+def _use_repository(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: Path,
+) -> None:
+    monkeypatch.setattr(source_identity, "REPOSITORY_ROOT", repository)
+
+
+def _write_controlled_todo(repository: Path) -> None:
+    todo = repository / CONTROLLED_CHAIN_4H_UNTRACKED_PATH
+    todo.parent.mkdir(parents=True, exist_ok=True)
+    todo.write_text("preserved local TODO\n", encoding="utf-8")
 
 
 def _manual_provenance() -> NativeShortWriterProvenance:
@@ -132,6 +172,154 @@ def test_test_mode_does_not_require_git_checkout() -> None:
         provenance,
         inspect_repository_source=forbidden,
     ) is provenance
+
+
+def test_real_clean_temporary_git_checkout_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, head_sha = _temporary_git_repository(tmp_path)
+    _use_repository(monkeypatch, repository)
+
+    state = verify_repository_commit_sha(head_sha)
+
+    assert state.head_sha == head_sha
+    assert state.status_porcelain == ""
+
+
+def test_real_checkout_allows_only_explicit_controlled_todo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, head_sha = _temporary_git_repository(tmp_path)
+    _write_controlled_todo(repository)
+    _use_repository(monkeypatch, repository)
+
+    state = verify_repository_commit_sha(
+        head_sha,
+        allowed_untracked_path=CONTROLLED_CHAIN_4H_UNTRACKED_PATH,
+    )
+
+    assert state.status_porcelain == f"?? {CONTROLLED_CHAIN_4H_UNTRACKED_PATH}"
+
+
+def test_real_checkout_with_controlled_todo_remains_strict_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, head_sha = _temporary_git_repository(tmp_path)
+    _write_controlled_todo(repository)
+    _use_repository(monkeypatch, repository)
+
+    with pytest.raises(
+        NativeShortRepositorySourceIdentityError,
+        match="staged=0 unstaged=0 untracked=1",
+    ):
+        verify_repository_commit_sha(head_sha)
+
+
+def test_real_checkout_rejects_controlled_todo_plus_another_untracked_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, head_sha = _temporary_git_repository(tmp_path)
+    _write_controlled_todo(repository)
+    (repository / "unexpected.txt").write_text("unexpected\n", encoding="utf-8")
+    _use_repository(monkeypatch, repository)
+
+    with pytest.raises(
+        NativeShortRepositorySourceIdentityError,
+        match="staged=0 unstaged=0 untracked=1",
+    ):
+        verify_repository_commit_sha(
+            head_sha,
+            allowed_untracked_path=CONTROLLED_CHAIN_4H_UNTRACKED_PATH,
+        )
+
+
+def test_real_checkout_rejects_similar_untracked_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, head_sha = _temporary_git_repository(tmp_path)
+    similar = repository / "docs/todo/replay_parameter_study_harness_v1.md.extra"
+    similar.parent.mkdir(parents=True, exist_ok=True)
+    similar.write_text("not controlled\n", encoding="utf-8")
+    _use_repository(monkeypatch, repository)
+
+    with pytest.raises(
+        NativeShortRepositorySourceIdentityError,
+        match="staged=0 unstaged=0 untracked=1",
+    ):
+        verify_repository_commit_sha(
+            head_sha,
+            allowed_untracked_path=CONTROLLED_CHAIN_4H_UNTRACKED_PATH,
+        )
+
+
+def test_real_checkout_rejects_tracked_modification_with_controlled_allowance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, head_sha = _temporary_git_repository(tmp_path)
+    (repository / "tracked.txt").write_text("modified\n", encoding="utf-8")
+    _use_repository(monkeypatch, repository)
+
+    with pytest.raises(
+        NativeShortRepositorySourceIdentityError,
+        match="staged=0 unstaged=1 untracked=0",
+    ):
+        verify_repository_commit_sha(
+            head_sha,
+            allowed_untracked_path=CONTROLLED_CHAIN_4H_UNTRACKED_PATH,
+        )
+
+
+def test_real_checkout_rejects_staged_modification_with_controlled_allowance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, head_sha = _temporary_git_repository(tmp_path)
+    (repository / "tracked.txt").write_text("staged\n", encoding="utf-8")
+    _run_git(repository, "add", "tracked.txt")
+    _use_repository(monkeypatch, repository)
+
+    with pytest.raises(
+        NativeShortRepositorySourceIdentityError,
+        match="staged=1 unstaged=0 untracked=0",
+    ):
+        verify_repository_commit_sha(
+            head_sha,
+            allowed_untracked_path=CONTROLLED_CHAIN_4H_UNTRACKED_PATH,
+        )
+
+
+@pytest.mark.parametrize(
+    "attempted_path",
+    (
+        "../docs/todo/replay_parameter_study_harness_v1.md",
+        "docs/todo",
+        "docs/todo/",
+        "docs/todo/*.md",
+        "/home/gurk/projects/synth-v2/docs/todo/replay_parameter_study_harness_v1.md",
+    ),
+)
+def test_real_checkout_rejects_noncanonical_exception_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attempted_path: str,
+) -> None:
+    repository, head_sha = _temporary_git_repository(tmp_path)
+    _use_repository(monkeypatch, repository)
+
+    with pytest.raises(
+        NativeShortRepositorySourceIdentityError,
+        match="CONTROLLED_UNTRACKED_PATH_NOT_ALLOWED",
+    ):
+        verify_repository_commit_sha(
+            head_sha,
+            allowed_untracked_path=attempted_path,
+        )
 
 
 @pytest.mark.parametrize(

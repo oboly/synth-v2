@@ -311,7 +311,14 @@ MVP cockpit render:
 
 - runtime host owner: devlap
 - timer cadence: 12 minutes after each 4h UTC candle close
-- service command: `scripts/run_chain_4h.sh`
+- service command: non-login `/bin/bash` with the absolute canonical
+  `/home/gurk/projects/synth-v2/scripts/run_chain_4h.sh` path
+- discards inherited repository and lock redirects, then holds the fixed
+  `/tmp/synth_chain_4h.lock` path for the complete outer process lifetime;
+  concurrent outer invocations fail closed with status 75
+- source identity is strict except when this chain explicitly allows exactly
+  `docs/todo/replay_parameter_study_harness_v1.md`; tracked changes, staged
+  changes, similar paths, and all additional untracked paths remain forbidden
 - after a SELECT-only check proves the expected 4h candle boundary was already
   persisted by the devlap candle writer, invokes the locked
   `scripts/run_native_short_scope_status_chain_once.sh` market-data writer;

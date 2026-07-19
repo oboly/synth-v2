@@ -20,6 +20,9 @@ from src.market_data.native_short_writer_provenance_v1 import (
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+CONTROLLED_CHAIN_4H_UNTRACKED_PATH = (
+    "docs/todo/replay_parameter_study_harness_v1.md"
+)
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -78,14 +81,35 @@ def inspect_running_repository_source() -> NativeShortRepositorySourceState:
     )
 
 
-def _dirty_counts(status_porcelain: str) -> tuple[int, int, int]:
+def _validate_allowed_untracked_path(
+    allowed_untracked_path: str | None,
+) -> str | None:
+    if allowed_untracked_path is None:
+        return None
+    if allowed_untracked_path != CONTROLLED_CHAIN_4H_UNTRACKED_PATH:
+        raise NativeShortRepositorySourceIdentityError(
+            "CONTROLLED_UNTRACKED_PATH_NOT_ALLOWED"
+        )
+    return allowed_untracked_path
+
+
+def _dirty_counts(
+    status_porcelain: str,
+    *,
+    allowed_untracked_path: str | None = None,
+) -> tuple[int, int, int]:
     staged = 0
     unstaged = 0
     untracked = 0
+    allowed_untracked_line = (
+        f"?? {allowed_untracked_path}" if allowed_untracked_path is not None else None
+    )
     for line in status_porcelain.splitlines():
         if not line:
             continue
         if line.startswith("??"):
+            if line == allowed_untracked_line:
+                continue
             untracked += 1
             continue
         if len(line) < 2:
@@ -101,11 +125,13 @@ def _dirty_counts(status_porcelain: str) -> tuple[int, int, int]:
 def verify_native_short_repository_source_identity(
     provenance: NativeShortWriterProvenance,
     *,
+    allowed_untracked_path: str | None = None,
     inspect_repository_source: NativeShortRepositorySourceInspector = (
         inspect_running_repository_source
     ),
 ) -> NativeShortWriterProvenance:
     """Verify exact production source without requiring Git for TEST provenance."""
+    allowed_untracked_path = _validate_allowed_untracked_path(allowed_untracked_path)
     validate_native_short_writer_provenance(provenance)
     mode = NativeShortWriterExecutionMode(str(provenance.execution_mode))
     if mode == NativeShortWriterExecutionMode.TEST:
@@ -113,6 +139,7 @@ def verify_native_short_repository_source_identity(
 
     verify_repository_commit_sha(
         provenance.repository_commit_sha,
+        allowed_untracked_path=allowed_untracked_path,
         inspect_repository_source=inspect_repository_source,
     )
     return provenance
@@ -121,10 +148,12 @@ def verify_native_short_repository_source_identity(
 def verify_repository_commit_sha(
     repository_commit_sha: str,
     *,
+    allowed_untracked_path: str | None = None,
     inspect_repository_source: NativeShortRepositorySourceInspector = (
         inspect_running_repository_source
     ),
 ) -> NativeShortRepositorySourceState:
+    allowed_untracked_path = _validate_allowed_untracked_path(allowed_untracked_path)
     if _SHA_PATTERN.fullmatch(repository_commit_sha) is None:
         raise NativeShortRepositorySourceIdentityError(
             "REPOSITORY_COMMIT_SHA_INVALID"
@@ -148,7 +177,10 @@ def verify_repository_commit_sha(
             "REPOSITORY_COMMIT_MISMATCH"
         )
 
-    staged, unstaged, untracked = _dirty_counts(state.status_porcelain)
+    staged, unstaged, untracked = _dirty_counts(
+        state.status_porcelain,
+        allowed_untracked_path=allowed_untracked_path,
+    )
     if staged or unstaged or untracked:
         raise NativeShortRepositorySourceIdentityError(
             "REPOSITORY_CHECKOUT_DIRTY "
@@ -167,6 +199,7 @@ def build_verified_process_provenance(
     trigger_type: str,
     trigger_ref: str,
     invocation_uuid: str | None = None,
+    allowed_untracked_path: str | None = None,
     inspect_repository_source: NativeShortRepositorySourceInspector = (
         inspect_running_repository_source
     ),
@@ -183,6 +216,7 @@ def build_verified_process_provenance(
     )
     return verify_native_short_repository_source_identity(
         provenance,
+        allowed_untracked_path=allowed_untracked_path,
         inspect_repository_source=inspect_repository_source,
     )
 
@@ -192,9 +226,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         description="Verify exact clean repository source identity before writer execution."
     )
     parser.add_argument("--repository-commit", required=True)
+    parser.add_argument("--allowed-untracked-path")
     args = parser.parse_args(argv)
     try:
-        verify_repository_commit_sha(args.repository_commit)
+        verify_repository_commit_sha(
+            args.repository_commit,
+            allowed_untracked_path=args.allowed_untracked_path,
+        )
     except NativeShortRepositorySourceIdentityError as exc:
         print(f"INVALID_REPOSITORY_SOURCE detail={exc}", file=sys.stderr, flush=True)
         return 2
