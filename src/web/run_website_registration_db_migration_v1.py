@@ -13,6 +13,7 @@ MIGRATION_CHAIN = [
     Path("db/migrations/20260607_app_profile_trading_account_link_v1.sql"),
     Path("db/migrations/20260609_trading_account_credential_v1.sql"),
     Path("db/migrations/20260609_trading_account_credential_add_valid_private_read.sql"),
+    Path("db/migrations/20260721_account_credential_binding_contract_v1.sql"),
 ]
 
 

@@ -37,26 +37,30 @@ Credentials live outside the repo and outside webroot.
 
 ## Credentials
 
-Credentials are never stored in the DB, the repo, or webroot.
+Canonical contract: `docs/architecture/account_credential_binding_contract_v1.md`.
 
-Each profile has a credential file at:
+Account selection does not imply credential selection. Wallet refresh must first
+resolve the exact linked `trading_account_id`, then resolve exactly one active
+credential profile by:
 
-```
-${SYNTH_ACCOUNT_ENV_DIR:-~/.config/synth/accounts}/<profile>.env
-```
-
-Odroid examples still use:
-
-```
-/home/theone/.config/synth/accounts/<profile>.env
+```text
+trading_account_id + venue + READ_ONLY_PRIVATE
 ```
 
-Required keys in the file:
+Canonical production credential source:
 
+```text
+db_encrypted
 ```
-BITVAVO_API_KEY=<key>
-BITVAVO_API_SECRET=<secret>
+
+Legacy profile environment credentials may be represented only as:
+
+```text
+legacy_profile_env_deprecated
 ```
+
+That state is explicit migration-only. It must never be a default, implicit
+fallback, or repository-global `.env` fallback.
 
 Profile slug rules:
 - must match `[a-z0-9][a-z0-9_-]{0,62}`
@@ -71,8 +75,8 @@ app user/profile
 → venue
 
 trading_account
-→ max one active READ credential
-→ max one active WRITE credential
+→ max one active READ_ONLY_PRIVATE credential per venue
+→ max one active TRADE_EXECUTION credential per venue
 ```
 
 Notes:
@@ -84,10 +88,8 @@ Notes:
 - executor-only write actions would use the trading account's active WRITE credential
 - dashboard/reporting code reads DB snapshots only
 
-The `credential_ref` concept (future):
-- DB may store only `credential_ref = "local_env:joost"` — a pointer
-- Never store the key or secret value in DB or logs
-- Secrets are never printed, never written to HTML/JSON output
+Private clients require an explicit resolved credential profile. Repository
+global `.env` credentials are not a valid multi-account binding.
 
 ## What it writes
 
@@ -121,7 +123,7 @@ Dry-run:
 SYNTH_BROKER_PRIVATE_READ_PERMISSION=I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA \
 python -m src.account.run_account_wallet_refresh_v1 \
   --account-profile joost \
-  --account-env-dir /home/theone/.config/synth/accounts \
+  --credential-source db \
   --venue bitvavo \
   --output summary
 ```
@@ -132,7 +134,7 @@ Write mode:
 SYNTH_BROKER_PRIVATE_READ_PERMISSION=I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA \
 python -m src.account.run_account_wallet_refresh_v1 \
   --account-profile hugo \
-  --account-env-dir /home/theone/.config/synth/accounts \
+  --credential-source db \
   --venue bitvavo \
   --write-db \
   --output summary
@@ -147,14 +149,16 @@ swapping the SQL path as needed:
 ```text
 db/migrations/20260603_multi_account_asset_foundation_v1.sql
 db/migrations/20260603_account_open_order_snapshot_v1.sql
+db/migrations/20260721_account_credential_binding_contract_v1.sql
 ```
 
 Expected summary output example:
 
 ```
-runner=account_wallet_refresh_v1 version=0.1
+runner=account_wallet_refresh_v1 version=0.2
 profile=joost account_code=bitvavo_joost_read
 trading_account_id=2 venue=bitvavo
+credential_source=db
 [INFO] private read-only; no broker writes; no order submission
 snapshot_ts_utc=2026-06-03 14:00:00
 balance_count=8
