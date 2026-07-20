@@ -45,5 +45,5 @@ jobs:
       - name: Run disposable MariaDB DDL validation
         run: |
           RUN_MARIADB_DDL_TEST=1 python -m pytest \
-            tests/test_native_short_map_lifecycle_migration_v1.py \
-            -k migration_executes_in_disposable_mariadb_schema
+            tests/test_native_short_map_lifecycle_migration_v1.py::test_migration_executes_in_disposable_mariadb_schema \
+            tests/test_account_credential_binding_mariadb_ddl_v1.py

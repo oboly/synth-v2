@@ -4,17 +4,17 @@ Canonical documentation for the `src/account_provisioning/` package.
 
 ## Scope
 
-Encrypted Bitvavo credential storage and authenticated account provisioning.
+Encrypted Bitvavo credential storage, authenticated account provisioning, and
+non-secret account-to-credential binding metadata.
 
-Batch 1 (complete): encrypted credential storage, contracts, crypto, MariaDB migration.
+Canonical binding contract:
 
-Batch 2 (complete): authenticated HTTP intake with mocked validation, atomic provisioning.
+```text
+docs/architecture/account_credential_binding_contract_v1.md
+```
 
-Not yet in scope:
-
-- Real Bitvavo API validation (Batch 4)
-- Account snapshot refresh (Batch 3)
-- Dashboard rendering for newly linked profile (Batch 3)
+PR A boundary: schema/contract only. It does not change private API runtime
+behavior or production credential resolution.
 
 ## Safety boundary
 
@@ -38,6 +38,7 @@ src/account_provisioning/
     contracts_v1.py                  — immutable contracts and enums
     credential_crypto_v1.py          — AES-256-GCM encryption, fingerprinting
     credential_repository_v1.py      — MariaDB + SQLite(test) encrypted credential repo
+    credential_binding_contract_v1.py — pure non-secret binding validators
     credential_validator_v1.py       — BitvavoCredentialValidator protocol + MockBitvavoCredentialValidator
     account_repository_v1.py         — trading_account + profile link repo (MariaDB + SQLite)
     account_provisioning_service_v1.py — orchestration: validate → create account → store credential → link
@@ -47,7 +48,10 @@ src/account_provisioning/
 
 Table: `trading_account_credential`
 
-Migration: `db/migrations/20260609_trading_account_credential_v1.sql`
+Base migration: `db/migrations/20260609_trading_account_credential_v1.sql`
+
+Binding metadata migration:
+`db/migrations/20260721_account_credential_binding_contract_v1.sql`
 
 Key columns:
 
@@ -62,13 +66,28 @@ Key columns:
 | `key_version` | VARCHAR(16) | e.g. `v1` |
 | `credential_fingerprint` | CHAR(64) | HMAC-SHA256 hex — no plaintext |
 | `credential_status` | VARCHAR(16) | `ACTIVE` / `REVOKED` / `ROTATED` / `INVALID` |
-| `validation_state` | VARCHAR(32) | `UNVALIDATED` / `VALID_READ_ONLY` / `INVALID_CREDENTIALS` |
+| `credential_source` | VARCHAR(32) | `db_encrypted` / `legacy_profile_env_deprecated` |
+| `permission_scope` | VARCHAR(32) | `READ_ONLY_PRIVATE` / `TRADE_EXECUTION` |
+| `allowed_private_read` | TINYINT(1) | non-secret capability metadata |
+| `allowed_order_write` | TINYINT(1) | false for `READ_ONLY_PRIVATE` |
+| `allowed_withdrawal` | TINYINT(1) | must remain false |
+| `validation_state` | VARCHAR(32) | `UNVALIDATED` / `VALID_READ_ONLY` / `VALID_PRIVATE_READ` / `INVALID_CREDENTIALS` |
 | `created_ts_utc` | DATETIME | |
 | `validated_ts_utc` | DATETIME NULL | |
+| `last_validation_error_code` | VARCHAR(64) NULL | safe non-secret error code |
 | `rotated_ts_utc` | DATETIME NULL | |
 | `revoked_ts_utc` | DATETIME NULL | |
 
 No plaintext `api_key` or `api_secret` columns exist in the schema.
+
+The active binding invariant is:
+
+```text
+trading_account_id + venue + permission_scope
+-> exactly one ACTIVE credential profile
+```
+
+Historical `REVOKED`, `ROTATED`, and `INVALID` rows are retained.
 
 ## Encrypted envelope format
 
@@ -106,7 +125,8 @@ Environment variable: `SYNTH_ACCOUNT_CREDENTIAL_MASTER_KEY`
 
 Format: `v1:<base64url-encoded-32-byte-key>`
 
-Example (generate once, store in `.env`, never commit):
+Example generator for an operator to run once and store in a host-local
+EnvironmentFile outside the repository:
 
 ```python
 import os, base64
@@ -139,8 +159,8 @@ fingerprint     = HMAC-SHA256(fingerprint_key, f"{venue}\n{api_key}".encode())
 ## Ownership model
 
 ```
-trading_account (disabled/non-live)
-  └─ trading_account_credential (ACTIVE, UNVALIDATED)
+trading_account (enabled, non-live by default)
+  └─ trading_account_credential (ACTIVE, scoped, non-secret metadata)
        ↑ FK to trading_account
        └─ provisioning service creates atomically with profile link
 ```
@@ -166,9 +186,10 @@ ACTIVE      → ROTATED  (replaced by a newer credential)
 ACTIVE      → INVALID  (validation failure on existing credential)
 ```
 
-Unique active credential per `(trading_account_id, venue)` is enforced at
-application level in `insert_active_credential`. After revocation or
-rotation, a new ACTIVE credential may be inserted for the same account+venue.
+Unique active credential per `(trading_account_id, venue, permission_scope)` is
+the canonical invariant. The binding metadata migration adds a generated active
+scope column and unique index for this invariant. Repository validators also
+fail closed on missing or ambiguous active bindings.
 
 ## Rotation / revocation
 
@@ -182,14 +203,26 @@ statuses — allows detecting a re-submitted duplicate key before inserting.
 
 ## Migration deployment
 
-Add to `MIGRATION_CHAIN` in `run_website_registration_db_migration_v1.py`
-(already done). Run:
+Migration chain includes the base credential migrations and the binding metadata
+migration. Run only from an authorized environment:
 
 ```bash
 python -m src.web.run_website_registration_db_migration_v1
 ```
 
 Migration is idempotent (safe to re-run).
+
+Precondition: before binding metadata exists, each `(trading_account_id, venue)`
+must have at most one `ACTIVE` credential. If duplicate active credentials exist,
+the migration aborts before adding or defaulting binding columns with:
+
+```text
+ACCOUNT_CREDENTIAL_BINDING_DUPLICATE_ACTIVE_PRECONDITION_FAILED
+```
+
+Duplicate active credentials require explicit operator review. The migration
+does not choose one credential, revoke credentials, change statuses, assign
+different scopes, or delete rows automatically.
 
 ## HTTP endpoint (Batch 2)
 
@@ -270,6 +303,16 @@ Synth live_trading_enabled and broker_write_permission remain disabled separatel
 - Returns `PlainBitvavoCredential` for the given account
 - Raises `ValueError(NO_ACTIVE_CREDENTIAL)` if none found
 - Never falls back to global env vars — Hugo always uses Hugo's stored credential
+
+### Account credential binding contract
+
+`credential_binding_contract_v1.validate_credential_binding(...)`:
+- validates non-secret rows only
+- requires exact `trading_account_id + venue + required_permission_scope`
+- rejects missing, ambiguous, disabled, unvalidated, or scope-mismatched bindings
+- rejects withdrawal capability and read-only credentials with order-write capability
+- rejects global/repository `.env` fallback requirements
+- exposes only non-secret report fields
 
 ### Account snapshot service
 

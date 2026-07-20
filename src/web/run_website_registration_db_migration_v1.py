@@ -13,6 +13,7 @@ MIGRATION_CHAIN = [
     Path("db/migrations/20260607_app_profile_trading_account_link_v1.sql"),
     Path("db/migrations/20260609_trading_account_credential_v1.sql"),
     Path("db/migrations/20260609_trading_account_credential_add_valid_private_read.sql"),
+    Path("db/migrations/20260721_account_credential_binding_contract_v1.sql"),
 ]
 
 
@@ -20,8 +21,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Apply the SYNTH website registration migration chain with the repository's "
-            "canonical MariaDB connection settings. No trading_account or credential changes. "
-            "Migrations are applied in order and are idempotent."
+            "canonical MariaDB connection settings. No plaintext credential values are "
+            "read, written, rotated, or exposed. The migration may add or default "
+            "non-secret credential metadata. Migrations are applied in order and are "
+            "idempotent."
         )
     )
     parser.add_argument("--output", choices=("summary", "none"), default="summary")
