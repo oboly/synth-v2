@@ -52,20 +52,15 @@ CHAIN_1H_END_TS="$(
     python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); print(n.replace(minute=0, second=0, microsecond=0).isoformat())'
 )"
 
-CHAIN_1H_ETL_START_TS="$(
-    python -c 'from datetime import datetime, timezone, timedelta; n=datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0); print((n - timedelta(hours=48)).isoformat())'
-)"
-
 echo "[CHAIN][1h] START $(date -u +%F' '%T) UTC"
 echo "[CHAIN][1h] repo=$(pwd)"
 echo "[CHAIN][1h] python=$(command -v python)"
-echo "[CHAIN][1h] ETL window start=${CHAIN_1H_ETL_START_TS} end=${CHAIN_1H_END_TS}"
 echo "[CHAIN][1h] feature window lookback_hours=240 warmup_bars=300 end=${CHAIN_1H_END_TS}"
 
-run_step python -m src.etl.bitvavo.run_candles_etl \
-    --interval 1h \
-    --start "$CHAIN_1H_ETL_START_TS" \
-    --end "$CHAIN_1H_END_TS"
+# This is a market-only processing chain. Public candle ingestion is owned by
+# the public_candle_freshness writer capability and is NOT performed here; the
+# chain consumes already-persisted candles. It must not become an unregistered
+# public-market-data writer.
 
 run_step python -m src.features.run_feat_candle \
     --interval 1h \

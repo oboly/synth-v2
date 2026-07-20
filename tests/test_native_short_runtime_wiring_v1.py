@@ -28,6 +28,20 @@ from src.market_data.native_short_writer_provenance_v1 import (
 ROOT = Path(__file__).parent.parent
 CHAIN_PATH = ROOT / "scripts/run_chain_4h.sh"
 WRAPPER_PATH = ROOT / "scripts/run_native_short_scope_status_chain_once.sh"
+
+
+@pytest.fixture(autouse=True)
+def _authorized_native_short_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These wiring/smoke tests exercise the runtime adapter assuming the
+    native_short_4h_chain capability is already authorized (an authorized
+    PRODUCTION runtime). The mutation-boundary authorization itself — including
+    UNASSIGNED denial for main() and execute_runtime() — is covered by
+    tests/test_writer_capability_authorization_v1.py."""
+    import src.operations.writer_capability_authorization_v1 as authmod
+
+    monkeypatch.setattr(
+        authmod, "require_capability_write_authorization", lambda *a, **k: None
+    )
 RUNNER_PATH = ROOT / "src/market_data/run_native_short_scope_status_chain_v1.py"
 SERVICE_PATH = ROOT / "deploy/systemd/synth-chain-4h.service"
 TIMER_PATH = ROOT / "deploy/systemd/synth-chain-4h.timer"
@@ -423,6 +437,9 @@ def test_runtime_wiring_imports_only_market_data_and_common_db() -> None:
         not module.startswith("src.")
         or module == "src.common.db"
         or module.startswith("src.market_data")
+        # Shared writer-capability authorization boundary (safety infrastructure,
+        # not a forbidden reporting/account/execution layer).
+        or module == "src.operations.writer_capability_authorization_v1"
         for module in imported
     )
 

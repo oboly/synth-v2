@@ -18,6 +18,18 @@ from src.market_data.native_short_repository_source_identity_v1 import (
     verify_repository_commit_sha,
     verify_native_short_repository_source_identity,
 )
+
+
+@pytest.fixture(autouse=True)
+def _authorized_native_short_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """This file verifies repository-source-identity ordering under an already
+    authorized native_short_4h_chain runtime. Writer-capability authorization
+    denial is covered by tests/test_writer_capability_authorization_v1.py."""
+    import src.operations.writer_capability_authorization_v1 as authmod
+
+    monkeypatch.setattr(
+        authmod, "require_capability_write_authorization", lambda *a, **k: None
+    )
 from src.market_data.native_short_writer_provenance_v1 import (
     CANONICAL_REPOSITORY_WRITER_OWNER,
     CHAIN_TRIGGER_TYPE,

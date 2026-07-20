@@ -19,7 +19,8 @@
     "forbidden_writer_invocation_tokens",
     "forbidden_account_execution_tokens",
     "call_graph_scan_trees",
-    "additional_writer_paths"
+    "additional_writer_paths",
+    "market_only_processing_chains_with_zero_public_writers"
   ],
   "properties": {
     "schema_version": {"const": "writer_capability_ownership_schema_v1"},
@@ -55,6 +56,10 @@
     "additional_writer_paths": {
       "type": "array",
       "items": {"$ref": "#/$defs/additional_writer_path"}
+    },
+    "market_only_processing_chains_with_zero_public_writers": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
     }
   },
   "$defs": {

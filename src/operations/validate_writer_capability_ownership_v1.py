@@ -220,6 +220,7 @@ def validate_registry_payload(
         "forbidden_account_execution_tokens",
         "call_graph_scan_trees",
         "additional_writer_paths",
+        "market_only_processing_chains_with_zero_public_writers",
     }
     _ensure_keys(registry, root_required, root_required, "registry", errors)
 
@@ -635,6 +636,27 @@ def _validate_call_graph(registry: dict[str, Any], repo: Path, errors: list[str]
                 continue
             errors.append(
                 f"unregistered writer path invokes public writer tokens: {rel} -> {found_public}"
+            )
+
+    # Market-only processing chains must own zero public-market-data ingestion:
+    # they consume already-persisted candles and must never invoke a public
+    # writer token. This proves 1h/1d chains cannot bypass candle-writer
+    # authorization by silently owning ingestion.
+    for rel in (str(x) for x in registry.get("market_only_processing_chains_with_zero_public_writers", [])):
+        full = repo / rel
+        if not _is_repo_relative(rel) or not full.exists():
+            errors.append(f"market_only_processing_chain missing or invalid: {rel}")
+            continue
+        text = _non_comment_source(full)
+        found_public = [tok for tok in public_tokens if tok in text and tok != rel]
+        found_account = [tok for tok in account_tokens if tok in text]
+        if found_public:
+            errors.append(
+                f"market_only_processing_chain {rel} must not invoke public writer tokens {found_public}"
+            )
+        if found_account:
+            errors.append(
+                f"market_only_processing_chain {rel} must not invoke account/execution tokens {found_account}"
             )
 
 

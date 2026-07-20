@@ -597,11 +597,20 @@ def main(argv: list[str] | None = None) -> int:
     run_started_ts = iso_now()
     run_id = f"run_candles_etl:{run_started_ts}:pid={os.getpid()}"
 
-    # The candle ETL is a shared market-only chain step. It is enforced as the
-    # registered public_candle_freshness capability only when a caller (the
-    # capability wrapper) explicitly claims that capability. Shared chain
-    # callers (1h/1d) do not claim it and are unaffected.
-    if not args.dry_run and os.environ.get("SYNTH_WRITER_CAPABILITY_ID") == "public_candle_freshness":
+    # Public candle persistence is owned by the public_candle_freshness writer
+    # capability. The capability is determined by the mutation performed here,
+    # never by an optional caller-supplied identity. Any non-dry-run invocation
+    # must be authorized before mutation; a direct invocation cannot bypass this
+    # boundary. A caller-supplied SYNTH_WRITER_CAPABILITY_ID is only checked for
+    # consistency and can never disable authorization.
+    if not args.dry_run:
+        claimed = os.environ.get("SYNTH_WRITER_CAPABILITY_ID")
+        if claimed not in (None, "", "public_candle_freshness"):
+            emit(
+                f"FAILED run_candles_etl reason=INCONSISTENT_CAPABILITY_CLAIM "
+                f"claimed={claimed} required=public_candle_freshness"
+            )
+            return 3
         from src.operations.writer_capability_authorization_v1 import (
             require_capability_write_authorization,
         )

@@ -332,25 +332,15 @@
   ],
   "additional_writer_paths": [
     {
-      "path": "scripts/run_chain_1h.sh",
-      "classification": "shared_market_only_chain",
-      "capability_binding": "UNASSIGNED",
-      "invokes_public_writer_tokens": ["src.etl.bitvavo.run_candles_etl"],
-      "note": "Market-only 1h chain. Invokes the shared candle ETL as an internal chain step. It does not claim the public_candle_freshness capability, owns no public-writer capability, and invokes no account/execution layer."
-    },
-    {
-      "path": "scripts/run_chain_1d.sh",
-      "classification": "shared_market_only_chain",
-      "capability_binding": "UNASSIGNED",
-      "invokes_public_writer_tokens": ["src.etl.bitvavo.run_candles_etl"],
-      "note": "Market-only 1d chain. Invokes the shared candle ETL as an internal chain step. It does not claim the public_candle_freshness capability, owns no public-writer capability, and invokes no account/execution layer."
-    },
-    {
       "path": "src/live/run_live_cycle.py",
       "classification": "architectural_violation_removed",
       "capability_binding": "NONE",
       "invokes_public_writer_tokens": [],
       "note": "Retired monolithic live cycle. Previously coupled public market-data writing (candle ETL) with account/execution layers (decision/risk/portfolio/execution). Both invocations were removed; the entrypoint now fails closed. Account/live execution must consume persisted market state and must not own or repair public-market data."
     }
+  ],
+  "market_only_processing_chains_with_zero_public_writers": [
+    "scripts/run_chain_1h.sh",
+    "scripts/run_chain_1d.sh"
   ]
 }

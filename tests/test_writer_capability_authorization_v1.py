@@ -438,20 +438,136 @@ def test_direct_python_writer_production_invocation_fails_while_unassigned() -> 
     assert "writer_authorization=denied" in result.stdout
 
 
-def test_shared_candle_etl_enforces_only_when_capability_claimed() -> None:
-    # When the public_candle_freshness capability is claimed, the shared ETL
-    # step enforces authorization and fails closed while UNASSIGNED.
-    env = {
-        **os.environ,
+def _run_candle_etl(extra_env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SYNTH_WRITER_")}
+    env.update(extra_env)
+    return subprocess.run(
+        ["python", "-m", "src.etl.bitvavo.run_candles_etl", "--interval", "1w"],
+        capture_output=True, text=True, check=False, cwd=str(REPO), env=env,
+    )
+
+
+def test_candle_etl_non_dry_run_without_capability_env_denied() -> None:
+    # Authorization is unconditional: no SYNTH_WRITER_CAPABILITY_ID is required
+    # or consulted to decide whether authorization applies.
+    result = _run_candle_etl({"SYNTH_WRITER_EXECUTION_MODE": "PRODUCTION"})
+    assert result.returncode == 3
+    assert "writer_authorization=denied" in result.stdout
+
+
+def test_candle_etl_default_mode_non_dry_run_denied_while_unassigned() -> None:
+    # No mode env at all -> defaults to READ_ONLY -> a write attempt is denied.
+    result = _run_candle_etl({})
+    assert result.returncode == 3
+    assert "writer_authorization=denied" in result.stdout
+
+
+def test_candle_etl_false_capability_identity_cannot_disable_authorization() -> None:
+    result = _run_candle_etl({
         "SYNTH_WRITER_EXECUTION_MODE": "PRODUCTION",
-        "SYNTH_WRITER_CAPABILITY_ID": "public_candle_freshness",
+        "SYNTH_WRITER_CAPABILITY_ID": "native_short_4h_chain",
+    })
+    assert result.returncode == 3
+    # Either the inconsistent-claim rejection or the authorization denial; both
+    # are fail-closed and neither lets the mutation proceed.
+    assert ("INCONSISTENT_CAPABILITY_CLAIM" in result.stdout
+            or "writer_authorization=denied" in result.stdout)
+
+
+def test_candle_etl_dry_run_is_not_gated() -> None:
+    # Dry-run performs no mutation, so it is not blocked by the write boundary
+    # (it may still fail later for unrelated env/network reasons, but never with
+    # a writer-authorization denial).
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SYNTH_WRITER_")}
+    env["SYNTH_WRITER_EXECUTION_MODE"] = "PRODUCTION"
+    dry = subprocess.run(
+        ["python", "-m", "src.etl.bitvavo.run_candles_etl", "--interval", "1w", "--dry-run"],
+        capture_output=True, text=True, check=False, cwd=str(REPO), env=env,
+    )
+    assert "writer_authorization=denied" not in dry.stdout
+
+
+def test_run_chain_1h_and_1d_do_not_invoke_candle_writer() -> None:
+    for rel in ("scripts/run_chain_1h.sh", "scripts/run_chain_1d.sh"):
+        text = Path(rel).read_text(encoding="utf-8")
+        assert "src.etl.bitvavo.run_candles_etl" not in text, rel
+    registry = _registry()
+    assert set(registry["market_only_processing_chains_with_zero_public_writers"]) == {
+        "scripts/run_chain_1h.sh", "scripts/run_chain_1d.sh",
     }
+    assert validator.validate_registry_payload(registry, repo_root=REPO).ok
+
+
+def test_market_only_chain_reintroducing_public_writer_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "scripts").mkdir(parents=True)
+    (tmp_path / "scripts" / "chain.sh").write_text(
+        "python -m src.etl.bitvavo.run_candles_etl --interval 1h\n", encoding="utf-8"
+    )
+    registry = {
+        "forbidden_writer_invocation_tokens": ["src.etl.bitvavo.run_candles_etl"],
+        "forbidden_account_execution_tokens": [],
+        "call_graph_scan_trees": [],
+        "additional_writer_paths": [],
+        "market_only_processing_chains_with_zero_public_writers": ["scripts/chain.sh"],
+        "capabilities": [],
+    }
+    errors: list[str] = []
+    validator._validate_call_graph(registry, tmp_path, errors)
+    assert any("must not invoke public writer tokens" in e for e in errors)
+
+
+def test_direct_scope_status_main_invocation_denied_while_unassigned() -> None:
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    env = {k: v for k, v in os.environ.items() if not k.startswith("SYNTH_WRITER_")}
+    env["SYNTH_WRITER_EXECUTION_MODE"] = "PRODUCTION"
     result = subprocess.run(
-        ["python", "-m", "src.etl.bitvavo.run_candles_etl", "--interval", "1h"],
+        [
+            "python", "-m", "src.market_data.run_native_short_scope_status_chain_v1",
+            "--venue", "bitvavo", "--quote-currency", "EUR",
+            "--fib-trading-horizon", "SHORT", "--primary-interval", "4h",
+            "--supporting-interval", "1h", "--execution-mode", "CHAIN",
+            "--writer-entrypoint", "scripts/run_chain_4h.sh",
+            "--repository-commit", head,
+            "--trigger-type", "REPOSITORY_4H_MARKET_CHAIN",
+            "--trigger-ref", "scripts/run_chain_4h.sh",
+        ],
         capture_output=True, text=True, check=False, cwd=str(REPO), env=env,
     )
     assert result.returncode == 3
     assert "writer_authorization=denied" in result.stdout
+
+
+def test_direct_scope_status_mutation_function_denied_while_unassigned(monkeypatch) -> None:
+    from datetime import datetime, timezone
+
+    from src.market_data import run_native_short_scope_status_chain_v1 as scope_runner
+
+    monkeypatch.setenv("SYNTH_WRITER_EXECUTION_MODE", "PRODUCTION")
+    for key in ("SYNTH_WRITER_CAPABILITY_ID", "SYNTH_WRITER_AUTHORIZATION_FILE",
+                "SYNTH_WRITER_ACCEPTANCE_PERMIT"):
+        monkeypatch.delenv(key, raising=False)
+    # get_connection must never be reached: authorization fails first. The
+    # authorization boundary is the first statement in execute_runtime, before
+    # provenance is validated, so provenance can be None here.
+    monkeypatch.setattr(scope_runner, "get_connection",
+                        lambda: pytest.fail("must not connect before authorization"))
+    with pytest.raises(SystemExit) as exc:
+        scope_runner.execute_runtime(
+            venue="bitvavo", symbols=[], quote_currency="EUR",
+            fib_trading_horizon="SHORT", primary_interval="4h",
+            supporting_interval="1h", as_of_utc=datetime.now(timezone.utc),
+            provenance=None,  # type: ignore[arg-type]
+        )
+    assert exc.value.code == 3
+
+
+def test_wrapper_and_python_authorization_independently_enforced() -> None:
+    # Wrapper guard present.
+    wrapper = Path("scripts/run_native_short_scope_status_chain_once.sh").read_text(encoding="utf-8")
+    assert "verify_writer_capability_authorization_v1" in wrapper
+    # Independent Python mutation-boundary guard present in the module itself.
+    module = Path("src/market_data/run_native_short_scope_status_chain_v1.py").read_text(encoding="utf-8")
+    assert module.count("require_capability_write_authorization") >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -461,8 +577,9 @@ def test_shared_candle_etl_enforces_only_when_capability_claimed() -> None:
 def test_additional_writer_paths_inventory_present_and_valid() -> None:
     registry = _registry()
     by_path = {e["path"]: e for e in registry["additional_writer_paths"]}
-    assert by_path["scripts/run_chain_1h.sh"]["classification"] == "shared_market_only_chain"
-    assert by_path["scripts/run_chain_1d.sh"]["classification"] == "shared_market_only_chain"
+    # 1h/1d are no longer writers; they own zero public ingestion.
+    assert "scripts/run_chain_1h.sh" not in by_path
+    assert "scripts/run_chain_1d.sh" not in by_path
     assert by_path["src/live/run_live_cycle.py"]["classification"] == "architectural_violation_removed"
     assert validator.validate_registry_payload(registry, repo_root=REPO).ok
 
