@@ -51,6 +51,7 @@ from src.market_data.native_short_writer_provenance_v1 import (
     NativeShortWriterProvenanceError,
     validate_native_short_writer_provenance,
 )
+from src.operations.writer_capability_authorization_v1 import WriterMutationAuthorization
 
 
 RUNNER_NAME = "run_native_short_map_level_status_materializer_v1"
@@ -272,6 +273,7 @@ def run_scope(
     key: NativeShortMapScopeKey,
     operational_clock: Callable[[], datetime],
     provenance: NativeShortWriterProvenance,
+    authorization: WriterMutationAuthorization,
     interruption: InterruptionController | None = None,
     monotonic_clock: Callable[[], float] = monotonic,
 ) -> ScopeRunResult:
@@ -314,6 +316,7 @@ def run_scope(
             key=key,
             operational_clock=operational_clock,
             provenance=provenance,
+            authorization=authorization,
         )
         materialize_elapsed_ms = _elapsed_ms(materialize_started, clock=monotonic_clock)
         _record_elapsed(phase_elapsed_ms_by_name, "MATERIALIZE_LEVEL_STATUS", materialize_elapsed_ms)
@@ -709,6 +712,7 @@ def main(
                 key=key,
                 operational_clock=utc_now,
                 provenance=provenance,
+                authorization=writer_authorization,
                 interruption=controller,
             )
             results.append(result)

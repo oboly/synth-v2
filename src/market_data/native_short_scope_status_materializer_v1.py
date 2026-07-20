@@ -1222,6 +1222,7 @@ def run_native_short_scope_status_materializer(
                 key=key,
                 operational_clock=operational_clock,
                 provenance=provenance,
+                authorization=authorization,
             )
             if level_status_outcome.branch == MAP_LEVEL_STATUS_BLOCKED:
                 raise NativeShortMapLevelStatusBlockedError(

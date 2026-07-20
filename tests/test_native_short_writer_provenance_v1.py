@@ -244,6 +244,7 @@ def test_rejected_provenance_precedes_every_shared_writer_boundary() -> None:
             key=key,
             operational_clock=lambda: None,  # type: ignore[return-value]
             provenance=invalid,
+            authorization=_NS_AUTH,
         )
     with pytest.raises(NativeShortWriterProvenanceError):
         run_native_short_scope_status_materializer(
@@ -264,6 +265,7 @@ def test_rejected_provenance_precedes_every_shared_writer_boundary() -> None:
             NoDatabaseTouch(),
             key=key,
             provenance=invalid,
+            authorization=_NS_AUTH,
         )
     with pytest.raises(NativeShortWriterProvenanceError):
         run_write_symbol(

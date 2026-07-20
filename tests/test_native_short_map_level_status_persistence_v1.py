@@ -17,6 +17,8 @@ from src.market_data.native_short_map_level_status_v1 import (
     REASON_MAP_COMPLETED,
     REASON_NO_PRIMARY_HIGH_REACHED_LEVEL,
     V1_NATIVE_SHORT_SELL_LEVEL_ROLES,
+    delete_native_short_map_level_status_for_scope,
+    replace_native_short_map_level_status_for_scope,
     serialize_native_short_map_level_status_record,
     validate_native_short_map_level_status_collection,
 )
@@ -26,15 +28,19 @@ from src.market_data.native_short_scope_status_v1 import (
     NativeShortScopeMapLifecycleState,
     NativeShortScopeStatusCode,
 )
+from src.market_data.native_short_writer_provenance_v1 import build_explicit_test_provenance
 from src.market_rules.price_tick_normalization_v1 import (
     NORM_STATUS_APPLIED,
     NORM_STATUS_MISSING,
     TICK_RULE_SOURCE_DB,
     TICK_RULE_SOURCE_MISSING,
 )
+from src.operations.writer_capability_authorization_v1 import AuthorizationDenied
+from tests.writer_auth_support import make_test_authorization
 
 MIGRATION_PATH = Path("db/migrations/20260708_native_short_map_level_status_v1.sql")
 MODULE_PATH = Path("src/market_data/native_short_map_level_status_v1.py")
+_WRONG_AUTH = make_test_authorization("public_price_snapshot")
 
 
 def _sql() -> str:
@@ -85,6 +91,117 @@ def _row(
         projection_actionability_state=actionability,
         rebuilt_at_utc=datetime(2026, 7, 8, 2, 1, tzinfo=UTC),
     )
+
+
+class _FakeMutationCursor:
+    rowcount = 0
+
+    def __init__(self, conn: "_FakeMutationConn") -> None:
+        self._conn = conn
+
+    def __enter__(self) -> "_FakeMutationCursor":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self._conn.execute_called = True
+
+    def executemany(self, sql: str, params: object = None) -> None:
+        self._conn.executemany_called = True
+
+
+class _FakeMutationConn:
+    def __init__(self) -> None:
+        self.execute_called = False
+        self.executemany_called = False
+        self.commit_called = False
+
+    def cursor(self) -> _FakeMutationCursor:
+        return _FakeMutationCursor(self)
+
+    def commit(self) -> None:
+        self.commit_called = True
+
+
+def _rows() -> tuple[NativeShortMapLevelStatusRecord, ...]:
+    return tuple(
+        _row(role=role, price=Decimal(index) + Decimal("1.0"))
+        for index, role in enumerate(V1_NATIVE_SHORT_SELL_LEVEL_ROLES)
+    )
+
+
+def _assert_no_sql_mutation(conn: _FakeMutationConn) -> None:
+    assert conn.execute_called is False
+    assert conn.executemany_called is False
+    assert conn.commit_called is False
+
+
+@pytest.mark.parametrize("authorization", (None, {}, _WRONG_AUTH))
+def test_delete_requires_valid_native_short_authorization_before_sql(authorization: object) -> None:
+    conn = _FakeMutationConn()
+    with pytest.raises(AuthorizationDenied):
+        delete_native_short_map_level_status_for_scope(
+            conn,
+            key=_key(),
+            provenance=build_explicit_test_provenance(),
+            authorization=authorization,  # type: ignore[arg-type]
+        )
+    _assert_no_sql_mutation(conn)
+
+
+def test_delete_missing_authorization_argument_touches_no_sql() -> None:
+    conn = _FakeMutationConn()
+
+    with pytest.raises(TypeError):
+        delete_native_short_map_level_status_for_scope(
+            conn,
+            key=_key(),
+            provenance=build_explicit_test_provenance(),
+        )
+    _assert_no_sql_mutation(conn)
+
+
+@pytest.mark.parametrize("rows", ((), _rows()))
+@pytest.mark.parametrize("authorization", (None, {}, _WRONG_AUTH))
+def test_replace_requires_valid_native_short_authorization_before_sql(
+    rows: tuple[NativeShortMapLevelStatusRecord, ...],
+    authorization: object,
+) -> None:
+    conn = _FakeMutationConn()
+
+    with pytest.raises(AuthorizationDenied):
+        replace_native_short_map_level_status_for_scope(
+            conn,
+            key=_key(),
+            current_map_id=123,
+            map_cycle_id=_row().map_cycle_id,
+            level_status_as_of_utc=_row().level_status_as_of_utc,
+            rows=rows,
+            provenance=build_explicit_test_provenance(),
+            authorization=authorization,  # type: ignore[arg-type]
+        )
+    _assert_no_sql_mutation(conn)
+
+
+@pytest.mark.parametrize("rows", ((), _rows()))
+def test_replace_missing_authorization_argument_touches_no_sql(
+    rows: tuple[NativeShortMapLevelStatusRecord, ...],
+) -> None:
+    conn = _FakeMutationConn()
+
+    with pytest.raises(TypeError):
+        replace_native_short_map_level_status_for_scope(
+            conn,
+            key=_key(),
+            current_map_id=123,
+            map_cycle_id=_row().map_cycle_id,
+            level_status_as_of_utc=_row().level_status_as_of_utc,
+            rows=rows,
+            provenance=build_explicit_test_provenance(),
+        )
+    _assert_no_sql_mutation(conn)
 
 
 def test_migration_creates_single_rebuildable_table() -> None:

@@ -306,6 +306,7 @@ def _stub_level_status(
     key: NativeShortMapScopeKey,
     operational_clock: Any,
     provenance: NativeShortWriterProvenance,
+    authorization: Any,
 ) -> MapLevelStatusMaterializationOutcome:
     assert provenance in (_PROVENANCE_A, _PROVENANCE_B)
     return MapLevelStatusMaterializationOutcome(

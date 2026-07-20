@@ -51,12 +51,16 @@ from src.market_rules.price_tick_normalization_v1 import (
     NORM_STATUS_MISSING,
     TICK_RULE_SOURCE_MISSING,
 )
+from src.operations.writer_capability_authorization_v1 import AuthorizationDenied
+from tests.writer_auth_support import make_test_authorization
 
 MODULE_PATH = Path("src/market_data/native_short_map_level_status_materializer_v1.py")
 
 _AS_OF = datetime(2026, 7, 10, 4, 0, tzinfo=UTC)
 _REBUILT_AT = datetime(2026, 7, 10, 4, 0, 5, tzinfo=UTC)
 _PROVENANCE = build_explicit_test_provenance()
+_NS_AUTH = make_test_authorization("native_short_4h_chain")
+_WRONG_AUTH = make_test_authorization("public_price_snapshot")
 
 
 def _source(path: Path = MODULE_PATH) -> str:
@@ -735,12 +739,43 @@ def _map_row(**overrides) -> dict:
 def test_orchestrator_missing_projection_deletes_and_blocks() -> None:
     conn = _FakeConn({"scope_status": None})
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
+        conn,
+        key=_key(),
+        operational_clock=lambda: _REBUILT_AT,
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == PROJECTION_MISSING
     assert outcome.row_count == 0
     assert conn.script["delete_calls"] == 1
+    assert "inserted_rows" not in conn.script
+
+
+def test_orchestrator_omitted_authorization_fails_closed() -> None:
+    conn = _FakeConn({"scope_status": None})
+    with pytest.raises(TypeError):
+        materialize_native_short_map_level_status_for_scope(
+            conn,
+            key=_key(),
+            operational_clock=lambda: _REBUILT_AT,
+            provenance=_PROVENANCE,
+        )
+    assert "delete_calls" not in conn.script
+    assert "inserted_rows" not in conn.script
+
+
+def test_orchestrator_wrong_authorization_fails_before_mutating_helper_sql() -> None:
+    conn = _FakeConn({"scope_status": None})
+    with pytest.raises(AuthorizationDenied):
+        materialize_native_short_map_level_status_for_scope(
+            conn,
+            key=_key(),
+            operational_clock=lambda: _REBUILT_AT,
+            provenance=_PROVENANCE,
+            authorization=_WRONG_AUTH,
+        )
+    assert "delete_calls" not in conn.script
     assert "inserted_rows" not in conn.script
 
 
@@ -760,7 +795,11 @@ def test_orchestrator_configuration_unavailable_deletes_and_blocks() -> None:
         }
     )
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
+        conn,
+        key=_key(),
+        operational_clock=lambda: _REBUILT_AT,
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == "CONFIGURATION_UNAVAILABLE"
@@ -776,7 +815,11 @@ def test_orchestrator_identity_mismatch_is_projection_invalid() -> None:
         }
     )
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
+        conn,
+        key=_key(),
+        operational_clock=lambda: _REBUILT_AT,
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == PROJECTION_INVALID
@@ -786,7 +829,11 @@ def test_orchestrator_identity_mismatch_is_projection_invalid() -> None:
 def test_orchestrator_missing_map_row_is_projection_invalid() -> None:
     conn = _FakeConn({"scope_status": _scope_status_row(), "map": None})
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
+        conn,
+        key=_key(),
+        operational_clock=lambda: _REBUILT_AT,
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == PROJECTION_INVALID
@@ -800,7 +847,11 @@ def test_orchestrator_malformed_geometry_is_geometry_invalid() -> None:
         }
     )
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
+        conn,
+        key=_key(),
+        operational_clock=lambda: _REBUILT_AT,
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == GEOMETRY_INVALID
@@ -824,7 +875,11 @@ def test_orchestrator_active_evaluation_writes_three_rows() -> None:
         }
     )
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
+        conn,
+        key=_key(),
+        operational_clock=lambda: _REBUILT_AT,
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
     )
     assert outcome.branch == ACTIVE_EVALUATION
     assert outcome.row_count == 3
@@ -851,7 +906,11 @@ def test_orchestrator_terminal_completed_writes_three_completed_rows() -> None:
         }
     )
     outcome = materialize_native_short_map_level_status_for_scope(
-        conn, key=_key(), operational_clock=lambda: _REBUILT_AT, provenance=_PROVENANCE
+        conn,
+        key=_key(),
+        operational_clock=lambda: _REBUILT_AT,
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
     )
     assert outcome.branch == TERMINAL_COMPLETED
     assert outcome.row_count == 3

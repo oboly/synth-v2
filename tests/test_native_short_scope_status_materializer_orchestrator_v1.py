@@ -426,6 +426,7 @@ def _successful_level_status(
     key: NativeShortMapScopeKey,
     operational_clock: Any,
     provenance: Any,
+    authorization: Any,
 ) -> MapLevelStatusMaterializationOutcome:
     return MapLevelStatusMaterializationOutcome(
         key=key,
@@ -479,6 +480,7 @@ def test_chain_materializes_level_status_after_projection_for_exact_explicit_sco
         key: NativeShortMapScopeKey,
         operational_clock: Any,
         provenance: Any,
+        authorization: Any,
     ) -> MapLevelStatusMaterializationOutcome:
         assert tuple(
             (
@@ -498,6 +500,7 @@ def test_chain_materializes_level_status_after_projection_for_exact_explicit_sco
             key=key,
             operational_clock=operational_clock,
             provenance=provenance,
+            authorization=authorization,
         )
 
     run = run_native_short_scope_status_materializer(
@@ -579,6 +582,7 @@ def test_chain_surfaces_blocked_level_status_as_failed_market_data_run() -> None
         key: NativeShortMapScopeKey,
         operational_clock: Any,
         provenance: Any,
+        authorization: Any,
     ) -> MapLevelStatusMaterializationOutcome:
         return MapLevelStatusMaterializationOutcome(
             key=key,

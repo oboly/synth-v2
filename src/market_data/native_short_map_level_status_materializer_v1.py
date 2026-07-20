@@ -73,6 +73,7 @@ from src.market_data.native_short_writer_provenance_v1 import (
     NativeShortWriterProvenance,
     validate_native_short_writer_provenance,
 )
+from src.operations.writer_capability_authorization_v1 import WriterMutationAuthorization
 from src.market_rules.price_tick_normalization_v1 import (
     NORM_STATUS_MISSING,
     PRICE_ROLE_TARGET_SELL,
@@ -531,6 +532,7 @@ def materialize_native_short_map_level_status_for_scope(
     key: NativeShortMapScopeKey,
     operational_clock: Callable[[], datetime],
     provenance: NativeShortWriterProvenance,
+    authorization: WriterMutationAuthorization,
 ) -> MapLevelStatusMaterializationOutcome:
     """Bounded, single-scope rebuild. The caller owns the transaction boundary.
 
@@ -546,7 +548,12 @@ def materialize_native_short_map_level_status_for_scope(
     try:
         projection = fetch_scope_status_projection(conn, key)
     except NativeShortScopeStatusValidationError:
-        delete_native_short_map_level_status_for_scope(conn, key=key, provenance=provenance)
+        delete_native_short_map_level_status_for_scope(
+            conn,
+            key=key,
+            provenance=provenance,
+            authorization=authorization,
+        )
         return MapLevelStatusMaterializationOutcome(
             key=key,
             branch=BLOCKED,
@@ -558,7 +565,12 @@ def materialize_native_short_map_level_status_for_scope(
         )
 
     if projection is None:
-        delete_native_short_map_level_status_for_scope(conn, key=key, provenance=provenance)
+        delete_native_short_map_level_status_for_scope(
+            conn,
+            key=key,
+            provenance=provenance,
+            authorization=authorization,
+        )
         return MapLevelStatusMaterializationOutcome(
             key=key,
             branch=BLOCKED,
@@ -572,7 +584,12 @@ def materialize_native_short_map_level_status_for_scope(
     branch, reason_code = select_gate_decision(projection)
 
     if branch == BLOCKED:
-        delete_native_short_map_level_status_for_scope(conn, key=key, provenance=provenance)
+        delete_native_short_map_level_status_for_scope(
+            conn,
+            key=key,
+            provenance=provenance,
+            authorization=authorization,
+        )
         return MapLevelStatusMaterializationOutcome(
             key=key,
             branch=branch,
@@ -586,7 +603,12 @@ def materialize_native_short_map_level_status_for_scope(
     map_record = fetch_map_geometry_by_id(conn, key, projection.current_map_id)
     identity_ok = map_record is not None and map_record.map_cycle_id == projection.current_map_cycle_id
     if not identity_ok:
-        delete_native_short_map_level_status_for_scope(conn, key=key, provenance=provenance)
+        delete_native_short_map_level_status_for_scope(
+            conn,
+            key=key,
+            provenance=provenance,
+            authorization=authorization,
+        )
         return MapLevelStatusMaterializationOutcome(
             key=key,
             branch=BLOCKED,
@@ -600,7 +622,12 @@ def materialize_native_short_map_level_status_for_scope(
     try:
         geometry = extract_v1_sell_geometry(map_record)
     except NativeShortMapLevelStatusMaterializerError:
-        delete_native_short_map_level_status_for_scope(conn, key=key, provenance=provenance)
+        delete_native_short_map_level_status_for_scope(
+            conn,
+            key=key,
+            provenance=provenance,
+            authorization=authorization,
+        )
         return MapLevelStatusMaterializationOutcome(
             key=key,
             branch=BLOCKED,
@@ -644,6 +671,7 @@ def materialize_native_short_map_level_status_for_scope(
         level_status_as_of_utc=projection.projection_as_of_utc,
         rows=rows,
         provenance=provenance,
+        authorization=authorization,
     )
 
     return MapLevelStatusMaterializationOutcome(
