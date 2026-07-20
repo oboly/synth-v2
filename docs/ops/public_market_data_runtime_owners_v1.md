@@ -30,26 +30,26 @@ Containment requires a separately authorized host action.
 ```text
 public_price_snapshot:
   candidate_host=gurkdb
-  selected_host=UNASSIGNED
+  selected_host=gurkdb
   acceptance_host=UNASSIGNED
   acceptance_status=UNASSIGNED
-  runtime_lifecycle=UNASSIGNED
+  runtime_lifecycle=SELECTED_PENDING_PREFLIGHT
   observed_runtime_state=[]
 
 public_candle_freshness:
   candidate_host=gurkdb
-  selected_host=UNASSIGNED
+  selected_host=gurkdb
   acceptance_host=UNASSIGNED
   acceptance_status=UNASSIGNED
-  runtime_lifecycle=UNASSIGNED
+  runtime_lifecycle=SELECTED_PENDING_PREFLIGHT
   observed_runtime_state=[]
 
 market_rotation_pressure:
   candidate_host=gurkdb
-  selected_host=UNASSIGNED
+  selected_host=gurkdb
   acceptance_host=devlap
   acceptance_status=ACCEPTED
-  runtime_lifecycle=UNASSIGNED
+  runtime_lifecycle=SELECTED_PENDING_PREFLIGHT
   historical_runtime_assignment.host=devlap
   historical_runtime_assignment.status=SUPERSEDED
   observed_runtime_state=devlap timer last observed installed/enabled/active,
@@ -64,6 +64,36 @@ native_short_4h_chain:
   runtime_lifecycle=UNASSIGNED
   observed_runtime_state=[]
 ```
+
+## gurkDB Preflight Selection
+
+`public_price_snapshot`, `public_candle_freshness`, and
+`market_rotation_pressure` are selected to gurkDB
+(`selected_host=gurkdb`, `runtime_lifecycle=SELECTED_PENDING_PREFLIGHT`).
+
+This selection means only: selected for strict host preflight. It does not mean
+production owner, authorized runtime, accepted host, prepared host, deployed
+host, or active writer. Specifically:
+
+```text
+all three production_runtime_owner=UNASSIGNED
+all three production_authorization_status=UNASSIGNED
+no gurkDB host preparation has occurred
+no strict gurkDB preflight has occurred
+no production authorization exists
+no writer is deployed or active on gurkDB
+```
+
+The devlap-bound committed units remain fail-closed candidate/historical
+artifacts; devlap legacy Rotation Pressure runtime is contained
+(`historical_runtime_assignment.status=SUPERSEDED`,
+`observed_runtime_state.current_state=UNVERIFIED`). Odroid remains a
+consumer/publisher host with zero writer capabilities. Strict gurkDB preflight
+(`python -m src.operations.run_host_preflight_v1 ... --strict`, see
+`docs/ops/writer_capability_host_ownership_contract_v1.md`) is the next gate.
+
+`native_short_4h_chain` is not selected and remains independently unresolved
+(`selected_host=UNASSIGNED`, `runtime_lifecycle=UNASSIGNED`).
 
 ## Executable Artifacts
 

@@ -142,10 +142,18 @@ Summary:
 
 | capability_id | kind | wrapper | current owner | lifecycle |
 |---|---|---|---|---|
-| `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | UNASSIGNED | UNASSIGNED |
-| `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | UNASSIGNED | UNASSIGNED |
-| `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | UNASSIGNED | UNASSIGNED |
+| `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
+| `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
+| `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
 | `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | UNASSIGNED | UNASSIGNED |
+
+The three public market-data writers are selected to gurkDB
+(`selected_host=gurkdb`) for strict host preflight only. Per the Lifecycle Rules
+below, `SELECTED_PENDING_PREFLIGHT` keeps `production_runtime_owner=UNASSIGNED`
+and `production_authorization_status=UNASSIGNED`: host selection is not
+production authorization, preparation, acceptance, or deployment, and no gurkDB
+preflight has run. `native_short_4h_chain` is not selected and remains
+`UNASSIGNED`.
 
 Native SHORT remains independently evaluated from the light DB writers because
 it owns CPU-heavy chain stages, source-identity checks, DB writes beyond public
