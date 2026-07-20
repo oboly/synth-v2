@@ -85,11 +85,12 @@ no writer is deployed or active on gurkDB
 ```
 
 The devlap-bound committed units remain fail-closed candidate/historical
-artifacts; devlap legacy Rotation Pressure runtime is contained
-(`historical_runtime_assignment.status=SUPERSEDED`,
-`observed_runtime_state.current_state=UNVERIFIED`). Odroid remains a
-consumer/publisher host with zero writer capabilities. Strict gurkDB preflight
-(`python -m src.operations.run_host_preflight_v1 ... --strict`, see
+artifacts. The devlap Rotation Pressure historical assignment remains
+`SUPERSEDED`, while canonical
+`observed_runtime_state.current_state=UNVERIFIED`; this PR does not assert or
+record current host containment. Odroid remains a consumer/publisher host with
+zero writer capabilities. Strict gurkDB preflight (`python -m
+src.operations.run_host_preflight_v1 ... --strict`, see
 `docs/ops/writer_capability_host_ownership_contract_v1.md`) is the next gate.
 
 `native_short_4h_chain` is not selected and remains independently unresolved
