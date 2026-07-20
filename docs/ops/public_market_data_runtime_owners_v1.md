@@ -19,14 +19,18 @@ docs/ops/writer_capability_host_ownership_contract_v1.md
 deploy/ownership/writer_capability_ownership_v1.json
 ```
 
-Under the corrected model `production_runtime_owner` is `UNASSIGNED` for the
-public price snapshot, candle freshness, and Native SHORT 4h chain capabilities;
-only `market_rotation_pressure` carries a recorded separate host-acceptance
-decision (devlap, PR #100/#101). Where the graphs below still read "devlap: sole
-public market-data database writer host," treat that as the retired claim: devlap
-is at most a *candidate/acceptance* host, and gurkDB is a *preferred candidate,
-not a proven owner*. The wrapper and unit contracts below remain valid as the
-capability definitions; only the implicit permanent host assignment is removed.
+Under the corrected model `production_runtime_owner` is `UNASSIGNED` for **all
+four** public market-data writer capabilities (public price snapshot, candle
+freshness, Native SHORT 4h chain, and rotation pressure). `market_rotation_pressure`
+has a recorded `acceptance_host` of devlap (PR #100/#101), but acceptance and
+installed-host state are historical audit context (SUPERSEDED as production
+authorization), not a current production assignment — assigning production from
+acceptance is the exact inference this correction removes. Where the graphs below
+still read "devlap: sole public market-data database writer host," treat that as
+the retired claim: devlap is at most a *candidate/acceptance* host, and gurkDB is
+a *preferred candidate, not a proven owner*. The wrapper and unit contracts below
+remain valid as the capability definitions; only the implicit permanent host
+assignment is removed.
 
 ## Domain boundary
 

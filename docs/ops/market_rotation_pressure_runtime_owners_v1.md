@@ -16,6 +16,33 @@ repository record for step 2 ("Separate Runtime Owner PR").
 No host systemd unit has been changed by the 2026-07-18 repository-only public
 market-data ownership correction.
 
+## 2026-07-19 production-ownership reset (audit context, not authorization)
+
+This document remains the truthful record of the devlap writer **acceptance** and
+its three-cycle runtime, idempotency/reconciliation, and installed active-timer
+evidence. None of that evidence is erased or altered.
+
+Under the writer-capability host-ownership contract
+(`docs/ops/writer_capability_host_ownership_contract_v1.md`), the earlier
+implication that this acceptance made devlap the canonical
+`production_runtime_owner` for `market_rotation_pressure` is **reset**:
+
+```text
+market_rotation_pressure.acceptance_host=devlap
+market_rotation_pressure.acceptance_status=ACCEPTED
+market_rotation_pressure.production_runtime_owner=UNASSIGNED
+market_rotation_pressure.production_owner_status=UNASSIGNED
+market_rotation_pressure.production_decision_evidence=""
+historical_runtime_assignment: host=devlap source=PR #100/#101 status=SUPERSEDED
+```
+
+The acceptance record, the three-cycle evidence, and the fact that devlap has or
+had an installed active timer describe acceptance and current installed-host
+state only. They do not constitute continuing canonical production authorization;
+a production owner is assigned only by a separate, explicitly evidenced
+host-selection decision. The "Ownership" section below is retained as the
+acceptance/installed-host record under that reset framing.
+
 ## Ownership
 
 ```text

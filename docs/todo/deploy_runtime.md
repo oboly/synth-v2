@@ -11,9 +11,12 @@ context, not the target contract.
 2026-07-19 ownership correction: the "devlap sole public market-data writer
 host" claim is retired. Each public market-data writer capability has exactly one
 `production_runtime_owner`, assigned only by explicit host selection plus
-acceptance, and `UNASSIGNED` until then (rotation-pressure excepted: devlap,
-PR #100/#101 recorded acceptance). gurkDB is a preferred candidate, not a proven
-owner. The authoritative contract and machine-readable registry are
+acceptance, and `UNASSIGNED` for all four capabilities by this correction —
+including `market_rotation_pressure`. Its devlap acceptance (PR #100/#101) is
+preserved as historical audit context (SUPERSEDED as production authorization),
+not a current production assignment; acceptance evidence does not grant
+production ownership. gurkDB is a preferred candidate, not a proven owner. The
+authoritative contract and machine-readable registry are
 `docs/ops/writer_capability_host_ownership_contract_v1.md` and
 `deploy/ownership/writer_capability_ownership_v1.json`. Host rollout remains
 pending; no host mutation or writer invocation is performed by this correction.

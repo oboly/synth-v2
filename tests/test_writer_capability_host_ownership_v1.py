@@ -51,8 +51,11 @@ def test_registry_parses_and_declares_invariants() -> None:
     assert inv["acceptance_host_is_not_production_owner"] is True
     assert inv["exactly_one_production_owner_per_capability"] is True
     assert inv["production_owner_requires_separate_decision_evidence"] is True
+    assert inv["acceptance_evidence_cannot_satisfy_production_decision"] is True
+    assert inv["historical_runtime_assignment_is_not_active_ownership"] is True
     assert inv["owner_identity_is_host_independent"] is True
     assert inv["consumers_reporting_account_runtimes_own_zero_writer_capabilities"] is True
+    assert inv["all_production_runtime_owners_unassigned_by_this_correction"] is True
     # No host is canonized as a proven owner by this correction.
     assert reg["host_status"] == {
         "gurkdb": "UNVERIFIED",
@@ -75,21 +78,74 @@ def test_acceptance_host_is_not_implicitly_production_owner() -> None:
             assert evidence.strip(), cap["capability_id"]
 
 
-def test_price_candle_and_native_short_owners_are_unassigned() -> None:
-    unassigned = {"public_price_snapshot", "public_candle_freshness", "native_short_4h_chain"}
+def test_all_four_production_owners_are_unassigned_by_this_correction() -> None:
+    # Required outcome: no capability carries a production_runtime_owner in this
+    # correction PR — including market_rotation_pressure.
+    ids = {cap["capability_id"] for cap in _capabilities()}
+    assert ids == {
+        "public_price_snapshot",
+        "public_candle_freshness",
+        "market_rotation_pressure",
+        "native_short_4h_chain",
+    }
     for cap in _capabilities():
-        if cap["capability_id"] in unassigned:
-            assert cap["production_runtime_owner"] == UNASSIGNED, cap["capability_id"]
-            assert cap["production_owner_status"] == UNASSIGNED, cap["capability_id"]
+        assert cap["production_runtime_owner"] == UNASSIGNED, cap["capability_id"]
+        assert cap["production_owner_status"] == UNASSIGNED, cap["capability_id"]
+
+
+def test_no_capability_has_a_production_owner_status_of_accepted() -> None:
+    # Acceptance never becomes a production authorization state.
+    for cap in _capabilities():
+        assert cap["production_owner_status"] != "ACCEPTED", cap["capability_id"]
 
 
 def test_only_rotation_pressure_has_a_recorded_host_acceptance() -> None:
+    # Acceptance (distinct from production ownership) is recorded only for
+    # rotation-pressure, on devlap.
     accepted = [
         cap["capability_id"]
         for cap in _capabilities()
-        if cap["production_owner_status"] == "ACCEPTED"
+        if cap["acceptance_status"] == "ACCEPTED"
     ]
     assert accepted == ["market_rotation_pressure"]
+
+
+def test_accepted_acceptance_host_coexists_with_unassigned_production_owner() -> None:
+    # Requirement 1: an accepted acceptance_host=devlap must coexist with
+    # production_runtime_owner=UNASSIGNED.
+    caps = {cap["capability_id"]: cap for cap in _capabilities()}
+    rp = caps["market_rotation_pressure"]
+    assert rp["acceptance_host"] == "devlap"
+    assert rp["acceptance_status"] == "ACCEPTED"
+    assert rp["production_runtime_owner"] == UNASSIGNED
+    assert rp["production_owner_status"] == UNASSIGNED
+
+
+def test_acceptance_evidence_cannot_satisfy_production_decision_evidence() -> None:
+    # Requirement 2: no capability may use acceptance / prior-runtime evidence
+    # as its production_decision_evidence. Because every owner is UNASSIGNED, the
+    # decision evidence must be empty for all, and acceptance evidence lives only
+    # in the historical assignment, never in production_decision_evidence.
+    for cap in _capabilities():
+        assert cap["production_decision_evidence"] == "", cap["capability_id"]
+    rp = {c["capability_id"]: c for c in _capabilities()}["market_rotation_pressure"]
+    hist = rp["historical_runtime_assignment"]
+    # Acceptance evidence is preserved, but only inside the SUPERSEDED history.
+    assert "PR #100" in hist["preserved_evidence"] or "PR #100" in hist["source"]
+    assert "do NOT satisfy production_decision_evidence" in hist["preserved_evidence"]
+
+
+def test_historical_runtime_assignment_does_not_grant_active_ownership() -> None:
+    # Requirement 3: a historical assignment is SUPERSEDED context, not ownership.
+    for cap in _capabilities():
+        hist = cap.get("historical_runtime_assignment")
+        if hist is None:
+            continue
+        assert hist["status"] == "SUPERSEDED", cap["capability_id"]
+        assert hist["host"], cap["capability_id"]
+        assert hist["reason"].strip(), cap["capability_id"]
+        # A superseded prior host must not equal the current (absent) owner.
+        assert cap["production_runtime_owner"] == UNASSIGNED, cap["capability_id"]
 
 
 def test_exactly_one_production_owner_per_capability() -> None:

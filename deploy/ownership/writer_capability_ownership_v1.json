@@ -6,8 +6,11 @@
     "acceptance_host_is_not_production_owner": true,
     "exactly_one_production_owner_per_capability": true,
     "production_owner_requires_separate_decision_evidence": true,
+    "acceptance_evidence_cannot_satisfy_production_decision": true,
+    "historical_runtime_assignment_is_not_active_ownership": true,
     "owner_identity_is_host_independent": true,
-    "consumers_reporting_account_runtimes_own_zero_writer_capabilities": true
+    "consumers_reporting_account_runtimes_own_zero_writer_capabilities": true,
+    "all_production_runtime_owners_unassigned_by_this_correction": true
   },
   "host_status": {
     "gurkdb": "UNVERIFIED",
@@ -79,9 +82,16 @@
       "evaluated_separately": false,
       "acceptance_host": "devlap",
       "acceptance_status": "ACCEPTED",
-      "production_runtime_owner": "devlap",
-      "production_owner_status": "ACCEPTED",
-      "production_decision_evidence": "PR #100 / PR #101 recorded three real, independently per-invocation-verified hourly writer->publisher cycles; see docs/ops/market_rotation_pressure_runtime_owners_v1.md. This is the only capability with a recorded separate host-acceptance decision.",
+      "production_runtime_owner": "UNASSIGNED",
+      "production_owner_status": "UNASSIGNED",
+      "production_decision_evidence": "",
+      "historical_runtime_assignment": {
+        "host": "devlap",
+        "source": "PR #100 / PR #101",
+        "status": "SUPERSEDED",
+        "reason": "The devlap host assignment was derived from the accepted implementation/acceptance sequence without a separately confirmed infrastructure host-selection decision. Acceptance and current installed-host state are historical audit context, not continuing canonical production authorization.",
+        "preserved_evidence": "Three real per-invocation-verified hourly writer->publisher cycles, idempotency/reconciliation audits, and installed active timer state remain recorded in docs/ops/market_rotation_pressure_runtime_owners_v1.md. These prove acceptance and installed-host state; they do NOT satisfy production_decision_evidence."
+      },
       "preferred_candidate_host": "gurkdb",
       "candidate_hosts": ["gurkdb", "odroid", "devlap"]
     },

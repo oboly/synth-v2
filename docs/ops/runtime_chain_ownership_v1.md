@@ -35,9 +35,11 @@ independent of which host is selected:
   fail-closed validators before Native SHORT publication
 - the 4h chain does not refresh public prices or candles and does not render or
   remotely transport dashboard output
-- rotation-pressure persistence is owned by the `market_rotation_pressure`
-  writer capability (the one capability with a recorded host acceptance, devlap
-  per PR #100/#101); Odroid owns only the read-only publisher
+- rotation-pressure persistence belongs to the `market_rotation_pressure`
+  writer capability, whose `production_runtime_owner` is `UNASSIGNED`; devlap is
+  its recorded `acceptance_host` (PR #100/#101), preserved as historical audit
+  context (SUPERSEDED), not current production authorization. Odroid owns only
+  the read-only publisher
 - `feat_candle` is owned by the feature chain
 - `signal_state` is owned by the signal chain / 4h chain
 - downstream strategy and selection snapshots are owned by their chain runners

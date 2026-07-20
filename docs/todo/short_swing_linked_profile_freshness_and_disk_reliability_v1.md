@@ -19,10 +19,13 @@ account/render ownership but loses its public-price writer stage.
 
 The earlier "devlap is the sole public market-data database writer" target is
 retired. Each writer capability has exactly one `production_runtime_owner`,
-assigned only by explicit host selection plus acceptance (`UNASSIGNED` until
-then; rotation-pressure excepted per recorded PR #100/#101 acceptance). devlap
-is a candidate/acceptance host and gurkDB a preferred candidate, not a proven
-owner. See `docs/ops/writer_capability_host_ownership_contract_v1.md` and
+assigned only by explicit host selection plus acceptance, and `UNASSIGNED` for
+all four capabilities by this correction — including `market_rotation_pressure`.
+Its devlap acceptance (PR #100/#101) is preserved as historical audit context
+(SUPERSEDED as production authorization); acceptance evidence does not grant
+production ownership. devlap is a candidate/acceptance host and gurkDB a
+preferred candidate, not a proven owner. See
+`docs/ops/writer_capability_host_ownership_contract_v1.md` and
 `deploy/ownership/writer_capability_ownership_v1.json`. The Odroid
 consumer/publisher split above is unchanged.
 

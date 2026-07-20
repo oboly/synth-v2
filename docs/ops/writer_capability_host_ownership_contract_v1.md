@@ -42,12 +42,39 @@ machine-readable registry:
 deploy/ownership/writer_capability_ownership_v1.json
 ```
 
-The single capability that carries a genuine, separately recorded host
-acceptance decision is `market_rotation_pressure` (devlap, PR #100 / PR #101,
-three real per-invocation-verified cycles — see
-`docs/ops/market_rotation_pressure_runtime_owners_v1.md`). Every other public
-market-data writer capability is `UNASSIGNED` until an explicit host selection
-plus acceptance is recorded here.
+**No capability is assigned a `production_runtime_owner` by this correction.**
+All four public market-data writer capabilities (`public_price_snapshot`,
+`public_candle_freshness`, `market_rotation_pressure`, `native_short_4h_chain`)
+have `production_runtime_owner = UNASSIGNED` until an explicit host selection
+plus acceptance is separately recorded.
+
+`market_rotation_pressure` was previously assigned to devlap on the strength of
+its PR #100 / PR #101 acceptance and three-cycle runtime evidence. That assignment
+repeated the exact inference this contract eliminates
+(`acceptance => production owner`) and is reset. The acceptance and installed-host
+facts remain truthful and preserved as historical audit context, not current
+authorization:
+
+```text
+market_rotation_pressure.acceptance_host=devlap
+market_rotation_pressure.acceptance_status=ACCEPTED
+market_rotation_pressure.production_runtime_owner=UNASSIGNED
+market_rotation_pressure.production_owner_status=UNASSIGNED
+market_rotation_pressure.production_decision_evidence=""
+historical_runtime_assignment:
+  host=devlap
+  source=PR #100/#101
+  status=SUPERSEDED
+  reason=host assignment was derived from the accepted implementation sequence
+         without a separately confirmed infrastructure host-selection decision
+```
+
+Acceptance evidence, three-cycle runtime evidence, idempotency/reconciliation
+evidence, and the fact that devlap has or had an installed active timer describe
+acceptance and current installed-host state. They do **not** satisfy
+`production_decision_evidence` and do **not** grant continuing production
+ownership. See `docs/ops/market_rotation_pressure_runtime_owners_v1.md` for the
+preserved acceptance record.
 
 ## Core concepts
 
@@ -86,7 +113,7 @@ Authoritative machine-readable form:
 |---|---|---|---|---|---|
 | `public_price_snapshot` | public market-data writer | `public-price-snapshot-writer` | `scripts/run_market_price_snapshot_once.sh` | `*:00/5:00 UTC` | UNASSIGNED |
 | `public_candle_freshness` | public market-data writer | `public-candle-freshness-writer` | `scripts/run_market_candle_freshness_once.sh` | `:02,17,32,47 UTC` | UNASSIGNED |
-| `market_rotation_pressure` | public market-data writer | `market-rotation-pressure-writer` | `scripts/run_market_rotation_pressure_once.sh` | `:20 UTC` | devlap (ACCEPTED, PR #100/#101) |
+| `market_rotation_pressure` | public market-data writer | `market-rotation-pressure-writer` | `scripts/run_market_rotation_pressure_once.sh` | `:20 UTC` | UNASSIGNED (acceptance_host devlap, PR #100/#101, SUPERSEDED as production authorization) |
 | `native_short_4h_chain` | market-only chain | `native-short-4h-chain` | `scripts/run_chain_4h.sh` | `:12 after 4h close UTC` | UNASSIGNED |
 
 Per capability the registry records: current repository owner identity (neutral,
