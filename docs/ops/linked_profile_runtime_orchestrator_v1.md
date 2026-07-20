@@ -8,10 +8,11 @@ deployment and acceptance remain separate.
 ## Ownership
 
 ```text
-devlap public market-data owners
-  -> persist public prices, candles, Native SHORT state, rotation pressure
+public market-data writer capabilities
+  -> production_runtime_owner=UNASSIGNED until explicit selection,
+     acceptance, containment, authorization, activation, and observation
 
-Odroid linked-profile orchestrator
+Odroid linked-profile orchestrator candidate/consumer role
   -> validate persisted public-price freshness (SELECT-only)
   -> discover linked profiles
   -> authenticated read-only account refresh and account-snapshot persistence
@@ -21,7 +22,9 @@ Odroid linked-profile orchestrator
 
 The orchestrator is account/render ownership, not public market-data ownership.
 Account snapshot persistence remains allowed and does not grant public market
-writer authority.
+writer authority. An installed timer may continue running operationally even
+after canonical authorization is reset; repository correction does not stop that
+timer. Containment requires a separately authorized host action.
 
 ## Hard boundaries
 
@@ -113,8 +116,9 @@ entry-candidate/about publication only.
 
 ## Account-owner boundary
 
-The installed `synth-linked-profile-runtime-refresh.timer` remains the intended
-linked-profile account/render owner after repository deployment.
+The installed `synth-linked-profile-runtime-refresh.timer`, if present on a
+host, remains an account/render runtime fact only. It is not evidence of
+public-writer authorization and must not invoke public market-data writers.
 `synth-mvp-account-refresh.timer` is a separate duplicate-account-owner
 retirement task. This public market-data ownership change does not modify or
 disable either account unit and does not touch website registration.
@@ -127,14 +131,14 @@ docs/ops/systemd/synth-linked-profile-runtime-refresh.timer
 ```
 
 The templates contain no public writer command or test injection. Deploy only
-after both devlap public-price and candle writers are installed, manually
-validated, and proven fresh. See
-`docs/ops/public_market_data_runtime_owners_v1.md` for sequencing and rollback.
+after required persisted public data is fresh from separately authorized writer
+capabilities. See `docs/ops/public_market_data_runtime_owners_v1.md` for
+sequencing and rollback.
 
 ## Acceptance checklist
 
-- [ ] Exact repository commit deployed on devlap and Odroid.
-- [ ] Devlap public-price and candle writers accepted first.
+- [ ] Exact repository commit deployed on selected hosts.
+- [ ] Public-price and candle writers are separately authorized and fresh.
 - [ ] Persisted public prices classify `FRESH` within the 900-second contract.
 - [ ] Odroid metadata records validation fields above.
 - [ ] Stale/missing/future/malformed fixtures stop before account refresh.

@@ -1,32 +1,25 @@
-"""
-Tests for the writer-capability host-ownership correction.
-
-These lock in the corrected contract:
-- acceptance_host is never an implicit production_runtime_owner;
-- exactly one production_runtime_owner per writer capability;
-- consumers / reporting / account runtimes own zero writer capabilities;
-- no duplicate writer timers or repair paths;
-- the Native SHORT 4h chain is evaluated separately from the DB writers;
-- owner identities are host-independent (no host name encoded);
-- the read-only host preflight runner performs no forbidden coupling.
-
-Sources of truth:
-    deploy/ownership/writer_capability_ownership_v1.json
-    docs/ops/writer_capability_host_ownership_contract_v1.md
-    src/operations/run_host_preflight_v1.py
-"""
 from __future__ import annotations
 
-import ast
+import copy
 import json
-import re
+import platform
+import subprocess
 from pathlib import Path
 
-REGISTRY_PATH = Path("deploy/ownership/writer_capability_ownership_v1.json")
-CONTRACT_DOC = Path("docs/ops/writer_capability_host_ownership_contract_v1.md")
-PREFLIGHT = Path("src/operations/run_host_preflight_v1.py")
+import pytest
 
-HOST_NAMES = ("devlap", "odroid", "gurkdb", "gurkDB", "theone")
+from src.operations import run_host_preflight_v1 as preflight
+from src.operations.validate_writer_capability_ownership_v1 import (
+    validate_registry_payload,
+)
+from src.operations.verify_writer_capability_authorization_v1 import (
+    verify_authorization,
+)
+
+
+REGISTRY_PATH = Path("deploy/ownership/writer_capability_ownership_v1.json")
+SCHEMA_PATH = Path("deploy/ownership/writer_capability_ownership_v1.schema.json")
+CONTRACT_DOC = Path("docs/ops/writer_capability_host_ownership_contract_v1.md")
 UNASSIGNED = "UNASSIGNED"
 
 
@@ -34,53 +27,46 @@ def _registry() -> dict:
     return json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
 
 
-def _capabilities() -> list[dict]:
-    return _registry()["writer_capabilities"]
+def _capabilities(registry: dict | None = None) -> list[dict]:
+    return (registry or _registry())["capabilities"]
 
 
-def _executable_lines(path: Path) -> str:
-    return "\n".join(
-        line for line in path.read_text(encoding="utf-8").splitlines()
-        if not line.lstrip().startswith("#")
-    )
+def _cap(registry: dict, capability_id: str) -> dict:
+    return next(cap for cap in registry["capabilities"] if cap["capability_id"] == capability_id)
 
 
-def test_registry_parses_and_declares_invariants() -> None:
-    reg = _registry()
-    inv = reg["invariants"]
-    assert inv["acceptance_host_is_not_production_owner"] is True
-    assert inv["exactly_one_production_owner_per_capability"] is True
-    assert inv["production_owner_requires_separate_decision_evidence"] is True
-    assert inv["acceptance_evidence_cannot_satisfy_production_decision"] is True
-    assert inv["historical_runtime_assignment_is_not_active_ownership"] is True
-    assert inv["owner_identity_is_host_independent"] is True
-    assert inv["consumers_reporting_account_runtimes_own_zero_writer_capabilities"] is True
-    assert inv["all_production_runtime_owners_unassigned_by_this_correction"] is True
-    # No host is canonized as a proven owner by this correction.
-    assert reg["host_status"] == {
-        "gurkdb": "UNVERIFIED",
-        "devlap": "UNVERIFIED",
-        "odroid": "UNVERIFIED",
-    }
+def _errors(registry: dict) -> list[str]:
+    return validate_registry_payload(registry, repo_root=Path.cwd()).errors
 
 
-def test_acceptance_host_is_not_implicitly_production_owner() -> None:
-    for cap in _capabilities():
-        owner = cap["production_runtime_owner"]
-        evidence = cap["production_decision_evidence"]
-        if owner == UNASSIGNED:
-            # An unassigned capability may still name an acceptance host, but
-            # must never carry production ownership without a decision.
-            assert evidence == "", cap["capability_id"]
-        else:
-            # Production ownership requires separate, recorded decision evidence;
-            # acceptance placement alone can never canonize it.
-            assert evidence.strip(), cap["capability_id"]
+def _active_registry(capability_id: str = "public_price_snapshot") -> dict:
+    registry = copy.deepcopy(_registry())
+    cap = _cap(registry, capability_id)
+    cap["production_runtime_owner"] = "devlap"
+    cap["production_authorization_status"] = "AUTHORIZED"
+    cap["runtime_lifecycle"] = "AUTHORIZED_INACTIVE"
+    cap["production_decision_evidence"] = "docs/ops/example_authorization.md#decision"
+    return registry
+
+
+def test_registry_and_schema_parse_and_baseline_semantics_pass() -> None:
+    registry = _registry()
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    assert schema["properties"]["schema_version"]["const"] == "writer_capability_ownership_schema_v1"
+    assert "exactly_one_production_owner_per_capability" not in registry["invariants"]
+    assert validate_registry_payload(registry, repo_root=Path.cwd()).ok
+
+
+def test_lifecycle_aware_invariants_replace_exactly_one_before_cutover() -> None:
+    inv = _registry()["invariants"]
+    assert inv["at_most_one_authorized_active_owner_per_capability"] is True
+    assert inv["exactly_one_authorized_active_owner_required_when_lifecycle_active"] is True
+    assert inv["unassigned_capability_must_have_zero_authorized_owners"] is True
+    assert inv["historical_or_observed_runtime_state_does_not_grant_authorization"] is True
+    assert inv["acceptance_does_not_grant_production_authorization"] is True
 
 
 def test_all_four_production_owners_are_unassigned_by_this_correction() -> None:
-    # Required outcome: no capability carries a production_runtime_owner in this
-    # correction PR — including market_rotation_pressure.
     ids = {cap["capability_id"] for cap in _capabilities()}
     assert ids == {
         "public_price_snapshot",
@@ -90,190 +76,330 @@ def test_all_four_production_owners_are_unassigned_by_this_correction() -> None:
     }
     for cap in _capabilities():
         assert cap["production_runtime_owner"] == UNASSIGNED, cap["capability_id"]
-        assert cap["production_owner_status"] == UNASSIGNED, cap["capability_id"]
+        assert cap["production_authorization_status"] == UNASSIGNED, cap["capability_id"]
+        assert cap["runtime_lifecycle"] == UNASSIGNED, cap["capability_id"]
+        assert cap["production_decision_evidence"] == "", cap["capability_id"]
 
 
-def test_no_capability_has_a_production_owner_status_of_accepted() -> None:
-    # Acceptance never becomes a production authorization state.
-    for cap in _capabilities():
-        assert cap["production_owner_status"] != "ACCEPTED", cap["capability_id"]
-
-
-def test_only_rotation_pressure_has_a_recorded_host_acceptance() -> None:
-    # Acceptance (distinct from production ownership) is recorded only for
-    # rotation-pressure, on devlap.
-    accepted = [
-        cap["capability_id"]
-        for cap in _capabilities()
-        if cap["acceptance_status"] == "ACCEPTED"
-    ]
-    assert accepted == ["market_rotation_pressure"]
-
-
-def test_accepted_acceptance_host_coexists_with_unassigned_production_owner() -> None:
-    # Requirement 1: an accepted acceptance_host=devlap must coexist with
-    # production_runtime_owner=UNASSIGNED.
-    caps = {cap["capability_id"]: cap for cap in _capabilities()}
-    rp = caps["market_rotation_pressure"]
+def test_rotation_pressure_acceptance_and_observed_legacy_runtime_are_preserved() -> None:
+    rp = _cap(_registry(), "market_rotation_pressure")
     assert rp["acceptance_host"] == "devlap"
     assert rp["acceptance_status"] == "ACCEPTED"
-    assert rp["production_runtime_owner"] == UNASSIGNED
-    assert rp["production_owner_status"] == UNASSIGNED
+    assert rp["historical_runtime_assignment"]["host"] == "devlap"
+    assert rp["historical_runtime_assignment"]["status"] == "SUPERSEDED"
+    assert rp["historical_runtime_assignment"]["grants_current_authority"] is False
+    observed = rp["observed_runtime_state"]
+    assert observed == [
+        {
+            "host": "devlap",
+            "unit": "synth-market-rotation-pressure-writer.timer",
+            "unit_path": "deploy/systemd/synth-market-rotation-pressure-writer.timer",
+            "installed_at_observation": True,
+            "enabled_at_observation": True,
+            "active_at_observation": True,
+            "observed_at_utc": "2026-07-14T18:56:00Z",
+            "observed_at_precision": "approximate_minute",
+            "current_state": "UNVERIFIED",
+            "authorization_status": "SUPERSEDED",
+            "runtime_state_classification": "OBSERVED_LEGACY_RUNTIME_PENDING_CONTAINMENT",
+            "evidence_source": "docs/ops/market_rotation_pressure_runtime_owners_v1.md#installedenabledactive-timer-evidence",
+        }
+    ]
 
 
-def test_acceptance_evidence_cannot_satisfy_production_decision_evidence() -> None:
-    # Requirement 2: no capability may use acceptance / prior-runtime evidence
-    # as its production_decision_evidence. Because every owner is UNASSIGNED, the
-    # decision evidence must be empty for all, and acceptance evidence lives only
-    # in the historical assignment, never in production_decision_evidence.
-    for cap in _capabilities():
-        assert cap["production_decision_evidence"] == "", cap["capability_id"]
-    rp = {c["capability_id"]: c for c in _capabilities()}["market_rotation_pressure"]
-    hist = rp["historical_runtime_assignment"]
-    # Acceptance evidence is preserved, but only inside the SUPERSEDED history.
-    assert "PR #100" in hist["preserved_evidence"] or "PR #100" in hist["source"]
-    assert "do NOT satisfy production_decision_evidence" in hist["preserved_evidence"]
+@pytest.mark.parametrize(
+    "field,value",
+    (
+        ("runtime_lifecycle", "BOGUS"),
+        ("production_authorization_status", "ACCEPTED"),
+        ("acceptance_status", "DONE"),
+        ("production_runtime_owner", "theone"),
+    ),
+)
+def test_invalid_enums_fail(field: str, value: str) -> None:
+    registry = copy.deepcopy(_registry())
+    _cap(registry, "public_price_snapshot")[field] = value
+    assert _errors(registry)
 
 
-def test_historical_runtime_assignment_does_not_grant_active_ownership() -> None:
-    # Requirement 3: a historical assignment is SUPERSEDED context, not ownership.
-    for cap in _capabilities():
-        hist = cap.get("historical_runtime_assignment")
-        if hist is None:
-            continue
-        assert hist["status"] == "SUPERSEDED", cap["capability_id"]
-        assert hist["host"], cap["capability_id"]
-        assert hist["reason"].strip(), cap["capability_id"]
-        # A superseded prior host must not equal the current (absent) owner.
-        assert cap["production_runtime_owner"] == UNASSIGNED, cap["capability_id"]
+def test_unknown_fields_fail() -> None:
+    registry = copy.deepcopy(_registry())
+    _cap(registry, "public_price_snapshot")["surprise"] = True
+    assert any("unknown fields" in err for err in _errors(registry))
 
 
-def test_exactly_one_production_owner_per_capability() -> None:
-    for cap in _capabilities():
-        owner = cap["production_runtime_owner"]
-        # A single scalar owner, never a list, never comma-joined hosts.
-        assert isinstance(owner, str)
-        assert "," not in owner and " and " not in owner, cap["capability_id"]
-    ids = [cap["capability_id"] for cap in _capabilities()]
-    assert len(ids) == len(set(ids))
+def test_unassigned_with_owner_or_evidence_is_rejected() -> None:
+    registry = copy.deepcopy(_registry())
+    cap = _cap(registry, "public_price_snapshot")
+    cap["production_runtime_owner"] = "devlap"
+    assert any("zero authorized production owners" in err for err in _errors(registry))
+    cap["production_runtime_owner"] = UNASSIGNED
+    cap["production_decision_evidence"] = "docs/ops/some_acceptance.md"
+    assert any("unassigned production owner must not carry decision evidence" in err for err in _errors(registry))
 
 
-def test_owner_identities_are_host_independent() -> None:
-    for cap in _capabilities():
-        identity = cap["owner_identity"].lower()
-        for host in HOST_NAMES:
-            assert host.lower() not in identity, cap["capability_id"]
+def test_active_without_exactly_one_owner_and_evidence_is_rejected() -> None:
+    registry = copy.deepcopy(_registry())
+    cap = _cap(registry, "public_price_snapshot")
+    cap["runtime_lifecycle"] = "ACTIVE"
+    cap["production_authorization_status"] = "AUTHORIZED"
+    assert any("requires exactly one production_runtime_owner" in err for err in _errors(registry))
+    cap["production_runtime_owner"] = "devlap"
+    assert any("requires production_decision_evidence" in err for err in _errors(registry))
 
 
-def test_native_short_4h_chain_is_evaluated_separately() -> None:
-    caps = {cap["capability_id"]: cap for cap in _capabilities()}
-    chain = caps["native_short_4h_chain"]
-    assert chain["evaluated_separately"] is True
-    assert chain["kind"] == "market_only_chain"
-    assert chain["evaluated_separately_reason"].strip()
-    # The light DB writers must not be flagged as chain-coupled.
-    for other in ("public_price_snapshot", "public_candle_freshness"):
-        assert caps[other]["evaluated_separately"] is False
+def test_multiple_active_authorized_runtime_observations_are_rejected() -> None:
+    registry = _active_registry()
+    cap = _cap(registry, "public_price_snapshot")
+    cap["runtime_lifecycle"] = "ACTIVE"
+    active = {
+        "host": "devlap",
+        "unit": "one.timer",
+        "unit_path": "deploy/systemd/synth-market-price-snapshot-writer.timer",
+        "installed_at_observation": True,
+        "enabled_at_observation": True,
+        "active_at_observation": True,
+        "observed_at_utc": "2026-07-20T00:00:00Z",
+        "observed_at_precision": "exact",
+        "current_state": "ACTIVE_OBSERVED",
+        "authorization_status": "AUTHORIZED",
+        "runtime_state_classification": "AUTHORIZED_RUNTIME_OBSERVED",
+        "evidence_source": "docs/ops/example.md",
+    }
+    cap["observed_runtime_state"] = [active, {**active, "unit": "two.timer"}]
+    assert any("multiple authorized active runtime observations" in err for err in _errors(registry))
 
 
-def test_writer_capabilities_have_no_account_or_reporting_coupling() -> None:
-    for cap in _capabilities():
-        assert cap["account_or_reporting_coupling"] is False, cap["capability_id"]
+def test_acceptance_and_historical_state_cannot_authorize_production() -> None:
+    registry = copy.deepcopy(_registry())
+    rp = _cap(registry, "market_rotation_pressure")
+    rp["runtime_lifecycle"] = "AUTHORIZED_INACTIVE"
+    rp["production_runtime_owner"] = "devlap"
+    rp["production_authorization_status"] = "AUTHORIZED"
+    rp["production_decision_evidence"] = rp["historical_runtime_assignment"]["source"]
+    errors = _errors(registry)
+    assert any("acceptance or historical evidence cannot authorize production" in err for err in errors)
+    assert any("historical assignment host cannot be reused as active authority" in err for err in errors)
 
 
-def test_consumers_own_zero_writer_capabilities() -> None:
-    reg = _registry()
-    forbidden = tuple(reg["forbidden_writer_invocation_tokens"])
-    for rel in reg["consumers_with_zero_writer_capabilities"]:
-        path = Path(rel)
-        assert path.exists(), rel
-        executable = _executable_lines(path)
-        for token in forbidden:
-            assert token not in executable, f"{rel} invokes forbidden writer token {token}"
+def test_missing_registry_paths_fail() -> None:
+    registry = copy.deepcopy(_registry())
+    _cap(registry, "public_price_snapshot")["timer"] = "deploy/systemd/nope.timer"
+    assert any("referenced timer path missing" in err for err in _errors(registry))
 
 
-def test_no_duplicate_writer_timers() -> None:
-    unit_targets: dict[str, list[str]] = {}
-    for timer in Path("deploy/systemd").glob("*.timer"):
-        for line in timer.read_text(encoding="utf-8").splitlines():
-            m = re.match(r"\s*Unit=(\S+)", line)
-            if m:
-                unit_targets.setdefault(m.group(1), []).append(timer.name)
-    for unit, timers in unit_targets.items():
-        assert len(timers) == 1, f"{unit} is driven by duplicate timers {timers}"
+def test_incomplete_native_short_inventory_fails() -> None:
+    registry = copy.deepcopy(_registry())
+    native = _cap(registry, "native_short_4h_chain")
+    native["database_writes"] = ["native_short_scope_status"]
+    native["modules_invoked"] = ["src.market_data.native_short_repository_source_identity_v1"]
+    errors = _errors(registry)
+    assert any("incomplete invoked module inventory" in err for err in errors)
+    assert any("incomplete database write inventory" in err for err in errors)
 
 
-def test_retired_odroid_writer_units_do_not_exist() -> None:
-    assert not Path("scripts/odroid/systemd/synth-market-candle-freshness.service").exists()
-    assert not Path("scripts/odroid/systemd/synth-market-candle-freshness.timer").exists()
+def test_arbitrary_owner_identity_overrides_are_rejected_and_not_in_wrappers() -> None:
+    registry = copy.deepcopy(_registry())
+    _cap(registry, "public_price_snapshot")["owner_identity_env"] = "SYNTH_MARKET_PRICE_WRITER_OWNER"
+    assert any("owner_identity_env overrides are forbidden" in err for err in _errors(registry))
+    wrapper_text = Path("scripts/run_market_price_snapshot_once.sh").read_text(encoding="utf-8")
+    assert "SYNTH_MARKET_PRICE_WRITER_OWNER" not in wrapper_text
 
 
-def test_registry_wrapper_and_unit_paths_exist() -> None:
+def test_authorization_guard_blocks_unassigned_capability() -> None:
+    registry = _registry()
+    authorization = {
+        "authorization_version": "writer_capability_runtime_authorization_v1",
+        "capability_id": "public_price_snapshot",
+        "service": "synth-market-price-snapshot-writer.service",
+        "authorized_host": platform.node().strip(),
+        "authorized_commit": "a" * 40,
+        "production_authorization_status": "AUTHORIZED",
+        "runtime_lifecycle": "ACTIVE",
+        "decision_evidence": "docs/ops/example.md#decision",
+    }
+    result = verify_authorization(
+        registry=registry,
+        authorization=authorization,
+        capability_id="public_price_snapshot",
+        service="synth-market-price-snapshot-writer.service",
+        actual_host=platform.node().strip(),
+        actual_commit="a" * 40,
+    )
+    assert not result.ok
+    assert any("UNASSIGNED" in err for err in result.errors)
+
+
+def test_authorization_guard_blocks_wrong_hostname_and_commit() -> None:
+    registry = _active_registry()
+    authorization = {
+        "authorization_version": "writer_capability_runtime_authorization_v1",
+        "capability_id": "public_price_snapshot",
+        "service": "synth-market-price-snapshot-writer.service",
+        "authorized_host": "devlap",
+        "authorized_commit": "a" * 40,
+        "production_authorization_status": "AUTHORIZED",
+        "runtime_lifecycle": "AUTHORIZED_INACTIVE",
+        "decision_evidence": "docs/ops/example_authorization.md#decision",
+    }
+    result = verify_authorization(
+        registry=registry,
+        authorization=authorization,
+        capability_id="public_price_snapshot",
+        service="synth-market-price-snapshot-writer.service",
+        actual_host="wrong-host",
+        actual_commit="b" * 40,
+    )
+    assert not result.ok
+    assert any("actual hostname" in err for err in result.errors)
+    assert any("commit does not match" in err for err in result.errors)
+
+
+def test_authorization_guard_passes_only_exact_authorized_tuple() -> None:
+    registry = _active_registry()
+    authorization = {
+        "authorization_version": "writer_capability_runtime_authorization_v1",
+        "capability_id": "public_price_snapshot",
+        "service": "synth-market-price-snapshot-writer.service",
+        "authorized_host": "devlap",
+        "authorized_commit": "a" * 40,
+        "production_authorization_status": "AUTHORIZED",
+        "runtime_lifecycle": "AUTHORIZED_INACTIVE",
+        "decision_evidence": "docs/ops/example_authorization.md#decision",
+    }
+    result = verify_authorization(
+        registry=registry,
+        authorization=authorization,
+        capability_id="public_price_snapshot",
+        service="synth-market-price-snapshot-writer.service",
+        actual_host="devlap",
+        actual_commit="a" * 40,
+    )
+    assert result.ok, result.errors
+
+
+def test_guard_cli_fails_closed_when_authorization_file_is_missing() -> None:
+    result = subprocess.run(
+        [
+            "python",
+            "-m",
+            "src.operations.verify_writer_capability_authorization_v1",
+            "--capability",
+            "public_price_snapshot",
+            "--service",
+            "synth-market-price-snapshot-writer.service",
+            "--checkout-path",
+            str(Path.cwd()),
+            "--authorization-file",
+            "/tmp/synth-missing-authorization-file.json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "authorization file missing" in result.stdout
+
+
+def test_preflight_strict_fails_on_required_warn_and_unverified() -> None:
+    assert preflight._strict_exit_status(
+        [preflight.CheckResult("warn_check", preflight.STATUS_WARN, "warn")]
+    ) == 4
+    assert preflight._strict_exit_status(
+        [preflight.CheckResult("unknown_check", preflight.STATUS_UNVERIFIED, "unknown")]
+    ) == 5
+
+
+def test_preflight_cli_checks_expected_host_commit_and_blocks_strict() -> None:
+    head = subprocess.check_output(["git", "rev-parse", "--verify", "HEAD"], text=True).strip()
+    result = subprocess.run(
+        [
+            "python",
+            "-m",
+            "src.operations.run_host_preflight_v1",
+            "--capability",
+            "public_price_snapshot",
+            "--expected-host",
+            "definitely-wrong-host",
+            "--expected-commit",
+            head,
+            "--checkout-path",
+            str(Path.cwd()),
+            "--strict",
+            "--output",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 3
+    payload = json.loads(result.stdout)
+    host_check = next(check for check in payload["checks"] if check["name"] == "host_identity")
+    assert host_check["status"] == "FAIL"
+
+
+def test_preflight_uses_venv_python_for_capability_imports(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args: list[str], *, cwd: Path | None = None, timeout: int = 5) -> subprocess.CompletedProcess[str]:
+        calls.append(args)
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(preflight, "_venv_python", lambda checkout_path: checkout_path / "venv/bin/python")
+    monkeypatch.setattr(preflight, "_run", fake_run)
+    result = preflight._capability_module_imports(Path.cwd(), "public_price_snapshot")
+    assert result.status == preflight.STATUS_PASS
+    assert calls
+    assert calls[0][0].endswith("venv/bin/python")
+
+
+def test_all_referenced_timer_service_wrapper_paths_exist() -> None:
     for cap in _capabilities():
         assert Path(cap["wrapper"]).exists(), cap["capability_id"]
-        service = cap["service"]
-        if service and service.startswith("deploy/systemd/"):
-            assert Path(service).exists(), cap["capability_id"]
+        assert Path(cap["service"]).exists(), cap["capability_id"]
+        assert Path(cap["timer"]).exists(), cap["capability_id"]
+        for observed in cap["observed_runtime_state"]:
+            assert Path(observed["unit_path"]).exists(), cap["capability_id"]
 
 
-def test_contract_doc_has_required_sections() -> None:
+def test_all_systemd_trees_are_searched_and_duplicate_capability_units_fail(tmp_path: Path) -> None:
+    registry = copy.deepcopy(_registry())
+    duplicate = tmp_path / "docs/ops/systemd/duplicate-price.service"
+    duplicate.parent.mkdir(parents=True)
+    duplicate.write_text(
+        "[Service]\nExecStart=/bin/bash scripts/run_market_price_snapshot_once.sh\n",
+        encoding="utf-8",
+    )
+    for tree in ("deploy/systemd", "docs/ops/systemd", "scripts/odroid/systemd"):
+        target = tmp_path / tree
+        target.mkdir(parents=True, exist_ok=True)
+    for cap in _capabilities(registry):
+        for key in ("wrapper", "service", "timer"):
+            source = Path(cap[key])
+            target = tmp_path / source
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    errors = validate_registry_payload(registry, repo_root=tmp_path).errors
+    assert any("duplicate or unexpected unit invocations" in err for err in errors)
+
+
+def test_consumers_reporting_account_paths_invoke_zero_writer_capabilities() -> None:
+    assert validate_registry_payload(_registry(), repo_root=Path.cwd()).ok
+
+
+def test_contract_doc_contains_state_machine_and_installed_timer_warning() -> None:
     text = CONTRACT_DOC.read_text(encoding="utf-8")
     for marker in (
+        "candidate_host",
+        "selected_host",
         "acceptance_host",
         "production_runtime_owner",
-        "writer_capability",
-        "host_preflight",
-        "runtime_acceptance",
-        "## Acceptance procedure",
-        "## Cutover procedure",
-        "## Rollback procedure",
-        "## Host-selection contract",
-        "## Host preflight contract",
-        "historical correction",
+        "runtime_lifecycle",
+        "OBSERVED_LEGACY_RUNTIME_PENDING_CONTAINMENT",
+        "An installed timer may continue running operationally",
+        "record candidate/selected state without production authorization",
+        "disable the old timer",
+        "mark lifecycle `ACTIVE`",
     ):
-        assert marker in text, marker
-    # gurkDB documented as a candidate, not a proven owner (whitespace-normalized
-    # so the assertion is insensitive to line wrapping / markdown emphasis).
-    normalized = re.sub(r"[\s*]+", " ", text)
-    assert "preferred candidate, not a proven owner" in normalized
-    assert "devlap acceptance" in normalized
-
-
-def test_preflight_runner_has_no_forbidden_layer_imports() -> None:
-    forbidden = (
-        "src.account",
-        "src.reporting",
-        "src.decision_gate",
-        "src.execution_planner",
-        "src.executor",
-        "src.broker",
-        "src.market_data",
-        "src.etl",
-    )
-    tree = ast.parse(PREFLIGHT.read_text(encoding="utf-8"))
-    imported: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.extend(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.append(node.module)
-    assert not any(name.startswith(forbidden) for name in imported), imported
-
-
-def test_preflight_runner_is_read_only_and_covers_full_checklist() -> None:
-    text = PREFLIGHT.read_text(encoding="utf-8")
-    for marker in ("host_mutations=0", "database_writes=0", "writer_invocations=0"):
         assert marker in text
-    for check in (
-        "host_identity",
-        "os_and_architecture",
-        "cpu_and_load",
-        "ram_and_swap",
-        "disk_space_and_inodes",
-        "python_and_virtualenv",
-        "mariadb_connectivity",
-        "exchange_api_connectivity",
-        "systemd",
-        "rollback_capability",
-    ):
-        assert check in text, check

@@ -1,6 +1,6 @@
 [Unit]
-Description=Synth Market Rotation Pressure writer timer — fires after hourly source-data availability (UTC)
-Documentation=docs/ops/market_rotation_pressure_runtime_owners_v1.md
+Description=Synth Market Rotation Pressure writer timer (devlap-bound historical/candidate artifact)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/market_rotation_pressure_runtime_owners_v1.md
 Requires=synth-market-rotation-pressure-writer.service
 
 [Timer]

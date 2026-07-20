@@ -1,20 +1,35 @@
 # Synth Market-Only Runtime V1 — Deployment Guide
 
-## Status and host
+## Status and Host Authorization
 
-The canonical host is `devlap`, with the repository at
-`/home/gurk/projects/synth-v2`. Repository acceptance does not authorize host
-deployment or timer activation. `synth-chain-4h.timer` must remain disabled
-until the correction is merged and a separately authorized host preflight has
-verified the exact deployed commit, unit checksums, persisted-input freshness,
-and absence of a competing owner.
+The `native_short_4h_chain` capability is not currently production-authorized:
+
+```text
+candidate_host=UNASSIGNED
+selected_host=UNASSIGNED
+acceptance_host=UNASSIGNED
+acceptance_status=UNASSIGNED
+production_runtime_owner=UNASSIGNED
+production_authorization_status=UNASSIGNED
+runtime_lifecycle=UNASSIGNED
+observed_runtime_state=[]
+```
+
+The committed `deploy/systemd/synth-chain-4h.service` and `.timer` are
+devlap-bound candidate artifacts (`ConditionHost=devlap`, `User=gurk`,
+`WorkingDirectory=/home/gurk/projects/synth-v2`). They are not host-neutral and
+do not authorize devlap as production owner.
+
+An installed timer may continue running operationally even after canonical
+authorization is reset. Repository correction does not stop that timer.
+Containment requires a separately authorized host action.
 
 ---
 
 ## Purpose
 
-Run the Synth 4h market-only chain after each 4h candle closes. Separate devlap
-timers own public-price ingestion and multi-interval candle ETL. This chain
+Run the Synth 4h market-only chain after each 4h candle closes. Separately
+authorized public-price and candle capabilities own ingestion. This chain
 consumes those persisted inputs, fails closed unless both are fresh, publishes
 the canonical Native SHORT runtime state, and then runs the remaining
 market-only stages. It does not refresh public prices or candles, render or
@@ -46,7 +61,7 @@ No live trading. No broker writes. No order submission. No decision_gate activat
 | `src/market_data/run_native_short_scope_status_chain_v1.py` | bounded adapter from persisted `SUPPORTED` scopes to the canonical scope-status orchestrator |
 
 Timer fires 12 minutes after each 4h candle close, after the separately owned
-devlap public-price and multi-interval candle writers. `Persistent=true`
+public-price and multi-interval candle writers. `Persistent=true`
 ensures a missed fire runs on next boot. `RandomizedDelaySec=120` spreads load
 across a 2-minute jitter window. The timer does not require either writer
 service; SELECT-only freshness validators are the fail-closed dependency
@@ -113,15 +128,30 @@ output.
 
 ---
 
-## Preflight checks — run on target host before installing
+## Preflight Checks
 
 Complete every check before proceeding. Do not install if any check fails.
 
-### 1. Confirm you are on the correct host
+Run this only after a candidate host has been identified. Replace the host and
+commit values with the separately selected candidate facts.
+
+```bash
+python -m src.operations.run_host_preflight_v1 \
+  --capability native_short_4h_chain \
+  --expected-host <candidate-host> \
+  --expected-commit <exact-commit> \
+  --checkout-path <candidate-checkout> \
+  --strict
+```
+
+The current committed unit is devlap-bound, so these manual devlap path checks
+are valid only when devlap has explicitly become the selected candidate host.
+
+### 1. Confirm selected candidate host
 
 ```bash
 hostname
-# expected: devlap
+# expected: selected candidate host
 ```
 
 ### 2. Confirm repo exists at expected path
@@ -178,16 +208,17 @@ python -m src.market_data.native_short_repository_source_identity_v1 \
 ```
 
 Do not manually start `synth-chain-4h.service` or invoke `run_chain_4h.sh` to
-manufacture operational acceptance. Acceptance requires a natural timer-driven
-cycle after separately authorized activation.
+manufacture operational acceptance. Acceptance requires the ordered state
+machine in `docs/ops/writer_capability_host_ownership_contract_v1.md`.
 
 ---
 
-## Post-merge install and activation gate
+## Post-Merge Install and Activation Gate
 
 Do not execute these steps from a repository-only PR. After merge, a separately
-authorized devlap rollout may copy the exact accepted unit files and reload
-systemd. It must verify installed checksums before enabling the timer:
+authorized rollout may copy unit files only for the selected host. The files
+below are devlap-bound examples and are invalid for another host without a
+separate selected-host artifact:
 
 ```bash
 # Copy unit files
@@ -200,9 +231,10 @@ sha256sum deploy/systemd/synth-chain-4h.service /etc/systemd/system/synth-chain-
 sha256sum deploy/systemd/synth-chain-4h.timer /etc/systemd/system/synth-chain-4h.timer
 ```
 
-Only after host preflight passes may the rollout lane explicitly authorize
-`systemctl enable --now synth-chain-4h.timer`. The service must not be started
-manually. Runtime acceptance then observes the next natural scheduled cycle.
+Only after preflight, controlled acceptance, legacy runtime inventory,
+old-timer containment, and production authorization may the rollout lane
+explicitly authorize `systemctl enable --now synth-chain-4h.timer`. The service
+must not be started manually to manufacture evidence.
 
 ---
 

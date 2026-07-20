@@ -1,6 +1,9 @@
 [Unit]
-Description=Synth 4h market-only chain
+Description=Synth 4h market-only chain (devlap-bound candidate artifact; capability native_short_4h_chain)
 Documentation=https://github.com/oboly/synth-v2/blob/main/docs/deployment/synth_market_only_runtime_v1.md
+# This committed unit is host-bound to devlap paths/users. Native SHORT host
+# ownership remains independently evaluated and currently UNASSIGNED.
+ConditionHost=devlap
 After=network-online.target
 Wants=network-online.target
 
@@ -18,6 +21,8 @@ Environment=SYNTH_CHAIN_4H_LOCK_FILE=/tmp/synth_chain_4h.lock
 Environment=SYNTH_EXECUTION_MODE=paper
 Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
 Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
+ExecStartPre=/bin/bash -lc 'python -m src.operations.verify_writer_capability_authorization_v1 --capability native_short_4h_chain --service synth-chain-4h.service --checkout-path /home/gurk/projects/synth-v2 --registry deploy/ownership/writer_capability_ownership_v1.json --authorization-file /etc/synth/writer-capability-runtime-authorization-v1.json'
+PrivateTmp=false
 
 StandardOutput=journal
 StandardError=journal

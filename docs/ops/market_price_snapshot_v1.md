@@ -3,17 +3,37 @@
 `market_price_snapshot` stores latest public prices for persisted-state
 consumers. The writer uses only Bitvavo public `GET /ticker/price`.
 
-Canonical runtime owner:
+## Ownership State
 
 ```text
-host=devlap
+capability_id=public_price_snapshot
+candidate_host=gurkdb
+selected_host=UNASSIGNED
+acceptance_host=UNASSIGNED
+acceptance_status=UNASSIGNED
+production_runtime_owner=UNASSIGNED
+production_authorization_status=UNASSIGNED
+runtime_lifecycle=UNASSIGNED
+observed_runtime_state=[]
+```
+
+The committed service and timer below are devlap-bound candidate artifacts, not
+host-neutral production configuration:
+
+```text
 timer=deploy/systemd/synth-market-price-snapshot-writer.timer
 service=deploy/systemd/synth-market-price-snapshot-writer.service
 wrapper=scripts/run_market_price_snapshot_once.sh
 module=src.market_data.run_market_price_snapshot_v1 --write-db
 lock=/tmp/synth-market-price-snapshot-writer-v1.lock
-owner=devlap-public-market-data
+ConditionHost=devlap
+User=gurk
+WorkingDirectory=/home/gurk/projects/synth-v2
 ```
+
+An installed timer may continue running operationally even after canonical
+authorization is reset. Repository correction does not stop that timer.
+Containment requires a separately authorized host action.
 
 Odroid render/account runners must not call this writer. They validate and
 consume persisted rows through the SELECT-only
@@ -21,22 +41,12 @@ consume persisted rows through the SELECT-only
 malformed, future-dated, or stale rows block dependent stages; consumers never
 repair freshness.
 
-The batch validator proves writer liveness and timestamp freshness, not full
-asset coverage. A current non-empty batch can pass even when an account asset
-is absent. Wallet and Profit Plan consumers therefore retain independent
-per-asset `MISSING_CURRENT_PRICE` and `STALE_CURRENT_PRICE` fail-closed checks;
-the top-level gate must never replace those checks.
-
 Safety boundary:
 
 - public endpoint only;
 - no private broker read or broker write;
 - no account, reporting, decision, planning, execution, or order authority;
 - no SSH or remote-host command.
-
-The writer stores one row per quote-currency ticker. `source_ts_utc` is NULL
-because the endpoint has no source timestamp; `observed_ts_utc` is the UTC
-observation time.
 
 Repository smoke commands, not host activation:
 
@@ -48,5 +58,6 @@ systemd-analyze verify deploy/systemd/synth-market-price-snapshot-writer.service
 systemd-analyze verify deploy/systemd/synth-market-price-snapshot-writer.timer
 ```
 
-See `docs/ops/public_market_data_runtime_owners_v1.md` for deployment order and
-rollback. Repository merge alone does not deploy or enable the writer.
+See `docs/ops/writer_capability_host_ownership_contract_v1.md` and
+`docs/ops/public_market_data_runtime_owners_v1.md` for selection, cutover, and
+rollback order.

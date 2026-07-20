@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/oboly/synth-v2/deploy/ownership/writer_capability_ownership_v1.schema.json",
+  "title": "Synth writer capability host ownership registry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_version",
+    "purpose",
+    "authoritative_doc",
+    "schema",
+    "invariants",
+    "enums",
+    "host_status",
+    "candidate_topology",
+    "capabilities",
+    "consumers_with_zero_writer_capabilities",
+    "forbidden_writer_invocation_tokens"
+  ],
+  "properties": {
+    "schema_version": {"const": "writer_capability_ownership_schema_v1"},
+    "contract_version": {"const": "v1"},
+    "purpose": {"type": "string", "minLength": 1},
+    "authoritative_doc": {"type": "string", "minLength": 1},
+    "schema": {"type": "string", "minLength": 1},
+    "invariants": {"type": "object"},
+    "enums": {"type": "object"},
+    "host_status": {"type": "object"},
+    "candidate_topology": {"type": "object"},
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/capability"}
+    },
+    "consumers_with_zero_writer_capabilities": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "forbidden_writer_invocation_tokens": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    }
+  },
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability_id",
+        "kind",
+        "capability_identity",
+        "wrapper",
+        "service",
+        "timer",
+        "systemd_unit",
+        "timer_unit",
+        "committed_unit_binding",
+        "authorization_guard",
+        "lock",
+        "cadence",
+        "database_writes",
+        "artifact_publications",
+        "status_publications",
+        "downstream_state_changes",
+        "wrappers_invoked",
+        "modules_invoked",
+        "account_or_reporting_coupling",
+        "evaluated_separately",
+        "candidate_host",
+        "selected_host",
+        "acceptance_host",
+        "acceptance_status",
+        "production_runtime_owner",
+        "production_authorization_status",
+        "runtime_lifecycle",
+        "production_decision_evidence",
+        "observed_runtime_state",
+        "historical_runtime_assignment"
+      ],
+      "properties": {
+        "capability_id": {"type": "string"},
+        "kind": {"enum": ["public_market_data_writer", "market_only_chain"]},
+        "capability_identity": {"type": "string", "minLength": 1},
+        "wrapper": {"type": "string", "minLength": 1},
+        "service": {"type": "string", "minLength": 1},
+        "timer": {"type": "string", "minLength": 1},
+        "systemd_unit": {"type": "string", "minLength": 1},
+        "timer_unit": {"type": "string", "minLength": 1},
+        "committed_unit_binding": {"$ref": "#/$defs/unit_binding"},
+        "authorization_guard": {"$ref": "#/$defs/authorization_guard"},
+        "lock": {"$ref": "#/$defs/lock"},
+        "cadence": {"type": "string", "minLength": 1},
+        "database_writes": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "artifact_publications": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "status_publications": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "downstream_state_changes": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "wrappers_invoked": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "modules_invoked": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "account_or_reporting_coupling": {"type": "boolean"},
+        "evaluated_separately": {"type": "boolean"},
+        "evaluated_separately_reason": {"type": "string"},
+        "intervals": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "candidate_host": {"enum": ["devlap", "gurkdb", "odroid", "UNASSIGNED"]},
+        "selected_host": {"enum": ["devlap", "gurkdb", "odroid", "UNASSIGNED"]},
+        "acceptance_host": {"enum": ["devlap", "gurkdb", "odroid", "UNASSIGNED"]},
+        "acceptance_status": {"enum": ["UNASSIGNED", "PENDING", "ACCEPTED", "REJECTED", "SUPERSEDED"]},
+        "production_runtime_owner": {"enum": ["devlap", "gurkdb", "odroid", "UNASSIGNED"]},
+        "production_authorization_status": {"enum": ["UNASSIGNED", "SELECTED_PENDING_PREFLIGHT", "PREFLIGHT_PASSED", "ACCEPTED_PENDING_CUTOVER", "AUTHORIZED", "SUPERSEDED"]},
+        "runtime_lifecycle": {"enum": ["UNASSIGNED", "SELECTED_PENDING_PREFLIGHT", "PREFLIGHT_PASSED", "ACCEPTED_PENDING_CUTOVER", "AUTHORIZED_INACTIVE", "ACTIVE", "SUPERSEDED"]},
+        "production_decision_evidence": {"type": "string"},
+        "observed_runtime_state": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/observed_runtime_state"}
+        },
+        "historical_runtime_assignment": {
+          "anyOf": [
+            {"type": "null"},
+            {"$ref": "#/$defs/historical_runtime_assignment"}
+          ]
+        }
+      }
+    },
+    "unit_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host_bound_candidate_artifact", "condition_host", "user", "working_directory"],
+      "properties": {
+        "host_bound_candidate_artifact": {"type": "boolean"},
+        "condition_host": {"enum": ["devlap", "gurkdb", "odroid"]},
+        "user": {"type": "string", "minLength": 1},
+        "working_directory": {"type": "string", "minLength": 1}
+      }
+    },
+    "authorization_guard": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["module", "authorization_file", "required"],
+      "properties": {
+        "module": {"const": "src.operations.verify_writer_capability_authorization_v1"},
+        "authorization_file": {"type": "string", "minLength": 1},
+        "required": {"type": "boolean"}
+      }
+    },
+    "lock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "scope"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "scope": {"const": "HOST_LOCAL"}
+      }
+    },
+    "observed_runtime_state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "host",
+        "unit",
+        "unit_path",
+        "installed_at_observation",
+        "enabled_at_observation",
+        "active_at_observation",
+        "observed_at_utc",
+        "observed_at_precision",
+        "current_state",
+        "authorization_status",
+        "runtime_state_classification",
+        "evidence_source"
+      ],
+      "properties": {
+        "host": {"enum": ["devlap", "gurkdb", "odroid"]},
+        "unit": {"type": "string", "minLength": 1},
+        "unit_path": {"type": "string", "minLength": 1},
+        "installed_at_observation": {"type": "boolean"},
+        "enabled_at_observation": {"type": "boolean"},
+        "active_at_observation": {"type": "boolean"},
+        "observed_at_utc": {"type": "string", "minLength": 1},
+        "observed_at_precision": {"enum": ["exact", "approximate_minute", "date_only"]},
+        "current_state": {"enum": ["UNVERIFIED", "INACTIVE_VERIFIED", "ACTIVE_OBSERVED", "RETIRED_VERIFIED"]},
+        "authorization_status": {"enum": ["UNASSIGNED", "AUTHORIZED", "SUPERSEDED"]},
+        "runtime_state_classification": {"enum": ["NONE_OBSERVED", "OBSERVED_LEGACY_RUNTIME_PENDING_CONTAINMENT", "AUTHORIZED_RUNTIME_OBSERVED", "RETIRED_RUNTIME_VERIFIED"]},
+        "evidence_source": {"type": "string", "minLength": 1}
+      }
+    },
+    "historical_runtime_assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "status", "source", "reason", "preserved_evidence", "grants_current_authority"],
+      "properties": {
+        "host": {"enum": ["devlap", "gurkdb", "odroid"]},
+        "status": {"const": "SUPERSEDED"},
+        "source": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1},
+        "preserved_evidence": {"type": "string", "minLength": 1},
+        "grants_current_authority": {"const": false}
+      }
+    }
+  }
+}

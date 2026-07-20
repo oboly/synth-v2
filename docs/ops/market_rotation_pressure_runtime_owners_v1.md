@@ -2,19 +2,19 @@
 
 ## Status
 
-**CLOSED — host activation and three-cycle acceptance PASS.** Both systemd
-units are installed, enabled, and active on their respective hosts, and three
-consecutive real hourly writer(:20 UTC)→publisher(:35 UTC) cycles have been
-independently verified against per-invocation timer-origin evidence (not
-`TriggeredBy=` alone). See "Host Activation & Multi-Cycle Acceptance
-Evidence" below for the full record.
+**HISTORICAL ACCEPTANCE RECORD — production authorization SUPERSEDED.** The
+devlap writer and Odroid publisher were previously observed installed, enabled,
+and active, and three consecutive real hourly writer(:20 UTC)→publisher(:35 UTC)
+cycles were independently verified against per-invocation timer-origin evidence
+(not `TriggeredBy=` alone). That remains valid acceptance and installed-runtime
+evidence, not current production authorization.
 
 This closes step 3 ("Separate host acceptance") of the Lane C operational
 sequence recorded in `docs/todo/README.md`. This document itself remains the
 repository record for step 2 ("Separate Runtime Owner PR").
 
-No host systemd unit has been changed by the 2026-07-18 repository-only public
-market-data ownership correction.
+No host systemd unit has been changed by this repository-only public market-data
+ownership correction.
 
 ## 2026-07-19 production-ownership reset (audit context, not authorization)
 
@@ -31,35 +31,50 @@ implication that this acceptance made devlap the canonical
 market_rotation_pressure.acceptance_host=devlap
 market_rotation_pressure.acceptance_status=ACCEPTED
 market_rotation_pressure.production_runtime_owner=UNASSIGNED
-market_rotation_pressure.production_owner_status=UNASSIGNED
+market_rotation_pressure.production_authorization_status=UNASSIGNED
 market_rotation_pressure.production_decision_evidence=""
 historical_runtime_assignment: host=devlap source=PR #100/#101 status=SUPERSEDED
+observed_runtime_state:
+  host=devlap
+  unit=synth-market-rotation-pressure-writer.timer
+  installed_at_observation=true
+  enabled_at_observation=true
+  active_at_observation=true
+  observed_at_utc=2026-07-14T18:56:00Z
+  observed_at_precision=approximate_minute
+  current_state=UNVERIFIED
+  authorization_status=SUPERSEDED
+  runtime_state_classification=OBSERVED_LEGACY_RUNTIME_PENDING_CONTAINMENT
 ```
 
-The acceptance record, the three-cycle evidence, and the fact that devlap has or
-had an installed active timer describe acceptance and current installed-host
-state only. They do not constitute continuing canonical production authorization;
-a production owner is assigned only by a separate, explicitly evidenced
-host-selection decision. The "Ownership" section below is retained as the
-acceptance/installed-host record under that reset framing.
+The acceptance record, the three-cycle evidence, and the fact that devlap was
+last observed with an installed active timer describe acceptance and observed
+runtime state only. Current state is `UNVERIFIED`; canonical authorization is
+absent. A production owner is assigned only by a separate, explicitly evidenced
+host-selection and cutover decision.
 
-## Ownership
+An installed timer may continue running operationally even after canonical
+authorization is reset. Repository correction does not stop that timer.
+Containment requires a separately authorized host action.
+
+## Historical Runtime Roles
 
 ```text
 devlap (host: devlap, user: gurk):
-  owns rotation history ingestion and persisted rotation pressure writes
+  historical acceptance host for rotation history ingestion and persisted
+  rotation pressure writes; production authorization is SUPERSEDED
   scripts/run_market_rotation_pressure_once.sh --write-db
   -> src.research.run_market_rotation_history_v1 --write-db
   -> src.research.run_market_rotation_pressure_v1 --write-db
 
 Odroid (host: odroid, user: theone):
-  owns read-only publication of persisted rotation pressure
+  historical read-only publication host for persisted rotation pressure
   scripts/odroid/run_market_rotation_pressure_dashboard_render_once.sh
   -> src.reporting.run_market_rotation_pressure_dashboard_v1
 ```
 
-The writer and publisher are separate runtime owners on separate hosts, with
-separate systemd units and separate timers. Neither unit declares a
+The writer and publisher were implemented as separate runtime roles on separate
+hosts, with separate systemd units and separate timers. Neither unit declares a
 cross-host or cross-service `Requires=`/`After=` dependency. No SSH
 orchestration is introduced by this lane.
 
@@ -91,7 +106,7 @@ hardening remain intact.
 
 ## Evidence
 
-### Accepted production evidence (devlap writer)
+### Accepted writer evidence (devlap writer)
 
 - devlap writer acceptance: PASS
 - resolved pressure source snapshots:
@@ -103,7 +118,7 @@ hardening remain intact.
 - duplicate and idempotency audits: PASS
 - unrelated writes: none
 
-### Accepted production evidence (Odroid publisher)
+### Accepted publisher evidence (Odroid publisher)
 
 - Odroid read-only publisher acceptance: PASS
 
@@ -122,9 +137,10 @@ found no existing unit that invokes:
 - `run_market_rotation_history_v1`
 - `run_market_rotation_pressure_v1`
 
-The only existing devlap-owned market chain unit is `synth-chain-4h`
+The existing devlap-bound market chain artifact is `synth-chain-4h`
 (`deploy/systemd/synth-chain-4h.service` / `.timer`), a 4-hourly market-only
-chain unrelated to hourly rotation pressure; it is not modified by this task.
+chain unrelated to hourly rotation pressure; its canonical production owner is
+also `UNASSIGNED`.
 
 Odroid (`ssh odroid 'systemctl --user list-timers --all'`,
 `systemctl --user list-unit-files'`, and equivalent system-level queries):
@@ -190,9 +206,9 @@ writer well before the top of the following cycle.
 Required relationship:
 
 ```text
-hourly source data available from the devlap candle owner
+hourly source data available from the separately authorized candle capability
 -> safety margin
--> devlap pressure writer:            HH:20:00 UTC
+-> devlap historical pressure writer: HH:20:00 UTC
 -> additional separation
 -> Odroid read-only publisher:        HH:35:00 UTC
 ```
@@ -210,9 +226,9 @@ before the writer under normal `RandomizedDelaySec` bounds.
 
 ## Installation Commands
 
-These commands were executed as the separate, explicitly approved
-host-activation operation. See "Host Activation & Multi-Cycle Acceptance
-Evidence" below for the resulting deployed commits and timer state.
+These commands are historical evidence for the superseded devlap/Odroid
+activation. Do not treat them as generic rollout instructions. A future rollout
+must follow `docs/ops/writer_capability_host_ownership_contract_v1.md`.
 
 ### Devlap installation
 
@@ -267,7 +283,7 @@ Before any enablement:
 - existing HTML/JSON web artifact baseline captured on Odroid before first
   enablement.
 
-## Activation Order
+## Historical Activation Order
 
 ```text
 1. install and accept devlap writer            -- DONE
@@ -289,14 +305,16 @@ below for the complete record.
 - Odroid: `4dce01998328d7215d40451e77eb5e121d8483d3` (origin/main, clean
   worktree, fast-forwarded from `84c78162a5da8c6b4defb1aa43f22c8b402f0347`)
 
-### Installed/enabled/active timer evidence
+### Last Observed Installed/Enabled/Active Timer Evidence
 
-- `synth-market-rotation-pressure-writer.timer` — devlap — installed,
+- `synth-market-rotation-pressure-writer.timer` — devlap — last observed
+  installed,
   `enabled`, `active`; `OnCalendar=*:20:00 UTC`, `RandomizedDelaySec=180`,
   `User=gurk`, `WorkingDirectory=/home/gurk/projects/synth-v2`; `ExecStart`
   invokes only `scripts/run_market_rotation_pressure_once.sh --write-db`; no
   remote/reporting/Profit Plan/broker reference.
-- `synth-market-rotation-pressure-publisher.timer` — Odroid — installed,
+- `synth-market-rotation-pressure-publisher.timer` — Odroid — last observed
+  installed,
   `enabled`, `active`; `OnCalendar=*:35:00 UTC`, `RandomizedDelaySec=180`,
   `User=theone`, `WorkingDirectory=/home/theone/projects/synth-v2`;
   `ExecStart` invokes only

@@ -1,6 +1,6 @@
 # Market Candle Freshness v1
 
-The canonical host-neutral wrapper keeps `obs_market_candle` fresh for:
+The public candle writer keeps `obs_market_candle` fresh for:
 
 - `15m` with a 72-hour refresh window;
 - `1h` with a 168-hour window;
@@ -8,24 +8,40 @@ The canonical host-neutral wrapper keeps `obs_market_candle` fresh for:
 - `1d` with a 2160-hour window;
 - `1w` with a 2016-hour window.
 
-Canonical runtime owner:
+## Ownership State
 
 ```text
-host=devlap
+capability_id=public_candle_freshness
+candidate_host=gurkdb
+selected_host=UNASSIGNED
+acceptance_host=UNASSIGNED
+acceptance_status=UNASSIGNED
+production_runtime_owner=UNASSIGNED
+production_authorization_status=UNASSIGNED
+runtime_lifecycle=UNASSIGNED
+observed_runtime_state=[]
+```
+
+The committed service and timer below are devlap-bound candidate artifacts, not
+host-neutral production configuration:
+
+```text
 timer=deploy/systemd/synth-market-candle-freshness-writer.timer
 service=deploy/systemd/synth-market-candle-freshness-writer.service
 wrapper=scripts/run_market_candle_freshness_once.sh
 module=src.etl.bitvavo.run_candles_etl
 lock=/tmp/synth-market-candle-freshness-writer-v1.lock
-owner=devlap-public-market-data
+ConditionHost=devlap
+User=gurk
+WorkingDirectory=/home/gurk/projects/synth-v2
 ```
 
-The wrapper reuses the existing ETL and canonical `obs_market_candle` upserts;
-it does not duplicate ETL logic. Refreshes remain idempotent. Weekly semantics
-remain Bitvavo-native `1W`, aligned to Monday 00:00 UTC, with no incomplete
-current-week close persisted.
+An installed timer may continue running operationally even after canonical
+authorization is reset. Repository correction does not stop that timer.
+Containment requires a separately authorized host action.
 
-The former Odroid user-unit templates are removed. The retained
+The wrapper reuses the existing ETL and canonical `obs_market_candle` upserts;
+it does not duplicate ETL logic. The retained
 `scripts/odroid/run_market_candle_freshness_once.sh` path is a fail-closed
 retirement stub and cannot invoke ETL. Reporting and account/render runners
 must consume persisted candles and expose staleness rather than starting a
@@ -48,5 +64,6 @@ systemd-analyze verify deploy/systemd/synth-market-candle-freshness-writer.servi
 systemd-analyze verify deploy/systemd/synth-market-candle-freshness-writer.timer
 ```
 
-See `docs/ops/public_market_data_runtime_owners_v1.md` for exact host rollout
-and rollback order. No timer is activated by this repository change.
+See `docs/ops/writer_capability_host_ownership_contract_v1.md` and
+`docs/ops/public_market_data_runtime_owners_v1.md` for selection, cutover, and
+rollback order.

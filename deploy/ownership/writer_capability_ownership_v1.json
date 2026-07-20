@@ -1,16 +1,29 @@
 {
+  "schema_version": "writer_capability_ownership_schema_v1",
   "contract_version": "v1",
-  "purpose": "Machine-readable source of truth for public market-data writer-capability ownership. Separates acceptance_host from production_runtime_owner and stores a neutral, host-independent owner identity per capability. A successful acceptance run proves the software/runtime on a host; it does NOT by itself assign or canonize permanent production ownership.",
+  "purpose": "Machine-readable source of truth for writer-capability host ownership. Acceptance evidence, observed installed runtime state, and historical runtime assignment are audit facts only; they do not grant production authorization.",
   "authoritative_doc": "docs/ops/writer_capability_host_ownership_contract_v1.md",
+  "schema": "deploy/ownership/writer_capability_ownership_v1.schema.json",
   "invariants": {
-    "acceptance_host_is_not_production_owner": true,
-    "exactly_one_production_owner_per_capability": true,
-    "production_owner_requires_separate_decision_evidence": true,
-    "acceptance_evidence_cannot_satisfy_production_decision": true,
-    "historical_runtime_assignment_is_not_active_ownership": true,
-    "owner_identity_is_host_independent": true,
+    "at_most_one_authorized_active_owner_per_capability": true,
+    "exactly_one_authorized_active_owner_required_when_lifecycle_active": true,
+    "unassigned_capability_must_have_zero_authorized_owners": true,
+    "historical_or_observed_runtime_state_does_not_grant_authorization": true,
+    "acceptance_does_not_grant_production_authorization": true,
     "consumers_reporting_account_runtimes_own_zero_writer_capabilities": true,
     "all_production_runtime_owners_unassigned_by_this_correction": true
+  },
+  "enums": {
+    "host_id": ["devlap", "gurkdb", "odroid", "UNASSIGNED"],
+    "host_status": ["UNVERIFIED", "CANDIDATE", "SELECTED", "ACCEPTED", "AUTHORIZED", "ACTIVE", "SUPERSEDED"],
+    "acceptance_status": ["UNASSIGNED", "PENDING", "ACCEPTED", "REJECTED", "SUPERSEDED"],
+    "production_authorization_status": ["UNASSIGNED", "SELECTED_PENDING_PREFLIGHT", "PREFLIGHT_PASSED", "ACCEPTED_PENDING_CUTOVER", "AUTHORIZED", "SUPERSEDED"],
+    "runtime_lifecycle": ["UNASSIGNED", "SELECTED_PENDING_PREFLIGHT", "PREFLIGHT_PASSED", "ACCEPTED_PENDING_CUTOVER", "AUTHORIZED_INACTIVE", "ACTIVE", "SUPERSEDED"],
+    "observed_current_state": ["UNVERIFIED", "INACTIVE_VERIFIED", "ACTIVE_OBSERVED", "RETIRED_VERIFIED"],
+    "observed_authorization_status": ["UNASSIGNED", "AUTHORIZED", "SUPERSEDED"],
+    "observed_runtime_classification": ["NONE_OBSERVED", "OBSERVED_LEGACY_RUNTIME_PENDING_CONTAINMENT", "AUTHORIZED_RUNTIME_OBSERVED", "RETIRED_RUNTIME_VERIFIED"],
+    "historical_assignment_status": ["SUPERSEDED"],
+    "capability_kind": ["public_market_data_writer", "market_only_chain"]
   },
   "host_status": {
     "gurkdb": "UNVERIFIED",
@@ -18,104 +31,260 @@
     "odroid": "UNVERIFIED"
   },
   "candidate_topology": {
-    "note": "Preferred direction only, not a proven outcome. Each role requires separate, technically justified, operationally accepted evidence.",
-    "gurkdb": ["light account-agnostic public-market-data writers", "possible acceptance host for those same writers"],
-    "odroid": ["account runtimes", "persisted-state consumers", "dashboards and publication"],
-    "devlap": ["development", "tests", "optional controlled acceptance", "no implicit permanent production ownership"]
+    "note": "Preferred direction only, not production authorization. Each role requires explicit host selection, read-only preflight, controlled acceptance, legacy-runtime inventory and containment, separate production authorization, activation, observation, and at-most-one-owner proof.",
+    "gurkdb": ["candidate host for light account-agnostic public market-data writers"],
+    "odroid": ["candidate host for account runtimes, persisted-state consumers, dashboards, and publication"],
+    "devlap": ["development host", "candidate acceptance host only", "historical Rotation Pressure runtime assignment SUPERSEDED"]
   },
-  "writer_capabilities": [
+  "capabilities": [
     {
       "capability_id": "public_price_snapshot",
       "kind": "public_market_data_writer",
-      "owner_identity": "public-price-snapshot-writer",
-      "owner_identity_env": "SYNTH_MARKET_PRICE_WRITER_OWNER",
+      "capability_identity": "public-price-snapshot-writer",
       "wrapper": "scripts/run_market_price_snapshot_once.sh",
       "service": "deploy/systemd/synth-market-price-snapshot-writer.service",
       "timer": "deploy/systemd/synth-market-price-snapshot-writer.timer",
-      "lock": "/tmp/synth-market-price-snapshot-writer-v1.lock",
+      "systemd_unit": "synth-market-price-snapshot-writer.service",
+      "timer_unit": "synth-market-price-snapshot-writer.timer",
+      "committed_unit_binding": {
+        "host_bound_candidate_artifact": true,
+        "condition_host": "devlap",
+        "user": "gurk",
+        "working_directory": "/home/gurk/projects/synth-v2"
+      },
+      "authorization_guard": {
+        "module": "src.operations.verify_writer_capability_authorization_v1",
+        "authorization_file": "/etc/synth/writer-capability-runtime-authorization-v1.json",
+        "required": true
+      },
+      "lock": {
+        "path": "/tmp/synth-market-price-snapshot-writer-v1.lock",
+        "scope": "HOST_LOCAL"
+      },
       "cadence": "*-*-* *:00/5:00 UTC",
-      "writes": ["market_price_snapshot"],
+      "database_writes": ["market_price_snapshot"],
+      "artifact_publications": [],
+      "status_publications": [],
+      "downstream_state_changes": ["persisted public price freshness for consumers"],
+      "wrappers_invoked": ["scripts/run_market_price_snapshot_once.sh"],
+      "modules_invoked": ["src.market_data.run_market_price_snapshot_v1"],
       "account_or_reporting_coupling": false,
       "evaluated_separately": false,
+      "candidate_host": "gurkdb",
+      "selected_host": "UNASSIGNED",
       "acceptance_host": "UNASSIGNED",
       "acceptance_status": "UNASSIGNED",
       "production_runtime_owner": "UNASSIGNED",
-      "production_owner_status": "UNASSIGNED",
+      "production_authorization_status": "UNASSIGNED",
+      "runtime_lifecycle": "UNASSIGNED",
       "production_decision_evidence": "",
-      "preferred_candidate_host": "gurkdb",
-      "candidate_hosts": ["gurkdb", "odroid", "devlap"]
+      "observed_runtime_state": [],
+      "historical_runtime_assignment": null
     },
     {
       "capability_id": "public_candle_freshness",
       "kind": "public_market_data_writer",
-      "owner_identity": "public-candle-freshness-writer",
-      "owner_identity_env": "SYNTH_MARKET_CANDLE_WRITER_OWNER",
+      "capability_identity": "public-candle-freshness-writer",
       "wrapper": "scripts/run_market_candle_freshness_once.sh",
       "service": "deploy/systemd/synth-market-candle-freshness-writer.service",
       "timer": "deploy/systemd/synth-market-candle-freshness-writer.timer",
-      "lock": "/tmp/synth-market-candle-freshness-writer-v1.lock",
+      "systemd_unit": "synth-market-candle-freshness-writer.service",
+      "timer_unit": "synth-market-candle-freshness-writer.timer",
+      "committed_unit_binding": {
+        "host_bound_candidate_artifact": true,
+        "condition_host": "devlap",
+        "user": "gurk",
+        "working_directory": "/home/gurk/projects/synth-v2"
+      },
+      "authorization_guard": {
+        "module": "src.operations.verify_writer_capability_authorization_v1",
+        "authorization_file": "/etc/synth/writer-capability-runtime-authorization-v1.json",
+        "required": true
+      },
+      "lock": {
+        "path": "/tmp/synth-market-candle-freshness-writer-v1.lock",
+        "scope": "HOST_LOCAL"
+      },
       "cadence": "minutes 02,17,32,47 UTC",
-      "writes": ["obs_market_candle"],
-      "intervals": ["15m", "1h", "4h", "1d", "1w"],
+      "database_writes": ["obs_market_candle"],
+      "artifact_publications": [],
+      "status_publications": [],
+      "downstream_state_changes": ["persisted candle freshness for 15m,1h,4h,1d,1w consumers"],
+      "wrappers_invoked": ["scripts/run_market_candle_freshness_once.sh"],
+      "modules_invoked": ["src.etl.bitvavo.run_candles_etl"],
       "account_or_reporting_coupling": false,
       "evaluated_separately": false,
+      "intervals": ["15m", "1h", "4h", "1d", "1w"],
+      "candidate_host": "gurkdb",
+      "selected_host": "UNASSIGNED",
       "acceptance_host": "UNASSIGNED",
       "acceptance_status": "UNASSIGNED",
       "production_runtime_owner": "UNASSIGNED",
-      "production_owner_status": "UNASSIGNED",
+      "production_authorization_status": "UNASSIGNED",
+      "runtime_lifecycle": "UNASSIGNED",
       "production_decision_evidence": "",
-      "preferred_candidate_host": "gurkdb",
-      "candidate_hosts": ["gurkdb", "odroid", "devlap"]
+      "observed_runtime_state": [],
+      "historical_runtime_assignment": null
     },
     {
       "capability_id": "market_rotation_pressure",
       "kind": "public_market_data_writer",
-      "owner_identity": "market-rotation-pressure-writer",
-      "owner_identity_env": "SYNTH_ROTATION_PRESSURE_WRITER_OWNER",
+      "capability_identity": "market-rotation-pressure-writer",
       "wrapper": "scripts/run_market_rotation_pressure_once.sh",
       "service": "deploy/systemd/synth-market-rotation-pressure-writer.service",
-      "timer": "docs/ops/systemd (installed host-side) synth-market-rotation-pressure-writer.timer",
-      "lock": "/tmp/synth-market-rotation-pressure-v1.lock",
+      "timer": "deploy/systemd/synth-market-rotation-pressure-writer.timer",
+      "systemd_unit": "synth-market-rotation-pressure-writer.service",
+      "timer_unit": "synth-market-rotation-pressure-writer.timer",
+      "committed_unit_binding": {
+        "host_bound_candidate_artifact": true,
+        "condition_host": "devlap",
+        "user": "gurk",
+        "working_directory": "/home/gurk/projects/synth-v2"
+      },
+      "authorization_guard": {
+        "module": "src.operations.verify_writer_capability_authorization_v1",
+        "authorization_file": "/etc/synth/writer-capability-runtime-authorization-v1.json",
+        "required": true
+      },
+      "lock": {
+        "path": "/tmp/synth-market-rotation-pressure-v1.lock",
+        "scope": "HOST_LOCAL"
+      },
       "cadence": "*:20:00 UTC",
-      "writes": ["market_rotation_history", "market_rotation_pressure"],
+      "database_writes": ["market_rotation_history", "market_rotation_pressure"],
+      "artifact_publications": [],
+      "status_publications": [],
+      "downstream_state_changes": ["persisted hourly Rotation Pressure market state"],
+      "wrappers_invoked": ["scripts/run_market_rotation_pressure_once.sh"],
+      "modules_invoked": ["src.research.run_market_rotation_history_v1", "src.research.run_market_rotation_pressure_v1"],
       "account_or_reporting_coupling": false,
       "evaluated_separately": false,
+      "candidate_host": "gurkdb",
+      "selected_host": "UNASSIGNED",
       "acceptance_host": "devlap",
       "acceptance_status": "ACCEPTED",
       "production_runtime_owner": "UNASSIGNED",
-      "production_owner_status": "UNASSIGNED",
+      "production_authorization_status": "UNASSIGNED",
+      "runtime_lifecycle": "UNASSIGNED",
       "production_decision_evidence": "",
+      "observed_runtime_state": [
+        {
+          "host": "devlap",
+          "unit": "synth-market-rotation-pressure-writer.timer",
+          "unit_path": "deploy/systemd/synth-market-rotation-pressure-writer.timer",
+          "installed_at_observation": true,
+          "enabled_at_observation": true,
+          "active_at_observation": true,
+          "observed_at_utc": "2026-07-14T18:56:00Z",
+          "observed_at_precision": "approximate_minute",
+          "current_state": "UNVERIFIED",
+          "authorization_status": "SUPERSEDED",
+          "runtime_state_classification": "OBSERVED_LEGACY_RUNTIME_PENDING_CONTAINMENT",
+          "evidence_source": "docs/ops/market_rotation_pressure_runtime_owners_v1.md#installedenabledactive-timer-evidence"
+        }
+      ],
       "historical_runtime_assignment": {
         "host": "devlap",
-        "source": "PR #100 / PR #101",
         "status": "SUPERSEDED",
-        "reason": "The devlap host assignment was derived from the accepted implementation/acceptance sequence without a separately confirmed infrastructure host-selection decision. Acceptance and current installed-host state are historical audit context, not continuing canonical production authorization.",
-        "preserved_evidence": "Three real per-invocation-verified hourly writer->publisher cycles, idempotency/reconciliation audits, and installed active timer state remain recorded in docs/ops/market_rotation_pressure_runtime_owners_v1.md. These prove acceptance and installed-host state; they do NOT satisfy production_decision_evidence."
-      },
-      "preferred_candidate_host": "gurkdb",
-      "candidate_hosts": ["gurkdb", "odroid", "devlap"]
+        "source": "PR #100 / PR #101",
+        "reason": "The devlap assignment was derived from implementation acceptance and observed installed runtime state without a separately evidenced production host-selection and cutover decision.",
+        "preserved_evidence": "Three real per-invocation-verified hourly writer-to-publisher cycles, idempotency/reconciliation audits, and installed active timer state are preserved in docs/ops/market_rotation_pressure_runtime_owners_v1.md; they do not satisfy production_decision_evidence.",
+        "grants_current_authority": false
+      }
     },
     {
       "capability_id": "native_short_4h_chain",
       "kind": "market_only_chain",
-      "owner_identity": "native-short-4h-chain",
-      "owner_identity_env": "SYNTH_NATIVE_SHORT_4H_CHAIN_OWNER",
+      "capability_identity": "native-short-4h-chain",
       "wrapper": "scripts/run_chain_4h.sh",
       "service": "deploy/systemd/synth-chain-4h.service",
       "timer": "deploy/systemd/synth-chain-4h.timer",
-      "lock": "/tmp/synth_chain_4h.lock",
+      "systemd_unit": "synth-chain-4h.service",
+      "timer_unit": "synth-chain-4h.timer",
+      "committed_unit_binding": {
+        "host_bound_candidate_artifact": true,
+        "condition_host": "devlap",
+        "user": "gurk",
+        "working_directory": "/home/gurk/projects/synth-v2"
+      },
+      "authorization_guard": {
+        "module": "src.operations.verify_writer_capability_authorization_v1",
+        "authorization_file": "/etc/synth/writer-capability-runtime-authorization-v1.json",
+        "required": true
+      },
+      "lock": {
+        "path": "/tmp/synth_chain_4h.lock",
+        "scope": "HOST_LOCAL"
+      },
       "cadence": "00,04,08,12,16,20:12:00 UTC",
-      "writes": ["native_short_scope_status", "native_short_map_status", "native_short_fib_context_snapshot (published artifact)"],
+      "database_writes": [
+        "native_short_scope_status",
+        "native_short_map_status",
+        "feat_candle",
+        "signal_engine_state",
+        "advice_state",
+        "ranking_state",
+        "asset_interval_quality_snapshot",
+        "selection_state",
+        "execution_zone_context",
+        "trade_setup_filter_observation",
+        "trade_setup_filter_policy_preview",
+        "paper_advice_observation",
+        "strategy_runtime_snapshot"
+      ],
+      "artifact_publications": [
+        "data/public/native_short/fib_context_snapshot/current.json",
+        "data/public/native_short/fib_context_snapshot/current.manifest.json",
+        "data/public/native_short/fib_context_snapshot/snapshots/*.json"
+      ],
+      "status_publications": [
+        "native SHORT repository source identity",
+        "native SHORT map lifecycle status",
+        "native SHORT fib context snapshot manifest",
+        "strategy runtime snapshot status"
+      ],
+      "downstream_state_changes": [
+        "market-only candidate ranking state",
+        "execution-zone context for review",
+        "trade setup filter observations",
+        "paper advice observations",
+        "strategy runtime freshness state"
+      ],
+      "wrappers_invoked": [
+        "scripts/run_chain_4h.sh",
+        "scripts/run_native_short_scope_status_chain_once.sh"
+      ],
+      "modules_invoked": [
+        "src.market_data.native_short_repository_source_identity_v1",
+        "src.operations.run_persisted_market_price_freshness_v1",
+        "src.operations.run_persisted_market_candle_freshness_v1",
+        "src.market_data.run_native_short_scope_status_chain_v1",
+        "src.market_data.run_native_short_fib_context_snapshot_v1",
+        "src.features.run_feat_candle",
+        "src.signal_engine.run_signal_state_etl",
+        "src.advice.run_advice_engine",
+        "src.ranking.run_ranking_engine",
+        "src.measurement.run_asset_interval_quality_snapshot",
+        "src.selection.run_selection_engine_v2",
+        "src.zone.run_zone_engine_v1",
+        "src.trade_setup_filter.run_trade_setup_filter_v1",
+        "src.research.run_trade_setup_filter_policy_preview_v1",
+        "src.advice.run_paper_advice_policy_v1",
+        "src.strategy_runtime.run_strategy_runtime_snapshot"
+      ],
       "account_or_reporting_coupling": false,
       "evaluated_separately": true,
-      "evaluated_separately_reason": "The 4h chain carries CPU, repository-source-identity, publication, and artifact dependencies distinct from the light DB writers. It must NOT be auto-moved with the database writers; CPU, repository, publication, and artifact dependencies are assessed on their own.",
+      "evaluated_separately_reason": "The 4h chain carries CPU, repository-source-identity, publication, artifact, and downstream market-state responsibilities distinct from the light DB writers. It must not be moved automatically with public-price or candle writers.",
+      "candidate_host": "UNASSIGNED",
+      "selected_host": "UNASSIGNED",
       "acceptance_host": "UNASSIGNED",
       "acceptance_status": "UNASSIGNED",
       "production_runtime_owner": "UNASSIGNED",
-      "production_owner_status": "UNASSIGNED",
+      "production_authorization_status": "UNASSIGNED",
+      "runtime_lifecycle": "UNASSIGNED",
       "production_decision_evidence": "",
-      "preferred_candidate_host": "UNASSIGNED",
-      "candidate_hosts": ["gurkdb", "odroid", "devlap"]
+      "observed_runtime_state": [],
+      "historical_runtime_assignment": null
     }
   ],
   "consumers_with_zero_writer_capabilities": [
@@ -133,6 +302,7 @@
     "scripts/run_chain_4h.sh",
     "scripts/run_native_short_scope_status_chain_once.sh",
     "src.market_data.run_native_short_scope_status_chain_v1",
+    "src.market_data.run_native_short_fib_context_snapshot_v1",
     "src.market_data.run_native_short_map_materializer_v1",
     "scripts/run_market_rotation_pressure_once.sh",
     "src.research.run_market_rotation_history_v1",

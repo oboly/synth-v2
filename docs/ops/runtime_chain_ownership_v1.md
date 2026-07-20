@@ -13,15 +13,17 @@ refresh.
 Host ownership is governed by the explicit per-capability contract in
 `docs/ops/writer_capability_host_ownership_contract_v1.md` and the registry
 `deploy/ownership/writer_capability_ownership_v1.json`. Each public
-market-data writer capability has exactly one `production_runtime_owner`,
-assigned only by explicit host selection plus acceptance (`UNASSIGNED` until
-then). The retired "devlap sole public market-data writer host" claim does not
-apply; devlap is a candidate/acceptance host, and gurkDB is a preferred
+market-data writer capability has at most one authorized active owner, and
+exactly one only when its lifecycle is `ACTIVE`. `UNASSIGNED` means no
+canonical production authorization; it does not prove no timer is installed or
+running. The retired "devlap sole public market-data writer host" claim does
+not apply; devlap is a candidate/acceptance host, and gurkDB is a preferred
 candidate, not a proven owner. The capability-level structural rules below are
 independent of which host is selected:
 
-- exactly one production owner per writer capability; no consumer, reporting,
-  or account runtime may run a public market-data writer or repair path
+- at most one authorized active production owner per writer capability; no
+  consumer, reporting, or account runtime may run a public market-data writer
+  or repair path
 - the `public_price_snapshot` capability owns
   `synth-market-price-snapshot-writer.timer`
 - the `public_candle_freshness` capability owns

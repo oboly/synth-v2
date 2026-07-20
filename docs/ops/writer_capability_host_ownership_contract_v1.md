@@ -2,282 +2,299 @@
 
 ## Status
 
-Repository and architecture correction only. **No host mutation, timer
+Repository and architecture correction only. No host mutation, timer
 activation, writer invocation, database mutation, deployment, or host selection
-is performed or implied by this document.** It defines the contract that must be
-followed before any of those steps happen.
+is performed or implied by this document.
 
 ```text
 host_mutations=0
 database_writes=0
 writer_invocations=0
 deployment=not_performed
-acceptance_host=UNASSIGNED
-production_runtime_owner=UNASSIGNED
-gurkDB=UNVERIFIED
-devlap=UNVERIFIED
-Odroid=UNVERIFIED
+systemctl_mutations=0
 ```
 
-## Why this document exists (historical correction)
+The machine-readable source of truth is
+`deploy/ownership/writer_capability_ownership_v1.json`; its schema is
+`deploy/ownership/writer_capability_ownership_v1.schema.json`; its executable
+semantic validator is
+`python -m src.operations.validate_writer_capability_ownership_v1`.
 
-Earlier repository state canonized:
+## Historical Correction
+
+Earlier repository state inferred:
 
 ```text
-devlap acceptance  =>  devlap permanent production owner
+devlap acceptance => devlap permanent production owner
 ```
 
-That inference was never a separate infrastructure decision. `devlap` was an
-acceptance/development convenience host, and the repository then documented it
-as the *sole public market-data database writer host* for every public
-market-data writer capability. A successful acceptance run proves the
-software/runtime on the host it ran on; it does **not** by itself select or
-canonize where production must permanently run.
+That inference is invalid. Acceptance proves a capability at one exact commit
+on one host. It does not select the permanent production runtime owner, and an
+installed or historically active timer does not grant current authority.
 
-This contract removes that implicit inference. Production ownership is now an
-explicit, separately evidenced decision, recorded per writer capability in the
-machine-readable registry:
+Current correction state:
 
 ```text
-deploy/ownership/writer_capability_ownership_v1.json
-```
-
-**No capability is assigned a `production_runtime_owner` by this correction.**
-All four public market-data writer capabilities (`public_price_snapshot`,
-`public_candle_freshness`, `market_rotation_pressure`, `native_short_4h_chain`)
-have `production_runtime_owner = UNASSIGNED` until an explicit host selection
-plus acceptance is separately recorded.
-
-`market_rotation_pressure` was previously assigned to devlap on the strength of
-its PR #100 / PR #101 acceptance and three-cycle runtime evidence. That assignment
-repeated the exact inference this contract eliminates
-(`acceptance => production owner`) and is reset. The acceptance and installed-host
-facts remain truthful and preserved as historical audit context, not current
-authorization:
-
-```text
-market_rotation_pressure.acceptance_host=devlap
-market_rotation_pressure.acceptance_status=ACCEPTED
+public_price_snapshot.production_runtime_owner=UNASSIGNED
+public_candle_freshness.production_runtime_owner=UNASSIGNED
 market_rotation_pressure.production_runtime_owner=UNASSIGNED
-market_rotation_pressure.production_owner_status=UNASSIGNED
-market_rotation_pressure.production_decision_evidence=""
-historical_runtime_assignment:
-  host=devlap
-  source=PR #100/#101
-  status=SUPERSEDED
-  reason=host assignment was derived from the accepted implementation sequence
-         without a separately confirmed infrastructure host-selection decision
+native_short_4h_chain.production_runtime_owner=UNASSIGNED
 ```
 
-Acceptance evidence, three-cycle runtime evidence, idempotency/reconciliation
-evidence, and the fact that devlap has or had an installed active timer describe
-acceptance and current installed-host state. They do **not** satisfy
-`production_decision_evidence` and do **not** grant continuing production
-ownership. See `docs/ops/market_rotation_pressure_runtime_owners_v1.md` for the
-preserved acceptance record.
-
-## Core concepts
+Rotation Pressure preserves historical facts without granting authority:
 
 ```text
-acceptance_host         host on which a writer capability is proven to run
-                        correctly at an exact commit and configuration.
-production_runtime_owner the single host authorized to run a writer capability
-                        on its production timer cadence.
-writer_capability       one market-only public-market-data write responsibility
-                        with exactly one production_runtime_owner.
-host_preflight          read-only host-readiness evaluation; proves nothing is
-                        installed, run, or written.
-runtime_acceptance      controlled, separately authorized proof of a writer
-                        capability on a chosen host at an exact commit.
+acceptance_host=devlap
+acceptance_status=ACCEPTED
+historical_runtime_assignment.host=devlap
+historical_runtime_assignment.status=SUPERSEDED
+production_decision_evidence=""
+observed_runtime_state=last_observed_active_on_devlap_current_state_UNVERIFIED
 ```
 
-Rules:
+An installed timer may continue running operationally even after canonical
+authorization is reset. Repository correction does not stop that timer.
+Containment requires a separately authorized host action.
 
-- `acceptance_host` and `production_runtime_owner` are separate roles.
-- An acceptance run never automatically decides where production permanently
-  runs.
-- The same host MAY hold both roles, but only when both decisions are
-  separately justified and recorded.
-- Exactly one active `production_runtime_owner` may exist per writer capability.
-- Reporting, dashboards, and account runtimes must never start a
-  public-market-data writer or a repair path.
-- Host choice must be explicit, technically justified, and operationally
-  accepted.
-
-## Writer-capability inventory
-
-Authoritative machine-readable form:
-`deploy/ownership/writer_capability_ownership_v1.json`. Summary:
-
-| capability_id | kind | neutral owner identity | wrapper | cadence | production owner |
-|---|---|---|---|---|---|
-| `public_price_snapshot` | public market-data writer | `public-price-snapshot-writer` | `scripts/run_market_price_snapshot_once.sh` | `*:00/5:00 UTC` | UNASSIGNED |
-| `public_candle_freshness` | public market-data writer | `public-candle-freshness-writer` | `scripts/run_market_candle_freshness_once.sh` | `:02,17,32,47 UTC` | UNASSIGNED |
-| `market_rotation_pressure` | public market-data writer | `market-rotation-pressure-writer` | `scripts/run_market_rotation_pressure_once.sh` | `:20 UTC` | UNASSIGNED (acceptance_host devlap, PR #100/#101, SUPERSEDED as production authorization) |
-| `native_short_4h_chain` | market-only chain | `native-short-4h-chain` | `scripts/run_chain_4h.sh` | `:12 after 4h close UTC` | UNASSIGNED |
-
-Per capability the registry records: current repository owner identity (neutral,
-host-independent), acceptance host + status, production owner + status, the
-separate production-decision evidence, DB/artifact writes, account/reporting
-coupling (must be `false`), cadence, lock, and candidate hosts. Unknown host
-facts remain `UNVERIFIED`.
-
-### Native SHORT 4h chain is evaluated separately
-
-`native_short_4h_chain` must **not** be moved automatically together with the
-light database writers. It carries CPU, repository-source-identity, publication,
-and artifact-manifest dependencies that the light writers do not. Its host
-selection assesses CPU, repository, publication, and artifact dependencies on
-their own merits.
-
-## Owner identity is host-independent
-
-Owner identity now names the *capability role*, never a host. The wrappers emit
-a neutral identity, overridable per capability:
+## Core Concepts
 
 ```text
-public_price_snapshot     SYNTH_MARKET_PRICE_WRITER_OWNER   default public-price-snapshot-writer
-public_candle_freshness   SYNTH_MARKET_CANDLE_WRITER_OWNER  default public-candle-freshness-writer
+candidate_host                 host being considered
+selected_host                  host selected for preparation, not authorized
+acceptance_host                host where controlled acceptance was proven
+acceptance_status              finite acceptance evidence state
+production_runtime_owner       host authorized to own the production cadence
+production_authorization_status finite authorization state
+runtime_lifecycle              finite lifecycle state for the capability
+observed_runtime_state         observed installed/running facts, not authority
+historical_runtime_assignment  superseded audit fact, not authority
 ```
 
-No wrapper, service description, or timer may encode a host name as the writer's
-identity. Host identity (systemd `User=` / `WorkingDirectory=`) is an *output of
-host selection*, assigned at cutover, not a canonical property of the capability.
-
-## Candidate topology (preference, not outcome)
+Lifecycle states:
 
 ```text
-gurkDB
-  light account-agnostic public-market-data writers
-  possibly acceptance for those same writers
-
-Odroid
-  account runtimes
-  persisted-state consumers
-  dashboards and publication
-
-devlap
-  development
-  tests
-  optional controlled acceptance
-  no implicit permanent production ownership
+UNASSIGNED
+SELECTED_PENDING_PREFLIGHT
+PREFLIGHT_PASSED
+ACCEPTED_PENDING_CUTOVER
+AUTHORIZED_INACTIVE
+ACTIVE
+SUPERSEDED
 ```
 
-This is a preferred direction only. gurkDB is a **preferred candidate, not a
-proven owner**. gurkDB must not be chosen solely because MariaDB runs there, and
-devlap must not be retained solely because it is currently documented. Odroid
-may remain or become a writer owner only when that is technically the best
-choice, not merely because runtimes already run there.
-
-## Host-selection contract
-
-Before a capability gains a `production_runtime_owner`:
-
-1. State the candidate host explicitly.
-2. Run the read-only host preflight (below) on that host; require PASS on all
-   measurable local checks; unresolved external facts stay `UNVERIFIED` until
-   proven.
-3. Record a technical justification (CPU/RAM/disk/network/artifact fit) for the
-   capability on that host.
-4. Obtain operational acceptance of that host for that capability.
-5. Only then record `production_runtime_owner` and the separate
-   `production_decision_evidence` in the registry.
-
-## Host preflight contract
-
-A generic, read-only preflight must check at least:
+Required invariants:
 
 ```text
-host identity
-OS and architecture
-CPU and load
-RAM and swap
-disk space and inodes
-Python and virtualenv
-deployment-artifact strategy
-MariaDB connectivity
-exchange API connectivity
-DNS
-NTP / time synchronization
-systemd
-journald / log rotation
-secrets and configuration
-locks and overlap protection
-runtime per writer
-resource usage per writer
-firewall / outbound connectivity
-rollback capability
+at_most_one_authorized_active_owner_per_capability=true
+exactly_one_authorized_active_owner_required_when_lifecycle_active=true
+unassigned_capability_must_have_zero_authorized_owners=true
+historical_or_observed_runtime_state_does_not_grant_authorization=true
+acceptance_does_not_grant_production_authorization=true
 ```
 
-A read-only preflight runner is provided:
+`UNASSIGNED` means no canonical production authorization. It does not mean no
+timer is installed or running on a host.
+
+## Lifecycle Rules
+
+`UNASSIGNED`:
+
+- `production_runtime_owner=UNASSIGNED`
+- `production_authorization_status=UNASSIGNED`
+- zero authorized owners
+- observed installed runtime, if any, must be non-authorized legacy state
+
+`SELECTED_PENDING_PREFLIGHT`, `PREFLIGHT_PASSED`, and
+`ACCEPTED_PENDING_CUTOVER`:
+
+- `selected_host` may be present
+- `production_runtime_owner` remains `UNASSIGNED`
+- no active authorization exists
+- host selection is not production authorization
+
+`AUTHORIZED_INACTIVE`:
+
+- exactly one `production_runtime_owner`
+- `production_authorization_status=AUTHORIZED`
+- separate production-decision evidence recorded
+- timer proven inactive before activation
+
+`ACTIVE`:
+
+- exactly one `production_runtime_owner`
+- `production_authorization_status=AUTHORIZED`
+- expected runtime observed active
+- at most one authorized active owner for the capability
+
+`SUPERSEDED`:
+
+- historical only
+- grants no current authority
+
+## Writer-Capability Inventory
+
+The registry records capability identity, host identity, acceptance status,
+authorization state, observed runtime facts, systemd artifacts, wrappers,
+modules, locks, database writes, artifact publications, and downstream state
+changes as separate fields.
+
+Summary:
+
+| capability_id | kind | wrapper | current owner | lifecycle |
+|---|---|---|---|---|
+| `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | UNASSIGNED | UNASSIGNED |
+| `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | UNASSIGNED | UNASSIGNED |
+| `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | UNASSIGNED | UNASSIGNED |
+| `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | UNASSIGNED | UNASSIGNED |
+
+Native SHORT remains independently evaluated from the light DB writers because
+it owns CPU-heavy chain stages, source-identity checks, DB writes beyond public
+price/candle tables, artifact publication, manifests, and downstream market
+state.
+
+## Owner Identity
+
+Wrapper log identity is immutable capability identity. It is not a host name,
+not an environment override, and not a substitute for hostname or production
+authorization.
+
+The following arbitrary identity override fields are forbidden:
+
+```text
+SYNTH_MARKET_PRICE_WRITER_OWNER
+SYNTH_MARKET_CANDLE_WRITER_OWNER
+SYNTH_ROTATION_PRESSURE_WRITER_OWNER
+SYNTH_NATIVE_SHORT_4H_CHAIN_OWNER
+```
+
+## Candidate Topology
+
+```text
+gurkDB  preferred candidate for light account-agnostic public market-data writers
+Odroid  candidate for account runtimes, persisted-state consumers, dashboards
+devlap  development and optional acceptance candidate; historical Rotation Pressure assignment SUPERSEDED
+```
+
+gurkDB is a preferred candidate, not a proven owner. devlap is a candidate or
+historical acceptance host, not the canonical sole owner.
+
+## Host Preflight Contract
+
+The read-only preflight runner is:
 
 ```bash
-python -m src.operations.run_host_preflight_v1 --output table
+python -m src.operations.run_host_preflight_v1 \
+  --capability <capability_id> \
+  --expected-host <host> \
+  --expected-commit <40-char-sha> \
+  --checkout-path <repo-path> \
+  --strict
 ```
 
-It performs **no** installation, **no** writer run, and **no** database write.
-Locally measurable facts are reported `PASS`/`WARN`/`FAIL`; anything not proven
-read-only on the host stays `UNVERIFIED`. It never probes the exchange or writes
-the database.
+Strict mode returns nonzero for any required `FAIL`, `WARN`, or `UNVERIFIED`.
+MariaDB, exchange API, DNS, NTP, firewall, secrets, runtime-per-writer,
+resource-usage-per-writer, journald/logrotation, and rollback evidence remain
+`UNVERIFIED` unless separately proven. Host selection cannot proceed while a
+required item is unresolved.
 
-## Acceptance procedure
+The runner executes the virtualenv Python for import checks, verifies `flock`,
+checks the exact checkout commit, verifies hostname, and runs
+`systemd-analyze verify` on the selected capability units when available. It
+does not read secret values, connect to MariaDB, call exchanges, run writers,
+or mutate systemd state.
 
-Acceptance is per writer capability and must prove, for one exact commit on one
-exact host:
+## Acceptance Procedure
+
+Acceptance is per capability and must prove one exact commit on one exact host:
 
 ```text
 exact commit
 exact host
 exact configuration
+read-only preflight evidence
 dependencies present
-read-only preflight PASS
-controlled writer run ONLY after separate explicit authorization
-expected database mutation
+controlled writer run only after separate explicit authorization
+expected database mutation or artifact publication
 idempotency / reconciliation
 runtime and resource usage
-lock behavior
+host-local lock behavior
 failure behavior
 rollback readiness
 ```
 
-An acceptance result MAY recommend that the same host become
-`production_runtime_owner`. It MUST NOT self-activate or self-canonize that
-ownership. Recording production ownership is the separate cutover step.
+Acceptance may support a later production authorization decision. It must not
+self-authorize production ownership.
 
-## Cutover procedure
+## Cutover Procedure
 
-1. Record the chosen `production_runtime_owner` explicitly in the registry.
-2. Inventory the current owner and timer status for the capability.
-3. Prepare the new host without activating any timer.
-4. Complete acceptance on the chosen host.
-5. Disable the old owner's timer.
-6. Prove the old timer inactive and disabled.
-7. Only then enable the new timer.
-8. Observe natural scheduled cycles.
-9. Verify database freshness and downstream consumers.
-10. Prove the absence of overlapping owners for the capability.
+Use this order:
 
-## Rollback procedure
+1. identify candidate host
+2. record candidate/selected state without production authorization
+3. complete read-only preflight
+4. prepare host without activating timer
+5. complete controlled acceptance after separate authorization
+6. inventory every installed runtime instance for the capability
+7. disable the old timer
+8. prove old timer inactive and disabled
+9. record new production authorization
+10. activate new timer
+11. observe natural scheduled cycles
+12. verify persisted-state freshness and consumers
+13. mark lifecycle `ACTIVE`
+14. prove at most one authorized active owner
+
+If an installed legacy timer is discovered while canonical authorization is
+`UNASSIGNED`, classify it as
+`OBSERVED_LEGACY_RUNTIME_PENDING_CONTAINMENT` or an equivalent non-authorized
+state. Do not silently treat it as inactive.
+
+## Executable Systemd Contract
+
+Committed units are explicit devlap-bound candidate or historical artifacts
+when they contain:
+
+```text
+ConditionHost=devlap
+User=gurk
+WorkingDirectory=/home/gurk/projects/synth-v2
+```
+
+They must not be described as host-neutral. Every executable writer service
+must include the fail-closed guard:
+
+```text
+ExecStartPre=python -m src.operations.verify_writer_capability_authorization_v1 ...
+```
+
+The guard verifies capability id, actual hostname, registry authorization,
+lifecycle, exact checkout commit, service identity, and explicit deployment
+authorization configuration. Missing authorization configuration fails closed.
+
+Host-local `flock` locks prevent manual/systemd overlap on one host only. They
+cannot prevent cross-host overlap, which is why authorization and cutover guards
+are mandatory.
+
+## Rollback Procedure
 
 Rollback must never activate two owners for one capability at the same time.
 
-- Disable the newly activated owner's timer first.
+- Disable the newly activated timer first.
 - Prove it inactive and disabled before considering any prior owner.
-- Restoring a previously retired owner is a separate incident decision requiring
-  its exact pre-cutover commit and proof the new owner is disabled.
-- Record exact commits, timer states, database freshness, and the absence of
+- Restoring a previously retired owner is a separate incident decision.
+- Record exact commits, timer states, database freshness, and absence of
   overlapping owners.
 - Never delete persisted market data as part of rollback.
 
-A fail-closed freshness outage is the accepted safe state during rollback; a
-second concurrent owner is not.
+A fail-closed freshness outage is safer than a duplicate writer.
 
 ## Forbidden
 
-- No SSH host mutations, deployment, or `systemctl` mutations from this lane.
-- No writer invocations or database writes from this lane.
-- No inventing host facts; unproven host facts stay `UNVERIFIED`.
-- No choosing gurkDB solely because MariaDB runs there.
-- No retaining devlap solely because it is currently documented.
-- No moving account or reporting logic into market writers.
-- No two production owners for one capability.
+- No host mutation, deployment, or `systemctl` mutation from this repository
+  correction.
+- No writer invocation or database write from this repository correction.
+- No acceptance evidence used as `production_decision_evidence`.
+- No historical or observed runtime assignment used as current authority.
+- No reporting, account, dashboard, decision_gate, execution_planner, executor,
+  or broker path may start a public market-data writer.
+- No two authorized active production owners for one capability.
