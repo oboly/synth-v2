@@ -260,7 +260,6 @@ def _assert_no_partial_binding_ddl(
     assert not (ADDED_BINDING_COLUMNS - allowed_columns) & _column_names(conn)
     assert not ADDED_BINDING_CONSTRAINTS & _constraint_names(conn)
     assert not ADDED_BINDING_INDEXES & _index_names(conn)
-    assert not _persistent_guard_artifacts(conn)
 
 
 def _assert_guard_table_not_accessible(conn: object) -> None:
@@ -539,6 +538,7 @@ def test_duplicate_active_precondition_aborts_before_schema_mutation_in_mariadb(
         conn.close()
         conn = get_connection(database=temp_db)
         _assert_guard_table_not_accessible(conn)
+        assert not _persistent_guard_artifacts(conn)
         _assert_no_partial_binding_ddl(conn)
     finally:
         conn.close()
@@ -594,6 +594,7 @@ def test_permission_scope_partial_duplicate_precondition_aborts_before_further_d
         conn.close()
         conn = get_connection(database=temp_db)
         _assert_guard_table_not_accessible(conn)
+        assert not _persistent_guard_artifacts(conn)
         _assert_no_partial_binding_ddl(
             conn,
             allowed_existing_columns={"permission_scope"},
