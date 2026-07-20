@@ -84,6 +84,9 @@ run_step python -m src.market_data.native_short_repository_source_identity_v1 \
 CHAIN_4H_END_TS="$(
     python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); h=(n.hour//4)*4; print(n.replace(hour=h, minute=0, second=0, microsecond=0).isoformat())'
 )"
+CHAIN_4H_END_TS_Z="$(
+    python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); h=(n.hour//4)*4; print(n.replace(hour=h, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ"))'
+)"
 
 echo "[CHAIN][4h] START $(date -u +%F' '%T) UTC"
 echo "[CHAIN][4h] persisted public-price freshness gate venue=bitvavo quote=EUR"
@@ -98,7 +101,7 @@ run_step python -m src.operations.run_persisted_market_price_freshness_v1 \
 run_step python -m src.operations.run_persisted_market_candle_freshness_v1 \
     --venue bitvavo \
     --interval 4h \
-    --expected-close-ts "$CHAIN_4H_END_TS"
+    --expected-close-ts "$CHAIN_4H_END_TS_Z"
 
 run_step env \
     SYNTH_NATIVE_SHORT_REPOSITORY_COMMIT="${NATIVE_SHORT_REPOSITORY_COMMIT}" \

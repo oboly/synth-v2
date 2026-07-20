@@ -218,12 +218,12 @@ def test_shared_read_only_mode_blocks_mutation() -> None:
 
 
 def test_shared_production_mode_blocks_unassigned_capability() -> None:
+    # Registry owner is UNASSIGNED; production authorization is registry-derived.
     decision = verify_writer_execution_authorization(
         capability_id="public_price_snapshot",
         mode=ExecutionMode.PRODUCTION,
         repo_root=Path.cwd(),
         checkout_path=Path.cwd(),
-        authorization_path=Path("/tmp/synth-nonexistent-authorization.json"),
     )
     assert not decision.allowed
 

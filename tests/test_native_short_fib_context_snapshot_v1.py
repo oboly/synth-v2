@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from tests.writer_auth_support import make_test_authorization
+_NS_AUTH = make_test_authorization("native_short_4h_chain")
+
 
 import pytest as _pytest_authz
 
@@ -348,13 +351,13 @@ def test_publish_is_atomic_consistent_and_unchanged_is_not_duplicated(tmp_path: 
         output_dir=tmp_path,
         generated_ts_utc=AS_OF,
         publication_ts_utc=AS_OF + timedelta(minutes=1),
-    )
+    authorization=_NS_AUTH)
     second = snapshot.publish_snapshot(
         build,
         output_dir=tmp_path,
         generated_ts_utc=AS_OF + timedelta(hours=4),
         publication_ts_utc=AS_OF + timedelta(hours=4, minutes=1),
-    )
+    authorization=_NS_AUTH)
     assert first.status == "PUBLISHED"
     assert second.status == "UNCHANGED"
     assert list((tmp_path / "snapshots").iterdir()) == [tmp_path / "snapshots" / build.snapshot_id]
@@ -375,7 +378,7 @@ def test_unchanged_rejects_missing_or_corrupt_immutable_artifact(tmp_path: Path,
         output_dir=tmp_path,
         generated_ts_utc=AS_OF,
         publication_ts_utc=AS_OF,
-    )
+    authorization=_NS_AUTH)
     path = published.rows_path if artifact == "rows" else published.bundle_path
     if artifact == "rows":
         path.unlink()
@@ -389,7 +392,7 @@ def test_unchanged_rejects_missing_or_corrupt_immutable_artifact(tmp_path: Path,
             output_dir=tmp_path,
             generated_ts_utc=AS_OF,
             publication_ts_utc=AS_OF,
-        )
+        authorization=_NS_AUTH)
 
 
 @pytest.mark.parametrize("existing_artifact", ["rows", "bundle"])
@@ -413,7 +416,7 @@ def test_preexisting_partial_snapshot_directory_is_completed_before_manifest(
         output_dir=tmp_path,
         generated_ts_utc=AS_OF,
         publication_ts_utc=AS_OF,
-    )
+    authorization=_NS_AUTH)
     assert published.status == "PUBLISHED"
     assert published.rows_path == rows_path
     assert published.bundle_path == bundle_path
@@ -429,7 +432,7 @@ def test_unchanged_rejects_self_consistent_but_semantically_wrong_rows(tmp_path:
         output_dir=tmp_path,
         generated_ts_utc=AS_OF,
         publication_ts_utc=AS_OF,
-    )
+    authorization=_NS_AUTH)
     manifest = json.loads(published.manifest_path.read_text(encoding="utf-8"))
     wrong_rows = published.rows_path.read_bytes().replace(b"BTC", b"ETH")
     published.rows_path.write_bytes(wrong_rows)
@@ -442,7 +445,7 @@ def test_unchanged_rejects_self_consistent_but_semantically_wrong_rows(tmp_path:
             output_dir=tmp_path,
             generated_ts_utc=AS_OF,
             publication_ts_utc=AS_OF,
-        )
+        authorization=_NS_AUTH)
 
 
 def test_preexisting_corrupt_partial_snapshot_never_publishes_manifest(tmp_path: Path) -> None:
@@ -456,7 +459,7 @@ def test_preexisting_corrupt_partial_snapshot_never_publishes_manifest(tmp_path:
             output_dir=tmp_path,
             generated_ts_utc=AS_OF,
             publication_ts_utc=AS_OF,
-        )
+        authorization=_NS_AUTH)
     assert not (tmp_path / snapshot.MANIFEST_NAME).exists()
 
 
@@ -471,7 +474,7 @@ def test_concurrent_publisher_fails_closed_before_manifest_write(tmp_path: Path)
                 output_dir=tmp_path,
                 generated_ts_utc=AS_OF,
                 publication_ts_utc=AS_OF,
-            )
+            authorization=_NS_AUTH)
     finally:
         snapshot.fcntl.flock(lock_handle.fileno(), snapshot.fcntl.LOCK_UN)
         lock_handle.close()
@@ -502,7 +505,7 @@ def test_publication_fsyncs_snapshot_and_parent_directories(tmp_path: Path, monk
         output_dir=tmp_path,
         generated_ts_utc=AS_OF,
         publication_ts_utc=AS_OF,
-    )
+    authorization=_NS_AUTH)
     assert published.rows_path.parent in calls
     assert published.rows_path.parent.parent in calls
     assert tmp_path in calls
@@ -540,7 +543,7 @@ def test_failed_commit_pointer_write_preserves_last_valid_snapshot(tmp_path: Pat
         output_dir=tmp_path,
         generated_ts_utc=AS_OF,
         publication_ts_utc=AS_OF,
-    )
+    authorization=_NS_AUTH)
     prior_manifest = first.manifest_path.read_bytes()
     changed = _build(levels=_levels(price_1272="102.73"))
     real_atomic_write = snapshot.atomic_write_bytes
@@ -557,7 +560,7 @@ def test_failed_commit_pointer_write_preserves_last_valid_snapshot(tmp_path: Pat
             output_dir=tmp_path,
             generated_ts_utc=AS_OF + timedelta(hours=4),
             publication_ts_utc=AS_OF + timedelta(hours=4),
-        )
+        authorization=_NS_AUTH)
     assert first.manifest_path.read_bytes() == prior_manifest
 
 

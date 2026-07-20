@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from tests.writer_auth_support import make_test_authorization
+_CANDLE_AUTH = make_test_authorization("public_candle_freshness")
+
 
 import pytest as _pytest_authz
 
@@ -225,7 +228,7 @@ def test_upsert_weekly_candles_uses_idempotent_sql() -> None:
             volume=Decimal("10.0"),
         )
     ]
-    written = etl.upsert_candles(conn, rows)
+    written = etl.upsert_candles(conn, rows, authorization=_CANDLE_AUTH)
     assert written == 1
     sql, payload = conn.cursor_instance.executemany_calls[0]
     assert "ON DUPLICATE KEY UPDATE" in sql

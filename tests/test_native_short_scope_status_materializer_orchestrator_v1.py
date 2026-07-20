@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from tests.writer_auth_support import make_test_authorization
+_NS_AUTH = make_test_authorization("native_short_4h_chain")
+
 
 import pytest as _pytest_authz
 
@@ -511,7 +514,7 @@ def test_chain_materializes_level_status_after_projection_for_exact_explicit_sco
         fetch_supporting_candle_close_timestamps=_fresh_candles,
         materialize_scope_symbol_fn=record_map,
         materialize_map_level_status_fn=record_level,
-    )
+    authorization=_NS_AUTH)
 
     assert run.terminal_status == "FINISHED"
     assert [(phase, key.symbol) for phase, key in calls] == [
@@ -552,7 +555,7 @@ def test_chain_propagates_run_trigger_type_into_map_materializer_call() -> None:
         fetch_primary_candle_close_timestamps=_fresh_candles,
         fetch_supporting_candle_close_timestamps=_fresh_candles,
         materialize_scope_symbol_fn=record_trigger_type,
-    )
+    authorization=_NS_AUTH)
 
     assert captured_trigger_types == [CHAIN_TRIGGER_TYPE]
 
@@ -609,7 +612,7 @@ def test_chain_surfaces_blocked_level_status_as_failed_market_data_run() -> None
             fetch_supporting_candle_close_timestamps=_fresh_candles,
             materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
             materialize_map_level_status_fn=blocked_level,
-        )
+        authorization=_NS_AUTH)
 
     assert conn.status_upsert_count == 1
     assert conn.runs[0]["terminal_status"] == "FAILED"
@@ -639,7 +642,7 @@ def test_one_run_row_inserted_and_finalized_once() -> None:
         fetch_primary_candle_close_timestamps=_fresh_candles,
         fetch_supporting_candle_close_timestamps=_fresh_candles,
         materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
-    )
+    authorization=_NS_AUTH)
 
     assert len(conn.runs) == 1
     run = conn.runs[0]
@@ -677,7 +680,7 @@ def test_one_observation_written_per_supported_scope_per_run() -> None:
         fetch_primary_candle_close_timestamps=_fresh_candles,
         fetch_supporting_candle_close_timestamps=_fresh_candles,
         materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
-    )
+    authorization=_NS_AUTH)
 
     assert len(conn.observations) == 1
     assert conn.observations[0]["observation_status"] == "EVALUATED"
@@ -716,7 +719,7 @@ def test_not_applicable_scope_writes_no_observation_and_no_status_row() -> None:
         fetch_existing_lifecycle_events=_no_lifecycle_events,
         fetch_primary_candle_close_timestamps=_fresh_candles,
         fetch_supporting_candle_close_timestamps=_fresh_candles,
-    )
+    authorization=_NS_AUTH)
 
     assert conn.observations == []
     assert conn.status_upsert_count == 0
@@ -740,7 +743,7 @@ def test_unknown_at_as_of_scope_writes_no_observation_and_no_status_row() -> Non
         fetch_existing_lifecycle_events=_no_lifecycle_events,
         fetch_primary_candle_close_timestamps=_fresh_candles,
         fetch_supporting_candle_close_timestamps=_fresh_candles,
-    )
+    authorization=_NS_AUTH)
 
     assert conn.observations == []
     assert conn.status_upsert_count == 0
@@ -782,7 +785,7 @@ def test_configuration_unavailable_scope_writes_blocked_observation_and_status_r
         fetch_existing_lifecycle_events=_no_lifecycle_events,
         fetch_primary_candle_close_timestamps=_raising_primary_candles,
         fetch_supporting_candle_close_timestamps=_raising_supporting_candles,
-    )
+    authorization=_NS_AUTH)
 
     assert len(conn.observations) == 1
     observation = conn.observations[0]
@@ -832,7 +835,7 @@ def test_unchanged_geometry_across_two_runs_does_not_duplicate_map(monkeypatch: 
             fetch_primary_candle_close_timestamps=_fresh_candles,
             fetch_supporting_candle_close_timestamps=_fresh_candles,
             materialize_scope_symbol_fn=stub_materialize,
-        )
+        authorization=_NS_AUTH)
 
     assert call_count["n"] == 2
     assert len(conn.observations) == 2
@@ -891,7 +894,7 @@ def test_genuine_lifecycle_transition_appended_once_across_repeated_runs() -> No
             fetch_primary_candle_close_timestamps=_fresh_candles,
             fetch_supporting_candle_close_timestamps=_fresh_candles,
             materialize_scope_symbol_fn=stub_materialize,
-        )
+        authorization=_NS_AUTH)
         # Simulate the lifecycle event actually being persisted so the second
         # run sees it as already-recorded (mirrors what a real DB would do).
         if conn.lifecycle_events and not lifecycle_state["events"]:
@@ -967,7 +970,7 @@ def test_completed_then_collapsed_map_never_receives_a_second_terminal_event() -
             fetch_primary_candle_close_timestamps=_fresh_candles,
             fetch_supporting_candle_close_timestamps=_fresh_candles,
             materialize_scope_symbol_fn=stub_materialize,
-        )
+        authorization=_NS_AUTH)
         if conn.lifecycle_events and not lifecycle_state["events"]:
             lifecycle_state["events"] = [
                 NativeShortMapLifecycleEvent(
@@ -1061,7 +1064,7 @@ def test_projection_upsert_writes_only_status_table_not_source_ledgers() -> None
         fetch_primary_candle_close_timestamps=_fresh_candles,
         fetch_supporting_candle_close_timestamps=_fresh_candles,
         materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
-    )
+    authorization=_NS_AUTH)
 
     # Only one status upsert; support-event/cadence-config source tables are
     # read-only across this run (never appended to).
@@ -1095,8 +1098,8 @@ def test_second_projection_rebuild_updates_rebuilt_at_utc_and_preserves_projecte
         provenance=_PROVENANCE,
     )
 
-    first_record = rebuild_scope_projection(conn, rebuilt_at_utc=first_rebuilt_at, **rebuild_kwargs)
-    second_record = rebuild_scope_projection(conn, rebuilt_at_utc=second_rebuilt_at, **rebuild_kwargs)
+    first_record = rebuild_scope_projection(conn, rebuilt_at_utc=first_rebuilt_at, **rebuild_kwargs, authorization=_NS_AUTH)
+    second_record = rebuild_scope_projection(conn, rebuilt_at_utc=second_rebuilt_at, **rebuild_kwargs, authorization=_NS_AUTH)
 
     assert conn.status_upsert_count == 2
     status_row = next(iter(conn.status_rows.values()))
@@ -1143,7 +1146,7 @@ def test_source_unavailable_when_context_symbol_missing() -> None:
         fetch_existing_lifecycle_events=_no_lifecycle_events,
         fetch_primary_candle_close_timestamps=_no_candles,
         fetch_supporting_candle_close_timestamps=_no_candles,
-    )
+    authorization=_NS_AUTH)
 
     assert len(conn.observations) == 1
     observation = conn.observations[0]
@@ -1181,7 +1184,7 @@ def test_failure_before_materialization_terminalizes_run_as_failed() -> None:
             fetch_existing_lifecycle_events=_no_lifecycle_events,
             fetch_primary_candle_close_timestamps=_fresh_candles,
             fetch_supporting_candle_close_timestamps=_fresh_candles,
-        )
+        authorization=_NS_AUTH)
 
     assert len(conn.runs) == 1
     run = conn.runs[0]
@@ -1234,7 +1237,7 @@ def test_failure_in_projection_rebuild_after_scope_outcome_terminalizes_as_faile
             fetch_primary_candle_close_timestamps=candles_raising_for_eth,
             fetch_supporting_candle_close_timestamps=_fresh_candles,
             materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
-        )
+        authorization=_NS_AUTH)
 
     assert len(conn.runs) == 1
     run = conn.runs[0]
@@ -1270,7 +1273,7 @@ def test_success_path_still_terminalizes_exactly_once_with_finished() -> None:
         fetch_primary_candle_close_timestamps=_fresh_candles,
         fetch_supporting_candle_close_timestamps=_fresh_candles,
         materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
-    )
+    authorization=_NS_AUTH)
 
     assert len(conn.runs) == 1
     assert conn.runs[0]["terminal_status"] == "FINISHED"
@@ -1302,7 +1305,7 @@ def test_projection_as_of_utc_is_independent_of_operational_clock() -> None:
         fetch_primary_candle_close_timestamps=_fresh_candles,
         fetch_supporting_candle_close_timestamps=_fresh_candles,
         materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
-    )
+    authorization=_NS_AUTH)
 
     # The semantic cutoff written into the projection is exactly the supplied
     # as_of_utc, wholly unaffected by the operational clock.
@@ -1361,14 +1364,14 @@ def test_second_direct_terminalization_cannot_overwrite_first_finished_values() 
         fetch_primary_candle_close_timestamps=_fresh_candles,
         fetch_supporting_candle_close_timestamps=_fresh_candles,
         materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
-    )
+    authorization=_NS_AUTH)
 
     run = conn.runs[0]
     first_snapshot = dict(run)
 
     conflicting = _conflicting_record(run, finished_at_utc=_AS_OF + timedelta(days=1))
     with pytest.raises(NativeShortRunTerminalizationConflictError, match="RUN_TERMINALIZATION_CONFLICT"):
-        _finalize_run(conn, run["run_id"], conflicting)
+        _finalize_run(conn, run["run_id"], conflicting, authorization=_NS_AUTH)
 
     # Stored status, timestamp, counters, reason, and detail remain exactly
     # from the first write; the conflicting second attempt changed nothing.
@@ -1399,7 +1402,7 @@ def test_failed_run_terminalizes_exactly_once_and_rejects_second_attempt() -> No
             fetch_existing_lifecycle_events=_no_lifecycle_events,
             fetch_primary_candle_close_timestamps=_fresh_candles,
             fetch_supporting_candle_close_timestamps=_fresh_candles,
-        )
+        authorization=_NS_AUTH)
 
     run = conn.runs[0]
     assert run["terminal_status"] == "FAILED"
@@ -1407,7 +1410,7 @@ def test_failed_run_terminalizes_exactly_once_and_rejects_second_attempt() -> No
 
     conflicting = _conflicting_record(run, finished_at_utc=_AS_OF + timedelta(days=2))
     with pytest.raises(NativeShortRunTerminalizationConflictError, match="RUN_TERMINALIZATION_CONFLICT"):
-        _finalize_run(conn, run["run_id"], conflicting)
+        _finalize_run(conn, run["run_id"], conflicting, authorization=_NS_AUTH)
 
     assert run == first_snapshot
     assert run["terminal_status"] == "FAILED"  # never became FINISHED via the conflicting attempt

@@ -81,14 +81,10 @@ def _production_authorization(commit: str) -> dict:
     }
 
 
-def _authorized_registry_file(tmp_path: Path) -> Path:
-    registry = _registry()
-    cap = _cap(registry, PRICE_CAP)
-    cap["production_runtime_owner"] = "devlap"
-    cap["production_authorization_status"] = "AUTHORIZED"
-    cap["runtime_lifecycle"] = "AUTHORIZED_INACTIVE"
-    cap["production_decision_evidence"] = "docs/ops/writer_capability_host_ownership_contract_v1.md#decision"
-    return _write_json(tmp_path / "registry.json", registry)
+def _authorized_registry_file(tmp_path: Path, auth_file: Path) -> Path:
+    from tests.writer_auth_support import registry_with_auth_file
+
+    return registry_with_auth_file(tmp_path, PRICE_CAP, auth_file, authorize=True)
 
 
 # ---------------------------------------------------------------------------
@@ -273,27 +269,29 @@ def test_read_only_mode_blocks_mutation() -> None:
 
 
 def test_production_mode_blocks_while_unassigned(tmp_path: Path) -> None:
+    from tests.writer_auth_support import registry_with_auth_file
+
+    registry_path = registry_with_auth_file(tmp_path, PRICE_CAP, tmp_path / "missing.json")
     decision = verify_writer_execution_authorization(
         capability_id=PRICE_CAP,
         mode=ExecutionMode.PRODUCTION,
         repo_root=REPO,
         checkout_path=REPO,
-        authorization_path=tmp_path / "missing.json",
+        registry_path=registry_path,
     )
     assert not decision.allowed
 
 
 def test_production_mode_passes_only_with_exact_authorized_tuple(tmp_path: Path) -> None:
     repo, head = _temp_git(tmp_path)
-    registry_path = _authorized_registry_file(tmp_path)
     auth_path = _write_json(tmp_path / "auth.json", _production_authorization(head))
+    registry_path = _authorized_registry_file(tmp_path, auth_path)
     decision = verify_writer_execution_authorization(
         capability_id=PRICE_CAP,
         mode=ExecutionMode.PRODUCTION,
         repo_root=REPO,
         checkout_path=repo,
         registry_path=registry_path,
-        authorization_path=auth_path,
         actual_host="devlap",
         expected_working_directory=os.path.realpath(str(repo)),
     )
@@ -302,15 +300,14 @@ def test_production_mode_passes_only_with_exact_authorized_tuple(tmp_path: Path)
 
 def test_production_denied_when_host_mismatches(tmp_path: Path) -> None:
     repo, head = _temp_git(tmp_path)
-    registry_path = _authorized_registry_file(tmp_path)
     auth_path = _write_json(tmp_path / "auth.json", _production_authorization(head))
+    registry_path = _authorized_registry_file(tmp_path, auth_path)
     decision = verify_writer_execution_authorization(
         capability_id=PRICE_CAP,
         mode=ExecutionMode.PRODUCTION,
         repo_root=REPO,
         checkout_path=repo,
         registry_path=registry_path,
-        authorization_path=auth_path,
         actual_host="gurkdb",
         expected_working_directory=os.path.realpath(str(repo)),
     )
@@ -333,12 +330,15 @@ def test_acceptance_permit_cannot_authorize_production(tmp_path: Path) -> None:
         "approval_reference": "ref",
     }
     permit_path = _write_json(tmp_path / "permit.json", permit)
+    from tests.writer_auth_support import registry_with_auth_file
+
+    registry_path = registry_with_auth_file(tmp_path, PRICE_CAP, permit_path)
     decision = verify_writer_execution_authorization(
         capability_id=PRICE_CAP,
         mode=ExecutionMode.PRODUCTION,
         repo_root=REPO,
         checkout_path=REPO,
-        authorization_path=permit_path,
+        registry_path=registry_path,
     )
     assert not decision.allowed
 
@@ -373,12 +373,15 @@ def test_production_cannot_be_inferred_from_acceptance(tmp_path: Path) -> None:
     assert accept.allowed, accept.reasons
     # Same permit cannot satisfy PRODUCTION (registry owner UNASSIGNED, and the
     # permit is not a production authorization file).
+    from tests.writer_auth_support import registry_with_auth_file
+
+    prod_registry = registry_with_auth_file(tmp_path, PRICE_CAP, permit_path)
     prod = verify_writer_execution_authorization(
         capability_id=PRICE_CAP,
         mode=ExecutionMode.PRODUCTION,
         repo_root=REPO,
         checkout_path=repo,
-        authorization_path=permit_path,
+        registry_path=prod_registry,
         actual_host="devlap",
     )
     assert not prod.allowed

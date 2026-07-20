@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+
+import pytest as _pytest_authz
+
+
+@_pytest_authz.fixture(autouse=True)
+def _authorized_writer_context(monkeypatch):
+    """Run write mechanics as an already-authorized writer capability. Denial is
+    covered by tests/test_native_short_sql_helper_authorization_v1.py and
+    tests/test_writer_capability_authorization_v1.py."""
+    from tests.writer_auth_support import install_authorized_writer_context
+    install_authorized_writer_context(monkeypatch)
+
 import ast
 import io
 import json
@@ -50,7 +62,7 @@ _BTC_ARGS = [
 
 @pytest.fixture(autouse=True)
 def _stub_writer_run_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
-    def start(provenance: Any, *, requested_scope_count: int):
+    def start(provenance: Any, *, requested_scope_count: int, authorization: Any = None):
         return (
             runner.NativeShortRunBuilder(
                 provenance=provenance,
@@ -61,7 +73,7 @@ def _stub_writer_run_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
             1,
         )
 
-    def finish(builder: Any, run_id: int, *, terminal_status: Any) -> None:
+    def finish(builder: Any, run_id: int, *, terminal_status: Any, authorization: Any = None) -> None:
         builder.finish(finished_at_utc=_AS_OF, terminal_status=terminal_status)
 
     monkeypatch.setattr(runner, "_start_writer_run", start)
@@ -467,6 +479,9 @@ def test_runner_has_no_forbidden_imports_or_broad_materialization() -> None:
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
+    # The shared writer-capability authorization guard is safety infrastructure,
+    # not a forbidden account/reporting/operations layer.
+    imported.discard("src.operations.writer_capability_authorization_v1")
     assert not any(
         module == forbidden or module.startswith(f"{forbidden}.")
         for module in imported

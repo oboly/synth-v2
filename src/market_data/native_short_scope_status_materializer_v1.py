@@ -532,7 +532,22 @@ def _to_lifecycle_event_facts(events: Sequence[Any]) -> list[LifecycleEventFact]
     ]
 
 
-def _insert_run(conn: Any, record: NativeShortMaterializerRunRecord) -> int:
+def _require_native_short_write_auth(authorization: Any) -> None:
+    """Fail closed before any Native SHORT SQL mutation."""
+    from src.operations.writer_capability_authorization_v1 import (
+        require_writer_mutation_authorization,
+    )
+
+    require_writer_mutation_authorization(authorization, "native_short_4h_chain")
+
+
+def _insert_run(
+    conn: Any,
+    record: NativeShortMaterializerRunRecord,
+    *,
+    authorization: Any = None,
+) -> int:
+    _require_native_short_write_auth(authorization)
     sql = """
     INSERT INTO native_short_materializer_run_v1 (
         run_uuid, runner_name, runner_version, contract_version, trigger_type,
@@ -572,7 +587,13 @@ def _insert_run(conn: Any, record: NativeShortMaterializerRunRecord) -> int:
         return int(cur.lastrowid)
 
 
-def _finalize_run(conn: Any, run_id: int, record: NativeShortMaterializerRunRecord) -> None:
+def _finalize_run(
+    conn: Any,
+    run_id: int,
+    record: NativeShortMaterializerRunRecord,
+    *,
+    authorization: Any = None,
+) -> None:
     """Compare-and-set terminalization: the UPDATE only ever matches a row
     that is still non-terminal (`terminal_status IS NULL AND
     finished_at_utc IS NULL`). This makes terminal fields immutable once set:
@@ -580,6 +601,7 @@ def _finalize_run(conn: Any, run_id: int, record: NativeShortMaterializerRunReco
     finalization bug or a concurrent writer — always affects zero rows and
     never overwrites the first terminal values.
     """
+    _require_native_short_write_auth(authorization)
     sql = """
     UPDATE native_short_materializer_run_v1
     SET finished_at_utc = %s,
@@ -621,7 +643,9 @@ def _insert_observation(
     record: NativeShortScopeObservationRecord,
     *,
     provenance: NativeShortWriterProvenance,
+    authorization: Any = None,
 ) -> int:
+    _require_native_short_write_auth(authorization)
     validate_native_short_writer_provenance(provenance)
     if record.run_uuid != provenance.invocation_uuid:
         raise NativeShortWriterProvenanceError(
@@ -701,7 +725,9 @@ def _insert_lifecycle_event(
     event_type: NativeShortMapLifecycleEventType,
     event_ts_utc: datetime,
     provenance: NativeShortWriterProvenance,
+    authorization: Any = None,
 ) -> int:
+    _require_native_short_write_auth(authorization)
     validate_native_short_writer_provenance(provenance)
     sql = """
     INSERT INTO native_short_map_lifecycle_event_v1 (
@@ -729,9 +755,11 @@ def upsert_scope_status_projection(
     record: NativeShortScopeStatusRecord,
     *,
     provenance: NativeShortWriterProvenance,
+    authorization: Any = None,
 ) -> None:
     """Deterministic per-scope upsert keyed on the full canonical scope key.
     Writes only native_short_scope_status_v1; never touches source ledgers."""
+    _require_native_short_write_auth(authorization)
     validate_native_short_writer_provenance(provenance)
     key = record.key
     sql = """
@@ -840,6 +868,7 @@ def rebuild_scope_projection(
     primary_candle_close_timestamps: Sequence[datetime],
     supporting_candle_close_timestamps: Sequence[datetime],
     provenance: NativeShortWriterProvenance,
+    authorization: Any = None,
 ) -> NativeShortScopeStatusRecord | None:
     """Fetch cutoff-independent facts already held in memory plus the
     support-event/cadence-config/observation ledgers, project, and upsert.
@@ -862,7 +891,7 @@ def rebuild_scope_projection(
         rebuilt_at_utc=rebuilt_at_utc,
     )
     if record is not None:
-        upsert_scope_status_projection(conn, record, provenance=provenance)
+        upsert_scope_status_projection(conn, record, provenance=provenance, authorization=authorization)
     return record
 
 
@@ -909,7 +938,7 @@ def evaluate_scope(
             run_uuid=provenance.invocation_uuid,
             observed_at_utc=as_of_utc,
         )
-        _insert_observation(conn, observation, provenance=provenance)
+        _insert_observation(conn, observation, provenance=provenance, authorization=authorization)
         return ScopeEvaluationOutcome(
             key=key,
             skipped_not_supported=False,
@@ -939,7 +968,7 @@ def evaluate_scope(
             supporting_source_freshness_limit_seconds=cadence_config.supporting_source_freshness_limit_seconds,
             current_map_id_before=map_before.map_id if map_before is not None else None,
         )
-        _insert_observation(conn, observation, provenance=provenance)
+        _insert_observation(conn, observation, provenance=provenance, authorization=authorization)
         return ScopeEvaluationOutcome(
             key=key,
             skipped_not_supported=False,
@@ -976,7 +1005,7 @@ def evaluate_scope(
             observation_detail=str(exc),
             current_map_id_before=map_before.map_id if map_before is not None else None,
         )
-        _insert_observation(conn, observation, provenance=provenance)
+        _insert_observation(conn, observation, provenance=provenance, authorization=authorization)
         return ScopeEvaluationOutcome(
             key=key,
             skipped_not_supported=False,
@@ -1020,6 +1049,7 @@ def evaluate_scope(
                 event_type=transition,
                 event_ts_utc=as_of_utc,
                 provenance=provenance,
+                authorization=authorization,
             )
             lifecycle_event_appended = True
             map_lifecycle_state_after = (
@@ -1051,7 +1081,7 @@ def evaluate_scope(
         source_primary_candle_count=context_row.source_primary_candle_count,
         source_support_candle_count=context_row.source_support_candle_count,
     )
-    _insert_observation(conn, observation, provenance=provenance)
+    _insert_observation(conn, observation, provenance=provenance, authorization=authorization)
 
     return ScopeEvaluationOutcome(
         key=key,
@@ -1121,7 +1151,7 @@ def run_native_short_scope_status_materializer(
         started_at_utc=started_at_utc,
         requested_scope_count=len(scopes),
     )
-    run_id = _insert_run(conn, builder.started_record())
+    run_id = _insert_run(conn, builder.started_record(), authorization=authorization)
 
     try:
         for key in scopes:
@@ -1179,6 +1209,7 @@ def run_native_short_scope_status_materializer(
                 primary_candle_close_timestamps=primary_candle_close_timestamps,
                 supporting_candle_close_timestamps=supporting_candle_close_timestamps,
                 provenance=provenance,
+                authorization=authorization,
             )
 
             # The level-status materializer consumes only the projection's
@@ -1216,9 +1247,9 @@ def run_native_short_scope_status_materializer(
             failure_reason_code=type(exc).__name__,
             failure_detail=str(exc)[:_MAX_FAILURE_DETAIL_LENGTH],
         )
-        _finalize_run(conn, run_id, failed_record)
+        _finalize_run(conn, run_id, failed_record, authorization=authorization)
         raise
 
     finished_record = builder.finish(finished_at_utc=operational_clock())
-    _finalize_run(conn, run_id, finished_record)
+    _finalize_run(conn, run_id, finished_record, authorization=authorization)
     return finished_record

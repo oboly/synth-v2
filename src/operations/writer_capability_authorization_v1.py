@@ -630,7 +630,6 @@ def verify_writer_execution_authorization(
     actual_host: str | None = None,
     registry_path: Path | None = None,
     registry_schema_path: Path | None = None,
-    authorization_path: Path | None = None,
     authorization_schema_path: Path | None = None,
     acceptance_permit_path: Path | None = None,
     acceptance_schema_path: Path | None = None,
@@ -673,11 +672,12 @@ def verify_writer_execution_authorization(
         )
 
     if resolved_mode is ExecutionMode.PRODUCTION:
-        # The production authorization path is registry-declared and is never
-        # environment-overridable. Tests may inject an explicit path.
+        # The production authorization path is derived solely from the validated
+        # registry capability entry. There is no public/CLI/environment override;
+        # tests exercise the real contract by pointing a temporary registry's
+        # authorization_guard.authorization_file at a temporary authorization file.
         guard = cap.get("authorization_guard") if isinstance(cap.get("authorization_guard"), dict) else {}
-        registry_declared = Path(str(guard.get("authorization_file") or DEFAULT_AUTHORIZATION_FILE))
-        resolved_authorization_path = authorization_path or registry_declared
+        resolved_authorization_path = Path(str(guard.get("authorization_file") or DEFAULT_AUTHORIZATION_FILE))
         reasons = _validate_writer_file_security(resolved_authorization_path, label="production authorization file")
         if reasons:
             return AuthorizationDecision(False, capability_id, resolved_mode, reasons)

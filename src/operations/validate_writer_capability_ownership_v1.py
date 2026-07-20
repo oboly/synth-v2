@@ -19,6 +19,7 @@ import argparse
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,21 @@ CAPABILITY_IDENTITY = {
 _RFC3339_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$"
 )
+
+
+def _valid_literal_utc(value: Any) -> bool:
+    """Canonical literal-Z shape AND a real calendar date/time.
+
+    Rejects timezone offsets, timezone-less values, and impossible dates such as
+    2026-02-31 while accepting valid leap days such as 2024-02-29.
+    """
+    if not isinstance(value, str) or not _RFC3339_RE.match(value):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
 ALLOWED_ADDITIONAL_WRITER_CLASSIFICATIONS = {
     "shared_market_only_chain",
     "read_only_caller",
@@ -341,7 +357,7 @@ def validate_registry_payload(
                     if not str(acceptance_evidence.get(key) or "").strip():
                         errors.append(f"{label}: acceptance_evidence.{key} is required and non-empty")
                 accepted_at = str(acceptance_evidence.get("accepted_at_utc", ""))
-                if not _RFC3339_RE.match(accepted_at):
+                if not _valid_literal_utc(accepted_at):
                     errors.append(f"{label}: acceptance_evidence.accepted_at_utc must be RFC3339 UTC")
         elif acceptance_evidence is not None:
             errors.append(f"{label}: acceptance_evidence must be null unless acceptance_status is ACCEPTED")
@@ -447,7 +463,7 @@ def validate_registry_payload(
                     errors.append(f"{item_label}: invalid runtime_state_classification")
                 if not _path_exists(repo, str(item.get("unit_path", ""))):
                     errors.append(f"{item_label}: unit_path missing or invalid")
-                if not _RFC3339_RE.match(str(item.get("observed_at_utc", ""))):
+                if not _valid_literal_utc(item.get("observed_at_utc")):
                     errors.append(f"{item_label}: observed_at_utc must be RFC3339 UTC")
                 if item.get("active_at_observation") is True and item.get("authorization_status") != "AUTHORIZED":
                     if item.get("runtime_state_classification") != "OBSERVED_LEGACY_RUNTIME_PENDING_CONTAINMENT":

@@ -85,11 +85,43 @@ def make_test_authorization(capability_id: str) -> WriterMutationAuthorization:
     return decision.authorization
 
 
+def registry_with_auth_file(
+    tmp_path: Path,
+    capability_id: str,
+    auth_file: Path,
+    *,
+    authorize: bool = False,
+    host: str = "devlap",
+) -> Path:
+    """Write a temporary registry whose capability authorization_guard points at
+    ``auth_file``. This exercises the real registry-only production authorization
+    path contract without any public/CLI/environment override.
+    """
+    reg = json.loads(
+        (REPO / "deploy/ownership/writer_capability_ownership_v1.json").read_text(encoding="utf-8")
+    )
+    cap = next(c for c in reg["capabilities"] if c["capability_id"] == capability_id)
+    cap["authorization_guard"]["authorization_file"] = str(auth_file)
+    if authorize:
+        cap["production_runtime_owner"] = host
+        cap["production_authorization_status"] = "AUTHORIZED"
+        cap["runtime_lifecycle"] = "AUTHORIZED_INACTIVE"
+        cap["production_decision_evidence"] = (
+            "docs/ops/writer_capability_host_ownership_contract_v1.md#decision"
+        )
+    path = tmp_path / "registry_with_auth.json"
+    path.write_text(json.dumps(reg, indent=2), encoding="utf-8")
+    return path
+
+
 def install_authorized_writer_context(monkeypatch) -> None:
     """Treat the module under test as already-authorized.
 
-    Entry gates return a real validated context; low-level mutation guards accept
-    whatever context is threaded through. Denial behaviour is tested separately.
+    Only the entry acquisition function is patched, and it returns a *genuine*
+    validated :class:`WriterMutationAuthorization`. The real low-level guard
+    ``require_writer_mutation_authorization`` is never patched, so mechanics
+    tests still fail if a runner forgets to thread the context, threads None,
+    threads the wrong context, or threads the wrong capability.
     """
     import src.operations.writer_capability_authorization_v1 as authmod
 
@@ -97,9 +129,4 @@ def install_authorized_writer_context(monkeypatch) -> None:
         authmod,
         "require_capability_write_authorization",
         lambda capability_id, **kwargs: make_test_authorization(capability_id),
-    )
-    monkeypatch.setattr(
-        authmod,
-        "require_writer_mutation_authorization",
-        lambda authorization, capability_id: authorization,
     )

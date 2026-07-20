@@ -425,7 +425,9 @@ def main(
                     started_at_utc=now_utc,
                     requested_scope_count=1,
                 )
-                run_id = _insert_run(conn, builder.started_record())
+                run_id = _insert_run(
+                    conn, builder.started_record(), authorization=writer_authorization
+                )
             result = materialize_scope_symbol(
                 conn,
                 scope_support=scope,
@@ -455,6 +457,7 @@ def main(
                         failure_reason_code=result.reason_code if result.status == "failed" else None,
                         failure_detail=result.detail if result.status == "failed" else None,
                     ),
+                    authorization=writer_authorization,
                 )
                 conn.commit()
             else:

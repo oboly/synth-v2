@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from tests.writer_auth_support import make_test_authorization
+_NS_AUTH = make_test_authorization("native_short_4h_chain")
+
 
 import pytest as _pytest_authz
 
@@ -234,7 +237,7 @@ def test_rejected_provenance_precedes_every_shared_writer_boundary() -> None:
             now_utc=None,  # type: ignore[arg-type]
             write=True,
             provenance=invalid,
-        )
+        authorization=_NS_AUTH)
     with pytest.raises(NativeShortWriterProvenanceError):
         materialize_native_short_map_level_status_for_scope(
             NoDatabaseTouch(),
@@ -255,7 +258,7 @@ def test_rejected_provenance_precedes_every_shared_writer_boundary() -> None:
             fetch_existing_lifecycle_events=lambda *_: [],
             fetch_primary_candle_close_timestamps=lambda *_: [],
             fetch_supporting_candle_close_timestamps=lambda *_: [],
-        )
+        authorization=_NS_AUTH)
     with pytest.raises(NativeShortWriterProvenanceError):
         delete_native_short_map_level_status_for_scope(
             NoDatabaseTouch(),
@@ -280,7 +283,7 @@ def test_missing_provenance_cannot_call_writer_api() -> None:
             context_row=None,
             now_utc=None,
             write=True,
-        )
+        authorization=_NS_AUTH)
 
 
 def test_invocation_identity_is_stable_within_run_and_unique_between_runs() -> None:

@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+from tests.writer_auth_support import make_test_authorization
+_NS_AUTH = make_test_authorization("native_short_4h_chain")
+
+
+import pytest as _pytest_authz
+
+
+@_pytest_authz.fixture(autouse=True)
+def _authorized_writer_context(monkeypatch):
+    """Run write mechanics as an already-authorized writer capability. Denial is
+    covered by tests/test_native_short_sql_helper_authorization_v1.py and
+    tests/test_writer_capability_authorization_v1.py."""
+    from tests.writer_auth_support import install_authorized_writer_context
+    install_authorized_writer_context(monkeypatch)
+
 import ast
 import io
 import sys
@@ -549,7 +564,7 @@ def test_write_scope_select_uses_for_update_lock() -> None:
         symbol="BTC",
         quote_currency="EUR",
         provenance=_PROVENANCE,
-    )
+    authorization=_NS_AUTH)
 
     assert any("FROM native_short_map_scope_v1" in sql and "FOR UPDATE" in sql for sql, _ in conn.executions)
     assert conn.committed_inserts[0]["writer_invocation_uuid"] == _PROVENANCE.invocation_uuid
@@ -600,6 +615,10 @@ def test_runner_has_no_forbidden_layer_imports_or_reachable_project_deps() -> No
             elif isinstance(node, ast.Import):
                 modules.extend(alias.name for alias in node.names)
             for module in modules:
+                # The shared writer-capability authorization guard is safety
+                # infrastructure, not a forbidden account/reporting/etl layer.
+                if module == "src.operations.writer_capability_authorization_v1":
+                    continue
                 assert not any(
                     module == item or module.startswith(f"{item}.") for item in forbidden
                 ), f"forbidden import {module} in {path}"

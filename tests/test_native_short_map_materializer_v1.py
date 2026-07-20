@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from tests.writer_auth_support import make_test_authorization
+_NS_AUTH = make_test_authorization("native_short_4h_chain")
+
 
 import pytest as _pytest_authz
 
@@ -873,7 +876,7 @@ def test_available_dry_run_does_not_insert_rows() -> None:
         now_utc=_NOW,
         provenance=_MANUAL_PROVENANCE,
         write=False,
-    )
+    authorization=_NS_AUTH)
 
     assert result.status == "skipped"
     assert result.reason_code == "DRY_RUN_WRITE_DISABLED"
@@ -893,7 +896,7 @@ def test_context_symbol_mismatch_fails_before_lock_or_ledger_reads() -> None:
             now_utc=_NOW,
             provenance=_MANUAL_PROVENANCE,
             write=True,
-        )
+        authorization=_NS_AUTH)
 
     assert conn.log == []
 
@@ -909,7 +912,7 @@ def test_context_interval_mismatch_fails_before_lock_or_ledger_reads() -> None:
             now_utc=_NOW,
             provenance=_MANUAL_PROVENANCE,
             write=True,
-        )
+        authorization=_NS_AUTH)
 
     assert conn.log == []
 
@@ -927,7 +930,7 @@ def test_missing_source_candle_count_fails_before_lock_or_ledger_reads() -> None
             now_utc=_NOW,
             provenance=_MANUAL_PROVENANCE,
             write=True,
-        )
+        authorization=_NS_AUTH)
 
     assert conn.log == []
 
@@ -947,7 +950,7 @@ def test_locked_scope_duplicate_rows_fail_before_ledger_insert() -> None:
             now_utc=_NOW,
             provenance=_MANUAL_PROVENANCE,
             write=True,
-        )
+        authorization=_NS_AUTH)
 
     assert all("INSERT INTO" not in sql for sql, _ in conn.log)
 
@@ -962,7 +965,7 @@ def test_locked_scope_zero_rows_fail_before_ledger_insert() -> None:
             now_utc=_NOW,
             provenance=_MANUAL_PROVENANCE,
             write=True,
-        )
+        authorization=_NS_AUTH)
 
     assert all("INSERT INTO" not in sql for sql, _ in conn.log)
 
@@ -976,7 +979,7 @@ def test_write_available_first_map_publishes_map_generation_and_lifecycle() -> N
         now_utc=_NOW,
         provenance=_MANUAL_PROVENANCE,
         write=True,
-    )
+    authorization=_NS_AUTH)
 
     assert result.status == "published"
     assert result.map_id is not None
@@ -1013,7 +1016,7 @@ def test_write_available_first_map_defaults_trigger_type_to_manual_canary() -> N
         now_utc=_NOW,
         provenance=_MANUAL_PROVENANCE,
         write=True,
-    )
+    authorization=_NS_AUTH)
 
     generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
     assert len(generation_params) == 2
@@ -1032,7 +1035,7 @@ def test_write_available_first_map_propagates_explicit_repository_chain_trigger_
         now_utc=_NOW,
         provenance=_CHAIN_PROVENANCE,
         write=True,
-    )
+    authorization=_NS_AUTH)
 
     generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
     assert len(generation_params) == 2
@@ -1070,7 +1073,7 @@ def test_same_structure_hash_is_idempotent_without_skip_event(monkeypatch: pytes
         now_utc=_NOW,
         provenance=_MANUAL_PROVENANCE,
         write=True,
-    )
+    authorization=_NS_AUTH)
 
     assert result.status == "skipped"
     assert result.map_id == 7
@@ -1101,7 +1104,7 @@ def test_duplicate_conflict_without_matching_identity_fails_closed(
             now_utc=_NOW,
             provenance=_MANUAL_PROVENANCE,
             write=True,
-        )
+        authorization=_NS_AUTH)
 
     assert conn.insert_log("native_short_map_v1") == []
     assert len(conn.insert_log("native_short_map_generation_event_v1")) == 1
@@ -1130,7 +1133,7 @@ def test_prior_same_rejection_is_idempotent_without_new_attempt(monkeypatch: pyt
         now_utc=_NOW,
         provenance=_MANUAL_PROVENANCE,
         write=True,
-    )
+    authorization=_NS_AUTH)
 
     assert result.status == "skipped"
     assert result.reason_code == REASON_PRIOR_REJECTION_UNCHANGED
@@ -1171,7 +1174,7 @@ def test_old_rejection_behind_newer_failure_does_not_suppress_attempt(
         now_utc=_NOW,
         provenance=_MANUAL_PROVENANCE,
         write=True,
-    )
+    authorization=_NS_AUTH)
 
     assert result.status == "skipped"
     assert result.reason_code == "CANDLES_INSUFFICIENT"
@@ -1187,7 +1190,7 @@ def test_new_unavailable_write_records_rejected_attempt_without_lifecycle() -> N
         now_utc=_NOW,
         provenance=_MANUAL_PROVENANCE,
         write=True,
-    )
+    authorization=_NS_AUTH)
 
     assert result.status == "skipped"
     assert result.reason_code == "CANDLE_SNAPSHOT_STALE"
@@ -1208,7 +1211,7 @@ def test_new_unavailable_write_propagates_explicit_trigger_type_to_rejected_even
         now_utc=_NOW,
         provenance=_CHAIN_PROVENANCE,
         write=True,
-    )
+    authorization=_NS_AUTH)
 
     generation_params = [entry[1] for entry in conn.insert_log("native_short_map_generation_event_v1")]
     assert len(generation_params) == 2
@@ -1257,7 +1260,7 @@ def test_supersedes_previous_active_map_without_duplicate_activation(
         now_utc=_NOW,
         provenance=_MANUAL_PROVENANCE,
         write=True,
-    )
+    authorization=_NS_AUTH)
 
     lifecycle_inserts = conn.insert_log("native_short_map_lifecycle_event_v1")
     lifecycle_types = [params[1] for _, params, _ in lifecycle_inserts]
@@ -1302,7 +1305,7 @@ def test_terminal_map_is_not_reopened_or_superseded(monkeypatch: pytest.MonkeyPa
         now_utc=_NOW,
         provenance=_MANUAL_PROVENANCE,
         write=True,
-    )
+    authorization=_NS_AUTH)
 
     lifecycle_inserts = conn.insert_log("native_short_map_lifecycle_event_v1")
     lifecycle_types = [params[1] for _, params, _ in lifecycle_inserts]

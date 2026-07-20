@@ -305,18 +305,26 @@ Authorization is enforced at every layer with one shared implementation
 (`src.operations.writer_capability_authorization_v1`) and, critically, at the
 lowest practical mutation boundary:
 
-- Low-level mutation helpers (candle upsert, market-price persistence, rotation
-  history/pressure persistence, Native SHORT scope/map materialization, and the
-  canonical fib-context artifact publication) require a validated, sealed
+- Low-level mutation helpers require a validated, sealed
   `WriterMutationAuthorization` context, constructed only by the shared
-  verification flow. A missing, `None`, plain-dict, or wrong-capability context
-  fails closed before the first `INSERT`/`UPDATE`/`executemany`/`commit` or any
-  canonical file replacement. The capability is determined by the mutation
-  performed, never by a caller-supplied identity.
+  verification flow. This covers candle upsert, market-price persistence,
+  rotation history/pressure persistence, the canonical fib-context artifact
+  publication, and **every** Native SHORT scope/map SQL helper — the
+  materializer-run insert/finalize, observation and lifecycle-event inserts, the
+  scope-status projection upsert, and the map generation-event/map-row inserts
+  and scope-seed insert. A missing, `None`, plain-dict, or wrong-capability
+  context fails closed before the first
+  `INSERT`/`UPDATE`/`executemany`/`commit` or any canonical file replacement.
+  The capability is determined by the mutation performed, never by a
+  caller-supplied identity. The manual Native SHORT map runners authorize
+  before writing their initial run row — never a partial run record authorized
+  later.
 - The production authorization file path is registry-declared
   (`authorization_guard.authorization_file`) and is never environment- or
-  CLI-overridable. The file must be a regular file, not a symlink, safely owned,
-  and not group/world writable.
+  CLI-overridable — the public verifier
+  (`verify_writer_execution_authorization`) exposes no `authorization_path`
+  parameter, and the guard CLI has no `--authorization-file` flag. The file must
+  be a regular file, not a symlink, safely owned, and not group/world writable.
 - Acceptance permits are capability-bound, host-bound, exact-commit-bound and
   **time-bounded**. A permit may be reused within its valid time window; it is
   **not** single-use and **not** invocation-count-bounded (there is no
@@ -324,7 +332,13 @@ lowest practical mutation boundary:
   Containment of a running timer remains an explicit operator action.
 - All `*_utc` timestamps use canonical literal UTC (`YYYY-MM-DDTHH:MM:SSZ`).
   A numeric offset (`+01:00`, `-05:00`) or a timezone-less timestamp is rejected;
-  offsets are never silently normalized.
+  offsets are never silently normalized. Validation is not shape-only: the
+  semantic validator and the shared parser both parse the timestamp as a real
+  calendar date, so impossible dates (`2026-02-31`, `2026-13-01`,
+  `2026-01-01T24:00:00Z`) are rejected while valid leap days (`2024-02-29`) pass.
+  This applies to ownership acceptance evidence, observed runtime timestamps,
+  production authorization timestamps, and acceptance-permit issued/expiry
+  timestamps.
 
 ## Market-only processing chains
 

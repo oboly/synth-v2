@@ -240,31 +240,37 @@ def test_acceptance_permit_schema_has_no_max_invocations() -> None:
 # ---------------------------------------------------------------------------
 
 def test_production_authorization_symlink_rejected(tmp_path: Path) -> None:
+    from tests.writer_auth_support import registry_with_auth_file
+
     real = tmp_path / "real.json"
     real.write_text("{}", encoding="utf-8")
     link = tmp_path / "link.json"
     link.symlink_to(real)
+    registry_path = registry_with_auth_file(tmp_path, "public_price_snapshot", link)
     decision = verify_writer_execution_authorization(
         capability_id="public_price_snapshot",
         mode=ExecutionMode.PRODUCTION,
         repo_root=REPO,
         checkout_path=REPO,
-        authorization_path=link,
+        registry_path=registry_path,
     )
     assert not decision.allowed
     assert any("must not be a symlink" in r for r in decision.reasons)
 
 
 def test_production_authorization_group_world_writable_rejected(tmp_path: Path) -> None:
+    from tests.writer_auth_support import registry_with_auth_file
+
     auth = tmp_path / "auth.json"
     auth.write_text("{}", encoding="utf-8")
     os.chmod(auth, 0o666)
+    registry_path = registry_with_auth_file(tmp_path, "public_price_snapshot", auth)
     decision = verify_writer_execution_authorization(
         capability_id="public_price_snapshot",
         mode=ExecutionMode.PRODUCTION,
         repo_root=REPO,
         checkout_path=REPO,
-        authorization_path=auth,
+        registry_path=registry_path,
     )
     assert not decision.allowed
     assert any("group/world writable" in r for r in decision.reasons)
@@ -357,3 +363,38 @@ def test_run_chain_1h_1d_registered_as_zero_public_writers() -> None:
         "scripts/run_chain_1h.sh", "scripts/run_chain_1d.sh",
     }
     assert validator.validate_registry_payload(registry, repo_root=REPO).ok
+
+
+# ---------------------------------------------------------------------------
+# Freshness runner literal-Z contract.
+# ---------------------------------------------------------------------------
+
+def test_freshness_timestamp_accepts_literal_z() -> None:
+    from src.operations.run_persisted_market_candle_freshness_v1 import _utc_timestamp
+
+    parsed = _utc_timestamp("2026-07-20T12:00:00Z")
+    assert parsed.tzinfo is not None
+
+
+@pytest.mark.parametrize("value", [
+    "2026-07-20T12:00:00+00:00",
+    "2026-07-20T13:00:00+01:00",
+    "2026-07-20T12:00:00",
+    "2026-02-31T00:00:00Z",
+])
+def test_freshness_timestamp_rejects_offset_and_invalid(value: str) -> None:
+    import argparse
+
+    from src.operations.run_persisted_market_candle_freshness_v1 import _utc_timestamp
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        _utc_timestamp(value)
+
+
+def test_freshness_output_uses_literal_z() -> None:
+    from src.operations.run_persisted_market_candle_freshness_v1 import _format_utc_z
+
+    formatted = _format_utc_z(datetime(2026, 7, 20, 12, 0, 0, tzinfo=UTC))
+    assert formatted == "2026-07-20T12:00:00Z"
+    assert "+00:00" not in formatted
+    assert _format_utc_z(None) == "not_available"
