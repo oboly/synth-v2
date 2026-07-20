@@ -316,19 +316,6 @@ def test_account_credential_binding_migration_valid_rows_and_rerun_in_mariadb() 
             assert rows[2]["active_permission_scope"] is None
             assert rows[3]["active_permission_scope"] is None
 
-            cur.execute(
-                """
-                INSERT INTO trading_account_credential (
-                    trading_account_id, venue, credential_kind, encrypted_envelope,
-                    encryption_algorithm, key_version, credential_fingerprint,
-                    credential_status, validation_state, created_ts_utc
-                ) VALUES (
-                    1, 'bitvavo', 'API_KEY_SECRET', '{}', 'AESGCM-256', 'v1',
-                    %s, 'ACTIVE', 'VALID_PRIVATE_READ', '2026-07-21 00:01:00'
-                )
-                """,
-                ("f" * 64,),
-            )
             with pytest.raises(IntegrityError):
                 cur.execute(
                     """
@@ -338,10 +325,10 @@ def test_account_credential_binding_migration_valid_rows_and_rerun_in_mariadb() 
                         credential_status, validation_state, created_ts_utc
                     ) VALUES (
                         1, 'bitvavo', 'API_KEY_SECRET', '{}', 'AESGCM-256', 'v1',
-                        %s, 'ACTIVE', 'VALID_PRIVATE_READ', '2026-07-21 00:02:00'
+                        %s, 'ACTIVE', 'VALID_PRIVATE_READ', '2026-07-21 00:01:00'
                     )
                     """,
-                    ("1" * 64,),
+                    ("f" * 64,),
                 )
             conn.rollback()
 
