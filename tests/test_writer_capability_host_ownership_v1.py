@@ -74,11 +74,23 @@ def test_all_four_production_owners_are_unassigned_by_this_correction() -> None:
         "market_rotation_pressure",
         "native_short_4h_chain",
     }
+    # gurkDB is selected only for strict preflight for the three light public
+    # writers; that selection never assigns a production owner or authorization.
+    selected_for_preflight = {
+        "public_price_snapshot",
+        "public_candle_freshness",
+        "market_rotation_pressure",
+    }
     for cap in _capabilities():
         assert cap["production_runtime_owner"] == UNASSIGNED, cap["capability_id"]
         assert cap["production_authorization_status"] == UNASSIGNED, cap["capability_id"]
-        assert cap["runtime_lifecycle"] == UNASSIGNED, cap["capability_id"]
         assert cap["production_decision_evidence"] == "", cap["capability_id"]
+        if cap["capability_id"] in selected_for_preflight:
+            assert cap["selected_host"] == "gurkdb", cap["capability_id"]
+            assert cap["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT", cap["capability_id"]
+        else:
+            assert cap["selected_host"] == UNASSIGNED, cap["capability_id"]
+            assert cap["runtime_lifecycle"] == UNASSIGNED, cap["capability_id"]
 
 
 def test_rotation_pressure_acceptance_and_observed_legacy_runtime_are_preserved() -> None:

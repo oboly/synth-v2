@@ -57,6 +57,27 @@ An installed timer may continue running operationally even after canonical
 authorization is reset. Repository correction does not stop that timer.
 Containment requires a separately authorized host action.
 
+## 2026-07-20 gurkDB preflight selection (selection only, not authorization)
+
+`market_rotation_pressure` is selected to gurkDB for strict host preflight:
+
+```text
+market_rotation_pressure.candidate_host=gurkdb
+market_rotation_pressure.selected_host=gurkdb
+market_rotation_pressure.runtime_lifecycle=SELECTED_PENDING_PREFLIGHT
+market_rotation_pressure.production_runtime_owner=UNASSIGNED
+market_rotation_pressure.production_authorization_status=UNASSIGNED
+```
+
+This selection is repository-only and means only "selected for strict host
+preflight". The acceptance record, the devlap historical assignment
+(`SUPERSEDED`), and the observed devlap timer (`current_state=UNVERIFIED`) above
+are unchanged; none of them is production authorization. gurkDB is not prepared,
+not preflighted, not accepted, not authorized, and runs no writer. No host
+systemd unit is changed. Strict gurkDB preflight and a separately evidenced
+cutover, per `docs/ops/writer_capability_host_ownership_contract_v1.md`, remain
+required before any production ownership.
+
 ## Historical Runtime Roles
 
 ```text

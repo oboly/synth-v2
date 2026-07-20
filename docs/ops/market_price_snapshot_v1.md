@@ -8,14 +8,19 @@ consumers. The writer uses only Bitvavo public `GET /ticker/price`.
 ```text
 capability_id=public_price_snapshot
 candidate_host=gurkdb
-selected_host=UNASSIGNED
+selected_host=gurkdb
 acceptance_host=UNASSIGNED
 acceptance_status=UNASSIGNED
 production_runtime_owner=UNASSIGNED
 production_authorization_status=UNASSIGNED
-runtime_lifecycle=UNASSIGNED
+runtime_lifecycle=SELECTED_PENDING_PREFLIGHT
 observed_runtime_state=[]
 ```
+
+`selected_host=gurkdb` records selection for strict host preflight only. It is
+not production ownership, authorization, host preparation, or deployment; the
+production owner remains `UNASSIGNED` and no gurkDB preflight has run. Strict
+gurkDB preflight is the next gate.
 
 The committed service and timer below are devlap-bound candidate artifacts, not
 host-neutral production configuration:
