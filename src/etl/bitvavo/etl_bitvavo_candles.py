@@ -383,7 +383,13 @@ def validate_chunk_rows(
     return gap_count
 
 
-def upsert_candles(conn, rows: list[CandleRow]) -> int:
+def upsert_candles(conn, rows: list[CandleRow], *, authorization: Any = None) -> int:
+    from src.operations.writer_capability_authorization_v1 import (
+        require_writer_mutation_authorization,
+    )
+
+    # Fail closed before any SQL execution.
+    require_writer_mutation_authorization(authorization, "public_candle_freshness")
     if not rows:
         return 0
 
@@ -460,6 +466,7 @@ def run_market_interval(
     timeout_seconds: int = 20,
     sleep_seconds: float = 0.0,
     dry_run: bool = False,
+    authorization: Any = None,
     **_: Any,
 ) -> dict[str, int]:
     """Run ETL for one (asset, interval) pair.
@@ -579,7 +586,7 @@ def run_market_interval(
             )
 
         if not dry_run:
-            total_written += upsert_candles(conn, filtered_rows)
+            total_written += upsert_candles(conn, filtered_rows, authorization=authorization)
 
         window_start_ms = window_end_ms
 

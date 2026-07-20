@@ -298,3 +298,39 @@ A fail-closed freshness outage is safer than a duplicate writer.
 - No reporting, account, dashboard, decision_gate, execution_planner, executor,
   or broker path may start a public market-data writer.
 - No two authorized active production owners for one capability.
+
+## Mutation authorization contract
+
+Authorization is enforced at every layer with one shared implementation
+(`src.operations.writer_capability_authorization_v1`) and, critically, at the
+lowest practical mutation boundary:
+
+- Low-level mutation helpers (candle upsert, market-price persistence, rotation
+  history/pressure persistence, Native SHORT scope/map materialization, and the
+  canonical fib-context artifact publication) require a validated, sealed
+  `WriterMutationAuthorization` context, constructed only by the shared
+  verification flow. A missing, `None`, plain-dict, or wrong-capability context
+  fails closed before the first `INSERT`/`UPDATE`/`executemany`/`commit` or any
+  canonical file replacement. The capability is determined by the mutation
+  performed, never by a caller-supplied identity.
+- The production authorization file path is registry-declared
+  (`authorization_guard.authorization_file`) and is never environment- or
+  CLI-overridable. The file must be a regular file, not a symlink, safely owned,
+  and not group/world writable.
+- Acceptance permits are capability-bound, host-bound, exact-commit-bound and
+  **time-bounded**. A permit may be reused within its valid time window; it is
+  **not** single-use and **not** invocation-count-bounded (there is no
+  `max_invocations` counter). A permit never grants production authorization.
+  Containment of a running timer remains an explicit operator action.
+- All `*_utc` timestamps use canonical literal UTC (`YYYY-MM-DDTHH:MM:SSZ`).
+  A numeric offset (`+01:00`, `-05:00`) or a timezone-less timestamp is rejected;
+  offsets are never silently normalized.
+
+## Market-only processing chains
+
+`scripts/run_chain_1h.sh` and `scripts/run_chain_1d.sh` are market-only
+processing chains. They do **not** ingest public candles (ingestion is owned by
+the `public_candle_freshness` capability); they consume already-persisted
+candles and run a read-only persisted-candle freshness gate before any
+write-capable stage, failing closed on missing, stale, or DB-unavailable state.
+They own zero public-market-data writer capabilities.

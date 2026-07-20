@@ -37,11 +37,9 @@ def _authorized_native_short_context(monkeypatch: pytest.MonkeyPatch) -> None:
     PRODUCTION runtime). The mutation-boundary authorization itself — including
     UNASSIGNED denial for main() and execute_runtime() — is covered by
     tests/test_writer_capability_authorization_v1.py."""
-    import src.operations.writer_capability_authorization_v1 as authmod
+    from tests.writer_auth_support import install_authorized_writer_context
 
-    monkeypatch.setattr(
-        authmod, "require_capability_write_authorization", lambda *a, **k: None
-    )
+    install_authorized_writer_context(monkeypatch)
 RUNNER_PATH = ROOT / "src/market_data/run_native_short_scope_status_chain_v1.py"
 SERVICE_PATH = ROOT / "deploy/systemd/synth-chain-4h.service"
 TIMER_PATH = ROOT / "deploy/systemd/synth-chain-4h.timer"

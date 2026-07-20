@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+
+import pytest as _pytest_authz
+
+
+@_pytest_authz.fixture(autouse=True)
+def _authorized_writer_context(monkeypatch):
+    """Run write mechanics as an already-authorized writer capability. Denial is
+    covered by tests/test_writer_capability_authorization_v1.py."""
+    from tests.writer_auth_support import install_authorized_writer_context
+    install_authorized_writer_context(monkeypatch)
+
 """Orchestrator-level tests for native_short_scope_status_materializer_v1.
 
 These tests exercise `evaluate_scope` / `run_native_short_scope_status_materializer`

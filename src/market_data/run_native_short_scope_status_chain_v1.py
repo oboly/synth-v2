@@ -427,7 +427,7 @@ def execute_runtime(
         require_capability_write_authorization,
     )
 
-    require_capability_write_authorization(
+    writer_authorization = require_capability_write_authorization(
         "native_short_4h_chain",
         service="synth-chain-4h.service",
     )
@@ -515,6 +515,7 @@ def execute_runtime(
                     ),
                     fetch_primary_candle_close_timestamps=market_data.primary_timestamps,
                     fetch_supporting_candle_close_timestamps=market_data.supporting_timestamps,
+                    authorization=writer_authorization,
                 )
             except NativeShortMapLevelStatusBlockedError:
                 # Explicit, already-designed domain-blocked contract: the

@@ -493,10 +493,12 @@ def call_etl_function(
     venue: str,
     config: EtlConfig,
     dry_run: bool,
+    authorization: Any = None,
 ) -> Any:
     signature = inspect.signature(fn)
 
     candidate_kwargs: dict[str, Any] = {
+        "authorization": authorization,
         "conn": conn,
         "session": session,
         "asset_id": asset.asset_id,
@@ -615,10 +617,12 @@ def main(argv: list[str] | None = None) -> int:
             require_capability_write_authorization,
         )
 
-        require_capability_write_authorization(
+        writer_authorization = require_capability_write_authorization(
             "public_candle_freshness",
             service="synth-market-candle-freshness-writer.service",
         )
+    else:
+        writer_authorization = None
 
     if args.debug_logging:
         os.environ[DEBUG_ENV_VAR] = "1"
@@ -786,6 +790,7 @@ def main(argv: list[str] | None = None) -> int:
                         venue=config.venue,
                         config=config,
                         dry_run=args.dry_run,
+                        authorization=writer_authorization,
                     )
                 except MarketUnavailableError as exc:
                     unavailable_entry = {

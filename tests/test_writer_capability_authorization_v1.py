@@ -331,7 +331,6 @@ def test_acceptance_permit_cannot_authorize_production(tmp_path: Path) -> None:
         "acceptance_host": "devlap",
         "authorized_commit": "a" * 40,
         "approval_reference": "ref",
-        "max_invocations": 1,
     }
     permit_path = _write_json(tmp_path / "permit.json", permit)
     decision = verify_writer_execution_authorization(
@@ -359,7 +358,6 @@ def test_production_cannot_be_inferred_from_acceptance(tmp_path: Path) -> None:
         "acceptance_host": "devlap",
         "authorized_commit": head,
         "approval_reference": "ref",
-        "max_invocations": 1,
     }
     permit_path = _write_json(tmp_path / "permit.json", permit)
     accept = verify_writer_execution_authorization(
@@ -368,6 +366,7 @@ def test_production_cannot_be_inferred_from_acceptance(tmp_path: Path) -> None:
         repo_root=REPO,
         checkout_path=repo,
         acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
         actual_host="devlap",
         expected_working_directory=os.path.realpath(str(repo)),
     )
@@ -398,7 +397,6 @@ def test_expired_acceptance_permit_rejected(tmp_path: Path) -> None:
         "acceptance_host": "devlap",
         "authorized_commit": head,
         "approval_reference": "ref",
-        "max_invocations": 1,
     }
     permit_path = _write_json(tmp_path / "permit.json", permit)
     decision = verify_writer_execution_authorization(
@@ -407,6 +405,7 @@ def test_expired_acceptance_permit_rejected(tmp_path: Path) -> None:
         repo_root=REPO,
         checkout_path=repo,
         acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
         actual_host="devlap",
         expected_working_directory=os.path.realpath(str(repo)),
     )
@@ -420,7 +419,6 @@ def test_guard_cli_production_fails_closed_while_unassigned() -> None:
             "python", "-m", "src.operations.verify_writer_capability_authorization_v1",
             "--capability", PRICE_CAP, "--service", PRICE_SERVICE,
             "--checkout-path", str(REPO), "--mode", "PRODUCTION",
-            "--authorization-file", "/tmp/synth-missing-authorization-file.json",
         ],
         capture_output=True, text=True, check=False,
     )

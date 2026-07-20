@@ -45,11 +45,9 @@ def _authorized_writer_context(monkeypatch: pytest.MonkeyPatch) -> None:
     """These tests exercise write/rollback mechanics and assume authorization is
     already granted. The writer-capability authorization boundary itself is
     covered by tests/test_writer_capability_authorization_v1.py."""
-    import src.operations.writer_capability_authorization_v1 as authmod
+    from tests.writer_auth_support import install_authorized_writer_context
 
-    monkeypatch.setattr(
-        authmod, "require_capability_write_authorization", lambda *a, **k: None
-    )
+    install_authorized_writer_context(monkeypatch)
 
 AS_OF = datetime(2026, 1, 15, 12, 0, 0)  # naive UTC hourly boundary
 

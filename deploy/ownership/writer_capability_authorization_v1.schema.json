@@ -23,7 +23,7 @@
   "properties": {
     "authorization_version": {"const": "writer_capability_runtime_authorization_v1"},
     "authorization_id": {"type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{6,126}[A-Za-z0-9]$"},
-    "authorized_at_utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"},
+    "authorized_at_utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"},
     "purpose": {"const": "PRODUCTION"},
     "capability_id": {"enum": ["public_price_snapshot", "public_candle_freshness", "market_rotation_pressure", "native_short_4h_chain"]},
     "capability_identity": {"enum": ["public-price-snapshot-writer", "public-candle-freshness-writer", "market-rotation-pressure-writer", "native-short-4h-chain"]},

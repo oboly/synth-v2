@@ -14,7 +14,7 @@ User=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
 Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
 Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
-ExecStartPre=/bin/bash -lc 'python -m src.operations.verify_writer_capability_authorization_v1 --capability public_candle_freshness --service synth-market-candle-freshness-writer.service --checkout-path /home/gurk/projects/synth-v2 --registry deploy/ownership/writer_capability_ownership_v1.json --authorization-file /etc/synth/writer-capability-runtime-authorization-v1.json'
+ExecStartPre=/bin/bash -lc 'python -m src.operations.verify_writer_capability_authorization_v1 --capability public_candle_freshness --service synth-market-candle-freshness-writer.service --checkout-path /home/gurk/projects/synth-v2 --registry deploy/ownership/writer_capability_ownership_v1.json'
 ExecStart=/bin/bash -lc 'bash scripts/run_market_candle_freshness_once.sh'
 Restart=no
 Nice=5

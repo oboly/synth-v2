@@ -41,7 +41,16 @@ def utc_now_naive() -> datetime:
 def insert_market_price_snapshots(
     conn: Any,
     snapshots: list[MarketPriceSnapshot],
+    *,
+    authorization: Any = None,
 ) -> int:
+    from src.operations.writer_capability_authorization_v1 import (
+        require_writer_mutation_authorization,
+    )
+
+    # Fail closed before any SQL execution: the mutation determines its own
+    # capability owner; a missing/invalid context is denied.
+    require_writer_mutation_authorization(authorization, "public_price_snapshot")
     if not snapshots:
         return 0
 

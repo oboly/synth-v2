@@ -915,7 +915,16 @@ def materialize_scope_symbol(
     now_utc: datetime,
     write: bool,
     provenance: NativeShortWriterProvenance,
+    authorization: Any = None,
 ) -> ScopeMaterializationResult:
+    if write:
+        from src.operations.writer_capability_authorization_v1 import (
+            require_writer_mutation_authorization,
+        )
+
+        # Fail closed before any lock, INSERT, or lifecycle write. Read-only
+        # (write=False) materialization needs no write authorization.
+        require_writer_mutation_authorization(authorization, "native_short_4h_chain")
     validate_native_short_writer_provenance(provenance)
     trigger_type = provenance.trigger_type
     key = scope_support.key

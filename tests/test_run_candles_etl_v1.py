@@ -17,13 +17,11 @@ import src.etl.bitvavo.run_candles_etl as runner
 def _authorized_writer_context(monkeypatch: pytest.MonkeyPatch) -> None:
     """These tests exercise ETL run/observability mechanics and assume the
     public_candle_freshness capability is already authorized. The unconditional
-    writer-capability authorization boundary itself is covered by
-    tests/test_writer_capability_authorization_v1.py."""
-    import src.operations.writer_capability_authorization_v1 as authmod
+    writer-capability authorization boundary (including the sealed candle upsert)
+    is covered by tests/test_writer_capability_authorization_v1.py."""
+    from tests.writer_auth_support import install_authorized_writer_context
 
-    monkeypatch.setattr(
-        authmod, "require_capability_write_authorization", lambda *a, **k: None
-    )
+    install_authorized_writer_context(monkeypatch)
 
 
 class _FakeConn:

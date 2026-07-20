@@ -435,7 +435,14 @@ def write_rotation_snapshot(
     eligible_count: int,
     excluded_count: int,
     observations: list[HorizonObservation],
+    *,
+    authorization: Any = None,
 ) -> tuple[str, int]:
+    from src.operations.writer_capability_authorization_v1 import (
+        require_writer_mutation_authorization,
+    )
+
+    require_writer_mutation_authorization(authorization, "market_rotation_pressure")
     sql_header = """
     INSERT IGNORE INTO market_rotation_snapshot_v1
       (as_of_ts_utc, horizon_h, venue, candle_interval_code,
@@ -605,7 +612,14 @@ def write_global_snapshot(
     result: GlobalContextResult,
     *,
     dry_run: bool = False,
+    authorization: Any = None,
 ) -> tuple[bool, str]:
+    if not dry_run:
+        from src.operations.writer_capability_authorization_v1 import (
+            require_writer_mutation_authorization,
+        )
+
+        require_writer_mutation_authorization(authorization, "market_rotation_pressure")
     with conn.cursor() as cur:
         cur.execute(
             "SELECT source_status FROM market_global_snapshot_v1 "
@@ -754,10 +768,12 @@ def main(argv: list[str] | None = None) -> int:
 
         # Final mandatory authorization boundary before any rotation-history
         # write. A direct invocation cannot bypass ownership authorization.
-        require_capability_write_authorization(
+        writer_authorization = require_capability_write_authorization(
             "market_rotation_pressure",
             service="synth-market-rotation-pressure-writer.service",
         )
+    else:
+        writer_authorization = None
     as_of_ts = resolve_as_of_ts(args.asof_ts)
     horizons = args.horizon or list(HORIZONS_H)
     mode = "validate-only" if args.validate_only else ("dry-run" if args.dry_run else "write-db")
@@ -825,6 +841,7 @@ def main(argv: list[str] | None = None) -> int:
                     write_status, obs_written = write_rotation_snapshot(
                         conn, as_of_ts, h, args.venue,
                         len(eligible), len(excluded), eligible,
+                        authorization=writer_authorization,
                     )
                     snap_results.append((h, eligible, excluded, write_status, obs_written))
                 conn.commit()
@@ -842,7 +859,10 @@ def main(argv: list[str] | None = None) -> int:
             api_key = os.getenv(COINGECKO_API_KEY_ENV)
             global_result = fetch_coingecko_global(api_key)
             try:
-                _, global_action = write_global_snapshot(conn, as_of_ts, global_result, dry_run=False)
+                _, global_action = write_global_snapshot(
+                    conn, as_of_ts, global_result, dry_run=False,
+                    authorization=writer_authorization,
+                )
                 conn.commit()
                 print_global_section(global_result, global_action)
             except Exception as exc:

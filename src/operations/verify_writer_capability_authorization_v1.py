@@ -24,7 +24,6 @@ import platform
 from pathlib import Path
 
 from src.operations.writer_capability_authorization_v1 import (
-    DEFAULT_AUTHORIZATION_FILE,
     REPO_RELATIVE_REGISTRY,
     AuthorizationDecision,
     ExecutionMode,
@@ -38,6 +37,8 @@ def _allowed_untracked(values: list[str] | None) -> set[str]:
 
 def run_guard(args: argparse.Namespace) -> AuthorizationDecision:
     repo_root = args.repo_root or args.checkout_path
+    # The production authorization path is registry-declared and is not passed
+    # here; it can never be overridden by CLI or environment.
     return verify_writer_execution_authorization(
         capability_id=args.capability,
         mode=args.mode,
@@ -46,7 +47,6 @@ def run_guard(args: argparse.Namespace) -> AuthorizationDecision:
         service=args.service,
         actual_host=platform.node().strip(),
         registry_path=args.registry,
-        authorization_path=args.authorization_file,
         acceptance_permit_path=args.acceptance_permit,
         allowed_untracked_paths=_allowed_untracked(args.allowed_untracked_path),
         expected_working_directory=repo_root,
@@ -66,7 +66,6 @@ def main() -> int:
         default=ExecutionMode.PRODUCTION.value,
         help="Authorization mode to prove (default PRODUCTION for a committed service start).",
     )
-    parser.add_argument("--authorization-file", type=Path, default=DEFAULT_AUTHORIZATION_FILE)
     parser.add_argument("--acceptance-permit", type=Path, default=None)
     parser.add_argument("--allowed-untracked-path", action="append", default=[])
     args = parser.parse_args()

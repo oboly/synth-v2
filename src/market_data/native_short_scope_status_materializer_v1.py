@@ -878,6 +878,7 @@ def evaluate_scope(
     fetch_existing_generation_events: Callable[[Any, NativeShortMapScopeKey], list[Any]],
     fetch_existing_lifecycle_events: Callable[[Any, list[int]], list[Any]],
     materialize_scope_symbol_fn: Callable[..., ScopeMaterializationResult] = materialize_scope_symbol,
+    authorization: Any = None,
 ) -> ScopeEvaluationOutcome:
     """Evaluate exactly one canonical scope for one bounded run.
 
@@ -957,6 +958,7 @@ def evaluate_scope(
             now_utc=as_of_utc,
             write=True,
             provenance=provenance,
+            authorization=authorization,
         )
     except Exception as exc:  # noqa: BLE001 - preserved as observation evidence, not swallowed
         observation = NativeShortScopeObservationRecord(
@@ -1081,6 +1083,7 @@ def run_native_short_scope_status_materializer(
     materialize_map_level_status_fn: Callable[
         ..., MapLevelStatusMaterializationOutcome
     ] | None = None,
+    authorization: Any = None,
 ) -> NativeShortMaterializerRunRecord:
     """Bounded run over an explicit scope list at one explicit as_of_utc.
 
@@ -1100,6 +1103,12 @@ def run_native_short_scope_status_materializer(
     itself, so the caller controls exactly when those two timestamps are
     captured.
     """
+    from src.operations.writer_capability_authorization_v1 import (
+        require_writer_mutation_authorization,
+    )
+
+    # Fail closed before the first run-row INSERT.
+    require_writer_mutation_authorization(authorization, "native_short_4h_chain")
     validate_native_short_writer_provenance(provenance)
     materialize_map_level_status_fn = (
         materialize_map_level_status_fn
@@ -1127,6 +1136,7 @@ def run_native_short_scope_status_materializer(
                 fetch_existing_generation_events=fetch_existing_generation_events,
                 fetch_existing_lifecycle_events=fetch_existing_lifecycle_events,
                 materialize_scope_symbol_fn=materialize_scope_symbol_fn,
+                authorization=authorization,
             )
             if outcome.skipped_not_supported:
                 continue

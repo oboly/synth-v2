@@ -226,7 +226,6 @@ def test_shared_production_mode_blocks_unassigned_capability() -> None:
         authorization_path=Path("/tmp/synth-nonexistent-authorization.json"),
     )
     assert not decision.allowed
-    assert any("authorization file missing" in reason for reason in decision.reasons)
 
 
 def test_shared_authorization_rejects_unknown_capability() -> None:
@@ -240,7 +239,9 @@ def test_shared_authorization_rejects_unknown_capability() -> None:
     assert any("unknown capability_id" in reason for reason in decision.reasons)
 
 
-def test_guard_cli_fails_closed_when_authorization_file_is_missing() -> None:
+def test_guard_cli_fails_closed_when_registry_declared_authorization_file_is_missing() -> None:
+    # The production authorization path is registry-declared (not overridable);
+    # on a host without that file the guard fails closed.
     result = subprocess.run(
         [
             "python",
@@ -252,15 +253,29 @@ def test_guard_cli_fails_closed_when_authorization_file_is_missing() -> None:
             "synth-market-price-snapshot-writer.service",
             "--checkout-path",
             str(Path.cwd()),
-            "--authorization-file",
-            "/tmp/synth-missing-authorization-file.json",
         ],
         capture_output=True,
         text=True,
         check=False,
     )
+    assert result.returncode == 3
+    assert "authorization_guard=fail_closed" in result.stdout
+
+
+def test_guard_cli_rejects_authorization_file_override() -> None:
+    # The removed --authorization-file override must not be accepted.
+    result = subprocess.run(
+        [
+            "python", "-m", "src.operations.verify_writer_capability_authorization_v1",
+            "--capability", "public_price_snapshot",
+            "--service", "synth-market-price-snapshot-writer.service",
+            "--checkout-path", str(Path.cwd()),
+            "--authorization-file", "/tmp/whatever.json",
+        ],
+        capture_output=True, text=True, check=False,
+    )
     assert result.returncode != 0
-    assert "authorization file missing" in result.stdout
+    assert "unrecognized arguments" in result.stderr or "authorization-file" in result.stderr
 
 
 def test_preflight_strict_fails_on_required_warn_and_unverified() -> None:

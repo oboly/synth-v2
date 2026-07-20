@@ -59,6 +59,16 @@ echo "[CHAIN][1d] feature window lookback_hours=2160 warmup_bars=300 end=${CHAIN
 # the public_candle_freshness writer capability and is NOT performed here; the
 # chain consumes already-persisted candles. It must not become an unregistered
 # public-market-data writer.
+#
+# Read-only persisted-candle freshness gate: fail closed before any downstream
+# write-capable stage if the persisted 1d candle at the expected close is
+# missing, stale, or the DB is unavailable. This performs SELECT-only checks,
+# no ingestion, no repair, and never marks derived state fresh on failure.
+echo "[CHAIN][1d] persisted candle freshness gate interval=1d expected_close=${CHAIN_1D_END_TS}"
+run_step python -m src.operations.run_persisted_market_candle_freshness_v1 \
+    --venue bitvavo \
+    --interval 1d \
+    --expected-close-ts "$CHAIN_1D_END_TS"
 
 run_step python -m src.features.run_feat_candle \
     --interval 1d \

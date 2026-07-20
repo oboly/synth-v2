@@ -39,7 +39,7 @@ CAPABILITY_IDENTITY = {
     "native_short_4h_chain": "native-short-4h-chain",
 }
 _RFC3339_RE = re.compile(
-    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$"
 )
 ALLOWED_ADDITIONAL_WRITER_CLASSIFICATIONS = {
     "shared_market_only_chain",
