@@ -16,6 +16,7 @@ PRICE_VALIDATOR = "src.operations.run_persisted_market_price_freshness_v1"
 CANDLE_VALIDATOR = "src.operations.run_persisted_market_candle_freshness_v1"
 NATIVE_SCOPE_RUNNER = "scripts/run_native_short_scope_status_chain_once.sh"
 NATIVE_SNAPSHOT_RUNNER = "src.market_data.run_native_short_fib_context_snapshot_v1"
+AUTH_GUARD = "src.operations.verify_writer_capability_authorization_v1"
 
 
 def _write(path: Path, source: str, *, executable: bool = False) -> None:
@@ -125,10 +126,11 @@ exit 0
 @pytest.mark.parametrize(
     ("blocked_module", "expected_calls"),
     (
-        (PRICE_VALIDATOR, ["src.market_data.native_short_repository_source_identity_v1", PRICE_VALIDATOR]),
+        (PRICE_VALIDATOR, [AUTH_GUARD, "src.market_data.native_short_repository_source_identity_v1", PRICE_VALIDATOR]),
         (
             CANDLE_VALIDATOR,
             [
+                AUTH_GUARD,
                 "src.market_data.native_short_repository_source_identity_v1",
                 PRICE_VALIDATOR,
                 CANDLE_VALIDATOR,
@@ -158,6 +160,7 @@ def test_inherited_repository_and_lock_guard_cannot_redirect_or_bypass_chain(
 
     assert result.returncode == 37
     assert calls == [
+        AUTH_GUARD,
         "src.market_data.native_short_repository_source_identity_v1",
         PRICE_VALIDATOR,
     ]
@@ -272,8 +275,9 @@ def test_canonical_service_pins_non_login_environment_and_outer_lock() -> None:
     assert "flock -n 8" in chain
     assert "reason=LOCK_HELD" in chain
     assert 'if [ "${SYNTH_CHAIN_4H_LOCKED:-0}" != "1" ]' not in chain
-    assert chain.count("--allowed-untracked-path") == 2
+    assert chain.count("--allowed-untracked-path") == 3
     assert "docs/todo/replay_parameter_study_harness_v1.md" in chain
+    assert AUTH_GUARD in chain
 
 
 def test_legacy_4h_unit_templates_are_inert_retirement_stubs() -> None:

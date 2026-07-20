@@ -420,6 +420,17 @@ def execute_runtime(
     provenance: NativeShortWriterProvenance,
     progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> RuntimeResult:
+    # Independent mandatory authorization boundary immediately before the
+    # bounded materialization/publication transaction. This guards direct calls
+    # to execute_runtime as well as invocations routed through main().
+    from src.operations.writer_capability_authorization_v1 import (
+        require_capability_write_authorization,
+    )
+
+    writer_authorization = require_capability_write_authorization(
+        "native_short_4h_chain",
+        service="synth-chain-4h.service",
+    )
     validate_native_short_writer_provenance(provenance)
     def _report(event: str, *, phase: str | None = None, **fields: Any) -> None:
         if progress is None:
@@ -504,6 +515,7 @@ def execute_runtime(
                     ),
                     fetch_primary_candle_close_timestamps=market_data.primary_timestamps,
                     fetch_supporting_candle_close_timestamps=market_data.supporting_timestamps,
+                    authorization=writer_authorization,
                 )
             except NativeShortMapLevelStatusBlockedError:
                 # Explicit, already-designed domain-blocked contract: the
@@ -601,6 +613,21 @@ def main(
     ),
 ) -> int:
     args = parse_args(argv)
+
+    # Mandatory authorization boundary: the native SHORT 4h chain owns public
+    # market-state materialization/publication. A direct Python invocation must
+    # not bypass ownership authorization. Wrapper guards are defense in depth.
+    from src.operations.writer_capability_authorization_v1 import (
+        require_capability_write_authorization,
+    )
+
+    allowed_untracked = {args.allowed_untracked_path} if args.allowed_untracked_path else None
+    require_capability_write_authorization(
+        "native_short_4h_chain",
+        service="synth-chain-4h.service",
+        allowed_untracked_paths=allowed_untracked,
+    )
+
     try:
         provenance = build_verified_process_provenance(
             writer_entrypoint=args.writer_entrypoint,

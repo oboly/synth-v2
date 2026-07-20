@@ -587,9 +587,19 @@ def _find_current_active_map(
     return max(active_maps, key=lambda item: (item.published_at_utc, item.map_id)) if active_maps else None
 
 
+def _require_native_short_write_auth(authorization: Any) -> None:
+    """Fail closed before any Native SHORT map SQL mutation."""
+    from src.operations.writer_capability_authorization_v1 import (
+        require_writer_mutation_authorization,
+    )
+
+    require_writer_mutation_authorization(authorization, "native_short_4h_chain")
+
+
 def _insert_generation_event(
     conn: Any,
     *,
+    authorization: Any = None,
     key: NativeShortMapScopeKey,
     attempt_id: str,
     event_type: NativeShortMapGenerationEventType,
@@ -611,6 +621,7 @@ def _insert_generation_event(
     source_primary_candle_count: int | None = None,
     source_support_candle_count: int | None = None,
 ) -> int:
+    _require_native_short_write_auth(authorization)
     validate_native_short_writer_provenance(provenance)
     sql = """
     INSERT INTO native_short_map_generation_event_v1 (
@@ -679,6 +690,7 @@ def _json_dumps(payload: Any) -> str:
 def _insert_map_row(
     conn: Any,
     *,
+    authorization: Any = None,
     key: NativeShortMapScopeKey,
     context_row: NativeShortContextRow,
     source_primary_candle_count: int,
@@ -690,6 +702,7 @@ def _insert_map_row(
     previous_map_cycle_id: str | None,
     provenance: NativeShortWriterProvenance,
 ) -> int:
+    _require_native_short_write_auth(authorization)
     validate_native_short_writer_provenance(provenance)
     fib_ratios_json = _json_dumps(
         {
@@ -827,6 +840,7 @@ def _insert_map_row(
 def _insert_lifecycle_event(
     conn: Any,
     *,
+    authorization: Any = None,
     map_id: int,
     event_type: NativeShortMapLifecycleEventType,
     event_ts_utc: datetime,
@@ -836,6 +850,7 @@ def _insert_lifecycle_event(
     latest_primary_close_ts_utc: datetime | None = None,
     latest_support_close_ts_utc: datetime | None = None,
 ) -> int:
+    _require_native_short_write_auth(authorization)
     validate_native_short_writer_provenance(provenance)
     sql = """
     INSERT INTO native_short_map_lifecycle_event_v1 (
@@ -915,7 +930,16 @@ def materialize_scope_symbol(
     now_utc: datetime,
     write: bool,
     provenance: NativeShortWriterProvenance,
+    authorization: Any = None,
 ) -> ScopeMaterializationResult:
+    if write:
+        from src.operations.writer_capability_authorization_v1 import (
+            require_writer_mutation_authorization,
+        )
+
+        # Fail closed before any lock, INSERT, or lifecycle write. Read-only
+        # (write=False) materialization needs no write authorization.
+        require_writer_mutation_authorization(authorization, "native_short_4h_chain")
     validate_native_short_writer_provenance(provenance)
     trigger_type = provenance.trigger_type
     key = scope_support.key
@@ -986,6 +1010,7 @@ def materialize_scope_symbol(
         attempt_id = str(uuid.uuid4())
         started_event_id = _insert_generation_event(
             conn,
+            authorization=authorization,
             provenance=provenance,
             key=key,
             attempt_id=attempt_id,
@@ -1001,6 +1026,7 @@ def materialize_scope_symbol(
         )
         rejected_event_id = _insert_generation_event(
             conn,
+            authorization=authorization,
             provenance=provenance,
             key=key,
             attempt_id=attempt_id,
@@ -1119,6 +1145,7 @@ def materialize_scope_symbol(
     attempt_id = str(uuid.uuid4())
     started_event_id = _insert_generation_event(
         conn,
+        authorization=authorization,
         provenance=provenance,
         key=key,
         attempt_id=attempt_id,
@@ -1139,6 +1166,7 @@ def materialize_scope_symbol(
     )
     new_map_id = _insert_map_row(
         conn,
+        authorization=authorization,
         provenance=provenance,
         key=key,
         context_row=context_row,
@@ -1152,6 +1180,7 @@ def materialize_scope_symbol(
     )
     published_event_id = _insert_generation_event(
         conn,
+        authorization=authorization,
         provenance=provenance,
         key=key,
         attempt_id=attempt_id,
@@ -1173,6 +1202,7 @@ def materialize_scope_symbol(
     )
     activated_lifecycle_id = _insert_lifecycle_event(
         conn,
+        authorization=authorization,
         provenance=provenance,
         map_id=new_map_id,
         event_type=NativeShortMapLifecycleEventType.ACTIVATED,
@@ -1192,6 +1222,7 @@ def materialize_scope_symbol(
     if current_active_map is not None:
         superseded_lifecycle_id = _insert_lifecycle_event(
             conn,
+            authorization=authorization,
             provenance=provenance,
             map_id=current_active_map.map_id,
             event_type=NativeShortMapLifecycleEventType.SUPERSEDED,

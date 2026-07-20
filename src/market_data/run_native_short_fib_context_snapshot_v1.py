@@ -70,6 +70,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     started = time.monotonic()
     generated_ts = args.generated_ts_utc or datetime.now(UTC)
+
+    # Publication is a canonical artifact mutation owned by native_short_4h_chain.
+    # Acquire and validate authorization BEFORE opening any DB connection,
+    # loading persisted authorities, or building publication state. Dry-run
+    # (read-only) needs no production authorization.
+    publish_authorization = None
+    if args.publish:
+        from src.operations.writer_capability_authorization_v1 import (
+            require_capability_write_authorization,
+        )
+
+        publish_authorization = require_capability_write_authorization(
+            "native_short_4h_chain",
+            service="synth-chain-4h.service",
+        )
     _emit(
         {
             "event": "STARTED",
@@ -124,6 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 output_dir=args.output_dir,
                 generated_ts_utc=generated_ts,
                 publication_ts_utc=publication_ts,
+                authorization=publish_authorization,
             )
             result = published.status
             paths = {

@@ -493,10 +493,12 @@ def call_etl_function(
     venue: str,
     config: EtlConfig,
     dry_run: bool,
+    authorization: Any = None,
 ) -> Any:
     signature = inspect.signature(fn)
 
     candidate_kwargs: dict[str, Any] = {
+        "authorization": authorization,
         "conn": conn,
         "session": session,
         "asset_id": asset.asset_id,
@@ -596,6 +598,31 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     run_started_ts = iso_now()
     run_id = f"run_candles_etl:{run_started_ts}:pid={os.getpid()}"
+
+    # Public candle persistence is owned by the public_candle_freshness writer
+    # capability. The capability is determined by the mutation performed here,
+    # never by an optional caller-supplied identity. Any non-dry-run invocation
+    # must be authorized before mutation; a direct invocation cannot bypass this
+    # boundary. A caller-supplied SYNTH_WRITER_CAPABILITY_ID is only checked for
+    # consistency and can never disable authorization.
+    if not args.dry_run:
+        claimed = os.environ.get("SYNTH_WRITER_CAPABILITY_ID")
+        if claimed not in (None, "", "public_candle_freshness"):
+            emit(
+                f"FAILED run_candles_etl reason=INCONSISTENT_CAPABILITY_CLAIM "
+                f"claimed={claimed} required=public_candle_freshness"
+            )
+            return 3
+        from src.operations.writer_capability_authorization_v1 import (
+            require_capability_write_authorization,
+        )
+
+        writer_authorization = require_capability_write_authorization(
+            "public_candle_freshness",
+            service="synth-market-candle-freshness-writer.service",
+        )
+    else:
+        writer_authorization = None
 
     if args.debug_logging:
         os.environ[DEBUG_ENV_VAR] = "1"
@@ -763,6 +790,7 @@ def main(argv: list[str] | None = None) -> int:
                         venue=config.venue,
                         config=config,
                         dry_run=args.dry_run,
+                        authorization=writer_authorization,
                     )
                 except MarketUnavailableError as exc:
                     unavailable_entry = {

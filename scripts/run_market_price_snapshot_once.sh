@@ -6,7 +6,7 @@ REPO_DIR="${SYNTH_REPO_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)}"
 LOCK_FILE="${SYNTH_MARKET_PRICE_SNAPSHOT_LOCK:-/tmp/synth-market-price-snapshot-writer-v1.lock}"
 VENUE="${SYNTH_MARKET_PRICE_SNAPSHOT_VENUE:-bitvavo}"
 QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
-OWNER="devlap-public-market-data"
+OWNER="public-price-snapshot-writer"
 started_epoch="$(date +%s)"
 
 echo "STARTED runner=run_market_price_snapshot_once owner=${OWNER} mode=public_market_data_write venue=${VENUE} quote=${QUOTE} worker_count=1 ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -32,6 +32,23 @@ fi
 
 repository_commit_sha="$(git rev-parse --verify HEAD)"
 echo "SOURCE owner=${OWNER} repository_commit_sha=${repository_commit_sha} endpoint=bitvavo_public_ticker_price lock_file=${LOCK_FILE}"
+
+# Fail closed before launching the write-capable process. Same shared
+# authorization semantics as the systemd ExecStartPre guard and the Python
+# mutation boundary. Default mode is PRODUCTION so an unassigned capability
+# fails before any write.
+WRITER_CAPABILITY_ID="public_price_snapshot"
+WRITER_SERVICE="synth-market-price-snapshot-writer.service"
+export SYNTH_WRITER_CAPABILITY_ID="${WRITER_CAPABILITY_ID}"
+export SYNTH_WRITER_EXECUTION_MODE="${SYNTH_WRITER_EXECUTION_MODE:-PRODUCTION}"
+GUARD_ARGS=(--capability "${WRITER_CAPABILITY_ID}" --service "${WRITER_SERVICE}" --checkout-path "${REPO_DIR}" --mode "${SYNTH_WRITER_EXECUTION_MODE}")
+if [[ -n "${SYNTH_WRITER_ACCEPTANCE_PERMIT:-}" ]]; then
+  GUARD_ARGS+=(--acceptance-permit "${SYNTH_WRITER_ACCEPTANCE_PERMIT}")
+fi
+if ! python -m src.operations.verify_writer_capability_authorization_v1 "${GUARD_ARGS[@]}"; then
+  echo "FAILED runner=run_market_price_snapshot_once reason=WRITER_AUTHORIZATION_DENIED capability=${WRITER_CAPABILITY_ID} mode=${SYNTH_WRITER_EXECUTION_MODE}" >&2
+  exit 3
+fi
 
 if python -m src.market_data.run_market_price_snapshot_v1 \
   --venue "${VENUE}" \

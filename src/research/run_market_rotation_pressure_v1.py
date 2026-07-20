@@ -457,7 +457,13 @@ def fetch_prior_market_score(conn: Any, venue: str, before: datetime) -> float |
 def write_pressure_snapshot(
     conn: Any, *, as_of_ts_utc: datetime, venue: str, excluded_missing_pair_count: int,
     aggregate: MarketAggregate, observations: list[PressureObservation],
+    authorization: Any = None,
 ) -> tuple[str, int]:
+    from src.operations.writer_capability_authorization_v1 import (
+        require_writer_mutation_authorization,
+    )
+
+    require_writer_mutation_authorization(authorization, "market_rotation_pressure")
     header_values = (
         len(observations), excluded_missing_pair_count,
         aggregate.positive_count, aggregate.neutral_count, aggregate.negative_count,
@@ -555,6 +561,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.write_db:
+        from src.operations.writer_capability_authorization_v1 import (
+            require_capability_write_authorization,
+        )
+
+        # Final mandatory authorization boundary before any rotation-pressure
+        # write. A direct invocation cannot bypass ownership authorization.
+        writer_authorization = require_capability_write_authorization(
+            "market_rotation_pressure",
+            service="synth-market-rotation-pressure-writer.service",
+        )
+    else:
+        writer_authorization = None
     if args.validate_only:
         print(f"RUNNER {RUNNER_NAME} model={MODEL_VERSION} mode=validate-only")
         print(f"weights={WEIGHTS} robust_scale_floors={ROBUST_SCALE_FLOORS}")
@@ -590,6 +609,7 @@ def main(argv: list[str] | None = None) -> int:
                     conn, as_of_ts_utc=as_of, venue=args.venue,
                     excluded_missing_pair_count=missing_pairs,
                     aggregate=aggregate, observations=observations,
+                    authorization=writer_authorization,
                 )
                 conn.commit()
                 status = f"{status} observations_written={written}"

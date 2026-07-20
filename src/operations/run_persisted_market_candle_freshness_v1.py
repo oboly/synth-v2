@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from datetime import UTC, datetime
 
 from dotenv import load_dotenv
@@ -17,12 +18,31 @@ from src.operations.persisted_market_candle_freshness_v1 import (
 RUNNER_NAME = "run_persisted_market_candle_freshness_v1"
 RUNNER_VERSION = "0.1"
 
+# Canonical literal-UTC only: YYYY-MM-DDTHH:MM:SS(.frac)?Z. Offsets and
+# timezone-less values are rejected; impossible calendar dates are rejected by
+# the real datetime parse below.
+_UTC_LITERAL_Z_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$"
+)
+
 
 def _utc_timestamp(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        raise argparse.ArgumentTypeError("timestamp must include a UTC offset")
+    if not _UTC_LITERAL_Z_RE.match(value):
+        raise argparse.ArgumentTypeError(
+            "timestamp must be canonical literal UTC (YYYY-MM-DDTHH:MM:SSZ)"
+        )
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid calendar date/time: {value}") from exc
     return parsed.astimezone(UTC)
+
+
+def _format_utc_z(value: datetime | None) -> str:
+    """Format a UTC datetime as canonical literal Z (never +00:00)."""
+    if value is None:
+        return "not_available"
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def parse_args() -> argparse.Namespace:
@@ -75,9 +95,8 @@ def main() -> int:
     print(f"validation_result={result.validation_result}")
     print(f"freshness_classification={result.freshness_classification}")
     print(f"reason={result.reason}")
-    print(f"expected_close_ts_utc={result.expected_close_ts_utc.isoformat()}")
-    latest = result.latest_close_ts_utc
-    print(f"latest_close_ts_utc={'not_available' if latest is None else latest.isoformat()}")
+    print(f"expected_close_ts_utc={_format_utc_z(result.expected_close_ts_utc)}")
+    print(f"latest_close_ts_utc={_format_utc_z(result.latest_close_ts_utc)}")
     print(f"expected_close_row_count={result.expected_close_row_count}")
     print("database_writes=0 public_exchange_calls=0 broker_private_calls=0 broker_writes=0")
     return 0 if result.is_fresh else 1

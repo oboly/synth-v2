@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 
@@ -9,6 +10,7 @@ PRICE_WRAPPER = Path("scripts/run_market_price_snapshot_once.sh")
 CANDLE_WRAPPER = Path("scripts/run_market_candle_freshness_once.sh")
 CHAIN_WRAPPER = Path("scripts/run_chain_4h.sh")
 ORCHESTRATOR = Path("scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh")
+SYSTEMD_TREES = (Path("deploy/systemd"), Path("docs/ops/systemd"), Path("scripts/odroid/systemd"))
 
 
 def _executable_text(path: Path) -> str:
@@ -18,15 +20,31 @@ def _executable_text(path: Path) -> str:
     )
 
 
+def _unit_value(path: Path, key: str) -> list[str]:
+    values = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith(";") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        if k == key:
+            values.append(v)
+    return values
+
+
 def test_no_odroid_script_can_invoke_a_public_market_data_writer() -> None:
     forbidden = (
         "src.market_data.run_market_price_snapshot_v1",
         "src.etl.bitvavo.run_candles_etl",
+        "scripts/run_market_price_snapshot_once.sh",
+        "scripts/run_market_candle_freshness_once.sh",
         "scripts/run_chain_4h.sh",
-        "run_native_short_scope_status_chain_once.sh",
+        "scripts/run_native_short_scope_status_chain_once.sh",
         "src.market_data.run_native_short_scope_status_chain_v1",
-        "src.market_data.run_native_short_map_materializer_v1",
+        "src.market_data.run_native_short_fib_context_snapshot_v1",
         "scripts/run_market_rotation_pressure_once.sh",
+        "src.research.run_market_rotation_history_v1",
+        "src.research.run_market_rotation_pressure_v1",
     )
     for path in ODROID_SCRIPTS:
         executable = _executable_text(path)
@@ -46,34 +64,37 @@ def test_linked_profile_orchestrator_is_validation_then_account_then_render() ->
     assert "run_account_profit_plan_snapshot_render_once.sh" in source
 
 
-def test_devlap_public_price_writer_has_one_owner_and_one_lock() -> None:
+def test_public_price_writer_has_immutable_identity_guard_and_lock() -> None:
     wrapper = PRICE_WRAPPER.read_text(encoding="utf-8")
-    service = Path("deploy/systemd/synth-market-price-snapshot-writer.service").read_text(encoding="utf-8")
-    timer = Path("deploy/systemd/synth-market-price-snapshot-writer.timer").read_text(encoding="utf-8")
+    service = Path("deploy/systemd/synth-market-price-snapshot-writer.service")
+    timer = Path("deploy/systemd/synth-market-price-snapshot-writer.timer")
+    service_text = service.read_text(encoding="utf-8")
     assert wrapper.count("flock -n 9") == 1
-    assert 'OWNER="devlap-public-market-data"' in wrapper
+    assert 'OWNER="public-price-snapshot-writer"' in wrapper
+    assert "SYNTH_MARKET_PRICE_WRITER_OWNER" not in wrapper
     assert wrapper.count("src.market_data.run_market_price_snapshot_v1") == 1
     assert wrapper.count("--write-db") == 1
-    assert service.count("scripts/run_market_price_snapshot_once.sh") == 1
-    assert timer.count("Unit=synth-market-price-snapshot-writer.service") == 1
-    assert "Requires=synth-market-price-snapshot-writer.service" not in timer
+    assert "ConditionHost=devlap" in service_text
+    assert "verify_writer_capability_authorization_v1" in service_text
+    assert "scripts/run_market_price_snapshot_once.sh" in service_text
+    assert "Unit=synth-market-price-snapshot-writer.service" in timer.read_text(encoding="utf-8")
 
 
-def test_devlap_candle_writer_has_one_owner_and_one_lock() -> None:
+def test_candle_writer_has_immutable_identity_guard_and_lock() -> None:
     wrapper = CANDLE_WRAPPER.read_text(encoding="utf-8")
-    service = Path("deploy/systemd/synth-market-candle-freshness-writer.service").read_text(encoding="utf-8")
-    timer = Path("deploy/systemd/synth-market-candle-freshness-writer.timer").read_text(encoding="utf-8")
+    service = Path("deploy/systemd/synth-market-candle-freshness-writer.service")
+    timer = Path("deploy/systemd/synth-market-candle-freshness-writer.timer")
+    service_text = service.read_text(encoding="utf-8")
     assert wrapper.count("flock -n 9") == 1
-    assert 'OWNER="devlap-public-market-data"' in wrapper
+    assert 'OWNER="public-candle-freshness-writer"' in wrapper
+    assert "SYNTH_MARKET_CANDLE_WRITER_OWNER" not in wrapper
     assert wrapper.count("src.etl.bitvavo.run_candles_etl") == 1
     for interval in ('run_or_fail "15m"', 'run_or_fail "1h"', 'run_or_fail "4h"', 'run_or_fail "1d"', 'run_or_fail "1w"'):
         assert interval in wrapper
-    assert service.count("scripts/run_market_candle_freshness_once.sh") == 1
-    assert timer.count("Unit=synth-market-candle-freshness-writer.service") == 1
-    assert "Requires=synth-market-candle-freshness-writer.service" not in timer
-    chain = CHAIN_WRAPPER.read_text(encoding="utf-8")
-    assert "src.etl.bitvavo.run_candles_etl" not in chain
-    assert "src.operations.run_persisted_market_candle_freshness_v1" in chain
+    assert "ConditionHost=devlap" in service_text
+    assert "verify_writer_capability_authorization_v1" in service_text
+    assert "scripts/run_market_candle_freshness_once.sh" in service_text
+    assert "Unit=synth-market-candle-freshness-writer.service" in timer.read_text(encoding="utf-8")
 
 
 def test_4h_chain_consumes_both_persisted_public_feeds_without_writer_repair() -> None:
@@ -92,7 +113,7 @@ def test_4h_chain_consumes_both_persisted_public_feeds_without_writer_repair() -
         assert forbidden not in chain
 
 
-def test_4h_owner_graph_has_no_reporting_or_remote_transport() -> None:
+def test_4h_owner_graph_has_no_reporting_remote_or_account_paths() -> None:
     service = _executable_text(Path("deploy/systemd/synth-chain-4h.service"))
     chain = _executable_text(CHAIN_WRAPPER)
     combined = f"{service}\n{chain}".lower()
@@ -103,11 +124,18 @@ def test_4h_owner_graph_has_no_reporting_or_remote_transport() -> None:
         "odroid",
         "ssh",
         "scp",
+        "src.account",
+        "decision_gate",
+        "execution_planner",
+        "src.executor",
+        "src.broker",
     ):
         assert forbidden not in combined
+    assert "verify_writer_capability_authorization_v1" in service
+    assert "conditionhost=devlap" in service.lower()
 
 
-def test_devlap_writer_contracts_have_no_cross_host_or_account_dependency() -> None:
+def test_devlap_bound_writer_contracts_have_no_cross_host_or_account_dependency() -> None:
     paths = (
         PRICE_WRAPPER,
         CANDLE_WRAPPER,
@@ -145,6 +173,37 @@ def test_odroid_candle_templates_are_retired_from_repository() -> None:
     retired = Path("scripts/odroid/run_market_candle_freshness_once.sh").read_text(encoding="utf-8")
     assert "ODROID_PUBLIC_MARKET_WRITER_RETIRED" in retired
     assert "writer_invocations=0" in retired
+    assert "scripts/run_market_candle_freshness_once.sh" not in retired
+
+
+def test_duplicate_detection_scans_all_systemd_trees_by_writer_token() -> None:
+    capability_tokens = {
+        "public_price_snapshot": ("scripts/run_market_price_snapshot_once.sh",),
+        "public_candle_freshness": ("scripts/run_market_candle_freshness_once.sh",),
+        "market_rotation_pressure": ("scripts/run_market_rotation_pressure_once.sh", "run_market_rotation_history_v1", "run_market_rotation_pressure_v1"),
+        "native_short_4h_chain": ("scripts/run_chain_4h.sh", "run_native_short_scope_status_chain_once.sh", "run_native_short_fib_context_snapshot_v1"),
+    }
+    hits = {capability: [] for capability in capability_tokens}
+    for root in SYSTEMD_TREES:
+        for unit in sorted(root.glob("*.service")):
+            executable = _executable_text(unit)
+            for capability, tokens in capability_tokens.items():
+                if any(token in executable for token in tokens):
+                    hits[capability].append(str(unit))
+    assert hits["public_price_snapshot"] == ["deploy/systemd/synth-market-price-snapshot-writer.service"]
+    assert hits["public_candle_freshness"] == ["deploy/systemd/synth-market-candle-freshness-writer.service"]
+    assert hits["market_rotation_pressure"] == ["deploy/systemd/synth-market-rotation-pressure-writer.service"]
+    assert hits["native_short_4h_chain"] == ["deploy/systemd/synth-chain-4h.service"]
+
+
+def test_all_deploy_services_are_devlap_bound_and_guarded() -> None:
+    for service in Path("deploy/systemd").glob("*.service"):
+        text = service.read_text(encoding="utf-8")
+        if service.name.startswith("synth-market-") or service.name == "synth-chain-4h.service":
+            assert "ConditionHost=devlap" in text
+            assert "verify_writer_capability_authorization_v1" in text
+            assert _unit_value(service, "User") == ["gurk"]
+            assert _unit_value(service, "WorkingDirectory") == ["/home/gurk/projects/synth-v2"]
 
 
 def test_account_snapshot_persistence_remains_separate_and_present() -> None:

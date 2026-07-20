@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/oboly/synth-v2/deploy/ownership/writer_capability_authorization_v1.schema.json",
+  "title": "Synth writer capability runtime production authorization v1",
+  "description": "Versioned schema for the deployment production authorization file consumed by the shared writer-capability authorization library. A schema-invalid authorization always fails closed and never grants production ownership.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "authorization_version",
+    "authorization_id",
+    "authorized_at_utc",
+    "purpose",
+    "capability_id",
+    "capability_identity",
+    "service",
+    "systemd_unit",
+    "authorized_host",
+    "authorized_commit",
+    "production_authorization_status",
+    "runtime_lifecycle",
+    "decision_evidence"
+  ],
+  "properties": {
+    "authorization_version": {"const": "writer_capability_runtime_authorization_v1"},
+    "authorization_id": {"type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{6,126}[A-Za-z0-9]$"},
+    "authorized_at_utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"},
+    "purpose": {"const": "PRODUCTION"},
+    "capability_id": {"enum": ["public_price_snapshot", "public_candle_freshness", "market_rotation_pressure", "native_short_4h_chain"]},
+    "capability_identity": {"enum": ["public-price-snapshot-writer", "public-candle-freshness-writer", "market-rotation-pressure-writer", "native-short-4h-chain"]},
+    "service": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*\\.service$"},
+    "systemd_unit": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*\\.service$"},
+    "authorized_host": {"enum": ["devlap", "gurkdb", "odroid"]},
+    "authorized_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "production_authorization_status": {"const": "AUTHORIZED"},
+    "runtime_lifecycle": {"enum": ["AUTHORIZED_INACTIVE", "ACTIVE"]},
+    "decision_evidence": {"type": "string", "minLength": 1}
+  }
+}

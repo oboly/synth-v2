@@ -52,18 +52,26 @@ CHAIN_1D_END_TS="$(
     python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); print(n.replace(hour=0, minute=0, second=0, microsecond=0).isoformat())'
 )"
 
-CHAIN_1D_ETL_START_TS="$(
-    python -c 'from datetime import datetime, timezone, timedelta; n=datetime.now(timezone.utc); e=n.replace(hour=0, minute=0, second=0, microsecond=0); print((e - timedelta(days=180)).isoformat())'
-)"
-
 echo "[CHAIN][1d] START $(date -u +%F' '%T) UTC"
-echo "[CHAIN][1d] ETL window start=${CHAIN_1D_ETL_START_TS} end=${CHAIN_1D_END_TS}"
-echo "[CHAIN][1d] feature window lookback_hours=2160 warmup_bars=300"
+echo "[CHAIN][1d] feature window lookback_hours=2160 warmup_bars=300 end=${CHAIN_1D_END_TS}"
 
-run_step python -m src.etl.bitvavo.run_candles_etl \
+# This is a market-only processing chain. Public candle ingestion is owned by
+# the public_candle_freshness writer capability and is NOT performed here; the
+# chain consumes already-persisted candles. It must not become an unregistered
+# public-market-data writer.
+#
+# Read-only persisted-candle freshness gate: fail closed before any downstream
+# write-capable stage if the persisted 1d candle at the expected close is
+# missing, stale, or the DB is unavailable. This performs SELECT-only checks,
+# no ingestion, no repair, and never marks derived state fresh on failure.
+CHAIN_1D_END_TS_Z="$(
+    python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); print(n.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ"))'
+)"
+echo "[CHAIN][1d] persisted candle freshness gate interval=1d expected_close=${CHAIN_1D_END_TS_Z}"
+run_step python -m src.operations.run_persisted_market_candle_freshness_v1 \
+    --venue bitvavo \
     --interval 1d \
-    --start "$CHAIN_1D_ETL_START_TS" \
-    --end "$CHAIN_1D_END_TS"
+    --expected-close-ts "$CHAIN_1D_END_TS_Z"
 
 run_step python -m src.features.run_feat_candle \
     --interval 1d \

@@ -349,7 +349,13 @@ def insert_scope_row(
     plan: ScopeSeedPlan,
     *,
     provenance: NativeShortWriterProvenance,
+    authorization: Any = None,
 ) -> None:
+    from src.operations.writer_capability_authorization_v1 import (
+        require_writer_mutation_authorization,
+    )
+
+    require_writer_mutation_authorization(authorization, "native_short_4h_chain")
     validate_native_short_writer_provenance(provenance)
     sql = """
     INSERT INTO native_short_map_scope_v1 (
@@ -419,6 +425,7 @@ def run_write_symbol(
     symbol: str,
     quote_currency: str,
     provenance: NativeShortWriterProvenance,
+    authorization: Any = None,
 ) -> ScopeSeedPlan:
     """Single-transaction explicit write for exactly one accepted symbol."""
     validate_native_short_writer_provenance(provenance)
@@ -438,10 +445,13 @@ def run_write_symbol(
                 started_at_utc=datetime.now(UTC),
                 requested_scope_count=1,
             )
-            run_id = _insert_run(conn, builder.started_record())
-            insert_scope_row(conn, plan, provenance=provenance)
+            run_id = _insert_run(conn, builder.started_record(), authorization=authorization)
+            insert_scope_row(conn, plan, provenance=provenance, authorization=authorization)
             builder.record_scope_outcome()
-            _finalize_run(conn, run_id, builder.finish(finished_at_utc=datetime.now(UTC)))
+            _finalize_run(
+                conn, run_id, builder.finish(finished_at_utc=datetime.now(UTC)),
+                authorization=authorization,
+            )
             conn.commit()
             return replace(plan, status=STATUS_SEEDED)
         conn.rollback()
@@ -552,6 +562,18 @@ def main(
         )
         return 2
 
+    writer_authorization = None
+    if write:
+        from src.operations.writer_capability_authorization_v1 import (
+            require_capability_write_authorization,
+        )
+
+        # Authorize before any run row or scope row is inserted.
+        writer_authorization = require_capability_write_authorization(
+            "native_short_4h_chain",
+            service="synth-chain-4h.service",
+        )
+
     try:
         provenance = build_verified_process_provenance(
             writer_entrypoint="src.market_data.run_native_short_map_scope_seed_canary_v1",
@@ -591,6 +613,7 @@ def main(
                     symbol=symbol,
                     quote_currency=args.quote_currency,
                     provenance=provenance,
+                    authorization=writer_authorization,
                 )
             else:
                 plan = run_dry_run_symbol(

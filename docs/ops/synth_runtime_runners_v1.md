@@ -2,7 +2,8 @@
 
 ## Purpose
 
-Run Synth on the Odroid as a lightweight 24/7 market-data/runtime host.
+Run Synth runtime jobs on lightweight hosts after explicit per-capability host
+selection.
 
 This document is an ops/design plan only. It does not install services, does not modify active chain behavior, and does not enable paper or live trading.
 
@@ -10,14 +11,18 @@ This document is an ops/design plan only. It does not install services, does not
 
 Odroid:
 
-- scheduled market-data candle refresh runners
+- candidate persisted-state consumer, dashboard, and account-runtime host
+- historical/legacy market-data candle refresh facts must not be treated as
+  production authorization
 - scheduled feature and signal refresh runners
 - optional read-only freshness checks
 - optional read-only webview data support
 
 gurkdb:
 
-- MariaDB only
+- MariaDB
+- candidate host for light public market-data writers, not selected or
+  authorized by default
 - shared persistence for market observations, features, signals, and later approved runtime snapshots
 
 dev laptop:
@@ -26,6 +31,8 @@ dev laptop:
 - research
 - manual reviews
 - branch work and deployment review
+- devlap-bound committed units are candidate/historical artifacts only unless
+  separately selected, accepted, authorized, activated, and observed
 
 game PC:
 
@@ -141,8 +148,10 @@ These files are templates only. They are not installed, copied to `/etc/systemd/
 
 The legacy `docs/ops/systemd/synth-4h-market-chain.service` and `.timer` files
 are retained only as non-startable retirement stubs. They contain no chain
-invocation, calendar schedule, or install target. The sole canonical 4h owner
-is `deploy/systemd/synth-chain-4h.service` / `.timer` on devlap.
+invocation, calendar schedule, or install target. The current
+`native_short_4h_chain` production owner is `UNASSIGNED`; the committed
+`deploy/systemd/synth-chain-4h.service` / `.timer` pair is a devlap-bound
+candidate artifact, not a host-neutral or authorized production owner.
 
 The templates use Odroid-oriented defaults:
 
@@ -309,7 +318,11 @@ MVP cockpit render:
 
 4h market chain:
 
-- runtime host owner: devlap
+- runtime host owner: UNASSIGNED — the `native_short_4h_chain` capability is
+  evaluated separately from the light DB writers (CPU/repository/publication/
+  artifact dependencies) and not auto-moved with them; see
+  `docs/ops/writer_capability_host_ownership_contract_v1.md`. devlap is a
+  candidate/acceptance host only
 - timer cadence: 12 minutes after each 4h UTC candle close
 - service command: non-login `/bin/bash` with the absolute canonical
   `/home/gurk/projects/synth-v2/scripts/run_chain_4h.sh` path
@@ -320,7 +333,7 @@ MVP cockpit render:
   `docs/todo/replay_parameter_study_harness_v1.md`; tracked changes, staged
   changes, similar paths, and all additional untracked paths remain forbidden
 - after a SELECT-only check proves the expected 4h candle boundary was already
-  persisted by the devlap candle writer, invokes the locked
+  persisted by the separately authorized candle capability, invokes the locked
   `scripts/run_native_short_scope_status_chain_once.sh` market-data writer;
   this chain does not own candle ETL
 - native SHORT scope is the exact persisted `SUPPORTED` registry for the
@@ -368,8 +381,15 @@ Rules:
 - acquire lock before any write
 - fail closed if the lock cannot be acquired
 - logs must show skipped duplicate runs
-- devlap is the sole public market-data writer host; Odroid must not run candle,
-  public-price, Native SHORT, or Rotation Pressure writers
+- each public market-data writer capability has at most one authorized active
+  owner, assigned by explicit host selection and recorded in
+  `deploy/ownership/writer_capability_ownership_v1.json`. `UNASSIGNED` means no
+  canonical authorization; it does not prove no timer is installed or running.
+  Consumers, reporting, and account runtimes must not run candle, public-price,
+  Native SHORT, or Rotation Pressure writers regardless of which host owns them
+- host-local locks prevent manual/systemd overlap on one host only. They cannot
+  prevent cross-host overlap, which is why authorization and cutover guards are
+  mandatory
 - manual runs must either use the same lock or be run only after stopping timers
 
 ## Environment
@@ -653,8 +673,9 @@ docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md
 
 Strict ownership, in order:
 
-1. **Public market ingestion** — devlap-owned
-   `scripts/run_market_price_snapshot_once.sh` and its dedicated timer.
+1. **Public market ingestion** — production owner currently `UNASSIGNED`.
+   The committed `scripts/run_market_price_snapshot_once.sh` service/timer
+   artifacts are devlap-bound candidates with a fail-closed authorization guard.
    Market-only, account-agnostic, public Bitvavo `GET /ticker/price` only.
    Odroid does not invoke this stage. See
    `docs/ops/public_market_data_runtime_owners_v1.md`.
@@ -698,9 +719,11 @@ not a source that `decision_gate` reads from.
 
 ### Current Implementation Status (verified, as of this writing)
 
-- **Repository target owner:** public ingestion is devlap-owned. Account
-  refresh plus wallet/open-order and Profit Plan render remain owned by the
-  linked-profile runtime orchestrator
+- **Repository target owner:** public ingestion capability ownership is
+  `UNASSIGNED` until recorded in
+  `deploy/ownership/writer_capability_ownership_v1.json`. Account refresh plus
+  wallet/open-order and Profit Plan render remain owned by the linked-profile
+  runtime orchestrator
   `scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh`, scheduled
   by the system-level `synth-linked-profile-runtime-refresh.timer`. That
   orchestrator uses the safe snapshot renderer

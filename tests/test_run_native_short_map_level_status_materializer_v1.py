@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+
+import pytest as _pytest_authz
+
+
+@_pytest_authz.fixture(autouse=True)
+def _authorized_writer_context(monkeypatch):
+    """Run write mechanics as an already-authorized writer capability. Denial is
+    covered by tests/test_native_short_sql_helper_authorization_v1.py and
+    tests/test_writer_capability_authorization_v1.py."""
+    from tests.writer_auth_support import install_authorized_writer_context
+    install_authorized_writer_context(monkeypatch)
+
 import ast
 import io
 import json
@@ -21,6 +33,11 @@ from src.market_data.native_short_map_level_status_materializer_v1 import (
     PROJECTION_MISSING,
     MapLevelStatusMaterializationOutcome,
 )
+from src.market_data.native_short_writer_provenance_v1 import build_explicit_test_provenance
+from src.operations.writer_capability_authorization_v1 import (
+    require_writer_mutation_authorization,
+)
+from tests.writer_auth_support import make_test_authorization
 
 
 _AS_OF = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
@@ -50,7 +67,7 @@ _BTC_ARGS = [
 
 @pytest.fixture(autouse=True)
 def _stub_writer_run_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
-    def start(provenance: Any, *, requested_scope_count: int):
+    def start(provenance: Any, *, requested_scope_count: int, authorization: Any = None):
         return (
             runner.NativeShortRunBuilder(
                 provenance=provenance,
@@ -61,7 +78,7 @@ def _stub_writer_run_persistence(monkeypatch: pytest.MonkeyPatch) -> None:
             1,
         )
 
-    def finish(builder: Any, run_id: int, *, terminal_status: Any) -> None:
+    def finish(builder: Any, run_id: int, *, terminal_status: Any, authorization: Any = None) -> None:
         builder.finish(finished_at_utc=_AS_OF, terminal_status=terminal_status)
 
     monkeypatch.setattr(runner, "_start_writer_run", start)
@@ -130,6 +147,17 @@ def _records_for_event(output: str, event: str) -> list[dict[str, Any]]:
     ]
 
 
+def _key() -> runner.NativeShortMapScopeKey:
+    return runner.NativeShortMapScopeKey(
+        venue="bitvavo",
+        symbol="BTC",
+        quote_currency="EUR",
+        fib_trading_horizon="SHORT",
+        primary_interval="4h",
+        supporting_interval="1h",
+    )
+
+
 def test_parse_args_accepts_exact_btc_scope() -> None:
     args = runner.parse_args(_BTC_ARGS)
 
@@ -182,11 +210,19 @@ def test_runner_calls_materializer_once_per_symbol_with_exact_full_scope(
 ) -> None:
     conns = [_FakeConn(), _FakeConn()]
     opened = iter(conns)
-    calls: list[tuple[Any, Any, Any]] = []
+    calls: list[tuple[Any, Any, Any, Any]] = []
     monkeypatch.setattr(runner, "get_connection", lambda: next(opened))
 
-    def fake_materialize(conn: Any, *, key: Any, operational_clock: Any, provenance: Any):
-        calls.append((conn, key, operational_clock))
+    def fake_materialize(
+        conn: Any,
+        *,
+        key: Any,
+        operational_clock: Any,
+        provenance: Any,
+        authorization: Any,
+    ):
+        require_writer_mutation_authorization(authorization, "native_short_4h_chain")
+        calls.append((conn, key, operational_clock, authorization))
         assert operational_clock() == _AS_OF
         return _outcome(key)
 
@@ -203,7 +239,8 @@ def test_runner_calls_materializer_once_per_symbol_with_exact_full_scope(
     assert code == 0
     assert err == ""
     assert [call[1].symbol for call in calls] == ["BTC", "ETH"]
-    for _, key, _ in calls:
+    for _, key, _, authorization in calls:
+        assert authorization.capability_id == "native_short_4h_chain"
         assert (
             key.venue,
             key.quote_currency,
@@ -218,6 +255,58 @@ def test_runner_calls_materializer_once_per_symbol_with_exact_full_scope(
     records = [json.loads(line) for line in out.splitlines()]
     assert records[-1]["event"] == "FINISHED"
     assert records[-1]["materialized"] == 2
+
+
+def test_run_scope_missing_authorization_argument_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _FakeConn()
+    monkeypatch.setattr(runner, "get_connection", lambda: conn)
+    with pytest.raises(TypeError):
+        runner.run_scope(  # type: ignore[call-arg]
+            key=_key(),
+            operational_clock=lambda: _AS_OF,
+            provenance=build_explicit_test_provenance(),
+        )
+    assert conn.begin_count == 0
+    assert conn.commit_count == 0
+    assert conn.rollback_count == 0
+
+
+def test_run_scope_wrong_authorization_rolls_back_before_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _FakeConn()
+    monkeypatch.setattr(runner, "get_connection", lambda: conn)
+
+    def guarded_materialize(
+        conn: Any,
+        *,
+        key: Any,
+        operational_clock: Any,
+        provenance: Any,
+        authorization: Any,
+    ):
+        require_writer_mutation_authorization(authorization, "native_short_4h_chain")
+        return _outcome(key)
+
+    monkeypatch.setattr(
+        runner,
+        "materialize_native_short_map_level_status_for_scope",
+        guarded_materialize,
+    )
+
+    result = runner.run_scope(
+        key=_key(),
+        operational_clock=lambda: _AS_OF,
+        provenance=build_explicit_test_provenance(),
+        authorization=make_test_authorization("public_price_snapshot"),
+    )
+
+    assert result.status == "failed"
+    assert "authorization context is for public_price_snapshot" in (result.detail or "")
+    assert conn.commit_count == 0
+    assert conn.rollback_count == 1
 
 
 @pytest.mark.parametrize(
@@ -236,7 +325,14 @@ def test_runner_reports_blocked_states_as_failure(
     conn = _FakeConn()
     monkeypatch.setattr(runner, "get_connection", lambda: conn)
 
-    def fake_materialize(conn: Any, *, key: Any, operational_clock: Any, provenance: Any):
+    def fake_materialize(
+        conn: Any,
+        *,
+        key: Any,
+        operational_clock: Any,
+        provenance: Any,
+        authorization: Any,
+    ):
         return MapLevelStatusMaterializationOutcome(
             key=key,
             branch=BLOCKED,
@@ -272,7 +368,14 @@ def test_runner_reports_missing_persistence_table_and_rolls_back(
     conn = _FakeConn()
     monkeypatch.setattr(runner, "get_connection", lambda: conn)
 
-    def fail_missing_table(conn: Any, *, key: Any, operational_clock: Any, provenance: Any):
+    def fail_missing_table(
+        conn: Any,
+        *,
+        key: Any,
+        operational_clock: Any,
+        provenance: Any,
+        authorization: Any,
+    ):
         raise RuntimeError("Table 'synth.native_short_map_level_status_v1' doesn't exist")
 
     monkeypatch.setattr(
@@ -301,7 +404,10 @@ def test_runner_rolls_back_unexpected_success_row_count(
     monkeypatch.setattr(
         runner,
         "materialize_native_short_map_level_status_for_scope",
-        lambda conn, *, key, operational_clock, provenance: _outcome(key, row_count=2),
+        lambda conn, *, key, operational_clock, provenance, authorization: _outcome(
+            key,
+            row_count=2,
+        ),
     )
 
     code, out, _ = _capture_main(monkeypatch, _BTC_ARGS)
@@ -321,7 +427,14 @@ def test_sigint_multi_symbol_run_emits_one_interrupted_summary_and_preserves_pri
     monkeypatch.setattr(runner, "get_connection", lambda: next(opened))
     calls = 0
 
-    def interrupt_second_symbol(conn: Any, *, key: Any, operational_clock: Any, provenance: Any):
+    def interrupt_second_symbol(
+        conn: Any,
+        *,
+        key: Any,
+        operational_clock: Any,
+        provenance: Any,
+        authorization: Any,
+    ):
         nonlocal calls
         calls += 1
         if calls == 2:
@@ -356,7 +469,14 @@ def test_sigterm_run_emits_one_interrupted_summary_and_rolls_back_active_symbol(
     conn = _FakeConn()
     monkeypatch.setattr(runner, "get_connection", lambda: conn)
 
-    def interrupt_active_symbol(conn: Any, *, key: Any, operational_clock: Any, provenance: Any):
+    def interrupt_active_symbol(
+        conn: Any,
+        *,
+        key: Any,
+        operational_clock: Any,
+        provenance: Any,
+        authorization: Any,
+    ):
         runner.signal.raise_signal(runner.signal.SIGTERM)
         return _outcome(key)
 
@@ -386,7 +506,7 @@ def test_successful_multi_symbol_run_reports_heartbeat_and_elapsed_timings(
     monkeypatch.setattr(
         runner,
         "materialize_native_short_map_level_status_for_scope",
-        lambda conn, *, key, operational_clock, provenance: _outcome(key),
+        lambda conn, *, key, operational_clock, provenance, authorization: _outcome(key),
     )
     argv = list(_BTC_ARGS)
     argv[argv.index("--symbols") + 1] = "BTC,ETH"
@@ -416,7 +536,7 @@ def test_single_symbol_run_emits_one_success_terminal_summary(monkeypatch: pytes
     monkeypatch.setattr(
         runner,
         "materialize_native_short_map_level_status_for_scope",
-        lambda conn, *, key, operational_clock, provenance: _outcome(key),
+        lambda conn, *, key, operational_clock, provenance, authorization: _outcome(key),
     )
 
     code, out, err = _capture_main(monkeypatch, _BTC_ARGS)
@@ -436,7 +556,7 @@ def test_runner_reports_all_required_safety_markers(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         runner,
         "materialize_native_short_map_level_status_for_scope",
-        lambda conn, *, key, operational_clock, provenance: _outcome(key),
+        lambda conn, *, key, operational_clock, provenance, authorization: _outcome(key),
     )
 
     code, out, _ = _capture_main(monkeypatch, _BTC_ARGS)
@@ -467,6 +587,9 @@ def test_runner_has_no_forbidden_imports_or_broad_materialization() -> None:
             imported.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module)
+    # The shared writer-capability authorization guard is safety infrastructure,
+    # not a forbidden account/reporting/operations layer.
+    imported.discard("src.operations.writer_capability_authorization_v1")
     assert not any(
         module == forbidden or module.startswith(f"{forbidden}.")
         for module in imported

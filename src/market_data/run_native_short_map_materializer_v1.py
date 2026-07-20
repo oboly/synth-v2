@@ -295,6 +295,19 @@ def main(
         )
         return 2
 
+    writer_authorization = None
+    if write:
+        from src.operations.writer_capability_authorization_v1 import (
+            require_capability_write_authorization,
+        )
+
+        # Map materialization is owned by native_short_4h_chain. A direct write
+        # invocation cannot bypass ownership authorization.
+        writer_authorization = require_capability_write_authorization(
+            "native_short_4h_chain",
+            service="synth-chain-4h.service",
+        )
+
     try:
         provenance = build_verified_process_provenance(
             writer_entrypoint="src.market_data.run_native_short_map_materializer_v1",
@@ -412,7 +425,9 @@ def main(
                     started_at_utc=now_utc,
                     requested_scope_count=1,
                 )
-                run_id = _insert_run(conn, builder.started_record())
+                run_id = _insert_run(
+                    conn, builder.started_record(), authorization=writer_authorization
+                )
             result = materialize_scope_symbol(
                 conn,
                 scope_support=scope,
@@ -420,6 +435,7 @@ def main(
                 now_utc=now_utc,
                 write=write,
                 provenance=provenance,
+                authorization=writer_authorization,
             )
             if write:
                 builder.record_scope_outcome(
@@ -441,6 +457,7 @@ def main(
                         failure_reason_code=result.reason_code if result.status == "failed" else None,
                         failure_detail=result.detail if result.status == "failed" else None,
                     ),
+                    authorization=writer_authorization,
                 )
                 conn.commit()
             else:

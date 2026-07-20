@@ -8,7 +8,20 @@ import os
 from contextlib import redirect_stdout
 from pathlib import Path
 
+import pytest
+
 import src.etl.bitvavo.run_candles_etl as runner
+
+
+@pytest.fixture(autouse=True)
+def _authorized_writer_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests exercise ETL run/observability mechanics and assume the
+    public_candle_freshness capability is already authorized. The unconditional
+    writer-capability authorization boundary (including the sealed candle upsert)
+    is covered by tests/test_writer_capability_authorization_v1.py."""
+    from tests.writer_auth_support import install_authorized_writer_context
+
+    install_authorized_writer_context(monkeypatch)
 
 
 class _FakeConn:

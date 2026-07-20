@@ -43,6 +43,10 @@ from src.market_rules.price_tick_normalization_v1 import (
     TICK_RULE_SOURCE_MISSING,
     TICK_RULE_SOURCE_STATIC,
 )
+from src.operations.writer_capability_authorization_v1 import (
+    WriterMutationAuthorization,
+    require_writer_mutation_authorization,
+)
 
 __all__ = [
     "ACTIVE_EVALUATION_REFERENCE",
@@ -418,9 +422,11 @@ def delete_native_short_map_level_status_for_scope(
     *,
     key: NativeShortMapScopeKey,
     provenance: NativeShortWriterProvenance,
+    authorization: WriterMutationAuthorization,
 ) -> int:
     validate_native_short_writer_provenance(provenance)
     validate_native_short_scope_key(key)
+    require_writer_mutation_authorization(authorization, "native_short_4h_chain")
     sql = """
     DELETE FROM native_short_map_level_status_v1
     WHERE venue = %s
@@ -454,6 +460,7 @@ def replace_native_short_map_level_status_for_scope(
     level_status_as_of_utc: datetime,
     rows: Iterable[NativeShortMapLevelStatusRecord],
     provenance: NativeShortWriterProvenance,
+    authorization: WriterMutationAuthorization,
 ) -> int:
     """Atomically replace current level-status rows for one exact scope.
 
@@ -463,6 +470,7 @@ def replace_native_short_map_level_status_for_scope(
     blocked projection collection replacement.
     """
     validate_native_short_writer_provenance(provenance)
+    require_writer_mutation_authorization(authorization, "native_short_4h_chain")
     materialized_rows = validate_native_short_map_level_status_collection(
         key=key,
         current_map_id=current_map_id,
@@ -470,7 +478,12 @@ def replace_native_short_map_level_status_for_scope(
         level_status_as_of_utc=level_status_as_of_utc,
         rows=rows,
     )
-    delete_native_short_map_level_status_for_scope(conn, key=key, provenance=provenance)
+    delete_native_short_map_level_status_for_scope(
+        conn,
+        key=key,
+        provenance=provenance,
+        authorization=authorization,
+    )
     if not materialized_rows:
         return 0
 

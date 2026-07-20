@@ -10,21 +10,38 @@ refresh.
 
 ## Canonical Ownership
 
-- devlap is the sole public market-data database writer host; Odroid is a
-  persisted-state consumer and publisher
-- public prices are owned by
-  `synth-market-price-snapshot-writer.timer` on devlap
-- multi-interval candles are owned by
-  `synth-market-candle-freshness-writer.timer` on devlap
+Host ownership is governed by the explicit per-capability contract in
+`docs/ops/writer_capability_host_ownership_contract_v1.md` and the registry
+`deploy/ownership/writer_capability_ownership_v1.json`. Each public
+market-data writer capability has at most one authorized active owner, and
+exactly one only when its lifecycle is `ACTIVE`. `UNASSIGNED` means no
+canonical production authorization; it does not prove no timer is installed or
+running. The retired "devlap sole public market-data writer host" claim does
+not apply; devlap is a candidate/acceptance host, and gurkDB is a preferred
+candidate, not a proven owner. The capability-level structural rules below are
+independent of which host is selected:
+
+- at most one authorized active production owner per writer capability; no
+  consumer, reporting, or account runtime may run a public market-data writer
+  or repair path
+- the `public_price_snapshot` capability owns
+  `synth-market-price-snapshot-writer.timer`
+- the `public_candle_freshness` capability owns
+  `synth-market-candle-freshness-writer.timer`
 - native SHORT map evaluation, scope-status projection, and map-level status
-  projection are owned by the existing devlap 4h market chain; no
-  second native SHORT timer or dashboard-side writer is permitted
-- the devlap 4h chain reads persisted public prices and candles through
-  SELECT-only fail-closed validators before Native SHORT publication
-- the devlap 4h chain does not refresh public prices or candles and does not
-  render or remotely transport dashboard output
-- rotation-pressure persistence remains owned by its devlap writer; Odroid
-  owns only the read-only publisher
+  projection are owned by the single `native_short_4h_chain` capability; no
+  second native SHORT timer or dashboard-side writer is permitted. This chain is
+  host-evaluated separately from the light DB writers (CPU/repository/
+  publication/artifact dependencies) and not auto-moved with them
+- the 4h chain reads persisted public prices and candles through SELECT-only
+  fail-closed validators before Native SHORT publication
+- the 4h chain does not refresh public prices or candles and does not render or
+  remotely transport dashboard output
+- rotation-pressure persistence belongs to the `market_rotation_pressure`
+  writer capability, whose `production_runtime_owner` is `UNASSIGNED`; devlap is
+  its recorded `acceptance_host` (PR #100/#101), preserved as historical audit
+  context (SUPERSEDED), not current production authorization. Odroid owns only
+  the read-only publisher
 - `feat_candle` is owned by the feature chain
 - `signal_state` is owned by the signal chain / 4h chain
 - downstream strategy and selection snapshots are owned by their chain runners

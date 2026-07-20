@@ -1,6 +1,10 @@
 [Unit]
-Description=Synth multi-interval candle freshness writer (devlap sole owner)
-Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/public_market_data_runtime_owners_v1.md
+Description=Synth multi-interval candle freshness writer (devlap-bound candidate artifact; capability public_candle_freshness)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/writer_capability_host_ownership_contract_v1.md
+# This committed unit is host-bound to devlap paths/users. It is not
+# host-neutral and is not production-authorized while the registry owner is
+# UNASSIGNED.
+ConditionHost=devlap
 After=network-online.target
 Wants=network-online.target
 
@@ -10,6 +14,7 @@ User=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
 Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
 Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
+ExecStartPre=/bin/bash -lc 'python -m src.operations.verify_writer_capability_authorization_v1 --capability public_candle_freshness --service synth-market-candle-freshness-writer.service --checkout-path /home/gurk/projects/synth-v2 --registry deploy/ownership/writer_capability_ownership_v1.json'
 ExecStart=/bin/bash -lc 'bash scripts/run_market_candle_freshness_once.sh'
 Restart=no
 Nice=5

@@ -720,7 +720,15 @@ def publish_snapshot(
     output_dir: Path,
     generated_ts_utc: datetime,
     publication_ts_utc: datetime,
+    authorization: Any = None,
 ) -> PublicationResult:
+    from src.operations.writer_capability_authorization_v1 import (
+        require_writer_mutation_authorization,
+    )
+
+    # Fail closed before the publication lock, any temporary output, or any
+    # canonical file replacement.
+    require_writer_mutation_authorization(authorization, "native_short_4h_chain")
     with publication_lock(output_dir):
         return _publish_snapshot_locked(
             build,

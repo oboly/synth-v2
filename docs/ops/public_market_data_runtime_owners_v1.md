@@ -3,236 +3,182 @@
 ## Status
 
 Repository implementation only. No host deployment, timer activation, writer
-invocation, database mutation, or operational acceptance is claimed here.
+invocation, database mutation, operational acceptance, or systemctl mutation is
+claimed here.
 
-## Domain boundary
+The authoritative machine-readable ownership source is
+`deploy/ownership/writer_capability_ownership_v1.json`.
 
-Public market-data database writes are distinct from other persistence:
-
-- public market data: public price snapshots, candle ETL, Native SHORT market
-  state, and rotation-pressure market state;
-- account snapshots: authenticated read-only exchange observations persisted by
-  account-owned runners;
-- website registration: identity/application persistence;
-- publication: HTML/JSON or static-file output from persisted state.
-
-Only the first category belongs to the devlap public market-data writer owner.
-Account snapshot persistence may remain on Odroid and does not make Odroid a
-public market-data owner.
-
-## Ownership graph before this repository change
+## Current Canonical Ownership
 
 ```text
-devlap
-  synth-chain-4h.timer
-    -> scripts/run_chain_4h.sh
-    -> 4h candle ETL
-    -> Native SHORT market-data writers
-  synth-market-rotation-pressure-writer.timer
-    -> scripts/run_market_rotation_pressure_once.sh --write-db
-
-Odroid
-  synth-linked-profile-runtime-refresh.timer
-    -> scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh
-    -> run_market_price_snapshot_v1 --write-db       [violation]
-    -> authenticated account snapshot refresh
-    -> wallet/open-order and Profit Plan renders
-  synth-market-candle-freshness.timer
-    -> scripts/odroid/run_market_candle_freshness_once.sh
-    -> run_candles_etl for 15m/1h/4h/1d/1w          [violation]
-  legacy/manual Odroid wrappers
-    -> public-price writes, candle ETL, or optional 4h chain [capability violation]
-  synth-market-rotation-pressure-publisher.timer
-    -> read-only persisted-state publication
+public_price_snapshot.production_runtime_owner=UNASSIGNED
+public_candle_freshness.production_runtime_owner=UNASSIGNED
+market_rotation_pressure.production_runtime_owner=UNASSIGNED
+native_short_4h_chain.production_runtime_owner=UNASSIGNED
 ```
 
-The live Odroid 4h and candle-freshness timers were contained separately. This
-document records repository ownership only; it does not repeat or supersede
-that host evidence.
+`UNASSIGNED` means no canonical production authorization. It does not prove
+that no host has an installed or running timer.
 
-## Target ownership graph
+An installed timer may continue running operationally even after canonical
+authorization is reset. Repository correction does not stop that timer.
+Containment requires a separately authorized host action.
+
+## Capability State
 
 ```text
-devlap: sole public market-data database writer host
-  synth-market-price-snapshot-writer.timer
-    -> scripts/run_market_price_snapshot_once.sh
-    -> run_market_price_snapshot_v1 --write-db
-  synth-market-candle-freshness-writer.timer
-    -> scripts/run_market_candle_freshness_once.sh
-    -> run_candles_etl for 15m/1h/4h/1d/1w
-  synth-chain-4h.timer
-    -> SELECT-only persisted public-price freshness validation
-    -> SELECT-only persisted 4h candle boundary validation
-    -> canonical Native SHORT scope/map publication
-    -> canonical Native SHORT context snapshot publication
-    -> later 4h market-only chain stages
-  synth-market-rotation-pressure-writer.timer
-    -> existing rotation history/pressure writer
+public_price_snapshot:
+  candidate_host=gurkdb
+  selected_host=UNASSIGNED
+  acceptance_host=UNASSIGNED
+  acceptance_status=UNASSIGNED
+  runtime_lifecycle=UNASSIGNED
+  observed_runtime_state=[]
 
-Odroid: persisted-state consumer and publisher
-  synth-linked-profile-runtime-refresh.timer
-    -> SELECT-only persisted public-price validation
-    -> authenticated account snapshot refresh
-    -> wallet/open-order persisted-snapshot render
-    -> Profit Plan persisted-snapshot render
-  synth-market-rotation-pressure-publisher.timer
-    -> read-only persisted pressure publication
-  static/public dashboard services
-    -> persisted-state publication only
+public_candle_freshness:
+  candidate_host=gurkdb
+  selected_host=UNASSIGNED
+  acceptance_host=UNASSIGNED
+  acceptance_status=UNASSIGNED
+  runtime_lifecycle=UNASSIGNED
+  observed_runtime_state=[]
+
+market_rotation_pressure:
+  candidate_host=gurkdb
+  selected_host=UNASSIGNED
+  acceptance_host=devlap
+  acceptance_status=ACCEPTED
+  runtime_lifecycle=UNASSIGNED
+  historical_runtime_assignment.host=devlap
+  historical_runtime_assignment.status=SUPERSEDED
+  observed_runtime_state=devlap timer last observed installed/enabled/active,
+                         current_state=UNVERIFIED,
+                         authorization_status=SUPERSEDED
+
+native_short_4h_chain:
+  candidate_host=UNASSIGNED
+  selected_host=UNASSIGNED
+  acceptance_host=UNASSIGNED
+  acceptance_status=UNASSIGNED
+  runtime_lifecycle=UNASSIGNED
+  observed_runtime_state=[]
 ```
 
-There is no SSH orchestration, remote systemd dependency, dashboard render, or
-reporting-triggered repair path in any devlap writer or the 4h chain. Reporting
-transport is a downstream, separately owned persisted-state consumer.
+## Executable Artifacts
 
-## Devlap writer contracts
-
-Public prices:
+The committed services under `deploy/systemd/` are devlap-bound candidate or
+historical artifacts. They are not host-neutral:
 
 ```text
-scripts/run_market_price_snapshot_once.sh
-deploy/systemd/synth-market-price-snapshot-writer.service
-deploy/systemd/synth-market-price-snapshot-writer.timer
-lock=/tmp/synth-market-price-snapshot-writer-v1.lock
-cadence=every 5 minutes, up to 30 seconds randomized delay
+ConditionHost=devlap
+User=gurk
+WorkingDirectory=/home/gurk/projects/synth-v2
+ExecStartPre=src.operations.verify_writer_capability_authorization_v1
 ```
 
-Candles:
+The mandatory `ExecStartPre` guard fails closed while a capability is
+`UNASSIGNED`, while the authorization file is absent, on the wrong hostname, on
+the wrong checkout commit, or for a lifecycle outside `AUTHORIZED_INACTIVE` and
+`ACTIVE`.
+
+Do not copy these units to another host with different users or paths. Do not
+create a gurkDB unit until gurkDB has been selected, accepted, contained, and
+authorized for a specific capability.
+
+Host-local locks still prevent manual/systemd overlap on one host:
 
 ```text
-scripts/run_market_candle_freshness_once.sh
-deploy/systemd/synth-market-candle-freshness-writer.service
-deploy/systemd/synth-market-candle-freshness-writer.timer
-lock=/tmp/synth-market-candle-freshness-writer-v1.lock
-cadence=minutes 02,17,32,47 UTC, up to 30 seconds randomized delay
-intervals=15m,1h,4h,1d,1w
+public_price_snapshot: /tmp/synth-market-price-snapshot-writer-v1.lock
+public_candle_freshness: /tmp/synth-market-candle-freshness-writer-v1.lock
+market_rotation_pressure: /tmp/synth-market-rotation-pressure-v1.lock
+native_short_4h_chain: /tmp/synth_chain_4h.lock
 ```
 
-The price and candle timers are the only canonical ingestion owners. The 4h
-chain invokes the canonical SELECT-only public-price validator first and the
-expected 4h candle-boundary validator second. Either failure stops the chain
-before all Native SHORT work. The chain does not attempt writer repair. Its
-repository timer fires at minute 12 after each 4h close, after the
-multi-interval writer's minute-02 cycle.
+Those locks cannot prevent cross-host overlap. Authorization and cutover guards
+are mandatory for that.
 
-The 4h chain is the sole canonical Native SHORT runtime publisher owner. It
-publishes scope/map state and the persisted context snapshot through one
-timer-owned invocation path. Linked-profile and reporting owners consume that
-persisted snapshot and must not reconstruct or publish Native SHORT state.
+## Domain Boundary
 
-Both wrappers are market-only and account-agnostic. They use public exchange
-endpoints, name `devlap-public-market-data` as owner, record repository commit
-identity, and contain no reporting, broker, account, decision, planning,
-execution, SSH, or remote-host invocation.
+Public market-data writer capabilities are separate from:
 
-## Odroid freshness contract
+- account snapshot persistence;
+- website registration;
+- dashboard and reporting publication;
+- decision_gate;
+- execution_planner;
+- executor and broker clients.
 
-`src.operations.run_persisted_market_price_freshness_v1` performs one read-only
-transaction and a SELECT over the latest persisted price batch. The linked
-profile orchestrator uses the fixed module directly; no production command or
-writer override exists.
+Reporting, dashboards, and account runtimes consume persisted state. They must
+not start public market-data writers or run repair paths.
 
-The default contract is:
+## Native SHORT Inventory
+
+`native_short_4h_chain` is independently evaluated from the light DB writers.
+It invokes:
 
 ```text
-max_age_seconds=900
-max_future_skew_seconds=30
-PASS only when classification=FRESH and snapshot_row_count>0
-BLOCKED for STALE, MISSING, UNAVAILABLE, malformed, future-dated, or query failure
+src.market_data.native_short_repository_source_identity_v1
+src.operations.run_persisted_market_price_freshness_v1
+src.operations.run_persisted_market_candle_freshness_v1
+scripts/run_native_short_scope_status_chain_once.sh
+src.market_data.run_native_short_scope_status_chain_v1
+src.market_data.run_native_short_fib_context_snapshot_v1 --publish
+src.features.run_feat_candle
+src.signal_engine.run_signal_state_etl
+src.advice.run_advice_engine
+src.ranking.run_ranking_engine
+src.measurement.run_asset_interval_quality_snapshot --write-db
+src.selection.run_selection_engine_v2 --write-db
+src.zone.run_zone_engine_v1 --write-db
+src.trade_setup_filter.run_trade_setup_filter_v1 --write-db
+src.research.run_trade_setup_filter_policy_preview_v1 --write-db
+src.advice.run_paper_advice_policy_v1 --write-db
+src.strategy_runtime.run_strategy_runtime_snapshot
 ```
 
-A blocked validation writes truthful run metadata but stops before profile
-discovery, account refresh, wallet/open-order render, or Profit Plan render. It
-never attempts to repair persisted state.
+It writes or publishes native scope/map state, feature/signal/advice/ranking
+state, quality snapshots, selection state, zone context, trade setup filter
+observations, policy preview rows, paper advice observations, strategy runtime
+snapshots, and native SHORT fib context artifacts/manifests.
 
-This batch-level check is a writer-liveness and timestamp-freshness gate only.
-It does not prove that every account asset exists in the newest persisted
-batch. Wallet and Profit Plan consumers must retain their independent
-per-asset `MISSING_CURRENT_PRICE` and `STALE_CURRENT_PRICE` fail-closed checks.
-Top-level batch freshness must never replace per-asset coverage validation, and
-account-specific coverage policy does not belong in this market-data validator.
+## Cutover Order
 
-## Separate account-domain work
+Use the state machine in
+`docs/ops/writer_capability_host_ownership_contract_v1.md`:
 
-These remain account-domain questions and are not folded into this change:
+1. identify candidate host
+2. record candidate/selected state without production authorization
+3. complete read-only preflight
+4. prepare host without activating timer
+5. complete controlled acceptance after separate authorization
+6. inventory every installed runtime instance for the capability
+7. disable the old timer
+8. prove old timer inactive and disabled
+9. record new production authorization
+10. activate new timer
+11. observe natural scheduled cycles
+12. verify persisted-state freshness and consumers
+13. mark lifecycle `ACTIVE`
+14. prove at most one authorized active owner
 
-- `synth-linked-profile-runtime-refresh.timer` remains the intended linked
-  profile account-refresh and render owner after its public-price write is
-  removed;
-- `synth-mvp-account-refresh.timer` is a separate duplicate-account-owner
-  retirement task;
-- website registration ownership is unchanged.
+If an installed legacy timer is discovered while canonical authorization is
+`UNASSIGNED`, classify it as
+`OBSERVED_LEGACY_RUNTIME_PENDING_CONTAINMENT`. Do not silently treat it as
+inactive.
 
-## Required host rollout order
+## Repository Checks
 
-No command in this section was executed by the repository change.
-
-1. Merge the accepted 4h boundary correction.
-2. Deploy its exact accepted commit without enabling the 4h timer.
-3. Confirm the separately owned devlap public-price writer is active and fresh.
-4. Confirm the separately owned devlap candle writer is active and fresh.
-5. Prove persisted price and candle freshness from SELECT-only evidence, then
-   install the updated 4h-chain service and timer definitions without manually
-   invoking the chain.
-6. Confirm downstream reporting and linked-profile paths remain consumers.
-7. Only after an explicit activation authorization, enable the 4h timer.
-8. Observe a natural scheduled cycle and repeat Native SHORT runtime acceptance.
-
-Timer activation remains blocked during repository review and until the
-post-merge host preflight passes.
-
-Repository-backed installation candidates, to be executed only in a separately
-authorized host rollout:
+These commands are repository-only checks, not host activation:
 
 ```bash
-sudo install -D -m 0644 /etc/systemd/system/synth-chain-4h.timer \
-  /var/lib/synth-runtime-backups/devlap-public-market-data-v1/synth-chain-4h.timer
-sudo cp deploy/systemd/synth-market-price-snapshot-writer.service /etc/systemd/system/
-sudo cp deploy/systemd/synth-market-price-snapshot-writer.timer /etc/systemd/system/
-sudo cp deploy/systemd/synth-market-candle-freshness-writer.service /etc/systemd/system/
-sudo cp deploy/systemd/synth-market-candle-freshness-writer.timer /etc/systemd/system/
-sudo cp deploy/systemd/synth-chain-4h.timer /etc/systemd/system/
-sudo systemctl daemon-reload
+python -m src.operations.validate_writer_capability_ownership_v1
+bash -n scripts/run_market_price_snapshot_once.sh
+bash -n scripts/run_market_candle_freshness_once.sh
+bash -n scripts/run_market_rotation_pressure_once.sh
+bash -n scripts/run_chain_4h.sh
+systemd-analyze verify deploy/systemd/*.service deploy/systemd/*.timer
 ```
 
-Activation remains separately authorized:
-
-```bash
-sudo systemctl enable --now synth-market-price-snapshot-writer.timer
-sudo systemctl enable --now synth-market-candle-freshness-writer.timer
-```
-
-## Rollback sequencing
-
-Never restore an Odroid writer while its devlap replacement remains active.
-
-Public-price rollback candidate:
-
-```bash
-sudo systemctl disable --now synth-market-price-snapshot-writer.timer
-sudo systemctl is-active synth-market-price-snapshot-writer.timer
-sudo systemctl is-enabled synth-market-price-snapshot-writer.timer
-```
-
-This deliberately creates a fail-closed public-price freshness outage. It does
-not restore an Odroid writer implicitly.
-
-Candle rollback candidate:
-
-```bash
-sudo systemctl disable --now synth-market-candle-freshness-writer.timer
-sudo systemctl is-active synth-market-candle-freshness-writer.timer
-sudo systemctl is-enabled synth-market-candle-freshness-writer.timer
-sudo cp /var/lib/synth-runtime-backups/devlap-public-market-data-v1/synth-chain-4h.timer \
-  /etc/systemd/system/synth-chain-4h.timer
-sudo systemctl daemon-reload
-```
-
-This deliberately creates a fail-closed candle freshness outage. Restoring the
-retired Odroid timer is a separate incident decision requiring an exact
-pre-cutover Odroid commit and proof that the devlap writer remains disabled; it
-is not part of this ownership contract.
-
-Rollback must record exact commits, timer states, database freshness, and the
-absence of overlapping owners. The retired repository Odroid candle wrapper is
-a fail-closed stub and cannot be used as a writer.
+Do not run `systemctl enable`, `systemctl start`, a writer wrapper, or any
+`--write-db` command as part of repository correction.

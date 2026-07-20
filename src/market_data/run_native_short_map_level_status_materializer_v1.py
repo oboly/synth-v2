@@ -51,6 +51,7 @@ from src.market_data.native_short_writer_provenance_v1 import (
     NativeShortWriterProvenanceError,
     validate_native_short_writer_provenance,
 )
+from src.operations.writer_capability_authorization_v1 import WriterMutationAuthorization
 
 
 RUNNER_NAME = "run_native_short_map_level_status_materializer_v1"
@@ -272,6 +273,7 @@ def run_scope(
     key: NativeShortMapScopeKey,
     operational_clock: Callable[[], datetime],
     provenance: NativeShortWriterProvenance,
+    authorization: WriterMutationAuthorization,
     interruption: InterruptionController | None = None,
     monotonic_clock: Callable[[], float] = monotonic,
 ) -> ScopeRunResult:
@@ -314,6 +316,7 @@ def run_scope(
             key=key,
             operational_clock=operational_clock,
             provenance=provenance,
+            authorization=authorization,
         )
         materialize_elapsed_ms = _elapsed_ms(materialize_started, clock=monotonic_clock)
         _record_elapsed(phase_elapsed_ms_by_name, "MATERIALIZE_LEVEL_STATUS", materialize_elapsed_ms)
@@ -588,6 +591,7 @@ def _start_writer_run(
     provenance: NativeShortWriterProvenance,
     *,
     requested_scope_count: int,
+    authorization: Any = None,
 ) -> tuple[NativeShortRunBuilder, int]:
     builder = NativeShortRunBuilder(
         provenance=provenance,
@@ -598,7 +602,7 @@ def _start_writer_run(
     conn = get_connection()
     try:
         conn.begin()
-        run_id = _insert_run(conn, builder.started_record())
+        run_id = _insert_run(conn, builder.started_record(), authorization=authorization)
         conn.commit()
         return builder, run_id
     except Exception:
@@ -613,6 +617,7 @@ def _finish_writer_run(
     run_id: int,
     *,
     terminal_status: NativeShortRunTerminalStatus,
+    authorization: Any = None,
 ) -> None:
     conn = get_connection()
     try:
@@ -621,6 +626,7 @@ def _finish_writer_run(
             conn,
             run_id,
             builder.finish(finished_at_utc=utc_now(), terminal_status=terminal_status),
+            authorization=authorization,
         )
         conn.commit()
     except Exception:
@@ -659,8 +665,21 @@ def main(
         print(f"INVALID_PROVENANCE runner={RUNNER_NAME} detail={exc}", file=sys.stderr)
         return 2
 
+    from src.operations.writer_capability_authorization_v1 import (
+        require_capability_write_authorization,
+    )
+
+    # Authorize before creating the initial run row. Never create a partial run
+    # record and authorize later. The shared guard still validates the registry
+    # unit binding; the optional cross-check argument is omitted here.
+    writer_authorization = require_capability_write_authorization(
+        "native_short_4h_chain",
+    )
+
     controller = InterruptionController()
-    run_builder, run_id = _start_writer_run(provenance, requested_scope_count=len(symbols))
+    run_builder, run_id = _start_writer_run(
+        provenance, requested_scope_count=len(symbols), authorization=writer_authorization
+    )
     previous_signal_handlers = _install_signal_handlers(controller)
     started_monotonic = monotonic()
     _emit_started(args, symbols)
@@ -693,6 +712,7 @@ def main(
                 key=key,
                 operational_clock=utc_now,
                 provenance=provenance,
+                authorization=writer_authorization,
                 interruption=controller,
             )
             results.append(result)
@@ -730,7 +750,10 @@ def main(
                 else NativeShortRunTerminalStatus.FAILED
             )
         )
-        _finish_writer_run(run_builder, run_id, terminal_status=terminal_status)
+        _finish_writer_run(
+            run_builder, run_id, terminal_status=terminal_status,
+            authorization=writer_authorization,
+        )
         _emit_terminal(
             results=results,
             output=args.output,

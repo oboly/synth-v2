@@ -59,6 +59,22 @@ run_step() {
     echo "PHASE_FINISHED phase=${label} exit_status=0 elapsed_sec=$(( $(date +%s) - step_started ))"
 }
 
+# Fail closed before launching the write-capable rotation writers. Same shared
+# authorization semantics as the Python mutation boundary in the rotation
+# history/pressure runners.
+WRITER_CAPABILITY_ID="market_rotation_pressure"
+WRITER_SERVICE="synth-market-rotation-pressure-writer.service"
+export SYNTH_WRITER_CAPABILITY_ID="${WRITER_CAPABILITY_ID}"
+export SYNTH_WRITER_EXECUTION_MODE="${SYNTH_WRITER_EXECUTION_MODE:-PRODUCTION}"
+GUARD_ARGS=(--capability "${WRITER_CAPABILITY_ID}" --service "${WRITER_SERVICE}" --checkout-path "${REPO_DIR}" --mode "${SYNTH_WRITER_EXECUTION_MODE}")
+if [[ -n "${SYNTH_WRITER_ACCEPTANCE_PERMIT:-}" ]]; then
+    GUARD_ARGS+=(--acceptance-permit "${SYNTH_WRITER_ACCEPTANCE_PERMIT}")
+fi
+if ! python -m src.operations.verify_writer_capability_authorization_v1 "${GUARD_ARGS[@]}"; then
+    echo "FAILED runner=run_market_rotation_pressure_once reason=WRITER_AUTHORIZATION_DENIED capability=${WRITER_CAPABILITY_ID} mode=${SYNTH_WRITER_EXECUTION_MODE}" >&2
+    exit 3
+fi
+
 status=0
 run_step rotation_history \
     python -m src.research.run_market_rotation_history_v1 \

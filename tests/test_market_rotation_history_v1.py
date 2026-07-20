@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from tests.writer_auth_support import make_test_authorization
+_RP_AUTH = make_test_authorization("market_rotation_pressure")
+
 import ast
 import io
 from contextlib import redirect_stdout
@@ -38,6 +41,16 @@ from src.research.run_market_rotation_history_v1 import (
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _authorized_writer_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests exercise write/rollback mechanics and assume authorization is
+    already granted. The writer-capability authorization boundary itself is
+    covered by tests/test_writer_capability_authorization_v1.py."""
+    from tests.writer_auth_support import install_authorized_writer_context
+
+    install_authorized_writer_context(monkeypatch)
 
 AS_OF = datetime(2026, 1, 15, 12, 0, 0)  # naive UTC hourly boundary
 
@@ -458,56 +471,56 @@ def test_determine_global_action_skip_no_improvement():
 
 def test_write_global_snapshot_inserts_new_row_no_commit():
     conn, cursor = _make_conn_mock(fetchone_return=None)
-    written, action = write_global_snapshot(conn, AS_OF, _available_result())
+    written, action = write_global_snapshot(conn, AS_OF, _available_result(), authorization=_RP_AUTH)
     assert written is True and action == "INSERT"
     conn.commit.assert_not_called()
 
 
 def test_write_global_snapshot_existing_available_is_noop():
     conn, cursor = _make_conn_mock(fetchone_return={"source_status": "AVAILABLE"})
-    written, action = write_global_snapshot(conn, AS_OF, _available_result())
+    written, action = write_global_snapshot(conn, AS_OF, _available_result(), authorization=_RP_AUTH)
     assert written is False and action == "SKIP_AVAILABLE_EXISTS"
     conn.commit.assert_not_called()
 
 
 def test_write_global_snapshot_existing_available_not_downgraded_by_unavailable():
     conn, cursor = _make_conn_mock(fetchone_return={"source_status": "AVAILABLE"})
-    written, action = write_global_snapshot(conn, AS_OF, _unavailable_result())
+    written, action = write_global_snapshot(conn, AS_OF, _unavailable_result(), authorization=_RP_AUTH)
     assert written is False and action == "SKIP_AVAILABLE_EXISTS"
     conn.commit.assert_not_called()
 
 
 def test_write_global_snapshot_existing_available_not_downgraded_by_skipped():
     conn, cursor = _make_conn_mock(fetchone_return={"source_status": "AVAILABLE"})
-    written, action = write_global_snapshot(conn, AS_OF, _skipped_result())
+    written, action = write_global_snapshot(conn, AS_OF, _skipped_result(), authorization=_RP_AUTH)
     assert written is False and action == "SKIP_AVAILABLE_EXISTS"
     conn.commit.assert_not_called()
 
 
 def test_write_global_snapshot_unavailable_promotes_when_available_arrives():
     conn, cursor = _make_conn_mock(fetchone_return={"source_status": "UNAVAILABLE"})
-    written, action = write_global_snapshot(conn, AS_OF, _available_result())
+    written, action = write_global_snapshot(conn, AS_OF, _available_result(), authorization=_RP_AUTH)
     assert written is True and action == "PROMOTE"
     conn.commit.assert_not_called()
 
 
 def test_write_global_snapshot_skipped_promotes_when_available_arrives():
     conn, cursor = _make_conn_mock(fetchone_return={"source_status": "SKIPPED_NO_CREDENTIAL"})
-    written, action = write_global_snapshot(conn, AS_OF, _available_result())
+    written, action = write_global_snapshot(conn, AS_OF, _available_result(), authorization=_RP_AUTH)
     assert written is True and action == "PROMOTE"
     conn.commit.assert_not_called()
 
 
 def test_write_global_snapshot_unavailable_does_not_promote_on_unavailable():
     conn, cursor = _make_conn_mock(fetchone_return={"source_status": "UNAVAILABLE"})
-    written, action = write_global_snapshot(conn, AS_OF, _unavailable_result())
+    written, action = write_global_snapshot(conn, AS_OF, _unavailable_result(), authorization=_RP_AUTH)
     assert written is False and action == "SKIP_NO_IMPROVEMENT"
     conn.commit.assert_not_called()
 
 
 def test_write_global_snapshot_dry_run_skips_write():
     conn, cursor = _make_conn_mock(fetchone_return=None)
-    written, action = write_global_snapshot(conn, AS_OF, _available_result(), dry_run=True)
+    written, action = write_global_snapshot(conn, AS_OF, _available_result(), dry_run=True, authorization=_RP_AUTH)
     assert written is False and action == "INSERT"
     conn.commit.assert_not_called()
 
@@ -522,7 +535,7 @@ def test_write_rotation_snapshot_no_commit():
         {"observation_count": 2},
     ])
     cursor.execute.side_effect = [1, None, 1, 1, None, 1]
-    write_rotation_snapshot(conn, AS_OF, 24, "bitvavo", 2, 0, [_make_obs(1), _make_obs(2, "ETH-EUR")])
+    write_rotation_snapshot(conn, AS_OF, 24, "bitvavo", 2, 0, [_make_obs(1), _make_obs(2, "ETH-EUR")], authorization=_RP_AUTH)
     conn.commit.assert_not_called()
 
 
@@ -534,7 +547,7 @@ def test_write_rotation_snapshot_idempotent_on_duplicate():
     cursor.execute.side_effect = [0, None, 0, 0, None, 0]
     status, obs_written = write_rotation_snapshot(
         conn, AS_OF, 24, "bitvavo", 2, 0, [_make_obs(1), _make_obs(2, "ETH-EUR")]
-    )
+    , authorization=_RP_AUTH)
     assert status == "NOOP_ALREADY_COMPLETE" and obs_written == 0
     conn.commit.assert_not_called()
 
@@ -547,7 +560,7 @@ def test_write_rotation_snapshot_new_inserts():
     cursor.execute.side_effect = [1, None, 1, 1, None, 1]
     status, obs_written = write_rotation_snapshot(
         conn, AS_OF, 24, "bitvavo", 2, 0, [_make_obs(1), _make_obs(2, "ETH-EUR")]
-    )
+    , authorization=_RP_AUTH)
     assert status == "CREATED" and obs_written == 2
     conn.commit.assert_not_called()
 
@@ -560,7 +573,7 @@ def test_write_rotation_snapshot_same_hour_rerun_reconciles_header_counts():
     cursor.execute.side_effect = [0, None, 1, None, 1]
     status, obs_written = write_rotation_snapshot(
         conn, AS_OF, 24, "bitvavo", 2, 0, [_make_obs(2, "ETH-EUR")]
-    )
+    , authorization=_RP_AUTH)
     assert status == "RECONCILED"
     assert obs_written == 1
     update_params = cursor.execute.call_args_list[-1].args[1]
@@ -575,7 +588,7 @@ def test_write_rotation_snapshot_same_hour_noop_reports_already_complete():
     cursor.execute.side_effect = [0, None, 0, 0, None, 0]
     status, obs_written = write_rotation_snapshot(
         conn, AS_OF, 24, "bitvavo", 2, 0, [_make_obs(1), _make_obs(2, "ETH-EUR")]
-    )
+    , authorization=_RP_AUTH)
     assert status == "NOOP_ALREADY_COMPLETE"
     assert obs_written == 0
     conn.commit.assert_not_called()
