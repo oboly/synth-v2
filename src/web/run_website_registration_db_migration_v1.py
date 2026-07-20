@@ -21,8 +21,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Apply the SYNTH website registration migration chain with the repository's "
-            "canonical MariaDB connection settings. No trading_account or credential changes. "
-            "Migrations are applied in order and are idempotent."
+            "canonical MariaDB connection settings. No plaintext credential values are "
+            "read, written, rotated, or exposed. The migration may add or default "
+            "non-secret credential metadata. Migrations are applied in order and are "
+            "idempotent."
         )
     )
     parser.add_argument("--output", choices=("summary", "none"), default="summary")

@@ -44,6 +44,16 @@ def _validate(rows: list[dict[str, object]]):
     )
 
 
+def _validate_without_validation_requirement(rows: list[dict[str, object]]):
+    return validate_credential_binding(
+        rows,
+        trading_account_id=2,
+        venue="bitvavo",
+        required_permission_scope=PERMISSION_SCOPE_READ_ONLY_PRIVATE,
+        require_validated=False,
+    )
+
+
 def _assert_code(exc: pytest.ExceptionInfo[CredentialBindingValidationError], code: str) -> None:
     assert exc.value.code == code
     assert str(exc.value).startswith(code + ":")
@@ -141,6 +151,79 @@ def test_disabled_account_rejected() -> None:
         _validate([_row(trading_account_enabled=0)])
 
     _assert_code(exc, "ACCOUNT_DISABLED")
+
+
+def test_noncanonical_integer_boolean_rejected() -> None:
+    with pytest.raises(CredentialBindingValidationError) as exc:
+        _validate([_row(trading_account_enabled=2)])
+
+    _assert_code(exc, "INVALID_BOOLEAN_VALUE")
+    assert "field_name=trading_account_enabled" in str(exc.value)
+
+
+def test_noncanonical_string_boolean_rejected() -> None:
+    with pytest.raises(CredentialBindingValidationError) as exc:
+        _validate([_row(allowed_order_write="arbitrary")])
+
+    _assert_code(exc, "INVALID_BOOLEAN_VALUE")
+    assert "field_name=allowed_order_write" in str(exc.value)
+
+
+def test_missing_required_boolean_rejected() -> None:
+    row = _row()
+    del row["allowed_private_read"]
+
+    with pytest.raises(CredentialBindingValidationError) as exc:
+        _validate([row])
+
+    _assert_code(exc, "MISSING_REQUIRED_FIELD")
+    assert "field_name=allowed_private_read" in str(exc.value)
+
+
+def test_none_boolean_rejected() -> None:
+    with pytest.raises(CredentialBindingValidationError) as exc:
+        _validate([_row(live_trading_enabled=None)])
+
+    _assert_code(exc, "INVALID_BOOLEAN_VALUE")
+    assert "field_name=live_trading_enabled" in str(exc.value)
+
+
+def test_canonical_boolean_values_are_accepted() -> None:
+    profile = _validate(
+        [
+            _row(
+                trading_account_enabled=True,
+                live_trading_enabled=False,
+                allowed_private_read="true",
+                allowed_order_write="0",
+                allowed_withdrawal="false",
+            )
+        ]
+    )
+
+    assert profile.trading_account_enabled is True
+    assert profile.live_trading_enabled is False
+    assert profile.allowed_private_read is True
+    assert profile.allowed_order_write is False
+    assert profile.allowed_withdrawal is False
+
+
+def test_unknown_validation_state_rejected_even_when_validation_not_required() -> None:
+    with pytest.raises(CredentialBindingValidationError) as exc:
+        _validate_without_validation_requirement([_row(validation_state="UNKNOWN_STATE")])
+
+    _assert_code(exc, "UNKNOWN_VALIDATION_STATE")
+
+
+def test_unvalidated_state_accepted_only_when_validation_not_required() -> None:
+    profile = _validate_without_validation_requirement([_row(validation_state="UNVALIDATED")])
+
+    assert profile.validation_state == "UNVALIDATED"
+
+    with pytest.raises(CredentialBindingValidationError) as exc:
+        _validate([_row(validation_state="UNVALIDATED")])
+
+    _assert_code(exc, "UNVALIDATED_CREDENTIAL")
 
 
 def test_secret_fields_are_rejected_before_reporting() -> None:

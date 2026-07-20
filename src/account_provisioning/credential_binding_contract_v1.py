@@ -41,6 +41,14 @@ VALID_PERMISSION_SCOPES = frozenset(
         PERMISSION_SCOPE_TRADE_EXECUTION,
     }
 )
+VALID_CREDENTIAL_VALIDATION_STATES = frozenset(
+    {
+        "UNVALIDATED",
+        "VALID_READ_ONLY",
+        "VALID_PRIVATE_READ",
+        "INVALID_CREDENTIALS",
+    }
+)
 VALIDATED_PRIVATE_READ_STATES = frozenset({"VALID_READ_ONLY", "VALID_PRIVATE_READ"})
 
 SECRET_FIELD_NAMES = frozenset(
@@ -243,6 +251,11 @@ def _validate_row_metadata(profile: CredentialBindingProfile) -> None:
             "UNKNOWN_PERMISSION_SCOPE",
             f"permission_scope={profile.permission_scope!r}",
         )
+    if profile.validation_state not in VALID_CREDENTIAL_VALIDATION_STATES:
+        raise CredentialBindingValidationError(
+            "UNKNOWN_VALIDATION_STATE",
+            f"validation_state={profile.validation_state!r}",
+        )
     if profile.allowed_withdrawal:
         raise CredentialBindingValidationError(
             "WITHDRAWAL_CAPABILITY_NOT_ALLOWED",
@@ -266,19 +279,40 @@ def _profile_from_row(row: Mapping[str, Any]) -> CredentialBindingProfile:
             "forbidden_fields=" + ",".join(forbidden),
         )
 
+    trading_account_enabled = _required_field(
+        row,
+        "trading_account_enabled",
+        legacy_field_name="enabled",
+    )
+
     return CredentialBindingProfile(
         trading_account_id=int(row["trading_account_id"]),
         account_code=str(row["account_code"]),
         venue=str(row["venue"]),
-        trading_account_enabled=_bool_value(row.get("trading_account_enabled", row.get("enabled", 0))),
-        live_trading_enabled=_bool_value(row.get("live_trading_enabled", 0)),
+        trading_account_enabled=_bool_value(
+            trading_account_enabled,
+            field_name="trading_account_enabled",
+        ),
+        live_trading_enabled=_bool_value(
+            _required_field(row, "live_trading_enabled"),
+            field_name="live_trading_enabled",
+        ),
         trading_account_credential_id=int(row["trading_account_credential_id"]),
         credential_source=str(row["credential_source"]),
         credential_status=str(row["credential_status"]),
         permission_scope=str(row["permission_scope"]),
-        allowed_private_read=_bool_value(row["allowed_private_read"]),
-        allowed_order_write=_bool_value(row["allowed_order_write"]),
-        allowed_withdrawal=_bool_value(row["allowed_withdrawal"]),
+        allowed_private_read=_bool_value(
+            _required_field(row, "allowed_private_read"),
+            field_name="allowed_private_read",
+        ),
+        allowed_order_write=_bool_value(
+            _required_field(row, "allowed_order_write"),
+            field_name="allowed_order_write",
+        ),
+        allowed_withdrawal=_bool_value(
+            _required_field(row, "allowed_withdrawal"),
+            field_name="allowed_withdrawal",
+        ),
         credential_fingerprint=str(row["credential_fingerprint"]),
         key_version=str(row["key_version"]),
         validation_state=str(row["validation_state"]),
@@ -291,11 +325,44 @@ def _profile_from_row(row: Mapping[str, Any]) -> CredentialBindingProfile:
     )
 
 
-def _bool_value(value: Any) -> bool:
+def _required_field(
+    row: Mapping[str, Any],
+    field_name: str,
+    *,
+    legacy_field_name: str | None = None,
+) -> Any:
+    if field_name in row:
+        return row[field_name]
+    if legacy_field_name is not None and legacy_field_name in row:
+        return row[legacy_field_name]
+    raise CredentialBindingValidationError(
+        "MISSING_REQUIRED_FIELD",
+        f"field_name={field_name}",
+    )
+
+
+def _bool_value(value: Any, *, field_name: str) -> bool:
     if isinstance(value, bool):
         return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        if value in (0, 1):
+            return bool(value)
+        raise CredentialBindingValidationError(
+            "INVALID_BOOLEAN_VALUE",
+            f"field_name={field_name}",
+        )
     if value is None:
-        return False
+        raise CredentialBindingValidationError(
+            "INVALID_BOOLEAN_VALUE",
+            f"field_name={field_name}",
+        )
     if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "y"}
-    return bool(int(value))
+        normalized = value.strip().lower()
+        if normalized in {"1", "true"}:
+            return True
+        if normalized in {"0", "false"}:
+            return False
+    raise CredentialBindingValidationError(
+        "INVALID_BOOLEAN_VALUE",
+        f"field_name={field_name}",
+    )

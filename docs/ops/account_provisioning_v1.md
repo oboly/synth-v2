@@ -212,6 +212,18 @@ python -m src.web.run_website_registration_db_migration_v1
 
 Migration is idempotent (safe to re-run).
 
+Precondition: before binding metadata exists, each `(trading_account_id, venue)`
+must have at most one `ACTIVE` credential. If duplicate active credentials exist,
+the migration aborts before adding or defaulting binding columns with:
+
+```text
+ACCOUNT_CREDENTIAL_BINDING_DUPLICATE_ACTIVE_PRECONDITION_FAILED
+```
+
+Duplicate active credentials require explicit operator review. The migration
+does not choose one credential, revoke credentials, change statuses, assign
+different scopes, or delete rows automatically.
+
 ## HTTP endpoint (Batch 2)
 
 ```

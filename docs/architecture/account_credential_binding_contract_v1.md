@@ -157,6 +157,18 @@ The generated `active_permission_scope` column backs a unique index enforcing
 one active credential per `(trading_account_id, venue, permission_scope)` while
 preserving historical revoked/rotated/invalid rows.
 
+Before adding binding metadata, the migration fails closed if existing rows
+contain more than one `ACTIVE` credential for the same `(trading_account_id,
+venue)`. The diagnostic code is:
+
+```text
+ACCOUNT_CREDENTIAL_BINDING_DUPLICATE_ACTIVE_PRECONDITION_FAILED
+```
+
+Duplicate active credentials require explicit operator review before migration.
+The migration never chooses a winner, changes statuses, assigns different
+scopes, revokes credentials, or deletes credential rows automatically.
+
 ## PR A boundary
 
 PR A is schema/contract only:

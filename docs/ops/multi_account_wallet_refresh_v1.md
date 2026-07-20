@@ -39,9 +39,9 @@ Credentials live outside the repo and outside webroot.
 
 Canonical contract: `docs/architecture/account_credential_binding_contract_v1.md`.
 
-Account selection does not imply credential selection. Wallet refresh must first
-resolve the exact linked `trading_account_id`, then resolve exactly one active
-credential profile by:
+Contract requirement: account selection does not imply credential selection.
+Wallet refresh must resolve the exact linked `trading_account_id`, then resolve
+exactly one active credential profile by:
 
 ```text
 trading_account_id + venue + READ_ONLY_PRIVATE
@@ -61,6 +61,15 @@ legacy_profile_env_deprecated
 
 That state is explicit migration-only. It must never be a default, implicit
 fallback, or repository-global `.env` fallback.
+
+Current implementation state for PR A:
+
+- the schema and pure binding contract are defined
+- runtime wallet-refresh callers are not yet migrated to permission-scope
+  credential resolution
+- legacy repository-global environment credential fallback still exists in
+  legacy runtime paths
+- PR B must enforce scoped runtime resolution and remove that legacy fallback
 
 Profile slug rules:
 - must match `[a-z0-9][a-z0-9_-]{0,62}`
@@ -88,8 +97,9 @@ Notes:
 - executor-only write actions would use the trading account's active WRITE credential
 - dashboard/reporting code reads DB snapshots only
 
-Private clients require an explicit resolved credential profile. Repository
-global `.env` credentials are not a valid multi-account binding.
+Contract requirement: private clients must use an explicit resolved credential
+profile. Repository-global `.env` credentials are not a valid multi-account
+binding. PR B must wire wallet-refresh runtime callers to enforce this boundary.
 
 ## What it writes
 

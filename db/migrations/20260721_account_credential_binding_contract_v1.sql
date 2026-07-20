@@ -9,6 +9,46 @@
 --
 -- No plaintext API keys or API secrets are added by this migration.
 
+DROP TEMPORARY TABLE IF EXISTS tac_binding_duplicate_active_guard_v1;
+
+CREATE TEMPORARY TABLE tac_binding_duplicate_active_guard_v1 (
+    trading_account_id BIGINT UNSIGNED NOT NULL,
+    venue VARCHAR(32) NOT NULL,
+    active_credential_count BIGINT UNSIGNED NOT NULL,
+    diagnostic_code VARCHAR(64) NOT NULL,
+    CONSTRAINT ACCOUNT_CREDENTIAL_BINDING_DUPLICATE_ACTIVE_PRECONDITION_FAILED
+        CHECK (
+            diagnostic_code
+            <> 'ACCOUNT_CREDENTIAL_BINDING_DUPLICATE_ACTIVE_PRECONDITION_FAILED'
+        )
+) ENGINE=MEMORY;
+
+INSERT INTO tac_binding_duplicate_active_guard_v1 (
+    trading_account_id,
+    venue,
+    active_credential_count,
+    diagnostic_code
+)
+SELECT
+    trading_account_id,
+    venue,
+    COUNT(*) AS active_credential_count,
+    'ACCOUNT_CREDENTIAL_BINDING_DUPLICATE_ACTIVE_PRECONDITION_FAILED'
+        AS diagnostic_code
+FROM trading_account_credential
+WHERE credential_status = 'ACTIVE'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'trading_account_credential'
+        AND COLUMN_NAME = 'permission_scope'
+  )
+GROUP BY trading_account_id, venue
+HAVING COUNT(*) > 1;
+
+DROP TEMPORARY TABLE IF EXISTS tac_binding_duplicate_active_guard_v1;
+
 ALTER TABLE trading_account_credential
     ADD COLUMN IF NOT EXISTS credential_source VARCHAR(32) NOT NULL DEFAULT 'db_encrypted'
         COMMENT 'db_encrypted | legacy_profile_env_deprecated';
