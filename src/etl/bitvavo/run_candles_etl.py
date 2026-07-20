@@ -597,6 +597,20 @@ def main(argv: list[str] | None = None) -> int:
     run_started_ts = iso_now()
     run_id = f"run_candles_etl:{run_started_ts}:pid={os.getpid()}"
 
+    # The candle ETL is a shared market-only chain step. It is enforced as the
+    # registered public_candle_freshness capability only when a caller (the
+    # capability wrapper) explicitly claims that capability. Shared chain
+    # callers (1h/1d) do not claim it and are unaffected.
+    if not args.dry_run and os.environ.get("SYNTH_WRITER_CAPABILITY_ID") == "public_candle_freshness":
+        from src.operations.writer_capability_authorization_v1 import (
+            require_capability_write_authorization,
+        )
+
+        require_capability_write_authorization(
+            "public_candle_freshness",
+            service="synth-market-candle-freshness-writer.service",
+        )
+
     if args.debug_logging:
         os.environ[DEBUG_ENV_VAR] = "1"
     debug = debug_logging_enabled(args)

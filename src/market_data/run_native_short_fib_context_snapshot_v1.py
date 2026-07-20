@@ -118,6 +118,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         result = "DRY_RUN"
         paths: dict[str, str] = {}
         if args.publish:
+            from src.operations.writer_capability_authorization_v1 import (
+                require_capability_write_authorization,
+            )
+
+            # Final mandatory authorization boundary before canonical artifact
+            # publication. A direct invocation cannot bypass ownership.
+            require_capability_write_authorization(
+                "native_short_4h_chain",
+                service="synth-chain-4h.service",
+            )
             publication_ts = args.publication_ts_utc or datetime.now(UTC)
             published = publish_snapshot(
                 build,

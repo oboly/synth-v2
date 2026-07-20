@@ -33,6 +33,22 @@ fi
 repository_commit_sha="$(git rev-parse --verify HEAD)"
 echo "SOURCE owner=${OWNER} repository_commit_sha=${repository_commit_sha} config=${CONFIG_PATH} lock_file=${LOCK_FILE}"
 
+# Fail closed before launching the write-capable candle ETL. The public
+# candle-freshness capability is claimed here so the shared Python mutation
+# boundary inside run_candles_etl enforces the same authorization.
+WRITER_CAPABILITY_ID="public_candle_freshness"
+WRITER_SERVICE="synth-market-candle-freshness-writer.service"
+export SYNTH_WRITER_CAPABILITY_ID="${WRITER_CAPABILITY_ID}"
+export SYNTH_WRITER_EXECUTION_MODE="${SYNTH_WRITER_EXECUTION_MODE:-PRODUCTION}"
+GUARD_ARGS=(--capability "${WRITER_CAPABILITY_ID}" --service "${WRITER_SERVICE}" --checkout-path "${REPO_DIR}" --mode "${SYNTH_WRITER_EXECUTION_MODE}")
+if [[ -n "${SYNTH_WRITER_ACCEPTANCE_PERMIT:-}" ]]; then
+  GUARD_ARGS+=(--acceptance-permit "${SYNTH_WRITER_ACCEPTANCE_PERMIT}")
+fi
+if ! python -m src.operations.verify_writer_capability_authorization_v1 "${GUARD_ARGS[@]}"; then
+  echo "FAILED runner=run_market_candle_freshness_once reason=WRITER_AUTHORIZATION_DENIED capability=${WRITER_CAPABILITY_ID} mode=${SYNTH_WRITER_EXECUTION_MODE}" >&2
+  exit 3
+fi
+
 build_window_start() {
   local lookback_hours="$1"
   python - "${lookback_hours}" <<'PY'

@@ -32,6 +32,22 @@ EXPECTED_CAPABILITY_IDS = {
     "market_rotation_pressure",
     "native_short_4h_chain",
 }
+CAPABILITY_IDENTITY = {
+    "public_price_snapshot": "public-price-snapshot-writer",
+    "public_candle_freshness": "public-candle-freshness-writer",
+    "market_rotation_pressure": "market-rotation-pressure-writer",
+    "native_short_4h_chain": "native-short-4h-chain",
+}
+_RFC3339_RE = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"
+)
+ALLOWED_ADDITIONAL_WRITER_CLASSIFICATIONS = {
+    "shared_market_only_chain",
+    "read_only_caller",
+    "retired_obsolete_path",
+    "architectural_violation_removed",
+}
+REMOVED_PATH_CLASSIFICATIONS = {"retired_obsolete_path", "architectural_violation_removed"}
 UNASSIGNED = "UNASSIGNED"
 AUTHORIZATION_REQUIRED_LIFECYCLES = {"AUTHORIZED_INACTIVE", "ACTIVE"}
 NO_AUTHORIZATION_LIFECYCLES = {
@@ -201,6 +217,9 @@ def validate_registry_payload(
         "capabilities",
         "consumers_with_zero_writer_capabilities",
         "forbidden_writer_invocation_tokens",
+        "forbidden_account_execution_tokens",
+        "call_graph_scan_trees",
+        "additional_writer_paths",
     }
     _ensure_keys(registry, root_required, root_required, "registry", errors)
 
@@ -267,6 +286,7 @@ def validate_registry_payload(
         "selected_host",
         "acceptance_host",
         "acceptance_status",
+        "acceptance_evidence",
         "production_runtime_owner",
         "production_authorization_status",
         "runtime_lifecycle",
@@ -287,6 +307,10 @@ def validate_registry_payload(
 
         if cap_id not in EXPECTED_CAPABILITY_IDS:
             errors.append(f"{label}: invalid capability_id")
+        if cap_id in CAPABILITY_IDENTITY and cap.get("capability_identity") != CAPABILITY_IDENTITY[cap_id]:
+            errors.append(
+                f"{label}: capability_identity must be {CAPABILITY_IDENTITY[cap_id]!r} for {cap_id}"
+            )
         if cap.get("kind") not in _enum_values(registry, "capability_kind"):
             errors.append(f"{label}: invalid kind {cap.get('kind')!r}")
         for field in ("candidate_host", "selected_host", "acceptance_host", "production_runtime_owner"):
@@ -306,6 +330,20 @@ def validate_registry_payload(
             errors.append(f"{label}: selected_host requires a candidate_host")
         if cap.get("acceptance_status") == "ACCEPTED" and cap.get("acceptance_host") == UNASSIGNED:
             errors.append(f"{label}: ACCEPTED acceptance_status requires acceptance_host")
+
+        acceptance_evidence = cap.get("acceptance_evidence")
+        if cap.get("acceptance_status") == "ACCEPTED":
+            if not isinstance(acceptance_evidence, dict):
+                errors.append(f"{label}: ACCEPTED acceptance_status requires structured acceptance_evidence")
+            else:
+                for key in ("approval_reference", "evidence_doc", "accepted_at_utc", "scope"):
+                    if not str(acceptance_evidence.get(key) or "").strip():
+                        errors.append(f"{label}: acceptance_evidence.{key} is required and non-empty")
+                accepted_at = str(acceptance_evidence.get("accepted_at_utc", ""))
+                if not _RFC3339_RE.match(accepted_at):
+                    errors.append(f"{label}: acceptance_evidence.accepted_at_utc must be RFC3339 UTC")
+        elif acceptance_evidence is not None:
+            errors.append(f"{label}: acceptance_evidence must be null unless acceptance_status is ACCEPTED")
         if cap.get("production_decision_evidence") and cap.get("production_runtime_owner") == UNASSIGNED:
             errors.append(f"{label}: unassigned production owner must not carry decision evidence")
         if cap.get("production_decision_evidence") and cap.get("production_decision_evidence") in {
@@ -408,12 +446,41 @@ def validate_registry_payload(
                     errors.append(f"{item_label}: invalid runtime_state_classification")
                 if not _path_exists(repo, str(item.get("unit_path", ""))):
                     errors.append(f"{item_label}: unit_path missing or invalid")
+                if not _RFC3339_RE.match(str(item.get("observed_at_utc", ""))):
+                    errors.append(f"{item_label}: observed_at_utc must be RFC3339 UTC")
                 if item.get("active_at_observation") is True and item.get("authorization_status") != "AUTHORIZED":
                     if item.get("runtime_state_classification") != "OBSERVED_LEGACY_RUNTIME_PENDING_CONTAINMENT":
                         errors.append(
                             f"{item_label}: observed active legacy runtime must be classified as pending containment"
                         )
-                if item.get("authorization_status") == "AUTHORIZED" and item.get("current_state") == "ACTIVE_OBSERVED":
+                # An observed runtime may claim AUTHORIZED status only when the
+                # capability itself canonically authorizes exactly that host.
+                # Observation must never convert into authorization.
+                if item.get("authorization_status") == "AUTHORIZED":
+                    if owner == UNASSIGNED:
+                        errors.append(
+                            f"{item_label}: observed authorization_status=AUTHORIZED requires an assigned production owner"
+                        )
+                    if item.get("host") != owner:
+                        errors.append(
+                            f"{item_label}: observed AUTHORIZED host must equal production_runtime_owner"
+                        )
+                    if auth_status != "AUTHORIZED":
+                        errors.append(
+                            f"{item_label}: observed AUTHORIZED requires production_authorization_status=AUTHORIZED"
+                        )
+                    if lifecycle not in AUTHORIZATION_REQUIRED_LIFECYCLES:
+                        errors.append(
+                            f"{item_label}: observed AUTHORIZED requires runtime_lifecycle AUTHORIZED_INACTIVE or ACTIVE"
+                        )
+                    if not evidence.strip():
+                        errors.append(
+                            f"{item_label}: observed AUTHORIZED requires production_decision_evidence"
+                        )
+                    if item.get("current_state") == "ACTIVE_OBSERVED" and lifecycle != "ACTIVE":
+                        errors.append(
+                            f"{item_label}: observed AUTHORIZED ACTIVE_OBSERVED requires runtime_lifecycle ACTIVE"
+                        )
                     active_observations.setdefault(cap_id, []).append(str(item.get("unit")))
 
         historical = cap.get("historical_runtime_assignment")
@@ -472,7 +539,103 @@ def validate_registry_payload(
 
     _validate_units_for_duplicates(registry, repo, errors)
     _validate_consumers(registry, repo, errors)
+    _validate_call_graph(registry, repo, errors)
     return ValidationResult(errors, warnings)
+
+
+def _registered_writer_paths(registry: dict[str, Any]) -> set[str]:
+    paths: set[str] = set()
+    for cap in registry.get("capabilities", []):
+        if not isinstance(cap, dict):
+            continue
+        for key in ("wrapper", "service", "timer"):
+            value = cap.get(key)
+            if isinstance(value, str) and value:
+                paths.add(value)
+        for wrapper in cap.get("wrappers_invoked", []):
+            paths.add(str(wrapper))
+    return paths
+
+
+def _validate_call_graph(registry: dict[str, Any], repo: Path, errors: list[str]) -> None:
+    """Structural, repository-wide writer call-graph validation.
+
+    Every file that invokes a public-market writer token must be either a
+    registered capability wrapper/service or an explicitly classified entry in
+    ``additional_writer_paths``. Public-market writers must never share a path
+    with account/execution layers.
+    """
+    public_tokens = tuple(str(x) for x in registry.get("forbidden_writer_invocation_tokens", []))
+    account_tokens = tuple(str(x) for x in registry.get("forbidden_account_execution_tokens", []))
+    scan_trees = [str(x) for x in registry.get("call_graph_scan_trees", [])]
+    registered_paths = _registered_writer_paths(registry)
+
+    additional_by_path: dict[str, dict[str, Any]] = {}
+    for entry in registry.get("additional_writer_paths", []):
+        if not isinstance(entry, dict):
+            errors.append("additional_writer_paths entry must be an object")
+            continue
+        rel = str(entry.get("path", ""))
+        additional_by_path[rel] = entry
+        classification = entry.get("classification")
+        if classification not in ALLOWED_ADDITIONAL_WRITER_CLASSIFICATIONS:
+            errors.append(f"additional_writer_paths[{rel}]: invalid classification {classification!r}")
+        full = repo / rel
+        if not _is_repo_relative(rel) or not full.exists():
+            errors.append(f"additional_writer_paths[{rel}]: path missing or invalid")
+            continue
+        text = _non_comment_source(full)
+        found_public = [tok for tok in public_tokens if tok in text and tok != rel]
+        found_account = [tok for tok in account_tokens if tok in text]
+        if classification in REMOVED_PATH_CLASSIFICATIONS:
+            if found_public:
+                errors.append(
+                    f"additional_writer_paths[{rel}]: classified removed but still invokes public writer tokens {found_public}"
+                )
+            if found_account:
+                errors.append(
+                    f"additional_writer_paths[{rel}]: classified removed but still invokes account/execution tokens {found_account}"
+                )
+        else:
+            if found_account:
+                errors.append(
+                    f"additional_writer_paths[{rel}]: market-only path must not invoke account/execution tokens {found_account}"
+                )
+            if classification == "read_only_caller" and found_public:
+                errors.append(
+                    f"additional_writer_paths[{rel}]: read_only_caller must not invoke public writer tokens {found_public}"
+                )
+            declared = {str(x) for x in entry.get("invokes_public_writer_tokens", [])}
+            if set(found_public) != declared:
+                errors.append(
+                    f"additional_writer_paths[{rel}]: declared public writer tokens {sorted(declared)} "
+                    f"do not match discovered {sorted(found_public)}"
+                )
+
+    for tree in scan_trees:
+        root = repo / tree
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or path.suffix not in {".py", ".sh"}:
+                continue
+            rel = str(path.relative_to(repo))
+            text = _non_comment_source(path)
+            found_public = [tok for tok in public_tokens if tok in text and tok != rel]
+            if not found_public:
+                continue
+            if rel in registered_paths:
+                found_account = [tok for tok in account_tokens if tok in text]
+                if found_account:
+                    errors.append(
+                        f"registered writer path {rel} must not invoke account/execution tokens {found_account}"
+                    )
+                continue
+            if rel in additional_by_path:
+                continue
+            errors.append(
+                f"unregistered writer path invokes public writer tokens: {rel} -> {found_public}"
+            )
 
 
 def _capability_for_unit_text(registry: dict[str, Any], text: str) -> set[str]:

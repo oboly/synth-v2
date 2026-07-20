@@ -74,6 +74,7 @@
       "selected_host": "UNASSIGNED",
       "acceptance_host": "UNASSIGNED",
       "acceptance_status": "UNASSIGNED",
+      "acceptance_evidence": null,
       "production_runtime_owner": "UNASSIGNED",
       "production_authorization_status": "UNASSIGNED",
       "runtime_lifecycle": "UNASSIGNED",
@@ -119,6 +120,7 @@
       "selected_host": "UNASSIGNED",
       "acceptance_host": "UNASSIGNED",
       "acceptance_status": "UNASSIGNED",
+      "acceptance_evidence": null,
       "production_runtime_owner": "UNASSIGNED",
       "production_authorization_status": "UNASSIGNED",
       "runtime_lifecycle": "UNASSIGNED",
@@ -163,6 +165,12 @@
       "selected_host": "UNASSIGNED",
       "acceptance_host": "devlap",
       "acceptance_status": "ACCEPTED",
+      "acceptance_evidence": {
+        "approval_reference": "PR #100 / PR #101 implementation acceptance",
+        "evidence_doc": "docs/ops/market_rotation_pressure_runtime_owners_v1.md",
+        "accepted_at_utc": "2026-07-14T18:56:00Z",
+        "scope": "Implementation acceptance and installed-runtime observation on devlap only. This is an audit fact and does not grant production authorization or production decision evidence."
+      },
       "production_runtime_owner": "UNASSIGNED",
       "production_authorization_status": "UNASSIGNED",
       "runtime_lifecycle": "UNASSIGNED",
@@ -279,6 +287,7 @@
       "selected_host": "UNASSIGNED",
       "acceptance_host": "UNASSIGNED",
       "acceptance_status": "UNASSIGNED",
+      "acceptance_evidence": null,
       "production_runtime_owner": "UNASSIGNED",
       "production_authorization_status": "UNASSIGNED",
       "runtime_lifecycle": "UNASSIGNED",
@@ -307,5 +316,41 @@
     "scripts/run_market_rotation_pressure_once.sh",
     "src.research.run_market_rotation_history_v1",
     "src.research.run_market_rotation_pressure_v1"
+  ],
+  "forbidden_account_execution_tokens": [
+    "src.decision.run_decision_engine",
+    "src.risk.run_risk_engine",
+    "src.portfolio.run_portfolio_state",
+    "src.execution.run_execution_intent"
+  ],
+  "call_graph_scan_trees": [
+    "scripts",
+    "src/live",
+    "src/reporting",
+    "apps",
+    "scripts/odroid"
+  ],
+  "additional_writer_paths": [
+    {
+      "path": "scripts/run_chain_1h.sh",
+      "classification": "shared_market_only_chain",
+      "capability_binding": "UNASSIGNED",
+      "invokes_public_writer_tokens": ["src.etl.bitvavo.run_candles_etl"],
+      "note": "Market-only 1h chain. Invokes the shared candle ETL as an internal chain step. It does not claim the public_candle_freshness capability, owns no public-writer capability, and invokes no account/execution layer."
+    },
+    {
+      "path": "scripts/run_chain_1d.sh",
+      "classification": "shared_market_only_chain",
+      "capability_binding": "UNASSIGNED",
+      "invokes_public_writer_tokens": ["src.etl.bitvavo.run_candles_etl"],
+      "note": "Market-only 1d chain. Invokes the shared candle ETL as an internal chain step. It does not claim the public_candle_freshness capability, owns no public-writer capability, and invokes no account/execution layer."
+    },
+    {
+      "path": "src/live/run_live_cycle.py",
+      "classification": "architectural_violation_removed",
+      "capability_binding": "NONE",
+      "invokes_public_writer_tokens": [],
+      "note": "Retired monolithic live cycle. Previously coupled public market-data writing (candle ETL) with account/execution layers (decision/risk/portfolio/execution). Both invocations were removed; the entrypoint now fails closed. Account/live execution must consume persisted market state and must not own or repair public-market data."
+    }
   ]
 }

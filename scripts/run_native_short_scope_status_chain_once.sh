@@ -44,6 +44,25 @@ if ! flock -n 9; then
     exit 75
 fi
 
+# Fail closed before launching the write-capable scope-status chain. Same
+# shared authorization semantics as the parent 4h chain guard. Mode and allowed
+# untracked paths are inherited from the parent chain environment.
+WRITER_CAPABILITY_ID="native_short_4h_chain"
+WRITER_SERVICE="synth-chain-4h.service"
+export SYNTH_WRITER_CAPABILITY_ID="${WRITER_CAPABILITY_ID}"
+export SYNTH_WRITER_EXECUTION_MODE="${SYNTH_WRITER_EXECUTION_MODE:-PRODUCTION}"
+SCOPE_GUARD_ARGS=(--capability "${WRITER_CAPABILITY_ID}" --service "${WRITER_SERVICE}" --checkout-path "${REPO_DIR}" --mode "${SYNTH_WRITER_EXECUTION_MODE}")
+if [[ -n "${SYNTH_WRITER_ALLOWED_UNTRACKED_PATHS:-}" ]]; then
+    SCOPE_GUARD_ARGS+=(--allowed-untracked-path "${SYNTH_WRITER_ALLOWED_UNTRACKED_PATHS}")
+fi
+if [[ -n "${SYNTH_WRITER_ACCEPTANCE_PERMIT:-}" ]]; then
+    SCOPE_GUARD_ARGS+=(--acceptance-permit "${SYNTH_WRITER_ACCEPTANCE_PERMIT}")
+fi
+if ! python -m src.operations.verify_writer_capability_authorization_v1 "${SCOPE_GUARD_ARGS[@]}"; then
+    echo "FAILED runner=run_native_short_scope_status_chain_once reason=WRITER_AUTHORIZATION_DENIED capability=${WRITER_CAPABILITY_ID} mode=${SYNTH_WRITER_EXECUTION_MODE}" >&2
+    exit 3
+fi
+
 python -m src.market_data.run_native_short_scope_status_chain_v1 \
     --venue bitvavo \
     --quote-currency EUR \

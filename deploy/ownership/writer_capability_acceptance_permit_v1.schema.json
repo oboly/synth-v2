@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/oboly/synth-v2/deploy/ownership/writer_capability_acceptance_permit_v1.schema.json",
+  "title": "Synth writer capability acceptance permit v1",
+  "description": "Versioned schema for a bounded, expiring acceptance permit. An acceptance permit authorizes controlled acceptance mutation only. It never sets production ownership, never satisfies production decision evidence, and never falls back to production mode.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "permit_version",
+    "permit_id",
+    "issued_at_utc",
+    "expiry_utc",
+    "purpose",
+    "capability_id",
+    "capability_identity",
+    "acceptance_host",
+    "authorized_commit",
+    "approval_reference",
+    "max_invocations"
+  ],
+  "properties": {
+    "permit_version": {"const": "writer_capability_acceptance_permit_v1"},
+    "permit_id": {"type": "string", "minLength": 8, "maxLength": 128, "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{6,126}[A-Za-z0-9]$"},
+    "issued_at_utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"},
+    "expiry_utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$"},
+    "purpose": {"const": "ACCEPTANCE"},
+    "capability_id": {"enum": ["public_price_snapshot", "public_candle_freshness", "market_rotation_pressure", "native_short_4h_chain"]},
+    "capability_identity": {"enum": ["public-price-snapshot-writer", "public-candle-freshness-writer", "market-rotation-pressure-writer", "native-short-4h-chain"]},
+    "acceptance_host": {"enum": ["devlap", "gurkdb", "odroid"]},
+    "authorized_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "service": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*\\.service$"},
+    "approval_reference": {"type": "string", "minLength": 1},
+    "max_invocations": {"type": "integer", "minimum": 1, "maximum": 1000}
+  }
+}

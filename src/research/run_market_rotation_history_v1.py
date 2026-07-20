@@ -747,6 +747,17 @@ def resolve_as_of_ts(asof_arg: str | None) -> datetime:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.write_db:
+        from src.operations.writer_capability_authorization_v1 import (
+            require_capability_write_authorization,
+        )
+
+        # Final mandatory authorization boundary before any rotation-history
+        # write. A direct invocation cannot bypass ownership authorization.
+        require_capability_write_authorization(
+            "market_rotation_pressure",
+            service="synth-market-rotation-pressure-writer.service",
+        )
     as_of_ts = resolve_as_of_ts(args.asof_ts)
     horizons = args.horizon or list(HORIZONS_H)
     mode = "validate-only" if args.validate_only else ("dry-run" if args.dry_run else "write-db")

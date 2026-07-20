@@ -124,6 +124,17 @@ def print_table(snapshots: list[MarketPriceSnapshot]) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.write_db:
+        from src.operations.writer_capability_authorization_v1 import (
+            require_capability_write_authorization,
+        )
+
+        # Final mandatory authorization boundary before any mutation and before
+        # any network work. A direct invocation cannot bypass ownership.
+        require_capability_write_authorization(
+            "public_price_snapshot",
+            service="synth-market-price-snapshot-writer.service",
+        )
     quote = args.quote.upper()
     observed_ts_utc = utc_now_naive()
 

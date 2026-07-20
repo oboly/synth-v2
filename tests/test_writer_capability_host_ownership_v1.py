@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import platform
 import subprocess
 from pathlib import Path
 
@@ -12,8 +11,9 @@ from src.operations import run_host_preflight_v1 as preflight
 from src.operations.validate_writer_capability_ownership_v1 import (
     validate_registry_payload,
 )
-from src.operations.verify_writer_capability_authorization_v1 import (
-    verify_authorization,
+from src.operations.writer_capability_authorization_v1 import (
+    ExecutionMode,
+    verify_writer_execution_authorization,
 )
 
 
@@ -206,76 +206,38 @@ def test_arbitrary_owner_identity_overrides_are_rejected_and_not_in_wrappers() -
     assert "SYNTH_MARKET_PRICE_WRITER_OWNER" not in wrapper_text
 
 
-def test_authorization_guard_blocks_unassigned_capability() -> None:
-    registry = _registry()
-    authorization = {
-        "authorization_version": "writer_capability_runtime_authorization_v1",
-        "capability_id": "public_price_snapshot",
-        "service": "synth-market-price-snapshot-writer.service",
-        "authorized_host": platform.node().strip(),
-        "authorized_commit": "a" * 40,
-        "production_authorization_status": "AUTHORIZED",
-        "runtime_lifecycle": "ACTIVE",
-        "decision_evidence": "docs/ops/example.md#decision",
-    }
-    result = verify_authorization(
-        registry=registry,
-        authorization=authorization,
+def test_shared_read_only_mode_blocks_mutation() -> None:
+    decision = verify_writer_execution_authorization(
         capability_id="public_price_snapshot",
-        service="synth-market-price-snapshot-writer.service",
-        actual_host=platform.node().strip(),
-        actual_commit="a" * 40,
+        mode=ExecutionMode.READ_ONLY,
+        repo_root=Path.cwd(),
+        checkout_path=Path.cwd(),
     )
-    assert not result.ok
-    assert any("UNASSIGNED" in err for err in result.errors)
+    assert not decision.allowed
+    assert any("READ_ONLY" in reason for reason in decision.reasons)
 
 
-def test_authorization_guard_blocks_wrong_hostname_and_commit() -> None:
-    registry = _active_registry()
-    authorization = {
-        "authorization_version": "writer_capability_runtime_authorization_v1",
-        "capability_id": "public_price_snapshot",
-        "service": "synth-market-price-snapshot-writer.service",
-        "authorized_host": "devlap",
-        "authorized_commit": "a" * 40,
-        "production_authorization_status": "AUTHORIZED",
-        "runtime_lifecycle": "AUTHORIZED_INACTIVE",
-        "decision_evidence": "docs/ops/example_authorization.md#decision",
-    }
-    result = verify_authorization(
-        registry=registry,
-        authorization=authorization,
+def test_shared_production_mode_blocks_unassigned_capability() -> None:
+    decision = verify_writer_execution_authorization(
         capability_id="public_price_snapshot",
-        service="synth-market-price-snapshot-writer.service",
-        actual_host="wrong-host",
-        actual_commit="b" * 40,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=Path.cwd(),
+        checkout_path=Path.cwd(),
+        authorization_path=Path("/tmp/synth-nonexistent-authorization.json"),
     )
-    assert not result.ok
-    assert any("actual hostname" in err for err in result.errors)
-    assert any("commit does not match" in err for err in result.errors)
+    assert not decision.allowed
+    assert any("authorization file missing" in reason for reason in decision.reasons)
 
 
-def test_authorization_guard_passes_only_exact_authorized_tuple() -> None:
-    registry = _active_registry()
-    authorization = {
-        "authorization_version": "writer_capability_runtime_authorization_v1",
-        "capability_id": "public_price_snapshot",
-        "service": "synth-market-price-snapshot-writer.service",
-        "authorized_host": "devlap",
-        "authorized_commit": "a" * 40,
-        "production_authorization_status": "AUTHORIZED",
-        "runtime_lifecycle": "AUTHORIZED_INACTIVE",
-        "decision_evidence": "docs/ops/example_authorization.md#decision",
-    }
-    result = verify_authorization(
-        registry=registry,
-        authorization=authorization,
-        capability_id="public_price_snapshot",
-        service="synth-market-price-snapshot-writer.service",
-        actual_host="devlap",
-        actual_commit="a" * 40,
+def test_shared_authorization_rejects_unknown_capability() -> None:
+    decision = verify_writer_execution_authorization(
+        capability_id="not_a_capability",
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=Path.cwd(),
+        checkout_path=Path.cwd(),
     )
-    assert result.ok, result.errors
+    assert not decision.allowed
+    assert any("unknown capability_id" in reason for reason in decision.reasons)
 
 
 def test_guard_cli_fails_closed_when_authorization_file_is_missing() -> None:

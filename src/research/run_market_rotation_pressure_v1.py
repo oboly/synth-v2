@@ -555,6 +555,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.write_db:
+        from src.operations.writer_capability_authorization_v1 import (
+            require_capability_write_authorization,
+        )
+
+        # Final mandatory authorization boundary before any rotation-pressure
+        # write. A direct invocation cannot bypass ownership authorization.
+        require_capability_write_authorization(
+            "market_rotation_pressure",
+            service="synth-market-rotation-pressure-writer.service",
+        )
     if args.validate_only:
         print(f"RUNNER {RUNNER_NAME} model={MODEL_VERSION} mode=validate-only")
         print(f"weights={WEIGHTS} robust_scale_floors={ROBUST_SCALE_FLOORS}")

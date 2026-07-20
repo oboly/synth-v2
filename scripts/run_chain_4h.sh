@@ -48,6 +48,24 @@ activate_runtime_venv() {
 
 activate_runtime_venv
 
+# Fail closed before launching any write-capable chain step. Same shared
+# authorization semantics as the systemd ExecStartPre guard and the Python
+# mutation boundary (native SHORT fib context snapshot publication). Default
+# mode is PRODUCTION so an unassigned capability fails before any write.
+WRITER_CAPABILITY_ID="native_short_4h_chain"
+WRITER_SERVICE="synth-chain-4h.service"
+export SYNTH_WRITER_CAPABILITY_ID="${WRITER_CAPABILITY_ID}"
+export SYNTH_WRITER_EXECUTION_MODE="${SYNTH_WRITER_EXECUTION_MODE:-PRODUCTION}"
+export SYNTH_WRITER_ALLOWED_UNTRACKED_PATHS="${CONTROLLED_UNTRACKED_PATH}"
+CHAIN_GUARD_ARGS=(--capability "${WRITER_CAPABILITY_ID}" --service "${WRITER_SERVICE}" --checkout-path "${REPO_DIR}" --mode "${SYNTH_WRITER_EXECUTION_MODE}" --allowed-untracked-path "${CONTROLLED_UNTRACKED_PATH}")
+if [ -n "${SYNTH_WRITER_ACCEPTANCE_PERMIT:-}" ]; then
+    CHAIN_GUARD_ARGS+=(--acceptance-permit "${SYNTH_WRITER_ACCEPTANCE_PERMIT}")
+fi
+if ! python -m src.operations.verify_writer_capability_authorization_v1 "${CHAIN_GUARD_ARGS[@]}"; then
+    echo "[CHAIN][4h][FAIL] rc=3 reason=WRITER_AUTHORIZATION_DENIED capability=${WRITER_CAPABILITY_ID} mode=${SYNTH_WRITER_EXECUTION_MODE}"
+    exit 3
+fi
+
 run_step() {
     echo "[CHAIN][4h][STEP] $*"
     "$@"

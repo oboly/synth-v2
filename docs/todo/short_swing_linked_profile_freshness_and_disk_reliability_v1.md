@@ -89,8 +89,11 @@ Repository systemd files are templates; their presence is not installed-host acc
 
 ### Native SHORT runtime line
 
-PR #87 closed and accepted the canonical repository runtime wiring for native SHORT using the existing 4h owner.
-Installed service/timer activation was explicitly not performed and remains separate from this lane's repository closure.
+PR #87 closed the repository runtime wiring implementation for native SHORT reusing the existing 4h chain shape.
+This is historical implementation evidence only. Production host ownership is now UNASSIGNED in the ownership
+registry (`deploy/ownership/writer_capability_ownership_v1.json`, `native_short_4h_chain.production_runtime_owner=UNASSIGNED`);
+there is no current canonical/production 4h owner. Installed service/timer activation was explicitly not performed and
+remains separate from this lane's repository closure.
 
 ## P2-A — Installed-host ownership and activation truth
 

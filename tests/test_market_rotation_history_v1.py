@@ -39,6 +39,18 @@ from src.research.run_market_rotation_history_v1 import (
 # Shared fixtures
 # ---------------------------------------------------------------------------
 
+
+@pytest.fixture(autouse=True)
+def _authorized_writer_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests exercise write/rollback mechanics and assume authorization is
+    already granted. The writer-capability authorization boundary itself is
+    covered by tests/test_writer_capability_authorization_v1.py."""
+    import src.operations.writer_capability_authorization_v1 as authmod
+
+    monkeypatch.setattr(
+        authmod, "require_capability_write_authorization", lambda *a, **k: None
+    )
+
 AS_OF = datetime(2026, 1, 15, 12, 0, 0)  # naive UTC hourly boundary
 
 MOCK_CG_DATA = {
