@@ -2,6 +2,9 @@ from __future__ import annotations
 
 
 import pytest as _pytest_authz
+from tests.writer_auth_support import make_test_authorization
+
+_NS_AUTH = make_test_authorization("native_short_4h_chain")
 
 
 @_pytest_authz.fixture(autouse=True)
@@ -370,6 +373,7 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
             fetch_primary_candle_close_timestamps=_raising_candles,
             fetch_supporting_candle_close_timestamps=_raising_candles,
             materialize_map_level_status_fn=_stub_level_status,
+            authorization=_NS_AUTH,
         )
         schema_conn.commit()
 
@@ -436,6 +440,7 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
             fetch_supporting_candle_close_timestamps=_fresh_candles,
             materialize_scope_symbol_fn=_stub_materialize,
             materialize_map_level_status_fn=_stub_level_status,
+            authorization=_NS_AUTH,
         )
         schema_conn.commit()
 
@@ -494,7 +499,7 @@ def test_a2_orchestrator_executes_against_disposable_mariadb_schema() -> None:
             failure_detail="SHOULD_NOT_PERSIST",
         )
         with pytest.raises(NativeShortRunTerminalizationConflictError):
-            _finalize_run(schema_conn, run_b_id, conflicting)
+            _finalize_run(schema_conn, run_b_id, conflicting, authorization=_NS_AUTH)
         schema_conn.commit()
 
         with schema_conn.cursor() as cur:
