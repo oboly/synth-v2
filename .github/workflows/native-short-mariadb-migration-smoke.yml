@@ -578,7 +578,7 @@ jobs:
       - name: Install Python test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt pytest
+          python -m pip install -r requirements.txt pytest jsonschema
 
       - name: Run Native SHORT pure contract tests
         # DB-free unit tests for the pure administration contract module. Runs
