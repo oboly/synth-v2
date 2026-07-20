@@ -15,6 +15,26 @@ BINDING_MIGRATION = Path("db/migrations/20260721_account_credential_binding_cont
 
 TEMP_DB_PREFIX = "synth_tac_binding_ddl_tmp"
 DIAGNOSTIC_CODE = "ACCOUNT_CREDENTIAL_BINDING_DUPLICATE_ACTIVE_PRECONDITION_FAILED"
+GUARD_OBJECT_NAME = "tac_binding_duplicate_active_guard_v1"
+ADDED_BINDING_COLUMNS = frozenset(
+    {
+        "credential_source",
+        "permission_scope",
+        "allowed_private_read",
+        "allowed_order_write",
+        "allowed_withdrawal",
+        "last_validation_error_code",
+        "active_permission_scope",
+    }
+)
+ADDED_BINDING_CONSTRAINTS = frozenset(
+    {
+        "chk_tac_credential_source_v1",
+        "chk_tac_permission_scope_v1",
+        "chk_tac_capability_flags_v1",
+    }
+)
+ADDED_BINDING_INDEXES = frozenset({"uq_tac_active_account_venue_scope_v1"})
 
 
 def _split_sql_statements(sql_text: str) -> list[str]:
@@ -172,10 +192,83 @@ def _insert_credential(
     )
 
 
+def _add_permission_scope_only_partial_schema(conn: object) -> None:
+    _apply_statements(
+        conn,
+        [
+            """
+            ALTER TABLE trading_account_credential
+                ADD COLUMN permission_scope VARCHAR(32) NOT NULL
+                    DEFAULT 'READ_ONLY_PRIVATE'
+                    COMMENT 'READ_ONLY_PRIVATE | TRADE_EXECUTION'
+            """,
+        ],
+    )
+
+
 def _column_names(conn: object) -> set[str]:
     with conn.cursor() as cur:
         cur.execute("SHOW COLUMNS FROM trading_account_credential")
         return {str(row["Field"]) for row in cur.fetchall()}
+
+
+def _constraint_names(conn: object) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT CONSTRAINT_NAME
+            FROM information_schema.TABLE_CONSTRAINTS
+            WHERE CONSTRAINT_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'trading_account_credential'
+            """
+        )
+        return {str(row["CONSTRAINT_NAME"]) for row in cur.fetchall()}
+
+
+def _index_names(conn: object) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute("SHOW INDEX FROM trading_account_credential")
+        return {str(row["Key_name"]) for row in cur.fetchall()}
+
+
+def _persistent_guard_artifacts(conn: object) -> set[str]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT TABLE_NAME AS artifact_name
+            FROM information_schema.TABLES
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = %s
+            UNION ALL
+            SELECT ROUTINE_NAME AS artifact_name
+            FROM information_schema.ROUTINES
+            WHERE ROUTINE_SCHEMA = DATABASE()
+              AND ROUTINE_NAME = %s
+            """,
+            (GUARD_OBJECT_NAME, GUARD_OBJECT_NAME),
+        )
+        return {str(row["artifact_name"]) for row in cur.fetchall()}
+
+
+def _assert_no_partial_binding_ddl(
+    conn: object,
+    *,
+    allowed_existing_columns: set[str] | None = None,
+) -> None:
+    allowed_columns = allowed_existing_columns or set()
+
+    assert not (ADDED_BINDING_COLUMNS - allowed_columns) & _column_names(conn)
+    assert not ADDED_BINDING_CONSTRAINTS & _constraint_names(conn)
+    assert not ADDED_BINDING_INDEXES & _index_names(conn)
+    assert not _persistent_guard_artifacts(conn)
+
+
+def _assert_guard_table_not_accessible(conn: object) -> None:
+    from pymysql.err import OperationalError, ProgrammingError
+
+    with conn.cursor() as cur:
+        with pytest.raises((OperationalError, ProgrammingError)):
+            cur.execute(f"SELECT COUNT(*) FROM `{GUARD_OBJECT_NAME}`")
 
 
 def _cleanup_temp_db(name: str) -> None:
@@ -432,14 +525,152 @@ def test_duplicate_active_precondition_aborts_before_schema_mutation_in_mariadb(
         conn.commit()
 
         before_columns = _column_names(conn)
+        before_constraints = _constraint_names(conn)
+        before_indexes = _index_names(conn)
         with pytest.raises(Exception) as exc:
             _apply_migration(conn, BINDING_MIGRATION)
 
         assert DIAGNOSTIC_CODE in str(exc.value)
         assert _column_names(conn) == before_columns
-        assert "credential_source" not in before_columns
-        assert "permission_scope" not in before_columns
-        assert "active_permission_scope" not in before_columns
+        assert _constraint_names(conn) == before_constraints
+        assert _index_names(conn) == before_indexes
+        _assert_no_partial_binding_ddl(conn)
+
+        conn.close()
+        conn = get_connection(database=temp_db)
+        _assert_guard_table_not_accessible(conn)
+        _assert_no_partial_binding_ddl(conn)
+    finally:
+        conn.close()
+        _cleanup_temp_db(temp_db)
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_MARIADB_DDL_TEST") != "1",
+    reason="Set RUN_MARIADB_DDL_TEST=1 to validate the migration in a disposable schema.",
+)
+def test_permission_scope_partial_duplicate_precondition_aborts_before_further_ddl_in_mariadb() -> None:
+    from src.common.db import get_connection
+
+    temp_db = _temp_db_name("partial_duplicate")
+    _create_database(temp_db)
+    conn = get_connection(database=temp_db)
+    try:
+        _apply_credential_base_chain(conn)
+        _add_permission_scope_only_partial_schema(conn)
+        with conn.cursor() as cur:
+            _insert_account(cur, 1, "bitvavo_partial_duplicate")
+            _insert_credential(
+                cur,
+                credential_id=101,
+                account_id=1,
+                status="ACTIVE",
+                fingerprint="a" * 64,
+            )
+            _insert_credential(
+                cur,
+                credential_id=102,
+                account_id=1,
+                status="ACTIVE",
+                fingerprint="b" * 64,
+            )
+        conn.commit()
+
+        before_columns = _column_names(conn)
+        before_constraints = _constraint_names(conn)
+        before_indexes = _index_names(conn)
+        with pytest.raises(Exception) as exc:
+            _apply_migration(conn, BINDING_MIGRATION)
+
+        assert DIAGNOSTIC_CODE in str(exc.value)
+        assert _column_names(conn) == before_columns
+        assert _constraint_names(conn) == before_constraints
+        assert _index_names(conn) == before_indexes
+        _assert_no_partial_binding_ddl(
+            conn,
+            allowed_existing_columns={"permission_scope"},
+        )
+
+        conn.close()
+        conn = get_connection(database=temp_db)
+        _assert_guard_table_not_accessible(conn)
+        _assert_no_partial_binding_ddl(
+            conn,
+            allowed_existing_columns={"permission_scope"},
+        )
+    finally:
+        conn.close()
+        _cleanup_temp_db(temp_db)
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_MARIADB_DDL_TEST") != "1",
+    reason="Set RUN_MARIADB_DDL_TEST=1 to validate the migration in a disposable schema.",
+)
+def test_permission_scope_partial_nonconflicting_schema_completes_in_mariadb() -> None:
+    from src.common.db import get_connection
+
+    temp_db = _temp_db_name("partial_valid")
+    _create_database(temp_db)
+    conn = get_connection(database=temp_db)
+    try:
+        _apply_credential_base_chain(conn)
+        _add_permission_scope_only_partial_schema(conn)
+        with conn.cursor() as cur:
+            _insert_account(cur, 1, "bitvavo_partial_valid")
+            _insert_credential(
+                cur,
+                credential_id=101,
+                account_id=1,
+                status="ACTIVE",
+                fingerprint="a" * 64,
+            )
+            _insert_credential(
+                cur,
+                credential_id=102,
+                account_id=1,
+                status="ROTATED",
+                fingerprint="b" * 64,
+            )
+            _insert_credential(
+                cur,
+                credential_id=103,
+                account_id=1,
+                status="REVOKED",
+                fingerprint="c" * 64,
+                validation_state="UNVALIDATED",
+            )
+        conn.commit()
+
+        _apply_migration(conn, BINDING_MIGRATION)
+        _apply_migration(conn, BINDING_MIGRATION)
+
+        columns = _column_names(conn)
+        assert ADDED_BINDING_COLUMNS <= columns
+        assert ADDED_BINDING_CONSTRAINTS <= _constraint_names(conn)
+        assert ADDED_BINDING_INDEXES <= _index_names(conn)
+        assert not _persistent_guard_artifacts(conn)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    trading_account_credential_id,
+                    credential_status,
+                    permission_scope,
+                    active_permission_scope
+                FROM trading_account_credential
+                ORDER BY trading_account_credential_id
+                """
+            )
+            rows = cur.fetchall()
+
+        assert rows[0]["permission_scope"] == "READ_ONLY_PRIVATE"
+        assert rows[0]["active_permission_scope"] == "READ_ONLY_PRIVATE"
+        assert rows[1]["credential_status"] == "ROTATED"
+        assert rows[1]["active_permission_scope"] is None
+        assert rows[2]["credential_status"] == "REVOKED"
+        assert rows[2]["active_permission_scope"] is None
     finally:
         conn.close()
         _cleanup_temp_db(temp_db)

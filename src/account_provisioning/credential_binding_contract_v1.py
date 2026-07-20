@@ -336,7 +336,7 @@ def _required_field(
     if legacy_field_name is not None and legacy_field_name in row:
         return row[legacy_field_name]
     raise CredentialBindingValidationError(
-        "MISSING_REQUIRED_FIELD",
+        "MISSING_REQUIRED_BOOLEAN_FIELD",
         f"field_name={field_name}",
     )
 
@@ -357,10 +357,9 @@ def _bool_value(value: Any, *, field_name: str) -> bool:
             f"field_name={field_name}",
         )
     if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true"}:
+        if value in {"1", "true"}:
             return True
-        if normalized in {"0", "false"}:
+        if value in {"0", "false"}:
             return False
     raise CredentialBindingValidationError(
         "INVALID_BOOLEAN_VALUE",

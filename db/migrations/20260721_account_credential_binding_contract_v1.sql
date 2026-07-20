@@ -14,6 +14,7 @@ DROP TEMPORARY TABLE IF EXISTS tac_binding_duplicate_active_guard_v1;
 CREATE TEMPORARY TABLE tac_binding_duplicate_active_guard_v1 (
     trading_account_id BIGINT UNSIGNED NOT NULL,
     venue VARCHAR(32) NOT NULL,
+    permission_scope VARCHAR(32) NULL,
     active_credential_count BIGINT UNSIGNED NOT NULL,
     diagnostic_code VARCHAR(64) NOT NULL,
     CONSTRAINT ACCOUNT_CREDENTIAL_BINDING_DUPLICATE_ACTIVE_PRECONDITION_FAILED
@@ -23,29 +24,26 @@ CREATE TEMPORARY TABLE tac_binding_duplicate_active_guard_v1 (
         )
 ) ENGINE=MEMORY;
 
-INSERT INTO tac_binding_duplicate_active_guard_v1 (
-    trading_account_id,
-    venue,
-    active_credential_count,
-    diagnostic_code
-)
-SELECT
-    trading_account_id,
-    venue,
-    COUNT(*) AS active_credential_count,
-    'ACCOUNT_CREDENTIAL_BINDING_DUPLICATE_ACTIVE_PRECONDITION_FAILED'
-        AS diagnostic_code
-FROM trading_account_credential
-WHERE credential_status = 'ACTIVE'
-  AND NOT EXISTS (
-      SELECT 1
-      FROM information_schema.COLUMNS
-      WHERE TABLE_SCHEMA = DATABASE()
-        AND TABLE_NAME = 'trading_account_credential'
-        AND COLUMN_NAME = 'permission_scope'
-  )
-GROUP BY trading_account_id, venue
-HAVING COUNT(*) > 1;
+SET @tac_binding_permission_scope_exists_v1 := (
+    SELECT COUNT(*) > 0
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'trading_account_credential'
+      AND COLUMN_NAME = 'permission_scope'
+);
+
+SET @tac_binding_duplicate_active_sql_v1 := IF(
+    @tac_binding_permission_scope_exists_v1,
+    'INSERT INTO tac_binding_duplicate_active_guard_v1 (trading_account_id, venue, permission_scope, active_credential_count, diagnostic_code) SELECT trading_account_id, venue, permission_scope, COUNT(*) AS active_credential_count, ''ACCOUNT_CREDENTIAL_BINDING_DUPLICATE_ACTIVE_PRECONDITION_FAILED'' AS diagnostic_code FROM trading_account_credential WHERE credential_status = ''ACTIVE'' GROUP BY trading_account_id, venue, permission_scope HAVING COUNT(*) > 1',
+    'INSERT INTO tac_binding_duplicate_active_guard_v1 (trading_account_id, venue, permission_scope, active_credential_count, diagnostic_code) SELECT trading_account_id, venue, NULL AS permission_scope, COUNT(*) AS active_credential_count, ''ACCOUNT_CREDENTIAL_BINDING_DUPLICATE_ACTIVE_PRECONDITION_FAILED'' AS diagnostic_code FROM trading_account_credential WHERE credential_status = ''ACTIVE'' GROUP BY trading_account_id, venue HAVING COUNT(*) > 1'
+);
+
+PREPARE tac_binding_duplicate_active_stmt_v1
+FROM @tac_binding_duplicate_active_sql_v1;
+
+EXECUTE tac_binding_duplicate_active_stmt_v1;
+
+DEALLOCATE PREPARE tac_binding_duplicate_active_stmt_v1;
 
 DROP TEMPORARY TABLE IF EXISTS tac_binding_duplicate_active_guard_v1;
 

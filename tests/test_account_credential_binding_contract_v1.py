@@ -7,6 +7,7 @@ import pytest
 from src.account_provisioning.credential_binding_contract_v1 import (
     PERMISSION_SCOPE_READ_ONLY_PRIVATE,
     CredentialBindingValidationError,
+    _bool_value,
     validate_credential_binding,
 )
 
@@ -57,6 +58,68 @@ def _validate_without_validation_requirement(rows: list[dict[str, object]]):
 def _assert_code(exc: pytest.ExceptionInfo[CredentialBindingValidationError], code: str) -> None:
     assert exc.value.code == code
     assert str(exc.value).startswith(code + ":")
+
+
+BOOLEAN_FIELD_NAMES = (
+    "trading_account_enabled",
+    "live_trading_enabled",
+    "allowed_private_read",
+    "allowed_order_write",
+    "allowed_withdrawal",
+)
+
+
+@pytest.mark.parametrize("field_name", BOOLEAN_FIELD_NAMES)
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    (
+        (True, True),
+        (False, False),
+        (0, False),
+        (1, True),
+        ("0", False),
+        ("1", True),
+        ("true", True),
+        ("false", False),
+    ),
+)
+def test_exact_boolean_parser_accepts_only_canonical_values(
+    field_name: str,
+    value: object,
+    expected: bool,
+) -> None:
+    assert _bool_value(value, field_name=field_name) is expected
+
+
+@pytest.mark.parametrize("field_name", BOOLEAN_FIELD_NAMES)
+@pytest.mark.parametrize(
+    "value",
+    (
+        " TRUE ",
+        "true ",
+        " true",
+        "TRUE",
+        "False",
+        "yes",
+        "no",
+        "",
+        "2",
+        2,
+        -1,
+        None,
+        object(),
+    ),
+)
+def test_exact_boolean_parser_rejects_noncanonical_values(
+    field_name: str,
+    value: object,
+) -> None:
+    with pytest.raises(CredentialBindingValidationError) as exc:
+        _bool_value(value, field_name=field_name)
+
+    _assert_code(exc, "INVALID_BOOLEAN_VALUE")
+    assert f"field_name={field_name}" in str(exc.value)
+    assert repr(value) not in str(exc.value)
 
 
 def test_exactly_one_active_binding_resolves_non_secret_profile() -> None:
@@ -176,7 +239,7 @@ def test_missing_required_boolean_rejected() -> None:
     with pytest.raises(CredentialBindingValidationError) as exc:
         _validate([row])
 
-    _assert_code(exc, "MISSING_REQUIRED_FIELD")
+    _assert_code(exc, "MISSING_REQUIRED_BOOLEAN_FIELD")
     assert "field_name=allowed_private_read" in str(exc.value)
 
 
