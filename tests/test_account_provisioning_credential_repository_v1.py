@@ -121,6 +121,32 @@ def test_insert_returns_positive_id() -> None:
     assert row_id > 0
 
 
+def test_validated_insert_records_validation_timestamp() -> None:
+    repo = _repo()
+    kv, kb = _master_key()
+    cred = _cred()
+    envelope = encrypt_credential(cred, _ACCOUNT_ID, kv, kb)
+    row_id = repo.insert_active_credential(
+        trading_account_id=_ACCOUNT_ID,
+        venue=_VENUE,
+        credential_kind=CREDENTIAL_KIND_API_KEY_SECRET,
+        encrypted_envelope=envelope.to_json(),
+        encryption_algorithm=envelope.alg,
+        key_version=envelope.kv,
+        credential_fingerprint=compute_fingerprint(_VENUE, cred.api_key, kb),
+        now_utc=_NOW,
+        validation_state="VALID_PRIVATE_READ",
+    )
+
+    row = repo._fetchone(
+        "SELECT validated_ts_utc FROM trading_account_credential "
+        "WHERE trading_account_credential_id = %s",
+        (row_id,),
+    )
+    assert row is not None
+    assert row["validated_ts_utc"] == "2026-06-09 12:00:00"
+
+
 def test_duplicate_active_credential_rejected() -> None:
     repo = _repo()
     _insert(repo)

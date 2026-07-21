@@ -10,6 +10,7 @@ fi
 
 export SYNTH_LIVE_EXECUTION_PERMISSION="${SYNTH_LIVE_EXECUTION_PERMISSION:-NOT_GRANTED}"
 export SYNTH_BROKER_WRITE_PERMISSION="${SYNTH_BROKER_WRITE_PERMISSION:-NOT_GRANTED}"
+export SYNTH_BROKER_PRIVATE_READ_PERMISSION="${SYNTH_BROKER_PRIVATE_READ_PERMISSION:-I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA}"
 export SYNTH_PAPER_ADVICE_DASHBOARD_HTML="${SYNTH_PAPER_ADVICE_DASHBOARD_HTML:-/var/www/html/synth/paper-advice.html}"
 export SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML="${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML:-/var/www/html/synth/entry-candidates.html}"
 export SYNTH_COCKPIT_INDEX_HTML="${SYNTH_COCKPIT_INDEX_HTML:-/var/www/html/synth/index.html}"
@@ -17,8 +18,19 @@ export SYNTH_MVP_WRITE_PAPER_ADVICE="${SYNTH_MVP_WRITE_PAPER_ADVICE:-0}"
 export SYNTH_MVP_RENDER_PAPER_DASHBOARD="${SYNTH_MVP_RENDER_PAPER_DASHBOARD:-0}"
 export SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE="${SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE:-EUR}"
 
+if [ -z "${SYNTH_MVP_ACCOUNT_CODE:-}" ]; then
+  echo "[MVP][FAIL] SYNTH_MVP_ACCOUNT_CODE must be set to an exact trading_account.account_code" >&2
+  exit 1
+fi
+
+if [ -z "${SYNTH_ACCOUNT_CREDENTIAL_MASTER_KEY:-}" ]; then
+  echo "[MVP][FAIL] SYNTH_ACCOUNT_CREDENTIAL_MASTER_KEY must be loaded from a host-local EnvironmentFile" >&2
+  exit 1
+fi
+
 echo "[MVP][START] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "[MVP][SAFETY] live_execution=${SYNTH_LIVE_EXECUTION_PERMISSION} broker_write=${SYNTH_BROKER_WRITE_PERMISSION}"
+echo "[MVP][ACCOUNT] account_code=${SYNTH_MVP_ACCOUNT_CODE} venue=bitvavo"
 
 run_step() {
   echo
@@ -32,19 +44,19 @@ run_step() {
 }
 
 run_step python -m src.operations.run_broker_balance_snapshot_writer_v1 \
-  --account-code bitvavo_synth_read \
+  --account-code "${SYNTH_MVP_ACCOUNT_CODE}" \
   --venue bitvavo \
   --write-db \
   --output none
 
 run_step python -m src.operations.run_broker_account_position_snapshot_writer_v1 \
-  --account-code bitvavo_synth_read \
+  --account-code "${SYNTH_MVP_ACCOUNT_CODE}" \
   --venue bitvavo \
   --write-db \
   --output none
 
 run_step python -m src.operations.run_decision_gate_position_source_audit_v1 \
-  --account-code bitvavo_synth_read \
+  --account-code "${SYNTH_MVP_ACCOUNT_CODE}" \
   --venue bitvavo \
   --output table
 

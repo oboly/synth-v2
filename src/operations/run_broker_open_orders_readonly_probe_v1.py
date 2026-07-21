@@ -7,11 +7,17 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from src.execution.bitvavo_client import BitvavoClient
+from src.account.private_read_credential_resolver_v1 import (
+    PrivateReadCredentialResolutionError,
+    resolve_private_read_bitvavo_client_from_env,
+)
+from src.account_provisioning.credential_crypto_v1 import MASTER_KEY_ENV_VAR
+from src.common.db import get_db_connection
 
 
 REPORT_NAME = "broker_open_orders_readonly_probe_v1"
-REPORT_VERSION = "0.1"
+REPORT_VERSION = "0.2"
+DEFAULT_VENUE = "bitvavo"
 
 
 def env_state(name: str, *, granted_value: str | None = None) -> str:
@@ -52,8 +58,7 @@ def mask_text(value: Any, *, prefix: int = 8, suffix: int = 6) -> str:
 
 def print_env_readiness() -> None:
     print("--- broker env readiness, values redacted ---")
-    print(f"BITVAVO_API_KEY={env_state('BITVAVO_API_KEY')}")
-    print(f"BITVAVO_API_SECRET={env_state('BITVAVO_API_SECRET')}")
+    print(f"{MASTER_KEY_ENV_VAR}={env_state(MASTER_KEY_ENV_VAR)}")
     print(f"BITVAVO_REST_URL={env_state('BITVAVO_REST_URL')}")
     print(f"BITVAVO_BASE_URL={env_state('BITVAVO_BASE_URL')}")
     print(
@@ -185,9 +190,29 @@ def run(args: argparse.Namespace) -> int:
     print()
     print("--- private open orders fetch ---")
 
+    conn = get_db_connection()
     try:
-        client = BitvavoClient(timeout_seconds=args.timeout_seconds)
+        resolved = resolve_private_read_bitvavo_client_from_env(
+            conn,
+            trading_account_id=args.trading_account_id,
+            account_code=args.account_code,
+            profile_code=args.account_profile,
+            venue=args.venue,
+            timeout_seconds=args.timeout_seconds,
+        )
+        print(f"trading_account_id={resolved.identity.trading_account_id}")
+        print(f"account_code={resolved.identity.account_code}")
+        print(f"venue={resolved.identity.venue}")
+        print(f"credential_profile_id={resolved.profile.trading_account_credential_id}")
+        print(f"credential_fingerprint={resolved.profile.credential_fingerprint}")
+        print(f"permission_scope={resolved.profile.permission_scope}")
+        print(f"validation_state={resolved.profile.validation_state}")
+        client = resolved.client
         orders = client.get_open_orders(market=args.market, base=args.base)
+    except PrivateReadCredentialResolutionError as exc:
+        print(f"[BLOCKED] credential_resolution={exc}")
+        print("[DONE] open_orders_fetch=False reason=CREDENTIAL_RESOLUTION_FAILED")
+        return 1
     except Exception as exc:
         text = str(exc)
         if "private read blocked fail-closed" in text:
@@ -198,6 +223,8 @@ def run(args: argparse.Namespace) -> int:
         print_http_error(exc)
         print("[DONE] open_orders_fetch=False reason=BITVAVO_OR_NETWORK_ERROR")
         return 0
+    finally:
+        conn.close()
 
     summarize_open_orders(orders)
 
@@ -218,6 +245,11 @@ def run(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    identity = parser.add_mutually_exclusive_group(required=False)
+    identity.add_argument("--trading-account-id", type=int, default=None)
+    identity.add_argument("--account-code", default=None)
+    identity.add_argument("--account-profile", default=None)
+    parser.add_argument("--venue", default=DEFAULT_VENUE)
     parser.add_argument("--fetch-open-orders", action="store_true")
     parser.add_argument("--market", default=None)
     parser.add_argument("--base", default=None)

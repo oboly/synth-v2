@@ -73,7 +73,7 @@ class RealBitvavoCredentialValidator:
                 safe_error_code="VALIDATION_UNAVAILABLE",
             )
 
-        client = BitvavoClient(
+        client = BitvavoClient.for_private_read(
             api_key=credential.api_key,
             api_secret=credential.api_secret,
         )

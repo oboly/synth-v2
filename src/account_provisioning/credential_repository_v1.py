@@ -18,6 +18,12 @@ def _utc_text(value: datetime) -> str:
     return normalized.replace(tzinfo=None).isoformat(sep=" ", timespec="seconds")
 
 
+def _validated_ts_text(validation_state: str, now_utc: datetime) -> str | None:
+    if validation_state in {"VALID_READ_ONLY", "VALID_PRIVATE_READ"}:
+        return _utc_text(now_utc)
+    return None
+
+
 def _parse_opt_datetime(value: object) -> datetime | None:
     if value is None:
         return None
@@ -101,8 +107,8 @@ class CredentialRepository:
                     trading_account_id, venue, credential_kind,
                     encrypted_envelope, encryption_algorithm, key_version,
                     credential_fingerprint, credential_status, validation_state,
-                    created_ts_utc
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', %s, %s)
+                    created_ts_utc, validated_ts_utc
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', %s, %s, %s)
                 """,
                 (
                     trading_account_id,
@@ -114,6 +120,7 @@ class CredentialRepository:
                     credential_fingerprint,
                     validation_state,
                     _utc_text(now_utc),
+                    _validated_ts_text(validation_state, now_utc),
                 ),
             )
             return int(cur.lastrowid)
@@ -274,6 +281,12 @@ class SqliteCredentialRepository:
         validated_ts_utc TEXT NULL,
         rotated_ts_utc TEXT NULL,
         revoked_ts_utc TEXT NULL,
+        credential_source TEXT NOT NULL DEFAULT 'db_encrypted',
+        permission_scope TEXT NOT NULL DEFAULT 'READ_ONLY_PRIVATE',
+        allowed_private_read INTEGER NOT NULL DEFAULT 1,
+        allowed_order_write INTEGER NOT NULL DEFAULT 0,
+        allowed_withdrawal INTEGER NOT NULL DEFAULT 0,
+        last_validation_error_code TEXT NULL,
         CHECK (credential_status IN ('ACTIVE', 'REVOKED', 'ROTATED', 'INVALID')),
         CHECK (validation_state IN ('UNVALIDATED', 'VALID_READ_ONLY', 'VALID_PRIVATE_READ', 'INVALID_CREDENTIALS'))
     );
@@ -325,8 +338,8 @@ class SqliteCredentialRepository:
                 trading_account_id, venue, credential_kind,
                 encrypted_envelope, encryption_algorithm, key_version,
                 credential_fingerprint, credential_status, validation_state,
-                created_ts_utc
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', %s, %s)
+                created_ts_utc, validated_ts_utc
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'ACTIVE', %s, %s, %s)
             """,
             (
                 trading_account_id,
@@ -338,6 +351,7 @@ class SqliteCredentialRepository:
                 credential_fingerprint,
                 validation_state,
                 _utc_text(now_utc),
+                _validated_ts_text(validation_state, now_utc),
             ),
         )
 

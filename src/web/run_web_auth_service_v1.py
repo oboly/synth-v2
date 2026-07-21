@@ -155,7 +155,7 @@ def _build_connect_bitvavo(args: argparse.Namespace) -> Callable[..., Any] | Non
         conn_factory=get_db_connection,
         master_key_bytes=key_bytes,
         cred_repo_factory=CredentialRepository,
-        bitvavo_client_factory=lambda api_key, api_secret: BitvavoClient(
+        bitvavo_client_factory=lambda api_key, api_secret: BitvavoClient.for_private_read(
             api_key=api_key, api_secret=api_secret
         ),
         output_root=Path(args.output_root),

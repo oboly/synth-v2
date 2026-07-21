@@ -489,19 +489,17 @@ def test_wallet_refresh_source_no_broker_write_permission() -> None:
 
 
 def test_wallet_refresh_uses_encrypted_credential_by_default() -> None:
-    """Runner source must import the encrypted credential loader, not only dotenv."""
+    """Runner source must use the canonical private-read resolver."""
     src = Path("src/account/run_account_wallet_refresh_v1.py").read_text()
-    assert "load_account_credential" in src
-    assert "load_master_key_from_env" in src
-    assert "CredentialRepository" in src
+    assert "resolve_private_read_bitvavo_client_from_env" in src
+    assert "profile_code=args.account_profile" in src
 
 
 def test_wallet_refresh_profile_env_is_not_automatic_fallback() -> None:
-    """db credential source must never silently fall back to profile-env."""
+    """Legacy profile-env source must fail closed, not load private credentials."""
     src = Path("src/account/run_account_wallet_refresh_v1.py").read_text()
-    # The profile-env path must be gated behind an explicit check
-    assert "credential_source" in src
-    assert "profile-env" in src
+    assert "LEGACY_PROFILE_ENV_DEPRECATED" in src
+    assert "load_profile_credentials" not in src
 
 
 # ---------------------------------------------------------------------------
@@ -538,9 +536,9 @@ def test_shell_script_does_not_reference_account_env_dir_in_default_path() -> No
 
 def test_shell_script_uses_db_credential_source() -> None:
     script = Path("scripts/odroid/run_account_wallet_refresh_once.sh").read_text()
-    # Script reads SYNTH_WALLET_CREDENTIAL_SOURCE env var, defaulting to "db"
-    assert 'SYNTH_WALLET_CREDENTIAL_SOURCE:-db' in script
-    assert '--credential-source "${CREDENTIAL_SOURCE}"' in script
+    assert "SYNTH_ACCOUNT_CREDENTIAL_MASTER_KEY" in script
+    assert "SYNTH_WALLET_CREDENTIAL_SOURCE" not in script
+    assert "--credential-source" not in script
 
 
 def test_shell_script_has_profile_scoped_lock() -> None:

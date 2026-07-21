@@ -4,7 +4,6 @@ import hashlib
 import hmac
 import json
 import os
-from pathlib import Path
 import time
 from dataclasses import dataclass
 from decimal import Decimal
@@ -13,11 +12,7 @@ from urllib.parse import urlparse
 from urllib.parse import urlencode
 
 import requests
-from dotenv import load_dotenv
 
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-load_dotenv(REPO_ROOT / ".env", override=True)
 
 BITVAVO_REST_URL = (
     os.getenv("BITVAVO_REST_URL")
@@ -56,16 +51,61 @@ class BitvavoClient:
         api_secret: str | None = None,
         rest_url: str | None = None,
         timeout_seconds: int = 15,
+        auth_context: str = "public",
     ) -> None:
-        self.api_key = api_key or os.getenv("BITVAVO_API_KEY", "")
-        self.api_secret = api_secret or os.getenv("BITVAVO_API_SECRET", "")
+        if bool(api_key) != bool(api_secret):
+            raise ValueError("BITVAVO_EXPLICIT_CREDENTIAL_PAIR_REQUIRED")
+        self.api_key = api_key or ""
+        self.api_secret = api_secret or ""
         self.rest_url = rest_url or BITVAVO_REST_URL
         self.timeout_seconds = timeout_seconds
+        self.auth_context = auth_context
+
+    @classmethod
+    def for_public(
+        cls,
+        *,
+        rest_url: str | None = None,
+        timeout_seconds: int = 15,
+    ) -> "BitvavoClient":
+        return cls(
+            rest_url=rest_url,
+            timeout_seconds=timeout_seconds,
+            auth_context="public",
+        )
+
+    @classmethod
+    def for_private_read(
+        cls,
+        *,
+        api_key: str,
+        api_secret: str,
+        rest_url: str | None = None,
+        timeout_seconds: int = 15,
+    ) -> "BitvavoClient":
+        if not (api_key or "").strip() or not (api_secret or "").strip():
+            raise ValueError("BITVAVO_PRIVATE_READ_EXPLICIT_CREDENTIALS_REQUIRED")
+        return cls(
+            api_key=api_key,
+            api_secret=api_secret,
+            rest_url=rest_url,
+            timeout_seconds=timeout_seconds,
+            auth_context="private_read",
+        )
 
     def _has_auth(self) -> bool:
         return bool(self.api_key and self.api_secret)
 
+    def _require_private_auth(self, action: str) -> None:
+        if not self._has_auth():
+            raise RuntimeError(
+                "Bitvavo private endpoint blocked fail-closed. "
+                f"action={action} auth_context={self.auth_context!r} "
+                "requires explicit private credentials."
+            )
+
     def _require_private_read_permission(self, action: str) -> None:
+        self._require_private_auth(action)
         permission_value = os.getenv(BROKER_PRIVATE_READ_PERMISSION_ENV, "")
         if permission_value != BROKER_PRIVATE_READ_PERMISSION_GRANTED_VALUE:
             raise PermissionError(
@@ -75,6 +115,12 @@ class BitvavoClient:
             )
 
     def _require_private_write_permission(self, action: str) -> None:
+        self._require_private_auth(action)
+        if self.auth_context == "private_read":
+            raise PermissionError(
+                "Bitvavo broker write blocked fail-closed. "
+                f"action={action} auth_context='private_read' cannot write."
+            )
         permission_value = os.getenv(BROKER_WRITE_PERMISSION_ENV, "")
         if permission_value != BROKER_WRITE_PERMISSION_GRANTED_VALUE:
             raise PermissionError(
