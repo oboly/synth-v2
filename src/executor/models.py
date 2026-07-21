@@ -9,12 +9,18 @@ from decimal import Decimal
 class ExecutionPlanRow:
     execution_plan_id: int
     account_id: int
+    trading_account_id: int | None
     asset_id: int
+    asset_symbol: str
     sleeve_code: str
     venue: str
+    market: str | None
     side: str
     desired_action: str
-    execution_mode: str
+    execution_intent: str | None
+    action_type: str | None
+    requested_side: str | None
+    execution_mode: str | None
     plan_ts_utc: datetime
     valid_until_ts_utc: datetime | None
     target_fraction: Decimal

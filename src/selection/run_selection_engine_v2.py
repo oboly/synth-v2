@@ -8,7 +8,6 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from src.common.db import get_connection
 from src.selection.selection_engine_v2 import (
     SelectionCandidate,
     SelectionRow,
@@ -437,6 +436,8 @@ def write_selection_state_rows(
 
 
 def main() -> int:
+    from src.common.db import get_connection
+
     args = parse_args()
 
     if args.dry_run and args.write_db:

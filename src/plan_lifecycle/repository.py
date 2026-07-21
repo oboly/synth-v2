@@ -1,16 +1,21 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
-from src.common.db import get_connection
 from src.plan_lifecycle.models import LifecyclePlanRow, LifecycleReservationRow
 
 
 EXPIRABLE_PLAN_STATES = {"IDLE", "PLANNED"}
 RELEASABLE_PLAN_STATES = {"CANCELLED", "ABORTED", "EXPIRED"}
 INVALIDATABLE_PLAN_STATES = {"IDLE", "PLANNED"}
+
+
+def _legacy_get_connection(*, database: str | None = None):
+    from src.common.db import get_connection
+
+    return get_connection(database=database)
 
 
 def _to_decimal(value: Any, default: str = "0") -> Decimal:
@@ -23,6 +28,12 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
 
 @dataclass
 class PlanLifecycleRepository:
+    connection_factory: Callable[..., Any] = field(
+        default=_legacy_get_connection,
+        repr=False,
+        compare=False,
+    )
+
     def fetch_invalidatable_plans(
         self,
         *,
@@ -76,7 +87,7 @@ class PlanLifecycleRepository:
         LIMIT %s
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -117,7 +128,7 @@ class PlanLifecycleRepository:
         plan: LifecyclePlanRow,
         reason: str,
     ) -> None:
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -172,7 +183,7 @@ class PlanLifecycleRepository:
         self,
         plan: LifecyclePlanRow,
     ) -> Decimal:
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(

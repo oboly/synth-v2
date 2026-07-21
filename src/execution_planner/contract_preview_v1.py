@@ -405,7 +405,7 @@ def build_execution_plan_preview(
         venue=intent.venue,
         side=side,
         plan_type=plan_type,
-        execution_mode="paper",
+        execution_mode="PAPER",
         plan_state="PREVIEW_ONLY",
         source_decision_state=intent.decision_state,
         source_decision_reason=intent.decision_reason,

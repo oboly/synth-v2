@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from src.context.execution_context_policy import resolve_execution_context
@@ -22,10 +22,26 @@ def build_execution_plan(
     if decision.decision_state not in PLANNABLE_DECISION_STATES and decision.decision_state != "WATCHLIST_PREPLAN_ALLOWED":
         return None
 
+    if decision.execution_intent is None or decision.execution_intent.strip() == "":
+        raise ValueError("EXECUTION_INTENT_REQUIRED")
+    if decision.execution_intent != decision.execution_intent.strip():
+        raise ValueError("EXECUTION_INTENT_NOT_CANONICAL")
     if decision.execution_intent not in PLANNABLE_EXECUTION_INTENTS:
         return None
 
     now_utc = datetime.now(UTC).replace(tzinfo=None)
+    execution_mode = str(config.execution_mode)
+    if execution_mode not in {"PAPER", "LIVE"}:
+        raise ValueError("EXECUTION_MODE_NOT_CANONICAL")
+    if config.trading_account_id is None or config.trading_account_id <= 0:
+        raise ValueError("TRADING_ACCOUNT_ID_REQUIRED")
+    if config.action_type not in {"PLACE_ORDER", "CANCEL_ORDER", "MONITOR_ORDER"}:
+        raise ValueError("ACTION_TYPE_NOT_CANONICAL")
+    if config.requested_side not in {"BUY", "SELL"}:
+        raise ValueError("REQUESTED_SIDE_NOT_CANONICAL")
+    if execution_mode == "LIVE":
+        if decision.execution_intent != "PLACE_PASSIVE_LIMIT":
+            raise ValueError("LIVE_PLAN_INTENT_NOT_SUPPORTED")
 
     regime = decision.regime_label_4h
     fib = None
@@ -85,9 +101,10 @@ def build_execution_plan(
             asset_id=decision.asset_id,
             sleeve_code=decision.sleeve_code,
             venue=decision.venue,
-            side="BUY",
+            side=config.requested_side,
             desired_action="PREPARE_PLAN",
-            execution_mode=config.execution_mode,
+            execution_intent=decision.execution_intent,
+            execution_mode=execution_mode,
             plan_ts_utc=now_utc,
             valid_until_ts_utc=None,
             target_fraction=target_fraction,
@@ -110,20 +127,30 @@ def build_execution_plan(
                 f"execution_intent={decision.execution_intent}; "
                 f"decision_reason={decision.decision_reason}"
             ),
+            market=f"{decision.symbol}-EUR",
+            trading_account_id=config.trading_account_id,
+            action_type=config.action_type,
+            requested_side=config.requested_side,
         )
 
     # === EXECUTION PATH ===
     if decision.execution_intent == "PLACE_PASSIVE_LIMIT":
+        valid_until_ts_utc = None
+        if execution_mode == "LIVE":
+            if config.live_plan_ttl_seconds <= 0:
+                raise ValueError("live_plan_ttl_seconds must be positive")
+            valid_until_ts_utc = now_utc + timedelta(seconds=config.live_plan_ttl_seconds)
         return PlannedExecution(
             account_id=decision.account_id,
             asset_id=decision.asset_id,
             sleeve_code=decision.sleeve_code,
             venue=decision.venue,
-            side="BUY",
+            side=config.requested_side,
             desired_action="SPREAD_CAPTURE_PASSIVE",
-            execution_mode=config.execution_mode,
+            execution_intent=decision.execution_intent,
+            execution_mode=execution_mode,
             plan_ts_utc=now_utc,
-            valid_until_ts_utc=None,
+            valid_until_ts_utc=valid_until_ts_utc,
             target_fraction=config.execute_target_fraction,
             max_notional_eur=config.max_notional_eur,
             reference_price_eur=reference_price_eur,
@@ -135,7 +162,7 @@ def build_execution_plan(
             min_spread_bps_for_capture=config.min_spread_bps_for_capture,
             escalation_to_urgent_limit=config.escalation_to_urgent_limit,
             abort_if_signal_invalidates=config.abort_if_signal_invalidates,
-            plan_state="PLANNED",
+            plan_state="IDLE" if execution_mode == "LIVE" else "PLANNED",
             notes=(
                 f"profile={profile} "
                 f"regime={regime} "
@@ -144,6 +171,10 @@ def build_execution_plan(
                 f"execution_intent={decision.execution_intent}; "
                 f"decision_reason={decision.decision_reason}"
             ),
+            market=f"{decision.symbol}-EUR",
+            trading_account_id=config.trading_account_id,
+            action_type=config.action_type,
+            requested_side=config.requested_side,
         )
 
     return None
@@ -154,6 +185,15 @@ def build_exit_plan_from_position(
     config: ExecutionPlannerConfig,
     reference_price_eur=None,
 ) -> PlannedExecution:
+    if config.execution_mode != "PAPER":
+        raise ValueError("EXIT_PLAN_MUST_BE_PAPER")
+    if config.trading_account_id is None or config.trading_account_id <= 0:
+        raise ValueError("TRADING_ACCOUNT_ID_REQUIRED")
+    if config.action_type != "PLACE_ORDER":
+        raise ValueError("ACTION_TYPE_NOT_CANONICAL")
+    if config.requested_side != "SELL":
+        raise ValueError("REQUESTED_SIDE_NOT_CANONICAL")
+
     now_utc = datetime.now(UTC).replace(tzinfo=None)
 
     return PlannedExecution(
@@ -163,7 +203,8 @@ def build_exit_plan_from_position(
         venue=position.venue,
         side="SELL",
         desired_action="CLOSE_POSITION_MARKET_PAPER",
-        execution_mode=config.execution_mode,
+        execution_intent="CLOSE_POSITION_MARKET_PAPER",
+        execution_mode="PAPER",
         plan_ts_utc=now_utc,
         valid_until_ts_utc=None,
         target_fraction=position.qty,
@@ -185,4 +226,8 @@ def build_exit_plan_from_position(
             f"avg_entry_price={position.avg_entry_price}; "
             f"market_value_eur={position.market_value_eur}"
         ),
+        market=position.market,
+        trading_account_id=config.trading_account_id,
+        action_type=config.action_type,
+        requested_side="SELL",
     )

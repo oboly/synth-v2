@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
-from src.common.db import get_connection
+
+def _legacy_get_connection(*, database: str | None = None):
+    from src.common.db import get_connection
+
+    return get_connection(database=database)
 
 
 @dataclass(frozen=True)
@@ -22,6 +26,7 @@ def fetch_last_close_fill_ts(
     account_id: int,
     sleeve_code: str,
     asset_id: int,
+    connection_factory: Callable[..., Any] = _legacy_get_connection,
 ) -> datetime | None:
     sql = """
     SELECT MAX(ee.created_ts_utc) AS last_close_fill_ts_utc
@@ -33,7 +38,7 @@ def fetch_last_close_fill_ts(
       AND ee.asset_id = %s
       AND ee.event_type = 'PAPER_FILL_CLOSE'
     """
-    conn = get_connection()
+    conn = connection_factory()
     try:
         with conn.cursor() as cur:
             cur.execute(sql, [account_id, sleeve_code, asset_id])
@@ -50,6 +55,7 @@ def fetch_closed_1h_candles_since(
     venue: str,
     asset_id: int,
     since_ts_utc: datetime,
+    connection_factory: Callable[..., Any] = _legacy_get_connection,
 ) -> int:
     sql = """
     SELECT COUNT(*) AS n
@@ -59,7 +65,7 @@ def fetch_closed_1h_candles_since(
       AND interval_code = '1h'
       AND close_ts_utc > %s
     """
-    conn = get_connection()
+    conn = connection_factory()
     try:
         with conn.cursor() as cur:
             cur.execute(sql, [venue, asset_id, since_ts_utc])
@@ -77,11 +83,13 @@ def evaluate_entry_cooldown(
     asset_id: int,
     symbol: str,
     cooldown_candles_after_close: int,
+    connection_factory: Callable[..., Any] = _legacy_get_connection,
 ) -> EntryCooldownResult:
     last_close_fill_ts_utc = fetch_last_close_fill_ts(
         account_id=account_id,
         sleeve_code=sleeve_code,
         asset_id=asset_id,
+        connection_factory=connection_factory,
     )
 
     if last_close_fill_ts_utc is None:
@@ -98,6 +106,7 @@ def evaluate_entry_cooldown(
         venue=venue,
         asset_id=asset_id,
         since_ts_utc=last_close_fill_ts_utc,
+        connection_factory=connection_factory,
     )
 
     if candles_since_close < cooldown_candles_after_close:

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
-from src.common.db import db_cursor
 from src.decision_gate.models import (
     ACTIVE_PLAN_STATES,
     DuplicateState,
@@ -13,6 +12,12 @@ from src.decision_gate.models import (
     SelectionInputRow,
     SleeveState,
 )
+
+
+def _legacy_db_cursor(*, commit: bool = False, database: str | None = None):
+    from src.common.db import db_cursor
+
+    return db_cursor(commit=commit, database=database)
 
 
 TRADE_SETUP_FILTER_TABLE = "synth.trade_setup_filter_observation"
@@ -104,6 +109,12 @@ def _extract_allowed_sleeves(source_ref_json: Any, summary_text: str | None) -> 
 
 @dataclass
 class DecisionGateRepository:
+    cursor_factory: Callable[..., Any] = field(
+        default=_legacy_db_cursor,
+        repr=False,
+        compare=False,
+    )
+
     def fetch_selection_rows(
         self,
         venue: str,
@@ -175,7 +186,7 @@ class DecisionGateRepository:
             sql += "\nLIMIT %(limit)s"
             params["limit"] = int(limit)
 
-        with db_cursor() as db_obj:
+        with self.cursor_factory() as db_obj:
             cursor = _unwrap_cursor(db_obj)
             cursor.execute(sql, params)
             rows = cursor.fetchall()
@@ -224,7 +235,7 @@ class DecisionGateRepository:
         LIMIT 1
         """
 
-        with db_cursor() as db_obj:
+        with self.cursor_factory() as db_obj:
             cursor = _unwrap_cursor(db_obj)
             cursor.execute(sql, {"account_id": account_id, "sleeve_code": sleeve_code})
             row = cursor.fetchone()
@@ -250,7 +261,7 @@ class DecisionGateRepository:
         asset_id: int,
         venue: str,
     ) -> DuplicateState:
-        with db_cursor() as db_obj:
+        with self.cursor_factory() as db_obj:
             cursor = _unwrap_cursor(db_obj)
 
             cursor.execute(
@@ -313,7 +324,7 @@ class DecisionGateRepository:
         ) AS v
         """
 
-        with db_cursor() as db_obj:
+        with self.cursor_factory() as db_obj:
             cursor = _unwrap_cursor(db_obj)
             cursor.execute(
                 sql,

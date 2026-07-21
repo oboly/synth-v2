@@ -92,7 +92,10 @@ def place_limit_buy_ladder_orders(
         raise PermissionError(
             "Limit buy ladder placement requires confirm_real_orders=True."
         )
-    return [client.place_order(order) for order in orders]
+    raise PermissionError(
+        "Direct limit buy ladder broker placement is disabled. "
+        "Live execution prerequisites are unavailable."
+    )
 
 
 def preview_limit_buy_ladder_orders(

@@ -49,7 +49,14 @@ from decimal import Decimal
 from time import perf_counter
 from typing import Any
 
-from src.common.db import get_connection
+from src.common.db_env_v1 import load_database_environment
+
+
+load_database_environment()
+
+
+from src.common.db_core_v1 import db_cursor, get_connection  # noqa: E402
+from src.config_registry.repository import ConfigRegistryRepository
 from src.config_registry.loader import load_config_set
 from src.decision_gate.decision_gate_v1 import evaluate_selection_for_account
 from src.decision_gate.models import DecisionGateConfig
@@ -82,6 +89,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--account-id", type=int, required=True)
+    parser.add_argument("--trading-account-id", type=int, required=True)
     parser.add_argument("--sleeve-code", required=True)
     parser.add_argument("--asset-id", type=int, default=None)
     parser.add_argument("--limit", type=int, default=40)
@@ -222,14 +230,15 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
     loaded_config = load_config_set(
         scope=args.config_scope,
         config_name=args.config_name,
+        repository=ConfigRegistryRepository(connection_factory=get_connection),
     )
     cfg = loaded_config.config_by_component
     stage_timings_ms["config_load"] = _ms_since(stage_start)
 
-    gate_repo = DecisionGateRepository()
-    planner_repo = ExecutionPlannerRepository()
-    executor_repo = ExecutorRepository()
-    lifecycle_repo = PlanLifecycleRepository()
+    gate_repo = DecisionGateRepository(cursor_factory=db_cursor)
+    planner_repo = ExecutionPlannerRepository(connection_factory=get_connection)
+    executor_repo = ExecutorRepository(connection_factory=get_connection)
+    lifecycle_repo = PlanLifecycleRepository(connection_factory=get_connection)
 
     cycle_stats = {
         "selection_written": 0,
@@ -276,12 +285,14 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
     stage_start = perf_counter()
     exit_results = run_exit_policy_v1(
         account_id=args.account_id,
+        trading_account_id=args.trading_account_id,
         sleeve_code=args.sleeve_code,
         venue=args.venue,
         config=ExitPolicyConfig(
             take_profit_pct=_require_decimal(cfg, "exit_policy", "take_profit_pct"),
             stop_loss_pct=_require_decimal(cfg, "exit_policy", "stop_loss_pct"),
         ),
+        connection_factory=get_connection,
     )
     cycle_stats["exit_plans_created"] = sum(1 for r in exit_results if r.exit_plan_created)
     stage_timings_ms["exit_policy"] = _ms_since(stage_start)
@@ -291,7 +302,10 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
         min_available_equity_eur=_require_decimal(cfg, "planner", "max_notional_eur")
     )
     planner_config = ExecutionPlannerConfig(
-        execution_mode="paper",
+        execution_mode="PAPER",
+        trading_account_id=args.trading_account_id,
+        action_type="PLACE_ORDER",
+        requested_side="BUY",
         prepare_target_fraction=_require_decimal(cfg, "planner", "prepare_target_fraction"),
         execute_target_fraction=_require_decimal(cfg, "planner", "execute_target_fraction"),
         max_notional_eur=_require_decimal(cfg, "planner", "max_notional_eur"),
@@ -359,6 +373,7 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
                 asset_id=selection_row.asset_id,
                 symbol=selection_row.symbol,
                 cooldown_candles_after_close=_require_int(cfg, "entry_cooldown", "cooldown_candles"),
+                connection_factory=get_connection,
             )
             if cooldown.cooldown_blocked:
                 cycle_stats["entry_cooldown_blocked"] += 1

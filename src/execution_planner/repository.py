@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
-from src.common.db import get_connection
 from src.execution_planner.models import OpenPositionForExit, PlannedExecution
 
 
@@ -18,6 +17,12 @@ ACTIVE_PLAN_STATES: tuple[str, ...] = (
 )
 
 
+def _legacy_get_connection(*, database: str | None = None):
+    from src.common.db import get_connection
+
+    return get_connection(database=database)
+
+
 def _to_decimal(value: Any, default: str = "0") -> Decimal:
     if value is None:
         return Decimal(default)
@@ -28,6 +33,29 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
 
 @dataclass
 class ExecutionPlannerRepository:
+    connection_factory: Callable[..., Any] = field(
+        default=_legacy_get_connection,
+        repr=False,
+        compare=False,
+    )
+
+    @staticmethod
+    def _validate_plan_contract(plan: PlannedExecution) -> None:
+        if plan.trading_account_id is None or plan.trading_account_id <= 0:
+            raise ValueError("TRADING_ACCOUNT_ID_REQUIRED")
+        if plan.execution_mode not in {"PAPER", "LIVE"}:
+            raise ValueError("EXECUTION_MODE_NOT_CANONICAL")
+        if plan.execution_intent is None or plan.execution_intent == "":
+            raise ValueError("EXECUTION_INTENT_REQUIRED")
+        if plan.execution_intent != plan.execution_intent.strip():
+            raise ValueError("EXECUTION_INTENT_NOT_CANONICAL")
+        if plan.action_type not in {"PLACE_ORDER", "CANCEL_ORDER", "MONITOR_ORDER"}:
+            raise ValueError("ACTION_TYPE_NOT_CANONICAL")
+        if plan.requested_side not in {"BUY", "SELL"} or plan.side != plan.requested_side:
+            raise ValueError("REQUESTED_SIDE_NOT_CANONICAL")
+        if plan.market is None or plan.market == "" or plan.market != plan.market.strip():
+            raise ValueError("MARKET_REQUIRED")
+
     def fetch_reference_price_eur(
         self,
         asset_id: int,
@@ -44,7 +72,7 @@ class ExecutionPlannerRepository:
         LIMIT 1
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, [asset_id, venue, interval_code])
@@ -77,9 +105,8 @@ class ExecutionPlannerRepository:
         ]
         params: list[Any] = [account_id, sleeve_code, venue]
 
-        join_symbol = ""
+        join_symbol = "JOIN asset a ON a.asset_id = pp.asset_id"
         if symbol is not None:
-            join_symbol = "JOIN asset a ON a.asset_id = pp.asset_id"
             clauses.append("a.symbol = %s")
             params.append(symbol)
 
@@ -94,6 +121,7 @@ class ExecutionPlannerRepository:
             pp.sleeve_code,
             pp.asset_id,
             pp.venue,
+            CONCAT(a.symbol, '-EUR') AS market,
             pp.qty,
             pp.avg_entry_price,
             pp.mark_price,
@@ -108,7 +136,7 @@ class ExecutionPlannerRepository:
         LIMIT 1
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -125,6 +153,7 @@ class ExecutionPlannerRepository:
             sleeve_code=str(row["sleeve_code"]),
             asset_id=int(row["asset_id"]),
             venue=str(row["venue"]),
+            market=str(row["market"]),
             qty=_to_decimal(row["qty"]),
             avg_entry_price=_to_decimal(row["avg_entry_price"]) if row["avg_entry_price"] is not None else None,
             mark_price=_to_decimal(row["mark_price"]) if row["mark_price"] is not None else None,
@@ -135,15 +164,21 @@ class ExecutionPlannerRepository:
         )
 
     def _insert_execution_plan(self, cur: Any, plan: PlannedExecution) -> int:
+        self._validate_plan_contract(plan)
         cur.execute(
             """
             INSERT INTO execution_plan (
                 account_id,
+                trading_account_id,
                 asset_id,
                 sleeve_code,
                 venue,
+                market,
                 side,
                 desired_action,
+                execution_intent,
+                action_type,
+                requested_side,
                 execution_mode,
                 plan_ts_utc,
                 valid_until_ts_utc,
@@ -162,16 +197,22 @@ class ExecutionPlannerRepository:
                 notes
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s
             )
             """,
             [
                 plan.account_id,
+                plan.trading_account_id,
                 plan.asset_id,
                 plan.sleeve_code,
                 plan.venue,
+                plan.market,
                 plan.side,
                 plan.desired_action,
+                plan.execution_intent,
+                plan.action_type,
+                plan.requested_side,
                 plan.execution_mode,
                 plan.plan_ts_utc,
                 plan.valid_until_ts_utc,
@@ -196,7 +237,7 @@ class ExecutionPlannerRepository:
         self,
         plan: PlannedExecution,
     ) -> int:
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 execution_plan_id = self._insert_execution_plan(cur, plan)
@@ -224,7 +265,7 @@ class ExecutionPlannerRepository:
             else Decimal("0")
         )
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -324,7 +365,7 @@ class ExecutionPlannerRepository:
           AND plan_state = 'IDLE'
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, [reason, execution_plan_id])
@@ -354,7 +395,7 @@ class ExecutionPlannerRepository:
         LIMIT 1
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -392,7 +433,7 @@ class ExecutionPlannerRepository:
         LIMIT 1
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -413,32 +454,54 @@ class ExecutionPlannerRepository:
         self,
         *,
         execution_plan_id: int,
-        target_fraction: Decimal,
-        desired_action: str,
-        notes: str,
+        plan: PlannedExecution,
     ) -> None:
+        if plan.execution_mode == "LIVE" and plan.valid_until_ts_utc is None:
+            raise ValueError("LIVE_PLAN_EXPIRY_REQUIRED")
         sql = """
         UPDATE execution_plan
         SET
             target_fraction = %s,
             desired_action = %s,
+            execution_intent = %s,
+            trading_account_id = %s,
+            market = %s,
+            side = %s,
+            requested_side = %s,
+            action_type = %s,
+            execution_mode = %s,
+            valid_until_ts_utc = %s,
             notes = %s,
             updated_ts_utc = CURRENT_TIMESTAMP()
         WHERE execution_plan_id = %s
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
+                self._validate_plan_contract(plan)
                 cur.execute(
                     sql,
                     [
-                        target_fraction,
-                        desired_action,
-                        notes,
+                        plan.target_fraction,
+                        plan.desired_action,
+                        plan.execution_intent,
+                        plan.trading_account_id,
+                        plan.market,
+                        plan.side,
+                        plan.requested_side,
+                        plan.action_type,
+                        plan.execution_mode,
+                        plan.valid_until_ts_utc,
+                        plan.notes,
                         execution_plan_id,
                     ],
                 )
+                if cur.rowcount != 1:
+                    raise ValueError("EXECUTION_PLAN_UPDATE_NOT_FOUND")
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()

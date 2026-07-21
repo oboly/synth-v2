@@ -7,7 +7,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from src.common.db import get_connection
+from src.common.db_env_v1 import load_database_environment
+
+
+load_database_environment()
+
+
+from src.common.db_core_v1 import db_cursor, get_connection  # noqa: E402
 from src.decision_gate.decision_gate_v1 import evaluate_selection_for_account
 from src.decision_gate.models import DecisionGateConfig
 from src.decision_gate.repository import DecisionGateRepository
@@ -53,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--account-id", type=int, required=True)
+    parser.add_argument("--trading-account-id", type=int, required=True)
     parser.add_argument("--sleeve-code", required=True)
     parser.add_argument("--asset-id", type=int, default=None)
     parser.add_argument("--limit", type=int, default=40)
@@ -61,7 +68,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--engine-version", default="2.0")
 
     parser.add_argument("--min-available-equity-eur", default="25.00")
-    parser.add_argument("--execution-mode", default="paper")
+    parser.add_argument("--execution-mode", choices=("PAPER", "LIVE"), default="PAPER")
+    parser.add_argument("--requested-side", choices=("BUY", "SELL"), default="BUY")
     parser.add_argument("--prepare-target-fraction", default="0.06600000")
     parser.add_argument("--execute-target-fraction", default="0.06600000")
     parser.add_argument("--max-notional-eur", default="25.0000000000")
@@ -218,10 +226,10 @@ def _print_table(payload: dict[str, Any]) -> None:
 def main() -> int:
     args = parse_args()
 
-    gate_repo = DecisionGateRepository()
-    planner_repo = ExecutionPlannerRepository()
-    executor_repo = ExecutorRepository()
-    lifecycle_repo = PlanLifecycleRepository()
+    gate_repo = DecisionGateRepository(cursor_factory=db_cursor)
+    planner_repo = ExecutionPlannerRepository(connection_factory=get_connection)
+    executor_repo = ExecutorRepository(connection_factory=get_connection)
+    lifecycle_repo = PlanLifecycleRepository(connection_factory=get_connection)
 
     summary = {
         "selection_written": 0,
@@ -262,6 +270,9 @@ def main() -> int:
         )
         planner_config = ExecutionPlannerConfig(
             execution_mode=str(args.execution_mode),
+            trading_account_id=args.trading_account_id,
+            action_type="PLACE_ORDER",
+            requested_side=args.requested_side,
             prepare_target_fraction=Decimal(str(args.prepare_target_fraction)),
             execute_target_fraction=Decimal(str(args.execute_target_fraction)),
             max_notional_eur=Decimal(str(args.max_notional_eur)),

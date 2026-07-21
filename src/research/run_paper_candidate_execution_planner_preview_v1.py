@@ -36,7 +36,13 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from src.common.db import get_connection
+from src.common.db_env_v1 import load_database_environment
+
+
+load_database_environment()
+
+
+from src.common.db_core_v1 import db_cursor, get_connection  # noqa: E402
 
 from src.decision_gate.decision_gate_v1 import evaluate_selection_for_account
 from src.decision_gate.models import DecisionGateConfig
@@ -64,6 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-id", default=None)
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--account-id", type=int, required=True)
+    parser.add_argument("--trading-account-id", type=int, required=True)
     parser.add_argument("--sleeve-code", required=True)
     parser.add_argument("--min-available-equity-eur", default="25.00")
     parser.add_argument(
@@ -167,7 +174,7 @@ def fetch_staged_reference_price_eur(
 
 
 def preview_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
-    gate_repo = DecisionGateRepository()
+    gate_repo = DecisionGateRepository(cursor_factory=db_cursor)
 
     staged_rows = fetch_staged_candidates(args)
     sleeve_state = gate_repo.fetch_sleeve_state(
@@ -178,7 +185,12 @@ def preview_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
     gate_config = DecisionGateConfig(
         min_available_equity_eur=Decimal(str(args.min_available_equity_eur))
     )
-    planner_config = ExecutionPlannerConfig()
+    planner_config = ExecutionPlannerConfig(
+        execution_mode="PAPER",
+        trading_account_id=args.trading_account_id,
+        action_type="PLACE_ORDER",
+        requested_side="BUY",
+    )
 
     out: list[dict[str, Any]] = []
 
