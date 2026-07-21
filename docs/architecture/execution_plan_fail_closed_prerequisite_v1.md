@@ -25,6 +25,12 @@ Implemented:
   fail before PAPER price hydration, permission lookup, private credentials,
   private-client construction, authenticated calls, submission state, or
   broker writes;
+- the worker and every paper-executor entrypoint use the same canonical LIVE
+  prerequisite failure;
+- the paper executor selects only exact canonical PAPER fill contracts and
+  validates the complete contract before symbol or price lookup;
+- paper fill transactions lock and revalidate the persisted contract before
+  reservation, position, event, plan-state, or sleeve mutation;
 - direct buy and sell ladder construction and preview remain available, while
   direct broker placement is disabled.
 
@@ -70,13 +76,45 @@ The PAPER import graph does not import the private Bitvavo client. Repository
 credentials, the account credential master key, and trade signing material are
 not loaded by the PAPER path.
 
+The canonical paper query uses explicit binary comparisons and returns only:
+
+```text
+execution_mode=PAPER
+action_type=PLACE_ORDER
+venue=bitvavo
+market=<exact asset.symbol>-EUR
+side=requested_side=BUY|SELL
+
+desired_action=SPREAD_CAPTURE_PASSIVE
+execution_intent=PLACE_PASSIVE_LIMIT
+
+or
+
+desired_action=CLOSE_POSITION_MARKET_PAPER
+execution_intent=CLOSE_POSITION_MARKET_PAPER
+side=requested_side=SELL
+```
+
+`PREPARE_PLAN`, `ENTER`, `ENTER_LONG`, case variants, incomplete retained rows,
+and inconsistent intent/action/side/market mappings are legacy noncanonical
+plans and are not consumed by this fill path. The executor repeats the same
+validation as its first operation, before symbol lookup, market-price lookup,
+decimal price work, reservation access, or database mutation.
+
+For passive entry and paper close, the fill transaction first locks the exact
+`execution_plan` row with `FOR UPDATE`. Persisted mode, trading account, market,
+intent, action type, requested side, legacy side, desired action, and actionable
+plan state must remain exact and equal to the validated in-memory plan. Any
+race or mismatch rolls back before an execution event, `FILLED` transition,
+position write, reservation release, or portfolio-sleeve balance change.
+
 `src.common.db` remains the compatibility wrapper for supported legacy callers
 and preserves its historical dotenv-loading behavior. PAPER runners instead
 load only allowlisted database keys and import the side-effect-free
 `src.common.db_core_v1` primitives. Existing process environment values remain
 authoritative in both paths.
 
-Every LIVE plan raises:
+Every LIVE plan presented to either the worker or paper executor raises:
 
 ```text
 LIVE_EXECUTION_PREREQUISITES_UNAVAILABLE

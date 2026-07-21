@@ -5,16 +5,28 @@ from decimal import Decimal
 from typing import Any, Callable
 
 from src.executor.models import CapitalReservationRow, ExecutionPlanRow
+from src.executor.paper_contract_v1 import (
+    CANONICAL_PAPER_PLAN_STATES,
+    CANONICAL_PAPER_VENUE,
+    PaperExecutorContractError,
+    canonical_paper_mapping_sql,
+    validate_canonical_paper_contract,
+)
 
 
-ACTIVE_EXECUTOR_PLAN_STATES = {"IDLE", "PLANNED"}
+ACTIVE_EXECUTOR_PLAN_STATES = CANONICAL_PAPER_PLAN_STATES
 
-EXECUTABLE_DESIRED_ACTIONS = {
-    "SPREAD_CAPTURE_PASSIVE",
-    "ENTER",
-    "ENTER_LONG",
-    "CLOSE_POSITION_MARKET_PAPER",
-}
+PERSISTED_PAPER_CONTRACT_FIELDS = (
+    "execution_mode",
+    "trading_account_id",
+    "market",
+    "execution_intent",
+    "action_type",
+    "requested_side",
+    "side",
+    "desired_action",
+    "plan_state",
+)
 
 
 def _legacy_get_connection(*, database: str | None = None):
@@ -47,57 +59,75 @@ class ExecutorRepository:
         venue: str | None = None,
         limit: int = 20,
     ) -> list[ExecutionPlanRow]:
+        mapping_sql, mapping_params = canonical_paper_mapping_sql("execution_plan")
         clauses = [
-            f"plan_state IN ({','.join(['%s'] * len(ACTIVE_EXECUTOR_PLAN_STATES))})",
-            f"desired_action IN ({','.join(['%s'] * len(EXECUTABLE_DESIRED_ACTIONS))})",
+            "(BINARY execution_plan.plan_state = BINARY %s "
+            "OR BINARY execution_plan.plan_state = BINARY %s)",
+            "BINARY execution_plan.execution_mode = BINARY 'PAPER'",
+            "BINARY execution_plan.action_type = BINARY 'PLACE_ORDER'",
+            "execution_plan.trading_account_id IS NOT NULL",
+            "execution_plan.trading_account_id > 0",
+            f"BINARY execution_plan.venue = BINARY '{CANONICAL_PAPER_VENUE}'",
+            "BINARY execution_plan.side = BINARY execution_plan.requested_side",
+            "BINARY execution_plan.market = "
+            "BINARY CONCAT(asset.symbol, '-EUR')",
+            mapping_sql,
         ]
         params: list[Any] = [
             *sorted(ACTIVE_EXECUTOR_PLAN_STATES),
-            *sorted(EXECUTABLE_DESIRED_ACTIONS),
+            *mapping_params,
         ]
 
         if account_id is not None:
-            clauses.append("account_id = %s")
+            clauses.append("execution_plan.account_id = %s")
             params.append(account_id)
 
         if sleeve_code is not None:
-            clauses.append("sleeve_code = %s")
+            clauses.append("BINARY execution_plan.sleeve_code = BINARY %s")
             params.append(sleeve_code)
 
         if venue is not None:
-            clauses.append("venue = %s")
+            clauses.append("BINARY execution_plan.venue = BINARY %s")
             params.append(venue)
 
         params.append(limit)
 
         sql = f"""
         SELECT
-            execution_plan_id,
-            account_id,
-            asset_id,
-            sleeve_code,
-            venue,
-            side,
-            desired_action,
-            execution_mode,
-            plan_ts_utc,
-            valid_until_ts_utc,
-            target_fraction,
-            max_notional_eur,
-            reference_price_eur,
-            passive_price_eur,
-            urgent_limit_price_eur,
-            max_reprices,
-            max_wait_seconds,
-            max_chase_bps,
-            min_spread_bps_for_capture,
-            escalation_to_urgent_limit,
-            abort_if_signal_invalidates,
-            plan_state,
-            notes
+            execution_plan.execution_plan_id,
+            execution_plan.account_id,
+            execution_plan.trading_account_id,
+            execution_plan.asset_id,
+            asset.symbol AS asset_symbol,
+            execution_plan.sleeve_code,
+            execution_plan.venue,
+            execution_plan.market,
+            execution_plan.side,
+            execution_plan.desired_action,
+            execution_plan.execution_intent,
+            execution_plan.action_type,
+            execution_plan.requested_side,
+            execution_plan.execution_mode,
+            execution_plan.plan_ts_utc,
+            execution_plan.valid_until_ts_utc,
+            execution_plan.target_fraction,
+            execution_plan.max_notional_eur,
+            execution_plan.reference_price_eur,
+            execution_plan.passive_price_eur,
+            execution_plan.urgent_limit_price_eur,
+            execution_plan.max_reprices,
+            execution_plan.max_wait_seconds,
+            execution_plan.max_chase_bps,
+            execution_plan.min_spread_bps_for_capture,
+            execution_plan.escalation_to_urgent_limit,
+            execution_plan.abort_if_signal_invalidates,
+            execution_plan.plan_state,
+            execution_plan.notes
         FROM execution_plan
+        JOIN asset
+          ON asset.asset_id = execution_plan.asset_id
         WHERE {" AND ".join(clauses)}
-        ORDER BY execution_plan_id ASC
+        ORDER BY execution_plan.execution_plan_id ASC
         LIMIT %s
         """
 
@@ -115,11 +145,17 @@ class ExecutorRepository:
                 ExecutionPlanRow(
                     execution_plan_id=int(row["execution_plan_id"]),
                     account_id=int(row["account_id"]),
+                    trading_account_id=int(row["trading_account_id"]),
                     asset_id=int(row["asset_id"]),
+                    asset_symbol=str(row["asset_symbol"]),
                     sleeve_code=str(row["sleeve_code"]),
                     venue=str(row["venue"]),
+                    market=str(row["market"]),
                     side=str(row["side"]),
                     desired_action=str(row["desired_action"]),
+                    execution_intent=str(row["execution_intent"]),
+                    action_type=str(row["action_type"]),
+                    requested_side=str(row["requested_side"]),
                     execution_mode=str(row["execution_mode"]),
                     plan_ts_utc=row["plan_ts_utc"],
                     valid_until_ts_utc=row["valid_until_ts_utc"],
@@ -222,6 +258,48 @@ class ExecutorRepository:
             reservation_state=str(row["reservation_state"]),
         )
 
+    @staticmethod
+    def _lock_and_validate_paper_plan(cur: Any, plan: ExecutionPlanRow) -> None:
+        validate_canonical_paper_contract(
+            plan,
+            canonical_symbol=plan.asset_symbol,
+            actionable_states=ACTIVE_EXECUTOR_PLAN_STATES,
+        )
+        cur.execute(
+            """
+            SELECT
+                execution_mode,
+                trading_account_id,
+                market,
+                execution_intent,
+                action_type,
+                requested_side,
+                side,
+                desired_action,
+                plan_state
+            FROM execution_plan
+            WHERE execution_plan_id = %s
+            FOR UPDATE
+            """,
+            [plan.execution_plan_id],
+        )
+        persisted = cur.fetchone()
+        if not persisted:
+            raise PaperExecutorContractError(
+                "PAPER_EXECUTOR_PERSISTED_PLAN_NOT_FOUND"
+            )
+
+        validate_canonical_paper_contract(
+            persisted,
+            canonical_symbol=plan.asset_symbol,
+            actionable_states=ACTIVE_EXECUTOR_PLAN_STATES,
+        )
+        for field_name in PERSISTED_PAPER_CONTRACT_FIELDS:
+            if persisted.get(field_name) != getattr(plan, field_name):
+                raise PaperExecutorContractError(
+                    f"PAPER_EXECUTOR_PERSISTED_{field_name.upper()}_MISMATCH"
+                )
+
     def fill_passive_plan_paper(
         self,
         *,
@@ -231,6 +309,7 @@ class ExecutorRepository:
         conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
+                self._lock_and_validate_paper_plan(cur, plan)
                 cur.execute(
                     """
                     SELECT
@@ -421,6 +500,7 @@ class ExecutorRepository:
         conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
+                self._lock_and_validate_paper_plan(cur, plan)
                 cur.execute(
                     """
                     SELECT

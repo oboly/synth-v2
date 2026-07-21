@@ -268,6 +268,6 @@ def test_worker_source_contains_no_private_or_broker_write_path() -> None:
     ).read_text(encoding="utf-8")
     assert "load_dotenv" not in paper_runner
     assert "src.execution.bitvavo_client" not in paper_runner
-    assert "BINARY execution_mode = BINARY 'PAPER'" in paper_runner
-    assert "BINARY action_type = BINARY 'PLACE_ORDER'" in paper_runner
-    assert "desired_action IN" not in paper_runner
+    assert "repo.fetch_open_plans" in paper_runner
+    assert "execute_plan_paper(plan, repo)" in paper_runner
+    assert "FROM execution_plan" not in paper_runner

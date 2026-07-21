@@ -13,6 +13,9 @@ load_database_environment()
 
 
 from src.common.db_core_v1 import db_cursor  # noqa: E402
+from src.execution.live_prerequisites_v1 import (  # noqa: E402
+    LiveExecutionPrerequisitesUnavailable,
+)
 from src.market_data.bitvavo_public_client_v1 import BitvavoPublicMarketDataClient
 
 
@@ -21,20 +24,6 @@ DEFAULT_EUR_NOTIONAL = Decimal(os.getenv("SYNTH_DEFAULT_EUR_NOTIONAL", "25"))
 DECIMAL_ZERO = Decimal("0")
 BPS = Decimal("10000")
 PAPER_ACTIONABLE_STATES = frozenset({"IDLE", "MONITOR_QUEUE", "REPRICE_PENDING"})
-LIVE_PREREQUISITE_CODES = (
-    "CANONICAL_DECISION_GATE_PERMISSION_PRODUCER_REQUIRED",
-    "ACCOUNT_BOUND_TRADE_CREDENTIAL_BINDING_REQUIRED",
-    "LIVE_EXECUTOR_ACTIVATION_REQUIRED",
-)
-
-
-class LiveExecutionPrerequisitesUnavailable(RuntimeError):
-    code = "LIVE_EXECUTION_PREREQUISITES_UNAVAILABLE"
-
-    def __init__(self) -> None:
-        super().__init__(f"{self.code}:" + ",".join(LIVE_PREREQUISITE_CODES))
-
-
 @dataclass(slots=True)
 class PlanRuntime:
     execution_plan_id: int
