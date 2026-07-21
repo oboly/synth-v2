@@ -448,16 +448,6 @@ def test_executor_permission_evidence_migration_applies_to_disposable_mariadb() 
                     execution_plan_id=plan_id,
                     evidence_state="SUPERSEDED",
                 )
-            with pytest.raises(constraint_errors):
-                _insert_evidence(
-                    conn,
-                    trading_account_id=trading_account_id,
-                    decision_gate_audit_log_id=audit_id,
-                    execution_plan_id=plan_id,
-                    evidence_state="SUPERSEDED",
-                    superseded_by_evidence_id=999999,
-                    explicit_id=999999,
-                )
         finally:
             conn.close()
 

@@ -40,6 +40,8 @@ The executor must consume the explicit `execution_plan.execution_intent` value o
 
 No database uniqueness constraint is used for "one current evidence row" because MariaDB cannot safely express the time-dependent current-row predicate without blocking auditable historical `REVOKED`, `SUPERSEDED`, expired, and future-dated evidence rows. The repository query narrows to currently applicable rows, and the executor fails closed unless exactly one current row is returned.
 
+MariaDB also rejects a `CHECK` constraint that compares `superseded_by_evidence_id` against the `AUTO_INCREMENT` primary key. Self-supersession must therefore be prevented by the evidence writer/repository contract, while the database still enforces that `SUPERSEDED` rows have a non-null `superseded_by_evidence_id`.
+
 ## Paper Separation
 
 Paper execution remains independent of live broker submission. Paper plans do not require broker credentials, do not consume live permission evidence, and must not call live order placement, cancellation, or authenticated order polling methods.

@@ -81,9 +81,6 @@ CREATE TABLE IF NOT EXISTS execution_permission_evidence (
     CONSTRAINT chk_epe_superseded_state_v1
         CHECK (evidence_state <> 'SUPERSEDED' OR superseded_by_evidence_id IS NOT NULL),
 
-    CONSTRAINT chk_epe_not_self_supersede_v1
-        CHECK (superseded_by_evidence_id IS NULL OR superseded_by_evidence_id <> execution_permission_evidence_id),
-
     CONSTRAINT fk_epe_decision_gate_audit_v1
         FOREIGN KEY (decision_gate_audit_log_id)
         REFERENCES decision_gate_audit_log (decision_gate_audit_log_id),
