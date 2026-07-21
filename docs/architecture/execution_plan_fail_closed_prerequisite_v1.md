@@ -18,10 +18,11 @@ Implemented:
 - `account_id` is never reinterpreted as `trading_account_id`;
 - planner mode, action, and side values are exact, case-sensitive enums;
 - PAPER processing imports a standalone public market-data client and uses a
-  DB-only environment loader;
+  DB-only environment loader plus pure DB connection primitives;
 - persisted PAPER plans stay on the simulated PAPER path, regardless of the
   global worker mode;
-- persisted LIVE plans fail before permission lookup, private credentials,
+- persisted LIVE plans are classified from raw plan identity and mode, then
+  fail before PAPER price hydration, permission lookup, private credentials,
   private-client construction, authenticated calls, submission state, or
   broker writes;
 - direct buy and sell ladder construction and preview remain available, while
@@ -69,6 +70,12 @@ The PAPER import graph does not import the private Bitvavo client. Repository
 credentials, the account credential master key, and trade signing material are
 not loaded by the PAPER path.
 
+`src.common.db` remains the compatibility wrapper for supported legacy callers
+and preserves its historical dotenv-loading behavior. PAPER runners instead
+load only allowlisted database keys and import the side-effect-free
+`src.common.db_core_v1` primitives. Existing process environment values remain
+authoritative in both paths.
+
 Every LIVE plan raises:
 
 ```text
@@ -77,6 +84,11 @@ CANONICAL_DECISION_GATE_PERMISSION_PRODUCER_REQUIRED
 ACCOUNT_BOUND_TRADE_CREDENTIAL_BINDING_REQUIRED
 LIVE_EXECUTOR_ACTIVATION_REQUIRED
 ```
+
+The worker reads only raw plan identity and `execution_mode` before this LIVE
+failure. Decimal conversion and validation of PAPER reference, passive, and
+urgent prices happen only after all selected rows are confirmed as exact
+`PAPER` plans.
 
 There is no environment flag, global credential, manually inserted evidence,
 or legacy account credential bypass.
@@ -88,6 +100,17 @@ execution-plan fields. It validates each field's exact type, length,
 nullability, default, charset, and collation, and validates the exact nullable
 foreign key from `execution_plan.trading_account_id` to
 `trading_account.trading_account_id`.
+
+The new `market`, `execution_intent`, `action_type`, and `requested_side`
+columns use `utf8mb4_bin`. Canonical SQL predicates also use explicit binary
+comparison, including the pre-existing `execution_mode` column, so lowercase
+or mixed-case persisted values never match canonical processing queries.
+
+Foreign-key validation groups complete constraint definitions and accepts only
+one single-column, ordinal-one mapping with `RESTRICT` update and delete rules.
+Wrong targets, composite definitions, additional columns, multiple involving
+constraints, and incompatible rules require explicit repair; the migration
+does not drop or rewrite them.
 
 The migration preserves historical rows, normalizes only exact legacy `paper`
 and `live` mode values, repairs compatible missing fields, fails explicitly on
@@ -105,6 +128,10 @@ created nor consumed by this change.
 5. Implement atomic live executor consumption.
 6. Perform controlled non-production acceptance.
 7. Obtain explicit deployment authorization.
+
+PR #127 is a separately reviewed private-read change. Its review does not
+depend on permission production, credential binding, or any other deferred
+live-execution work.
 
 Credentials authenticate broker requests. Credentials never authorize
 execution.

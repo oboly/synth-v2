@@ -23,17 +23,29 @@ NOTES:
 - reads only active config sets by default
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
-from src.common.db import get_connection
 from src.config_registry.models import ConfigParamRow, ConfigSetRow
 
 
 CONFIG_DB_NAME = "synth_bt"
 
 
+def _legacy_get_connection(*, database: str | None = None):
+    from src.common.db import get_connection
+
+    return get_connection(database=database)
+
+
 @dataclass
 class ConfigRegistryRepository:
+    connection_factory: Callable[..., Any] = field(
+        default=_legacy_get_connection,
+        repr=False,
+        compare=False,
+    )
+
     def fetch_config_set(
         self,
         *,
@@ -64,7 +76,7 @@ class ConfigRegistryRepository:
         LIMIT 1
         """
 
-        conn = get_connection(database=CONFIG_DB_NAME)
+        conn = self.connection_factory(database=CONFIG_DB_NAME)
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -105,7 +117,7 @@ class ConfigRegistryRepository:
         ORDER BY component, parameter_name
         """
 
-        conn = get_connection(database=CONFIG_DB_NAME)
+        conn = self.connection_factory(database=CONFIG_DB_NAME)
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, [config_set_id])

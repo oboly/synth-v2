@@ -7,7 +7,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from src.common.db import get_connection
+from src.common.db_env_v1 import load_database_environment
+
+
+load_database_environment()
+
+
+from src.common.db_core_v1 import db_cursor, get_connection  # noqa: E402
 from src.decision_gate.decision_gate_v1 import evaluate_selection_for_account
 from src.decision_gate.models import DecisionGateConfig
 from src.decision_gate.repository import DecisionGateRepository
@@ -220,10 +226,10 @@ def _print_table(payload: dict[str, Any]) -> None:
 def main() -> int:
     args = parse_args()
 
-    gate_repo = DecisionGateRepository()
-    planner_repo = ExecutionPlannerRepository()
-    executor_repo = ExecutorRepository()
-    lifecycle_repo = PlanLifecycleRepository()
+    gate_repo = DecisionGateRepository(cursor_factory=db_cursor)
+    planner_repo = ExecutionPlannerRepository(connection_factory=get_connection)
+    executor_repo = ExecutorRepository(connection_factory=get_connection)
+    lifecycle_repo = PlanLifecycleRepository(connection_factory=get_connection)
 
     summary = {
         "selection_written": 0,

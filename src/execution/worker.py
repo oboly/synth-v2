@@ -6,7 +6,13 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from src.common.db import db_cursor
+from src.common.db_env_v1 import load_database_environment
+
+
+load_database_environment()
+
+
+from src.common.db_core_v1 import db_cursor  # noqa: E402
 from src.market_data.bitvavo_public_client_v1 import BitvavoPublicMarketDataClient
 
 
@@ -90,7 +96,34 @@ def _decimal(row: dict[str, Any], key: str) -> Decimal:
     return Decimal(str(value))
 
 
-def _fetch_actionable_plans(limit: int = 50) -> list[PlanRuntime]:
+def _fetch_actionable_plan_headers(limit: int = 50) -> list[dict[str, Any]]:
+    with db_cursor(commit=False) as (_conn, cur):
+        cur.execute(
+            """
+            SELECT execution_plan_id, execution_mode
+            FROM execution_plan
+            WHERE plan_state IN ('IDLE', 'MONITOR_QUEUE', 'REPRICE_PENDING')
+            ORDER BY plan_ts_utc ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return list(cur.fetchall())
+
+
+def _classify_actionable_plan_modes(rows: list[dict[str, Any]]) -> list[int]:
+    modes = [str(row.get("execution_mode")) for row in rows]
+    if any(mode not in {"PAPER", "LIVE"} for mode in modes):
+        raise ValueError("PLAN_EXECUTION_MODE_NOT_CANONICAL")
+    if any(mode == "LIVE" for mode in modes):
+        raise LiveExecutionPrerequisitesUnavailable()
+    return [int(row["execution_plan_id"]) for row in rows]
+
+
+def _fetch_actionable_plans(plan_ids: list[int]) -> list[PlanRuntime]:
+    if not plan_ids:
+        return []
+    placeholders = ", ".join(["%s"] * len(plan_ids))
     sql = """
     SELECT
         execution_plan_id,
@@ -120,17 +153,21 @@ def _fetch_actionable_plans(limit: int = 50) -> list[PlanRuntime]:
         plan_state,
         notes
     FROM execution_plan
-    WHERE plan_state IN ('IDLE', 'MONITOR_QUEUE', 'REPRICE_PENDING')
+    WHERE execution_plan_id IN ({placeholders})
     ORDER BY plan_ts_utc ASC
-    LIMIT %s
-    """
+    """.format(placeholders=placeholders)
     symbol_map = _fetch_symbol_map()
     with db_cursor(commit=False) as (_conn, cur):
-        cur.execute(sql, (limit,))
+        cur.execute(sql, plan_ids)
         rows = cur.fetchall()
 
     plans: list[PlanRuntime] = []
     for row in rows:
+        mode = str(row.get("execution_mode"))
+        if mode == "LIVE":
+            raise LiveExecutionPrerequisitesUnavailable()
+        if mode != "PAPER":
+            raise ValueError("PLAN_EXECUTION_MODE_NOT_CANONICAL")
         asset_id = int(row["asset_id"])
         symbol = symbol_map.get(asset_id)
         if symbol is None:
@@ -155,7 +192,7 @@ def _fetch_actionable_plans(limit: int = 50) -> list[PlanRuntime]:
                 requested_side=(
                     None if row.get("requested_side") is None else str(row["requested_side"])
                 ),
-                execution_mode=str(row["execution_mode"]),
+                execution_mode=mode,
                 target_fraction=_decimal(row, "target_fraction"),
                 reference_price_eur=_decimal(row, "reference_price_eur"),
                 passive_price_eur=_decimal(row, "passive_price_eur"),
@@ -350,12 +387,8 @@ def process_execution_plans(
     market_data_client_factory: Any = BitvavoPublicMarketDataClient,
 ) -> dict[str, int]:
     _runtime_mode(execution_mode)
-    plans = _fetch_actionable_plans()
-    invalid_modes = [plan.execution_mode for plan in plans if plan.execution_mode not in {"PAPER", "LIVE"}]
-    if invalid_modes:
-        raise ValueError("PLAN_EXECUTION_MODE_NOT_CANONICAL")
-    if any(plan.execution_mode == "LIVE" for plan in plans):
-        raise LiveExecutionPrerequisitesUnavailable()
+    plan_ids = _classify_actionable_plan_modes(_fetch_actionable_plan_headers())
+    plans = _fetch_actionable_plans(plan_ids)
 
     latest_events = _fetch_latest_events_for_plans([plan.execution_plan_id for plan in plans])
     market_data_client: BitvavoPublicMarketDataClient | None = None

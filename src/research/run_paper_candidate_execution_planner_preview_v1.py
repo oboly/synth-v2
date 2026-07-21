@@ -36,7 +36,13 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from src.common.db import get_connection
+from src.common.db_env_v1 import load_database_environment
+
+
+load_database_environment()
+
+
+from src.common.db_core_v1 import db_cursor, get_connection  # noqa: E402
 
 from src.decision_gate.decision_gate_v1 import evaluate_selection_for_account
 from src.decision_gate.models import DecisionGateConfig
@@ -168,7 +174,7 @@ def fetch_staged_reference_price_eur(
 
 
 def preview_rows(args: argparse.Namespace) -> list[dict[str, Any]]:
-    gate_repo = DecisionGateRepository()
+    gate_repo = DecisionGateRepository(cursor_factory=db_cursor)
 
     staged_rows = fetch_staged_candidates(args)
     sleeve_state = gate_repo.fetch_sleeve_state(

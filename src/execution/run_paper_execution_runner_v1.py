@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from src.common.db import get_connection
+from src.common.db_env_v1 import load_database_environment
+
+
+load_database_environment()
+
+
+from src.common.db_core_v1 import get_connection  # noqa: E402
 
 def utc_now_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
@@ -13,8 +19,8 @@ def fetch_idle_plans(conn, limit: int = 50):
         SELECT *
         FROM execution_plan
         WHERE plan_state = 'IDLE'
-          AND execution_mode = 'PAPER'
-          AND action_type = 'PLACE_ORDER'
+          AND BINARY execution_mode = BINARY 'PAPER'
+          AND BINARY action_type = BINARY 'PLACE_ORDER'
         ORDER BY plan_ts_utc ASC
         LIMIT %s
     """

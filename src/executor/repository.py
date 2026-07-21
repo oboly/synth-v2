@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
-from src.common.db import get_connection
 from src.executor.models import CapitalReservationRow, ExecutionPlanRow
 
 
@@ -18,6 +17,12 @@ EXECUTABLE_DESIRED_ACTIONS = {
 }
 
 
+def _legacy_get_connection(*, database: str | None = None):
+    from src.common.db import get_connection
+
+    return get_connection(database=database)
+
+
 def _to_decimal(value: Any, default: str = "0") -> Decimal:
     if value is None:
         return Decimal(default)
@@ -28,6 +33,12 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
 
 @dataclass
 class ExecutorRepository:
+    connection_factory: Callable[..., Any] = field(
+        default=_legacy_get_connection,
+        repr=False,
+        compare=False,
+    )
+
     def fetch_open_plans(
         self,
         *,
@@ -90,7 +101,7 @@ class ExecutorRepository:
         LIMIT %s
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -131,7 +142,7 @@ class ExecutorRepository:
 
     def fetch_symbol(self, asset_id: int) -> str | None:
         sql = "SELECT symbol FROM asset WHERE asset_id = %s LIMIT 1"
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, [asset_id])
@@ -161,7 +172,7 @@ class ExecutorRepository:
         ORDER BY close_ts_utc DESC
         LIMIT 1
         """
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, [asset_id, venue, interval_code])
@@ -190,7 +201,7 @@ class ExecutorRepository:
           AND reservation_state = 'ACTIVE'
         LIMIT 1
         """
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, [execution_plan_id])
@@ -217,7 +228,7 @@ class ExecutorRepository:
         plan: ExecutionPlanRow,
         fill_price_eur: Decimal,
     ) -> tuple[Decimal, bool]:
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -407,7 +418,7 @@ class ExecutorRepository:
         plan: ExecutionPlanRow,
         fill_price_eur: Decimal,
     ) -> tuple[Decimal, Decimal, bool]:
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(

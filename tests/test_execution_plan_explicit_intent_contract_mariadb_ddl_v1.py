@@ -75,8 +75,11 @@ def _create_base_schema(conn: Any) -> None:
             """
             CREATE TABLE trading_account (
                 trading_account_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                legacy_account_id BIGINT UNSIGNED NOT NULL,
                 account_code VARCHAR(63) NOT NULL,
-                PRIMARY KEY (trading_account_id)
+                PRIMARY KEY (trading_account_id),
+                UNIQUE KEY uq_trading_account_legacy (legacy_account_id),
+                UNIQUE KEY uq_trading_account_composite (trading_account_id, legacy_account_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """,
             """
@@ -137,6 +140,46 @@ def _column_names(conn: Any) -> set[str]:
         return {str(row["column_name"]) for row in cur.fetchall()}
 
 
+def _add_trading_account_id(conn: Any) -> None:
+    _apply_statements(
+        conn,
+        ["ALTER TABLE execution_plan ADD trading_account_id BIGINT UNSIGNED NULL AFTER account_id"],
+    )
+
+
+def _foreign_keys_for_trading_account_id(conn: Any) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                kcu.constraint_name,
+                kcu.column_name,
+                kcu.referenced_table_name,
+                kcu.referenced_column_name,
+                kcu.ordinal_position,
+                rc.update_rule,
+                rc.delete_rule
+            FROM information_schema.key_column_usage AS kcu
+            JOIN information_schema.referential_constraints AS rc
+              ON rc.constraint_schema = kcu.constraint_schema
+             AND rc.constraint_name = kcu.constraint_name
+             AND rc.table_name = kcu.table_name
+            WHERE kcu.table_schema = DATABASE()
+              AND kcu.table_name = 'execution_plan'
+              AND kcu.constraint_name IN (
+                  SELECT involving.constraint_name
+                  FROM information_schema.key_column_usage AS involving
+                  WHERE involving.table_schema = DATABASE()
+                    AND involving.table_name = 'execution_plan'
+                    AND involving.column_name = 'trading_account_id'
+                    AND involving.referenced_table_name IS NOT NULL
+              )
+            ORDER BY kcu.constraint_name, kcu.ordinal_position
+            """
+        )
+        return list(cur.fetchall())
+
+
 def test_migration_parser_keeps_procedure_atomic() -> None:
     statements = _split_sql_statements(MIGRATION_PATH.read_text(encoding="utf-8"))
     assert len(statements) == 4
@@ -150,7 +193,8 @@ def test_fresh_rerun_partial_columns_and_history_are_preserved() -> None:
         _apply_statements(
             conn,
             [
-                "ALTER TABLE execution_plan ADD market VARCHAR(32) NULL",
+                "ALTER TABLE execution_plan ADD market VARCHAR(32) "
+                "CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL",
                 """
                 INSERT INTO execution_plan (
                     account_id, asset_id, sleeve_code, venue, side, desired_action,
@@ -186,6 +230,24 @@ def test_fresh_rerun_partial_columns_and_history_are_preserved() -> None:
                 "('execution_permission_evidence','decision_gate_permission_evidence','execution_attempt')"
             )
             assert cur.fetchall() == ()
+            cur.execute(
+                "SELECT column_name, collation_name FROM information_schema.columns "
+                "WHERE table_schema=DATABASE() AND table_name='execution_plan' "
+                "AND column_name IN ('market','execution_intent','action_type','requested_side')"
+            )
+            assert {row["collation_name"] for row in cur.fetchall()} == {"utf8mb4_bin"}
+
+        assert _foreign_keys_for_trading_account_id(conn) == [
+            {
+                "constraint_name": "fk_execution_plan_trading_account_contract_v1",
+                "column_name": "trading_account_id",
+                "referenced_table_name": "trading_account",
+                "referenced_column_name": "trading_account_id",
+                "ordinal_position": 1,
+                "update_rule": "RESTRICT",
+                "delete_rule": "RESTRICT",
+            }
+        ]
 
 
 @pytest.mark.parametrize(
@@ -201,7 +263,7 @@ def test_fresh_rerun_partial_columns_and_history_are_preserved() -> None:
         ),
         (
             "ALTER TABLE execution_plan ADD execution_intent VARCHAR(64) "
-            "CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NULL",
+            "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL",
             "EPC_MIGRATION_INCOMPATIBLE_EXECUTION_INTENT",
         ),
     ],
@@ -210,4 +272,89 @@ def test_incompatible_partial_shape_fails_explicitly(partial_sql: str, code: str
     with _schema() as conn:
         _apply_statements(conn, [partial_sql])
         with pytest.raises(Exception, match=code):
+            _apply_migration(conn)
+
+
+def test_only_exact_lowercase_legacy_modes_are_normalized() -> None:
+    with _schema() as conn:
+        for mode in ("PAPER", "paper", "Paper", "LIVE", "live", "Live"):
+            _apply_statements(
+                conn,
+                [
+                    "INSERT INTO execution_plan "
+                    "(account_id, asset_id, sleeve_code, venue, side, desired_action, "
+                    "execution_mode, plan_ts_utc, plan_state) VALUES "
+                    f"(7, 9, 'CORE', 'bitvavo', 'BUY', 'PREPARE_PLAN', '{mode}', "
+                    "UTC_TIMESTAMP(6), 'IDLE')"
+                ],
+            )
+
+        _apply_migration(conn)
+        with conn.cursor() as cur:
+            cur.execute("SELECT execution_mode FROM execution_plan ORDER BY execution_plan_id")
+            assert [row["execution_mode"] for row in cur.fetchall()] == [
+                "PAPER",
+                "PAPER",
+                "Paper",
+                "LIVE",
+                "LIVE",
+                "Live",
+            ]
+
+
+def test_existing_exact_single_column_fk_is_accepted() -> None:
+    with _schema() as conn:
+        _add_trading_account_id(conn)
+        _apply_statements(
+            conn,
+            [
+                "ALTER TABLE execution_plan ADD CONSTRAINT fk_existing_exact "
+                "FOREIGN KEY (trading_account_id) REFERENCES trading_account (trading_account_id) "
+                "ON UPDATE RESTRICT ON DELETE RESTRICT"
+            ],
+        )
+        _apply_migration(conn)
+        _apply_migration(conn)
+        assert len(_foreign_keys_for_trading_account_id(conn)) == 1
+
+
+@pytest.mark.parametrize(
+    "setup_statements",
+    [
+        [
+            "CREATE TABLE alternate_account (trading_account_id BIGINT UNSIGNED NOT NULL, "
+            "PRIMARY KEY (trading_account_id)) ENGINE=InnoDB",
+            "ALTER TABLE execution_plan ADD CONSTRAINT fk_wrong_table "
+            "FOREIGN KEY (trading_account_id) REFERENCES alternate_account (trading_account_id)",
+        ],
+        [
+            "ALTER TABLE execution_plan ADD CONSTRAINT fk_wrong_column "
+            "FOREIGN KEY (trading_account_id) REFERENCES trading_account (legacy_account_id)",
+        ],
+        [
+            "ALTER TABLE execution_plan ADD CONSTRAINT fk_composite "
+            "FOREIGN KEY (trading_account_id, account_id) "
+            "REFERENCES trading_account (trading_account_id, legacy_account_id)",
+        ],
+        [
+            "ALTER TABLE execution_plan ADD CONSTRAINT fk_exact_first "
+            "FOREIGN KEY (trading_account_id) REFERENCES trading_account (trading_account_id)",
+            "ALTER TABLE execution_plan ADD CONSTRAINT fk_second_wrong "
+            "FOREIGN KEY (trading_account_id) REFERENCES trading_account (legacy_account_id)",
+        ],
+        [
+            "ALTER TABLE execution_plan ADD CONSTRAINT fk_wrong_rules "
+            "FOREIGN KEY (trading_account_id) REFERENCES trading_account (trading_account_id) "
+            "ON UPDATE CASCADE ON DELETE CASCADE",
+        ],
+    ],
+    ids=["wrong-table", "wrong-column", "composite", "multiple", "wrong-rules"],
+)
+def test_incompatible_foreign_key_definitions_fail_explicitly(
+    setup_statements: list[str],
+) -> None:
+    with _schema() as conn:
+        _add_trading_account_id(conn)
+        _apply_statements(conn, setup_statements)
+        with pytest.raises(Exception, match="EPC_MIGRATION_INCOMPATIBLE_TRADING_ACCOUNT_FK"):
             _apply_migration(conn)

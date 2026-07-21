@@ -2,15 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
-from src.common.db import get_connection
 from src.execution_planner.execution_planner_v1 import build_exit_plan_from_position
 from src.execution_planner.models import ExecutionPlannerConfig, OpenPositionForExit
 from src.execution_planner.repository import ExecutionPlannerRepository
 
 
 ACTIVE_EXIT_PLAN_STATES = {"IDLE", "PLANNED", "PLACED", "MONITOR_QUEUE", "REPRICE_PENDING", "ESCALATED"}
+
+
+def _legacy_get_connection(*, database: str | None = None):
+    from src.common.db import get_connection
+
+    return get_connection(database=database)
 
 
 def _to_decimal(value: Any, default: str = "0") -> Decimal:
@@ -46,6 +51,7 @@ def fetch_open_positions_for_policy(
     account_id: int,
     sleeve_code: str,
     venue: str,
+    connection_factory: Callable[..., Any] = _legacy_get_connection,
 ) -> list[dict[str, Any]]:
     sql = """
     SELECT
@@ -73,7 +79,7 @@ def fetch_open_positions_for_policy(
     ORDER BY pp.portfolio_position_id ASC
     """
 
-    conn = get_connection()
+    conn = connection_factory()
     try:
         with conn.cursor() as cur:
             cur.execute(sql, [account_id, sleeve_code, venue])
@@ -89,6 +95,7 @@ def has_active_exit_plan(
     sleeve_code: str,
     venue: str,
     asset_id: int,
+    connection_factory: Callable[..., Any] = _legacy_get_connection,
 ) -> bool:
     states_sql = ",".join(["%s"] * len(ACTIVE_EXIT_PLAN_STATES))
     params: list[Any] = [
@@ -113,7 +120,7 @@ def has_active_exit_plan(
     ) AS has_active_exit_plan
     """
 
-    conn = get_connection()
+    conn = connection_factory()
     try:
         with conn.cursor() as cur:
             cur.execute(sql, params)
@@ -152,8 +159,9 @@ def run_exit_policy_v1(
     sleeve_code: str,
     venue: str,
     config: ExitPolicyConfig,
+    connection_factory: Callable[..., Any] = _legacy_get_connection,
 ) -> list[ExitPolicyResult]:
-    planner_repo = ExecutionPlannerRepository()
+    planner_repo = ExecutionPlannerRepository(connection_factory=connection_factory)
     planner_config = ExecutionPlannerConfig(
         execution_mode="PAPER",
         trading_account_id=trading_account_id,
@@ -164,6 +172,7 @@ def run_exit_policy_v1(
         account_id=account_id,
         sleeve_code=sleeve_code,
         venue=venue,
+        connection_factory=connection_factory,
     )
 
     out: list[ExitPolicyResult] = []
@@ -221,6 +230,7 @@ def run_exit_policy_v1(
             sleeve_code=sleeve_code,
             venue=venue,
             asset_id=asset_id,
+            connection_factory=connection_factory,
         ):
             out.append(
                 ExitPolicyResult(

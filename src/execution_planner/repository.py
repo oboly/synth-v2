@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
+from typing import Any, Callable
 
-from src.common.db import get_connection
 from src.execution_planner.models import OpenPositionForExit, PlannedExecution
 
 
@@ -18,6 +17,12 @@ ACTIVE_PLAN_STATES: tuple[str, ...] = (
 )
 
 
+def _legacy_get_connection(*, database: str | None = None):
+    from src.common.db import get_connection
+
+    return get_connection(database=database)
+
+
 def _to_decimal(value: Any, default: str = "0") -> Decimal:
     if value is None:
         return Decimal(default)
@@ -28,6 +33,12 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
 
 @dataclass
 class ExecutionPlannerRepository:
+    connection_factory: Callable[..., Any] = field(
+        default=_legacy_get_connection,
+        repr=False,
+        compare=False,
+    )
+
     @staticmethod
     def _validate_plan_contract(plan: PlannedExecution) -> None:
         if plan.trading_account_id is None or plan.trading_account_id <= 0:
@@ -61,7 +72,7 @@ class ExecutionPlannerRepository:
         LIMIT 1
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, [asset_id, venue, interval_code])
@@ -125,7 +136,7 @@ class ExecutionPlannerRepository:
         LIMIT 1
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, params)
@@ -226,7 +237,7 @@ class ExecutionPlannerRepository:
         self,
         plan: PlannedExecution,
     ) -> int:
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 execution_plan_id = self._insert_execution_plan(cur, plan)
@@ -254,7 +265,7 @@ class ExecutionPlannerRepository:
             else Decimal("0")
         )
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -354,7 +365,7 @@ class ExecutionPlannerRepository:
           AND plan_state = 'IDLE'
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(sql, [reason, execution_plan_id])
@@ -384,7 +395,7 @@ class ExecutionPlannerRepository:
         LIMIT 1
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -422,7 +433,7 @@ class ExecutionPlannerRepository:
         LIMIT 1
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 cur.execute(
@@ -465,7 +476,7 @@ class ExecutionPlannerRepository:
         WHERE execution_plan_id = %s
         """
 
-        conn = get_connection()
+        conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
                 self._validate_plan_contract(plan)

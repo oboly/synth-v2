@@ -36,7 +36,13 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from src.common.db import get_connection
+from src.common.db_env_v1 import load_database_environment
+
+
+load_database_environment()
+
+
+from src.common.db_core_v1 import db_cursor, get_connection  # noqa: E402
 from src.decision_gate.decision_gate_v1 import evaluate_selection_for_account
 from src.decision_gate.models import DecisionGateConfig, SelectionInputRow
 from src.decision_gate.repository import DecisionGateRepository
@@ -251,7 +257,7 @@ def staged_candidate_to_selection_input(row: StagedCandidateRow) -> SelectionInp
 
 
 def preview_decisions(args: argparse.Namespace) -> list[dict[str, Any]]:
-    repo = DecisionGateRepository()
+    repo = DecisionGateRepository(cursor_factory=db_cursor)
     rows = fetch_staged_candidates(args)
     sleeve_state = repo.fetch_sleeve_state(
         account_id=args.account_id,
