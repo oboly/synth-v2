@@ -257,6 +257,7 @@ def main() -> int:
                         execution_plan_id=existing_plan_id,
                         target_fraction=planner_config.prepare_target_fraction,
                         desired_action="PREPARE_PLAN",
+                        execution_intent=decision.execution_intent,
                         notes="PROMOTED_TO_PREPARE",
                     )
 
@@ -282,6 +283,7 @@ def main() -> int:
                         execution_plan_id=existing_plan_id,
                         target_fraction=planner_config.execute_target_fraction,
                         desired_action="SPREAD_CAPTURE_PASSIVE",
+                        execution_intent=decision.execution_intent,
                         notes="PROMOTED_TO_EXECUTION",
                     )
 

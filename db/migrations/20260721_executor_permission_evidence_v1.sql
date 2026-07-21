@@ -5,6 +5,9 @@
 -- Non-goals: no credential binding, no decrypted credentials, no broker calls,
 --            no order submission, no execution_plan overloading.
 
+ALTER TABLE execution_plan
+    ADD COLUMN IF NOT EXISTS execution_intent VARCHAR(64) NULL AFTER desired_action;
+
 CREATE TABLE IF NOT EXISTS execution_permission_evidence (
     execution_permission_evidence_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
 
@@ -62,6 +65,24 @@ CREATE TABLE IF NOT EXISTS execution_permission_evidence (
 
     CONSTRAINT chk_epe_decision_v1
         CHECK (decision_state <> ''),
+
+    CONSTRAINT chk_epe_valid_window_v1
+        CHECK (valid_until_ts_utc >= permitted_ts_utc),
+
+    CONSTRAINT chk_epe_revoked_state_v1
+        CHECK (evidence_state <> 'REVOKED' OR revoked_ts_utc IS NOT NULL),
+
+    CONSTRAINT chk_epe_active_not_revoked_v1
+        CHECK (evidence_state <> 'ACTIVE' OR revoked_ts_utc IS NULL),
+
+    CONSTRAINT chk_epe_active_not_superseded_v1
+        CHECK (evidence_state <> 'ACTIVE' OR superseded_by_evidence_id IS NULL),
+
+    CONSTRAINT chk_epe_superseded_state_v1
+        CHECK (evidence_state <> 'SUPERSEDED' OR superseded_by_evidence_id IS NOT NULL),
+
+    CONSTRAINT chk_epe_not_self_supersede_v1
+        CHECK (superseded_by_evidence_id IS NULL OR superseded_by_evidence_id <> execution_permission_evidence_id),
 
     CONSTRAINT fk_epe_decision_gate_audit_v1
         FOREIGN KEY (decision_gate_audit_log_id)

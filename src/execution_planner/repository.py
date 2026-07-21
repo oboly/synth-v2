@@ -144,6 +144,7 @@ class ExecutionPlannerRepository:
                 venue,
                 side,
                 desired_action,
+                execution_intent,
                 execution_mode,
                 plan_ts_utc,
                 valid_until_ts_utc,
@@ -162,6 +163,7 @@ class ExecutionPlannerRepository:
                 notes
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                %s,
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             )
             """,
@@ -172,6 +174,7 @@ class ExecutionPlannerRepository:
                 plan.venue,
                 plan.side,
                 plan.desired_action,
+                plan.execution_intent,
                 plan.execution_mode,
                 plan.plan_ts_utc,
                 plan.valid_until_ts_utc,
@@ -415,6 +418,7 @@ class ExecutionPlannerRepository:
         execution_plan_id: int,
         target_fraction: Decimal,
         desired_action: str,
+        execution_intent: str | None,
         notes: str,
     ) -> None:
         sql = """
@@ -422,6 +426,7 @@ class ExecutionPlannerRepository:
         SET
             target_fraction = %s,
             desired_action = %s,
+            execution_intent = %s,
             notes = %s,
             updated_ts_utc = CURRENT_TIMESTAMP()
         WHERE execution_plan_id = %s
@@ -435,6 +440,7 @@ class ExecutionPlannerRepository:
                     [
                         target_fraction,
                         desired_action,
+                        execution_intent,
                         notes,
                         execution_plan_id,
                     ],

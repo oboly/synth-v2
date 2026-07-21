@@ -45,6 +45,7 @@ class PlannedExecution:
     venue: str
     side: str
     desired_action: str
+    execution_intent: str | None
     execution_mode: str
     plan_ts_utc: datetime
     valid_until_ts_utc: datetime | None

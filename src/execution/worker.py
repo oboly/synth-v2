@@ -41,6 +41,7 @@ class PlanRuntime:
     venue: str | None
     side: str
     desired_action: str
+    execution_intent: str | None
     execution_mode: str
     target_fraction: Decimal
     reference_price_eur: Decimal
@@ -98,6 +99,7 @@ def _fetch_actionable_plans(limit: int = 50) -> list[PlanRuntime]:
         venue,
         side,
         desired_action,
+        execution_intent,
         plan_ts_utc,
         valid_until_ts_utc,
         execution_mode,
@@ -149,6 +151,11 @@ def _fetch_actionable_plans(limit: int = 50) -> list[PlanRuntime]:
                 venue=str(row["venue"]) if row.get("venue") is not None else None,
                 side=str(row["side"] or "buy").lower(),
                 desired_action=str(row["desired_action"]),
+                execution_intent=(
+                    None
+                    if row.get("execution_intent") is None
+                    else str(row["execution_intent"])
+                ),
                 execution_mode=str(row["execution_mode"]),
                 target_fraction=Decimal(str(row["target_fraction"])),
                 reference_price_eur=Decimal(str(row["reference_price_eur"])),

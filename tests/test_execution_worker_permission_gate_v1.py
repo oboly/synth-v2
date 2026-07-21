@@ -31,15 +31,85 @@ class FakePermissionRepo:
         *,
         account: TradingAccountState | None,
         evidence: list[PermissionEvidence],
+        filter_current: bool = False,
     ) -> None:
         self.account = account
         self.evidence = evidence
+        self.filter_current = filter_current
 
     def fetch_account_state(self, trading_account_id: int) -> TradingAccountState | None:
         return self.account
 
-    def fetch_permission_evidence(self, execution_plan_id: int) -> list[PermissionEvidence]:
-        return list(self.evidence)
+    def fetch_current_permission_evidence(
+        self,
+        execution_plan_id: int,
+        evaluation_ts_utc: datetime,
+    ) -> list[PermissionEvidence]:
+        if not self.filter_current:
+            return list(self.evidence)
+
+        return [
+            row
+            for row in self.evidence
+            if row.execution_plan_id == execution_plan_id
+            and row.evidence_state == "ACTIVE"
+            and row.revoked_ts_utc is None
+            and row.superseded_by_evidence_id is None
+            and row.permitted_ts_utc <= evaluation_ts_utc
+            and row.valid_until_ts_utc is not None
+            and row.valid_until_ts_utc >= evaluation_ts_utc
+        ][:2]
+
+    def fetch_permission_evidence_history(self, execution_plan_id: int) -> list[PermissionEvidence]:
+        return [
+            row
+            for row in self.evidence
+            if row.execution_plan_id == execution_plan_id
+        ]
+
+
+def _row_from_evidence(evidence: PermissionEvidence) -> dict[str, Any]:
+    return {
+        "execution_permission_evidence_id": evidence.execution_permission_evidence_id,
+        "execution_plan_id": evidence.execution_plan_id,
+        "trading_account_id": evidence.trading_account_id,
+        "venue": evidence.venue,
+        "asset_id": evidence.asset_id,
+        "market": evidence.market,
+        "execution_intent": evidence.execution_intent,
+        "action_type": evidence.action_type,
+        "requested_side": evidence.requested_side,
+        "permission_state": evidence.permission_state,
+        "decision_state": evidence.decision_state,
+        "evidence_state": evidence.evidence_state,
+        "permitted_ts_utc": evidence.permitted_ts_utc,
+        "valid_until_ts_utc": evidence.valid_until_ts_utc,
+        "revoked_ts_utc": evidence.revoked_ts_utc,
+        "superseded_by_evidence_id": evidence.superseded_by_evidence_id,
+    }
+
+
+class CapturingCursor:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self.rows = rows
+        self.executed: list[tuple[str, tuple[Any, ...]]] = []
+
+    def execute(self, sql: str, params: tuple[Any, ...]) -> None:
+        self.executed.append((sql, params))
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return list(self.rows)
+
+
+class FakeDbCursor:
+    def __init__(self, cursor: CapturingCursor) -> None:
+        self.cursor = cursor
+
+    def __enter__(self) -> tuple[None, CapturingCursor]:
+        return None, self.cursor
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        return None
 
 
 class FakeBrokerClient:
@@ -74,6 +144,7 @@ def _plan(**overrides: Any) -> worker.PlanRuntime:
         venue="bitvavo",
         side="buy",
         desired_action="SPREAD_CAPTURE_PASSIVE",
+        execution_intent="PLACE_PASSIVE_LIMIT",
         execution_mode="live",
         target_fraction=Decimal("0.10"),
         reference_price_eur=Decimal("100.00"),
@@ -88,7 +159,7 @@ def _plan(**overrides: Any) -> worker.PlanRuntime:
         plan_state="IDLE",
         notes="test",
         plan_ts_utc=NOW,
-        valid_until_ts_utc=NOW + timedelta(minutes=30),
+        valid_until_ts_utc=NOW + timedelta(days=365),
     )
     return replace(base, **overrides)
 
@@ -117,7 +188,8 @@ def _evidence(**overrides: Any) -> PermissionEvidence:
         permission_state="EXECUTION_PERMITTED",
         decision_state="EXECUTION_ALLOWED",
         evidence_state="ACTIVE",
-        valid_until_ts_utc=NOW + timedelta(minutes=5),
+        permitted_ts_utc=NOW - timedelta(days=365),
+        valid_until_ts_utc=NOW + timedelta(days=365),
         revoked_ts_utc=None,
         superseded_by_evidence_id=None,
     )
@@ -143,6 +215,7 @@ def _assert_gate_blocks(
     account: TradingAccountState | None = None,
     evidence: list[PermissionEvidence] | None = None,
     env: dict[str, str] | None = None,
+    filter_current: bool = False,
 ) -> None:
     with pytest.raises(LiveExecutionPermissionError):
         validate_live_execution_permission(
@@ -151,18 +224,265 @@ def _assert_gate_blocks(
             repo=FakePermissionRepo(
                 account=_account() if account is None else account,
                 evidence=[_evidence()] if evidence is None else evidence,
+                filter_current=filter_current,
             ),
             env=_env() if env is None else env,
             now_utc=NOW,
         )
 
 
+def test_one_current_active_evidence_row_passes_selection() -> None:
+    evidence = validate_live_execution_permission(
+        plan=_plan(),
+        market="BTC-EUR",
+        repo=FakePermissionRepo(
+            account=_account(),
+            evidence=[_evidence()],
+            filter_current=True,
+        ),
+        env=_env(),
+        now_utc=NOW,
+    )
+
+    assert evidence.execution_permission_evidence_id == 1
+
+
 def test_missing_decision_gate_evidence_blocks() -> None:
     _assert_gate_blocks(evidence=[])
 
 
+def test_zero_current_evidence_rows_block() -> None:
+    _assert_gate_blocks(
+        evidence=[_evidence(valid_until_ts_utc=NOW - timedelta(seconds=1))],
+        filter_current=True,
+    )
+
+
+def test_multiple_current_evidence_rows_block() -> None:
+    _assert_gate_blocks(
+        evidence=[_evidence(), _evidence(execution_permission_evidence_id=2)],
+        filter_current=True,
+    )
+
+
 def test_multiple_evidence_rows_block() -> None:
     _assert_gate_blocks(evidence=[_evidence(), _evidence(execution_permission_evidence_id=2)])
+
+
+def test_historical_revoked_plus_current_selects_current_row() -> None:
+    selected = validate_live_execution_permission(
+        plan=_plan(),
+        market="BTC-EUR",
+        repo=FakePermissionRepo(
+            account=_account(),
+            evidence=[
+                _evidence(
+                    execution_permission_evidence_id=1,
+                    evidence_state="REVOKED",
+                    revoked_ts_utc=NOW - timedelta(seconds=1),
+                ),
+                _evidence(execution_permission_evidence_id=2),
+            ],
+            filter_current=True,
+        ),
+        env=_env(),
+        now_utc=NOW,
+    )
+
+    assert selected.execution_permission_evidence_id == 2
+
+
+def test_historical_superseded_plus_current_selects_current_row() -> None:
+    selected = validate_live_execution_permission(
+        plan=_plan(),
+        market="BTC-EUR",
+        repo=FakePermissionRepo(
+            account=_account(),
+            evidence=[
+                _evidence(
+                    execution_permission_evidence_id=1,
+                    evidence_state="SUPERSEDED",
+                    superseded_by_evidence_id=2,
+                ),
+                _evidence(execution_permission_evidence_id=2),
+            ],
+            filter_current=True,
+        ),
+        env=_env(),
+        now_utc=NOW,
+    )
+
+    assert selected.execution_permission_evidence_id == 2
+
+
+def test_expired_active_plus_current_selects_current_row() -> None:
+    selected = validate_live_execution_permission(
+        plan=_plan(),
+        market="BTC-EUR",
+        repo=FakePermissionRepo(
+            account=_account(),
+            evidence=[
+                _evidence(
+                    execution_permission_evidence_id=1,
+                    valid_until_ts_utc=NOW - timedelta(seconds=1),
+                ),
+                _evidence(execution_permission_evidence_id=2),
+            ],
+            filter_current=True,
+        ),
+        env=_env(),
+        now_utc=NOW,
+    )
+
+    assert selected.execution_permission_evidence_id == 2
+
+
+def test_future_not_yet_valid_plus_current_selects_current_row() -> None:
+    selected = validate_live_execution_permission(
+        plan=_plan(),
+        market="BTC-EUR",
+        repo=FakePermissionRepo(
+            account=_account(),
+            evidence=[
+                _evidence(
+                    execution_permission_evidence_id=1,
+                    permitted_ts_utc=NOW + timedelta(seconds=1),
+                ),
+                _evidence(execution_permission_evidence_id=2),
+            ],
+            filter_current=True,
+        ),
+        env=_env(),
+        now_utc=NOW,
+    )
+
+    assert selected.execution_permission_evidence_id == 2
+
+
+def test_active_row_with_revoked_timestamp_is_ignored_as_current() -> None:
+    selected = validate_live_execution_permission(
+        plan=_plan(),
+        market="BTC-EUR",
+        repo=FakePermissionRepo(
+            account=_account(),
+            evidence=[
+                _evidence(
+                    execution_permission_evidence_id=1,
+                    revoked_ts_utc=NOW - timedelta(seconds=1),
+                ),
+                _evidence(execution_permission_evidence_id=2),
+            ],
+            filter_current=True,
+        ),
+        env=_env(),
+        now_utc=NOW,
+    )
+
+    assert selected.execution_permission_evidence_id == 2
+
+
+def test_active_row_with_superseded_by_is_ignored_as_current() -> None:
+    selected = validate_live_execution_permission(
+        plan=_plan(),
+        market="BTC-EUR",
+        repo=FakePermissionRepo(
+            account=_account(),
+            evidence=[
+                _evidence(
+                    execution_permission_evidence_id=1,
+                    superseded_by_evidence_id=2,
+                ),
+                _evidence(execution_permission_evidence_id=2),
+            ],
+            filter_current=True,
+        ),
+        env=_env(),
+        now_utc=NOW,
+    )
+
+    assert selected.execution_permission_evidence_id == 2
+
+
+def test_historical_rows_remain_queryable_for_audit() -> None:
+    repo = FakePermissionRepo(
+        account=_account(),
+        evidence=[
+            _evidence(
+                execution_permission_evidence_id=1,
+                evidence_state="REVOKED",
+                revoked_ts_utc=NOW - timedelta(seconds=1),
+            ),
+            _evidence(execution_permission_evidence_id=2),
+        ],
+        filter_current=True,
+    )
+
+    assert [
+        row.execution_permission_evidence_id
+        for row in repo.fetch_permission_evidence_history(100)
+    ] == [1, 2]
+    assert [
+        row.execution_permission_evidence_id
+        for row in repo.fetch_current_permission_evidence(100, NOW)
+    ] == [2]
+
+
+def test_repository_current_evidence_query_filters_only_current_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.execution import permission_gate_v1
+
+    cursor = CapturingCursor([_row_from_evidence(_evidence())])
+    monkeypatch.setattr(
+        permission_gate_v1,
+        "db_cursor",
+        lambda commit=False: FakeDbCursor(cursor),
+    )
+
+    rows = permission_gate_v1.ExecutionPermissionRepository().fetch_current_permission_evidence(100, NOW)
+
+    assert len(rows) == 1
+    sql, params = cursor.executed[0]
+    assert "WHERE execution_plan_id = %s" in sql
+    assert "evidence_state = 'ACTIVE'" in sql
+    assert "revoked_ts_utc IS NULL" in sql
+    assert "superseded_by_evidence_id IS NULL" in sql
+    assert "permitted_ts_utc <= %s" in sql
+    assert "valid_until_ts_utc >= %s" in sql
+    assert "LIMIT 1" not in sql
+    assert params == (100, NOW, NOW)
+
+
+def test_repository_history_query_keeps_historical_rows_auditable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.execution import permission_gate_v1
+
+    cursor = CapturingCursor(
+        [
+            _row_from_evidence(
+                _evidence(
+                    execution_permission_evidence_id=1,
+                    evidence_state="REVOKED",
+                    revoked_ts_utc=NOW - timedelta(seconds=1),
+                )
+            ),
+            _row_from_evidence(_evidence(execution_permission_evidence_id=2)),
+        ]
+    )
+    monkeypatch.setattr(
+        permission_gate_v1,
+        "db_cursor",
+        lambda commit=False: FakeDbCursor(cursor),
+    )
+
+    rows = permission_gate_v1.ExecutionPermissionRepository().fetch_permission_evidence_history(100)
+
+    assert [row.execution_permission_evidence_id for row in rows] == [1, 2]
+    sql, params = cursor.executed[0]
+    assert "WHERE execution_plan_id = %s" in sql
+    assert "evidence_state = 'ACTIVE'" not in sql
+    assert params == (100,)
 
 
 def test_denied_decision_blocks() -> None:
@@ -185,12 +505,46 @@ def test_wrong_execution_intent_blocks() -> None:
     _assert_gate_blocks(evidence=[_evidence(execution_intent="PREPARE_PLAN")])
 
 
+def test_missing_planner_execution_intent_blocks() -> None:
+    _assert_gate_blocks(plan=_plan(execution_intent=None), evidence=[_evidence()])
+
+
+def test_legacy_desired_action_without_explicit_intent_blocks() -> None:
+    _assert_gate_blocks(
+        plan=_plan(desired_action="SPREAD_CAPTURE_PASSIVE", execution_intent=None),
+        evidence=[_evidence(execution_intent="PLACE_PASSIVE_LIMIT")],
+    )
+
+
+def test_executor_does_not_derive_intent_from_desired_action() -> None:
+    _assert_gate_blocks(
+        plan=_plan(desired_action="ENTER_LONG", execution_intent=None),
+        evidence=[
+            _evidence(
+                execution_intent="PLACE_PASSIVE_LIMIT",
+                action_type="ENTER_LONG",
+            )
+        ],
+    )
+
+
+def test_decision_gate_evidence_cannot_replace_planner_intent() -> None:
+    _assert_gate_blocks(
+        plan=_plan(execution_intent=None),
+        evidence=[_evidence(execution_intent="PLACE_PASSIVE_LIMIT")],
+    )
+
+
+def test_planner_intent_cannot_replace_decision_gate_permission() -> None:
+    _assert_gate_blocks(plan=_plan(execution_intent="PLACE_PASSIVE_LIMIT"), evidence=[])
+
+
 def test_wrong_execution_action_blocks() -> None:
     _assert_gate_blocks(evidence=[_evidence(action_type="ENTER_LONG")])
 
 
 def test_stale_evidence_blocks() -> None:
-    _assert_gate_blocks(evidence=[_evidence(valid_until_ts_utc=NOW)])
+    _assert_gate_blocks(evidence=[_evidence(valid_until_ts_utc=NOW - timedelta(seconds=1))])
 
 
 def test_revoked_evidence_blocks() -> None:
@@ -277,7 +631,11 @@ def test_paper_execution_stays_broker_isolated(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_live_permission_evidence_cannot_convert_paper_intent_to_live() -> None:
-    paper_plan = _plan(execution_mode="paper", desired_action="PREPARE_PLAN")
+    paper_plan = _plan(
+        execution_mode="paper",
+        desired_action="PREPARE_PLAN",
+        execution_intent="PREPARE_PLAN",
+    )
     _assert_gate_blocks(plan=paper_plan, evidence=[_evidence(execution_intent="PLACE_PASSIVE_LIMIT")])
 
 
@@ -290,6 +648,8 @@ def test_executor_does_not_invoke_selection_engine_or_recalculate_decision_gate_
     assert "evaluate_selection_for_account" not in joined
     assert "DecisionGateRepository" not in joined
     assert "decision_gate_v1" not in joined
+    assert "INTENT_BY_DESIRED_ACTION" not in joined
+    assert "expected_execution_intent" not in joined
 
 
 def test_migration_defines_explicit_additive_evidence_contract() -> None:
@@ -308,6 +668,7 @@ def test_migration_defines_explicit_additive_evidence_contract() -> None:
         "permission_state",
         "decision_state",
         "evidence_state",
+        "permitted_ts_utc",
         "valid_until_ts_utc",
         "revoked_ts_utc",
         "superseded_by_evidence_id",
@@ -321,3 +682,7 @@ def test_migration_defines_explicit_additive_evidence_contract() -> None:
     assert "REFERENCES decision_gate_audit_log" in sql
     assert "REFERENCES execution_plan" in sql
     assert "REFERENCES trading_account" in sql
+    assert "ADD COLUMN IF NOT EXISTS execution_intent" in sql
+    assert "chk_epe_valid_window_v1" in sql
+    assert "chk_epe_active_not_revoked_v1" in sql
+    assert "chk_epe_active_not_superseded_v1" in sql

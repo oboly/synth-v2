@@ -27,6 +27,7 @@ Before any live broker write, executor must require exactly one active, current 
 - `decision_state=EXECUTION_ALLOWED`
 - `permission_state=EXECUTION_PERMITTED`
 - `evidence_state=ACTIVE`
+- `permitted_ts_utc <= evaluation timestamp`
 - non-expired `valid_until_ts_utc`
 - no `revoked_ts_utc`
 - no `superseded_by_evidence_id`
@@ -34,6 +35,10 @@ Before any live broker write, executor must require exactly one active, current 
 The execution plan must remain actionable and unexpired. The trading account must be enabled and `trading_account.live_trading_enabled=true`.
 
 Production live execution also requires `SYNTH_LIVE_EXECUTION_PERMISSION` to contain the canonical granted value, and broker writes still require `SYNTH_BROKER_WRITE_PERMISSION=I_UNDERSTAND_THIS_PLACES_REAL_ORDERS`.
+
+The executor must consume the explicit `execution_plan.execution_intent` value owned by `execution_planner` and compare it exactly with `execution_permission_evidence.execution_intent`. It must not infer intent from `desired_action`.
+
+No database uniqueness constraint is used for "one current evidence row" because MariaDB cannot safely express the time-dependent current-row predicate without blocking auditable historical `REVOKED`, `SUPERSEDED`, expired, and future-dated evidence rows. The repository query narrows to currently applicable rows, and the executor fails closed unless exactly one current row is returned.
 
 ## Paper Separation
 

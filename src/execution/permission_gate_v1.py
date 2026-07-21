@@ -22,12 +22,6 @@ LIVE_ACTIONABLE_PLAN_STATES = frozenset(
     {"IDLE", "PLACED", "MONITOR_QUEUE", "REPRICE_PENDING"}
 )
 
-INTENT_BY_DESIRED_ACTION = {
-    "SPREAD_CAPTURE_PASSIVE": "PLACE_PASSIVE_LIMIT",
-    "ENTER": "PLACE_PASSIVE_LIMIT",
-    "ENTER_LONG": "PLACE_PASSIVE_LIMIT",
-}
-
 
 @dataclass(frozen=True)
 class TradingAccountState:
@@ -51,6 +45,7 @@ class PermissionEvidence:
     permission_state: str
     decision_state: str
     evidence_state: str
+    permitted_ts_utc: datetime
     valid_until_ts_utc: datetime | None
     revoked_ts_utc: datetime | None
     superseded_by_evidence_id: int | None
@@ -87,7 +82,11 @@ class ExecutionPermissionRepository:
             live_trading_enabled=bool(row["live_trading_enabled"]),
         )
 
-    def fetch_permission_evidence(self, execution_plan_id: int) -> list[PermissionEvidence]:
+    def fetch_current_permission_evidence(
+        self,
+        execution_plan_id: int,
+        evaluation_ts_utc: datetime,
+    ) -> list[PermissionEvidence]:
         sql = """
         SELECT
             execution_permission_evidence_id,
@@ -102,13 +101,49 @@ class ExecutionPermissionRepository:
             permission_state,
             decision_state,
             evidence_state,
+            permitted_ts_utc,
+            valid_until_ts_utc,
+            revoked_ts_utc,
+            superseded_by_evidence_id
+        FROM execution_permission_evidence
+        WHERE execution_plan_id = %s
+          AND evidence_state = 'ACTIVE'
+          AND revoked_ts_utc IS NULL
+          AND superseded_by_evidence_id IS NULL
+          AND permitted_ts_utc <= %s
+          AND valid_until_ts_utc >= %s
+        ORDER BY execution_permission_evidence_id ASC
+        LIMIT 2
+        """
+
+        with db_cursor(commit=False) as (_conn, cur):
+            cur.execute(sql, (execution_plan_id, evaluation_ts_utc, evaluation_ts_utc))
+            rows = cur.fetchall()
+
+        return [_permission_evidence_from_row(row) for row in rows]
+
+    def fetch_permission_evidence_history(self, execution_plan_id: int) -> list[PermissionEvidence]:
+        sql = """
+        SELECT
+            execution_permission_evidence_id,
+            execution_plan_id,
+            trading_account_id,
+            venue,
+            asset_id,
+            market,
+            execution_intent,
+            action_type,
+            requested_side,
+            permission_state,
+            decision_state,
+            evidence_state,
+            permitted_ts_utc,
             valid_until_ts_utc,
             revoked_ts_utc,
             superseded_by_evidence_id
         FROM execution_permission_evidence
         WHERE execution_plan_id = %s
         ORDER BY execution_permission_evidence_id ASC
-        LIMIT 2
         """
 
         with db_cursor(commit=False) as (_conn, cur):
@@ -134,6 +169,7 @@ def _permission_evidence_from_row(row: Mapping[str, Any]) -> PermissionEvidence:
         permission_state=str(row["permission_state"]),
         decision_state=str(row["decision_state"]),
         evidence_state=str(row["evidence_state"]),
+        permitted_ts_utc=row["permitted_ts_utc"],
         valid_until_ts_utc=row["valid_until_ts_utc"],
         revoked_ts_utc=row["revoked_ts_utc"],
         superseded_by_evidence_id=(
@@ -146,10 +182,6 @@ def _permission_evidence_from_row(row: Mapping[str, Any]) -> PermissionEvidence:
 
 def utc_now_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
-
-
-def expected_execution_intent(desired_action: str) -> str | None:
-    return INTENT_BY_DESIRED_ACTION.get(str(desired_action).upper())
 
 
 def require_live_execution_environment(env: Mapping[str, str] | None = None) -> None:
@@ -208,16 +240,17 @@ def validate_live_execution_permission(
     if valid_until is not None and valid_until <= now:
         raise LiveExecutionPermissionError("Live execution blocked: execution plan is stale.")
 
-    rows = repo.fetch_permission_evidence(execution_plan_id)
+    rows = repo.fetch_current_permission_evidence(execution_plan_id, now)
     if not rows:
         raise LiveExecutionPermissionError("Live execution blocked: missing decision-gate permission evidence.")
     if len(rows) > 1:
-        raise LiveExecutionPermissionError("Live execution blocked: multiple decision-gate permission evidence rows.")
+        raise LiveExecutionPermissionError("Live execution blocked: ambiguous current decision-gate permission evidence.")
 
     evidence = rows[0]
-    expected_intent = expected_execution_intent(str(getattr(plan, "desired_action", "")))
-    if expected_intent is None:
-        raise LiveExecutionPermissionError("Live execution blocked: unsupported execution intent.")
+    plan_execution_intent = getattr(plan, "execution_intent", None)
+    if plan_execution_intent is None or str(plan_execution_intent).strip() == "":
+        raise LiveExecutionPermissionError("Live execution blocked: missing explicit planner execution_intent.")
+    plan_execution_intent = str(plan_execution_intent)
 
     if evidence.execution_plan_id != execution_plan_id:
         raise LiveExecutionPermissionError("Live execution blocked: execution_plan_id mismatch.")
@@ -229,7 +262,7 @@ def validate_live_execution_permission(
         raise LiveExecutionPermissionError("Live execution blocked: instrument asset_id mismatch.")
     if evidence.market != market:
         raise LiveExecutionPermissionError("Live execution blocked: market identity mismatch.")
-    if evidence.execution_intent != expected_intent:
+    if evidence.execution_intent != plan_execution_intent:
         raise LiveExecutionPermissionError("Live execution blocked: execution intent mismatch.")
     if evidence.action_type != str(getattr(plan, "desired_action")):
         raise LiveExecutionPermissionError("Live execution blocked: execution action mismatch.")
@@ -245,7 +278,9 @@ def validate_live_execution_permission(
         raise LiveExecutionPermissionError("Live execution blocked: permission state is not execution-permitted.")
     if evidence.evidence_state != ACTIVE_EVIDENCE_STATE:
         raise LiveExecutionPermissionError("Live execution blocked: permission evidence is not active.")
-    if evidence.valid_until_ts_utc is None or evidence.valid_until_ts_utc <= now:
+    if evidence.permitted_ts_utc > now:
+        raise LiveExecutionPermissionError("Live execution blocked: permission evidence is not yet valid.")
+    if evidence.valid_until_ts_utc is None or evidence.valid_until_ts_utc < now:
         raise LiveExecutionPermissionError("Live execution blocked: permission evidence is stale.")
     if evidence.revoked_ts_utc is not None:
         raise LiveExecutionPermissionError("Live execution blocked: permission evidence is revoked.")
