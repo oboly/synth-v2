@@ -96,6 +96,52 @@ src.operations.run_host_preflight_v1 ... --strict`, see
 `native_short_4h_chain` is not selected and remains independently unresolved
 (`selected_host=UNASSIGNED`, `runtime_lifecycle=UNASSIGNED`).
 
+## Stage-Aware Preflight Evidence
+
+Strict gurkDB preflight distinguishes evidence stages. Only `PREFLIGHT_LOCAL`
+and `PREFLIGHT_EXTERNAL` checks gate `--strict`; `ACCEPTANCE` and `CUTOVER`
+checks stay visible but deferred and non-blocking, and are never silently marked
+`PASS`.
+
+```text
+PREFLIGHT_LOCAL     measured locally by the read-only runner; always authoritative
+PREFLIGHT_EXTERNAL  DB/exchange/network/host-policy probes; UNVERIFIED unless proven
+ACCEPTANCE          runtime_per_writer, resource_usage_per_writer (deferred)
+CUTOVER             rollback_capability (deferred)
+```
+
+Separately authorized external probes may be recorded in a matching
+external-evidence manifest and merged with `--external-evidence-file`. The
+manifest binds `schema_version`, `capability`, `hostname`, `checkout_commit`,
+and `observed_at_utc`, may fill only permitted `PREFLIGHT_EXTERNAL` checks, and
+never overrides a local check. Capability-specific external requirements are
+proven from code. All three writers reach MariaDB through `src.common.db`, so
+`mariadb_connectivity` and `runtime_configuration` are required for each. The
+public price/candle writers additionally require public-exchange connectivity
+but no private exchange credentials (`private_exchange_credentials` not
+required); `market_rotation_pressure` requires MariaDB but no exchange API (it
+reads persisted candles and uses only optional public CoinGecko context).
+`runtime_configuration` verifies only safe DB/runtime configuration metadata
+(env names resolvable, config file present/owned/permissioned, required values
+non-empty) and never reads secret values.
+
+External evidence is time-bounded: `--max-external-evidence-age-seconds`
+(default 900) rejects stale or future evidence, and every required check must
+belong to one bounded evidence run. The manifest also carries strict safety
+markers proving no mutation occurred while producing the evidence
+(`host_mutations=0`, `database_writes=0`, `writer_invocations=0`,
+`systemctl_mutations=0`, `order_submission=0`, `broker_writes=0`,
+`authorization_created=false`, `deployment_performed=false`); read-only probe
+counters may be nonzero.
+
+A strict preflight `PASS` proves host readiness only. It is non-authorizing: it
+does not grant production ownership and does not change any lifecycle here. No
+external-evidence file may contain secrets or credentials, and acceptance or
+cutover evidence must not be presented as preflight evidence. Evidence files are
+local operational artifacts and are not committed by default. See
+`docs/ops/writer_capability_host_ownership_contract_v1.md` and
+`deploy/ownership/host_preflight_external_evidence_v1.schema.json`.
+
 ## Executable Artifacts
 
 The committed services under `deploy/systemd/` are devlap-bound candidate or

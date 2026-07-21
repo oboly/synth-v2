@@ -1,0 +1,117 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "host_preflight_external_evidence_v1",
+  "title": "Host preflight external evidence manifest v1",
+  "description": "Machine-readable, non-authorizing manifest binding separately collected PREFLIGHT_EXTERNAL evidence to one exact capability, host, and checkout commit. Never contains secrets, credentials, commands, or acceptance/cutover evidence. Evidence files are local operational artifacts and must not be committed by default.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "capability",
+    "hostname",
+    "checkout_commit",
+    "observed_at_utc",
+    "checks",
+    "safety_markers"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "host_preflight_external_evidence_schema_v1"
+    },
+    "capability": {
+      "type": "string",
+      "enum": [
+        "public_price_snapshot",
+        "public_candle_freshness",
+        "market_rotation_pressure",
+        "native_short_4h_chain"
+      ]
+    },
+    "hostname": {
+      "type": "string",
+      "minLength": 1
+    },
+    "checkout_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "observed_at_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+    },
+    "evidence_producer": {
+      "type": "string",
+      "description": "Optional human/tool label describing who produced this evidence. Must not contain secrets."
+    },
+    "checks": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "Keyed only by permitted PREFLIGHT_EXTERNAL check names. Local, acceptance, and cutover check names are rejected.",
+      "propertyNames": {
+        "enum": [
+          "mariadb_connectivity",
+          "exchange_api_connectivity",
+          "dns",
+          "ntp_time_sync",
+          "journald_logrotation",
+          "runtime_configuration",
+          "private_exchange_credentials",
+          "firewall_outbound_connectivity"
+        ]
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["status", "detail", "evidence_source", "observed_at_utc"],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["PASS", "WARN", "FAIL"]
+          },
+          "detail": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "evidence_source": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "observed_at_utc": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"
+          }
+        }
+      }
+    },
+    "safety_markers": {
+      "type": "object",
+      "description": "Strict attestation that producing this evidence performed no mutation. Mutation/write/invocation/order counters must be 0; authorization/deployment flags must be false. Read-only probe counters (DB connections/read queries, DNS lookups, public exchange calls) may be nonzero.",
+      "additionalProperties": false,
+      "required": [
+        "host_mutations",
+        "database_writes",
+        "writer_invocations",
+        "systemctl_mutations",
+        "order_submission",
+        "broker_writes",
+        "authorization_created",
+        "deployment_performed"
+      ],
+      "properties": {
+        "host_mutations": {"const": 0},
+        "database_writes": {"const": 0},
+        "writer_invocations": {"const": 0},
+        "systemctl_mutations": {"const": 0},
+        "order_submission": {"const": 0},
+        "broker_writes": {"const": 0},
+        "authorization_created": {"const": false},
+        "deployment_performed": {"const": false},
+        "database_connections": {"type": "integer", "minimum": 0},
+        "database_read_queries": {"type": "integer", "minimum": 0},
+        "dns_lookups": {"type": "integer", "minimum": 0},
+        "exchange_public_calls": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}
