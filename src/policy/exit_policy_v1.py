@@ -153,7 +153,7 @@ def run_exit_policy_v1(
     config: ExitPolicyConfig,
 ) -> list[ExitPolicyResult]:
     planner_repo = ExecutionPlannerRepository()
-    planner_config = ExecutionPlannerConfig(execution_mode="paper")
+    planner_config = ExecutionPlannerConfig(execution_mode="PAPER")
     position_rows = fetch_open_positions_for_policy(
         account_id=account_id,
         sleeve_code=sleeve_code,

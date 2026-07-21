@@ -291,7 +291,7 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
         min_available_equity_eur=_require_decimal(cfg, "planner", "max_notional_eur")
     )
     planner_config = ExecutionPlannerConfig(
-        execution_mode="paper",
+        execution_mode="PAPER",
         prepare_target_fraction=_require_decimal(cfg, "planner", "prepare_target_fraction"),
         execute_target_fraction=_require_decimal(cfg, "planner", "execute_target_fraction"),
         max_notional_eur=_require_decimal(cfg, "planner", "max_notional_eur"),

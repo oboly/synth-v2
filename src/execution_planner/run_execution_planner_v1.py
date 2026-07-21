@@ -24,6 +24,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbol", default=None)
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--min-available-equity-eur", default="25.00")
+    parser.add_argument("--execution-mode", choices=("PAPER", "LIVE"), default="PAPER")
+    parser.add_argument("--trading-account-id", type=int, default=None)
+    parser.add_argument("--permission-evidence-id", type=int, default=None)
     parser.add_argument("--write-db", action="store_true")
     parser.add_argument("--output", choices=("table", "json"), default="table")
     return parser.parse_args()
@@ -163,7 +166,17 @@ def main() -> int:
     planner_repo = ExecutionPlannerRepository()
     gate_repo = DecisionGateRepository()
 
-    planner_config = ExecutionPlannerConfig()
+    if args.execution_mode == "LIVE" and (
+        args.trading_account_id is None or args.permission_evidence_id is None
+    ):
+        raise SystemExit(
+            "LIVE planning requires --trading-account-id and --permission-evidence-id"
+        )
+    planner_config = ExecutionPlannerConfig(
+        execution_mode=args.execution_mode,
+        trading_account_id=args.trading_account_id,
+        decision_gate_permission_evidence_id=args.permission_evidence_id,
+    )
     gate_config = DecisionGateConfig(
         min_available_equity_eur=Decimal(str(args.min_available_equity_eur))
     )
@@ -255,10 +268,13 @@ def main() -> int:
                 if args.write_db:
                     planner_repo.update_plan(
                         execution_plan_id=existing_plan_id,
-                        target_fraction=planner_config.prepare_target_fraction,
-                        desired_action="PREPARE_PLAN",
-                        execution_intent=decision.execution_intent,
-                        notes="PROMOTED_TO_PREPARE",
+                        plan=build_execution_plan(
+                            decision,
+                            planner_config,
+                            reference_price_eur=planner_repo.fetch_reference_price_eur(
+                                selection_row.asset_id, selection_row.venue
+                            ),
+                        ),
                     )
 
                 output_rows.append(
@@ -281,10 +297,13 @@ def main() -> int:
                 if args.write_db:
                     planner_repo.update_plan(
                         execution_plan_id=existing_plan_id,
-                        target_fraction=planner_config.execute_target_fraction,
-                        desired_action="SPREAD_CAPTURE_PASSIVE",
-                        execution_intent=decision.execution_intent,
-                        notes="PROMOTED_TO_EXECUTION",
+                        plan=build_execution_plan(
+                            decision,
+                            planner_config,
+                            reference_price_eur=planner_repo.fetch_reference_price_eur(
+                                selection_row.asset_id, selection_row.venue
+                            ),
+                        ),
                     )
 
                 output_rows.append(

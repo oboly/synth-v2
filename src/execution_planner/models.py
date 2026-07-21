@@ -20,7 +20,10 @@ PLANNABLE_EXECUTION_INTENTS: Final[set[str]] = {
 
 @dataclass(frozen=True)
 class ExecutionPlannerConfig:
-    execution_mode: str = "paper"
+    execution_mode: str = "PAPER"
+    trading_account_id: int | None = None
+    decision_gate_permission_evidence_id: int | None = None
+    live_plan_ttl_seconds: int = 300
     watchlist_preplan_target_fraction: Decimal = Decimal("0.03300000")
     prepare_target_fraction: Decimal = Decimal("0.06600000")
     execute_target_fraction: Decimal = Decimal("0.06600000")
@@ -62,6 +65,11 @@ class PlannedExecution:
     abort_if_signal_invalidates: bool
     plan_state: str
     notes: str
+    market: str | None = None
+    trading_account_id: int | None = None
+    decision_gate_permission_evidence_id: int | None = None
+    action_type: str | None = None
+    requested_side: str | None = None
 
 
 @dataclass(frozen=True)

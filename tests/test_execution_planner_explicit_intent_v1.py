@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 from decimal import Decimal
 
 from src.decision_gate.models import DecisionResult
@@ -38,13 +39,24 @@ def _decision(**overrides: object) -> DecisionResult:
 def test_execution_plan_stores_explicit_passive_limit_intent() -> None:
     plan = build_execution_plan(
         decision=_decision(),
-        config=ExecutionPlannerConfig(execution_mode="live"),
+        config=ExecutionPlannerConfig(
+            execution_mode="LIVE",
+            trading_account_id=17,
+            decision_gate_permission_evidence_id=23,
+        ),
         reference_price_eur=Decimal("100.00"),
     )
 
     assert plan is not None
     assert plan.execution_intent == "PLACE_PASSIVE_LIMIT"
     assert plan.desired_action == "SPREAD_CAPTURE_PASSIVE"
+    assert plan.execution_mode == "LIVE"
+    assert plan.trading_account_id == 17
+    assert plan.decision_gate_permission_evidence_id == 23
+    assert plan.action_type == "PLACE_ORDER"
+    assert plan.requested_side == "BUY"
+    assert plan.plan_state == "IDLE"
+    assert isinstance(plan.valid_until_ts_utc, datetime)
 
 
 def test_execution_plan_stores_explicit_prepare_intent() -> None:
@@ -53,10 +65,56 @@ def test_execution_plan_stores_explicit_prepare_intent() -> None:
             decision_state="PREPARE_ALLOWED",
             execution_intent="PREPARE_PLAN",
         ),
-        config=ExecutionPlannerConfig(execution_mode="paper"),
+        config=ExecutionPlannerConfig(execution_mode="PAPER"),
         reference_price_eur=Decimal("100.00"),
     )
 
     assert plan is not None
     assert plan.execution_intent == "PREPARE_PLAN"
     assert plan.desired_action == "PREPARE_PLAN"
+
+
+def test_live_plan_requires_explicit_trading_account_and_permission_binding() -> None:
+    for config, message in [
+        (ExecutionPlannerConfig(execution_mode="LIVE"), "trading_account_id"),
+        (
+            ExecutionPlannerConfig(execution_mode="LIVE", trading_account_id=17),
+            "decision_gate_permission_evidence_id",
+        ),
+    ]:
+        try:
+            build_execution_plan(_decision(), config, Decimal("100"))
+        except ValueError as exc:
+            assert message in str(exc)
+        else:
+            raise AssertionError("LIVE plan without exact binding must fail")
+
+
+def test_legacy_lowercase_execution_mode_is_not_silently_normalized() -> None:
+    try:
+        build_execution_plan(
+            _decision(),
+            ExecutionPlannerConfig(execution_mode="live", trading_account_id=17),
+            Decimal("100"),
+        )
+    except ValueError as exc:
+        assert str(exc) == "execution_mode must be canonical PAPER or LIVE"
+    else:
+        raise AssertionError("lowercase mode must fail closed")
+
+
+def test_live_prepare_plan_is_rejected() -> None:
+    try:
+        build_execution_plan(
+            _decision(decision_state="PREPARE_ALLOWED", execution_intent="PREPARE_PLAN"),
+            ExecutionPlannerConfig(
+                execution_mode="LIVE",
+                trading_account_id=17,
+                decision_gate_permission_evidence_id=23,
+            ),
+            Decimal("100"),
+        )
+    except ValueError as exc:
+        assert str(exc) == "LIVE planning only supports PLACE_PASSIVE_LIMIT"
+    else:
+        raise AssertionError("LIVE preplan must fail closed")

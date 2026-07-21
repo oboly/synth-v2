@@ -1,155 +1,249 @@
 from __future__ import annotations
 
+import threading
+import base64
 from dataclasses import replace
 from datetime import datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from src.decision_gate.permission_evidence_v1 import (
+    EVIDENCE_PRIVATE_KEY_ENV,
+    EVIDENCE_PUBLIC_KEY_ENV,
+    PRODUCER_NAME,
+    build_provenance_payload,
+    sign_provenance,
+)
 from src.execution import worker
 from src.execution.permission_gate_v1 import (
     BROKER_WRITE_PERMISSION_ENV,
     BROKER_WRITE_PERMISSION_GRANTED_VALUE,
     LIVE_EXECUTION_PERMISSION_ENV,
     LIVE_EXECUTION_PERMISSION_GRANTED_VALUE,
+    ExecutionClaim,
     LiveExecutionPermissionError,
-    PermissionEvidence,
-    TradingAccountState,
-    validate_live_execution_permission,
+    _validate_exact_scope,
 )
 
 
 NOW = datetime(2026, 7, 21, 12, 0, 0)
-MIGRATION_PATH = Path("db/migrations/20260721_executor_permission_evidence_v1.sql")
+PRIVATE_KEY = Ed25519PrivateKey.from_private_bytes(bytes(range(32)))
+PRIVATE_KEY_B64 = base64.b64encode(
+    PRIVATE_KEY.private_bytes(
+        serialization.Encoding.Raw,
+        serialization.PrivateFormat.Raw,
+        serialization.NoEncryption(),
+    )
+).decode("ascii")
+PUBLIC_KEY_B64 = base64.b64encode(
+    PRIVATE_KEY.public_key().public_bytes(
+        serialization.Encoding.Raw,
+        serialization.PublicFormat.Raw,
+    )
+).decode("ascii")
 
 
-class FakePermissionRepo:
-    def __init__(
-        self,
-        *,
-        account: TradingAccountState | None,
-        evidence: list[PermissionEvidence],
-        filter_current: bool = False,
-    ) -> None:
-        self.account = account
-        self.evidence = evidence
-        self.filter_current = filter_current
-
-    def fetch_account_state(self, trading_account_id: int) -> TradingAccountState | None:
-        return self.account
-
-    def fetch_current_permission_evidence(
-        self,
-        execution_plan_id: int,
-        evaluation_ts_utc: datetime,
-    ) -> list[PermissionEvidence]:
-        if not self.filter_current:
-            return list(self.evidence)
-
-        return [
-            row
-            for row in self.evidence
-            if row.execution_plan_id == execution_plan_id
-            and row.evidence_state == "ACTIVE"
-            and row.revoked_ts_utc is None
-            and row.superseded_by_evidence_id is None
-            and row.permitted_ts_utc <= evaluation_ts_utc
-            and row.valid_until_ts_utc is not None
-            and row.valid_until_ts_utc >= evaluation_ts_utc
-        ][:2]
-
-    def fetch_permission_evidence_history(self, execution_plan_id: int) -> list[PermissionEvidence]:
-        return [
-            row
-            for row in self.evidence
-            if row.execution_plan_id == execution_plan_id
-        ]
-
-
-def _row_from_evidence(evidence: PermissionEvidence) -> dict[str, Any]:
+def _env() -> dict[str, str]:
     return {
-        "execution_permission_evidence_id": evidence.execution_permission_evidence_id,
-        "execution_plan_id": evidence.execution_plan_id,
-        "trading_account_id": evidence.trading_account_id,
-        "venue": evidence.venue,
-        "asset_id": evidence.asset_id,
-        "market": evidence.market,
-        "execution_intent": evidence.execution_intent,
-        "action_type": evidence.action_type,
-        "requested_side": evidence.requested_side,
-        "permission_state": evidence.permission_state,
-        "decision_state": evidence.decision_state,
-        "evidence_state": evidence.evidence_state,
-        "permitted_ts_utc": evidence.permitted_ts_utc,
-        "valid_until_ts_utc": evidence.valid_until_ts_utc,
-        "revoked_ts_utc": evidence.revoked_ts_utc,
-        "superseded_by_evidence_id": evidence.superseded_by_evidence_id,
+        LIVE_EXECUTION_PERMISSION_ENV: LIVE_EXECUTION_PERMISSION_GRANTED_VALUE,
+        BROKER_WRITE_PERMISSION_ENV: BROKER_WRITE_PERMISSION_GRANTED_VALUE,
+        EVIDENCE_PUBLIC_KEY_ENV: PUBLIC_KEY_B64,
     }
 
 
-class CapturingCursor:
-    def __init__(self, rows: list[dict[str, Any]]) -> None:
-        self.rows = rows
-        self.executed: list[tuple[str, tuple[Any, ...]]] = []
-
-    def execute(self, sql: str, params: tuple[Any, ...]) -> None:
-        self.executed.append((sql, params))
-
-    def fetchall(self) -> list[dict[str, Any]]:
-        return list(self.rows)
+def _producer_env() -> dict[str, str]:
+    return {EVIDENCE_PRIVATE_KEY_ENV: PRIVATE_KEY_B64}
 
 
-class FakeDbCursor:
-    def __init__(self, cursor: CapturingCursor) -> None:
-        self.cursor = cursor
+def _scope_row(**overrides: Any) -> dict[str, Any]:
+    row: dict[str, Any] = {
+        "execution_plan_id": 100,
+        "plan_trading_account_id": 7,
+        "plan_permission_evidence_id": 11,
+        "evidence_permission_evidence_id": 11,
+        "plan_asset_id": 42,
+        "plan_venue": "bitvavo",
+        "plan_market": "BTC-EUR",
+        "plan_side": "BUY",
+        "plan_execution_intent": "PLACE_PASSIVE_LIMIT",
+        "plan_action_type": "PLACE_ORDER",
+        "plan_requested_side": "BUY",
+        "plan_execution_mode": "LIVE",
+        "plan_state": "IDLE",
+        "plan_valid_until_ts_utc": NOW + timedelta(minutes=5),
+        "reference_price_eur": Decimal("100"),
+        "passive_price_eur": Decimal("99"),
+        "target_fraction": Decimal("0.10"),
+        "decision_gate_audit_log_id": 9,
+        "audit_row_id": 9,
+        "producer_name": PRODUCER_NAME,
+        "evidence_trading_account_id": 7,
+        "evidence_venue": "bitvavo",
+        "evidence_asset_id": 42,
+        "evidence_market": "BTC-EUR",
+        "evidence_execution_intent": "PLACE_PASSIVE_LIMIT",
+        "evidence_action_type": "PLACE_ORDER",
+        "evidence_requested_side": "BUY",
+        "permission_state": "EXECUTION_PERMITTED",
+        "decision_state": "EXECUTION_ALLOWED",
+        "evidence_state": "ACTIVE",
+        "permitted_ts_utc": NOW - timedelta(minutes=1),
+        "valid_until_ts_utc": NOW + timedelta(minutes=5),
+        "revoked_ts_utc": None,
+        "superseded_by_evidence_id": None,
+        "audit_trading_account_id": 7,
+        "audit_venue": "bitvavo",
+        "audit_asset_id": 42,
+        "audit_market": "BTC-EUR",
+        "audit_execution_intent": "PLACE_PASSIVE_LIMIT",
+        "audit_action_type": "PLACE_ORDER",
+        "audit_requested_side": "BUY",
+        "audit_permission_state": "EXECUTION_PERMITTED",
+        "audit_decision_state": "EXECUTION_ALLOWED",
+        "audit_execution_mode": "LIVE",
+        "account_trading_account_id": 7,
+        "account_venue": "bitvavo",
+        "account_enabled": 1,
+        "account_live_trading_enabled": 1,
+    }
+    row.update(overrides)
+    payload = build_provenance_payload(
+        decision_gate_audit_log_id=int(row["decision_gate_audit_log_id"] or 0),
+        trading_account_id=int(row["evidence_trading_account_id"]),
+        venue=str(row["evidence_venue"]),
+        asset_id=int(row["evidence_asset_id"]),
+        market=str(row["evidence_market"]),
+        execution_intent=str(row["evidence_execution_intent"]),
+        action_type=str(row["evidence_action_type"]),
+        requested_side=str(row["evidence_requested_side"]),
+        permission_state=str(row["permission_state"]),
+        decision_state=str(row["decision_state"]),
+        permitted_ts_utc=row["permitted_ts_utc"],
+        valid_until_ts_utc=row["valid_until_ts_utc"],
+    )
+    row.setdefault("provenance_signature", sign_provenance(payload, _producer_env()))
+    return row
 
-    def __enter__(self) -> tuple[None, CapturingCursor]:
-        return None, self.cursor
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        return None
+def _assert_scope_error(code: str, **overrides: Any) -> None:
+    with pytest.raises(LiveExecutionPermissionError) as exc_info:
+        _validate_exact_scope(
+            _scope_row(**overrides),
+            action_type="PLACE_ORDER",
+            now=NOW,
+            env=_env(),
+        )
+    assert exc_info.value.code == code
 
 
-class FakeBrokerClient:
-    def __init__(self) -> None:
-        self.placed_orders: list[Any] = []
-        self.cancelled_orders: list[tuple[str, str]] = []
-        self.polled_orders: list[tuple[str, str]] = []
+def test_exact_canonical_scope_and_signed_provenance_pass() -> None:
+    _validate_exact_scope(_scope_row(), action_type="PLACE_ORDER", now=NOW, env=_env())
 
-    def get_book(self, market: str, depth: int = 5) -> dict[str, Any]:
-        return {"bids": [["99.00", "1"]], "asks": [["101.00", "1"]]}
 
-    def place_order(self, order: Any) -> dict[str, str]:
-        self.placed_orders.append(order)
-        return {"orderId": "order-1"}
+@pytest.mark.parametrize("side", [None, "", "buy", "Buy", "HOLD"])
+def test_noncanonical_plan_side_blocks(side: str | None) -> None:
+    code = "REQUESTED_SIDE_MISMATCH" if side in {None, ""} else "REQUESTED_SIDE_MISMATCH"
+    _assert_scope_error(code, plan_requested_side=side)
 
-    def cancel_order(self, market: str, order_id: str) -> dict[str, str]:
-        self.cancelled_orders.append((market, order_id))
-        return {"orderId": order_id}
 
-    def get_order(self, market: str, order_id: str) -> dict[str, str]:
-        self.polled_orders.append((market, order_id))
-        return {"orderId": order_id}
+def test_matching_lowercase_side_is_still_rejected() -> None:
+    _assert_scope_error(
+        "REQUESTED_SIDE_NOT_CANONICAL",
+        plan_side="buy",
+        plan_requested_side="buy",
+        evidence_requested_side="buy",
+        audit_requested_side="buy",
+    )
+
+
+def test_evidence_plan_side_mismatch_blocks() -> None:
+    _assert_scope_error("REQUESTED_SIDE_MISMATCH", evidence_requested_side="SELL")
+
+
+def test_action_mismatch_blocks() -> None:
+    _assert_scope_error("ACTION_TYPE_MISMATCH", evidence_action_type="CANCEL_ORDER")
+
+
+@pytest.mark.parametrize("field", ["reference_price_eur", "passive_price_eur", "target_fraction"])
+def test_invalid_placement_values_block_before_claim(field: str) -> None:
+    _assert_scope_error("PLACEMENT_VALUES_INVALID", **{field: None})
+
+
+@pytest.mark.parametrize(
+    ("overrides", "code"),
+    [
+        ({"decision_gate_audit_log_id": None}, "PERMISSION_AUDIT_PROVENANCE_MISSING"),
+        ({"audit_row_id": None}, "PERMISSION_AUDIT_ROW_NOT_FOUND"),
+        ({"decision_state": "EXECUTION_DENIED"}, "DECISION_STATE_DENIED"),
+        ({"producer_name": "manual_sql"}, "PERMISSION_PRODUCER_INVALID"),
+        ({"audit_trading_account_id": 8}, "AUDIT_ACCOUNT_MISMATCH"),
+        ({"audit_venue": "other"}, "AUDIT_VENUE_MISMATCH"),
+        ({"audit_asset_id": 99}, "AUDIT_ASSET_MISMATCH"),
+        ({"audit_market": "ETH-EUR"}, "AUDIT_MARKET_MISMATCH"),
+        ({"provenance_signature": "0" * 88}, "PERMISSION_PROVENANCE_INVALID"),
+    ],
+)
+def test_untrusted_or_mismatched_provenance_blocks(
+    overrides: dict[str, Any], code: str
+) -> None:
+    _assert_scope_error(code, **overrides)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "code"),
+    [
+        ({"plan_trading_account_id": None}, "PLAN_TRADING_ACCOUNT_ID_MISSING"),
+        ({"plan_trading_account_id": 8}, "PLAN_EVIDENCE_ACCOUNT_MISMATCH"),
+        ({"account_trading_account_id": 8}, "PLAN_ACCOUNT_ROW_MISMATCH"),
+        ({"account_venue": "other"}, "ACCOUNT_VENUE_MISMATCH"),
+        ({"account_enabled": 0}, "TRADING_ACCOUNT_DISABLED"),
+        ({"account_live_trading_enabled": 0}, "TRADING_ACCOUNT_LIVE_DISABLED"),
+    ],
+)
+def test_explicit_trading_account_binding(overrides: dict[str, Any], code: str) -> None:
+    _assert_scope_error(code, **overrides)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "code"),
+    [
+        ({"evidence_state": "REVOKED", "revoked_ts_utc": NOW}, "PERMISSION_REVOKED"),
+        ({"evidence_state": "SUPERSEDED", "superseded_by_evidence_id": 12}, "PERMISSION_SUPERSEDED"),
+        ({"evidence_state": "SUPERSEDED", "superseded_by_evidence_id": 11}, "PERMISSION_SELF_SUPERSEDED"),
+        ({"account_enabled": 0}, "TRADING_ACCOUNT_DISABLED"),
+        ({"plan_state": "CANCELLED"}, "PLAN_NOT_ACTIONABLE"),
+    ],
+)
+def test_toctou_values_are_revalidated_at_claim(
+    overrides: dict[str, Any], code: str
+) -> None:
+    _assert_scope_error(code, **overrides)
 
 
 def _plan(**overrides: Any) -> worker.PlanRuntime:
-    base = worker.PlanRuntime(
+    plan = worker.PlanRuntime(
         execution_plan_id=100,
         trading_account_id=7,
+        decision_gate_permission_evidence_id=11,
         asset_id=42,
         symbol="BTC",
         sleeve_code="CORE",
         venue="bitvavo",
-        side="buy",
+        market="BTC-EUR",
+        side="BUY",
         desired_action="SPREAD_CAPTURE_PASSIVE",
         execution_intent="PLACE_PASSIVE_LIMIT",
-        execution_mode="live",
+        action_type="PLACE_ORDER",
+        requested_side="BUY",
+        execution_mode="LIVE",
         target_fraction=Decimal("0.10"),
-        reference_price_eur=Decimal("100.00"),
-        passive_price_eur=Decimal("99.00"),
-        urgent_limit_price_eur=Decimal("101.00"),
+        reference_price_eur=Decimal("100"),
+        passive_price_eur=Decimal("99"),
+        urgent_limit_price_eur=Decimal("101"),
         max_reprices=2,
         max_wait_seconds=1800,
         max_chase_bps=Decimal("15"),
@@ -159,530 +253,174 @@ def _plan(**overrides: Any) -> worker.PlanRuntime:
         plan_state="IDLE",
         notes="test",
         plan_ts_utc=NOW,
-        valid_until_ts_utc=NOW + timedelta(days=365),
+        valid_until_ts_utc=NOW + timedelta(minutes=5),
     )
-    return replace(base, **overrides)
+    return replace(plan, **overrides)
 
 
-def _account(**overrides: Any) -> TradingAccountState:
-    base = TradingAccountState(
-        trading_account_id=7,
-        venue="bitvavo",
-        enabled=True,
-        live_trading_enabled=True,
-    )
-    return replace(base, **overrides)
-
-
-def _evidence(**overrides: Any) -> PermissionEvidence:
-    base = PermissionEvidence(
-        execution_permission_evidence_id=1,
+def _claim(**overrides: Any) -> ExecutionClaim:
+    claim = ExecutionClaim(
+        execution_attempt_id=1,
         execution_plan_id=100,
+        decision_gate_permission_evidence_id=11,
         trading_account_id=7,
-        venue="bitvavo",
         asset_id=42,
+        venue="bitvavo",
         market="BTC-EUR",
         execution_intent="PLACE_PASSIVE_LIMIT",
-        action_type="SPREAD_CAPTURE_PASSIVE",
+        action_type="PLACE_ORDER",
         requested_side="BUY",
-        permission_state="EXECUTION_PERMITTED",
-        decision_state="EXECUTION_ALLOWED",
-        evidence_state="ACTIVE",
-        permitted_ts_utc=NOW - timedelta(days=365),
-        valid_until_ts_utc=NOW + timedelta(days=365),
-        revoked_ts_utc=None,
-        superseded_by_evidence_id=None,
+        reference_price_eur=Decimal("100"),
+        passive_price_eur=Decimal("99"),
+        target_fraction=Decimal("0.10"),
+        claim_token="claim-token",
+        claim_owner="worker-1",
+        claimed_ts_utc=NOW,
+        authorization_snapshot_ts_utc=NOW,
+        idempotency_key="a" * 64,
+        broker_client_order_id="b1a7b1a7-b1a7-41a7-81a7-b1a7b1a7b1a7",
     )
-    return replace(base, **overrides)
+    return replace(claim, **overrides)
 
 
-def _env(
-    *,
-    live_auth: bool = True,
-    broker_write: bool = True,
-) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if live_auth:
-        values[LIVE_EXECUTION_PERMISSION_ENV] = LIVE_EXECUTION_PERMISSION_GRANTED_VALUE
-    if broker_write:
-        values[BROKER_WRITE_PERMISSION_ENV] = BROKER_WRITE_PERMISSION_GRANTED_VALUE
-    return values
+class Broker:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.orders: list[Any] = []
+
+    def place_order(self, order: Any) -> dict[str, str]:
+        self.orders.append(order)
+        if self.fail:
+            raise TimeoutError("unknown broker outcome")
+        return {"orderId": "order-1"}
 
 
-def _assert_gate_blocks(
-    *,
-    plan: worker.PlanRuntime | None = None,
-    account: TradingAccountState | None = None,
-    evidence: list[PermissionEvidence] | None = None,
-    env: dict[str, str] | None = None,
-    filter_current: bool = False,
-) -> None:
-    with pytest.raises(LiveExecutionPermissionError):
-        validate_live_execution_permission(
-            plan=plan or _plan(),
-            market="BTC-EUR",
-            repo=FakePermissionRepo(
-                account=_account() if account is None else account,
-                evidence=[_evidence()] if evidence is None else evidence,
-                filter_current=filter_current,
-            ),
-            env=_env() if env is None else env,
-            now_utc=NOW,
-        )
+class AtomicClaimRepo:
+    def __init__(self, claim: ExecutionClaim | None = None) -> None:
+        self.claim = claim or _claim()
+        self.lock = threading.Lock()
+        self.claimed = False
+        self.confirmed: list[tuple[ExecutionClaim, str]] = []
+        self.uncertain: list[tuple[ExecutionClaim, str]] = []
+        self.failed: list[tuple[ExecutionClaim, str]] = []
+
+    def claim_live_action(self, **_: Any) -> ExecutionClaim:
+        with self.lock:
+            if self.claimed:
+                raise LiveExecutionPermissionError("EXECUTION_ATTEMPT_ALREADY_CLAIMED")
+            self.claimed = True
+            return self.claim
+
+    def confirm_attempt(self, claim: ExecutionClaim, order_id: str) -> None:
+        self.confirmed.append((claim, order_id))
+
+    def mark_attempt_uncertain(self, claim: ExecutionClaim, code: str) -> None:
+        self.uncertain.append((claim, code))
+
+    def mark_attempt_failed(self, claim: ExecutionClaim, code: str) -> None:
+        self.failed.append((claim, code))
 
 
-def test_one_current_active_evidence_row_passes_selection() -> None:
-    evidence = validate_live_execution_permission(
-        plan=_plan(),
-        market="BTC-EUR",
-        repo=FakePermissionRepo(
-            account=_account(),
-            evidence=[_evidence()],
-            filter_current=True,
-        ),
-        env=_env(),
-        now_utc=NOW,
-    )
-
-    assert evidence.execution_permission_evidence_id == 1
+def _patch_worker_io(monkeypatch: pytest.MonkeyPatch, plan: worker.PlanRuntime) -> None:
+    monkeypatch.setattr(worker, "_fetch_actionable_plans", lambda: [plan])
+    monkeypatch.setattr(worker, "_fetch_latest_events_for_plans", lambda _: {})
+    monkeypatch.setattr(worker, "_write_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker, "_update_plan_state", lambda *args, **kwargs: None)
 
 
-def test_missing_decision_gate_evidence_blocks() -> None:
-    _assert_gate_blocks(evidence=[])
-
-
-def test_zero_current_evidence_rows_block() -> None:
-    _assert_gate_blocks(
-        evidence=[_evidence(valid_until_ts_utc=NOW - timedelta(seconds=1))],
-        filter_current=True,
-    )
-
-
-def test_multiple_current_evidence_rows_block() -> None:
-    _assert_gate_blocks(
-        evidence=[_evidence(), _evidence(execution_permission_evidence_id=2)],
-        filter_current=True,
-    )
-
-
-def test_multiple_evidence_rows_block() -> None:
-    _assert_gate_blocks(evidence=[_evidence(), _evidence(execution_permission_evidence_id=2)])
-
-
-def test_historical_revoked_plus_current_selects_current_row() -> None:
-    selected = validate_live_execution_permission(
-        plan=_plan(),
-        market="BTC-EUR",
-        repo=FakePermissionRepo(
-            account=_account(),
-            evidence=[
-                _evidence(
-                    execution_permission_evidence_id=1,
-                    evidence_state="REVOKED",
-                    revoked_ts_utc=NOW - timedelta(seconds=1),
-                ),
-                _evidence(execution_permission_evidence_id=2),
-            ],
-            filter_current=True,
-        ),
-        env=_env(),
-        now_utc=NOW,
-    )
-
-    assert selected.execution_permission_evidence_id == 2
-
-
-def test_historical_superseded_plus_current_selects_current_row() -> None:
-    selected = validate_live_execution_permission(
-        plan=_plan(),
-        market="BTC-EUR",
-        repo=FakePermissionRepo(
-            account=_account(),
-            evidence=[
-                _evidence(
-                    execution_permission_evidence_id=1,
-                    evidence_state="SUPERSEDED",
-                    superseded_by_evidence_id=2,
-                ),
-                _evidence(execution_permission_evidence_id=2),
-            ],
-            filter_current=True,
-        ),
-        env=_env(),
-        now_utc=NOW,
-    )
-
-    assert selected.execution_permission_evidence_id == 2
-
-
-def test_expired_active_plus_current_selects_current_row() -> None:
-    selected = validate_live_execution_permission(
-        plan=_plan(),
-        market="BTC-EUR",
-        repo=FakePermissionRepo(
-            account=_account(),
-            evidence=[
-                _evidence(
-                    execution_permission_evidence_id=1,
-                    valid_until_ts_utc=NOW - timedelta(seconds=1),
-                ),
-                _evidence(execution_permission_evidence_id=2),
-            ],
-            filter_current=True,
-        ),
-        env=_env(),
-        now_utc=NOW,
-    )
-
-    assert selected.execution_permission_evidence_id == 2
-
-
-def test_future_not_yet_valid_plus_current_selects_current_row() -> None:
-    selected = validate_live_execution_permission(
-        plan=_plan(),
-        market="BTC-EUR",
-        repo=FakePermissionRepo(
-            account=_account(),
-            evidence=[
-                _evidence(
-                    execution_permission_evidence_id=1,
-                    permitted_ts_utc=NOW + timedelta(seconds=1),
-                ),
-                _evidence(execution_permission_evidence_id=2),
-            ],
-            filter_current=True,
-        ),
-        env=_env(),
-        now_utc=NOW,
-    )
-
-    assert selected.execution_permission_evidence_id == 2
-
-
-def test_active_row_with_revoked_timestamp_is_ignored_as_current() -> None:
-    selected = validate_live_execution_permission(
-        plan=_plan(),
-        market="BTC-EUR",
-        repo=FakePermissionRepo(
-            account=_account(),
-            evidence=[
-                _evidence(
-                    execution_permission_evidence_id=1,
-                    revoked_ts_utc=NOW - timedelta(seconds=1),
-                ),
-                _evidence(execution_permission_evidence_id=2),
-            ],
-            filter_current=True,
-        ),
-        env=_env(),
-        now_utc=NOW,
-    )
-
-    assert selected.execution_permission_evidence_id == 2
-
-
-def test_active_row_with_superseded_by_is_ignored_as_current() -> None:
-    selected = validate_live_execution_permission(
-        plan=_plan(),
-        market="BTC-EUR",
-        repo=FakePermissionRepo(
-            account=_account(),
-            evidence=[
-                _evidence(
-                    execution_permission_evidence_id=1,
-                    superseded_by_evidence_id=2,
-                ),
-                _evidence(execution_permission_evidence_id=2),
-            ],
-            filter_current=True,
-        ),
-        env=_env(),
-        now_utc=NOW,
-    )
-
-    assert selected.execution_permission_evidence_id == 2
-
-
-def test_historical_rows_remain_queryable_for_audit() -> None:
-    repo = FakePermissionRepo(
-        account=_account(),
-        evidence=[
-            _evidence(
-                execution_permission_evidence_id=1,
-                evidence_state="REVOKED",
-                revoked_ts_utc=NOW - timedelta(seconds=1),
-            ),
-            _evidence(execution_permission_evidence_id=2),
-        ],
-        filter_current=True,
-    )
-
-    assert [
-        row.execution_permission_evidence_id
-        for row in repo.fetch_permission_evidence_history(100)
-    ] == [1, 2]
-    assert [
-        row.execution_permission_evidence_id
-        for row in repo.fetch_current_permission_evidence(100, NOW)
-    ] == [2]
-
-
-def test_repository_current_evidence_query_filters_only_current_candidates(
+def test_persisted_paper_plan_cannot_construct_live_client_or_claim(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from src.execution import permission_gate_v1
+    _patch_worker_io(monkeypatch, _plan(execution_mode="PAPER"))
 
-    cursor = CapturingCursor([_row_from_evidence(_evidence())])
-    monkeypatch.setattr(
-        permission_gate_v1,
-        "db_cursor",
-        lambda commit=False: FakeDbCursor(cursor),
-    )
-
-    rows = permission_gate_v1.ExecutionPermissionRepository().fetch_current_permission_evidence(100, NOW)
-
-    assert len(rows) == 1
-    sql, params = cursor.executed[0]
-    assert "WHERE execution_plan_id = %s" in sql
-    assert "evidence_state = 'ACTIVE'" in sql
-    assert "revoked_ts_utc IS NULL" in sql
-    assert "superseded_by_evidence_id IS NULL" in sql
-    assert "permitted_ts_utc <= %s" in sql
-    assert "valid_until_ts_utc >= %s" in sql
-    assert "LIMIT 1" not in sql
-    assert params == (100, NOW, NOW)
-
-
-def test_repository_history_query_keeps_historical_rows_auditable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from src.execution import permission_gate_v1
-
-    cursor = CapturingCursor(
-        [
-            _row_from_evidence(
-                _evidence(
-                    execution_permission_evidence_id=1,
-                    evidence_state="REVOKED",
-                    revoked_ts_utc=NOW - timedelta(seconds=1),
-                )
-            ),
-            _row_from_evidence(_evidence(execution_permission_evidence_id=2)),
-        ]
-    )
-    monkeypatch.setattr(
-        permission_gate_v1,
-        "db_cursor",
-        lambda commit=False: FakeDbCursor(cursor),
-    )
-
-    rows = permission_gate_v1.ExecutionPermissionRepository().fetch_permission_evidence_history(100)
-
-    assert [row.execution_permission_evidence_id for row in rows] == [1, 2]
-    sql, params = cursor.executed[0]
-    assert "WHERE execution_plan_id = %s" in sql
-    assert "evidence_state = 'ACTIVE'" not in sql
-    assert params == (100,)
-
-
-def test_denied_decision_blocks() -> None:
-    _assert_gate_blocks(evidence=[_evidence(decision_state="BLOCKED_BALANCE")])
-
-
-def test_wrong_execution_plan_id_blocks() -> None:
-    _assert_gate_blocks(evidence=[_evidence(execution_plan_id=101)])
-
-
-def test_wrong_trading_account_id_blocks() -> None:
-    _assert_gate_blocks(evidence=[_evidence(trading_account_id=8)])
-
-
-def test_wrong_venue_blocks() -> None:
-    _assert_gate_blocks(evidence=[_evidence(venue="coinbase")])
-
-
-def test_wrong_execution_intent_blocks() -> None:
-    _assert_gate_blocks(evidence=[_evidence(execution_intent="PREPARE_PLAN")])
-
-
-def test_missing_planner_execution_intent_blocks() -> None:
-    _assert_gate_blocks(plan=_plan(execution_intent=None), evidence=[_evidence()])
-
-
-def test_legacy_desired_action_without_explicit_intent_blocks() -> None:
-    _assert_gate_blocks(
-        plan=_plan(desired_action="SPREAD_CAPTURE_PASSIVE", execution_intent=None),
-        evidence=[_evidence(execution_intent="PLACE_PASSIVE_LIMIT")],
-    )
-
-
-def test_executor_does_not_derive_intent_from_desired_action() -> None:
-    _assert_gate_blocks(
-        plan=_plan(desired_action="ENTER_LONG", execution_intent=None),
-        evidence=[
-            _evidence(
-                execution_intent="PLACE_PASSIVE_LIMIT",
-                action_type="ENTER_LONG",
-            )
-        ],
-    )
-
-
-def test_decision_gate_evidence_cannot_replace_planner_intent() -> None:
-    _assert_gate_blocks(
-        plan=_plan(execution_intent=None),
-        evidence=[_evidence(execution_intent="PLACE_PASSIVE_LIMIT")],
-    )
-
-
-def test_planner_intent_cannot_replace_decision_gate_permission() -> None:
-    _assert_gate_blocks(plan=_plan(execution_intent="PLACE_PASSIVE_LIMIT"), evidence=[])
-
-
-def test_wrong_execution_action_blocks() -> None:
-    _assert_gate_blocks(evidence=[_evidence(action_type="ENTER_LONG")])
-
-
-def test_stale_evidence_blocks() -> None:
-    _assert_gate_blocks(evidence=[_evidence(valid_until_ts_utc=NOW - timedelta(seconds=1))])
-
-
-def test_revoked_evidence_blocks() -> None:
-    _assert_gate_blocks(evidence=[_evidence(revoked_ts_utc=NOW - timedelta(minutes=1))])
-
-
-def test_superseded_evidence_blocks() -> None:
-    _assert_gate_blocks(evidence=[_evidence(superseded_by_evidence_id=2)])
-
-
-def test_disabled_account_blocks() -> None:
-    _assert_gate_blocks(account=_account(enabled=False))
-
-
-def test_live_trading_enabled_false_blocks() -> None:
-    _assert_gate_blocks(account=_account(live_trading_enabled=False))
-
-
-def test_missing_production_authorization_blocks() -> None:
-    _assert_gate_blocks(env=_env(live_auth=False, broker_write=True))
-
-
-def test_missing_broker_write_permission_blocks() -> None:
-    _assert_gate_blocks(env=_env(live_auth=True, broker_write=False))
-
-
-def test_credentials_alone_do_not_authorize_execution() -> None:
-    _assert_gate_blocks(evidence=[])
-
-
-def test_all_exact_gates_present_reaches_mocked_broker_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_client = FakeBrokerClient()
-    events: list[tuple[int, str, str]] = []
-    states: list[tuple[int, str]] = []
-
-    monkeypatch.setenv(LIVE_EXECUTION_PERMISSION_ENV, LIVE_EXECUTION_PERMISSION_GRANTED_VALUE)
-    monkeypatch.setenv(BROKER_WRITE_PERMISSION_ENV, BROKER_WRITE_PERMISSION_GRANTED_VALUE)
-    monkeypatch.setattr(worker, "_fetch_actionable_plans", lambda limit=50: [_plan()])
-    monkeypatch.setattr(worker, "_fetch_latest_events_for_plans", lambda plan_ids: {})
-    monkeypatch.setattr(worker, "_write_event", lambda plan_id, event_type, note, order_price=None: events.append((plan_id, event_type, note)))
-    monkeypatch.setattr(worker, "_update_plan_state", lambda plan_id, state: states.append((plan_id, state)))
+    class ForbiddenRepo:
+        def claim_live_action(self, **_: Any) -> ExecutionClaim:
+            raise AssertionError("paper must not consume permission")
 
     result = worker.process_execution_plans(
         execution_mode="live",
-        broker_client_factory=lambda: fake_client,
-        permission_repo=FakePermissionRepo(account=_account(), evidence=[_evidence()]),
+        broker_client_factory=lambda: (_ for _ in ()).throw(AssertionError("live client")),
+        market_data_client_factory=lambda: (_ for _ in ()).throw(AssertionError("auth polling")),
+        permission_repo=ForbiddenRepo(),
     )
-
-    assert result["live_placed"] == 1
-    assert len(fake_client.placed_orders) == 1
-    assert fake_client.cancelled_orders == []
-    assert fake_client.polled_orders == []
-    assert events[0][1] == "LIVE_PLACE_PASSIVE"
-    assert states == [(100, "MONITOR_QUEUE")]
-
-
-def test_paper_execution_stays_broker_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_client = FakeBrokerClient()
-    events: list[str] = []
-
-    monkeypatch.delenv(LIVE_EXECUTION_PERMISSION_ENV, raising=False)
-    monkeypatch.delenv(BROKER_WRITE_PERMISSION_ENV, raising=False)
-    monkeypatch.setattr(
-        worker,
-        "_fetch_actionable_plans",
-        lambda limit=50: [_plan(execution_mode="paper")],
-    )
-    monkeypatch.setattr(worker, "_fetch_latest_events_for_plans", lambda plan_ids: {})
-    monkeypatch.setattr(worker, "_write_event", lambda plan_id, event_type, note, order_price=None: events.append(event_type))
-    monkeypatch.setattr(worker, "_update_plan_state", lambda plan_id, state: None)
-
-    result = worker.process_execution_plans(
-        execution_mode="paper",
-        broker_client_factory=lambda: pytest.fail("live broker client must not be constructed for paper"),
-        market_data_client_factory=lambda: fake_client,
-        permission_repo=FakePermissionRepo(account=None, evidence=[]),
-    )
-
     assert result["paper_placed"] == 1
-    assert events == ["PAPER_PLACE_PASSIVE"]
-    assert fake_client.placed_orders == []
-    assert fake_client.cancelled_orders == []
-    assert fake_client.polled_orders == []
+    assert result["live_placed"] == 0
 
 
-def test_live_permission_evidence_cannot_convert_paper_intent_to_live() -> None:
-    paper_plan = _plan(
-        execution_mode="paper",
-        desired_action="PREPARE_PLAN",
-        execution_intent="PREPARE_PLAN",
+def test_sell_claim_submits_exactly_one_sell_and_never_buy() -> None:
+    broker = Broker()
+    order_id = worker._place_claimed_order_live(_claim(requested_side="SELL"), broker)
+    assert order_id == "order-1"
+    assert [order.side for order in broker.orders] == ["SELL"]
+
+
+def test_buy_claim_submits_exactly_one_buy() -> None:
+    broker = Broker()
+    worker._place_claimed_order_live(_claim(requested_side="BUY"), broker)
+    assert [order.side for order in broker.orders] == ["BUY"]
+
+
+def test_two_workers_can_produce_only_one_broker_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_worker_io(monkeypatch, _plan())
+    repo = AtomicClaimRepo()
+    broker = Broker()
+
+    threads = [
+        threading.Thread(
+            target=worker.process_execution_plans,
+            kwargs={
+                "execution_mode": "live",
+                "broker_client_factory": lambda: broker,
+                "permission_repo": repo,
+            },
+        )
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(broker.orders) == 1
+    assert len(repo.confirmed) == 1
+
+
+def test_uncertain_submission_blocks_automatic_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_worker_io(monkeypatch, _plan())
+    repo = AtomicClaimRepo()
+    broker = Broker(fail=True)
+    first = worker.process_execution_plans(
+        execution_mode="live", broker_client_factory=lambda: broker, permission_repo=repo
     )
-    _assert_gate_blocks(plan=paper_plan, evidence=[_evidence(execution_intent="PLACE_PASSIVE_LIMIT")])
+    second = worker.process_execution_plans(
+        execution_mode="live", broker_client_factory=lambda: broker, permission_repo=repo
+    )
+    assert first["failed"] == 1
+    assert second["failed"] == 1
+    assert len(broker.orders) == 1
+    assert repo.uncertain == [(repo.claim, "BROKER_SUBMISSION_OUTCOME_UNKNOWN")]
 
 
-def test_executor_does_not_invoke_selection_engine_or_recalculate_decision_gate_policy() -> None:
-    source = Path("src/execution/worker.py").read_text(encoding="utf-8")
-    gate_source = Path("src/execution/permission_gate_v1.py").read_text(encoding="utf-8")
-    joined = source + "\n" + gate_source
+def test_client_construction_failure_records_failed_and_calls_no_broker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_worker_io(monkeypatch, _plan())
+    repo = AtomicClaimRepo()
+    result = worker.process_execution_plans(
+        execution_mode="live",
+        broker_client_factory=lambda: (_ for _ in ()).throw(RuntimeError("no credentials")),
+        permission_repo=repo,
+    )
+    assert result["failed"] == 1
+    assert repo.failed == [(repo.claim, "BROKER_CLIENT_CONSTRUCTION_FAILED")]
 
-    assert "selection_engine" not in joined
-    assert "evaluate_selection_for_account" not in joined
-    assert "DecisionGateRepository" not in joined
-    assert "decision_gate_v1" not in joined
-    assert "INTENT_BY_DESIRED_ACTION" not in joined
-    assert "expected_execution_intent" not in joined
 
-
-def test_migration_defines_explicit_additive_evidence_contract() -> None:
-    sql = MIGRATION_PATH.read_text(encoding="utf-8")
-
-    assert "CREATE TABLE IF NOT EXISTS execution_permission_evidence" in sql
-    for column in (
-        "decision_gate_audit_log_id",
-        "execution_plan_id",
-        "trading_account_id",
-        "venue",
-        "asset_id",
-        "market",
-        "execution_intent",
-        "action_type",
-        "permission_state",
-        "decision_state",
-        "evidence_state",
-        "permitted_ts_utc",
-        "valid_until_ts_utc",
-        "revoked_ts_utc",
-        "superseded_by_evidence_id",
-    ):
-        assert column in sql
-
-    assert "encrypted" not in sql.lower()
-    assert "credential_id" not in sql.lower()
-    assert "api_key" not in sql.lower()
-    assert "api_secret" not in sql.lower()
-    assert "REFERENCES decision_gate_audit_log" in sql
-    assert "REFERENCES execution_plan" in sql
-    assert "REFERENCES trading_account" in sql
-    assert "ADD COLUMN IF NOT EXISTS execution_intent" in sql
-    assert "chk_epe_valid_window_v1" in sql
-    assert "chk_epe_active_not_revoked_v1" in sql
-    assert "chk_epe_active_not_superseded_v1" in sql
+def test_stable_claim_identifier_is_passed_unchanged() -> None:
+    broker = Broker()
+    claim = _claim(broker_client_order_id="018f47ee-312a-7b25-8000-000000000001")
+    worker._place_claimed_order_live(claim, broker)
+    assert broker.orders[0].client_order_id == claim.broker_client_order_id

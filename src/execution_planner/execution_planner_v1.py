@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from src.context.execution_context_policy import resolve_execution_context
@@ -26,6 +26,16 @@ def build_execution_plan(
         return None
 
     now_utc = datetime.now(UTC).replace(tzinfo=None)
+    execution_mode = str(config.execution_mode)
+    if execution_mode not in {"PAPER", "LIVE"}:
+        raise ValueError("execution_mode must be canonical PAPER or LIVE")
+    if execution_mode == "LIVE":
+        if decision.execution_intent != "PLACE_PASSIVE_LIMIT":
+            raise ValueError("LIVE planning only supports PLACE_PASSIVE_LIMIT")
+        if config.trading_account_id is None:
+            raise ValueError("LIVE plan requires trading_account_id")
+        if config.decision_gate_permission_evidence_id is None:
+            raise ValueError("LIVE plan requires decision_gate_permission_evidence_id")
 
     regime = decision.regime_label_4h
     fib = None
@@ -88,7 +98,7 @@ def build_execution_plan(
             side="BUY",
             desired_action="PREPARE_PLAN",
             execution_intent=decision.execution_intent,
-            execution_mode=config.execution_mode,
+            execution_mode=execution_mode,
             plan_ts_utc=now_utc,
             valid_until_ts_utc=None,
             target_fraction=target_fraction,
@@ -111,10 +121,20 @@ def build_execution_plan(
                 f"execution_intent={decision.execution_intent}; "
                 f"decision_reason={decision.decision_reason}"
             ),
+            market=f"{decision.symbol}-EUR",
+            trading_account_id=config.trading_account_id,
+            decision_gate_permission_evidence_id=config.decision_gate_permission_evidence_id,
+            action_type=None,
+            requested_side="BUY",
         )
 
     # === EXECUTION PATH ===
     if decision.execution_intent == "PLACE_PASSIVE_LIMIT":
+        valid_until_ts_utc = None
+        if execution_mode == "LIVE":
+            if config.live_plan_ttl_seconds <= 0:
+                raise ValueError("live_plan_ttl_seconds must be positive")
+            valid_until_ts_utc = now_utc + timedelta(seconds=config.live_plan_ttl_seconds)
         return PlannedExecution(
             account_id=decision.account_id,
             asset_id=decision.asset_id,
@@ -123,9 +143,9 @@ def build_execution_plan(
             side="BUY",
             desired_action="SPREAD_CAPTURE_PASSIVE",
             execution_intent=decision.execution_intent,
-            execution_mode=config.execution_mode,
+            execution_mode=execution_mode,
             plan_ts_utc=now_utc,
-            valid_until_ts_utc=None,
+            valid_until_ts_utc=valid_until_ts_utc,
             target_fraction=config.execute_target_fraction,
             max_notional_eur=config.max_notional_eur,
             reference_price_eur=reference_price_eur,
@@ -137,7 +157,7 @@ def build_execution_plan(
             min_spread_bps_for_capture=config.min_spread_bps_for_capture,
             escalation_to_urgent_limit=config.escalation_to_urgent_limit,
             abort_if_signal_invalidates=config.abort_if_signal_invalidates,
-            plan_state="PLANNED",
+            plan_state="IDLE" if execution_mode == "LIVE" else "PLANNED",
             notes=(
                 f"profile={profile} "
                 f"regime={regime} "
@@ -146,6 +166,11 @@ def build_execution_plan(
                 f"execution_intent={decision.execution_intent}; "
                 f"decision_reason={decision.decision_reason}"
             ),
+            market=f"{decision.symbol}-EUR",
+            trading_account_id=config.trading_account_id,
+            decision_gate_permission_evidence_id=config.decision_gate_permission_evidence_id,
+            action_type="PLACE_ORDER",
+            requested_side="BUY",
         )
 
     return None
@@ -166,7 +191,7 @@ def build_exit_plan_from_position(
         side="SELL",
         desired_action="CLOSE_POSITION_MARKET_PAPER",
         execution_intent="CLOSE_POSITION_MARKET_PAPER",
-        execution_mode=config.execution_mode,
+        execution_mode="PAPER",
         plan_ts_utc=now_utc,
         valid_until_ts_utc=None,
         target_fraction=position.qty,
@@ -188,4 +213,9 @@ def build_exit_plan_from_position(
             f"avg_entry_price={position.avg_entry_price}; "
             f"market_value_eur={position.market_value_eur}"
         ),
+        market=None,
+        trading_account_id=None,
+        decision_gate_permission_evidence_id=None,
+        action_type=None,
+        requested_side="SELL",
     )
