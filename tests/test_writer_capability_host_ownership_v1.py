@@ -64,9 +64,10 @@ def test_lifecycle_aware_invariants_replace_exactly_one_before_cutover() -> None
     assert inv["unassigned_capability_must_have_zero_authorized_owners"] is True
     assert inv["historical_or_observed_runtime_state_does_not_grant_authorization"] is True
     assert inv["acceptance_does_not_grant_production_authorization"] is True
+    assert inv["authorized_inactive_owner_requires_acceptance_and_production_decision_evidence"] is True
 
 
-def test_all_four_production_owners_are_unassigned_by_this_correction() -> None:
+def test_public_price_is_authorized_inactive_and_other_lanes_remain_unassigned() -> None:
     ids = {cap["capability_id"] for cap in _capabilities()}
     assert ids == {
         "public_price_snapshot",
@@ -74,14 +75,24 @@ def test_all_four_production_owners_are_unassigned_by_this_correction() -> None:
         "market_rotation_pressure",
         "native_short_4h_chain",
     }
-    # gurkDB is selected only for strict preflight for the three light public
-    # writers; that selection never assigns a production owner or authorization.
+    price = _cap(_registry(), "public_price_snapshot")
+    assert price["candidate_host"] == "gurkdb"
+    assert price["selected_host"] == "gurkdb"
+    assert price["acceptance_host"] == "gurkdb"
+    assert price["acceptance_status"] == "ACCEPTED"
+    assert price["production_runtime_owner"] == "gurkdb"
+    assert price["production_authorization_status"] == "AUTHORIZED"
+    assert price["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+    assert price["production_decision_evidence"]
+
+    # The remaining lanes retain their prior selection/unassigned state.
     selected_for_preflight = {
-        "public_price_snapshot",
         "public_candle_freshness",
         "market_rotation_pressure",
     }
     for cap in _capabilities():
+        if cap["capability_id"] == "public_price_snapshot":
+            continue
         assert cap["production_runtime_owner"] == UNASSIGNED, cap["capability_id"]
         assert cap["production_authorization_status"] == UNASSIGNED, cap["capability_id"]
         assert cap["production_decision_evidence"] == "", cap["capability_id"]
@@ -91,6 +102,26 @@ def test_all_four_production_owners_are_unassigned_by_this_correction() -> None:
         else:
             assert cap["selected_host"] == UNASSIGNED, cap["capability_id"]
             assert cap["runtime_lifecycle"] == UNASSIGNED, cap["capability_id"]
+
+
+def test_authorized_inactive_public_price_observation_is_installed_but_inactive() -> None:
+    price = _cap(_registry(), "public_price_snapshot")
+    assert price["observed_runtime_state"] == [
+        {
+            "host": "gurkdb",
+            "unit": "synth-market-price-snapshot-writer.timer",
+            "unit_path": "deploy/systemd/synth-market-price-snapshot-writer.timer",
+            "installed_at_observation": True,
+            "enabled_at_observation": False,
+            "active_at_observation": False,
+            "observed_at_utc": "2026-07-21T22:30:53Z",
+            "observed_at_precision": "exact",
+            "current_state": "INACTIVE_VERIFIED",
+            "authorization_status": "UNASSIGNED",
+            "runtime_state_classification": "NONE_OBSERVED",
+            "evidence_source": "docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md#rollback-proof",
+        }
+    ]
 
 
 def test_rotation_pressure_acceptance_and_observed_legacy_runtime_are_preserved() -> None:
@@ -143,6 +174,10 @@ def test_unknown_fields_fail() -> None:
 def test_unassigned_with_owner_or_evidence_is_rejected() -> None:
     registry = copy.deepcopy(_registry())
     cap = _cap(registry, "public_price_snapshot")
+    cap["runtime_lifecycle"] = "SELECTED_PENDING_PREFLIGHT"
+    cap["production_authorization_status"] = UNASSIGNED
+    cap["production_runtime_owner"] = UNASSIGNED
+    cap["production_decision_evidence"] = ""
     cap["production_runtime_owner"] = "devlap"
     assert any("zero authorized production owners" in err for err in _errors(registry))
     cap["production_runtime_owner"] = UNASSIGNED
@@ -155,9 +190,24 @@ def test_active_without_exactly_one_owner_and_evidence_is_rejected() -> None:
     cap = _cap(registry, "public_price_snapshot")
     cap["runtime_lifecycle"] = "ACTIVE"
     cap["production_authorization_status"] = "AUTHORIZED"
+    cap["production_runtime_owner"] = UNASSIGNED
+    cap["production_decision_evidence"] = ""
     assert any("requires exactly one production_runtime_owner" in err for err in _errors(registry))
-    cap["production_runtime_owner"] = "devlap"
+    cap["production_runtime_owner"] = "gurkdb"
     assert any("requires production_decision_evidence" in err for err in _errors(registry))
+
+
+def test_authorized_inactive_requires_matching_accepted_host() -> None:
+    registry = copy.deepcopy(_registry())
+    cap = _cap(registry, "public_price_snapshot")
+    cap["acceptance_status"] = "PENDING"
+    cap["acceptance_evidence"] = None
+    assert any("requires acceptance_status=ACCEPTED" in err for err in _errors(registry))
+
+    cap["acceptance_status"] = "ACCEPTED"
+    cap["acceptance_evidence"] = _cap(_registry(), "public_price_snapshot")["acceptance_evidence"]
+    cap["acceptance_host"] = "devlap"
+    assert any("acceptance_host must equal production_runtime_owner" in err for err in _errors(registry))
 
 
 def test_multiple_active_authorized_runtime_observations_are_rejected() -> None:
@@ -229,8 +279,9 @@ def test_shared_read_only_mode_blocks_mutation() -> None:
     assert any("READ_ONLY" in reason for reason in decision.reasons)
 
 
-def test_shared_production_mode_blocks_unassigned_capability() -> None:
-    # Registry owner is UNASSIGNED; production authorization is registry-derived.
+def test_shared_production_mode_blocks_without_production_authorization_file() -> None:
+    # Registry ownership is necessary but the host-local authorization file is
+    # deliberately absent until independent review and merge.
     decision = verify_writer_execution_authorization(
         capability_id="public_price_snapshot",
         mode=ExecutionMode.PRODUCTION,

@@ -80,7 +80,7 @@ REQUIRED_INVARIANTS = {
     "historical_or_observed_runtime_state_does_not_grant_authorization",
     "acceptance_does_not_grant_production_authorization",
     "consumers_reporting_account_runtimes_own_zero_writer_capabilities",
-    "all_production_runtime_owners_unassigned_by_this_correction",
+    "authorized_inactive_owner_requires_acceptance_and_production_decision_evidence",
 }
 AUTHORIZATION_GUARD_MODULE = "src.operations.verify_writer_capability_authorization_v1"
 REQUIRED_NATIVE_SHORT_WRITES = {
@@ -385,6 +385,13 @@ def validate_registry_payload(
                 errors.append(f"{label}: lifecycle {lifecycle} requires production_authorization_status=AUTHORIZED")
             if not evidence.strip():
                 errors.append(f"{label}: lifecycle {lifecycle} requires production_decision_evidence")
+        if lifecycle == "AUTHORIZED_INACTIVE":
+            if cap.get("acceptance_status") != "ACCEPTED":
+                errors.append(f"{label}: AUTHORIZED_INACTIVE requires acceptance_status=ACCEPTED")
+            if cap.get("acceptance_host") != owner:
+                errors.append(f"{label}: AUTHORIZED_INACTIVE acceptance_host must equal production_runtime_owner")
+            if cap.get("selected_host") != owner:
+                errors.append(f"{label}: AUTHORIZED_INACTIVE selected_host must equal production_runtime_owner")
         if lifecycle == "ACTIVE":
             observed = cap.get("observed_runtime_state")
             if not isinstance(observed, list) or not any(

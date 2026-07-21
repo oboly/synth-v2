@@ -2,16 +2,16 @@
 
 ## Status
 
-Repository and architecture correction only. No host mutation, timer
-activation, writer invocation, database mutation, deployment, or host selection
-is performed or implied by this document.
+The contract now records `public_price_snapshot` as accepted and separately
+authorized to gurkDB in `AUTHORIZED_INACTIVE`. Host preparation and controlled
+acceptance occurred on 2026-07-21; timer activation did not.
 
 ```text
-host_mutations=0
-database_writes=0
-writer_invocations=0
-deployment=not_performed
-systemctl_mutations=0
+public_price_snapshot_host_preparation=performed
+public_price_snapshot_acceptance_writes=864
+public_price_snapshot_timer_active=false
+public_price_snapshot_production_authorization_file_present=false
+other_capability_changes=0
 ```
 
 The machine-readable source of truth is
@@ -35,7 +35,7 @@ installed or historically active timer does not grant current authority.
 Current correction state:
 
 ```text
-public_price_snapshot.production_runtime_owner=UNASSIGNED
+public_price_snapshot.production_runtime_owner=gurkdb
 public_candle_freshness.production_runtime_owner=UNASSIGNED
 market_rotation_pressure.production_runtime_owner=UNASSIGNED
 native_short_4h_chain.production_runtime_owner=UNASSIGNED
@@ -50,6 +50,19 @@ historical_runtime_assignment.host=devlap
 historical_runtime_assignment.status=SUPERSEDED
 production_decision_evidence=""
 observed_runtime_state=last_observed_active_on_devlap_current_state_UNVERIFIED
+```
+
+Public Price Snapshot records a separate production decision after successful
+gurkDB preflight and acceptance:
+
+```text
+acceptance_host=gurkdb
+acceptance_status=ACCEPTED
+production_runtime_owner=gurkdb
+production_authorization_status=AUTHORIZED
+runtime_lifecycle=AUTHORIZED_INACTIVE
+timer=disabled/inactive
+production_authorization_file=absent
 ```
 
 An installed timer may continue running operationally even after canonical
@@ -90,6 +103,7 @@ exactly_one_authorized_active_owner_required_when_lifecycle_active=true
 unassigned_capability_must_have_zero_authorized_owners=true
 historical_or_observed_runtime_state_does_not_grant_authorization=true
 acceptance_does_not_grant_production_authorization=true
+authorized_inactive_owner_requires_acceptance_and_production_decision_evidence=true
 ```
 
 `UNASSIGNED` means no canonical production authorization. It does not mean no
@@ -142,18 +156,16 @@ Summary:
 
 | capability_id | kind | wrapper | current owner | lifecycle |
 |---|---|---|---|---|
-| `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
+| `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
 | `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
 | `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
 | `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | UNASSIGNED | UNASSIGNED |
 
-The three public market-data writers are selected to gurkDB
-(`selected_host=gurkdb`) for strict host preflight only. Per the Lifecycle Rules
-below, `SELECTED_PENDING_PREFLIGHT` keeps `production_runtime_owner=UNASSIGNED`
-and `production_authorization_status=UNASSIGNED`: host selection is not
-production authorization, preparation, acceptance, or deployment, and no gurkDB
-preflight has run. `native_short_4h_chain` is not selected and remains
-`UNASSIGNED`.
+Public Price Snapshot completed gurkDB strict preflight and controlled
+acceptance and received a separate production decision; it remains inactive.
+Public Candle Freshness and Rotation Pressure are selected to gurkDB for strict
+preflight only and retain `production_runtime_owner=UNASSIGNED`.
+`native_short_4h_chain` is not selected and remains `UNASSIGNED`.
 
 Native SHORT remains independently evaluated from the light DB writers because
 it owns CPU-heavy chain stages, source-identity checks, DB writes beyond public
@@ -399,11 +411,12 @@ state. Do not silently treat it as inactive.
 
 ## Executable Systemd Contract
 
-Committed units are explicit devlap-bound candidate or historical artifacts
-when they contain:
+Committed units are explicit host-bound artifacts. Public Price Snapshot is
+bound to gurkDB; the remaining candidate/historical units are bound to devlap:
 
 ```text
-ConditionHost=devlap
+public_price_snapshot ConditionHost=gurkdb
+other current artifacts ConditionHost=devlap
 User=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
 ```

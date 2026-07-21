@@ -74,7 +74,7 @@ def test_public_price_writer_has_immutable_identity_guard_and_lock() -> None:
     assert "SYNTH_MARKET_PRICE_WRITER_OWNER" not in wrapper
     assert wrapper.count("src.market_data.run_market_price_snapshot_v1") == 1
     assert wrapper.count("--write-db") == 1
-    assert "ConditionHost=devlap" in service_text
+    assert "ConditionHost=gurkdb" in service_text
     assert "verify_writer_capability_authorization_v1" in service_text
     assert "scripts/run_market_price_snapshot_once.sh" in service_text
     assert "Unit=synth-market-price-snapshot-writer.service" in timer.read_text(encoding="utf-8")
@@ -135,7 +135,7 @@ def test_4h_owner_graph_has_no_reporting_remote_or_account_paths() -> None:
     assert "conditionhost=devlap" in service.lower()
 
 
-def test_devlap_bound_writer_contracts_have_no_cross_host_or_account_dependency() -> None:
+def test_public_writer_contracts_have_no_cross_host_or_account_dependency() -> None:
     paths = (
         PRICE_WRAPPER,
         CANDLE_WRAPPER,
@@ -196,11 +196,16 @@ def test_duplicate_detection_scans_all_systemd_trees_by_writer_token() -> None:
     assert hits["native_short_4h_chain"] == ["deploy/systemd/synth-chain-4h.service"]
 
 
-def test_all_deploy_services_are_devlap_bound_and_guarded() -> None:
+def test_all_deploy_services_are_explicitly_host_bound_and_guarded() -> None:
     for service in Path("deploy/systemd").glob("*.service"):
         text = service.read_text(encoding="utf-8")
         if service.name.startswith("synth-market-") or service.name == "synth-chain-4h.service":
-            assert "ConditionHost=devlap" in text
+            expected_host = (
+                "gurkdb"
+                if service.name == "synth-market-price-snapshot-writer.service"
+                else "devlap"
+            )
+            assert f"ConditionHost={expected_host}" in text
             assert "verify_writer_capability_authorization_v1" in text
             assert _unit_value(service, "User") == ["gurk"]
             assert _unit_value(service, "WorkingDirectory") == ["/home/gurk/projects/synth-v2"]

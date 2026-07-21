@@ -9,21 +9,20 @@ consumers. The writer uses only Bitvavo public `GET /ticker/price`.
 capability_id=public_price_snapshot
 candidate_host=gurkdb
 selected_host=gurkdb
-acceptance_host=UNASSIGNED
-acceptance_status=UNASSIGNED
-production_runtime_owner=UNASSIGNED
-production_authorization_status=UNASSIGNED
-runtime_lifecycle=SELECTED_PENDING_PREFLIGHT
-observed_runtime_state=[]
+acceptance_host=gurkdb
+acceptance_status=ACCEPTED
+production_runtime_owner=gurkdb
+production_authorization_status=AUTHORIZED
+runtime_lifecycle=AUTHORIZED_INACTIVE
+observed_runtime_state=gurkdb timer installed/disabled/inactive
 ```
 
-`selected_host=gurkdb` records selection for strict host preflight only. It is
-not production ownership, authorization, host preparation, or deployment; the
-production owner remains `UNASSIGNED` and no gurkDB preflight has run. Strict
-gurkDB preflight is the next gate.
+gurkDB strict preflight, two controlled acceptance writes, lock behavior, and
+rollback readiness passed at the exact release commit. The timer remains
+disabled/inactive and the production authorization file remains absent pending
+independent review and merge.
 
-The committed service and timer below are devlap-bound candidate artifacts, not
-host-neutral production configuration:
+The committed service and timer below are canonical gurkDB-bound artifacts:
 
 ```text
 timer=deploy/systemd/synth-market-price-snapshot-writer.timer
@@ -31,14 +30,14 @@ service=deploy/systemd/synth-market-price-snapshot-writer.service
 wrapper=scripts/run_market_price_snapshot_once.sh
 module=src.market_data.run_market_price_snapshot_v1 --write-db
 lock=/tmp/synth-market-price-snapshot-writer-v1.lock
-ConditionHost=devlap
+ConditionHost=gurkdb
 User=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
 ```
 
-An installed timer may continue running operationally even after canonical
-authorization is reset. Repository correction does not stop that timer.
-Containment requires a separately authorized host action.
+Acceptance evidence is recorded in
+`docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md`. The unit
+still fails closed without the exact production authorization file.
 
 Odroid render/account runners must not call this writer. They validate and
 consume persisted rows through the SELECT-only

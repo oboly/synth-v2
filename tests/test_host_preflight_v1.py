@@ -364,14 +364,18 @@ def test_nonzero_with_relevant_synth_diagnostic_fails() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Ownership registry invariants remain unchanged by this PR
+# Ownership registry state remains explicit after the public-price rollout
 # ---------------------------------------------------------------------------
 
 
-def test_ownership_registry_lifecycles_and_owners_unchanged() -> None:
+def test_ownership_registry_records_only_public_price_as_authorized_inactive() -> None:
     registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
     caps = {c["capability_id"]: c for c in registry["capabilities"]}
-    for cap_id in ("public_price_snapshot", "public_candle_freshness", "market_rotation_pressure"):
+    price = caps["public_price_snapshot"]
+    assert price["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+    assert price["production_runtime_owner"] == "gurkdb"
+    assert price["production_authorization_status"] == "AUTHORIZED"
+    for cap_id in ("public_candle_freshness", "market_rotation_pressure"):
         cap = caps[cap_id]
         assert cap["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT", cap_id
         assert cap["production_runtime_owner"] == "UNASSIGNED", cap_id

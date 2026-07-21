@@ -103,6 +103,9 @@ def registry_with_auth_file(
     cap = next(c for c in reg["capabilities"] if c["capability_id"] == capability_id)
     cap["authorization_guard"]["authorization_file"] = str(auth_file)
     if authorize:
+        cap["selected_host"] = host
+        cap["acceptance_host"] = host
+        cap["acceptance_status"] = "ACCEPTED"
         cap["production_runtime_owner"] = host
         cap["production_authorization_status"] = "AUTHORIZED"
         cap["runtime_lifecycle"] = "AUTHORIZED_INACTIVE"

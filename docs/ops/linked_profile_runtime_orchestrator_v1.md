@@ -9,8 +9,8 @@ deployment and acceptance remain separate.
 
 ```text
 public market-data writer capabilities
-  -> production_runtime_owner=UNASSIGNED until explicit selection,
-     acceptance, containment, authorization, activation, and observation
+  -> public_price_snapshot owner=gurkdb, lifecycle=AUTHORIZED_INACTIVE
+  -> other writer capabilities retain their registry-specific state
 
 Odroid linked-profile orchestrator candidate/consumer role
   -> validate persisted public-price freshness (SELECT-only)
