@@ -119,6 +119,39 @@ def test_market_rotation_pressure_capability_specific_dependency_matrix() -> Non
         assert preflight._external_required(cap, "private_exchange_credentials") is False
 
 
+@pytest.mark.parametrize(
+    "capability",
+    ("public_price_snapshot", "public_candle_freshness", "market_rotation_pressure"),
+)
+def test_selected_public_capabilities_strict_behaviour(
+    capability: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(preflight, "_local_checks", _all_pass_local)
+    required_external = tuple(
+        name
+        for name in preflight.PREFLIGHT_EXTERNAL_CHECKS
+        if preflight._external_required(capability, name)
+    )
+    # Without external evidence, every required external check is UNVERIFIED.
+    bare = preflight.run_preflight(
+        capability=capability,
+        expected_host="gurkdb",
+        expected_commit="0" * 40,
+        checkout_path=Path.cwd(),
+    )
+    assert preflight._strict_exit_status(bare) == 5
+    # With all required external evidence PASS, strict preflight passes.
+    evidence = _external_evidence(capability, {name: "PASS" for name in required_external})
+    passed = preflight.run_preflight(
+        capability=capability,
+        expected_host="gurkdb",
+        expected_commit="0" * 40,
+        checkout_path=Path.cwd(),
+        external_evidence_checks=evidence,
+    )
+    assert preflight._strict_exit_status(passed) == 0
+
+
 def test_runtime_configuration_required_but_private_exchange_credentials_not() -> None:
     results = preflight.run_preflight(
         capability="public_price_snapshot",

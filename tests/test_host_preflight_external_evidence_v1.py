@@ -109,6 +109,48 @@ def test_schema_file_parses_and_declares_stable_version() -> None:
     assert set(allowed) == set(preflight.PREFLIGHT_EXTERNAL_CHECKS)
 
 
+def test_schema_and_validator_permit_the_same_external_check_names() -> None:
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    schema_names = set(schema["properties"]["checks"]["propertyNames"]["enum"])
+    assert schema_names == set(preflight.PREFLIGHT_EXTERNAL_CHECKS)
+    # The canonical check whose name collides with a forbidden substring.
+    assert "private_exchange_credentials" in schema_names
+
+
+# ---------------------------------------------------------------------------
+# Canonical `private_exchange_credentials` must not be treated as a secret key
+# ---------------------------------------------------------------------------
+
+
+def test_private_exchange_credentials_check_with_safe_metadata_is_accepted() -> None:
+    payload = _manifest()
+    payload["checks"]["private_exchange_credentials"] = _check()
+    payload["checks"]["private_exchange_credentials"]["detail"] = "private_key_present=false"
+    result = _validate(payload)
+    assert result.ok, result.errors
+    assert "private_exchange_credentials" in result.checks
+
+
+def test_private_exchange_credentials_check_with_credential_value_is_rejected() -> None:
+    payload = _manifest()
+    payload["checks"]["private_exchange_credentials"] = _check()
+    payload["checks"]["private_exchange_credentials"]["detail"] = (
+        "-----BEGIN OPENSSH PRIVATE KEY-----AAAAB3Nza"
+    )
+    result = _validate(payload)
+    assert not result.ok
+    assert any("secret-like value" in e for e in result.errors)
+
+
+def test_unknown_database_credentials_key_is_rejected() -> None:
+    payload = _manifest()
+    payload["database_credentials"] = "should not be here"
+    result = _validate(payload)
+    assert not result.ok
+    # Arbitrary credential-bearing key is still flagged by the secret-key scan.
+    assert any("forbidden secret-like key" in e for e in result.errors)
+
+
 # ---------------------------------------------------------------------------
 # Exact matching: capability / host / commit
 # ---------------------------------------------------------------------------

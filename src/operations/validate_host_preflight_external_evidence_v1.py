@@ -98,8 +98,21 @@ _RFC3339_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$"
 )
 
-# Key names anywhere in the manifest that must never appear: they indicate a
-# secret/credential was pasted into what must remain a non-secret artifact.
+# Canonical structural keys and canonical check names. These are part of the
+# contract (for example the external check `private_exchange_credentials`) and
+# must never be flagged as secret-like even though their names contain otherwise
+# forbidden substrings. Misplaced canonical keys are still caught by the
+# per-context unknown-field validation, so exempting them here opens no hole.
+CANONICAL_ALLOWED_KEYS = frozenset(
+    ALLOWED_TOP_KEYS
+    | set(PREFLIGHT_EXTERNAL_CHECKS)
+    | REQUIRED_CHECK_KEYS
+    | SAFETY_ALLOWED_KEYS
+)
+
+# Substrings that mark an UNKNOWN/arbitrary key as secret-bearing: they indicate
+# a secret/credential was pasted into what must remain a non-secret artifact.
+# Only applied to keys not in CANONICAL_ALLOWED_KEYS.
 FORBIDDEN_KEY_SUBSTRINGS = (
     "secret",
     "password",
@@ -164,11 +177,19 @@ def _parse_literal_utc(value: Any) -> datetime | None:
 
 
 def _forbidden_key_hits(node: Any, path: str = "") -> list[str]:
+    """Flag arbitrary secret-bearing keys, exempting canonical structural keys.
+
+    Canonical schema keys and canonical check names (including
+    `private_exchange_credentials`) are contract-defined and never flagged; only
+    unknown/arbitrary keys are checked for secret-like tokens.
+    """
     hits: list[str] = []
     if isinstance(node, dict):
         for key, value in node.items():
             lowered = str(key).lower()
-            if any(token in lowered for token in FORBIDDEN_KEY_SUBSTRINGS):
+            if key not in CANONICAL_ALLOWED_KEYS and any(
+                token in lowered for token in FORBIDDEN_KEY_SUBSTRINGS
+            ):
                 hits.append(f"forbidden secret-like key at {path or '<root>'}: {key!r}")
             hits.extend(_forbidden_key_hits(value, f"{path}.{key}" if path else str(key)))
     elif isinstance(node, list):
