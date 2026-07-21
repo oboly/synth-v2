@@ -9,6 +9,10 @@ from typing import Any
 
 from src.common.db import db_cursor
 from src.execution.bitvavo_client import BitvavoClient, BitvavoOrderRequest
+from src.execution.permission_gate_v1 import (
+    ExecutionPermissionRepository,
+    validate_live_execution_permission,
+)
 
 
 EXECUTION_MODE = os.getenv("SYNTH_EXECUTION_MODE", "paper").lower()
@@ -30,9 +34,12 @@ EXECUTABLE_DESIRED_ACTIONS = {
 @dataclass(slots=True)
 class PlanRuntime:
     execution_plan_id: int
+    trading_account_id: int | None
     asset_id: int
     symbol: str
     sleeve_code: str
+    venue: str | None
+    side: str
     desired_action: str
     execution_mode: str
     target_fraction: Decimal
@@ -48,6 +55,7 @@ class PlanRuntime:
     plan_state: str
     notes: str
     plan_ts_utc: datetime
+    valid_until_ts_utc: datetime | None
 
 
 def _utc_now_naive() -> datetime:
@@ -84,10 +92,14 @@ def _fetch_actionable_plans(limit: int = 50) -> list[PlanRuntime]:
     sql = """
     SELECT
         execution_plan_id,
+        account_id,
         asset_id,
         sleeve_code,
+        venue,
+        side,
         desired_action,
         plan_ts_utc,
+        valid_until_ts_utc,
         execution_mode,
         target_fraction,
         reference_price_eur,
@@ -128,9 +140,14 @@ def _fetch_actionable_plans(limit: int = 50) -> list[PlanRuntime]:
         out.append(
             PlanRuntime(
                 execution_plan_id=int(row["execution_plan_id"]),
+                trading_account_id=(
+                    None if row.get("account_id") is None else int(row["account_id"])
+                ),
                 asset_id=asset_id,
                 symbol=symbol,
                 sleeve_code=str(row["sleeve_code"]),
+                venue=str(row["venue"]) if row.get("venue") is not None else None,
+                side=str(row["side"] or "buy").lower(),
                 desired_action=str(row["desired_action"]),
                 execution_mode=str(row["execution_mode"]),
                 target_fraction=Decimal(str(row["target_fraction"])),
@@ -146,6 +163,7 @@ def _fetch_actionable_plans(limit: int = 50) -> list[PlanRuntime]:
                 plan_state=str(row["plan_state"]),
                 notes=str(row["notes"] or ""),
                 plan_ts_utc=row["plan_ts_utc"],
+                valid_until_ts_utc=row.get("valid_until_ts_utc"),
             )
         )
     return out
@@ -554,10 +572,38 @@ def _handle_monitor_live(
     return "monitored"
 
 
-def process_execution_plans() -> dict[str, int]:
+def _runtime_mode(execution_mode: str | None = None) -> str:
+    mode = (execution_mode or EXECUTION_MODE).lower()
+    if mode not in {"paper", "live"}:
+        raise ValueError(f"Unsupported SYNTH_EXECUTION_MODE={mode!r}; expected paper or live.")
+    return mode
+
+
+def _require_live_gate(
+    *,
+    plan: PlanRuntime,
+    permission_repo: ExecutionPermissionRepository,
+) -> None:
+    validate_live_execution_permission(
+        plan=plan,
+        market=_market_symbol(plan.symbol),
+        repo=permission_repo,
+    )
+
+
+def process_execution_plans(
+    *,
+    execution_mode: str | None = None,
+    broker_client_factory: Any = BitvavoClient,
+    market_data_client_factory: Any = BitvavoClient,
+    permission_repo: ExecutionPermissionRepository | None = None,
+) -> dict[str, int]:
+    mode = _runtime_mode(execution_mode)
     plans = _fetch_actionable_plans()
     latest_events = _fetch_latest_events_for_plans([p.execution_plan_id for p in plans])
-    client = BitvavoClient()
+    permission_repo = permission_repo or ExecutionPermissionRepository()
+    broker_client: BitvavoClient | None = None
+    market_data_client: BitvavoClient | None = None
 
     processed = 0
     paper_placed = 0
@@ -581,20 +627,28 @@ def process_execution_plans() -> dict[str, int]:
                 continue
 
             if plan.plan_state == "IDLE":
-                if EXECUTION_MODE == "paper":
+                if mode == "paper":
                     _place_initial_order_paper(plan)
                     processed += 1
                     paper_placed += 1
                 else:
-                    _place_initial_order_live(plan, client)
+                    _require_live_gate(plan=plan, permission_repo=permission_repo)
+                    if broker_client is None:
+                        broker_client = broker_client_factory()
+                    _place_initial_order_live(plan, broker_client)
                     processed += 1
                     live_placed += 1
                 continue
 
-            if EXECUTION_MODE == "paper":
-                outcome = _handle_monitor_paper(plan, client, latest_event)
+            if mode == "paper":
+                if market_data_client is None:
+                    market_data_client = market_data_client_factory()
+                outcome = _handle_monitor_paper(plan, market_data_client, latest_event)
             else:
-                outcome = _handle_monitor_live(plan, client, latest_event)
+                _require_live_gate(plan=plan, permission_repo=permission_repo)
+                if broker_client is None:
+                    broker_client = broker_client_factory()
+                outcome = _handle_monitor_live(plan, broker_client, latest_event)
 
             processed += 1
             if outcome == "repriced":

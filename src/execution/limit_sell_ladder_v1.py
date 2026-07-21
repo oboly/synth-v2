@@ -95,7 +95,10 @@ def place_limit_sell_ladder_orders(
         raise PermissionError(
             "Limit sell ladder placement requires confirm_real_orders=True."
         )
-    return [client.place_order(order) for order in orders]
+    raise PermissionError(
+        "Direct limit sell ladder broker placement is disabled. "
+        "Live order submission must pass the executor permission-consumption gate."
+    )
 
 
 def preview_limit_sell_ladder_orders(

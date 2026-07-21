@@ -1,10 +1,8 @@
 from decimal import Decimal
-from src.execution.bitvavo_client import BitvavoClient
 from src.execution.limit_sell_ladder_v1 import (
     LimitSellLadderLevel,
     build_limit_sell_ladder_orders,
     preview_limit_sell_ladder_orders,
-    place_limit_sell_ladder_orders,
 )
 
 levels = [
@@ -21,10 +19,5 @@ orders = build_limit_sell_ladder_orders(
 
 print(preview_limit_sell_ladder_orders(orders))
 
-# Alleen als je echt wil plaatsen:
-# client = BitvavoClient()
-# place_limit_sell_ladder_orders(
-#     client=client,
-#     orders=orders,
-#     confirm_real_orders=True,
-# )
+# Direct broker placement is disabled; live submission must go through the
+# executor permission-consumption gate.

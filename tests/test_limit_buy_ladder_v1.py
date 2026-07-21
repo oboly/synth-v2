@@ -101,6 +101,18 @@ class LimitBuyLadderV1Tests(unittest.TestCase):
                 confirm_real_orders=False,
             )
 
+    def test_place_limit_buy_ladder_orders_never_calls_broker_directly(self) -> None:
+        class Client:
+            def place_order(self, _order):  # noqa: ANN001
+                raise AssertionError("direct broker placement must not be called")
+
+        with self.assertRaises(PermissionError):
+            place_limit_buy_ladder_orders(
+                client=Client(),  # type: ignore[arg-type]
+                orders=[],
+                confirm_real_orders=True,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
