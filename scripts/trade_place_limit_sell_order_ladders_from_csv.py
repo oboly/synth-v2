@@ -19,5 +19,5 @@ orders = build_limit_sell_ladder_orders(
 
 print(preview_limit_sell_ladder_orders(orders))
 
-# Direct broker placement is disabled; live submission must go through the
-# executor permission-consumption gate.
+# Direct broker placement is disabled; live execution prerequisites are not
+# implemented.

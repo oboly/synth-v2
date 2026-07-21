@@ -1,38 +1,11 @@
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime
 
-import pymysql
-from dotenv import load_dotenv
-
-
-load_dotenv(".env")
-
-EXECUTABLE_DESIRED_ACTIONS = {
-    "SPREAD_CAPTURE_PASSIVE",
-    "ENTER",
-    "ENTER_LONG",
-}
-
-DB_CONFIG = {
-    "host": os.getenv("DB_HOST"),
-    "port": int(os.getenv("DB_PORT", "3306")),
-    "user": os.getenv("DB_USER"),
-    "password": os.getenv("DB_PASSWORD"),
-    "database": os.getenv("DB_NAME"),
-    "charset": os.getenv("DB_CHARSET", "utf8mb4"),
-    "cursorclass": pymysql.cursors.DictCursor,
-    "autocommit": False,
-}
-
+from src.common.db import get_connection
 
 def utc_now_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
-
-
-def get_connection():
-    return pymysql.connect(**DB_CONFIG)
 
 
 def fetch_idle_plans(conn, limit: int = 50):
@@ -40,11 +13,8 @@ def fetch_idle_plans(conn, limit: int = 50):
         SELECT *
         FROM execution_plan
         WHERE plan_state = 'IDLE'
-          AND desired_action IN (
-              'SPREAD_CAPTURE_PASSIVE',
-              'ENTER',
-              'ENTER_LONG'
-          )
+          AND execution_mode = 'PAPER'
+          AND action_type = 'PLACE_ORDER'
         ORDER BY plan_ts_utc ASC
         LIMIT %s
     """
@@ -141,12 +111,29 @@ def update_plan_state(conn, plan_id: int, new_state: str):
 
 
 def process_plan(conn, plan):
-    if str(plan["desired_action"]) not in EXECUTABLE_DESIRED_ACTIONS:
+    if str(plan.get("execution_mode")) != "PAPER":
         insert_execution_event(
             conn,
             plan,
-            event_type="EXECUTOR_SKIPPED_NON_EXECUTABLE_ACTION",
-            reason=f"desired_action={plan['desired_action']}",
+            event_type="EXECUTOR_REJECTED",
+            reason="EXECUTION_MODE_NOT_CANONICAL_PAPER",
+        )
+        return
+    if str(plan.get("action_type")) != "PLACE_ORDER":
+        insert_execution_event(
+            conn,
+            plan,
+            event_type="EXECUTOR_REJECTED",
+            reason="PAPER_ACTION_NOT_SUPPORTED",
+        )
+        return
+    requested_side = plan.get("requested_side")
+    if requested_side not in {"BUY", "SELL"} or plan.get("side") != requested_side:
+        insert_execution_event(
+            conn,
+            plan,
+            event_type="EXECUTOR_REJECTED",
+            reason="REQUESTED_SIDE_NOT_CANONICAL",
         )
         return
 

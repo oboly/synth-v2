@@ -82,6 +82,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--venue", default="bitvavo")
     parser.add_argument("--account-id", type=int, required=True)
+    parser.add_argument("--trading-account-id", type=int, required=True)
     parser.add_argument("--sleeve-code", required=True)
     parser.add_argument("--asset-id", type=int, default=None)
     parser.add_argument("--limit", type=int, default=40)
@@ -276,6 +277,7 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
     stage_start = perf_counter()
     exit_results = run_exit_policy_v1(
         account_id=args.account_id,
+        trading_account_id=args.trading_account_id,
         sleeve_code=args.sleeve_code,
         venue=args.venue,
         config=ExitPolicyConfig(
@@ -292,6 +294,9 @@ def run_single_cycle(args: argparse.Namespace) -> dict[str, Any]:
     )
     planner_config = ExecutionPlannerConfig(
         execution_mode="PAPER",
+        trading_account_id=args.trading_account_id,
+        action_type="PLACE_ORDER",
+        requested_side="BUY",
         prepare_target_fraction=_require_decimal(cfg, "planner", "prepare_target_fraction"),
         execute_target_fraction=_require_decimal(cfg, "planner", "execute_target_fraction"),
         max_notional_eur=_require_decimal(cfg, "planner", "max_notional_eur"),

@@ -20,11 +20,12 @@ from contextlib import contextmanager
 from typing import Iterator
 
 import pymysql
-from dotenv import load_dotenv
 from pymysql.cursors import DictCursor
 
+from src.common.db_env_v1 import load_database_environment
 
-load_dotenv()
+
+load_database_environment()
 
 
 DEFAULT_CHARSET = "utf8mb4"

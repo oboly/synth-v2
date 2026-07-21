@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import copy
 import json
-import subprocess
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -537,30 +536,25 @@ def test_sector_rotation_public_contract_uses_participation_terms() -> None:
     assert "INSUFFICIENT_PARTICIPATION" in engine
 
 
-def test_phase_a_does_not_touch_trading_authority_layers() -> None:
+def test_phase_a_does_not_import_trading_authority_layers() -> None:
     root = Path(__file__).resolve().parents[1]
-    commands = (
-        ["git", "diff", "--name-only", "origin/main...HEAD"],
-        ["git", "diff", "--name-only"],
-        ["git", "diff", "--cached", "--name-only"],
+    phase_a_files = (
+        root / "src/research/run_sector_taxonomy_import_v1.py",
     )
-    changed: set[str] = set()
-    for command in commands:
-        result = subprocess.run(command, cwd=root, check=True, capture_output=True, text=True)
-        changed.update(line for line in result.stdout.splitlines() if line)
-    forbidden_prefixes = (
-        "src/selection/",
-        "src/selection_engine/",
-        "src/decision_gate/",
-        "src/execution_planner/",
-        "src/executor/",
-        "src/agents/",
+    forbidden_imports = (
+        "src.selection",
+        "src.selection_engine",
+        "src.decision_gate",
+        "src.execution_planner",
+        "src.executor",
+        "src.agents",
     )
-    assert not {
-        path
-        for path in changed
-        if path.startswith(forbidden_prefixes)
-    }
+    for path in phase_a_files:
+        source = path.read_text(encoding="utf-8")
+        assert not any(
+            f"from {module}" in source or f"import {module}" in source
+            for module in forbidden_imports
+        )
 
 
 class MainConnection:

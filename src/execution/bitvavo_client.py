@@ -47,7 +47,6 @@ class BitvavoOrderRequest:
     price: str | None = None
     post_only: bool = True
     time_in_force: str = "GTC"
-    client_order_id: str | None = None
 
 
 class BitvavoClient:
@@ -220,8 +219,6 @@ class BitvavoClient:
         return data
 
     def place_order(self, order: BitvavoOrderRequest) -> dict[str, Any]:
-        if order.side not in {"BUY", "SELL"}:
-            raise ValueError("BitvavoOrderRequest.side must be canonical BUY or SELL.")
         self._require_private_write_permission("place_order")
 
         path = "/order"
@@ -229,14 +226,11 @@ class BitvavoClient:
 
         payload: dict[str, Any] = {
             "market": order.market,
-            "side": order.side.lower(),
+            "side": order.side,
             "orderType": order.order_type,
             "amount": order.amount,
             "operatorId": 1,
         }
-
-        if order.client_order_id is not None:
-            payload["clientOrderId"] = order.client_order_id
 
         if order.price is not None:
             payload["price"] = order.price

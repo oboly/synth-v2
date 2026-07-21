@@ -94,7 +94,7 @@ def place_limit_buy_ladder_orders(
         )
     raise PermissionError(
         "Direct limit buy ladder broker placement is disabled. "
-        "Live order submission must pass the executor permission-consumption gate."
+        "Live execution prerequisites are unavailable."
     )
 
 

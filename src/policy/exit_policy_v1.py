@@ -148,12 +148,18 @@ def evaluate_exit_trigger(
 def run_exit_policy_v1(
     *,
     account_id: int,
+    trading_account_id: int,
     sleeve_code: str,
     venue: str,
     config: ExitPolicyConfig,
 ) -> list[ExitPolicyResult]:
     planner_repo = ExecutionPlannerRepository()
-    planner_config = ExecutionPlannerConfig(execution_mode="PAPER")
+    planner_config = ExecutionPlannerConfig(
+        execution_mode="PAPER",
+        trading_account_id=trading_account_id,
+        action_type="PLACE_ORDER",
+        requested_side="SELL",
+    )
     position_rows = fetch_open_positions_for_policy(
         account_id=account_id,
         sleeve_code=sleeve_code,

@@ -7,12 +7,6 @@ from decimal import Decimal
 from typing import Any
 
 from src.common.db import db_cursor
-from src.execution.bitvavo_client import BitvavoClient, BitvavoOrderRequest
-from src.execution.permission_gate_v1 import (
-    ExecutionClaim,
-    ExecutionPermissionRepository,
-    LiveExecutionPermissionError,
-)
 from src.market_data.bitvavo_public_client_v1 import BitvavoPublicMarketDataClient
 
 
@@ -21,13 +15,24 @@ DEFAULT_EUR_NOTIONAL = Decimal(os.getenv("SYNTH_DEFAULT_EUR_NOTIONAL", "25"))
 DECIMAL_ZERO = Decimal("0")
 BPS = Decimal("10000")
 PAPER_ACTIONABLE_STATES = frozenset({"IDLE", "MONITOR_QUEUE", "REPRICE_PENDING"})
+LIVE_PREREQUISITE_CODES = (
+    "CANONICAL_DECISION_GATE_PERMISSION_PRODUCER_REQUIRED",
+    "ACCOUNT_BOUND_TRADE_CREDENTIAL_BINDING_REQUIRED",
+    "LIVE_EXECUTOR_ACTIVATION_REQUIRED",
+)
+
+
+class LiveExecutionPrerequisitesUnavailable(RuntimeError):
+    code = "LIVE_EXECUTION_PREREQUISITES_UNAVAILABLE"
+
+    def __init__(self) -> None:
+        super().__init__(f"{self.code}:" + ",".join(LIVE_PREREQUISITE_CODES))
 
 
 @dataclass(slots=True)
 class PlanRuntime:
     execution_plan_id: int
     trading_account_id: int | None
-    decision_gate_permission_evidence_id: int | None
     asset_id: int
     symbol: str
     sleeve_code: str
@@ -90,7 +95,6 @@ def _fetch_actionable_plans(limit: int = 50) -> list[PlanRuntime]:
     SELECT
         execution_plan_id,
         trading_account_id,
-        decision_gate_permission_evidence_id,
         asset_id,
         sleeve_code,
         venue,
@@ -136,11 +140,6 @@ def _fetch_actionable_plans(limit: int = 50) -> list[PlanRuntime]:
                 execution_plan_id=int(row["execution_plan_id"]),
                 trading_account_id=(
                     None if row.get("trading_account_id") is None else int(row["trading_account_id"])
-                ),
-                decision_gate_permission_evidence_id=(
-                    None
-                    if row.get("decision_gate_permission_evidence_id") is None
-                    else int(row["decision_gate_permission_evidence_id"])
                 ),
                 asset_id=asset_id,
                 symbol=symbol,
@@ -280,6 +279,19 @@ def _place_initial_order_paper(plan: PlanRuntime) -> None:
     _update_plan_state(plan.execution_plan_id, "MONITOR_QUEUE")
 
 
+def _validate_paper_plan(plan: PlanRuntime) -> None:
+    if plan.trading_account_id is None or plan.trading_account_id <= 0:
+        raise ValueError("TRADING_ACCOUNT_ID_REQUIRED")
+    if plan.execution_intent is None or plan.execution_intent == "":
+        raise ValueError("EXECUTION_INTENT_REQUIRED")
+    if plan.action_type != "PLACE_ORDER":
+        raise ValueError("PAPER_ACTION_NOT_SUPPORTED")
+    if plan.requested_side not in {"BUY", "SELL"} or plan.side != plan.requested_side:
+        raise ValueError("REQUESTED_SIDE_NOT_CANONICAL")
+    if plan.market is None or plan.market == "":
+        raise ValueError("PLAN_MARKET_MISSING")
+
+
 def _handle_monitor_paper(
     plan: PlanRuntime,
     client: BitvavoPublicMarketDataClient,
@@ -325,26 +337,6 @@ def _handle_monitor_paper(
     return "monitored"
 
 
-def _place_claimed_order_live(claim: ExecutionClaim, client: BitvavoClient) -> str:
-    if claim.action_type != "PLACE_ORDER":
-        raise LiveExecutionPermissionError("LIVE_ACTION_NOT_PLACEMENT")
-    if claim.requested_side not in {"BUY", "SELL"}:
-        raise LiveExecutionPermissionError("REQUESTED_SIDE_NOT_CANONICAL")
-    amount = _estimate_amount(claim.reference_price_eur, claim.target_fraction)
-    response = client.place_order(
-        BitvavoOrderRequest(
-            market=claim.market,
-            side=claim.requested_side,
-            order_type="limit",
-            amount=str(amount),
-            price=str(claim.passive_price_eur),
-            post_only=True,
-            client_order_id=claim.broker_client_order_id,
-        )
-    )
-    return str(response.get("orderId", "UNKNOWN"))
-
-
 def _runtime_mode(execution_mode: str | None = None) -> str:
     mode = execution_mode or EXECUTION_MODE
     if mode not in {"paper", "live"}:
@@ -355,14 +347,17 @@ def _runtime_mode(execution_mode: str | None = None) -> str:
 def process_execution_plans(
     *,
     execution_mode: str | None = None,
-    broker_client_factory: Any = BitvavoClient,
     market_data_client_factory: Any = BitvavoPublicMarketDataClient,
-    permission_repo: ExecutionPermissionRepository | None = None,
 ) -> dict[str, int]:
-    worker_mode = _runtime_mode(execution_mode)
+    _runtime_mode(execution_mode)
     plans = _fetch_actionable_plans()
+    invalid_modes = [plan.execution_mode for plan in plans if plan.execution_mode not in {"PAPER", "LIVE"}]
+    if invalid_modes:
+        raise ValueError("PLAN_EXECUTION_MODE_NOT_CANONICAL")
+    if any(plan.execution_mode == "LIVE" for plan in plans):
+        raise LiveExecutionPrerequisitesUnavailable()
+
     latest_events = _fetch_latest_events_for_plans([plan.execution_plan_id for plan in plans])
-    claim_repo = permission_repo or ExecutionPermissionRepository()
     market_data_client: BitvavoPublicMarketDataClient | None = None
     counters = {
         "processed": 0,
@@ -376,58 +371,23 @@ def process_execution_plans(
     }
 
     for plan in plans:
-        claim: ExecutionClaim | None = None
         try:
-            if plan.execution_mode == "PAPER":
-                if plan.plan_state not in PAPER_ACTIONABLE_STATES:
-                    raise ValueError("PAPER_PLAN_NOT_ACTIONABLE")
-                if plan.plan_state == "IDLE":
-                    _place_initial_order_paper(plan)
-                    counters["paper_placed"] += 1
-                else:
-                    if market_data_client is None:
-                        market_data_client = market_data_client_factory()
-                    outcome = _handle_monitor_paper(
-                        plan, market_data_client, latest_events.get(plan.execution_plan_id)
-                    )
-                    counters[outcome if outcome != "monitored" else "monitored"] += 1
-                counters["processed"] += 1
-                continue
-
-            if plan.execution_mode != "LIVE":
-                raise LiveExecutionPermissionError("PLAN_EXECUTION_MODE_NOT_CANONICAL")
-            if worker_mode != "live":
-                raise LiveExecutionPermissionError("WORKER_LIVE_MODE_NOT_ARMED")
-            if plan.plan_state != "IDLE":
-                raise LiveExecutionPermissionError("LIVE_MONITORING_NOT_IMPLEMENTED")
-            if plan.action_type != "PLACE_ORDER":
-                raise LiveExecutionPermissionError("LIVE_ACTION_NOT_PLACEMENT")
-
-            claim = claim_repo.claim_live_action(
-                execution_plan_id=plan.execution_plan_id,
-                action_type="PLACE_ORDER",
-            )
-            try:
-                broker_client = broker_client_factory()
-            except Exception:
-                claim_repo.mark_attempt_failed(claim, "BROKER_CLIENT_CONSTRUCTION_FAILED")
-                raise
-            try:
-                broker_order_id = _place_claimed_order_live(claim, broker_client)
-            except Exception:
-                claim_repo.mark_attempt_uncertain(claim, "BROKER_SUBMISSION_OUTCOME_UNKNOWN")
-                raise
-            claim_repo.confirm_attempt(claim, broker_order_id)
-            _write_event(
-                plan.execution_plan_id,
-                "LIVE_PLACE_CONFIRMED",
-                f"attempt_id={claim.execution_attempt_id} broker_order_id={broker_order_id} client_order_id={claim.broker_client_order_id}",
-                claim.passive_price_eur,
-            )
-            counters["live_placed"] += 1
+            _validate_paper_plan(plan)
+            if plan.plan_state not in PAPER_ACTIONABLE_STATES:
+                raise ValueError("PAPER_PLAN_NOT_ACTIONABLE")
+            if plan.plan_state == "IDLE":
+                _place_initial_order_paper(plan)
+                counters["paper_placed"] += 1
+            else:
+                if market_data_client is None:
+                    market_data_client = market_data_client_factory()
+                outcome = _handle_monitor_paper(
+                    plan, market_data_client, latest_events.get(plan.execution_plan_id)
+                )
+                counters[outcome if outcome != "monitored" else "monitored"] += 1
             counters["processed"] += 1
         except Exception as exc:
-            code = exc.code if isinstance(exc, LiveExecutionPermissionError) else type(exc).__name__
+            code = type(exc).__name__
             _write_event(plan.execution_plan_id, "EXECUTOR_REJECTED", f"code={code}")
             counters["failed"] += 1
     return counters

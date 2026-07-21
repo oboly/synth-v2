@@ -25,8 +25,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--min-available-equity-eur", default="25.00")
     parser.add_argument("--execution-mode", choices=("PAPER", "LIVE"), default="PAPER")
-    parser.add_argument("--trading-account-id", type=int, default=None)
-    parser.add_argument("--permission-evidence-id", type=int, default=None)
+    parser.add_argument("--trading-account-id", type=int, required=True)
+    parser.add_argument(
+        "--action-type",
+        choices=("PLACE_ORDER", "CANCEL_ORDER", "MONITOR_ORDER"),
+        required=True,
+    )
+    parser.add_argument("--requested-side", choices=("BUY", "SELL"), required=True)
     parser.add_argument("--write-db", action="store_true")
     parser.add_argument("--output", choices=("table", "json"), default="table")
     return parser.parse_args()
@@ -166,16 +171,11 @@ def main() -> int:
     planner_repo = ExecutionPlannerRepository()
     gate_repo = DecisionGateRepository()
 
-    if args.execution_mode == "LIVE" and (
-        args.trading_account_id is None or args.permission_evidence_id is None
-    ):
-        raise SystemExit(
-            "LIVE planning requires --trading-account-id and --permission-evidence-id"
-        )
     planner_config = ExecutionPlannerConfig(
         execution_mode=args.execution_mode,
         trading_account_id=args.trading_account_id,
-        decision_gate_permission_evidence_id=args.permission_evidence_id,
+        action_type=args.action_type,
+        requested_side=args.requested_side,
     )
     gate_config = DecisionGateConfig(
         min_available_equity_eur=Decimal(str(args.min_available_equity_eur))

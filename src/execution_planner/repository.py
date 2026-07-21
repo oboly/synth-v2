@@ -5,11 +5,6 @@ from decimal import Decimal
 from typing import Any
 
 from src.common.db import get_connection
-from src.decision_gate.permission_evidence_v1 import (
-    PRODUCER_NAME,
-    build_provenance_payload,
-    verify_provenance_signature,
-)
 from src.execution_planner.models import OpenPositionForExit, PlannedExecution
 
 
@@ -33,105 +28,22 @@ def _to_decimal(value: Any, default: str = "0") -> Decimal:
 
 @dataclass
 class ExecutionPlannerRepository:
-    def _validate_permission_binding(self, cur: Any, plan: PlannedExecution) -> None:
-        if plan.execution_mode == "PAPER":
-            return
-        if plan.execution_mode != "LIVE":
-            raise ValueError("PLAN_EXECUTION_MODE_NOT_CANONICAL")
-        required = (
-            plan.trading_account_id,
-            plan.decision_gate_permission_evidence_id,
-            plan.market,
-            plan.execution_intent,
-            plan.action_type,
-            plan.requested_side,
-        )
-        if any(value is None or (isinstance(value, str) and value == "") for value in required):
-            raise ValueError("LIVE_PLAN_PERMISSION_BINDING_INCOMPLETE")
-        if plan.requested_side not in {"BUY", "SELL"} or plan.side != plan.requested_side:
-            raise ValueError("LIVE_PLAN_SIDE_NOT_CANONICAL")
+    @staticmethod
+    def _validate_plan_contract(plan: PlannedExecution) -> None:
+        if plan.trading_account_id is None or plan.trading_account_id <= 0:
+            raise ValueError("TRADING_ACCOUNT_ID_REQUIRED")
+        if plan.execution_mode not in {"PAPER", "LIVE"}:
+            raise ValueError("EXECUTION_MODE_NOT_CANONICAL")
+        if plan.execution_intent is None or plan.execution_intent == "":
+            raise ValueError("EXECUTION_INTENT_REQUIRED")
+        if plan.execution_intent != plan.execution_intent.strip():
+            raise ValueError("EXECUTION_INTENT_NOT_CANONICAL")
         if plan.action_type not in {"PLACE_ORDER", "CANCEL_ORDER", "MONITOR_ORDER"}:
-            raise ValueError("LIVE_PLAN_ACTION_NOT_CANONICAL")
-        cur.execute(
-            """
-            SELECT
-                e.*,
-                a.trading_account_id AS audit_trading_account_id,
-                a.venue AS audit_venue,
-                a.asset_id AS audit_asset_id,
-                a.market AS audit_market,
-                a.execution_intent AS audit_execution_intent,
-                a.action_type AS audit_action_type,
-                a.requested_side AS audit_requested_side,
-                a.permission_state AS audit_permission_state,
-                a.decision_state AS audit_decision_state,
-                a.execution_mode AS audit_execution_mode
-            FROM decision_gate_permission_evidence e
-            JOIN decision_gate_audit_log a
-              ON a.decision_gate_audit_log_id = e.decision_gate_audit_log_id
-            WHERE e.decision_gate_permission_evidence_id = %s
-              AND e.trading_account_id = %s
-              AND e.venue = %s
-              AND e.asset_id = %s
-              AND e.market = %s
-              AND e.execution_intent = %s
-              AND e.action_type = %s
-              AND e.requested_side = %s
-              AND e.producer_name = %s
-              AND e.permission_state = 'EXECUTION_PERMITTED'
-              AND e.decision_state = 'EXECUTION_ALLOWED'
-              AND e.evidence_state = 'ACTIVE'
-              AND e.revoked_ts_utc IS NULL
-              AND e.superseded_by_evidence_id IS NULL
-              AND e.permitted_ts_utc <= UTC_TIMESTAMP(6)
-              AND e.valid_until_ts_utc >= UTC_TIMESTAMP(6)
-            """,
-            (
-                plan.decision_gate_permission_evidence_id,
-                plan.trading_account_id,
-                plan.venue,
-                plan.asset_id,
-                plan.market,
-                plan.execution_intent,
-                plan.action_type,
-                plan.requested_side,
-                PRODUCER_NAME,
-            ),
-        )
-        row = cur.fetchone()
-        if row is None:
-            raise ValueError("LIVE_PLAN_PERMISSION_BINDING_NOT_CANONICAL")
-        audit_pairs = (
-            ("trading_account_id", "audit_trading_account_id"),
-            ("venue", "audit_venue"),
-            ("asset_id", "audit_asset_id"),
-            ("market", "audit_market"),
-            ("execution_intent", "audit_execution_intent"),
-            ("action_type", "audit_action_type"),
-            ("requested_side", "audit_requested_side"),
-            ("permission_state", "audit_permission_state"),
-            ("decision_state", "audit_decision_state"),
-        )
-        if any(row[left] != row[right] for left, right in audit_pairs):
-            raise ValueError("LIVE_PLAN_PERMISSION_AUDIT_SCOPE_MISMATCH")
-        if row["audit_execution_mode"] != "LIVE":
-            raise ValueError("LIVE_PLAN_PERMISSION_AUDIT_NOT_LIVE")
-        payload = build_provenance_payload(
-            decision_gate_audit_log_id=int(row["decision_gate_audit_log_id"]),
-            trading_account_id=int(row["trading_account_id"]),
-            venue=str(row["venue"]),
-            asset_id=int(row["asset_id"]),
-            market=str(row["market"]),
-            execution_intent=str(row["execution_intent"]),
-            action_type=str(row["action_type"]),
-            requested_side=str(row["requested_side"]),
-            permission_state=str(row["permission_state"]),
-            decision_state=str(row["decision_state"]),
-            permitted_ts_utc=row["permitted_ts_utc"],
-            valid_until_ts_utc=row["valid_until_ts_utc"],
-        )
-        if not verify_provenance_signature(payload, str(row["provenance_signature"])):
-            raise ValueError("LIVE_PLAN_PERMISSION_PROVENANCE_INVALID")
+            raise ValueError("ACTION_TYPE_NOT_CANONICAL")
+        if plan.requested_side not in {"BUY", "SELL"} or plan.side != plan.requested_side:
+            raise ValueError("REQUESTED_SIDE_NOT_CANONICAL")
+        if plan.market is None or plan.market == "" or plan.market != plan.market.strip():
+            raise ValueError("MARKET_REQUIRED")
 
     def fetch_reference_price_eur(
         self,
@@ -182,9 +94,8 @@ class ExecutionPlannerRepository:
         ]
         params: list[Any] = [account_id, sleeve_code, venue]
 
-        join_symbol = ""
+        join_symbol = "JOIN asset a ON a.asset_id = pp.asset_id"
         if symbol is not None:
-            join_symbol = "JOIN asset a ON a.asset_id = pp.asset_id"
             clauses.append("a.symbol = %s")
             params.append(symbol)
 
@@ -199,6 +110,7 @@ class ExecutionPlannerRepository:
             pp.sleeve_code,
             pp.asset_id,
             pp.venue,
+            CONCAT(a.symbol, '-EUR') AS market,
             pp.qty,
             pp.avg_entry_price,
             pp.mark_price,
@@ -230,6 +142,7 @@ class ExecutionPlannerRepository:
             sleeve_code=str(row["sleeve_code"]),
             asset_id=int(row["asset_id"]),
             venue=str(row["venue"]),
+            market=str(row["market"]),
             qty=_to_decimal(row["qty"]),
             avg_entry_price=_to_decimal(row["avg_entry_price"]) if row["avg_entry_price"] is not None else None,
             mark_price=_to_decimal(row["mark_price"]) if row["mark_price"] is not None else None,
@@ -240,13 +153,12 @@ class ExecutionPlannerRepository:
         )
 
     def _insert_execution_plan(self, cur: Any, plan: PlannedExecution) -> int:
-        self._validate_permission_binding(cur, plan)
+        self._validate_plan_contract(plan)
         cur.execute(
             """
             INSERT INTO execution_plan (
                 account_id,
                 trading_account_id,
-                decision_gate_permission_evidence_id,
                 asset_id,
                 sleeve_code,
                 venue,
@@ -275,13 +187,12 @@ class ExecutionPlannerRepository:
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s
             )
             """,
             [
                 plan.account_id,
                 plan.trading_account_id,
-                plan.decision_gate_permission_evidence_id,
                 plan.asset_id,
                 plan.sleeve_code,
                 plan.venue,
@@ -543,7 +454,6 @@ class ExecutionPlannerRepository:
             desired_action = %s,
             execution_intent = %s,
             trading_account_id = %s,
-            decision_gate_permission_evidence_id = %s,
             market = %s,
             side = %s,
             requested_side = %s,
@@ -558,7 +468,7 @@ class ExecutionPlannerRepository:
         conn = get_connection()
         try:
             with conn.cursor() as cur:
-                self._validate_permission_binding(cur, plan)
+                self._validate_plan_contract(plan)
                 cur.execute(
                     sql,
                     [
@@ -566,7 +476,6 @@ class ExecutionPlannerRepository:
                         plan.desired_action,
                         plan.execution_intent,
                         plan.trading_account_id,
-                        plan.decision_gate_permission_evidence_id,
                         plan.market,
                         plan.side,
                         plan.requested_side,

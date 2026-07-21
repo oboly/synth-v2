@@ -4,9 +4,12 @@ from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 
+import pytest
+
 from src.decision_gate.models import DecisionResult
 from src.execution_planner.execution_planner_v1 import build_execution_plan
 from src.execution_planner.models import ExecutionPlannerConfig
+from src.execution_planner.repository import ExecutionPlannerRepository
 
 
 def _decision(**overrides: object) -> DecisionResult:
@@ -36,85 +39,111 @@ def _decision(**overrides: object) -> DecisionResult:
     return replace(base, **overrides)
 
 
-def test_execution_plan_stores_explicit_passive_limit_intent() -> None:
+def _config(**overrides: object) -> ExecutionPlannerConfig:
+    values: dict[str, object] = {
+        "execution_mode": "PAPER",
+        "trading_account_id": 17,
+        "action_type": "PLACE_ORDER",
+        "requested_side": "BUY",
+    }
+    values.update(overrides)
+    return ExecutionPlannerConfig(**values)
+
+
+@pytest.mark.parametrize("side", ["BUY", "SELL"])
+@pytest.mark.parametrize("mode", ["PAPER", "LIVE"])
+def test_plan_persists_exact_explicit_contract(side: str, mode: str) -> None:
     plan = build_execution_plan(
-        decision=_decision(),
-        config=ExecutionPlannerConfig(
-            execution_mode="LIVE",
-            trading_account_id=17,
-            decision_gate_permission_evidence_id=23,
-        ),
-        reference_price_eur=Decimal("100.00"),
+        _decision(),
+        _config(execution_mode=mode, requested_side=side),
+        Decimal("100"),
     )
 
     assert plan is not None
-    assert plan.execution_intent == "PLACE_PASSIVE_LIMIT"
-    assert plan.desired_action == "SPREAD_CAPTURE_PASSIVE"
-    assert plan.execution_mode == "LIVE"
     assert plan.trading_account_id == 17
-    assert plan.decision_gate_permission_evidence_id == 23
+    assert plan.execution_mode == mode
+    assert plan.execution_intent == "PLACE_PASSIVE_LIMIT"
     assert plan.action_type == "PLACE_ORDER"
-    assert plan.requested_side == "BUY"
-    assert plan.plan_state == "IDLE"
-    assert isinstance(plan.valid_until_ts_utc, datetime)
+    assert plan.requested_side == side
+    assert plan.side == side
+    assert plan.market == "BTC-EUR"
+    assert isinstance(plan.valid_until_ts_utc, datetime) is (mode == "LIVE")
 
 
-def test_execution_plan_stores_explicit_prepare_intent() -> None:
-    plan = build_execution_plan(
-        decision=_decision(
-            decision_state="PREPARE_ALLOWED",
-            execution_intent="PREPARE_PLAN",
-        ),
-        config=ExecutionPlannerConfig(execution_mode="PAPER"),
-        reference_price_eur=Decimal("100.00"),
-    )
+@pytest.mark.parametrize("side", [None, "", "buy", "sell", "Buy", "SELL ", "HOLD"])
+def test_requested_side_must_be_exact(side: str | None) -> None:
+    with pytest.raises(ValueError, match="^REQUESTED_SIDE_NOT_CANONICAL$"):
+        build_execution_plan(_decision(), _config(requested_side=side), Decimal("100"))
 
+
+@pytest.mark.parametrize("mode", [None, "", "paper", "live", "Paper", "TEST"])
+def test_execution_mode_must_be_exact(mode: str | None) -> None:
+    with pytest.raises(ValueError, match="^EXECUTION_MODE_NOT_CANONICAL$"):
+        build_execution_plan(_decision(), _config(execution_mode=mode), Decimal("100"))
+
+
+@pytest.mark.parametrize("action", [None, "", "place_order", "PLACE", "PLACE_ORDER "])
+def test_action_type_must_be_exact(action: str | None) -> None:
+    with pytest.raises(ValueError, match="^ACTION_TYPE_NOT_CANONICAL$"):
+        build_execution_plan(_decision(), _config(action_type=action), Decimal("100"))
+
+
+@pytest.mark.parametrize("intent", [None, "", " ", "PLACE_PASSIVE_LIMIT "])
+def test_intent_must_be_nonblank_and_canonical(intent: str | None) -> None:
+    expected = "EXECUTION_INTENT_REQUIRED" if intent is None or not intent.strip() else "EXECUTION_INTENT_NOT_CANONICAL"
+    with pytest.raises(ValueError, match=f"^{expected}$"):
+        build_execution_plan(_decision(execution_intent=intent), _config(), Decimal("100"))
+
+
+def test_account_id_cannot_substitute_for_trading_account_id() -> None:
+    with pytest.raises(ValueError, match="^TRADING_ACCOUNT_ID_REQUIRED$"):
+        build_execution_plan(_decision(account_id=17), _config(trading_account_id=None), Decimal("100"))
+
+
+def test_repository_rejects_incomplete_canonical_plan() -> None:
+    plan = build_execution_plan(_decision(), _config(), Decimal("100"))
     assert plan is not None
-    assert plan.execution_intent == "PREPARE_PLAN"
-    assert plan.desired_action == "PREPARE_PLAN"
-
-
-def test_live_plan_requires_explicit_trading_account_and_permission_binding() -> None:
-    for config, message in [
-        (ExecutionPlannerConfig(execution_mode="LIVE"), "trading_account_id"),
-        (
-            ExecutionPlannerConfig(execution_mode="LIVE", trading_account_id=17),
-            "decision_gate_permission_evidence_id",
-        ),
-    ]:
-        try:
-            build_execution_plan(_decision(), config, Decimal("100"))
-        except ValueError as exc:
-            assert message in str(exc)
-        else:
-            raise AssertionError("LIVE plan without exact binding must fail")
-
-
-def test_legacy_lowercase_execution_mode_is_not_silently_normalized() -> None:
-    try:
-        build_execution_plan(
-            _decision(),
-            ExecutionPlannerConfig(execution_mode="live", trading_account_id=17),
-            Decimal("100"),
+    with pytest.raises(ValueError, match="^TRADING_ACCOUNT_ID_REQUIRED$"):
+        ExecutionPlannerRepository._validate_plan_contract(
+            replace(plan, trading_account_id=None)
         )
-    except ValueError as exc:
-        assert str(exc) == "execution_mode must be canonical PAPER or LIVE"
-    else:
-        raise AssertionError("lowercase mode must fail closed")
 
 
-def test_live_prepare_plan_is_rejected() -> None:
-    try:
+def test_repository_persists_exact_sell_contract_without_permission_fields() -> None:
+    plan = build_execution_plan(
+        _decision(),
+        _config(execution_mode="LIVE", requested_side="SELL"),
+        Decimal("100"),
+    )
+    assert plan is not None
+
+    class Cursor:
+        lastrowid = 91
+        sql = ""
+        params: list[object] = []
+
+        def execute(self, sql: str, params: list[object]) -> None:
+            self.sql = sql
+            self.params = params
+
+    cursor = Cursor()
+    result = ExecutionPlannerRepository()._insert_execution_plan(cursor, plan)
+
+    assert result == 91
+    assert "decision_gate_permission_evidence_id" not in cursor.sql
+    assert cursor.params[1] == 17
+    assert cursor.params[5] == "BTC-EUR"
+    assert cursor.params[6] == "SELL"
+    assert cursor.params[8] == "PLACE_PASSIVE_LIMIT"
+    assert cursor.params[9] == "PLACE_ORDER"
+    assert cursor.params[10] == "SELL"
+    assert cursor.params[11] == "LIVE"
+
+
+def test_live_prepare_plan_remains_unsupported() -> None:
+    with pytest.raises(ValueError, match="^LIVE_PLAN_INTENT_NOT_SUPPORTED$"):
         build_execution_plan(
             _decision(decision_state="PREPARE_ALLOWED", execution_intent="PREPARE_PLAN"),
-            ExecutionPlannerConfig(
-                execution_mode="LIVE",
-                trading_account_id=17,
-                decision_gate_permission_evidence_id=23,
-            ),
+            _config(execution_mode="LIVE"),
             Decimal("100"),
         )
-    except ValueError as exc:
-        assert str(exc) == "LIVE planning only supports PLACE_PASSIVE_LIMIT"
-    else:
-        raise AssertionError("LIVE preplan must fail closed")
