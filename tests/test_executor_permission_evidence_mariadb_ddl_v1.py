@@ -548,6 +548,58 @@ def test_two_real_repository_transactions_allow_exactly_one_claim(
             assert int(cur.fetchone()["cnt"]) == 1
 
 
+def test_revocation_after_committed_claim_cannot_create_second_claim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.common.db import get_connection
+    from src.execution import permission_gate_v1
+
+    with _disposable_schema() as conn:
+        _apply_migration(conn)
+        _, evidence_id, plan_id = _seed_claim_scope(conn)
+        database_name = conn.db.decode("utf-8") if isinstance(conn.db, bytes) else str(conn.db)
+        monkeypatch.setattr(
+            permission_gate_v1,
+            "get_connection",
+            lambda: get_connection(database=database_name),
+        )
+        repo = permission_gate_v1.ExecutionPermissionRepository()
+        first_claim = repo.claim_live_action(
+            execution_plan_id=plan_id,
+            action_type="PLACE_ORDER",
+            claim_owner="revocation-race-test",
+            env=CLAIM_ENV,
+            now_utc=CLAIM_NOW,
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE decision_gate_permission_evidence
+                SET evidence_state='REVOKED', revoked_ts_utc=%s
+                WHERE decision_gate_permission_evidence_id=%s
+                """,
+                (CLAIM_NOW + timedelta(seconds=1), evidence_id),
+            )
+        conn.commit()
+
+        with pytest.raises(permission_gate_v1.LiveExecutionPermissionError) as exc_info:
+            repo.claim_live_action(
+                execution_plan_id=plan_id,
+                action_type="PLACE_ORDER",
+                claim_owner="revocation-race-test-2",
+                env=CLAIM_ENV,
+                now_utc=CLAIM_NOW + timedelta(seconds=2),
+            )
+        assert exc_info.value.code == "PLAN_NOT_ACTIONABLE"
+        assert first_claim.authorization_snapshot_ts_utc == CLAIM_NOW
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM execution_attempt WHERE execution_plan_id=%s",
+                (plan_id,),
+            )
+            assert int(cur.fetchone()["cnt"]) == 1
+
+
 def test_permission_lifecycle_constraints_preserve_valid_history() -> None:
     from pymysql.err import OperationalError
 
