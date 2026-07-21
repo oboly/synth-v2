@@ -19,6 +19,7 @@ ACTIVE_EXECUTOR_PLAN_STATES = CANONICAL_PAPER_PLAN_STATES
 PERSISTED_PAPER_CONTRACT_FIELDS = (
     "execution_mode",
     "trading_account_id",
+    "venue",
     "market",
     "execution_intent",
     "action_type",
@@ -270,6 +271,7 @@ class ExecutorRepository:
             SELECT
                 execution_mode,
                 trading_account_id,
+                venue,
                 market,
                 execution_intent,
                 action_type,

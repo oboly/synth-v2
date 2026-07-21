@@ -486,21 +486,24 @@ def test_both_fill_transactions_revalidate_every_persisted_contract_field() -> N
         plans = {plan.execution_plan_id: plan for plan in repo.fetch_open_plans()}
         baseline = _counts_and_accounting(conn)
 
-        races = {
-            "execution_mode": "LIVE",
-            "execution_intent": "WRONG_INTENT",
-            "action_type": "place_order",
-            "requested_side": "buy",
-            "market": "btc-eur",
-            "side": "buy",
-            "plan_state": "FILLED",
-        }
+        races = (
+            ("execution_mode", "LIVE"),
+            ("execution_intent", "WRONG_INTENT"),
+            ("action_type", "place_order"),
+            ("requested_side", "buy"),
+            ("venue", "BITVAVO"),
+            ("venue", "other"),
+            ("venue", None),
+            ("market", "btc-eur"),
+            ("side", "buy"),
+            ("plan_state", "FILLED"),
+        )
         for plan_id, fill_name in (
             (passive_id, "fill_passive_plan_paper"),
             (close_id, "fill_close_position_market_paper"),
         ):
             plan = plans[plan_id]
-            for field_name, changed_value in races.items():
+            for field_name, changed_value in races:
                 with conn.cursor() as cur:
                     cur.execute(
                         f"UPDATE execution_plan SET {field_name} = %s "
