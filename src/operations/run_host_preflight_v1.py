@@ -1,11 +1,29 @@
 """
 host_preflight_v1
 
-Read-only host-readiness preflight for writer-capability host selection.
+Read-only, stage-aware host-readiness preflight for writer-capability host
+selection.
 
 This runner proves only local facts that can be inspected without mutating host
 state. It never selects a host, installs a unit, activates a timer, invokes a
 writer, writes a database, or calls an exchange/broker.
+
+Evidence stages
+---------------
+Every check declares an explicit evidence stage:
+
+    PREFLIGHT_LOCAL     provable by read-only local inspection here
+    PREFLIGHT_EXTERNAL  provable only by a separately authorized external probe
+    ACCEPTANCE          provable only by a controlled acceptance run
+    CUTOVER             provable only by a documented cutover/rollback drill
+
+Strict host preflight (`--strict`) requires only PREFLIGHT_LOCAL and
+PREFLIGHT_EXTERNAL checks. ACCEPTANCE and CUTOVER checks remain visible but are
+deferred and non-blocking during preflight; they are never silently marked PASS.
+
+Preflight-external checks are `UNVERIFIED` here unless a separately produced,
+matching external-evidence manifest is supplied via `--external-evidence-file`.
+Local checks are always authoritative and can never be overridden by evidence.
 
 Safety boundary:
 - read-only local host inspection
@@ -14,7 +32,8 @@ Safety boundary:
 - no writer invocation
 - no database connection or write
 - no exchange / broker call
-- unproved external facts remain UNVERIFIED
+- no command execution from any evidence file
+- unproved external/acceptance/cutover facts remain UNVERIFIED
 
 broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0
 host_mutations=0 database_writes=0 writer_invocations=0 systemctl_mutations=0
@@ -34,12 +53,17 @@ from pathlib import Path
 
 
 RUNNER_NAME = "host_preflight_v1"
-RUNNER_VERSION = "0.2"
+RUNNER_VERSION = "0.3"
 
 STATUS_PASS = "PASS"
 STATUS_WARN = "WARN"
 STATUS_FAIL = "FAIL"
 STATUS_UNVERIFIED = "UNVERIFIED"
+
+STAGE_PREFLIGHT_LOCAL = "PREFLIGHT_LOCAL"
+STAGE_PREFLIGHT_EXTERNAL = "PREFLIGHT_EXTERNAL"
+STAGE_ACCEPTANCE = "ACCEPTANCE"
+STAGE_CUTOVER = "CUTOVER"
 
 CAPABILITY_MODULES = {
     "public_price_snapshot": ("src.market_data.run_market_price_snapshot_v1",),
@@ -94,20 +118,9 @@ CAPABILITY_THRESHOLDS = {
     "native_short_4h_chain": {"min_cpus": 2, "min_mem_mb": 4096, "min_free_gb": 10.0},
 }
 
-UNVERIFIED_BY_DESIGN = {
-    "mariadb_connectivity": "requires a DB connection; not attempted read-only",
-    "exchange_api_connectivity": "requires an exchange call; not attempted",
-    "dns": "requires a network resolve; not attempted read-only",
-    "ntp_time_sync": "requires querying a time source; not attempted",
-    "secrets_and_configuration": "must be verified out-of-band; secret values are not read",
-    "runtime_per_writer": "proven only by a separately authorized controlled acceptance run",
-    "resource_usage_per_writer": "proven only by a separately authorized controlled acceptance run",
-    "firewall_outbound_connectivity": "requires an outbound probe; not attempted",
-    "rollback_capability": "proven only by a documented cutover/rollback drill",
-    "journald_logrotation": "requires host retention policy evidence; not read here",
-}
-
-CHECK_ORDER = (
+# Locally measurable, read-only host facts. Always authoritative; never merged
+# from external evidence.
+PREFLIGHT_LOCAL_CHECKS = (
     "capability_identity",
     "host_identity",
     "checkout_commit",
@@ -120,17 +133,88 @@ CHECK_ORDER = (
     "flock",
     "systemd_availability",
     "systemd_unit_validation",
+)
+
+# Facts that require a separately authorized external probe (DB/exchange/network/
+# host policy). These are the only checks an external-evidence manifest may fill.
+PREFLIGHT_EXTERNAL_CHECKS = (
     "mariadb_connectivity",
     "exchange_api_connectivity",
     "dns",
     "ntp_time_sync",
     "journald_logrotation",
     "secrets_and_configuration",
+    "firewall_outbound_connectivity",
+)
+
+# Deferred: provable only by a controlled acceptance run after separate
+# authorization. Non-blocking during preflight.
+ACCEPTANCE_CHECKS = (
     "runtime_per_writer",
     "resource_usage_per_writer",
-    "firewall_outbound_connectivity",
-    "rollback_capability",
 )
+
+# Deferred: provable only by a documented cutover/rollback drill. Non-blocking
+# during preflight.
+CUTOVER_CHECKS = ("rollback_capability",)
+
+CHECK_ORDER = (
+    *PREFLIGHT_LOCAL_CHECKS,
+    *PREFLIGHT_EXTERNAL_CHECKS,
+    *ACCEPTANCE_CHECKS,
+    *CUTOVER_CHECKS,
+)
+
+# Base rationale for each external check when it is not yet proven here.
+EXTERNAL_CHECK_DESIGN = {
+    "mariadb_connectivity": "requires a DB connection; proven by a separately authorized external probe",
+    "exchange_api_connectivity": "requires an exchange call; proven by a separately authorized external probe",
+    "dns": "requires a network resolve; proven by a separately authorized external probe",
+    "ntp_time_sync": "requires querying a time source; proven by a separately authorized external probe",
+    "journald_logrotation": "requires host retention policy evidence; proven by a separately authorized external probe",
+    "secrets_and_configuration": "must be verified out-of-band; secret values are never read here",
+    "firewall_outbound_connectivity": "requires an outbound probe; proven by a separately authorized external probe",
+}
+
+# Capability-specific external requirements. Default is required=True for every
+# preflight-external check; overrides below mark a check non-required only when
+# the capability's proven call graph does not depend on it. Public exchange
+# endpoints (bitvavo public ticker/candles) require no private credentials, so
+# secrets_and_configuration is not required for the public writers.
+#
+# market_rotation_pressure: run_market_rotation_history_v1 and
+# run_market_rotation_pressure_v1 read persisted candles from MariaDB and use
+# only optional public CoinGecko global context; neither calls the exchange API,
+# so exchange_api_connectivity is not required.
+CAPABILITY_EXTERNAL_REQUIRED_OVERRIDES = {
+    "public_price_snapshot": {"secrets_and_configuration": False},
+    "public_candle_freshness": {"secrets_and_configuration": False},
+    "market_rotation_pressure": {
+        "exchange_api_connectivity": False,
+        "secrets_and_configuration": False,
+    },
+    "native_short_4h_chain": {
+        "exchange_api_connectivity": False,
+        "secrets_and_configuration": False,
+    },
+}
+
+# Short, capability-specific justification recorded in the detail for a check
+# whose requirement differs from the default.
+CAPABILITY_EXTERNAL_NOTES = {
+    ("public_price_snapshot", "secrets_and_configuration"): "public bitvavo ticker endpoint needs no private exchange credentials",
+    ("public_candle_freshness", "secrets_and_configuration"): "public bitvavo candle endpoint needs no private exchange credentials",
+    ("market_rotation_pressure", "exchange_api_connectivity"): "reads persisted candles from MariaDB; only optional public CoinGecko global context; no exchange API dependency",
+    ("market_rotation_pressure", "secrets_and_configuration"): "no private exchange credentials; optional CoinGecko key degrades gracefully",
+    ("native_short_4h_chain", "exchange_api_connectivity"): "market-only chain consumes persisted market state; does not call the exchange API directly",
+    ("native_short_4h_chain", "secrets_and_configuration"): "market-only chain reads persisted state; no private exchange credentials",
+}
+
+DEFERRED_CHECK_DESIGN = {
+    "runtime_per_writer": (STAGE_ACCEPTANCE, "proven only by a separately authorized controlled acceptance run"),
+    "resource_usage_per_writer": (STAGE_ACCEPTANCE, "proven only by a separately authorized controlled acceptance run"),
+    "rollback_capability": (STAGE_CUTOVER, "proven only by a documented cutover/rollback drill"),
+}
 
 
 @dataclass(frozen=True)
@@ -139,6 +223,22 @@ class CheckResult:
     status: str
     detail: str
     required: bool = True
+    stage: str = STAGE_PREFLIGHT_LOCAL
+    required_stage: str | None = None
+    evidence_source: str | None = None
+
+
+def _external_required(capability: str, check: str) -> bool:
+    return CAPABILITY_EXTERNAL_REQUIRED_OVERRIDES.get(capability, {}).get(check, True)
+
+
+def _external_placeholder_detail(capability: str, check: str, required: bool) -> str:
+    base = EXTERNAL_CHECK_DESIGN[check]
+    note = CAPABILITY_EXTERNAL_NOTES.get((capability, check))
+    detail = f"{base}; required={str(required).lower()}"
+    if note:
+        detail = f"{detail}; {note}"
+    return detail
 
 
 def _run(args: list[str], *, cwd: Path | None = None, timeout: int = 5) -> subprocess.CompletedProcess[str]:
@@ -339,6 +439,50 @@ def _systemd_availability() -> CheckResult:
     return CheckResult("systemd_availability", STATUS_WARN, f"systemctl={binary} state={detail}")
 
 
+def _classify_systemd_verify(
+    returncode: int,
+    stderr: str,
+    stdout: str,
+    rel_units: tuple[str, ...],
+) -> CheckResult:
+    """Scope systemd-analyze diagnostics to the supplied capability units.
+
+    Only diagnostics that reference one of the supplied unit files/names are
+    treated as blocking for this capability. Unrelated global unit diagnostics
+    (for example a host `xfs_scrub_all` warning) are retained deterministically
+    as informational metadata and never raise a capability warning.
+    """
+    basenames = {Path(rel).name for rel in rel_units}
+    raw = (stderr or "").strip() or (stdout or "").strip()
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    relevant: list[str] = []
+    unrelated: list[str] = []
+    for line in lines:
+        (relevant if any(base in line for base in basenames) else unrelated).append(line)
+    info = f"unrelated_diagnostics={len(unrelated)}"
+    if returncode != 0:
+        if relevant:
+            return CheckResult(
+                "systemd_unit_validation", STATUS_FAIL, f"{relevant[0]} ({info})"
+            )
+        # Nonzero exit attributable only to unrelated units; the supplied
+        # capability units produced no diagnostic of their own.
+        return CheckResult(
+            "systemd_unit_validation",
+            STATUS_PASS,
+            f"verified={','.join(rel_units)} rc={returncode} {info}",
+        )
+    if relevant:
+        return CheckResult(
+            "systemd_unit_validation", STATUS_WARN, f"{relevant[0]} ({info})"
+        )
+    return CheckResult(
+        "systemd_unit_validation",
+        STATUS_PASS,
+        f"verified={','.join(rel_units)} {info}",
+    )
+
+
 def _systemd_unit_validation(checkout_path: Path, capability: str) -> CheckResult:
     binary = shutil.which("systemd-analyze")
     if not binary:
@@ -354,22 +498,17 @@ def _systemd_unit_validation(checkout_path: Path, capability: str) -> CheckResul
         result = _run([binary, "verify", *unit_paths], timeout=15)
     except (OSError, subprocess.SubprocessError) as exc:
         return CheckResult("systemd_unit_validation", STATUS_WARN, f"systemd-analyze verify failed: {exc}")
-    detail = (result.stderr.strip() or result.stdout.strip() or "verify emitted no output")
-    if result.returncode != 0:
-        return CheckResult("systemd_unit_validation", STATUS_FAIL, detail.splitlines()[0])
-    if detail != "verify emitted no output":
-        return CheckResult("systemd_unit_validation", STATUS_WARN, detail.splitlines()[0])
-    return CheckResult("systemd_unit_validation", STATUS_PASS, f"verified={','.join(rel_units)}")
+    return _classify_systemd_verify(result.returncode, result.stderr, result.stdout, tuple(rel_units))
 
 
-def run_preflight(
+def _local_checks(
     *,
     capability: str,
     expected_host: str,
     expected_commit: str,
     checkout_path: Path,
-) -> list[CheckResult]:
-    measured = {
+) -> dict[str, CheckResult]:
+    return {
         "capability_identity": _capability_identity(capability),
         "host_identity": _host_identity(expected_host),
         "checkout_commit": _checkout_commit(checkout_path, expected_commit),
@@ -383,12 +522,71 @@ def run_preflight(
         "systemd_availability": _systemd_availability(),
         "systemd_unit_validation": _systemd_unit_validation(checkout_path, capability),
     }
+
+
+def run_preflight(
+    *,
+    capability: str,
+    expected_host: str,
+    expected_commit: str,
+    checkout_path: Path,
+    external_evidence_checks: dict[str, dict] | None = None,
+) -> list[CheckResult]:
+    """Assemble the full stage-aware check list.
+
+    Local checks are always measured here and are authoritative. Preflight
+    external checks stay UNVERIFIED unless a matching, permitted entry is present
+    in ``external_evidence_checks`` (already validated by the evidence
+    validator). Acceptance/cutover checks stay deferred and non-blocking.
+    """
+    measured = _local_checks(
+        capability=capability,
+        expected_host=expected_host,
+        expected_commit=expected_commit,
+        checkout_path=checkout_path,
+    )
+    evidence = external_evidence_checks or {}
     results: list[CheckResult] = []
     for name in CHECK_ORDER:
-        if name in measured:
+        if name in PREFLIGHT_LOCAL_CHECKS:
             results.append(measured[name])
+        elif name in PREFLIGHT_EXTERNAL_CHECKS:
+            required = _external_required(capability, name)
+            merged = evidence.get(name)
+            if merged is not None:
+                detail = merged["detail"]
+                results.append(
+                    CheckResult(
+                        name,
+                        merged["status"],
+                        f"{detail}; evidence_source={merged['evidence_source']}; observed_at_utc={merged['observed_at_utc']}",
+                        required=required,
+                        stage=STAGE_PREFLIGHT_EXTERNAL,
+                        evidence_source=merged["evidence_source"],
+                    )
+                )
+            else:
+                results.append(
+                    CheckResult(
+                        name,
+                        STATUS_UNVERIFIED,
+                        _external_placeholder_detail(capability, name, required),
+                        required=required,
+                        stage=STAGE_PREFLIGHT_EXTERNAL,
+                    )
+                )
         else:
-            results.append(CheckResult(name, STATUS_UNVERIFIED, UNVERIFIED_BY_DESIGN[name], required=True))
+            stage, reason = DEFERRED_CHECK_DESIGN[name]
+            results.append(
+                CheckResult(
+                    name,
+                    STATUS_UNVERIFIED,
+                    reason,
+                    required=False,
+                    stage=stage,
+                    required_stage=stage,
+                )
+            )
     return results
 
 
@@ -402,9 +600,15 @@ def _print_safety_markers() -> None:
 
 def _render_table(results: list[CheckResult]) -> str:
     width = max(len(r.name) for r in results)
-    lines = [f"{'CHECK'.ljust(width)}  STATUS      REQUIRED  DETAIL"]
+    stage_width = max(len(r.stage) for r in results)
+    lines = [
+        f"{'CHECK'.ljust(width)}  {'STAGE'.ljust(stage_width)}  STATUS      REQUIRED  DETAIL"
+    ]
     for r in results:
-        lines.append(f"{r.name.ljust(width)}  {r.status.ljust(10)}  {str(r.required).lower().ljust(8)}  {r.detail}")
+        lines.append(
+            f"{r.name.ljust(width)}  {r.stage.ljust(stage_width)}  "
+            f"{r.status.ljust(10)}  {str(r.required).lower().ljust(8)}  {r.detail}"
+        )
     return "\n".join(lines)
 
 
@@ -430,13 +634,23 @@ def _strict_exit_status(results: list[CheckResult]) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Read-only host preflight for writer-capability host selection."
+        description="Read-only, stage-aware host preflight for writer-capability host selection."
     )
     parser.add_argument("--capability", required=True, choices=sorted(CAPABILITY_MODULES))
     parser.add_argument("--expected-host", required=True)
     parser.add_argument("--expected-commit", required=True)
     parser.add_argument("--checkout-path", type=Path, default=None)
     parser.add_argument("--path", type=Path, default=None, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--external-evidence-file",
+        type=Path,
+        default=None,
+        help=(
+            "Optional path to a separately produced external-evidence manifest. "
+            "Only matching, permitted preflight-external checks are merged; local "
+            "checks stay authoritative and no command is ever executed from it."
+        ),
+    )
     parser.add_argument("--output", choices=("table", "json"), default="table")
     parser.add_argument(
         "--strict",
@@ -447,11 +661,39 @@ def main() -> int:
 
     checkout_path = (args.checkout_path or args.path or Path.cwd()).resolve()
     ts = datetime.now(UTC).replace(microsecond=0).isoformat()
+
+    external_checks: dict[str, dict] | None = None
+    evidence_source_path: str | None = None
+    if args.external_evidence_file is not None:
+        # Imported lazily so importing the validator (which imports this module's
+        # stage constants) never forms a load-time cycle.
+        from src.operations.validate_host_preflight_external_evidence_v1 import (
+            load_and_validate_external_evidence,
+        )
+
+        evidence_source_path = str(args.external_evidence_file)
+        validation = load_and_validate_external_evidence(
+            args.external_evidence_file,
+            capability=args.capability,
+            expected_host=args.expected_host,
+            expected_commit=args.expected_commit,
+        )
+        if not validation.ok:
+            print(
+                f"FAILED runner={RUNNER_NAME} reason=EXTERNAL_EVIDENCE_INVALID "
+                f"file={evidence_source_path} error_count={len(validation.errors)} ts={ts}"
+            )
+            for error in validation.errors:
+                print(f"EVIDENCE_ERROR {error}")
+            return 2
+        external_checks = validation.checks
+
     results = run_preflight(
         capability=args.capability,
         expected_host=args.expected_host,
         expected_commit=args.expected_commit,
         checkout_path=checkout_path,
+        external_evidence_checks=external_checks,
     )
     counts = _counts(results)
 
@@ -464,6 +706,9 @@ def main() -> int:
             "expected_host": args.expected_host,
             "expected_commit": args.expected_commit,
             "checkout_path": str(checkout_path),
+            "external_evidence_file": evidence_source_path,
+            "strict_requires_stages": [STAGE_PREFLIGHT_LOCAL, STAGE_PREFLIGHT_EXTERNAL],
+            "deferred_stages": [STAGE_ACCEPTANCE, STAGE_CUTOVER],
             "safety_markers": {
                 "host_mutations": 0,
                 "database_writes": 0,
@@ -471,6 +716,7 @@ def main() -> int:
                 "systemctl_mutations": 0,
                 "broker_private_calls": 0,
                 "broker_writes": 0,
+                "exchange_calls": 0,
             },
             "counts": counts,
             "checks": [asdict(r) for r in results],
@@ -479,7 +725,7 @@ def main() -> int:
     else:
         print(
             f"STARTED runner={RUNNER_NAME} mode=read_only capability={args.capability} "
-            f"checkout_path={checkout_path} ts={ts}"
+            f"checkout_path={checkout_path} external_evidence_file={evidence_source_path} ts={ts}"
         )
         _print_safety_markers()
         print(_render_table(results))

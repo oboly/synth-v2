@@ -196,20 +196,87 @@ python -m src.operations.run_host_preflight_v1 \
   --expected-host <host> \
   --expected-commit <40-char-sha> \
   --checkout-path <repo-path> \
+  [--external-evidence-file <path>] \
   --strict
 ```
 
-Strict mode returns nonzero for any required `FAIL`, `WARN`, or `UNVERIFIED`.
-MariaDB, exchange API, DNS, NTP, firewall, secrets, runtime-per-writer,
-resource-usage-per-writer, journald/logrotation, and rollback evidence remain
-`UNVERIFIED` unless separately proven. Host selection cannot proceed while a
-required item is unresolved.
+Preflight is stage-aware. Every check declares an explicit evidence stage:
 
-The runner executes the virtualenv Python for import checks, verifies `flock`,
+```text
+PREFLIGHT_LOCAL     provable by read-only local inspection in this runner
+PREFLIGHT_EXTERNAL  provable only by a separately authorized external probe
+ACCEPTANCE          provable only by a controlled acceptance run
+CUTOVER             provable only by a documented cutover/rollback drill
+```
+
+Stage membership:
+
+```text
+PREFLIGHT_LOCAL:
+  capability_identity, host_identity, checkout_commit, os_and_architecture,
+  cpu_and_load, ram_and_swap, disk_space_and_inodes, python_and_virtualenv,
+  capability_module_imports, flock, systemd_availability, systemd_unit_validation
+
+PREFLIGHT_EXTERNAL:
+  mariadb_connectivity, exchange_api_connectivity, dns, ntp_time_sync,
+  journald_logrotation, secrets_and_configuration, firewall_outbound_connectivity
+
+ACCEPTANCE (deferred, non-blocking during preflight):
+  runtime_per_writer, resource_usage_per_writer
+
+CUTOVER (deferred, non-blocking during preflight):
+  rollback_capability
+```
+
+### Local versus external evidence
+
+`PREFLIGHT_LOCAL` checks are measured here and are always authoritative. The
+runner executes the virtualenv Python for import checks, verifies `flock`,
 checks the exact checkout commit, verifies hostname, and runs
 `systemd-analyze verify` on the selected capability units when available. It
 does not read secret values, connect to MariaDB, call exchanges, run writers,
 or mutate systemd state.
+
+`PREFLIGHT_EXTERNAL` checks require a database, exchange, network, or host-policy
+probe that this read-only runner never performs. They remain `UNVERIFIED` unless
+a separately produced, matching external-evidence manifest is supplied with
+`--external-evidence-file`. The manifest may fill only permitted
+`PREFLIGHT_EXTERNAL` checks; it can never override a local check, and the runner
+never executes any command from it. See
+`deploy/ownership/host_preflight_external_evidence_v1.schema.json` and
+`src/operations/validate_host_preflight_external_evidence_v1.py`.
+
+### Capability-specific external requirements
+
+External requirements are proven from each capability's real call graph, not
+inferred from names:
+
+```text
+public_price_snapshot:    mariadb required; exchange (public bitvavo ticker) required; secrets not required
+public_candle_freshness:  mariadb required; exchange (public bitvavo candles) required; secrets not required
+market_rotation_pressure: mariadb required; exchange NOT required; secrets not required
+```
+
+`market_rotation_pressure` reads persisted candles from MariaDB and uses only
+optional public CoinGecko global context, so it has no exchange-API dependency.
+Public exchange endpoints require no private credentials, so
+`secrets_and_configuration` is not required for the public writers.
+
+### Strict-pass semantics
+
+`--strict` for host preflight requires only `PREFLIGHT_LOCAL` and
+`PREFLIGHT_EXTERNAL` checks. It returns zero only when every required preflight
+check is `PASS`. Any required `FAIL`, `WARN`, or `UNVERIFIED` returns nonzero.
+Deferred `ACCEPTANCE` and `CUTOVER` checks stay visible but never block a strict
+preflight; they are never silently marked `PASS`. A required check whose
+capability-specific requirement is `false` (for example rotation-pressure
+exchange connectivity) stays `UNVERIFIED` without blocking.
+
+The external-evidence manifest is non-authorizing: a strict preflight `PASS`
+proves host readiness only. It does not grant production ownership, and it does
+not change any lifecycle to `PREFLIGHT_PASSED`. Acceptance and cutover evidence
+must not be presented inside a preflight manifest, and no external-evidence file
+may contain secrets or credentials.
 
 ## Acceptance Procedure
 
@@ -278,6 +345,13 @@ ExecStartPre=python -m src.operations.verify_writer_capability_authorization_v1 
 The guard verifies capability id, actual hostname, registry authorization,
 lifecycle, exact checkout commit, service identity, and explicit deployment
 authorization configuration. Missing authorization configuration fails closed.
+
+The `systemd_unit_validation` preflight check scopes `systemd-analyze verify`
+diagnostics to the supplied capability unit files. Errors or warnings that
+reference the selected service/timer remain blocking. Unrelated global unit
+diagnostics on the host (for example an `xfs_scrub_all` warning) are retained as
+informational metadata and never raise a capability warning. `systemd-analyze`
+stderr is not broadly suppressed.
 
 Host-local `flock` locks prevent manual/systemd overlap on one host only. They
 cannot prevent cross-host overlap, which is why authorization and cutover guards
