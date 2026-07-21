@@ -403,3 +403,157 @@ def test_json_output_exposes_stage_and_strict_stage_contract(monkeypatch: pytest
     stages = {c["name"]: c["stage"] for c in payload["checks"]}
     assert stages["mariadb_connectivity"] == "PREFLIGHT_EXTERNAL"
     assert stages["rollback_capability"] == "CUTOVER"
+
+
+# ---------------------------------------------------------------------------
+# Machine-readable and redacted evidence failures
+# ---------------------------------------------------------------------------
+
+
+SENTINEL_SECRET = "SENTINEL_SECRET_VALUE_MUST_NOT_APPEAR"
+
+
+def _runner_manifest_with_host(hostname: str) -> dict:
+    observed_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "schema_version": "host_preflight_external_evidence_schema_v1",
+        "capability": "market_rotation_pressure",
+        "hostname": hostname,
+        "checkout_commit": "0" * 40,
+        "observed_at_utc": observed_at,
+        "checks": {
+            "dns": {
+                "status": "PASS",
+                "detail": "probe ok",
+                "evidence_source": "ops/preflight_probe_v1",
+                "observed_at_utc": observed_at,
+            }
+        },
+        "safety_markers": dict(VALID_SAFETY_MARKERS),
+    }
+
+
+def _run_main_with_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    evidence_path: Path,
+    *,
+    output: str,
+    strict: bool = False,
+) -> int:
+    argv = [
+        "run_host_preflight_v1",
+        "--capability",
+        "market_rotation_pressure",
+        "--expected-host",
+        "gurkdb",
+        "--expected-commit",
+        "0" * 40,
+        "--checkout-path",
+        str(Path.cwd()),
+        "--external-evidence-file",
+        str(evidence_path),
+        "--output",
+        output,
+    ]
+    if strict:
+        argv.append("--strict")
+    monkeypatch.setattr("sys.argv", argv)
+    return preflight.main()
+
+
+def test_invalid_evidence_json_is_one_redacted_document(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    evidence_path = tmp_path / "invalid_evidence.json"
+    evidence_path.write_text(
+        json.dumps(_runner_manifest_with_host(SENTINEL_SECRET)),
+        encoding="utf-8",
+    )
+    rc = _run_main_with_evidence(monkeypatch, evidence_path, output="json")
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 2
+    assert payload["status"] == "FAILED"
+    assert payload["reason"] == "EXTERNAL_EVIDENCE_INVALID"
+    assert payload["errors"] == [
+        {
+            "code": "HOSTNAME_MISMATCH",
+            "field": "hostname",
+            "provided_length": len(SENTINEL_SECRET),
+            "provided_type": "str",
+        }
+    ]
+    assert captured.err == ""
+    assert SENTINEL_SECRET not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("file_state", ("invalid_json", "missing"))
+def test_unreadable_or_invalid_json_evidence_stays_json(
+    file_state: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    evidence_path = tmp_path / "evidence.json"
+    if file_state == "invalid_json":
+        evidence_path.write_text(f"{{{SENTINEL_SECRET}", encoding="utf-8")
+    rc = _run_main_with_evidence(monkeypatch, evidence_path, output="json")
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 2
+    assert payload["status"] == "FAILED"
+    assert payload["error_count"] == 1
+    assert captured.err == ""
+    assert SENTINEL_SECRET not in captured.out + captured.err
+
+
+def test_invalid_evidence_table_is_redacted_and_human_readable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    evidence_path = tmp_path / "invalid_evidence.json"
+    evidence_path.write_text(
+        json.dumps(_runner_manifest_with_host(SENTINEL_SECRET)),
+        encoding="utf-8",
+    )
+    rc = _run_main_with_evidence(monkeypatch, evidence_path, output="table")
+    captured = capsys.readouterr()
+    assert rc == 2
+    assert "FAILED runner=host_preflight_v1" in captured.out
+    assert "EVIDENCE_ERROR hostname mismatch" in captured.out
+    assert "host_mutations=0" in captured.out
+    assert captured.err == ""
+    assert SENTINEL_SECRET not in captured.out + captured.err
+
+
+def test_strict_nonzero_json_is_one_document(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(preflight, "_local_checks", _all_pass_local)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_host_preflight_v1",
+            "--capability",
+            "market_rotation_pressure",
+            "--expected-host",
+            "gurkdb",
+            "--expected-commit",
+            "0" * 40,
+            "--checkout-path",
+            str(Path.cwd()),
+            "--output",
+            "json",
+            "--strict",
+        ],
+    )
+    rc = preflight.main()
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 5
+    assert payload["runner"] == "host_preflight_v1"
+    assert captured.err == ""

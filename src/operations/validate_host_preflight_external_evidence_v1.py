@@ -53,6 +53,8 @@ SCHEMA_PATH = Path("deploy/ownership/host_preflight_external_evidence_v1.schema.
 
 SCHEMA_VERSION = "host_preflight_external_evidence_schema_v1"
 ALLOWED_STATUS = {"PASS", "WARN", "FAIL"}
+MAX_DETAIL_LENGTH = 500
+MAX_EVIDENCE_SOURCE_LENGTH = 500
 
 # Small allowance (seconds) for benign clock drift between the evidence producer
 # and the preflight host.
@@ -129,9 +131,9 @@ FORBIDDEN_KEY_SUBSTRINGS = (
     "passphrase",
 )
 
-# Free-text value patterns that look like a leaked secret. Applied only to the
-# free-text fields (detail, evidence_source, evidence_producer); identity fields
-# are matched exactly and cannot carry a payload.
+# Free-text value patterns that look like a leaked secret. Applied to the
+# contract's free-text fields (detail, evidence_source, evidence_producer).
+# Identity values are never rendered by the structured issue boundary below.
 _SECRET_VALUE_PATTERNS = (
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
@@ -140,13 +142,154 @@ _SECRET_VALUE_PATTERNS = (
 )
 
 
+_ISSUE_MESSAGES = {
+    "MAX_AGE_INVALID": "max_age_seconds must be a positive integer",
+    "MANIFEST_ROOT_INVALID": "manifest root must be a JSON object",
+    "FORBIDDEN_SECRET_LIKE_KEY": "forbidden secret-like key detected",
+    "UNKNOWN_TOP_LEVEL_FIELDS": "unknown top-level fields",
+    "MISSING_TOP_LEVEL_FIELDS": "missing required top-level fields",
+    "SCHEMA_VERSION_MISMATCH": "schema_version mismatch",
+    "CAPABILITY_UNSUPPORTED": "capability unsupported",
+    "CAPABILITY_MISMATCH": "capability mismatch",
+    "HOSTNAME_MISMATCH": "hostname mismatch",
+    "CHECKOUT_COMMIT_INVALID": "checkout_commit invalid format",
+    "CHECKOUT_COMMIT_MISMATCH": "checkout_commit mismatch",
+    "TIMESTAMP_INVALID": "observed_at_utc invalid",
+    "TIMESTAMP_FUTURE": "observed_at_utc is in the future",
+    "EVIDENCE_STALE": "external evidence is stale",
+    "FIELD_TYPE_INVALID": "field has invalid type",
+    "SECRET_LIKE_VALUE": "secret-like value detected",
+    "SAFETY_UNKNOWN_FIELDS": "safety_markers has unknown fields",
+    "SAFETY_MISSING_FIELDS": "safety_markers missing required fields",
+    "COUNTER_TYPE_INVALID": "counter must be an integer",
+    "COUNTER_NEGATIVE": "counter must not be negative",
+    "COUNTER_NONZERO": "counter must be 0",
+    "FLAG_TYPE_INVALID": "flag must be a boolean",
+    "FLAG_TRUE": "flag must be false",
+    "CHECKS_EMPTY": "checks must contain at least one preflight-external check",
+    "LOCAL_CHECK_OVERRIDE": "external evidence must not override local checks",
+    "DEFERRED_CHECK_PRESENT": "acceptance/cutover evidence must not be presented as preflight evidence",
+    "UNKNOWN_EXTERNAL_CHECK": "unknown preflight-external check",
+    "CHECK_UNKNOWN_FIELDS": "check has unknown fields",
+    "CHECK_MISSING_FIELDS": "check missing required fields",
+    "CHECK_STATUS_INVALID": "check status invalid",
+    "STRING_EMPTY": "string field must be non-empty",
+    "STRING_TOO_LONG": "string field exceeds maximum length",
+    "CHECK_TIMESTAMP_NEWER": "check timestamp is newer than the manifest",
+    "CHECK_TIMESTAMP_PREDATES_WINDOW": "check timestamp predates the manifest window",
+    "EVIDENCE_FILE_UNREADABLE": "cannot read evidence file",
+    "DUPLICATE_KEY": "duplicate key not allowed",
+    "INVALID_JSON": "invalid JSON",
+    "INVALID_UTF8": "evidence file must be valid UTF-8",
+}
+
+_CANONICAL_CHECK_NAMES = (
+    set(PREFLIGHT_LOCAL_CHECKS)
+    | set(PREFLIGHT_EXTERNAL_CHECKS)
+    | set(ACCEPTANCE_CHECKS)
+    | set(CUTOVER_CHECKS)
+)
+_SAFE_ISSUE_FIELDS = frozenset(
+    {
+        "manifest",
+        "max_age_seconds",
+        "schema_version",
+        "capability",
+        "hostname",
+        "checkout_commit",
+        "observed_at_utc",
+        "evidence_producer",
+        "safety_markers",
+        "checks",
+        "evidence_file",
+    }
+    | {f"safety_markers.{name}" for name in SAFETY_ALLOWED_KEYS}
+    | {f"checks.{name}" for name in _CANONICAL_CHECK_NAMES}
+    | {
+        f"checks.{name}.{field_name}"
+        for name in PREFLIGHT_EXTERNAL_CHECKS
+        for field_name in REQUIRED_CHECK_KEYS
+    }
+)
+
+
+@dataclass(frozen=True)
+class EvidenceValidationIssue:
+    """One redacted validation issue built only from trusted metadata."""
+
+    code: str
+    field: str
+    provided_type: str | None = None
+    provided_length: int | None = None
+    count: int | None = None
+    limit: int | None = None
+
+    @property
+    def message(self) -> str:
+        return _ISSUE_MESSAGES[self.code]
+
+    def as_dict(self) -> dict[str, str | int]:
+        payload: dict[str, str | int] = {
+            "code": self.code,
+            "field": self.field,
+        }
+        for name in ("provided_type", "provided_length", "count", "limit"):
+            value = getattr(self, name)
+            if value is not None:
+                payload[name] = value
+        return payload
+
+    def render(self) -> str:
+        metadata = self.as_dict()
+        metadata.pop("code")
+        suffix = " ".join(f"{name}={value}" for name, value in metadata.items())
+        return f"{self.message} {suffix}".strip()
+
+
+_UNSET = object()
+
+
+def _issue(
+    code: str,
+    field: str,
+    *,
+    provided: Any = _UNSET,
+    count: int | None = None,
+    limit: int | None = None,
+) -> EvidenceValidationIssue:
+    """Create an error without retaining or rendering an untrusted value."""
+
+    if code not in _ISSUE_MESSAGES:
+        raise ValueError("validation issue code must be canonical")
+    if field not in _SAFE_ISSUE_FIELDS:
+        raise ValueError("validation issue field must be canonical")
+    provided_type: str | None = None
+    provided_length: int | None = None
+    if provided is not _UNSET:
+        provided_type = type(provided).__name__
+        if isinstance(provided, (str, bytes, list, tuple, dict)):
+            provided_length = len(provided)
+    return EvidenceValidationIssue(
+        code=code,
+        field=field,
+        provided_type=provided_type,
+        provided_length=provided_length,
+        count=count,
+        limit=limit,
+    )
+
+
 class EvidenceValidationError(Exception):
-    """Raised when the manifest cannot be parsed (including duplicate keys)."""
+    """Raised when the manifest cannot be parsed without retaining raw input."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 @dataclass(frozen=True)
 class EvidenceValidationResult:
-    errors: list[str]
+    issues: list[EvidenceValidationIssue]
     warnings: list[str] = field(default_factory=list)
     checks: dict[str, dict] = field(default_factory=dict)
     observed_at_utc: str | None = None
@@ -155,14 +298,24 @@ class EvidenceValidationResult:
 
     @property
     def ok(self) -> bool:
-        return not self.errors
+        return not self.issues
+
+    @property
+    def errors(self) -> list[str]:
+        """Redacted human-readable errors retained for table-mode compatibility."""
+
+        return [issue.render() for issue in self.issues]
+
+    @property
+    def error_payloads(self) -> list[dict[str, str | int]]:
+        return [issue.as_dict() for issue in self.issues]
 
 
 def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     seen: dict[str, Any] = {}
     for key, value in pairs:
         if key in seen:
-            raise EvidenceValidationError(f"duplicate key not allowed: {key!r}")
+            raise EvidenceValidationError("DUPLICATE_KEY")
         seen[key] = value
     return seen
 
@@ -176,36 +329,34 @@ def _parse_literal_utc(value: Any) -> datetime | None:
         return None
 
 
-def _forbidden_key_hits(node: Any, path: str = "") -> list[str]:
+def _forbidden_key_hit_count(node: Any) -> int:
     """Flag arbitrary secret-bearing keys, exempting canonical structural keys.
 
     Canonical schema keys and canonical check names (including
     `private_exchange_credentials`) are contract-defined and never flagged; only
     unknown/arbitrary keys are checked for secret-like tokens.
     """
-    hits: list[str] = []
+    hits = 0
     if isinstance(node, dict):
         for key, value in node.items():
             lowered = str(key).lower()
             if key not in CANONICAL_ALLOWED_KEYS and any(
                 token in lowered for token in FORBIDDEN_KEY_SUBSTRINGS
             ):
-                hits.append(f"forbidden secret-like key at {path or '<root>'}: {key!r}")
-            hits.extend(_forbidden_key_hits(value, f"{path}.{key}" if path else str(key)))
+                hits += 1
+            hits += _forbidden_key_hit_count(value)
     elif isinstance(node, list):
-        for index, item in enumerate(node):
-            hits.extend(_forbidden_key_hits(item, f"{path}[{index}]"))
+        for item in node:
+            hits += _forbidden_key_hit_count(item)
     return hits
 
 
-def _secret_value_hits(text: str, where: str) -> list[str]:
+def _secret_value_issues(text: str, field: str) -> list[EvidenceValidationIssue]:
     if not isinstance(text, str):
         return []
-    return [
-        f"secret-like value in {where}"
-        for pattern in _SECRET_VALUE_PATTERNS
-        if pattern.search(text)
-    ]
+    if any(pattern.search(text) for pattern in _SECRET_VALUE_PATTERNS):
+        return [_issue("SECRET_LIKE_VALUE", field)]
+    return []
 
 
 def _is_int(value: Any) -> bool:
@@ -213,43 +364,46 @@ def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _validate_safety_markers(safety: Any) -> list[str]:
-    errors: list[str] = []
+def _validate_safety_markers(safety: Any) -> list[EvidenceValidationIssue]:
+    issues: list[EvidenceValidationIssue] = []
     if not isinstance(safety, dict):
-        return ["safety_markers must be an object"]
+        return [_issue("FIELD_TYPE_INVALID", "safety_markers", provided=safety)]
     unknown = set(safety) - SAFETY_ALLOWED_KEYS
     if unknown:
-        errors.append(f"safety_markers has unknown fields: {sorted(unknown)}")
+        issues.append(_issue("SAFETY_UNKNOWN_FIELDS", "safety_markers", count=len(unknown)))
     missing = SAFETY_REQUIRED_KEYS - set(safety)
     if missing:
-        errors.append(f"safety_markers missing required fields: {sorted(missing)}")
+        issues.append(_issue("SAFETY_MISSING_FIELDS", "safety_markers", count=len(missing)))
     for name in SAFETY_ZERO_COUNTERS:
         if name not in safety:
             continue
         value = safety[name]
+        field = f"safety_markers.{name}"
         if not _is_int(value):
-            errors.append(f"safety_markers.{name} must be an integer, got {type(value).__name__}")
+            issues.append(_issue("COUNTER_TYPE_INVALID", field, provided=value))
         elif value < 0:
-            errors.append(f"safety_markers.{name} must not be negative")
+            issues.append(_issue("COUNTER_NEGATIVE", field))
         elif value != 0:
-            errors.append(f"safety_markers.{name} must be 0 (no mutation permitted)")
+            issues.append(_issue("COUNTER_NONZERO", field))
     for name in SAFETY_FALSE_FLAGS:
         if name not in safety:
             continue
         value = safety[name]
+        field = f"safety_markers.{name}"
         if not isinstance(value, bool):
-            errors.append(f"safety_markers.{name} must be a boolean, got {type(value).__name__}")
+            issues.append(_issue("FLAG_TYPE_INVALID", field, provided=value))
         elif value is not False:
-            errors.append(f"safety_markers.{name} must be false")
+            issues.append(_issue("FLAG_TRUE", field))
     for name in SAFETY_ALLOWED_NONNEGATIVE_COUNTERS:
         if name not in safety:
             continue
         value = safety[name]
+        field = f"safety_markers.{name}"
         if not _is_int(value):
-            errors.append(f"safety_markers.{name} must be an integer, got {type(value).__name__}")
+            issues.append(_issue("COUNTER_TYPE_INVALID", field, provided=value))
         elif value < 0:
-            errors.append(f"safety_markers.{name} must not be negative")
-    return errors
+            issues.append(_issue("COUNTER_NEGATIVE", field))
+    return issues
 
 
 def validate_external_evidence(
@@ -261,155 +415,232 @@ def validate_external_evidence(
     reference_time: datetime,
     max_age_seconds: int = DEFAULT_MAX_EXTERNAL_EVIDENCE_AGE_SECONDS,
 ) -> EvidenceValidationResult:
-    errors: list[str] = []
+    issues: list[EvidenceValidationIssue] = []
 
     if max_age_seconds <= 0:
-        return EvidenceValidationResult(errors=["max_age_seconds must be a positive integer"])
+        return EvidenceValidationResult(
+            issues=[_issue("MAX_AGE_INVALID", "max_age_seconds")]
+        )
     if reference_time.tzinfo is None:
         reference_time = reference_time.replace(tzinfo=UTC)
 
     if not isinstance(payload, dict):
-        return EvidenceValidationResult(errors=["manifest root must be a JSON object"])
+        return EvidenceValidationResult(
+            issues=[_issue("MANIFEST_ROOT_INVALID", "manifest", provided=payload)]
+        )
 
     # Forbidden secret-like keys anywhere in the manifest.
-    errors.extend(_forbidden_key_hits(payload))
+    forbidden_key_count = _forbidden_key_hit_count(payload)
+    if forbidden_key_count:
+        issues.append(
+            _issue(
+                "FORBIDDEN_SECRET_LIKE_KEY",
+                "manifest",
+                count=forbidden_key_count,
+            )
+        )
 
     unknown = set(payload) - ALLOWED_TOP_KEYS
     if unknown:
-        errors.append(f"unknown top-level fields: {sorted(unknown)}")
+        issues.append(_issue("UNKNOWN_TOP_LEVEL_FIELDS", "manifest", count=len(unknown)))
     missing = REQUIRED_TOP_KEYS - set(payload)
     if missing:
-        errors.append(f"missing required top-level fields: {sorted(missing)}")
+        issues.append(_issue("MISSING_TOP_LEVEL_FIELDS", "manifest", count=len(missing)))
 
-    if payload.get("schema_version") != SCHEMA_VERSION:
-        errors.append(
-            f"schema_version must be {SCHEMA_VERSION!r}, got {payload.get('schema_version')!r}"
+    manifest_schema_version = payload.get("schema_version")
+    if manifest_schema_version != SCHEMA_VERSION:
+        issues.append(
+            _issue(
+                "SCHEMA_VERSION_MISMATCH",
+                "schema_version",
+                provided=manifest_schema_version,
+            )
         )
 
     manifest_capability = payload.get("capability")
-    if manifest_capability not in CAPABILITY_MODULES:
-        errors.append(f"unknown capability: {manifest_capability!r}")
-    elif manifest_capability != capability:
-        errors.append(
-            f"capability mismatch: manifest={manifest_capability!r} expected={capability!r}"
+    if not isinstance(manifest_capability, str) or manifest_capability not in CAPABILITY_MODULES:
+        issues.append(
+            _issue("CAPABILITY_UNSUPPORTED", "capability", provided=manifest_capability)
         )
+    elif manifest_capability != capability:
+        issues.append(_issue("CAPABILITY_MISMATCH", "capability", provided=manifest_capability))
 
     manifest_host = payload.get("hostname")
     if manifest_host != expected_host:
-        errors.append(
-            f"hostname mismatch: manifest={manifest_host!r} expected={expected_host!r} "
-            "(evidence for a different host is rejected)"
-        )
+        issues.append(_issue("HOSTNAME_MISMATCH", "hostname", provided=manifest_host))
 
     manifest_commit = payload.get("checkout_commit")
     if not isinstance(manifest_commit, str) or not _COMMIT_RE.match(manifest_commit):
-        errors.append(f"checkout_commit must be a 40-char lowercase hex sha, got {manifest_commit!r}")
+        issues.append(
+            _issue("CHECKOUT_COMMIT_INVALID", "checkout_commit", provided=manifest_commit)
+        )
     elif manifest_commit != expected_commit:
-        errors.append(
-            f"checkout_commit mismatch: manifest={manifest_commit!r} expected={expected_commit!r} "
-            "(evidence for a different commit is rejected)"
+        issues.append(
+            _issue("CHECKOUT_COMMIT_MISMATCH", "checkout_commit", provided=manifest_commit)
         )
 
     manifest_observed_raw = payload.get("observed_at_utc")
     manifest_observed = _parse_literal_utc(manifest_observed_raw)
     age_seconds: float | None = None
     if manifest_observed is None:
-        errors.append(f"observed_at_utc is not a valid literal-Z UTC timestamp: {manifest_observed_raw!r}")
+        issues.append(
+            _issue("TIMESTAMP_INVALID", "observed_at_utc", provided=manifest_observed_raw)
+        )
     else:
         age_seconds = (reference_time - manifest_observed).total_seconds()
         if age_seconds < -CLOCK_SKEW_ALLOWANCE_SECONDS:
-            errors.append(
-                f"manifest observed_at_utc is in the future by {-age_seconds:.0f}s "
-                f"(allowance {CLOCK_SKEW_ALLOWANCE_SECONDS}s)"
-            )
+            issues.append(_issue("TIMESTAMP_FUTURE", "observed_at_utc"))
         elif age_seconds > max_age_seconds:
-            errors.append(
-                f"external evidence is stale: age {age_seconds:.0f}s exceeds max {max_age_seconds}s"
-            )
+            issues.append(_issue("EVIDENCE_STALE", "observed_at_utc"))
 
     producer = payload.get("evidence_producer")
     if producer is not None:
         if not isinstance(producer, str):
-            errors.append("evidence_producer must be a string")
+            issues.append(
+                _issue("FIELD_TYPE_INVALID", "evidence_producer", provided=producer)
+            )
         else:
-            errors.extend(_secret_value_hits(producer, "evidence_producer"))
+            issues.extend(_secret_value_issues(producer, "evidence_producer"))
 
-    errors.extend(_validate_safety_markers(payload.get("safety_markers")))
+    issues.extend(_validate_safety_markers(payload.get("safety_markers")))
 
     normalized: dict[str, dict] = {}
     checks = payload.get("checks")
     if not isinstance(checks, dict):
-        errors.append("checks must be an object")
+        issues.append(_issue("FIELD_TYPE_INVALID", "checks", provided=checks))
     elif not checks:
-        errors.append("checks must contain at least one preflight-external check")
+        issues.append(_issue("CHECKS_EMPTY", "checks"))
     else:
         for name, spec in checks.items():
             if name in PREFLIGHT_LOCAL_CHECKS:
-                errors.append(
-                    f"check {name!r} is a local check; external evidence must not override local checks"
+                issues.append(
+                    _issue("LOCAL_CHECK_OVERRIDE", f"checks.{name}")
                 )
                 continue
             if name in ACCEPTANCE_CHECKS or name in CUTOVER_CHECKS:
-                errors.append(
-                    f"check {name!r} is acceptance/cutover evidence; it must not be presented as preflight evidence"
+                issues.append(
+                    _issue("DEFERRED_CHECK_PRESENT", f"checks.{name}")
                 )
                 continue
             if name not in PREFLIGHT_EXTERNAL_CHECKS:
-                errors.append(f"unknown preflight-external check: {name!r}")
+                issues.append(_issue("UNKNOWN_EXTERNAL_CHECK", "checks"))
                 continue
+            check_field = f"checks.{name}"
             if not isinstance(spec, dict):
-                errors.append(f"check {name!r} must be an object")
+                issues.append(_issue("FIELD_TYPE_INVALID", check_field, provided=spec))
                 continue
             unknown_check_keys = set(spec) - REQUIRED_CHECK_KEYS
             if unknown_check_keys:
-                errors.append(f"check {name!r} has unknown fields: {sorted(unknown_check_keys)}")
+                issues.append(
+                    _issue(
+                        "CHECK_UNKNOWN_FIELDS",
+                        check_field,
+                        count=len(unknown_check_keys),
+                    )
+                )
             missing_check_keys = REQUIRED_CHECK_KEYS - set(spec)
             if missing_check_keys:
-                errors.append(f"check {name!r} missing fields: {sorted(missing_check_keys)}")
+                issues.append(
+                    _issue(
+                        "CHECK_MISSING_FIELDS",
+                        check_field,
+                        count=len(missing_check_keys),
+                    )
+                )
                 continue
+            check_issue_count = len(issues)
             status = spec.get("status")
             if status not in ALLOWED_STATUS:
-                errors.append(f"check {name!r} status must be one of {sorted(ALLOWED_STATUS)}, got {status!r}")
+                issues.append(
+                    _issue(
+                        "CHECK_STATUS_INVALID",
+                        f"{check_field}.status",
+                        provided=status,
+                    )
+                )
             detail = spec.get("detail")
             if not isinstance(detail, str):
-                errors.append(f"check {name!r} detail must be a string")
+                issues.append(
+                    _issue("FIELD_TYPE_INVALID", f"{check_field}.detail", provided=detail)
+                )
             else:
-                errors.extend(_secret_value_hits(detail, f"check {name!r} detail"))
+                if len(detail) > MAX_DETAIL_LENGTH:
+                    issues.append(
+                        _issue(
+                            "STRING_TOO_LONG",
+                            f"{check_field}.detail",
+                            provided=detail,
+                            limit=MAX_DETAIL_LENGTH,
+                        )
+                    )
+                issues.extend(_secret_value_issues(detail, f"{check_field}.detail"))
             evidence_source = spec.get("evidence_source")
             if not isinstance(evidence_source, str) or not evidence_source.strip():
-                errors.append(f"check {name!r} evidence_source must be a non-empty string")
+                if not isinstance(evidence_source, str):
+                    issues.append(
+                        _issue(
+                            "FIELD_TYPE_INVALID",
+                            f"{check_field}.evidence_source",
+                            provided=evidence_source,
+                        )
+                    )
+                else:
+                    issues.append(
+                        _issue("STRING_EMPTY", f"{check_field}.evidence_source")
+                    )
             else:
-                errors.extend(_secret_value_hits(evidence_source, f"check {name!r} evidence_source"))
+                if len(evidence_source) > MAX_EVIDENCE_SOURCE_LENGTH:
+                    issues.append(
+                        _issue(
+                            "STRING_TOO_LONG",
+                            f"{check_field}.evidence_source",
+                            provided=evidence_source,
+                            limit=MAX_EVIDENCE_SOURCE_LENGTH,
+                        )
+                    )
+                issues.extend(
+                    _secret_value_issues(
+                        evidence_source,
+                        f"{check_field}.evidence_source",
+                    )
+                )
             check_observed_raw = spec.get("observed_at_utc")
             check_observed = _parse_literal_utc(check_observed_raw)
             if check_observed is None:
-                errors.append(
-                    f"check {name!r} observed_at_utc is not a valid literal-Z UTC timestamp: {check_observed_raw!r}"
+                issues.append(
+                    _issue(
+                        "TIMESTAMP_INVALID",
+                        f"{check_field}.observed_at_utc",
+                        provided=check_observed_raw,
+                    )
                 )
             else:
                 check_age = (reference_time - check_observed).total_seconds()
                 if check_age < -CLOCK_SKEW_ALLOWANCE_SECONDS:
-                    errors.append(
-                        f"check {name!r} observed_at_utc is in the future by {-check_age:.0f}s "
-                        f"(allowance {CLOCK_SKEW_ALLOWANCE_SECONDS}s)"
+                    issues.append(
+                        _issue("TIMESTAMP_FUTURE", f"{check_field}.observed_at_utc")
                     )
                 elif check_age > max_age_seconds:
-                    errors.append(
-                        f"check {name!r} is stale: age {check_age:.0f}s exceeds max {max_age_seconds}s"
+                    issues.append(
+                        _issue("EVIDENCE_STALE", f"{check_field}.observed_at_utc")
                     )
                 if manifest_observed is not None:
                     ahead = (check_observed - manifest_observed).total_seconds()
                     if ahead > CLOCK_SKEW_ALLOWANCE_SECONDS:
-                        errors.append(
-                            f"check {name!r} is newer than the manifest by {ahead:.0f}s; "
-                            "all checks must belong to one bounded evidence run"
+                        issues.append(
+                            _issue(
+                                "CHECK_TIMESTAMP_NEWER",
+                                f"{check_field}.observed_at_utc",
+                            )
                         )
                     elif ahead < -max_age_seconds:
-                        errors.append(
-                            f"check {name!r} predates the manifest window by {-ahead:.0f}s; "
-                            "all checks must belong to one bounded evidence run"
+                        issues.append(
+                            _issue(
+                                "CHECK_TIMESTAMP_PREDATES_WINDOW",
+                                f"{check_field}.observed_at_utc",
+                            )
                         )
-            if status in ALLOWED_STATUS and isinstance(detail, str) and isinstance(evidence_source, str):
+            if len(issues) == check_issue_count:
                 normalized[name] = {
                     "status": status,
                     "detail": detail,
@@ -417,17 +648,18 @@ def validate_external_evidence(
                     "observed_at_utc": check_observed_raw,
                 }
 
-    if errors:
+    safe_observed_at = manifest_observed_raw if manifest_observed is not None else None
+    if issues:
         return EvidenceValidationResult(
-            errors=errors,
-            observed_at_utc=manifest_observed_raw if isinstance(manifest_observed_raw, str) else None,
+            issues=issues,
+            observed_at_utc=safe_observed_at,
             age_seconds=age_seconds,
             max_age_seconds=max_age_seconds,
         )
     return EvidenceValidationResult(
-        errors=[],
+        issues=[],
         checks=normalized,
-        observed_at_utc=manifest_observed_raw,
+        observed_at_utc=safe_observed_at,
         age_seconds=age_seconds,
         max_age_seconds=max_age_seconds,
     )
@@ -444,14 +676,24 @@ def load_and_validate_external_evidence(
 ) -> EvidenceValidationResult:
     try:
         text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        return EvidenceValidationResult(errors=[f"cannot read evidence file: {exc}"])
+    except OSError:
+        return EvidenceValidationResult(
+            issues=[_issue("EVIDENCE_FILE_UNREADABLE", "evidence_file")]
+        )
+    except UnicodeError:
+        return EvidenceValidationResult(
+            issues=[_issue("INVALID_UTF8", "evidence_file")]
+        )
     try:
         payload = json.loads(text, object_pairs_hook=_no_duplicate_keys)
     except EvidenceValidationError as exc:
-        return EvidenceValidationResult(errors=[str(exc)])
-    except json.JSONDecodeError as exc:
-        return EvidenceValidationResult(errors=[f"invalid JSON: {exc}"])
+        return EvidenceValidationResult(
+            issues=[_issue(exc.code, "manifest")]
+        )
+    except json.JSONDecodeError:
+        return EvidenceValidationResult(
+            issues=[_issue("INVALID_JSON", "manifest")]
+        )
     return validate_external_evidence(
         payload,
         capability=capability,
@@ -499,7 +741,7 @@ def main() -> int:
             json.dumps(
                 {
                     "ok": result.ok,
-                    "errors": result.errors,
+                    "errors": result.error_payloads,
                     "warnings": result.warnings,
                     "merged_checks": sorted(result.checks),
                     "external_evidence_observed_at_utc": result.observed_at_utc,
@@ -519,7 +761,7 @@ def main() -> int:
         )
     else:
         print(
-            f"evidence_ok={str(result.ok).lower()} error_count={len(result.errors)} "
+            f"evidence_ok={str(result.ok).lower()} error_count={len(result.issues)} "
             f"merged_checks={len(result.checks)} age_seconds={result.age_seconds} "
             f"max_age_seconds={result.max_age_seconds}"
         )

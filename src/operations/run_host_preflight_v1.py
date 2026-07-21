@@ -54,7 +54,7 @@ from pathlib import Path
 
 
 RUNNER_NAME = "host_preflight_v1"
-RUNNER_VERSION = "0.4"
+RUNNER_VERSION = "0.5"
 
 # Host preflight external evidence must be recent: a strict PASS may never rest
 # on indefinitely reusable evidence. 900s (15 min) is a safe default for a
@@ -640,6 +640,18 @@ def run_preflight(
     return results
 
 
+def _safety_markers_payload() -> dict[str, int]:
+    return {
+        "host_mutations": 0,
+        "database_writes": 0,
+        "writer_invocations": 0,
+        "systemctl_mutations": 0,
+        "broker_private_calls": 0,
+        "broker_writes": 0,
+        "exchange_calls": 0,
+    }
+
+
 def _print_safety_markers() -> None:
     print(
         "broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0 "
@@ -751,12 +763,31 @@ def main() -> int:
             max_age_seconds=args.max_external_evidence_age_seconds,
         )
         if not validation.ok:
-            print(
-                f"FAILED runner={RUNNER_NAME} reason=EXTERNAL_EVIDENCE_INVALID "
-                f"file={evidence_source_path} error_count={len(validation.errors)} ts={ts}"
-            )
-            for error in validation.errors:
-                print(f"EVIDENCE_ERROR {error}")
+            if args.output == "json":
+                print(
+                    json.dumps(
+                        {
+                            "runner": RUNNER_NAME,
+                            "version": RUNNER_VERSION,
+                            "ts_utc": ts,
+                            "status": "FAILED",
+                            "reason": "EXTERNAL_EVIDENCE_INVALID",
+                            "error_count": len(validation.issues),
+                            "errors": validation.error_payloads,
+                            "safety_markers": _safety_markers_payload(),
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(
+                    f"FAILED runner={RUNNER_NAME} reason=EXTERNAL_EVIDENCE_INVALID "
+                    f"error_count={len(validation.issues)} ts={ts}"
+                )
+                for error in validation.errors:
+                    print(f"EVIDENCE_ERROR {error}")
+                _print_safety_markers()
             return 2
         external_checks = validation.checks
         evidence_observed_at = validation.observed_at_utc
@@ -786,15 +817,7 @@ def main() -> int:
             "external_evidence_max_age_seconds": args.max_external_evidence_age_seconds,
             "strict_requires_stages": [STAGE_PREFLIGHT_LOCAL, STAGE_PREFLIGHT_EXTERNAL],
             "deferred_stages": [STAGE_ACCEPTANCE, STAGE_CUTOVER],
-            "safety_markers": {
-                "host_mutations": 0,
-                "database_writes": 0,
-                "writer_invocations": 0,
-                "systemctl_mutations": 0,
-                "broker_private_calls": 0,
-                "broker_writes": 0,
-                "exchange_calls": 0,
-            },
+            "safety_markers": _safety_markers_payload(),
             "counts": counts,
             "checks": [asdict(r) for r in results],
         }

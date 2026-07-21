@@ -299,6 +299,25 @@ maximum age. The validator receives an explicit reference time and rejects:
 JSON output records `external_evidence_observed_at_utc`,
 `external_evidence_age_seconds`, and `external_evidence_max_age_seconds`.
 
+### Validation errors and output format
+
+Validation errors never echo manifest-controlled values or arbitrary key names.
+They expose only stable error codes, canonical contract field/check names, and
+safe structural metadata such as provided type, string length, field count, and
+configured limit. This applies to both human-readable table output and JSON
+output, so malformed evidence cannot copy a secret into preflight logs.
+
+When `--output json` is selected, every runner outcome emits exactly one JSON
+document, including unreadable evidence files, malformed JSON, validation
+failure, successful preflight, and strict nonzero results. No text is printed
+before or after that document.
+
+The runtime validator and
+`deploy/ownership/host_preflight_external_evidence_v1.schema.json` enforce the
+same string limits: `detail` is at most 500 characters and `evidence_source` is
+non-empty and at most 500 characters. Boundary-length strings are accepted;
+longer strings are rejected before evidence normalization.
+
 ### Safety markers
 
 The manifest must carry strict safety markers attesting that producing the

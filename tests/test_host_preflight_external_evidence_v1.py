@@ -9,6 +9,8 @@ import pytest
 from src.operations import run_host_preflight_v1 as preflight
 from src.operations.validate_host_preflight_external_evidence_v1 import (
     CLOCK_SKEW_ALLOWANCE_SECONDS,
+    MAX_DETAIL_LENGTH,
+    MAX_EVIDENCE_SOURCE_LENGTH,
     SCHEMA_PATH,
     SCHEMA_VERSION,
     load_and_validate_external_evidence,
@@ -115,6 +117,16 @@ def test_schema_and_validator_permit_the_same_external_check_names() -> None:
     assert schema_names == set(preflight.PREFLIGHT_EXTERNAL_CHECKS)
     # The canonical check whose name collides with a forbidden substring.
     assert "private_exchange_credentials" in schema_names
+
+
+def test_schema_and_validator_enforce_the_same_string_limits() -> None:
+    schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    check_properties = schema["properties"]["checks"]["additionalProperties"]["properties"]
+    assert check_properties["detail"]["maxLength"] == MAX_DETAIL_LENGTH
+    assert (
+        check_properties["evidence_source"]["maxLength"]
+        == MAX_EVIDENCE_SOURCE_LENGTH
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +298,91 @@ def test_private_key_block_in_evidence_source_is_rejected() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Redacted validation issues
+# ---------------------------------------------------------------------------
+
+
+SENTINEL_SECRET = "SENTINEL_SECRET_VALUE_MUST_NOT_APPEAR"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("hostname", SENTINEL_SECRET),
+        ("capability", SENTINEL_SECRET),
+        ("checkout_commit", SENTINEL_SECRET),
+        ("schema_version", SENTINEL_SECRET),
+        ("observed_at_utc", SENTINEL_SECRET),
+    ),
+)
+def test_hostile_top_level_values_never_appear_in_errors(field: str, value: str) -> None:
+    payload = _manifest()
+    payload[field] = value
+    result = _validate(payload)
+    assert not result.ok
+    rendered = json.dumps(result.error_payloads) + "\n" + "\n".join(result.errors)
+    assert value not in rendered
+
+
+def test_hostile_check_status_and_timestamp_never_appear_in_errors() -> None:
+    payload = _manifest()
+    payload["checks"]["dns"]["status"] = SENTINEL_SECRET
+    payload["checks"]["dns"]["observed_at_utc"] = SENTINEL_SECRET
+    result = _validate(payload)
+    assert not result.ok
+    rendered = json.dumps(result.error_payloads) + "\n" + "\n".join(result.errors)
+    assert SENTINEL_SECRET not in rendered
+    assert {issue.code for issue in result.issues} >= {
+        "CHECK_STATUS_INVALID",
+        "TIMESTAMP_INVALID",
+    }
+
+
+def test_hostile_arbitrary_key_names_never_appear_in_errors() -> None:
+    hostile_key = f"api_key_{SENTINEL_SECRET}"
+    payload = _manifest()
+    payload[hostile_key] = "present"
+    payload["checks"]["dns"][hostile_key] = "present"
+    result = _validate(payload)
+    assert not result.ok
+    rendered = json.dumps(result.error_payloads) + "\n" + "\n".join(result.errors)
+    assert hostile_key not in rendered
+    assert any(issue.code == "FORBIDDEN_SECRET_LIKE_KEY" for issue in result.issues)
+
+
+@pytest.mark.parametrize(
+    ("field", "limit"),
+    (
+        ("detail", MAX_DETAIL_LENGTH),
+        ("evidence_source", MAX_EVIDENCE_SOURCE_LENGTH),
+    ),
+)
+def test_check_string_limit_boundary_is_accepted(field: str, limit: int) -> None:
+    payload = _manifest()
+    payload["checks"]["dns"][field] = "x" * limit
+    result = _validate(payload)
+    assert result.ok, result.errors
+
+
+@pytest.mark.parametrize(
+    ("field", "limit"),
+    (
+        ("detail", MAX_DETAIL_LENGTH),
+        ("evidence_source", MAX_EVIDENCE_SOURCE_LENGTH),
+    ),
+)
+def test_check_string_over_limit_is_rejected(field: str, limit: int) -> None:
+    payload = _manifest()
+    payload["checks"]["dns"][field] = "x" * (limit + 1)
+    result = _validate(payload)
+    assert not result.ok
+    issue = next(issue for issue in result.issues if issue.code == "STRING_TOO_LONG")
+    assert issue.field == f"checks.dns.{field}"
+    assert issue.provided_length == limit + 1
+    assert issue.limit == limit
+
+
+# ---------------------------------------------------------------------------
 # End-to-end file load and merge into a strict preflight
 # ---------------------------------------------------------------------------
 
@@ -363,7 +460,10 @@ def test_future_manifest_is_rejected() -> None:
         reference_time=REFERENCE - timedelta(seconds=CLOCK_SKEW_ALLOWANCE_SECONDS + 60),
     )
     assert not result.ok
-    assert any("manifest observed_at_utc is in the future" in e for e in result.errors)
+    assert any(
+        issue.code == "TIMESTAMP_FUTURE" and issue.field == "observed_at_utc"
+        for issue in result.issues
+    )
 
 
 def test_future_check_is_rejected() -> None:
@@ -413,7 +513,11 @@ def test_nonzero_mutation_counter_is_rejected() -> None:
     payload["safety_markers"]["database_writes"] = 1
     result = _validate(payload)
     assert not result.ok
-    assert any("database_writes must be 0" in e for e in result.errors)
+    assert any(
+        issue.code == "COUNTER_NONZERO"
+        and issue.field == "safety_markers.database_writes"
+        for issue in result.issues
+    )
 
 
 def test_negative_counter_is_rejected() -> None:
@@ -437,7 +541,11 @@ def test_authorization_created_true_is_rejected() -> None:
     payload["safety_markers"]["authorization_created"] = True
     result = _validate(payload)
     assert not result.ok
-    assert any("authorization_created must be false" in e for e in result.errors)
+    assert any(
+        issue.code == "FLAG_TRUE"
+        and issue.field == "safety_markers.authorization_created"
+        for issue in result.issues
+    )
 
 
 def test_deployment_performed_true_is_rejected() -> None:
@@ -445,7 +553,11 @@ def test_deployment_performed_true_is_rejected() -> None:
     payload["safety_markers"]["deployment_performed"] = True
     result = _validate(payload)
     assert not result.ok
-    assert any("deployment_performed must be false" in e for e in result.errors)
+    assert any(
+        issue.code == "FLAG_TRUE"
+        and issue.field == "safety_markers.deployment_performed"
+        for issue in result.issues
+    )
 
 
 def test_boolean_flag_as_int_is_rejected() -> None:
@@ -453,7 +565,11 @@ def test_boolean_flag_as_int_is_rejected() -> None:
     payload["safety_markers"]["authorization_created"] = 0
     result = _validate(payload)
     assert not result.ok
-    assert any("authorization_created must be a boolean" in e for e in result.errors)
+    assert any(
+        issue.code == "FLAG_TYPE_INVALID"
+        and issue.field == "safety_markers.authorization_created"
+        for issue in result.issues
+    )
 
 
 def test_unknown_safety_marker_field_is_rejected() -> None:
