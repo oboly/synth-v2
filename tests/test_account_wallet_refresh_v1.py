@@ -1,15 +1,11 @@
 from __future__ import annotations
 
 import ast
-import os
-import tempfile
 from decimal import Decimal
 from pathlib import Path
 
 from src.account.account_snapshot_models_v1 import WalletBalanceRow, WalletOpenOrderRow
 from src.account.run_account_wallet_refresh_v1 import (
-    get_account_env_dir,
-    load_profile_credentials,
     normalize_balance_rows,
     normalize_order_rows,
     validate_profile_slug,
@@ -210,61 +206,16 @@ def test_order_rows_empty_input():
     assert rows == []
 
 
-# ---------------------------------------------------------------------------
-# Account isolation: Hugo refresh must not touch Joost's account_asset
-# ---------------------------------------------------------------------------
-
-def test_different_profiles_have_different_account_codes():
-    from src.account.run_account_wallet_refresh_v1 import main as _main
-    # The account_code derivation is deterministic per profile:
-    joost_code = "bitvavo_joost_read"
-    hugo_code = "bitvavo_hugo_read"
-    assert joost_code != hugo_code
+def test_wallet_refresh_uses_linked_profile_canonical_resolver():
+    src = Path("src/account/run_account_wallet_refresh_v1.py").read_text()
+    assert "resolve_private_read_bitvavo_client_from_env" in src
+    assert "profile_code=args.account_profile" in src
 
 
-def test_profile_credential_path_scoped_to_profile():
-    from src.account.run_account_wallet_refresh_v1 import CREDENTIAL_BASE_DIR
-    joost_path = CREDENTIAL_BASE_DIR / "joost.env"
-    hugo_path = CREDENTIAL_BASE_DIR / "hugo.env"
-    assert joost_path != hugo_path
-    assert "joost" in str(joost_path)
-    assert "hugo" in str(hugo_path)
-
-
-def test_account_env_dir_default_uses_path_home():
-    assert get_account_env_dir() == Path.home() / ".config/synth/accounts"
-
-
-def test_synth_account_env_dir_overrides_default():
-    old_value = os.environ.get("SYNTH_ACCOUNT_ENV_DIR")
-    try:
-        os.environ["SYNTH_ACCOUNT_ENV_DIR"] = "/tmp/synth-test-accounts"
-        assert get_account_env_dir() == Path("/tmp/synth-test-accounts")
-    finally:
-        if old_value is None:
-            os.environ.pop("SYNTH_ACCOUNT_ENV_DIR", None)
-        else:
-            os.environ["SYNTH_ACCOUNT_ENV_DIR"] = old_value
-
-
-def test_load_profile_credentials_uses_env_override():
-    old_value = os.environ.get("SYNTH_ACCOUNT_ENV_DIR")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        env_dir = Path(tmpdir)
-        (env_dir / "joost.env").write_text(
-            "BITVAVO_API_KEY=test-key\nBITVAVO_API_SECRET=test-secret\n",
-            encoding="utf-8",
-        )
-        try:
-            os.environ["SYNTH_ACCOUNT_ENV_DIR"] = str(env_dir)
-            api_key, api_secret = load_profile_credentials("joost")
-        finally:
-            if old_value is None:
-                os.environ.pop("SYNTH_ACCOUNT_ENV_DIR", None)
-            else:
-                os.environ["SYNTH_ACCOUNT_ENV_DIR"] = old_value
-    assert api_key == "test-key"
-    assert api_secret == "test-secret"
+def test_wallet_refresh_legacy_profile_env_fails_closed():
+    src = Path("src/account/run_account_wallet_refresh_v1.py").read_text()
+    assert "LEGACY_PROFILE_ENV_DEPRECATED" in src
+    assert "load_profile_credentials" not in src
 
 
 # ---------------------------------------------------------------------------
@@ -370,11 +321,8 @@ def main():
     test_order_row_filled_computed_from_remaining()
     test_order_row_side_uppercased()
     test_order_rows_empty_input()
-    test_different_profiles_have_different_account_codes()
-    test_profile_credential_path_scoped_to_profile()
-    test_account_env_dir_default_uses_path_home()
-    test_synth_account_env_dir_overrides_default()
-    test_load_profile_credentials_uses_env_override()
+    test_wallet_refresh_uses_linked_profile_canonical_resolver()
+    test_wallet_refresh_legacy_profile_env_fails_closed()
     test_wallet_balance_row_repr_has_no_secrets()
     test_wallet_open_order_row_repr_no_secrets()
     test_wallet_refresh_source_no_place_order()

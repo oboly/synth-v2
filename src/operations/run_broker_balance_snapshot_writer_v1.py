@@ -10,13 +10,15 @@ from typing import Any
 import pymysql
 from dotenv import load_dotenv
 
+from src.account.private_read_credential_resolver_v1 import (
+    PrivateReadCredentialResolutionError,
+    resolve_private_read_bitvavo_client_from_env,
+)
 from src.common.db import get_db_connection
-from src.execution.bitvavo_client import BitvavoClient
 
 
 WRITER_NAME = "broker_balance_snapshot_writer_v1"
-WRITER_VERSION = "0.2"
-DEFAULT_ACCOUNT_CODE = "bitvavo_synth_read"
+WRITER_VERSION = "0.3"
 DEFAULT_VENUE = "bitvavo"
 SOURCE_NAME = "bitvavo_private_balance_read_v1"
 
@@ -257,10 +259,18 @@ def run(args: argparse.Namespace) -> int:
     conn = get_db_connection()
 
     try:
+        resolved = resolve_private_read_bitvavo_client_from_env(
+            conn,
+            trading_account_id=args.trading_account_id,
+            account_code=args.account_code,
+            profile_code=args.account_profile,
+            venue=args.venue,
+            timeout_seconds=args.timeout_seconds,
+        )
         account = fetch_trading_account(
             conn,
-            account_code=args.account_code,
-            venue=args.venue,
+            account_code=resolved.identity.account_code,
+            venue=resolved.identity.venue,
         )
 
         print(f"writer={WRITER_NAME} version={WRITER_VERSION}")
@@ -272,9 +282,13 @@ def run(args: argparse.Namespace) -> int:
             "venue="
             f"{account.venue}"
         )
+        print(f"credential_profile_id={resolved.profile.trading_account_credential_id}")
+        print(f"credential_fingerprint={resolved.profile.credential_fingerprint}")
+        print(f"permission_scope={resolved.profile.permission_scope}")
+        print(f"validation_state={resolved.profile.validation_state}")
         print("[INFO] private read only; no broker writes; no orders; no position mutation")
 
-        client = BitvavoClient(timeout_seconds=args.timeout_seconds)
+        client = resolved.client
 
         raw_balances = client.get_balance(symbol=args.symbol)
         snapshot_ts_utc = utc_now_naive()
@@ -337,13 +351,19 @@ def run(args: argparse.Namespace) -> int:
 
         return 0
 
+    except PrivateReadCredentialResolutionError as exc:
+        print(f"[ERROR] credential_resolution={exc}")
+        return 2
     finally:
         conn.close()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--account-code", default=DEFAULT_ACCOUNT_CODE)
+    identity = parser.add_mutually_exclusive_group(required=True)
+    identity.add_argument("--trading-account-id", type=int, default=None)
+    identity.add_argument("--account-code", default=None)
+    identity.add_argument("--account-profile", default=None)
     parser.add_argument("--venue", default=DEFAULT_VENUE)
     parser.add_argument("--symbol", default=None)
     parser.add_argument("--timeout-seconds", type=int, default=20)

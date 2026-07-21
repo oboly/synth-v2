@@ -1,7 +1,7 @@
 """
 connect_bitvavo_v1 — post-provisioning activation handler.
 
-Orchestrates: provision → load credential → snapshot → activation render.
+Orchestrates: provision → canonical private-read resolution → snapshot → activation render.
 
 Activation render creates all three required account pages:
   accounts/<profile>/wallet.html + wallet.json
@@ -33,7 +33,9 @@ from typing import Any, Callable
 
 _LOGGER = logging.getLogger(__name__)
 
-from src.account_provisioning.account_credential_loader_v1 import load_account_credential
+from src.account.private_read_credential_resolver_v1 import (
+    resolve_private_read_bitvavo_client,
+)
 from src.account_provisioning.account_provisioning_service_v1 import (
     AccountProvisioningService,
     AuthenticatedProfileIdentity,
@@ -89,7 +91,6 @@ def _run_activation(
     prov: ProvisioningResult,
     conn_factory: Callable[[], Any],
     master_key_bytes: bytes,
-    cred_repo_factory: Callable[[Any], Any],
     bitvavo_client_factory: Callable[[str, str], Any],
     activation_renderer: Callable[..., Any],
     venue: str,
@@ -107,12 +108,12 @@ def _run_activation(
     try:
         conn = conn_factory()
         try:
-            plain = load_account_credential(
+            resolved = resolve_private_read_bitvavo_client(
                 conn,
                 trading_account_id=trading_account_id,
                 venue=venue,
                 master_key_bytes=master_key_bytes,
-                cred_repo_factory=cred_repo_factory,
+                client_factory=bitvavo_client_factory,
             )
         finally:
             conn.close()
@@ -120,14 +121,13 @@ def _run_activation(
         return dataclasses.replace(prov, refresh_pending=True, refresh_error_code="CREDENTIAL_LOAD_FAILED")
 
     try:
-        client = bitvavo_client_factory(plain.api_key, plain.api_secret)
         snap_conn = conn_factory()
         try:
             snap = take_first_snapshot(
                 snap_conn,
                 trading_account_id=trading_account_id,
                 venue=venue,
-                bitvavo_client=client,
+                bitvavo_client=resolved.client,
                 now_utc=now_utc,
             )
         finally:
@@ -202,7 +202,6 @@ def build_connect_bitvavo(
                 prov=prov,
                 conn_factory=conn_factory,
                 master_key_bytes=master_key_bytes,
-                cred_repo_factory=cred_repo_factory,
                 bitvavo_client_factory=bitvavo_client_factory,
                 activation_renderer=effective_renderer,
                 venue=venue,
@@ -229,7 +228,6 @@ def build_connect_bitvavo(
                 prov=retry_base,
                 conn_factory=conn_factory,
                 master_key_bytes=master_key_bytes,
-                cred_repo_factory=cred_repo_factory,
                 bitvavo_client_factory=bitvavo_client_factory,
                 activation_renderer=effective_renderer,
                 venue=venue,

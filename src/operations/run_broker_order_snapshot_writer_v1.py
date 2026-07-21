@@ -11,13 +11,15 @@ from typing import Any
 import pymysql
 from dotenv import load_dotenv
 
+from src.account.private_read_credential_resolver_v1 import (
+    PrivateReadCredentialResolutionError,
+    resolve_private_read_bitvavo_client_from_env,
+)
 from src.common.db import get_db_connection
-from src.execution.bitvavo_client import BitvavoClient
 
 
 WRITER_NAME = "broker_order_snapshot_writer_v1"
-WRITER_VERSION = "0.1"
-DEFAULT_ACCOUNT_CODE = "bitvavo_synth_read"
+WRITER_VERSION = "0.2"
 DEFAULT_VENUE = "bitvavo"
 
 
@@ -378,7 +380,19 @@ def run(args: argparse.Namespace) -> int:
     conn = get_db_connection()
 
     try:
-        account = fetch_trading_account(conn, account_code=args.account_code, venue=args.venue)
+        resolved = resolve_private_read_bitvavo_client_from_env(
+            conn,
+            trading_account_id=args.trading_account_id,
+            account_code=args.account_code,
+            profile_code=args.account_profile,
+            venue=args.venue,
+            timeout_seconds=args.timeout_seconds,
+        )
+        account = fetch_trading_account(
+            conn,
+            account_code=resolved.identity.account_code,
+            venue=resolved.identity.venue,
+        )
 
         print(f"writer={WRITER_NAME} version={WRITER_VERSION}")
         print(
@@ -389,8 +403,12 @@ def run(args: argparse.Namespace) -> int:
         print("[INFO] private read only; DB writes only to broker_order_snapshot; no broker writes; no orders")
         print(f"snapshot_ts_utc={snapshot_ts_utc}")
         print(f"SYNTH_BROKER_WRITE_PERMISSION={write_permission}")
+        print(f"credential_profile_id={resolved.profile.trading_account_credential_id}")
+        print(f"credential_fingerprint={resolved.profile.credential_fingerprint}")
+        print(f"permission_scope={resolved.profile.permission_scope}")
+        print(f"validation_state={resolved.profile.validation_state}")
 
-        client = BitvavoClient(timeout_seconds=args.timeout_seconds)
+        client = resolved.client
         raw_orders = client.get_open_orders(market=args.market, base=args.base)
 
         normalized_rows: list[BrokerOrderSnapshotRow] = []
@@ -447,13 +465,19 @@ def run(args: argparse.Namespace) -> int:
 
         return 0
 
+    except PrivateReadCredentialResolutionError as exc:
+        print(f"[ERROR] credential_resolution={exc}")
+        return 2
     finally:
         conn.close()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--account-code", default=DEFAULT_ACCOUNT_CODE)
+    identity = parser.add_mutually_exclusive_group(required=True)
+    identity.add_argument("--trading-account-id", type=int, default=None)
+    identity.add_argument("--account-code", default=None)
+    identity.add_argument("--account-profile", default=None)
     parser.add_argument("--venue", default=DEFAULT_VENUE)
     parser.add_argument("--market", default=None)
     parser.add_argument("--base", default=None)

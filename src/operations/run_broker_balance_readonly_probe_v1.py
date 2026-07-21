@@ -7,11 +7,17 @@ from typing import Any
 import requests
 from dotenv import load_dotenv
 
-from src.execution.bitvavo_client import BitvavoClient
+from src.account.private_read_credential_resolver_v1 import (
+    PrivateReadCredentialResolutionError,
+    resolve_private_read_bitvavo_client_from_env,
+)
+from src.account_provisioning.credential_crypto_v1 import MASTER_KEY_ENV_VAR
+from src.common.db import get_db_connection
 
 
 REPORT_NAME = "broker_balance_readonly_probe_v1"
-REPORT_VERSION = "0.2"
+REPORT_VERSION = "0.3"
+DEFAULT_VENUE = "bitvavo"
 
 PRIVATE_READ_PERMISSION_ENV = "SYNTH_BROKER_PRIVATE_READ_PERMISSION"
 PRIVATE_READ_PERMISSION_GRANTED_VALUE = "I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA"
@@ -33,8 +39,7 @@ def env_state(name: str, *, granted_value: str | None = None) -> str:
 
 def print_env_readiness() -> None:
     print("--- broker env readiness, values redacted ---")
-    print(f"BITVAVO_API_KEY={env_state('BITVAVO_API_KEY')}")
-    print(f"BITVAVO_API_SECRET={env_state('BITVAVO_API_SECRET')}")
+    print(f"{MASTER_KEY_ENV_VAR}={env_state(MASTER_KEY_ENV_VAR)}")
     print(f"BITVAVO_REST_URL={env_state('BITVAVO_REST_URL')}")
     print(f"BITVAVO_BASE_URL={env_state('BITVAVO_BASE_URL')}")
     print(
@@ -123,9 +128,29 @@ def run(args: argparse.Namespace) -> int:
     print()
     print("--- private balance fetch ---")
 
+    conn = get_db_connection()
     try:
-        client = BitvavoClient(timeout_seconds=args.timeout_seconds)
+        resolved = resolve_private_read_bitvavo_client_from_env(
+            conn,
+            trading_account_id=args.trading_account_id,
+            account_code=args.account_code,
+            profile_code=args.account_profile,
+            venue=args.venue,
+            timeout_seconds=args.timeout_seconds,
+        )
+        print(f"trading_account_id={resolved.identity.trading_account_id}")
+        print(f"account_code={resolved.identity.account_code}")
+        print(f"venue={resolved.identity.venue}")
+        print(f"credential_profile_id={resolved.profile.trading_account_credential_id}")
+        print(f"credential_fingerprint={resolved.profile.credential_fingerprint}")
+        print(f"permission_scope={resolved.profile.permission_scope}")
+        print(f"validation_state={resolved.profile.validation_state}")
+        client = resolved.client
         balances = client.get_balance(symbol=args.symbol)
+    except PrivateReadCredentialResolutionError as exc:
+        print(f"[BLOCKED] credential_resolution={exc}")
+        print("[DONE] private_balance_fetch=False reason=CREDENTIAL_RESOLUTION_FAILED")
+        return 1
     except RuntimeError as exc:
         print(f"[BLOCKED] {exc}")
         print("[DONE] private_balance_fetch=False reason=PRIVATE_READ_PERMISSION_NOT_GRANTED")
@@ -145,6 +170,8 @@ def run(args: argparse.Namespace) -> int:
         print(f"message={exc}")
         print("[DONE] private_balance_fetch=False reason=NETWORK_ERROR")
         return 1
+    finally:
+        conn.close()
 
     print_balances(balances)
     print()
@@ -154,6 +181,11 @@ def run(args: argparse.Namespace) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
+    identity = parser.add_mutually_exclusive_group(required=False)
+    identity.add_argument("--trading-account-id", type=int, default=None)
+    identity.add_argument("--account-code", default=None)
+    identity.add_argument("--account-profile", default=None)
+    parser.add_argument("--venue", default=DEFAULT_VENUE)
     parser.add_argument("--symbol", default=None)
     parser.add_argument("--fetch-private-balance", action="store_true")
     parser.add_argument("--timeout-seconds", type=int, default=15)

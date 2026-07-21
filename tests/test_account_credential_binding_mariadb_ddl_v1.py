@@ -231,6 +231,25 @@ def _index_names(conn: object) -> set[str]:
         return {str(row["Key_name"]) for row in cur.fetchall()}
 
 
+def _foreign_key_rows(conn: object) -> list[dict[str, str]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                CONSTRAINT_NAME,
+                COLUMN_NAME,
+                REFERENCED_TABLE_NAME,
+                REFERENCED_COLUMN_NAME
+            FROM information_schema.KEY_COLUMN_USAGE
+            WHERE CONSTRAINT_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'trading_account_credential'
+              AND REFERENCED_TABLE_NAME IS NOT NULL
+            ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION
+            """
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
 def _persistent_guard_artifacts(conn: object) -> set[str]:
     with conn.cursor() as cur:
         cur.execute(
@@ -318,6 +337,15 @@ def test_account_credential_binding_migration_empty_schema_reruns_in_mariadb() -
                 """
             )
             assert len(cur.fetchall()) == 3
+
+        assert _foreign_key_rows(conn) == [
+            {
+                "CONSTRAINT_NAME": "fk_tac_trading_account",
+                "COLUMN_NAME": "trading_account_id",
+                "REFERENCED_TABLE_NAME": "trading_account",
+                "REFERENCED_COLUMN_NAME": "trading_account_id",
+            }
+        ]
     finally:
         conn.close()
         _cleanup_temp_db(temp_db)
@@ -672,6 +700,169 @@ def test_permission_scope_partial_nonconflicting_schema_completes_in_mariadb() -
         assert rows[1]["active_permission_scope"] is None
         assert rows[2]["credential_status"] == "REVOKED"
         assert rows[2]["active_permission_scope"] is None
+    finally:
+        conn.close()
+        _cleanup_temp_db(temp_db)
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_MARIADB_DDL_TEST") != "1",
+    reason="Set RUN_MARIADB_DDL_TEST=1 to validate the resolver in a disposable schema.",
+)
+def test_private_read_resolver_binding_failures_in_disposable_mariadb() -> None:
+    from src.account.private_read_credential_resolver_v1 import (
+        PrivateReadCredentialResolutionError,
+        resolve_private_read_credential,
+    )
+    from src.account_provisioning.contracts_v1 import PlainBitvavoCredential
+    from src.account_provisioning.credential_crypto_v1 import (
+        compute_fingerprint,
+        encrypt_credential,
+        generate_test_master_key,
+        parse_master_key,
+    )
+    from src.common.db import get_connection
+
+    temp_db = _temp_db_name("runtime")
+    _create_database(temp_db)
+    conn = get_connection(database=temp_db)
+    try:
+        _apply_credential_base_chain(conn)
+        _apply_migration(conn, BINDING_MIGRATION)
+        with conn.cursor() as cur:
+            _insert_account(cur, 1, "bitvavo_runtime")
+        conn.commit()
+
+        key_version, master_key_bytes = parse_master_key(generate_test_master_key())
+
+        def _resolve() -> object:
+            return resolve_private_read_credential(
+                conn,
+                trading_account_id=1,
+                venue="bitvavo",
+                master_key_bytes=master_key_bytes,
+            )
+
+        with pytest.raises(PrivateReadCredentialResolutionError) as exc:
+            _resolve()
+        assert exc.value.code == "NO_CREDENTIAL_BINDING"
+
+        plain = PlainBitvavoCredential(
+            venue="bitvavo",
+            api_key="disposable-runtime-key-1",
+            api_secret="disposable-runtime-secret-1",
+        )
+        envelope = encrypt_credential(
+            plain,
+            trading_account_id=1,
+            key_version=key_version,
+            master_key_bytes=master_key_bytes,
+        )
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO trading_account_credential (
+                    trading_account_id, venue, credential_kind,
+                    encrypted_envelope, encryption_algorithm, key_version,
+                    credential_fingerprint, credential_status, validation_state,
+                    created_ts_utc, validated_ts_utc, credential_source,
+                    permission_scope, allowed_private_read, allowed_order_write,
+                    allowed_withdrawal
+                ) VALUES (
+                    1, 'bitvavo', 'API_KEY_SECRET', %s, 'AESGCM-256', %s,
+                    %s, 'ACTIVE', 'VALID_PRIVATE_READ', UTC_TIMESTAMP(),
+                    UTC_TIMESTAMP(), 'db_encrypted', 'READ_ONLY_PRIVATE', 1, 0, 0
+                )
+                """,
+                (
+                    envelope.to_json(),
+                    key_version,
+                    compute_fingerprint("bitvavo", plain.api_key, master_key_bytes),
+                ),
+            )
+            credential_id = int(cur.lastrowid)
+        conn.commit()
+
+        identity, resolved = _resolve()
+        assert identity.trading_account_id == 1
+        assert resolved.profile.trading_account_credential_id == credential_id
+        assert resolved.profile.permission_scope == "READ_ONLY_PRIVATE"
+        assert resolved.credential.api_key == "disposable-runtime-key-1"
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE trading_account_credential SET credential_status = 'REVOKED' "
+                "WHERE trading_account_credential_id = %s",
+                (credential_id,),
+            )
+        conn.commit()
+        with pytest.raises(PrivateReadCredentialResolutionError) as exc:
+            _resolve()
+        assert exc.value.code == "NO_CREDENTIAL_BINDING"
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE trading_account_credential
+                SET credential_status = 'ACTIVE',
+                    permission_scope = 'TRADE_EXECUTION',
+                    allowed_order_write = 1
+                WHERE trading_account_credential_id = %s
+                """,
+                (credential_id,),
+            )
+        conn.commit()
+        with pytest.raises(PrivateReadCredentialResolutionError) as exc:
+            _resolve()
+        assert exc.value.code == "NO_CREDENTIAL_BINDING"
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE trading_account_credential
+                SET venue = 'kraken',
+                    permission_scope = 'READ_ONLY_PRIVATE',
+                    allowed_order_write = 0
+                WHERE trading_account_credential_id = %s
+                """,
+                (credential_id,),
+            )
+        conn.commit()
+        with pytest.raises(PrivateReadCredentialResolutionError) as exc:
+            _resolve()
+        assert exc.value.code == "NO_CREDENTIAL_BINDING"
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE trading_account_credential SET venue = 'bitvavo' "
+                "WHERE trading_account_credential_id = %s",
+                (credential_id,),
+            )
+            cur.execute(
+                "ALTER TABLE trading_account_credential "
+                "DROP INDEX uq_tac_active_account_venue_scope_v1"
+            )
+            cur.execute(
+                """
+                INSERT INTO trading_account_credential (
+                    trading_account_id, venue, credential_kind,
+                    encrypted_envelope, encryption_algorithm, key_version,
+                    credential_fingerprint, credential_status, validation_state,
+                    created_ts_utc, validated_ts_utc, credential_source,
+                    permission_scope, allowed_private_read, allowed_order_write,
+                    allowed_withdrawal
+                ) VALUES (
+                    1, 'bitvavo', 'API_KEY_SECRET', %s, 'AESGCM-256', %s,
+                    %s, 'ACTIVE', 'VALID_PRIVATE_READ', UTC_TIMESTAMP(),
+                    UTC_TIMESTAMP(), 'db_encrypted', 'READ_ONLY_PRIVATE', 1, 0, 0
+                )
+                """,
+                (envelope.to_json(), key_version, "f" * 64),
+            )
+        conn.commit()
+        with pytest.raises(PrivateReadCredentialResolutionError) as exc:
+            _resolve()
+        assert exc.value.code == "MULTIPLE_ACTIVE_MATCHING_CREDENTIALS"
     finally:
         conn.close()
         _cleanup_temp_db(temp_db)

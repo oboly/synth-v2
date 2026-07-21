@@ -182,5 +182,41 @@ no API call
 no production authorization
 ```
 
-Follow-up PR B must wire private runtimes to this contract and remove legacy
-global credential fallback from runtime behavior.
+## PR B1 private-read runtime enforcement
+
+PR B1 wires private read-only account runtimes to this contract:
+
+```text
+trading_account_id
++ venue
++ READ_ONLY_PRIVATE
+-> exactly one ACTIVE validated db_encrypted credential
+```
+
+Credential metadata is validated before decryption. The plaintext credential
+container is discarded after constructing the explicit private-read client;
+the client retains key material only in process memory for authenticated reads
+and never serializes, logs, or writes it back.
+
+Removed from private-read runtime behavior:
+
+```text
+repository-global BITVAVO_API_KEY / BITVAVO_API_SECRET fallback
+implicit private authentication from BitvavoClient()
+legacy profile-env private-read credential loading
+```
+
+`BitvavoClient.for_public()` is unauthenticated. Public Bitvavo endpoints remain
+available without private credentials. Private endpoints fail closed when called
+from a public/unbound client.
+
+`BitvavoClient.for_private_read(api_key, api_secret)` requires explicit
+account-bound credentials supplied by the canonical resolver.
+
+Trade-execution credential enforcement remains outside PR B1. Merged PR #129's
+LIVE fail-closed and PAPER public-client boundaries remain unchanged. PR B1 does
+not implement execution credential binding, does not perform production
+migration, does not mutate host state, does not make exchange calls, and does
+not reactivate Odroid timers. Deployment is authorized only after merge and a
+separate independent review; it was not performed in this implementation
+refresh session.
