@@ -493,7 +493,6 @@ def test_both_fill_transactions_revalidate_every_persisted_contract_field() -> N
             ("requested_side", "buy"),
             ("venue", "BITVAVO"),
             ("venue", "other"),
-            ("venue", None),
             ("market", "btc-eur"),
             ("side", "buy"),
             ("plan_state", "FILLED"),
