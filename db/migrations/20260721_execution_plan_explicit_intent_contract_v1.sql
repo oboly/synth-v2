@@ -35,9 +35,9 @@ BEGIN
       AND table_name = 'execution_plan'
       AND column_name = 'trading_account_id'
       AND data_type = 'bigint'
-      AND column_type = 'bigint(20) unsigned'
+      AND column_type IN ('bigint(20) unsigned', 'bigint unsigned')
       AND is_nullable = 'YES'
-      AND column_default IS NULL;
+      AND (column_default IS NULL OR UPPER(column_default) = 'NULL');
     IF object_count <> 1 THEN
         SIGNAL SQLSTATE '45000'
             SET MESSAGE_TEXT = 'EPC_MIGRATION_INCOMPATIBLE_TRADING_ACCOUNT_ID';
@@ -51,7 +51,7 @@ BEGIN
       AND data_type = 'varchar'
       AND character_maximum_length = 32
       AND is_nullable = 'YES'
-      AND column_default IS NULL
+      AND (column_default IS NULL OR UPPER(column_default) = 'NULL')
       AND character_set_name = 'utf8mb4'
       AND collation_name = 'utf8mb4_unicode_ci';
     IF object_count <> 1 THEN
@@ -67,7 +67,7 @@ BEGIN
       AND data_type = 'varchar'
       AND character_maximum_length = 64
       AND is_nullable = 'YES'
-      AND column_default IS NULL
+      AND (column_default IS NULL OR UPPER(column_default) = 'NULL')
       AND character_set_name = 'utf8mb4'
       AND collation_name = 'utf8mb4_unicode_ci';
     IF object_count <> 1 THEN
@@ -83,7 +83,7 @@ BEGIN
       AND data_type = 'varchar'
       AND character_maximum_length = 64
       AND is_nullable = 'YES'
-      AND column_default IS NULL
+      AND (column_default IS NULL OR UPPER(column_default) = 'NULL')
       AND character_set_name = 'utf8mb4'
       AND collation_name = 'utf8mb4_unicode_ci';
     IF object_count <> 1 THEN
@@ -99,7 +99,7 @@ BEGIN
       AND data_type = 'varchar'
       AND character_maximum_length = 16
       AND is_nullable = 'YES'
-      AND column_default IS NULL
+      AND (column_default IS NULL OR UPPER(column_default) = 'NULL')
       AND character_set_name = 'utf8mb4'
       AND collation_name = 'utf8mb4_unicode_ci';
     IF object_count <> 1 THEN
