@@ -4,12 +4,21 @@ validate_host_preflight_external_evidence_v1
 Read-only validator for the host-preflight external-evidence manifest.
 
 The manifest binds separately collected PREFLIGHT_EXTERNAL evidence to one exact
-capability, host, and checkout commit. This validator never executes anything
-from the manifest, never connects to a database or exchange, and never mutates
-host state. It exists only to decide whether a manifest may be merged into a
-read-only preflight, and to reject manifests that are mismatched, malformed, or
-that attempt to smuggle secrets, local-check overrides, or acceptance/cutover
-evidence into the preflight stage.
+capability, host, checkout commit, and bounded time window. This validator never
+executes anything from the manifest, never connects to a database or exchange,
+and never mutates host state. It exists only to decide whether a manifest may be
+merged into a read-only preflight, and to reject manifests that are mismatched,
+malformed, stale, mutation-attesting, or that attempt to smuggle secrets,
+local-check overrides, or acceptance/cutover evidence into the preflight stage.
+
+Freshness: strict preflight must not rest on indefinitely reusable evidence.
+Every manifest and every check timestamp is bounded against an explicit
+reference time and a maximum age, with a small clock-skew allowance.
+
+Safety markers: the manifest must attest that producing the evidence performed
+no mutation. Read-only probes (DB connections/queries, DNS, public exchange
+calls) may be nonzero; mutation/write/invocation/order counters must be zero and
+the authorization/deployment flags must be false.
 
 Safety boundary:
 - reads only the manifest file supplied by path
@@ -27,7 +36,7 @@ import argparse
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +44,7 @@ from src.operations.run_host_preflight_v1 import (
     ACCEPTANCE_CHECKS,
     CAPABILITY_MODULES,
     CUTOVER_CHECKS,
+    DEFAULT_MAX_EXTERNAL_EVIDENCE_AGE_SECONDS,
     PREFLIGHT_EXTERNAL_CHECKS,
     PREFLIGHT_LOCAL_CHECKS,
 )
@@ -43,6 +53,11 @@ SCHEMA_PATH = Path("deploy/ownership/host_preflight_external_evidence_v1.schema.
 
 SCHEMA_VERSION = "host_preflight_external_evidence_schema_v1"
 ALLOWED_STATUS = {"PASS", "WARN", "FAIL"}
+
+# Small allowance (seconds) for benign clock drift between the evidence producer
+# and the preflight host.
+CLOCK_SKEW_ALLOWANCE_SECONDS = 60
+
 REQUIRED_TOP_KEYS = {
     "schema_version",
     "capability",
@@ -54,6 +69,29 @@ REQUIRED_TOP_KEYS = {
 }
 ALLOWED_TOP_KEYS = REQUIRED_TOP_KEYS | {"evidence_producer"}
 REQUIRED_CHECK_KEYS = {"status", "detail", "evidence_source", "observed_at_utc"}
+
+# Safety-marker contract.
+SAFETY_ZERO_COUNTERS = (
+    "host_mutations",
+    "database_writes",
+    "writer_invocations",
+    "systemctl_mutations",
+    "order_submission",
+    "broker_writes",
+)
+SAFETY_FALSE_FLAGS = (
+    "authorization_created",
+    "deployment_performed",
+)
+# Read-only probe activity that is the purpose of this lane and may be nonzero.
+SAFETY_ALLOWED_NONNEGATIVE_COUNTERS = (
+    "database_connections",
+    "database_read_queries",
+    "dns_lookups",
+    "exchange_public_calls",
+)
+SAFETY_REQUIRED_KEYS = set(SAFETY_ZERO_COUNTERS) | set(SAFETY_FALSE_FLAGS)
+SAFETY_ALLOWED_KEYS = SAFETY_REQUIRED_KEYS | set(SAFETY_ALLOWED_NONNEGATIVE_COUNTERS)
 
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _RFC3339_RE = re.compile(
@@ -98,6 +136,9 @@ class EvidenceValidationResult:
     errors: list[str]
     warnings: list[str] = field(default_factory=list)
     checks: dict[str, dict] = field(default_factory=dict)
+    observed_at_utc: str | None = None
+    age_seconds: float | None = None
+    max_age_seconds: int | None = None
 
     @property
     def ok(self) -> bool:
@@ -113,14 +154,13 @@ def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return seen
 
 
-def _valid_literal_utc(value: Any) -> bool:
+def _parse_literal_utc(value: Any) -> datetime | None:
     if not isinstance(value, str) or not _RFC3339_RE.match(value):
-        return False
+        return None
     try:
-        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return False
-    return True
+        return None
 
 
 def _forbidden_key_hits(node: Any, path: str = "") -> list[str]:
@@ -147,14 +187,65 @@ def _secret_value_hits(text: str, where: str) -> list[str]:
     ]
 
 
+def _is_int(value: Any) -> bool:
+    # bool is a subtype of int; reject it where an integer counter is required.
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _validate_safety_markers(safety: Any) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(safety, dict):
+        return ["safety_markers must be an object"]
+    unknown = set(safety) - SAFETY_ALLOWED_KEYS
+    if unknown:
+        errors.append(f"safety_markers has unknown fields: {sorted(unknown)}")
+    missing = SAFETY_REQUIRED_KEYS - set(safety)
+    if missing:
+        errors.append(f"safety_markers missing required fields: {sorted(missing)}")
+    for name in SAFETY_ZERO_COUNTERS:
+        if name not in safety:
+            continue
+        value = safety[name]
+        if not _is_int(value):
+            errors.append(f"safety_markers.{name} must be an integer, got {type(value).__name__}")
+        elif value < 0:
+            errors.append(f"safety_markers.{name} must not be negative")
+        elif value != 0:
+            errors.append(f"safety_markers.{name} must be 0 (no mutation permitted)")
+    for name in SAFETY_FALSE_FLAGS:
+        if name not in safety:
+            continue
+        value = safety[name]
+        if not isinstance(value, bool):
+            errors.append(f"safety_markers.{name} must be a boolean, got {type(value).__name__}")
+        elif value is not False:
+            errors.append(f"safety_markers.{name} must be false")
+    for name in SAFETY_ALLOWED_NONNEGATIVE_COUNTERS:
+        if name not in safety:
+            continue
+        value = safety[name]
+        if not _is_int(value):
+            errors.append(f"safety_markers.{name} must be an integer, got {type(value).__name__}")
+        elif value < 0:
+            errors.append(f"safety_markers.{name} must not be negative")
+    return errors
+
+
 def validate_external_evidence(
     payload: Any,
     *,
     capability: str,
     expected_host: str,
     expected_commit: str,
+    reference_time: datetime,
+    max_age_seconds: int = DEFAULT_MAX_EXTERNAL_EVIDENCE_AGE_SECONDS,
 ) -> EvidenceValidationResult:
     errors: list[str] = []
+
+    if max_age_seconds <= 0:
+        return EvidenceValidationResult(errors=["max_age_seconds must be a positive integer"])
+    if reference_time.tzinfo is None:
+        reference_time = reference_time.replace(tzinfo=UTC)
 
     if not isinstance(payload, dict):
         return EvidenceValidationResult(errors=["manifest root must be a JSON object"])
@@ -198,8 +289,22 @@ def validate_external_evidence(
             "(evidence for a different commit is rejected)"
         )
 
-    if not _valid_literal_utc(payload.get("observed_at_utc")):
-        errors.append(f"observed_at_utc is not a valid literal-Z UTC timestamp: {payload.get('observed_at_utc')!r}")
+    manifest_observed_raw = payload.get("observed_at_utc")
+    manifest_observed = _parse_literal_utc(manifest_observed_raw)
+    age_seconds: float | None = None
+    if manifest_observed is None:
+        errors.append(f"observed_at_utc is not a valid literal-Z UTC timestamp: {manifest_observed_raw!r}")
+    else:
+        age_seconds = (reference_time - manifest_observed).total_seconds()
+        if age_seconds < -CLOCK_SKEW_ALLOWANCE_SECONDS:
+            errors.append(
+                f"manifest observed_at_utc is in the future by {-age_seconds:.0f}s "
+                f"(allowance {CLOCK_SKEW_ALLOWANCE_SECONDS}s)"
+            )
+        elif age_seconds > max_age_seconds:
+            errors.append(
+                f"external evidence is stale: age {age_seconds:.0f}s exceeds max {max_age_seconds}s"
+            )
 
     producer = payload.get("evidence_producer")
     if producer is not None:
@@ -208,9 +313,7 @@ def validate_external_evidence(
         else:
             errors.extend(_secret_value_hits(producer, "evidence_producer"))
 
-    safety = payload.get("safety_markers")
-    if not isinstance(safety, dict):
-        errors.append("safety_markers must be an object")
+    errors.extend(_validate_safety_markers(payload.get("safety_markers")))
 
     normalized: dict[str, dict] = {}
     checks = payload.get("checks")
@@ -256,21 +359,57 @@ def validate_external_evidence(
                 errors.append(f"check {name!r} evidence_source must be a non-empty string")
             else:
                 errors.extend(_secret_value_hits(evidence_source, f"check {name!r} evidence_source"))
-            if not _valid_literal_utc(spec.get("observed_at_utc")):
+            check_observed_raw = spec.get("observed_at_utc")
+            check_observed = _parse_literal_utc(check_observed_raw)
+            if check_observed is None:
                 errors.append(
-                    f"check {name!r} observed_at_utc is not a valid literal-Z UTC timestamp: {spec.get('observed_at_utc')!r}"
+                    f"check {name!r} observed_at_utc is not a valid literal-Z UTC timestamp: {check_observed_raw!r}"
                 )
+            else:
+                check_age = (reference_time - check_observed).total_seconds()
+                if check_age < -CLOCK_SKEW_ALLOWANCE_SECONDS:
+                    errors.append(
+                        f"check {name!r} observed_at_utc is in the future by {-check_age:.0f}s "
+                        f"(allowance {CLOCK_SKEW_ALLOWANCE_SECONDS}s)"
+                    )
+                elif check_age > max_age_seconds:
+                    errors.append(
+                        f"check {name!r} is stale: age {check_age:.0f}s exceeds max {max_age_seconds}s"
+                    )
+                if manifest_observed is not None:
+                    ahead = (check_observed - manifest_observed).total_seconds()
+                    if ahead > CLOCK_SKEW_ALLOWANCE_SECONDS:
+                        errors.append(
+                            f"check {name!r} is newer than the manifest by {ahead:.0f}s; "
+                            "all checks must belong to one bounded evidence run"
+                        )
+                    elif ahead < -max_age_seconds:
+                        errors.append(
+                            f"check {name!r} predates the manifest window by {-ahead:.0f}s; "
+                            "all checks must belong to one bounded evidence run"
+                        )
             if status in ALLOWED_STATUS and isinstance(detail, str) and isinstance(evidence_source, str):
                 normalized[name] = {
                     "status": status,
                     "detail": detail,
                     "evidence_source": evidence_source,
-                    "observed_at_utc": spec.get("observed_at_utc"),
+                    "observed_at_utc": check_observed_raw,
                 }
 
     if errors:
-        return EvidenceValidationResult(errors=errors)
-    return EvidenceValidationResult(errors=[], checks=normalized)
+        return EvidenceValidationResult(
+            errors=errors,
+            observed_at_utc=manifest_observed_raw if isinstance(manifest_observed_raw, str) else None,
+            age_seconds=age_seconds,
+            max_age_seconds=max_age_seconds,
+        )
+    return EvidenceValidationResult(
+        errors=[],
+        checks=normalized,
+        observed_at_utc=manifest_observed_raw,
+        age_seconds=age_seconds,
+        max_age_seconds=max_age_seconds,
+    )
 
 
 def load_and_validate_external_evidence(
@@ -279,6 +418,8 @@ def load_and_validate_external_evidence(
     capability: str,
     expected_host: str,
     expected_commit: str,
+    reference_time: datetime,
+    max_age_seconds: int = DEFAULT_MAX_EXTERNAL_EVIDENCE_AGE_SECONDS,
 ) -> EvidenceValidationResult:
     try:
         text = path.read_text(encoding="utf-8")
@@ -295,7 +436,16 @@ def load_and_validate_external_evidence(
         capability=capability,
         expected_host=expected_host,
         expected_commit=expected_commit,
+        reference_time=reference_time,
+        max_age_seconds=max_age_seconds,
     )
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
 
 
 def main() -> int:
@@ -306,6 +456,11 @@ def main() -> int:
     parser.add_argument("--capability", required=True, choices=sorted(CAPABILITY_MODULES))
     parser.add_argument("--expected-host", required=True)
     parser.add_argument("--expected-commit", required=True)
+    parser.add_argument(
+        "--max-external-evidence-age-seconds",
+        type=_positive_int,
+        default=DEFAULT_MAX_EXTERNAL_EVIDENCE_AGE_SECONDS,
+    )
     parser.add_argument("--output", choices=("table", "json"), default="table")
     args = parser.parse_args()
 
@@ -314,6 +469,8 @@ def main() -> int:
         capability=args.capability,
         expected_host=args.expected_host,
         expected_commit=args.expected_commit,
+        reference_time=datetime.now(UTC),
+        max_age_seconds=args.max_external_evidence_age_seconds,
     )
 
     if args.output == "json":
@@ -324,6 +481,9 @@ def main() -> int:
                     "errors": result.errors,
                     "warnings": result.warnings,
                     "merged_checks": sorted(result.checks),
+                    "external_evidence_observed_at_utc": result.observed_at_utc,
+                    "external_evidence_age_seconds": result.age_seconds,
+                    "external_evidence_max_age_seconds": result.max_age_seconds,
                     "safety_markers": {
                         "host_mutations": 0,
                         "database_writes": 0,
@@ -337,7 +497,11 @@ def main() -> int:
             )
         )
     else:
-        print(f"evidence_ok={str(result.ok).lower()} error_count={len(result.errors)} merged_checks={len(result.checks)}")
+        print(
+            f"evidence_ok={str(result.ok).lower()} error_count={len(result.errors)} "
+            f"merged_checks={len(result.checks)} age_seconds={result.age_seconds} "
+            f"max_age_seconds={result.max_age_seconds}"
+        )
         for error in result.errors:
             print(f"ERROR {error}")
         print(

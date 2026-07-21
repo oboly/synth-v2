@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -12,16 +13,33 @@ from src.operations.validate_host_preflight_external_evidence_v1 import (
 
 
 REGISTRY_PATH = Path("deploy/ownership/writer_capability_ownership_v1.json")
+OBS = "2026-07-21T00:00:00Z"
+REFERENCE = datetime(2026, 7, 21, 0, 0, 0, tzinfo=UTC)
 
 # Required PREFLIGHT_EXTERNAL checks for market_rotation_pressure: exchange and
-# secrets are proven non-required from its call graph.
+# private_exchange_credentials are proven non-required from its call graph, but
+# runtime_configuration (MariaDB config) remains required.
 RP_REQUIRED_EXTERNAL = (
     "mariadb_connectivity",
     "dns",
     "ntp_time_sync",
     "journald_logrotation",
+    "runtime_configuration",
     "firewall_outbound_connectivity",
 )
+
+VALID_SAFETY_MARKERS = {
+    "host_mutations": 0,
+    "database_writes": 0,
+    "writer_invocations": 0,
+    "systemctl_mutations": 0,
+    "order_submission": 0,
+    "broker_writes": 0,
+    "authorization_created": False,
+    "deployment_performed": False,
+    "database_connections": 1,
+    "database_read_queries": 3,
+}
 
 
 def _all_pass_local(**_kwargs) -> dict[str, preflight.CheckResult]:
@@ -37,20 +55,24 @@ def _external_evidence(capability: str, statuses: dict[str, str]) -> dict[str, d
         "capability": capability,
         "hostname": "gurkdb",
         "checkout_commit": "0" * 40,
-        "observed_at_utc": "2026-07-21T00:00:00Z",
+        "observed_at_utc": OBS,
         "checks": {
             name: {
                 "status": status,
                 "detail": f"{name} probe result",
                 "evidence_source": "ops/preflight_probe_v1",
-                "observed_at_utc": "2026-07-21T00:00:00Z",
+                "observed_at_utc": OBS,
             }
             for name, status in statuses.items()
         },
-        "safety_markers": {"database_writes": 0, "exchange_calls": 0},
+        "safety_markers": dict(VALID_SAFETY_MARKERS),
     }
     result = validate_external_evidence(
-        payload, capability=capability, expected_host="gurkdb", expected_commit="0" * 40
+        payload,
+        capability=capability,
+        expected_host="gurkdb",
+        expected_commit="0" * 40,
+        reference_time=REFERENCE,
     )
     assert result.ok, result.errors
     return result.checks
@@ -69,10 +91,13 @@ def test_check_stage_partition_is_exhaustive_and_disjoint() -> None:
         preflight.CUTOVER_CHECKS,
     )
     names = [name for group in groups for name in group]
-    assert len(names) == len(set(names)) == 22
+    assert len(names) == len(set(names)) == 23
     assert set(names) == set(preflight.CHECK_ORDER)
     assert len(preflight.PREFLIGHT_LOCAL_CHECKS) == 12
-    assert len(preflight.PREFLIGHT_EXTERNAL_CHECKS) == 7
+    assert len(preflight.PREFLIGHT_EXTERNAL_CHECKS) == 8
+    assert "runtime_configuration" in preflight.PREFLIGHT_EXTERNAL_CHECKS
+    assert "private_exchange_credentials" in preflight.PREFLIGHT_EXTERNAL_CHECKS
+    assert "secrets_and_configuration" not in preflight.PREFLIGHT_EXTERNAL_CHECKS
     assert preflight.ACCEPTANCE_CHECKS == ("runtime_per_writer", "resource_usage_per_writer")
     assert preflight.CUTOVER_CHECKS == ("rollback_capability",)
 
@@ -80,26 +105,34 @@ def test_check_stage_partition_is_exhaustive_and_disjoint() -> None:
 def test_market_rotation_pressure_capability_specific_dependency_matrix() -> None:
     # Proven from code: rotation history/pressure read persisted candles from
     # MariaDB and use only optional public CoinGecko context; no exchange API.
+    # MariaDB runtime configuration is required; only the private exchange key is
+    # not (there is none).
     assert preflight._external_required("market_rotation_pressure", "mariadb_connectivity") is True
+    assert preflight._external_required("market_rotation_pressure", "runtime_configuration") is True
     assert preflight._external_required("market_rotation_pressure", "exchange_api_connectivity") is False
-    assert preflight._external_required("market_rotation_pressure", "secrets_and_configuration") is False
-    # The public writers do call a public exchange endpoint but need no secrets.
-    assert preflight._external_required("public_price_snapshot", "exchange_api_connectivity") is True
-    assert preflight._external_required("public_price_snapshot", "secrets_and_configuration") is False
-    assert preflight._external_required("public_candle_freshness", "exchange_api_connectivity") is True
-    assert preflight._external_required("public_candle_freshness", "secrets_and_configuration") is False
+    assert preflight._external_required("market_rotation_pressure", "private_exchange_credentials") is False
+    # The public writers call a public exchange endpoint and need MariaDB
+    # runtime configuration, but no private exchange credentials.
+    for cap in ("public_price_snapshot", "public_candle_freshness"):
+        assert preflight._external_required(cap, "exchange_api_connectivity") is True
+        assert preflight._external_required(cap, "runtime_configuration") is True
+        assert preflight._external_required(cap, "private_exchange_credentials") is False
 
 
-def test_public_exchange_endpoints_do_not_require_private_secrets() -> None:
+def test_runtime_configuration_required_but_private_exchange_credentials_not() -> None:
     results = preflight.run_preflight(
         capability="public_price_snapshot",
         expected_host="nowhere",
         expected_commit="0" * 40,
         checkout_path=Path.cwd(),
     )
-    secrets = next(r for r in results if r.name == "secrets_and_configuration")
-    assert secrets.required is False
-    assert secrets.stage == preflight.STAGE_PREFLIGHT_EXTERNAL
+    by_name = {r.name: r for r in results}
+    runtime = by_name["runtime_configuration"]
+    assert runtime.required is True
+    assert runtime.stage == preflight.STAGE_PREFLIGHT_EXTERNAL
+    private = by_name["private_exchange_credentials"]
+    assert private.required is False
+    assert private.stage == preflight.STAGE_PREFLIGHT_EXTERNAL
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +266,7 @@ RP_UNITS = (
 
 
 def test_unrelated_xfs_scrub_all_diagnostic_does_not_warn() -> None:
+    # rc=0 unrelated xfs warning remains informational PASS.
     stderr = (
         "/usr/lib/systemd/system/xfs_scrub_all.service:5: Unit configured to use "
         "KillMode=none. This is unsafe, as it disables systemd's process lifecycle "
@@ -240,7 +274,7 @@ def test_unrelated_xfs_scrub_all_diagnostic_does_not_warn() -> None:
     )
     result = preflight._classify_systemd_verify(0, stderr, "", RP_UNITS)
     assert result.status == preflight.STATUS_PASS
-    assert "unrelated_diagnostics=1" in result.detail
+    assert "known_unrelated=1" in result.detail
 
 
 def test_relevant_synth_unit_warning_still_blocks() -> None:
@@ -266,6 +300,34 @@ def test_relevant_synth_unit_failure_blocks_even_with_unrelated_noise() -> None:
 def test_clean_verify_passes() -> None:
     result = preflight._classify_systemd_verify(0, "", "", RP_UNITS)
     assert result.status == preflight.STATUS_PASS
+
+
+def test_nonzero_with_empty_output_fails_closed() -> None:
+    result = preflight._classify_systemd_verify(1, "", "", RP_UNITS)
+    assert result.status == preflight.STATUS_FAIL
+    assert "no diagnostic output" in result.detail
+
+
+def test_nonzero_with_generic_unknown_diagnostic_fails_closed() -> None:
+    stderr = "Failed to load unit file: No such file or directory"
+    result = preflight._classify_systemd_verify(1, stderr, "", RP_UNITS)
+    assert result.status == preflight.STATUS_FAIL
+    assert "Failed to load unit" in result.detail
+
+
+def test_nonzero_with_only_known_unrelated_diagnostic_is_ignored() -> None:
+    # rc=1 but every line is positively classified as unrelated -> PASS.
+    stderr = "/usr/lib/systemd/system/xfs_scrub_all.service:5: KillMode=none is unsafe"
+    result = preflight._classify_systemd_verify(1, stderr, "", RP_UNITS)
+    assert result.status == preflight.STATUS_PASS
+    assert "ignored_known_unrelated=1" in result.detail
+
+
+def test_nonzero_with_relevant_synth_diagnostic_fails() -> None:
+    stderr = "deploy/systemd/synth-market-rotation-pressure-writer.service:9: bad directive"
+    result = preflight._classify_systemd_verify(1, stderr, "", RP_UNITS)
+    assert result.status == preflight.STATUS_FAIL
+    assert "synth-market-rotation-pressure-writer.service" in result.detail
 
 
 # ---------------------------------------------------------------------------

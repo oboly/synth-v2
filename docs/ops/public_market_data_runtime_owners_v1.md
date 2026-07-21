@@ -115,10 +115,24 @@ external-evidence manifest and merged with `--external-evidence-file`. The
 manifest binds `schema_version`, `capability`, `hostname`, `checkout_commit`,
 and `observed_at_utc`, may fill only permitted `PREFLIGHT_EXTERNAL` checks, and
 never overrides a local check. Capability-specific external requirements are
-proven from code: the public price/candle writers require public-exchange
-connectivity but no private secrets, while `market_rotation_pressure` requires
-MariaDB but no exchange API (it reads persisted candles and uses only optional
-public CoinGecko context).
+proven from code. All three writers reach MariaDB through `src.common.db`, so
+`mariadb_connectivity` and `runtime_configuration` are required for each. The
+public price/candle writers additionally require public-exchange connectivity
+but no private exchange credentials (`private_exchange_credentials` not
+required); `market_rotation_pressure` requires MariaDB but no exchange API (it
+reads persisted candles and uses only optional public CoinGecko context).
+`runtime_configuration` verifies only safe DB/runtime configuration metadata
+(env names resolvable, config file present/owned/permissioned, required values
+non-empty) and never reads secret values.
+
+External evidence is time-bounded: `--max-external-evidence-age-seconds`
+(default 900) rejects stale or future evidence, and every required check must
+belong to one bounded evidence run. The manifest also carries strict safety
+markers proving no mutation occurred while producing the evidence
+(`host_mutations=0`, `database_writes=0`, `writer_invocations=0`,
+`systemctl_mutations=0`, `order_submission=0`, `broker_writes=0`,
+`authorization_created=false`, `deployment_performed=false`); read-only probe
+counters may be nonzero.
 
 A strict preflight `PASS` proves host readiness only. It is non-authorizing: it
 does not grant production ownership and does not change any lifecycle here. No

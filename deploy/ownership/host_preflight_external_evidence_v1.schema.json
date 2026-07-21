@@ -54,7 +54,8 @@
           "dns",
           "ntp_time_sync",
           "journald_logrotation",
-          "secrets_and_configuration",
+          "runtime_configuration",
+          "private_exchange_credentials",
           "firewall_outbound_connectivity"
         ]
       },
@@ -85,9 +86,31 @@
     },
     "safety_markers": {
       "type": "object",
-      "description": "Attestation that producing this evidence performed no mutation. Values are non-negative integers or booleans; no secrets.",
-      "additionalProperties": {
-        "type": ["integer", "boolean", "string"]
+      "description": "Strict attestation that producing this evidence performed no mutation. Mutation/write/invocation/order counters must be 0; authorization/deployment flags must be false. Read-only probe counters (DB connections/read queries, DNS lookups, public exchange calls) may be nonzero.",
+      "additionalProperties": false,
+      "required": [
+        "host_mutations",
+        "database_writes",
+        "writer_invocations",
+        "systemctl_mutations",
+        "order_submission",
+        "broker_writes",
+        "authorization_created",
+        "deployment_performed"
+      ],
+      "properties": {
+        "host_mutations": {"const": 0},
+        "database_writes": {"const": 0},
+        "writer_invocations": {"const": 0},
+        "systemctl_mutations": {"const": 0},
+        "order_submission": {"const": 0},
+        "broker_writes": {"const": 0},
+        "authorization_created": {"const": false},
+        "deployment_performed": {"const": false},
+        "database_connections": {"type": "integer", "minimum": 0},
+        "database_read_queries": {"type": "integer", "minimum": 0},
+        "dns_lookups": {"type": "integer", "minimum": 0},
+        "exchange_public_calls": {"type": "integer", "minimum": 0}
       }
     }
   }

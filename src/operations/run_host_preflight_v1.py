@@ -45,6 +45,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass
@@ -53,7 +54,12 @@ from pathlib import Path
 
 
 RUNNER_NAME = "host_preflight_v1"
-RUNNER_VERSION = "0.3"
+RUNNER_VERSION = "0.4"
+
+# Host preflight external evidence must be recent: a strict PASS may never rest
+# on indefinitely reusable evidence. 900s (15 min) is a safe default for a
+# controlled preflight window.
+DEFAULT_MAX_EXTERNAL_EVIDENCE_AGE_SECONDS = 900
 
 STATUS_PASS = "PASS"
 STATUS_WARN = "WARN"
@@ -137,13 +143,19 @@ PREFLIGHT_LOCAL_CHECKS = (
 
 # Facts that require a separately authorized external probe (DB/exchange/network/
 # host policy). These are the only checks an external-evidence manifest may fill.
+#
+# runtime_configuration and private_exchange_credentials are deliberately
+# separate: every writer needs MariaDB runtime configuration and DB credentials
+# via src.common.db (so runtime_configuration is required), but the public
+# market-data endpoints need no private exchange key.
 PREFLIGHT_EXTERNAL_CHECKS = (
     "mariadb_connectivity",
     "exchange_api_connectivity",
     "dns",
     "ntp_time_sync",
     "journald_logrotation",
-    "secrets_and_configuration",
+    "runtime_configuration",
+    "private_exchange_credentials",
     "firewall_outbound_connectivity",
 )
 
@@ -172,42 +184,47 @@ EXTERNAL_CHECK_DESIGN = {
     "dns": "requires a network resolve; proven by a separately authorized external probe",
     "ntp_time_sync": "requires querying a time source; proven by a separately authorized external probe",
     "journald_logrotation": "requires host retention policy evidence; proven by a separately authorized external probe",
-    "secrets_and_configuration": "must be verified out-of-band; secret values are never read here",
+    "runtime_configuration": "requires safe DB/runtime configuration metadata (env names resolvable, source file present/owned/permissioned, required values non-empty); secret values are never read here",
+    "private_exchange_credentials": "private exchange key presence, verified out-of-band without reading secret values",
     "firewall_outbound_connectivity": "requires an outbound probe; proven by a separately authorized external probe",
 }
 
 # Capability-specific external requirements. Default is required=True for every
 # preflight-external check; overrides below mark a check non-required only when
-# the capability's proven call graph does not depend on it. Public exchange
-# endpoints (bitvavo public ticker/candles) require no private credentials, so
-# secrets_and_configuration is not required for the public writers.
+# the capability's proven call graph does not depend on it.
+#
+# runtime_configuration stays required for every capability: all three light
+# writers (and native SHORT) reach MariaDB through src.common.db, which resolves
+# DB host/user/password/database from the runtime environment. "No private
+# exchange key" is not the same as "no runtime configuration required", so the
+# private-credential fact is a separate, non-required check.
 #
 # market_rotation_pressure: run_market_rotation_history_v1 and
 # run_market_rotation_pressure_v1 read persisted candles from MariaDB and use
 # only optional public CoinGecko global context; neither calls the exchange API,
 # so exchange_api_connectivity is not required.
 CAPABILITY_EXTERNAL_REQUIRED_OVERRIDES = {
-    "public_price_snapshot": {"secrets_and_configuration": False},
-    "public_candle_freshness": {"secrets_and_configuration": False},
+    "public_price_snapshot": {"private_exchange_credentials": False},
+    "public_candle_freshness": {"private_exchange_credentials": False},
     "market_rotation_pressure": {
         "exchange_api_connectivity": False,
-        "secrets_and_configuration": False,
+        "private_exchange_credentials": False,
     },
     "native_short_4h_chain": {
         "exchange_api_connectivity": False,
-        "secrets_and_configuration": False,
+        "private_exchange_credentials": False,
     },
 }
 
 # Short, capability-specific justification recorded in the detail for a check
 # whose requirement differs from the default.
 CAPABILITY_EXTERNAL_NOTES = {
-    ("public_price_snapshot", "secrets_and_configuration"): "public bitvavo ticker endpoint needs no private exchange credentials",
-    ("public_candle_freshness", "secrets_and_configuration"): "public bitvavo candle endpoint needs no private exchange credentials",
+    ("public_price_snapshot", "private_exchange_credentials"): "public bitvavo ticker endpoint needs no private exchange credentials; MariaDB runtime configuration remains required",
+    ("public_candle_freshness", "private_exchange_credentials"): "public bitvavo candle endpoint needs no private exchange credentials; MariaDB runtime configuration remains required",
     ("market_rotation_pressure", "exchange_api_connectivity"): "reads persisted candles from MariaDB; only optional public CoinGecko global context; no exchange API dependency",
-    ("market_rotation_pressure", "secrets_and_configuration"): "no private exchange credentials; optional CoinGecko key degrades gracefully",
+    ("market_rotation_pressure", "private_exchange_credentials"): "no private exchange credentials (optional CoinGecko key degrades gracefully); MariaDB runtime configuration remains required",
     ("native_short_4h_chain", "exchange_api_connectivity"): "market-only chain consumes persisted market state; does not call the exchange API directly",
-    ("native_short_4h_chain", "secrets_and_configuration"): "market-only chain reads persisted state; no private exchange credentials",
+    ("native_short_4h_chain", "private_exchange_credentials"): "market-only chain reads persisted state; no private exchange credentials; MariaDB runtime configuration remains required",
 }
 
 DEFERRED_CHECK_DESIGN = {
@@ -439,6 +456,14 @@ def _systemd_availability() -> CheckResult:
     return CheckResult("systemd_availability", STATUS_WARN, f"systemctl={binary} state={detail}")
 
 
+# Positive allowlist of host units that are known to be unrelated to any Synth
+# capability. A nonzero systemd-analyze exit is only ignored when EVERY emitted
+# diagnostic line is positively matched here; anything else fails closed.
+KNOWN_UNRELATED_UNIT_PATTERNS = (
+    re.compile(r"\bxfs_scrub_all\b"),
+)
+
+
 def _classify_systemd_verify(
     returncode: int,
     stderr: str,
@@ -447,35 +472,60 @@ def _classify_systemd_verify(
 ) -> CheckResult:
     """Scope systemd-analyze diagnostics to the supplied capability units.
 
-    Only diagnostics that reference one of the supplied unit files/names are
-    treated as blocking for this capability. Unrelated global unit diagnostics
-    (for example a host `xfs_scrub_all` warning) are retained deterministically
-    as informational metadata and never raise a capability warning.
+    Fail closed on any nonzero exit unless it is fully explained by positively
+    recognized unrelated diagnostics. Each non-empty diagnostic line is
+    classified as:
+
+    - relevant: references one of the supplied Synth unit basenames;
+    - known-unrelated: positively matches KNOWN_UNRELATED_UNIT_PATTERNS;
+    - unknown: everything else (fails closed on nonzero exit).
+
+    A line without a Synth basename is never assumed harmless.
     """
     basenames = {Path(rel).name for rel in rel_units}
-    raw = (stderr or "").strip() or (stdout or "").strip()
-    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    combined = "\n".join(
+        part for part in ((stderr or "").strip(), (stdout or "").strip()) if part
+    )
+    lines = [line.strip() for line in combined.splitlines() if line.strip()]
     relevant: list[str] = []
-    unrelated: list[str] = []
+    known_unrelated: list[str] = []
+    unknown: list[str] = []
     for line in lines:
-        (relevant if any(base in line for base in basenames) else unrelated).append(line)
-    info = f"unrelated_diagnostics={len(unrelated)}"
+        if any(base in line for base in basenames):
+            relevant.append(line)
+        elif any(pattern.search(line) for pattern in KNOWN_UNRELATED_UNIT_PATTERNS):
+            known_unrelated.append(line)
+        else:
+            unknown.append(line)
+    info = (
+        f"relevant={len(relevant)} known_unrelated={len(known_unrelated)} "
+        f"unknown={len(unknown)}"
+    )
+
     if returncode != 0:
         if relevant:
+            return CheckResult("systemd_unit_validation", STATUS_FAIL, f"{relevant[0]} ({info})")
+        if not lines:
             return CheckResult(
-                "systemd_unit_validation", STATUS_FAIL, f"{relevant[0]} ({info})"
+                "systemd_unit_validation",
+                STATUS_FAIL,
+                f"systemd-analyze verify failed with no diagnostic output (rc={returncode} {info})",
             )
-        # Nonzero exit attributable only to unrelated units; the supplied
-        # capability units produced no diagnostic of their own.
+        if unknown:
+            return CheckResult(
+                "systemd_unit_validation",
+                STATUS_FAIL,
+                f"{unknown[0]} (rc={returncode} {info})",
+            )
+        # Nonzero exit fully explained by positively recognized unrelated units.
         return CheckResult(
             "systemd_unit_validation",
             STATUS_PASS,
-            f"verified={','.join(rel_units)} rc={returncode} {info}",
+            f"verified={','.join(rel_units)} ignored_known_unrelated={len(known_unrelated)} rc={returncode} {info}",
         )
+
     if relevant:
-        return CheckResult(
-            "systemd_unit_validation", STATUS_WARN, f"{relevant[0]} ({info})"
-        )
+        return CheckResult("systemd_unit_validation", STATUS_WARN, f"{relevant[0]} ({info})")
     return CheckResult(
         "systemd_unit_validation",
         STATUS_PASS,
@@ -632,6 +682,13 @@ def _strict_exit_status(results: list[CheckResult]) -> int:
     return 0
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Read-only, stage-aware host preflight for writer-capability host selection."
@@ -651,6 +708,16 @@ def main() -> int:
             "checks stay authoritative and no command is ever executed from it."
         ),
     )
+    parser.add_argument(
+        "--max-external-evidence-age-seconds",
+        type=_positive_int,
+        default=DEFAULT_MAX_EXTERNAL_EVIDENCE_AGE_SECONDS,
+        help=(
+            "Maximum accepted age of external evidence, in seconds. Strict preflight "
+            "must not rest on indefinitely reusable evidence. "
+            f"Default {DEFAULT_MAX_EXTERNAL_EVIDENCE_AGE_SECONDS}."
+        ),
+    )
     parser.add_argument("--output", choices=("table", "json"), default="table")
     parser.add_argument(
         "--strict",
@@ -660,10 +727,13 @@ def main() -> int:
     args = parser.parse_args()
 
     checkout_path = (args.checkout_path or args.path or Path.cwd()).resolve()
-    ts = datetime.now(UTC).replace(microsecond=0).isoformat()
+    reference_time = datetime.now(UTC)
+    ts = reference_time.replace(microsecond=0).isoformat()
 
     external_checks: dict[str, dict] | None = None
     evidence_source_path: str | None = None
+    evidence_observed_at: str | None = None
+    evidence_age_seconds: float | None = None
     if args.external_evidence_file is not None:
         # Imported lazily so importing the validator (which imports this module's
         # stage constants) never forms a load-time cycle.
@@ -677,6 +747,8 @@ def main() -> int:
             capability=args.capability,
             expected_host=args.expected_host,
             expected_commit=args.expected_commit,
+            reference_time=reference_time,
+            max_age_seconds=args.max_external_evidence_age_seconds,
         )
         if not validation.ok:
             print(
@@ -687,6 +759,8 @@ def main() -> int:
                 print(f"EVIDENCE_ERROR {error}")
             return 2
         external_checks = validation.checks
+        evidence_observed_at = validation.observed_at_utc
+        evidence_age_seconds = validation.age_seconds
 
     results = run_preflight(
         capability=args.capability,
@@ -707,6 +781,9 @@ def main() -> int:
             "expected_commit": args.expected_commit,
             "checkout_path": str(checkout_path),
             "external_evidence_file": evidence_source_path,
+            "external_evidence_observed_at_utc": evidence_observed_at,
+            "external_evidence_age_seconds": evidence_age_seconds,
+            "external_evidence_max_age_seconds": args.max_external_evidence_age_seconds,
             "strict_requires_stages": [STAGE_PREFLIGHT_LOCAL, STAGE_PREFLIGHT_EXTERNAL],
             "deferred_stages": [STAGE_ACCEPTANCE, STAGE_CUTOVER],
             "safety_markers": {

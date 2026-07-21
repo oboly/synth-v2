@@ -219,7 +219,8 @@ PREFLIGHT_LOCAL:
 
 PREFLIGHT_EXTERNAL:
   mariadb_connectivity, exchange_api_connectivity, dns, ntp_time_sync,
-  journald_logrotation, secrets_and_configuration, firewall_outbound_connectivity
+  journald_logrotation, runtime_configuration, private_exchange_credentials,
+  firewall_outbound_connectivity
 
 ACCEPTANCE (deferred, non-blocking during preflight):
   runtime_per_writer, resource_usage_per_writer
@@ -246,21 +247,74 @@ never executes any command from it. See
 `deploy/ownership/host_preflight_external_evidence_v1.schema.json` and
 `src/operations/validate_host_preflight_external_evidence_v1.py`.
 
+`runtime_configuration` and `private_exchange_credentials` are separate checks.
+Runtime configuration is MariaDB host/user/password/database resolved through
+`src.common.db`, plus the runtime config file's presence, ownership, and
+permissions; it never reads or returns secret values. "No private exchange key"
+is not the same as "no runtime configuration required".
+
 ### Capability-specific external requirements
 
 External requirements are proven from each capability's real call graph, not
 inferred from names:
 
 ```text
-public_price_snapshot:    mariadb required; exchange (public bitvavo ticker) required; secrets not required
-public_candle_freshness:  mariadb required; exchange (public bitvavo candles) required; secrets not required
-market_rotation_pressure: mariadb required; exchange NOT required; secrets not required
+public_price_snapshot:
+  mariadb_connectivity=required
+  exchange_api_connectivity=required (public bitvavo ticker)
+  runtime_configuration=required
+  private_exchange_credentials=not required
+
+public_candle_freshness:
+  mariadb_connectivity=required
+  exchange_api_connectivity=required (public bitvavo candles)
+  runtime_configuration=required
+  private_exchange_credentials=not required
+
+market_rotation_pressure:
+  mariadb_connectivity=required
+  exchange_api_connectivity=not required
+  runtime_configuration=required
+  private_exchange_credentials=not required
 ```
 
+All three writers reach MariaDB through `src.common.db`, so
+`runtime_configuration` is required for every one of them.
 `market_rotation_pressure` reads persisted candles from MariaDB and uses only
 optional public CoinGecko global context, so it has no exchange-API dependency.
-Public exchange endpoints require no private credentials, so
-`secrets_and_configuration` is not required for the public writers.
+Public exchange endpoints require no private exchange credentials, so
+`private_exchange_credentials` is not required for the public writers.
+
+### Bounded evidence freshness
+
+External evidence is time-bounded so a strict `PASS` never rests on indefinitely
+reusable evidence. `--max-external-evidence-age-seconds` (default 900) sets the
+maximum age. The validator receives an explicit reference time and rejects:
+
+- a manifest or check timestamp in the future beyond a 60s clock-skew allowance;
+- a check newer than the manifest timestamp;
+- any check older than the configured maximum age (all required checks must
+  belong to one bounded evidence run).
+
+JSON output records `external_evidence_observed_at_utc`,
+`external_evidence_age_seconds`, and `external_evidence_max_age_seconds`.
+
+### Safety markers
+
+The manifest must carry strict safety markers attesting that producing the
+evidence performed no mutation:
+
+```text
+host_mutations=0 database_writes=0 writer_invocations=0 systemctl_mutations=0
+order_submission=0 broker_writes=0 authorization_created=false deployment_performed=false
+```
+
+Read-only probe counters (`database_connections`, `database_read_queries`,
+`dns_lookups`, `exchange_public_calls`) may be nonzero because they are the
+purpose of this external probe lane. Missing required markers, wrong types,
+negative counters, nonzero mutation/write/invocation/order counters,
+`authorization_created=true`, `deployment_performed=true`, or unknown fields are
+rejected.
 
 ### Strict-pass semantics
 
