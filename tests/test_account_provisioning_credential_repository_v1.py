@@ -6,6 +6,8 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -23,6 +25,7 @@ from src.account_provisioning.credential_crypto_v1 import (
 from src.account_provisioning.contracts_v1 import PlainBitvavoCredential
 from src.account_provisioning.credential_repository_v1 import (
     CREDENTIAL_KIND_API_KEY_SECRET,
+    CredentialValidationUpdateError,
     SqliteCredentialRepository,
 )
 
@@ -229,6 +232,150 @@ def test_multiple_active_rows_fail_closed() -> None:
         assert False, "expected RuntimeError"
     except RuntimeError as e:
         assert "MULTIPLE_ACTIVE_CREDENTIALS" in str(e)
+
+
+# ---------------------------------------------------------------------------
+# Exact existing-credential validation update
+# ---------------------------------------------------------------------------
+
+def test_exact_active_validation_success_update() -> None:
+    repo = _repo()
+    row_id = _insert(repo)
+
+    affected = repo.update_existing_active_credential_validation(
+        trading_account_credential_id=row_id,
+        trading_account_id=_ACCOUNT_ID,
+        venue=_VENUE,
+        validation_state="VALID_PRIVATE_READ",
+        validated_ts_utc=_NOW,
+        safe_error_code=None,
+    )
+
+    row = repo._fetchone(
+        "SELECT validation_state, validated_ts_utc, last_validation_error_code "
+        "FROM trading_account_credential WHERE trading_account_credential_id = %s",
+        (row_id,),
+    )
+    assert affected == 1
+    assert row is not None
+    assert row["validation_state"] == "VALID_PRIVATE_READ"
+    assert row["validated_ts_utc"] == "2026-06-09 12:00:00"
+    assert row["last_validation_error_code"] is None
+
+
+def test_exact_active_validation_invalid_update() -> None:
+    repo = _repo()
+    row_id = _insert(repo)
+
+    repo.update_existing_active_credential_validation(
+        trading_account_credential_id=row_id,
+        trading_account_id=_ACCOUNT_ID,
+        venue=_VENUE,
+        validation_state="INVALID_CREDENTIALS",
+        validated_ts_utc=None,
+        safe_error_code="INVALID_CREDENTIALS_OR_READ_PERMISSION",
+    )
+
+    row = repo._fetchone(
+        "SELECT validation_state, validated_ts_utc, last_validation_error_code "
+        "FROM trading_account_credential WHERE trading_account_credential_id = %s",
+        (row_id,),
+    )
+    assert row is not None
+    assert row["validation_state"] == "INVALID_CREDENTIALS"
+    assert row["validated_ts_utc"] is None
+    assert row["last_validation_error_code"] == "INVALID_CREDENTIALS_OR_READ_PERMISSION"
+
+
+def test_exact_active_validation_rejects_untrusted_error_code() -> None:
+    repo = _repo()
+    row_id = _insert(repo)
+
+    with pytest.raises(CredentialValidationUpdateError) as exc:
+        repo.update_existing_active_credential_validation(
+            trading_account_credential_id=row_id,
+            trading_account_id=_ACCOUNT_ID,
+            venue=_VENUE,
+            validation_state="INVALID_CREDENTIALS",
+            validated_ts_utc=None,
+            safe_error_code="PRIVATE_SECRET_SENTINEL",
+        )
+
+    assert exc.value.code == "INVALID_FAILURE_VALIDATION_UPDATE"
+
+
+@pytest.mark.parametrize(
+    ("credential_id", "account_id", "venue"),
+    (
+        (999, _ACCOUNT_ID, _VENUE),
+        (1, 999, _VENUE),
+        (1, _ACCOUNT_ID, "kraken"),
+    ),
+)
+def test_exact_active_validation_update_rejects_identity_mismatch(
+    credential_id: int,
+    account_id: int,
+    venue: str,
+) -> None:
+    repo = _repo()
+    row_id = _insert(repo)
+    if credential_id == 1:
+        credential_id = row_id
+
+    with pytest.raises(CredentialValidationUpdateError) as exc:
+        repo.update_existing_active_credential_validation(
+            trading_account_credential_id=credential_id,
+            trading_account_id=account_id,
+            venue=venue,
+            validation_state="VALID_PRIVATE_READ",
+            validated_ts_utc=_NOW,
+            safe_error_code=None,
+        )
+
+    assert exc.value.code == "EXACT_ACTIVE_CREDENTIAL_UPDATE_REQUIRED"
+
+
+def test_exact_active_validation_update_rejects_non_active_row() -> None:
+    repo = _repo()
+    row_id = _insert(repo)
+    repo.mark_revoked(trading_account_credential_id=row_id, now_utc=_NOW)
+
+    with pytest.raises(CredentialValidationUpdateError) as exc:
+        repo.update_existing_active_credential_validation(
+            trading_account_credential_id=row_id,
+            trading_account_id=_ACCOUNT_ID,
+            venue=_VENUE,
+            validation_state="VALID_PRIVATE_READ",
+            validated_ts_utc=_NOW,
+            safe_error_code=None,
+        )
+
+    assert exc.value.code == "EXACT_ACTIVE_CREDENTIAL_UPDATE_REQUIRED"
+
+
+def test_exact_active_validation_update_remains_caller_transaction_owned() -> None:
+    repo = _repo()
+    row_id = _insert(repo)
+    repo._conn.commit()
+
+    repo.update_existing_active_credential_validation(
+        trading_account_credential_id=row_id,
+        trading_account_id=_ACCOUNT_ID,
+        venue=_VENUE,
+        validation_state="VALID_PRIVATE_READ",
+        validated_ts_utc=_NOW,
+        safe_error_code=None,
+    )
+    repo._conn.rollback()
+
+    row = repo._fetchone(
+        "SELECT validation_state, validated_ts_utc "
+        "FROM trading_account_credential WHERE trading_account_credential_id = %s",
+        (row_id,),
+    )
+    assert row is not None
+    assert row["validation_state"] == "UNVALIDATED"
+    assert row["validated_ts_utc"] is None
 
 
 # ---------------------------------------------------------------------------

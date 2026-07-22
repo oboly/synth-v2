@@ -199,6 +199,66 @@ def resolve_private_read_credential(
     account_code: str | None = None,
     profile_code: str | None = None,
 ) -> tuple[AccountRuntimeIdentity, PrivateReadCredential]:
+    """Resolve only an already validated runtime credential.
+
+    Runtime callers intentionally retain both fail-closed gates: a validated
+    state and a non-null validation timestamp are required before static
+    envelope verification or client construction can continue.
+    """
+    return _resolve_existing_private_read_credential(
+        conn,
+        master_key_bytes=master_key_bytes,
+        venue=venue,
+        trading_account_id=trading_account_id,
+        account_code=account_code,
+        profile_code=profile_code,
+        require_validated=True,
+        require_validation_timestamp=True,
+        require_exactly_one_active_credential=False,
+    )
+
+
+def resolve_existing_private_read_credential_for_revalidation(
+    conn: Any,
+    *,
+    master_key_bytes: bytes,
+    venue: str = DEFAULT_PRIVATE_READ_VENUE,
+    trading_account_id: int | None = None,
+    account_code: str | None = None,
+    profile_code: str | None = None,
+) -> tuple[AccountRuntimeIdentity, PrivateReadCredential]:
+    """Statically verify an existing binding before broker revalidation.
+
+    This entrypoint relaxes only the two fields that the revalidation workflow
+    is responsible for repairing. It still requires the exact account binding,
+    ACTIVE db_encrypted READ_ONLY_PRIVATE metadata, envelope/account/venue
+    alignment, decryption, and constant-time fingerprint verification.
+    """
+    return _resolve_existing_private_read_credential(
+        conn,
+        master_key_bytes=master_key_bytes,
+        venue=venue,
+        trading_account_id=trading_account_id,
+        account_code=account_code,
+        profile_code=profile_code,
+        require_validated=False,
+        require_validation_timestamp=False,
+        require_exactly_one_active_credential=True,
+    )
+
+
+def _resolve_existing_private_read_credential(
+    conn: Any,
+    *,
+    master_key_bytes: bytes,
+    venue: str,
+    trading_account_id: int | None,
+    account_code: str | None,
+    profile_code: str | None,
+    require_validated: bool,
+    require_validation_timestamp: bool,
+    require_exactly_one_active_credential: bool,
+) -> tuple[AccountRuntimeIdentity, PrivateReadCredential]:
     identity = resolve_account_identity(
         conn,
         venue=venue,
@@ -211,13 +271,25 @@ def resolve_private_read_credential(
         trading_account_id=identity.trading_account_id,
         venue=identity.venue,
     )
+    if require_exactly_one_active_credential:
+        active_count = sum(
+            row.get("credential_status") == "ACTIVE" for row in metadata_rows
+        )
+        if active_count != 1:
+            raise PrivateReadCredentialResolutionError(
+                "EXACTLY_ONE_ACTIVE_CREDENTIAL_REQUIRED",
+                (
+                    f"trading_account_id={identity.trading_account_id} "
+                    f"venue={identity.venue!r} active_count={active_count}"
+                ),
+            )
     try:
         profile = validate_credential_binding(
             metadata_rows,
             trading_account_id=identity.trading_account_id,
             venue=identity.venue,
             required_permission_scope=PERMISSION_SCOPE_READ_ONLY_PRIVATE,
-            require_validated=True,
+            require_validated=require_validated,
             allow_legacy_source=False,
         )
     except CredentialBindingValidationError as exc:
@@ -225,7 +297,7 @@ def resolve_private_read_credential(
             exc.code,
             "credential binding validation failed",
         ) from None
-    if profile.validated_ts_utc is None:
+    if require_validation_timestamp and profile.validated_ts_utc is None:
         raise PrivateReadCredentialResolutionError(
             "CREDENTIAL_VALIDATION_TIMESTAMP_MISSING",
             "validated credential must have validated_ts_utc",

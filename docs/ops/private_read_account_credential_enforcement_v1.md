@@ -108,6 +108,84 @@ account/profile runner mappings explicit
 account-refresh timer contained until host acceptance passes
 ```
 
+## Existing encrypted credential revalidation
+
+Bindings created before strict runtime enforcement may be structurally correct
+but unusable because `validation_state=UNVALIDATED`, or because a previously
+validated row has no `validated_ts_utc`. Runtime callers continue to reject
+both states. They must not infer validity or fill a timestamp without a real
+private-read validation.
+
+The canonical repair command reuses the existing exact account binding,
+encrypted envelope, and host-local master key:
+
+```bash
+python -m src.account_provisioning.run_revalidate_existing_private_read_credential_v1 \
+  --profile-code joost
+```
+
+Exactly one of `--trading-account-id`, `--account-code`, or `--profile-code` is
+required. The only supported venue is `bitvavo`. Before any exchange call the
+command verifies the ACTIVE `db_encrypted` `READ_ONLY_PRIVATE` binding,
+read-only capability flags, credential kind, encryption algorithm, key
+version, envelope schema/account/venue metadata, decryption, and the
+constant-time credential fingerprint comparison.
+
+Required host-local environment gates are:
+
+```text
+SYNTH_ACCOUNT_CREDENTIAL_MASTER_KEY=<host-local encrypted-credential master key>
+SYNTH_BROKER_PRIVATE_READ_PERMISSION=I_UNDERSTAND_THIS_READS_PRIVATE_ACCOUNT_DATA
+```
+
+The command uses `RealBitvavoCredentialValidator`, which performs `get_balance`
+and `get_open_orders` with the exact decrypted account credential. It never
+uses repository-global Bitvavo credentials and never constructs a
+trade-capable client.
+
+Persistence semantics are transaction-owned by the revalidation service:
+
+```text
+successful private-read validation
+  -> validation_state=VALID_PRIVATE_READ
+  -> validated_ts_utc=current UTC
+  -> last_validation_error_code=NULL
+  -> commit exact ACTIVE credential row
+
+definitive credential/read/order-visibility permission failure
+  -> validation_state=INVALID_CREDENTIALS
+  -> validated_ts_utc=NULL
+  -> last_validation_error_code=<safe validator code>
+  -> commit exact ACTIVE credential row
+
+missing permission gate, network failure, or server failure
+  -> result=BLOCKED
+  -> safe_error_code=VALIDATION_UNAVAILABLE
+  -> database mutation=0
+  -> rollback; preserve the existing row
+```
+
+The update predicate includes credential ID, trading-account ID, venue, and
+`credential_status=ACTIVE`, and exactly one affected row is required. Any
+structural failure, ambiguous identity, envelope mismatch, fingerprint
+mismatch, or persistence failure rolls back. Output is nonsecret: plaintext
+keys/secrets, encrypted envelopes, master keys, and fingerprints are never
+printed or included in result/exception representations.
+
+Production recovery sequence is deliberately one account at a time:
+
+1. keep `synth-linked-profile-runtime-refresh.timer` inactive;
+2. run the canonical command for Joost and require `result=SUCCESS`;
+3. run the canonical command for Hugo and require `result=SUCCESS`;
+4. independently verify both bindings through the strict runtime resolver;
+5. resume the linked-profile dashboard restoration from its persisted-price
+   freshness gate.
+
+This repository change does not claim either production revalidation was run.
+The command authorizes authenticated private reads only. It grants no execution,
+broker-write, order-submission, cancellation, live-trading, or withdrawal
+permission.
+
 Rollback requires stopping or keeping contained all affected timers, restoring
 the previous known-good application SHA, and confirming no private-read runner
 remains active. Credential rows and encrypted envelopes must not be deleted or

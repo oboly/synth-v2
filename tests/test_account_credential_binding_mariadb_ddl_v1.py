@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -516,6 +517,88 @@ def test_account_credential_binding_migration_valid_rows_and_rerun_in_mariadb() 
                     ("5" * 64,),
                 )
             conn.rollback()
+    finally:
+        conn.close()
+        _cleanup_temp_db(temp_db)
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_MARIADB_DDL_TEST") != "1",
+    reason="Set RUN_MARIADB_DDL_TEST=1 to validate repository updates in a disposable schema.",
+)
+def test_existing_validation_update_matches_sqlite_contract_in_mariadb() -> None:
+    from src.account_provisioning.credential_repository_v1 import (
+        CredentialRepository,
+        CredentialValidationUpdateError,
+    )
+    from src.common.db import get_connection
+
+    temp_db = _temp_db_name("revalidation_update")
+    _create_database(temp_db)
+    conn = get_connection(database=temp_db)
+    try:
+        _apply_credential_base_chain(conn)
+        _apply_migration(conn, BINDING_MIGRATION)
+        with conn.cursor() as cur:
+            _insert_account(cur, 1, "bitvavo_revalidation")
+            _insert_credential(
+                cur,
+                credential_id=101,
+                account_id=1,
+                status="ACTIVE",
+                fingerprint="a" * 64,
+                validation_state="UNVALIDATED",
+            )
+        conn.commit()
+
+        repo = CredentialRepository(conn)
+        affected = repo.update_existing_active_credential_validation(
+            trading_account_credential_id=101,
+            trading_account_id=1,
+            venue="bitvavo",
+            validation_state="VALID_PRIVATE_READ",
+            validated_ts_utc=datetime(2026, 7, 22, 12, 0, 0, tzinfo=UTC),
+            safe_error_code=None,
+        )
+        assert affected == 1
+        conn.commit()
+
+        with pytest.raises(CredentialValidationUpdateError) as exc:
+            repo.update_existing_active_credential_validation(
+                trading_account_credential_id=101,
+                trading_account_id=2,
+                venue="bitvavo",
+                validation_state="INVALID_CREDENTIALS",
+                validated_ts_utc=None,
+                safe_error_code="INVALID_CREDENTIALS_OR_READ_PERMISSION",
+            )
+        assert exc.value.code == "EXACT_ACTIVE_CREDENTIAL_UPDATE_REQUIRED"
+        conn.rollback()
+
+        repo.update_existing_active_credential_validation(
+            trading_account_credential_id=101,
+            trading_account_id=1,
+            venue="bitvavo",
+            validation_state="INVALID_CREDENTIALS",
+            validated_ts_utc=None,
+            safe_error_code="INVALID_CREDENTIALS_OR_READ_PERMISSION",
+        )
+        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT validation_state, validated_ts_utc,
+                       last_validation_error_code
+                FROM trading_account_credential
+                WHERE trading_account_credential_id = 101
+                """
+            )
+            row = cur.fetchone()
+        assert row["validation_state"] == "INVALID_CREDENTIALS"
+        assert row["validated_ts_utc"] is None
+        assert row["last_validation_error_code"] == (
+            "INVALID_CREDENTIALS_OR_READ_PERMISSION"
+        )
     finally:
         conn.close()
         _cleanup_temp_db(temp_db)

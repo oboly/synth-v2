@@ -71,6 +71,7 @@ class RealBitvavoCredentialValidator:
                 success=False,
                 validation_state=_VALIDATION_UNAVAILABLE,
                 safe_error_code="VALIDATION_UNAVAILABLE",
+                broker_private_calls=0,
             )
 
         client = BitvavoClient.for_private_read(
@@ -86,6 +87,7 @@ class RealBitvavoCredentialValidator:
                 success=False,
                 validation_state=_VALIDATION_UNAVAILABLE,
                 safe_error_code="VALIDATION_UNAVAILABLE",
+                broker_private_calls=1,
             )
         except Exception as exc:
             status_code = _http_status_from_exception(exc)
@@ -94,11 +96,13 @@ class RealBitvavoCredentialValidator:
                     success=False,
                     validation_state=_INVALID_CREDENTIALS,
                     safe_error_code="INVALID_CREDENTIALS_OR_READ_PERMISSION",
+                    broker_private_calls=1,
                 )
             return CredentialValidationResult(
                 success=False,
                 validation_state=_VALIDATION_UNAVAILABLE,
                 safe_error_code="VALIDATION_UNAVAILABLE",
+                broker_private_calls=1,
             )
 
         # Step 2: open orders — proves Trade permission.
@@ -109,6 +113,7 @@ class RealBitvavoCredentialValidator:
                 success=False,
                 validation_state=_VALIDATION_UNAVAILABLE,
                 safe_error_code="VALIDATION_UNAVAILABLE",
+                broker_private_calls=2,
             )
         except Exception as exc:
             status_code = _http_status_from_exception(exc)
@@ -117,17 +122,20 @@ class RealBitvavoCredentialValidator:
                     success=False,
                     validation_state=_INVALID_CREDENTIALS,
                     safe_error_code="TRADE_PERMISSION_REQUIRED",
+                    broker_private_calls=2,
                 )
             return CredentialValidationResult(
                 success=False,
                 validation_state=_VALIDATION_UNAVAILABLE,
                 safe_error_code="VALIDATION_UNAVAILABLE",
+                broker_private_calls=2,
             )
 
         return CredentialValidationResult(
             success=True,
             validation_state=_VALID_PRIVATE_READ,
             capabilities=["read_balance", "read_orders"],
+            broker_private_calls=2,
         )
 
 
