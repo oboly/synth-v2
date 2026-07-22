@@ -103,7 +103,7 @@ exactly_one_authorized_active_owner_required_when_lifecycle_active=true
 unassigned_capability_must_have_zero_authorized_owners=true
 historical_or_observed_runtime_state_does_not_grant_authorization=true
 acceptance_does_not_grant_production_authorization=true
-authorized_inactive_owner_requires_acceptance_and_production_decision_evidence=true
+production_authorized_lifecycle_requires_acceptance_and_production_decision_evidence=true
 ```
 
 `UNASSIGNED` means no canonical production authorization. It does not mean no
@@ -130,14 +130,18 @@ timer is installed or running on a host.
 
 - exactly one `production_runtime_owner`
 - `production_authorization_status=AUTHORIZED`
+- `acceptance_status=ACCEPTED` with structured acceptance evidence
+- `acceptance_host` and `selected_host` equal `production_runtime_owner`
 - separate production-decision evidence recorded
-- timer proven inactive before activation
+- no authorized active runtime is observed before activation
 
 `ACTIVE`:
 
 - exactly one `production_runtime_owner`
 - `production_authorization_status=AUTHORIZED`
-- expected runtime observed active
+- `acceptance_status=ACCEPTED` with structured acceptance evidence
+- `acceptance_host` and `selected_host` equal `production_runtime_owner`
+- the authorized runtime for the exact `production_runtime_owner` is observed active
 - at most one authorized active owner for the capability
 
 `SUPERSEDED`:

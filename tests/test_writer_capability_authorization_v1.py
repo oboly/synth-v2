@@ -9,10 +9,12 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from src.operations import validate_writer_capability_ownership_v1 as validator
+from src.operations import verify_writer_capability_authorization_v1 as guard
 from src.operations.writer_capability_authorization_v1 import (
     ExecutionMode,
     load_and_validate_authorization,
@@ -296,6 +298,56 @@ def test_production_mode_passes_only_with_exact_authorized_tuple(tmp_path: Path)
         expected_working_directory=os.path.realpath(str(repo)),
     )
     assert decision.allowed, decision.reasons
+
+
+def test_production_guard_rejects_active_registry_without_valid_acceptance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, head = _temp_git(tmp_path)
+    auth = _production_authorization(head)
+    auth["runtime_lifecycle"] = "ACTIVE"
+    auth_path = _write_json(tmp_path / "auth.json", auth)
+    registry_path = _authorized_registry_file(tmp_path, auth_path)
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    cap = _cap(registry, PRICE_CAP)
+    cap["runtime_lifecycle"] = "ACTIVE"
+    cap["acceptance_status"] = "UNASSIGNED"
+    cap["acceptance_host"] = "UNASSIGNED"
+    cap["acceptance_evidence"] = None
+    observation = cap["observed_runtime_state"][0]
+    observation.update(
+        {
+            "host": "devlap",
+            "enabled_at_observation": True,
+            "active_at_observation": True,
+            "current_state": "ACTIVE_OBSERVED",
+            "authorization_status": "AUTHORIZED",
+            "runtime_state_classification": "AUTHORIZED_RUNTIME_OBSERVED",
+        }
+    )
+    _write_json(registry_path, registry)
+    monkeypatch.setattr(guard.platform, "node", lambda: "devlap")
+
+    decision = guard.run_guard(
+        SimpleNamespace(
+            repo_root=REPO,
+            checkout_path=repo,
+            capability=PRICE_CAP,
+            service=PRICE_SERVICE,
+            registry=registry_path,
+            mode=ExecutionMode.PRODUCTION.value,
+            acceptance_permit=None,
+            allowed_untracked_path=[],
+        )
+    )
+
+    assert not decision.allowed
+    assert any(
+        "registry semantic invalid: capability[public_price_snapshot]: "
+        "lifecycle ACTIVE requires acceptance_status=ACCEPTED" in reason
+        for reason in decision.reasons
+    )
 
 
 def test_production_denied_when_host_mismatches(tmp_path: Path) -> None:

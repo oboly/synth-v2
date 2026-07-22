@@ -80,6 +80,10 @@ REQUIRED_INVARIANTS = {
     "historical_or_observed_runtime_state_does_not_grant_authorization",
     "acceptance_does_not_grant_production_authorization",
     "consumers_reporting_account_runtimes_own_zero_writer_capabilities",
+    "production_authorized_lifecycle_requires_acceptance_and_production_decision_evidence",
+}
+OBSOLETE_INVARIANTS = {
+    "exactly_one_production_owner_per_capability",
     "authorized_inactive_owner_requires_acceptance_and_production_decision_evidence",
 }
 AUTHORIZATION_GUARD_MODULE = "src.operations.verify_writer_capability_authorization_v1"
@@ -254,8 +258,9 @@ def validate_registry_payload(
         for key in REQUIRED_INVARIANTS:
             if invariants.get(key) is not True:
                 errors.append(f"registry.invariants.{key} must be true")
-        if "exactly_one_production_owner_per_capability" in invariants:
-            errors.append("obsolete invariant exactly_one_production_owner_per_capability is forbidden")
+        for key in sorted(OBSOLETE_INVARIANTS):
+            if key in invariants:
+                errors.append(f"obsolete invariant {key} is forbidden")
 
     host_ids = _enum_values(registry, "host_id")
     acceptance_statuses = _enum_values(registry, "acceptance_status")
@@ -375,6 +380,14 @@ def validate_registry_payload(
         owner = cap.get("production_runtime_owner")
         auth_status = cap.get("production_authorization_status")
         evidence = str(cap.get("production_decision_evidence") or "")
+        observed = cap.get("observed_runtime_state")
+        authorized_active_observations = [
+            item
+            for item in observed
+            if isinstance(item, dict)
+            and item.get("authorization_status") == "AUTHORIZED"
+            and item.get("current_state") == "ACTIVE_OBSERVED"
+        ] if isinstance(observed, list) else []
         if lifecycle in NO_AUTHORIZATION_LIFECYCLES:
             if owner != UNASSIGNED or auth_status == "AUTHORIZED":
                 errors.append(f"{label}: lifecycle {lifecycle} must have zero authorized production owners")
@@ -385,22 +398,27 @@ def validate_registry_payload(
                 errors.append(f"{label}: lifecycle {lifecycle} requires production_authorization_status=AUTHORIZED")
             if not evidence.strip():
                 errors.append(f"{label}: lifecycle {lifecycle} requires production_decision_evidence")
-        if lifecycle == "AUTHORIZED_INACTIVE":
             if cap.get("acceptance_status") != "ACCEPTED":
-                errors.append(f"{label}: AUTHORIZED_INACTIVE requires acceptance_status=ACCEPTED")
+                errors.append(f"{label}: lifecycle {lifecycle} requires acceptance_status=ACCEPTED")
+            if not isinstance(acceptance_evidence, dict):
+                errors.append(f"{label}: lifecycle {lifecycle} requires structured acceptance_evidence")
             if cap.get("acceptance_host") != owner:
-                errors.append(f"{label}: AUTHORIZED_INACTIVE acceptance_host must equal production_runtime_owner")
+                errors.append(
+                    f"{label}: lifecycle {lifecycle} requires acceptance_host=production_runtime_owner"
+                )
             if cap.get("selected_host") != owner:
-                errors.append(f"{label}: AUTHORIZED_INACTIVE selected_host must equal production_runtime_owner")
+                errors.append(
+                    f"{label}: lifecycle {lifecycle} requires selected_host=production_runtime_owner"
+                )
+        if lifecycle == "AUTHORIZED_INACTIVE":
+            if authorized_active_observations:
+                errors.append(f"{label}: AUTHORIZED_INACTIVE requires no authorized observed active runtime")
         if lifecycle == "ACTIVE":
-            observed = cap.get("observed_runtime_state")
-            if not isinstance(observed, list) or not any(
-                item.get("authorization_status") == "AUTHORIZED"
-                and item.get("current_state") == "ACTIVE_OBSERVED"
-                for item in observed
-                if isinstance(item, dict)
-            ):
-                errors.append(f"{label}: ACTIVE requires an authorized observed active runtime")
+            if not any(item.get("host") == owner for item in authorized_active_observations):
+                errors.append(
+                    f"{label}: ACTIVE requires an authorized observed active runtime "
+                    "for production_runtime_owner"
+                )
 
         for rel_field in ("wrapper", "service", "timer"):
             rel = cap.get(rel_field)

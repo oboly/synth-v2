@@ -11,7 +11,7 @@
     "historical_or_observed_runtime_state_does_not_grant_authorization": true,
     "acceptance_does_not_grant_production_authorization": true,
     "consumers_reporting_account_runtimes_own_zero_writer_capabilities": true,
-    "authorized_inactive_owner_requires_acceptance_and_production_decision_evidence": true
+    "production_authorized_lifecycle_requires_acceptance_and_production_decision_evidence": true
   },
   "enums": {
     "host_id": ["devlap", "gurkdb", "odroid", "UNASSIGNED"],
