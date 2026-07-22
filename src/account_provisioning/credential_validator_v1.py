@@ -26,6 +26,7 @@ class CredentialValidationResult:
     validation_state: str
     capabilities: list[str] = field(default_factory=list)
     safe_error_code: str | None = None
+    broker_private_calls: int = 0
 
 
 class BitvavoCredentialValidator(Protocol):

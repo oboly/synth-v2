@@ -11,6 +11,27 @@ from src.account_provisioning.contracts_v1 import (
 )
 
 CREDENTIAL_KIND_API_KEY_SECRET = "API_KEY_SECRET"
+DEFINITIVE_PRIVATE_READ_VALIDATION_ERROR_CODES = frozenset(
+    {
+        "INVALID_CREDENTIALS",
+        "INVALID_CREDENTIALS_OR_READ_PERMISSION",
+        "TRADE_PERMISSION_REQUIRED",
+    }
+)
+_REVALIDATION_PERSISTENCE_STATES = frozenset(
+    {
+        CredentialValidationState.VALID_PRIVATE_READ.value,
+        CredentialValidationState.INVALID_CREDENTIALS.value,
+    }
+)
+
+
+class CredentialValidationUpdateError(RuntimeError):
+    """Fail-closed exact-row validation update error."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
 
 
 def _utc_text(value: datetime) -> str:
@@ -30,6 +51,26 @@ def _parse_opt_datetime(value: object) -> datetime | None:
     if isinstance(value, datetime):
         return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
     return datetime.fromisoformat(str(value)).replace(tzinfo=UTC)
+
+
+def _validation_update_values(
+    *,
+    validation_state: str,
+    validated_ts_utc: datetime | None,
+    safe_error_code: str | None,
+) -> tuple[str, str | None, str | None]:
+    if validation_state not in _REVALIDATION_PERSISTENCE_STATES:
+        raise CredentialValidationUpdateError("UNSUPPORTED_VALIDATION_STATE")
+    if validation_state == CredentialValidationState.VALID_PRIVATE_READ.value:
+        if validated_ts_utc is None or safe_error_code is not None:
+            raise CredentialValidationUpdateError("INVALID_SUCCESS_VALIDATION_UPDATE")
+        return validation_state, _utc_text(validated_ts_utc), None
+    if (
+        validated_ts_utc is not None
+        or safe_error_code not in DEFINITIVE_PRIVATE_READ_VALIDATION_ERROR_CODES
+    ):
+        raise CredentialValidationUpdateError("INVALID_FAILURE_VALIDATION_UPDATE")
+    return validation_state, None, safe_error_code
 
 
 def _row_to_stored(row: Any) -> StoredAccountCredential:
@@ -174,6 +215,55 @@ class CredentialRepository:
                 f"MULTIPLE_ACTIVE_CREDENTIALS: trading_account_id={trading_account_id} venue={venue!r}"
             )
         return _row_to_stored(rows[0])
+
+    def update_existing_active_credential_validation(
+        self,
+        *,
+        trading_account_credential_id: int,
+        trading_account_id: int,
+        venue: str,
+        validation_state: str,
+        validated_ts_utc: datetime | None,
+        safe_error_code: str | None,
+    ) -> int:
+        """Update one exact ACTIVE credential row without committing.
+
+        The caller owns commit/rollback. A missing or non-exact match raises so
+        the transaction-owning service can roll back instead of widening the
+        predicate or inferring a different credential.
+        """
+        state, validated_text, error_code = _validation_update_values(
+            validation_state=validation_state,
+            validated_ts_utc=validated_ts_utc,
+            safe_error_code=safe_error_code,
+        )
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE trading_account_credential
+                SET validation_state = %s,
+                    validated_ts_utc = %s,
+                    last_validation_error_code = %s
+                WHERE trading_account_credential_id = %s
+                  AND trading_account_id = %s
+                  AND venue = %s
+                  AND credential_status = 'ACTIVE'
+                """,
+                (
+                    state,
+                    validated_text,
+                    error_code,
+                    trading_account_credential_id,
+                    trading_account_id,
+                    venue,
+                ),
+            )
+            affected = int(cur.rowcount)
+        if affected != 1:
+            raise CredentialValidationUpdateError(
+                "EXACT_ACTIVE_CREDENTIAL_UPDATE_REQUIRED"
+            )
+        return affected
 
     def mark_revoked(
         self,
@@ -394,6 +484,49 @@ class SqliteCredentialRepository:
                 f"MULTIPLE_ACTIVE_CREDENTIALS: trading_account_id={trading_account_id} venue={venue!r}"
             )
         return _row_to_stored(rows[0])
+
+    def update_existing_active_credential_validation(
+        self,
+        *,
+        trading_account_credential_id: int,
+        trading_account_id: int,
+        venue: str,
+        validation_state: str,
+        validated_ts_utc: datetime | None,
+        safe_error_code: str | None,
+    ) -> int:
+        """SQLite equivalent of the caller-owned exact ACTIVE-row update."""
+        state, validated_text, error_code = _validation_update_values(
+            validation_state=validation_state,
+            validated_ts_utc=validated_ts_utc,
+            safe_error_code=safe_error_code,
+        )
+        cur = self._conn.execute(
+            """
+            UPDATE trading_account_credential
+            SET validation_state = %s,
+                validated_ts_utc = %s,
+                last_validation_error_code = %s
+            WHERE trading_account_credential_id = %s
+              AND trading_account_id = %s
+              AND venue = %s
+              AND credential_status = 'ACTIVE'
+            """.replace("%s", "?"),
+            (
+                state,
+                validated_text,
+                error_code,
+                trading_account_credential_id,
+                trading_account_id,
+                venue,
+            ),
+        )
+        affected = int(cur.rowcount)
+        if affected != 1:
+            raise CredentialValidationUpdateError(
+                "EXACT_ACTIVE_CREDENTIAL_UPDATE_REQUIRED"
+            )
+        return affected
 
     def mark_revoked(
         self,

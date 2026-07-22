@@ -55,6 +55,7 @@ def test_blocked_without_permission_env(monkeypatch=None) -> None:
         assert result.success is False
         assert result.safe_error_code == "VALIDATION_UNAVAILABLE"
         assert result.validation_state == "VALIDATION_UNAVAILABLE"
+        assert result.broker_private_calls == 0
     finally:
         if env_backup is not None:
             os.environ[BROKER_PRIVATE_READ_PERMISSION_ENV] = env_backup
@@ -89,6 +90,7 @@ def test_valid_credentials_return_valid_private_read() -> None:
             result = RealBitvavoCredentialValidator().validate(_credential())
         assert result.success is True
         assert result.validation_state == "VALID_PRIVATE_READ"
+        assert result.broker_private_calls == 2
         assert "read_balance" in result.capabilities
         assert "read_orders" in result.capabilities
     finally:
@@ -131,6 +133,7 @@ def test_balance_http_401_returns_invalid_credentials_or_read_permission() -> No
         assert result.success is False
         assert result.validation_state == "INVALID_CREDENTIALS"
         assert result.safe_error_code == "INVALID_CREDENTIALS_OR_READ_PERMISSION"
+        assert result.broker_private_calls == 1
     finally:
         os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
 
@@ -160,6 +163,7 @@ def test_orders_http_401_returns_trade_permission_required() -> None:
         assert result.success is False
         assert result.validation_state == "INVALID_CREDENTIALS"
         assert result.safe_error_code == "TRADE_PERMISSION_REQUIRED"
+        assert result.broker_private_calls == 2
     finally:
         os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
 
@@ -188,6 +192,7 @@ def test_balance_http_500_returns_unavailable() -> None:
             result = RealBitvavoCredentialValidator().validate(_credential())
         assert result.success is False
         assert result.safe_error_code == "VALIDATION_UNAVAILABLE"
+        assert result.broker_private_calls == 1
     finally:
         os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
 
@@ -200,6 +205,7 @@ def test_orders_http_500_returns_unavailable() -> None:
             result = RealBitvavoCredentialValidator().validate(_credential())
         assert result.success is False
         assert result.safe_error_code == "VALIDATION_UNAVAILABLE"
+        assert result.broker_private_calls == 2
     finally:
         os.environ.pop(BROKER_PRIVATE_READ_PERMISSION_ENV, None)
 
