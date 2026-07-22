@@ -434,7 +434,6 @@ def main() -> int:
         print(f"trading_account_id={trading_account_id} venue={args.venue}")
         print(f"credential_source={resolved.profile.credential_source}")
         print(f"credential_profile_id={resolved.profile.trading_account_credential_id}")
-        print(f"credential_fingerprint={resolved.profile.credential_fingerprint}")
         print(f"permission_scope={resolved.profile.permission_scope}")
         print(f"validation_state={resolved.profile.validation_state}")
         print("[INFO] private read-only; no broker writes; no order submission")

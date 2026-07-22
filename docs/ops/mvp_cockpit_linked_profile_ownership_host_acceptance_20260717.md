@@ -105,3 +105,47 @@ native SHORT snapshot publish = 1  (synth-4h-market-chain.timer)
 - **P2-C multi-cycle acceptance:** OPEN — observe several consecutive scheduled
   `synth-linked-profile-runtime-refresh.timer` cycles with no overlap, stable
   freshness, and bounded disk/log growth. Not claimed from the two manual runs.
+
+## Dashboard recovery evidence (2026-07-22)
+
+The linked-profile dashboard recovery reached a successful controlled manual
+cycle on Odroid at deployed SHA
+`1f2af91d686154ffa77e8059d256cda7009c74aa`. This section records the observed
+evidence without claiming linked-profile timer activation:
+
+```text
+deployed SHA=1f2af91d686154ffa77e8059d256cda7009c74aa
+Joost credential revalidation=SUCCESS
+Hugo credential revalidation=SUCCESS
+strict resolver acceptance=PASS for both
+manual orchestrator overall_result=ok
+profiles=2
+account refresh=2/0
+wallet render=2/0
+Profit Plan render=2/0
+public price freshness=PASS
+dashboard artifacts advanced for both profiles
+cross-profile artifact isolation=PASS
+unauthenticated protected HTTP requests=401 as expected
+authenticated application-session HTTP proof=not performed
+linked-profile timer remained inactive
+legacy duplicate owners=0
+Odroid public writers=0
+```
+
+An HTTP 401 without Basic Auth and a profile-owned application session proves
+that the protected route does not allow anonymous access. Authenticated
+application-session HTTP verification is a separate web-auth acceptance check.
+It is not required to prove the account/render scheduler itself when:
+
+- the full runner cycle succeeds;
+- rendered artifacts parse;
+- account/profile isolation is verified;
+- protected routes reject anonymous requests.
+
+The sole remaining timer-activation blocker observed in that cycle was the
+wallet-refresh summary emitting persistent `credential_fingerprint` metadata
+into the linked-profile orchestrator journal. The logging-redaction repair
+removes only that operational output. It does not change internal constant-time
+fingerprint verification, credential resolution, broker calls, snapshot writes,
+rendering, authentication, or systemd ownership.

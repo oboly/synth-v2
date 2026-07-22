@@ -25,16 +25,27 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
+
+import pytest
+
 _ROOT = Path(__file__).parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+import src.account.run_account_wallet_refresh_v1 as wallet_refresh_module
 from src.account.account_snapshot_models_v1 import WalletBalanceRow, WalletOpenOrderRow
+from src.account.private_read_credential_resolver_v1 import (
+    AccountRuntimeIdentity,
+    PrivateReadClientResolution,
+)
 from src.account.run_account_wallet_refresh_v1 import (
     normalize_balance_rows,
     normalize_order_rows,
     write_balance_snapshot,
     write_open_order_snapshot,
+)
+from src.account_provisioning.credential_binding_contract_v1 import (
+    CredentialBindingProfile,
 )
 from src.account_provisioning.account_credential_loader_v1 import load_account_credential
 from src.account_provisioning.contracts_v1 import PlainBitvavoCredential
@@ -500,6 +511,144 @@ def test_wallet_refresh_profile_env_is_not_automatic_fallback() -> None:
     src = Path("src/account/run_account_wallet_refresh_v1.py").read_text()
     assert "LEGACY_PROFILE_ENV_DEPRECATED" in src
     assert "load_profile_credentials" not in src
+
+
+def test_wallet_refresh_summary_redacts_all_credential_material(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fingerprint_sentinel = "FINGERPRINT_SENTINEL_9b6e5f"
+    api_key_sentinel = "API_KEY_SENTINEL_7a1d"
+    api_secret_sentinel = "API_SECRET_SENTINEL_4c2f"
+    envelope_sentinel = "ENCRYPTED_ENVELOPE_SENTINEL_1e8a"
+    master_key_sentinel = "MASTER_KEY_SENTINEL_6d3b"
+
+    class FakePrivateReadClient:
+        api_key = api_key_sentinel
+        api_secret = api_secret_sentinel
+        encrypted_envelope = envelope_sentinel
+        master_key = master_key_sentinel
+
+        def get_balance(self) -> list[dict[str, str]]:
+            return [{"symbol": "EUR", "available": "100", "inOrder": "0"}]
+
+        def get_open_orders(self) -> list[dict[str, str]]:
+            return []
+
+    class FakeConnection:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    profile = CredentialBindingProfile(
+        trading_account_id=3,
+        account_code="bitvavo_joost_read",
+        venue="bitvavo",
+        trading_account_enabled=True,
+        live_trading_enabled=False,
+        trading_account_credential_id=17,
+        credential_source="db_encrypted",
+        credential_status="ACTIVE",
+        permission_scope="READ_ONLY_PRIVATE",
+        allowed_private_read=True,
+        allowed_order_write=False,
+        allowed_withdrawal=False,
+        credential_fingerprint=fingerprint_sentinel,
+        key_version="v1",
+        validation_state="VALID_PRIVATE_READ",
+        validated_ts_utc=_NOW,
+        last_validation_error_code=None,
+    )
+    resolution = PrivateReadClientResolution(
+        identity=AccountRuntimeIdentity(
+            trading_account_id=3,
+            account_code="bitvavo_joost_read",
+            venue="bitvavo",
+            account_mode="paper",
+            enabled=True,
+            live_trading_enabled=False,
+            profile_code="joost",
+        ),
+        profile=profile,
+        client=FakePrivateReadClient(),
+    )
+    connection = FakeConnection()
+    monkeypatch.setattr(wallet_refresh_module, "get_db_connection", lambda: connection)
+    monkeypatch.setattr(
+        wallet_refresh_module,
+        "resolve_private_read_bitvavo_client_from_env",
+        lambda *_args, **_kwargs: resolution,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_account_wallet_refresh_v1",
+            "--account-profile",
+            "joost",
+            "--venue",
+            "bitvavo",
+            "--output",
+            "summary",
+        ],
+    )
+
+    assert wallet_refresh_module.main() == 0
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+
+    assert captured.err == ""
+    for sentinel in (
+        fingerprint_sentinel,
+        api_key_sentinel,
+        api_secret_sentinel,
+        envelope_sentinel,
+        master_key_sentinel,
+    ):
+        assert sentinel not in captured.out
+        assert sentinel not in captured.err
+    assert "credential_fingerprint" not in captured.out
+    assert "credential_fingerprint" not in captured.err
+    for expected in (
+        "profile=joost account_code=bitvavo_joost_read",
+        "trading_account_id=3 venue=bitvavo",
+        "credential_source=db_encrypted",
+        "credential_profile_id=17",
+        "permission_scope=READ_ONLY_PRIVATE",
+        "validation_state=VALID_PRIVATE_READ",
+        "balance_count=1",
+        "order_count=0",
+        "broker_private_calls=2",
+        "broker_writes=0",
+        "order_submission=0",
+        "executor=none",
+    ):
+        assert expected in combined
+    assert connection.closed is True
+
+
+def test_scheduled_linked_profile_shell_chain_does_not_print_credentials() -> None:
+    shell_paths = (
+        Path("scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh"),
+        Path("scripts/odroid/run_account_wallet_refresh_once.sh"),
+    )
+    output_lines: list[str] = []
+    for path in shell_paths:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped.startswith(("echo ", "printf ")):
+                output_lines.append(f"{path}:{stripped}")
+
+    scheduled_output_source = "\n".join(output_lines).lower()
+    for forbidden in (
+        "credential_fingerprint",
+        "encrypted_envelope",
+        "api_key",
+        "api_secret",
+    ):
+        assert forbidden not in scheduled_output_source
+    assert "${synth_account_credential_master_key" not in scheduled_output_source
 
 
 # ---------------------------------------------------------------------------
