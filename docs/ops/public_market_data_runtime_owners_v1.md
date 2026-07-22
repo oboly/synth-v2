@@ -2,9 +2,10 @@
 
 ## Status
 
-Repository implementation only. No host deployment, timer activation, writer
-invocation, database mutation, operational acceptance, or systemctl mutation is
-claimed here.
+`public_price_snapshot` completed exact-commit gurkDB preflight, controlled
+acceptance, and inactive host preparation on 2026-07-21. Its timer remains
+disabled/inactive and its production authorization file remains absent pending
+independent review and merge. The other three capabilities are unchanged.
 
 The authoritative machine-readable ownership source is
 `deploy/ownership/writer_capability_ownership_v1.json`.
@@ -12,7 +13,7 @@ The authoritative machine-readable ownership source is
 ## Current Canonical Ownership
 
 ```text
-public_price_snapshot.production_runtime_owner=UNASSIGNED
+public_price_snapshot.production_runtime_owner=gurkdb
 public_candle_freshness.production_runtime_owner=UNASSIGNED
 market_rotation_pressure.production_runtime_owner=UNASSIGNED
 native_short_4h_chain.production_runtime_owner=UNASSIGNED
@@ -31,10 +32,13 @@ Containment requires a separately authorized host action.
 public_price_snapshot:
   candidate_host=gurkdb
   selected_host=gurkdb
-  acceptance_host=UNASSIGNED
-  acceptance_status=UNASSIGNED
-  runtime_lifecycle=SELECTED_PENDING_PREFLIGHT
-  observed_runtime_state=[]
+  acceptance_host=gurkdb
+  acceptance_status=ACCEPTED
+  production_runtime_owner=gurkdb
+  production_authorization_status=AUTHORIZED
+  runtime_lifecycle=AUTHORIZED_INACTIVE
+  observed_runtime_state=gurkdb timer installed/disabled/inactive,
+                         production authorization file absent
 
 public_candle_freshness:
   candidate_host=gurkdb
@@ -65,33 +69,33 @@ native_short_4h_chain:
   observed_runtime_state=[]
 ```
 
-## gurkDB Preflight Selection
+## gurkDB Public-Price Authorization and Remaining Selections
 
-`public_price_snapshot`, `public_candle_freshness`, and
-`market_rotation_pressure` are selected to gurkDB
-(`selected_host=gurkdb`, `runtime_lifecycle=SELECTED_PENDING_PREFLIGHT`).
+`public_price_snapshot` is accepted and separately authorized to gurkDB in
+`AUTHORIZED_INACTIVE`. `public_candle_freshness` and
+`market_rotation_pressure` remain selected for preflight only.
 
-This selection means only: selected for strict host preflight. It does not mean
-production owner, authorized runtime, accepted host, prepared host, deployed
-host, or active writer. Specifically:
+For the two remaining selected lanes, selection still means only strict host
+preflight; it is not production authorization. Specifically:
 
 ```text
-all three production_runtime_owner=UNASSIGNED
-all three production_authorization_status=UNASSIGNED
-no gurkDB host preparation has occurred
-no strict gurkDB preflight has occurred
-no production authorization exists
-no writer is deployed or active on gurkDB
+public_price_snapshot production_runtime_owner=gurkdb
+public_price_snapshot production_authorization_status=AUTHORIZED
+public_price_snapshot runtime_lifecycle=AUTHORIZED_INACTIVE
+public_price_snapshot production authorization file absent
+public_price_snapshot timer disabled/inactive
+public_candle_freshness production_runtime_owner=UNASSIGNED
+market_rotation_pressure production_runtime_owner=UNASSIGNED
 ```
 
-The devlap-bound committed units remain fail-closed candidate/historical
-artifacts. The devlap Rotation Pressure historical assignment remains
+The public-price committed unit is now bound to gurkDB. Other devlap-bound
+committed units remain fail-closed candidate/historical artifacts. The devlap
+Rotation Pressure historical assignment remains
 `SUPERSEDED`, while canonical
 `observed_runtime_state.current_state=UNVERIFIED`; this PR does not assert or
 record current host containment. Odroid remains a consumer/publisher host with
-zero writer capabilities. Strict gurkDB preflight (`python -m
-src.operations.run_host_preflight_v1 ... --strict`, see
-`docs/ops/writer_capability_host_ownership_contract_v1.md`) is the next gate.
+zero writer capabilities. The public-price acceptance and rollback evidence is
+in `docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md`.
 
 `native_short_4h_chain` is not selected and remains independently unresolved
 (`selected_host=UNASSIGNED`, `runtime_lifecycle=UNASSIGNED`).
@@ -144,24 +148,27 @@ local operational artifacts and are not committed by default. See
 
 ## Executable Artifacts
 
-The committed services under `deploy/systemd/` are devlap-bound candidate or
-historical artifacts. They are not host-neutral:
+The public-price service is explicitly gurkDB-bound:
 
 ```text
-ConditionHost=devlap
+ConditionHost=gurkdb
 User=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
 ExecStartPre=src.operations.verify_writer_capability_authorization_v1
 ```
+
+The other committed services remain devlap-bound candidate or historical
+artifacts; they are not authorized by the public-price decision.
 
 The mandatory `ExecStartPre` guard fails closed while a capability is
 `UNASSIGNED`, while the authorization file is absent, on the wrong hostname, on
 the wrong checkout commit, or for a lifecycle outside `AUTHORIZED_INACTIVE` and
 `ACTIVE`.
 
-Do not copy these units to another host with different users or paths. Do not
-create a gurkDB unit until gurkDB has been selected, accepted, contained, and
-authorized for a specific capability.
+Do not copy these units to another host with different users or paths. The
+gurkDB public-price timer must not be enabled before this ownership change is
+independently reviewed and merged and the exact-merge production authorization
+file is installed.
 
 Host-local locks still prevent manual/systemd overlap on one host:
 

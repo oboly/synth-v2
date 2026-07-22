@@ -17,15 +17,17 @@ market-data writer capability has at most one authorized active owner, and
 exactly one only when its lifecycle is `ACTIVE`. `UNASSIGNED` means no
 canonical production authorization; it does not prove no timer is installed or
 running. The retired "devlap sole public market-data writer host" claim does
-not apply; devlap is a candidate/acceptance host, and gurkDB is a preferred
-candidate, not a proven owner. The capability-level structural rules below are
-independent of which host is selected:
+not apply. gurkDB is the authorized-inactive owner for
+`public_price_snapshot`; devlap remains candidate/historical context for other
+capabilities. The capability-level structural rules below are independent of
+which host is selected:
 
 - at most one authorized active production owner per writer capability; no
   consumer, reporting, or account runtime may run a public market-data writer
   or repair path
 - the `public_price_snapshot` capability owns
-  `synth-market-price-snapshot-writer.timer`
+  `synth-market-price-snapshot-writer.timer` on gurkDB; it remains inactive
+  until guarded activation after merge
 - the `public_candle_freshness` capability owns
   `synth-market-candle-freshness-writer.timer`
 - native SHORT map evaluation, scope-status projection, and map-level status

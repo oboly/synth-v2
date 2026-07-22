@@ -1,6 +1,7 @@
 [Unit]
-Description=Synth public market-price snapshot writer timer (capability public-price-snapshot-writer)
+Description=Run Synth public market-price snapshot writer every 5 minutes (gurkDB)
 Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/writer_capability_host_ownership_contract_v1.md
+ConditionHost=gurkdb
 
 [Timer]
 OnCalendar=*-*-* *:00/5:00 UTC

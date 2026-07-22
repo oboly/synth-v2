@@ -673,9 +673,12 @@ docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md
 
 Strict ownership, in order:
 
-1. **Public market ingestion** — production owner currently `UNASSIGNED`.
-   The committed `scripts/run_market_price_snapshot_once.sh` service/timer
-   artifacts are devlap-bound candidates with a fail-closed authorization guard.
+1. **Public market ingestion** — `public_price_snapshot` production owner is
+   gurkDB in `AUTHORIZED_INACTIVE`. The committed
+   `scripts/run_market_price_snapshot_once.sh` service/timer artifacts are
+   gurkDB-bound with a fail-closed authorization guard. The timer remains
+   disabled/inactive pending independent review, merge, exact-merge production
+   authorization, and activation.
    Market-only, account-agnostic, public Bitvavo `GET /ticker/price` only.
    Odroid does not invoke this stage. See
    `docs/ops/public_market_data_runtime_owners_v1.md`.

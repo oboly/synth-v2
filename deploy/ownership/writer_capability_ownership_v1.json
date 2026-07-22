@@ -11,7 +11,7 @@
     "historical_or_observed_runtime_state_does_not_grant_authorization": true,
     "acceptance_does_not_grant_production_authorization": true,
     "consumers_reporting_account_runtimes_own_zero_writer_capabilities": true,
-    "all_production_runtime_owners_unassigned_by_this_correction": true
+    "production_authorized_lifecycle_requires_acceptance_and_production_decision_evidence": true
   },
   "enums": {
     "host_id": ["devlap", "gurkdb", "odroid", "UNASSIGNED"],
@@ -26,13 +26,16 @@
     "capability_kind": ["public_market_data_writer", "market_only_chain"]
   },
   "host_status": {
-    "gurkdb": "UNVERIFIED",
+    "gurkdb": "AUTHORIZED",
     "devlap": "UNVERIFIED",
     "odroid": "UNVERIFIED"
   },
   "candidate_topology": {
     "note": "Preferred direction only, not production authorization. Each role requires explicit host selection, read-only preflight, controlled acceptance, legacy-runtime inventory and containment, separate production authorization, activation, observation, and at-most-one-owner proof.",
-    "gurkdb": ["candidate host for light account-agnostic public market-data writers"],
+    "gurkdb": [
+      "authorized-inactive production owner for public_price_snapshot",
+      "candidate host for other light account-agnostic public market-data writers"
+    ],
     "odroid": ["candidate host for account runtimes, persisted-state consumers, dashboards, and publication"],
     "devlap": ["development host", "candidate acceptance host only", "historical Rotation Pressure runtime assignment SUPERSEDED"]
   },
@@ -48,7 +51,7 @@
       "timer_unit": "synth-market-price-snapshot-writer.timer",
       "committed_unit_binding": {
         "host_bound_candidate_artifact": true,
-        "condition_host": "devlap",
+        "condition_host": "gurkdb",
         "user": "gurk",
         "working_directory": "/home/gurk/projects/synth-v2"
       },
@@ -72,14 +75,34 @@
       "evaluated_separately": false,
       "candidate_host": "gurkdb",
       "selected_host": "gurkdb",
-      "acceptance_host": "UNASSIGNED",
-      "acceptance_status": "UNASSIGNED",
-      "acceptance_evidence": null,
-      "production_runtime_owner": "UNASSIGNED",
-      "production_authorization_status": "UNASSIGNED",
-      "runtime_lifecycle": "SELECTED_PENDING_PREFLIGHT",
-      "production_decision_evidence": "",
-      "observed_runtime_state": [],
+      "acceptance_host": "gurkdb",
+      "acceptance_status": "ACCEPTED",
+      "acceptance_evidence": {
+        "approval_reference": "Explicit user authorization for the gurkDB public_price_snapshot rollout on 2026-07-21",
+        "evidence_doc": "docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md",
+        "accepted_at_utc": "2026-07-21T21:34:21Z",
+        "scope": "Exact-commit strict preflight, two controlled public Bitvavo ticker writes, batch integrity, lock behavior, and rollback readiness on gurkDB"
+      },
+      "production_runtime_owner": "gurkdb",
+      "production_authorization_status": "AUTHORIZED",
+      "runtime_lifecycle": "AUTHORIZED_INACTIVE",
+      "production_decision_evidence": "docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md#production-decision-evidence",
+      "observed_runtime_state": [
+        {
+          "host": "gurkdb",
+          "unit": "synth-market-price-snapshot-writer.timer",
+          "unit_path": "deploy/systemd/synth-market-price-snapshot-writer.timer",
+          "installed_at_observation": true,
+          "enabled_at_observation": false,
+          "active_at_observation": false,
+          "observed_at_utc": "2026-07-21T22:30:53Z",
+          "observed_at_precision": "exact",
+          "current_state": "INACTIVE_VERIFIED",
+          "authorization_status": "UNASSIGNED",
+          "runtime_state_classification": "NONE_OBSERVED",
+          "evidence_source": "docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md#rollback-proof"
+        }
+      ],
       "historical_runtime_assignment": null
     },
     {
