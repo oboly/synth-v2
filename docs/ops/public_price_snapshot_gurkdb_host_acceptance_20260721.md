@@ -322,3 +322,38 @@ rerun the canonical production guard, enable/start only the gurkDB timer,
 observe a fresh scheduled cycle, and record the lifecycle transition to
 `ACTIVE` in a later PR. Only after public-price freshness is proven should the
 separate Odroid PR #127 deployment resume.
+
+<a id="scheduled-production-activation-proof-20260722"></a>
+
+## Scheduled production activation proof — 2026-07-22
+
+The gurkDB timer was activated only after PR #133 merged. Its scheduled service
+cycle completed successfully and established the observed `ACTIVE` lifecycle:
+
+```text
+deployed_commit=8fa3ea1ada89ebf6f0eb922db30872dcb8f6035d
+timer=synth-market-price-snapshot-writer.timer
+timer_enabled=true
+timer_active=true
+scheduled_cycle_started=2026-07-22T12:10:14Z
+scheduled_cycle_completed=2026-07-22T12:10:15Z
+service=synth-market-price-snapshot-writer.service
+service_result=success
+service_exit_code=0
+snapshot_rows=430
+snapshot_timestamp=2026-07-22T12:10:15.413056Z
+freshness_age_seconds=15.450
+freshness_result=PASS
+authorization_file_owner=root
+authorization_file_group=gurk
+authorization_file_mode=0640
+authorized_active_owner_count=1
+legacy_active_owner_count=0
+other_writer_activations=0
+private_exchange_calls=0
+broker_writes=0
+order_submission=0
+live_orders=0
+account_runtime_changes=0
+odroid_mutations=0
+```

@@ -368,11 +368,11 @@ def test_nonzero_with_relevant_synth_diagnostic_fails() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_ownership_registry_records_only_public_price_as_authorized_inactive() -> None:
+def test_ownership_registry_records_only_public_price_as_active() -> None:
     registry = json.loads(REGISTRY_PATH.read_text(encoding="utf-8"))
     caps = {c["capability_id"]: c for c in registry["capabilities"]}
     price = caps["public_price_snapshot"]
-    assert price["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+    assert price["runtime_lifecycle"] == "ACTIVE"
     assert price["production_runtime_owner"] == "gurkdb"
     assert price["production_authorization_status"] == "AUTHORIZED"
     for cap_id in ("public_candle_freshness", "market_rotation_pressure"):
