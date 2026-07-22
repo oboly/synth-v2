@@ -42,19 +42,25 @@ def _errors(registry: dict) -> list[str]:
 def _valid_active_registry(capability_id: str = "public_price_snapshot") -> dict:
     registry = copy.deepcopy(_registry())
     cap = _cap(registry, capability_id)
-    owner = cap["production_runtime_owner"]
     cap["runtime_lifecycle"] = "ACTIVE"
-    observation = cap["observed_runtime_state"][0]
-    observation.update(
-        {
-            "host": owner,
-            "enabled_at_observation": True,
-            "active_at_observation": True,
-            "current_state": "ACTIVE_OBSERVED",
-            "authorization_status": "AUTHORIZED",
-            "runtime_state_classification": "AUTHORIZED_RUNTIME_OBSERVED",
-        }
-    )
+    cap["observed_runtime_state"] = [
+        observation
+        for observation in cap["observed_runtime_state"]
+        if observation["authorization_status"] == "AUTHORIZED"
+        and observation["current_state"] == "ACTIVE_OBSERVED"
+    ]
+    return registry
+
+
+def _valid_authorized_inactive_registry() -> dict:
+    registry = copy.deepcopy(_registry())
+    cap = _cap(registry, "public_price_snapshot")
+    cap["runtime_lifecycle"] = "AUTHORIZED_INACTIVE"
+    cap["observed_runtime_state"] = [
+        observation
+        for observation in cap["observed_runtime_state"]
+        if observation["current_state"] == "INACTIVE_VERIFIED"
+    ]
     return registry
 
 
@@ -79,7 +85,7 @@ def test_lifecycle_aware_invariants_replace_exactly_one_before_cutover() -> None
     assert "authorized_inactive_owner_requires_acceptance_and_production_decision_evidence" not in inv
 
 
-def test_public_price_is_authorized_inactive_and_other_lanes_remain_unassigned() -> None:
+def test_public_price_is_active_and_other_lanes_remain_unassigned() -> None:
     ids = {cap["capability_id"] for cap in _capabilities()}
     assert ids == {
         "public_price_snapshot",
@@ -94,7 +100,7 @@ def test_public_price_is_authorized_inactive_and_other_lanes_remain_unassigned()
     assert price["acceptance_status"] == "ACCEPTED"
     assert price["production_runtime_owner"] == "gurkdb"
     assert price["production_authorization_status"] == "AUTHORIZED"
-    assert price["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+    assert price["runtime_lifecycle"] == "ACTIVE"
     assert price["production_decision_evidence"]
 
     # The remaining lanes retain their prior selection/unassigned state.
@@ -116,7 +122,7 @@ def test_public_price_is_authorized_inactive_and_other_lanes_remain_unassigned()
             assert cap["runtime_lifecycle"] == UNASSIGNED, cap["capability_id"]
 
 
-def test_authorized_inactive_public_price_observation_is_installed_but_inactive() -> None:
+def test_public_price_observations_preserve_inactive_and_append_active() -> None:
     price = _cap(_registry(), "public_price_snapshot")
     assert price["observed_runtime_state"] == [
         {
@@ -132,6 +138,20 @@ def test_authorized_inactive_public_price_observation_is_installed_but_inactive(
             "authorization_status": "UNASSIGNED",
             "runtime_state_classification": "NONE_OBSERVED",
             "evidence_source": "docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md#rollback-proof",
+        },
+        {
+            "host": "gurkdb",
+            "unit": "synth-market-price-snapshot-writer.timer",
+            "unit_path": "deploy/systemd/synth-market-price-snapshot-writer.timer",
+            "installed_at_observation": True,
+            "enabled_at_observation": True,
+            "active_at_observation": True,
+            "observed_at_utc": "2026-07-22T12:10:15Z",
+            "observed_at_precision": "exact",
+            "current_state": "ACTIVE_OBSERVED",
+            "authorization_status": "AUTHORIZED",
+            "runtime_state_classification": "AUTHORIZED_RUNTIME_OBSERVED",
+            "evidence_source": "docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md#scheduled-production-activation-proof-20260722",
         }
     ]
 
@@ -210,12 +230,14 @@ def test_active_without_exactly_one_owner_and_evidence_is_rejected() -> None:
 
 
 def test_valid_authorized_inactive_state_passes() -> None:
-    result = validate_registry_payload(_registry(), repo_root=Path.cwd())
+    result = validate_registry_payload(
+        _valid_authorized_inactive_registry(), repo_root=Path.cwd()
+    )
     assert result.ok, result.errors
 
 
 def test_authorized_inactive_requires_matching_accepted_host() -> None:
-    registry = copy.deepcopy(_registry())
+    registry = _valid_authorized_inactive_registry()
     cap = _cap(registry, "public_price_snapshot")
     cap["acceptance_status"] = "PENDING"
     cap["acceptance_evidence"] = None

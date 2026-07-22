@@ -33,7 +33,7 @@
   "candidate_topology": {
     "note": "Preferred direction only, not production authorization. Each role requires explicit host selection, read-only preflight, controlled acceptance, legacy-runtime inventory and containment, separate production authorization, activation, observation, and at-most-one-owner proof.",
     "gurkdb": [
-      "authorized-inactive production owner for public_price_snapshot",
+      "active production owner for public_price_snapshot",
       "candidate host for other light account-agnostic public market-data writers"
     ],
     "odroid": ["candidate host for account runtimes, persisted-state consumers, dashboards, and publication"],
@@ -85,7 +85,7 @@
       },
       "production_runtime_owner": "gurkdb",
       "production_authorization_status": "AUTHORIZED",
-      "runtime_lifecycle": "AUTHORIZED_INACTIVE",
+      "runtime_lifecycle": "ACTIVE",
       "production_decision_evidence": "docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md#production-decision-evidence",
       "observed_runtime_state": [
         {
@@ -101,6 +101,20 @@
           "authorization_status": "UNASSIGNED",
           "runtime_state_classification": "NONE_OBSERVED",
           "evidence_source": "docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md#rollback-proof"
+        },
+        {
+          "host": "gurkdb",
+          "unit": "synth-market-price-snapshot-writer.timer",
+          "unit_path": "deploy/systemd/synth-market-price-snapshot-writer.timer",
+          "installed_at_observation": true,
+          "enabled_at_observation": true,
+          "active_at_observation": true,
+          "observed_at_utc": "2026-07-22T12:10:15Z",
+          "observed_at_precision": "exact",
+          "current_state": "ACTIVE_OBSERVED",
+          "authorization_status": "AUTHORIZED",
+          "runtime_state_classification": "AUTHORIZED_RUNTIME_OBSERVED",
+          "evidence_source": "docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md#scheduled-production-activation-proof-20260722"
         }
       ],
       "historical_runtime_assignment": null

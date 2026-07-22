@@ -109,6 +109,11 @@ def registry_with_auth_file(
         cap["production_runtime_owner"] = host
         cap["production_authorization_status"] = "AUTHORIZED"
         cap["runtime_lifecycle"] = "AUTHORIZED_INACTIVE"
+        cap["observed_runtime_state"] = [
+            observation
+            for observation in cap["observed_runtime_state"]
+            if observation["current_state"] != "ACTIVE_OBSERVED"
+        ]
         cap["production_decision_evidence"] = (
             "docs/ops/writer_capability_host_ownership_contract_v1.md#decision"
         )
