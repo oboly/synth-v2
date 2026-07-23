@@ -33,10 +33,12 @@ from src.market_data.native_short_scope_administration_transaction_v1 import (
     CANONICAL_RECENT_SCOPE_GRACE_SECONDS,
     CANONICAL_SUPPORTING_SOURCE_FRESHNESS_LIMIT_SECONDS,
     CANONICAL_TARGET_EVALUATION_INTERVAL,
+    AdminOperationRow,
     AdministrationDecision,
     CadenceRowState,
     CommitState,
     ExistingOperation,
+    NativeShortScopeAdministrationExecutionError,
     OperationAction,
     ScopeClassification,
     ScopeStateSnapshot,
@@ -152,6 +154,25 @@ def _support_event(
     )
 
 
+def _admin_op(
+    *,
+    operation_id: int,
+    operation_type: str = "PROMOTE_SCOPE",
+    result_code: str = "PROMOTED_NEW_SCOPE",
+    terminal: bool = True,
+    generation_before: int | None = None,
+    generation_after: int | None = None,
+) -> AdminOperationRow:
+    return AdminOperationRow(
+        scope_admin_operation_id=operation_id,
+        operation_type=operation_type,
+        result_code=result_code,
+        is_terminal=terminal,
+        support_generation_before=generation_before,
+        support_generation_after=generation_after,
+    )
+
+
 def _snapshot(
     *,
     scope_present: bool = True,
@@ -160,6 +181,7 @@ def _snapshot(
     generation: int | None = None,
     cadence_rows: tuple[CadenceRowState, ...] = (),
     support_events: tuple[SupportEventRow, ...] = (),
+    operations: tuple[AdminOperationRow, ...] = (),
     status_residue: int = 0,
     level_residue: int = 0,
     reason_code: str | None = None,
@@ -173,6 +195,7 @@ def _snapshot(
         scope_reason_detail=None,
         cadence_rows=cadence_rows,
         support_events=support_events,
+        operations=operations,
         scope_status_residue_count=status_residue,
         map_level_status_residue_count=level_residue,
     )
@@ -195,6 +218,22 @@ def _legacy_supported(canonical: bool = True) -> ScopeStateSnapshot:
 
 
 def _managed_supported(generation: int = 1, activation_op: int = 50) -> ScopeStateSnapshot:
+    if generation == 1:
+        op = _admin_op(
+            operation_id=activation_op,
+            operation_type="PROMOTE_SCOPE",
+            result_code="PROMOTED_NEW_SCOPE",
+            generation_before=None,
+            generation_after=1,
+        )
+    else:
+        op = _admin_op(
+            operation_id=activation_op,
+            operation_type="PROMOTE_SCOPE",
+            result_code="PROMOTED_FROM_PRIOR_WITHDRAWAL",
+            generation_before=generation - 1,
+            generation_after=generation,
+        )
     return _snapshot(
         generation=generation,
         state="SUPPORTED",
@@ -214,6 +253,7 @@ def _managed_supported(generation: int = 1, activation_op: int = 50) -> ScopeSta
                 operation_id=activation_op,
             ),
         ),
+        operations=(op,),
     )
 
 
@@ -221,6 +261,8 @@ def _managed_removed(
     generation: int = 2, *, status_residue: int = 0, level_residue: int = 0
 ) -> ScopeStateSnapshot:
     supported_gen = generation - 1
+    activation_op = 50
+    removal_op = 60
     return _snapshot(
         state="NOT_APPLICABLE",
         generation=generation,
@@ -229,21 +271,37 @@ def _managed_removed(
             _cadence(
                 cadence_config_id=10,
                 is_active=0,
-                activation_op=50,
-                deactivation_op=60,
+                activation_op=activation_op,
+                deactivation_op=removal_op,
                 support_generation=supported_gen,
                 effective_to=datetime(2026, 7, 15),
             ),
         ),
         support_events=(
             _support_event(
-                event_id=1, generation=supported_gen, state="SUPPORTED", operation_id=50
+                event_id=1, generation=supported_gen, state="SUPPORTED", operation_id=activation_op
             ),
             _support_event(
                 event_id=2,
                 generation=generation,
                 state="NOT_APPLICABLE",
-                operation_id=60,
+                operation_id=removal_op,
+            ),
+        ),
+        operations=(
+            _admin_op(
+                operation_id=activation_op,
+                operation_type="PROMOTE_SCOPE",
+                result_code="PROMOTED_NEW_SCOPE",
+                generation_before=None,
+                generation_after=supported_gen,
+            ),
+            _admin_op(
+                operation_id=removal_op,
+                operation_type="REMOVE_SCOPE",
+                result_code="REMOVED_SCOPE",
+                generation_before=supported_gen,
+                generation_after=generation,
             ),
         ),
         status_residue=status_residue,
@@ -606,6 +664,266 @@ def test_overlapping_effective_windows_is_incoherent() -> None:
     assert code == ResultCode.LEGACY_STATE_INCOHERENT
 
 
+# --- Step 2: complete managed operation-lineage validation ------------------ #
+
+
+def test_supported_event_operation_differs_from_cadence_activation() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=50, support_generation=1),
+        ),
+        support_events=(_support_event(generation=1, state="SUPPORTED", operation_id=51),),
+        operations=(
+            _admin_op(operation_id=50, generation_after=1),
+            _admin_op(operation_id=51, generation_after=1),
+        ),
+    )
+    _, code, detail = classify_scope_state(snap)
+    assert code == ResultCode.PARTIAL_SCOPE_STATE
+    assert "differs from cadence activation" in detail
+
+
+def test_supported_referenced_activation_operation_absent() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=50, support_generation=1),
+        ),
+        support_events=(_support_event(generation=1, state="SUPPORTED", operation_id=50),),
+        operations=(),  # operation 50 not present for this scope
+    )
+    _, code, detail = classify_scope_state(snap)
+    assert code == ResultCode.PARTIAL_SCOPE_STATE
+    assert "absent or bound to another scope" in detail
+
+
+def test_supported_referenced_operation_nonterminal() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=50, support_generation=1),
+        ),
+        support_events=(_support_event(generation=1, state="SUPPORTED", operation_id=50),),
+        operations=(_admin_op(operation_id=50, terminal=False, generation_after=1),),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.COMMIT_STATUS_UNKNOWN
+
+
+def test_supported_referenced_operation_wrong_type() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=50, support_generation=1),
+        ),
+        support_events=(_support_event(generation=1, state="SUPPORTED", operation_id=50),),
+        operations=(
+            _admin_op(
+                operation_id=50,
+                operation_type="REMOVE_SCOPE",
+                result_code="REMOVED_SCOPE",
+                generation_after=1,
+            ),
+        ),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.PARTIAL_SCOPE_STATE
+
+
+def test_supported_referenced_operation_wrong_result() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=50, support_generation=1),
+        ),
+        support_events=(_support_event(generation=1, state="SUPPORTED", operation_id=50),),
+        operations=(
+            _admin_op(
+                operation_id=50,
+                operation_type="PROMOTE_SCOPE",
+                result_code="SCOPE_ALREADY_SUPPORTED",
+                generation_after=1,
+            ),
+        ),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.PARTIAL_SCOPE_STATE
+
+
+def test_supported_operation_generation_after_mismatch() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=50, support_generation=1),
+        ),
+        support_events=(_support_event(generation=1, state="SUPPORTED", operation_id=50),),
+        operations=(_admin_op(operation_id=50, generation_after=2),),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.SUPPORT_GENERATION_MISMATCH
+
+
+def test_removed_event_operation_differs_from_cadence_deactivation() -> None:
+    snap = _managed_removed(2)
+    tampered = _snapshot(
+        state="NOT_APPLICABLE",
+        generation=2,
+        reason_code=ADMIN_REMOVAL_REASON_CODE,
+        cadence_rows=snap.cadence_rows,
+        support_events=(
+            _support_event(event_id=1, generation=1, state="SUPPORTED", operation_id=50),
+            _support_event(event_id=2, generation=2, state="NOT_APPLICABLE", operation_id=99),
+        ),
+        operations=snap.operations,
+    )
+    _, code, detail = classify_scope_state(tampered)
+    assert code == ResultCode.PARTIAL_SCOPE_STATE
+    assert "differs from cadence deactivation" in detail
+
+
+def test_removed_cadence_generation_skips_generations() -> None:
+    # Scope generation 5 but withdrawn cadence generation 2 (skips generations).
+    snap = _snapshot(
+        state="NOT_APPLICABLE",
+        generation=5,
+        reason_code=ADMIN_REMOVAL_REASON_CODE,
+        cadence_rows=(
+            _cadence(
+                cadence_config_id=10,
+                is_active=0,
+                activation_op=50,
+                deactivation_op=60,
+                support_generation=2,
+                effective_to=datetime(2026, 7, 15),
+            ),
+        ),
+        support_events=(
+            _support_event(event_id=1, generation=2, state="SUPPORTED", operation_id=50),
+            _support_event(event_id=2, generation=5, state="NOT_APPLICABLE", operation_id=60),
+        ),
+        operations=(
+            _admin_op(operation_id=50, generation_after=2),
+            _admin_op(
+                operation_id=60,
+                operation_type="REMOVE_SCOPE",
+                result_code="REMOVED_SCOPE",
+                generation_before=2,
+                generation_after=5,
+            ),
+        ),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.SUPPORT_GENERATION_MISMATCH
+
+
+def test_removed_noncanonical_withdrawn_cadence_is_conflict() -> None:
+    snap = _snapshot(
+        state="NOT_APPLICABLE",
+        generation=2,
+        reason_code=ADMIN_REMOVAL_REASON_CODE,
+        cadence_rows=(
+            _cadence(
+                cadence_config_id=10,
+                is_active=0,
+                activation_op=50,
+                deactivation_op=60,
+                support_generation=1,
+                effective_to=datetime(2026, 7, 15),
+                canonical_profile=False,
+            ),
+        ),
+        support_events=(
+            _support_event(event_id=1, generation=1, state="SUPPORTED", operation_id=50),
+            _support_event(event_id=2, generation=2, state="NOT_APPLICABLE", operation_id=60),
+        ),
+        operations=(
+            _admin_op(operation_id=50, generation_after=1),
+            _admin_op(
+                operation_id=60,
+                operation_type="REMOVE_SCOPE",
+                result_code="REMOVED_SCOPE",
+                generation_before=1,
+                generation_after=2,
+            ),
+        ),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.CADENCE_PROFILE_CONFLICT
+
+
+def test_removed_wrong_withdrawal_reason() -> None:
+    snap = _managed_removed(2)
+    tampered = _snapshot(
+        state="NOT_APPLICABLE",
+        generation=2,
+        reason_code="MARKET_INVALIDATED",  # not the administration-removal reason
+        cadence_rows=snap.cadence_rows,
+        support_events=snap.support_events,
+        operations=snap.operations,
+    )
+    _, code, _ = classify_scope_state(tampered)
+    assert code == ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT
+
+
+def test_removed_operation_generation_before_mismatch() -> None:
+    snap = _snapshot(
+        state="NOT_APPLICABLE",
+        generation=2,
+        reason_code=ADMIN_REMOVAL_REASON_CODE,
+        cadence_rows=(
+            _cadence(
+                cadence_config_id=10,
+                is_active=0,
+                activation_op=50,
+                deactivation_op=60,
+                support_generation=1,
+                effective_to=datetime(2026, 7, 15),
+            ),
+        ),
+        support_events=(
+            _support_event(event_id=1, generation=1, state="SUPPORTED", operation_id=50),
+            _support_event(event_id=2, generation=2, state="NOT_APPLICABLE", operation_id=60),
+        ),
+        operations=(
+            _admin_op(operation_id=50, generation_after=1),
+            _admin_op(
+                operation_id=60,
+                operation_type="REMOVE_SCOPE",
+                result_code="REMOVED_SCOPE",
+                generation_before=99,  # should be 1
+                generation_after=2,
+            ),
+        ),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.SUPPORT_GENERATION_MISMATCH
+
+
+def test_fk_valid_but_logically_cross_wired_operation() -> None:
+    # Operation row exists and is scope-bound (FK-valid) but its type/result is
+    # for a different logical transition than the state it is wired into.
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=60, support_generation=1),
+        ),
+        support_events=(_support_event(generation=1, state="SUPPORTED", operation_id=60),),
+        operations=(
+            _admin_op(
+                operation_id=60,
+                operation_type="REMOVE_SCOPE",
+                result_code="REMOVED_SCOPE",
+                generation_before=1,
+                generation_after=2,
+            ),
+        ),
+    )
+    _, code, _ = classify_scope_state(snap)
+    # A REMOVE operation wired as a SUPPORTED activation is rejected.
+    assert code in (ResultCode.PARTIAL_SCOPE_STATE, ResultCode.SUPPORT_GENERATION_MISMATCH)
+
+
 # --------------------------------------------------------------------------- #
 # Operation-ledger replay (idempotency)                                       #
 # --------------------------------------------------------------------------- #
@@ -774,10 +1092,15 @@ class _FakeCursor:
         if "FROM native_short_scope_admin_operation_v1" in norm and norm.startswith(
             "SELECT"
         ):
-            uuid_val = params[0]
-            self._rows = [
-                dict(op) for op in state.operations if op["operation_uuid"] == uuid_val
-            ]
+            if "WHERE operation_uuid" in norm:
+                uuid_val = params[0]
+                self._rows = [
+                    dict(op)
+                    for op in state.operations
+                    if op["operation_uuid"] == uuid_val
+                ]
+            else:  # scope-keyed operation-lineage projection read
+                self._rows = _match_scope(state.operations, params[:6])
             return
         if norm.startswith("INSERT INTO native_short_scope_admin_operation_v1"):
             self._insert_operation(params, state)
@@ -1402,6 +1725,12 @@ def test_write_commit_raises_is_unknown_without_rollback_claim() -> None:
     # Unknown commit does not assert rollback certainty nor persisted=false.
     assert outcome.persisted is None
     assert conn.rollback_count == 0
+    # current_state must not carry the authoritative pre-mutation snapshot.
+    assert outcome.current_state.get("state_unknown") is True
+    assert "scope_present" not in outcome.current_state
+    # The operation id is labelled attempted/unverified, not proven persisted.
+    assert outcome.scope_admin_operation_id is None
+    assert "attempted_operation_id_unverified" in outcome.current_state
     assert not _SHARED_LOCKS  # lock still released in finally
 
 
@@ -1441,11 +1770,18 @@ def test_write_lock_wait_timeout_before_commit_maps_typed() -> None:
     assert outcome.commit_state == CommitState.ROLLED_BACK
 
 
-def test_write_unmapped_precommit_exception_reraises_and_rolls_back() -> None:
+def test_write_unmapped_precommit_failure_raises_typed_rolled_back() -> None:
+    # Step 3: an unexpected mutation failure after begin is rolled back and
+    # surfaced as a typed execution error carrying commit_state=ROLLED_BACK and
+    # persisted=False, preserving the original defect as __cause__.
     conn = _FakeConn()
     conn.fail_on = "support"
-    with pytest.raises(RuntimeError, match="injected support insert failure"):
+    with pytest.raises(NativeShortScopeAdministrationExecutionError) as exc:
         execute_scope_administration(conn, _request(), authorization=_AUTH)
+    assert exc.value.commit_state == CommitState.ROLLED_BACK
+    assert exc.value.persisted is False
+    assert isinstance(exc.value.__cause__, RuntimeError)
+    assert "injected support insert failure" in str(exc.value.__cause__)
     assert conn.rollback_count >= 1
     assert conn.committed.scopes == []
     assert conn.committed.operations == []
@@ -1581,7 +1917,7 @@ def test_cli_dry_run_is_default_and_emits_exactly_one_stdout_document(
     assert conn.commit_count == 0
 
 
-def test_cli_write_is_explicit_and_persists(monkeypatch: pytest.MonkeyPatch) -> None:
+def _stub_write_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.operations.writer_capability_authorization_v1 as authmod
 
     monkeypatch.setattr(
@@ -1592,6 +1928,31 @@ def test_cli_write_is_explicit_and_persists(monkeypatch: pytest.MonkeyPatch) -> 
         authmod, "require_writer_mutation_authorization",
         lambda authorization, capability_id: authorization,
     )
+
+
+def _run_cli_raw(
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], *, conn: _FakeConn
+) -> tuple[int, str, str]:
+    import src.common.db as dbmod
+
+    monkeypatch.setattr(dbmod, "get_connection", lambda: conn)
+    out, err = io.StringIO(), io.StringIO()
+    monkeypatch.setattr("sys.stdout", out)
+    monkeypatch.setattr("sys.stderr", err)
+    code = cli.main(argv, inspect_repository_source=_clean_source)
+    monkeypatch.undo()
+    return code, out.getvalue(), err.getvalue()
+
+
+def _assert_single_json_stdout(raw_stdout: str) -> dict[str, Any]:
+    lines = raw_stdout.splitlines()
+    nonempty = [line for line in lines if line.strip()]
+    assert len(nonempty) == 1, f"expected one stdout document, got {nonempty!r}"
+    return json.loads(nonempty[0])  # raises if any unexpected plaintext
+
+
+def test_cli_write_is_explicit_and_persists(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_write_auth(monkeypatch)
     conn = _FakeConn()
     code, stdout_docs, _ = _run_cli(monkeypatch, [*_BASE_CLI_ARGS, "--write"], conn=conn)
     assert code == 0
@@ -1603,6 +1964,63 @@ def test_cli_write_is_explicit_and_persists(monkeypatch: pytest.MonkeyPatch) -> 
     assert result["result_code"] == "PROMOTED_NEW_SCOPE"
     assert result["production_db_writes"] == 1
     assert conn.commit_count == 1
+
+
+def test_cli_validation_failure_is_not_attempted_one_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Invalid request before any connection/transaction => NOT_ATTEMPTED.
+    args = list(_BASE_CLI_ARGS)
+    args[args.index("--operation-uuid") + 1] = "not-a-uuid"
+    code, raw_out, _ = _run_cli_raw(monkeypatch, [*args, "--write"], conn=_FakeConn())
+    doc = _assert_single_json_stdout(raw_out)
+    assert code == 2
+    assert doc["event"] == "FAILED"
+    assert doc["commit_state"] == "NOT_ATTEMPTED"
+    assert doc["reason_code"] == "INVALID_REQUEST"
+
+
+def test_cli_write_injected_mutation_failure_is_rolled_back_one_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_write_auth(monkeypatch)
+    conn = _FakeConn()
+    conn.fail_on = "support"
+    code, raw_out, _ = _run_cli_raw(monkeypatch, [*_BASE_CLI_ARGS, "--write"], conn=conn)
+    doc = _assert_single_json_stdout(raw_out)
+    assert code == 1
+    assert doc["event"] == "FAILED"
+    assert doc["commit_state"] == "ROLLED_BACK"
+    assert doc["persisted"] is False
+    assert conn.committed.operations == []
+
+
+def test_cli_write_deadlock_before_commit_is_rolled_back_one_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_write_auth(monkeypatch)
+    conn = _FakeConn()
+    conn.db_error_on = ("scope", 1213)
+    code, raw_out, _ = _run_cli_raw(monkeypatch, [*_BASE_CLI_ARGS, "--write"], conn=conn)
+    doc = _assert_single_json_stdout(raw_out)
+    assert code == 1
+    assert doc["result_code"] == "DEADLOCK"
+    assert doc["commit_state"] == "ROLLED_BACK"
+
+
+def test_cli_write_commit_exception_is_unknown_one_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_write_auth(monkeypatch)
+    conn = _FakeConn()
+    conn.commit_behavior = "raise_before"
+    code, raw_out, _ = _run_cli_raw(monkeypatch, [*_BASE_CLI_ARGS, "--write"], conn=conn)
+    doc = _assert_single_json_stdout(raw_out)
+    assert code == 1
+    assert doc["result_code"] == "COMMIT_STATUS_UNKNOWN"
+    assert doc["commit_state"] == "UNKNOWN"
+    assert doc["persisted"] is None
+    assert doc["current_state"].get("state_unknown") is True
 
 
 def test_cli_write_rejects_dirty_source_before_mutation(

@@ -242,14 +242,21 @@ def _result_document(outcome_dict: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _error_document(reason_code: str, detail: str, *, write: bool) -> dict[str, Any]:
+def _error_document(
+    reason_code: str,
+    detail: str,
+    *,
+    write: bool,
+    commit_state: str = "NOT_ATTEMPTED",
+    persisted: bool | None = False,
+) -> dict[str, Any]:
     return {
         "event": "FAILED",
         "runner": RUNNER_NAME,
         "runner_version": RUNNER_VERSION,
         "write": write,
-        "persisted": False,
-        "commit_state": "NOT_ATTEMPTED",
+        "persisted": persisted,
+        "commit_state": commit_state,
         "production_db_writes": 0,
         "reason_code": reason_code,
         "detail": detail,
@@ -338,12 +345,29 @@ def _run_write(
         )
         return 3
 
+    from src.market_data.native_short_scope_administration_transaction_v1 import (
+        NativeShortScopeAdministrationExecutionError,
+    )
+
     conn = None
     try:
         conn = get_connection()
         outcome = execute_scope_administration(
             conn, request, authorization=authorization
         )
+    except NativeShortScopeAdministrationExecutionError as exc:
+        # Confirmed pre-commit rollback of an unexpected defect: report the
+        # authoritative commit_state without hiding the defect (str carries it).
+        _emit_document(
+            _error_document(
+                exc.reason_code,
+                exc.detail,
+                write=True,
+                commit_state=str(exc.commit_state),
+                persisted=exc.persisted,
+            )
+        )
+        return 1
     except Exception as exc:  # noqa: BLE001 - surface as fail-closed result.
         _emit_document(_error_document(type(exc).__name__, str(exc), write=True))
         return 1
