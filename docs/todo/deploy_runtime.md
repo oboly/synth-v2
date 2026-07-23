@@ -90,18 +90,20 @@ Read/write scope must be explicit per runner.
 
 ## P2 — Candle ingestion runner
 
-Status: blocked before gurkDB controlled acceptance.
+Status: ready for fresh exact-head preflight before gurkDB controlled acceptance.
 
-Current acceptance state (2026-07-23):
+Current acceptance state (2026-07-24):
 
 - strict gurkDB preflight passed at exact clean commit `6031a94a2f6e9a0576dd73b0d3babe5d6e228bb6`;
 - devlap writer remains disabled and Odroid candle units remain masked;
-- enabled-universe validation found 429 enabled assets but only 421 current
-  Bitvavo EUR trading markets;
+- eight stale historical-import asset rows were disabled without deleting
+  18,660 historical candles;
+- enabled-universe validation reports 421 enabled assets, 430 current Bitvavo
+  EUR trading markets, and zero mismatch;
 - no manual writer cycle, candle write, authorization installation, or timer
   activation occurred;
-- reconcile the eight unavailable enabled symbols through the canonical asset
-  metadata lane, then rerun strict preflight and controlled acceptance.
+- rerun strict preflight at the final candidate head, then resume two-cycle
+  controlled acceptance.
 
 Goal:
 

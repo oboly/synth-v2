@@ -24,10 +24,11 @@ observed_runtime_state=[]
 
 Strict gurkDB preflight passed at exact commit
 `6031a94a2f6e9a0576dd73b0d3babe5d6e228bb6` on 2026-07-23. Acceptance
-remains pending and production ownership remains `UNASSIGNED`: the required
-full enabled-universe check found 429 enabled assets but only 421 current
-Bitvavo EUR trading markets. No manual writer cycle ran, no candle row was
-written, and no timer or production authorization was installed. See
+remains pending and production ownership remains `UNASSIGNED`. The initial
+enabled-universe mismatch was corrected on 2026-07-24 by disabling only eight
+stale historical-import rows; validation now reports 421 enabled assets, 430
+current Bitvavo EUR trading markets, and zero mismatch. No manual writer cycle
+has yet run, and no timer or production authorization was installed. See
 `docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md`.
 
 The committed service and timer below are gurkDB-bound candidate artifacts, not

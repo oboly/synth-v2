@@ -167,10 +167,12 @@ Summary:
 
 Public Price Snapshot completed gurkDB strict preflight and controlled
 acceptance and received a separate production decision; it remains inactive.
-Public Candle Freshness passed strict gurkDB preflight on 2026-07-23 but stopped
-before controlled acceptance because the 429 enabled assets did not match the
-421 current Bitvavo EUR trading markets. Rotation Pressure remains selected for
-strict preflight only. Both retain `production_runtime_owner=UNASSIGNED`.
+Public Candle Freshness passed strict gurkDB preflight on 2026-07-23. Its
+enabled-universe mismatch was resolved on 2026-07-24 by disabling only the eight
+stale historical-import asset rows; generic live validation now reports zero
+mismatch. Controlled acceptance remains pending. Rotation Pressure remains
+selected for strict preflight only. Both retain
+`production_runtime_owner=UNASSIGNED`.
 `native_short_4h_chain` is not selected and remains `UNASSIGNED`.
 
 Native SHORT remains independently evaluated from the light DB writers because

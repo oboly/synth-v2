@@ -4,10 +4,10 @@
 
 `public_price_snapshot` completed exact-commit gurkDB preflight, controlled
 acceptance, and inactive host preparation on 2026-07-21.
-`public_candle_freshness` passed strict gurkDB preflight on 2026-07-23 but
-stopped before acceptance writes because the enabled database universe did not
-match the current Bitvavo EUR market universe. The other capabilities are
-unchanged.
+`public_candle_freshness` passed strict gurkDB preflight on 2026-07-23. Its
+enabled-universe blocker was corrected on 2026-07-24 without a writer
+invocation; controlled acceptance remains pending fresh exact-head preflight.
+The other capabilities are unchanged.
 
 The authoritative machine-readable ownership source is
 `deploy/ownership/writer_capability_ownership_v1.json`.
@@ -77,8 +77,8 @@ native_short_4h_chain:
 
 `public_price_snapshot` is accepted and separately authorized to gurkDB in
 `AUTHORIZED_INACTIVE`. `public_candle_freshness` has passed strict preflight
-but remains blocked before controlled acceptance; `market_rotation_pressure`
-remains selected for preflight only.
+and its metadata blocker is resolved, but controlled acceptance remains
+pending; `market_rotation_pressure` remains selected for preflight only.
 
 For the two remaining selected lanes, selection still means only strict host
 preflight; it is not production authorization. Specifically:
