@@ -50,6 +50,21 @@ The probes used one read-only MariaDB transaction, one public Bitvavo candle
 request, DNS resolution, NTP state, journald/logrotate state, and safe runtime
 configuration metadata. They made no database write or systemd mutation.
 
+### Exact-Head Evidence Boundary
+
+The strict preflight above is initial evidence for commit
+`6031a94a2f6e9a0576dd73b0d3babe5d6e228bb6` only. Registry lifecycle state and
+the systemd candidate description changed afterward, producing candidate head
+`032eac5d2025271060f25af4d57532c50ab80264`. The initial preflight must not be
+presented as exact-head evidence for that later artifact state.
+
+The documentation-only child commit containing this clarification is the final
+candidate commit for PR #139. It requires a complete fresh strict read-only
+preflight at its exact SHA before review may rely on final-candidate evidence.
+That immutable SHA and the resulting host, registry, systemd, containment,
+authorization, writer, and database-write checks are recorded in the PR
+comment; no repository file may change after that preflight.
+
 ## Blocking Universe Mismatch
 
 The writer loads every row where `asset.is_enabled=1`. The bounded comparison
