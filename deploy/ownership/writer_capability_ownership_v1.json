@@ -156,11 +156,16 @@
       "candidate_host": "gurkdb",
       "selected_host": "gurkdb",
       "acceptance_host": "gurkdb",
-      "acceptance_status": "PENDING",
-      "acceptance_evidence": null,
+      "acceptance_status": "ACCEPTED",
+      "acceptance_evidence": {
+        "approval_reference": "Explicit user authorization for controlled public_candle_freshness acceptance on gurkDB on 2026-07-24",
+        "evidence_doc": "docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md",
+        "accepted_at_utc": "2026-07-23T23:10:13Z",
+        "scope": "Exact-commit strict preflight, zero-mismatch 421-asset Bitvavo EUR universe, two controlled five-interval writer cycles, persisted coverage, idempotent repeat operation, host-local lock behavior, and zero duplicate writers on gurkDB"
+      },
       "production_runtime_owner": "UNASSIGNED",
-      "production_authorization_status": "PREFLIGHT_PASSED",
-      "runtime_lifecycle": "PREFLIGHT_PASSED",
+      "production_authorization_status": "ACCEPTED_PENDING_CUTOVER",
+      "runtime_lifecycle": "ACCEPTED_PENDING_CUTOVER",
       "production_decision_evidence": "",
       "observed_runtime_state": [],
       "historical_runtime_assignment": null

@@ -2,12 +2,11 @@
 
 ## Outcome
 
-Strict read-only preflight passed. Controlled acceptance initially stopped
-before the first writer invocation because the configured enabled universe did
-not match the current Bitvavo EUR trading universe. The bounded canonical
-metadata correction completed on 2026-07-24 and the enabled-universe validator
-now reports zero mismatch. Acceptance remains pending a fresh exact-head
-preflight.
+Strict read-only preflight and controlled acceptance passed on gurkDB. The
+configured enabled-universe mismatch was corrected before any writer
+invocation, then exact-head validation reported zero mismatch. Two authorized
+manual cycles completed for the full enabled universe with the host-local lock
+and duplicate-writer boundaries intact.
 
 ```text
 capability=public_candle_freshness
@@ -17,9 +16,10 @@ preflight_required_pass=19
 preflight_required_warn=0
 preflight_required_fail=0
 preflight_required_unverified=0
-acceptance_status=PENDING
+acceptance_commit=2e762b58ab9e311f4a8d403d8d97332e5ebb0f16
+acceptance_status=ACCEPTED
 production_runtime_owner=UNASSIGNED
-runtime_lifecycle=PREFLIGHT_PASSED
+runtime_lifecycle=ACCEPTED_PENDING_CUTOVER
 ```
 
 ## Host and Legacy Containment
@@ -102,23 +102,49 @@ remaining_enabled_universe_mismatch=0
 No asset or candle row was deleted. No alias, writer exclusion, calculation
 change, writer invocation, runtime change, or timer change occurred.
 
-## Deferred Acceptance and Activation
+## Controlled Acceptance
 
 ```text
-manual_cycle_1=NOT_RUN
-manual_cycle_2=NOT_RUN
-accepted_candle_writes=0
-lock_test=NOT_RUN
+manual_cycle_1=PASS
+manual_cycle_1_started=2026-07-23T23:02:13Z
+manual_cycle_1_finished=2026-07-23T23:06:31Z
+manual_cycle_1_accepted_input_rows=219630
+manual_cycle_2=PASS
+manual_cycle_2_started=2026-07-23T23:06:42Z
+manual_cycle_2_finished=2026-07-23T23:10:13Z
+manual_cycle_2_accepted_input_rows=219630
+lock_test=PASS
+lock_test_exit_status=75
+lock_test_etl_invocations=0
+enabled_asset_coverage_per_interval=421/421
+bitvavo_rows_before=3506001
+bitvavo_rows_after_cycle_1=3599458
+bitvavo_rows_after_cycle_2=3599458
+latest_15m_close=2026-07-23T23:00:00Z
+latest_1h_close=2026-07-23T23:00:00Z
+latest_4h_close=2026-07-23T20:00:00Z
+latest_1d_close=2026-07-23T00:00:00Z
+latest_1w_close=2026-07-20T00:00:00Z
+source_venue=bitvavo
+unavailable_market_errors=0
+duplicate_writer_processes=0
+disabled_target_history_rows=18660
 timer_installed=false
 timer_enabled=false
 scheduled_cycles_observed=0
 production_authorization_created=false
 ```
 
-An administrator-capable installation path is also required for the eventual
-system unit and capability-specific production authorization file; the
-available SSH account has no non-interactive sudo delegation. This was not
-bypassed.
+Cycle 1 added 93,457 previously missing unique candle rows. Cycle 2 repeated
+the same bounded inputs without increasing the row count, proving idempotent
+operation. The acceptance permit was exact-commit, host-bound, and
+acceptance-only; the prior permit file was restored byte-for-byte afterward.
+No production authorization was created.
+
+An administrator-capable installation path is required for the eventual
+system unit and capability-specific production authorization file. The
+available SSH account has no non-interactive sudo delegation, so cutover was
+not attempted or bypassed.
 
 ## Safety
 
@@ -138,7 +164,6 @@ executor changes=0
 
 ## Next Gate
 
-Repeat exact-commit strict preflight on the final candidate, then run two
-controlled acceptance cycles and verify persisted coverage and lock behavior.
-Only after successful acceptance may production authorization and canonical
-gurkDB timer installation be considered.
+Repeat exact-commit strict preflight on the final registry/documentation head.
+Production authorization and canonical gurkDB timer installation remain a
+separate cutover step requiring administrator-capable sudo.

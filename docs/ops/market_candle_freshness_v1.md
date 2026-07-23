@@ -15,20 +15,20 @@ capability_id=public_candle_freshness
 candidate_host=gurkdb
 selected_host=gurkdb
 acceptance_host=gurkdb
-acceptance_status=PENDING
+acceptance_status=ACCEPTED
 production_runtime_owner=UNASSIGNED
-production_authorization_status=PREFLIGHT_PASSED
-runtime_lifecycle=PREFLIGHT_PASSED
+production_authorization_status=ACCEPTED_PENDING_CUTOVER
+runtime_lifecycle=ACCEPTED_PENDING_CUTOVER
 observed_runtime_state=[]
 ```
 
-Strict gurkDB preflight passed at exact commit
-`6031a94a2f6e9a0576dd73b0d3babe5d6e228bb6` on 2026-07-23. Acceptance
-remains pending and production ownership remains `UNASSIGNED`. The initial
-enabled-universe mismatch was corrected on 2026-07-24 by disabling only eight
-stale historical-import rows; validation now reports 421 enabled assets, 430
-current Bitvavo EUR trading markets, and zero mismatch. No manual writer cycle
-has yet run, and no timer or production authorization was installed. See
+Exact-head strict preflight and two controlled manual cycles passed at commit
+`2e762b58ab9e311f4a8d403d8d97332e5ebb0f16`. The initial enabled-universe
+mismatch was corrected by disabling only eight stale historical-import rows;
+validation reports 421 enabled assets, 430 current Bitvavo EUR trading markets,
+and zero mismatch. Each interval retained 421/421 asset coverage, cycle 1 added
+93,457 unique rows, and cycle 2 was idempotent. Production ownership remains
+`UNASSIGNED`; no timer or production authorization was installed. See
 `docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md`.
 
 The committed service and timer below are gurkDB-bound candidate artifacts, not

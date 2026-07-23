@@ -161,17 +161,17 @@ Summary:
 | capability_id | kind | wrapper | current owner | lifecycle |
 |---|---|---|---|---|
 | `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
-| `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | UNASSIGNED | PREFLIGHT_PASSED |
+| `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | UNASSIGNED | ACCEPTED_PENDING_CUTOVER |
 | `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
 | `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | UNASSIGNED | UNASSIGNED |
 
 Public Price Snapshot completed gurkDB strict preflight and controlled
 acceptance and received a separate production decision; it remains inactive.
-Public Candle Freshness passed strict gurkDB preflight on 2026-07-23. Its
-enabled-universe mismatch was resolved on 2026-07-24 by disabling only the eight
-stale historical-import asset rows; generic live validation now reports zero
-mismatch. Controlled acceptance remains pending. Rotation Pressure remains
-selected for strict preflight only. Both retain
+Public Candle Freshness passed strict gurkDB preflight and two controlled
+manual cycles after its enabled-universe mismatch was resolved by disabling
+only the eight stale historical-import asset rows. Generic live validation
+reports zero mismatch. It is accepted pending cutover. Rotation Pressure
+remains selected for strict preflight only. Both retain
 `production_runtime_owner=UNASSIGNED`.
 `native_short_4h_chain` is not selected and remains `UNASSIGNED`.
 

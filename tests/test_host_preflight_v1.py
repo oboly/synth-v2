@@ -376,9 +376,9 @@ def test_ownership_registry_records_only_public_price_as_active() -> None:
     assert price["production_runtime_owner"] == "gurkdb"
     assert price["production_authorization_status"] == "AUTHORIZED"
     candle = caps["public_candle_freshness"]
-    assert candle["runtime_lifecycle"] == "PREFLIGHT_PASSED"
+    assert candle["runtime_lifecycle"] == "ACCEPTED_PENDING_CUTOVER"
     assert candle["production_runtime_owner"] == "UNASSIGNED"
-    assert candle["production_authorization_status"] == "PREFLIGHT_PASSED"
+    assert candle["production_authorization_status"] == "ACCEPTED_PENDING_CUTOVER"
     pressure = caps["market_rotation_pressure"]
     assert pressure["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT"
     assert pressure["production_runtime_owner"] == "UNASSIGNED"

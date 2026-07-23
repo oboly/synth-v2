@@ -4,10 +4,10 @@
 
 `public_price_snapshot` completed exact-commit gurkDB preflight, controlled
 acceptance, and inactive host preparation on 2026-07-21.
-`public_candle_freshness` passed strict gurkDB preflight on 2026-07-23. Its
-enabled-universe blocker was corrected on 2026-07-24 without a writer
-invocation; controlled acceptance remains pending fresh exact-head preflight.
-The other capabilities are unchanged.
+`public_candle_freshness` passed strict gurkDB preflight and two controlled
+manual cycles after its enabled-universe blocker was corrected. It is accepted
+pending a separately authorized cutover; production ownership remains
+`UNASSIGNED`. The other capabilities are unchanged.
 
 The authoritative machine-readable ownership source is
 `deploy/ownership/writer_capability_ownership_v1.json`.
@@ -46,10 +46,10 @@ public_candle_freshness:
   candidate_host=gurkdb
   selected_host=gurkdb
   acceptance_host=gurkdb
-  acceptance_status=PENDING
+  acceptance_status=ACCEPTED
   production_runtime_owner=UNASSIGNED
-  production_authorization_status=PREFLIGHT_PASSED
-  runtime_lifecycle=PREFLIGHT_PASSED
+  production_authorization_status=ACCEPTED_PENDING_CUTOVER
+  runtime_lifecycle=ACCEPTED_PENDING_CUTOVER
   observed_runtime_state=[]
 
 market_rotation_pressure:
@@ -76,9 +76,10 @@ native_short_4h_chain:
 ## gurkDB Public-Price Authorization and Remaining Selections
 
 `public_price_snapshot` is accepted and separately authorized to gurkDB in
-`AUTHORIZED_INACTIVE`. `public_candle_freshness` has passed strict preflight
-and its metadata blocker is resolved, but controlled acceptance remains
-pending; `market_rotation_pressure` remains selected for preflight only.
+`AUTHORIZED_INACTIVE`. `public_candle_freshness` passed strict preflight and
+controlled acceptance after its metadata blocker was resolved, but remains
+unassigned pending cutover; `market_rotation_pressure` remains selected for
+preflight only.
 
 For the two remaining selected lanes, selection still means only strict host
 preflight; it is not production authorization. Specifically:
@@ -90,7 +91,7 @@ public_price_snapshot runtime_lifecycle=AUTHORIZED_INACTIVE
 public_price_snapshot production authorization file absent
 public_price_snapshot timer disabled/inactive
 public_candle_freshness production_runtime_owner=UNASSIGNED
-public_candle_freshness runtime_lifecycle=PREFLIGHT_PASSED
+public_candle_freshness runtime_lifecycle=ACCEPTED_PENDING_CUTOVER
 market_rotation_pressure production_runtime_owner=UNASSIGNED
 ```
 

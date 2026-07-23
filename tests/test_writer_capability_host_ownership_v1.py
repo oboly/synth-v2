@@ -112,9 +112,10 @@ def test_public_price_is_active_and_other_production_owners_remain_unassigned() 
         if cap["capability_id"] == "public_candle_freshness":
             assert cap["selected_host"] == "gurkdb"
             assert cap["acceptance_host"] == "gurkdb"
-            assert cap["acceptance_status"] == "PENDING"
-            assert cap["production_authorization_status"] == "PREFLIGHT_PASSED"
-            assert cap["runtime_lifecycle"] == "PREFLIGHT_PASSED"
+            assert cap["acceptance_status"] == "ACCEPTED"
+            assert cap["acceptance_evidence"]
+            assert cap["production_authorization_status"] == "ACCEPTED_PENDING_CUTOVER"
+            assert cap["runtime_lifecycle"] == "ACCEPTED_PENDING_CUTOVER"
         elif cap["capability_id"] == "market_rotation_pressure":
             assert cap["selected_host"] == "gurkdb", cap["capability_id"]
             assert cap["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT", cap["capability_id"]
