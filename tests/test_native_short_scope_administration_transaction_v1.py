@@ -158,6 +158,7 @@ def _admin_op(
     *,
     operation_id: int,
     operation_type: str = "PROMOTE_SCOPE",
+    result_class: str | None = "SUCCESS",
     result_code: str = "PROMOTED_NEW_SCOPE",
     terminal: bool = True,
     generation_before: int | None = None,
@@ -166,6 +167,7 @@ def _admin_op(
     return AdminOperationRow(
         scope_admin_operation_id=operation_id,
         operation_type=operation_type,
+        result_class=result_class,
         result_code=result_code,
         is_terminal=terminal,
         support_generation_before=generation_before,
@@ -254,6 +256,31 @@ def _managed_supported(generation: int = 1, activation_op: int = 50) -> ScopeSta
             ),
         ),
         operations=(op,),
+    )
+
+
+def _supported_snapshot_with_operation(
+    operation: AdminOperationRow,
+    *,
+    generation: int,
+) -> ScopeStateSnapshot:
+    return _snapshot(
+        generation=generation,
+        cadence_rows=(
+            _cadence(
+                cadence_config_id=10,
+                activation_op=operation.scope_admin_operation_id,
+                support_generation=generation,
+            ),
+        ),
+        support_events=(
+            _support_event(
+                generation=generation,
+                state="SUPPORTED",
+                operation_id=operation.scope_admin_operation_id,
+            ),
+        ),
+        operations=(operation,),
     )
 
 
@@ -762,6 +789,141 @@ def test_supported_operation_generation_after_mismatch() -> None:
     )
     _, code, _ = classify_scope_state(snap)
     assert code == ResultCode.SUPPORT_GENERATION_MISMATCH
+
+
+@pytest.mark.parametrize(
+    ("operation_type", "result_code"),
+    (
+        ("ADOPT_LEGACY_SCOPE", "PROMOTED_NEW_SCOPE"),
+        ("PROMOTE_SCOPE", "ADOPTED_LEGACY_SCOPE"),
+    ),
+)
+def test_supported_rejects_impossible_operation_cross_pairings(
+    operation_type: str,
+    result_code: str,
+) -> None:
+    operation = _admin_op(
+        operation_id=50,
+        operation_type=operation_type,
+        result_code=result_code,
+        generation_before=None,
+        generation_after=1,
+    )
+    _, code, _ = classify_scope_state(
+        _supported_snapshot_with_operation(operation, generation=1)
+    )
+    assert code == ResultCode.PARTIAL_SCOPE_STATE
+
+
+def test_supported_referenced_operation_result_class_must_be_success() -> None:
+    operation = _admin_op(
+        operation_id=50,
+        result_class="IDEMPOTENT_SUCCESS",
+        generation_before=None,
+        generation_after=1,
+    )
+    _, code, _ = classify_scope_state(
+        _supported_snapshot_with_operation(operation, generation=1)
+    )
+    assert code == ResultCode.PARTIAL_SCOPE_STATE
+
+
+@pytest.mark.parametrize(
+    ("generation_before", "generation_after", "scope_generation"),
+    (
+        (0, 1, 1),
+        (None, 2, 2),
+    ),
+)
+def test_adoption_requires_null_before_and_generation_one(
+    generation_before: int | None,
+    generation_after: int,
+    scope_generation: int,
+) -> None:
+    operation = _admin_op(
+        operation_id=50,
+        operation_type="ADOPT_LEGACY_SCOPE",
+        result_code="ADOPTED_LEGACY_SCOPE",
+        generation_before=generation_before,
+        generation_after=generation_after,
+    )
+    _, code, _ = classify_scope_state(
+        _supported_snapshot_with_operation(operation, generation=scope_generation)
+    )
+    assert code == ResultCode.SUPPORT_GENERATION_MISMATCH
+
+
+@pytest.mark.parametrize(
+    ("generation_before", "generation_after", "scope_generation"),
+    (
+        (0, 1, 1),
+        (None, 2, 2),
+    ),
+)
+def test_new_promotion_requires_null_before_and_generation_one(
+    generation_before: int | None,
+    generation_after: int,
+    scope_generation: int,
+) -> None:
+    operation = _admin_op(
+        operation_id=50,
+        operation_type="PROMOTE_SCOPE",
+        result_code="PROMOTED_NEW_SCOPE",
+        generation_before=generation_before,
+        generation_after=generation_after,
+    )
+    _, code, _ = classify_scope_state(
+        _supported_snapshot_with_operation(operation, generation=scope_generation)
+    )
+    assert code == ResultCode.SUPPORT_GENERATION_MISMATCH
+
+
+def test_repromotion_requires_immediate_predecessor_generation() -> None:
+    operation = _admin_op(
+        operation_id=50,
+        operation_type="PROMOTE_SCOPE",
+        result_code="PROMOTED_FROM_PRIOR_WITHDRAWAL",
+        generation_before=1,
+        generation_after=3,
+    )
+    _, code, _ = classify_scope_state(
+        _supported_snapshot_with_operation(operation, generation=3)
+    )
+    assert code == ResultCode.SUPPORT_GENERATION_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    (
+        pytest.param(
+            _supported_snapshot_with_operation(
+                _admin_op(
+                    operation_id=50,
+                    operation_type="ADOPT_LEGACY_SCOPE",
+                    result_code="ADOPTED_LEGACY_SCOPE",
+                    generation_before=None,
+                    generation_after=1,
+                ),
+                generation=1,
+            ),
+            id="adopt-legacy-scope",
+        ),
+        pytest.param(_managed_supported(1), id="promote-new-scope"),
+        pytest.param(_managed_supported(3), id="promote-from-prior-withdrawal"),
+        pytest.param(_managed_removed(2), id="remove-scope"),
+    ),
+)
+def test_all_canonical_operation_tuples_are_valid(
+    snapshot: ScopeStateSnapshot,
+) -> None:
+    classification, code, _ = classify_scope_state(snapshot)
+    expected = (
+        ScopeClassification.MANAGED_REMOVED
+        if snapshot.scope_support_state == "NOT_APPLICABLE"
+        else ScopeClassification.MANAGED_SUPPORTED
+    )
+    assert classification == expected
+    assert code is None
 
 
 def test_removed_event_operation_differs_from_cadence_deactivation() -> None:
@@ -2352,6 +2514,35 @@ def test_mariadb_promote_new_and_replay_idempotent(_mariadb_auth) -> None:
                 "SELECT COUNT(*) AS n FROM native_short_scope_cadence_config_v1 WHERE is_active = 1"
             )
             assert cursor.fetchone()["n"] == 1
+
+
+@_MARIADB
+def test_mariadb_persisted_operation_tuple_is_canonical(_mariadb_auth) -> None:
+    with _disposable_schema("operationtuple") as (conn, _config, _database):
+        operation_uuid = _other_uuid("c1")
+        outcome = execute_scope_administration(
+            conn,
+            _mariadb_request(OperationType.PROMOTE_SCOPE, operation_uuid),
+            authorization=_AUTH,
+        )
+        assert outcome.result.result_code == ResultCode.PROMOTED_NEW_SCOPE
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT operation_type, result_class, result_code,
+                       support_generation_before, support_generation_after
+                FROM native_short_scope_admin_operation_v1
+                WHERE operation_uuid = %s
+                """,
+                (operation_uuid,),
+            )
+            assert cursor.fetchone() == {
+                "operation_type": "PROMOTE_SCOPE",
+                "result_class": "SUCCESS",
+                "result_code": "PROMOTED_NEW_SCOPE",
+                "support_generation_before": None,
+                "support_generation_after": 1,
+            }
 
 
 @_MARIADB

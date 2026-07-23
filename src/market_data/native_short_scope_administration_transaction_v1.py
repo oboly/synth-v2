@@ -250,6 +250,7 @@ class AdminOperationRow:
 
     scope_admin_operation_id: int
     operation_type: str
+    result_class: str | None
     result_code: str | None
     is_terminal: bool
     support_generation_before: int | None
@@ -590,8 +591,8 @@ def read_scope_state_snapshot(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT scope_admin_operation_id, operation_type, result_code,
-                   completed_at_utc,
+            SELECT scope_admin_operation_id, operation_type,
+                   result_class, result_code, completed_at_utc,
                    support_generation_before, support_generation_after
             FROM native_short_scope_admin_operation_v1
             WHERE {_SCOPE_KEY_WHERE}
@@ -603,6 +604,7 @@ def read_scope_state_snapshot(
             AdminOperationRow(
                 scope_admin_operation_id=int(r["scope_admin_operation_id"]),
                 operation_type=str(r["operation_type"]),
+                result_class=r["result_class"],
                 result_code=r["result_code"],
                 is_terminal=r["completed_at_utc"] is not None,
                 support_generation_before=(
@@ -817,15 +819,7 @@ def _classify_managed_supported(
     lineage = _validate_referenced_operation(
         snapshot,
         cadence.activation_operation_id,
-        allowed_types=(
-            OperationType.ADOPT_LEGACY_SCOPE,
-            OperationType.PROMOTE_SCOPE,
-        ),
-        allowed_results=(
-            ResultCode.ADOPTED_LEGACY_SCOPE,
-            ResultCode.PROMOTED_NEW_SCOPE,
-            ResultCode.PROMOTED_FROM_PRIOR_WITHDRAWAL,
-        ),
+        expected_classification=ScopeClassification.MANAGED_SUPPORTED,
         expected_generation_after=generation,
     )
     if lineage is not None:
@@ -915,8 +909,7 @@ def _classify_managed_removed(
     lineage = _validate_referenced_operation(
         snapshot,
         latest.deactivation_operation_id,
-        allowed_types=(OperationType.REMOVE_SCOPE,),
-        allowed_results=(ResultCode.REMOVED_SCOPE,),
+        expected_classification=ScopeClassification.MANAGED_REMOVED,
         expected_generation_after=generation,
         expected_generation_before=latest.support_generation,
     )
@@ -929,16 +922,16 @@ def _validate_referenced_operation(
     snapshot: ScopeStateSnapshot,
     operation_id: int | None,
     *,
-    allowed_types: tuple[OperationType, ...],
-    allowed_results: tuple[ResultCode, ...],
+    expected_classification: ScopeClassification,
     expected_generation_after: int,
     expected_generation_before: int | None = None,
 ) -> tuple[ScopeClassification, ResultCode, str] | None:
     """Prove a referenced admin operation exists for this exact scope, is
-    terminal, has a compatible type/result, and carries matching generation
-    continuity. Returns an incoherent classification tuple on failure, else None.
-    Only rows for this exact scope are in ``snapshot.operations`` (scope-keyed
-    read), so a missing row also means "not bound to this scope"."""
+    terminal, and matches exactly one accepted canonical (operation_type,
+    result_class, result_code, generation_before, generation_after) tuple.
+    Returns an incoherent classification tuple on failure, else None. Only rows
+    for this exact scope are in ``snapshot.operations`` (scope-keyed read), so a
+    missing row also means "not bound to this scope"."""
     operation = snapshot.operation_by_id(operation_id)
     if operation is None:
         return (
@@ -952,34 +945,70 @@ def _validate_referenced_operation(
             ResultCode.COMMIT_STATUS_UNKNOWN,
             "referenced administration operation is not terminal",
         )
-    if operation.operation_type not in {t.value for t in allowed_types}:
-        return (
-            ScopeClassification.INCOHERENT,
-            ResultCode.PARTIAL_SCOPE_STATE,
-            f"referenced operation type {operation.operation_type} incompatible with state",
+
+    operation_tuple = (
+        operation.operation_type,
+        operation.result_class,
+        operation.result_code,
+        operation.support_generation_before,
+        operation.support_generation_after,
+    )
+    if expected_classification == ScopeClassification.MANAGED_SUPPORTED:
+        canonical_tuples = (
+            (
+                OperationType.ADOPT_LEGACY_SCOPE.value,
+                ResultClass.SUCCESS.value,
+                ResultCode.ADOPTED_LEGACY_SCOPE.value,
+                None,
+                1,
+            ),
+            (
+                OperationType.PROMOTE_SCOPE.value,
+                ResultClass.SUCCESS.value,
+                ResultCode.PROMOTED_NEW_SCOPE.value,
+                None,
+                1,
+            ),
+            (
+                OperationType.PROMOTE_SCOPE.value,
+                ResultClass.SUCCESS.value,
+                ResultCode.PROMOTED_FROM_PRIOR_WITHDRAWAL.value,
+                expected_generation_after - 1,
+                expected_generation_after,
+            ),
         )
-    if operation.result_code not in {r.value for r in allowed_results}:
-        return (
-            ScopeClassification.INCOHERENT,
-            ResultCode.PARTIAL_SCOPE_STATE,
-            f"referenced operation result {operation.result_code} incompatible with state",
+    elif expected_classification == ScopeClassification.MANAGED_REMOVED:
+        canonical_tuples = (
+            (
+                OperationType.REMOVE_SCOPE.value,
+                ResultClass.SUCCESS.value,
+                ResultCode.REMOVED_SCOPE.value,
+                expected_generation_before,
+                expected_generation_after,
+            ),
         )
-    if operation.support_generation_after != expected_generation_after:
+    else:
+        raise ValueError(
+            f"unsupported lineage classification: {expected_classification}"
+        )
+
+    if operation_tuple in canonical_tuples:
+        return None
+
+    operation_identity = operation_tuple[:3]
+    canonical_identities = tuple(item[:3] for item in canonical_tuples)
+    if operation_identity in canonical_identities:
         return (
             ScopeClassification.INCOHERENT,
             ResultCode.SUPPORT_GENERATION_MISMATCH,
-            "referenced operation support_generation_after does not match state",
+            "referenced operation generation tuple is not canonical for state",
         )
-    if (
-        expected_generation_before is not None
-        and operation.support_generation_before != expected_generation_before
-    ):
-        return (
-            ScopeClassification.INCOHERENT,
-            ResultCode.SUPPORT_GENERATION_MISMATCH,
-            "referenced operation support_generation_before does not match state",
-        )
-    return None
+    return (
+        ScopeClassification.INCOHERENT,
+        ResultCode.PARTIAL_SCOPE_STATE,
+        "referenced operation type/result_class/result_code tuple is not "
+        "canonical for state",
+    )
 
 
 def classify_scope_state(
