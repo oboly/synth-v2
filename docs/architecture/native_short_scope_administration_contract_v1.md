@@ -2,9 +2,12 @@
 
 ## Status and boundary
 
-This document defines the repository contract and schema ownership established
-by the first Native SHORT scope-administration implementation boundary. It does
-not implement or authorize an administration transaction.
+This document defines the repository contract and schema ownership for Native
+SHORT scope administration. The pure request contract, the forward-only schema,
+and the deterministic repository transactions for `ADOPT_LEGACY_SCOPE`,
+`PROMOTE_SCOPE`, and `REMOVE_SCOPE` are implemented in the repository. This
+document authorizes no production database mutation, deployment, migration
+application, host acceptance, or new production scope.
 
 Native SHORT scope administration belongs to `src/market_data/` and remains
 market-only and account-agnostic. It has no account, wallet, private-broker,
@@ -120,6 +123,51 @@ slot, which:
 The migration preflight additionally fails before persistent DDL if current data
 already holds duplicate legacy `(scope + cadence_contract_version)` rows.
 
+## Implemented repository transaction boundary
+
+`src/market_data/native_short_scope_administration_transaction_v1.py` owns the
+deterministic repository transactions, and
+`src/market_data/run_native_short_scope_administration_v1.py` is the thin manual
+CLI. The transaction module:
+
+- separates a pure decision function (`classify_scope_state` /
+  `decide_administration`) from explicit per-branch SQL, with no generic
+  administration framework;
+- serializes each exact scope with one zero-wait MariaDB advisory lock derived
+  from the six-part canonical scope key, plus `SELECT ... FOR UPDATE` row locks
+  on the existing scope, cadence, support, and operation rows; the advisory lock
+  serializes first creation when no scope row exists yet;
+- treats `native_short_scope_admin_operation_v1` as the sole idempotency
+  authority: a terminal operation ledger row and its scope mutation commit
+  atomically in one bounded transaction, so a committed ledger row is always
+  terminal. Replay of a completed `operation_uuid` with the identical request
+  digest returns `OPERATION_ALREADY_COMPLETED`; a different digest or immutable
+  metadata returns `OPERATION_METADATA_MISMATCH`; a non-terminal committed row
+  fails closed as `COMMIT_STATUS_UNKNOWN`;
+- assigns the first positive administration generation for adoption and new
+  promotion, increments the generation for re-promotion after withdrawal and for
+  removal, appends exactly one attributable support event per operation, and
+  keeps at most one active cadence row per exact scope;
+- performs, on removal, only the narrow deterministic cleanup of the current
+  derived projections (`native_short_scope_status_v1` and
+  `native_short_map_level_status_v1`) that would otherwise remain falsely
+  actionable, using the stable `ADMIN_SCOPE_WITHDRAWN` reason code that never
+  masquerades as a market-lifecycle outcome; it deletes no immutable map,
+  generation, lifecycle, observation, run, or support history;
+- materializes no map and publishes no snapshot;
+- revalidates all invariants immediately before commit, and maps deadlock, lock
+  timeout, and unknown commit status only to the existing typed RETRYABLE result
+  codes;
+- defaults to a read-only dry run that computes the planned transition and
+  expected result without any persistent write, lock acquisition, operation
+  ledger row, or production mutation authorization. Write mode verifies the exact
+  clean repository source identity and requires canonical
+  `native_short_4h_chain` writer mutation authorization before any mutation.
+
+This transaction provides its own commit-time transaction validation only. It
+does not add or perform the separate 4h map-writer commit-time fencing, which
+remains the next blocker.
+
 ## Forward-only and deferred work
 
 The migration is forward-only, non-destructive, and performs no historical
@@ -139,11 +187,13 @@ test. No migration-runner state table is introduced by this contract.
 
 The following remain explicitly deferred:
 
-- repository transactions for adoption, promotion, and removal;
-- first-creation serialization and transaction locking;
-- writer selection and commit-time revalidation using scope ID, support state,
-  support generation, and cadence config ID;
-- narrow deterministic projection cleanup after coherent withdrawal;
-- any scope mutation or operational acceptance.
+- 4h map-writer commit-time fencing (writer selection and commit-time
+  revalidation of scope ID, support state, support generation, and cadence
+  config ID immediately before the bounded writer transaction commits);
+- `NO_CURRENT_MAP` bootstrap semantics for a newly supported scope;
+- per-symbol failure isolation across a multi-scope rollout;
+- the sequential SOL canary, then ETH, then XRP, then broader rollout;
+- any production database mutation, migration application, host acceptance, or
+  operational acceptance.
 
 No persistent writer-fence table is part of this contract.
