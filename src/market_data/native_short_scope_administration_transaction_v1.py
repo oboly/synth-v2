@@ -19,12 +19,17 @@ Design:
 - Database I/O is explicit, one SQL statement per concern, with no generic
   administration framework.
 - ``native_short_scope_admin_operation_v1`` is the sole idempotency authority.
-  A terminal operation ledger row and its scope mutation commit atomically in
-  one transaction; a crash rolls back both, so a committed ledger row is always
-  terminal.
+  Every write-capable administration request commits exactly one immutable
+  terminal operation-ledger row atomically with its mutations; a crash rolls
+  back both, so a committed ledger row is always terminal. There is no
+  unledgered mutation path.
 - Serialization uses one deterministic MariaDB advisory lock derived from the
   exact six-part canonical scope key (zero-wait) plus ``SELECT ... FOR UPDATE``
   row locks on the existing scope, cadence, support, and operation rows.
+- The commit boundary is explicit: once ``conn.commit()`` is invoked, an
+  exception whose committed state cannot be proven returns a typed
+  ``COMMIT_STATUS_UNKNOWN`` result with ``commit_state=UNKNOWN``; the code never
+  claims rollback certainty or ``persisted=false`` after an indeterminate commit.
 
 Safety markers:
 broker_private_calls=0
@@ -38,10 +43,10 @@ executor=none
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from src.market_data.native_short_scope_administration_v1 import (
     NativeShortScopeAdministrationOperationType as OperationType,
@@ -49,6 +54,7 @@ from src.market_data.native_short_scope_administration_v1 import (
     NativeShortScopeAdministrationResult,
     NativeShortScopeAdministrationResultClass as ResultClass,
     NativeShortScopeAdministrationResultCode as ResultCode,
+    _RESULT_CODE_CLASS,
 )
 
 
@@ -105,6 +111,15 @@ class TransactionMode(StrEnum):
     WRITE = "WRITE"
 
 
+class CommitState(StrEnum):
+    """Explicit, deterministic commit-boundary state for a write attempt."""
+
+    NOT_ATTEMPTED = "NOT_ATTEMPTED"
+    COMMITTED = "COMMITTED"
+    ROLLED_BACK = "ROLLED_BACK"
+    UNKNOWN = "UNKNOWN"
+
+
 class OperationAction(StrEnum):
     """Concrete mutation branch selected by the pure decider."""
 
@@ -126,10 +141,24 @@ class ScopeClassification(StrEnum):
     INCOHERENT = "INCOHERENT"
 
 
-# Actions that persist a new terminal operation ledger row and mutate support
-# state. Everything else either replays an existing terminal operation, is an
-# idempotent no-op, performs only narrow residue cleanup, or is rejected.
-_PERSISTING_ACTIONS = frozenset(
+# Actions that commit one immutable terminal operation-ledger row atomically
+# with their mutations. Every write-capable request lands in exactly one of
+# these; there is no unledgered mutation path. CLEAR_RESIDUE writes a terminal
+# ledger row for its own operation UUID while performing only residue cleanup
+# (no support event, no generation increment, no map/history deletion).
+_LEDGERED_ACTIONS = frozenset(
+    {
+        OperationAction.ADOPT,
+        OperationAction.PROMOTE_NEW,
+        OperationAction.PROMOTE_REACTIVATE,
+        OperationAction.REMOVE,
+        OperationAction.CLEAR_RESIDUE,
+    }
+)
+
+# Ledgered actions that also change support state / generation (as opposed to
+# CLEAR_RESIDUE, which never does).
+_SUPPORT_STATE_ACTIONS = frozenset(
     {
         OperationAction.ADOPT,
         OperationAction.PROMOTE_NEW,
@@ -140,8 +169,8 @@ _PERSISTING_ACTIONS = frozenset(
 
 
 class _RetryableResult(Exception):
-    """Internal control-flow signal that maps a locking/commit condition to a
-    typed RETRYABLE result code after rollback + lock release."""
+    """Internal control-flow signal that maps a locking condition to a typed
+    RETRYABLE result code after rollback + lock release."""
 
     def __init__(self, result_code: ResultCode) -> None:
         super().__init__(result_code.value)
@@ -178,6 +207,17 @@ class CadenceRowState:
 
 
 @dataclass(frozen=True)
+class SupportEventRow:
+    """Typed projection of one native_short_scope_support_event_v1 row, enough to
+    prove support-event state and operation attribution without hidden dicts."""
+
+    scope_support_event_id: int
+    scope_support_state: str
+    scope_admin_operation_id: int | None
+    support_generation: int | None
+
+
+@dataclass(frozen=True)
 class ScopeStateSnapshot:
     scope_present: bool
     scope_id: int | None
@@ -186,14 +226,47 @@ class ScopeStateSnapshot:
     scope_reason_code: str | None
     scope_reason_detail: str | None
     cadence_rows: tuple[CadenceRowState, ...]
-    attributable_support_generations: tuple[int, ...]
-    legacy_support_event_count: int
+    support_events: tuple[SupportEventRow, ...]
     scope_status_residue_count: int
     map_level_status_residue_count: int
 
     @property
     def active_cadence_rows(self) -> tuple[CadenceRowState, ...]:
         return tuple(row for row in self.cadence_rows if int(row.is_active) == 1)
+
+    @property
+    def managed_cadence_rows(self) -> tuple[CadenceRowState, ...]:
+        return tuple(
+            row for row in self.cadence_rows if row.support_generation is not None
+        )
+
+    @property
+    def attributable_support_events(self) -> tuple[SupportEventRow, ...]:
+        return tuple(
+            e for e in self.support_events if e.support_generation is not None
+        )
+
+    @property
+    def attributable_support_generations(self) -> tuple[int, ...]:
+        return tuple(
+            sorted(
+                int(e.support_generation)
+                for e in self.support_events
+                if e.support_generation is not None
+            )
+        )
+
+    @property
+    def legacy_support_event_count(self) -> int:
+        return sum(1 for e in self.support_events if e.support_generation is None)
+
+    def events_for_generation(self, generation: int) -> tuple[SupportEventRow, ...]:
+        return tuple(
+            e
+            for e in self.support_events
+            if e.support_generation is not None
+            and int(e.support_generation) == generation
+        )
 
     @property
     def residue_present(self) -> bool:
@@ -207,10 +280,11 @@ class ScopeStateSnapshot:
             "scope_present": self.scope_present,
             "scope_support_state": self.scope_support_state,
             "support_generation": self.support_generation,
+            "scope_reason_code": self.scope_reason_code,
             "cadence_row_count": len(self.cadence_rows),
             "active_cadence_count": len(self.active_cadence_rows),
             "attributable_support_event_count": len(
-                self.attributable_support_generations
+                self.attributable_support_events
             ),
             "legacy_support_event_count": self.legacy_support_event_count,
             "scope_status_residue_count": self.scope_status_residue_count,
@@ -243,15 +317,16 @@ class AdministrationDecision:
     detail: str
 
     @property
-    def persists_operation(self) -> bool:
-        return self.action in _PERSISTING_ACTIONS
+    def writes_ledger(self) -> bool:
+        return self.action in _LEDGERED_ACTIONS
 
 
 @dataclass(frozen=True)
 class AdministrationTransactionOutcome:
     mode: TransactionMode
     write: bool
-    persisted: bool
+    persisted: bool | None
+    commit_state: CommitState
     operation_type: str
     operation_uuid: str
     request_digest: str
@@ -268,6 +343,7 @@ class AdministrationTransactionOutcome:
             "mode": str(self.mode),
             "write": self.write,
             "persisted": self.persisted,
+            "commit_state": str(self.commit_state),
             "operation_type": self.operation_type,
             "operation_uuid": self.operation_uuid,
             "request_digest": self.request_digest,
@@ -433,24 +509,31 @@ def read_scope_state_snapshot(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT scope_support_event_id, support_generation,
-                   scope_admin_operation_id
+            SELECT scope_support_event_id, scope_support_state,
+                   support_generation, scope_admin_operation_id
             FROM native_short_scope_support_event_v1
             WHERE {_SCOPE_KEY_WHERE}
             ORDER BY scope_support_event_id ASC{lock}
             """,
             params,
         )
-        support_rows = [dict(r) for r in cur.fetchall()]
-
-    attributable = tuple(
-        sorted(
-            int(r["support_generation"])
-            for r in support_rows
-            if r["support_generation"] is not None
+        support_events = tuple(
+            SupportEventRow(
+                scope_support_event_id=int(r["scope_support_event_id"]),
+                scope_support_state=str(r["scope_support_state"]),
+                scope_admin_operation_id=(
+                    None
+                    if r["scope_admin_operation_id"] is None
+                    else int(r["scope_admin_operation_id"])
+                ),
+                support_generation=(
+                    None
+                    if r["support_generation"] is None
+                    else int(r["support_generation"])
+                ),
+            )
+            for r in (dict(row) for row in cur.fetchall())
         )
-    )
-    legacy_count = sum(1 for r in support_rows if r["support_generation"] is None)
 
     scope_status_residue = _count(
         conn,
@@ -476,8 +559,7 @@ def read_scope_state_snapshot(
         scope_reason_code=None if scope is None else scope["scope_reason_code"],
         scope_reason_detail=None if scope is None else scope["scope_reason_detail"],
         cadence_rows=cadence_rows,
-        attributable_support_generations=attributable,
-        legacy_support_event_count=legacy_count,
+        support_events=support_events,
         scope_status_residue_count=scope_status_residue,
         map_level_status_residue_count=map_level_residue,
     )
@@ -552,10 +634,7 @@ def _effective_windows_overlap(rows: Sequence[CadenceRowState]) -> bool:
     (NULL effective_to) rows extend to the far future."""
     far_future = datetime(9999, 12, 31, 23, 59, 59, 999999)
     windows = sorted(
-        (
-            (r.effective_from_utc, r.effective_to_utc or far_future)
-            for r in rows
-        ),
+        ((r.effective_from_utc, r.effective_to_utc or far_future) for r in rows),
         key=lambda w: w[0],
     )
     for earlier, later in zip(windows, windows[1:]):
@@ -577,20 +656,140 @@ def _cadence_profile_matches_canonical(row: CadenceRowState) -> bool:
     )
 
 
+def _classify_managed_supported(
+    snapshot: ScopeStateSnapshot,
+) -> tuple[ScopeClassification, ResultCode | None, str]:
+    generation = snapshot.support_generation
+    assert generation is not None
+    active = snapshot.active_cadence_rows
+    if len(active) != 1:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.PARTIAL_SCOPE_STATE,
+            f"managed SUPPORTED scope has {len(active)} active cadence rows",
+        )
+    cadence = active[0]
+    if not _cadence_profile_matches_canonical(cadence):
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.CADENCE_PROFILE_CONFLICT,
+            "active managed cadence profile is not the canonical profile",
+        )
+    if cadence.support_generation != generation:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.SUPPORT_GENERATION_MISMATCH,
+            "active cadence support_generation != scope support_generation",
+        )
+    if cadence.activation_operation_id is None:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.PARTIAL_SCOPE_STATE,
+            "active managed cadence has no activation operation",
+        )
+    if cadence.deactivation_operation_id is not None:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.PARTIAL_SCOPE_STATE,
+            "active cadence row carries a deactivation operation",
+        )
+    if cadence.effective_to_utc is not None:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.PARTIAL_SCOPE_STATE,
+            "active cadence row has an effective end",
+        )
+    events = snapshot.events_for_generation(generation)
+    if len(events) != 1:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.SUPPORT_GENERATION_MISMATCH,
+            f"expected exactly one support event for generation {generation}, "
+            f"found {len(events)}",
+        )
+    event = events[0]
+    if event.scope_support_state != SUPPORTED_STATE:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.PARTIAL_SCOPE_STATE,
+            "support event for the current generation is not SUPPORTED",
+        )
+    if event.scope_admin_operation_id is None:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.PARTIAL_SCOPE_STATE,
+            "support event for the current generation has no operation attribution",
+        )
+    return (ScopeClassification.MANAGED_SUPPORTED, None, "managed SUPPORTED scope")
+
+
+def _classify_managed_removed(
+    snapshot: ScopeStateSnapshot,
+) -> tuple[ScopeClassification, ResultCode | None, str]:
+    generation = snapshot.support_generation
+    assert generation is not None
+    active = snapshot.active_cadence_rows
+    if len(active) != 0:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT,
+            f"managed removed scope has {len(active)} active cadence rows",
+        )
+    events = snapshot.events_for_generation(generation)
+    if len(events) != 1:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.SUPPORT_GENERATION_MISMATCH,
+            f"expected exactly one support event for generation {generation}, "
+            f"found {len(events)}",
+        )
+    event = events[0]
+    if event.scope_support_state != NOT_APPLICABLE_STATE:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT,
+            "latest support event for the current generation is not NOT_APPLICABLE",
+        )
+    if event.scope_admin_operation_id is None:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.PARTIAL_SCOPE_STATE,
+            "removal support event has no operation attribution",
+        )
+    managed = snapshot.managed_cadence_rows
+    if not managed:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT,
+            "managed removed scope has no managed cadence history",
+        )
+    latest = max(managed, key=lambda c: c.support_generation)  # type: ignore[arg-type]
+    if (
+        int(latest.is_active) != 0
+        or latest.deactivation_operation_id is None
+        or latest.effective_to_utc is None
+    ):
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT,
+            "latest managed cadence generation is not coherently deactivated",
+        )
+    return (ScopeClassification.MANAGED_REMOVED, None, "managed NOT_APPLICABLE scope")
+
+
 def classify_scope_state(
     snapshot: ScopeStateSnapshot,
 ) -> tuple[ScopeClassification, ResultCode | None, str]:
-    """Pure structural classification of the current scope state.
-
-    Returns (classification, corrupt_code, detail). ``corrupt_code`` is set only
-    when the state is structurally incoherent for any operation."""
+    """Pure structural classification with complete managed cadence/generation
+    invariants. Returns (classification, corrupt_code, detail); ``corrupt_code``
+    is set only when the state is structurally incoherent for any operation."""
     active = snapshot.active_cadence_rows
 
     if not snapshot.scope_present:
-        # A cadence or attributable/legacy support row without a scope row is a
-        # partial administration state.
-        if snapshot.cadence_rows or snapshot.attributable_support_generations or (
-            snapshot.legacy_support_event_count > 0
+        if (
+            snapshot.cadence_rows
+            or snapshot.attributable_support_events
+            or snapshot.legacy_support_event_count > 0
         ):
             return (
                 ScopeClassification.INCOHERENT,
@@ -619,8 +818,8 @@ def classify_scope_state(
         )
 
     if snapshot.support_generation is None:
-        # Legacy, unadopted scope.
-        if snapshot.attributable_support_generations:
+        # Legacy, unadopted scope: no administration attribution may exist yet.
+        if snapshot.attributable_support_events:
             return (
                 ScopeClassification.INCOHERENT,
                 ResultCode.PARTIAL_SCOPE_STATE,
@@ -641,38 +840,32 @@ def classify_scope_state(
         )
 
     # Managed scope (support_generation is a positive int).
-    if snapshot.scope_support_state == SUPPORTED_STATE:
-        if len(active) != 1:
+    generation = snapshot.support_generation
+    managed_generations = [
+        int(c.support_generation)
+        for c in snapshot.cadence_rows
+        if c.support_generation is not None
+    ]
+    if managed_generations and max(managed_generations) > generation:
+        return (
+            ScopeClassification.INCOHERENT,
+            ResultCode.SUPPORT_GENERATION_MISMATCH,
+            "a cadence generation is ahead of the scope generation",
+        )
+    for cadence in snapshot.cadence_rows:
+        if (cadence.support_generation is None) != (
+            cadence.activation_operation_id is None
+        ):
             return (
                 ScopeClassification.INCOHERENT,
                 ResultCode.PARTIAL_SCOPE_STATE,
-                f"managed SUPPORTED scope has {len(active)} active cadence rows",
+                "managed cadence row violates activation/generation attribution shape",
             )
-        if snapshot.support_generation not in snapshot.attributable_support_generations:
-            return (
-                ScopeClassification.INCOHERENT,
-                ResultCode.SUPPORT_GENERATION_MISMATCH,
-                "no attributable support event for the scope support_generation",
-            )
-        return (
-            ScopeClassification.MANAGED_SUPPORTED,
-            None,
-            "managed SUPPORTED scope",
-        )
 
+    if snapshot.scope_support_state == SUPPORTED_STATE:
+        return _classify_managed_supported(snapshot)
     if snapshot.scope_support_state == NOT_APPLICABLE_STATE:
-        if len(active) != 0:
-            return (
-                ScopeClassification.INCOHERENT,
-                ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT,
-                f"managed removed scope has {len(active)} active cadence rows",
-            )
-        return (
-            ScopeClassification.MANAGED_REMOVED,
-            None,
-            "managed NOT_APPLICABLE scope",
-        )
-
+        return _classify_managed_removed(snapshot)
     return (
         ScopeClassification.INCOHERENT,
         ResultCode.PARTIAL_SCOPE_STATE,
@@ -686,21 +879,13 @@ def _reject(
     return AdministrationDecision(
         action=OperationAction.REJECT,
         result_code=code,
-        result_class=_result_class_for(code),
+        result_class=_RESULT_CODE_CLASS[code],
         support_generation_before=None,
         support_generation_after=None,
         target_cadence_config_id=None,
         classification=classification,
         detail=detail,
     )
-
-
-def _result_class_for(code: ResultCode) -> ResultClass:
-    from src.market_data.native_short_scope_administration_v1 import (
-        _RESULT_CODE_CLASS,
-    )
-
-    return _RESULT_CODE_CLASS[code]
 
 
 def _decide_adopt(
@@ -856,6 +1041,9 @@ def _already_removed_or_residue(
 ) -> AdministrationDecision:
     generation = snapshot.support_generation
     if snapshot.residue_present:
+        # A ledgered cleanup operation: it records generation_before ==
+        # generation_after, appends no support event, and deletes only current
+        # derived projections.
         return AdministrationDecision(
             action=OperationAction.CLEAR_RESIDUE,
             result_code=ResultCode.ALREADY_REMOVED_DERIVED_RESIDUE_CLEARED,
@@ -914,8 +1102,8 @@ def decide_operation_replay(
         )
     if existing.completed_at_utc is None:
         # A committed ledger row is always terminal because the row and its
-        # scope mutation commit atomically. A non-terminal committed row means
-        # the prior attempt's commit status is unknown; fail closed, retryable.
+        # mutations commit atomically. A non-terminal committed row means the
+        # prior attempt's commit status is unknown; fail closed, retryable.
         return AdministrationDecision(
             action=OperationAction.REJECT,
             result_code=ResultCode.COMMIT_STATUS_UNKNOWN,
@@ -941,6 +1129,14 @@ def decide_operation_replay(
 # --------------------------------------------------------------------------- #
 # Mutations (explicit SQL per branch)                                         #
 # --------------------------------------------------------------------------- #
+
+
+def _naive_utc(value: datetime) -> datetime:
+    """MariaDB DATETIME(6) columns store no timezone; persist canonical UTC as a
+    naive value so comparison constraints behave deterministically."""
+    if value.tzinfo is not None:
+        value = value.astimezone(UTC).replace(tzinfo=None)
+    return value
 
 
 def _insert_operation(
@@ -998,14 +1194,6 @@ def _insert_operation(
         return int(cur.lastrowid)
 
 
-def _naive_utc(value: datetime) -> datetime:
-    """MariaDB DATETIME(6) columns store no timezone; persist canonical UTC as a
-    naive value so comparison constraints behave deterministically."""
-    if value.tzinfo is not None:
-        value = value.astimezone(UTC).replace(tzinfo=None)
-    return value
-
-
 def _insert_support_event(
     conn: Any,
     request: NativeShortScopeAdministrationRequest,
@@ -1055,7 +1243,6 @@ def _insert_scope_supported(
     request: NativeShortScopeAdministrationRequest,
     *,
     support_generation: int,
-    now_utc: datetime,
 ) -> None:
     scope = request.scope_key
     with conn.cursor() as cur:
@@ -1255,9 +1442,7 @@ def _clear_derived_projections(conn: Any, scope_key: Mapping[str, str]) -> int:
         "native_short_map_level_status_v1",
     ):
         with conn.cursor() as cur:
-            cur.execute(
-                f"DELETE FROM {table} WHERE {_SCOPE_KEY_WHERE}", params
-            )
+            cur.execute(f"DELETE FROM {table} WHERE {_SCOPE_KEY_WHERE}", params)
             deleted += int(cur.rowcount)
     return deleted
 
@@ -1274,21 +1459,21 @@ def _apply_decision(
     snapshot: ScopeStateSnapshot,
     *,
     now_utc: datetime,
-) -> int | None:
-    """Execute the concrete mutation branch. Returns the new operation id when a
-    ledger row was written, else None."""
+) -> int:
+    """Execute the concrete ledgered mutation branch. Every ledgered action
+    writes exactly one terminal operation row atomically with its mutations.
+    Returns the new operation id."""
     action = decision.action
+    operation_id = _insert_operation(conn, request, decision, now_utc=now_utc)
 
     if action == OperationAction.CLEAR_RESIDUE:
+        # Ledgered residue cleanup only: no support event, no cadence change, no
+        # generation increment, no map/history deletion.
         _clear_derived_projections(conn, request.scope_key.as_dict())
-        return None
-
-    if action not in _PERSISTING_ACTIONS:
-        return None
+        return operation_id
 
     generation_after = decision.support_generation_after
     assert generation_after is not None
-    operation_id = _insert_operation(conn, request, decision, now_utc=now_utc)
 
     if action == OperationAction.ADOPT:
         _update_scope_generation(
@@ -1311,7 +1496,7 @@ def _apply_decision(
         )
     elif action == OperationAction.PROMOTE_NEW:
         _insert_scope_supported(
-            conn, request, support_generation=generation_after, now_utc=now_utc
+            conn, request, support_generation=generation_after
         )
         _insert_active_cadence(
             conn,
@@ -1369,6 +1554,10 @@ def _apply_decision(
             now_utc=now_utc,
         )
         _clear_derived_projections(conn, request.scope_key.as_dict())
+    else:  # pragma: no cover - guarded by _LEDGERED_ACTIONS membership.
+        raise NativeShortScopeAdministrationTransactionError(
+            f"non-ledgered action reached apply: {action}"
+        )
 
     return operation_id
 
@@ -1395,68 +1584,16 @@ def _revalidate_post_state(
     decision: AdministrationDecision,
     *,
     operation_id: int,
+    now_utc: datetime,
 ) -> None:
-    """Immediately-before-commit revalidation of all invariants for a persisting
-    action, re-reading the mutated state under the same locked transaction."""
+    """Immediately-before-commit revalidation for a ledgered action, re-reading
+    the mutated state under the same locked transaction and binding every
+    mutated row to the exact new operation/generation."""
     scope_key = request.scope_key.as_dict()
     post = read_scope_state_snapshot(conn, scope_key, for_update=True)
 
-    if not post.scope_present:
-        raise _RevalidationError(
-            ResultCode.PARTIAL_SCOPE_STATE, "scope row missing after mutation"
-        )
-    if post.support_generation != decision.support_generation_after:
-        raise _RevalidationError(
-            ResultCode.SUPPORT_GENERATION_MISMATCH,
-            f"post generation {post.support_generation} != "
-            f"{decision.support_generation_after}",
-        )
-
-    if decision.action == OperationAction.REMOVE:
-        expected_state = NOT_APPLICABLE_STATE
-        expected_active = 0
-    else:
-        expected_state = SUPPORTED_STATE
-        expected_active = 1
-
-    if post.scope_support_state != expected_state:
-        raise _RevalidationError(
-            ResultCode.PARTIAL_SCOPE_STATE,
-            f"post support state {post.scope_support_state} != {expected_state}",
-        )
-    active = post.active_cadence_rows
-    if len(active) != expected_active:
-        code = (
-            ResultCode.MULTIPLE_ACTIVE_CADENCE_ROWS
-            if len(active) > 1
-            else ResultCode.PARTIAL_SCOPE_STATE
-        )
-        raise _RevalidationError(
-            code, f"post active cadence count {len(active)} != {expected_active}"
-        )
-    if _effective_windows_overlap(post.cadence_rows):
-        raise _RevalidationError(
-            ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT,
-            "post cadence effective windows overlap",
-        )
-
-    generation_after = decision.support_generation_after
-    assert generation_after is not None
-    if post.attributable_support_generations.count(generation_after) != 1:
-        raise _RevalidationError(
-            ResultCode.SUPPORT_GENERATION_MISMATCH,
-            "expected exactly one attributable support event for the new generation",
-        )
-    if len(post.attributable_support_generations) != len(
-        set(post.attributable_support_generations)
-    ):
-        raise _RevalidationError(
-            ResultCode.SUPPORT_GENERATION_MISMATCH,
-            "duplicate attributable support generation detected",
-        )
-
-    # The persisted operation must exist, be terminal, and be bound to this exact
-    # scope (no cross-scope attribution).
+    # 1. Operation ledger row exists, is terminal, matches digest, and is bound
+    #    to this exact scope (no cross-scope attribution).
     existing = read_existing_operation(
         conn, request.provenance.operation_uuid, for_update=True
     )
@@ -1477,13 +1614,157 @@ def _revalidate_post_state(
             ResultCode.COMMIT_STATUS_UNKNOWN, "operation ledger row not terminal"
         )
 
+    if decision.action == OperationAction.CLEAR_RESIDUE:
+        if post.residue_present:
+            raise _RevalidationError(
+                ResultCode.PARTIAL_SCOPE_STATE, "residue still present after cleanup"
+            )
+        if (
+            post.scope_present
+            and post.support_generation != decision.support_generation_after
+        ):
+            raise _RevalidationError(
+                ResultCode.SUPPORT_GENERATION_MISMATCH,
+                "scope generation changed during residue cleanup",
+            )
+        return
+
+    # 2. Support-state mutations: scope, generation, support event.
+    if not post.scope_present:
+        raise _RevalidationError(
+            ResultCode.PARTIAL_SCOPE_STATE, "scope row missing after mutation"
+        )
+    generation_after = decision.support_generation_after
+    assert generation_after is not None
+    if post.support_generation != generation_after:
+        raise _RevalidationError(
+            ResultCode.SUPPORT_GENERATION_MISMATCH,
+            f"post generation {post.support_generation} != {generation_after}",
+        )
+    if len(post.attributable_support_generations) != len(
+        set(post.attributable_support_generations)
+    ):
+        raise _RevalidationError(
+            ResultCode.SUPPORT_GENERATION_MISMATCH,
+            "duplicate attributable support generation detected",
+        )
+    events = post.events_for_generation(generation_after)
+    if len(events) != 1:
+        raise _RevalidationError(
+            ResultCode.SUPPORT_GENERATION_MISMATCH,
+            "expected exactly one attributable support event for the new generation",
+        )
+    event = events[0]
+    if event.scope_admin_operation_id != operation_id:
+        raise _RevalidationError(
+            ResultCode.COMMIT_STATUS_UNKNOWN,
+            "new support event bound to the wrong operation",
+        )
+    if _effective_windows_overlap(post.cadence_rows):
+        raise _RevalidationError(
+            ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT,
+            "post cadence effective windows overlap",
+        )
+
+    if decision.action == OperationAction.REMOVE:
+        if post.scope_support_state != NOT_APPLICABLE_STATE:
+            raise _RevalidationError(
+                ResultCode.PARTIAL_SCOPE_STATE, "scope not NOT_APPLICABLE after remove"
+            )
+        if post.scope_reason_code != ADMIN_REMOVAL_REASON_CODE:
+            raise _RevalidationError(
+                ResultCode.PARTIAL_SCOPE_STATE,
+                "removed scope does not carry the administration-removal reason",
+            )
+        if len(post.active_cadence_rows) != 0:
+            raise _RevalidationError(
+                ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT,
+                "active cadence remains after removal",
+            )
+        if event.scope_support_state != NOT_APPLICABLE_STATE:
+            raise _RevalidationError(
+                ResultCode.PARTIAL_SCOPE_STATE,
+                "removal support event state is not NOT_APPLICABLE",
+            )
+        target = _find_cadence(post, _require_cadence_id(decision))
+        if (
+            target is None
+            or int(target.is_active) != 0
+            or target.deactivation_operation_id != operation_id
+            or target.effective_to_utc != _naive_utc(now_utc)
+        ):
+            raise _RevalidationError(
+                ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT,
+                "target cadence not coherently deactivated by this operation",
+            )
+        if post.residue_present:
+            raise _RevalidationError(
+                ResultCode.PARTIAL_SCOPE_STATE,
+                "derived projections not cleared after removal",
+            )
+        return
+
+    # 3. ADOPT / PROMOTE_NEW / PROMOTE_REACTIVATE: exactly one active canonical
+    #    cadence row for the new generation, bound to this operation.
+    if post.scope_support_state != SUPPORTED_STATE:
+        raise _RevalidationError(
+            ResultCode.PARTIAL_SCOPE_STATE, "scope not SUPPORTED after mutation"
+        )
+    if event.scope_support_state != SUPPORTED_STATE:
+        raise _RevalidationError(
+            ResultCode.PARTIAL_SCOPE_STATE, "support event state is not SUPPORTED"
+        )
+    active = post.active_cadence_rows
+    if len(active) != 1:
+        code = (
+            ResultCode.MULTIPLE_ACTIVE_CADENCE_ROWS
+            if len(active) > 1
+            else ResultCode.PARTIAL_SCOPE_STATE
+        )
+        raise _RevalidationError(code, f"post active cadence count {len(active)} != 1")
+    cadence = active[0]
+    if not _cadence_profile_matches_canonical(cadence):
+        raise _RevalidationError(
+            ResultCode.CADENCE_PROFILE_CONFLICT,
+            "post active cadence profile is not canonical",
+        )
+    if cadence.support_generation != generation_after:
+        raise _RevalidationError(
+            ResultCode.SUPPORT_GENERATION_MISMATCH,
+            "post active cadence generation != scope generation",
+        )
+    if cadence.activation_operation_id != operation_id:
+        raise _RevalidationError(
+            ResultCode.COMMIT_STATUS_UNKNOWN,
+            "post active cadence bound to the wrong operation",
+        )
+    if (
+        cadence.deactivation_operation_id is not None
+        or cadence.effective_to_utc is not None
+    ):
+        raise _RevalidationError(
+            ResultCode.PARTIAL_SCOPE_STATE,
+            "post active cadence carries deactivation/effective-end state",
+        )
+
+
+def _find_cadence(
+    snapshot: ScopeStateSnapshot, cadence_config_id: int
+) -> CadenceRowState | None:
+    for row in snapshot.cadence_rows:
+        if row.cadence_config_id == cadence_config_id:
+            return row
+    return None
+
 
 # --------------------------------------------------------------------------- #
 # Orchestration                                                               #
 # --------------------------------------------------------------------------- #
 
 
-def _build_result(decision: AdministrationDecision) -> NativeShortScopeAdministrationResult:
+def _build_result(
+    decision: AdministrationDecision,
+) -> NativeShortScopeAdministrationResult:
     return NativeShortScopeAdministrationResult(
         result_class=decision.result_class,
         result_code=decision.result_code,
@@ -1506,6 +1787,7 @@ def plan_scope_administration(
     existing = read_existing_operation(
         conn, request.provenance.operation_uuid, for_update=False
     )
+    snapshot: ScopeStateSnapshot | None
     if existing is not None:
         decision = decide_operation_replay(request, existing)
         snapshot = read_scope_state_snapshot(conn, scope_key, for_update=False)
@@ -1513,21 +1795,23 @@ def plan_scope_administration(
         try:
             snapshot = read_scope_state_snapshot(conn, scope_key, for_update=False)
         except _RevalidationError as exc:
-            snapshot = None  # type: ignore[assignment]
+            snapshot = None
             decision = _reject(
                 ScopeClassification.INCOHERENT, exc.result_code, exc.detail
             )
         else:
             decision = decide_administration(request.operation_type, snapshot)
 
-    current_state = snapshot.summary() if snapshot is not None else {
-        "scope_present": None,
-        "unreadable_state": True,
-    }
+    current_state = (
+        snapshot.summary()
+        if snapshot is not None
+        else {"scope_present": None, "state_unread": True}
+    )
     return AdministrationTransactionOutcome(
         mode=TransactionMode.DRY_RUN,
         write=False,
         persisted=False,
+        commit_state=CommitState.NOT_ATTEMPTED,
         operation_type=str(request.operation_type),
         operation_uuid=request.provenance.operation_uuid,
         request_digest=request.request_digest,
@@ -1551,8 +1835,13 @@ def execute_scope_administration(
     now_utc: datetime | None = None,
 ) -> AdministrationTransactionOutcome:
     """Write mode: one bounded transaction under a deterministic advisory lock
-    plus row locks. Commits terminal operation state and scope mutation
+    plus row locks. Commits one terminal operation-ledger row and its mutations
     atomically, or fails closed with a typed result code and no partial state.
+
+    Commit-boundary uncertainty (an exception after ``conn.commit()`` whose
+    committed state cannot be proven) returns ``COMMIT_STATUS_UNKNOWN`` with
+    ``commit_state=UNKNOWN`` and ``persisted=None``; rollback certainty is never
+    claimed in that case.
 
     ``authorization`` must be a validated writer mutation authorization for the
     ``native_short_4h_chain`` capability; it is required before any mutation."""
@@ -1586,25 +1875,14 @@ def execute_scope_administration(
                 snapshot,
                 lock_name=lock_name,
                 persisted=False,
+                commit_state=CommitState.ROLLED_BACK,
                 scope_admin_operation_id=existing.scope_admin_operation_id,
             )
 
         snapshot = read_scope_state_snapshot(conn, scope_key, for_update=True)
         decision = decide_administration(request.operation_type, snapshot)
 
-        if decision.action == OperationAction.CLEAR_RESIDUE:
-            _apply_decision(conn, request, decision, snapshot, now_utc=now)
-            conn.commit()
-            return _outcome(
-                request,
-                decision,
-                snapshot,
-                lock_name=lock_name,
-                persisted=True,
-                scope_admin_operation_id=None,
-            )
-
-        if not decision.persists_operation:
+        if not decision.writes_ledger:
             # Idempotent no-op, conflict, blocked, or corrupt: never persist.
             conn.rollback()
             return _outcome(
@@ -1613,47 +1891,65 @@ def execute_scope_administration(
                 snapshot,
                 lock_name=lock_name,
                 persisted=False,
+                commit_state=CommitState.ROLLED_BACK,
                 scope_admin_operation_id=None,
             )
 
-        operation_id = _apply_decision(
-            conn, request, decision, snapshot, now_utc=now
+        operation_id = _apply_decision(conn, request, decision, snapshot, now_utc=now)
+        _revalidate_post_state(
+            conn, request, decision, operation_id=operation_id, now_utc=now
         )
-        assert operation_id is not None
-        _revalidate_post_state(conn, request, decision, operation_id=operation_id)
-        conn.commit()
+
+        # --- commit boundary ----------------------------------------------- #
+        try:
+            conn.commit()
+        except Exception:  # noqa: BLE001 - commit-status uncertainty is typed.
+            # The server may or may not have committed. Do not attempt rollback
+            # or claim persisted=false; return a retryable typed result. On a
+            # later retry the operation ledger is the authority.
+            return _outcome(
+                request,
+                _reject(
+                    ScopeClassification.INCOHERENT,
+                    ResultCode.COMMIT_STATUS_UNKNOWN,
+                    "commit raised; committed state cannot be proven",
+                ),
+                snapshot,
+                lock_name=lock_name,
+                persisted=None,
+                commit_state=CommitState.UNKNOWN,
+                scope_admin_operation_id=operation_id,
+            )
+
         return _outcome(
             request,
             decision,
             snapshot,
             lock_name=lock_name,
             persisted=True,
+            commit_state=CommitState.COMMITTED,
             scope_admin_operation_id=operation_id,
         )
     except _RetryableResult as exc:
         conn.rollback()
-        decision = _reject(
-            ScopeClassification.INCOHERENT, exc.result_code, "lock unavailable"
-        )
         return _outcome(
             request,
-            decision,
+            _reject(ScopeClassification.INCOHERENT, exc.result_code, "lock unavailable"),
             None,
             lock_name=lock_name,
             persisted=False,
+            commit_state=CommitState.ROLLED_BACK,
             scope_admin_operation_id=None,
         )
     except _RevalidationError as exc:
         conn.rollback()
-        decision = _reject(
-            ScopeClassification.INCOHERENT, exc.result_code, exc.detail
-        )
         return _outcome(
             request,
-            decision,
+            _reject(ScopeClassification.INCOHERENT, exc.result_code, exc.detail),
             None,
             lock_name=lock_name,
             persisted=False,
+            commit_state=CommitState.ROLLED_BACK,
             scope_admin_operation_id=None,
         )
     except Exception as exc:  # noqa: BLE001 - map DB locking errors to typed codes.
@@ -1661,15 +1957,15 @@ def execute_scope_administration(
         mapped = _map_operational_error(exc)
         if mapped is None:
             raise
-        decision = _reject(
-            ScopeClassification.INCOHERENT, mapped, "database locking condition"
-        )
         return _outcome(
             request,
-            decision,
+            _reject(
+                ScopeClassification.INCOHERENT, mapped, "database locking condition"
+            ),
             None,
             lock_name=lock_name,
             persisted=False,
+            commit_state=CommitState.ROLLED_BACK,
             scope_admin_operation_id=None,
         )
     finally:
@@ -1696,7 +1992,8 @@ def _outcome(
     snapshot: ScopeStateSnapshot | None,
     *,
     lock_name: str,
-    persisted: bool,
+    persisted: bool | None,
+    commit_state: CommitState,
     scope_admin_operation_id: int | None,
 ) -> AdministrationTransactionOutcome:
     current_state = (
@@ -1708,6 +2005,7 @@ def _outcome(
         mode=TransactionMode.WRITE,
         write=True,
         persisted=persisted,
+        commit_state=commit_state,
         operation_type=str(request.operation_type),
         operation_uuid=request.provenance.operation_uuid,
         request_digest=request.request_digest,
@@ -1727,11 +2025,13 @@ __all__ = [
     "AdministrationTransactionOutcome",
     "CANONICAL_CADENCE_CONTRACT_VERSION",
     "CadenceRowState",
+    "CommitState",
     "ExistingOperation",
     "NativeShortScopeAdministrationTransactionError",
     "OperationAction",
     "ScopeClassification",
     "ScopeStateSnapshot",
+    "SupportEventRow",
     "TransactionMode",
     "WRITER_CAPABILITY_ID",
     "advisory_lock_name",

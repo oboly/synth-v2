@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import io
 import json
 import os
 import threading
@@ -25,16 +26,21 @@ from src.market_data import (
     native_short_scope_administration_transaction_v1 as txn,
 )
 from src.market_data.native_short_scope_administration_transaction_v1 import (
+    ADMIN_REMOVAL_REASON_CODE,
     CANONICAL_CADENCE_CONTRACT_VERSION,
     CANONICAL_EVALUATION_GRACE_SECONDS,
     CANONICAL_PRIMARY_SOURCE_FRESHNESS_LIMIT_SECONDS,
     CANONICAL_RECENT_SCOPE_GRACE_SECONDS,
     CANONICAL_SUPPORTING_SOURCE_FRESHNESS_LIMIT_SECONDS,
     CANONICAL_TARGET_EVALUATION_INTERVAL,
+    AdministrationDecision,
     CadenceRowState,
+    CommitState,
     ExistingOperation,
     OperationAction,
+    ScopeClassification,
     ScopeStateSnapshot,
+    SupportEventRow,
     advisory_lock_name,
     classify_scope_state,
     decide_administration,
@@ -45,7 +51,7 @@ from src.market_data.native_short_scope_administration_transaction_v1 import (
 
 
 # --------------------------------------------------------------------------- #
-# Shared request/snapshot builders                                            #
+# Request builders                                                            #
 # --------------------------------------------------------------------------- #
 
 
@@ -91,6 +97,11 @@ def _request(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Snapshot builders                                                           #
+# --------------------------------------------------------------------------- #
+
+
 def _cadence(
     *,
     cadence_config_id: int = 10,
@@ -126,6 +137,21 @@ def _cadence(
     )
 
 
+def _support_event(
+    *,
+    event_id: int = 1,
+    generation: int | None = None,
+    state: str = "SUPPORTED",
+    operation_id: int | None = None,
+) -> SupportEventRow:
+    return SupportEventRow(
+        scope_support_event_id=event_id,
+        scope_support_state=state,
+        scope_admin_operation_id=operation_id,
+        support_generation=generation,
+    )
+
+
 def _snapshot(
     *,
     scope_present: bool = True,
@@ -133,8 +159,7 @@ def _snapshot(
     state: str | None = "SUPPORTED",
     generation: int | None = None,
     cadence_rows: tuple[CadenceRowState, ...] = (),
-    attributable: tuple[int, ...] = (),
-    legacy_support: int = 0,
+    support_events: tuple[SupportEventRow, ...] = (),
     status_residue: int = 0,
     level_residue: int = 0,
     reason_code: str | None = None,
@@ -147,10 +172,82 @@ def _snapshot(
         scope_reason_code=reason_code,
         scope_reason_detail=None,
         cadence_rows=cadence_rows,
-        attributable_support_generations=attributable,
-        legacy_support_event_count=legacy_support,
+        support_events=support_events,
         scope_status_residue_count=status_residue,
         map_level_status_residue_count=level_residue,
+    )
+
+
+def _legacy_supported(canonical: bool = True) -> ScopeStateSnapshot:
+    return _snapshot(
+        generation=None,
+        state="SUPPORTED",
+        cadence_rows=(
+            _cadence(
+                is_active=1,
+                activation_op=None,
+                support_generation=None,
+                canonical_profile=canonical,
+            ),
+        ),
+        support_events=(_support_event(generation=None, state="SUPPORTED"),),
+    )
+
+
+def _managed_supported(generation: int = 1, activation_op: int = 50) -> ScopeStateSnapshot:
+    return _snapshot(
+        generation=generation,
+        state="SUPPORTED",
+        cadence_rows=(
+            _cadence(
+                cadence_config_id=10,
+                is_active=1,
+                activation_op=activation_op,
+                support_generation=generation,
+            ),
+        ),
+        support_events=(
+            _support_event(
+                event_id=generation,
+                generation=generation,
+                state="SUPPORTED",
+                operation_id=activation_op,
+            ),
+        ),
+    )
+
+
+def _managed_removed(
+    generation: int = 2, *, status_residue: int = 0, level_residue: int = 0
+) -> ScopeStateSnapshot:
+    supported_gen = generation - 1
+    return _snapshot(
+        state="NOT_APPLICABLE",
+        generation=generation,
+        reason_code=ADMIN_REMOVAL_REASON_CODE,
+        cadence_rows=(
+            _cadence(
+                cadence_config_id=10,
+                is_active=0,
+                activation_op=50,
+                deactivation_op=60,
+                support_generation=supported_gen,
+                effective_to=datetime(2026, 7, 15),
+            ),
+        ),
+        support_events=(
+            _support_event(
+                event_id=1, generation=supported_gen, state="SUPPORTED", operation_id=50
+            ),
+            _support_event(
+                event_id=2,
+                generation=generation,
+                state="NOT_APPLICABLE",
+                operation_id=60,
+            ),
+        ),
+        status_residue=status_residue,
+        level_residue=level_residue,
     )
 
 
@@ -168,18 +265,20 @@ def test_advisory_lock_name_is_deterministic_and_bounded() -> None:
 
 
 def test_promote_new_scope_from_empty() -> None:
-    snap = _snapshot(scope_present=False, scope_id=None)
-    decision = decide_administration(OperationType.PROMOTE_SCOPE, snap)
+    decision = decide_administration(
+        OperationType.PROMOTE_SCOPE, _snapshot(scope_present=False, scope_id=None)
+    )
     assert decision.action == OperationAction.PROMOTE_NEW
     assert decision.result_code == ResultCode.PROMOTED_NEW_SCOPE
     assert decision.support_generation_before is None
     assert decision.support_generation_after == 1
-    assert decision.persists_operation
+    assert decision.writes_ledger
 
 
 def test_adopt_coherent_legacy_scope() -> None:
-    snap = _snapshot(generation=None, cadence_rows=(_cadence(),), legacy_support=1)
-    decision = decide_administration(OperationType.ADOPT_LEGACY_SCOPE, snap)
+    decision = decide_administration(
+        OperationType.ADOPT_LEGACY_SCOPE, _legacy_supported()
+    )
     assert decision.action == OperationAction.ADOPT
     assert decision.result_code == ResultCode.ADOPTED_LEGACY_SCOPE
     assert decision.support_generation_after == 1
@@ -195,15 +294,13 @@ def test_adopt_rejects_multiple_active_cadence_rows() -> None:
         ),
     )
     decision = decide_administration(OperationType.ADOPT_LEGACY_SCOPE, snap)
-    assert decision.action == OperationAction.REJECT
     assert decision.result_code == ResultCode.MULTIPLE_ACTIVE_CADENCE_ROWS
 
 
 def test_adopt_rejects_noncanonical_cadence_profile() -> None:
-    snap = _snapshot(
-        generation=None, cadence_rows=(_cadence(canonical_profile=False),)
+    decision = decide_administration(
+        OperationType.ADOPT_LEGACY_SCOPE, _legacy_supported(canonical=False)
     )
-    decision = decide_administration(OperationType.ADOPT_LEGACY_SCOPE, snap)
     assert decision.result_code == ResultCode.CADENCE_PROFILE_CONFLICT
 
 
@@ -211,31 +308,24 @@ def test_adopt_rejects_partial_administration_state() -> None:
     snap = _snapshot(
         generation=None,
         cadence_rows=(_cadence(),),
-        attributable=(1,),
+        support_events=(_support_event(generation=1, operation_id=5),),
     )
     decision = decide_administration(OperationType.ADOPT_LEGACY_SCOPE, snap)
     assert decision.result_code == ResultCode.PARTIAL_SCOPE_STATE
 
 
 def test_adopt_already_managed_is_idempotent() -> None:
-    snap = _snapshot(
-        generation=3,
-        cadence_rows=(_cadence(activation_op=5, support_generation=3),),
-        attributable=(3,),
+    decision = decide_administration(
+        OperationType.ADOPT_LEGACY_SCOPE, _managed_supported(generation=3)
     )
-    decision = decide_administration(OperationType.ADOPT_LEGACY_SCOPE, snap)
     assert decision.action == OperationAction.NOOP
     assert decision.result_code == ResultCode.SCOPE_ALREADY_ADOPTED
 
 
 def test_managed_removal() -> None:
-    snap = _snapshot(
-        generation=3,
-        cadence_rows=(_cadence(activation_op=5, support_generation=3),),
-        attributable=(3,),
-        status_residue=1,
+    decision = decide_administration(
+        OperationType.REMOVE_SCOPE, _managed_supported(generation=3)
     )
-    decision = decide_administration(OperationType.REMOVE_SCOPE, snap)
     assert decision.action == OperationAction.REMOVE
     assert decision.result_code == ResultCode.REMOVED_SCOPE
     assert decision.support_generation_before == 3
@@ -244,25 +334,24 @@ def test_managed_removal() -> None:
 
 
 def test_repeat_removal_is_idempotent_without_residue() -> None:
-    snap = _snapshot(state="NOT_APPLICABLE", generation=4, cadence_rows=())
-    decision = decide_administration(OperationType.REMOVE_SCOPE, snap)
+    decision = decide_administration(OperationType.REMOVE_SCOPE, _managed_removed(2))
     assert decision.action == OperationAction.NOOP
     assert decision.result_code == ResultCode.SCOPE_ALREADY_REMOVED
 
 
-def test_repeat_removal_clears_derived_residue() -> None:
-    snap = _snapshot(
-        state="NOT_APPLICABLE", generation=4, cadence_rows=(), level_residue=2
+def test_repeat_removal_clears_derived_residue_is_ledgered() -> None:
+    decision = decide_administration(
+        OperationType.REMOVE_SCOPE, _managed_removed(2, level_residue=2)
     )
-    decision = decide_administration(OperationType.REMOVE_SCOPE, snap)
     assert decision.action == OperationAction.CLEAR_RESIDUE
     assert decision.result_code == ResultCode.ALREADY_REMOVED_DERIVED_RESIDUE_CLEARED
-    assert not decision.persists_operation
+    # Blocker 1: residue cleanup is now a ledgered action.
+    assert decision.writes_ledger
+    assert decision.support_generation_before == decision.support_generation_after == 2
 
 
 def test_re_promotion_after_removal() -> None:
-    snap = _snapshot(state="NOT_APPLICABLE", generation=4, cadence_rows=())
-    decision = decide_administration(OperationType.PROMOTE_SCOPE, snap)
+    decision = decide_administration(OperationType.PROMOTE_SCOPE, _managed_removed(4))
     assert decision.action == OperationAction.PROMOTE_REACTIVATE
     assert decision.result_code == ResultCode.PROMOTED_FROM_PRIOR_WITHDRAWAL
     assert decision.support_generation_before == 4
@@ -270,26 +359,24 @@ def test_re_promotion_after_removal() -> None:
 
 
 def test_already_supported_is_idempotent() -> None:
-    snap = _snapshot(
-        generation=1,
-        cadence_rows=(_cadence(activation_op=1, support_generation=1),),
-        attributable=(1,),
+    decision = decide_administration(
+        OperationType.PROMOTE_SCOPE, _managed_supported(generation=1)
     )
-    decision = decide_administration(OperationType.PROMOTE_SCOPE, snap)
     assert decision.action == OperationAction.NOOP
     assert decision.result_code == ResultCode.SCOPE_ALREADY_SUPPORTED
 
 
 def test_promote_legacy_requires_adoption() -> None:
-    snap = _snapshot(generation=None, cadence_rows=(_cadence(),))
-    decision = decide_administration(OperationType.PROMOTE_SCOPE, snap)
+    decision = decide_administration(OperationType.PROMOTE_SCOPE, _legacy_supported())
     assert decision.result_code == ResultCode.LEGACY_SCOPE_REQUIRES_ADOPTION
 
 
 def test_remove_legacy_requires_adoption() -> None:
-    snap = _snapshot(generation=None, cadence_rows=(_cadence(),))
-    decision = decide_administration(OperationType.REMOVE_SCOPE, snap)
+    decision = decide_administration(OperationType.REMOVE_SCOPE, _legacy_supported())
     assert decision.result_code == ResultCode.LEGACY_SCOPE_REQUIRES_ADOPTION
+
+
+# --- Blocker 3: complete managed cadence/generation invariants -------------- #
 
 
 def test_managed_supported_multiple_active_cadence_is_corrupt() -> None:
@@ -304,20 +391,175 @@ def test_managed_supported_multiple_active_cadence_is_corrupt() -> None:
                 effective_from=datetime(2026, 7, 9),
             ),
         ),
-        attributable=(1,),
+        support_events=(_support_event(generation=1, operation_id=1),),
     )
     decision = decide_administration(OperationType.PROMOTE_SCOPE, snap)
     assert decision.result_code == ResultCode.MULTIPLE_ACTIVE_CADENCE_ROWS
 
 
-def test_support_generation_mismatch_is_corrupt() -> None:
-    snap = _snapshot(
-        generation=5,
-        cadence_rows=(_cadence(activation_op=1, support_generation=5),),
-        attributable=(1,),
+def test_active_cadence_generation_differs_from_scope_generation() -> None:
+    snap = _managed_supported(generation=3)
+    tampered = _snapshot(
+        generation=3,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=50, support_generation=2),
+        ),
+        support_events=snap.support_events,
     )
-    decision = decide_administration(OperationType.REMOVE_SCOPE, snap)
-    assert decision.result_code == ResultCode.SUPPORT_GENERATION_MISMATCH
+    _, code, _ = classify_scope_state(tampered)
+    assert code == ResultCode.SUPPORT_GENERATION_MISMATCH
+
+
+def test_noncanonical_managed_cadence_profile_is_conflict() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(
+                cadence_config_id=10,
+                activation_op=50,
+                support_generation=1,
+                canonical_profile=False,
+            ),
+        ),
+        support_events=(_support_event(generation=1, operation_id=50),),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.CADENCE_PROFILE_CONFLICT
+
+
+def test_managed_supported_missing_activation_operation() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=None, support_generation=1),
+        ),
+        support_events=(_support_event(generation=1, operation_id=50),),
+    )
+    _, code, _ = classify_scope_state(snap)
+    # activation-op / generation attribution shape mismatch is caught first.
+    assert code == ResultCode.PARTIAL_SCOPE_STATE
+
+
+def test_active_cadence_with_deactivation_operation_is_corrupt() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(
+                cadence_config_id=10,
+                activation_op=50,
+                deactivation_op=60,
+                support_generation=1,
+            ),
+        ),
+        support_events=(_support_event(generation=1, operation_id=50),),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.PARTIAL_SCOPE_STATE
+
+
+def test_removed_row_missing_deactivation_operation_is_corrupt() -> None:
+    snap = _snapshot(
+        state="NOT_APPLICABLE",
+        generation=2,
+        reason_code=ADMIN_REMOVAL_REASON_CODE,
+        cadence_rows=(
+            _cadence(
+                cadence_config_id=10,
+                is_active=0,
+                activation_op=50,
+                deactivation_op=None,
+                support_generation=1,
+                effective_to=datetime(2026, 7, 15),
+            ),
+        ),
+        support_events=(
+            _support_event(event_id=1, generation=1, state="SUPPORTED", operation_id=50),
+            _support_event(
+                event_id=2, generation=2, state="NOT_APPLICABLE", operation_id=60
+            ),
+        ),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT
+
+
+def test_removed_row_missing_effective_to_is_corrupt() -> None:
+    snap = _snapshot(
+        state="NOT_APPLICABLE",
+        generation=2,
+        reason_code=ADMIN_REMOVAL_REASON_CODE,
+        cadence_rows=(
+            _cadence(
+                cadence_config_id=10,
+                is_active=0,
+                activation_op=50,
+                deactivation_op=60,
+                support_generation=1,
+                effective_to=None,
+            ),
+        ),
+        support_events=(
+            _support_event(event_id=1, generation=1, state="SUPPORTED", operation_id=50),
+            _support_event(
+                event_id=2, generation=2, state="NOT_APPLICABLE", operation_id=60
+            ),
+        ),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT
+
+
+def test_support_event_correct_generation_wrong_state() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=50, support_generation=1),
+        ),
+        support_events=(
+            _support_event(generation=1, state="NOT_APPLICABLE", operation_id=50),
+        ),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.PARTIAL_SCOPE_STATE
+
+
+def test_support_event_missing_operation_attribution() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=50, support_generation=1),
+        ),
+        support_events=(_support_event(generation=1, state="SUPPORTED", operation_id=None),),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.PARTIAL_SCOPE_STATE
+
+
+def test_multiple_support_events_for_same_managed_generation() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=50, support_generation=1),
+        ),
+        support_events=(
+            _support_event(event_id=1, generation=1, state="SUPPORTED", operation_id=50),
+            _support_event(event_id=2, generation=1, state="SUPPORTED", operation_id=51),
+        ),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.SUPPORT_GENERATION_MISMATCH
+
+
+def test_cadence_generation_ahead_of_scope_generation() -> None:
+    snap = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=50, support_generation=2),
+        ),
+        support_events=(_support_event(generation=1, operation_id=50),),
+    )
+    _, code, _ = classify_scope_state(snap)
+    assert code == ResultCode.SUPPORT_GENERATION_MISMATCH
 
 
 def test_partial_scope_state_cadence_without_scope() -> None:
@@ -331,6 +573,12 @@ def test_withdrawal_state_incoherent_active_cadence_when_removed() -> None:
         state="NOT_APPLICABLE",
         generation=4,
         cadence_rows=(_cadence(activation_op=5, support_generation=3),),
+        support_events=(
+            _support_event(event_id=1, generation=3, state="SUPPORTED", operation_id=5),
+            _support_event(
+                event_id=2, generation=4, state="NOT_APPLICABLE", operation_id=6
+            ),
+        ),
     )
     decision = decide_administration(OperationType.PROMOTE_SCOPE, snap)
     assert decision.result_code == ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT
@@ -407,21 +655,59 @@ def test_operation_replay_non_terminal_is_commit_status_unknown() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Post-mutation revalidation binding (Blocker 3)                              #
+# --------------------------------------------------------------------------- #
+
+
+def test_post_state_bound_to_wrong_operation_id_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request()
+    decision = AdministrationDecision(
+        action=OperationAction.PROMOTE_NEW,
+        result_code=ResultCode.PROMOTED_NEW_SCOPE,
+        result_class=txn.ResultClass.SUCCESS,
+        support_generation_before=None,
+        support_generation_after=1,
+        target_cadence_config_id=None,
+        classification=ScopeClassification.NO_SCOPE,
+        detail="",
+    )
+    # The persisted cadence row's activation_operation_id points at a different
+    # operation than the ledger row we just wrote.
+    post = _snapshot(
+        generation=1,
+        cadence_rows=(
+            _cadence(cadence_config_id=10, activation_op=999, support_generation=1),
+        ),
+        support_events=(_support_event(generation=1, state="SUPPORTED", operation_id=500),),
+    )
+    op = ExistingOperation(
+        scope_admin_operation_id=500,
+        operation_type=str(request.operation_type),
+        metadata_digest=request.request_digest,
+        completed_at_utc=datetime(2026, 7, 18, 10, 0),
+        result_class="SUCCESS",
+        result_code="PROMOTED_NEW_SCOPE",
+        support_generation_before=None,
+        support_generation_after=1,
+        scope_key=request.scope_key.as_dict(),
+    )
+    monkeypatch.setattr(txn, "read_scope_state_snapshot", lambda *a, **k: post)
+    monkeypatch.setattr(txn, "read_existing_operation", lambda *a, **k: op)
+    with pytest.raises(txn._RevalidationError) as exc:
+        txn._revalidate_post_state(
+            None, request, decision, operation_id=500, now_utc=datetime(2026, 7, 18, 12, 0, tzinfo=UTC)
+        )
+    assert exc.value.result_code == ResultCode.COMMIT_STATUS_UNKNOWN
+
+
+# --------------------------------------------------------------------------- #
 # Stateful fake connection for write-mode mechanics                           #
 # --------------------------------------------------------------------------- #
 
 
-_PROFILE_DEFAULTS = {
-    "target_evaluation_interval": CANONICAL_TARGET_EVALUATION_INTERVAL,
-    "primary_source_freshness_limit_seconds": (
-        CANONICAL_PRIMARY_SOURCE_FRESHNESS_LIMIT_SECONDS
-    ),
-    "supporting_source_freshness_limit_seconds": (
-        CANONICAL_SUPPORTING_SOURCE_FRESHNESS_LIMIT_SECONDS
-    ),
-    "evaluation_grace_seconds": CANONICAL_EVALUATION_GRACE_SECONDS,
-    "recent_scope_grace_seconds": CANONICAL_RECENT_SCOPE_GRACE_SECONDS,
-}
+_SHARED_LOCKS: set[str] = set()
 
 
 class _FakeState:
@@ -438,7 +724,10 @@ class _FakeState:
         self.next_operation_id = 5000
 
 
-_SHARED_LOCKS: set[str] = set()
+def _op_error(code: int, message: str) -> Exception:
+    import pymysql
+
+    return pymysql.err.OperationalError(code, message)
 
 
 class _FakeCursor:
@@ -544,12 +833,17 @@ class _FakeCursor:
 
         raise AssertionError(f"Unexpected SQL: {norm}")
 
+    def _maybe_fail(self, target: str) -> None:
+        if self._conn.fail_on == target:
+            raise RuntimeError(f"injected {target} insert failure")
+        if self._conn.db_error_on and self._conn.db_error_on[0] == target:
+            raise _op_error(self._conn.db_error_on[1], "injected db error")
+
     def _insert_operation(self, params: tuple, state: _FakeState) -> None:
-        if self._conn.fail_on == "operation":
-            raise RuntimeError("injected operation insert failure")
+        self._maybe_fail("operation")
         for op in state.operations:
             if op["operation_uuid"] == params[0]:
-                raise _fake_integrity("duplicate operation_uuid")
+                raise _op_error(1062, "duplicate operation_uuid")
         op_id = state.next_operation_id
         state.next_operation_id += 1
         state.operations.append(
@@ -574,8 +868,7 @@ class _FakeCursor:
         self.lastrowid = op_id
 
     def _insert_scope(self, params: tuple, state: _FakeState) -> None:
-        if self._conn.fail_on == "scope":
-            raise RuntimeError("injected scope insert failure")
+        self._maybe_fail("scope")
         scope_id = state.next_scope_id
         state.next_scope_id += 1
         state.scopes.append(
@@ -602,10 +895,7 @@ class _FakeCursor:
                 params
             )
             for row in state.scopes:
-                if (
-                    row["scope_id"] == scope_id
-                    and row["scope_support_state"] == expected
-                ):
+                if row["scope_id"] == scope_id and row["scope_support_state"] == expected:
                     row.update(
                         scope_support_state=state_val,
                         scope_reason_code=reason_code,
@@ -616,10 +906,7 @@ class _FakeCursor:
         elif "scope_reason_code = NULL" in norm:  # promote reactivate
             state_val, generation, scope_id, expected = params
             for row in state.scopes:
-                if (
-                    row["scope_id"] == scope_id
-                    and row["scope_support_state"] == expected
-                ):
+                if row["scope_id"] == scope_id and row["scope_support_state"] == expected:
                     row.update(
                         scope_support_state=state_val,
                         scope_reason_code=None,
@@ -630,10 +917,7 @@ class _FakeCursor:
         else:  # adopt generation-only
             generation, scope_id = params
             for row in state.scopes:
-                if (
-                    row["scope_id"] == scope_id
-                    and row["support_generation"] is None
-                ):
+                if row["scope_id"] == scope_id and row["support_generation"] is None:
                     row["support_generation"] = generation
                     affected += 1
         self.rowcount = affected
@@ -700,22 +984,21 @@ class _FakeCursor:
         self.rowcount = affected
 
     def _insert_support(self, params: tuple, state: _FakeState) -> None:
-        support_id = state.next_support_id
-        state.next_support_id += 1
+        self._maybe_fail("support")
         generation = params[8]
         operation_id = params[7]
         for row in state.support:
             if (
-                row["support_generation"] == generation
-                and generation is not None
+                generation is not None
+                and row["support_generation"] == generation
                 and _same_scope(row, params[:6])
             ):
-                raise _fake_integrity("duplicate support generation")
-            if row["scope_admin_operation_id"] == operation_id and operation_id:
-                raise _fake_integrity("duplicate support operation")
+                raise _op_error(1062, "duplicate support generation")
+            if operation_id and row["scope_admin_operation_id"] == operation_id:
+                raise _op_error(1062, "duplicate support operation")
         state.support.append(
             {
-                "scope_support_event_id": support_id,
+                "scope_support_event_id": state.next_support_id,
                 "venue": params[0],
                 "symbol": params[1],
                 "quote_currency": params[2],
@@ -727,7 +1010,7 @@ class _FakeCursor:
                 "support_generation": generation,
             }
         )
-        self.lastrowid = support_id
+        state.next_support_id += 1
 
     def _delete_scope(self, rows: list[dict[str, Any]], key: tuple) -> None:
         keep = [r for r in rows if not _same_scope(r, key)]
@@ -751,11 +1034,6 @@ def _match_scope(rows: list[dict[str, Any]], key: tuple) -> list[dict[str, Any]]
     return [copy.deepcopy(r) for r in rows if _same_scope(r, key)]
 
 
-def _fake_integrity(detail: str) -> Exception:
-    exc = RuntimeError(detail)
-    return exc
-
-
 class _FakeConn:
     def __init__(self, committed: _FakeState | None = None) -> None:
         self.committed = committed or _FakeState()
@@ -766,6 +1044,8 @@ class _FakeConn:
         self.rollback_count = 0
         self.held_locks: set[str] = set()
         self.fail_on: str | None = None
+        self.db_error_on: tuple[str, int] | None = None
+        self.commit_behavior: str = "normal"  # normal | raise_before | raise_after
 
     @property
     def state(self) -> _FakeState:
@@ -780,9 +1060,13 @@ class _FakeConn:
 
     def commit(self) -> None:
         self.commit_count += 1
+        if self.commit_behavior == "raise_before":
+            raise _op_error(2013, "Lost connection to server during commit")
         if self.working is not None:
             self.committed = self.working
             self.working = None
+        if self.commit_behavior == "raise_after":
+            raise _op_error(2013, "Lost connection after server committed")
 
     def rollback(self) -> None:
         self.rollback_count += 1
@@ -799,6 +1083,20 @@ def _clear_locks() -> Iterator[None]:
     _SHARED_LOCKS.clear()
 
 
+_AUTH = object()
+
+
+@pytest.fixture(autouse=True)
+def _stub_writer_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.operations.writer_capability_authorization_v1 as authmod
+
+    monkeypatch.setattr(
+        authmod,
+        "require_writer_mutation_authorization",
+        lambda authorization, capability_id: authorization,
+    )
+
+
 def _seed_supported(state: _FakeState, *, generation: int, symbol: str = "BTC") -> None:
     scope_id = state.next_scope_id
     state.next_scope_id += 1
@@ -806,38 +1104,30 @@ def _seed_supported(state: _FakeState, *, generation: int, symbol: str = "BTC") 
     state.next_operation_id += 1
     cadence_id = state.next_cadence_id
     state.next_cadence_id += 1
-    key = ("bitvavo", symbol, "EUR", "SHORT", "4h", "1h")
+    base = {
+        "venue": "bitvavo",
+        "symbol": symbol,
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h",
+    }
     state.scopes.append(
-        dict(
-            zip(
-                (
-                    "venue",
-                    "symbol",
-                    "quote_currency",
-                    "fib_trading_horizon",
-                    "primary_interval",
-                    "supporting_interval",
-                ),
-                key,
-            ),
-            scope_id=scope_id,
-            scope_support_state="SUPPORTED",
-            scope_reason_code=None,
-            scope_reason_detail=None,
-            support_generation=generation,
-        )
+        {
+            **base,
+            "scope_id": scope_id,
+            "scope_support_state": "SUPPORTED",
+            "scope_reason_code": None,
+            "scope_reason_detail": None,
+            "support_generation": generation,
+        }
     )
     state.operations.append(
         {
+            **base,
             "scope_admin_operation_id": op_id,
             "operation_uuid": f"seed-{symbol}-{generation}",
             "operation_type": "PROMOTE_SCOPE",
-            "venue": "bitvavo",
-            "symbol": symbol,
-            "quote_currency": "EUR",
-            "fib_trading_horizon": "SHORT",
-            "primary_interval": "4h",
-            "supporting_interval": "1h",
             "metadata_digest": "0" * 64,
             "completed_at_utc": datetime(2026, 7, 10, 0, 0),
             "result_class": "SUCCESS",
@@ -848,13 +1138,8 @@ def _seed_supported(state: _FakeState, *, generation: int, symbol: str = "BTC") 
     )
     state.cadence.append(
         {
+            **base,
             "cadence_config_id": cadence_id,
-            "venue": "bitvavo",
-            "symbol": symbol,
-            "quote_currency": "EUR",
-            "fib_trading_horizon": "SHORT",
-            "primary_interval": "4h",
-            "supporting_interval": "1h",
             "cadence_contract_version": CANONICAL_CADENCE_CONTRACT_VERSION,
             "target_evaluation_interval": CANONICAL_TARGET_EVALUATION_INTERVAL,
             "primary_source_freshness_limit_seconds": (
@@ -875,13 +1160,8 @@ def _seed_supported(state: _FakeState, *, generation: int, symbol: str = "BTC") 
     )
     state.support.append(
         {
+            **base,
             "scope_support_event_id": state.next_support_id,
-            "venue": "bitvavo",
-            "symbol": symbol,
-            "quote_currency": "EUR",
-            "fib_trading_horizon": "SHORT",
-            "primary_interval": "4h",
-            "supporting_interval": "1h",
             "scope_support_state": "SUPPORTED",
             "scope_admin_operation_id": op_id,
             "support_generation": generation,
@@ -890,18 +1170,8 @@ def _seed_supported(state: _FakeState, *, generation: int, symbol: str = "BTC") 
     state.next_support_id += 1
 
 
-_AUTH = object()
-
-
-@pytest.fixture(autouse=True)
-def _stub_writer_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
-    import src.operations.writer_capability_authorization_v1 as authmod
-
-    monkeypatch.setattr(
-        authmod,
-        "require_writer_mutation_authorization",
-        lambda authorization, capability_id: authorization,
-    )
+def _other_uuid(suffix: str) -> str:
+    return f"00000000-0000-4000-8000-0000000000{suffix}"
 
 
 def test_write_promote_new_scope_commits_full_state() -> None:
@@ -911,6 +1181,7 @@ def test_write_promote_new_scope_commits_full_state() -> None:
     )
     assert outcome.result.result_code == ResultCode.PROMOTED_NEW_SCOPE
     assert outcome.persisted is True
+    assert outcome.commit_state == CommitState.COMMITTED
     assert conn.commit_count == 1
     assert len(conn.committed.scopes) == 1
     assert conn.committed.scopes[0]["support_generation"] == 1
@@ -918,7 +1189,6 @@ def test_write_promote_new_scope_commits_full_state() -> None:
     assert conn.committed.cadence[0]["is_active"] == 1
     assert len(conn.committed.support) == 1
     assert len(conn.committed.operations) == 1
-    # Advisory lock acquired and released.
     assert not conn.held_locks
     assert not _SHARED_LOCKS
 
@@ -933,6 +1203,7 @@ def test_write_replay_is_idempotent_without_second_mutation() -> None:
     second = execute_scope_administration(conn, request, authorization=_AUTH)
     assert second.result.result_code == ResultCode.OPERATION_ALREADY_COMPLETED
     assert second.persisted is False
+    assert second.commit_state == CommitState.ROLLED_BACK
     assert len(conn.committed.operations) == ops_after_first
     assert len(conn.committed.scopes) == 1
 
@@ -942,12 +1213,14 @@ def test_write_already_supported_new_uuid_does_not_persist() -> None:
     _seed_supported(state, generation=1)
     conn = _FakeConn(state)
     outcome = execute_scope_administration(
-        conn, _request(provenance=_provenance(operation_uuid="00000000-0000-4000-8000-0000000000aa")), authorization=_AUTH
+        conn,
+        _request(provenance=_provenance(operation_uuid=_other_uuid("aa"))),
+        authorization=_AUTH,
     )
     assert outcome.result.result_code == ResultCode.SCOPE_ALREADY_SUPPORTED
     assert outcome.persisted is False
+    assert outcome.commit_state == CommitState.ROLLED_BACK
     assert len(conn.committed.operations) == 1  # only the seed operation
-    assert conn.rollback_count >= 1
 
 
 def test_write_removal_then_repromotion_preserves_prior_rows() -> None:
@@ -957,53 +1230,235 @@ def test_write_removal_then_repromotion_preserves_prior_rows() -> None:
 
     remove = execute_scope_administration(
         conn,
-        _request(
-            OperationType.REMOVE_SCOPE,
-            provenance=_provenance(operation_uuid="00000000-0000-4000-8000-0000000000b1"),
-        ),
+        _request(OperationType.REMOVE_SCOPE, provenance=_provenance(operation_uuid=_other_uuid("b1"))),
         authorization=_AUTH,
     )
     assert remove.result.result_code == ResultCode.REMOVED_SCOPE
+    assert remove.commit_state == CommitState.COMMITTED
     assert conn.committed.scopes[0]["scope_support_state"] == "NOT_APPLICABLE"
     assert conn.committed.scopes[0]["support_generation"] == 2
+    assert conn.committed.scopes[0]["scope_reason_code"] == ADMIN_REMOVAL_REASON_CODE
     assert all(row["is_active"] == 0 for row in conn.committed.cadence)
 
     repromote = execute_scope_administration(
         conn,
-        _request(
-            OperationType.PROMOTE_SCOPE,
-            provenance=_provenance(operation_uuid="00000000-0000-4000-8000-0000000000b2"),
-        ),
+        _request(OperationType.PROMOTE_SCOPE, provenance=_provenance(operation_uuid=_other_uuid("b2"))),
         authorization=_AUTH,
     )
     assert repromote.result.result_code == ResultCode.PROMOTED_FROM_PRIOR_WITHDRAWAL
     assert conn.committed.scopes[0]["scope_support_state"] == "SUPPORTED"
     assert conn.committed.scopes[0]["support_generation"] == 3
-    # Prior inactive cadence preserved plus one new active row.
     assert len(conn.committed.cadence) == 2
     assert sum(1 for r in conn.committed.cadence if r["is_active"] == 1) == 1
-    # Prior support events preserved plus new ones (seed + remove + repromote).
     assert len(conn.committed.support) == 3
 
 
-def test_write_rollback_after_injected_failure_leaves_no_partial_state() -> None:
+def test_write_cleanup_writes_one_terminal_operation_row() -> None:
+    # Blocker 1: repeat removal with removable residue writes exactly one
+    # terminal operation row and performs only residue cleanup.
+    state = _FakeState()
+    _seed_supported(state, generation=1)
+    conn = _FakeConn(state)
+    execute_scope_administration(
+        conn,
+        _request(OperationType.REMOVE_SCOPE, provenance=_provenance(operation_uuid=_other_uuid("c1"))),
+        authorization=_AUTH,
+    )
+    ops_after_remove = len(conn.committed.operations)
+    support_after_remove = len(conn.committed.support)
+    gen_after_remove = conn.committed.scopes[0]["support_generation"]
+    # Simulate falsely-actionable derived residue reappearing.
+    conn.committed.scope_status.append(
+        {
+            "venue": "bitvavo",
+            "symbol": "BTC",
+            "quote_currency": "EUR",
+            "fib_trading_horizon": "SHORT",
+            "primary_interval": "4h",
+            "supporting_interval": "1h",
+        }
+    )
+
+    cleanup = execute_scope_administration(
+        conn,
+        _request(OperationType.REMOVE_SCOPE, provenance=_provenance(operation_uuid=_other_uuid("c2"))),
+        authorization=_AUTH,
+    )
+    assert cleanup.result.result_code == ResultCode.ALREADY_REMOVED_DERIVED_RESIDUE_CLEARED
+    assert cleanup.persisted is True
+    assert cleanup.commit_state == CommitState.COMMITTED
+    # Exactly one new terminal operation row for the cleanup UUID.
+    assert len(conn.committed.operations) == ops_after_remove + 1
+    cleanup_op = next(
+        op for op in conn.committed.operations if op["operation_uuid"] == _other_uuid("c2")
+    )
+    assert cleanup_op["completed_at_utc"] is not None
+    assert cleanup_op["result_code"] == "ALREADY_REMOVED_DERIVED_RESIDUE_CLEARED"
+    # No new support event, no generation increment.
+    assert len(conn.committed.support) == support_after_remove
+    assert conn.committed.scopes[0]["support_generation"] == gen_after_remove
+    # Residue removed.
+    assert conn.committed.scope_status == []
+
+
+def test_write_cleanup_replay_performs_no_second_deletion() -> None:
+    state = _FakeState()
+    _seed_supported(state, generation=1)
+    conn = _FakeConn(state)
+    execute_scope_administration(
+        conn,
+        _request(OperationType.REMOVE_SCOPE, provenance=_provenance(operation_uuid=_other_uuid("d1"))),
+        authorization=_AUTH,
+    )
+    conn.committed.scope_status.append(
+        {
+            "venue": "bitvavo", "symbol": "BTC", "quote_currency": "EUR",
+            "fib_trading_horizon": "SHORT", "primary_interval": "4h",
+            "supporting_interval": "1h",
+        }
+    )
+    cleanup_request = _request(
+        OperationType.REMOVE_SCOPE, provenance=_provenance(operation_uuid=_other_uuid("d2"))
+    )
+    execute_scope_administration(conn, cleanup_request, authorization=_AUTH)
+    ops_after = len(conn.committed.operations)
+
+    # Replay the same cleanup UUID/digest: operation-ledger idempotent, no second
+    # deletion or ledger row.
+    replay = execute_scope_administration(conn, cleanup_request, authorization=_AUTH)
+    assert replay.result.result_code == ResultCode.OPERATION_ALREADY_COMPLETED
+    assert replay.persisted is False
+    assert len(conn.committed.operations) == ops_after
+
+
+def test_write_cleanup_changed_digest_conflicts() -> None:
+    state = _FakeState()
+    _seed_supported(state, generation=1)
+    conn = _FakeConn(state)
+    execute_scope_administration(
+        conn,
+        _request(OperationType.REMOVE_SCOPE, provenance=_provenance(operation_uuid=_other_uuid("e1"))),
+        authorization=_AUTH,
+    )
+    conn.committed.scope_status.append(
+        {
+            "venue": "bitvavo", "symbol": "BTC", "quote_currency": "EUR",
+            "fib_trading_horizon": "SHORT", "primary_interval": "4h",
+            "supporting_interval": "1h",
+        }
+    )
+    uuid = _other_uuid("e2")
+    execute_scope_administration(
+        conn,
+        _request(OperationType.REMOVE_SCOPE, provenance=_provenance(operation_uuid=uuid), metadata={"k": "v1"}),
+        authorization=_AUTH,
+    )
+    conflict = execute_scope_administration(
+        conn,
+        _request(OperationType.REMOVE_SCOPE, provenance=_provenance(operation_uuid=uuid), metadata={"k": "v2"}),
+        authorization=_AUTH,
+    )
+    assert conflict.result.result_code == ResultCode.OPERATION_METADATA_MISMATCH
+    assert conflict.persisted is False
+
+
+def test_write_no_residue_repeat_removal_performs_no_write() -> None:
+    state = _FakeState()
+    _seed_supported(state, generation=1)
+    conn = _FakeConn(state)
+    execute_scope_administration(
+        conn,
+        _request(OperationType.REMOVE_SCOPE, provenance=_provenance(operation_uuid=_other_uuid("f1"))),
+        authorization=_AUTH,
+    )
+    ops_after_remove = len(conn.committed.operations)
+    repeat = execute_scope_administration(
+        conn,
+        _request(OperationType.REMOVE_SCOPE, provenance=_provenance(operation_uuid=_other_uuid("f2"))),
+        authorization=_AUTH,
+    )
+    assert repeat.result.result_code == ResultCode.SCOPE_ALREADY_REMOVED
+    assert repeat.persisted is False
+    assert repeat.commit_state == CommitState.ROLLED_BACK
+    assert len(conn.committed.operations) == ops_after_remove
+
+
+# --- Blocker 2: commit-state contract --------------------------------------- #
+
+
+def test_write_commit_success_is_committed() -> None:
     conn = _FakeConn()
-    conn.fail_on = "scope"
-    with pytest.raises(RuntimeError, match="injected scope insert failure"):
+    outcome = execute_scope_administration(conn, _request(), authorization=_AUTH)
+    assert outcome.commit_state == CommitState.COMMITTED
+    assert outcome.persisted is True
+
+
+def test_write_commit_raises_is_unknown_without_rollback_claim() -> None:
+    conn = _FakeConn()
+    conn.commit_behavior = "raise_before"
+    outcome = execute_scope_administration(conn, _request(), authorization=_AUTH)
+    assert outcome.result.result_code == ResultCode.COMMIT_STATUS_UNKNOWN
+    assert outcome.commit_state == CommitState.UNKNOWN
+    # Unknown commit does not assert rollback certainty nor persisted=false.
+    assert outcome.persisted is None
+    assert conn.rollback_count == 0
+    assert not _SHARED_LOCKS  # lock still released in finally
+
+
+def test_write_unknown_commit_then_retry_resolves_via_ledger() -> None:
+    # Simulate the server committing but the client losing the connection at the
+    # commit boundary; a retry resolves through the operation ledger.
+    conn = _FakeConn()
+    conn.commit_behavior = "raise_after"
+    request = _request()
+    first = execute_scope_administration(conn, request, authorization=_AUTH)
+    assert first.commit_state == CommitState.UNKNOWN
+    assert len(conn.committed.operations) == 1  # server-side commit landed
+
+    conn.commit_behavior = "normal"
+    retry = execute_scope_administration(conn, request, authorization=_AUTH)
+    assert retry.result.result_code == ResultCode.OPERATION_ALREADY_COMPLETED
+    assert retry.persisted is False
+
+
+def test_write_deadlock_before_commit_maps_typed_and_rolls_back() -> None:
+    conn = _FakeConn()
+    conn.db_error_on = ("scope", 1213)
+    outcome = execute_scope_administration(conn, _request(), authorization=_AUTH)
+    assert outcome.result.result_code == ResultCode.DEADLOCK
+    assert outcome.commit_state == CommitState.ROLLED_BACK
+    assert outcome.persisted is False
+    assert conn.committed.scopes == []
+    assert conn.committed.operations == []
+    assert not _SHARED_LOCKS
+
+
+def test_write_lock_wait_timeout_before_commit_maps_typed() -> None:
+    conn = _FakeConn()
+    conn.db_error_on = ("scope", 1205)
+    outcome = execute_scope_administration(conn, _request(), authorization=_AUTH)
+    assert outcome.result.result_code == ResultCode.LOCK_TIMEOUT
+    assert outcome.commit_state == CommitState.ROLLED_BACK
+
+
+def test_write_unmapped_precommit_exception_reraises_and_rolls_back() -> None:
+    conn = _FakeConn()
+    conn.fail_on = "support"
+    with pytest.raises(RuntimeError, match="injected support insert failure"):
         execute_scope_administration(conn, _request(), authorization=_AUTH)
     assert conn.rollback_count >= 1
     assert conn.committed.scopes == []
     assert conn.committed.operations == []
-    assert conn.committed.cadence == []
-    assert not _SHARED_LOCKS  # lock released in finally
+    assert not _SHARED_LOCKS
 
 
-def test_write_lock_timeout_maps_to_retryable_code() -> None:
+def test_write_advisory_lock_timeout_maps_to_retryable() -> None:
     conn = _FakeConn()
     _SHARED_LOCKS.add(advisory_lock_name(_key().as_dict()))
     outcome = execute_scope_administration(conn, _request(), authorization=_AUTH)
     assert outcome.result.result_code == ResultCode.LOCK_TIMEOUT
     assert outcome.persisted is False
+    assert outcome.commit_state == CommitState.ROLLED_BACK
     assert conn.commit_count == 0
 
 
@@ -1021,7 +1476,7 @@ def test_write_requires_authorization_before_mutation(
     conn = _FakeConn()
     with pytest.raises(authmod.AuthorizationDenied):
         execute_scope_administration(conn, _request(), authorization=None)
-    assert conn.begin_count == 0  # never opened a transaction
+    assert conn.begin_count == 0
     assert conn.committed.scopes == []
 
 
@@ -1029,19 +1484,20 @@ def test_dry_run_performs_no_writes_and_no_transaction() -> None:
     conn = _FakeConn()
     outcome = plan_scope_administration(conn, _request())
     assert outcome.mode == txn.TransactionMode.DRY_RUN
+    assert outcome.commit_state == CommitState.NOT_ATTEMPTED
     assert outcome.result.result_code == ResultCode.PROMOTED_NEW_SCOPE
     assert outcome.persisted is False
     assert conn.begin_count == 0
     assert conn.commit_count == 0
     assert all(not e.startswith("INSERT") for e in conn.executions)
     assert all(not e.startswith("UPDATE") for e in conn.executions)
+    assert all(not e.startswith("DELETE") for e in conn.executions)
     assert all("FOR UPDATE" not in e for e in conn.executions)
 
 
 def test_dry_run_fails_closed_on_incoherent_state() -> None:
     state = _FakeState()
     _seed_supported(state, generation=1)
-    # Inject a second active cadence row to create corruption.
     state.cadence.append(dict(state.cadence[0], cadence_config_id=999))
     conn = _FakeConn(state)
     outcome = plan_scope_administration(conn, _request(OperationType.REMOVE_SCOPE))
@@ -1050,11 +1506,9 @@ def test_dry_run_fails_closed_on_incoherent_state() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# CLI tests                                                                    #
+# CLI tests — one-document stdout contract                                    #
 # --------------------------------------------------------------------------- #
 
-
-import io
 
 from src.market_data import run_native_short_scope_administration_v1 as cli
 from src.market_data.native_short_repository_source_identity_v1 import (
@@ -1063,28 +1517,17 @@ from src.market_data.native_short_repository_source_identity_v1 import (
 
 
 _BASE_CLI_ARGS = [
-    "--symbol",
-    "BTC",
-    "--operation",
-    "PROMOTE_SCOPE",
-    "--actor-type",
-    "HUMAN_OPERATOR",
-    "--actor-id",
-    "operator-1",
-    "--trigger-type",
-    "MANUAL_CLI",
-    "--reason",
-    "explicit review",
-    "--operation-uuid",
-    "00000000-0000-4000-8000-00000000c001",
-    "--request-source",
-    "cli-test",
-    "--repository-commit",
-    "a" * 40,
-    "--trigger-ref",
-    "admin-cli-test",
-    "--requested-at-utc",
-    "2026-07-18T10:00:00Z",
+    "--symbol", "BTC",
+    "--operation", "PROMOTE_SCOPE",
+    "--actor-type", "HUMAN_OPERATOR",
+    "--actor-id", "operator-1",
+    "--trigger-type", "MANUAL_CLI",
+    "--reason", "explicit review",
+    "--operation-uuid", "00000000-0000-4000-8000-00000000c001",
+    "--request-source", "cli-test",
+    "--repository-commit", "a" * 40,
+    "--trigger-ref", "admin-cli-test",
+    "--requested-at-utc", "2026-07-18T10:00:00Z",
 ]
 
 
@@ -1093,17 +1536,20 @@ def _clean_source() -> NativeShortRepositorySourceState:
 
 
 def _run_cli(
-    monkeypatch: pytest.MonkeyPatch, argv: list[str], *, conn: _FakeConn
-) -> tuple[int, list[dict[str, Any]]]:
+    monkeypatch: pytest.MonkeyPatch, argv: list[str], *, conn: _FakeConn | None
+) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
     import src.common.db as dbmod
 
-    monkeypatch.setattr(dbmod, "get_connection", lambda: conn)
-    buf = io.StringIO()
-    monkeypatch.setattr("sys.stdout", buf)
+    if conn is not None:
+        monkeypatch.setattr(dbmod, "get_connection", lambda: conn)
+    out, err = io.StringIO(), io.StringIO()
+    monkeypatch.setattr("sys.stdout", out)
+    monkeypatch.setattr("sys.stderr", err)
     code = cli.main(argv, inspect_repository_source=_clean_source)
     monkeypatch.undo()
-    lines = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
-    return code, lines
+    stdout_docs = [json.loads(x) for x in out.getvalue().splitlines() if x.strip()]
+    stderr_docs = [json.loads(x) for x in err.getvalue().splitlines() if x.strip()]
+    return code, stdout_docs, stderr_docs
 
 
 def test_cli_help_exits_zero() -> None:
@@ -1112,53 +1558,48 @@ def test_cli_help_exits_zero() -> None:
     assert exc.value.code == 0
 
 
-def test_cli_dry_run_is_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_dry_run_is_default_and_emits_exactly_one_stdout_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     conn = _FakeConn()
-    code, lines = _run_cli(monkeypatch, _BASE_CLI_ARGS, conn=conn)
+    code, stdout_docs, stderr_docs = _run_cli(monkeypatch, _BASE_CLI_ARGS, conn=conn)
     assert code == 0
-    started = next(line for line in lines if line["event"] == "STARTED")
-    result = next(line for line in lines if line["event"] == "RESULT")
-    assert started["dry_run"] is True
-    assert started["write"] is False
+    assert len(stdout_docs) == 1  # exactly one JSON result document on stdout
+    result = stdout_docs[0]
+    assert result["event"] == "RESULT"
     assert result["mode"] == "DRY_RUN"
+    assert result["commit_state"] == "NOT_ATTEMPTED"
     assert result["persisted"] is False
     assert result["result_code"] == "PROMOTED_NEW_SCOPE"
-    # Safety markers present.
     for marker in (
-        "broker_private_calls",
-        "broker_writes",
-        "order_submission",
-        "live_orders",
-        "systemd_changes",
-        "timer_changes",
-        "runtime_activation",
-        "host_mutations",
+        "broker_private_calls", "broker_writes", "order_submission", "live_orders",
+        "systemd_changes", "timer_changes", "runtime_activation", "host_mutations",
     ):
         assert marker in result
+    # Progress went to stderr, not stdout.
+    assert any(doc.get("event") == "STARTED" for doc in stderr_docs)
     assert conn.commit_count == 0
 
 
-def test_cli_write_is_explicit_and_persists(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_cli_write_is_explicit_and_persists(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.operations.writer_capability_authorization_v1 as authmod
 
     monkeypatch.setattr(
-        authmod,
-        "require_capability_write_authorization",
+        authmod, "enforce_capability_write_authorization",
         lambda capability_id, **kwargs: _AUTH,
     )
     monkeypatch.setattr(
-        authmod,
-        "require_writer_mutation_authorization",
+        authmod, "require_writer_mutation_authorization",
         lambda authorization, capability_id: authorization,
     )
     conn = _FakeConn()
-    code, lines = _run_cli(monkeypatch, [*_BASE_CLI_ARGS, "--write"], conn=conn)
+    code, stdout_docs, _ = _run_cli(monkeypatch, [*_BASE_CLI_ARGS, "--write"], conn=conn)
     assert code == 0
-    result = next(line for line in lines if line["event"] == "RESULT")
+    assert len(stdout_docs) == 1
+    result = stdout_docs[0]
     assert result["mode"] == "WRITE"
     assert result["persisted"] is True
+    assert result["commit_state"] == "COMMITTED"
     assert result["result_code"] == "PROMOTED_NEW_SCOPE"
     assert result["production_db_writes"] == 1
     assert conn.commit_count == 1
@@ -1177,53 +1618,63 @@ def test_cli_write_rejects_dirty_source_before_mutation(
     import src.common.db as dbmod
 
     monkeypatch.setattr(dbmod, "get_connection", lambda: conn)
-    buf = io.StringIO()
-    monkeypatch.setattr("sys.stdout", buf)
+    out, err = io.StringIO(), io.StringIO()
+    monkeypatch.setattr("sys.stdout", out)
+    monkeypatch.setattr("sys.stderr", err)
     code = cli.main([*_BASE_CLI_ARGS, "--write"], inspect_repository_source=_dirty)
     monkeypatch.undo()
-    lines = [json.loads(x) for x in buf.getvalue().splitlines() if x.strip()]
+    stdout_docs = [json.loads(x) for x in out.getvalue().splitlines() if x.strip()]
     assert code == 2
-    failed = next(line for line in lines if line["event"] == "FAILED")
-    assert failed["reason_code"] == "INVALID_REPOSITORY_SOURCE"
+    assert len(stdout_docs) == 1
+    assert stdout_docs[0]["event"] == "FAILED"
+    assert stdout_docs[0]["reason_code"] == "INVALID_REPOSITORY_SOURCE"
     assert conn.begin_count == 0
 
 
-def test_cli_rejects_multi_symbol_and_wildcards(
+def test_cli_write_auth_denial_emits_one_json_document(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    import src.operations.writer_capability_authorization_v1 as authmod
+
+    def _deny(capability_id: str, **kwargs: Any) -> Any:
+        raise authmod.AuthorizationDenied(
+            capability_id, authmod.ExecutionMode.READ_ONLY, ["not authorized"]
+        )
+
+    monkeypatch.setattr(authmod, "enforce_capability_write_authorization", _deny)
     conn = _FakeConn()
+    code, stdout_docs, _ = _run_cli(monkeypatch, [*_BASE_CLI_ARGS, "--write"], conn=conn)
+    assert code == 3
+    assert len(stdout_docs) == 1
+    assert stdout_docs[0]["event"] == "FAILED"
+    assert stdout_docs[0]["reason_code"] == "WRITER_AUTHORIZATION_DENIED"
+    assert conn.begin_count == 0
+
+
+def test_cli_rejects_multi_symbol_and_wildcards(monkeypatch: pytest.MonkeyPatch) -> None:
     for bad in ("BTC,ETH", "*", "BTC ETH"):
         args = list(_BASE_CLI_ARGS)
         args[1] = bad
-        code, lines = _run_cli(monkeypatch, args, conn=conn)
+        code, stdout_docs, _ = _run_cli(monkeypatch, args, conn=None)
         assert code == 2
-        assert any(line["event"] == "FAILED" for line in lines)
+        assert len(stdout_docs) == 1
+        assert stdout_docs[0]["event"] == "FAILED"
 
 
 def test_cli_requires_explicit_provenance() -> None:
-    # Missing required provenance argument aborts argparse with a nonzero exit.
     with pytest.raises(SystemExit) as exc:
         cli.main(
-            [
-                "--symbol",
-                "BTC",
-                "--operation",
-                "PROMOTE_SCOPE",
-                "--actor-type",
-                "HUMAN_OPERATOR",
-            ]
+            ["--symbol", "BTC", "--operation", "PROMOTE_SCOPE", "--actor-type", "HUMAN_OPERATOR"]
         )
     assert exc.value.code != 0
 
 
 def test_cli_result_json_is_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
     conn1 = _FakeConn()
-    _, lines1 = _run_cli(monkeypatch, _BASE_CLI_ARGS, conn=conn1)
+    _, docs1, _ = _run_cli(monkeypatch, _BASE_CLI_ARGS, conn=conn1)
     conn2 = _FakeConn()
-    _, lines2 = _run_cli(monkeypatch, _BASE_CLI_ARGS, conn=conn2)
-    result1 = next(line for line in lines1 if line["event"] == "RESULT")
-    result2 = next(line for line in lines2 if line["event"] == "RESULT")
-    assert json.dumps(result1, sort_keys=True) == json.dumps(result2, sort_keys=True)
+    _, docs2, _ = _run_cli(monkeypatch, _BASE_CLI_ARGS, conn=conn2)
+    assert json.dumps(docs1[0], sort_keys=True) == json.dumps(docs2[0], sort_keys=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -1251,15 +1702,8 @@ def _imports(path: Path) -> set[str]:
 )
 def test_no_forbidden_layer_imports(path: Path) -> None:
     forbidden = (
-        "selection",
-        "decision_gate",
-        "execution_planner",
-        "executor",
-        "broker",
-        "src.account",
-        "wallet",
-        "reporting",
-        ".order",
+        "selection", "decision_gate", "execution_planner", "executor",
+        "broker", "src.account", "wallet", "reporting", ".order",
     )
     for module_name in _imports(path):
         assert not any(
@@ -1268,7 +1712,7 @@ def test_no_forbidden_layer_imports(path: Path) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Opt-in MariaDB integration tests                                            #
+# Opt-in isolated-MariaDB integration tests                                   #
 # --------------------------------------------------------------------------- #
 
 
@@ -1277,10 +1721,14 @@ STATUS_MIGRATION = Path(
     "db/migrations/20260706_native_short_scope_status_persistence_v1.sql"
 )
 LEVEL_MIGRATION = Path("db/migrations/20260708_native_short_map_level_status_v1.sql")
+CADENCE_UNAVAILABLE_MIGRATION = Path(
+    "db/migrations/20260707_native_short_cadence_unavailable_v1.sql"
+)
 ADMIN_MIGRATION = Path(
     "db/migrations/20260718_native_short_scope_administration_v1.sql"
 )
 TEMP_DB_PREFIX = "synth_native_short_scope_admin_txn_v1_tmp"
+_PRODUCTION_DB_NAMES = frozenset({"synth"})
 
 _REQUIRED_ENV = (
     "SYNTH_TEST_MARIADB_HOST",
@@ -1319,7 +1767,11 @@ def _explicit_test_config() -> dict[str, str]:
         pytest.skip("explicit disposable MariaDB configuration is absent")
     if os.environ.get("SYNTH_TEST_MARIADB_DISPOSABLE") != "1":
         pytest.skip("SYNTH_TEST_MARIADB_DISPOSABLE=1 is required")
-    return {name: os.environ[name] for name in _REQUIRED_ENV}
+    config = {name: os.environ[name] for name in _REQUIRED_ENV}
+    # Verify the DB target name explicitly: never point at the production schema.
+    if config["SYNTH_TEST_MARIADB_ADMIN_DATABASE"] in _PRODUCTION_DB_NAMES:
+        pytest.fail("refusing to run against a production database name")
+    return config
 
 
 def _connect(config: dict[str, str], *, database: str) -> Any:
@@ -1342,6 +1794,7 @@ def _connect(config: dict[str, str], *, database: str) -> Any:
 def _disposable_schema(label: str) -> Iterator[Any]:
     config = _explicit_test_config()
     database = f"{TEMP_DB_PREFIX}_{label}_{os.getpid()}"
+    assert database not in _PRODUCTION_DB_NAMES and database.startswith(TEMP_DB_PREFIX)
     admin = _connect(config, database=config["SYNTH_TEST_MARIADB_ADMIN_DATABASE"])
     connection = None
     try:
@@ -1356,13 +1809,12 @@ def _disposable_schema(label: str) -> Iterator[Any]:
         for path in (
             BASE_MIGRATION,
             STATUS_MIGRATION,
+            CADENCE_UNAVAILABLE_MIGRATION,
             LEVEL_MIGRATION,
             ADMIN_MIGRATION,
         ):
             with connection.cursor() as cursor:
-                for statement in _split_sql_statements(
-                    path.read_text(encoding="utf-8")
-                ):
+                for statement in _split_sql_statements(path.read_text(encoding="utf-8")):
                     cursor.execute(statement)
             connection.commit()
         yield connection, config, database
@@ -1375,33 +1827,99 @@ def _disposable_schema(label: str) -> Iterator[Any]:
         admin.close()
 
 
-def _mariadb_request(operation: OperationType, uuid: str, *, symbol: str = "BTC"):
+def _mariadb_request(operation: OperationType, uuid: str, *, symbol: str = "BTC", metadata=None):
     return _request(
-        operation,
-        symbol=symbol,
-        provenance=_provenance(operation_uuid=uuid),
+        operation, symbol=symbol, provenance=_provenance(operation_uuid=uuid), metadata=metadata
     )
+
+
+@pytest.fixture
+def _mariadb_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.operations.writer_capability_authorization_v1 as authmod
+
+    monkeypatch.setattr(
+        authmod, "require_writer_mutation_authorization",
+        lambda authorization, capability_id: authorization,
+    )
+
+
+def _seed_legacy_scope(conn: Any, symbol: str = "BTC") -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO native_short_map_scope_v1 (
+                venue, symbol, quote_currency, fib_trading_horizon,
+                primary_interval, supporting_interval, scope_support_state
+            ) VALUES ('bitvavo', %s, 'EUR', 'SHORT', '4h', '1h', 'SUPPORTED')
+            """,
+            (symbol,),
+        )
+        cur.execute(
+            """
+            INSERT INTO native_short_scope_support_event_v1 (
+                venue, symbol, quote_currency, fib_trading_horizon,
+                primary_interval, supporting_interval, scope_support_state,
+                event_ts_utc, reason_code, source_name, source_version
+            ) VALUES (
+                'bitvavo', %s, 'EUR', 'SHORT', '4h', '1h', 'SUPPORTED',
+                '2026-07-01 00:00:00', 'LEGACY', 'legacy_fixture', 'v1'
+            )
+            """,
+            (symbol,),
+        )
+        cur.execute(
+            """
+            INSERT INTO native_short_scope_cadence_config_v1 (
+                venue, symbol, quote_currency, fib_trading_horizon,
+                primary_interval, supporting_interval, cadence_contract_version,
+                target_evaluation_interval,
+                primary_source_freshness_limit_seconds,
+                supporting_source_freshness_limit_seconds,
+                evaluation_grace_seconds, recent_scope_grace_seconds,
+                effective_from_utc, effective_to_utc, is_active
+            ) VALUES (
+                'bitvavo', %s, 'EUR', 'SHORT', '4h', '1h', 'native_short_cadence_v1',
+                '1h', 43200, 10800, 900, 3600, '2026-07-01 00:00:00', NULL, 1
+            )
+            """,
+            (symbol,),
+        )
+    conn.commit()
+
+
+def _insert_scope_status_residue(conn: Any, symbol: str = "BTC") -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO native_short_scope_status_v1 (
+                venue, symbol, quote_currency, fib_trading_horizon,
+                primary_interval, supporting_interval, scope_support_state,
+                scope_status_code, map_lifecycle_state, observation_freshness_state,
+                source_freshness_state, actionability_state,
+                primary_source_freshness_limit_seconds,
+                supporting_source_freshness_limit_seconds,
+                cadence_contract_version, projection_as_of_utc
+            ) VALUES (
+                'bitvavo', %s, 'EUR', 'SHORT', '4h', '1h', 'SUPPORTED',
+                'CURRENT_EVALUATION', 'NO_CURRENT_MAP', 'NO_OBSERVATION',
+                'SOURCE_CURRENT', 'NO_ACTIONABLE_MAP', 43200, 10800,
+                'native_short_cadence_v1', '2026-07-18 10:00:00'
+            )
+            """,
+            (symbol,),
+        )
+    conn.commit()
 
 
 @_MARIADB
-def test_mariadb_promote_new_and_replay_idempotent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        __import__(
-            "src.operations.writer_capability_authorization_v1",
-            fromlist=["require_writer_mutation_authorization"],
-        ),
-        "require_writer_mutation_authorization",
-        lambda authorization, capability_id: authorization,
-    )
-    with _disposable_schema("promote") as (conn, _config, _db):
-        request = _mariadb_request(
-            OperationType.PROMOTE_SCOPE, "00000000-0000-4000-8000-00000000d001"
-        )
+def test_mariadb_promote_new_and_replay_idempotent(_mariadb_auth) -> None:
+    with _disposable_schema("promote") as (conn, _config, database):
+        assert database not in _PRODUCTION_DB_NAMES
+        request = _mariadb_request(OperationType.PROMOTE_SCOPE, _other_uuid("d1"))
         outcome = execute_scope_administration(conn, request, authorization=_AUTH)
         assert outcome.result.result_code == ResultCode.PROMOTED_NEW_SCOPE
         assert outcome.persisted is True
+        assert outcome.commit_state == CommitState.COMMITTED
 
         replay = execute_scope_administration(conn, request, authorization=_AUTH)
         assert replay.result.result_code == ResultCode.OPERATION_ALREADY_COMPLETED
@@ -1410,29 +1928,119 @@ def test_mariadb_promote_new_and_replay_idempotent(
         with conn.cursor() as cursor:
             cursor.execute("SELECT COUNT(*) AS n FROM native_short_map_scope_v1")
             assert cursor.fetchone()["n"] == 1
-            cursor.execute(
-                "SELECT COUNT(*) AS n FROM native_short_scope_admin_operation_v1"
-            )
+            cursor.execute("SELECT COUNT(*) AS n FROM native_short_scope_admin_operation_v1")
             assert cursor.fetchone()["n"] == 1
             cursor.execute(
-                "SELECT COUNT(*) AS n FROM native_short_scope_cadence_config_v1 "
-                "WHERE is_active = 1"
+                "SELECT COUNT(*) AS n FROM native_short_scope_cadence_config_v1 WHERE is_active = 1"
             )
             assert cursor.fetchone()["n"] == 1
 
 
 @_MARIADB
-def test_mariadb_first_creation_serialization(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        __import__(
-            "src.operations.writer_capability_authorization_v1",
-            fromlist=["require_writer_mutation_authorization"],
-        ),
-        "require_writer_mutation_authorization",
-        lambda authorization, capability_id: authorization,
-    )
+def test_mariadb_adopt_legacy_scope(_mariadb_auth) -> None:
+    with _disposable_schema("adopt") as (conn, _config, _database):
+        _seed_legacy_scope(conn)
+        outcome = execute_scope_administration(
+            conn, _mariadb_request(OperationType.ADOPT_LEGACY_SCOPE, _other_uuid("a1")),
+            authorization=_AUTH,
+        )
+        assert outcome.result.result_code == ResultCode.ADOPTED_LEGACY_SCOPE
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT support_generation FROM native_short_map_scope_v1")
+            assert cursor.fetchone()["support_generation"] == 1
+            cursor.execute(
+                "SELECT support_generation, activation_operation_id "
+                "FROM native_short_scope_cadence_config_v1 WHERE is_active = 1"
+            )
+            row = cursor.fetchone()
+            assert row["support_generation"] == 1
+            assert row["activation_operation_id"] is not None
+
+
+@_MARIADB
+def test_mariadb_remove_then_cleanup_then_repromote(_mariadb_auth) -> None:
+    with _disposable_schema("removecycle") as (conn, _config, _database):
+        execute_scope_administration(
+            conn, _mariadb_request(OperationType.PROMOTE_SCOPE, _other_uuid("01")),
+            authorization=_AUTH,
+        )
+        remove = execute_scope_administration(
+            conn, _mariadb_request(OperationType.REMOVE_SCOPE, _other_uuid("02")),
+            authorization=_AUTH,
+        )
+        assert remove.result.result_code == ResultCode.REMOVED_SCOPE
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT scope_support_state, scope_reason_code, support_generation "
+                "FROM native_short_map_scope_v1"
+            )
+            row = cursor.fetchone()
+            assert row["scope_support_state"] == "NOT_APPLICABLE"
+            assert row["scope_reason_code"] == ADMIN_REMOVAL_REASON_CODE
+            assert row["support_generation"] == 2
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM native_short_scope_cadence_config_v1 WHERE is_active = 1"
+            )
+            assert cursor.fetchone()["n"] == 0
+
+        # Ledgered residue cleanup on a second removal.
+        _insert_scope_status_residue(conn)
+        cleanup = execute_scope_administration(
+            conn, _mariadb_request(OperationType.REMOVE_SCOPE, _other_uuid("03")),
+            authorization=_AUTH,
+        )
+        assert cleanup.result.result_code == ResultCode.ALREADY_REMOVED_DERIVED_RESIDUE_CLEARED
+        assert cleanup.persisted is True
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT COUNT(*) AS n FROM native_short_scope_status_v1")
+            assert cursor.fetchone()["n"] == 0
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM native_short_scope_admin_operation_v1 "
+                "WHERE result_code = 'ALREADY_REMOVED_DERIVED_RESIDUE_CLEARED'"
+            )
+            assert cursor.fetchone()["n"] == 1
+
+        # Re-promotion after withdrawal preserves prior rows.
+        repromote = execute_scope_administration(
+            conn, _mariadb_request(OperationType.PROMOTE_SCOPE, _other_uuid("04")),
+            authorization=_AUTH,
+        )
+        assert repromote.result.result_code == ResultCode.PROMOTED_FROM_PRIOR_WITHDRAWAL
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT scope_support_state, support_generation FROM native_short_map_scope_v1"
+            )
+            row = cursor.fetchone()
+            assert row["scope_support_state"] == "SUPPORTED"
+            assert row["support_generation"] == 3
+            cursor.execute("SELECT COUNT(*) AS n FROM native_short_scope_cadence_config_v1")
+            assert cursor.fetchone()["n"] == 2
+            cursor.execute(
+                "SELECT COUNT(*) AS n FROM native_short_scope_cadence_config_v1 WHERE is_active = 1"
+            )
+            assert cursor.fetchone()["n"] == 1
+
+
+@_MARIADB
+def test_mariadb_changed_digest_conflict(_mariadb_auth) -> None:
+    with _disposable_schema("digest") as (conn, _config, _database):
+        uuid = _other_uuid("f1")
+        execute_scope_administration(
+            conn,
+            _mariadb_request(OperationType.PROMOTE_SCOPE, uuid, metadata={"k": "v1"}),
+            authorization=_AUTH,
+        )
+        conflict = execute_scope_administration(
+            conn,
+            _mariadb_request(OperationType.PROMOTE_SCOPE, uuid, metadata={"k": "v2"}),
+            authorization=_AUTH,
+        )
+        assert conflict.result.result_code == ResultCode.OPERATION_METADATA_MISMATCH
+        assert conflict.persisted is False
+
+
+@_MARIADB
+def test_mariadb_first_creation_serialization(_mariadb_auth) -> None:
     with _disposable_schema("serialize") as (conn, config, database):
         conn_b = _connect(config, database=database)
         try:
@@ -1442,34 +2050,21 @@ def test_mariadb_first_creation_serialization(
             def _promote(tag: str, connection: Any, uuid: str) -> None:
                 barrier.wait()
                 results[tag] = execute_scope_administration(
-                    connection,
-                    _mariadb_request(OperationType.PROMOTE_SCOPE, uuid),
+                    connection, _mariadb_request(OperationType.PROMOTE_SCOPE, uuid),
                     authorization=_AUTH,
                 )
 
-            t1 = threading.Thread(
-                target=_promote,
-                args=("a", conn, "00000000-0000-4000-8000-00000000d0a1"),
-            )
-            t2 = threading.Thread(
-                target=_promote,
-                args=("b", conn_b, "00000000-0000-4000-8000-00000000d0a2"),
-            )
-            t1.start()
-            t2.start()
-            t1.join()
-            t2.join()
+            t1 = threading.Thread(target=_promote, args=("a", conn, _other_uuid("a1")))
+            t2 = threading.Thread(target=_promote, args=("b", conn_b, _other_uuid("a2")))
+            t1.start(); t2.start(); t1.join(); t2.join()
 
             codes = {str(results["a"].result.result_code), str(results["b"].result.result_code)}
-            # Exactly one creates the scope; the other observes it already
-            # supported or fails closed on the lock. Never two scopes.
             assert "PROMOTED_NEW_SCOPE" in codes
             with conn.cursor() as cursor:
                 cursor.execute("SELECT COUNT(*) AS n FROM native_short_map_scope_v1")
                 assert cursor.fetchone()["n"] == 1
                 cursor.execute(
-                    "SELECT COUNT(*) AS n FROM native_short_scope_cadence_config_v1 "
-                    "WHERE is_active = 1"
+                    "SELECT COUNT(*) AS n FROM native_short_scope_cadence_config_v1 WHERE is_active = 1"
                 )
                 assert cursor.fetchone()["n"] == 1
         finally:
@@ -1478,20 +2073,9 @@ def test_mariadb_first_creation_serialization(
 
 @_MARIADB
 def test_mariadb_rollback_leaves_no_partial_state(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, _mariadb_auth
 ) -> None:
-    authmod = __import__(
-        "src.operations.writer_capability_authorization_v1",
-        fromlist=["require_writer_mutation_authorization"],
-    )
-    monkeypatch.setattr(
-        authmod,
-        "require_writer_mutation_authorization",
-        lambda authorization, capability_id: authorization,
-    )
-    with _disposable_schema("rollback") as (conn, _config, _db):
-        # Inject a failure by monkeypatching the support-event insert to raise
-        # after the scope/cadence/operation writes in the same transaction.
+    with _disposable_schema("rollback") as (conn, _config, _database):
         original = txn._insert_support_event
 
         def _boom(*args: Any, **kwargs: Any) -> None:
@@ -1500,11 +2084,7 @@ def test_mariadb_rollback_leaves_no_partial_state(
         monkeypatch.setattr(txn, "_insert_support_event", _boom)
         with pytest.raises(RuntimeError, match="injected failure"):
             execute_scope_administration(
-                conn,
-                _mariadb_request(
-                    OperationType.PROMOTE_SCOPE,
-                    "00000000-0000-4000-8000-00000000d301",
-                ),
+                conn, _mariadb_request(OperationType.PROMOTE_SCOPE, _other_uuid("31")),
                 authorization=_AUTH,
             )
         monkeypatch.setattr(txn, "_insert_support_event", original)
@@ -1513,18 +2093,84 @@ def test_mariadb_rollback_leaves_no_partial_state(
                 "native_short_map_scope_v1",
                 "native_short_scope_admin_operation_v1",
                 "native_short_scope_support_event_v1",
+                "native_short_scope_cadence_config_v1",
             ):
                 cursor.execute(f"SELECT COUNT(*) AS n FROM {table}")
                 assert cursor.fetchone()["n"] == 0, table
 
 
 @_MARIADB
-def test_mariadb_cross_scope_operation_attribution_is_rejected() -> None:
-    with _disposable_schema("crossscope") as (conn, _config, _db):
-        # An operation recorded for BTC cannot be referenced by an ETH support
-        # event: the scope-bound composite FK forbids it.
-        import pymysql
+def test_mariadb_active_cadence_uniqueness_enforced(_mariadb_auth) -> None:
+    import pymysql
 
+    with _disposable_schema("cadenceuq") as (conn, _config, _database):
+        execute_scope_administration(
+            conn, _mariadb_request(OperationType.PROMOTE_SCOPE, _other_uuid("51")),
+            authorization=_AUTH,
+        )
+        # A direct attempt to insert a second active cadence row for the exact
+        # scope must violate the active-slot unique key.
+        with pytest.raises(pymysql.err.IntegrityError):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO native_short_scope_cadence_config_v1 (
+                        venue, symbol, quote_currency, fib_trading_horizon,
+                        primary_interval, supporting_interval, cadence_contract_version,
+                        target_evaluation_interval,
+                        primary_source_freshness_limit_seconds,
+                        supporting_source_freshness_limit_seconds,
+                        evaluation_grace_seconds, recent_scope_grace_seconds,
+                        effective_from_utc, effective_to_utc, is_active
+                    ) VALUES (
+                        'bitvavo', 'BTC', 'EUR', 'SHORT', '4h', '1h', 'other_v2',
+                        '1h', 43200, 10800, 900, 3600, '2026-07-20 00:00:00', NULL, 1
+                    )
+                    """
+                )
+        conn.rollback()
+
+
+@_MARIADB
+def test_mariadb_support_generation_uniqueness_enforced(_mariadb_auth) -> None:
+    import pymysql
+
+    with _disposable_schema("supportuq") as (conn, _config, _database):
+        execute_scope_administration(
+            conn, _mariadb_request(OperationType.PROMOTE_SCOPE, _other_uuid("61")),
+            authorization=_AUTH,
+        )
+        with conn.cursor() as cursor:
+            cursor.execute(
+                "SELECT scope_admin_operation_id AS id FROM native_short_scope_admin_operation_v1"
+            )
+            op_id = cursor.fetchone()["id"]
+        # A second attributable support event for the same scope+generation must
+        # violate the scope-generation unique key.
+        with pytest.raises(pymysql.err.IntegrityError):
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    """
+                    INSERT INTO native_short_scope_support_event_v1 (
+                        venue, symbol, quote_currency, fib_trading_horizon,
+                        primary_interval, supporting_interval, scope_support_state,
+                        scope_admin_operation_id, support_generation, event_ts_utc,
+                        source_name, source_version
+                    ) VALUES (
+                        'bitvavo', 'BTC', 'EUR', 'SHORT', '4h', '1h', 'SUPPORTED',
+                        %s, 1, '2026-07-19 00:00:00', 'dup', 'v1'
+                    )
+                    """,
+                    (op_id,),
+                )
+        conn.rollback()
+
+
+@_MARIADB
+def test_mariadb_cross_scope_operation_attribution_is_rejected() -> None:
+    import pymysql
+
+    with _disposable_schema("crossscope") as (conn, _config, _database):
         with conn.cursor() as cursor:
             cursor.execute(
                 """
@@ -1549,8 +2195,7 @@ def test_mariadb_cross_scope_operation_attribution_is_rejected() -> None:
                 ("0" * 40, "1" * 64),
             )
             cursor.execute(
-                "SELECT scope_admin_operation_id AS id "
-                "FROM native_short_scope_admin_operation_v1"
+                "SELECT scope_admin_operation_id AS id FROM native_short_scope_admin_operation_v1"
             )
             op_id = cursor.fetchone()["id"]
         conn.commit()

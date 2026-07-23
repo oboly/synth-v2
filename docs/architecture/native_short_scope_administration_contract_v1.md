@@ -138,31 +138,53 @@ CLI. The transaction module:
   on the existing scope, cadence, support, and operation rows; the advisory lock
   serializes first creation when no scope row exists yet;
 - treats `native_short_scope_admin_operation_v1` as the sole idempotency
-  authority: a terminal operation ledger row and its scope mutation commit
-  atomically in one bounded transaction, so a committed ledger row is always
-  terminal. Replay of a completed `operation_uuid` with the identical request
-  digest returns `OPERATION_ALREADY_COMPLETED`; a different digest or immutable
-  metadata returns `OPERATION_METADATA_MISMATCH`; a non-terminal committed row
-  fails closed as `COMMIT_STATUS_UNKNOWN`;
+  authority with no unledgered mutation path: every write-capable request —
+  including a repeat removal that only clears derived residue — commits exactly
+  one immutable terminal operation-ledger row atomically with its mutations, so a
+  committed ledger row is always terminal. Replay of a completed `operation_uuid`
+  with the identical request digest returns `OPERATION_ALREADY_COMPLETED`; a
+  different digest or immutable metadata returns `OPERATION_METADATA_MISMATCH`; a
+  non-terminal committed row fails closed as `COMMIT_STATUS_UNKNOWN`;
 - assigns the first positive administration generation for adoption and new
   promotion, increments the generation for re-promotion after withdrawal and for
-  removal, appends exactly one attributable support event per operation, and
-  keeps at most one active cadence row per exact scope;
+  removal, appends exactly one attributable support event per support-state
+  operation, and keeps at most one active cadence row per exact scope;
+- fully validates managed state before and after every mutation: for a managed
+  SUPPORTED scope it proves exactly one active canonical cadence row whose
+  `support_generation` equals the scope generation and whose activation operation
+  is present with no deactivation/effective-end, plus exactly one operation-linked
+  `SUPPORTED` support event for that generation; for a managed removed scope it
+  proves zero active cadence rows, a `NOT_APPLICABLE` operation-linked support
+  event for the current generation, a coherently deactivated latest managed
+  cadence generation, and no cadence generation ahead of the scope generation.
+  Post-mutation revalidation binds each mutated scope/cadence/support row to the
+  exact new operation id and generation;
 - performs, on removal, only the narrow deterministic cleanup of the current
   derived projections (`native_short_scope_status_v1` and
   `native_short_map_level_status_v1`) that would otherwise remain falsely
   actionable, using the stable `ADMIN_SCOPE_WITHDRAWN` reason code that never
-  masquerades as a market-lifecycle outcome; it deletes no immutable map,
-  generation, lifecycle, observation, run, or support history;
+  masquerades as a market-lifecycle outcome. A repeat removal whose only residue
+  is such a projection performs a ledgered `ALREADY_REMOVED_DERIVED_RESIDUE_CLEARED`
+  cleanup that records `support_generation_before == support_generation_after`,
+  appends no support event, and deletes no immutable map, generation, lifecycle,
+  observation, run, or support history;
 - materializes no map and publishes no snapshot;
-- revalidates all invariants immediately before commit, and maps deadlock, lock
-  timeout, and unknown commit status only to the existing typed RETRYABLE result
-  codes;
+- exposes an explicit `commit_state` (`NOT_ATTEMPTED` / `COMMITTED` /
+  `ROLLED_BACK` / `UNKNOWN`). Failures before `conn.commit()` roll back and return
+  `commit_state=ROLLED_BACK` with `persisted=false`; deadlock and lock timeout
+  before commit map to their existing typed RETRYABLE codes. An exception at the
+  commit boundary whose committed state cannot be proven returns
+  `COMMIT_STATUS_UNKNOWN` with `commit_state=UNKNOWN` and `persisted=null` — it
+  never claims rollback certainty, and a retry resolves through the operation
+  ledger;
 - defaults to a read-only dry run that computes the planned transition and
   expected result without any persistent write, lock acquisition, operation
   ledger row, or production mutation authorization. Write mode verifies the exact
   clean repository source identity and requires canonical
-  `native_short_4h_chain` writer mutation authorization before any mutation.
+  `native_short_4h_chain` writer mutation authorization before any mutation. The
+  CLI emits exactly one deterministic JSON result document on stdout (progress and
+  authorization/source-identity failures included) with operational progress on
+  stderr.
 
 This transaction provides its own commit-time transaction validation only. It
 does not add or perform the separate 4h map-writer commit-time fencing, which

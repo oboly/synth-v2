@@ -205,7 +205,9 @@ def build_request(args: argparse.Namespace) -> NativeShortScopeAdministrationReq
     )
 
 
-def _emit_started(args: argparse.Namespace) -> None:
+def _emit_progress(args: argparse.Namespace) -> None:
+    """Operational progress goes to stderr so stdout carries exactly one JSON
+    result document."""
     payload = {
         "event": "STARTED",
         "runner": RUNNER_NAME,
@@ -219,12 +221,18 @@ def _emit_started(args: argparse.Namespace) -> None:
         "production_db_writes": 1 if args.write else 0,
         **_SAFETY_MARKERS,
     }
+    print(json.dumps(payload, sort_keys=True), file=sys.stderr, flush=True)
+
+
+def _emit_document(payload: dict[str, Any]) -> None:
+    """Emit the single final JSON result document to stdout. Called exactly once
+    per invocation on every code path."""
     print(json.dumps(payload, sort_keys=True))
     sys.stdout.flush()
 
 
-def _emit_result(outcome_dict: dict[str, Any], *, write: bool) -> None:
-    payload = {
+def _result_document(outcome_dict: dict[str, Any]) -> dict[str, Any]:
+    return {
         "event": "RESULT",
         "runner": RUNNER_NAME,
         "runner_version": RUNNER_VERSION,
@@ -232,24 +240,21 @@ def _emit_result(outcome_dict: dict[str, Any], *, write: bool) -> None:
         **_SAFETY_MARKERS,
         **outcome_dict,
     }
-    print(json.dumps(payload, sort_keys=True))
-    sys.stdout.flush()
 
 
-def _emit_error(reason_code: str, detail: str, *, write: bool) -> None:
-    payload = {
+def _error_document(reason_code: str, detail: str, *, write: bool) -> dict[str, Any]:
+    return {
         "event": "FAILED",
         "runner": RUNNER_NAME,
         "runner_version": RUNNER_VERSION,
         "write": write,
         "persisted": False,
+        "commit_state": "NOT_ATTEMPTED",
         "production_db_writes": 0,
         "reason_code": reason_code,
         "detail": detail,
         **_SAFETY_MARKERS,
     }
-    print(json.dumps(payload, sort_keys=True))
-    sys.stdout.flush()
 
 
 def main(
@@ -265,10 +270,10 @@ def main(
     try:
         request = build_request(args)
     except NativeShortScopeAdministrationValidationError as exc:
-        _emit_error("INVALID_REQUEST", str(exc), write=write)
+        _emit_document(_error_document("INVALID_REQUEST", str(exc), write=write))
         return 2
 
-    _emit_started(args)
+    _emit_progress(args)
 
     if not write:
         return _run_dry_run(request)
@@ -284,7 +289,7 @@ def _run_dry_run(request: NativeShortScopeAdministrationRequest) -> int:
         conn = get_connection()
         outcome = plan_scope_administration(conn, request)
     except Exception as exc:  # noqa: BLE001 - surface as fail-closed result.
-        _emit_error(type(exc).__name__, str(exc), write=False)
+        _emit_document(_error_document(type(exc).__name__, str(exc), write=False))
         return 1
     finally:
         if conn is not None:
@@ -294,7 +299,7 @@ def _run_dry_run(request: NativeShortScopeAdministrationRequest) -> int:
                 pass
             conn.close()
 
-    _emit_result(outcome.as_json_dict(), write=False)
+    _emit_document(_result_document(outcome.as_json_dict()))
     return 0 if _is_success(outcome) else 1
 
 
@@ -305,7 +310,8 @@ def _run_write(
 ) -> int:
     from src.common.db import get_connection
     from src.operations.writer_capability_authorization_v1 import (
-        require_capability_write_authorization,
+        AuthorizationDenied,
+        enforce_capability_write_authorization,
     )
 
     # Verify the exact clean repository source identity before any mutation.
@@ -315,14 +321,22 @@ def _run_write(
             inspect_repository_source=inspect_repository_source,
         )
     except NativeShortRepositorySourceIdentityError as exc:
-        _emit_error("INVALID_REPOSITORY_SOURCE", str(exc), write=True)
+        _emit_document(
+            _error_document("INVALID_REPOSITORY_SOURCE", str(exc), write=True)
+        )
         return 2
 
-    # Require canonical writer mutation authorization. On denial this prints
-    # deterministic FAIL lines and raises SystemExit(3).
-    authorization = require_capability_write_authorization(
-        WRITER_CAPABILITY_ID, service=WRITER_SERVICE
-    )
+    # Require canonical writer mutation authorization without emitting any
+    # uncontrolled non-JSON stdout: a denial becomes exactly one JSON document.
+    try:
+        authorization = enforce_capability_write_authorization(
+            WRITER_CAPABILITY_ID, service=WRITER_SERVICE
+        )
+    except AuthorizationDenied as exc:
+        _emit_document(
+            _error_document("WRITER_AUTHORIZATION_DENIED", str(exc), write=True)
+        )
+        return 3
 
     conn = None
     try:
@@ -331,13 +345,13 @@ def _run_write(
             conn, request, authorization=authorization
         )
     except Exception as exc:  # noqa: BLE001 - surface as fail-closed result.
-        _emit_error(type(exc).__name__, str(exc), write=True)
+        _emit_document(_error_document(type(exc).__name__, str(exc), write=True))
         return 1
     finally:
         if conn is not None:
             conn.close()
 
-    _emit_result(outcome.as_json_dict(), write=True)
+    _emit_document(_result_document(outcome.as_json_dict()))
     return 0 if _is_success(outcome) else 1
 
 
