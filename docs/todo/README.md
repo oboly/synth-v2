@@ -66,6 +66,8 @@ A + D = later
 
 Rotation Pressure runtime ownership, timers, freshness, disk/log bounds, rollback, and multi-cycle host acceptance belong to **C**. Rotation Pressure and cross-asset rotation research remain in **D**. Profit Plan **A** may later consume persisted pressure state read-only, but it must never trigger or own the writer.
 
+The backtest capability contract and decision-gate account protections are cross-lane future-design guardrails. They do not change the current C/E/A/D execution order and authorize no runtime, account, or execution changes.
+
 ## Lane C — Rotation Pressure runtime-owner operational sequence
 
 **Steps 1-3 below (the Rotation Pressure runtime-owner operational sequence
@@ -175,13 +177,15 @@ Installed-host service/timer activation was not part of that closure. Any activa
 |---|---:|---|
 | `README.md` | **E — ongoing board maintenance** | Cross-lane execution order, status reconciliation, and stable A–E references |
 | `workflow_standard.md` | standard | TODO creation, update, closure, priority, boundary, and commit rules |
+| `backtest_capability_contract_v1.md` | **future design P2 / cross-lane guardrail** | Machine-readable replay support, data scope, as-of, side-effect, and composition-preflight contract for backtestable components |
 | `profit_plan_live_ladder.md` | **A — active P1 / later** | Safe prerequisites and ordered path from canonical ladder truth to authenticated preview, decision gate, execution plan, executor, and a tightly controlled live canary |
+| `decision_gate_account_protections_v1.md` | **future design P2** | Account-aware drawdown, loss, stoploss-streak, and cooldown permission blocks inside `decision_gate`; no market ranking or execution authority |
 | `credential_scope_and_manual_ladder_execution_boundary_v1.md` | open follow-up; credential contract migrated | Runtime wiring and execution-boundary tasks after canonical account-to-credential binding moved to `docs/architecture/account_credential_binding_contract_v1.md` |
 | `profit_plan_target_lifecycle_history_truth_v1.md` | **B — contained/completed (original IOST defect) by PR #105; future monotonic hardening parked, evidence-gated** | Closure record: IOST never had canonical map/lifecycle truth; the transient-bridge reporting defect is contained by fail-closed handling. Future monotonic reached/passed hardening reopens only on real canonical evidence |
 | `short_swing_linked_profile_freshness_and_disk_reliability_v1.md` | **C — open P2 / first (current active lane)** | Odroid/runtime ownership, absolute freshness timestamps, disk/log containment verification, rollout, and rollback hygiene |
 | `momentum_flow_scanner_matrix_v1.md` | **D — open P3 research / later** | Read-only RSI/MFI momentum-flow scanner, target-room research gate, and validation path |
 | `ffg_curated_rotation_radar_v1.md` | **D — open P3 research / later** | Curated-universe rotation radar, normalized flow and RSI/MFI confirmation, market-only classifications, and separate account ownership overlay |
-| `sector_rotation_master_plan_v1.md` | **D — Phase A accepted; Phase B implementation complete for review** | Research-only sector taxonomy, analytics, dashboard, and optional future context sequence |
+| `sector_rotation_master_plan_v1.md` | **D — Phase A accepted; Phase B implementation complete for review; Phase B2 short audit open** | Research-only sector taxonomy, analytics, short market-filter candidate audit, dashboard, and optional future context sequence |
 | `sector_taxonomy_database_seed_v1.md` | **D — Phase A done / accepted and activated** | Deterministic taxonomy, full enabled/research coverage, multi-cluster membership, and transactional metadata import |
 | `sector_rotation_engine_v1.md` | **D — Phase B implementation complete for review; migration/write pending** | Participation, relative-strength, persistence, and proxy-rotation analytics |
 | `sector_rotation_dashboard_v1.md` | **D — open / next after accepted Phase B snapshots** | Future read-only taxonomy and sector-rotation inspection surface |
