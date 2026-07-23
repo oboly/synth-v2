@@ -2,7 +2,7 @@
 
 ## Status
 
-`blocked` — the repository writer-provenance contract is implemented, and the first scope-administration boundary defines pure request types plus forward-only schema constraints only. Runtime adoption, promotion, and removal transactions remain unimplemented. One post-merge attributable BTC production run passed devlap host acceptance; its permanent evidence is reviewed in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`. `WRITER_PROVENANCE_UNATTRIBUTED` is closed by that evidence. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
+`blocked` — the repository writer-provenance contract, the pure scope-administration request types, the forward-only schema, and the deterministic repository transactions for `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` (with first-creation serialization, operation-ledger idempotency, and commit-time transaction validation) are now implemented in the repository. One post-merge attributable BTC production run passed devlap host acceptance; its permanent evidence is reviewed in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`, and `WRITER_PROVENANCE_UNATTRIBUTED` is closed by that evidence. No production database mutation, migration application, or operational acceptance of the administration transactions has been performed. Writer commit-time fencing, `NO_CURRENT_MAP` bootstrap, and per-symbol failure isolation remain unimplemented. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
 
 ## Sources
 
@@ -145,8 +145,8 @@ The required later removal/rollback transaction must lock the same exact key, wi
 
 The remaining blocker order is fixed:
 
-1. **Scope-administration repository transactions.** Implement `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` separately against the accepted types and schema; include deterministic first-creation serialization and no map materialization.
-2. **Writer commit-time fencing.** Revalidate scope ID, support state, support generation, and active cadence immediately before the bounded writer transaction commits; no persistent fence ledger.
+1. **Scope-administration repository transactions.** *Implemented* in `src/market_data/native_short_scope_administration_transaction_v1.py` and `src/market_data/run_native_short_scope_administration_v1.py`: `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` are handled separately against the accepted types and schema, with deterministic first-creation serialization, operation-ledger idempotency, complete managed operation-lineage validation, commit-time transaction validation, and no map materialization. Production application and operational acceptance are not part of that repository slice.
+2. **Writer commit-time fencing.** Revalidate scope ID, support state, support generation, and active cadence immediately before the bounded writer transaction commits; no persistent fence ledger. This is the next blocker; the administration transaction provides its own commit-time validation only.
 3. **`NO_CURRENT_MAP` bootstrap semantics.** Make the expected newly supported bootstrap state non-fatal without hiding real failures.
 4. **Per-symbol failure isolation.** Prove one symbol cannot leave another symbol's partial evidence.
 5. **Sequential SOL review/canary.** Consider only SOL and accept three consecutive real 4h cycles.
@@ -156,8 +156,8 @@ The remaining blocker order is fixed:
 
 ## Blockers / dependencies
 
-- `PROMOTION_TRANSACTION_IMPLEMENTATION_MISSING`;
-- `REMOVAL_TRANSACTION_IMPLEMENTATION_MISSING`;
+- `WRITER_COMMIT_TIME_FENCING_MISSING`: the 4h map-writer commit-time fence is not implemented; the administration transaction validates only its own commit;
+- `ADMINISTRATION_TRANSACTION_OPERATIONAL_ACCEPTANCE_PENDING`: the promotion/removal/adoption repository transactions are implemented but have never been applied against production or operationally accepted;
 - `BOOTSTRAP_ORCHESTRATION_BLOCKED`: current `NO_CURRENT_MAP` semantics are fatal for a new scope;
 - `MULTI_SCOPE_FAILURE_ISOLATION_MISSING`: current orchestration does not isolate failures by symbol;
 - one-scope current failure-domain-safe capacity;

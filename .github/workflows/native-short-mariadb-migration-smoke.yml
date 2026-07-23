@@ -8,14 +8,18 @@ on:
       - db/migrations/20260626_native_short_map_lifecycle_v1.sql
       - db/migrations/20260706_native_short_scope_status_persistence_v1.sql
       - db/migrations/20260707_native_short_cadence_unavailable_v1.sql
+      - db/migrations/20260708_native_short_map_level_status_v1.sql
       - db/migrations/20260718_native_short_scope_administration_v1.sql
       - src/market_data/native_short_scope_administration_v1.py
+      - src/market_data/native_short_scope_administration_transaction_v1.py
+      - src/market_data/run_native_short_scope_administration_v1.py
       - src/market_data/native_short_scope_status_v1.py
       - src/market_data/native_short_scope_status_projection_v1.py
       - src/market_data/native_short_scope_status_materializer_v1.py
       - tests/test_native_short_scope_status_materializer_mariadb_v1.py
       - tests/test_native_short_scope_administration_v1.py
       - tests/test_native_short_scope_administration_migration_v1.py
+      - tests/test_native_short_scope_administration_transaction_v1.py
       - .github/workflows/native-short-mariadb-migration-smoke.yml
   workflow_dispatch:
 
@@ -596,6 +600,9 @@ jobs:
           # DB_PASSWORD/DB_NAME above: this test must never resolve project
           # configuration, .env, or a configured Synth DB default, only what
           # is explicitly supplied here for this disposable service.
+          # The disposable admin database is information_schema (never the
+          # production `synth` schema); the test's production-name guard fails
+          # closed if a production database name is ever supplied.
           SYNTH_TEST_MARIADB_HOST: 127.0.0.1
           SYNTH_TEST_MARIADB_PORT: "3306"
           SYNTH_TEST_MARIADB_USER: root
@@ -603,7 +610,37 @@ jobs:
           SYNTH_TEST_MARIADB_ADMIN_DATABASE: information_schema
           SYNTH_TEST_MARIADB_DISPOSABLE: "1"
         run: |
+          set -euo pipefail
           python -m pytest \
             tests/test_native_short_scope_status_materializer_mariadb_v1.py \
             tests/test_native_short_scope_administration_migration_v1.py \
             -v
+
+      - name: Run Native SHORT administration transaction MariaDB integration tests
+        env:
+          RUN_MARIADB_DDL_TEST: "1"
+          SYNTH_TEST_MARIADB_HOST: 127.0.0.1
+          SYNTH_TEST_MARIADB_PORT: "3306"
+          SYNTH_TEST_MARIADB_USER: root
+          SYNTH_TEST_MARIADB_PASSWORD: native_short_ci_root_password
+          SYNTH_TEST_MARIADB_ADMIN_DATABASE: information_schema
+          SYNTH_TEST_MARIADB_DISPOSABLE: "1"
+        run: |
+          set -euo pipefail
+          report="$(mktemp)"
+          # The opt-in transaction MariaDB tests must actually execute against the
+          # disposable service. A skipped or empty selection is treated as a CI
+          # failure so silent gating can never pass this job.
+          python -m pytest \
+            tests/test_native_short_scope_administration_transaction_v1.py \
+            -k mariadb -v -rsx | tee "$report"
+          if grep -Eiq 'skipped|no tests ran' "$report"; then
+            echo "FAIL: administration transaction MariaDB tests were skipped unexpectedly" >&2
+            exit 1
+          fi
+          passed="$(grep -Eo '[0-9]+ passed' "$report" | tail -n1 | grep -Eo '[0-9]+' || echo 0)"
+          if [ "${passed:-0}" -lt 9 ]; then
+            echo "FAIL: expected at least 9 administration transaction MariaDB tests, got ${passed}" >&2
+            exit 1
+          fi
+          echo "administration transaction MariaDB tests passed=${passed}"

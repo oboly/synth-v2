@@ -1,0 +1,388 @@
+from __future__ import annotations
+
+"""Manual market-only Native SHORT single-scope administration CLI.
+
+Runs exactly one administration operation (ADOPT_LEGACY_SCOPE, PROMOTE_SCOPE, or
+REMOVE_SCOPE) against exactly one canonical scope. Defaults to a read-only dry
+run. Mutation requires an explicit ``--write`` plus a verified clean repository
+source identity and canonical writer mutation authorization for the
+``native_short_4h_chain`` capability.
+
+Boundary: market-only, account-agnostic, exact-one-scope. No broker, order,
+selection, decision-gate, execution-planner, executor, or reporting mutation. No
+runtime or timer is activated by this CLI.
+
+Safety markers:
+broker_private_calls=0
+broker_writes=0
+order_submission=0
+live_orders=0
+decision_gate=none
+execution_planner=none
+executor=none
+"""
+
+import argparse
+import json
+import sys
+from datetime import UTC, datetime
+from typing import Any
+
+from src.market_data.native_short_scope_administration_v1 import (
+    NativeShortScopeAdministrationActorType,
+    NativeShortScopeAdministrationKey,
+    NativeShortScopeAdministrationOperationType,
+    NativeShortScopeAdministrationProvenance,
+    NativeShortScopeAdministrationRequest,
+    NativeShortScopeAdministrationTriggerType,
+    NativeShortScopeAdministrationValidationError,
+)
+from src.market_data.native_short_scope_administration_transaction_v1 import (
+    WRITER_CAPABILITY_ID,
+    execute_scope_administration,
+    plan_scope_administration,
+)
+from src.market_data.native_short_repository_source_identity_v1 import (
+    NativeShortRepositorySourceIdentityError,
+    NativeShortRepositorySourceInspector,
+    inspect_running_repository_source,
+    verify_repository_commit_sha,
+)
+
+
+RUNNER_NAME = "native_short_scope_administration_v1"
+RUNNER_VERSION = "0.1"
+DEFAULT_SCHEMA_VERSION = "native_short_scope_administration_v1"
+WRITER_SERVICE = "synth-chain-4h.service"
+
+DEFAULT_VENUE = "bitvavo"
+DEFAULT_QUOTE_CURRENCY = "EUR"
+DEFAULT_FIB_TRADING_HORIZON = "SHORT"
+DEFAULT_PRIMARY_INTERVAL = "4h"
+DEFAULT_SUPPORTING_INTERVAL = "1h"
+
+# CLI-selectable provenance values. TEST actor/trigger are intentionally not
+# selectable from this production CLI.
+_ACTOR_CHOICES = (
+    NativeShortScopeAdministrationActorType.HUMAN_OPERATOR.value,
+    NativeShortScopeAdministrationActorType.SERVICE_PRINCIPAL.value,
+)
+_TRIGGER_CHOICES = (
+    NativeShortScopeAdministrationTriggerType.MANUAL_CLI.value,
+    NativeShortScopeAdministrationTriggerType.AUTOMATION.value,
+)
+_OPERATION_CHOICES = tuple(
+    item.value for item in NativeShortScopeAdministrationOperationType
+)
+
+_SAFETY_MARKERS = {
+    "broker_private_calls": 0,
+    "broker_writes": 0,
+    "order_submission": 0,
+    "live_orders": 0,
+    "decision_gate": "none",
+    "execution_planner": "none",
+    "executor": "none",
+    "systemd_changes": 0,
+    "timer_changes": 0,
+    "runtime_activation": 0,
+    "host_mutations": 0,
+}
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="run_native_short_scope_administration_v1",
+        description=(
+            "Manual market-only Native SHORT single-scope administration. "
+            "Defaults to dry-run. Use --write for the explicit mutation path "
+            "against exactly one canonical scope."
+        ),
+    )
+    parser.add_argument(
+        "--symbol",
+        required=True,
+        help="Exactly one canonical base symbol (e.g. BTC). Lists/wildcards rejected.",
+    )
+    parser.add_argument("--operation", required=True, choices=_OPERATION_CHOICES)
+    parser.add_argument("--venue", choices=(DEFAULT_VENUE,), default=DEFAULT_VENUE)
+    parser.add_argument(
+        "--quote-currency",
+        choices=(DEFAULT_QUOTE_CURRENCY,),
+        default=DEFAULT_QUOTE_CURRENCY,
+    )
+    parser.add_argument("--actor-type", required=True, choices=_ACTOR_CHOICES)
+    parser.add_argument("--actor-id", required=True)
+    parser.add_argument("--trigger-type", required=True, choices=_TRIGGER_CHOICES)
+    parser.add_argument("--reason", required=True)
+    parser.add_argument("--operation-uuid", required=True)
+    parser.add_argument("--request-source", required=True)
+    parser.add_argument("--repository-commit", required=True)
+    parser.add_argument(
+        "--trigger-ref",
+        required=True,
+        help="Explicit reviewed trigger reference metadata.",
+    )
+    parser.add_argument("--schema-version", default=DEFAULT_SCHEMA_VERSION)
+    parser.add_argument(
+        "--requested-at-utc",
+        default=None,
+        help=(
+            "Explicit request timestamp in canonical UTC ISO-8601 "
+            "(e.g. 2026-07-18T10:00:00Z). Part of the immutable request "
+            "identity/digest: a retry must supply the identical value. "
+            "Defaults to the current UTC time for a first attempt."
+        ),
+    )
+    parser.add_argument(
+        "--metadata",
+        default="{}",
+        help="Canonical immutable request metadata as a JSON object.",
+    )
+    parser.add_argument(
+        "--write",
+        action="store_true",
+        help="Perform the explicit single-scope mutation transaction.",
+    )
+    return parser.parse_args(argv)
+
+
+def _parse_requested_at(value: str | None) -> datetime:
+    if value is None:
+        return datetime.now(UTC)
+    text = value.strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise NativeShortScopeAdministrationValidationError(
+            f"REQUESTED_AT_NOT_ISO_UTC value={value}"
+        ) from exc
+    if parsed.tzinfo is None:
+        raise NativeShortScopeAdministrationValidationError(
+            "REQUESTED_AT_MISSING_TIMEZONE"
+        )
+    return parsed.astimezone(UTC)
+
+
+def build_request(args: argparse.Namespace) -> NativeShortScopeAdministrationRequest:
+    try:
+        metadata = json.loads(args.metadata)
+    except json.JSONDecodeError as exc:
+        raise NativeShortScopeAdministrationValidationError(
+            f"METADATA_NOT_JSON detail={exc}"
+        ) from exc
+    if not isinstance(metadata, dict):
+        raise NativeShortScopeAdministrationValidationError(
+            "METADATA_MUST_BE_JSON_OBJECT"
+        )
+
+    requested_at_utc = _parse_requested_at(args.requested_at_utc)
+
+    scope_key = NativeShortScopeAdministrationKey(
+        venue=args.venue,
+        symbol=args.symbol,
+        quote_currency=args.quote_currency,
+        fib_trading_horizon=DEFAULT_FIB_TRADING_HORIZON,
+        primary_interval=DEFAULT_PRIMARY_INTERVAL,
+        supporting_interval=DEFAULT_SUPPORTING_INTERVAL,
+    )
+    provenance = NativeShortScopeAdministrationProvenance(
+        operation_uuid=args.operation_uuid,
+        actor_type=args.actor_type,
+        actor_id=args.actor_id,
+        trigger_type=args.trigger_type,
+        request_source=args.request_source,
+        reason=args.reason,
+        requested_at_utc=requested_at_utc,
+        repository_sha=args.repository_commit,
+        schema_version=args.schema_version,
+    )
+    return NativeShortScopeAdministrationRequest(
+        operation_type=args.operation,
+        scope_key=scope_key,
+        provenance=provenance,
+        canonical_metadata=metadata,
+    )
+
+
+def _emit_progress(args: argparse.Namespace) -> None:
+    """Operational progress goes to stderr so stdout carries exactly one JSON
+    result document."""
+    payload = {
+        "event": "STARTED",
+        "runner": RUNNER_NAME,
+        "runner_version": RUNNER_VERSION,
+        "operation": args.operation,
+        "symbol": args.symbol.strip().upper(),
+        "venue": args.venue,
+        "quote_currency": args.quote_currency,
+        "write": bool(args.write),
+        "dry_run": not args.write,
+        "production_db_writes": 1 if args.write else 0,
+        **_SAFETY_MARKERS,
+    }
+    print(json.dumps(payload, sort_keys=True), file=sys.stderr, flush=True)
+
+
+def _emit_document(payload: dict[str, Any]) -> None:
+    """Emit the single final JSON result document to stdout. Called exactly once
+    per invocation on every code path."""
+    print(json.dumps(payload, sort_keys=True))
+    sys.stdout.flush()
+
+
+def _result_document(outcome_dict: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "event": "RESULT",
+        "runner": RUNNER_NAME,
+        "runner_version": RUNNER_VERSION,
+        "production_db_writes": 1 if outcome_dict.get("persisted") else 0,
+        **_SAFETY_MARKERS,
+        **outcome_dict,
+    }
+
+
+def _error_document(
+    reason_code: str,
+    detail: str,
+    *,
+    write: bool,
+    commit_state: str = "NOT_ATTEMPTED",
+    persisted: bool | None = False,
+) -> dict[str, Any]:
+    return {
+        "event": "FAILED",
+        "runner": RUNNER_NAME,
+        "runner_version": RUNNER_VERSION,
+        "write": write,
+        "persisted": persisted,
+        "commit_state": commit_state,
+        "production_db_writes": 0,
+        "reason_code": reason_code,
+        "detail": detail,
+        **_SAFETY_MARKERS,
+    }
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    inspect_repository_source: NativeShortRepositorySourceInspector = (
+        inspect_running_repository_source
+    ),
+) -> int:
+    args = parse_args(argv)
+    write = bool(args.write)
+
+    try:
+        request = build_request(args)
+    except NativeShortScopeAdministrationValidationError as exc:
+        _emit_document(_error_document("INVALID_REQUEST", str(exc), write=write))
+        return 2
+
+    _emit_progress(args)
+
+    if not write:
+        return _run_dry_run(request)
+
+    return _run_write(request, inspect_repository_source=inspect_repository_source)
+
+
+def _run_dry_run(request: NativeShortScopeAdministrationRequest) -> int:
+    from src.common.db import get_connection
+
+    conn = None
+    try:
+        conn = get_connection()
+        outcome = plan_scope_administration(conn, request)
+    except Exception as exc:  # noqa: BLE001 - surface as fail-closed result.
+        _emit_document(_error_document(type(exc).__name__, str(exc), write=False))
+        return 1
+    finally:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            conn.close()
+
+    _emit_document(_result_document(outcome.as_json_dict()))
+    return 0 if _is_success(outcome) else 1
+
+
+def _run_write(
+    request: NativeShortScopeAdministrationRequest,
+    *,
+    inspect_repository_source: NativeShortRepositorySourceInspector,
+) -> int:
+    from src.common.db import get_connection
+    from src.operations.writer_capability_authorization_v1 import (
+        AuthorizationDenied,
+        enforce_capability_write_authorization,
+    )
+
+    # Verify the exact clean repository source identity before any mutation.
+    try:
+        verify_repository_commit_sha(
+            request.provenance.repository_sha,
+            inspect_repository_source=inspect_repository_source,
+        )
+    except NativeShortRepositorySourceIdentityError as exc:
+        _emit_document(
+            _error_document("INVALID_REPOSITORY_SOURCE", str(exc), write=True)
+        )
+        return 2
+
+    # Require canonical writer mutation authorization without emitting any
+    # uncontrolled non-JSON stdout: a denial becomes exactly one JSON document.
+    try:
+        authorization = enforce_capability_write_authorization(
+            WRITER_CAPABILITY_ID, service=WRITER_SERVICE
+        )
+    except AuthorizationDenied as exc:
+        _emit_document(
+            _error_document("WRITER_AUTHORIZATION_DENIED", str(exc), write=True)
+        )
+        return 3
+
+    from src.market_data.native_short_scope_administration_transaction_v1 import (
+        NativeShortScopeAdministrationExecutionError,
+    )
+
+    conn = None
+    try:
+        conn = get_connection()
+        outcome = execute_scope_administration(
+            conn, request, authorization=authorization
+        )
+    except NativeShortScopeAdministrationExecutionError as exc:
+        # Confirmed pre-commit rollback of an unexpected defect: report the
+        # authoritative commit_state without hiding the defect (str carries it).
+        _emit_document(
+            _error_document(
+                exc.reason_code,
+                exc.detail,
+                write=True,
+                commit_state=str(exc.commit_state),
+                persisted=exc.persisted,
+            )
+        )
+        return 1
+    except Exception as exc:  # noqa: BLE001 - surface as fail-closed result.
+        _emit_document(_error_document(type(exc).__name__, str(exc), write=True))
+        return 1
+    finally:
+        if conn is not None:
+            conn.close()
+
+    _emit_document(_result_document(outcome.as_json_dict()))
+    return 0 if _is_success(outcome) else 1
+
+
+def _is_success(outcome: Any) -> bool:
+    result_class = str(outcome.result.result_class)
+    return result_class in ("SUCCESS", "IDEMPOTENT_SUCCESS")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
