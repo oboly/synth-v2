@@ -6,8 +6,10 @@ Phase A is done / accepted and operationally activated from merged main
 `794a03e014c44b5f01410a07bc5f24aa763715a8`. Its migration, first import,
 post-write verification, and idempotent second import passed on 2026-07-16.
 Phase B repository implementation is complete for review; its migration and
-snapshot writes remain separate post-merge acceptance actions. Phase C is next
-after persisted Phase B snapshots are accepted. Phase D has not started.
+snapshot writes remain separate post-merge acceptance actions. Phase B2 is a
+short, open research audit of a few market-filter ideas; it may run alongside
+Phase C after persisted Phase B snapshots are accepted and must not reopen or
+retune Phase B without evidence. Phase D has not started.
 
 ## Goal
 
@@ -91,6 +93,65 @@ At minimum:
 - POL
 - HYPE, LIT
 - NEAR, VET, DEEP
+
+## Phase B2 — Market-filter candidate audit
+
+Status: open / short research after accepted Phase B snapshots. This audit may
+run alongside Phase C because it changes no dashboard or runtime behavior.
+
+Purpose:
+
+Determine whether a small set of market-only filter ideas adds genuine sector
+rotation information or belongs elsewhere in Synth. Phase B remains the
+accepted baseline; no v1 score, migration, or writer is changed by this audit.
+
+Research questions:
+
+- Test realized-volatility normalization as an explanatory sector feature, while
+  avoiding duplicate information already present in dispersion and liquidity
+  quality.
+- Test member-level range compression/expansion as an aggregated participation
+  or confirmation measure; do not blindly remove compressed assets before
+  breakout analysis.
+- Treat listing age and historical-data age as eligibility or confidence inputs,
+  not as sector leadership.
+- Keep spread, precision, and instrument tradability in market quality, asset
+  profile, or selection eligibility unless evidence shows an aggregate sector
+  metric adds independent value.
+- Compare every candidate against the existing Phase B components and measure
+  incremental stability, explanatory value, and replay-safe predictive value.
+- Use point-in-time inputs and the future
+  `backtest_capability_contract_v1.md`; no current/latest profile joins in
+  historical evaluation.
+
+Required output:
+
+```text
+candidate
+source_inputs
+point_in_time_availability
+existing_metric_overlap
+sector_level_hypothesis
+validation_method
+decision
+```
+
+Allowed decisions:
+
+```text
+ADOPT_AS_SECTOR_FEATURE
+ADOPT_AS_ELIGIBILITY_OR_CONFIDENCE
+KEEP_IN_OTHER_LAYER
+REJECT
+```
+
+Explicit exclusions:
+
+- Trade-performance ranking is account-aware and belongs only in a future
+  decision-gate protection/permission design.
+- Random shuffle is non-deterministic and is rejected.
+- No Freqtrade code copy, plugin framework, dependency, or second runtime.
+- No implementation starts until this short audit is reviewed.
 
 ## Completion rule
 
