@@ -91,7 +91,7 @@ def test_candle_writer_has_immutable_identity_guard_and_lock() -> None:
     assert wrapper.count("src.etl.bitvavo.run_candles_etl") == 1
     for interval in ('run_or_fail "15m"', 'run_or_fail "1h"', 'run_or_fail "4h"', 'run_or_fail "1d"', 'run_or_fail "1w"'):
         assert interval in wrapper
-    assert "ConditionHost=devlap" in service_text
+    assert "ConditionHost=gurkdb" in service_text
     assert "verify_writer_capability_authorization_v1" in service_text
     assert "scripts/run_market_candle_freshness_once.sh" in service_text
     assert "Unit=synth-market-candle-freshness-writer.service" in timer.read_text(encoding="utf-8")
@@ -202,13 +202,32 @@ def test_all_deploy_services_are_explicitly_host_bound_and_guarded() -> None:
         if service.name.startswith("synth-market-") or service.name == "synth-chain-4h.service":
             expected_host = (
                 "gurkdb"
-                if service.name == "synth-market-price-snapshot-writer.service"
+                if service.name
+                in {
+                    "synth-market-price-snapshot-writer.service",
+                    "synth-market-candle-freshness-writer.service",
+                }
                 else "devlap"
             )
             assert f"ConditionHost={expected_host}" in text
             assert "verify_writer_capability_authorization_v1" in text
             assert _unit_value(service, "User") == ["gurk"]
             assert _unit_value(service, "WorkingDirectory") == ["/home/gurk/projects/synth-v2"]
+
+
+def test_concurrent_public_writer_capabilities_use_distinct_authorization_files() -> None:
+    import json
+
+    registry = json.loads(
+        Path("deploy/ownership/writer_capability_ownership_v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    paths = {
+        cap["capability_id"]: cap["authorization_guard"]["authorization_file"]
+        for cap in registry["capabilities"]
+    }
+    assert paths["public_price_snapshot"] != paths["public_candle_freshness"]
 
 
 def test_account_snapshot_persistence_remains_separate_and_present() -> None:
