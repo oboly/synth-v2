@@ -3,9 +3,11 @@
 ## Status
 
 `public_price_snapshot` completed exact-commit gurkDB preflight, controlled
-acceptance, and inactive host preparation on 2026-07-21. Its timer remains
-disabled/inactive and its production authorization file remains absent pending
-independent review and merge. The other three capabilities are unchanged.
+acceptance, and inactive host preparation on 2026-07-21.
+`public_candle_freshness` passed strict gurkDB preflight on 2026-07-23 but
+stopped before acceptance writes because the enabled database universe did not
+match the current Bitvavo EUR market universe. The other capabilities are
+unchanged.
 
 The authoritative machine-readable ownership source is
 `deploy/ownership/writer_capability_ownership_v1.json`.
@@ -43,9 +45,11 @@ public_price_snapshot:
 public_candle_freshness:
   candidate_host=gurkdb
   selected_host=gurkdb
-  acceptance_host=UNASSIGNED
-  acceptance_status=UNASSIGNED
-  runtime_lifecycle=SELECTED_PENDING_PREFLIGHT
+  acceptance_host=gurkdb
+  acceptance_status=PENDING
+  production_runtime_owner=UNASSIGNED
+  production_authorization_status=PREFLIGHT_PASSED
+  runtime_lifecycle=PREFLIGHT_PASSED
   observed_runtime_state=[]
 
 market_rotation_pressure:
@@ -72,8 +76,9 @@ native_short_4h_chain:
 ## gurkDB Public-Price Authorization and Remaining Selections
 
 `public_price_snapshot` is accepted and separately authorized to gurkDB in
-`AUTHORIZED_INACTIVE`. `public_candle_freshness` and
-`market_rotation_pressure` remain selected for preflight only.
+`AUTHORIZED_INACTIVE`. `public_candle_freshness` has passed strict preflight
+but remains blocked before controlled acceptance; `market_rotation_pressure`
+remains selected for preflight only.
 
 For the two remaining selected lanes, selection still means only strict host
 preflight; it is not production authorization. Specifically:
@@ -85,11 +90,13 @@ public_price_snapshot runtime_lifecycle=AUTHORIZED_INACTIVE
 public_price_snapshot production authorization file absent
 public_price_snapshot timer disabled/inactive
 public_candle_freshness production_runtime_owner=UNASSIGNED
+public_candle_freshness runtime_lifecycle=PREFLIGHT_PASSED
 market_rotation_pressure production_runtime_owner=UNASSIGNED
 ```
 
-The public-price committed unit is now bound to gurkDB. Other devlap-bound
-committed units remain fail-closed candidate/historical artifacts. The devlap
+The public-price unit and the fail-closed candle candidate unit are bound to
+gurkDB. Remaining devlap-bound committed units are candidate/historical
+artifacts. The devlap
 Rotation Pressure historical assignment remains
 `SUPERSEDED`, while canonical
 `observed_runtime_state.current_state=UNVERIFIED`; this PR does not assert or
@@ -148,7 +155,8 @@ local operational artifacts and are not committed by default. See
 
 ## Executable Artifacts
 
-The public-price service is explicitly gurkDB-bound:
+The public-price service and fail-closed candle candidate service are explicitly
+gurkDB-bound:
 
 ```text
 ConditionHost=gurkdb
@@ -157,8 +165,8 @@ WorkingDirectory=/home/gurk/projects/synth-v2
 ExecStartPre=src.operations.verify_writer_capability_authorization_v1
 ```
 
-The other committed services remain devlap-bound candidate or historical
-artifacts; they are not authorized by the public-price decision.
+The remaining committed services are devlap-bound candidate or historical
+artifacts; none are authorized by the public-price decision.
 
 The mandatory `ExecStartPre` guard fails closed while a capability is
 `UNASSIGNED`, while the authorization file is absent, on the wrong hostname, on

@@ -1,5 +1,5 @@
 [Unit]
-Description=Synth multi-interval candle freshness writer (gurkDB canonical owner; capability public_candle_freshness)
+Description=Synth multi-interval candle freshness writer (gurkDB-bound candidate artifact; capability public_candle_freshness)
 Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/writer_capability_host_ownership_contract_v1.md
 ConditionHost=gurkdb
 After=network-online.target

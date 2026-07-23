@@ -14,20 +14,23 @@ The public candle writer keeps `obs_market_candle` fresh for:
 capability_id=public_candle_freshness
 candidate_host=gurkdb
 selected_host=gurkdb
-acceptance_host=UNASSIGNED
-acceptance_status=UNASSIGNED
+acceptance_host=gurkdb
+acceptance_status=PENDING
 production_runtime_owner=UNASSIGNED
-production_authorization_status=UNASSIGNED
-runtime_lifecycle=SELECTED_PENDING_PREFLIGHT
+production_authorization_status=PREFLIGHT_PASSED
+runtime_lifecycle=PREFLIGHT_PASSED
 observed_runtime_state=[]
 ```
 
-`selected_host=gurkdb` records selection for strict host preflight only. It is
-not production ownership, authorization, host preparation, or deployment; the
-production owner remains `UNASSIGNED` and no gurkDB preflight has run. Strict
-gurkDB preflight is the next gate.
+Strict gurkDB preflight passed at exact commit
+`6031a94a2f6e9a0576dd73b0d3babe5d6e228bb6` on 2026-07-23. Acceptance
+remains pending and production ownership remains `UNASSIGNED`: the required
+full enabled-universe check found 429 enabled assets but only 421 current
+Bitvavo EUR trading markets. No manual writer cycle ran, no candle row was
+written, and no timer or production authorization was installed. See
+`docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md`.
 
-The committed service and timer below are devlap-bound candidate artifacts, not
+The committed service and timer below are gurkDB-bound candidate artifacts, not
 host-neutral production configuration:
 
 ```text
@@ -36,9 +39,10 @@ service=deploy/systemd/synth-market-candle-freshness-writer.service
 wrapper=scripts/run_market_candle_freshness_once.sh
 module=src.etl.bitvavo.run_candles_etl
 lock=/tmp/synth-market-candle-freshness-writer-v1.lock
-ConditionHost=devlap
+ConditionHost=gurkdb
 User=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
+authorization_file=/etc/synth/writer-capability-public-candle-freshness-authorization-v1.json
 ```
 
 An installed timer may continue running operationally even after canonical
