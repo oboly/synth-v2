@@ -85,7 +85,7 @@ def test_lifecycle_aware_invariants_replace_exactly_one_before_cutover() -> None
     assert "authorized_inactive_owner_requires_acceptance_and_production_decision_evidence" not in inv
 
 
-def test_public_price_is_active_and_other_lanes_remain_unassigned() -> None:
+def test_public_price_is_active_and_other_production_owners_remain_unassigned() -> None:
     ids = {cap["capability_id"] for cap in _capabilities()}
     assert ids == {
         "public_price_snapshot",
@@ -103,23 +103,27 @@ def test_public_price_is_active_and_other_lanes_remain_unassigned() -> None:
     assert price["runtime_lifecycle"] == "ACTIVE"
     assert price["production_decision_evidence"]
 
-    # The remaining lanes retain their prior selection/unassigned state.
-    selected_for_preflight = {
-        "public_candle_freshness",
-        "market_rotation_pressure",
-    }
+    # Preflight progress never grants production ownership.
     for cap in _capabilities():
         if cap["capability_id"] == "public_price_snapshot":
             continue
         assert cap["production_runtime_owner"] == UNASSIGNED, cap["capability_id"]
-        assert cap["production_authorization_status"] == UNASSIGNED, cap["capability_id"]
         assert cap["production_decision_evidence"] == "", cap["capability_id"]
-        if cap["capability_id"] in selected_for_preflight:
+        if cap["capability_id"] == "public_candle_freshness":
+            assert cap["selected_host"] == "gurkdb"
+            assert cap["acceptance_host"] == "gurkdb"
+            assert cap["acceptance_status"] == "ACCEPTED"
+            assert cap["acceptance_evidence"]
+            assert cap["production_authorization_status"] == "ACCEPTED_PENDING_CUTOVER"
+            assert cap["runtime_lifecycle"] == "ACCEPTED_PENDING_CUTOVER"
+        elif cap["capability_id"] == "market_rotation_pressure":
             assert cap["selected_host"] == "gurkdb", cap["capability_id"]
             assert cap["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT", cap["capability_id"]
+            assert cap["production_authorization_status"] == UNASSIGNED
         else:
             assert cap["selected_host"] == UNASSIGNED, cap["capability_id"]
             assert cap["runtime_lifecycle"] == UNASSIGNED, cap["capability_id"]
+            assert cap["production_authorization_status"] == UNASSIGNED
 
 
 def test_public_price_observations_preserve_inactive_and_append_active() -> None:

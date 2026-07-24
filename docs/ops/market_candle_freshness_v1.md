@@ -14,20 +14,24 @@ The public candle writer keeps `obs_market_candle` fresh for:
 capability_id=public_candle_freshness
 candidate_host=gurkdb
 selected_host=gurkdb
-acceptance_host=UNASSIGNED
-acceptance_status=UNASSIGNED
+acceptance_host=gurkdb
+acceptance_status=ACCEPTED
 production_runtime_owner=UNASSIGNED
-production_authorization_status=UNASSIGNED
-runtime_lifecycle=SELECTED_PENDING_PREFLIGHT
+production_authorization_status=ACCEPTED_PENDING_CUTOVER
+runtime_lifecycle=ACCEPTED_PENDING_CUTOVER
 observed_runtime_state=[]
 ```
 
-`selected_host=gurkdb` records selection for strict host preflight only. It is
-not production ownership, authorization, host preparation, or deployment; the
-production owner remains `UNASSIGNED` and no gurkDB preflight has run. Strict
-gurkDB preflight is the next gate.
+Exact-head strict preflight and two controlled manual cycles passed at commit
+`2e762b58ab9e311f4a8d403d8d97332e5ebb0f16`. The initial enabled-universe
+mismatch was corrected by disabling only eight stale historical-import rows;
+validation reports 421 enabled assets, 430 current Bitvavo EUR trading markets,
+and zero mismatch. Each interval retained 421/421 asset coverage, cycle 1 added
+93,457 unique rows, and cycle 2 was idempotent. Production ownership remains
+`UNASSIGNED`; no timer or production authorization was installed. See
+`docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md`.
 
-The committed service and timer below are devlap-bound candidate artifacts, not
+The committed service and timer below are gurkDB-bound candidate artifacts, not
 host-neutral production configuration:
 
 ```text
@@ -36,9 +40,10 @@ service=deploy/systemd/synth-market-candle-freshness-writer.service
 wrapper=scripts/run_market_candle_freshness_once.sh
 module=src.etl.bitvavo.run_candles_etl
 lock=/tmp/synth-market-candle-freshness-writer-v1.lock
-ConditionHost=devlap
+ConditionHost=gurkdb
 User=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
+authorization_file=/etc/synth/writer-capability-public-candle-freshness-authorization-v1.json
 ```
 
 An installed timer may continue running operationally even after canonical

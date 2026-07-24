@@ -130,13 +130,13 @@
       "timer_unit": "synth-market-candle-freshness-writer.timer",
       "committed_unit_binding": {
         "host_bound_candidate_artifact": true,
-        "condition_host": "devlap",
+        "condition_host": "gurkdb",
         "user": "gurk",
         "working_directory": "/home/gurk/projects/synth-v2"
       },
       "authorization_guard": {
         "module": "src.operations.verify_writer_capability_authorization_v1",
-        "authorization_file": "/etc/synth/writer-capability-runtime-authorization-v1.json",
+        "authorization_file": "/etc/synth/writer-capability-public-candle-freshness-authorization-v1.json",
         "required": true
       },
       "lock": {
@@ -155,12 +155,17 @@
       "intervals": ["15m", "1h", "4h", "1d", "1w"],
       "candidate_host": "gurkdb",
       "selected_host": "gurkdb",
-      "acceptance_host": "UNASSIGNED",
-      "acceptance_status": "UNASSIGNED",
-      "acceptance_evidence": null,
+      "acceptance_host": "gurkdb",
+      "acceptance_status": "ACCEPTED",
+      "acceptance_evidence": {
+        "approval_reference": "Explicit user authorization for controlled public_candle_freshness acceptance on gurkDB on 2026-07-24",
+        "evidence_doc": "docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md",
+        "accepted_at_utc": "2026-07-23T23:10:13Z",
+        "scope": "Exact-commit strict preflight, zero-mismatch 421-asset Bitvavo EUR universe, two controlled five-interval writer cycles, persisted coverage, idempotent repeat operation, host-local lock behavior, and zero duplicate writers on gurkDB"
+      },
       "production_runtime_owner": "UNASSIGNED",
-      "production_authorization_status": "UNASSIGNED",
-      "runtime_lifecycle": "SELECTED_PENDING_PREFLIGHT",
+      "production_authorization_status": "ACCEPTED_PENDING_CUTOVER",
+      "runtime_lifecycle": "ACCEPTED_PENDING_CUTOVER",
       "production_decision_evidence": "",
       "observed_runtime_state": [],
       "historical_runtime_assignment": null

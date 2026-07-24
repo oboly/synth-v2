@@ -161,14 +161,18 @@ Summary:
 | capability_id | kind | wrapper | current owner | lifecycle |
 |---|---|---|---|---|
 | `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
-| `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
+| `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | UNASSIGNED | ACCEPTED_PENDING_CUTOVER |
 | `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
 | `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | UNASSIGNED | UNASSIGNED |
 
 Public Price Snapshot completed gurkDB strict preflight and controlled
 acceptance and received a separate production decision; it remains inactive.
-Public Candle Freshness and Rotation Pressure are selected to gurkDB for strict
-preflight only and retain `production_runtime_owner=UNASSIGNED`.
+Public Candle Freshness passed strict gurkDB preflight and two controlled
+manual cycles after its enabled-universe mismatch was resolved by disabling
+only the eight stale historical-import asset rows. Generic live validation
+reports zero mismatch. It is accepted pending cutover. Rotation Pressure
+remains selected for strict preflight only. Both retain
+`production_runtime_owner=UNASSIGNED`.
 `native_short_4h_chain` is not selected and remains `UNASSIGNED`.
 
 Native SHORT remains independently evaluated from the light DB writers because
@@ -415,12 +419,15 @@ state. Do not silently treat it as inactive.
 
 ## Executable Systemd Contract
 
-Committed units are explicit host-bound artifacts. Public Price Snapshot is
-bound to gurkDB; the remaining candidate/historical units are bound to devlap:
+Committed units are explicit host-bound artifacts. Public Price Snapshot and
+the Public Candle Freshness candidate are bound to gurkDB; remaining
+candidate/historical units are bound to devlap:
 
 ```text
 public_price_snapshot ConditionHost=gurkdb
-other current artifacts ConditionHost=devlap
+public_candle_freshness ConditionHost=gurkdb
+market_rotation_pressure ConditionHost=devlap
+native_short_4h_chain ConditionHost=devlap
 User=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
 ```

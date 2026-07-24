@@ -375,11 +375,14 @@ def test_ownership_registry_records_only_public_price_as_active() -> None:
     assert price["runtime_lifecycle"] == "ACTIVE"
     assert price["production_runtime_owner"] == "gurkdb"
     assert price["production_authorization_status"] == "AUTHORIZED"
-    for cap_id in ("public_candle_freshness", "market_rotation_pressure"):
-        cap = caps[cap_id]
-        assert cap["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT", cap_id
-        assert cap["production_runtime_owner"] == "UNASSIGNED", cap_id
-        assert cap["production_authorization_status"] == "UNASSIGNED", cap_id
+    candle = caps["public_candle_freshness"]
+    assert candle["runtime_lifecycle"] == "ACCEPTED_PENDING_CUTOVER"
+    assert candle["production_runtime_owner"] == "UNASSIGNED"
+    assert candle["production_authorization_status"] == "ACCEPTED_PENDING_CUTOVER"
+    pressure = caps["market_rotation_pressure"]
+    assert pressure["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT"
+    assert pressure["production_runtime_owner"] == "UNASSIGNED"
+    assert pressure["production_authorization_status"] == "UNASSIGNED"
     native = caps["native_short_4h_chain"]
     assert native["runtime_lifecycle"] == "UNASSIGNED"
     assert native["production_runtime_owner"] == "UNASSIGNED"

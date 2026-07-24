@@ -90,7 +90,23 @@ Read/write scope must be explicit per runner.
 
 ## P2 — Candle ingestion runner
 
-Status: done / active for bounded public candle ingestion.
+Status: gurkDB controlled acceptance passed; production cutover blocked on administrator-capable sudo.
+
+Current acceptance state (2026-07-24):
+
+- strict gurkDB preflight passed at exact clean commit `2e762b58ab9e311f4a8d403d8d97332e5ebb0f16`;
+- devlap writer remains disabled and Odroid candle units remain masked;
+- eight stale historical-import asset rows were disabled without deleting
+  18,660 historical candles;
+- enabled-universe validation reports 421 enabled assets, 430 current Bitvavo
+  EUR trading markets, and zero mismatch;
+- two controlled five-interval manual cycles passed with 421/421 persisted
+  asset coverage, lock containment, idempotent repeat operation, and zero
+  duplicate writers;
+- production ownership remains `UNASSIGNED`; no production authorization or
+  timer activation occurred;
+- rerun strict preflight at the final registry head, then perform separately
+  authorized cutover only with administrator-capable sudo.
 
 Goal:
 
