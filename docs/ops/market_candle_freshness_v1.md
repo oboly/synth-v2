@@ -16,9 +16,9 @@ candidate_host=gurkdb
 selected_host=gurkdb
 acceptance_host=gurkdb
 acceptance_status=ACCEPTED
-production_runtime_owner=UNASSIGNED
-production_authorization_status=ACCEPTED_PENDING_CUTOVER
-runtime_lifecycle=ACCEPTED_PENDING_CUTOVER
+production_runtime_owner=gurkdb
+production_authorization_status=AUTHORIZED
+runtime_lifecycle=AUTHORIZED_INACTIVE
 observed_runtime_state=[]
 ```
 
@@ -27,12 +27,13 @@ Exact-head strict preflight and two controlled manual cycles passed at commit
 mismatch was corrected by disabling only eight stale historical-import rows;
 validation reports 421 enabled assets, 430 current Bitvavo EUR trading markets,
 and zero mismatch. Each interval retained 421/421 asset coverage, cycle 1 added
-93,457 unique rows, and cycle 2 was idempotent. Production ownership remains
-`UNASSIGNED`; no timer or production authorization was installed. See
+93,457 unique rows, and cycle 2 was idempotent. The separately authorized
+production owner is gurkDB in `AUTHORIZED_INACTIVE`; no timer or production
+authorization has yet been installed. See
 `docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md`.
 
-The committed service and timer below are gurkDB-bound candidate artifacts, not
-host-neutral production configuration:
+The committed service and timer below are gurkDB-bound artifacts, not
+host-neutral configuration:
 
 ```text
 timer=deploy/systemd/synth-market-candle-freshness-writer.timer

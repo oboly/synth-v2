@@ -34,6 +34,7 @@
     "note": "Preferred direction only, not production authorization. Each role requires explicit host selection, read-only preflight, controlled acceptance, legacy-runtime inventory and containment, separate production authorization, activation, observation, and at-most-one-owner proof.",
     "gurkdb": [
       "active production owner for public_price_snapshot",
+      "authorized-inactive production owner for public_candle_freshness",
       "candidate host for other light account-agnostic public market-data writers"
     ],
     "odroid": ["candidate host for account runtimes, persisted-state consumers, dashboards, and publication"],
@@ -163,10 +164,10 @@
         "accepted_at_utc": "2026-07-23T23:10:13Z",
         "scope": "Exact-commit strict preflight, zero-mismatch 421-asset Bitvavo EUR universe, two controlled five-interval writer cycles, persisted coverage, idempotent repeat operation, host-local lock behavior, and zero duplicate writers on gurkDB"
       },
-      "production_runtime_owner": "UNASSIGNED",
-      "production_authorization_status": "ACCEPTED_PENDING_CUTOVER",
-      "runtime_lifecycle": "ACCEPTED_PENDING_CUTOVER",
-      "production_decision_evidence": "",
+      "production_runtime_owner": "gurkdb",
+      "production_authorization_status": "AUTHORIZED",
+      "runtime_lifecycle": "AUTHORIZED_INACTIVE",
+      "production_decision_evidence": "docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md#production-cutover-authorization",
       "observed_runtime_state": [],
       "historical_runtime_assignment": null
     },
