@@ -18,8 +18,12 @@ preflight_required_fail=0
 preflight_required_unverified=0
 acceptance_commit=2e762b58ab9e311f4a8d403d8d97332e5ebb0f16
 acceptance_status=ACCEPTED
-production_runtime_owner=UNASSIGNED
-runtime_lifecycle=ACCEPTED_PENDING_CUTOVER
+production_runtime_owner=gurkdb
+production_authorization_status=AUTHORIZED
+runtime_lifecycle=AUTHORIZED_INACTIVE
+production_authorization_file_present=false
+timer_enabled=false
+timer_active=false
 ```
 
 ## Host and Legacy Containment
@@ -146,6 +150,32 @@ system unit and capability-specific production authorization file. The
 available SSH account has no non-interactive sudo delegation, so cutover was
 not attempted or bypassed.
 
+## Production Cutover Authorization
+
+The user explicitly authorized the `public_candle_freshness` production
+cutover to gurkDB on 2026-07-24, separately from the controlled acceptance
+permit. The authorization covers the repository ownership transition to
+`AUTHORIZED_INACTIVE`, creation of the capability-specific production
+authorization bound to the exact merged commit, installation of the canonical
+candle service and timer, one production service run, and timer activation
+after its required checks pass.
+
+```text
+candidate_host=gurkdb
+selected_host=gurkdb
+acceptance_host=gurkdb
+acceptance_status=ACCEPTED
+production_runtime_owner=gurkdb
+production_authorization_status=AUTHORIZED
+runtime_lifecycle=AUTHORIZED_INACTIVE
+accepted_merge=9bafa64607542818e2ae639aeb1bcae0816ebd56
+```
+
+`AUTHORIZED_INACTIVE` does not permit execution by itself. The runtime remains
+fail-closed until this authorization change is reviewed and merged and a
+schema-valid production authorization file binds the exact merged commit,
+host, capability, service, and this decision evidence.
+
 ## Safety
 
 ```text
@@ -164,6 +194,8 @@ executor changes=0
 
 ## Next Gate
 
-Repeat exact-commit strict preflight on the final registry/documentation head.
-Production authorization and canonical gurkDB timer installation remain a
-separate cutover step requiring administrator-capable sudo.
+Review and merge the authorization change. Then update the clean canonical
+gurkDB checkout to the exact merge commit, install the capability-specific
+production authorization and canonical units, run the service once, verify
+fresh persisted Bitvavo candles and zero duplicate writers, and enable/start
+the timer. One post-cutover service run is sufficient; do not repeat acceptance.

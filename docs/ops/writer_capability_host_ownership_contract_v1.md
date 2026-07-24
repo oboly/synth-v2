@@ -2,15 +2,16 @@
 
 ## Status
 
-The contract now records `public_price_snapshot` as accepted and separately
-authorized to gurkDB in `AUTHORIZED_INACTIVE`. Host preparation and controlled
-acceptance occurred on 2026-07-21; timer activation did not.
+The contract records `public_price_snapshot` as active on gurkDB and
+`public_candle_freshness` as accepted and separately authorized to gurkDB in
+`AUTHORIZED_INACTIVE`, pending exact merged-commit deployment and activation.
 
 ```text
-public_price_snapshot_host_preparation=performed
-public_price_snapshot_acceptance_writes=864
-public_price_snapshot_timer_active=false
-public_price_snapshot_production_authorization_file_present=false
+public_candle_freshness_acceptance=ACCEPTED
+public_candle_freshness_production_runtime_owner=gurkdb
+public_candle_freshness_runtime_lifecycle=AUTHORIZED_INACTIVE
+public_candle_freshness_timer_active=false
+public_candle_freshness_production_authorization_file_present=false
 other_capability_changes=0
 ```
 
@@ -36,7 +37,7 @@ Current correction state:
 
 ```text
 public_price_snapshot.production_runtime_owner=gurkdb
-public_candle_freshness.production_runtime_owner=UNASSIGNED
+public_candle_freshness.production_runtime_owner=gurkdb
 market_rotation_pressure.production_runtime_owner=UNASSIGNED
 native_short_4h_chain.production_runtime_owner=UNASSIGNED
 ```
@@ -54,6 +55,19 @@ observed_runtime_state=last_observed_active_on_devlap_current_state_UNVERIFIED
 
 Public Price Snapshot records a separate production decision after successful
 gurkDB preflight and acceptance:
+
+```text
+acceptance_host=gurkdb
+acceptance_status=ACCEPTED
+production_runtime_owner=gurkdb
+production_authorization_status=AUTHORIZED
+runtime_lifecycle=AUTHORIZED_INACTIVE
+timer=disabled/inactive
+production_authorization_file=absent
+```
+
+Public Candle Freshness also records a separate production decision after
+successful gurkDB preflight and controlled acceptance:
 
 ```text
 acceptance_host=gurkdb
@@ -160,18 +174,18 @@ Summary:
 
 | capability_id | kind | wrapper | current owner | lifecycle |
 |---|---|---|---|---|
-| `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
-| `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | UNASSIGNED | ACCEPTED_PENDING_CUTOVER |
+| `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | gurkdb | ACTIVE |
+| `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
 | `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
 | `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | UNASSIGNED | UNASSIGNED |
 
-Public Price Snapshot completed gurkDB strict preflight and controlled
-acceptance and received a separate production decision; it remains inactive.
+Public Price Snapshot is active on gurkDB.
 Public Candle Freshness passed strict gurkDB preflight and two controlled
 manual cycles after its enabled-universe mismatch was resolved by disabling
 only the eight stale historical-import asset rows. Generic live validation
-reports zero mismatch. It is accepted pending cutover. Rotation Pressure
-remains selected for strict preflight only. Both retain
+reports zero mismatch. It is accepted and separately authorized to gurkDB in
+`AUTHORIZED_INACTIVE`, pending exact merged-commit deployment and activation.
+Rotation Pressure remains selected for strict preflight only and retains
 `production_runtime_owner=UNASSIGNED`.
 `native_short_4h_chain` is not selected and remains `UNASSIGNED`.
 
@@ -420,7 +434,7 @@ state. Do not silently treat it as inactive.
 ## Executable Systemd Contract
 
 Committed units are explicit host-bound artifacts. Public Price Snapshot and
-the Public Candle Freshness candidate are bound to gurkDB; remaining
+Public Candle Freshness are bound to gurkDB; remaining
 candidate/historical units are bound to devlap:
 
 ```text

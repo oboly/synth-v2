@@ -6,8 +6,8 @@
 acceptance, and inactive host preparation on 2026-07-21.
 `public_candle_freshness` passed strict gurkDB preflight and two controlled
 manual cycles after its enabled-universe blocker was corrected. It is accepted
-pending a separately authorized cutover; production ownership remains
-`UNASSIGNED`. The other capabilities are unchanged.
+and separately authorized to gurkDB in `AUTHORIZED_INACTIVE`, pending exact
+merged-commit deployment and activation. The other capabilities are unchanged.
 
 The authoritative machine-readable ownership source is
 `deploy/ownership/writer_capability_ownership_v1.json`.
@@ -16,7 +16,7 @@ The authoritative machine-readable ownership source is
 
 ```text
 public_price_snapshot.production_runtime_owner=gurkdb
-public_candle_freshness.production_runtime_owner=UNASSIGNED
+public_candle_freshness.production_runtime_owner=gurkdb
 market_rotation_pressure.production_runtime_owner=UNASSIGNED
 native_short_4h_chain.production_runtime_owner=UNASSIGNED
 ```
@@ -38,18 +38,18 @@ public_price_snapshot:
   acceptance_status=ACCEPTED
   production_runtime_owner=gurkdb
   production_authorization_status=AUTHORIZED
-  runtime_lifecycle=AUTHORIZED_INACTIVE
-  observed_runtime_state=gurkdb timer installed/disabled/inactive,
-                         production authorization file absent
+  runtime_lifecycle=ACTIVE
+  observed_runtime_state=gurkdb timer installed/enabled/active,
+                         production authorization present
 
 public_candle_freshness:
   candidate_host=gurkdb
   selected_host=gurkdb
   acceptance_host=gurkdb
   acceptance_status=ACCEPTED
-  production_runtime_owner=UNASSIGNED
-  production_authorization_status=ACCEPTED_PENDING_CUTOVER
-  runtime_lifecycle=ACCEPTED_PENDING_CUTOVER
+  production_runtime_owner=gurkdb
+  production_authorization_status=AUTHORIZED
+  runtime_lifecycle=AUTHORIZED_INACTIVE
   observed_runtime_state=[]
 
 market_rotation_pressure:
@@ -73,25 +73,25 @@ native_short_4h_chain:
   observed_runtime_state=[]
 ```
 
-## gurkDB Public-Price Authorization and Remaining Selections
+## gurkDB Public-Writer Authorization and Remaining Selection
 
 `public_price_snapshot` is accepted and separately authorized to gurkDB in
-`AUTHORIZED_INACTIVE`. `public_candle_freshness` passed strict preflight and
-controlled acceptance after its metadata blocker was resolved, but remains
-unassigned pending cutover; `market_rotation_pressure` remains selected for
-preflight only.
+`ACTIVE`. `public_candle_freshness` passed strict preflight and controlled
+acceptance after its metadata blocker was resolved and is separately authorized
+to gurkDB in `AUTHORIZED_INACTIVE`; `market_rotation_pressure` remains selected
+for preflight only.
 
-For the two remaining selected lanes, selection still means only strict host
-preflight; it is not production authorization. Specifically:
+Specifically:
 
 ```text
 public_price_snapshot production_runtime_owner=gurkdb
 public_price_snapshot production_authorization_status=AUTHORIZED
-public_price_snapshot runtime_lifecycle=AUTHORIZED_INACTIVE
-public_price_snapshot production authorization file absent
-public_price_snapshot timer disabled/inactive
-public_candle_freshness production_runtime_owner=UNASSIGNED
-public_candle_freshness runtime_lifecycle=ACCEPTED_PENDING_CUTOVER
+public_price_snapshot runtime_lifecycle=ACTIVE
+public_candle_freshness production_runtime_owner=gurkdb
+public_candle_freshness production_authorization_status=AUTHORIZED
+public_candle_freshness runtime_lifecycle=AUTHORIZED_INACTIVE
+public_candle_freshness production authorization file absent
+public_candle_freshness timer disabled/inactive
 market_rotation_pressure production_runtime_owner=UNASSIGNED
 ```
 
@@ -102,8 +102,10 @@ Rotation Pressure historical assignment remains
 `SUPERSEDED`, while canonical
 `observed_runtime_state.current_state=UNVERIFIED`; this PR does not assert or
 record current host containment. Odroid remains a consumer/publisher host with
-zero writer capabilities. The public-price acceptance and rollback evidence is
-in `docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md`.
+zero writer capabilities. Public-price evidence is in
+`docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md`; candle
+acceptance and production-decision evidence is in
+`docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md`.
 
 `native_short_4h_chain` is not selected and remains independently unresolved
 (`selected_host=UNASSIGNED`, `runtime_lifecycle=UNASSIGNED`).

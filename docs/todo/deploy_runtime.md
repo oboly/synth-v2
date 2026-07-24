@@ -90,7 +90,7 @@ Read/write scope must be explicit per runner.
 
 ## P2 — Candle ingestion runner
 
-Status: gurkDB controlled acceptance passed; production cutover blocked on administrator-capable sudo.
+Status: gurkDB controlled acceptance passed; production cutover authorized and pending merged-commit activation.
 
 Current acceptance state (2026-07-24):
 
@@ -103,10 +103,11 @@ Current acceptance state (2026-07-24):
 - two controlled five-interval manual cycles passed with 421/421 persisted
   asset coverage, lock containment, idempotent repeat operation, and zero
   duplicate writers;
-- production ownership remains `UNASSIGNED`; no production authorization or
-  timer activation occurred;
-- rerun strict preflight at the final registry head, then perform separately
-  authorized cutover only with administrator-capable sudo.
+- production owner is authorized as gurkDB in `AUTHORIZED_INACTIVE`; no
+  production authorization file or timer activation has yet occurred;
+- merge the authorization change, deploy that exact merge to the clean gurkDB
+  checkout, create the capability-specific authorization, run the service once,
+  verify freshness/coverage/lock/duplicate-writer state, then enable the timer.
 
 Goal:
 
