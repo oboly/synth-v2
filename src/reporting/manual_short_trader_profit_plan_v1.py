@@ -4836,8 +4836,8 @@ def render_full_html(
     setup_filter_options_html = _filter_select_options(filter_refs["setup"])
     primary_filter_options_html = _filter_select_options(filter_refs["primary"])
     order_filter_options_html = _filter_select_options(filter_refs["orders"])
-    clean_nav_html = "" if not nav_html else nav_html.replace("\\n", "\n")
-    clean_pipeline_banner_html = "" if not pipeline_banner_html else pipeline_banner_html.replace("\\n", "\n")
+    nav_section_html = "" if not nav_html else f"    {nav_html}\n"
+    pipeline_banner_section_html = "" if not pipeline_banner_html else f"  {pipeline_banner_html}\n"
 
     return (
         "<!doctype html>\n<html lang='en'>\n<head>\n"
@@ -4857,9 +4857,9 @@ def render_full_html(
         "    <h1>Synth v2 — Profit Plan</h1>\n"
         f"    <span class='muted small'>Rendered: {esc(rendered_at)} · Mode: {esc(broker_mode)} · Cards: {total_count} · Attention: {attention_count}</span>\n"
         "    </div>\n"
-        f"{'' if not clean_nav_html else f'    {clean_nav_html}\\n'}"
+        f"{nav_section_html}"
         "  </header>\n"
-        f"{'' if not clean_pipeline_banner_html else f'  {clean_pipeline_banner_html}\\n'}"
+        f"{pipeline_banner_section_html}"
         "  <div class='sticky-controls'>\n"
         "    <div class='filter-controls'>\n"
         "      <button id='btn-all' class='toggle-btn active' type='button' onclick='resetProfitPlanFilters()'>All selected assets</button>\n"
