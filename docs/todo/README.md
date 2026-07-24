@@ -51,7 +51,7 @@ Reference letters are stable names for easy discussion. Table order is the curre
 | **E** | P0 | TODO reconciliation / board maintenance | Keep the repository board truthful so completed work, open work, priorities, and accepted deployment roadmaps are not lost or duplicated across chats. | ongoing maintenance; reconciliation merged in PR #92 | Keep `README.md` and each lane TODO synchronized whenever status, priority, or accepted deployment sequence changes. |
 | **B** | P1 | IOST target lifecycle history truth | Stop a target that was already reached or passed from appearing as still `UPCOMING` after price pulls back below it. | contained / completed (original IOST defect) by PR #105; future monotonic hardening parked, evidence-gated | No active implementation PR. Reopen monotonic hardening only on real canonical evidence: a BTC `REACHED`/`PASSED`-then-pullback case or another explicitly approved canonical scope. |
 | **A** | P1 | Profit Plan Live Ladder prerequisites | Make **Fix selected ladder** safe: trustworthy current-map rows, stable identities, fresh account data, and a reviewable server preview before any order mutation. | active, deliberately later | Resume after C unless a new dependency changes the order. |
-| **D** | P3 | Research / FFG / scanners / cross-asset rotation | Find markets with improving participation, momentum reset, and enough target room without giving research or a scanner trading authority. | open, read-only, deliberately later | Resume as non-blocking research after C is controlled. |
+| **D** | P3 | Research / FFG / scanners / cross-asset rotation | Find markets with improving participation, momentum reset, and enough target room without giving research or a scanner trading authority. | Phase A accepted; Phase A.1 taxonomy quality refresh open / approved; Phase B implementation complete for review; Phase B2 short audit open | Phase A.1 may proceed as non-blocking repository metadata work. Do not operationally accept Phase B database snapshots until the refreshed taxonomy is reviewed and accepted. |
 
 Priority is execution order, not architectural importance.
 
@@ -62,6 +62,7 @@ C first (current active lane)
 E = ongoing board maintenance
 B = contained; future evidence-gated hardening parked
 A + D = later
+D/A.1 may proceed only as non-blocking repository metadata/research work
 ```
 
 Rotation Pressure runtime ownership, timers, freshness, disk/log bounds, rollback, and multi-cycle host acceptance belong to **C**. Rotation Pressure and cross-asset rotation research remain in **D**. Profit Plan **A** may later consume persisted pressure state read-only, but it must never trigger or own the writer.
@@ -121,6 +122,7 @@ The original Lane-B correctness work is no longer a prerequisite for C:
 - **B is contained, not blocking.** PR #105 contained the non-canonical IOST reporting defect by failing closed when canonical native SHORT map and scope-status truth is unavailable. The accepted read-only forensic audit proved IOST never had a canonical scope, map, cycle, activation boundary, or lifecycle state — so there was no canonical lifecycle to regress and no active canonical IOST defect remains. Future monotonic-lifecycle hardening reopens only on real canonical evidence (a BTC `REACHED`/`PASSED`-then-pullback case or another explicitly approved canonical scope).
 - **C is the current operational prerequisite.** It establishes absolute freshness, installed-host ownership, disk/log bounds, and multi-cycle acceptance that A must later trust. Its implementation surface is smaller than A, although multi-cycle observation may require elapsed runtime rather than more code.
 - **A is the larger and higher-risk lane.** It spans canonical ladder consumption, deterministic row identity, authenticated preview, `decision_gate`, `execution_planner`, executor behavior, broker mutation, reconciliation, and a controlled live canary. C must still precede A so that A never builds execution authority on freshness or host-ownership assumptions that are still unresolved.
+- **D/A.1 is metadata-only and non-blocking for C.** Repository review can proceed in parallel, but taxonomy DB activation and Phase B snapshot acceptance remain separate controlled actions.
 
 Therefore the working order is:
 
@@ -128,6 +130,7 @@ Therefore the working order is:
 C freshness and host acceptance
 -> A manual ladder-to-trade path
 (B contained; future evidence-gated hardening parked)
+(D/A.1 repository metadata review may run without runtime ownership changes)
 ```
 
 Making C the current active lane reduces ambiguity and prevents A from building execution authority on freshness or host-ownership assumptions that are still unresolved.
@@ -190,8 +193,9 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `short_swing_linked_profile_freshness_and_disk_reliability_v1.md` | **C — open P2 / first (current active lane)** | Odroid/runtime ownership, absolute freshness timestamps, disk/log containment verification, rollout, and rollback hygiene |
 | `momentum_flow_scanner_matrix_v1.md` | **D — open P3 research / later** | Read-only RSI/MFI momentum-flow scanner, target-room research gate, and validation path |
 | `ffg_curated_rotation_radar_v1.md` | **D — open P3 research / later** | Curated-universe rotation radar, normalized flow and RSI/MFI confirmation, market-only classifications, and separate account ownership overlay |
-| `sector_rotation_master_plan_v1.md` | **D — Phase A accepted; Phase B implementation complete for review; Phase B2 short audit open** | Research-only sector taxonomy, analytics, short market-filter candidate audit, dashboard, and optional future context sequence |
+| `sector_rotation_master_plan_v1.md` | **D — Phase A accepted; Phase A.1 open; Phase B implementation complete for review; Phase B2 short audit open** | Research-only sector taxonomy, quality refresh, analytics, short market-filter candidate audit, dashboard, and optional future context sequence |
 | `sector_taxonomy_database_seed_v1.md` | **D — Phase A done / accepted and activated** | Deterministic taxonomy, full enabled/research coverage, multi-cluster membership, and transactional metadata import |
+| `sector_taxonomy_quality_refresh_v1_1.md` | **D — Phase A.1 open / approved** | Evidence-backed correction of verified misclassifications, FFG-universe review, HOT correction, and versioned taxonomy refresh before Phase B snapshot acceptance |
 | `sector_rotation_engine_v1.md` | **D — Phase B implementation complete for review; migration/write pending** | Participation, relative-strength, persistence, and proxy-rotation analytics |
 | `sector_rotation_dashboard_v1.md` | **D — open / next after accepted Phase B snapshots** | Future read-only taxonomy and sector-rotation inspection surface |
 | `cross_asset_metals_miners_food_rotation_v1.md` | **D — open P3 research / later** | Public-data-first metals, miners, and food/agriculture rotation research with manual broker execution and optional future IBKR API work in a separate lane |
@@ -223,10 +227,11 @@ With the reconciliation merged:
 
 1. Execute C first (current active lane).
 2. Keep E running as board maintenance.
-3. Keep A and D for later.
-4. Do not reopen B without real canonical lifecycle evidence — a BTC `REACHED`/`PASSED`-then-pullback case or another explicitly approved canonical scope.
-5. Do not reopen native SHORT implementation work unless new evidence identifies a concrete defect.
-6. Do not create several parallel implementation chats merely because the board lists several lanes.
+3. Keep A and D for later, except D/A.1 may proceed as non-blocking repository metadata work with no runtime or database activation.
+4. Do not operationally accept Phase B sector snapshots until A.1 taxonomy acceptance is complete.
+5. Do not reopen B without real canonical lifecycle evidence — a BTC `REACHED`/`PASSED`-then-pullback case or another explicitly approved canonical scope.
+6. Do not reopen native SHORT implementation work unless new evidence identifies a concrete defect.
+7. Do not create several parallel implementation chats merely because the board lists several lanes.
 
 ## Pre-live safety state
 
