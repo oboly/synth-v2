@@ -1053,6 +1053,21 @@ def test_render_full_html_uses_profit_plan_title_and_public_monitor_href() -> No
     assert "shell.style.display = 'flex'" in html
 
 
+def test_render_full_html_uses_real_newlines_around_navigation_and_warning_banner() -> None:
+    nav_html = "<nav class='cockpit-nav'>NAVIGATION</nav>"
+    banner_html = "<div class='pipeline-warning'>WARNING BANNER</div>"
+
+    html = render_full_html(
+        [],
+        nav_html=nav_html,
+        pipeline_banner_html=banner_html,
+    )
+
+    assert f"    {nav_html}\n  </header>\n  {banner_html}\n  <div" in html
+    assert f"{nav_html}\\n" not in html
+    assert f"{banner_html}\\n" not in html
+
+
 def test_json_snapshot_structure_and_safety_markers() -> None:
     card = _make_card(current_price="0.48", fib_ext=_wld_fib_ext())
     snapshot = build_json_snapshot([card], broker_mode="db_snapshot")
