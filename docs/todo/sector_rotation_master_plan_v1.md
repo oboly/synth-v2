@@ -5,6 +5,12 @@
 Phase A is done / accepted and operationally activated from merged main
 `794a03e014c44b5f01410a07bc5f24aa763715a8`. Its migration, first import,
 post-write verification, and idempotent second import passed on 2026-07-16.
+
+Phase A.1 is open / approved as a bounded taxonomy quality refresh. It must
+correct verified misclassifications, review the FFG research universe, preserve
+explicit uncertainty, and complete before Phase B snapshots are accepted as
+operationally trustworthy.
+
 Phase B repository implementation is complete for review; its migration and
 snapshot writes remain separate post-merge acceptance actions. Phase B2 is a
 short, open research audit of a few market-filter ideas; it may run alongside
@@ -19,6 +25,8 @@ Build a research-only sector intelligence layer above individual asset analysis 
 
 A. Sector Taxonomy & Database Seed v1
 
+A.1. Sector Taxonomy Quality Refresh v1.1
+
 B. Sector Rotation Engine v1
 
 C. Sector Rotation Dashboard v1
@@ -30,12 +38,18 @@ D. Sector Context Integration v1 (future, research-only until separately accepte
 ```text
 A. taxonomy + DB seed
         ↓
-B. sector snapshots + rotation algorithm
+A.1 taxonomy quality refresh
+        ↓
+B. accepted sector snapshots + rotation algorithm
         ↓
 C. GUI + drilldown
         ↓
 D. optional downstream context integration
 ```
+
+Phase B implementation may remain under repository review while A.1 runs. Phase
+B database acceptance and claims about trustworthy sector outputs must wait for
+A.1 taxonomy acceptance.
 
 ## Existing hooks
 
@@ -93,6 +107,39 @@ At minimum:
 - POL
 - HYPE, LIT
 - NEAR, VET, DEEP
+
+## Phase A.1 — Sector Taxonomy Quality Refresh
+
+Status: open / approved planning lane.
+
+Canonical task:
+
+```text
+docs/todo/sector_taxonomy_quality_refresh_v1_1.md
+```
+
+Purpose:
+
+- correct verified primary-sector mistakes, beginning with HOT;
+- review every FFG research-universe asset;
+- re-evaluate named classifications that feed sector snapshots;
+- reduce avoidable `UNCLASSIFIED` rows without forcing speculative labels;
+- preserve primary/secondary membership history and deterministic import behavior;
+- produce primary-source evidence for every changed asset.
+
+Required HOT review target:
+
+```text
+current primary = STORAGE
+expected primary = CLOUD_INFRA
+expected secondary = DEPIN
+```
+
+The expected correction remains evidence-gated. Do not apply it blindly if
+primary project sources contradict it.
+
+Phase A.1 changes metadata only. It must not modify Phase B scoring, selection,
+decision, planning, execution, reporting, broker access, or runtime ownership.
 
 ## Phase B2 — Market-filter candidate audit
 
