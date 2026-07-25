@@ -64,6 +64,10 @@ from src.market_data.native_short_writer_provenance_v1 import (
     NativeShortWriterProvenanceError,
     validate_native_short_writer_provenance,
 )
+from src.market_data.native_short_writer_commit_fence_v1 import (
+    capture_writer_commit_fences,
+    revalidate_writer_commit_fences,
+)
 
 
 RUNNER_NAME = "run_native_short_scope_status_chain_v1"
@@ -457,6 +461,7 @@ def execute_runtime(
             supporting_interval=supporting_interval,
             symbols=symbols,
         )
+        writer_commit_fences = capture_writer_commit_fences(conn, scopes)
         _report(
             "PHASE_END",
             phase="FETCH_SUPPORTED_SCOPES",
@@ -524,6 +529,7 @@ def execute_runtime(
                 # row and any completed per-scope observations/projections
                 # from this explicitly bounded scope set are the intended
                 # evidence and are safe to commit.
+                revalidate_writer_commit_fences(conn, writer_commit_fences)
                 conn.commit()
                 transaction_closed = True
                 raise
@@ -550,6 +556,7 @@ def execute_runtime(
             failed_scopes=run.failed_scope_count,
             candle_rows_read=market_data.rows_read,
         )
+        revalidate_writer_commit_fences(conn, writer_commit_fences)
         conn.commit()
         transaction_closed = True
         if run.failed_scope_count:

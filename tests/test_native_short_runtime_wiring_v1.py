@@ -40,6 +40,16 @@ def _authorized_native_short_context(monkeypatch: pytest.MonkeyPatch) -> None:
     from tests.writer_auth_support import install_authorized_writer_context
 
     install_authorized_writer_context(monkeypatch)
+    monkeypatch.setattr(
+        runner,
+        "capture_writer_commit_fences",
+        lambda conn, scopes: (),
+    )
+    monkeypatch.setattr(
+        runner,
+        "revalidate_writer_commit_fences",
+        lambda conn, expected_fences: None,
+    )
 RUNNER_PATH = ROOT / "src/market_data/run_native_short_scope_status_chain_v1.py"
 SERVICE_PATH = ROOT / "deploy/systemd/synth-chain-4h.service"
 TIMER_PATH = ROOT / "deploy/systemd/synth-chain-4h.timer"
