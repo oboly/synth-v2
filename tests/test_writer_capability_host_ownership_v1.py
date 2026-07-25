@@ -443,7 +443,9 @@ def test_native_short_preflight_names_one_repository_scheduler_and_retired_legac
 
     assert "ConditionHost=devlap" in service
     assert "User=gurk" in service
+    assert "Group=gurk" in service
     assert "WorkingDirectory=/home/gurk/projects/synth-v2" in service
+    assert "ConditionHost=devlap" in timer
     assert timer.count("Unit=synth-chain-4h.service") == 1
     assert "deploy/systemd/synth-chain-4h.timer" in contract
     assert "deploy/systemd/synth-chain-4h.service" in contract

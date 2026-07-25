@@ -10,18 +10,24 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 User=gurk
+Group=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
 ExecStart=/bin/bash /home/gurk/projects/synth-v2/scripts/run_chain_4h.sh
 Restart=no
 Nice=5
+UMask=0077
+NoNewPrivileges=true
 
+# EnvironmentFile is intentionally absent. Runtime modules load the fixed
+# WorkingDirectory .env directly; systemd must not inject its full contents.
 Environment=SYNTH_REPO_DIR=/home/gurk/projects/synth-v2
 Environment=SYNTH_CHAIN_4H_LOCKED=0
 Environment=SYNTH_CHAIN_4H_LOCK_FILE=/tmp/synth_chain_4h.lock
 Environment=SYNTH_EXECUTION_MODE=paper
 Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
 Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
-ExecStartPre=/bin/bash -lc 'python -m src.operations.verify_writer_capability_authorization_v1 --capability native_short_4h_chain --service synth-chain-4h.service --checkout-path /home/gurk/projects/synth-v2 --registry deploy/ownership/writer_capability_ownership_v1.json'
+Environment=SYNTH_WRITER_EXECUTION_MODE=PRODUCTION
+ExecStartPre=/home/gurk/projects/synth-v2/venv/bin/python -m src.operations.verify_writer_capability_authorization_v1 --capability native_short_4h_chain --service synth-chain-4h.service --checkout-path /home/gurk/projects/synth-v2 --registry deploy/ownership/writer_capability_ownership_v1.json
 PrivateTmp=false
 
 StandardOutput=journal
