@@ -58,6 +58,100 @@ deployment contract:
   canonical publication-path write authority, or installed unit equivalence
   for either devlap, Odroid, or gurkDB.
 
+## Canonical Devlap Unit Contract
+
+The repository-side devlap candidate is exact and intentionally
+pre-activation:
+
+```text
+service=synth-chain-4h.service
+timer=synth-chain-4h.timer
+condition_host=devlap
+user=gurk
+group=gurk
+working_directory=/home/gurk/projects/synth-v2
+exec_start=/bin/bash /home/gurk/projects/synth-v2/scripts/run_chain_4h.sh
+environment_files=[]
+outer_lock=/tmp/synth_chain_4h.lock
+outer_lock_scope=HOST_LOCAL
+service_unit_file_state=disabled
+service_active_state=inactive
+timer_unit_file_state=disabled
+timer_active_state=inactive
+```
+
+No `EnvironmentFile=` directive is permitted. Runtime modules load the
+working-directory `.env` themselves; systemd does not inject the full file
+into the service environment. The unit pins only repository, lock, paper-mode,
+broker/live denial, and `SYNTH_WRITER_EXECUTION_MODE=PRODUCTION` values.
+
+Authorization is fail-closed before the wrapper starts:
+
+```text
+/home/gurk/projects/synth-v2/venv/bin/python
+  -m src.operations.verify_writer_capability_authorization_v1
+  --capability native_short_4h_chain
+  --service synth-chain-4h.service
+  --checkout-path /home/gurk/projects/synth-v2
+  --registry deploy/ownership/writer_capability_ownership_v1.json
+```
+
+The fixed outer lock is acquired by `scripts/run_chain_4h.sh` with
+`flock -n` for the full chain lifetime. `PrivateTmp=false` keeps manual and
+timer-triggered invocations in the same host-local lock namespace. Inherited
+repository or lock environment values cannot bypass that lock.
+
+The exact timer contract is:
+
+```text
+OnCalendar=*-*-* 00,04,08,12,16,20:12:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+AccuracySec=1s
+Unit=synth-chain-4h.service
+ConditionHost=devlap
+```
+
+This host-bound repository artifact does not select devlap, assign ownership,
+grant production authorization, or authorize activation.
+
+## Installed-Unit Equivalence Preflight
+
+Run the repository preflight from the exact candidate checkout:
+
+```bash
+python -m src.operations.run_native_short_systemd_equivalence_preflight_v1 \
+  --checkout-path /home/gurk/projects/synth-v2
+```
+
+It uses only `systemctl show` and read access to reported fragment paths. It
+compares service/timer presence, exact SHA-256 content, drop-ins, user/group,
+working directory, `ExecStart`, `ExecStartPre`, environment-file set, pinned
+environment, lock visibility, cadence, host conditions, and the required
+disabled/inactive state. It also requires the named legacy
+`synth-4h-market-chain.service` and `.timer` to be absent. Any missing,
+unreadable, enabled, active, drifted, or overridden unit returns
+`status=MISMATCH`; the runner does not install or change anything.
+
+The Lane F devlap observation is a mismatch, not canonical evidence:
+
+```text
+installed_service=absent
+installed_timer=present
+installed_timer_sha256=0311364ca21ba7109405b08982282fd270c78c170b4ff63e75a4d698cdb362b4
+lane_f_repository_timer_sha256=52b6227bb47f18aaf37828d8c1e48db09e3d7b075e00b59c9a1d887e1abf1fdd
+installed_timer_enabled=false
+installed_timer_active=false
+active_native_short_schedulers=0
+legacy_systemd_units=absent
+equivalence=MISMATCH
+```
+
+Matching cadence does not override absent service state, content drift, or
+missing host binding. This focused preflight proves only the installed
+system-level unit pair on one host. It does not replace the required
+cross-host system/user-systemd, cron, container, and manual-wrapper inventory.
+
 The approximately seven-day-old BTC-only snapshot and
 `TRANSIENT_NON_CANONICAL_CONTEXT_AVAILABLE` render state are consumer-visible
 staleness evidence. They do not select a writer host and must not trigger a
@@ -144,9 +238,14 @@ Required evidence:
    - reporting consumers have read-only access and no fallback publisher.
 5. `EXACT_INSTALLED_UNIT_EQUIVALENCE_MISSING`
    - installed service and timer names, hashes, user, working directory,
-     command, environment, lock, cadence, and `ConditionHost` equal the
-     reviewed host-bound repository artifacts;
-   - legacy `synth-4h-market-chain.*` units remain non-startable or absent.
+     group, command, authorization guard, environment-file set, environment,
+     lock, cadence, and `ConditionHost` equal the reviewed host-bound
+     repository artifacts;
+   - both canonical units are disabled/inactive during pre-activation
+     reconciliation;
+   - `python -m
+     src.operations.run_native_short_systemd_equivalence_preflight_v1` passes;
+   - legacy `synth-4h-market-chain.*` units are absent.
 6. `ALL_HOST_SCHEDULER_INVENTORY_MISSING`
    - devlap, Odroid, and gurkDB are checked for system/user timers, cron,
      containers, and direct publisher wrappers;

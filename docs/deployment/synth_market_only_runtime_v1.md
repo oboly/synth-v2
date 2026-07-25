@@ -17,8 +17,8 @@ observed_runtime_state=[]
 
 The committed `deploy/systemd/synth-chain-4h.service` and `.timer` are
 devlap-bound candidate artifacts (`ConditionHost=devlap`, `User=gurk`,
-`WorkingDirectory=/home/gurk/projects/synth-v2`). They are not host-neutral and
-do not authorize devlap as production owner.
+`Group=gurk`, `WorkingDirectory=/home/gurk/projects/synth-v2`). They are not
+host-neutral and do not authorize devlap as production owner.
 
 An installed timer may continue running operationally even after canonical
 authorization is reset. Repository correction does not stop that timer.
@@ -46,8 +46,12 @@ decision gate, or touch the execution planner or executor.
 | `SYNTH_REPO_DIR` | `/home/gurk/projects/synth-v2` |
 | `SYNTH_CHAIN_4H_LOCKED` | `0` (inherited bypass state is discarded) |
 | `SYNTH_CHAIN_4H_LOCK_FILE` | `/tmp/synth_chain_4h.lock` |
+| `SYNTH_WRITER_EXECUTION_MODE` | `PRODUCTION` (still denied while ownership is `UNASSIGNED`) |
 
 No live trading. No broker writes. No order submission. No decision_gate activation. No execution_planner activation. No executor activation.
+
+The unit has no `EnvironmentFile=` directive. Runtime modules load the fixed
+working-directory `.env` directly; systemd does not inject its full contents.
 
 ---
 
@@ -63,9 +67,9 @@ No live trading. No broker writes. No order submission. No decision_gate activat
 Timer fires 12 minutes after each 4h candle close, after the separately owned
 public-price and multi-interval candle writers. `Persistent=true`
 ensures a missed fire runs on next boot. `RandomizedDelaySec=120` spreads load
-across a 2-minute jitter window. The timer does not require either writer
-service; SELECT-only freshness validators are the fail-closed dependency
-boundary.
+across a 2-minute jitter window and `AccuracySec=1s` fixes timer coalescing.
+The timer does not require either writer service; SELECT-only freshness
+validators are the fail-closed dependency boundary.
 
 The native SHORT runtime does not add a timer or service. Canonical ownership is:
 
@@ -143,6 +147,19 @@ python -m src.operations.run_host_preflight_v1 \
   --checkout-path <candidate-checkout> \
   --strict
 ```
+
+Installed systemd equivalence is a separate mandatory, read-only check:
+
+```bash
+python -m src.operations.run_native_short_systemd_equivalence_preflight_v1 \
+  --checkout-path <candidate-checkout>
+```
+
+It requires the exact repository service/timer fragments, no drop-ins, the
+fixed service identity/path/command/environment/lock contract, the exact
+cadence and host conditions, disabled/inactive pre-activation state, and
+absence of the legacy `synth-4h-market-chain.*` pair. Matching cadence alone
+does not make an orphan installed timer canonical.
 
 The current committed unit is devlap-bound, so these manual devlap path checks
 are valid only when devlap has explicitly become the selected candidate host.
@@ -229,6 +246,8 @@ sudo cp /home/gurk/projects/synth-v2/deploy/systemd/synth-chain-4h.timer /etc/sy
 sudo systemctl daemon-reload
 sha256sum deploy/systemd/synth-chain-4h.service /etc/systemd/system/synth-chain-4h.service
 sha256sum deploy/systemd/synth-chain-4h.timer /etc/systemd/system/synth-chain-4h.timer
+python -m src.operations.run_native_short_systemd_equivalence_preflight_v1 \
+  --checkout-path /home/gurk/projects/synth-v2
 ```
 
 Only after preflight, controlled acceptance, legacy runtime inventory,
