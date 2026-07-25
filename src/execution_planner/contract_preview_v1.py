@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Final
 
+from src.execution_planner.canonical_rounding_v1 import round_price_for_side
+
 
 VALID_SIDES: Final[set[str]] = {"BUY", "SELL"}
 
@@ -142,20 +144,22 @@ def _normalize_upper(value: str, field_name: str) -> str:
     return normalized
 
 
-def _quantize_to_tick(price: Decimal, tick_size: Decimal) -> Decimal:
-    if tick_size <= Decimal("0"):
-        raise ValueError("tick_size must be > 0")
-
-    ticks = (price / tick_size).to_integral_value(rounding=ROUND_DOWN)
-    return ticks * tick_size
+def _quantize_to_tick(price: Decimal, tick_size: Decimal, side: str) -> Decimal:
+    """Side-aware tick rounding, delegating to the single canonical rounding
+    service (src.execution_planner.canonical_rounding_v1). This used to be
+    an unconditional ROUND_DOWN regardless of side, which rounded SELL
+    prices below the analytical target — see
+    docs/architecture/manual_execution_ladder_future_readiness_audit_v1.md
+    finding F3. Do not reintroduce a local, side-unaware quantizer here."""
+    return round_price_for_side(price, tick_size, side)
 
 
 def _passive_price_for_side(side: str, context: ExecutionMarketContextPreview) -> Decimal:
     if side == "BUY":
-        return _quantize_to_tick(context.best_bid_eur + context.tick_size, context.tick_size)
+        return _quantize_to_tick(context.best_bid_eur + context.tick_size, context.tick_size, side)
 
     if side == "SELL":
-        return _quantize_to_tick(context.best_ask_eur - context.tick_size, context.tick_size)
+        return _quantize_to_tick(context.best_ask_eur - context.tick_size, context.tick_size, side)
 
     raise ValueError(f"unsupported side: {side}")
 
@@ -295,7 +299,7 @@ def _build_ladder_legs(
     legs: list[ExecutionPlanLegPreview] = []
 
     for idx, (price, fraction) in enumerate(levels, start=1):
-        target_price = _quantize_to_tick(price, tick_size)
+        target_price = _quantize_to_tick(price, tick_size, side)
         target_notional_eur = None
         target_quantity_base = None
 

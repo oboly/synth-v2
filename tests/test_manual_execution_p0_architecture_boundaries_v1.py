@@ -1,0 +1,133 @@
+"""
+Architecture-boundary tests for the P0 manual execution ladder safety
+remediation (see
+docs/architecture/manual_execution_ladder_future_readiness_audit_v1.md and
+docs/todo/manual_execution_ladder_future_readiness_backlog_v1.md).
+
+These mirror the existing repository pattern of import-graph boundary tests
+(e.g. tests/test_account_asset_management_v1.py::
+test_no_decision_gate_execution_planner_executor_imports) rather than
+inventing a new checking style.
+"""
+from __future__ import annotations
+
+import ast
+import pathlib
+
+import pytest
+
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def _imported_module_names(path: pathlib.Path) -> set[str]:
+    tree = ast.parse(path.read_text())
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                names.add(alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names.add(node.module)
+    return names
+
+
+def _all_py_files(rel_dir: str) -> list[pathlib.Path]:
+    return sorted((_REPO_ROOT / rel_dir).rglob("*.py"))
+
+
+class TestSelectionEngineNeverConsumesAccountAwareP0Modules:
+    """selection_engine must remain market-only and account-agnostic: it
+    must never import the new FREE_BASE_QUANTITY resolver, the SELL
+    reservation model, or the research-provenance override module, all of
+    which are account-aware or governance-scoped by construction."""
+
+    _FORBIDDEN_MODULES = (
+        "src.decision_gate.free_base_quantity_v1",
+        "src.decision_gate.sell_reservation_v1",
+        "src.decision_gate.research_provenance_v1",
+    )
+
+    def test_selection_engine_does_not_import_new_p0_modules(self) -> None:
+        selection_dir = _REPO_ROOT / "src" / "selection"
+        if not selection_dir.exists():
+            pytest.skip("src/selection not present in this checkout")
+
+        for path in selection_dir.rglob("*.py"):
+            imported = _imported_module_names(path)
+            for forbidden in self._FORBIDDEN_MODULES:
+                assert forbidden not in imported, (
+                    f"{path.relative_to(_REPO_ROOT)} imports {forbidden}, "
+                    "which is account-aware/governance-scoped and must not "
+                    "be reachable from selection_engine"
+                )
+
+
+class TestResearchProvenanceCannotReachSelectionOrDecisionScoring:
+    """The research-provenance module's selection_weight/decision_weight
+    fields must never be consumed as scoring input by decision_gate's own
+    scoring/decision functions. This is enforced two ways: (1) DB-level
+    CHECK constraints force both fields to 0 (see the migration), and (2) no
+    decision_gate scoring module imports research_provenance_v1 at all."""
+
+    _DECISION_GATE_SCORING_MODULES = (
+        "decision_gate_v1.py",
+        "sell_intent_policy_v1.py",
+    )
+
+    def test_decision_gate_scoring_modules_do_not_import_research_provenance(self) -> None:
+        decision_gate_dir = _REPO_ROOT / "src" / "decision_gate"
+        for filename in self._DECISION_GATE_SCORING_MODULES:
+            path = decision_gate_dir / filename
+            if not path.exists():
+                continue
+            imported = _imported_module_names(path)
+            assert "src.decision_gate.research_provenance_v1" not in imported, (
+                f"{filename} must not import research_provenance_v1 — "
+                "research overrides must never become scoring input"
+            )
+
+    def test_migration_enforces_zero_weights_and_no_live_permission(self) -> None:
+        migration = (
+            _REPO_ROOT
+            / "db/migrations/20260725_manual_execution_ladder_p0_safety_v1.sql"
+        ).read_text()
+        assert "chk_execution_research_provenance_weights_zero" in migration
+        assert "selection_weight = 0 AND decision_weight = 0" in migration
+        assert "chk_execution_research_provenance_live_permission_off" in migration
+        assert "live_permission = 0" in migration
+
+
+class TestNoParallelReservationPath:
+    """Do not create a parallel SELL-reservation path: exactly one module
+    may write execution_sell_reservation.reservation_state."""
+
+    def test_only_sell_reservation_module_updates_the_reservation_table(self) -> None:
+        offenders = []
+        for path in _all_py_files("src"):
+            if path.name == "sell_reservation_v1.py":
+                continue
+            text = path.read_text()
+            if "execution_sell_reservation" in text and "UPDATE" in text.upper():
+                offenders.append(str(path.relative_to(_REPO_ROOT)))
+        assert offenders == [], (
+            f"unexpected writers of execution_sell_reservation: {offenders}"
+        )
+
+
+class TestExecutionPlannerDoesNotFetchPrivateBrokerState:
+    """execution_planner must consume only an approved immutable quantity
+    snapshot (FreeBaseQuantityResult); it must not call the broker's
+    private balance/order endpoints itself."""
+
+    def test_execution_planner_package_does_not_call_private_bitvavo_methods(self) -> None:
+        forbidden_calls = ("get_balance(", "get_open_orders(")
+        offenders = []
+        for path in _all_py_files("src/execution_planner"):
+            text = path.read_text()
+            for call in forbidden_calls:
+                if call in text:
+                    offenders.append(f"{path.relative_to(_REPO_ROOT)}::{call}")
+        assert offenders == [], (
+            f"execution_planner must not call private broker methods: {offenders}"
+        )

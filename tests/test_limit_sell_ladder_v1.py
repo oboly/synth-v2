@@ -19,6 +19,12 @@ class LimitSellLadderV1Tests(unittest.TestCase):
         )
 
     def test_build_limit_sell_ladder_orders_quantizes_amount_and_price(self) -> None:
+        # Regression: price rounding for a SELL leg must round UP to the
+        # tick (never place a sell below the analytical target) via the
+        # canonical rounding service, not the previous unconditional
+        # ROUND_DOWN. 0.45678 * 0.99 = 0.4522122 -> ROUND_UP to 0.001 -> 0.453.
+        # See docs/architecture/manual_execution_ladder_future_readiness_audit_v1.md
+        # finding F3.
         orders = build_limit_sell_ladder_orders(
             market="WLD-EUR",
             available_qty=Decimal("100"),
@@ -39,9 +45,29 @@ class LimitSellLadderV1Tests(unittest.TestCase):
         self.assertEqual(order.side, "sell")
         self.assertEqual(order.order_type, "limit")
         self.assertEqual(order.amount, "25.00000000")
-        self.assertEqual(order.price, "0.452")
+        self.assertEqual(order.price, "0.453")
         self.assertTrue(order.post_only)
         self.assertEqual(order.time_in_force, "GTC")
+
+    def test_build_limit_sell_ladder_orders_never_rounds_price_down(self) -> None:
+        # Direct regression for F3: a raw price that is not exactly on a
+        # tick boundary must never be quantized below its raw value for a
+        # SELL leg.
+        orders = build_limit_sell_ladder_orders(
+            market="WLD-EUR",
+            available_qty=Decimal("100"),
+            levels=[
+                LimitSellLadderLevel(
+                    level_price=Decimal("1.23456"),
+                    offset_pct=Decimal("0"),
+                    quantity_pct=Decimal("100"),
+                )
+            ],
+            price_quantize=Decimal("0.01"),
+            amount_quantize=Decimal("0.00000001"),
+        )
+        rounded_price = Decimal(orders[0].price)
+        self.assertGreaterEqual(rounded_price, Decimal("1.23456"))
 
     def test_preview_limit_sell_ladder_orders(self) -> None:
         orders = build_limit_sell_ladder_orders(

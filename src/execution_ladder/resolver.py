@@ -12,6 +12,8 @@ from src.execution_ladder.models import (
     LadderProfile,
     SizingRule,
 )
+from src.execution_planner.canonical_rounding_v1 import RoundedLeg, round_leg_for_side
+from src.market_rules.venue_execution_constraints_v1 import VenueExecutionConstraints
 
 # ---------------------------------------------------------------------------
 # Whitelists — code-owned; database content must never expand these
@@ -213,4 +215,40 @@ def resolve_ladder_preview(
         legs=tuple(leg_previews),
         total_allocation_bps=total_allocation,
         estimated_total_base_quantity=total_base_qty,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Venue-aware rounded preview
+#
+# resolve_ladder_preview() above returns raw, unquantized prices/quantities —
+# it always has and existing callers/tests depend on that raw shape, so its
+# signature is unchanged here. Any caller that intends to use a preview for
+# anything beyond a raw estimate (i.e. anything that could become a real
+# execution-plan leg) must additionally round it through this function,
+# which delegates to the single canonical rounding service
+# (src.execution_planner.canonical_rounding_v1) rather than re-implementing
+# tick/step rounding here. See
+# docs/architecture/manual_execution_ladder_future_readiness_audit_v1.md
+# finding F3 (side-unaware rounding) and F4/F5 (missing min-qty/min-notional
+# and tick/step metadata).
+# ---------------------------------------------------------------------------
+
+def round_ladder_preview(
+    preview: LadderPreview,
+    *,
+    constraints: VenueExecutionConstraints,
+) -> tuple[RoundedLeg, ...]:
+    """Round every leg of a raw LadderPreview via the canonical rounding
+    service. Returns one RoundedLeg per input leg, in the same order;
+    callers must check RoundedLeg.is_valid per leg and must not submit an
+    invalid leg."""
+    return tuple(
+        round_leg_for_side(
+            side=preview.side,
+            raw_price=leg.limit_price,
+            raw_quantity_base=leg.estimated_base_quantity,
+            constraints=constraints,
+        )
+        for leg in preview.legs
     )
