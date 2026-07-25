@@ -1,5 +1,10 @@
 # Research Runner Overrides
 
+Scoped overrides for `src/research/`. These are **additional** constraints.
+The canonical contract in root `AGENTS.md`, plus
+`docs/ops/agent_orchestration_contract_v1.md` and
+`docs/ops/agent_search_hygiene_v1.md`, still applies in full.
+
 ## Query and Process Efficiency
 
 Before implementing or running a broad research job:
