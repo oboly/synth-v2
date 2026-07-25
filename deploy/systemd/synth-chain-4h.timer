@@ -1,7 +1,7 @@
 [Unit]
 Description=Synth 4h market-only chain timer (devlap-bound candidate artifact)
 Documentation=https://github.com/oboly/synth-v2/blob/main/docs/deployment/synth_market_only_runtime_v1.md
-Requires=synth-chain-4h.service
+ConditionHost=devlap
 
 [Timer]
 # The public-candle-freshness-writer capability runs first; this chain validates
@@ -11,6 +11,7 @@ Requires=synth-chain-4h.service
 OnCalendar=*-*-* 00,04,08,12,16,20:12:00 UTC
 Persistent=true
 RandomizedDelaySec=120
+AccuracySec=1s
 Unit=synth-chain-4h.service
 
 [Install]

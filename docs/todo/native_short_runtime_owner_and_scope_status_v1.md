@@ -27,8 +27,10 @@ truth is the ownership registry and the current runtime lifecycle above.
 
 ```text
 implementation line: done / accepted (historical)
+repository devlap unit contract and read-only equivalence preflight: done
 production runtime owner: UNASSIGNED (see registry)
-installed-host activation: separate P2 operational action, not performed by this lane closure
+installed devlap equivalence: MISMATCH (service absent; orphan timer drifted)
+installed-host activation: NOT_AUTHORIZED
 ```
 
 The native SHORT map-level runtime implementation line is closed. Host selection,
@@ -43,6 +45,8 @@ docs/architecture/native_short_scope_status_contract_v1.md
 docs/architecture/native_short_map_level_status_contract_v1.md
 docs/ops/native_short_map_materializer_canary_v1.md
 docs/ops/native_short_map_ledger_health_report_v1.md
+docs/ops/native_short_4h_chain_ownership_preflight_v1.md
+docs/deployment/synth_market_only_runtime_v1.md
 ```
 
 Merged implementation chain:
@@ -123,12 +127,18 @@ Installed-host activation was deliberately not part of PR #87 acceptance.
 Any later installed-host action must be handled as a separate operational change and must:
 
 1. verify the installed checkout and exact `origin/main` ancestry;
-2. inspect the existing `synth-chain-4h` service/timer state;
-3. reuse that owner rather than create another timer;
-4. run a manual one-shot before enabling or restarting anything;
-5. verify bounded logs, lock behavior, idempotency, and terminal summaries;
-6. preserve rollback by reverting repository deployment or runtime owner wiring without mutating ledger history;
-7. perform no broker, account, order, decision, planning, or execution action.
+2. run the read-only
+   `src.operations.run_native_short_systemd_equivalence_preflight_v1`;
+3. keep the currently observed orphan timer disabled/inactive and treat its
+   content mismatch as a blocker, not as canonical ownership;
+4. prove zero alternate schedulers/publishers across all candidate and
+   historical hosts;
+5. separately select and accept one owner before any controlled writer run;
+6. separately authorize production before any timer activation;
+7. verify bounded logs, lock behavior, idempotency, and terminal summaries
+   only in an explicitly authorized acceptance lane;
+8. preserve rollback without mutating ledger history;
+9. perform no broker, account, order, decision, planning, or execution action.
 
 This remaining host action is tracked under:
 

@@ -256,6 +256,7 @@ def test_exactly_one_canonical_native_short_owner_path() -> None:
 def test_canonical_service_pins_non_login_environment_and_outer_lock() -> None:
     chain = CHAIN.read_text(encoding="utf-8")
     service = SERVICE.read_text(encoding="utf-8")
+    timer = TIMER.read_text(encoding="utf-8")
 
     assert "ExecStart=/bin/bash -lc" not in service
     assert (
@@ -263,6 +264,11 @@ def test_canonical_service_pins_non_login_environment_and_outer_lock() -> None:
         in service
     )
     assert "WorkingDirectory=/home/gurk/projects/synth-v2" in service
+    assert "User=gurk" in service
+    assert "Group=gurk" in service
+    assert "EnvironmentFile=" not in "\n".join(
+        line for line in service.splitlines() if not line.lstrip().startswith("#")
+    )
     assert "Environment=SYNTH_REPO_DIR=/home/gurk/projects/synth-v2" in service
     assert "Environment=SYNTH_CHAIN_4H_LOCKED=0" in service
     assert "Environment=SYNTH_CHAIN_4H_LOCK_FILE=/tmp/synth_chain_4h.lock" in service
@@ -278,6 +284,10 @@ def test_canonical_service_pins_non_login_environment_and_outer_lock() -> None:
     assert chain.count("--allowed-untracked-path") == 3
     assert "docs/todo/replay_parameter_study_harness_v1.md" in chain
     assert AUTH_GUARD in chain
+    assert "ConditionHost=devlap" in timer
+    assert "OnCalendar=*-*-* 00,04,08,12,16,20:12:00 UTC" in timer
+    assert "RandomizedDelaySec=120" in timer
+    assert "AccuracySec=1s" in timer
 
 
 def test_legacy_4h_unit_templates_are_inert_retirement_stubs() -> None:
