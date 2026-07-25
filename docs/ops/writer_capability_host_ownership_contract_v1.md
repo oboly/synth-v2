@@ -194,6 +194,15 @@ it owns CPU-heavy chain stages, source-identity checks, DB writes beyond public
 price/candle tables, artifact publication, manifests, and downstream market
 state.
 
+The repository-only ownership reconciliation and exact fail-closed blocker
+contract are recorded in
+`docs/ops/native_short_4h_chain_ownership_preflight_v1.md`. PR #143 is merged,
+but no one host currently has a consistent exact-commit DB-writer,
+filesystem-publication, installed-unit, single-scheduler, and rollback proof.
+Writer execution and canonical filesystem publication therefore remain
+co-located within this capability, and all Native SHORT ownership fields remain
+`UNASSIGNED`.
+
 ## Owner Identity
 
 Wrapper log identity is immutable capability identity. It is not a host name,

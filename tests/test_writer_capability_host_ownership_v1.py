@@ -20,6 +20,9 @@ from src.operations.writer_capability_authorization_v1 import (
 REGISTRY_PATH = Path("deploy/ownership/writer_capability_ownership_v1.json")
 SCHEMA_PATH = Path("deploy/ownership/writer_capability_ownership_v1.schema.json")
 CONTRACT_DOC = Path("docs/ops/writer_capability_host_ownership_contract_v1.md")
+NATIVE_SHORT_PREFLIGHT_DOC = Path(
+    "docs/ops/native_short_4h_chain_ownership_preflight_v1.md"
+)
 UNASSIGNED = "UNASSIGNED"
 
 
@@ -398,6 +401,57 @@ def test_incomplete_native_short_inventory_fails() -> None:
     errors = _errors(registry)
     assert any("incomplete invoked module inventory" in err for err in errors)
     assert any("incomplete database write inventory" in err for err in errors)
+
+
+def test_native_short_owner_preflight_fails_closed_on_host_or_publication_ambiguity() -> None:
+    registry = _registry()
+    native = _cap(registry, "native_short_4h_chain")
+    contract = NATIVE_SHORT_PREFLIGHT_DOC.read_text(encoding="utf-8")
+
+    assert native["candidate_host"] == UNASSIGNED
+    assert native["selected_host"] == UNASSIGNED
+    assert native["acceptance_host"] == UNASSIGNED
+    assert native["production_runtime_owner"] == UNASSIGNED
+    assert native["production_authorization_status"] == UNASSIGNED
+    assert native["runtime_lifecycle"] == UNASSIGNED
+    assert "recommended_owner=UNASSIGNED" in contract
+    assert "writer_host=UNASSIGNED" in contract
+    assert "publication_host=UNASSIGNED" in contract
+    assert "publication_host must equal writer_host" in contract
+    for blocker in (
+        "DB_CONNECTIVITY_PROOF_MISSING",
+        "DB_WRITER_AUTHORITY_PROOF_MISSING",
+        "PUBLICATION_PATH_OWNERSHIP_PROOF_MISSING",
+        "EXACT_INSTALLED_UNIT_EQUIVALENCE_MISSING",
+        "ALL_HOST_SCHEDULER_INVENTORY_MISSING",
+        "ROLLBACK_PROOF_MISSING",
+        "WRITER_PUBLICATION_COLOCATION_PROOF_MISSING",
+    ):
+        assert blocker in contract
+
+
+def test_native_short_preflight_names_one_repository_scheduler_and_retired_legacy_pair() -> None:
+    contract = NATIVE_SHORT_PREFLIGHT_DOC.read_text(encoding="utf-8")
+    service = Path("deploy/systemd/synth-chain-4h.service").read_text(encoding="utf-8")
+    timer = Path("deploy/systemd/synth-chain-4h.timer").read_text(encoding="utf-8")
+    legacy_service = Path(
+        "docs/ops/systemd/synth-4h-market-chain.service"
+    ).read_text(encoding="utf-8")
+    legacy_timer = Path(
+        "docs/ops/systemd/synth-4h-market-chain.timer"
+    ).read_text(encoding="utf-8")
+
+    assert "ConditionHost=devlap" in service
+    assert "User=gurk" in service
+    assert "WorkingDirectory=/home/gurk/projects/synth-v2" in service
+    assert timer.count("Unit=synth-chain-4h.service") == 1
+    assert "deploy/systemd/synth-chain-4h.timer" in contract
+    assert "deploy/systemd/synth-chain-4h.service" in contract
+    assert "No publication timer is permitted." in contract
+    assert "RefuseManualStart=yes" in legacy_service
+    assert "RefuseManualStart=yes" in legacy_timer
+    assert "scripts/run_chain_4h.sh" not in legacy_service
+    assert "OnCalendar=" not in legacy_timer
 
 
 def test_arbitrary_owner_identity_overrides_are_rejected_and_not_in_wrappers() -> None:
