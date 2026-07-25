@@ -121,6 +121,36 @@ transaction through `Requires=` or `Wants=`.
 This host-bound repository artifact does not select devlap, assign ownership,
 grant production authorization, or authorize activation.
 
+## Database Least-Privilege Contract
+
+The complete service-to-SQL call graph, exact object-level privilege matrix,
+dedicated identity contract, non-executed DBA artifact, and read-only grant
+preflight are canonicalized in:
+
+```text
+docs/ops/synth_chain_4h_database_least_privilege_contract_v1.md
+db/dba/synth_chain_4h_writer_v1.sql
+src/operations/run_synth_chain_4h_db_grant_preflight_v1.py
+```
+
+The dedicated identity is
+`synth_chain_4h_writer@192.168.1.%`. It covers the complete market-only 4h
+processing chain, not only Native SHORT tables. The existing broad
+`synth@192.168.1.%` identity is not accepted as chain authority proof and is
+not changed by the repository artifact.
+
+`execution_zone_context` is explicitly classified as market-derived zone
+context written by `src.zone` and read by paper advice. It is not
+decision-gate state, execution-planner intent, executor state, an order, a
+fill, or broker state. Exact object-level DML for that table and `SELECT` on
+`vw_paper_advice_execution_zone_context_v1` are therefore part of the
+market-only matrix.
+
+The repository contract does not prove that the dedicated identity exists or
+has the expected grants. `DB_WRITER_AUTHORITY_PROOF_MISSING` remains open until
+the candidate identity is separately provisioned by a DBA and the read-only
+preflight passes from the exact candidate service environment.
+
 ## Installed-Unit Equivalence Preflight
 
 Run the repository preflight from the exact candidate checkout:
@@ -233,10 +263,17 @@ Required evidence:
      service environment;
    - the resolved database endpoint is recorded without secrets.
 3. `DB_WRITER_AUTHORITY_PROOF_MISSING`
-   - grants are inspected without mutation and prove only the exact required
-     Native SHORT and market-only tables;
-   - no account, broker, order, decision, planning, or execution grants are
-     introduced.
+   - the authenticated identity is the dedicated
+     `synth_chain_4h_writer@192.168.1.%`, not the broad `synth` identity;
+   - `python -m
+     src.operations.run_synth_chain_4h_db_grant_preflight_v1` inspects grants
+     without mutation and proves the exact matrix in
+     `docs/ops/synth_chain_4h_database_least_privilege_contract_v1.md`;
+   - `execution_zone_context` DML and view access remain bounded
+     market-derived zone context;
+   - no account/profile, balance, position, wallet, credential, broker,
+     decision-gate, execution-planner intent, executor, order, fill,
+     administrative, schema-wide, or database-wide authority exists.
 4. `PUBLICATION_PATH_OWNERSHIP_PROOF_MISSING`
    - one absolute canonical publication root is selected;
    - the candidate service user owns atomic create, fsync, rename, lock, and

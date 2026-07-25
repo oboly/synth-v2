@@ -28,6 +28,8 @@ truth is the ownership registry and the current runtime lifecycle above.
 ```text
 implementation line: done / accepted (historical)
 repository devlap unit contract and read-only equivalence preflight: done
+repository database least-privilege contract and read-only grant preflight: done
+dedicated database identity provisioning/observed grant acceptance: pending
 production runtime owner: UNASSIGNED (see registry)
 installed devlap equivalence: MISMATCH (service absent; orphan timer drifted)
 installed-host activation: NOT_AUTHORIZED
@@ -46,6 +48,7 @@ docs/architecture/native_short_map_level_status_contract_v1.md
 docs/ops/native_short_map_materializer_canary_v1.md
 docs/ops/native_short_map_ledger_health_report_v1.md
 docs/ops/native_short_4h_chain_ownership_preflight_v1.md
+docs/ops/synth_chain_4h_database_least_privilege_contract_v1.md
 docs/deployment/synth_market_only_runtime_v1.md
 ```
 
@@ -129,16 +132,20 @@ Any later installed-host action must be handled as a separate operational change
 1. verify the installed checkout and exact `origin/main` ancestry;
 2. run the read-only
    `src.operations.run_native_short_systemd_equivalence_preflight_v1`;
-3. keep the currently observed orphan timer disabled/inactive and treat its
+3. provision the dedicated `synth_chain_4h_writer` identity only in a
+   separately authorized DBA lane, then pass the read-only
+   `src.operations.run_synth_chain_4h_db_grant_preflight_v1`; the broad
+   `synth` identity is not accepted as writer-authority proof;
+4. keep the currently observed orphan timer disabled/inactive and treat its
    content mismatch as a blocker, not as canonical ownership;
-4. prove zero alternate schedulers/publishers across all candidate and
+5. prove zero alternate schedulers/publishers across all candidate and
    historical hosts;
-5. separately select and accept one owner before any controlled writer run;
-6. separately authorize production before any timer activation;
-7. verify bounded logs, lock behavior, idempotency, and terminal summaries
+6. separately select and accept one owner before any controlled writer run;
+7. separately authorize production before any timer activation;
+8. verify bounded logs, lock behavior, idempotency, and terminal summaries
    only in an explicitly authorized acceptance lane;
-8. preserve rollback without mutating ledger history;
-9. perform no broker, account, order, decision, planning, or execution action.
+9. preserve rollback without mutating ledger history;
+10. perform no broker, account, order, decision, planning, or execution action.
 
 This remaining host action is tracked under:
 
