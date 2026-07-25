@@ -110,7 +110,13 @@ RandomizedDelaySec=120
 AccuracySec=1s
 Unit=synth-chain-4h.service
 ConditionHost=devlap
+Unit.Requires=[]
+Unit.Wants=[]
 ```
+
+The service is activated only when `Timer.Unit=` fires at timer expiry. The
+timer `[Unit]` section must not pull the oneshot into the timer start
+transaction through `Requires=` or `Wants=`.
 
 This host-bound repository artifact does not select devlap, assign ownership,
 grant production authorization, or authorize activation.

@@ -70,6 +70,9 @@ ensures a missed fire runs on next boot. `RandomizedDelaySec=120` spreads load
 across a 2-minute jitter window and `AccuracySec=1s` fixes timer coalescing.
 The timer does not require either writer service; SELECT-only freshness
 validators are the fail-closed dependency boundary.
+The timer `[Unit]` section has no `Requires=` or `Wants=` dependency on
+`synth-chain-4h.service`; only `[Timer] Unit=synth-chain-4h.service` triggers
+the oneshot when the timer expires.
 
 The native SHORT runtime does not add a timer or service. Canonical ownership is:
 

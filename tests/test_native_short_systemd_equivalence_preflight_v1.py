@@ -62,6 +62,18 @@ def test_exact_canonical_inactive_pair_passes() -> None:
     assert "disabled/inactive" in results["timer_enabled_active_state"].detail
 
 
+def test_timer_activates_service_only_on_timer_expiry() -> None:
+    timer = (ROOT / preflight.TIMER_REL_PATH).read_bytes()
+    fields = preflight._parse_unit(timer)
+
+    assert fields.get(("Unit", "Requires"), ()) == ()
+    assert fields.get(("Unit", "Wants"), ()) == ()
+    assert fields.get(("Timer", "Unit")) == (preflight.SERVICE_UNIT,)
+    assert preflight.EXPECTED_TIMER_FIELDS[("Unit", "Requires")] == ()
+    assert preflight.EXPECTED_TIMER_FIELDS[("Unit", "Wants")] == ()
+    assert _run(_canonical_states())["timer_activation_dependencies"].status == preflight.STATUS_PASS
+
+
 def test_missing_service_and_drifted_timer_report_mismatch() -> None:
     states = _canonical_states()
     states[preflight.SERVICE_UNIT] = _installed_state(

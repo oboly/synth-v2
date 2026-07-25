@@ -70,7 +70,8 @@ EXPECTED_SERVICE_FIELDS = {
 
 EXPECTED_TIMER_FIELDS = {
     ("Unit", "ConditionHost"): ("devlap",),
-    ("Unit", "Requires"): (SERVICE_UNIT,),
+    ("Unit", "Requires"): (),
+    ("Unit", "Wants"): (),
     ("Timer", "OnCalendar"): ("*-*-* 00,04,08,12,16,20:12:00 UTC",),
     ("Timer", "Persistent"): ("true",),
     ("Timer", "RandomizedDelaySec"): ("120",),
@@ -354,6 +355,16 @@ def run_preflight(
             service,
             EXPECTED_SERVICE_FIELDS,
             (("Unit", "ConditionHost"),),
+        ),
+        _semantic_check(
+            "timer_activation_dependencies",
+            timer,
+            EXPECTED_TIMER_FIELDS,
+            (
+                ("Unit", "Requires"),
+                ("Unit", "Wants"),
+                ("Timer", "Unit"),
+            ),
         ),
         _semantic_check(
             "timer_cadence",
