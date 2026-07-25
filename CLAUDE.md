@@ -11,7 +11,7 @@ separation, testing, security, git, and documentation rules.
 This file contains **Claude-specific integration rules only**. Do not
 duplicate the shared contract here.
 
-Supporting canonical documents:
+Supporting documents:
 
 ```text
 docs/ops/agent_orchestration_contract_v1.md   orchestration / handoff / thread / host rules
@@ -34,8 +34,9 @@ Prefer:
 ## Claude Code Repository Integration
 
 - State `agent=claude-code` in every final task report.
-- State the model used when acting as advisor, reviewer, or auditor, per the
-  task header rules in `docs/ops/agent_orchestration_contract_v1.md`.
+- State the exact model and effort used when acting as advisor, reviewer, or
+  auditor, per the task header rules in
+  `docs/ops/agent_orchestration_contract_v1.md`.
 - Before editing files under `src/research/`, read and obey
   `src/research/AGENTS.override.md`.
 - Treat direct task instructions as additional constraints, not replacements

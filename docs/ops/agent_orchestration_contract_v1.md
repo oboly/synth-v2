@@ -16,14 +16,15 @@ host_state_changes=0
 
 ## Scope
 
-This document is the canonical, provider-neutral contract for how AI coding
+This document provides provider-neutral supporting detail for how AI coding
 agents are selected, briefed, reviewed, and reported across Synth v2 work.
 It applies to Anthropic Claude agents, OpenAI Codex agents, and any other
 provider used on this repository.
 
-`AGENTS.md` owns the shared engineering contract and carries a short summary
-of these rules. This document owns the detail. Provider files (`CLAUDE.md`,
-`CODEX.md`) contain integration specifics only and reference both.
+`AGENTS.md` is the sole canonical owner of the shared engineering and agent
+orchestration rules. This document expands the orchestration detail. Provider
+files (`CLAUDE.md`, `CODEX.md`) contain integration specifics only and
+reference both.
 
 This document grants no new permission. It does not enable live trading,
 broker writes, DB writes, deployment, or runtime mutation. It only governs
@@ -65,6 +66,22 @@ duplicate all implementation work.
 Do not use the most expensive model for routine mechanical work unless there
 is a stated reason.
 
+Select effort proportionally:
+
+```text
+low     = bounded mechanical work with low risk
+medium  = normal implementation or focused review
+high    = architecture, security, runtime, database, execution, broad
+          refactors, ambiguous failures, or final high-risk review
+```
+
+Use the exact effort or reasoning value supported by the selected model or
+client where known. Otherwise use `low`, `medium`, or `high`. Do not invent
+unsupported effort values.
+
+Effort does not replace ROLE. It does not authorize broader scope, additional
+mutations, or any permission not stated in the task.
+
 An implementer that hits a boundary question, an architecture ambiguity, or a
 permission question must stop and return to the advisor rather than deciding
 unilaterally.
@@ -95,7 +112,7 @@ Every generated agent handoff must explicitly contain:
 ```text
 HOST: <exact host>
 MODEL: <exact model>
-PROVIDER: <provider>
+EFFORT: <low | medium | high, or exact supported runtime value>
 ROLE: <advisor | implementer | reviewer | auditor>
 THREAD: <CLEAR | CONTINUE>
 ```
@@ -113,7 +130,9 @@ DB WRITE PERMISSION: <granted | not granted>
 BROKER / PRIVATE API PERMISSION: <granted | not granted>
 ```
 
-Host and model selection must never be left implicit.
+Host, model, and effort selection must never be left implicit. Provider
+identity is not a required header field and may be inferred from MODEL where
+relevant.
 
 Permission fields default to **not granted**. An absent permission line is
 read as not granted, never as permission.

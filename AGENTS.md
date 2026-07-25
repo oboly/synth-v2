@@ -31,7 +31,7 @@ When implementing:
 
 ## Agent Orchestration and Handoff
 
-Canonical rules: `docs/ops/agent_orchestration_contract_v1.md`.
+Supporting detail: `docs/ops/agent_orchestration_contract_v1.md`.
 
 This applies to all providers (Anthropic Claude, OpenAI Codex, others).
 
@@ -59,15 +59,26 @@ Every generated agent handoff must explicitly state:
 ```text
 HOST: <exact host>
 MODEL: <exact model>
-PROVIDER: <provider>
+EFFORT: <low | medium | high, or exact supported runtime value>
 ROLE: <advisor | implementer | reviewer | auditor>
 THREAD: <CLEAR | CONTINUE>
 ```
 
 plus repository/worktree path, branch, base SHA when relevant, head SHA when
 reviewing, and explicit deployment, runtime mutation, DB write, and
-broker/private API permission. Host and model must never be implicit. An
-absent permission line means not granted.
+broker/private API permission. Host, model, and effort must never be implicit.
+An absent permission line means not granted.
+
+Effort selection:
+
+- Use the exact effort or reasoning value supported by the selected model or
+  client where known; otherwise use `low`, `medium`, or `high`.
+- Use low for bounded mechanical work with low risk.
+- Use medium for normal implementation or focused review.
+- Use high for architecture, security, runtime, database, execution, broad
+  refactors, ambiguous failures, or final high-risk review.
+- Do not invent unsupported effort values.
+- Effort does not replace role or authorize broader scope or mutations.
 
 Thread selection:
 

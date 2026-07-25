@@ -17,7 +17,7 @@ research separation, testing, security, git, and documentation rules.
 This file contains **Codex-specific integration rules only**. Do not duplicate
 the shared contract here.
 
-Supporting canonical documents:
+Supporting documents:
 
 ```text
 docs/ops/agent_orchestration_contract_v1.md   orchestration / handoff / thread / host rules
@@ -30,7 +30,7 @@ and obey `src/research/AGENTS.override.md`.
 ## Codex Repository Integration
 
 - State `agent=codex` in every final task report.
-- State the exact model used, per the task header rules in
+- State the exact model and effort used, per the task header rules in
   `docs/ops/agent_orchestration_contract_v1.md`.
 - Follow the default terse output shape in `AGENTS.md` (`Files: / Checks: /
   Result: / Status: / Blockers:`).
