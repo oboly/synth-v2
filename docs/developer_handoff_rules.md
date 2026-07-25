@@ -4,9 +4,11 @@ These rules define the preferred delivery format for code and file changes in th
 
 ## Shell delivery
 
-- Always provide bash-ready heredocs for file creation or replacement
+- Provide bash-ready heredocs for file creation or replacement on the local host
 - Prefer full-file replacement over partial patch fragments
 - Run commands from repo root unless explicitly stated otherwise
+- For work on a remote host, follow the SSH output rule in `AGENTS.md`: name the
+  host outside the code block and do not wrap heredocs in `ssh ...`
 
 ## File creation
 

@@ -112,8 +112,9 @@ Explicit prohibitions:
 - no account state in `selection_engine`;
 - no execution behavior in `decision_gate`.
 
-See `docs/README.md` §1 and §5, `AGENTS.md`, and `CLAUDE.md` at repo root for
-the full pipeline and the research/live separation rule.
+See `docs/README.md` §1 and §5 and `AGENTS.md` at repo root for the full
+pipeline and the research/live separation rule. `AGENTS.md` is the canonical
+owner; `CLAUDE.md` and `CODEX.md` hold provider integration rules only.
 
 ## 5. Time, replay, and provenance facts
 

@@ -29,6 +29,86 @@ When implementing:
 - Do not mix unrelated work in one patch.
 - Do not create loose notes or temporary docs outside the approved folders.
 
+## Agent Orchestration and Handoff
+
+Canonical rules: `docs/ops/agent_orchestration_contract_v1.md`.
+
+This applies to all providers (Anthropic Claude, OpenAI Codex, others).
+
+Summary:
+
+- Use a strong frontier model as **advisor** for complex, risky, architectural,
+  security-sensitive, runtime, database, execution, or broad-refactor tasks.
+- Cheaper or less-capable agents may execute bounded implementation work under
+  an explicit advisor contract covering architecture boundaries, permitted
+  files and scope, host ownership, risk areas, minimal required tests, minimal
+  required audits, and completion evidence.
+- The advisor reviews deviations and difficult decisions rather than
+  duplicating all implementation work.
+- Do not use the most expensive model for routine mechanical work unless
+  justified.
+- Important changes should, where practical, get an independent review from a
+  **different provider** than the implementer (Anthropic work -> prefer OpenAI
+  review; OpenAI work -> prefer Anthropic review). Cross-provider review
+  supplements but never replaces tests, audits, or human authorization.
+- Reviewers use a CLEAR thread and review exact diffs and evidence, not
+  summaries alone.
+
+Every generated agent handoff must explicitly state:
+
+```text
+HOST: <exact host>
+MODEL: <exact model>
+PROVIDER: <provider>
+ROLE: <advisor | implementer | reviewer | auditor>
+THREAD: <CLEAR | CONTINUE>
+```
+
+plus repository/worktree path, branch, base SHA when relevant, head SHA when
+reviewing, and explicit deployment, runtime mutation, DB write, and
+broker/private API permission. Host and model must never be implicit. An
+absent permission line means not granted.
+
+Thread selection:
+
+- **CLEAR** by default for independent review, cross-provider review, audits,
+  security-sensitive work, architecture review, role changes, a new bounded
+  task, or context that may be stale or conflicting. A CLEAR prompt must be
+  fully self-contained.
+- **CONTINUE** only for the same lane, same role, same branch/worktree, where
+  previous context is required, the thread stays manageable, and no
+  independent review is intended. A CONTINUE prompt must state branch, commit,
+  task contract, completed work, remaining work, and blockers.
+
+Host discipline:
+
+- Always state whether work runs on devlap, Odroid, DB host, Windows host,
+  GitHub-only, or another named VM/server.
+- Never assume repository path, virtualenv, service user, database socket,
+  credential file, or runtime owner is identical across hosts.
+- Verify host ownership before runtime changes and prevent duplicate writers.
+
+SSH output rule:
+
+- Do not put an `ssh ...` wrapper inside a code block intended for the user.
+- Name the target host outside the code block; put only the command to run on
+  that host inside the code block.
+- Avoid nested SSH quoting and SSH-wrapped heredocs.
+- This is an output-format rule; it does not prohibit authorized internal SSH
+  use.
+
+Token and context discipline:
+
+- Read canonical docs first; search and fetch only relevant files.
+- Do not dump full repositories, long logs, entire diffs, or repeated context.
+- Give worker and reviewer agents only the minimum self-contained evidence
+  bundle.
+- Stop investigating once the task is sufficiently proven; run broad audits
+  only for a named risk.
+- Prefer exact paths, SHAs, commands, and compact evidence over narrative.
+- Token discipline never justifies skipping a required safety check or
+  reporting an unrun check as run.
+
 ## Agent Output Style
 
 Default response style for Codex / coding agents is terse.
@@ -81,6 +161,26 @@ Blockers:
 ```
 
 For handoff tasks, a longer summary is allowed only when explicitly requested, but keep it structured and avoid duplicating code or generated artifacts.
+
+## Diff Review Output
+
+When reviewing diffs, check:
+
+1. Layer-boundary violations
+2. Accidental DB/executor/order coupling
+3. Runtime permission bypasses
+4. Live-trading leakage
+5. Future-aware leakage
+6. Deterministic validation
+7. Minimality of change
+
+Return:
+
+```text
+PASS / BLOCK
+issues
+minimal fixes only
+```
 
 ## Project Structure & Module Organization
 
@@ -204,7 +304,85 @@ executor -> strategy decision
 external note -> buy/sell/order logic
 ```
 
+### Layer Responsibilities in Detail
+
+`selection_engine`:
+
+- market-only
+- account-agnostic
+- no balances
+- no positions
+- no orders
+- no execution plans
+
+`decision_gate`:
+
+- account-aware permission layer
+- checks balance, sleeve, position, active plan, open order, duplicate exposure
+- produces allowed/blocked decision state or execution intent
+- no market-regime logic
+- no order placement
+
+`execution_planner`:
+
+- converts approved execution intent into execution plan
+- decides passive vs urgent limit, laddering, tick placement, repricing controls, urgency, spread capture
+- does not place orders
+- does not call broker/exchange
+- does not decide account permission
+- does not bypass `decision_gate`
+
+`executor` / agents:
+
+- order handling only
+- place/cancel/monitor orders
+- write execution_event / order state
+- no strategy logic
+- no account allocation logic
+- no target selection logic
+- no fib/pro/profile interpretation
+
+### Fib / Exit Profile Rule
+
+Pro Elliott/Fibo charts are harvest maps, not buy/sell buttons.
+
+Correct flow:
+
+```text
+asset_exit_profile candidate
+-> decision_gate validates actual position / sleeve / permission
+-> execution_planner builds passive / urgent / ladder plan
+-> executor places / monitors orders only
+```
+
+`asset_exit_profile`:
+
+- is candidate metadata only
+- must not create orders
+- must not bypass `decision_gate`
+- must not instruct `executor` directly
+
+### Current Planner Lane
+
+The active safe lane is:
+
+```text
+src/execution_planner/contract_preview_v1.py
+src/execution_planner/run_execution_planner_contract_preview_v1.py
+```
+
+Contract preview rules:
+
+- read-only
+- no DB writes
+- no executor calls
+- no reservations
+- no broker calls
+- no live mode
+
 ## Live Trading Safety
+
+Live trading permission is NOT_GRANTED.
 
 Default state is no live trading.
 
@@ -236,6 +414,26 @@ If a task touches private broker reads, broker writes, order creation, executor 
 ## Research Rules
 
 Research is market-only and account-agnostic unless explicitly stated otherwise.
+
+Research/backtest/oracle tools may use future-aware data only in:
+
+```text
+src/research/
+src/backtest/
+research_*
+bt_*
+docs/research/
+```
+
+Future-aware data must never leak into:
+
+```text
+live selection_engine path
+decision_gate
+execution_planner runtime
+executor
+live inference
+```
 
 Research may:
 
@@ -366,6 +564,27 @@ Rules:
 - Do not duplicate the same TODO across multiple files.
 - Commit TODO/doc updates separately from code when practical.
 
+### Instruction File Ownership
+
+```text
+AGENTS.md                                   = provider-neutral canonical operating contract
+docs/ops/agent_orchestration_contract_v1.md = orchestration / handoff detail
+docs/ops/agent_search_hygiene_v1.md         = untrusted-input detail
+CLAUDE.md                                   = Claude integration only, imports AGENTS.md
+CODEX.md                                    = Codex integration only, references AGENTS.md
+src/research/AGENTS.override.md             = scoped research overrides
+```
+
+Rules:
+
+- `AGENTS.md` is the single canonical owner of provider-neutral rules.
+- Provider files contain integration specifics only. Do not duplicate the
+  complete shared contract into `CLAUDE.md` or `CODEX.md`.
+- Preserve scoped `AGENTS.override.md` behavior.
+- Permanent supporting documentation belongs under `docs/ops/`.
+- Update canonical docs rather than creating loose notes or a second policy
+  document covering the same ground.
+
 ## Build, Test, and Development Commands
 
 Create or activate a virtualenv, then install dependencies:
@@ -398,6 +617,21 @@ make schema-snapshot
 This dumps DB schema metadata using `.env` database settings.
 
 ## Testing Guidelines
+
+Use the smallest test scope that gives credible evidence. Full scope rules:
+`docs/ops/agent_orchestration_contract_v1.md`.
+
+```text
+documentation-only     -> git diff --check, path/link/consistency validation
+narrow Python change   -> py_compile changed files, focused affected tests, git diff --check
+cross-module/contract  -> focused contract tests, affected integration tests
+runtime/security/db/   -> focused tests, bounded preflight or audit,
+account/decision/          explicit safety markers, explicit statement of
+planner/executor/broker    writes / calls / mutations
+```
+
+Do not run full suites or broad audits by habit. Do not omit a required test
+merely to save tokens. Never claim checks that were not run.
 
 Add focused tests under `tests/` when behavior is reusable, safety-critical, or likely to regress.
 
