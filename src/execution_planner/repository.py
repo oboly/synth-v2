@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Callable
 
+from src.execution_planner.sell_authority_guard_v1 import (
+    UnauthorizedManualExecutionCallError,
+)
 from src.execution_planner.models import OpenPositionForExit, PlannedExecution
 
 
@@ -41,6 +44,11 @@ class ExecutionPlannerRepository:
 
     @staticmethod
     def _validate_plan_contract(plan: PlannedExecution) -> None:
+        if plan.side == "SELL" or plan.requested_side == "SELL":
+            raise UnauthorizedManualExecutionCallError(
+                "generic execution-plan persistence is BUY-only; manual SELL "
+                "requires manual_execution_service_v1.process()"
+            )
         if plan.trading_account_id is None or plan.trading_account_id <= 0:
             raise ValueError("TRADING_ACCOUNT_ID_REQUIRED")
         if plan.execution_mode not in {"PAPER", "LIVE"}:
@@ -237,6 +245,7 @@ class ExecutionPlannerRepository:
         self,
         plan: PlannedExecution,
     ) -> int:
+        self._validate_plan_contract(plan)
         conn = self.connection_factory()
         try:
             with conn.cursor() as cur:
@@ -253,12 +262,15 @@ class ExecutionPlannerRepository:
         self,
         plan: PlannedExecution,
     ) -> int:
-        return self.create_plan_without_reservation(plan)
+        raise UnauthorizedManualExecutionCallError(
+            "exit-plan persistence without the canonical manual approval is disabled"
+        )
 
     def create_plan_with_reservation(
         self,
         plan: PlannedExecution,
     ) -> tuple[int, int]:
+        self._validate_plan_contract(plan)
         reserved_amount_eur = (
             _to_decimal(plan.max_notional_eur)
             if plan.max_notional_eur is not None
@@ -456,6 +468,7 @@ class ExecutionPlannerRepository:
         execution_plan_id: int,
         plan: PlannedExecution,
     ) -> None:
+        self._validate_plan_contract(plan)
         if plan.execution_mode == "LIVE" and plan.valid_until_ts_utc is None:
             raise ValueError("LIVE_PLAN_EXPIRY_REQUIRED")
         sql = """

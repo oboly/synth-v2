@@ -23,12 +23,7 @@ PAPER_EXECUTION_MAPPINGS = (
     PaperExecutionMapping(
         desired_action="SPREAD_CAPTURE_PASSIVE",
         execution_intent="PLACE_PASSIVE_LIMIT",
-        requested_sides=("BUY", "SELL"),
-    ),
-    PaperExecutionMapping(
-        desired_action="CLOSE_POSITION_MARKET_PAPER",
-        execution_intent="CLOSE_POSITION_MARKET_PAPER",
-        requested_sides=("SELL",),
+        requested_sides=("BUY",),
     ),
 )
 
@@ -99,6 +94,10 @@ def validate_canonical_paper_contract(
         raise PaperExecutorContractError("PAPER_EXECUTOR_ACTION_TYPE_NOT_CANONICAL")
 
     requested_side = _field(plan, "requested_side")
+    if requested_side == "SELL":
+        raise PaperExecutorContractError(
+            "PAPER_EXECUTOR_SELL_REQUIRES_MANUAL_AUTHORITY"
+        )
     if requested_side not in {"BUY", "SELL"}:
         raise PaperExecutorContractError("PAPER_EXECUTOR_REQUESTED_SIDE_NOT_CANONICAL")
     if _field(plan, "side") != requested_side:

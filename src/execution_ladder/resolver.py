@@ -2,6 +2,15 @@ from __future__ import annotations
 
 # broker_private_calls=0  broker_writes=0  order_submission=0
 # live_orders=0  decision_gate=none  executor=none
+#
+# NOT an authoritative manual-execution path: this module never calls
+# decision_gate and round_ladder_preview() is optional (raw
+# resolve_ladder_preview() has no consumer that rejects invalid legs). See
+# docs/reviews/manual_execution_ladder_p0_implementation_review_20260725.md
+# bypass-list items 3-4. Left unmodified in this change (A+ ladder quantity
+# calculation is explicitly out of scope here) — route real manual SELL
+# execution requests through
+# src.manual_execution.manual_execution_service_v1.process() instead.
 
 from decimal import Decimal
 
@@ -12,6 +21,8 @@ from src.execution_ladder.models import (
     LadderProfile,
     SizingRule,
 )
+from src.execution_planner.canonical_rounding_v1 import RoundedLeg, round_leg_for_side
+from src.market_rules.venue_execution_constraints_v1 import VenueExecutionConstraints
 
 # ---------------------------------------------------------------------------
 # Whitelists — code-owned; database content must never expand these
@@ -166,6 +177,12 @@ def resolve_ladder_preview(
     anchor_price: Decimal,
     quote_amount: Decimal,
 ) -> LadderPreview:
+    if profile.side.strip().upper() == "SELL":
+        raise PermissionError(
+            "direct SELL ladder preview is disabled; route through "
+            "manual_execution_service_v1.process()"
+        )
+
     if not legs:
         raise ValueError(
             f"profile {profile.profile_code!r} has no active legs for version "
@@ -213,4 +230,45 @@ def resolve_ladder_preview(
         legs=tuple(leg_previews),
         total_allocation_bps=total_allocation,
         estimated_total_base_quantity=total_base_qty,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Venue-aware rounded preview
+#
+# resolve_ladder_preview() above returns raw, unquantized prices/quantities —
+# it always has and existing callers/tests depend on that raw shape, so its
+# signature is unchanged here. Any caller that intends to use a preview for
+# anything beyond a raw estimate (i.e. anything that could become a real
+# execution-plan leg) must additionally round it through this function,
+# which delegates to the single canonical rounding service
+# (src.execution_planner.canonical_rounding_v1) rather than re-implementing
+# tick/step rounding here. See
+# docs/architecture/manual_execution_ladder_future_readiness_audit_v1.md
+# finding F3 (side-unaware rounding) and F4/F5 (missing min-qty/min-notional
+# and tick/step metadata).
+# ---------------------------------------------------------------------------
+
+def round_ladder_preview(
+    preview: LadderPreview,
+    *,
+    constraints: VenueExecutionConstraints,
+) -> tuple[RoundedLeg, ...]:
+    """Round every leg of a raw LadderPreview via the canonical rounding
+    service. Returns one RoundedLeg per input leg, in the same order;
+    callers must check RoundedLeg.is_valid per leg and must not submit an
+    invalid leg."""
+    if preview.side.strip().upper() == "SELL":
+        raise PermissionError(
+            "direct SELL ladder rounding is disabled; route through "
+            "manual_execution_service_v1.process()"
+        )
+    return tuple(
+        round_leg_for_side(
+            side=preview.side,
+            raw_price=leg.limit_price,
+            raw_quantity_base=leg.estimated_base_quantity,
+            constraints=constraints,
+        )
+        for leg in preview.legs
     )

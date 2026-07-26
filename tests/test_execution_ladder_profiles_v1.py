@@ -254,132 +254,16 @@ def test_leg_base_quantity_from_notional_and_price() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Full ladder preview — SELL_PPP_RECOVERY_V1 at anchor €1.00 / €10 quote
+# Direct SELL ladder preview is hard-blocked
 # ---------------------------------------------------------------------------
 
-def test_sell_ppp_recovery_v1_quote_allocations() -> None:
-    preview = resolve_ladder_preview(
-        _default_profile(),
-        _default_legs(),
-        anchor_price=Decimal("1.00"),
-        quote_amount=Decimal("10.00"),
-    )
-    assert len(preview.legs) == 2
-    assert preview.legs[0].allocated_quote_notional == Decimal("5.00")
-    assert preview.legs[1].allocated_quote_notional == Decimal("5.00")
-
-
-def test_sell_ppp_recovery_v1_limit_prices() -> None:
-    preview = resolve_ladder_preview(
-        _default_profile(),
-        _default_legs(),
-        anchor_price=Decimal("1.00"),
-        quote_amount=Decimal("10.00"),
-    )
-    assert preview.legs[0].limit_price == Decimal("0.9400")
-    assert preview.legs[1].limit_price == Decimal("0.9800")
-
-
-def test_sell_ppp_recovery_v1_base_quantities_not_equal() -> None:
-    preview = resolve_ladder_preview(
-        _default_profile(),
-        _default_legs(),
-        anchor_price=Decimal("1.00"),
-        quote_amount=Decimal("10.00"),
-    )
-    qty1 = preview.legs[0].estimated_base_quantity
-    qty2 = preview.legs[1].estimated_base_quantity
-    assert qty1 != qty2, "quantities must not be equal (derived from different leg prices)"
-
-
-def test_sell_ppp_recovery_v1_base_quantity_leg1() -> None:
-    preview = resolve_ladder_preview(
-        _default_profile(),
-        _default_legs(),
-        anchor_price=Decimal("1.00"),
-        quote_amount=Decimal("10.00"),
-    )
-    expected_qty1 = Decimal("5.00") / Decimal("0.9400")
-    assert preview.legs[0].estimated_base_quantity == expected_qty1
-
-
-def test_sell_ppp_recovery_v1_base_quantity_leg2() -> None:
-    preview = resolve_ladder_preview(
-        _default_profile(),
-        _default_legs(),
-        anchor_price=Decimal("1.00"),
-        quote_amount=Decimal("10.00"),
-    )
-    expected_qty2 = Decimal("5.00") / Decimal("0.9800")
-    assert preview.legs[1].estimated_base_quantity == expected_qty2
-
-
-def test_sell_ppp_recovery_v1_has_exactly_two_active_legs() -> None:
-    preview = resolve_ladder_preview(
-        _default_profile(),
-        _default_legs(),
-        anchor_price=Decimal("1.00"),
-        quote_amount=Decimal("10.00"),
-    )
-    assert len(preview.legs) == 2
-
-
-def test_active_allocation_sums_to_10000() -> None:
-    preview = resolve_ladder_preview(
-        _default_profile(),
-        _default_legs(),
-        anchor_price=Decimal("1.00"),
-        quote_amount=Decimal("10.00"),
-    )
-    assert preview.total_allocation_bps == 10_000
-
-
-def test_profile_code_and_version_in_preview() -> None:
-    preview = resolve_ladder_preview(
-        _default_profile(),
-        _default_legs(),
-        anchor_price=Decimal("1.00"),
-        quote_amount=Decimal("10.00"),
-    )
-    assert preview.profile_code == "SELL_PPP_RECOVERY_V1"
-    assert preview.profile_version == 1
-
-
-# ---------------------------------------------------------------------------
-# Guard: no active legs blocks preview
-# ---------------------------------------------------------------------------
-
-def test_no_active_legs_blocks_preview() -> None:
-    with pytest.raises(ValueError, match="no active legs"):
+def test_sell_ppp_recovery_v1_is_hard_blocked_before_resolution() -> None:
+    with pytest.raises(PermissionError, match="manual_execution_service_v1"):
         resolve_ladder_preview(
             _default_profile(),
-            [],
+            _default_legs(),
             anchor_price=Decimal("1.00"),
             quote_amount=Decimal("10.00"),
-        )
-
-
-# ---------------------------------------------------------------------------
-# Guard: allocation must sum to 10000
-# ---------------------------------------------------------------------------
-
-def test_allocation_not_summing_to_10000_blocked() -> None:
-    bad_legs = [
-        LadderLeg(
-            ladder_leg_id=1, ladder_profile_id=1, profile_version=1,
-            leg_number=1, price_offset_bps=-600, allocation_bps=4000,
-            order_type="LIMIT", time_in_force="GTC", is_enabled=True,
-        ),
-        LadderLeg(
-            ladder_leg_id=2, ladder_profile_id=1, profile_version=1,
-            leg_number=2, price_offset_bps=-200, allocation_bps=5000,
-            order_type="LIMIT", time_in_force="GTC", is_enabled=True,
-        ),
-    ]
-    with pytest.raises(ValueError, match="must sum to exactly 10000"):
-        resolve_ladder_preview(
-            _default_profile(), bad_legs,
-            anchor_price=Decimal("1.00"), quote_amount=Decimal("10.00"),
         )
 
 

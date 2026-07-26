@@ -5,6 +5,9 @@ from decimal import Decimal
 
 from src.context.execution_context_policy import resolve_execution_context
 from src.decision_gate.models import DecisionResult
+from src.execution_planner.sell_authority_guard_v1 import (
+    UnauthorizedManualExecutionCallError,
+)
 from src.execution_planner.models import (
     PLANNABLE_DECISION_STATES,
     PLANNABLE_EXECUTION_INTENTS,
@@ -19,6 +22,12 @@ def build_execution_plan(
     config: ExecutionPlannerConfig,
     reference_price_eur=None,
 ) -> PlannedExecution | None:
+    if config.requested_side == "SELL":
+        raise UnauthorizedManualExecutionCallError(
+            "generic execution planner is BUY-only; manual SELL requires "
+            "manual_execution_service_v1.process()"
+        )
+
     if decision.decision_state not in PLANNABLE_DECISION_STATES and decision.decision_state != "WATCHLIST_PREPLAN_ALLOWED":
         return None
 
@@ -185,6 +194,12 @@ def build_exit_plan_from_position(
     config: ExecutionPlannerConfig,
     reference_price_eur=None,
 ) -> PlannedExecution:
+    raise UnauthorizedManualExecutionCallError(
+        "generic position-exit planner is disabled; manual SELL requires "
+        "manual_execution_service_v1.process()"
+    )
+
+    # Unreachable legacy implementation retained for compatibility analysis.
     if config.execution_mode != "PAPER":
         raise ValueError("EXIT_PLAN_MUST_BE_PAPER")
     if config.trading_account_id is None or config.trading_account_id <= 0:

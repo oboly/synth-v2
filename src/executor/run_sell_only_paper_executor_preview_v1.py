@@ -1,3 +1,15 @@
+"""
+run_sell_only_paper_executor_preview_v1 — third stage of the whole-position
+sell-only PAPER preview chain.
+
+NOT the canonical manual execution path — see the module docstring in
+src.decision_gate.run_sell_only_decision_gate_preview_v1 and
+docs/reviews/manual_execution_ladder_p0_implementation_review_20260725.md
+bypass-list item 7. No broker submission and no position mutation occur
+here; left unmodified in this change. Route real manual SELL execution
+requests through src.manual_execution.manual_execution_service_v1.process()
+instead.
+"""
 from __future__ import annotations
 
 import argparse
@@ -160,6 +172,12 @@ def update_plan_state(
     to_state: str,
     note: str,
 ) -> int:
+    raise PermissionError(
+        "legacy sell-only executor state mutation is disabled; route through "
+        "manual_execution_service_v1.process()"
+    )
+
+    # Unreachable compatibility SQL retained for read-migration analysis.
     sql = """
     UPDATE execution_sell_plan
     SET
@@ -193,6 +211,12 @@ def insert_event(
     message: str,
     to_state: str,
 ) -> None:
+    raise PermissionError(
+        "legacy sell-only executor state mutation is disabled; route through "
+        "manual_execution_service_v1.process()"
+    )
+
+    # Unreachable compatibility SQL retained for read-migration analysis.
     sql = """
     INSERT INTO execution_sell_event (
         execution_sell_intent_id,
@@ -292,6 +316,14 @@ def print_table(rows: list[ExecutorPreviewRow]) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    print(
+        "[BLOCKED] legacy sell-only PAPER executor preview is disabled; "
+        "use src.manual_execution.manual_execution_service_v1.process()"
+    )
+    return 2
+
+    # Unreachable compatibility implementation retained temporarily for
+    # readers of pre-migration PAPER rows. It must never execute.
     load_dotenv(dotenv_path=".env", override=False)
 
     conn = get_db_connection()

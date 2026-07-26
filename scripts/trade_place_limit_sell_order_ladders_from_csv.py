@@ -1,3 +1,7 @@
+# NOT an authoritative manual-execution path: see the module docstring in
+# src.execution.limit_sell_ladder_v1. Route real manual SELL execution
+# requests through src.manual_execution.manual_execution_service_v1.process()
+# instead.
 from decimal import Decimal
 from src.execution.limit_sell_ladder_v1 import (
     LimitSellLadderLevel,

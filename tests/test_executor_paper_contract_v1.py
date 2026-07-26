@@ -189,7 +189,7 @@ def test_malformed_direct_call_fails_before_every_repository_boundary(
     assert not any(repo.calls.values())
 
 
-def test_supported_passive_and_close_mappings_reach_only_the_expected_fill() -> None:
+def test_supported_buy_passive_mapping_reaches_only_expected_fill() -> None:
     passive_repo = BoundaryRepository()
     passive_result = execute_plan_paper(
         _plan(), passive_repo  # type: ignore[arg-type]
@@ -199,7 +199,6 @@ def test_supported_passive_and_close_mappings_reach_only_the_expected_fill() -> 
     assert passive_repo.calls["fill_passive_plan_paper"] == 1
     assert passive_repo.calls["fill_close_position_market_paper"] == 0
 
-    close_repo = BoundaryRepository()
     close_plan = replace(
         _plan(),
         requested_side="SELL",
@@ -207,11 +206,13 @@ def test_supported_passive_and_close_mappings_reach_only_the_expected_fill() -> 
         desired_action="CLOSE_POSITION_MARKET_PAPER",
         execution_intent="CLOSE_POSITION_MARKET_PAPER",
     )
-    close_result = execute_plan_paper(close_plan, close_repo)  # type: ignore[arg-type]
-    assert close_result.event_type == "PAPER_FILL_CLOSE"
-    assert close_repo.calls["fetch_latest_price_eur"] == 1
-    assert close_repo.calls["fill_passive_plan_paper"] == 0
-    assert close_repo.calls["fill_close_position_market_paper"] == 1
+    close_repo = BoundaryRepository()
+    with pytest.raises(
+        PaperExecutorContractError,
+        match="^PAPER_EXECUTOR_SELL_REQUIRES_MANUAL_AUTHORITY$",
+    ):
+        execute_plan_paper(close_plan, close_repo)  # type: ignore[arg-type]
+    assert not any(close_repo.calls.values())
 
 
 def test_close_mapping_rejects_buy_before_repository_boundary() -> None:

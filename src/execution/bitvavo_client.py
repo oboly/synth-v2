@@ -190,6 +190,18 @@ class BitvavoClient:
         data = response.json()
         return Decimal(str(data["price"]))
 
+    def get_markets(self) -> list[dict[str, Any]]:
+        """Public market metadata: tickSize, quantityDecimals, min/max order
+        size, orderTypes, status. No credentials required; no permission gate
+        (matches get_ticker_price/get_book, both public)."""
+        url = f"{self.rest_url}/markets"
+        response = requests.get(url, timeout=self.timeout_seconds)
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, list):
+            raise RuntimeError("Unexpected Bitvavo markets response shape.")
+        return data
+
     def get_book(self, market: str, depth: int = 5) -> dict[str, Any]:
         url = f"{self.rest_url}/{market}/book"
         response = requests.get(

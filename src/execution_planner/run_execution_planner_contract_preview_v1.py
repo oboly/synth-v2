@@ -13,6 +13,17 @@ from src.execution_planner.contract_preview_v1 import (
 )
 
 
+# EXIT_PASSIVE_LIMIT/EXIT_LADDER are manual SELL exit intents. This CLI is a
+# generic, read-only plan-shape preview tool with no decision_gate call and
+# no trusted quantity/tick-size resolution of its own — it must not be used
+# as an authoritative manual-execution path (see
+# docs/reviews/manual_execution_ladder_p0_implementation_review_20260725.md,
+# bypass-list item 1, and
+# docs/reviews/manual_execution_ladder_p0_remediation_implementation_20260726.md).
+# Use src.manual_execution.manual_execution_service_v1.process() instead.
+_DEPRECATED_MANUAL_EXECUTION_INTENT_TYPES = frozenset({"EXIT_PASSIVE_LIMIT", "EXIT_LADDER"})
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Read-only execution planner contract preview. No DB writes. No executor."
@@ -132,6 +143,15 @@ def _print_table(row: dict[str, Any]) -> None:
 
 def main() -> int:
     args = parse_args()
+
+    if args.side == "SELL" or args.intent_type in _DEPRECATED_MANUAL_EXECUTION_INTENT_TYPES:
+        print(
+            f"[BLOCKED] side={args.side} intent_type={args.intent_type} is a SELL/EXIT intent. "
+            "This CLI is not an authoritative manual-execution path (no decision_gate "
+            "call, no trusted quantity/tick-size resolution). Use "
+            "src.manual_execution.manual_execution_service_v1.process() instead."
+        )
+        return 2
 
     intent = ExecutionIntentPreview(
         account_id=args.account_id,

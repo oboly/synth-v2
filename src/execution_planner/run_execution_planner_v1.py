@@ -31,7 +31,7 @@ def parse_args() -> argparse.Namespace:
         choices=("PLACE_ORDER", "CANCEL_ORDER", "MONITOR_ORDER"),
         required=True,
     )
-    parser.add_argument("--requested-side", choices=("BUY", "SELL"), required=True)
+    parser.add_argument("--requested-side", choices=("BUY",), required=True)
     parser.add_argument("--write-db", action="store_true")
     parser.add_argument("--output", choices=("table", "json"), default="table")
     return parser.parse_args()
@@ -167,6 +167,12 @@ def _print_table(rows: list[dict[str, Any]]) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.requested_side == "SELL":
+        print(
+            "[BLOCKED] Generic execution planner is BUY-only. "
+            "Route manual SELL through manual_execution_service_v1.process()."
+        )
+        return 2
 
     planner_repo = ExecutionPlannerRepository()
     gate_repo = DecisionGateRepository()

@@ -18,61 +18,20 @@ class LimitSellLadderV1Tests(unittest.TestCase):
             Decimal("9.850"),
         )
 
-    def test_build_limit_sell_ladder_orders_quantizes_amount_and_price(self) -> None:
-        orders = build_limit_sell_ladder_orders(
+    def test_build_limit_sell_ladder_orders_is_hard_blocked(self) -> None:
+        with self.assertRaises(PermissionError):
+            build_limit_sell_ladder_orders(
             market="WLD-EUR",
             available_qty=Decimal("100"),
             levels=[
                 LimitSellLadderLevel(
-                    level_price=Decimal("0.45678"),
-                    offset_pct=Decimal("1"),
-                    quantity_pct=Decimal("25"),
-                )
-            ],
-            price_quantize=Decimal("0.001"),
-            amount_quantize=Decimal("0.00000001"),
-        )
-
-        self.assertEqual(len(orders), 1)
-        order = orders[0]
-        self.assertEqual(order.market, "WLD-EUR")
-        self.assertEqual(order.side, "sell")
-        self.assertEqual(order.order_type, "limit")
-        self.assertEqual(order.amount, "25.00000000")
-        self.assertEqual(order.price, "0.452")
-        self.assertTrue(order.post_only)
-        self.assertEqual(order.time_in_force, "GTC")
-
-    def test_preview_limit_sell_ladder_orders(self) -> None:
-        orders = build_limit_sell_ladder_orders(
-            market="WLD-EUR",
-            available_qty=Decimal("100"),
-            levels=[
-                LimitSellLadderLevel(
-                    level_price=Decimal("0.500"),
+                    level_price=Decimal("1.23456"),
                     offset_pct=Decimal("0"),
-                    quantity_pct=Decimal("25"),
+                    quantity_pct=Decimal("100"),
                 )
             ],
-            price_quantize=Decimal("0.001"),
+            price_quantize=Decimal("0.01"),
             amount_quantize=Decimal("0.00000001"),
-        )
-
-        rows = preview_limit_sell_ladder_orders(orders)
-
-        self.assertEqual(
-            rows,
-            [
-                {
-                    "market": "WLD-EUR",
-                    "side": "sell",
-                    "order_type": "limit",
-                    "amount": "25.00000000",
-                    "price": "0.500",
-                    "post_only": True,
-                    "time_in_force": "GTC",
-                }
-            ],
         )
 
     def test_validate_limit_sell_ladder_levels_rejects_invalid_values(self) -> None:

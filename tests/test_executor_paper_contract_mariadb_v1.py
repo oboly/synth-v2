@@ -351,16 +351,15 @@ def test_fetch_open_plans_requires_exact_canonical_contract() -> None:
         _insert_plan(conn, plan_state="PLACED")
 
         plans = repo.fetch_open_plans(limit=100)
-        assert [plan.execution_plan_id for plan in plans] == [
-            passive_buy,
-            passive_sell,
-            close_sell,
-        ]
+        plan_ids = [plan.execution_plan_id for plan in plans]
+        assert plan_ids == [passive_buy]
+        assert {passive_sell, close_sell}.isdisjoint(plan_ids)
         assert all(plan.trading_account_id == 19 for plan in plans)
         assert all(plan.market == "BTC-EUR" for plan in plans)
         assert all(plan.action_type == "PLACE_ORDER" for plan in plans)
+        assert all(plan.side == "BUY" and plan.requested_side == "BUY" for plan in plans)
         assert repo.fetch_open_plans(venue="BITVAVO", limit=100) == []
-        assert len(repo.fetch_open_plans(venue="bitvavo", limit=100)) == 3
+        assert len(repo.fetch_open_plans(venue="bitvavo", limit=100)) == 1
 
 
 def test_live_rows_are_query_excluded_and_direct_calls_cross_no_boundary() -> None:
@@ -410,7 +409,7 @@ def test_live_rows_are_query_excluded_and_direct_calls_cross_no_boundary() -> No
             assert [row["plan_state"] for row in cur.fetchall()] == ["IDLE", "IDLE"]
 
 
-def _seed_accounting(conn: Any, passive_id: int, close_id: int) -> None:
+def _seed_accounting(conn: Any, passive_id: int) -> None:
     _apply(
         conn,
         [
@@ -443,7 +442,7 @@ def _seed_accounting(conn: Any, passive_id: int, close_id: int) -> None:
     )
 
 
-def test_supported_mappings_execute_through_real_repository_boundary() -> None:
+def test_only_buy_mapping_executes_through_real_repository_boundary() -> None:
     with _repository_schema() as (repo, conn):
         passive_id = _insert_plan(conn)
         close_id = _insert_plan(
@@ -454,35 +453,36 @@ def test_supported_mappings_execute_through_real_repository_boundary() -> None:
             desired_action="CLOSE_POSITION_MARKET_PAPER",
             execution_intent="CLOSE_POSITION_MARKET_PAPER",
         )
-        _seed_accounting(conn, passive_id, close_id)
+        _seed_accounting(conn, passive_id)
 
         results = [execute_plan_paper(plan, repo) for plan in repo.fetch_open_plans()]
-        assert [result.event_type for result in results] == [
-            "PAPER_FILL_PASSIVE",
-            "PAPER_FILL_CLOSE",
-        ]
+        assert [result.event_type for result in results] == ["PAPER_FILL_PASSIVE"]
+        with pytest.raises(
+            PaperExecutorContractError,
+            match="^PAPER_EXECUTOR_SELL_REQUIRES_MANUAL_AUTHORITY$",
+        ):
+            execute_plan_paper(
+                _model(
+                    close_id,
+                    sleeve_code="SWING",
+                    side="SELL",
+                    requested_side="SELL",
+                    desired_action="CLOSE_POSITION_MARKET_PAPER",
+                    execution_intent="CLOSE_POSITION_MARKET_PAPER",
+                ),
+                repo,
+            )
         with conn.cursor() as cur:
             cur.execute("SELECT plan_state FROM execution_plan ORDER BY execution_plan_id")
-            assert [row["plan_state"] for row in cur.fetchall()] == ["FILLED", "FILLED"]
+            assert [row["plan_state"] for row in cur.fetchall()] == ["FILLED", "IDLE"]
             cur.execute("SELECT event_type FROM execution_event ORDER BY execution_event_id")
-            assert [row["event_type"] for row in cur.fetchall()] == [
-                "PAPER_FILL_PASSIVE",
-                "PAPER_FILL_CLOSE",
-            ]
+            assert [row["event_type"] for row in cur.fetchall()] == ["PAPER_FILL_PASSIVE"]
 
 
-def test_both_fill_transactions_revalidate_every_persisted_contract_field() -> None:
+def test_buy_fill_transaction_revalidates_every_persisted_contract_field() -> None:
     with _repository_schema() as (repo, conn):
         passive_id = _insert_plan(conn)
-        close_id = _insert_plan(
-            conn,
-            sleeve_code="SWING",
-            side="SELL",
-            requested_side="SELL",
-            desired_action="CLOSE_POSITION_MARKET_PAPER",
-            execution_intent="CLOSE_POSITION_MARKET_PAPER",
-        )
-        _seed_accounting(conn, passive_id, close_id)
+        _seed_accounting(conn, passive_id)
         plans = {plan.execution_plan_id: plan for plan in repo.fetch_open_plans()}
         baseline = _counts_and_accounting(conn)
 
@@ -497,34 +497,32 @@ def test_both_fill_transactions_revalidate_every_persisted_contract_field() -> N
             ("side", "buy"),
             ("plan_state", "FILLED"),
         )
-        for plan_id, fill_name in (
-            (passive_id, "fill_passive_plan_paper"),
-            (close_id, "fill_close_position_market_paper"),
-        ):
-            plan = plans[plan_id]
-            for field_name, changed_value in races:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"UPDATE execution_plan SET {field_name} = %s "
-                        "WHERE execution_plan_id = %s",
-                        [changed_value, plan_id],
-                    )
-                conn.commit()
-
-                fill = getattr(repo, fill_name)
-                expected_error = (
-                    LiveExecutionPrerequisitesUnavailable
-                    if field_name == "execution_mode"
-                    else PaperExecutorContractError
+        plan = plans[passive_id]
+        for field_name, changed_value in races:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE execution_plan SET {field_name} = %s "
+                    "WHERE execution_plan_id = %s",
+                    [changed_value, passive_id],
                 )
-                with pytest.raises(expected_error):
-                    fill(plan=plan, fill_price_eur=Decimal("100"))
+            conn.commit()
 
-                assert _counts_and_accounting(conn) == baseline
-                with conn.cursor() as cur:
-                    cur.execute(
-                        f"UPDATE execution_plan SET {field_name} = %s "
-                        "WHERE execution_plan_id = %s",
-                        [getattr(plan, field_name), plan_id],
-                    )
-                conn.commit()
+            expected_error = (
+                LiveExecutionPrerequisitesUnavailable
+                if field_name == "execution_mode"
+                else PaperExecutorContractError
+            )
+            with pytest.raises(expected_error):
+                repo.fill_passive_plan_paper(
+                    plan=plan,
+                    fill_price_eur=Decimal("100"),
+                )
+
+            assert _counts_and_accounting(conn) == baseline
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE execution_plan SET {field_name} = %s "
+                    "WHERE execution_plan_id = %s",
+                    [getattr(plan, field_name), passive_id],
+                )
+            conn.commit()

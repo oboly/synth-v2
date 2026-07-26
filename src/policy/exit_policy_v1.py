@@ -5,6 +5,9 @@ from decimal import Decimal
 from typing import Any, Callable
 
 from src.execution_planner.execution_planner_v1 import build_exit_plan_from_position
+from src.execution_planner.sell_authority_guard_v1 import (
+    UnauthorizedManualExecutionCallError,
+)
 from src.execution_planner.models import ExecutionPlannerConfig, OpenPositionForExit
 from src.execution_planner.repository import ExecutionPlannerRepository
 
@@ -161,6 +164,12 @@ def run_exit_policy_v1(
     config: ExitPolicyConfig,
     connection_factory: Callable[..., Any] = _legacy_get_connection,
 ) -> list[ExitPolicyResult]:
+    raise UnauthorizedManualExecutionCallError(
+        "generic exit policy SELL planning is disabled; route manual SELL "
+        "through manual_execution_service_v1.process()"
+    )
+
+    # Unreachable legacy implementation retained for compatibility analysis.
     planner_repo = ExecutionPlannerRepository(connection_factory=connection_factory)
     planner_config = ExecutionPlannerConfig(
         execution_mode="PAPER",

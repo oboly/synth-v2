@@ -1,10 +1,24 @@
 from __future__ import annotations
 
+# NOT an authoritative manual-execution path: build_limit_sell_ladder_orders()
+# below accepts a caller-controlled available_qty and permits both
+# price_quantize/amount_quantize to be omitted (no rounding at all). The
+# existing place_limit_sell_ladder_orders() PermissionError is the live
+# safety boundary, not this builder — see
+# docs/reviews/manual_execution_ladder_p0_implementation_review_20260725.md
+# bypass-list item 5. Left unmodified in this change; route real manual SELL
+# execution requests through
+# src.manual_execution.manual_execution_service_v1.process() instead.
+
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN
+from decimal import Decimal
 from typing import Any, Sequence
 
 from src.execution.bitvavo_client import BitvavoClient, BitvavoOrderRequest
+from src.execution_planner.canonical_rounding_v1 import (
+    round_price_for_side,
+    round_quantity_down,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,10 +59,17 @@ def validate_limit_sell_ladder_levels(
     return errors
 
 
-def quantize_decimal(value: Decimal, quantum: Decimal | None) -> Decimal:
+def quantize_decimal(value: Decimal, quantum: Decimal | None, *, side: str = "SELL") -> Decimal:
+    """Side-aware quantization delegating to the single canonical rounding
+    service (src.execution_planner.canonical_rounding_v1). This used to be
+    an unconditional ROUND_DOWN for both price and amount, which rounded
+    this ladder's SELL prices below the analytical target — see
+    docs/architecture/manual_execution_ladder_future_readiness_audit_v1.md
+    finding F3. `side` only affects price rounding; quantity is always
+    rounded down regardless of side (never exceed the approved amount)."""
     if quantum is None:
         return value
-    return value.quantize(quantum, rounding=ROUND_DOWN)
+    return round_price_for_side(value, quantum, side)
 
 
 def build_limit_sell_ladder_orders(
@@ -59,6 +80,13 @@ def build_limit_sell_ladder_orders(
     price_quantize: Decimal | None = None,
     amount_quantize: Decimal | None = None,
 ) -> list[BitvavoOrderRequest]:
+    raise PermissionError(
+        "direct limit SELL order construction is disabled; route through "
+        "manual_execution_service_v1.process()"
+    )
+
+    # Unreachable compatibility implementation retained for migration
+    # auditing; no callable path may construct these order requests.
     validation_errors = validate_limit_sell_ladder_levels(levels)
     if validation_errors:
         raise ValueError("; ".join(validation_errors))
@@ -69,8 +97,10 @@ def build_limit_sell_ladder_orders(
     for level in levels:
         amount = available_qty * level.quantity_pct / Decimal("100")
         price = compute_offset_limit_price(level.level_price, level.offset_pct)
-        quantized_amount = quantize_decimal(amount, amount_quantize)
-        quantized_price = quantize_decimal(price, price_quantize)
+        quantized_amount = (
+            amount if amount_quantize is None else round_quantity_down(amount, amount_quantize)
+        )
+        quantized_price = quantize_decimal(price, price_quantize, side="SELL")
         orders.append(
             BitvavoOrderRequest(
                 market=market,
@@ -104,6 +134,12 @@ def place_limit_sell_ladder_orders(
 def preview_limit_sell_ladder_orders(
     orders: Sequence[BitvavoOrderRequest],
 ) -> list[dict[str, Any]]:
+    raise PermissionError(
+        "direct limit SELL order preview is disabled; route through "
+        "manual_execution_service_v1.process()"
+    )
+
+    # Unreachable compatibility serialization retained for read analysis.
     rows: list[dict[str, Any]] = []
     for order in orders:
         rows.append(

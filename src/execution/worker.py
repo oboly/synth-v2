@@ -16,6 +16,9 @@ from src.common.db_core_v1 import db_cursor  # noqa: E402
 from src.execution.live_prerequisites_v1 import (  # noqa: E402
     LiveExecutionPrerequisitesUnavailable,
 )
+from src.execution_planner.sell_authority_guard_v1 import (  # noqa: E402
+    UnauthorizedManualExecutionCallError,
+)
 from src.market_data.bitvavo_public_client_v1 import BitvavoPublicMarketDataClient
 
 
@@ -283,7 +286,9 @@ def _compute_passive_price(best_bid: Decimal, best_ask: Decimal, side: str) -> D
     if side == "BUY":
         return (best_bid + tick).quantize(Decimal("0.00000001"))
     if side == "SELL":
-        return (best_ask - tick).quantize(Decimal("0.00000001"))
+        raise UnauthorizedManualExecutionCallError(
+            "generic execution worker is BUY-only; manual SELL is not executable"
+        )
     raise ValueError("REQUESTED_SIDE_NOT_CANONICAL")
 
 
@@ -306,13 +311,17 @@ def _place_initial_order_paper(plan: PlanRuntime) -> None:
 
 
 def _validate_paper_plan(plan: PlanRuntime) -> None:
+    if plan.requested_side == "SELL" or plan.side == "SELL":
+        raise UnauthorizedManualExecutionCallError(
+            "generic execution worker is BUY-only; manual SELL is not executable"
+        )
     if plan.trading_account_id is None or plan.trading_account_id <= 0:
         raise ValueError("TRADING_ACCOUNT_ID_REQUIRED")
     if plan.execution_intent is None or plan.execution_intent == "":
         raise ValueError("EXECUTION_INTENT_REQUIRED")
     if plan.action_type != "PLACE_ORDER":
         raise ValueError("PAPER_ACTION_NOT_SUPPORTED")
-    if plan.requested_side not in {"BUY", "SELL"} or plan.side != plan.requested_side:
+    if plan.requested_side != "BUY" or plan.side != plan.requested_side:
         raise ValueError("REQUESTED_SIDE_NOT_CANONICAL")
     if plan.market is None or plan.market == "":
         raise ValueError("PLAN_MARKET_MISSING")
@@ -325,7 +334,7 @@ def _handle_monitor_paper(
 ) -> str:
     if plan.market is None:
         raise ValueError("PLAN_MARKET_MISSING")
-    if plan.requested_side not in {"BUY", "SELL"}:
+    if plan.requested_side != "BUY":
         raise ValueError("REQUESTED_SIDE_NOT_CANONICAL")
     book = client.get_book(plan.market, depth=5)
     best_bid, best_ask = _best_bid_ask(book)
@@ -408,6 +417,8 @@ def process_execution_plans(
                 )
                 counters[outcome if outcome != "monitored" else "monitored"] += 1
             counters["processed"] += 1
+        except UnauthorizedManualExecutionCallError:
+            counters["failed"] += 1
         except Exception as exc:
             code = type(exc).__name__
             _write_event(plan.execution_plan_id, "EXECUTOR_REJECTED", f"code={code}")
