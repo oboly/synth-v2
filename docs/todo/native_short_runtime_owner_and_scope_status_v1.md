@@ -29,7 +29,9 @@ truth is the ownership registry and the current runtime lifecycle above.
 implementation line: done / accepted (historical)
 repository devlap unit contract and read-only equivalence preflight: done
 repository database least-privilege contract and read-only grant preflight: done
+repository filesystem publisher/reader separation contract and read-only preflight: implemented for review
 dedicated database identity provisioning/observed grant acceptance: pending
+filesystem reader group/identity provisioning and observed acceptance: pending
 production runtime owner: UNASSIGNED (see registry)
 installed devlap equivalence: MISMATCH (service absent; orphan timer drifted)
 installed-host activation: NOT_AUTHORIZED
@@ -49,6 +51,7 @@ docs/ops/native_short_map_materializer_canary_v1.md
 docs/ops/native_short_map_ledger_health_report_v1.md
 docs/ops/native_short_4h_chain_ownership_preflight_v1.md
 docs/ops/synth_chain_4h_database_least_privilege_contract_v1.md
+docs/architecture/native_short_fib_context_snapshot_contract_v1.md
 docs/deployment/synth_market_only_runtime_v1.md
 ```
 
@@ -138,14 +141,18 @@ Any later installed-host action must be handled as a separate operational change
    `synth` identity is not accepted as writer-authority proof;
 4. keep the currently observed orphan timer disabled/inactive and treat its
    content mismatch as a blocker, not as canonical ownership;
-5. prove zero alternate schedulers/publishers across all candidate and
+5. separately provision `gurk:synth-native-short-readers` ownership and
+   `theone` reader membership, then pass the strictly read-only
+   `src.operations.run_native_short_snapshot_filesystem_preflight_v1`; any
+   reporting consumer with UID `gurk` is a blocker;
+6. prove zero alternate schedulers/publishers across all candidate and
    historical hosts;
-6. separately select and accept one owner before any controlled writer run;
-7. separately authorize production before any timer activation;
-8. verify bounded logs, lock behavior, idempotency, and terminal summaries
+7. separately select and accept one owner before any controlled writer run;
+8. separately authorize production before any timer activation;
+9. verify bounded logs, lock behavior, idempotency, and terminal summaries
    only in an explicitly authorized acceptance lane;
-9. preserve rollback without mutating ledger history;
-10. perform no broker, account, order, decision, planning, or execution action.
+10. preserve rollback without mutating ledger history;
+11. perform no broker, account, order, decision, planning, or execution action.
 
 This remaining host action is tracked under:
 

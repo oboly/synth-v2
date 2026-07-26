@@ -17,9 +17,9 @@ It is account-agnostic and reads only persisted public-market authorities. It
 does not import reporting, account, selection, decision, planning, execution,
 broker, or research packages.
 
-## Canonical owner and path
+## Canonical publication path and unassigned owner
 
-The only scheduled owner is the existing 4h market chain. Publication runs
+The only repository publication path is the 4h market chain. Publication runs
 exactly once immediately after:
 
 ```text
@@ -29,7 +29,11 @@ scripts/run_native_short_scope_status_chain_once.sh
 That predecessor completes map evaluation, scope-status projection, and
 map-level status projection. A snapshot failure exits the existing 4h chain
 non-zero through `run_step`; the producer never falls back to an older snapshot.
-No service, timer, cron entry, or second scheduler is introduced.
+No service, timer, cron entry, or second scheduler is introduced. Runtime
+ownership remains `UNASSIGNED` in
+`deploy/ownership/writer_capability_ownership_v1.json`; the committed
+`synth-chain-4h.service` is a devlap-bound candidate, not activation or
+production-owner evidence.
 
 Default runtime directory:
 
@@ -43,6 +47,92 @@ Direct override:
 SYNTH_NATIVE_SHORT_CONTEXT_SNAPSHOT_DIR
 --output-dir
 ```
+
+The publisher and every raw-snapshot consumer must use the same host-local
+filesystem. This version defines no cross-host transport or replication.
+
+## Producer and consumer matrix
+
+| Script/module | Expected host | Service identity | Required access | Raw snapshot access necessary |
+|---|---|---|---|---|
+| `deploy/systemd/synth-chain-4h.service` | `devlap` candidate only; production owner `UNASSIGNED` | `gurk` | invoke the single chain; write publication root through its child | yes |
+| `scripts/run_chain_4h.sh` | selected `native_short_4h_chain` host; currently `UNASSIGNED` | inherited `gurk` candidate identity | invoke exactly one publisher; no reporting write | yes |
+| `src.market_data.run_native_short_fib_context_snapshot_v1` | same host/filesystem as the selected chain | `gurk` | read DB authorities; create/replace snapshot artifacts and manifest; acquire publication lock | yes |
+| `src.market_data.native_short_fib_context_snapshot_v1` | same host/filesystem as the selected chain | `gurk` | sole filesystem write implementation; validate immutable collisions and digests | yes |
+| `docs/ops/systemd/synth-linked-profile-runtime-refresh.service` and `scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh` | same host/filesystem as publisher before this consumer may be activated; historical template host is Odroid | `theone` | sequence reporting only; no snapshot write or lock acquisition | yes, through its Profit Plan child |
+| `scripts/odroid/run_account_profit_plan_snapshot_render_once.sh` | same host/filesystem as publisher | `theone` | read-only pass-through of the canonical root | yes |
+| `src.reporting.run_account_profit_plan_snapshot_render_owner_v1` | same host/filesystem as publisher | `theone` | read manifest, referenced CSV, and bundle; validate paths and digests | yes |
+| `src.reporting.run_manual_short_trader_profit_plan_v1` | same host/filesystem as publisher | inherited `theone` identity | read only the already-validated immutable CSV | yes, CSV only |
+| `src.operations.run_native_short_snapshot_filesystem_preflight_v1` | candidate/selected publication host, manual audit only | invoking operator; no scheduled identity | lstat/read only; never chmod/chown/create/replace/acquire lock | yes, for digest validation |
+| nginx/static serving | web host | `www-data` | read rendered Profit Plan HTML/JSON only | no |
+
+`scripts/odroid/run_account_wallet_dashboard_render_once.sh` writes a
+profile-local compatibility path, not this canonical publication root.
+Research `manifest_v1.json` files and the manual research CSV default are also
+outside this contract.
+
+## Filesystem authority contract
+
+The exact runtime identities are:
+
+```text
+publisher user = gurk
+reader group   = synth-native-short-readers
+group members  = gurk,theone
+raw reader     = theone
+www-data       = not a raw reader
+```
+
+The root must already exist with mode `02750` and ownership
+`gurk:synth-native-short-readers` before publication. The publisher validates
+its type, symlink/ACL state, mode, owner, and group and never creates, chmods,
+or repairs it. Setgid on the mutable directories makes publisher-created
+descendants inherit the exact reader group without a writable reader group.
+The group contains `gurk` so an unprivileged publisher can deterministically
+retain `S_ISGID` when it applies canonical modes to newly created directories.
+This membership grants `gurk` no additional authority because `gurk` already
+owns the publication tree. `theone` remains the only raw reporting consumer;
+`www-data` remains excluded.
+
+| Path class | Mode | Mutation authority |
+|---|---:|---|
+| publication root | `02750` | publisher may create snapshots and atomically replace the manifest |
+| `snapshots/` | `02750` | publisher may create one new immutable snapshot directory |
+| finalized `snapshots/<snapshot_id>/` | `02550` | direct write bits absent; content immutability is application-enforced |
+| `manifest_v1.json` | `0640` | publisher owner only; reader group read-only |
+| immutable CSV and bundle | `0440` | direct write bits absent; collision/digest checks enforce publisher-side immutability |
+| `.native_short_context_snapshot_v1.publish.lock` | `0600` | publisher only |
+
+Modes are applied explicitly only to newly created paths and are independent of
+process umask. Every existing path is validated for type, owner, group, ACL,
+and exact canonical mode before any mutation; drift fails without repair. No
+contract path is group-writable, world-writable, or world-readable. Extended
+access/default POSIX ACLs are forbidden because they would make mode analysis
+incomplete. The reader group has read/traverse only.
+
+Mode bits separate consumers from the publisher and deny direct in-place writes
+on finalized artifacts. They do not make the owning publisher incapable of
+`chmod`. Publisher-side immutability is application-enforced through exact
+content collision checks, digests, and manifest-last publication. Temp files
+remain same-directory staging files; file and directory fsync, `os.replace`,
+digest validation, immutable collision rejection, and `flock` behavior are
+preserved.
+
+A process that shares UID `gurk` is a publisher-equivalent process regardless
+of its service name or mode bits. It is therefore forbidden as a reporting
+consumer. The canonical reporting identity is `theone`; any installed
+reporting unit running as `gurk` must remain inactive until moved to that
+distinct identity and admitted to `synth-native-short-readers`. The required
+reader-group membership is exactly `gurk,theone`; extra members fail closed.
+User/group creation, membership changes, chmod/chown/setfacl, deployment, and
+activation are separate host actions and are not authorized by this repository
+contract.
+
+All existing path components and publication targets must be real directories
+or regular files. Symlinked roots, parents, manifests, locks, snapshot
+directories, or artifacts fail closed. Manifest paths remain exact relative
+paths bound to the manifest snapshot ID; absolute paths, traversal, identity
+mismatch, and resolved escape are rejected.
 
 ## Field-by-field source authority
 
@@ -201,17 +291,20 @@ snapshots/<snapshot_id>/snapshot_bundle_v1.json
 
 Publication is:
 
-1. build and validate all rows in memory;
-2. serialize rows and bundle in memory;
-3. write each immutable file through a temp file in the same directory;
-4. flush and fsync the file;
-5. `os.replace` it;
-6. fsync its directory and the immutable snapshot parent;
-7. validate digests and paths;
-8. write, flush, fsync, and atomically replace `manifest_v1.json` last;
-9. fsync the manifest parent directory.
+1. validate the pre-existing root and every existing path before mutation;
+2. build and validate all rows in memory;
+3. serialize rows and bundle in memory;
+4. write each immutable file through a temp file in the same directory;
+5. flush and fsync the file;
+6. `os.replace` it;
+7. validate artifact content and digests;
+8. finalize a newly created snapshot directory from `02750` to `02550`;
+9. fsync its directory and the immutable snapshot parent;
+10. write, flush, fsync, and atomically replace `manifest_v1.json` last;
+11. fsync the manifest parent directory.
 
-A failure before step 8 can leave an unreferenced immutable file, but cannot
+A failure before step 10 can leave an unreferenced new artifact or a new
+snapshot directory at mutable staging mode `02750`, but cannot
 damage or partially advance the last valid snapshot. A reader must resolve the
 CSV through `manifest_v1.json`; it must not scan `snapshots/` for the newest
 directory.
@@ -227,9 +320,11 @@ Before returning `UNCHANGED`, the publisher requires both immutable artifacts,
 checks the CSV and bundle digests, validates the bundle/snapshot identity, and
 proves that both artifacts exactly represent the current semantic build. A
 self-consistent manifest cannot bless different row content. Corrupt or partial
-immutable directories are rejected. Temp files are removed after pre-replace
-failure. Snapshot and parent directories are fsynced before the manifest is
-replaced.
+immutable directories are rejected. The root, lock, snapshots directory,
+manifest, current snapshot directory, and both artifacts must also pass their
+complete filesystem contract; `UNCHANGED` performs no chmod or repair. Temp
+files are removed after pre-replace failure. Snapshot and parent directories
+are fsynced before the manifest is replaced.
 
 Future consumers, including PR B, must use
 `resolve_manifest_artifact_paths(...)` or equivalent validation. Absolute
@@ -276,12 +371,17 @@ normal step in `scripts/run_chain_4h.sh`; no new owner is required.
 Host rollout must preserve this order before the production owner is allowed to
 run the updated chain:
 
-1. run the producer manually without `--publish` against configured authorities;
-2. confirm supported-row freshness, authority identities, and zero DB writes;
-3. run a manual publish to an acceptance/temp output directory, never the
+1. provision the already-approved host identities/group and root ownership in
+   a separate authorized host lane;
+2. run
+   `src.operations.run_native_short_snapshot_filesystem_preflight_v1` and
+   require `PASS`, including zero same-UID consumers and zero consumer writes;
+3. run the producer manually without `--publish` against configured authorities;
+4. confirm supported-row freshness, authority identities, and zero DB writes;
+5. run a manual publish to an acceptance/temp output directory, never the
    canonical production directory;
-4. validate the manifest schema/digests and its referenced immutable CSV/bundle;
-5. only then allow the existing 4h owner to use the canonical production path.
+6. validate the manifest schema/digests and its referenced immutable CSV/bundle;
+7. only then allow the selected 4h owner to use the canonical production path.
 
 Representative acceptance command for step 3:
 

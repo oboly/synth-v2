@@ -9,10 +9,13 @@ lifecycle/freshness from wall-clock time.
 
 import csv
 import fcntl
+import grp
 import hashlib
 import io
 import json
 import os
+import pwd
+import stat
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -37,6 +40,14 @@ MANIFEST_NAME = "manifest_v1.json"
 ROWS_NAME = "native_short_fib_context_rows_v1.csv"
 BUNDLE_NAME = "snapshot_bundle_v1.json"
 PUBLICATION_LOCK_NAME = ".native_short_context_snapshot_v1.publish.lock"
+PUBLISH_ROOT_MODE = 0o2750
+SNAPSHOTS_DIR_MODE = 0o2750
+IMMUTABLE_SNAPSHOT_DIR_MODE = 0o2550
+MANIFEST_MODE = 0o640
+IMMUTABLE_ARTIFACT_MODE = 0o440
+PUBLICATION_LOCK_MODE = 0o600
+PUBLISHER_USER = "gurk"
+READER_GROUP = "synth-native-short-readers"
 
 FRESH = "FRESH"
 STALE = "STALE"
@@ -169,6 +180,14 @@ class PublicationResult:
     manifest_path: Path
     rows_path: Path
     bundle_path: Path
+
+
+@dataclass(frozen=True)
+class ValidatedSnapshot:
+    snapshot_id: str
+    rows_path: Path
+    bundle_path: Path
+    row_count: int
 
 
 def _text(value: Any) -> str:
@@ -646,16 +665,154 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
-def atomic_write_bytes(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _path_lexists(path: Path) -> bool:
+    return os.path.lexists(path)
+
+
+def assert_no_symlink_components(path: Path) -> Path:
+    absolute = Path(os.path.abspath(path))
+    for component in reversed((absolute, *absolute.parents)):
+        if _path_lexists(component) and stat.S_ISLNK(component.lstat().st_mode):
+            raise SnapshotContractError(f"symlink path component is forbidden: {component}")
+    return absolute
+
+
+def _assert_no_extended_acl(path: Path) -> None:
+    acl_names = {
+        name
+        for name in os.listxattr(path, follow_symlinks=False)
+        if name in {"system.posix_acl_access", "system.posix_acl_default"}
+    }
+    if acl_names:
+        raise SnapshotContractError(
+            f"extended POSIX ACL is forbidden: {path} ({','.join(sorted(acl_names))})"
+        )
+
+
+def _publication_identity_ids() -> tuple[int, int]:
+    try:
+        publisher_uid = pwd.getpwnam(PUBLISHER_USER).pw_uid
+        reader_gid = grp.getgrnam(READER_GROUP).gr_gid
+    except KeyError as exc:
+        raise SnapshotContractError(f"publication identity or reader group is missing: {exc}") from exc
+    if os.geteuid() != publisher_uid:
+        raise SnapshotContractError(
+            f"publisher UID mismatch: expected {PUBLISHER_USER}:{publisher_uid} actual={os.geteuid()}"
+        )
+    return publisher_uid, reader_gid
+
+
+def _validate_existing_path(
+    path: Path,
+    *,
+    expected_type: str,
+    mode: int,
+    owner_uid: int,
+    group_gid: int,
+) -> None:
+    assert_no_symlink_components(path.parent)
+    if not _path_lexists(path):
+        raise SnapshotContractError(f"required publication path is missing: {path}")
+    metadata = path.lstat()
+    type_matches = (
+        expected_type == "directory" and stat.S_ISDIR(metadata.st_mode)
+    ) or (
+        expected_type == "file" and stat.S_ISREG(metadata.st_mode)
+    )
+    if stat.S_ISLNK(metadata.st_mode) or not type_matches:
+        raise SnapshotContractError(
+            f"publication path type mismatch: {path} expected={expected_type}"
+        )
+    _assert_no_extended_acl(path)
+    if metadata.st_uid != owner_uid or metadata.st_gid != group_gid:
+        raise SnapshotContractError(
+            f"publication owner/group mismatch: {path} "
+            f"actual={metadata.st_uid}:{metadata.st_gid} expected={owner_uid}:{group_gid}"
+        )
+    actual_mode = stat.S_IMODE(metadata.st_mode)
+    if actual_mode != mode:
+        raise SnapshotContractError(
+            f"publication mode mismatch: {path} actual={actual_mode:04o} expected={mode:04o}"
+        )
+
+
+def _create_or_validate_directory(
+    path: Path,
+    *,
+    existing_mode: int,
+    new_mode: int,
+    owner_uid: int,
+    group_gid: int,
+) -> bool:
+    assert_no_symlink_components(path.parent)
+    if _path_lexists(path):
+        _validate_existing_path(
+            path,
+            expected_type="directory",
+            mode=existing_mode,
+            owner_uid=owner_uid,
+            group_gid=group_gid,
+        )
+        return False
+    path.mkdir(mode=new_mode)
+    os.chmod(path, new_mode, follow_symlinks=False)
+    _validate_existing_path(
+        path,
+        expected_type="directory",
+        mode=new_mode,
+        owner_uid=owner_uid,
+        group_gid=group_gid,
+    )
+    return True
+
+
+def atomic_write_bytes(
+    path: Path,
+    payload: bytes,
+    *,
+    mode: int = MANIFEST_MODE,
+    owner_uid: int | None = None,
+    group_gid: int | None = None,
+) -> None:
+    assert_no_symlink_components(path.parent)
+    if _path_lexists(path):
+        if owner_uid is None or group_gid is None:
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                raise SnapshotContractError(f"publication target is unsafe: {path}")
+            _assert_no_extended_acl(path)
+            if stat.S_IMODE(metadata.st_mode) != mode:
+                raise SnapshotContractError(
+                    f"publication mode mismatch: {path} "
+                    f"actual={stat.S_IMODE(metadata.st_mode):04o} expected={mode:04o}"
+                )
+        else:
+            _validate_existing_path(
+                path,
+                expected_type="file",
+                mode=mode,
+                owner_uid=owner_uid,
+                group_gid=group_gid,
+            )
     descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temp_path = Path(temp_name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(payload)
             handle.flush()
+            os.fchmod(handle.fileno(), mode)
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
+        if owner_uid is not None and group_gid is not None:
+            _validate_existing_path(
+                path,
+                expected_type="file",
+                mode=mode,
+                owner_uid=owner_uid,
+                group_gid=group_gid,
+            )
+        else:
+            _assert_no_extended_acl(path)
         _fsync_directory(path.parent)
     except BaseException:
         try:
@@ -664,19 +821,74 @@ def atomic_write_bytes(path: Path, payload: bytes) -> None:
             raise
 
 
-def _write_immutable(path: Path, payload: bytes) -> None:
-    if path.exists():
+def _write_immutable(
+    path: Path,
+    payload: bytes,
+    *,
+    owner_uid: int,
+    group_gid: int,
+) -> None:
+    if _path_lexists(path):
+        _validate_existing_path(
+            path,
+            expected_type="file",
+            mode=IMMUTABLE_ARTIFACT_MODE,
+            owner_uid=owner_uid,
+            group_gid=group_gid,
+        )
         if path.read_bytes() != payload:
             raise SnapshotContractError(f"immutable snapshot collision: {path}")
         return
-    atomic_write_bytes(path, payload)
+    atomic_write_bytes(
+        path,
+        payload,
+        mode=IMMUTABLE_ARTIFACT_MODE,
+        owner_uid=owner_uid,
+        group_gid=group_gid,
+    )
 
 
 @contextmanager
 def publication_lock(output_dir: Path):
-    output_dir.mkdir(parents=True, exist_ok=True)
+    publisher_uid, reader_gid = _publication_identity_ids()
+    _validate_existing_path(
+        output_dir,
+        expected_type="directory",
+        mode=PUBLISH_ROOT_MODE,
+        owner_uid=publisher_uid,
+        group_gid=reader_gid,
+    )
     lock_path = output_dir / PUBLICATION_LOCK_NAME
-    handle = lock_path.open("a+b")
+    if _path_lexists(lock_path):
+        _validate_existing_path(
+            lock_path,
+            expected_type="file",
+            mode=PUBLICATION_LOCK_MODE,
+            owner_uid=publisher_uid,
+            group_gid=reader_gid,
+        )
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(lock_path, flags)
+    else:
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(lock_path, flags, PUBLICATION_LOCK_MODE)
+        os.fchmod(descriptor, PUBLICATION_LOCK_MODE)
+    lock_metadata = os.fstat(descriptor)
+    if lock_metadata.st_uid != publisher_uid or lock_metadata.st_gid != reader_gid:
+        os.close(descriptor)
+        raise SnapshotContractError(
+            f"publication lock owner/group mismatch: actual={lock_metadata.st_uid}:"
+            f"{lock_metadata.st_gid} expected={publisher_uid}:{reader_gid}"
+        )
+    actual_lock_mode = stat.S_IMODE(lock_metadata.st_mode)
+    if actual_lock_mode != PUBLICATION_LOCK_MODE:
+        os.close(descriptor)
+        raise SnapshotContractError(
+            f"publication lock mode mismatch: actual={actual_lock_mode:04o} "
+            f"expected={PUBLICATION_LOCK_MODE:04o}"
+        )
+    _assert_no_extended_acl(lock_path)
+    handle = os.fdopen(descriptor, "a+b")
     try:
         try:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -694,6 +906,7 @@ def resolve_manifest_artifact_paths(
     output_dir: Path,
     manifest: Mapping[str, Any],
 ) -> tuple[Path, Path]:
+    safe_output_dir = assert_no_symlink_components(output_dir)
     snapshot_id = _text(manifest.get("snapshot_id"))
     if not snapshot_id.startswith("nsctx-v1-") or "/" in snapshot_id or "\\" in snapshot_id:
         raise SnapshotContractError("manifest snapshot_id is invalid")
@@ -707,11 +920,100 @@ def resolve_manifest_artifact_paths(
             raise SnapshotContractError(f"manifest {field} must be a safe relative path")
         if candidate != expected:
             raise SnapshotContractError(f"manifest {field} does not match snapshot identity")
-        resolved = (output_dir / candidate).resolve()
-        if not resolved.is_relative_to(output_dir.resolve()):
+        artifact_path = safe_output_dir / candidate
+        assert_no_symlink_components(artifact_path)
+        resolved = artifact_path.resolve()
+        if not resolved.is_relative_to(safe_output_dir):
             raise SnapshotContractError(f"manifest {field} escapes output directory")
         resolved_paths.append(resolved)
     return resolved_paths[0], resolved_paths[1]
+
+
+def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SnapshotContractError(f"{label} is unreadable JSON: {path}") from exc
+    if not isinstance(payload, dict):
+        raise SnapshotContractError(f"{label} must contain a top-level JSON object")
+    return payload
+
+
+def validate_published_snapshot(snapshot_root: Path) -> ValidatedSnapshot:
+    assert_no_symlink_components(snapshot_root)
+    manifest_path = snapshot_root / MANIFEST_NAME
+    if not _path_lexists(manifest_path) or not stat.S_ISREG(manifest_path.lstat().st_mode):
+        raise SnapshotContractError(f"canonical native SHORT manifest is missing: {manifest_path}")
+    manifest = _read_json_object(manifest_path, label="canonical native SHORT manifest")
+    if manifest.get("schema_version") != SCHEMA_VERSION:
+        raise SnapshotContractError("native SHORT manifest schema_version mismatch")
+    if manifest.get("row_schema_version") != ROW_SCHEMA_VERSION:
+        raise SnapshotContractError("native SHORT manifest row_schema_version mismatch")
+
+    snapshot_id = _text(manifest.get("snapshot_id"))
+    content_digest = _text(manifest.get("content_digest"))
+    digest_hex = content_digest.removeprefix("sha256:")
+    if not content_digest.startswith("sha256:") or len(digest_hex) != 64:
+        raise SnapshotContractError("native SHORT manifest content_digest is invalid")
+    try:
+        int(digest_hex, 16)
+    except ValueError as exc:
+        raise SnapshotContractError("native SHORT manifest content_digest is invalid") from exc
+    if snapshot_id != f"nsctx-v1-{digest_hex[:24]}":
+        raise SnapshotContractError("native SHORT manifest snapshot_id/content_digest mismatch")
+
+    rows_path, bundle_path = resolve_manifest_artifact_paths(snapshot_root, manifest)
+    if rows_path.name != ROWS_NAME or bundle_path.name != BUNDLE_NAME:
+        raise SnapshotContractError("native SHORT manifest references unexpected artifacts")
+    if not rows_path.is_file() or not bundle_path.is_file():
+        raise SnapshotContractError("native SHORT manifest references missing immutable artifacts")
+
+    rows_payload = rows_path.read_bytes()
+    bundle_payload = bundle_path.read_bytes()
+    rows_digest = f"sha256:{hashlib.sha256(rows_payload).hexdigest()}"
+    bundle_digest = f"sha256:{hashlib.sha256(bundle_payload).hexdigest()}"
+    if rows_digest != manifest.get("rows_csv_digest"):
+        raise SnapshotContractError("native SHORT rows digest mismatch")
+    if bundle_digest != manifest.get("snapshot_bundle_digest"):
+        raise SnapshotContractError("native SHORT bundle digest mismatch")
+
+    try:
+        with rows_path.open(encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            if reader.fieldnames != CSV_FIELDS:
+                raise SnapshotContractError("native SHORT rows schema mismatch")
+            csv_rows = list(reader)
+    except (OSError, UnicodeError, csv.Error) as exc:
+        raise SnapshotContractError("native SHORT rows CSV is unreadable") from exc
+
+    row_count = manifest.get("row_count")
+    if isinstance(row_count, bool) or not isinstance(row_count, int) or row_count < 0:
+        raise SnapshotContractError("native SHORT manifest row_count is invalid")
+    if len(csv_rows) != row_count:
+        raise SnapshotContractError("native SHORT rows count mismatch")
+
+    bundle = _read_json_object(bundle_path, label="native SHORT snapshot bundle")
+    envelope = bundle.get("envelope")
+    bundle_rows = bundle.get("rows")
+    if not isinstance(envelope, dict) or not isinstance(bundle_rows, list):
+        raise SnapshotContractError("native SHORT snapshot bundle shape is invalid")
+    if (
+        envelope.get("schema_version") != SCHEMA_VERSION
+        or envelope.get("row_schema_version") != ROW_SCHEMA_VERSION
+        or envelope.get("snapshot_id") != snapshot_id
+        or envelope.get("content_digest") != content_digest
+        or envelope.get("row_count") != row_count
+    ):
+        raise SnapshotContractError("native SHORT manifest/bundle identity mismatch")
+    if len(bundle_rows) != row_count or render_rows_csv(bundle_rows) != rows_payload:
+        raise SnapshotContractError("native SHORT bundle rows do not match immutable CSV")
+
+    return ValidatedSnapshot(
+        snapshot_id=snapshot_id,
+        rows_path=rows_path,
+        bundle_path=bundle_path,
+        row_count=row_count,
+    )
 
 
 def publish_snapshot(
@@ -745,8 +1047,24 @@ def _publish_snapshot_locked(
     generated_ts_utc: datetime,
     publication_ts_utc: datetime,
 ) -> PublicationResult:
+    publisher_uid, reader_gid = _publication_identity_ids()
     manifest_path = output_dir / MANIFEST_NAME
-    if manifest_path.exists():
+    if _path_lexists(manifest_path):
+        _validate_existing_path(
+            manifest_path,
+            expected_type="file",
+            mode=MANIFEST_MODE,
+            owner_uid=publisher_uid,
+            group_gid=reader_gid,
+        )
+        snapshots_dir = output_dir / "snapshots"
+        _validate_existing_path(
+            snapshots_dir,
+            expected_type="directory",
+            mode=SNAPSHOTS_DIR_MODE,
+            owner_uid=publisher_uid,
+            group_gid=reader_gid,
+        )
         try:
             current = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -757,8 +1075,21 @@ def _publish_snapshot_locked(
             if current.get("snapshot_id") != build.snapshot_id:
                 raise SnapshotContractError("current manifest snapshot identity mismatch")
             rows_path, bundle_path = resolve_manifest_artifact_paths(output_dir, current)
-            if not rows_path.is_file() or not bundle_path.is_file():
-                raise SnapshotContractError("current manifest references missing immutable files")
+            _validate_existing_path(
+                rows_path.parent,
+                expected_type="directory",
+                mode=IMMUTABLE_SNAPSHOT_DIR_MODE,
+                owner_uid=publisher_uid,
+                group_gid=reader_gid,
+            )
+            for artifact_path in (rows_path, bundle_path):
+                _validate_existing_path(
+                    artifact_path,
+                    expected_type="file",
+                    mode=IMMUTABLE_ARTIFACT_MODE,
+                    owner_uid=publisher_uid,
+                    group_gid=reader_gid,
+                )
             rows_payload = rows_path.read_bytes()
             rows_digest = f"sha256:{hashlib.sha256(rows_payload).hexdigest()}"
             if rows_digest != current.get("rows_csv_digest"):
@@ -800,7 +1131,22 @@ def _publish_snapshot_locked(
         publication_ts_utc=publication_ts_utc,
     )
     relative_dir = Path("snapshots") / build.snapshot_id
+    snapshots_dir = output_dir / "snapshots"
+    _create_or_validate_directory(
+        snapshots_dir,
+        existing_mode=SNAPSHOTS_DIR_MODE,
+        new_mode=SNAPSHOTS_DIR_MODE,
+        owner_uid=publisher_uid,
+        group_gid=reader_gid,
+    )
     snapshot_dir = output_dir / relative_dir
+    snapshot_dir_created = _create_or_validate_directory(
+        snapshot_dir,
+        existing_mode=IMMUTABLE_SNAPSHOT_DIR_MODE,
+        new_mode=SNAPSHOTS_DIR_MODE,
+        owner_uid=publisher_uid,
+        group_gid=reader_gid,
+    )
     rows_path = snapshot_dir / ROWS_NAME
     bundle_path = snapshot_dir / BUNDLE_NAME
     rows_payload = render_rows_csv(build.rows)
@@ -808,14 +1154,37 @@ def _publish_snapshot_locked(
     bundle_payload = canonical_json_bytes({"envelope": envelope, "rows": build.rows})
     bundle_digest = hashlib.sha256(bundle_payload).hexdigest()
 
-    _write_immutable(rows_path, rows_payload)
-    _write_immutable(bundle_path, bundle_payload)
-    _fsync_directory(snapshot_dir)
-    _fsync_directory(snapshot_dir.parent)
+    if not snapshot_dir_created and (
+        not _path_lexists(rows_path) or not _path_lexists(bundle_path)
+    ):
+        raise SnapshotContractError("existing immutable snapshot directory is incomplete")
+    _write_immutable(
+        rows_path,
+        rows_payload,
+        owner_uid=publisher_uid,
+        group_gid=reader_gid,
+    )
+    _write_immutable(
+        bundle_path,
+        bundle_payload,
+        owner_uid=publisher_uid,
+        group_gid=reader_gid,
+    )
     if hashlib.sha256(rows_path.read_bytes()).hexdigest() != rows_digest:
         raise SnapshotContractError("published immutable rows digest mismatch")
     if bundle_path.read_bytes() != bundle_payload:
         raise SnapshotContractError("published immutable bundle digest mismatch")
+    if snapshot_dir_created:
+        os.chmod(snapshot_dir, IMMUTABLE_SNAPSHOT_DIR_MODE, follow_symlinks=False)
+        _validate_existing_path(
+            snapshot_dir,
+            expected_type="directory",
+            mode=IMMUTABLE_SNAPSHOT_DIR_MODE,
+            owner_uid=publisher_uid,
+            group_gid=reader_gid,
+        )
+    _fsync_directory(snapshot_dir)
+    _fsync_directory(snapshots_dir)
     manifest = {
         **envelope,
         "rows_csv": str(relative_dir / ROWS_NAME),
@@ -824,7 +1193,13 @@ def _publish_snapshot_locked(
         "snapshot_bundle_digest": f"sha256:{bundle_digest}",
         "publication_result": "PUBLISHED",
     }
-    atomic_write_bytes(manifest_path, canonical_json_bytes(manifest))
+    atomic_write_bytes(
+        manifest_path,
+        canonical_json_bytes(manifest),
+        mode=MANIFEST_MODE,
+        owner_uid=publisher_uid,
+        group_gid=reader_gid,
+    )
     return PublicationResult(
         "PUBLISHED",
         build.snapshot_id,
