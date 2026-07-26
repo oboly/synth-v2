@@ -127,6 +127,29 @@ The following former TODOs are complete and must not remain open:
 - historical 4h runtime wiring (production owner now UNASSIGNED; see registry);
 - PR-branch and post-merge acceptance.
 
+## Deferred runtime-binding hardening — P3
+
+The current runtime binding already fails closed on:
+
+- the exact `synth_chain_4h` binding profile;
+- the exact `synth_chain_4h_writer` dedicated username;
+- the exact `synth` database;
+- generic credential fallback;
+- validated external secret transport;
+- repository-unit/environment equivalence;
+- exact authenticated and grant identity validation.
+
+One deferred hardening TODO remains: enforce `EXPECTED_HOST`,
+`EXPECTED_PORT`, and `EXPECTED_PASSWORD_FILE` exactly inside the shared binding
+loader, and reject repository-unit drift from those canonical values before
+connection.
+
+This is not required for the current single canonical `synth-chain-4h` caller.
+It becomes required before supporting configurable endpoints, alternative
+secret paths, multiple runtime consumers, or externally supplied chain-binding
+metadata. Completing or retaining this TODO grants no runtime ownership and no
+activation authorization.
+
 ## Remaining operational action — P2 owner only
 
 Installed-host activation was deliberately not part of PR #87 acceptance.
