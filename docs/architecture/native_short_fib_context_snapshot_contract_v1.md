@@ -17,9 +17,9 @@ It is account-agnostic and reads only persisted public-market authorities. It
 does not import reporting, account, selection, decision, planning, execution,
 broker, or research packages.
 
-## Canonical owner and path
+## Canonical publication path and unassigned owner
 
-The only scheduled owner is the existing 4h market chain. Publication runs
+The only repository publication path is the 4h market chain. Publication runs
 exactly once immediately after:
 
 ```text
@@ -29,7 +29,11 @@ scripts/run_native_short_scope_status_chain_once.sh
 That predecessor completes map evaluation, scope-status projection, and
 map-level status projection. A snapshot failure exits the existing 4h chain
 non-zero through `run_step`; the producer never falls back to an older snapshot.
-No service, timer, cron entry, or second scheduler is introduced.
+No service, timer, cron entry, or second scheduler is introduced. Runtime
+ownership remains `UNASSIGNED` in
+`deploy/ownership/writer_capability_ownership_v1.json`; the committed
+`synth-chain-4h.service` is a devlap-bound candidate, not activation or
+production-owner evidence.
 
 Default runtime directory:
 
@@ -43,6 +47,76 @@ Direct override:
 SYNTH_NATIVE_SHORT_CONTEXT_SNAPSHOT_DIR
 --output-dir
 ```
+
+The publisher and every raw-snapshot consumer must use the same host-local
+filesystem. This version defines no cross-host transport or replication.
+
+## Producer and consumer matrix
+
+| Script/module | Expected host | Service identity | Required access | Raw snapshot access necessary |
+|---|---|---|---|---|
+| `deploy/systemd/synth-chain-4h.service` | `devlap` candidate only; production owner `UNASSIGNED` | `gurk` | invoke the single chain; write publication root through its child | yes |
+| `scripts/run_chain_4h.sh` | selected `native_short_4h_chain` host; currently `UNASSIGNED` | inherited `gurk` candidate identity | invoke exactly one publisher; no reporting write | yes |
+| `src.market_data.run_native_short_fib_context_snapshot_v1` | same host/filesystem as the selected chain | `gurk` | read DB authorities; create/replace snapshot artifacts and manifest; acquire publication lock | yes |
+| `src.market_data.native_short_fib_context_snapshot_v1` | same host/filesystem as the selected chain | `gurk` | sole filesystem write implementation; validate immutable collisions and digests | yes |
+| `docs/ops/systemd/synth-linked-profile-runtime-refresh.service` and `scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh` | same host/filesystem as publisher before this consumer may be activated; historical template host is Odroid | `theone` | sequence reporting only; no snapshot write or lock acquisition | yes, through its Profit Plan child |
+| `scripts/odroid/run_account_profit_plan_snapshot_render_once.sh` | same host/filesystem as publisher | `theone` | read-only pass-through of the canonical root | yes |
+| `src.reporting.run_account_profit_plan_snapshot_render_owner_v1` | same host/filesystem as publisher | `theone` | read manifest, referenced CSV, and bundle; validate paths and digests | yes |
+| `src.reporting.run_manual_short_trader_profit_plan_v1` | same host/filesystem as publisher | inherited `theone` identity | read only the already-validated immutable CSV | yes, CSV only |
+| `src.operations.run_native_short_snapshot_filesystem_preflight_v1` | candidate/selected publication host, manual audit only | invoking operator; no scheduled identity | lstat/read only; never chmod/chown/create/replace/acquire lock | yes, for digest validation |
+| nginx/static serving | web host | `www-data` | read rendered Profit Plan HTML/JSON only | no |
+
+`scripts/odroid/run_account_wallet_dashboard_render_once.sh` writes a
+profile-local compatibility path, not this canonical publication root.
+Research `manifest_v1.json` files and the manual research CSV default are also
+outside this contract.
+
+## Filesystem authority contract
+
+The exact runtime identities are:
+
+```text
+publisher user = gurk
+reader group   = synth-native-short-readers
+raw reader     = theone
+www-data       = not a raw reader
+```
+
+The root must be owned by `gurk:synth-native-short-readers` before activation.
+The publisher refuses a different effective UID or root owner/group. Setgid on
+the mutable directories makes publisher-created descendants inherit the exact
+reader group without a writable reader group.
+
+| Path class | Mode | Mutation authority |
+|---|---:|---|
+| publication root | `02750` | publisher may create snapshots and atomically replace the manifest |
+| `snapshots/` | `02750` | publisher may create one new immutable snapshot directory |
+| finalized `snapshots/<snapshot_id>/` | `02550` | no in-place mutation |
+| `manifest_v1.json` | `0640` | publisher owner only; reader group read-only |
+| immutable CSV and bundle | `0440` | no in-place mutation; publisher collision check is read-only |
+| `.native_short_context_snapshot_v1.publish.lock` | `0600` | publisher only |
+
+Every mode is applied explicitly after creation and is independent of process
+umask. No contract path is group-writable, world-writable, or world-readable.
+Extended access/default POSIX ACLs are forbidden because they would make mode
+analysis incomplete. The reader group has read/traverse only. Temp files remain
+same-directory staging files; file and directory fsync, `os.replace`, digest
+validation, manifest-last commit, immutable collision rejection, and `flock`
+behavior are preserved.
+
+A process that shares UID `gurk` is a publisher-equivalent process regardless
+of its service name or mode bits. It is therefore forbidden as a reporting
+consumer. The canonical reporting identity is `theone`; any installed
+reporting unit running as `gurk` must remain inactive until moved to that
+distinct identity and admitted to `synth-native-short-readers`. User/group
+creation, membership changes, chmod/chown/setfacl, deployment, and activation
+are separate host actions and are not authorized by this repository contract.
+
+All existing path components and publication targets must be real directories
+or regular files. Symlinked roots, parents, manifests, locks, snapshot
+directories, or artifacts fail closed. Manifest paths remain exact relative
+paths bound to the manifest snapshot ID; absolute paths, traversal, identity
+mismatch, and resolved escape are rejected.
 
 ## Field-by-field source authority
 
@@ -276,12 +350,17 @@ normal step in `scripts/run_chain_4h.sh`; no new owner is required.
 Host rollout must preserve this order before the production owner is allowed to
 run the updated chain:
 
-1. run the producer manually without `--publish` against configured authorities;
-2. confirm supported-row freshness, authority identities, and zero DB writes;
-3. run a manual publish to an acceptance/temp output directory, never the
+1. provision the already-approved host identities/group and root ownership in
+   a separate authorized host lane;
+2. run
+   `src.operations.run_native_short_snapshot_filesystem_preflight_v1` and
+   require `PASS`, including zero same-UID consumers and zero consumer writes;
+3. run the producer manually without `--publish` against configured authorities;
+4. confirm supported-row freshness, authority identities, and zero DB writes;
+5. run a manual publish to an acceptance/temp output directory, never the
    canonical production directory;
-4. validate the manifest schema/digests and its referenced immutable CSV/bundle;
-5. only then allow the existing 4h owner to use the canonical production path.
+6. validate the manifest schema/digests and its referenced immutable CSV/bundle;
+7. only then allow the selected 4h owner to use the canonical production path.
 
 Representative acceptance command for step 3:
 

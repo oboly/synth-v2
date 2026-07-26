@@ -13,10 +13,16 @@ def _authorized_writer_context(monkeypatch):
     covered by tests/test_writer_capability_authorization_v1.py."""
     from tests.writer_auth_support import install_authorized_writer_context
     install_authorized_writer_context(monkeypatch)
+    monkeypatch.setattr(
+        "src.market_data.native_short_fib_context_snapshot_v1._publication_identity_ids",
+        lambda: (os.getuid(), os.getgid()),
+    )
 
 import csv
 import hashlib
 import json
+import os
+import stat
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -370,6 +376,80 @@ def test_publish_is_atomic_consistent_and_unchanged_is_not_duplicated(tmp_path: 
     assert hashlib.sha256(first.bundle_path.read_bytes()).hexdigest() == manifest["snapshot_bundle_digest"].split(":", 1)[1]
 
 
+@pytest.mark.parametrize("process_umask", [0o000, 0o027, 0o077])
+def test_publication_modes_are_canonical_and_umask_independent(
+    tmp_path: Path,
+    process_umask: int,
+) -> None:
+    root = tmp_path / f"snapshot-{process_umask:o}"
+    root.mkdir()
+    previous_umask = os.umask(process_umask)
+    try:
+        published = snapshot.publish_snapshot(
+            _build(),
+            output_dir=root,
+            generated_ts_utc=AS_OF,
+            publication_ts_utc=AS_OF,
+            authorization=_NS_AUTH,
+        )
+    finally:
+        os.umask(previous_umask)
+
+    expected = {
+        root: snapshot.PUBLISH_ROOT_MODE,
+        root / "snapshots": snapshot.SNAPSHOTS_DIR_MODE,
+        published.rows_path.parent: snapshot.IMMUTABLE_SNAPSHOT_DIR_MODE,
+        published.rows_path: snapshot.IMMUTABLE_ARTIFACT_MODE,
+        published.bundle_path: snapshot.IMMUTABLE_ARTIFACT_MODE,
+        published.manifest_path: snapshot.MANIFEST_MODE,
+        root / snapshot.PUBLICATION_LOCK_NAME: snapshot.PUBLICATION_LOCK_MODE,
+    }
+    assert {
+        path: stat.S_IMODE(path.lstat().st_mode)
+        for path in expected
+    } == expected
+
+
+def test_publication_rejects_root_owner_group_outside_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        snapshot,
+        "_publication_identity_ids",
+        lambda: (os.getuid(), os.getgid() + 10_000),
+    )
+    with pytest.raises(snapshot.SnapshotContractError, match="owner/group mismatch"):
+        snapshot.publish_snapshot(
+            _build(),
+            output_dir=tmp_path,
+            generated_ts_utc=AS_OF,
+            publication_ts_utc=AS_OF,
+            authorization=_NS_AUTH,
+        )
+    assert not (tmp_path / snapshot.MANIFEST_NAME).exists()
+
+
+def test_publication_rejects_extended_acl_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        snapshot.os,
+        "listxattr",
+        lambda path, follow_symlinks=False: ["system.posix_acl_access"],
+    )
+    with pytest.raises(snapshot.SnapshotContractError, match="ACL"):
+        snapshot.publish_snapshot(
+            _build(),
+            output_dir=tmp_path,
+            generated_ts_utc=AS_OF,
+            publication_ts_utc=AS_OF,
+            authorization=_NS_AUTH,
+        )
+    assert not (tmp_path / snapshot.MANIFEST_NAME).exists()
+
+
 @pytest.mark.parametrize("artifact", ["rows", "bundle"])
 def test_unchanged_rejects_missing_or_corrupt_immutable_artifact(tmp_path: Path, artifact: str) -> None:
     build = _build()
@@ -381,9 +461,11 @@ def test_unchanged_rejects_missing_or_corrupt_immutable_artifact(tmp_path: Path,
     authorization=_NS_AUTH)
     path = published.rows_path if artifact == "rows" else published.bundle_path
     if artifact == "rows":
+        path.parent.chmod(snapshot.SNAPSHOTS_DIR_MODE)
         path.unlink()
         expected = "missing immutable"
     else:
+        path.chmod(snapshot.MANIFEST_MODE)
         path.write_bytes(b"corrupt")
         expected = "bundle is unreadable"
     with pytest.raises(snapshot.SnapshotContractError, match=expected):
@@ -435,6 +517,7 @@ def test_unchanged_rejects_self_consistent_but_semantically_wrong_rows(tmp_path:
     authorization=_NS_AUTH)
     manifest = json.loads(published.manifest_path.read_text(encoding="utf-8"))
     wrong_rows = published.rows_path.read_bytes().replace(b"BTC", b"ETH")
+    published.rows_path.chmod(snapshot.MANIFEST_MODE)
     published.rows_path.write_bytes(wrong_rows)
     manifest["rows_csv_digest"] = f"sha256:{hashlib.sha256(wrong_rows).hexdigest()}"
     published.manifest_path.write_bytes(snapshot.canonical_json_bytes(manifest))
@@ -548,10 +631,10 @@ def test_failed_commit_pointer_write_preserves_last_valid_snapshot(tmp_path: Pat
     changed = _build(levels=_levels(price_1272="102.73"))
     real_atomic_write = snapshot.atomic_write_bytes
 
-    def fail_manifest(path: Path, payload: bytes) -> None:
+    def fail_manifest(path: Path, payload: bytes, *, mode: int = snapshot.MANIFEST_MODE) -> None:
         if path.name == snapshot.MANIFEST_NAME:
             raise OSError("interrupted before commit pointer replace")
-        real_atomic_write(path, payload)
+        real_atomic_write(path, payload, mode=mode)
 
     monkeypatch.setattr(snapshot, "atomic_write_bytes", fail_manifest)
     with pytest.raises(OSError, match="interrupted"):
@@ -609,3 +692,48 @@ def test_cli_defaults_to_read_only_and_market_owned_output_path() -> None:
     args = runner.parse_args([])
     assert args.publish is False
     assert args.output_dir == Path("/var/www/html/synth/_runtime/native_short_context_snapshot_v1")
+
+
+def test_publication_rejects_symlink_root_manifest_and_immutable_artifact(tmp_path: Path) -> None:
+    build = _build()
+    real_root = tmp_path / "real"
+    real_root.mkdir()
+    linked_root = tmp_path / "linked"
+    linked_root.symlink_to(real_root, target_is_directory=True)
+    with pytest.raises(snapshot.SnapshotContractError, match="unsafe|symlink"):
+        snapshot.publish_snapshot(
+            build,
+            output_dir=linked_root,
+            generated_ts_utc=AS_OF,
+            publication_ts_utc=AS_OF,
+            authorization=_NS_AUTH,
+        )
+
+    manifest_root = tmp_path / "manifest-root"
+    manifest_root.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_text("preserve", encoding="utf-8")
+    (manifest_root / snapshot.MANIFEST_NAME).symlink_to(outside)
+    with pytest.raises(snapshot.SnapshotContractError, match="unsafe|symlink"):
+        snapshot.publish_snapshot(
+            build,
+            output_dir=manifest_root,
+            generated_ts_utc=AS_OF,
+            publication_ts_utc=AS_OF,
+            authorization=_NS_AUTH,
+        )
+    assert outside.read_text(encoding="utf-8") == "preserve"
+
+    artifact_root = tmp_path / "artifact-root"
+    artifact_dir = artifact_root / "snapshots" / build.snapshot_id
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / snapshot.ROWS_NAME).symlink_to(outside)
+    with pytest.raises(snapshot.SnapshotContractError, match="unsafe"):
+        snapshot.publish_snapshot(
+            build,
+            output_dir=artifact_root,
+            generated_ts_utc=AS_OF,
+            publication_ts_utc=AS_OF,
+            authorization=_NS_AUTH,
+        )
+    assert outside.read_text(encoding="utf-8") == "preserve"

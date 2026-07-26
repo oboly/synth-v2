@@ -235,6 +235,33 @@ The Odroid remains the current runtime host until explicitly changed.
 A later dedicated runtime server may be evaluated, but the database host and runtime host should remain separate failure domains.
 Host replacement does not substitute for fixing ownership, freshness, and logging on the current host.
 
+### 2026-07-26 repository filesystem-separation follow-up
+
+The canonical Native SHORT snapshot publication path now has a repository-side
+publisher/reader filesystem contract implemented for review:
+
+```text
+publisher=gurk
+reader_group=synth-native-short-readers
+raw_reader=theone
+same_uid_reporting_consumer=forbidden
+www-data_raw_access=not_required
+```
+
+The publisher applies deterministic setgid/read-only modes independent of
+umask, and the new strictly read-only
+`src.operations.run_native_short_snapshot_filesystem_preflight_v1` proves
+owner/group/mode, parent traversal, symlink/escape denial, ACL absence,
+publisher writes, consumer reads/write rejection, exact distinct identities,
+and snapshot digests. The observed `0600` artifacts and any consumer running
+as `gurk` remain host-acceptance failures.
+
+This repository change performs no chmod/chown/setfacl, user/group creation,
+publication, deployment, owner assignment, or activation.
+`native_short_4h_chain` ownership and lifecycle remain `UNASSIGNED`; host
+identity/group provisioning and a passing exact-host preflight are still
+required in a separately authorized lane.
+
 ## Forward implementation plan — Profit Plan runtime ownership and native SHORT snapshot (PR A / PR B)
 
 Two separate repository PRs, sequenced PR A before PR B (PR B consumes PR A's snapshot). Neither is implemented by this docs lane and neither performs host mutations. This is deliberately not a cosmetic or temporary owner-fix: the legacy in-render native SHORT build and the missing card deltas are corrected only by the persisted contract plus safe owner below — never by re-pointing a timer at the legacy renderer, and never by passing `--previous-json` into the legacy in-render path.

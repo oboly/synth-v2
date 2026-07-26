@@ -3,9 +3,7 @@ from __future__ import annotations
 """Safe, per-profile Profit Plan render owner over persisted snapshots only."""
 
 import argparse
-import csv
 import fcntl
-import hashlib
 import json
 import os
 import re
@@ -18,13 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from src.market_data.native_short_fib_context_snapshot_v1 import (
-    BUNDLE_NAME,
-    CSV_FIELDS,
-    ROW_SCHEMA_VERSION,
-    SCHEMA_VERSION,
-    SnapshotContractError,
-    render_rows_csv,
-    resolve_manifest_artifact_paths,
+    validate_published_snapshot,
 )
 
 
@@ -76,71 +68,13 @@ def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
     return payload
 
 
-def _sha256(payload: bytes) -> str:
-    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
-
-
 def validate_native_short_snapshot(snapshot_root: Path) -> NativeShortSnapshot:
-    manifest_path = snapshot_root / "manifest_v1.json"
-    manifest = _read_json_object(manifest_path, label="canonical native SHORT manifest")
-    if manifest.get("schema_version") != SCHEMA_VERSION:
-        raise SnapshotContractError("native SHORT manifest schema_version mismatch")
-    if manifest.get("row_schema_version") != ROW_SCHEMA_VERSION:
-        raise SnapshotContractError("native SHORT manifest row_schema_version mismatch")
-
-    snapshot_id = str(manifest.get("snapshot_id") or "")
-    content_digest = str(manifest.get("content_digest") or "")
-    if not re.fullmatch(r"sha256:[0-9a-f]{64}", content_digest):
-        raise SnapshotContractError("native SHORT manifest content_digest is invalid")
-    expected_snapshot_id = f"nsctx-v1-{content_digest.removeprefix('sha256:')[:24]}"
-    if snapshot_id != expected_snapshot_id:
-        raise SnapshotContractError("native SHORT manifest snapshot_id/content_digest mismatch")
-
-    rows_path, bundle_path = resolve_manifest_artifact_paths(snapshot_root, manifest)
-    if rows_path.name != "native_short_fib_context_rows_v1.csv" or bundle_path.name != BUNDLE_NAME:
-        raise SnapshotContractError("native SHORT manifest references unexpected artifacts")
-    if not rows_path.is_file() or not bundle_path.is_file():
-        raise SnapshotContractError("native SHORT manifest references missing immutable artifacts")
-
-    rows_payload = rows_path.read_bytes()
-    bundle_payload = bundle_path.read_bytes()
-    if _sha256(rows_payload) != manifest.get("rows_csv_digest"):
-        raise SnapshotContractError("native SHORT rows digest mismatch")
-    if _sha256(bundle_payload) != manifest.get("snapshot_bundle_digest"):
-        raise SnapshotContractError("native SHORT bundle digest mismatch")
-
-    try:
-        with rows_path.open(encoding="utf-8", newline="") as handle:
-            reader = csv.DictReader(handle)
-            if reader.fieldnames != CSV_FIELDS:
-                raise SnapshotContractError("native SHORT rows schema mismatch")
-            csv_rows = list(reader)
-    except (OSError, UnicodeError, csv.Error) as exc:
-        raise SnapshotContractError("native SHORT rows CSV is unreadable") from exc
-
-    row_count = manifest.get("row_count")
-    if isinstance(row_count, bool) or not isinstance(row_count, int) or row_count < 0:
-        raise SnapshotContractError("native SHORT manifest row_count is invalid")
-    if len(csv_rows) != row_count:
-        raise SnapshotContractError("native SHORT rows count mismatch")
-
-    bundle = _read_json_object(bundle_path, label="native SHORT snapshot bundle")
-    envelope = bundle.get("envelope")
-    bundle_rows = bundle.get("rows")
-    if not isinstance(envelope, dict) or not isinstance(bundle_rows, list):
-        raise SnapshotContractError("native SHORT snapshot bundle shape is invalid")
-    if (
-        envelope.get("schema_version") != SCHEMA_VERSION
-        or envelope.get("row_schema_version") != ROW_SCHEMA_VERSION
-        or envelope.get("snapshot_id") != snapshot_id
-        or envelope.get("content_digest") != content_digest
-        or envelope.get("row_count") != row_count
-    ):
-        raise SnapshotContractError("native SHORT manifest/bundle identity mismatch")
-    if len(bundle_rows) != row_count or render_rows_csv(bundle_rows) != rows_payload:
-        raise SnapshotContractError("native SHORT bundle rows do not match immutable CSV")
-
-    return NativeShortSnapshot(snapshot_id=snapshot_id, rows_path=rows_path, row_count=row_count)
+    validated = validate_published_snapshot(snapshot_root)
+    return NativeShortSnapshot(
+        snapshot_id=validated.snapshot_id,
+        rows_path=validated.rows_path,
+        row_count=validated.row_count,
+    )
 
 
 def validate_profit_plan_snapshot(path: Path, *, label: str) -> ProfitPlanSnapshot:

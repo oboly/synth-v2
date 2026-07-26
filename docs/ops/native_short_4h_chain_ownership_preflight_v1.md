@@ -235,6 +235,80 @@ publication_host must equal writer_host
 
 for any future owner decision under this version of the contract.
 
+## Filesystem publication separation preflight
+
+The repository-side publication contract is canonical in:
+
+```text
+docs/architecture/native_short_fib_context_snapshot_contract_v1.md
+src/operations/run_native_short_snapshot_filesystem_preflight_v1.py
+```
+
+Exact identities remain independent of host ownership selection:
+
+```text
+publisher_user=gurk
+reader_group=synth-native-short-readers
+raw_reader_users=theone
+raw_reader_users_excluded=gurk,www-data
+```
+
+`gurk` is excluded from the consumer set because a same-UID reporting process
+has publisher owner permissions and cannot be proven read-only. `www-data` is
+excluded because nginx needs rendered HTML/JSON only, not the raw market
+snapshot. If publisher and reporting are selected on different hosts, this
+version has no transport contract and both activation paths remain blocked.
+
+Run this command read-only on the candidate publication host:
+
+```text
+python -m src.operations.run_native_short_snapshot_filesystem_preflight_v1 \
+  --snapshot-root /var/www/html/synth/_runtime/native_short_context_snapshot_v1 \
+  --publisher-user gurk \
+  --reader-group synth-native-short-readers \
+  --consumer-user theone \
+  --output json
+```
+
+It reports:
+
+- owner, group, and exact mode for every parent and contract path;
+- parent traversal for publisher and reader;
+- every symlink in the ancestry or snapshot tree;
+- publisher access to root, snapshot container, manifest, and lock;
+- reader access to manifest and referenced immutable artifacts;
+- reader write access to every contract path;
+- same-UID conflicts and reader-group membership;
+- exact reader-group membership (`theone` only; no undeclared identities);
+- group/world-write violations;
+- extended access/default ACLs that would invalidate mode-only separation;
+- current manifest, CSV, and bundle path/digest validity.
+
+The implementation uses only identity lookup, `lstat`, directory enumeration,
+and file reads. It does not create paths, acquire the publication lock, chmod,
+chown, set ACLs, repair artifacts, or publish a snapshot.
+
+Acceptance requires every check to pass. In particular:
+
+```text
+root=02750
+snapshots_dir=02750
+immutable_snapshot_dir=02550
+manifest=0640
+immutable_artifact=0440
+publication_lock=0600
+same_uid_conflicts=0
+reporting_writers=0
+group_or_world_writable_paths=0
+digest_valid=true
+```
+
+The observed `0600` artifacts and any reporting consumer running as `gurk`
+must therefore fail preflight. Repository merge does not repair that host
+state. Identity/group provisioning, membership, chmod/chown/setfacl,
+deployment, ownership assignment, and activation remain separately
+unauthorized.
+
 ## Exact Blocker Contract
 
 All blockers below must be closed for one and the same host at one exact merged
