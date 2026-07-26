@@ -56,10 +56,20 @@ The committed service path is:
 ```text
 deploy/systemd/synth-chain-4h.service
 -> ExecStartPre:
+   src.operations.run_synth_chain_4h_db_environment_preflight_v1
+   (closed binding/secret-file/repository-unit checks; SQL=none)
+-> ExecStartPre:
+   src.operations.run_synth_chain_4h_db_grant_preflight_v1
+   (read-only authenticated/grant identity and exact-grant checks)
+-> ExecStartPre:
    src.operations.verify_writer_capability_authorization_v1
    (repository/authorization checks; SQL=none)
 -> ExecStart:
    scripts/run_chain_4h.sh
+   -> src.operations.run_synth_chain_4h_db_environment_preflight_v1
+      (same closed binding check before every DB-capable child; SQL=none)
+   -> src.operations.run_synth_chain_4h_db_grant_preflight_v1
+      (same read-only grant contract; no DDL or DML)
    -> src.operations.verify_writer_capability_authorization_v1
       (SQL=none)
    -> src.market_data.native_short_repository_source_identity_v1
@@ -101,6 +111,80 @@ deploy/systemd/synth-chain-4h.service
 
 Pure calculation/configuration imports below those modules execute no SQL and
 add no authority.
+
+Every SQL-capable path in this graph obtains its connection through:
+
+```text
+src.common.db
+-> src.common.db_core_v1.get_connection
+-> pymysql.connect
+```
+
+Some runners call `load_dotenv()` themselves and importing `src.common.db`
+also calls it. These calls use the default `override=False` behavior. Before
+this binding, the final generic resolution was:
+
+```text
+host     = DB_HOST -> MYSQL_HOST -> localhost
+port     = DB_PORT -> MYSQL_PORT -> 3306
+user     = DB_USER -> MYSQL_USER -> synth
+password = DB_PASSWORD -> MYSQL_PASSWORD -> empty
+database = explicit argument -> DB_NAME -> MYSQL_DATABASE -> synth
+```
+
+The service did not inject an `EnvironmentFile`, so its children could read
+the checkout `.env` from the fixed working directory. A checkout containing
+the broad `DB_USER=synth` identity therefore selected that identity, while a
+checkout with no matching value used the same `synth` default. Children
+loaded dotenv at different points, but all database-capable children converged
+on the same generic helper and could silently use the broad identity.
+
+## Closed Runtime Binding
+
+The shared DB helper now has one explicit closed profile:
+
+```text
+SYNTH_DB_BINDING_PROFILE=synth_chain_4h
+SYNTH_CHAIN_4H_DB_HOST=gurkdb
+SYNTH_CHAIN_4H_DB_PORT=3306
+SYNTH_CHAIN_4H_DB_USER=synth_chain_4h_writer
+SYNTH_CHAIN_4H_DB_NAME=synth
+SYNTH_CHAIN_4H_DB_PASSWORD_FILE=/etc/synth/synth-chain-4h-db-password-v1
+```
+
+Only the canonical service supplies this profile, and normal process
+inheritance carries the exact non-secret values to its children. No
+service-name guessing or process-global environment mutation is used.
+`src.common.db_core_v1` retains its existing generic resolution when the
+profile and all dedicated variables are absent. If the profile or any
+dedicated variable is present, the closed resolver must succeed; it never
+falls back.
+
+Under the closed profile, host and port are explicit, username and database
+must equal the values above, generic `DB_*` and `MYSQL_*` values are ignored,
+and a database override other than `synth` is rejected before connection.
+Charset, collation, and timeouts use fixed connection constants rather than
+generic `.env` values.
+
+The password file contract is:
+
+```text
+path=/etc/synth/synth-chain-4h-db-password-v1
+owner=root
+group=gurk
+mode=0640
+type=regular
+symlink=forbidden
+payload=one non-empty UTF-8 password value with one optional trailing newline
+```
+
+The file remains external to Git. The resolver opens it with no-follow and
+close-on-exec semantics, compares the opened inode to the inspected inode,
+checks exact owner/group/mode, bounds its size, and rejects missing, empty,
+symlinked, non-regular, changed, over-permissive, wrongly owned, multiline, or
+NUL-containing content. Password material is held only in process memory for
+the PyMySQL call and is never placed in the unit, argv, log output, exception
+text, fixture, DSN, fingerprint, or process title.
 
 ## Executed SQL Inventory
 
@@ -232,14 +316,16 @@ The artifact is not a migration and must not be run by application code.
 Candidate configuration uses only:
 
 ```text
+SYNTH_DB_BINDING_PROFILE=synth_chain_4h
 SYNTH_CHAIN_4H_DB_HOST
 SYNTH_CHAIN_4H_DB_PORT
 SYNTH_CHAIN_4H_DB_USER=synth_chain_4h_writer
-SYNTH_CHAIN_4H_DB_PASSWORD
 SYNTH_CHAIN_4H_DB_NAME=synth
+SYNTH_CHAIN_4H_DB_PASSWORD_FILE
 ```
 
-The preflight does not read `.env`, `DB_*`, or `MYSQL_*` fallbacks:
+The grant preflight uses the same closed resolver and external secret file as
+the runtime. It does not read `.env`, `DB_*`, or `MYSQL_*` fallbacks:
 
 ```bash
 python -m src.operations.run_synth_chain_4h_db_grant_preflight_v1
@@ -254,8 +340,21 @@ SHOW GRANTS
 ROLLBACK
 ```
 
-It reports authenticated and matched grant identities without printing the
-configured host, port, password, DSN, token, raw grants, password hash, or
+The repository/host binding preflight is:
+
+```bash
+python -m src.operations.run_synth_chain_4h_db_environment_preflight_v1
+```
+
+It performs no SQL. It reports the active profile, non-secret endpoint, port,
+username, database, secret path/type/owner/group/mode/symlink state, generic
+fallback-variable names and their ignored status, repository-unit equivalence,
+and whether the grant preflight resolves the exact same candidate
+configuration. The existing installed-unit equivalence preflight remains the
+owner of repository-versus-installed systemd content and inactive-state checks.
+
+The grant preflight reports authenticated and matched grant identities without
+printing the configured password, DSN, token, raw grants, password hash, or
 credential fingerprint. It fails on missing privileges, additional object
 privileges, schema/global wildcards, administrative authority, grant option,
 foreign-database authority, account/credential/decision/planner/executor/order

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 
@@ -174,22 +175,29 @@ def test_dba_artifact_grants_exact_contract_without_plaintext_password() -> None
     assert text.count(f"'{IDENTITY_NAME}'@'{IDENTITY_HOST}'") >= 1
 
 
-def test_candidate_config_uses_only_dedicated_namespace() -> None:
+def test_candidate_config_uses_only_dedicated_namespace(tmp_path: Path) -> None:
+    secret = tmp_path / "chain-password"
+    secret.write_text("not-printed-secret\n", encoding="utf-8")
+    secret.chmod(0o640)
     config = runner.load_candidate_config(
         {
+            runner.BINDING_PROFILE_ENV: "synth_chain_4h",
             runner.ENV_HOST: "candidate-db.internal",
             runner.ENV_PORT: "3307",
             runner.ENV_USER: IDENTITY_NAME,
-            runner.ENV_PASSWORD: "not-printed-secret",
             runner.ENV_DATABASE: OPERATIONAL_DATABASE,
+            runner.ENV_PASSWORD_FILE: str(secret),
             "DB_USER": "broad-synth-must-not-be-used",
             "DB_PASSWORD": "broad-secret-must-not-be-used",
-        }
+        },
+        expected_uid=os.getuid(),
+        expected_gid=os.getgid(),
     )
     assert config.host == "candidate-db.internal"
     assert config.port == 3307
     assert config.user == IDENTITY_NAME
     assert config.password == "not-printed-secret"
+    assert config.password_file == str(secret)
 
 
 class _FakeCursor:

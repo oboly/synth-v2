@@ -49,6 +49,11 @@ EXPECTED_SERVICE_FIELDS = {
     ),
     ("Service", "ExecStartPre"): (
         "/home/gurk/projects/synth-v2/venv/bin/python "
+        "-m src.operations.run_synth_chain_4h_db_environment_preflight_v1 "
+        "--checkout-path /home/gurk/projects/synth-v2",
+        "/home/gurk/projects/synth-v2/venv/bin/python "
+        "-m src.operations.run_synth_chain_4h_db_grant_preflight_v1",
+        "/home/gurk/projects/synth-v2/venv/bin/python "
         "-m src.operations.verify_writer_capability_authorization_v1 "
         "--capability native_short_4h_chain "
         "--service synth-chain-4h.service "
@@ -60,6 +65,15 @@ EXPECTED_SERVICE_FIELDS = {
         "SYNTH_REPO_DIR=/home/gurk/projects/synth-v2",
         "SYNTH_CHAIN_4H_LOCKED=0",
         "SYNTH_CHAIN_4H_LOCK_FILE=/tmp/synth_chain_4h.lock",
+        "SYNTH_DB_BINDING_PROFILE=synth_chain_4h",
+        "SYNTH_CHAIN_4H_DB_HOST=gurkdb",
+        "SYNTH_CHAIN_4H_DB_PORT=3306",
+        "SYNTH_CHAIN_4H_DB_USER=synth_chain_4h_writer",
+        "SYNTH_CHAIN_4H_DB_NAME=synth",
+        (
+            "SYNTH_CHAIN_4H_DB_PASSWORD_FILE="
+            "/etc/synth/synth-chain-4h-db-password-v1"
+        ),
         "SYNTH_EXECUTION_MODE=paper",
         "SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED",
         "SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED",

@@ -10,14 +10,24 @@ decision_gate=none execution_planner=none executor=none
 """
 
 import argparse
-from dataclasses import dataclass
-import os
+from dataclasses import dataclass, field
 import sys
 from typing import Any, Callable, Mapping, Sequence
 
 import pymysql
 from pymysql.cursors import DictCursor
 
+from src.common.synth_chain_4h_db_binding_v1 import (
+    BINDING_PROFILE_ENV,
+    DEDICATED_ENV_KEYS,
+    ENV_DATABASE,
+    ENV_HOST,
+    ENV_PASSWORD_FILE,
+    ENV_PORT,
+    ENV_USER,
+    ChainDatabaseBindingError,
+    load_chain_database_binding,
+)
 from src.operations.synth_chain_4h_db_authority_v1 import (
     EXPECTED_GRANT_IDENTITY,
     IDENTITY_NAME,
@@ -29,12 +39,7 @@ from src.operations.synth_chain_4h_db_authority_v1 import (
 
 
 RUNNER_NAME = "run_synth_chain_4h_db_grant_preflight_v1"
-ENV_HOST = "SYNTH_CHAIN_4H_DB_HOST"
-ENV_PORT = "SYNTH_CHAIN_4H_DB_PORT"
-ENV_USER = "SYNTH_CHAIN_4H_DB_USER"
-ENV_PASSWORD = "SYNTH_CHAIN_4H_DB_PASSWORD"
-ENV_DATABASE = "SYNTH_CHAIN_4H_DB_NAME"
-REQUIRED_ENV_KEYS = (ENV_HOST, ENV_USER, ENV_PASSWORD, ENV_DATABASE)
+REQUIRED_ENV_KEYS = (BINDING_PROFILE_ENV, *DEDICATED_ENV_KEYS)
 
 READ_ONLY_SQL = (
     "START TRANSACTION READ ONLY",
@@ -59,8 +64,9 @@ class CandidateDatabaseConfig:
     host: str
     port: int
     user: str
-    password: str
+    password: str = field(repr=False)
     database: str
+    password_file: str = ""
 
 
 @dataclass(frozen=True)
@@ -87,39 +93,25 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 def load_candidate_config(
     environ: Mapping[str, str] | None = None,
+    *,
+    expected_uid: int | None = None,
+    expected_gid: int | None = None,
 ) -> CandidateDatabaseConfig:
-    source = os.environ if environ is None else environ
-    missing = tuple(key for key in REQUIRED_ENV_KEYS if not source.get(key))
-    if missing:
-        raise PreflightConfigurationError(
-            "CANDIDATE_DATABASE_CONFIG_MISSING names=" + ",".join(missing)
-        )
-
-    user = str(source[ENV_USER])
-    if user != IDENTITY_NAME:
-        raise PreflightConfigurationError(
-            f"CANDIDATE_DATABASE_USER_INVALID expected={IDENTITY_NAME}"
-        )
-    database = str(source[ENV_DATABASE])
-    if database != OPERATIONAL_DATABASE:
-        raise PreflightConfigurationError(
-            f"CANDIDATE_DATABASE_NAME_INVALID expected={OPERATIONAL_DATABASE}"
-        )
-
-    raw_port = str(source.get(ENV_PORT, "3306"))
     try:
-        port = int(raw_port)
-    except ValueError as exc:
-        raise PreflightConfigurationError("CANDIDATE_DATABASE_PORT_INVALID") from exc
-    if not 1 <= port <= 65535:
-        raise PreflightConfigurationError("CANDIDATE_DATABASE_PORT_INVALID")
-
+        binding = load_chain_database_binding(
+            environ,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+        )
+    except ChainDatabaseBindingError as exc:
+        raise PreflightConfigurationError(str(exc)) from None
     return CandidateDatabaseConfig(
-        host=str(source[ENV_HOST]),
-        port=port,
-        user=user,
-        password=str(source[ENV_PASSWORD]),
-        database=database,
+        host=binding.host,
+        port=binding.port,
+        user=binding.user,
+        password=binding.password,
+        database=binding.database,
+        password_file=str(binding.password_file),
     )
 
 

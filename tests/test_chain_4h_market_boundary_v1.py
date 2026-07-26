@@ -17,6 +17,10 @@ CANDLE_VALIDATOR = "src.operations.run_persisted_market_candle_freshness_v1"
 NATIVE_SCOPE_RUNNER = "scripts/run_native_short_scope_status_chain_once.sh"
 NATIVE_SNAPSHOT_RUNNER = "src.market_data.run_native_short_fib_context_snapshot_v1"
 AUTH_GUARD = "src.operations.verify_writer_capability_authorization_v1"
+DB_BINDING_PREFLIGHT = (
+    "src.operations.run_synth_chain_4h_db_environment_preflight_v1"
+)
+DB_GRANT_PREFLIGHT = "src.operations.run_synth_chain_4h_db_grant_preflight_v1"
 
 
 def _write(path: Path, source: str, *, executable: bool = False) -> None:
@@ -126,10 +130,21 @@ exit 0
 @pytest.mark.parametrize(
     ("blocked_module", "expected_calls"),
     (
-        (PRICE_VALIDATOR, [AUTH_GUARD, "src.market_data.native_short_repository_source_identity_v1", PRICE_VALIDATOR]),
+        (
+            PRICE_VALIDATOR,
+            [
+                DB_BINDING_PREFLIGHT,
+                DB_GRANT_PREFLIGHT,
+                AUTH_GUARD,
+                "src.market_data.native_short_repository_source_identity_v1",
+                PRICE_VALIDATOR,
+            ],
+        ),
         (
             CANDLE_VALIDATOR,
             [
+                DB_BINDING_PREFLIGHT,
+                DB_GRANT_PREFLIGHT,
                 AUTH_GUARD,
                 "src.market_data.native_short_repository_source_identity_v1",
                 PRICE_VALIDATOR,
@@ -160,6 +175,8 @@ def test_inherited_repository_and_lock_guard_cannot_redirect_or_bypass_chain(
 
     assert result.returncode == 37
     assert calls == [
+        DB_BINDING_PREFLIGHT,
+        DB_GRANT_PREFLIGHT,
         AUTH_GUARD,
         "src.market_data.native_short_repository_source_identity_v1",
         PRICE_VALIDATOR,
@@ -272,6 +289,22 @@ def test_canonical_service_pins_non_login_environment_and_outer_lock() -> None:
     assert "Environment=SYNTH_REPO_DIR=/home/gurk/projects/synth-v2" in service
     assert "Environment=SYNTH_CHAIN_4H_LOCKED=0" in service
     assert "Environment=SYNTH_CHAIN_4H_LOCK_FILE=/tmp/synth_chain_4h.lock" in service
+    assert "Environment=SYNTH_DB_BINDING_PROFILE=synth_chain_4h" in service
+    assert "Environment=SYNTH_CHAIN_4H_DB_HOST=gurkdb" in service
+    assert "Environment=SYNTH_CHAIN_4H_DB_PORT=3306" in service
+    assert "Environment=SYNTH_CHAIN_4H_DB_USER=synth_chain_4h_writer" in service
+    assert "Environment=SYNTH_CHAIN_4H_DB_NAME=synth" in service
+    assert (
+        "Environment=SYNTH_CHAIN_4H_DB_PASSWORD_FILE="
+        "/etc/synth/synth-chain-4h-db-password-v1"
+    ) in service
+    assert "SYNTH_CHAIN_4H_DB_PASSWORD=" not in service
+    assert DB_BINDING_PREFLIGHT in service
+    assert DB_BINDING_PREFLIGHT in chain
+    assert DB_GRANT_PREFLIGHT in service
+    assert DB_GRANT_PREFLIGHT in chain
+    assert service.index(DB_BINDING_PREFLIGHT) < service.index(DB_GRANT_PREFLIGHT)
+    assert chain.index(DB_BINDING_PREFLIGHT) < chain.index(DB_GRANT_PREFLIGHT)
     assert "unset SYNTH_REPO_DIR" in chain
     assert "unset SYNTH_CHAIN_4H_LOCKED" in chain
     assert "unset SYNTH_CHAIN_4H_LOCK_FILE" in chain

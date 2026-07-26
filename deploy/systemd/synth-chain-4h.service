@@ -18,15 +18,23 @@ Nice=5
 UMask=0077
 NoNewPrivileges=true
 
-# EnvironmentFile is intentionally absent. Runtime modules load the fixed
-# WorkingDirectory .env directly; systemd must not inject its full contents.
+# EnvironmentFile is intentionally absent. The closed DB profile below ignores
+# generic checkout .env DB values and reads only the dedicated password file.
 Environment=SYNTH_REPO_DIR=/home/gurk/projects/synth-v2
 Environment=SYNTH_CHAIN_4H_LOCKED=0
 Environment=SYNTH_CHAIN_4H_LOCK_FILE=/tmp/synth_chain_4h.lock
+Environment=SYNTH_DB_BINDING_PROFILE=synth_chain_4h
+Environment=SYNTH_CHAIN_4H_DB_HOST=gurkdb
+Environment=SYNTH_CHAIN_4H_DB_PORT=3306
+Environment=SYNTH_CHAIN_4H_DB_USER=synth_chain_4h_writer
+Environment=SYNTH_CHAIN_4H_DB_NAME=synth
+Environment=SYNTH_CHAIN_4H_DB_PASSWORD_FILE=/etc/synth/synth-chain-4h-db-password-v1
 Environment=SYNTH_EXECUTION_MODE=paper
 Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
 Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
 Environment=SYNTH_WRITER_EXECUTION_MODE=PRODUCTION
+ExecStartPre=/home/gurk/projects/synth-v2/venv/bin/python -m src.operations.run_synth_chain_4h_db_environment_preflight_v1 --checkout-path /home/gurk/projects/synth-v2
+ExecStartPre=/home/gurk/projects/synth-v2/venv/bin/python -m src.operations.run_synth_chain_4h_db_grant_preflight_v1
 ExecStartPre=/home/gurk/projects/synth-v2/venv/bin/python -m src.operations.verify_writer_capability_authorization_v1 --capability native_short_4h_chain --service synth-chain-4h.service --checkout-path /home/gurk/projects/synth-v2 --registry deploy/ownership/writer_capability_ownership_v1.json
 PrivateTmp=false
 

@@ -9,6 +9,11 @@ from typing import Iterator
 import pymysql
 from pymysql.cursors import DictCursor
 
+from src.common.synth_chain_4h_db_binding_v1 import (
+    dedicated_binding_requested,
+    load_chain_database_binding,
+)
+
 
 DEFAULT_CHARSET = "utf8mb4"
 DEFAULT_COLLATION = "utf8mb4_unicode_ci"
@@ -48,6 +53,30 @@ def get_db_connection():
 
 
 def get_connection(database: str | None = None):
+    if dedicated_binding_requested():
+        binding = load_chain_database_binding()
+        if database is not None and database != binding.database:
+            raise ValueError(
+                "CHAIN_DB_BINDING_DATABASE_OVERRIDE_FORBIDDEN "
+                f"expected={binding.database}"
+            )
+        return pymysql.connect(
+            host=binding.host,
+            port=binding.port,
+            user=binding.user,
+            password=binding.password,
+            database=binding.database,
+            charset=DEFAULT_CHARSET,
+            init_command=(
+                f"SET NAMES {DEFAULT_CHARSET} COLLATE {DEFAULT_COLLATION}"
+            ),
+            cursorclass=DictCursor,
+            autocommit=False,
+            connect_timeout=10,
+            read_timeout=60,
+            write_timeout=60,
+        )
+
     charset = _db_charset()
     collation = _db_collation()
 

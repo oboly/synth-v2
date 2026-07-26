@@ -251,12 +251,21 @@ sha256sum deploy/systemd/synth-chain-4h.service /etc/systemd/system/synth-chain-
 sha256sum deploy/systemd/synth-chain-4h.timer /etc/systemd/system/synth-chain-4h.timer
 python -m src.operations.run_native_short_systemd_equivalence_preflight_v1 \
   --checkout-path /home/gurk/projects/synth-v2
+python -m src.operations.run_synth_chain_4h_db_environment_preflight_v1 \
+  --checkout-path /home/gurk/projects/synth-v2
 ```
 
 Only after preflight, controlled acceptance, legacy runtime inventory,
 old-timer containment, and production authorization may the rollout lane
 explicitly authorize `systemctl enable --now synth-chain-4h.timer`. The service
 must not be started manually to manufacture evidence.
+
+The DB binding preflight requires the separately provisioned external file
+`/etc/synth/synth-chain-4h-db-password-v1` as a regular, non-symlink file owned
+by `root:gurk` with exact mode `0640`. The file contains only the dedicated
+`synth_chain_4h_writer` password with one optional trailing newline. Repository
+deployment does not create, copy, change ownership or permissions, or rotate
+this credential.
 
 ---
 
