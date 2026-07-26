@@ -86,14 +86,20 @@ unattended, or concurrent use — not immediately money-losing on a single
 careful manual run, but wrong under repetition or concurrency.
 
 7. **Implement `manual_execution_request` and its plan-snapshot table (F12).**
-   The four-table foundation (`execution_sizing_variable_ref`,
-   `execution_sizing_rule`, `execution_ladder_profile`,
-   `execution_ladder_leg`) already exists per
-   `db/migrations/20260628_execution_ladder_profiles_v1.sql`. The request
-   and plan-snapshot tables specified in
-   `docs/todo/manual_execution_ladder_profiles_v1.md` do not yet exist. This
-   is the P0 item of that pre-existing design spec and should be treated as
-   the anchor for the rest of this backlog's P1 tier.
+   **PARTIALLY REMEDIATED (2026-07-26):** the request contract
+   (`src/manual_execution/manual_execution_request_v1.py`), its migration
+   (`db/migrations/20260726_manual_execution_request_v1.sql`, created but
+   not applied), and the canonical service entrypoint
+   (`src/manual_execution/manual_execution_service_v1.py`) now exist — see
+   `docs/reviews/manual_execution_ladder_p0_remediation_implementation_20260726.md`.
+   Still missing: the plan-snapshot table, ladder-profile/anchor fields
+   (`ladder_profile_id`, `anchor_type`, `anchor_price`,
+   `source_map_cycle_id`, `source_native_map_id`), and provenance binding
+   from the full design spec in
+   `docs/todo/manual_execution_ladder_profiles_v1.md`. The four-table
+   foundation (`execution_sizing_variable_ref`, `execution_sizing_rule`,
+   `execution_ladder_profile`, `execution_ladder_leg`) already exists per
+   `db/migrations/20260628_execution_ladder_profiles_v1.sql`.
 
 8. **Idempotency for repeated Process actions (F8/F13, request-side).**
    Depends on (7). Add a deterministic request-dedupe key

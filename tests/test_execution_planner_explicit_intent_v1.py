@@ -7,6 +7,9 @@ from decimal import Decimal
 import pytest
 
 from src.decision_gate.models import DecisionResult
+from src.execution_planner.contract_preview_v1 import (
+    UnauthorizedManualExecutionCallError,
+)
 from src.execution_planner.execution_planner_v1 import build_execution_plan
 from src.execution_planner.models import ExecutionPlannerConfig
 from src.execution_planner.repository import ExecutionPlannerRepository
@@ -50,12 +53,11 @@ def _config(**overrides: object) -> ExecutionPlannerConfig:
     return ExecutionPlannerConfig(**values)
 
 
-@pytest.mark.parametrize("side", ["BUY", "SELL"])
 @pytest.mark.parametrize("mode", ["PAPER", "LIVE"])
-def test_plan_persists_exact_explicit_contract(side: str, mode: str) -> None:
+def test_plan_persists_exact_explicit_buy_contract(mode: str) -> None:
     plan = build_execution_plan(
         _decision(),
-        _config(execution_mode=mode, requested_side=side),
+        _config(execution_mode=mode, requested_side="BUY"),
         Decimal("100"),
     )
 
@@ -64,8 +66,8 @@ def test_plan_persists_exact_explicit_contract(side: str, mode: str) -> None:
     assert plan.execution_mode == mode
     assert plan.execution_intent == "PLACE_PASSIVE_LIMIT"
     assert plan.action_type == "PLACE_ORDER"
-    assert plan.requested_side == side
-    assert plan.side == side
+    assert plan.requested_side == "BUY"
+    assert plan.side == "BUY"
     assert plan.market == "BTC-EUR"
     assert isinstance(plan.valid_until_ts_utc, datetime) is (mode == "LIVE")
 
@@ -109,35 +111,13 @@ def test_repository_rejects_incomplete_canonical_plan() -> None:
         )
 
 
-def test_repository_persists_exact_sell_contract_without_permission_fields() -> None:
-    plan = build_execution_plan(
-        _decision(),
-        _config(execution_mode="LIVE", requested_side="SELL"),
-        Decimal("100"),
-    )
-    assert plan is not None
-
-    class Cursor:
-        lastrowid = 91
-        sql = ""
-        params: list[object] = []
-
-        def execute(self, sql: str, params: list[object]) -> None:
-            self.sql = sql
-            self.params = params
-
-    cursor = Cursor()
-    result = ExecutionPlannerRepository()._insert_execution_plan(cursor, plan)
-
-    assert result == 91
-    assert "decision_gate_permission_evidence_id" not in cursor.sql
-    assert cursor.params[1] == 17
-    assert cursor.params[5] == "BTC-EUR"
-    assert cursor.params[6] == "SELL"
-    assert cursor.params[8] == "PLACE_PASSIVE_LIMIT"
-    assert cursor.params[9] == "PLACE_ORDER"
-    assert cursor.params[10] == "SELL"
-    assert cursor.params[11] == "LIVE"
+def test_generic_sell_contract_is_rejected_before_planning() -> None:
+    with pytest.raises(UnauthorizedManualExecutionCallError):
+        build_execution_plan(
+            _decision(),
+            _config(execution_mode="LIVE", requested_side="SELL"),
+            Decimal("100"),
+        )
 
 
 def test_live_prepare_plan_remains_unsupported() -> None:

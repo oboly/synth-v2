@@ -1,3 +1,14 @@
+"""
+run_sell_only_execution_plan_preview_v1 — second stage of the whole-position
+sell-only PAPER preview chain.
+
+NOT the canonical manual execution path — see the module docstring in
+src.decision_gate.run_sell_only_decision_gate_preview_v1 and
+docs/reviews/manual_execution_ladder_p0_implementation_review_20260725.md
+bypass-list item 7. Left unmodified in this change. Route real manual SELL
+execution requests through
+src.manual_execution.manual_execution_service_v1.process() instead.
+"""
 from __future__ import annotations
 
 import argparse
@@ -149,6 +160,12 @@ def find_existing_plan(conn: Any, execution_sell_intent_id: int) -> int | None:
 
 
 def insert_plan(conn: Any, intent: ApprovedIntent) -> int:
+    raise PermissionError(
+        "legacy sell-only plan persistence is disabled; route through "
+        "manual_execution_service_v1.process()"
+    )
+
+    # Unreachable compatibility SQL retained for read-migration analysis.
     sql = """
     INSERT INTO execution_sell_plan (
         execution_sell_intent_id,
@@ -215,6 +232,12 @@ def insert_plan(conn: Any, intent: ApprovedIntent) -> int:
 
 
 def insert_event(conn: Any, *, intent: ApprovedIntent, plan_id: int, event_type: str, message: str) -> None:
+    raise PermissionError(
+        "legacy sell-only planner event persistence is disabled; route through "
+        "manual_execution_service_v1.process()"
+    )
+
+    # Unreachable compatibility SQL retained for read-migration analysis.
     sql = """
     INSERT INTO execution_sell_event (
         execution_sell_intent_id,
@@ -317,6 +340,14 @@ def print_table(rows: list[PlanPreviewRow]) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    print(
+        "[BLOCKED] legacy sell-only plan preview is disabled; "
+        "use src.manual_execution.manual_execution_service_v1.process()"
+    )
+    return 2
+
+    # Unreachable compatibility implementation retained temporarily for
+    # readers of pre-migration PAPER rows. It must never execute.
     load_dotenv(dotenv_path=".env", override=False)
 
     conn = get_db_connection()

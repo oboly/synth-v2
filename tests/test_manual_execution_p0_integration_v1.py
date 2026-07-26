@@ -24,6 +24,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+import pytest
+
+from src.manual_execution import _trusted_clock_v1 as trusted_clock
 from src.decision_gate.free_base_quantity_v1 import (
     STATUS_BLOCKED,
     STATUS_OK,
@@ -43,6 +46,11 @@ from src.market_rules.venue_execution_constraints_v1 import (
 
 
 NOW = datetime(2026, 7, 25, 20, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _fixed_manual_execution_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(trusted_clock, "utc_now", lambda: NOW)
 
 
 class _FakeCursor:
@@ -171,7 +179,6 @@ def test_full_paper_flow_no_double_subtraction_idempotent_and_ambiguity_safe() -
         reconciliation_pending_reservation_count=repo.count_reconciliation_pending(
             trading_account_id=3, venue="bitvavo", asset_id=101
         ),
-        now=NOW,
     )
     assert result_before.status == STATUS_OK
     assert result_before.free_base_quantity == Decimal("1.0")
@@ -201,7 +208,6 @@ def test_full_paper_flow_no_double_subtraction_idempotent_and_ambiguity_safe() -
         reconciliation_pending_reservation_count=repo.count_reconciliation_pending(
             trading_account_id=3, venue="bitvavo", asset_id=101
         ),
-        now=NOW,
     )
     assert result_after_approve.status == STATUS_OK
     assert result_after_approve.free_base_quantity == Decimal("0.3")
@@ -222,7 +228,6 @@ def test_full_paper_flow_no_double_subtraction_idempotent_and_ambiguity_safe() -
         reconciliation_pending_reservation_count=repo.count_reconciliation_pending(
             trading_account_id=3, venue="bitvavo", asset_id=101
         ),
-        now=NOW,
     )
     assert result_pending.status == STATUS_BLOCKED
 
@@ -251,7 +256,6 @@ def test_full_paper_flow_no_double_subtraction_idempotent_and_ambiguity_safe() -
         reconciliation_pending_reservation_count=repo.count_reconciliation_pending(
             trading_account_id=3, venue="bitvavo", asset_id=101
         ),
-        now=NOW,
     )
     assert result_after_open.status == STATUS_OK
     assert result_after_open.free_base_quantity == Decimal("0.3")  # not 0.0 — no double subtraction

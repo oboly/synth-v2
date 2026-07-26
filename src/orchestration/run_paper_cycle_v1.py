@@ -69,7 +69,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--min-available-equity-eur", default="25.00")
     parser.add_argument("--execution-mode", choices=("PAPER", "LIVE"), default="PAPER")
-    parser.add_argument("--requested-side", choices=("BUY", "SELL"), default="BUY")
+    parser.add_argument("--requested-side", choices=("BUY",), default="BUY")
     parser.add_argument("--prepare-target-fraction", default="0.06600000")
     parser.add_argument("--execute-target-fraction", default="0.06600000")
     parser.add_argument("--max-notional-eur", default="25.0000000000")
@@ -225,6 +225,12 @@ def _print_table(payload: dict[str, Any]) -> None:
 
 def main() -> int:
     args = parse_args()
+    if args.requested_side == "SELL":
+        print(
+            "[BLOCKED] Generic PAPER cycle is BUY-only. "
+            "Route manual SELL through manual_execution_service_v1.process()."
+        )
+        return 2
 
     gate_repo = DecisionGateRepository(cursor_factory=db_cursor)
     planner_repo = ExecutionPlannerRepository(connection_factory=get_connection)

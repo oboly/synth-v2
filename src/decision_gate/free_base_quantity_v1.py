@@ -39,6 +39,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Final
 
+from src.manual_execution import _trusted_clock_v1 as trusted_clock
+
 
 STATUS_OK: Final[str] = "OK"
 STATUS_BLOCKED: Final[str] = "BLOCKED"
@@ -71,6 +73,11 @@ class WalletAvailableSnapshot:
     total_base_quantity: Decimal | None
     source_name: str
     snapshot_ts_utc: datetime
+    # Snapshot row identity/version (e.g. account_position_snapshot_id). Optional
+    # for backward compatibility with existing direct-construction callers;
+    # src.decision_gate.manual_execution_gate_v1 always populates this so a
+    # persisted manual execution approval can bind to a specific version.
+    snapshot_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -101,7 +108,6 @@ def resolve_free_base_quantity(
     wallet_snapshot: WalletAvailableSnapshot,
     approved_not_submitted_reservation_base: Decimal,
     reconciliation_pending_reservation_count: int,
-    now: datetime,
     max_wallet_snapshot_age_seconds: int = DEFAULT_MAX_WALLET_SNAPSHOT_AGE_SECONDS,
     expected_trading_account_id: int | None = None,
     expected_venue: str | None = None,
@@ -115,6 +121,7 @@ def resolve_free_base_quantity(
     reservation still pending broker reconciliation, or a negative result.
     """
     reasons: list[str] = []
+    resolved_now = trusted_clock.utc_now()
 
     if (
         expected_trading_account_id is not None
@@ -137,7 +144,7 @@ def resolve_free_base_quantity(
         reasons.append(REASON_CONTRADICTORY_WALLET_SNAPSHOT)
 
     snapshot_ts = _ensure_aware(wallet_snapshot.snapshot_ts_utc)
-    now_aware = _ensure_aware(now)
+    now_aware = _ensure_aware(resolved_now)
     age = now_aware - snapshot_ts
     if age > timedelta(seconds=max_wallet_snapshot_age_seconds) or age < timedelta(0):
         reasons.append(REASON_STALE_WALLET_SNAPSHOT)
@@ -170,6 +177,6 @@ def resolve_free_base_quantity(
         reservation_semantics=_RESERVATION_SEMANTICS_NOTE,
         source_name=wallet_snapshot.source_name,
         snapshot_ts_utc=wallet_snapshot.snapshot_ts_utc,
-        resolved_ts_utc=now,
+        resolved_ts_utc=resolved_now,
         blocking_reasons=tuple(reasons),
     )

@@ -142,7 +142,32 @@ def _row_to_reservation(row: Any) -> SellReservation:
 
 @dataclass
 class SellReservationRepository:
+    """cursor_factory-based methods each open and commit their own
+    transaction by default. Every method also accepts an optional `cursor`
+    (an already-open DB cursor) so a caller — specifically
+    src.decision_gate.manual_execution_gate_v1.ManualExecutionGateRepository.approve_and_reserve —
+    can compose several of these calls inside one shared transaction/lock.
+    When `cursor` is supplied, the caller owns commit/rollback; this class
+    never opens or closes a connection in that mode."""
+
     cursor_factory: Callable[..., Any] = field(default=_legacy_db_cursor, repr=False, compare=False)
+
+    def find_by_idempotency_key(
+        self, idempotency_key: str, *, cursor: Any | None = None
+    ) -> SellReservation | None:
+        if cursor is not None:
+            return self._find_by_idempotency_key(cursor, idempotency_key)
+
+        with self.cursor_factory() as db_obj:
+            return self._find_by_idempotency_key(_unwrap_cursor(db_obj), idempotency_key)
+
+    def _find_by_idempotency_key(self, cursor: Any, idempotency_key: str) -> SellReservation | None:
+        cursor.execute(
+            "SELECT * FROM execution_sell_reservation WHERE idempotency_key = %s",
+            [idempotency_key],
+        )
+        row = cursor.fetchone()
+        return _row_to_reservation(row) if row else None
 
     def create_reservation_idempotent(
         self,
@@ -157,85 +182,163 @@ class SellReservationRepository:
         execution_plan_id: int | None = None,
         leg_number: int | None = None,
         notes: str | None = None,
+        cursor: Any | None = None,
     ) -> SellReservation:
         if quantity_base <= 0:
             raise ValueError("quantity_base must be > 0")
         if not idempotency_key.strip():
             raise ValueError("idempotency_key is required")
 
-        with self.cursor_factory(commit=True) as db_obj:
-            cursor = _unwrap_cursor(db_obj)
-            cursor.execute(
-                "SELECT * FROM execution_sell_reservation WHERE idempotency_key = %s",
-                [idempotency_key],
+        if cursor is not None:
+            return self._create_reservation_idempotent(
+                cursor,
+                trading_account_id=trading_account_id,
+                venue=venue,
+                asset_id=asset_id,
+                symbol=symbol,
+                idempotency_key=idempotency_key,
+                quantity_base=quantity_base,
+                manual_execution_request_id=manual_execution_request_id,
+                execution_plan_id=execution_plan_id,
+                leg_number=leg_number,
+                notes=notes,
             )
-            existing = cursor.fetchone()
-            if existing:
-                return _row_to_reservation(existing)
 
-            cursor.execute(
-                """
-                INSERT INTO execution_sell_reservation (
-                    trading_account_id, venue, asset_id, symbol,
-                    idempotency_key, quantity_base, reservation_state,
-                    manual_execution_request_id, execution_plan_id, leg_number,
-                    notes
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                [
-                    trading_account_id,
-                    venue,
-                    asset_id,
-                    symbol,
-                    idempotency_key,
-                    quantity_base,
-                    STATE_APPROVED_NOT_SUBMITTED,
-                    manual_execution_request_id,
-                    execution_plan_id,
-                    leg_number,
-                    notes,
-                ],
+        with self.cursor_factory(commit=True) as db_obj:
+            return self._create_reservation_idempotent(
+                _unwrap_cursor(db_obj),
+                trading_account_id=trading_account_id,
+                venue=venue,
+                asset_id=asset_id,
+                symbol=symbol,
+                idempotency_key=idempotency_key,
+                quantity_base=quantity_base,
+                manual_execution_request_id=manual_execution_request_id,
+                execution_plan_id=execution_plan_id,
+                leg_number=leg_number,
+                notes=notes,
             )
-            reservation_id = int(cursor.lastrowid)
-            cursor.execute(
-                "SELECT * FROM execution_sell_reservation WHERE reservation_id = %s",
-                [reservation_id],
-            )
-            row = cursor.fetchone()
-            return _row_to_reservation(row)
+
+    def _create_reservation_idempotent(
+        self,
+        cursor: Any,
+        *,
+        trading_account_id: int,
+        venue: str,
+        asset_id: int,
+        symbol: str,
+        idempotency_key: str,
+        quantity_base: Decimal,
+        manual_execution_request_id: int | None,
+        execution_plan_id: int | None,
+        leg_number: int | None,
+        notes: str | None,
+    ) -> SellReservation:
+        existing = self._find_by_idempotency_key(cursor, idempotency_key)
+        if existing:
+            return existing
+
+        cursor.execute(
+            """
+            INSERT INTO execution_sell_reservation (
+                trading_account_id, venue, asset_id, symbol,
+                idempotency_key, quantity_base, reservation_state,
+                manual_execution_request_id, execution_plan_id, leg_number,
+                notes
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """,
+            [
+                trading_account_id,
+                venue,
+                asset_id,
+                symbol,
+                idempotency_key,
+                quantity_base,
+                STATE_APPROVED_NOT_SUBMITTED,
+                manual_execution_request_id,
+                execution_plan_id,
+                leg_number,
+                notes,
+            ],
+        )
+        reservation_id = int(cursor.lastrowid)
+        cursor.execute(
+            "SELECT * FROM execution_sell_reservation WHERE reservation_id = %s",
+            [reservation_id],
+        )
+        row = cursor.fetchone()
+        return _row_to_reservation(row)
 
     def sum_approved_not_submitted(
-        self, *, trading_account_id: int, venue: str, asset_id: int
+        self,
+        *,
+        trading_account_id: int,
+        venue: str,
+        asset_id: int,
+        cursor: Any | None = None,
     ) -> Decimal:
-        with self.cursor_factory() as db_obj:
-            cursor = _unwrap_cursor(db_obj)
-            cursor.execute(
-                """
-                SELECT COALESCE(SUM(quantity_base), 0) AS total
-                FROM execution_sell_reservation
-                WHERE trading_account_id = %s AND venue = %s AND asset_id = %s
-                  AND reservation_state = %s
-                """,
-                [trading_account_id, venue, asset_id, STATE_APPROVED_NOT_SUBMITTED],
+        if cursor is not None:
+            return self._sum_approved_not_submitted(
+                cursor, trading_account_id=trading_account_id, venue=venue, asset_id=asset_id
             )
-            row = cursor.fetchone()
+
+        with self.cursor_factory() as db_obj:
+            return self._sum_approved_not_submitted(
+                _unwrap_cursor(db_obj),
+                trading_account_id=trading_account_id,
+                venue=venue,
+                asset_id=asset_id,
+            )
+
+    def _sum_approved_not_submitted(
+        self, cursor: Any, *, trading_account_id: int, venue: str, asset_id: int
+    ) -> Decimal:
+        cursor.execute(
+            """
+            SELECT COALESCE(SUM(quantity_base), 0) AS total
+            FROM execution_sell_reservation
+            WHERE trading_account_id = %s AND venue = %s AND asset_id = %s
+              AND reservation_state = %s
+            """,
+            [trading_account_id, venue, asset_id, STATE_APPROVED_NOT_SUBMITTED],
+        )
+        row = cursor.fetchone()
         return Decimal(str(row["total"])) if row else Decimal("0")
 
     def count_reconciliation_pending(
-        self, *, trading_account_id: int, venue: str, asset_id: int
+        self,
+        *,
+        trading_account_id: int,
+        venue: str,
+        asset_id: int,
+        cursor: Any | None = None,
     ) -> int:
-        with self.cursor_factory() as db_obj:
-            cursor = _unwrap_cursor(db_obj)
-            cursor.execute(
-                """
-                SELECT COUNT(*) AS n
-                FROM execution_sell_reservation
-                WHERE trading_account_id = %s AND venue = %s AND asset_id = %s
-                  AND reservation_state = %s
-                """,
-                [trading_account_id, venue, asset_id, STATE_SUBMITTED_AWAITING_RECONCILIATION],
+        if cursor is not None:
+            return self._count_reconciliation_pending(
+                cursor, trading_account_id=trading_account_id, venue=venue, asset_id=asset_id
             )
-            row = cursor.fetchone()
+
+        with self.cursor_factory() as db_obj:
+            return self._count_reconciliation_pending(
+                _unwrap_cursor(db_obj),
+                trading_account_id=trading_account_id,
+                venue=venue,
+                asset_id=asset_id,
+            )
+
+    def _count_reconciliation_pending(
+        self, cursor: Any, *, trading_account_id: int, venue: str, asset_id: int
+    ) -> int:
+        cursor.execute(
+            """
+            SELECT COUNT(*) AS n
+            FROM execution_sell_reservation
+            WHERE trading_account_id = %s AND venue = %s AND asset_id = %s
+              AND reservation_state = %s
+            """,
+            [trading_account_id, venue, asset_id, STATE_SUBMITTED_AWAITING_RECONCILIATION],
+        )
+        row = cursor.fetchone()
         return int(row["n"]) if row else 0
 
     def reconcile_reservation_state(

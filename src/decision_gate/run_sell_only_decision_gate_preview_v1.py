@@ -1,3 +1,18 @@
+"""
+run_sell_only_decision_gate_preview_v1 — whole-position (non-ladder)
+sell-only PAPER preview chain.
+
+NOT the canonical manual execution path: this chain (this runner ->
+run_sell_only_execution_plan_preview_v1 -> run_sell_only_paper_executor_preview_v1)
+uses account_position_snapshot directly, has no maximum-age check, and does
+not call src.decision_gate.manual_execution_gate_v1 or create a SELL
+reservation — see
+docs/reviews/manual_execution_ladder_p0_implementation_review_20260725.md
+bypass-list item 7. It writes only execution_sell_intent/execution_sell_plan
+PAPER-preview state (no broker submission, no position mutation) and is left
+unmodified in this change. Route real manual SELL execution requests
+through src.manual_execution.manual_execution_service_v1.process() instead.
+"""
 from __future__ import annotations
 
 import argparse
@@ -166,6 +181,12 @@ def insert_event(
     message: str,
     payload: dict[str, Any],
 ) -> None:
+    raise PermissionError(
+        "legacy sell-only decision event persistence is disabled; route through "
+        "manual_execution_service_v1.process()"
+    )
+
+    # Unreachable compatibility SQL retained for read-migration analysis.
     sql = """
     INSERT INTO execution_sell_event (
         execution_sell_intent_id,
@@ -213,6 +234,12 @@ def decide_position(
     request_fraction: Decimal,
     approve_paper_preview: bool,
 ) -> tuple[str, str, int, int, int, Decimal]:
+    raise PermissionError(
+        "legacy sell-only decision construction is disabled; route through "
+        "manual_execution_service_v1.process()"
+    )
+
+    # Unreachable compatibility logic retained for read-migration analysis.
     requested_quantity = position.available_quantity_base * request_fraction
 
     if position.account_mode != "paper":
@@ -338,6 +365,12 @@ def insert_intent(
     decision_gate_enabled: int,
     execution_enabled: int,
 ) -> int:
+    raise PermissionError(
+        "legacy sell-only intent persistence is disabled; route through "
+        "manual_execution_service_v1.process()"
+    )
+
+    # Unreachable compatibility SQL retained for read-migration analysis.
     sql = """
     INSERT INTO execution_sell_intent (
         trading_account_id,
@@ -453,6 +486,14 @@ def print_table(rows: list[DecisionRow]) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    print(
+        "[BLOCKED] legacy sell-only preview chain is disabled; "
+        "use src.manual_execution.manual_execution_service_v1.process()"
+    )
+    return 2
+
+    # Unreachable compatibility implementation retained temporarily for
+    # readers of pre-migration PAPER rows. It must never execute.
     load_dotenv(dotenv_path=".env", override=False)
 
     request_fraction = Decimal(str(args.request_fraction))

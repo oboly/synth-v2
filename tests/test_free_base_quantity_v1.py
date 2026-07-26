@@ -10,6 +10,7 @@ from decimal import Decimal
 
 import pytest
 
+from src.manual_execution import _trusted_clock_v1 as trusted_clock
 from src.decision_gate.free_base_quantity_v1 import (
     REASON_ACCOUNT_VENUE_ASSET_MISMATCH,
     REASON_CONTRADICTORY_WALLET_SNAPSHOT,
@@ -25,6 +26,11 @@ from src.decision_gate.free_base_quantity_v1 import (
 
 
 NOW = datetime(2026, 7, 25, 12, 0, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _fixed_manual_execution_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(trusted_clock, "utc_now", lambda: NOW)
 
 
 def _snapshot(**overrides) -> WalletAvailableSnapshot:
@@ -48,7 +54,6 @@ class TestHappyPath:
             wallet_snapshot=_snapshot(),
             approved_not_submitted_reservation_base=Decimal("0"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
         )
         assert result.status == STATUS_OK
         assert result.free_base_quantity == Decimal("1.5")
@@ -59,7 +64,6 @@ class TestHappyPath:
             wallet_snapshot=_snapshot(available_base_quantity=Decimal("1.5")),
             approved_not_submitted_reservation_base=Decimal("0.4"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
         )
         assert result.status == STATUS_OK
         assert result.free_base_quantity == Decimal("1.1")
@@ -75,7 +79,6 @@ class TestDoubleSubtractionPrevention:
             wallet_snapshot=_snapshot(available_base_quantity=Decimal("1.5")),
             approved_not_submitted_reservation_base=Decimal("0"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
         )
         assert result.free_base_quantity == Decimal("1.5")
 
@@ -88,7 +91,6 @@ class TestDoubleSubtractionPrevention:
             wallet_snapshot=_snapshot(),
             approved_not_submitted_reservation_base=Decimal("0"),
             reconciliation_pending_reservation_count=1,
-            now=NOW,
         )
         assert result.status == STATUS_BLOCKED
         assert REASON_RECONCILIATION_PENDING in result.blocking_reasons
@@ -101,7 +103,6 @@ class TestFailClosed:
             wallet_snapshot=_snapshot(snapshot_ts_utc=NOW - timedelta(hours=2)),
             approved_not_submitted_reservation_base=Decimal("0"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
             max_wallet_snapshot_age_seconds=900,
         )
         assert result.status == STATUS_BLOCKED
@@ -112,7 +113,6 @@ class TestFailClosed:
             wallet_snapshot=_snapshot(snapshot_ts_utc=NOW + timedelta(minutes=5)),
             approved_not_submitted_reservation_base=Decimal("0"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
         )
         assert result.status == STATUS_BLOCKED
         assert REASON_STALE_WALLET_SNAPSHOT in result.blocking_reasons
@@ -122,7 +122,6 @@ class TestFailClosed:
             wallet_snapshot=_snapshot(available_base_quantity=None),
             approved_not_submitted_reservation_base=Decimal("0"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
         )
         assert result.status == STATUS_BLOCKED
         assert REASON_INCOMPLETE_WALLET_SNAPSHOT in result.blocking_reasons
@@ -132,7 +131,6 @@ class TestFailClosed:
             wallet_snapshot=_snapshot(available_base_quantity=Decimal("-1")),
             approved_not_submitted_reservation_base=Decimal("0"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
         )
         assert result.status == STATUS_BLOCKED
         assert REASON_CONTRADICTORY_WALLET_SNAPSHOT in result.blocking_reasons
@@ -144,7 +142,6 @@ class TestFailClosed:
             ),
             approved_not_submitted_reservation_base=Decimal("0"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
         )
         assert result.status == STATUS_BLOCKED
         assert REASON_CONTRADICTORY_WALLET_SNAPSHOT in result.blocking_reasons
@@ -154,7 +151,6 @@ class TestFailClosed:
             wallet_snapshot=_snapshot(trading_account_id=3),
             approved_not_submitted_reservation_base=Decimal("0"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
             expected_trading_account_id=99,
         )
         assert result.status == STATUS_BLOCKED
@@ -165,7 +161,6 @@ class TestFailClosed:
             wallet_snapshot=_snapshot(venue="bitvavo"),
             approved_not_submitted_reservation_base=Decimal("0"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
             expected_venue="kraken",
         )
         assert result.status == STATUS_BLOCKED
@@ -176,7 +171,6 @@ class TestFailClosed:
             wallet_snapshot=_snapshot(available_base_quantity=Decimal("1.0")),
             approved_not_submitted_reservation_base=Decimal("2.0"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
         )
         assert result.status == STATUS_BLOCKED
         assert REASON_NEGATIVE_RESULT in result.blocking_reasons
@@ -187,7 +181,6 @@ class TestFailClosed:
             wallet_snapshot=_snapshot(),
             approved_not_submitted_reservation_base=Decimal("-1"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
         )
         assert result.status == STATUS_BLOCKED
         assert REASON_CONTRADICTORY_WALLET_SNAPSHOT in result.blocking_reasons
@@ -199,7 +192,6 @@ class TestRecordedProvenance:
             wallet_snapshot=_snapshot(),
             approved_not_submitted_reservation_base=Decimal("0"),
             reconciliation_pending_reservation_count=0,
-            now=NOW,
         )
         assert result.trading_account_id == 3
         assert result.venue == "bitvavo"

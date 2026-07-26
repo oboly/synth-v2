@@ -2,6 +2,15 @@ from __future__ import annotations
 
 # broker_private_calls=0  broker_writes=0  order_submission=0
 # live_orders=0  decision_gate=none  executor=none
+#
+# NOT an authoritative manual-execution path: this module never calls
+# decision_gate and round_ladder_preview() is optional (raw
+# resolve_ladder_preview() has no consumer that rejects invalid legs). See
+# docs/reviews/manual_execution_ladder_p0_implementation_review_20260725.md
+# bypass-list items 3-4. Left unmodified in this change (A+ ladder quantity
+# calculation is explicitly out of scope here) — route real manual SELL
+# execution requests through
+# src.manual_execution.manual_execution_service_v1.process() instead.
 
 from decimal import Decimal
 
@@ -168,6 +177,12 @@ def resolve_ladder_preview(
     anchor_price: Decimal,
     quote_amount: Decimal,
 ) -> LadderPreview:
+    if profile.side.strip().upper() == "SELL":
+        raise PermissionError(
+            "direct SELL ladder preview is disabled; route through "
+            "manual_execution_service_v1.process()"
+        )
+
     if not legs:
         raise ValueError(
             f"profile {profile.profile_code!r} has no active legs for version "
@@ -243,6 +258,11 @@ def round_ladder_preview(
     service. Returns one RoundedLeg per input leg, in the same order;
     callers must check RoundedLeg.is_valid per leg and must not submit an
     invalid leg."""
+    if preview.side.strip().upper() == "SELL":
+        raise PermissionError(
+            "direct SELL ladder rounding is disabled; route through "
+            "manual_execution_service_v1.process()"
+        )
     return tuple(
         round_leg_for_side(
             side=preview.side,

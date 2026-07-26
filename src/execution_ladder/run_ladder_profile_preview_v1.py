@@ -4,6 +4,13 @@ run_ladder_profile_preview_v1 — read-only ladder profile preview runner.
 Resolves a ladder profile and prints per-leg preview without writing to the
 database, placing orders, or calling any broker API.
 
+NOT an authoritative manual-execution path: this runner uses the raw
+resolve_ladder_preview() path, never calls decision_gate, and has no
+executor consumer — see
+docs/reviews/manual_execution_ladder_p0_implementation_review_20260725.md
+bypass-list item 4. Route real manual SELL execution requests through
+src.manual_execution.manual_execution_service_v1.process() instead.
+
 Usage:
     python -m src.execution_ladder.run_ladder_profile_preview_v1 \\
         --trading-account-id 1 \\
@@ -60,6 +67,14 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
 
+    print(
+        "[BLOCKED] direct ladder profile preview is disabled; "
+        "use src.manual_execution.manual_execution_service_v1.process()"
+    )
+    return 2
+
+    # Unreachable compatibility implementation retained until the profile
+    # reader is migrated to the canonical request/service path.
     print(f"runner={RUNNER_NAME}")
     print(f"version={RUNNER_VERSION}")
     print(f"trading_account_id={args.trading_account_id}")

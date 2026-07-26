@@ -136,9 +136,49 @@ def test_global_live_mode_cannot_convert_persisted_paper(monkeypatch: pytest.Mon
         ),
     )
 
+    assert calls == []
+    assert result["paper_placed"] == 0
+    assert result["live_placed"] == 0
+    assert result["processed"] == 0
+    assert result["failed"] == 1
+
+
+def test_buy_paper_worker_behavior_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _plan()
+    plan.requested_side = "BUY"
+    plan.side = "BUY"
+    calls: list[int] = []
+    monkeypatch.setattr(
+        worker,
+        "_fetch_actionable_plan_headers",
+        lambda: [
+            {
+                "execution_plan_id": plan.execution_plan_id,
+                "execution_mode": "PAPER",
+            }
+        ],
+    )
+    monkeypatch.setattr(worker, "_fetch_actionable_plans", lambda _ids: [plan])
+    monkeypatch.setattr(worker, "_fetch_latest_events_for_plans", lambda _ids: {})
+    monkeypatch.setattr(
+        worker,
+        "_place_initial_order_paper",
+        lambda value: calls.append(value.execution_plan_id),
+    )
+
+    result = worker.process_execution_plans(
+        execution_mode="paper",
+        market_data_client_factory=lambda: (_ for _ in ()).throw(
+            AssertionError("PAPER IDLE path must not construct a client")
+        ),
+    )
+
     assert calls == [71]
     assert result["paper_placed"] == 1
-    assert result["live_placed"] == 0
+    assert result["processed"] == 1
+    assert result["failed"] == 0
 
 
 @pytest.mark.parametrize("mode", ["paper", "Paper", "live", "Live", "", "UNKNOWN"])

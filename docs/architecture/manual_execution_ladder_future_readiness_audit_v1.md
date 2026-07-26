@@ -733,6 +733,26 @@ statically confirms no other module writes this table's `reservation_state`.
 
 ### F12 — `manual_execution_request` (the tray's core artifact) does not exist yet
 
+**P0 status (2026-07-26): PARTIALLY REMEDIATED.** The P0 safety remediation
+commit reviewed on 2026-07-25
+(`docs/reviews/manual_execution_ladder_p0_implementation_review_20260725.md`)
+was BLOCK/REJECT: it built `free_base_quantity_v1`, `sell_reservation_v1`,
+`venue_execution_constraints_v1`, and `canonical_rounding_v1` as
+disconnected primitives with no request parent to bind them to (finding
+B1). `src.manual_execution.manual_execution_request_v1` now implements the
+canonical immutable request contract this finding names, and
+`src.manual_execution.manual_execution_service_v1.process()` is the one
+call graph from a persisted request through
+`src.decision_gate.manual_execution_gate_v1` (the trusted FREE_BASE_QUANTITY
+producer B2 found missing) to a decision_gate-approved
+`contract_preview_v1.build_execution_plan_preview()` call — see
+`docs/reviews/manual_execution_ladder_p0_remediation_implementation_20260726.md`
+for the exact call graph, tests, and remaining gaps. Still open: atomic
+SELL reservation creation, reconciliation, provenance binding, the
+plan-snapshot table, and the ladder-profile/anchor fields from
+`docs/todo/manual_execution_ladder_profiles_v1.md`'s full design spec —
+none of those are implemented by this change.
+
 - Reference: `docs/todo/manual_execution_ladder_profiles_v1.md` — a complete,
   already-reviewed P0 design spec for exactly this table, its lifecycle
   states, and its immutability requirement. No corresponding migration,
