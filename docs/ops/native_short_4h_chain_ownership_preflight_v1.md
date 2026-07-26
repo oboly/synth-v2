@@ -249,15 +249,20 @@ Exact identities remain independent of host ownership selection:
 ```text
 publisher_user=gurk
 reader_group=synth-native-short-readers
+required_reader_group_members=gurk,theone
 raw_reader_users=theone
 raw_reader_users_excluded=gurk,www-data
 ```
 
 `gurk` is excluded from the consumer set because a same-UID reporting process
-has publisher owner permissions and cannot be proven read-only. `www-data` is
-excluded because nginx needs rendered HTML/JSON only, not the raw market
-snapshot. If publisher and reporting are selected on different hosts, this
-version has no transport contract and both activation paths remain blocked.
+has publisher owner permissions and cannot be proven read-only. It is
+nevertheless a required member of `synth-native-short-readers` so publisher
+`chmod` of newly created setgid directories deterministically retains
+`S_ISGID`; membership grants no authority beyond the ownership `gurk` already
+has. `theone` is the only raw read-only consumer. `www-data` is excluded because
+nginx needs rendered HTML/JSON only, not the raw market snapshot. If publisher
+and reporting are selected on different hosts, this version has no transport
+contract and both activation paths remain blocked.
 
 Run this command read-only on the candidate publication host:
 
@@ -281,8 +286,10 @@ It reports:
   chmodding them;
 - reader access to manifest and referenced immutable artifacts;
 - reader write access to every contract path;
-- same-UID conflicts and reader-group membership;
-- exact reader-group membership (`theone` only; no undeclared identities);
+- same-UID conflicts among raw consumers and reader-group membership for both
+  publisher and raw consumers;
+- exact reader-group membership (`gurk,theone`; no undeclared identities),
+  while deriving raw consumers separately as `theone` only;
 - group/world-write violations;
 - extended access/default ACLs that would invalidate mode-only separation;
 - current manifest, CSV, and bundle path/digest validity.

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -131,6 +133,105 @@ def test_consumer_without_reader_group_cannot_read(tmp_path: Path) -> None:
 
     assert "reader_group_membership" in _failed(result)
     assert f"consumer_read:{consumer.name}" in _failed(result)
+
+
+def test_publisher_without_reader_group_membership_fails(tmp_path: Path) -> None:
+    root = tmp_path / "native"
+    _publish(root)
+    publisher, consumer, gid = _identity_contract()
+    ungrouped_publisher = preflight.Identity(
+        publisher.name,
+        publisher.uid,
+        frozenset({gid + 1}),
+    )
+
+    result = preflight.inspect_snapshot_filesystem(
+        root,
+        publisher=ungrouped_publisher,
+        consumers=(consumer,),
+        reader_gid=gid,
+        reader_group=preflight.READER_GROUP,
+    )
+
+    assert "publisher_reader_group_membership" in _failed(result)
+
+
+def _run_main_with_group_members(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    members: set[str],
+) -> tuple[int, dict[str, object]]:
+    publisher, consumer, gid = _identity_contract()
+    identities = {publisher.name: publisher, consumer.name: consumer}
+    monkeypatch.setattr(preflight, "_identity", identities.__getitem__)
+    monkeypatch.setattr(
+        preflight.grp,
+        "getgrnam",
+        lambda name: SimpleNamespace(gr_gid=gid, gr_name=name),
+    )
+    monkeypatch.setattr(preflight, "_group_member_names", lambda group: members)
+
+    code = preflight.main(
+        [
+            "--snapshot-root",
+            str(root),
+            "--output",
+            "json",
+        ]
+    )
+    return code, json.loads(capsys.readouterr().out)
+
+
+def test_exact_group_membership_keeps_publisher_out_of_consumers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "native"
+    _publish(root)
+
+    code, payload = _run_main_with_group_members(
+        root,
+        monkeypatch,
+        capsys,
+        set(preflight.REQUIRED_READER_GROUP_MEMBERS),
+    )
+
+    assert code == 0
+    assert payload["result"] == preflight.PASS
+    assert payload["consumer_users"] == list(preflight.READER_USERS)
+    checks = {check["name"]: check["status"] for check in payload["checks"]}
+    assert checks["exact_reader_group_membership"] == preflight.PASS
+    assert checks["publisher_reader_group_membership"] == preflight.PASS
+    assert checks["same_uid_conflicts"] == preflight.PASS
+    assert checks["consumer_read:theone"] == preflight.PASS
+    assert checks["consumer_write_rejection:theone"] == preflight.PASS
+    assert "consumer_read:gurk" not in checks
+    assert "consumer_write_rejection:gurk" not in checks
+
+
+def test_extra_reader_group_member_fails_without_becoming_consumer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "native"
+    _publish(root)
+
+    code, payload = _run_main_with_group_members(
+        root,
+        monkeypatch,
+        capsys,
+        {*preflight.REQUIRED_READER_GROUP_MEMBERS, "unexpected"},
+    )
+
+    assert code == 1
+    assert payload["result"] == preflight.FAIL
+    assert payload["consumer_users"] == list(preflight.READER_USERS)
+    checks = {check["name"]: check["status"] for check in payload["checks"]}
+    assert checks["exact_reader_group_membership"] == preflight.FAIL
+    assert "consumer_read:unexpected" not in checks
 
 
 @pytest.mark.parametrize("mode", [0o660, 0o646])

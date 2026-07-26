@@ -35,6 +35,7 @@ DEFAULT_SNAPSHOT_ROOT = Path("/var/www/html/synth/_runtime/native_short_context_
 PUBLISHER_USER = CONTRACT_PUBLISHER_USER
 READER_GROUP = CONTRACT_READER_GROUP
 READER_USERS = ("theone",)
+REQUIRED_READER_GROUP_MEMBERS = (PUBLISHER_USER, *READER_USERS)
 PASS = "PASS"
 FAIL = "FAIL"
 
@@ -240,6 +241,13 @@ def inspect_snapshot_filesystem(
         not same_uid,
         "publisher UID is distinct from every consumer UID",
         f"publisher={publisher.name}:{publisher.uid} conflicts={','.join(same_uid)}",
+    )
+    _check(
+        checks,
+        "publisher_reader_group_membership",
+        reader_gid in publisher.gids,
+        f"publisher {publisher.name} is a member of {reader_group}",
+        f"group={reader_group} missing={publisher.name}",
     )
     group_membership_missing = [
         consumer.name for consumer in consumers if reader_gid not in consumer.gids
@@ -464,9 +472,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         publisher = _identity(args.publisher_user)
         reader = grp.getgrnam(args.reader_group)
         actual_reader_members = _group_member_names(reader)
-        consumer_users = tuple(
-            sorted(set(args.consumer_users or READER_USERS) | actual_reader_members)
-        )
+        consumer_users = tuple(sorted(set(args.consumer_users or READER_USERS)))
         consumers = tuple(_identity(name) for name in consumer_users)
         result = inspect_snapshot_filesystem(
             args.snapshot_root,
@@ -475,15 +481,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             reader_gid=reader.gr_gid,
             reader_group=reader.gr_name,
         )
-        exact_readers = actual_reader_members == set(READER_USERS)
+        exact_readers = actual_reader_members == set(REQUIRED_READER_GROUP_MEMBERS)
         exact_reader_check = Check(
-            "exact_reader_identities",
+            "exact_reader_group_membership",
             PASS if exact_readers else FAIL,
-            f"reader group members are exactly {','.join(READER_USERS)}"
+            (
+                "reader group members are exactly "
+                f"{','.join(REQUIRED_READER_GROUP_MEMBERS)}"
+            )
             if exact_readers
             else (
                 f"actual={','.join(sorted(actual_reader_members)) or 'none'} "
-                f"expected={','.join(READER_USERS)}"
+                f"expected={','.join(REQUIRED_READER_GROUP_MEMBERS)}"
             ),
         )
         checks = (*result.checks, exact_reader_check)

@@ -78,6 +78,7 @@ The exact runtime identities are:
 ```text
 publisher user = gurk
 reader group   = synth-native-short-readers
+group members  = gurk,theone
 raw reader     = theone
 www-data       = not a raw reader
 ```
@@ -87,6 +88,11 @@ The root must already exist with mode `02750` and ownership
 its type, symlink/ACL state, mode, owner, and group and never creates, chmods,
 or repairs it. Setgid on the mutable directories makes publisher-created
 descendants inherit the exact reader group without a writable reader group.
+The group contains `gurk` so an unprivileged publisher can deterministically
+retain `S_ISGID` when it applies canonical modes to newly created directories.
+This membership grants `gurk` no additional authority because `gurk` already
+owns the publication tree. `theone` remains the only raw reporting consumer;
+`www-data` remains excluded.
 
 | Path class | Mode | Mutation authority |
 |---|---:|---|
@@ -116,9 +122,11 @@ A process that shares UID `gurk` is a publisher-equivalent process regardless
 of its service name or mode bits. It is therefore forbidden as a reporting
 consumer. The canonical reporting identity is `theone`; any installed
 reporting unit running as `gurk` must remain inactive until moved to that
-distinct identity and admitted to `synth-native-short-readers`. User/group
-creation, membership changes, chmod/chown/setfacl, deployment, and activation
-are separate host actions and are not authorized by this repository contract.
+distinct identity and admitted to `synth-native-short-readers`. The required
+reader-group membership is exactly `gurk,theone`; extra members fail closed.
+User/group creation, membership changes, chmod/chown/setfacl, deployment, and
+activation are separate host actions and are not authorized by this repository
+contract.
 
 All existing path components and publication targets must be real directories
 or regular files. Symlinked roots, parents, manifests, locks, snapshot
