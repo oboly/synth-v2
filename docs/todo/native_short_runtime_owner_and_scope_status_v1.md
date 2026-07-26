@@ -150,6 +150,23 @@ secret paths, multiple runtime consumers, or externally supplied chain-binding
 metadata. Completing or retaining this TODO grants no runtime ownership and no
 activation authorization.
 
+Current review status for PR #151:
+
+```text
+current_safety_status=SAFE_WITHIN_CURRENT_DEPLOYMENT_ENVELOPE
+universal_hardening=NOT_CLAIMED
+single_canonical_caller=true
+trusted_deployment_metadata=true
+generic_db_fallback=FORBIDDEN
+future_multi_caller_hardening=DEFERRED_TRIGGERED_TODO
+merge_decision=GO
+accepted_scope=current single-caller deployment
+host_port_secret_path_exact_pinning=deferred
+future_scope_expansion_requires_reassessment=true
+ownership=UNASSIGNED
+activation=NOT_AUTHORIZED
+```
+
 ## Remaining operational action — P2 owner only
 
 Installed-host activation was deliberately not part of PR #87 acceptance.

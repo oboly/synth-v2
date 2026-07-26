@@ -364,6 +364,71 @@ Passing this repository preflight proves only candidate grant truth. It does
 not prove installed service configuration, assign ownership, authorize a
 writer run, publish state, or authorize timer activation.
 
+## Safety Posture: Current Deployment Envelope
+
+This contract provides bounded safety for the current Synth v2 deployment.
+
+Current assumptions:
+
+- `synth-chain-4h.service` is the only canonical caller using the
+  `synth_chain_4h` database binding profile.
+- The service unit and its non-secret environment metadata are maintained from
+  this repository by the operator.
+- The configured database endpoint, port, and password-file path are trusted
+  deployment metadata, not untrusted user input.
+- The runtime must use the exact dedicated identity
+  `synth_chain_4h_writer` and database `synth`.
+- Missing or invalid dedicated credentials must fail closed.
+- Falling back to generic `DB_*`, `MYSQL_*`, or the broad `synth` identity is
+  forbidden.
+- The grant preflight must prove the exact least-privilege database authority
+  before the chain runs.
+
+The goal is not to make the shared database binding universally safe against
+every possible caller, hostile environment mutation, arbitrary unit rewrite,
+or future multi-service use.
+
+The accepted safety claim is:
+
+```text
+SAFE_WITHIN_CURRENT_DEPLOYMENT_ENVELOPE
+```
+
+It must not be described as:
+
+- universally hardened;
+- tamper-proof;
+- multi-tenant safe;
+- safe for arbitrary external callers;
+- safe for configurable database endpoints supplied by untrusted sources.
+
+Exact enforcement of the canonical host, port, and password-file path inside
+the shared binding loader is deferred hardening. It is not required for the
+current single-caller deployment envelope.
+
+This hardening becomes mandatory before any of the following changes:
+
+- another service or caller uses the binding profile;
+- database endpoints become configurable outside the canonical service unit;
+- secret paths become configurable;
+- multiple hosts, accounts, tenants, or runtime owners are supported;
+- environment metadata can originate from an untrusted or user-controlled
+  source;
+- the binding module becomes a general-purpose runtime interface.
+
+```text
+current_safety_status=SAFE_WITHIN_CURRENT_DEPLOYMENT_ENVELOPE
+universal_hardening=NOT_CLAIMED
+single_canonical_caller=true
+trusted_deployment_metadata=true
+generic_db_fallback=FORBIDDEN
+future_multi_caller_hardening=DEFERRED_TRIGGERED_TODO
+```
+
+The bounded claim is that the binding is demonstrably safe for the current
+architecture, caller, and operator-controlled deployment boundary. Expanding
+that boundary reopens the deferred hardening TODO.
+
 ## Safety State
 
 ```text
