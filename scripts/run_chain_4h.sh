@@ -48,6 +48,20 @@ activate_runtime_venv() {
 
 activate_runtime_venv
 
+# The canonical unit and every direct invocation must carry the same closed
+# chain-scoped binding. This reads no database and fails before any DB-capable
+# child process when the dedicated profile or secret transport is invalid.
+if ! python -m src.operations.run_synth_chain_4h_db_environment_preflight_v1 \
+    --checkout-path "${REPO_DIR}"; then
+    echo "[CHAIN][4h][FAIL] rc=4 reason=CHAIN_DB_BINDING_PREFLIGHT_FAILED"
+    exit 4
+fi
+
+if ! python -m src.operations.run_synth_chain_4h_db_grant_preflight_v1; then
+    echo "[CHAIN][4h][FAIL] rc=5 reason=CHAIN_DB_GRANT_PREFLIGHT_FAILED"
+    exit 5
+fi
+
 # Fail closed before launching any write-capable chain step. Same shared
 # authorization semantics as the systemd ExecStartPre guard and the Python
 # mutation boundary (native SHORT fib context snapshot publication). Default

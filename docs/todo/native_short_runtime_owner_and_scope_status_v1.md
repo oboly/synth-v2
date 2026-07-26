@@ -29,6 +29,7 @@ truth is the ownership registry and the current runtime lifecycle above.
 implementation line: done / accepted (historical)
 repository devlap unit contract and read-only equivalence preflight: done
 repository database least-privilege contract and read-only grant preflight: done
+repository chain-scoped database runtime binding and secret-file preflight: implemented for review
 repository filesystem publisher/reader separation contract and read-only preflight: implemented for review
 dedicated database identity provisioning/observed grant acceptance: pending
 filesystem reader group/identity provisioning and observed acceptance: pending
@@ -126,6 +127,46 @@ The following former TODOs are complete and must not remain open:
 - historical 4h runtime wiring (production owner now UNASSIGNED; see registry);
 - PR-branch and post-merge acceptance.
 
+## Deferred runtime-binding hardening — P3
+
+The current runtime binding already fails closed on:
+
+- the exact `synth_chain_4h` binding profile;
+- the exact `synth_chain_4h_writer` dedicated username;
+- the exact `synth` database;
+- generic credential fallback;
+- validated external secret transport;
+- repository-unit/environment equivalence;
+- exact authenticated and grant identity validation.
+
+One deferred hardening TODO remains: enforce `EXPECTED_HOST`,
+`EXPECTED_PORT`, and `EXPECTED_PASSWORD_FILE` exactly inside the shared binding
+loader, and reject repository-unit drift from those canonical values before
+connection.
+
+This is not required for the current single canonical `synth-chain-4h` caller.
+It becomes required before supporting configurable endpoints, alternative
+secret paths, multiple runtime consumers, or externally supplied chain-binding
+metadata. Completing or retaining this TODO grants no runtime ownership and no
+activation authorization.
+
+Current review status for PR #151:
+
+```text
+current_safety_status=SAFE_WITHIN_CURRENT_DEPLOYMENT_ENVELOPE
+universal_hardening=NOT_CLAIMED
+single_canonical_caller=true
+trusted_deployment_metadata=true
+generic_db_fallback=FORBIDDEN
+future_multi_caller_hardening=DEFERRED_TRIGGERED_TODO
+merge_decision=GO
+accepted_scope=current single-caller deployment
+host_port_secret_path_exact_pinning=deferred
+future_scope_expansion_requires_reassessment=true
+ownership=UNASSIGNED
+activation=NOT_AUTHORIZED
+```
+
 ## Remaining operational action — P2 owner only
 
 Installed-host activation was deliberately not part of PR #87 acceptance.
@@ -135,24 +176,29 @@ Any later installed-host action must be handled as a separate operational change
 1. verify the installed checkout and exact `origin/main` ancestry;
 2. run the read-only
    `src.operations.run_native_short_systemd_equivalence_preflight_v1`;
-3. provision the dedicated `synth_chain_4h_writer` identity only in a
+3. separately install the external
+   `/etc/synth/synth-chain-4h-db-password-v1` secret as
+   `root:gurk` mode `0640`, then pass the read-only
+   `src.operations.run_synth_chain_4h_db_environment_preflight_v1`; repository
+   implementation does not create, copy, chmod, chown, or rotate that file;
+4. provision the dedicated `synth_chain_4h_writer` identity only in a
    separately authorized DBA lane, then pass the read-only
    `src.operations.run_synth_chain_4h_db_grant_preflight_v1`; the broad
    `synth` identity is not accepted as writer-authority proof;
-4. keep the currently observed orphan timer disabled/inactive and treat its
+5. keep the currently observed orphan timer disabled/inactive and treat its
    content mismatch as a blocker, not as canonical ownership;
-5. separately provision `gurk:synth-native-short-readers` ownership and
+6. separately provision `gurk:synth-native-short-readers` ownership and
    `theone` reader membership, then pass the strictly read-only
    `src.operations.run_native_short_snapshot_filesystem_preflight_v1`; any
    reporting consumer with UID `gurk` is a blocker;
-6. prove zero alternate schedulers/publishers across all candidate and
+7. prove zero alternate schedulers/publishers across all candidate and
    historical hosts;
-7. separately select and accept one owner before any controlled writer run;
-8. separately authorize production before any timer activation;
-9. verify bounded logs, lock behavior, idempotency, and terminal summaries
+8. separately select and accept one owner before any controlled writer run;
+9. separately authorize production before any timer activation;
+10. verify bounded logs, lock behavior, idempotency, and terminal summaries
    only in an explicitly authorized acceptance lane;
-10. preserve rollback without mutating ledger history;
-11. perform no broker, account, order, decision, planning, or execution action.
+11. preserve rollback without mutating ledger history;
+12. perform no broker, account, order, decision, planning, or execution action.
 
 This remaining host action is tracked under:
 
