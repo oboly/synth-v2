@@ -37,6 +37,7 @@ def _identity_contract() -> tuple[preflight.Identity, preflight.Identity, int]:
 
 def _publish(root: Path) -> snapshot.PublicationResult:
     root.mkdir()
+    root.chmod(snapshot.PUBLISH_ROOT_MODE)
     published = snapshot.publish_snapshot(
         _build(),
         output_dir=root,
@@ -82,6 +83,17 @@ def test_valid_snapshot_proves_consumer_read_and_write_rejection(tmp_path: Path)
         "2550",
         "2750",
     }
+    direct_bits_check = next(
+        check
+        for check in result.checks
+        if check.name == "finalized_snapshot_direct_write_bits"
+    )
+    assert "application-enforced" in direct_bits_check.detail
+    assert "can chmod" in direct_bits_check.detail
+    assert all(
+        check.name != "publisher_immutable_write_rejection"
+        for check in result.checks
+    )
 
 
 def test_corrupted_snapshot_fails_digest_validation(tmp_path: Path) -> None:

@@ -689,18 +689,6 @@ def _assert_no_extended_acl(path: Path) -> None:
         )
 
 
-def _ensure_directory(path: Path, *, mode: int) -> None:
-    assert_no_symlink_components(path.parent)
-    if _path_lexists(path):
-        metadata = path.lstat()
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-            raise SnapshotContractError(f"snapshot directory path is unsafe: {path}")
-    else:
-        path.mkdir(mode=mode)
-    os.chmod(path, mode, follow_symlinks=False)
-    _assert_no_extended_acl(path)
-
-
 def _publication_identity_ids() -> tuple[int, int]:
     try:
         publisher_uid = pwd.getpwnam(PUBLISHER_USER).pw_uid
@@ -714,19 +702,98 @@ def _publication_identity_ids() -> tuple[int, int]:
     return publisher_uid, reader_gid
 
 
-def _require_owner_group(path: Path, *, owner_uid: int, group_gid: int) -> None:
+def _validate_existing_path(
+    path: Path,
+    *,
+    expected_type: str,
+    mode: int,
+    owner_uid: int,
+    group_gid: int,
+) -> None:
+    assert_no_symlink_components(path.parent)
+    if not _path_lexists(path):
+        raise SnapshotContractError(f"required publication path is missing: {path}")
     metadata = path.lstat()
+    type_matches = (
+        expected_type == "directory" and stat.S_ISDIR(metadata.st_mode)
+    ) or (
+        expected_type == "file" and stat.S_ISREG(metadata.st_mode)
+    )
+    if stat.S_ISLNK(metadata.st_mode) or not type_matches:
+        raise SnapshotContractError(
+            f"publication path type mismatch: {path} expected={expected_type}"
+        )
+    _assert_no_extended_acl(path)
     if metadata.st_uid != owner_uid or metadata.st_gid != group_gid:
         raise SnapshotContractError(
             f"publication owner/group mismatch: {path} "
             f"actual={metadata.st_uid}:{metadata.st_gid} expected={owner_uid}:{group_gid}"
         )
+    actual_mode = stat.S_IMODE(metadata.st_mode)
+    if actual_mode != mode:
+        raise SnapshotContractError(
+            f"publication mode mismatch: {path} actual={actual_mode:04o} expected={mode:04o}"
+        )
 
 
-def atomic_write_bytes(path: Path, payload: bytes, *, mode: int = MANIFEST_MODE) -> None:
+def _create_or_validate_directory(
+    path: Path,
+    *,
+    existing_mode: int,
+    new_mode: int,
+    owner_uid: int,
+    group_gid: int,
+) -> bool:
     assert_no_symlink_components(path.parent)
-    if _path_lexists(path) and stat.S_ISLNK(path.lstat().st_mode):
-        raise SnapshotContractError(f"symlink publication target is forbidden: {path}")
+    if _path_lexists(path):
+        _validate_existing_path(
+            path,
+            expected_type="directory",
+            mode=existing_mode,
+            owner_uid=owner_uid,
+            group_gid=group_gid,
+        )
+        return False
+    path.mkdir(mode=new_mode)
+    os.chmod(path, new_mode, follow_symlinks=False)
+    _validate_existing_path(
+        path,
+        expected_type="directory",
+        mode=new_mode,
+        owner_uid=owner_uid,
+        group_gid=group_gid,
+    )
+    return True
+
+
+def atomic_write_bytes(
+    path: Path,
+    payload: bytes,
+    *,
+    mode: int = MANIFEST_MODE,
+    owner_uid: int | None = None,
+    group_gid: int | None = None,
+) -> None:
+    assert_no_symlink_components(path.parent)
+    if _path_lexists(path):
+        if owner_uid is None or group_gid is None:
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+                raise SnapshotContractError(f"publication target is unsafe: {path}")
+            _assert_no_extended_acl(path)
+            if stat.S_IMODE(metadata.st_mode) != mode:
+                raise SnapshotContractError(
+                    f"publication mode mismatch: {path} "
+                    f"actual={stat.S_IMODE(metadata.st_mode):04o} expected={mode:04o}"
+                )
+        else:
+            _validate_existing_path(
+                path,
+                expected_type="file",
+                mode=mode,
+                owner_uid=owner_uid,
+                group_gid=group_gid,
+            )
     descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temp_path = Path(temp_name)
     try:
@@ -736,7 +803,16 @@ def atomic_write_bytes(path: Path, payload: bytes, *, mode: int = MANIFEST_MODE)
             os.fchmod(handle.fileno(), mode)
             os.fsync(handle.fileno())
         os.replace(temp_path, path)
-        _assert_no_extended_acl(path)
+        if owner_uid is not None and group_gid is not None:
+            _validate_existing_path(
+                path,
+                expected_type="file",
+                mode=mode,
+                owner_uid=owner_uid,
+                group_gid=group_gid,
+            )
+        else:
+            _assert_no_extended_acl(path)
         _fsync_directory(path.parent)
     except BaseException:
         try:
@@ -745,31 +821,58 @@ def atomic_write_bytes(path: Path, payload: bytes, *, mode: int = MANIFEST_MODE)
             raise
 
 
-def _write_immutable(path: Path, payload: bytes) -> None:
+def _write_immutable(
+    path: Path,
+    payload: bytes,
+    *,
+    owner_uid: int,
+    group_gid: int,
+) -> None:
     if _path_lexists(path):
-        metadata = path.lstat()
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            raise SnapshotContractError(f"immutable snapshot path is unsafe: {path}")
+        _validate_existing_path(
+            path,
+            expected_type="file",
+            mode=IMMUTABLE_ARTIFACT_MODE,
+            owner_uid=owner_uid,
+            group_gid=group_gid,
+        )
         if path.read_bytes() != payload:
             raise SnapshotContractError(f"immutable snapshot collision: {path}")
-        os.chmod(path, IMMUTABLE_ARTIFACT_MODE, follow_symlinks=False)
-        _assert_no_extended_acl(path)
         return
-    atomic_write_bytes(path, payload, mode=IMMUTABLE_ARTIFACT_MODE)
+    atomic_write_bytes(
+        path,
+        payload,
+        mode=IMMUTABLE_ARTIFACT_MODE,
+        owner_uid=owner_uid,
+        group_gid=group_gid,
+    )
 
 
 @contextmanager
 def publication_lock(output_dir: Path):
     publisher_uid, reader_gid = _publication_identity_ids()
-    _ensure_directory(output_dir, mode=PUBLISH_ROOT_MODE)
-    _require_owner_group(output_dir, owner_uid=publisher_uid, group_gid=reader_gid)
+    _validate_existing_path(
+        output_dir,
+        expected_type="directory",
+        mode=PUBLISH_ROOT_MODE,
+        owner_uid=publisher_uid,
+        group_gid=reader_gid,
+    )
     lock_path = output_dir / PUBLICATION_LOCK_NAME
-    if _path_lexists(lock_path) and stat.S_ISLNK(lock_path.lstat().st_mode):
-        raise SnapshotContractError(f"symlink publication lock is forbidden: {lock_path}")
-    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(lock_path, flags, PUBLICATION_LOCK_MODE)
-    os.fchmod(descriptor, PUBLICATION_LOCK_MODE)
-    _assert_no_extended_acl(lock_path)
+    if _path_lexists(lock_path):
+        _validate_existing_path(
+            lock_path,
+            expected_type="file",
+            mode=PUBLICATION_LOCK_MODE,
+            owner_uid=publisher_uid,
+            group_gid=reader_gid,
+        )
+        flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(lock_path, flags)
+    else:
+        flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(lock_path, flags, PUBLICATION_LOCK_MODE)
+        os.fchmod(descriptor, PUBLICATION_LOCK_MODE)
     lock_metadata = os.fstat(descriptor)
     if lock_metadata.st_uid != publisher_uid or lock_metadata.st_gid != reader_gid:
         os.close(descriptor)
@@ -777,6 +880,14 @@ def publication_lock(output_dir: Path):
             f"publication lock owner/group mismatch: actual={lock_metadata.st_uid}:"
             f"{lock_metadata.st_gid} expected={publisher_uid}:{reader_gid}"
         )
+    actual_lock_mode = stat.S_IMODE(lock_metadata.st_mode)
+    if actual_lock_mode != PUBLICATION_LOCK_MODE:
+        os.close(descriptor)
+        raise SnapshotContractError(
+            f"publication lock mode mismatch: actual={actual_lock_mode:04o} "
+            f"expected={PUBLICATION_LOCK_MODE:04o}"
+        )
+    _assert_no_extended_acl(lock_path)
     handle = os.fdopen(descriptor, "a+b")
     try:
         try:
@@ -939,9 +1050,21 @@ def _publish_snapshot_locked(
     publisher_uid, reader_gid = _publication_identity_ids()
     manifest_path = output_dir / MANIFEST_NAME
     if _path_lexists(manifest_path):
-        metadata = manifest_path.lstat()
-        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
-            raise SnapshotContractError(f"snapshot manifest path is unsafe: {manifest_path}")
+        _validate_existing_path(
+            manifest_path,
+            expected_type="file",
+            mode=MANIFEST_MODE,
+            owner_uid=publisher_uid,
+            group_gid=reader_gid,
+        )
+        snapshots_dir = output_dir / "snapshots"
+        _validate_existing_path(
+            snapshots_dir,
+            expected_type="directory",
+            mode=SNAPSHOTS_DIR_MODE,
+            owner_uid=publisher_uid,
+            group_gid=reader_gid,
+        )
         try:
             current = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -952,8 +1075,21 @@ def _publish_snapshot_locked(
             if current.get("snapshot_id") != build.snapshot_id:
                 raise SnapshotContractError("current manifest snapshot identity mismatch")
             rows_path, bundle_path = resolve_manifest_artifact_paths(output_dir, current)
-            if not rows_path.is_file() or not bundle_path.is_file():
-                raise SnapshotContractError("current manifest references missing immutable files")
+            _validate_existing_path(
+                rows_path.parent,
+                expected_type="directory",
+                mode=IMMUTABLE_SNAPSHOT_DIR_MODE,
+                owner_uid=publisher_uid,
+                group_gid=reader_gid,
+            )
+            for artifact_path in (rows_path, bundle_path):
+                _validate_existing_path(
+                    artifact_path,
+                    expected_type="file",
+                    mode=IMMUTABLE_ARTIFACT_MODE,
+                    owner_uid=publisher_uid,
+                    group_gid=reader_gid,
+                )
             rows_payload = rows_path.read_bytes()
             rows_digest = f"sha256:{hashlib.sha256(rows_payload).hexdigest()}"
             if rows_digest != current.get("rows_csv_digest"):
@@ -980,18 +1116,6 @@ def _publish_snapshot_locked(
                 raise SnapshotContractError("current manifest/bundle schema version mismatch")
             if envelope.get("row_count") != len(build.rows) or bundle.get("rows") != list(build.rows):
                 raise SnapshotContractError("current bundle does not match semantic snapshot")
-            os.chmod(rows_path, IMMUTABLE_ARTIFACT_MODE, follow_symlinks=False)
-            os.chmod(bundle_path, IMMUTABLE_ARTIFACT_MODE, follow_symlinks=False)
-            os.chmod(rows_path.parent, IMMUTABLE_SNAPSHOT_DIR_MODE, follow_symlinks=False)
-            os.chmod(manifest_path, MANIFEST_MODE, follow_symlinks=False)
-            for path in (
-                rows_path.parent.parent,
-                rows_path.parent,
-                rows_path,
-                bundle_path,
-                manifest_path,
-            ):
-                _require_owner_group(path, owner_uid=publisher_uid, group_gid=reader_gid)
             return PublicationResult(
                 "UNCHANGED",
                 build.snapshot_id,
@@ -1008,9 +1132,21 @@ def _publish_snapshot_locked(
     )
     relative_dir = Path("snapshots") / build.snapshot_id
     snapshots_dir = output_dir / "snapshots"
-    _ensure_directory(snapshots_dir, mode=SNAPSHOTS_DIR_MODE)
+    _create_or_validate_directory(
+        snapshots_dir,
+        existing_mode=SNAPSHOTS_DIR_MODE,
+        new_mode=SNAPSHOTS_DIR_MODE,
+        owner_uid=publisher_uid,
+        group_gid=reader_gid,
+    )
     snapshot_dir = output_dir / relative_dir
-    _ensure_directory(snapshot_dir, mode=SNAPSHOTS_DIR_MODE)
+    snapshot_dir_created = _create_or_validate_directory(
+        snapshot_dir,
+        existing_mode=IMMUTABLE_SNAPSHOT_DIR_MODE,
+        new_mode=SNAPSHOTS_DIR_MODE,
+        owner_uid=publisher_uid,
+        group_gid=reader_gid,
+    )
     rows_path = snapshot_dir / ROWS_NAME
     bundle_path = snapshot_dir / BUNDLE_NAME
     rows_payload = render_rows_csv(build.rows)
@@ -1018,17 +1154,37 @@ def _publish_snapshot_locked(
     bundle_payload = canonical_json_bytes({"envelope": envelope, "rows": build.rows})
     bundle_digest = hashlib.sha256(bundle_payload).hexdigest()
 
-    try:
-        _write_immutable(rows_path, rows_payload)
-        _write_immutable(bundle_path, bundle_payload)
-    finally:
-        os.chmod(snapshot_dir, IMMUTABLE_SNAPSHOT_DIR_MODE, follow_symlinks=False)
-    _fsync_directory(snapshot_dir)
-    _fsync_directory(snapshots_dir)
+    if not snapshot_dir_created and (
+        not _path_lexists(rows_path) or not _path_lexists(bundle_path)
+    ):
+        raise SnapshotContractError("existing immutable snapshot directory is incomplete")
+    _write_immutable(
+        rows_path,
+        rows_payload,
+        owner_uid=publisher_uid,
+        group_gid=reader_gid,
+    )
+    _write_immutable(
+        bundle_path,
+        bundle_payload,
+        owner_uid=publisher_uid,
+        group_gid=reader_gid,
+    )
     if hashlib.sha256(rows_path.read_bytes()).hexdigest() != rows_digest:
         raise SnapshotContractError("published immutable rows digest mismatch")
     if bundle_path.read_bytes() != bundle_payload:
         raise SnapshotContractError("published immutable bundle digest mismatch")
+    if snapshot_dir_created:
+        os.chmod(snapshot_dir, IMMUTABLE_SNAPSHOT_DIR_MODE, follow_symlinks=False)
+        _validate_existing_path(
+            snapshot_dir,
+            expected_type="directory",
+            mode=IMMUTABLE_SNAPSHOT_DIR_MODE,
+            owner_uid=publisher_uid,
+            group_gid=reader_gid,
+        )
+    _fsync_directory(snapshot_dir)
+    _fsync_directory(snapshots_dir)
     manifest = {
         **envelope,
         "rows_csv": str(relative_dir / ROWS_NAME),
@@ -1037,15 +1193,13 @@ def _publish_snapshot_locked(
         "snapshot_bundle_digest": f"sha256:{bundle_digest}",
         "publication_result": "PUBLISHED",
     }
-    atomic_write_bytes(manifest_path, canonical_json_bytes(manifest), mode=MANIFEST_MODE)
-    for path in (
-        snapshots_dir,
-        snapshot_dir,
-        rows_path,
-        bundle_path,
+    atomic_write_bytes(
         manifest_path,
-    ):
-        _require_owner_group(path, owner_uid=publisher_uid, group_gid=reader_gid)
+        canonical_json_bytes(manifest),
+        mode=MANIFEST_MODE,
+        owner_uid=publisher_uid,
+        group_gid=reader_gid,
+    )
     return PublicationResult(
         "PUBLISHED",
         build.snapshot_id,

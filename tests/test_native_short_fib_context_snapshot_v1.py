@@ -8,7 +8,7 @@ import pytest as _pytest_authz
 
 
 @_pytest_authz.fixture(autouse=True)
-def _authorized_writer_context(monkeypatch):
+def _authorized_writer_context(monkeypatch, tmp_path):
     """Run write mechanics as an already-authorized writer capability. Denial is
     covered by tests/test_writer_capability_authorization_v1.py."""
     from tests.writer_auth_support import install_authorized_writer_context
@@ -17,6 +17,7 @@ def _authorized_writer_context(monkeypatch):
         "src.market_data.native_short_fib_context_snapshot_v1._publication_identity_ids",
         lambda: (os.getuid(), os.getgid()),
     )
+    tmp_path.chmod(0o2750)
 
 import csv
 import hashlib
@@ -383,6 +384,7 @@ def test_publication_modes_are_canonical_and_umask_independent(
 ) -> None:
     root = tmp_path / f"snapshot-{process_umask:o}"
     root.mkdir()
+    root.chmod(snapshot.PUBLISH_ROOT_MODE)
     previous_umask = os.umask(process_umask)
     try:
         published = snapshot.publish_snapshot(
@@ -430,6 +432,105 @@ def test_publication_rejects_root_owner_group_outside_contract(
     assert not (tmp_path / snapshot.MANIFEST_NAME).exists()
 
 
+def test_wrong_existing_root_mode_fails_without_repair(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    before_mode = stat.S_IMODE(tmp_path.lstat().st_mode)
+
+    with pytest.raises(snapshot.SnapshotContractError, match="mode mismatch"):
+        snapshot.publish_snapshot(
+            _build(),
+            output_dir=tmp_path,
+            generated_ts_utc=AS_OF,
+            publication_ts_utc=AS_OF,
+            authorization=_NS_AUTH,
+        )
+
+    assert stat.S_IMODE(tmp_path.lstat().st_mode) == before_mode == 0o700
+    assert not (tmp_path / snapshot.PUBLICATION_LOCK_NAME).exists()
+
+
+@pytest.mark.parametrize("drifted_mode", [0o640, 0o600])
+def test_wrong_existing_artifact_mode_fails_without_repair(
+    tmp_path: Path,
+    drifted_mode: int,
+) -> None:
+    published = snapshot.publish_snapshot(
+        _build(),
+        output_dir=tmp_path,
+        generated_ts_utc=AS_OF,
+        publication_ts_utc=AS_OF,
+        authorization=_NS_AUTH,
+    )
+    published.rows_path.chmod(drifted_mode)
+
+    with pytest.raises(snapshot.SnapshotContractError, match="mode mismatch"):
+        snapshot.publish_snapshot(
+            _build(),
+            output_dir=tmp_path,
+            generated_ts_utc=AS_OF,
+            publication_ts_utc=AS_OF,
+            authorization=_NS_AUTH,
+        )
+
+    assert stat.S_IMODE(published.rows_path.lstat().st_mode) == drifted_mode
+
+
+def test_unchanged_publication_performs_no_chmod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build = _build()
+    snapshot.publish_snapshot(
+        build,
+        output_dir=tmp_path,
+        generated_ts_utc=AS_OF,
+        publication_ts_utc=AS_OF,
+        authorization=_NS_AUTH,
+    )
+
+    def reject_chmod(*args, **kwargs) -> None:
+        raise AssertionError(f"UNCHANGED publication attempted chmod: {args} {kwargs}")
+
+    monkeypatch.setattr(snapshot.os, "chmod", reject_chmod)
+    monkeypatch.setattr(snapshot.os, "fchmod", reject_chmod)
+    result = snapshot.publish_snapshot(
+        build,
+        output_dir=tmp_path,
+        generated_ts_utc=AS_OF,
+        publication_ts_utc=AS_OF,
+        authorization=_NS_AUTH,
+    )
+
+    assert result.status == "UNCHANGED"
+
+
+def test_failed_artifact_publication_leaves_staging_directory_unfinalized(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build = _build()
+    real_write_immutable = snapshot._write_immutable
+
+    def fail_bundle(path: Path, payload: bytes, **kwargs) -> None:
+        if path.name == snapshot.BUNDLE_NAME:
+            raise OSError("bundle staging failed")
+        real_write_immutable(path, payload, **kwargs)
+
+    monkeypatch.setattr(snapshot, "_write_immutable", fail_bundle)
+    with pytest.raises(OSError, match="bundle staging failed"):
+        snapshot.publish_snapshot(
+            build,
+            output_dir=tmp_path,
+            generated_ts_utc=AS_OF,
+            publication_ts_utc=AS_OF,
+            authorization=_NS_AUTH,
+        )
+
+    snapshot_dir = tmp_path / "snapshots" / build.snapshot_id
+    assert stat.S_IMODE(snapshot_dir.lstat().st_mode) == snapshot.SNAPSHOTS_DIR_MODE
+    assert not (tmp_path / snapshot.MANIFEST_NAME).exists()
+
+
 def test_publication_rejects_extended_acl_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -463,10 +564,12 @@ def test_unchanged_rejects_missing_or_corrupt_immutable_artifact(tmp_path: Path,
     if artifact == "rows":
         path.parent.chmod(snapshot.SNAPSHOTS_DIR_MODE)
         path.unlink()
-        expected = "missing immutable"
+        path.parent.chmod(snapshot.IMMUTABLE_SNAPSHOT_DIR_MODE)
+        expected = "required publication path is missing"
     else:
         path.chmod(snapshot.MANIFEST_MODE)
         path.write_bytes(b"corrupt")
+        path.chmod(snapshot.IMMUTABLE_ARTIFACT_MODE)
         expected = "bundle is unreadable"
     with pytest.raises(snapshot.SnapshotContractError, match=expected):
         snapshot.publish_snapshot(
@@ -478,33 +581,39 @@ def test_unchanged_rejects_missing_or_corrupt_immutable_artifact(tmp_path: Path,
 
 
 @pytest.mark.parametrize("existing_artifact", ["rows", "bundle"])
-def test_preexisting_partial_snapshot_directory_is_completed_before_manifest(
+def test_preexisting_partial_snapshot_directory_is_rejected_without_repair(
     tmp_path: Path,
     existing_artifact: str,
 ) -> None:
     build = _build()
-    snapshot_dir = tmp_path / "snapshots" / build.snapshot_id
-    snapshot_dir.mkdir(parents=True)
+    snapshots_dir = tmp_path / "snapshots"
+    snapshots_dir.mkdir()
+    snapshots_dir.chmod(snapshot.SNAPSHOTS_DIR_MODE)
+    snapshot_dir = snapshots_dir / build.snapshot_id
+    snapshot_dir.mkdir()
     rows_path = snapshot_dir / snapshot.ROWS_NAME
     bundle_path = snapshot_dir / snapshot.BUNDLE_NAME
     if existing_artifact == "rows":
         rows_path.write_bytes(snapshot.render_rows_csv(build.rows))
+        rows_path.chmod(snapshot.IMMUTABLE_ARTIFACT_MODE)
     else:
         envelope = snapshot.build_envelope(build, generated_ts_utc=AS_OF, publication_ts_utc=AS_OF)
         bundle_path.write_bytes(snapshot.canonical_json_bytes({"envelope": envelope, "rows": build.rows}))
+        bundle_path.chmod(snapshot.IMMUTABLE_ARTIFACT_MODE)
+    snapshot_dir.chmod(snapshot.IMMUTABLE_SNAPSHOT_DIR_MODE)
 
-    published = snapshot.publish_snapshot(
-        build,
-        output_dir=tmp_path,
-        generated_ts_utc=AS_OF,
-        publication_ts_utc=AS_OF,
-    authorization=_NS_AUTH)
-    assert published.status == "PUBLISHED"
-    assert published.rows_path == rows_path
-    assert published.bundle_path == bundle_path
-    assert published.rows_path.is_file()
-    assert published.bundle_path.is_file()
-    assert published.manifest_path.is_file()
+    with pytest.raises(snapshot.SnapshotContractError, match="incomplete"):
+        snapshot.publish_snapshot(
+            build,
+            output_dir=tmp_path,
+            generated_ts_utc=AS_OF,
+            publication_ts_utc=AS_OF,
+            authorization=_NS_AUTH,
+        )
+    assert stat.S_IMODE(snapshot_dir.lstat().st_mode) == snapshot.IMMUTABLE_SNAPSHOT_DIR_MODE
+    assert rows_path.exists() is (existing_artifact == "rows")
+    assert bundle_path.exists() is (existing_artifact == "bundle")
+    assert not (tmp_path / snapshot.MANIFEST_NAME).exists()
 
 
 def test_unchanged_rejects_self_consistent_but_semantically_wrong_rows(tmp_path: Path) -> None:
@@ -519,6 +628,7 @@ def test_unchanged_rejects_self_consistent_but_semantically_wrong_rows(tmp_path:
     wrong_rows = published.rows_path.read_bytes().replace(b"BTC", b"ETH")
     published.rows_path.chmod(snapshot.MANIFEST_MODE)
     published.rows_path.write_bytes(wrong_rows)
+    published.rows_path.chmod(snapshot.IMMUTABLE_ARTIFACT_MODE)
     manifest["rows_csv_digest"] = f"sha256:{hashlib.sha256(wrong_rows).hexdigest()}"
     published.manifest_path.write_bytes(snapshot.canonical_json_bytes(manifest))
 
@@ -533,9 +643,19 @@ def test_unchanged_rejects_self_consistent_but_semantically_wrong_rows(tmp_path:
 
 def test_preexisting_corrupt_partial_snapshot_never_publishes_manifest(tmp_path: Path) -> None:
     build = _build()
-    snapshot_dir = tmp_path / "snapshots" / build.snapshot_id
-    snapshot_dir.mkdir(parents=True)
-    (snapshot_dir / snapshot.ROWS_NAME).write_bytes(b"corrupt")
+    snapshots_dir = tmp_path / "snapshots"
+    snapshots_dir.mkdir()
+    snapshots_dir.chmod(snapshot.SNAPSHOTS_DIR_MODE)
+    snapshot_dir = snapshots_dir / build.snapshot_id
+    snapshot_dir.mkdir()
+    rows_path = snapshot_dir / snapshot.ROWS_NAME
+    rows_path.write_bytes(b"corrupt")
+    rows_path.chmod(snapshot.IMMUTABLE_ARTIFACT_MODE)
+    envelope = snapshot.build_envelope(build, generated_ts_utc=AS_OF, publication_ts_utc=AS_OF)
+    bundle_path = snapshot_dir / snapshot.BUNDLE_NAME
+    bundle_path.write_bytes(snapshot.canonical_json_bytes({"envelope": envelope, "rows": build.rows}))
+    bundle_path.chmod(snapshot.IMMUTABLE_ARTIFACT_MODE)
+    snapshot_dir.chmod(snapshot.IMMUTABLE_SNAPSHOT_DIR_MODE)
     with pytest.raises(snapshot.SnapshotContractError, match="immutable snapshot collision"):
         snapshot.publish_snapshot(
             build,
@@ -549,6 +669,7 @@ def test_preexisting_corrupt_partial_snapshot_never_publishes_manifest(tmp_path:
 def test_concurrent_publisher_fails_closed_before_manifest_write(tmp_path: Path) -> None:
     tmp_path.mkdir(parents=True, exist_ok=True)
     lock_handle = (tmp_path / snapshot.PUBLICATION_LOCK_NAME).open("a+b")
+    (tmp_path / snapshot.PUBLICATION_LOCK_NAME).chmod(snapshot.PUBLICATION_LOCK_MODE)
     snapshot.fcntl.flock(lock_handle.fileno(), snapshot.fcntl.LOCK_EX | snapshot.fcntl.LOCK_NB)
     try:
         with pytest.raises(snapshot.SnapshotContractError, match="lock is already held"):
@@ -631,10 +752,23 @@ def test_failed_commit_pointer_write_preserves_last_valid_snapshot(tmp_path: Pat
     changed = _build(levels=_levels(price_1272="102.73"))
     real_atomic_write = snapshot.atomic_write_bytes
 
-    def fail_manifest(path: Path, payload: bytes, *, mode: int = snapshot.MANIFEST_MODE) -> None:
+    def fail_manifest(
+        path: Path,
+        payload: bytes,
+        *,
+        mode: int = snapshot.MANIFEST_MODE,
+        owner_uid: int | None = None,
+        group_gid: int | None = None,
+    ) -> None:
         if path.name == snapshot.MANIFEST_NAME:
             raise OSError("interrupted before commit pointer replace")
-        real_atomic_write(path, payload, mode=mode)
+        real_atomic_write(
+            path,
+            payload,
+            mode=mode,
+            owner_uid=owner_uid,
+            group_gid=group_gid,
+        )
 
     monkeypatch.setattr(snapshot, "atomic_write_bytes", fail_manifest)
     with pytest.raises(OSError, match="interrupted"):
@@ -700,7 +834,7 @@ def test_publication_rejects_symlink_root_manifest_and_immutable_artifact(tmp_pa
     real_root.mkdir()
     linked_root = tmp_path / "linked"
     linked_root.symlink_to(real_root, target_is_directory=True)
-    with pytest.raises(snapshot.SnapshotContractError, match="unsafe|symlink"):
+    with pytest.raises(snapshot.SnapshotContractError, match="type mismatch|symlink"):
         snapshot.publish_snapshot(
             build,
             output_dir=linked_root,
@@ -711,10 +845,11 @@ def test_publication_rejects_symlink_root_manifest_and_immutable_artifact(tmp_pa
 
     manifest_root = tmp_path / "manifest-root"
     manifest_root.mkdir()
+    manifest_root.chmod(snapshot.PUBLISH_ROOT_MODE)
     outside = tmp_path / "outside"
     outside.write_text("preserve", encoding="utf-8")
     (manifest_root / snapshot.MANIFEST_NAME).symlink_to(outside)
-    with pytest.raises(snapshot.SnapshotContractError, match="unsafe|symlink"):
+    with pytest.raises(snapshot.SnapshotContractError, match="type mismatch|symlink"):
         snapshot.publish_snapshot(
             build,
             output_dir=manifest_root,
@@ -727,8 +862,15 @@ def test_publication_rejects_symlink_root_manifest_and_immutable_artifact(tmp_pa
     artifact_root = tmp_path / "artifact-root"
     artifact_dir = artifact_root / "snapshots" / build.snapshot_id
     artifact_dir.mkdir(parents=True)
+    artifact_root.chmod(snapshot.PUBLISH_ROOT_MODE)
+    (artifact_root / "snapshots").chmod(snapshot.SNAPSHOTS_DIR_MODE)
     (artifact_dir / snapshot.ROWS_NAME).symlink_to(outside)
-    with pytest.raises(snapshot.SnapshotContractError, match="unsafe"):
+    envelope = snapshot.build_envelope(build, generated_ts_utc=AS_OF, publication_ts_utc=AS_OF)
+    bundle_path = artifact_dir / snapshot.BUNDLE_NAME
+    bundle_path.write_bytes(snapshot.canonical_json_bytes({"envelope": envelope, "rows": build.rows}))
+    bundle_path.chmod(snapshot.IMMUTABLE_ARTIFACT_MODE)
+    artifact_dir.chmod(snapshot.IMMUTABLE_SNAPSHOT_DIR_MODE)
+    with pytest.raises(snapshot.SnapshotContractError, match="type mismatch"):
         snapshot.publish_snapshot(
             build,
             output_dir=artifact_root,

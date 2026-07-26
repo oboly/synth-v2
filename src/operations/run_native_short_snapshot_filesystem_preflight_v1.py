@@ -368,7 +368,7 @@ def inspect_snapshot_filesystem(
         checks,
         "publisher_write_access",
         not publisher_write_failures,
-        f"{publisher.name} can write only the mutable publication surfaces",
+        f"mode bits grant {publisher.name} direct writes on the mutable publication surfaces",
         f"not_writable={','.join(publisher_write_failures)}",
     )
     immutable_paths = [
@@ -381,9 +381,13 @@ def inspect_snapshot_filesystem(
     ]
     _check(
         checks,
-        "publisher_immutable_write_rejection",
+        "finalized_snapshot_direct_write_bits",
         not publisher_immutable_writes,
-        f"{publisher.name} cannot mutate finalized immutable snapshots in place",
+        (
+            "finalized snapshot modes omit direct write bits; publisher-side "
+            "immutability remains application-enforced because the owning "
+            "publisher can chmod"
+        ),
         f"writable={','.join(publisher_immutable_writes)}",
     )
 

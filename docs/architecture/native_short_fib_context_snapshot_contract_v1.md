@@ -82,27 +82,35 @@ raw reader     = theone
 www-data       = not a raw reader
 ```
 
-The root must be owned by `gurk:synth-native-short-readers` before activation.
-The publisher refuses a different effective UID or root owner/group. Setgid on
-the mutable directories makes publisher-created descendants inherit the exact
-reader group without a writable reader group.
+The root must already exist with mode `02750` and ownership
+`gurk:synth-native-short-readers` before publication. The publisher validates
+its type, symlink/ACL state, mode, owner, and group and never creates, chmods,
+or repairs it. Setgid on the mutable directories makes publisher-created
+descendants inherit the exact reader group without a writable reader group.
 
 | Path class | Mode | Mutation authority |
 |---|---:|---|
 | publication root | `02750` | publisher may create snapshots and atomically replace the manifest |
 | `snapshots/` | `02750` | publisher may create one new immutable snapshot directory |
-| finalized `snapshots/<snapshot_id>/` | `02550` | no in-place mutation |
+| finalized `snapshots/<snapshot_id>/` | `02550` | direct write bits absent; content immutability is application-enforced |
 | `manifest_v1.json` | `0640` | publisher owner only; reader group read-only |
-| immutable CSV and bundle | `0440` | no in-place mutation; publisher collision check is read-only |
+| immutable CSV and bundle | `0440` | direct write bits absent; collision/digest checks enforce publisher-side immutability |
 | `.native_short_context_snapshot_v1.publish.lock` | `0600` | publisher only |
 
-Every mode is applied explicitly after creation and is independent of process
-umask. No contract path is group-writable, world-writable, or world-readable.
-Extended access/default POSIX ACLs are forbidden because they would make mode
-analysis incomplete. The reader group has read/traverse only. Temp files remain
-same-directory staging files; file and directory fsync, `os.replace`, digest
-validation, manifest-last commit, immutable collision rejection, and `flock`
-behavior are preserved.
+Modes are applied explicitly only to newly created paths and are independent of
+process umask. Every existing path is validated for type, owner, group, ACL,
+and exact canonical mode before any mutation; drift fails without repair. No
+contract path is group-writable, world-writable, or world-readable. Extended
+access/default POSIX ACLs are forbidden because they would make mode analysis
+incomplete. The reader group has read/traverse only.
+
+Mode bits separate consumers from the publisher and deny direct in-place writes
+on finalized artifacts. They do not make the owning publisher incapable of
+`chmod`. Publisher-side immutability is application-enforced through exact
+content collision checks, digests, and manifest-last publication. Temp files
+remain same-directory staging files; file and directory fsync, `os.replace`,
+digest validation, immutable collision rejection, and `flock` behavior are
+preserved.
 
 A process that shares UID `gurk` is a publisher-equivalent process regardless
 of its service name or mode bits. It is therefore forbidden as a reporting
@@ -275,17 +283,20 @@ snapshots/<snapshot_id>/snapshot_bundle_v1.json
 
 Publication is:
 
-1. build and validate all rows in memory;
-2. serialize rows and bundle in memory;
-3. write each immutable file through a temp file in the same directory;
-4. flush and fsync the file;
-5. `os.replace` it;
-6. fsync its directory and the immutable snapshot parent;
-7. validate digests and paths;
-8. write, flush, fsync, and atomically replace `manifest_v1.json` last;
-9. fsync the manifest parent directory.
+1. validate the pre-existing root and every existing path before mutation;
+2. build and validate all rows in memory;
+3. serialize rows and bundle in memory;
+4. write each immutable file through a temp file in the same directory;
+5. flush and fsync the file;
+6. `os.replace` it;
+7. validate artifact content and digests;
+8. finalize a newly created snapshot directory from `02750` to `02550`;
+9. fsync its directory and the immutable snapshot parent;
+10. write, flush, fsync, and atomically replace `manifest_v1.json` last;
+11. fsync the manifest parent directory.
 
-A failure before step 8 can leave an unreferenced immutable file, but cannot
+A failure before step 10 can leave an unreferenced new artifact or a new
+snapshot directory at mutable staging mode `02750`, but cannot
 damage or partially advance the last valid snapshot. A reader must resolve the
 CSV through `manifest_v1.json`; it must not scan `snapshots/` for the newest
 directory.
@@ -301,9 +312,11 @@ Before returning `UNCHANGED`, the publisher requires both immutable artifacts,
 checks the CSV and bundle digests, validates the bundle/snapshot identity, and
 proves that both artifacts exactly represent the current semantic build. A
 self-consistent manifest cannot bless different row content. Corrupt or partial
-immutable directories are rejected. Temp files are removed after pre-replace
-failure. Snapshot and parent directories are fsynced before the manifest is
-replaced.
+immutable directories are rejected. The root, lock, snapshots directory,
+manifest, current snapshot directory, and both artifacts must also pass their
+complete filesystem contract; `UNCHANGED` performs no chmod or repair. Temp
+files are removed after pre-replace failure. Snapshot and parent directories
+are fsynced before the manifest is replaced.
 
 Future consumers, including PR B, must use
 `resolve_manifest_artifact_paths(...)` or equivalent validation. Absolute

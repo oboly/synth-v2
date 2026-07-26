@@ -276,6 +276,9 @@ It reports:
 - parent traversal for publisher and reader;
 - every symlink in the ancestry or snapshot tree;
 - publisher access to root, snapshot container, manifest, and lock;
+- absence of direct write bits on finalized snapshot directories/artifacts,
+  without claiming that Unix permissions prevent the owning publisher from
+  chmodding them;
 - reader access to manifest and referenced immutable artifacts;
 - reader write access to every contract path;
 - same-UID conflicts and reader-group membership;
@@ -308,6 +311,12 @@ must therefore fail preflight. Repository merge does not repair that host
 state. Identity/group provisioning, membership, chmod/chown/setfacl,
 deployment, ownership assignment, and activation remain separately
 unauthorized.
+
+`finalized_snapshot_direct_write_bits=PASS` means only that canonical mode bits
+omit direct writes. Consumer separation is filesystem-enforced. Publisher-side
+immutability is application-enforced by exact collision checks, digest
+validation, and manifest-last publication because the owning publisher can
+change its own mode bits.
 
 ## Exact Blocker Contract
 
