@@ -2,15 +2,20 @@
 
 ## Scope
 
-Read-only dashboards, web views, inspection surfaces, evidence presentation, and reporting contracts.
+Read-only dashboards, web views, inspection surfaces, evidence presentation, sorting, filtering, labels, and account-overlay contracts.
 
 ## Boundary
 
-Reporting consumes accepted persisted state. It must not calculate canonical trading authority, call brokers, grant account permission, create execution intent, or submit orders.
+Reporting consumes accepted persisted or canonical state. It must not recompute market models, call brokers, grant account permission, create execution intent, handle orders, or submit orders.
 
 ## Index rule
 
 This file is navigation only. Status, priority, and cross-lane execution order remain owned exclusively by `docs/todo/README.md`.
+
+## Canonical files
+
+- `profit_plan_opportunity_presentation_v1.md`
+- `ffg_rotation_radar_presentation_v1.md`
 
 ## Planned migration candidates
 
