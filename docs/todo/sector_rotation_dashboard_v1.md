@@ -7,6 +7,10 @@ and the Phase B repository implementation is under review. This phase remains
 blocked on an applied Phase B migration and accepted persisted analytics
 snapshots. No GUI implementation has started in the Phase B PR.
 
+Macro, composite-regime, catalyst, and narrative views are future read-only
+extensions owned by separate TODO lanes. They do not expand the initial Phase C
+scope or unblock it.
+
 ## Purpose
 
 Expose sector taxonomy, cluster membership, sector scores, participation, and rotation history in the Synth GUI without implying that price/volume proxies are measured capital flows.
@@ -15,6 +19,13 @@ This phase depends on:
 
 - `sector_taxonomy_database_seed_v1.md`;
 - `sector_rotation_engine_v1.md`.
+
+Future extensions depend on:
+
+- `macro_regime_engine_v1.md`;
+- `composite_market_regime_v1.md`;
+- `catalyst_engine_v1.md`;
+- `narrative_engine_v1.md`.
 
 ## Primary views
 
@@ -122,6 +133,64 @@ Visually distinguish:
 
 These must not share an indistinguishable badge, color meaning, or label.
 
+## Future macro overview
+
+Blocked until accepted Macro Regime Engine snapshots exist. Candidate display:
+
+```text
+DXY        USD_EXHAUSTION       confidence 0.71
+SOX        SEMI_OVERHEATED      confidence 0.83
+NASDAQ     EQUITY_CORRECTION    confidence 0.66
+GOLD       METALS_BOTTOMING     confidence 0.58
+OIL        OIL_INFLATION_PRESSURE confidence 0.79
+BTC        CAPITULATION_RISK
+ALTS       NARROW
+```
+
+Requirements:
+
+- show exact series, provider, timeframe, as-of, and freshness;
+- never display a forecast as measured current state;
+- never substitute zero for unavailable data;
+- distinguish public measured flows from price/volume proxies.
+
+## Future composite market regime
+
+Blocked until accepted macro, BTC structure, breadth, and sector snapshots exist.
+
+Example presentation only:
+
+```text
+Composite market regime:
+BTC_BOTTOMING / SECTOR_SELECTIVE_ROTATION
+```
+
+The dashboard displays an accepted persisted composite snapshot. It must not
+calculate or override composite state in the browser or reporting controller.
+
+## Future narrative and catalyst context
+
+Blocked on their separate canonical lanes.
+
+Asset cards may eventually show:
+
+- point-in-time narrative badges;
+- narrative strength and participation;
+- confirmed upcoming catalyst badges;
+- event status, source, scheduled time, and verification state;
+- completed, cancelled, expired, disputed, and stale events.
+
+The UI must distinguish:
+
+```text
+stable sector classification
+current narrative membership
+confirmed catalyst metadata
+external research assertion
+```
+
+A price target is not a catalyst. An external briefing is not confirmation.
+
 ## Filters
 
 Support:
@@ -136,6 +205,13 @@ Support:
 - data freshness;
 - measured-flow versus proxy-flow.
 
+Future filters after separate acceptance:
+
+- macro regime state;
+- composite market regime;
+- narrative membership and state;
+- catalyst type, status, verification, and date window.
+
 ## Failure and stale behavior
 
 - Missing sector metadata: `UNCLASSIFIED`.
@@ -144,6 +220,8 @@ Support:
 - Stale snapshot: show age and `STALE` prominently.
 - Never fall back to a previous score without visibly marking it stale.
 - Never show zero as a substitute for unavailable data.
+- Missing catalyst data means `DATA_UNAVAILABLE`, not `NO_UPCOMING_EVENTS`.
+- Browser-side or cached data may never become canonical authority.
 
 ## Acceptance
 
@@ -158,6 +236,8 @@ Support:
 - GUI changes do not mutate asset eligibility, portfolio membership, or trading state.
 - No broker writes or order submissions.
 
+Future-extension acceptance remains in the owning macro, composite, catalyst, and narrative lanes and is not implied by completion of this dashboard phase.
+
 ## Layer and boundaries
 
 ```text
@@ -168,3 +248,5 @@ Broker writes: 0
 Order submissions: 0
 Execution impact: none
 ```
+
+Read-only display or untrusted user input only. No direct broker access. No authority derived from HTML/JSON presentation.
