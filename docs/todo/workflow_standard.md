@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Define how Synth v2 TODOs are created, indexed, prioritized, updated, and closed without drifting into chat-only state.
+Define how Synth v2 TODOs are created, indexed, prioritized, grouped, updated, and closed without drifting into chat-only state.
 
 ## Canonical location
 
@@ -19,6 +19,26 @@ docs/todo/README.md
 ```
 
 Design and evidence may remain under `docs/research/`, `docs/status/`, `docs/architecture/`, or `docs/ops/`, but active tracking must point back to one TODO lane.
+
+## Folder structure
+
+`docs/todo/README.md` remains the sole owner of cross-lane status, priority, and execution order.
+
+Responsibility folders may group TODO files:
+
+```text
+execution/
+runtime/
+market_intelligence/
+research_validation/
+reporting/
+completed/
+backlog/
+```
+
+Folder `README.md` files are navigation and boundary documents only. They must not define a second priority order or duplicate active task ownership.
+
+Files may remain top-level during staged migration. Every move must update all exact path references in the same reviewed change.
 
 ## Lane ownership
 
@@ -178,18 +198,6 @@ Parked lanes remain parked unless they directly unblock an indexed higher-priori
 Reconcile the board:
 
 - after a major PR chain closes;
-- before creating several new work chats;
-- when a lane changes priority;
-- after 2–3 days of heavy chat-driven work;
-- before merging TODO changes that alter active direction.
-
-## Non-goals
-
-The TODO system is not:
-
-- a project-management platform;
-- a substitute for canonical design documents;
-- a raw-notes directory;
-- a place for secrets, credentials, logs, dumps, or generated artifacts.
-
-It is the compact repository authority for work state, order, ownership, and boundaries.
+- when a lane changes priority or ownership;
+- when new work is accepted from chat;
+- before starting another parallel implementation lane.
