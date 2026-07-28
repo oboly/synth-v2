@@ -11,6 +11,10 @@ short, open research audit of a few market-filter ideas; it may run alongside
 Phase C after persisted Phase B snapshots are accepted and must not reopen or
 retune Phase B without evidence. Phase D has not started.
 
+Separate future-design lanes now own macro regime, composite market regime,
+catalyst, and narrative research. They do not expand Phase B authority and do
+not change the current cross-lane execution order.
+
 ## Goal
 
 Build a research-only sector intelligence layer above individual asset analysis so Synth can distinguish isolated coin moves from broader sector participation and rotation.
@@ -25,6 +29,24 @@ C. Sector Rotation Dashboard v1
 
 D. Sector Context Integration v1 (future, research-only until separately accepted)
 
+Adjacent future-design lanes:
+
+```text
+Macro Regime Engine v1
+Composite Market Regime v1
+Catalyst Engine v1
+Narrative Engine v1
+```
+
+Canonical TODO owners:
+
+```text
+docs/todo/macro_regime_engine_v1.md
+docs/todo/composite_market_regime_v1.md
+docs/todo/catalyst_engine_v1.md
+docs/todo/narrative_engine_v1.md
+```
+
 ## Dependency order
 
 ```text
@@ -36,6 +58,25 @@ C. GUI + drilldown
         ↓
 D. optional downstream context integration
 ```
+
+Adjacent research sequence:
+
+```text
+accepted macro inputs + classifiers
+              \
+accepted BTC structure + breadth
+                \
+accepted sector rotation snapshots ---> composite market regime research
+                /
+accepted measured-flow overlays
+
+catalyst metadata --------> read-only context
+narrative taxonomy -------> read-only analytics
+```
+
+Catalyst and narrative lanes remain separate from macro and sector state. The
+composite regime may consume only accepted market evidence; it must not consume
+external conviction or unverified catalyst claims as market truth.
 
 ## Existing hooks
 
@@ -53,19 +94,9 @@ D. optional downstream context integration
 - No broker writes or order submissions.
 - Database writes are limited to deterministic taxonomy imports and expected analytics snapshots.
 - Proxy flow labels must never be presented as measured capital flow.
-
-## Flow terminology
-
-Synth must distinguish:
-
-- `MARKET_ACTIVITY_INFLOW_PROXY`
-- `ROTATION_INFLOW_PROXY`
-- `ROTATION_OUTFLOW_PROXY`
-- `MEASURED_ONCHAIN_FLOW`
-- `MEASURED_ETF_FLOW`
-- `EXTERNAL_RESEARCH_FLOW`
-
-Price/volume-derived proxies must remain visibly separate from measured public flows.
+- Narrative membership must not overwrite primary sector ownership.
+- Catalyst state must not become a hidden trade trigger.
+- External research remains separately typed and cannot assign canonical market state.
 
 ## Initial sector coverage
 
@@ -85,6 +116,39 @@ At minimum:
 - Gaming
 - Stablecoin Infrastructure
 
+## Financial Infrastructure audit
+
+The existing taxonomy must be audited before adding another broad sector.
+Candidate distinctions:
+
+```text
+Tokenization
+Settlement
+Stable Assets
+Treasury Infrastructure
+Yield Markets
+Governance / risk coordination
+```
+
+Candidate assets for classification review, not predetermined membership:
+
+```text
+ONDO
+RSR
+PENDLE
+XRP
+XLM
+HBAR
+QNT
+XDC
+ALGO
+```
+
+RSR must be evaluated from its actual protocol roles, including governance,
+risk coordination, DTF infrastructure, first-loss staking, and RWA/stable-asset
+adjacency. Project ambition to become reserve-currency infrastructure is not a
+classification fact.
+
 ## Initial tracked examples
 
 - AAVE, PENDLE, ENA
@@ -93,6 +157,7 @@ At minimum:
 - POL
 - HYPE, LIT
 - NEAR, VET, DEEP
+- RSR as a taxonomy and research-universe candidate pending canonical asset and membership review
 
 ## Phase B2 — Market-filter candidate audit
 
@@ -152,7 +217,9 @@ Explicit exclusions:
 - Random shuffle is non-deterministic and is rejected.
 - No Freqtrade code copy, plugin framework, dependency, or second runtime.
 - No implementation starts until this short audit is reviewed.
+- Macro state, catalyst status, and narrative popularity are not Phase B score
+  components.
 
 ## Completion rule
 
-Each phase is a separate reviewed PR. Phase D must not start until A-C have produced stable, reproducible, and explainable research outputs.
+Each phase is a separate reviewed PR. Phase D must not start until A-C have produced stable, reproducible, and explainable research outputs. Adjacent future-design lanes require their own reviewed contracts and acceptance; this master plan grants none of them runtime or downstream authority.
