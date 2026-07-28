@@ -12,6 +12,39 @@ replace it.
 - make the smallest structurally correct change
 - stop when acceptance criteria pass
 
+## Goal revalidation on repetition or scope growth
+
+Before continuing, re-check the original operator goal when any of these occurs:
+
+- the same action or proposal has already required one correction cycle;
+- the task gains a new tool, credential, host, prerequisite, abstraction, or
+  provisioning layer;
+- the proposed solution becomes materially longer or broader than the original
+  objective;
+- work shifts from the required outcome to debugging an optional helper or
+  interface;
+- the operator reports repetition, overengineering, or loss of momentum.
+
+At that checkpoint, state explicitly:
+
+- `original_goal`;
+- `current_blocker`;
+- whether the blocker is actually required by the canonical contract;
+- the shortest architecture-compliant route to the goal;
+- which optional steps, tools, or abstractions can be removed.
+
+Do not continue patching the current route by default. After one repeated
+correction, compare at least one simpler route and choose the shortest route
+that preserves architecture, safety, and acceptance requirements.
+
+Continue the existing route only when repository contracts or concrete safety
+evidence require it. Do not introduce a new framework, installer, credential
+path, documentation artifact, or execution layer merely to rescue an optional
+approach.
+
+Keep proposed actions separate from observed execution state. A command, SQL
+block, or plan returned by an agent is not evidence that it was executed.
+
 ## Independent review
 
 - default effort = high
