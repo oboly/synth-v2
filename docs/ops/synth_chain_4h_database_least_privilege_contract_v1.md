@@ -205,7 +205,7 @@ the same site. `UPSERT` means `INSERT ... ON DUPLICATE KEY UPDATE`.
 | scope projection facts | `SELECT` from `native_short_scope_cadence_config_v1` | `src/market_data/native_short_scope_status_materializer_v1.py:455-465` |
 | scope projection facts | `SELECT` from `native_short_scope_observation_v1` | `src/market_data/native_short_scope_status_materializer_v1.py:482-490` |
 | materializer run | `INSERT` into `native_short_materializer_run_v1` | `src/market_data/native_short_scope_status_materializer_v1.py:544-590` |
-| materializer run | compare-and-set `UPDATE` of `native_short_materializer_run_v1` | `src/market_data/native_short_scope_status_materializer_v1.py:597-634` |
+| materializer run | compare-and-set `UPDATE ... WHERE run_id = ...` of `native_short_materializer_run_v1` (the `WHERE` clause requires `SELECT` in addition to `UPDATE`) | `src/market_data/native_short_scope_status_materializer_v1.py:597-634` |
 | scope observation | `INSERT` into `native_short_scope_observation_v1` | `src/market_data/native_short_scope_status_materializer_v1.py:641-714` |
 | lifecycle transition | `INSERT` into `native_short_map_lifecycle_event_v1` | `src/market_data/native_short_scope_status_materializer_v1.py:721-746` |
 | scope projection | `UPSERT` `native_short_scope_status_v1` | `src/market_data/native_short_scope_status_materializer_v1.py:753-830` |
@@ -271,7 +271,7 @@ sequences, DDL, or administrative statements.
 | `native_short_map_lifecycle_event_v1` | yes | yes | no | no | Native SHORT ledger/snapshot |
 | `native_short_map_scope_v1` | yes | no | no | no | scope selection and row lock |
 | `native_short_map_v1` | yes | yes | no | no | map materialization/snapshot |
-| `native_short_materializer_run_v1` | no | yes | yes | no | run insert/terminalize |
+| `native_short_materializer_run_v1` | yes | yes | yes | no | run insert/terminalize; `SELECT` required for compare-and-set `UPDATE ... WHERE run_id` |
 | `native_short_scope_cadence_config_v1` | yes | no | no | no | cadence fact and row lock |
 | `native_short_scope_observation_v1` | yes | yes | no | no | observation fact/append |
 | `native_short_scope_status_v1` | yes | yes | yes | no | projection upsert/read |

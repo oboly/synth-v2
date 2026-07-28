@@ -40,7 +40,7 @@ REQUIRED_OBJECT_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "native_short_map_lifecycle_event_v1": _privileges(SELECT, INSERT),
     "native_short_map_scope_v1": _privileges(SELECT),
     "native_short_map_v1": _privileges(SELECT, INSERT),
-    "native_short_materializer_run_v1": _privileges(INSERT, UPDATE),
+    "native_short_materializer_run_v1": _privileges(SELECT, INSERT, UPDATE),
     "native_short_scope_cadence_config_v1": _privileges(SELECT),
     "native_short_scope_observation_v1": _privileges(SELECT, INSERT),
     "native_short_scope_status_v1": _privileges(SELECT, INSERT, UPDATE),
