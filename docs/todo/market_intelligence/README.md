@@ -2,7 +2,7 @@
 
 ## Scope
 
-Research-only, market-only, account-agnostic observation and classification lanes, including sector rotation, macro regime, narrative, catalyst, breadth, flow, and composite market context.
+Research-only, market-only, account-agnostic observation and classification lanes, including sector rotation, macro regime, narrative, catalyst, breadth, flow, scanner research, and composite market context.
 
 ## Boundary
 
@@ -20,17 +20,34 @@ This file is navigation only. Status, priority, and cross-lane execution order r
 - `composite_market_regime_v1.md`
 - `narrative_engine_v1.md`
 - `catalyst_engine_v1.md`
+- `momentum_flow_scanner_research_v1.md`
+- `ffg_rotation_classification_v1.md`
 
 ## Completed dependency
 
 - `../completed/sector_taxonomy_database_seed_v1.md` — accepted Phase A taxonomy seed and operational acceptance record.
 
-## Related files requiring separation before relocation
+## Split ownership
 
-- `../momentum_flow_scanner_matrix_v1.md` mixes market research, Profit Plan presentation, and future selection-promotion questions. Split it before relocation.
-- `../ffg_curated_rotation_radar_v1.md` mixes external-research metadata, market classification, account overlays, and dashboard behavior. Split it before relocation.
+The former umbrella TODOs remain historical specifications while active ownership is separated:
+
+```text
+momentum_flow_scanner_matrix_v1.md
+  market research     -> market_intelligence/momentum_flow_scanner_research_v1.md
+  Profit Plan display -> reporting/profit_plan_opportunity_presentation_v1.md
+
+ffg_curated_rotation_radar_v1.md
+  source membership   -> external_research/ffg_universe_metadata_v1.md
+  market classification -> market_intelligence/ffg_rotation_classification_v1.md
+  account/UI overlay  -> reporting/ffg_rotation_radar_presentation_v1.md
+```
+
+The umbrella files own no account permission, execution intent, order handling, or broker access.
+
+## Remaining ownership review
+
 - `../cross_asset_metals_miners_food_rotation_v1.md` requires an ownership review before choosing market intelligence, external research, or reporting.
 
 ## Compatibility pointers
 
-Former top-level paths for moved or completed TODOs may remain as non-owning migration pointers. They prevent broken links while exact references are retired and own no active status or priority.
+Former top-level paths for moved, completed, or split TODOs may remain as non-owning migration or umbrella references. They prevent broken links while exact references are retired and own no cross-lane status or priority.
