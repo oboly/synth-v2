@@ -4,18 +4,20 @@
 
 ```text
 capability=native_short_4h_chain
-recommended_owner=UNASSIGNED
-writer_host=UNASSIGNED
-publication_host=UNASSIGNED
-candidate_host=UNASSIGNED
-selected_host=UNASSIGNED
-production_authorization=none
-activation_authorization=none
+recommended_owner=devlap
+writer_host=devlap
+publication_host=devlap
+candidate_host=devlap
+selected_host=devlap
+production_authorization=granted
+activation_authorization=granted
 scope=BTC_ONLY
 ```
 
-The repository evidence does not prove one deployable production owner.
-`native_short_4h_chain` therefore remains fail-closed and `UNASSIGNED`.
+All eight blockers in the Exact Blocker Contract closed at commit
+`8af1cee2badee1b6e85e227f33c97d11aee98aff` (2026-07-28). See "Owner Assignment
+and Activation Evidence" below. `native_short_4h_chain` is assigned to
+`devlap`, `PAPER` execution mode only. Live trading remains `NOT_GRANTED`.
 
 PR #143 is merged as `76e6b8c`, with writer commit-time fencing at
 `c20cb7c`. This closes the repository dependency only. It does not select a
@@ -430,3 +432,73 @@ executor=none
 multi_asset_promotion=0
 reporting_fallback=0
 ```
+
+## Owner Assignment and Activation Evidence (2026-07-28)
+
+All eight blockers closed for `devlap` at commit
+`8af1cee2badee1b6e85e227f33c97d11aee98aff`:
+
+```text
+OWNER_EXACT_COMMIT_PREFLIGHT_MISSING       CLOSED  HEAD=origin/main, working tree clean
+DB_CONNECTIVITY_PROOF_MISSING              CLOSED  reused PASS (db_environment_preflight)
+DB_WRITER_AUTHORITY_PROOF_MISSING          CLOSED  reused PASS (db_grant_preflight, identity=synth_chain_4h_writer@192.168.1.64)
+PUBLICATION_PATH_OWNERSHIP_PROOF_MISSING   CLOSED  reused PASS (snapshot_filesystem_preflight)
+EXACT_INSTALLED_UNIT_EQUIVALENCE_MISSING   CLOSED  run_native_short_systemd_equivalence_preflight_v1 pass=22 fail=0
+ALL_HOST_SCHEDULER_INVENTORY_MISSING       CLOSED  see below
+ROLLBACK_PROOF_MISSING                     CLOSED  see below
+WRITER_PUBLICATION_COLOCATION_PROOF_MISSING CLOSED  writer and publisher both run as service user `gurk` on devlap
+```
+
+Scheduler inventory (read-only, 2026-07-28):
+
+```text
+devlap : synth-chain-4h.{service,timer}        disabled/inactive (candidate)
+devlap : no cron/user-timer/container match
+odroid : synth-4h-market-chain.{service,timer} disabled/inactive (retired legacy)
+odroid : no other native_short/chain_4h match in system/user timers or cron
+gurkdb : no synth-chain-4h/native_short unit, timer, or cron entry present
+active_native_short_4h_chain_schedulers=0
+proposed_scheduler=devlap:synth-chain-4h.timer
+```
+
+Rollback proof (documented only; not executed unless acceptance fails):
+
+```bash
+sudo systemctl disable --now synth-chain-4h.timer
+sudo systemctl disable --now synth-chain-4h.service   # only if left active
+```
+
+This disables only the proposed devlap timer/service and removes their
+enabled state. It does not revert or rewrite DB ledger/history tables, and
+does not delete or modify the last digest-valid published snapshot, which
+remains readable and visibly stale under the existing freshness/staleness
+reporting behavior.
+
+Controlled acceptance: one manual `systemctl start synth-chain-4h.service`
+run on devlap with the timer still disabled/inactive, exit code and safety
+markers recorded in the task report. No broker private calls, no broker
+writes, no order submission, no live mode; `decision_gate`, `execution_planner`,
+and `executor` are not invoked by this chain.
+
+Activation: after acceptance passed, `synth-chain-4h.timer` was enabled and
+started on devlap. `synth-chain-4h.service` itself remains `disabled`/inactive
+between timer firings (`Timer.Unit=` activation only, no `Requires=`/`Wants=`
+pull-in).
+
+### Production Decision Evidence
+
+```text
+approval_reference=Explicit user authorization (chat, this session) for native_short_4h_chain PAPER-mode production activation on devlap on 2026-07-28
+capability_id=native_short_4h_chain
+authorized_host=devlap
+authorized_commit=8af1cee2badee1b6e85e227f33c97d11aee98aff
+scope=BTC_ONLY, PAPER execution mode only, live trading NOT_GRANTED, no broker private calls, no broker writes, no order submission
+production_authorization_status=AUTHORIZED
+runtime_lifecycle=AUTHORIZED_INACTIVE (pending one controlled acceptance run; ACTIVE only after timer enabled)
+authorization_file=/etc/synth/writer-capability-runtime-authorization-v1.json (deployed by the operator on devlap, outside git)
+```
+
+The user explicitly authorized production activation of `native_short_4h_chain`
+on `devlap`, `PAPER` mode, `BTC_ONLY` scope, in this session on 2026-07-28,
+after all eight blockers above closed. This is the production decision
+evidence for `deploy/ownership/writer_capability_ownership_v1.json`.

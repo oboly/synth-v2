@@ -27,7 +27,7 @@
   },
   "host_status": {
     "gurkdb": "AUTHORIZED",
-    "devlap": "UNVERIFIED",
+    "devlap": "AUTHORIZED",
     "odroid": "UNVERIFIED"
   },
   "candidate_topology": {
@@ -326,15 +326,20 @@
       "account_or_reporting_coupling": false,
       "evaluated_separately": true,
       "evaluated_separately_reason": "The 4h chain carries CPU, repository-source-identity, publication, artifact, and downstream market-state responsibilities distinct from the light DB writers. It must not be moved automatically with public-price or candle writers.",
-      "candidate_host": "UNASSIGNED",
-      "selected_host": "UNASSIGNED",
-      "acceptance_host": "UNASSIGNED",
-      "acceptance_status": "UNASSIGNED",
-      "acceptance_evidence": null,
-      "production_runtime_owner": "UNASSIGNED",
-      "production_authorization_status": "UNASSIGNED",
-      "runtime_lifecycle": "UNASSIGNED",
-      "production_decision_evidence": "",
+      "candidate_host": "devlap",
+      "selected_host": "devlap",
+      "acceptance_host": "devlap",
+      "acceptance_status": "ACCEPTED",
+      "acceptance_evidence": {
+        "approval_reference": "Explicit user authorization for the devlap native_short_4h_chain PAPER-mode rollout on 2026-07-28",
+        "evidence_doc": "docs/ops/native_short_4h_chain_ownership_preflight_v1.md",
+        "accepted_at_utc": "2026-07-28T10:47:46Z",
+        "scope": "All eight blocker gates closed at commit 8af1cee2badee1b6e85e227f33c97d11aee98aff: exact-commit, DB connectivity, DB writer authority, publication path ownership, installed-unit equivalence, all-host scheduler inventory (devlap/odroid/gurkdb), rollback proof, writer/publication colocation."
+      },
+      "production_runtime_owner": "devlap",
+      "production_authorization_status": "AUTHORIZED",
+      "runtime_lifecycle": "AUTHORIZED_INACTIVE",
+      "production_decision_evidence": "docs/ops/native_short_4h_chain_ownership_preflight_v1.md#production-decision-evidence",
       "observed_runtime_state": [],
       "historical_runtime_assignment": null
     }
