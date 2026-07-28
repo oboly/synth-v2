@@ -2,7 +2,7 @@
 
 ## Scope
 
-Research-only, market-only, account-agnostic observation and classification lanes, including sector rotation, macro regime, narrative, catalyst, breadth, flow, scanner research, and composite market context.
+Research-only, market-only, account-agnostic observation and classification lanes, including sector rotation, macro regime, narrative, catalyst, breadth, flow, scanner research, cross-asset rotation, and composite market context.
 
 ## Boundary
 
@@ -22,6 +22,7 @@ This file is navigation only. Status, priority, and cross-lane execution order r
 - `catalyst_engine_v1.md`
 - `momentum_flow_scanner_research_v1.md`
 - `ffg_rotation_classification_v1.md`
+- `cross_asset_rotation_research_v1.md`
 
 ## Completed dependency
 
@@ -33,20 +34,20 @@ The former umbrella TODOs remain historical specifications while active ownershi
 
 ```text
 momentum_flow_scanner_matrix_v1.md
-  market research     -> market_intelligence/momentum_flow_scanner_research_v1.md
-  Profit Plan display -> reporting/profit_plan_opportunity_presentation_v1.md
+  market research       -> market_intelligence/momentum_flow_scanner_research_v1.md
+  Profit Plan display   -> reporting/profit_plan_opportunity_presentation_v1.md
 
 ffg_curated_rotation_radar_v1.md
-  source membership   -> external_research/ffg_universe_metadata_v1.md
+  source membership     -> external_research/ffg_universe_metadata_v1.md
   market classification -> market_intelligence/ffg_rotation_classification_v1.md
-  account/UI overlay  -> reporting/ffg_rotation_radar_presentation_v1.md
+  account/UI overlay    -> reporting/ffg_rotation_radar_presentation_v1.md
+
+cross_asset_metals_miners_food_rotation_v1.md
+  public data + identity -> external_research/cross_asset_public_data_and_instrument_registry_v1.md
+  market research        -> market_intelligence/cross_asset_rotation_research_v1.md
 ```
 
 The umbrella files own no account permission, execution intent, order handling, or broker access.
-
-## Remaining ownership review
-
-- `../cross_asset_metals_miners_food_rotation_v1.md` requires an ownership review before choosing market intelligence, external research, or reporting.
 
 ## Compatibility pointers
 
