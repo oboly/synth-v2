@@ -2,124 +2,83 @@
 
 ## Status
 
-Phase A is done / accepted and operationally activated from merged main
-`794a03e014c44b5f01410a07bc5f24aa763715a8`. Its migration, first import,
-post-write verification, and idempotent second import passed on 2026-07-16.
-Phase B repository implementation is complete for review; its migration and
-snapshot writes remain separate post-merge acceptance actions. Phase B2 is a
-short, open research audit of a few market-filter ideas; it may run alongside
-Phase C after persisted Phase B snapshots are accepted and must not reopen or
-retune Phase B without evidence. Phase D has not started.
+Phase A is accepted and operationally activated from merged main `794a03e014c44b5f01410a07bc5f24aa763715a8`.
 
-Separate future-design lanes now own macro regime, composite market regime,
-catalyst, and narrative research. They do not expand Phase B authority and do
-not change the current cross-lane execution order.
+Phase B repository implementation is complete for review. Migration application and persisted snapshot acceptance remain separate post-merge actions.
+
+Phase B2 is a short research audit that may run after accepted Phase B snapshots. Phase C is the reporting lane. Phase D has not started.
+
+Macro regime, composite market regime, catalyst, and narrative research are separate future-design lanes. They do not expand Phase B authority or change the current cross-lane execution order.
 
 ## Goal
 
-Build a research-only sector intelligence layer above individual asset analysis so Synth can distinguish isolated coin moves from broader sector participation and rotation.
+Build a research-only sector intelligence layer above individual asset analysis so Synth can distinguish isolated asset moves from broader sector participation and rotation.
 
 ## Roadmap
 
+```text
 A. Sector Taxonomy & Database Seed v1
-
+        ↓
 B. Sector Rotation Engine v1
-
+        ↓
 C. Sector Rotation Dashboard v1
-
-D. Sector Context Integration v1 (future, research-only until separately accepted)
-
-Adjacent future-design lanes:
-
-```text
-Macro Regime Engine v1
-Composite Market Regime v1
-Catalyst Engine v1
-Narrative Engine v1
-```
-
-Canonical TODO owners:
-
-```text
-docs/todo/macro_regime_engine_v1.md
-docs/todo/composite_market_regime_v1.md
-docs/todo/catalyst_engine_v1.md
-docs/todo/narrative_engine_v1.md
-```
-
-## Dependency order
-
-```text
-A. taxonomy + DB seed
         ↓
-B. sector snapshots + rotation algorithm
-        ↓
-C. GUI + drilldown
-        ↓
-D. optional downstream context integration
+D. Optional Sector Context Integration v1
 ```
 
-Adjacent research sequence:
+Adjacent market-intelligence owners:
 
 ```text
-accepted macro inputs + classifiers
-              \
-accepted BTC structure + breadth
-                \
-accepted sector rotation snapshots ---> composite market regime research
-                /
-accepted measured-flow overlays
-
-catalyst metadata --------> read-only context
-narrative taxonomy -------> read-only analytics
+docs/todo/market_intelligence/macro_regime_engine_v1.md
+docs/todo/market_intelligence/composite_market_regime_v1.md
+docs/todo/market_intelligence/catalyst_engine_v1.md
+docs/todo/market_intelligence/narrative_engine_v1.md
 ```
 
-Catalyst and narrative lanes remain separate from macro and sector state. The
-composite regime may consume only accepted market evidence; it must not consume
-external conviction or unverified catalyst claims as market truth.
+## Dependency boundaries
+
+- The composite regime may consume only accepted macro, BTC structure, breadth, sector-rotation, and separately typed measured-flow snapshots.
+- Catalyst metadata and narrative analytics remain separate from macro and sector state.
+- External research may create candidates but cannot assign canonical market state.
+- Narrative membership must not overwrite primary sector ownership.
+- Catalyst state must not become a hidden trade trigger.
 
 ## Existing hooks
 
-- `asset.sector` already exists as global asset metadata.
-- `asset_profile_snapshot.sector_group_code` and `sector_confidence` already exist.
-- Asset Profile v1 intentionally leaves sector clustering null; this initiative completes that deferred line.
+- `asset.sector` exists as global asset metadata.
+- `asset_profile_snapshot.sector_group_code` and `sector_confidence` exist.
+- Asset Profile v1 intentionally leaves sector clustering unresolved; this initiative owns that deferred work.
 
 ## Hard boundaries
 
-- Research/reporting only through phases A-C.
-- No `selection_engine` behavior changes.
-- No `decision_gate` behavior changes.
-- No `execution_planner` behavior changes.
-- No executor or agent behavior changes.
-- No broker writes or order submissions.
-- Database writes are limited to deterministic taxonomy imports and expected analytics snapshots.
+- Research/reporting only through phases A–C.
+- No `selection_engine`, `decision_gate`, `execution_planner`, executor, agent, broker, or order-path behavior changes.
+- Database writes are limited to deterministic taxonomy imports and accepted analytics snapshots.
 - Proxy flow labels must never be presented as measured capital flow.
-- Narrative membership must not overwrite primary sector ownership.
-- Catalyst state must not become a hidden trade trigger.
-- External research remains separately typed and cannot assign canonical market state.
 
 ## Initial sector coverage
 
 At minimum:
 
-- DeFi Lending
-- DeFi Yield
-- RWA
-- RWA Infrastructure
-- AI / Decentralized Intelligence
-- AI Compute / DePIN
-- L1
-- L2
-- Perpetual DEX
-- Oracle / Interoperability
-- Payments
-- Gaming
-- Stablecoin Infrastructure
+```text
+DeFi Lending
+DeFi Yield
+RWA
+RWA Infrastructure
+AI / Decentralized Intelligence
+AI Compute / DePIN
+L1
+L2
+Perpetual DEX
+Oracle / Interoperability
+Payments
+Gaming
+Stablecoin Infrastructure
+```
 
 ## Financial Infrastructure audit
 
-The existing taxonomy must be audited before adding another broad sector.
-Candidate distinctions:
+Audit whether the existing taxonomy adequately represents:
 
 ```text
 Tokenization
@@ -130,7 +89,7 @@ Yield Markets
 Governance / risk coordination
 ```
 
-Candidate assets for classification review, not predetermined membership:
+Candidate assets for classification review, without predetermined membership:
 
 ```text
 ONDO
@@ -144,52 +103,20 @@ XDC
 ALGO
 ```
 
-RSR must be evaluated from its actual protocol roles, including governance,
-risk coordination, DTF infrastructure, first-loss staking, and RWA/stable-asset
-adjacency. Project ambition to become reserve-currency infrastructure is not a
-classification fact.
-
-## Initial tracked examples
-
-- AAVE, PENDLE, ENA
-- ONDO, PLUME, LINK
-- TAO, AKT, RENDER, CHIP
-- POL
-- HYPE, LIT
-- NEAR, VET, DEEP
-- RSR as a taxonomy and research-universe candidate pending canonical asset and membership review
+RSR must be evaluated from actual protocol roles such as governance, risk coordination, DTF infrastructure, first-loss staking, and RWA/stable-asset adjacency. Project ambition is not classification evidence.
 
 ## Phase B2 — Market-filter candidate audit
 
-Status: open / short research after accepted Phase B snapshots. This audit may
-run alongside Phase C because it changes no dashboard or runtime behavior.
+Status: open after accepted Phase B snapshots.
 
-Purpose:
+Evaluate only whether these market-only candidates add independent sector information:
 
-Determine whether a small set of market-only filter ideas adds genuine sector
-rotation information or belongs elsewhere in Synth. Phase B remains the
-accepted baseline; no v1 score, migration, or writer is changed by this audit.
+- realized-volatility normalization;
+- member-level range compression or expansion;
+- listing age and historical-data age as eligibility/confidence inputs;
+- spread, precision, and tradability only where aggregate sector value is demonstrated.
 
-Research questions:
-
-- Test realized-volatility normalization as an explanatory sector feature, while
-  avoiding duplicate information already present in dispersion and liquidity
-  quality.
-- Test member-level range compression/expansion as an aggregated participation
-  or confirmation measure; do not blindly remove compressed assets before
-  breakout analysis.
-- Treat listing age and historical-data age as eligibility or confidence inputs,
-  not as sector leadership.
-- Keep spread, precision, and instrument tradability in market quality, asset
-  profile, or selection eligibility unless evidence shows an aggregate sector
-  metric adds independent value.
-- Compare every candidate against the existing Phase B components and measure
-  incremental stability, explanatory value, and replay-safe predictive value.
-- Use point-in-time inputs and the future
-  `backtest_capability_contract_v1.md`; no current/latest profile joins in
-  historical evaluation.
-
-Required output:
+Every candidate must record:
 
 ```text
 candidate
@@ -210,16 +137,8 @@ KEEP_IN_OTHER_LAYER
 REJECT
 ```
 
-Explicit exclusions:
-
-- Trade-performance ranking is account-aware and belongs only in a future
-  decision-gate protection/permission design.
-- Random shuffle is non-deterministic and is rejected.
-- No Freqtrade code copy, plugin framework, dependency, or second runtime.
-- No implementation starts until this short audit is reviewed.
-- Macro state, catalyst status, and narrative popularity are not Phase B score
-  components.
+Random shuffle is rejected. Trade-performance ranking remains account-aware and outside this lane. No Freqtrade runtime, plugin framework, or copied implementation is introduced.
 
 ## Completion rule
 
-Each phase is a separate reviewed PR. Phase D must not start until A-C have produced stable, reproducible, and explainable research outputs. Adjacent future-design lanes require their own reviewed contracts and acceptance; this master plan grants none of them runtime or downstream authority.
+Each phase requires separate review and acceptance. Phase D must not start until phases A–C produce stable, reproducible, explainable outputs. Adjacent market-intelligence lanes require their own contracts and acceptance; this master plan grants none of them downstream authority.
