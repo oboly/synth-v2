@@ -9,14 +9,22 @@ from pathlib import Path
 from src.market_data.native_short_fib_context_v1 import STATUS_AVAILABLE
 from src.market_data.native_short_multi_asset_audit_v1 import (
     ASSET_DISABLED,
+    BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID,
+    BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED,
+    BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE,
+    BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE,
+    BOOTSTRAP_ORCHESTRATION_BLOCKED,
     GENERATION_CHAIN_INVALID,
     GLOBAL_BLOCKERS,
     MARKET_DATA_DISABLED,
     MARKET_NOT_TRADEABLE,
+    MULTI_SCOPE_FAILURE_ISOLATION_MISSING,
     PRIMARY_SOURCE_STALE,
     PRIMARY_CONTEXT_UNAVAILABLE,
+    PROMOTION_CONTRACT_MISSING,
     READY_EXISTING_CANARY,
     READY_FOR_SEQUENTIAL_CANARY_REVIEW,
+    REMOVAL_CONTRACT_MISSING,
     SCOPE_AMBIGUOUS,
     SUPPORTING_SOURCE_STALE,
     SUPPORTING_CONTEXT_UNAVAILABLE,
@@ -30,6 +38,7 @@ from src.market_data.native_short_multi_asset_audit_v1 import (
     LedgerState,
     MarketMetadata,
     evaluate_candidate,
+    evaluate_global_blockers,
     rank_sequential_candidates,
 )
 
@@ -254,6 +263,92 @@ def test_provenance_contract_and_operational_acceptance_are_independent() -> Non
     assert report["operational_acceptance_completed"] is False
     assert report["writer_provenance_blocker_active"] is True
     assert WRITER_PROVENANCE_UNATTRIBUTED in report["global_blocker_codes"]
+
+
+def test_attributable_provenance_clears_only_writer_provenance_blocker() -> None:
+    active, reasons = evaluate_global_blockers(provenance_attributed=True)
+    assert WRITER_PROVENANCE_UNATTRIBUTED not in active
+    assert reasons[WRITER_PROVENANCE_UNATTRIBUTED] == BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED
+    # every other blocker remains active regardless of provenance evidence
+    assert set(active) == {
+        PROMOTION_CONTRACT_MISSING,
+        REMOVAL_CONTRACT_MISSING,
+        BOOTSTRAP_ORCHESTRATION_BLOCKED,
+        MULTI_SCOPE_FAILURE_ISOLATION_MISSING,
+    }
+
+
+def test_unattributable_provenance_keeps_writer_provenance_blocker_active() -> None:
+    active, reasons = evaluate_global_blockers(provenance_attributed=False)
+    assert WRITER_PROVENANCE_UNATTRIBUTED in active
+    assert reasons[WRITER_PROVENANCE_UNATTRIBUTED] == BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID
+
+
+def test_missing_or_malformed_provenance_fails_closed() -> None:
+    # Any non-True input (absent row, invalid classification, ambiguous
+    # evidence) must be treated identically to False -- fail closed.
+    active_false, _ = evaluate_global_blockers(provenance_attributed=False)
+    active_falsy, _ = evaluate_global_blockers(provenance_attributed=bool(None))
+    assert active_false == active_falsy
+    assert WRITER_PROVENANCE_UNATTRIBUTED in active_false
+
+
+def test_promotion_and_removal_evidence_remain_unresolved() -> None:
+    active, reasons = evaluate_global_blockers(provenance_attributed=True)
+    assert PROMOTION_CONTRACT_MISSING in active
+    assert REMOVAL_CONTRACT_MISSING in active
+    assert reasons[PROMOTION_CONTRACT_MISSING] == BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE
+    assert reasons[REMOVAL_CONTRACT_MISSING] == BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE
+
+
+def test_bootstrap_and_isolation_blockers_remain_active_pending_separate_lanes() -> None:
+    active, reasons = evaluate_global_blockers(provenance_attributed=True)
+    assert BOOTSTRAP_ORCHESTRATION_BLOCKED in active
+    assert MULTI_SCOPE_FAILURE_ISOLATION_MISSING in active
+    assert (
+        reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED]
+        == BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE
+    )
+    assert (
+        reasons[MULTI_SCOPE_FAILURE_ISOLATION_MISSING]
+        == BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE
+    )
+
+
+def test_global_blocker_codes_exactly_matches_evaluated_active_blockers() -> None:
+    for provenance_attributed in (True, False):
+        active, _ = evaluate_global_blockers(provenance_attributed=provenance_attributed)
+        result = evaluate_candidate(candidate("SOL"), as_of_utc=AS_OF, global_blockers=active)
+        assert result.global_blocker_codes == active
+        assert (result.global_rollout_status == "GLOBAL_ROLLOUT_BLOCKED") == bool(active)
+
+
+def test_operational_acceptance_cannot_be_true_while_any_blocker_active() -> None:
+    for provenance_attributed in (True, False):
+        active, _ = evaluate_global_blockers(provenance_attributed=provenance_attributed)
+        operational_acceptance_completed = not active
+        # At least one blocker (promotion/removal/bootstrap/isolation) is
+        # always active in this lane, so acceptance can never be true yet.
+        assert active
+        assert operational_acceptance_completed is False
+
+
+def test_production_promotable_remains_false_while_blockers_remain() -> None:
+    for provenance_attributed in (True, False):
+        active, _ = evaluate_global_blockers(provenance_attributed=provenance_attributed)
+        result = evaluate_candidate(candidate("ETH", volume="1"), as_of_utc=AS_OF, global_blockers=active)
+        assert result.readiness_status == READY_FOR_SEQUENTIAL_CANARY_REVIEW
+        assert result.production_promotable is False
+
+
+def test_global_blocker_evidence_covers_every_canonical_blocker_deterministically() -> None:
+    active, reasons = evaluate_global_blockers(provenance_attributed=True)
+    assert set(reasons) == set(GLOBAL_BLOCKERS)
+    active_again, reasons_again = evaluate_global_blockers(provenance_attributed=True)
+    assert active == active_again
+    assert reasons == reasons_again
+    # ordering follows canonical GLOBAL_BLOCKERS declaration order
+    assert list(active) == [code for code in GLOBAL_BLOCKERS if code in active]
 
 
 def test_no_account_or_execution_imports() -> None:

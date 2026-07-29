@@ -62,6 +62,70 @@ GLOBAL_BLOCKERS = (
     BOOTSTRAP_ORCHESTRATION_BLOCKED,
     MULTI_SCOPE_FAILURE_ISOLATION_MISSING,
 )
+"""Fail-closed default: assume every blocker remains active unless a caller
+explicitly supplies an evaluated blocker tuple (see ``evaluate_global_blockers``).
+"""
+
+# Evidence-classification reason codes for the per-blocker diagnostic map.
+# These explain *why* a blocker is active/closed without changing the
+# existing ``global_blocker_codes`` / ``writer_provenance_blocker_active`` /
+# ``operational_acceptance_completed`` field shapes.
+BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED = "EVIDENCE_CONFIRMS_CLOSED"
+BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID = "EVIDENCE_ABSENT_OR_INVALID"
+BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE = "NO_CANONICAL_EVIDENCE_SOURCE"
+BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE = "IMPLEMENTATION_PENDING_SEPARATE_LANE"
+
+
+def evaluate_global_blockers(
+    *, provenance_attributed: bool
+) -> tuple[tuple[str, ...], Mapping[str, str]]:
+    """Derive active global blockers from explicit evaluated evidence only.
+
+    Fail-closed: any blocker lacking a canonical, machine-readable, explicitly
+    owned evidence source stays active. Code/tests existing for a contract
+    is never treated as acceptance, and narrative documentation is never
+    treated as runtime acceptance state.
+
+    Returns ``(active_blocker_codes, reason_by_code)`` where
+    ``reason_by_code`` covers all of ``GLOBAL_BLOCKERS`` (active or not).
+    """
+    reasons: dict[str, str] = {}
+    active: list[str] = []
+
+    # WRITER_PROVENANCE_UNATTRIBUTED: wired to the existing canonical
+    # provenance evaluation (classify_persisted_native_short_writer_provenance
+    # applied to the reviewed accepted run row). Absent/invalid/ambiguous
+    # evidence fails closed.
+    if provenance_attributed:
+        reasons[WRITER_PROVENANCE_UNATTRIBUTED] = BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED
+    else:
+        active.append(WRITER_PROVENANCE_UNATTRIBUTED)
+        reasons[WRITER_PROVENANCE_UNATTRIBUTED] = BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID
+
+    # PROMOTION_CONTRACT_MISSING / REMOVAL_CONTRACT_MISSING: the promotion and
+    # removal transactions are implemented and unit-tested in
+    # native_short_scope_administration_transaction_v1.py, but no canonical,
+    # explicitly owned, machine-readable production-operational-acceptance
+    # evidence source exists for either transaction (unlike writer provenance,
+    # which has one). Implementation/tests are not accepted as evidence, so
+    # both blockers remain unconditionally active until such a source exists.
+    active.append(PROMOTION_CONTRACT_MISSING)
+    reasons[PROMOTION_CONTRACT_MISSING] = BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE
+    active.append(REMOVAL_CONTRACT_MISSING)
+    reasons[REMOVAL_CONTRACT_MISSING] = BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE
+
+    # BOOTSTRAP_ORCHESTRATION_BLOCKED / MULTI_SCOPE_FAILURE_ISOLATION_MISSING:
+    # out of scope for this lane (audit-correctness only). Both remain active
+    # until their own separate implementation lanes land and are accepted.
+    active.append(BOOTSTRAP_ORCHESTRATION_BLOCKED)
+    reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] = BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE
+    active.append(MULTI_SCOPE_FAILURE_ISOLATION_MISSING)
+    reasons[MULTI_SCOPE_FAILURE_ISOLATION_MISSING] = (
+        BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE
+    )
+
+    ordered_active = tuple(code for code in GLOBAL_BLOCKERS if code in active)
+    return ordered_active, reasons
 
 Progress = Callable[[str, int, float], None]
 
@@ -214,6 +278,7 @@ class AuditReport:
     operational_acceptance_completed: bool
     writer_provenance_blocker_active: bool
     global_blocker_codes: tuple[str, ...]
+    global_blocker_evidence: Mapping[str, str] = ()  # type: ignore[assignment]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -240,6 +305,7 @@ class AuditReport:
             "operational_acceptance_completed": self.operational_acceptance_completed,
             "writer_provenance_blocker_active": self.writer_provenance_blocker_active,
             "global_blocker_codes": list(self.global_blocker_codes),
+            "global_blocker_evidence": dict(self.global_blocker_evidence),
             "safe_max_simultaneous_cohort_size": 1,
             "proposed_sequential_queue": list(self.proposed_sequential_queue),
             "results": [item.to_dict() for item in self.results],
@@ -689,6 +755,19 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
     def keyed(rows: Sequence[Mapping[str, Any]], symbol: str) -> list[Mapping[str, Any]]:
         return [row for row in rows if str(row["symbol"]).upper() == symbol and exact(row)]
 
+    attributable, legacy_unattributed, invalid_provenance, production_observed = (
+        summarize_writer_provenance(writer_rows)
+    )
+    provenance_rows = [row for row in writer_rows if str(row["run_uuid"]) == PROVENANCE_AUDIT_RUN_UUID]
+    provenance_attributed = bool(provenance_rows) and all(
+        classify_persisted_native_short_writer_provenance(row)
+        == NativeShortWriterProvenanceState.ATTRIBUTABLE
+        for row in provenance_rows
+    )
+    active_blockers, blocker_evidence = evaluate_global_blockers(
+        provenance_attributed=provenance_attributed
+    )
+
     evaluated: list[CandidateResult] = []
     for symbol in sorted(markets_by_symbol):
         primary = tuple(candles[(symbol, PRIMARY_INTERVAL)])
@@ -752,7 +831,7 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
                 supporting,
             ),
             trailing_30d_quote_volume=volumes.get(symbol), ledger=ledger,
-        ), as_of_utc=as_of))
+        ), as_of_utc=as_of, global_blockers=active_blockers))
 
     ranked = rank_sequential_candidates(evaluated)
     sequential = sorted(
@@ -784,15 +863,6 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
         ),
         "tick_rule_ambiguous_count": sum(item.tick_rule_state == TICK_RULE_AMBIGUOUS for item in ranked),
     }
-    attributable, legacy_unattributed, invalid_provenance, production_observed = (
-        summarize_writer_provenance(writer_rows)
-    )
-    provenance_rows = [row for row in writer_rows if str(row["run_uuid"]) == PROVENANCE_AUDIT_RUN_UUID]
-    provenance_attributed = bool(provenance_rows) and all(
-        classify_persisted_native_short_writer_provenance(row)
-        == NativeShortWriterProvenanceState.ATTRIBUTABLE
-        for row in provenance_rows
-    )
     _phase(progress, "evaluation", len(ranked), started)
     return AuditReport(
         as_of,
@@ -807,7 +877,8 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
         provenance_attributed,
         True,
         production_observed,
-        False,
-        True,
-        GLOBAL_BLOCKERS,
+        not active_blockers,
+        WRITER_PROVENANCE_UNATTRIBUTED in active_blockers,
+        active_blockers,
+        blocker_evidence,
     )
