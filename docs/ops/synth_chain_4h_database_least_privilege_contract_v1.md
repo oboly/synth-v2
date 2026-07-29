@@ -231,11 +231,11 @@ the same site. `UPSERT` means `INSERT ... ON DUPLICATE KEY UPDATE`.
 | candle features | `SELECT` from `asset`; `SELECT` from `obs_market_candle`; `UPSERT` `feat_candle` | `src/features/etl_candle_feat.py:57-67,92-135,318-393` |
 | signal state | two `SELECT` statements from `feat_candle JOIN asset`; `UPSERT` `signal_engine_state` | `src/signal_engine/run_signal_state_etl.py:42-143`; `src/engine/write_signal_engine_state.py:51-180` |
 | advice state | three `SELECT` statements from `signal_engine_state`/`asset`; `UPSERT` `advice_state` | `src/advice/run_advice_engine.py:152-276,295-340` |
-| ranking state | three `SELECT` statements from `signal_engine_state`/`asset`/`advice_state`; `UPSERT` `ranking_state` | `src/ranking/run_ranking_engine.py:37-198,345-401` |
+| ranking state | three `SELECT` statements from `signal_engine_state`/`asset`/`advice_state`; `INSERT ... ON DUPLICATE KEY UPDATE` `ranking_state` (requires `SELECT` on the target table) | `src/ranking/run_ranking_engine.py:37-198,345-401` |
 | quality snapshot | `SELECT` from `v_asset_interval_quality_v3`; `UPSERT` `asset_interval_quality` | `src/measurement/run_asset_interval_quality_snapshot.py:29-54,57-147` |
 | selection state | `SELECT` from `asset_interval_quality`/`signal_engine_state`/`asset`; `UPSERT` `selection_state` | `src/selection/run_selection_engine_v2.py:61-179,369-433` |
 | zone context | `SELECT` from `asset`; `SELECT` from `obs_market_candle` | `src/zone/repository.py:26-101` |
-| zone context | `UPSERT` `fib_observation_v2`; `UPSERT` `zone_observation_v2` | `src/zone/repository.py:107-278` |
+| zone context | `INSERT ... ON DUPLICATE KEY UPDATE` `fib_observation_v2`; `INSERT ... ON DUPLICATE KEY UPDATE` `zone_observation_v2` (both require `SELECT` on the target table) | `src/zone/repository.py:107-278` |
 | zone context | `DELETE` then `UPSERT` `execution_zone_context` | `src/zone/repository.py:291-401` |
 | setup filter | `SELECT` from `selection_state`/`asset`/`obs_market_candle` | `src/trade_setup_filter/repository.py:30-141` |
 | setup filter metadata | `SELECT` from `information_schema.tables` | `src/trade_setup_filter/observation_repository.py:29-48` |
@@ -243,7 +243,7 @@ the same site. `UPSERT` means `INSERT ... ON DUPLICATE KEY UPDATE`.
 | policy preview | two `SELECT` statements from `trade_setup_filter_observation`; `UPSERT` `trade_setup_policy_preview_observation` | `src/research/run_trade_setup_filter_policy_preview_v1.py:170-244,457-550` |
 | paper advice A+ | `SELECT` from `aplus_table1_report`; `SELECT` from `aplus_table1_row` | `src/advice/run_paper_advice_policy_v1.py:47-97` |
 | paper advice inputs | `SELECT` from `selection_state`, filter/policy observations, `execution_zone_context`, `asset`, and `vw_paper_advice_execution_zone_context_v1` | `src/advice/run_paper_advice_policy_v1.py:167-286` |
-| paper advice observation | `UPSERT` `paper_advice_observation` | `src/advice/run_paper_advice_policy_v1.py:391-452` |
+| paper advice observation | `INSERT ... ON DUPLICATE KEY UPDATE` `paper_advice_observation` (requires `SELECT` on the target table) | `src/advice/run_paper_advice_policy_v1.py:391-452` |
 | runtime metadata | `INSERT` `strategy_runtime_snapshot`; `INSERT` `strategy_runtime_component` | `src/strategy_runtime/runtime_snapshot_writer.py:195-280` |
 
 `information_schema.tables` visibility follows the identity's object
@@ -264,7 +264,7 @@ sequences, DDL, or administrative statements.
 | `asset_interval_quality` | yes | yes | yes | no | quality upsert; selection read |
 | `execution_zone_context` | yes | yes | yes | yes | zone replacement; paper-advice read |
 | `feat_candle` | yes | yes | yes | no | feature upsert; signal read |
-| `fib_observation_v2` | no | yes | yes | no | zone upsert |
+| `fib_observation_v2` | yes | yes | yes | no | zone upsert; `SELECT` required for `INSERT ... ON DUPLICATE KEY UPDATE` |
 | `market_price_snapshot` | yes | no | no | no | freshness read |
 | `native_short_map_generation_event_v1` | yes | yes | no | no | Native SHORT ledger/snapshot |
 | `native_short_map_level_status_v1` | yes | yes | no | yes | projection replacement/snapshot |
@@ -277,8 +277,8 @@ sequences, DDL, or administrative statements.
 | `native_short_scope_status_v1` | yes | yes | yes | no | projection upsert/read |
 | `native_short_scope_support_event_v1` | yes | no | no | no | support fact read |
 | `obs_market_candle` | yes | no | no | no | freshness/features/Native SHORT/zone/filter reads |
-| `paper_advice_observation` | no | yes | yes | no | paper-advice upsert |
-| `ranking_state` | no | yes | yes | no | ranking upsert |
+| `paper_advice_observation` | yes | yes | yes | no | paper-advice upsert; `SELECT` required for `INSERT ... ON DUPLICATE KEY UPDATE` |
+| `ranking_state` | yes | yes | yes | no | ranking upsert; `SELECT` required for `INSERT ... ON DUPLICATE KEY UPDATE` |
 | `selection_state` | yes | yes | yes | no | selection upsert; filter/advice reads |
 | `signal_engine_state` | yes | yes | yes | no | signal upsert; advice/ranking/selection reads |
 | `strategy_runtime_component` | no | yes | no | no | runtime metadata append |
@@ -288,7 +288,7 @@ sequences, DDL, or administrative statements.
 | `v_asset_interval_quality_v3` | yes | no | no | no | quality view read |
 | `venue_market` | yes | no | no | no | public tick precision read |
 | `vw_paper_advice_execution_zone_context_v1` | yes | no | no | no | paper-advice zone view read |
-| `zone_observation_v2` | no | yes | yes | no | zone upsert |
+| `zone_observation_v2` | yes | yes | yes | no | zone upsert; `SELECT` required for `INSERT ... ON DUPLICATE KEY UPDATE` |
 
 No table-level `CREATE`, `ALTER`, `DROP`, `INDEX`, `REFERENCES`, `TRIGGER`,
 `EXECUTE`, `LOCK TABLES`, or `GRANT OPTION` is required.

@@ -33,7 +33,7 @@ REQUIRED_OBJECT_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "asset_interval_quality": _privileges(SELECT, INSERT, UPDATE),
     "execution_zone_context": _privileges(SELECT, INSERT, UPDATE, DELETE),
     "feat_candle": _privileges(SELECT, INSERT, UPDATE),
-    "fib_observation_v2": _privileges(INSERT, UPDATE),
+    "fib_observation_v2": _privileges(SELECT, INSERT, UPDATE),
     "market_price_snapshot": _privileges(SELECT),
     "native_short_map_generation_event_v1": _privileges(SELECT, INSERT),
     "native_short_map_level_status_v1": _privileges(SELECT, INSERT, DELETE),
@@ -46,8 +46,8 @@ REQUIRED_OBJECT_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "native_short_scope_status_v1": _privileges(SELECT, INSERT, UPDATE),
     "native_short_scope_support_event_v1": _privileges(SELECT),
     "obs_market_candle": _privileges(SELECT),
-    "paper_advice_observation": _privileges(INSERT, UPDATE),
-    "ranking_state": _privileges(INSERT, UPDATE),
+    "paper_advice_observation": _privileges(SELECT, INSERT, UPDATE),
+    "ranking_state": _privileges(SELECT, INSERT, UPDATE),
     "selection_state": _privileges(SELECT, INSERT, UPDATE),
     "signal_engine_state": _privileges(SELECT, INSERT, UPDATE),
     "strategy_runtime_component": _privileges(INSERT),
@@ -57,7 +57,7 @@ REQUIRED_OBJECT_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "v_asset_interval_quality_v3": _privileges(SELECT),
     "venue_market": _privileges(SELECT),
     "vw_paper_advice_execution_zone_context_v1": _privileges(SELECT),
-    "zone_observation_v2": _privileges(INSERT, UPDATE),
+    "zone_observation_v2": _privileges(SELECT, INSERT, UPDATE),
 }
 
 

@@ -57,7 +57,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE
 GRANT SELECT, INSERT, UPDATE
     ON `synth`.`feat_candle`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
-GRANT INSERT, UPDATE
+GRANT SELECT, INSERT, UPDATE
     ON `synth`.`fib_observation_v2`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
 GRANT SELECT
@@ -96,10 +96,10 @@ GRANT SELECT
 GRANT SELECT
     ON `synth`.`obs_market_candle`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
-GRANT INSERT, UPDATE
+GRANT SELECT, INSERT, UPDATE
     ON `synth`.`paper_advice_observation`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
-GRANT INSERT, UPDATE
+GRANT SELECT, INSERT, UPDATE
     ON `synth`.`ranking_state`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
 GRANT SELECT, INSERT, UPDATE
@@ -129,7 +129,7 @@ GRANT SELECT
 GRANT SELECT
     ON `synth`.`vw_paper_advice_execution_zone_context_v1`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
-GRANT INSERT, UPDATE
+GRANT SELECT, INSERT, UPDATE
     ON `synth`.`zone_observation_v2`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
 
