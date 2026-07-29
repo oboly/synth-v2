@@ -13,6 +13,7 @@ from src.operations.synth_chain_4h_db_authority_v1 import (
     IDENTITY_NAME,
     OPERATIONAL_DATABASE,
     REQUIRED_OBJECT_PRIVILEGES,
+    SELECT,
     audit_grants,
     parse_grant_statement,
 )
@@ -44,6 +45,43 @@ def _audit(grants: list[str]):
         grant_identity=EXPECTED_GRANT_IDENTITY,
         database_name=OPERATIONAL_DATABASE,
         grant_statements=grants,
+    )
+
+
+# Tables reachable from scripts/run_chain_4h.sh that are written with
+# `INSERT ... ON DUPLICATE KEY UPDATE`. MariaDB requires SELECT on the target
+# table for this statement form even when the UPDATE clause only assigns
+# VALUES(); a missing SELECT fails at runtime with error 1143, as proven by
+# the native_short_4h_chain devlap acceptance run. This is a fixed, manually
+# reviewed list of proven upsert targets, not a general SQL scan.
+REACHABLE_UPSERT_TARGETS = frozenset(
+    {
+        "advice_state",
+        "asset_interval_quality",
+        "execution_zone_context",
+        "feat_candle",
+        "fib_observation_v2",
+        "native_short_scope_status_v1",
+        "paper_advice_observation",
+        "ranking_state",
+        "selection_state",
+        "signal_engine_state",
+        "trade_setup_filter_observation",
+        "trade_setup_policy_preview_observation",
+        "zone_observation_v2",
+    }
+)
+
+
+def test_reachable_upsert_targets_require_select() -> None:
+    missing_select = sorted(
+        object_name
+        for object_name in REACHABLE_UPSERT_TARGETS
+        if SELECT not in REQUIRED_OBJECT_PRIVILEGES.get(object_name, frozenset())
+    )
+    assert missing_select == [], (
+        "INSERT ... ON DUPLICATE KEY UPDATE targets reachable from "
+        f"scripts/run_chain_4h.sh must grant SELECT: {missing_select}"
     )
 
 
