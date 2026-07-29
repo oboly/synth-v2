@@ -28,7 +28,13 @@ FIB_TRADING_HORIZON = "SHORT"
 PRIMARY_INTERVAL = "4h"
 SUPPORTING_INTERVAL = "1h"
 EXISTING_CANARY_SYMBOL = "BTC"
-PROVENANCE_AUDIT_RUN_UUID = "b5d9ca6b-ff24-46eb-8155-4e663b948ebc"
+# The reviewed, operationally accepted attributable production run
+# (docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md,
+# run_id=52, 2026-07-17T13:56:30Z). Not the legacy pre-contract run_id=30
+# (b5d9ca6b-ff24-46eb-8155-4e663b948ebc, started 2026-07-15, predates the
+# provenance-contract migration and is used elsewhere only as a
+# LEGACY_UNATTRIBUTED classification fixture).
+PROVENANCE_AUDIT_RUN_UUID = "b07d897d-6574-4380-98c3-8145c5c41b30"
 PRIMARY_LOOKBACK = timedelta(days=60)
 SUPPORTING_LOOKBACK = timedelta(days=21)
 VOLUME_LOOKBACK = timedelta(days=30)
