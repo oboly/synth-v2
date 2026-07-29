@@ -534,7 +534,9 @@ next_scheduled_fire=2026-07-29T18:13:55+02:00 (CEST)
 `ActiveState=inactive`/`SubState=dead` between fires is expected: the service
 is `Timer.Unit=`-activated only (no `Requires=`/`Wants=` pull-in), matching the
 Activation section above. `Result=success` and `ExecMainStatus=0` confirm the
-most recent scheduled run completed cleanly.
+controlled acceptance run completed cleanly. At observation time the timer
+was enabled and active, but its next scheduled fire was still pending at
+2026-07-29T18:13:55+02:00.
 
 Safety boundary at observation time (unchanged from Activation Gate above):
 
