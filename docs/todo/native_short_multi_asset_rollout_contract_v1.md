@@ -163,7 +163,7 @@ The remaining blocker order is fixed:
 - one-scope current failure-domain-safe capacity;
 - 403 markets without database/static tick-rule coverage.
 
-Writer-provenance closure state:
+Writer-provenance closure state (narrative record of the reviewed 2026-07-17 acceptance, not live runtime state):
 
 ```text
 provenance_contract_implemented=true
@@ -173,6 +173,8 @@ writer_provenance_blocker_active=false
 ```
 
 The reviewed attributable run and its persisted linkage close only the writer-provenance blocker. The repository-only writer commit-time fence was implemented later and has not been production-invoked or operationally accepted. Neither change implements bootstrap semantics, failure isolation, or authorization for any non-BTC production scope.
+
+`src/market_data/native_short_multi_asset_audit_v1.py` no longer emits `global_blocker_codes`, `writer_provenance_blocker_active`, and `operational_acceptance_completed` as an unconditional hardcoded constant. `evaluate_global_blockers()` now derives each blocker from explicit evaluated evidence, fails closed on absent/invalid/ambiguous evidence, and never infers acceptance from code or tests existing, or from this narrative record alone. `WRITER_PROVENANCE_UNATTRIBUTED` is wired to the existing canonical provenance evaluation (`classify_persisted_native_short_writer_provenance` applied to the reviewed accepted run row); if that row does not currently classify `ATTRIBUTABLE`, the blocker stays active regardless of what this narrative snapshot claims. `PROMOTION_CONTRACT_MISSING` and `REMOVAL_CONTRACT_MISSING` remain unconditionally active: the promotion/removal transactions are implemented and unit-tested, but no canonical, explicitly owned, machine-readable production-operational-acceptance evidence source exists for either, so implementation and tests alone are not treated as acceptance. `BOOTSTRAP_ORCHESTRATION_BLOCKED` and `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` remain unconditionally active pending their own separate implementation lanes. The audit report also now exposes an additive `global_blocker_evidence` map giving the per-blocker reason (`EVIDENCE_CONFIRMS_CLOSED`, `EVIDENCE_ABSENT_OR_INVALID`, `NO_CANONICAL_EVIDENCE_SOURCE`, or `IMPLEMENTATION_PENDING_SEPARATE_LANE`) so a blocker that is active because evidence failed can be distinguished from one active because no canonical evidence source exists yet. This lane changes audit correctness only; it does not itself close any blocker, perform any promotion/removal, or implement bootstrap/isolation semantics.
 
 ## Boundary
 
