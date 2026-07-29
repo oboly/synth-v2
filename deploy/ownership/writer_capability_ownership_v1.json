@@ -38,7 +38,7 @@
       "candidate host for other light account-agnostic public market-data writers"
     ],
     "odroid": ["candidate host for account runtimes, persisted-state consumers, dashboards, and publication"],
-    "devlap": ["development host", "candidate acceptance host only", "historical Rotation Pressure runtime assignment SUPERSEDED"]
+    "devlap": ["development host", "active BTC_ONLY PAPER owner of native_short_4h_chain", "candidate acceptance host only for other capabilities", "historical Rotation Pressure runtime assignment SUPERSEDED"]
   },
   "capabilities": [
     {
@@ -338,9 +338,24 @@
       },
       "production_runtime_owner": "devlap",
       "production_authorization_status": "AUTHORIZED",
-      "runtime_lifecycle": "AUTHORIZED_INACTIVE",
+      "runtime_lifecycle": "ACTIVE",
       "production_decision_evidence": "docs/ops/native_short_4h_chain_ownership_preflight_v1.md#production-decision-evidence",
-      "observed_runtime_state": [],
+      "observed_runtime_state": [
+        {
+          "host": "devlap",
+          "unit": "synth-chain-4h.timer",
+          "unit_path": "deploy/systemd/synth-chain-4h.timer",
+          "installed_at_observation": true,
+          "enabled_at_observation": true,
+          "active_at_observation": true,
+          "observed_at_utc": "2026-07-29T16:05:37Z",
+          "observed_at_precision": "exact",
+          "current_state": "ACTIVE_OBSERVED",
+          "authorization_status": "AUTHORIZED",
+          "runtime_state_classification": "AUTHORIZED_RUNTIME_OBSERVED",
+          "evidence_source": "docs/ops/native_short_4h_chain_ownership_preflight_v1.md#scheduled-production-activation-proof-2026-07-29"
+        }
+      ],
       "historical_runtime_assignment": null
     }
   ],

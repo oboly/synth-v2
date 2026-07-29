@@ -491,10 +491,11 @@ pull-in).
 approval_reference=Explicit user authorization (chat, this session) for native_short_4h_chain PAPER-mode production activation on devlap on 2026-07-28
 capability_id=native_short_4h_chain
 authorized_host=devlap
-authorized_commit=8af1cee2badee1b6e85e227f33c97d11aee98aff
+decision_commit=8af1cee2badee1b6e85e227f33c97d11aee98aff
+activation_commit=7f277a851a01708b44a3cffa10705521f9cd4680
 scope=BTC_ONLY, PAPER execution mode only, live trading NOT_GRANTED, no broker private calls, no broker writes, no order submission
 production_authorization_status=AUTHORIZED
-runtime_lifecycle=AUTHORIZED_INACTIVE (pending one controlled acceptance run; ACTIVE only after timer enabled)
+runtime_lifecycle=ACTIVE
 authorization_file=/etc/synth/writer-capability-runtime-authorization-v1.json (deployed by the operator on devlap, outside git)
 ```
 
@@ -502,3 +503,56 @@ The user explicitly authorized production activation of `native_short_4h_chain`
 on `devlap`, `PAPER` mode, `BTC_ONLY` scope, in this session on 2026-07-28,
 after all eight blockers above closed. This is the production decision
 evidence for `deploy/ownership/writer_capability_ownership_v1.json`.
+
+## Scheduled Production Activation Proof (2026-07-29)
+
+Read-only capture on `devlap`, decision-commit checkout:
+
+```text
+observed_at_utc=2026-07-29T16:05:37Z
+activation_commit=7f277a851a01708b44a3cffa10705521f9cd4680
+authorized_commit (from authorization file)=7f277a851a01708b44a3cffa10705521f9cd4680
+capability_id=native_short_4h_chain
+authorized_host=devlap
+purpose=PRODUCTION
+production_authorization_status=AUTHORIZED
+runtime_lifecycle (authorization file, pre-observation)=AUTHORIZED_INACTIVE
+```
+
+Timer/service state:
+
+```text
+synth-chain-4h.timer is-enabled=enabled
+synth-chain-4h.timer is-active=active
+synth-chain-4h.service Result=success
+synth-chain-4h.service ExecMainStatus=0
+synth-chain-4h.service ActiveState=inactive
+synth-chain-4h.service SubState=dead
+next_scheduled_fire=2026-07-29T18:13:55+02:00 (CEST)
+```
+
+`ActiveState=inactive`/`SubState=dead` between fires is expected: the service
+is `Timer.Unit=`-activated only (no `Requires=`/`Wants=` pull-in), matching the
+Activation section above. `Result=success` and `ExecMainStatus=0` confirm the
+most recent scheduled run completed cleanly.
+
+Safety boundary at observation time (unchanged from Activation Gate above):
+
+```text
+scope=BTC_ONLY, PAPER execution mode only
+live_trading=NOT_GRANTED
+broker_private_calls=0
+broker_writes=0
+order_submission=0
+live_orders=0
+decision_gate=none
+execution_planner=none
+executor=none
+```
+
+This observation confirms `native_short_4h_chain` is running in scheduled
+production on `devlap` under the `8af1cee2badee1b6e85e227f33c97d11aee98aff`
+production decision, now reconciled to the runtime commit
+`7f277a851a01708b44a3cffa10705521f9cd4680`. `runtime_lifecycle` for this
+capability is updated to `ACTIVE` in
+`deploy/ownership/writer_capability_ownership_v1.json`.
