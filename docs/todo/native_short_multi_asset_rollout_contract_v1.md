@@ -350,6 +350,11 @@ operation is decided via the separate, pre-existing `decide_operation_replay`
 path and is untouched by this gate -- replay behavior remains deterministic
 and is not re-evaluated against current blocker state.
 
+`active_global_blockers` is a required keyword-only input with no default.
+Every direct caller must therefore pass explicitly evaluated state; production
+entrypoints obtain that state only from
+`evaluate_current_global_blockers(conn)`.
+
 **Authoritative enforcement layer.** The gate lives in
 `native_short_scope_administration_transaction_v1.decide_administration`,
 called from both `execute_scope_administration` (write mode, the sole
@@ -365,13 +370,12 @@ itself, the same established pattern already used in this file's test suite
 for `read_scope_state_snapshot` / `_insert_support_event`; production code
 never does this.
 
-**Operation-specific blocker matrix.** No authoritative operation-specific
-matrix existed anywhere in the repository before this lane. The gate lane
-introduced one as an explicit, documented interpretation derived from each
-canonical blocker's own published semantics (see
+**Operation-specific blocker matrix: adopted v1 policy.** No authoritative
+operation-specific matrix existed anywhere in the repository before this
+lane. This lane explicitly adopts the following v1 policy, derived from each
+canonical blocker's published semantics and enforced by
 `_APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION` in
-`native_short_scope_administration_transaction_v1.py`), not a pre-existing
-repository fact:
+`native_short_scope_administration_transaction_v1.py`:
 
 | Operation             | Applicable active blockers |
 |------------------------|----------------------------|
@@ -399,6 +403,11 @@ operation-specific tests in
 including an explicit proof that removal is *not* incidentally blocked by
 unrelated rollout-expansion blockers.
 
+The matrix is settled policy for v1, not an unresolved interpretation. The
+only unresolved policy issue retained by this lane is the first
+controlled-promotion bootstrap circularity documented below; no bypass is
+implemented.
+
 **Scope-state vs. audit-ledger mutation behavior.** A `GLOBAL_BLOCKERS_ACTIVE`
 decision is a `REJECT` action, which -- like every other reject/no-op/idempotent
 outcome in this module -- is not in the ledgered-action set and therefore
@@ -422,6 +431,13 @@ database read), `execute_scope_administration`'s existing unmapped-exception
 handling rolls back and raises a typed
 `NativeShortScopeAdministrationExecutionError` rather than proceeding as if
 no blockers were active -- fail-closed either way.
+
+Integration tests exercise the complete unpatched path from
+`execute_scope_administration` through `evaluate_current_global_blockers`,
+both evidence-row fetches, `evaluate_global_blockers_from_rows`,
+`evaluate_global_blockers`, and `decide_administration`. They prove absent
+writer evidence, absent promotion evidence, malformed evidence, and unreadable
+evidence cannot authorize a mutation or persist an operation-ledger row.
 
 **Removal/rollback semantics.** Proven explicitly, not assumed: dedicated
 tests confirm a `REMOVE_SCOPE` unaffected by its narrower applicable-blocker

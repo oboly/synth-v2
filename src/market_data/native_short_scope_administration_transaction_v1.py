@@ -128,9 +128,9 @@ _ER_LOCK_WAIT_TIMEOUT = 1205
 #   increase that risk. Blocking a safety rollback on an unrelated
 #   expansion-readiness gate would itself be a safety defect.
 #
-# This interpretation is an unresolved policy point, not a settled contract;
-# see the canonical rollout doc's "PROMOTE_SCOPE remains permanently blocked"
-# discussion for the promotion-acceptance bootstrap circularity this creates.
+# This is the explicitly adopted v1 operation-gating policy. The matrix itself
+# is settled for v1; only the first controlled-promotion bootstrap circularity
+# described in the canonical rollout doc remains unresolved.
 _APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION: dict[OperationType, frozenset[str]] = {
     OperationType.ADOPT_LEGACY_SCOPE: frozenset({WRITER_PROVENANCE_UNATTRIBUTED}),
     OperationType.PROMOTE_SCOPE: frozenset(GLOBAL_BLOCKERS),
@@ -1360,17 +1360,17 @@ def decide_administration(
     operation_type: OperationType,
     snapshot: ScopeStateSnapshot,
     *,
-    active_global_blockers: Sequence[str] = (),
+    active_global_blockers: Sequence[str],
 ) -> AdministrationDecision:
     """Pure decision function: given the operation, a state snapshot, and the
     currently active canonical global blockers, choose exactly one action and
     typed result code. No database access -- ``active_global_blockers`` must
     be read by the caller via the canonical
     ``native_short_multi_asset_audit_v1.evaluate_current_global_blockers``
-    evaluator (or an equivalent already-evaluated tuple in tests); this
-    function never fetches, infers, or defaults blocker state itself, and a
-    caller cannot bypass enforcement by omitting it -- an empty default here
-    means "no blockers evaluated," never "blockers cleared."
+    evaluator (or an equivalent explicitly evaluated tuple in tests); this
+    function never fetches, infers, or defaults blocker state itself. The
+    required keyword-only argument prevents omission from being interpreted
+    as cleared blocker state.
 
     An applicable active blocker takes priority over every other decision:
     it returns a REJECT/BLOCKED/GLOBAL_BLOCKERS_ACTIVE result before any

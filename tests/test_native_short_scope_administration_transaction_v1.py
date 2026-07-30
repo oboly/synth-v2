@@ -368,7 +368,9 @@ def test_advisory_lock_name_is_deterministic_and_bounded() -> None:
 
 def test_promote_new_scope_from_empty() -> None:
     decision = decide_administration(
-        OperationType.PROMOTE_SCOPE, _snapshot(scope_present=False, scope_id=None)
+        OperationType.PROMOTE_SCOPE,
+        _snapshot(scope_present=False, scope_id=None),
+        active_global_blockers=(),
     )
     assert decision.action == OperationAction.PROMOTE_NEW
     assert decision.result_code == ResultCode.PROMOTED_NEW_SCOPE
@@ -379,7 +381,9 @@ def test_promote_new_scope_from_empty() -> None:
 
 def test_adopt_coherent_legacy_scope() -> None:
     decision = decide_administration(
-        OperationType.ADOPT_LEGACY_SCOPE, _legacy_supported()
+        OperationType.ADOPT_LEGACY_SCOPE,
+        _legacy_supported(),
+        active_global_blockers=(),
     )
     assert decision.action == OperationAction.ADOPT
     assert decision.result_code == ResultCode.ADOPTED_LEGACY_SCOPE
@@ -395,13 +399,17 @@ def test_adopt_rejects_multiple_active_cadence_rows() -> None:
             _cadence(cadence_config_id=11, effective_from=datetime(2026, 7, 5)),
         ),
     )
-    decision = decide_administration(OperationType.ADOPT_LEGACY_SCOPE, snap)
+    decision = decide_administration(
+        OperationType.ADOPT_LEGACY_SCOPE, snap, active_global_blockers=()
+    )
     assert decision.result_code == ResultCode.MULTIPLE_ACTIVE_CADENCE_ROWS
 
 
 def test_adopt_rejects_noncanonical_cadence_profile() -> None:
     decision = decide_administration(
-        OperationType.ADOPT_LEGACY_SCOPE, _legacy_supported(canonical=False)
+        OperationType.ADOPT_LEGACY_SCOPE,
+        _legacy_supported(canonical=False),
+        active_global_blockers=(),
     )
     assert decision.result_code == ResultCode.CADENCE_PROFILE_CONFLICT
 
@@ -412,13 +420,17 @@ def test_adopt_rejects_partial_administration_state() -> None:
         cadence_rows=(_cadence(),),
         support_events=(_support_event(generation=1, operation_id=5),),
     )
-    decision = decide_administration(OperationType.ADOPT_LEGACY_SCOPE, snap)
+    decision = decide_administration(
+        OperationType.ADOPT_LEGACY_SCOPE, snap, active_global_blockers=()
+    )
     assert decision.result_code == ResultCode.PARTIAL_SCOPE_STATE
 
 
 def test_adopt_already_managed_is_idempotent() -> None:
     decision = decide_administration(
-        OperationType.ADOPT_LEGACY_SCOPE, _managed_supported(generation=3)
+        OperationType.ADOPT_LEGACY_SCOPE,
+        _managed_supported(generation=3),
+        active_global_blockers=(),
     )
     assert decision.action == OperationAction.NOOP
     assert decision.result_code == ResultCode.SCOPE_ALREADY_ADOPTED
@@ -426,7 +438,9 @@ def test_adopt_already_managed_is_idempotent() -> None:
 
 def test_managed_removal() -> None:
     decision = decide_administration(
-        OperationType.REMOVE_SCOPE, _managed_supported(generation=3)
+        OperationType.REMOVE_SCOPE,
+        _managed_supported(generation=3),
+        active_global_blockers=(),
     )
     assert decision.action == OperationAction.REMOVE
     assert decision.result_code == ResultCode.REMOVED_SCOPE
@@ -436,14 +450,18 @@ def test_managed_removal() -> None:
 
 
 def test_repeat_removal_is_idempotent_without_residue() -> None:
-    decision = decide_administration(OperationType.REMOVE_SCOPE, _managed_removed(2))
+    decision = decide_administration(
+        OperationType.REMOVE_SCOPE, _managed_removed(2), active_global_blockers=()
+    )
     assert decision.action == OperationAction.NOOP
     assert decision.result_code == ResultCode.SCOPE_ALREADY_REMOVED
 
 
 def test_repeat_removal_clears_derived_residue_is_ledgered() -> None:
     decision = decide_administration(
-        OperationType.REMOVE_SCOPE, _managed_removed(2, level_residue=2)
+        OperationType.REMOVE_SCOPE,
+        _managed_removed(2, level_residue=2),
+        active_global_blockers=(),
     )
     assert decision.action == OperationAction.CLEAR_RESIDUE
     assert decision.result_code == ResultCode.ALREADY_REMOVED_DERIVED_RESIDUE_CLEARED
@@ -453,7 +471,9 @@ def test_repeat_removal_clears_derived_residue_is_ledgered() -> None:
 
 
 def test_re_promotion_after_removal() -> None:
-    decision = decide_administration(OperationType.PROMOTE_SCOPE, _managed_removed(4))
+    decision = decide_administration(
+        OperationType.PROMOTE_SCOPE, _managed_removed(4), active_global_blockers=()
+    )
     assert decision.action == OperationAction.PROMOTE_REACTIVATE
     assert decision.result_code == ResultCode.PROMOTED_FROM_PRIOR_WITHDRAWAL
     assert decision.support_generation_before == 4
@@ -462,19 +482,25 @@ def test_re_promotion_after_removal() -> None:
 
 def test_already_supported_is_idempotent() -> None:
     decision = decide_administration(
-        OperationType.PROMOTE_SCOPE, _managed_supported(generation=1)
+        OperationType.PROMOTE_SCOPE,
+        _managed_supported(generation=1),
+        active_global_blockers=(),
     )
     assert decision.action == OperationAction.NOOP
     assert decision.result_code == ResultCode.SCOPE_ALREADY_SUPPORTED
 
 
 def test_promote_legacy_requires_adoption() -> None:
-    decision = decide_administration(OperationType.PROMOTE_SCOPE, _legacy_supported())
+    decision = decide_administration(
+        OperationType.PROMOTE_SCOPE, _legacy_supported(), active_global_blockers=()
+    )
     assert decision.result_code == ResultCode.LEGACY_SCOPE_REQUIRES_ADOPTION
 
 
 def test_remove_legacy_requires_adoption() -> None:
-    decision = decide_administration(OperationType.REMOVE_SCOPE, _legacy_supported())
+    decision = decide_administration(
+        OperationType.REMOVE_SCOPE, _legacy_supported(), active_global_blockers=()
+    )
     assert decision.result_code == ResultCode.LEGACY_SCOPE_REQUIRES_ADOPTION
 
 
@@ -601,6 +627,16 @@ def test_decide_administration_no_active_blockers_is_unaffected() -> None:
     assert decision.blocking_global_blockers == ()
 
 
+def test_decide_administration_requires_explicit_blocker_state() -> None:
+    import inspect
+
+    parameter = inspect.signature(decide_administration).parameters[
+        "active_global_blockers"
+    ]
+    assert parameter.kind == inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is inspect.Parameter.empty
+
+
 def test_applicable_active_global_blockers_is_deterministic_and_sorted() -> None:
     unsorted = (
         "WRITER_PROVENANCE_UNATTRIBUTED",
@@ -647,7 +683,9 @@ def test_managed_supported_multiple_active_cadence_is_corrupt() -> None:
         ),
         support_events=(_support_event(generation=1, operation_id=1),),
     )
-    decision = decide_administration(OperationType.PROMOTE_SCOPE, snap)
+    decision = decide_administration(
+        OperationType.PROMOTE_SCOPE, snap, active_global_blockers=()
+    )
     assert decision.result_code == ResultCode.MULTIPLE_ACTIVE_CADENCE_ROWS
 
 
@@ -818,7 +856,9 @@ def test_cadence_generation_ahead_of_scope_generation() -> None:
 
 def test_partial_scope_state_cadence_without_scope() -> None:
     snap = _snapshot(scope_present=False, scope_id=None, cadence_rows=(_cadence(),))
-    decision = decide_administration(OperationType.PROMOTE_SCOPE, snap)
+    decision = decide_administration(
+        OperationType.PROMOTE_SCOPE, snap, active_global_blockers=()
+    )
     assert decision.result_code == ResultCode.PARTIAL_SCOPE_STATE
 
 
@@ -834,7 +874,9 @@ def test_withdrawal_state_incoherent_active_cadence_when_removed() -> None:
             ),
         ),
     )
-    decision = decide_administration(OperationType.PROMOTE_SCOPE, snap)
+    decision = decide_administration(
+        OperationType.PROMOTE_SCOPE, snap, active_global_blockers=()
+    )
     assert decision.result_code == ResultCode.AUTHORITATIVE_WITHDRAWAL_STATE_INCOHERENT
 
 
@@ -1361,6 +1403,7 @@ _SHARED_LOCKS: set[str] = set()
 
 class _FakeState:
     def __init__(self) -> None:
+        self.writer_runs: list[dict[str, Any]] = []
         self.scopes: list[dict[str, Any]] = []
         self.cadence: list[dict[str, Any]] = []
         self.support: list[dict[str, Any]] = []
@@ -1420,6 +1463,13 @@ class _FakeCursor:
             self._rows = [{"released": 1}]
             return
 
+        if "FROM native_short_materializer_run_v1" in norm and norm.startswith(
+            "SELECT"
+        ):
+            if self._conn.fail_on == "writer_evidence_read":
+                raise RuntimeError("injected unreadable writer evidence")
+            self._rows = copy.deepcopy(state.writer_runs)
+            return
         if "FROM native_short_scope_admin_operation_v1" in norm and norm.startswith(
             "SELECT"
         ):
@@ -1429,6 +1479,12 @@ class _FakeCursor:
                     dict(op)
                     for op in state.operations
                     if op["operation_uuid"] == uuid_val
+                ]
+            elif "WHERE operation_type = 'PROMOTE_SCOPE'" in norm:
+                self._rows = [
+                    copy.deepcopy(op)
+                    for op in state.operations
+                    if op["operation_type"] == "PROMOTE_SCOPE"
                 ]
             else:  # scope-keyed operation-lineage projection read
                 self._rows = _match_scope(state.operations, params[:6])
