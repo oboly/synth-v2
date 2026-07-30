@@ -269,6 +269,8 @@
       },
       "cadence": "00,04,08,12,16,20:12:00 UTC",
       "database_writes": [
+        "canonical_fib_zone_map_publication_v1",
+        "canonical_fib_zone_map_v1",
         "native_short_scope_status",
         "native_short_map_status",
         "feat_candle",
@@ -306,6 +308,7 @@
         "scripts/run_native_short_scope_status_chain_once.sh"
       ],
       "modules_invoked": [
+        "src.market_data.run_canonical_fib_zone_map_v1",
         "src.market_data.native_short_repository_source_identity_v1",
         "src.operations.run_persisted_market_price_freshness_v1",
         "src.operations.run_persisted_market_candle_freshness_v1",

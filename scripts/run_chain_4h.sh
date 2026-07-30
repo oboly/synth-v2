@@ -117,6 +117,13 @@ run_step python -m src.operations.run_persisted_market_candle_freshness_v1 \
     --interval 4h \
     --expected-close-ts "$CHAIN_4H_END_TS_Z"
 
+run_step python -m src.market_data.run_canonical_fib_zone_map_v1 \
+    --venue bitvavo \
+    --quote EUR \
+    --interval 4h \
+    --publish \
+    --output summary
+
 run_step env \
     SYNTH_NATIVE_SHORT_REPOSITORY_COMMIT="${NATIVE_SHORT_REPOSITORY_COMMIT}" \
     SYNTH_NATIVE_SHORT_WRITER_ENTRYPOINT="scripts/run_chain_4h.sh" \

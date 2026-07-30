@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import html
 import json
+import os
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -23,7 +24,6 @@ from src.reporting.dashboard_time_v1 import format_ui_now
 REPORT_NAME = "breath_fibo_strategy_static_dashboard_v1"
 REPORT_VERSION = "0.1"
 DEFAULT_OUTPUT_HTML = "/tmp/breath_fibo_strategy_dashboard_v1.html"
-DEFAULT_FIB_MAP_ROWS = Path("data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv")
 FRESHNESS_MULTIPLIERS = {
     "15m": (1.5, 4.0),
     "1h": (1.5, 4.0),
@@ -104,7 +104,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--quote", default="EUR")
     parser.add_argument("--interval", default="4h")
     parser.add_argument("--limit", type=int, default=80)
-    parser.add_argument("--fib-map-rows", default=str(DEFAULT_FIB_MAP_ROWS))
     parser.add_argument("--output-html", default=DEFAULT_OUTPUT_HTML)
     parser.add_argument("--output", choices=("summary", "none"), default="summary")
     return parser.parse_args(argv)
@@ -167,25 +166,18 @@ def first_text(source: dict[str, Any], keys: tuple[str, ...], default: str = "UN
     return default
 
 
-def resolve_invalidation_level(
-    paper_row: dict[str, Any] | None,
-    fib_row: dict[str, Any] | None,
-    merged_source: dict[str, Any],
-) -> InvalidationResolution:
-    _ = paper_row
-    _ = merged_source
-    for field in ("invalidation_price", "fib_invalidation_price", "fib_invalidation"):
-        if fib_row:
-            level = to_decimal(fib_row.get(field))
-            if level is not None:
-                return InvalidationResolution(
-                    invalidation_level=level,
-                    invalidation_source_module="fibo_target_map_v1",
-                    invalidation_source_field=field,
-                    invalidation_method="FIBO_MAP_INVALIDATION",
-                    invalidation_source_status="FOUND",
-                    invalidation_note="Invalidation resolved from fibo target map row.",
-                )
+def resolve_invalidation_level(fib_row: dict[str, Any] | None) -> InvalidationResolution:
+    if fib_row:
+        level = to_decimal(fib_row.get("invalidation_level"))
+        if level is not None:
+            return InvalidationResolution(
+                invalidation_level=level,
+                invalidation_source_module="canonical_fib_zone_map_v1",
+                invalidation_source_field="invalidation_level",
+                invalidation_method=str(fib_row.get("invalidation_method") or "UNKNOWN"),
+                invalidation_source_status="FOUND",
+                invalidation_note="Invalidation resolved from the persisted canonical map.",
+            )
     return InvalidationResolution(
         invalidation_level=None,
         invalidation_source_module="UNKNOWN",
@@ -253,6 +245,34 @@ def now_utc() -> datetime:
     return datetime.now(UTC)
 
 
+def atomic_text_write(content: str, destination: Path) -> None:
+    temporary_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = Path(handle.name)
+            handle.write(content)
+            handle.flush()
+            os.fchmod(handle.fileno(), 0o644)
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, destination)
+        temporary_path = None
+        directory_fd = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+
+
 def freshness_state(interval: str, latest_ts: datetime | None) -> str:
     if latest_ts is None:
         return "MISSING_CANDLE"
@@ -296,42 +316,26 @@ def try_query(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> list[dict[st
         return []
 
 
-def load_fib_map_rows(path: Path, *, venue: str) -> dict[str, dict[str, Any]]:
-    if not path.exists():
-        return {}
-    rows_by_symbol: dict[str, dict[str, Any]] = {}
-    with path.open(encoding="utf-8", newline="") as handle:
-        for row in csv.DictReader(handle):
-            if str(row.get("venue") or "").strip().lower() not in {"", venue.lower()}:
-                continue
-            symbol = str(row.get("symbol") or "").strip().upper()
-            if not symbol:
-                continue
-            rows_by_symbol[symbol] = row
-    return rows_by_symbol
-
-
-def fetch_latest_paper_rows(conn: Any, *, venue: str, interval: str, limit: int) -> dict[str, dict[str, Any]]:
-    sql = """
+def fetch_canonical_fib_rows(
+    conn: Any,
+    *,
+    venue: str,
+    quote: str,
+    interval: str,
+) -> dict[str, dict[str, Any]]:
+    rows = fetch_all_dicts(
+        conn,
+        """
         SELECT *
-        FROM paper_advice_observation
+        FROM canonical_fib_zone_map_latest_v1
         WHERE venue = %s
+          AND quote_currency = %s
           AND interval_code = %s
-          AND asof_ts_utc = (
-              SELECT MAX(asof_ts_utc)
-              FROM paper_advice_observation
-              WHERE venue = %s AND interval_code = %s
-          )
         ORDER BY symbol
-        LIMIT %s
-    """
-    rows = try_query(conn, sql, (venue, interval, venue, interval, limit))
-    out: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        symbol = str(row.get("symbol") or row.get("asset_symbol") or "").strip().upper()
-        if symbol:
-            out[symbol] = row
-    return out
+        """,
+        (venue, quote, interval),
+    )
+    return {str(row["symbol"]).upper(): row for row in rows}
 
 
 def fetch_latest_price_rows(conn: Any, *, venue: str, interval: str, limit: int) -> dict[str, PriceSnapshot]:
@@ -445,64 +449,63 @@ def status_blob(*values: Any) -> str:
     return " ".join(str(value or "").upper() for value in values)
 
 
-def legacy_context_bits(source: dict[str, Any]) -> list[str]:
-    return [
-        f"selection_state={str(source.get('selection_state') or 'UNKNOWN').strip().upper()}",
-        f"setup_filter_state={str(source.get('setup_filter_state') or 'UNKNOWN').strip().upper()}",
-        f"policy/action={str(source.get('policy_decision') or 'UNKNOWN').strip().upper()}/{str(source.get('advice_action') or source.get('paper_action') or 'UNKNOWN').strip().upper()}",
-        f"edge_permission={str(source.get('edge_permission') or source.get('allowed_now') or 'UNKNOWN').strip().upper()}",
-    ]
-
-
 def build_row(
     symbol: str,
     *,
     interval: str,
     price_row: PriceSnapshot | None,
-    paper_row: dict[str, Any] | None,
     fib_row: dict[str, Any] | None,
     regime_row: dict[str, Any] | None,
 ) -> DashboardRow:
     source: dict[str, Any] = {}
     if fib_row:
         source.update({f"fib_{k}": v for k, v in fib_row.items()})
-    if paper_row:
-        source["legacy_paper_context_present"] = True
 
     current_price = price_row.current_price if price_row else None
     latest_candle_ts_utc = price_row.latest_candle_ts_utc if price_row else None
     candle_state = freshness_state(interval, latest_candle_ts_utc)
+    map_ts = fib_row.get("input_latest_candle_ts_utc") if fib_row else None
+    map_freshness = freshness_state(interval, map_ts if isinstance(map_ts, datetime) else None)
+    map_age_hours = (
+        (now_utc() - (map_ts.replace(tzinfo=UTC) if map_ts.tzinfo is None else map_ts.astimezone(UTC))).total_seconds()
+        / 3600
+        if isinstance(map_ts, datetime)
+        else None
+    )
 
     fib_state = "FIB_MAP_UNKNOWN"
     if fib_row:
         fib_state = " | ".join(
-            part
-            for part in (
-                str(fib_row.get("target_status") or "").strip(),
-                str(fib_row.get("anchor_quality") or "").strip(),
-                str(fib_row.get("interval") or "").strip(),
+            (
+                str(fib_row.get("map_status") or "UNKNOWN"),
+                str(fib_row.get("map_quality") or "UNKNOWN"),
+                f"age={map_age_hours:.1f}h/{map_freshness}" if map_age_hours is not None else "age=UNAVAILABLE",
+                str(fib_row.get("map_version") or "UNKNOWN"),
+                f"publication={str(fib_row.get('publication_id') or 'UNKNOWN')[:20]}",
             )
-            if part
         ) or "FIB_MAP_FOUND"
 
-    current_leg = first_text(source, ("fib_leg_direction",), default="UNKNOWN").upper()
-
+    current_leg = first_text(source, ("fib_current_leg",), default="UNKNOWN").upper()
     entry_low = first_decimal(source, ("fib_entry_zone_low",))
     entry_high = first_decimal(source, ("fib_entry_zone_high",))
-    fib_support = first_decimal(source, ("fib_next_fibo_support_price",))
-    fib_support_2 = first_decimal(source, ("fib_secondary_fibo_support_price",))
-    entry_zone_mid = midpoint(entry_low, entry_high) or fib_support
-    entry_zone = zone_text(entry_low or fib_support_2, entry_high or fib_support)
-    nearest_support = zone_text(entry_low or fib_support_2, entry_high or fib_support)
+    support_low = first_decimal(source, ("fib_support_reaction_zone_low",))
+    support_high = first_decimal(source, ("fib_support_reaction_zone_high",))
+    entry_zone_mid = first_decimal(source, ("fib_entry_zone_mid",)) or midpoint(entry_low, entry_high)
+    entry_zone = zone_text(entry_low, entry_high)
+    nearest_support = zone_text(support_low or entry_low, support_high or entry_high)
 
-    local_reaction = first_decimal(source, ("fib_local_reaction_price",))
-    next_extension = first_decimal(source, ("fib_next_extension_target_price",))
-    nearest_target = local_reaction
-    if current_price is not None and local_reaction is not None and current_price >= local_reaction:
-        nearest_target = next_extension or local_reaction
-    elif nearest_target is None:
-        nearest_target = next_extension
-    invalidation_resolution = resolve_invalidation_level(paper_row, fib_row, source)
+    target_t1 = first_decimal(source, ("fib_target_t1",))
+    target_t2 = first_decimal(source, ("fib_target_t2",))
+    target_extension = first_decimal(source, ("fib_target_extension",))
+    nearest_target = next(
+        (
+            target
+            for target in (target_t1, target_t2, target_extension)
+            if target is not None and (current_price is None or target > current_price)
+        ),
+        target_extension or target_t2 or target_t1,
+    )
+    invalidation_resolution = resolve_invalidation_level(fib_row)
     invalidation = invalidation_resolution.invalidation_level
 
     distance_to_target_pct = pct_distance(nearest_target, current_price)
@@ -510,12 +513,10 @@ def build_row(
     distance_to_invalidation_pct = pct_distance(invalidation, current_price)
 
     manual_ladder_context = "unavailable"
-    if local_reaction is not None or entry_zone_mid is not None or next_extension is not None:
+    if target_t1 is not None or entry_zone_mid is not None or target_t2 is not None:
         manual_ladder_context = (
-            f"T1={fmt_price(local_reaction)} · entry_zone={entry_zone} · next={fmt_price(next_extension)}"
+            f"T1={fmt_price(target_t1)} · entry_zone={entry_zone} · T2={fmt_price(target_t2)}"
         )
-    if paper_row:
-        manual_ladder_context = f"{manual_ladder_context} · legacy_context_present=yes"
 
     primitive_signal_context = "unavailable"
 
@@ -523,11 +524,9 @@ def build_row(
     if price_row:
         source_modules.append("obs_market_candle")
     if fib_row:
-        source_modules.append("fibo_target_map_v1")
+        source_modules.append("canonical_fib_zone_map_v1")
     if regime_row:
         source_modules.append("active_regime_observation")
-    if paper_row:
-        source_modules.append("paper_advice_observation(legacy_only)")
 
     missing_sources: list[str] = []
     if not price_row:
@@ -569,9 +568,20 @@ def build_row(
         and not support_candidate
     )
 
+    map_available = (
+        fib_row is not None
+        and str(fib_row.get("map_status") or "") not in {"NO_DATA", "STALE"}
+        and map_freshness in {"FRESH", "DELAYED"}
+    )
     if not fib_row:
         state = "NO_STRATEGY_CONTEXT"
         reason = "No canonical fib map row is available."
+    elif not map_available:
+        state = "MAP_UNAVAILABLE"
+        reason = (
+            f"Canonical map is not current: map_status={fib_row.get('map_status')} "
+            f"freshness={map_freshness}."
+        )
     elif nearest_target is None or entry_zone_mid is None or invalidation is None:
         state = "MAP_INCOMPLETE"
         reason = "Canonical fib map is incomplete: target, Entry Zone, or invalidation is missing."
@@ -605,7 +615,7 @@ def build_row(
         [
             f"price={'FOUND' if price_row else 'MISSING_SOURCE'}",
             f"canonical_fib_map={'FOUND' if fib_row else 'MISSING_SOURCE'}",
-            f"legacy_paper_context={'FOUND_NOT_USED_FOR_STATE' if paper_row else 'MISSING_SOURCE'}",
+            "legacy_paper_context=NOT_READ",
             f"regime={'FOUND' if regime_row else 'MISSING_SOURCE'}",
             f"primitive={'FOUND' if primitive_signal_context != 'unavailable' else 'MISSING_SOURCE'}",
             f"invalidation_source={invalidation_resolution.invalidation_source_module}",
@@ -614,11 +624,9 @@ def build_row(
     )
 
     debug_payload = {
-        "paper_row": paper_row or {},
         "fib_row": fib_row or {},
         "regime_row": regime_row or {},
         "invalidation_resolution": asdict(invalidation_resolution),
-        "legacy_context_bits": legacy_context_bits(source) if paper_row else [],
         "missing_sources": missing_sources,
     }
     return DashboardRow(
@@ -653,12 +661,10 @@ def build_rows(
     *,
     interval: str,
     price_rows: dict[str, PriceSnapshot],
-    paper_rows: dict[str, dict[str, Any]],
     fib_rows: dict[str, dict[str, Any]],
     regime_by_class: dict[str, dict[str, Any]],
     limit: int,
 ) -> list[DashboardRow]:
-    _ = paper_rows
     symbols = sorted(set(price_rows) | set(fib_rows))
     rows = []
     for symbol in symbols[:limit]:
@@ -667,7 +673,6 @@ def build_rows(
             symbol,
             interval=interval,
             price_row=price_rows.get(symbol),
-            paper_row=paper_rows.get(symbol),
             fib_row=fib_rows.get(symbol),
             regime_row=regime_by_class.get(asset_class),
         )
@@ -809,10 +814,8 @@ def print_summary(
             missing_counts["canonical_fib_map_missing"] += 1
         if "regime=MISSING_SOURCE" in row.source_status:
             missing_counts["regime_missing"] += 1
-        if "legacy_paper_context=FOUND_NOT_USED_FOR_STATE" in row.source_status:
+        if "legacy_paper_context=NOT_READ" not in row.source_status:
             legacy_context_rows += 1
-        else:
-            missing_counts["legacy_paper_context_missing"] += 1
         if "primitive=MISSING_SOURCE" in row.source_status:
             missing_counts["primitive_missing"] += 1
         if "price=MISSING_SOURCE" in row.source_status:
@@ -848,11 +851,14 @@ def main(argv: list[str] | None = None) -> int:
     venue = str(args.venue)
     quote = str(args.quote).upper()
     interval = str(args.interval)
-    fib_rows = load_fib_map_rows(Path(args.fib_map_rows), venue=venue)
-
     conn = get_connection()
     try:
-        paper_rows = fetch_latest_paper_rows(conn, venue=venue, interval=interval, limit=args.limit)
+        fib_rows = fetch_canonical_fib_rows(
+            conn,
+            venue=venue,
+            quote=quote,
+            interval=interval,
+        )
         price_rows = fetch_latest_price_rows(conn, venue=venue, interval=interval, limit=max(args.limit, 200))
         regime_by_class, _ = fetch_regime_by_class(conn, venue=venue, interval=interval)
     finally:
@@ -861,7 +867,6 @@ def main(argv: list[str] | None = None) -> int:
     rows = build_rows(
         interval=interval,
         price_rows=price_rows,
-        paper_rows=paper_rows,
         fib_rows=fib_rows,
         regime_by_class=regime_by_class,
         limit=args.limit,
@@ -870,7 +875,7 @@ def main(argv: list[str] | None = None) -> int:
     html_text = render_html(rows, venue=venue, quote=quote, interval=interval)
     output_html = Path(args.output_html)
     output_html.parent.mkdir(parents=True, exist_ok=True)
-    output_html.write_text(html_text, encoding="utf-8")
+    atomic_text_write(html_text, output_html)
 
     if args.output == "summary":
         print_summary(rows=rows, output_html=output_html, interval=interval)

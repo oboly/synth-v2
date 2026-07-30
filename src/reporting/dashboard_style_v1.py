@@ -84,6 +84,7 @@ def cockpit_nav(*, account_profile: str | None = None, include_auth_links: bool 
     else:
         items = (
             ("Cockpit", "/synth/index.html"),
+            ("Fibonacci Map", "/synth/fibo-map.html"),
             ("About", "/synth/about.html"),
         )
     if include_auth_links:

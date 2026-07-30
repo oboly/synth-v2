@@ -12,6 +12,7 @@ fi
 export SYNTH_LIVE_EXECUTION_PERMISSION="${SYNTH_LIVE_EXECUTION_PERMISSION:-NOT_GRANTED}"
 export SYNTH_BROKER_WRITE_PERMISSION="${SYNTH_BROKER_WRITE_PERMISSION:-NOT_GRANTED}"
 export SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML="${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML:-/var/www/html/synth/entry-candidates.html}"
+export SYNTH_FIBO_MAP_DASHBOARD_HTML="${SYNTH_FIBO_MAP_DASHBOARD_HTML:-/var/www/html/synth/fibo-map.html}"
 export SYNTH_COCKPIT_INDEX_HTML="${SYNTH_COCKPIT_INDEX_HTML:-/var/www/html/synth/index.html}"
 export SYNTH_ABOUT_PAGE_HTML="${SYNTH_ABOUT_PAGE_HTML:-/var/www/html/synth/about.html}"
 export SYNTH_ABOUT_HERO_ASSET_SOURCE="${SYNTH_ABOUT_HERO_ASSET_SOURCE:-assets/brand/synth/synth-third-faction-triptych.png}"
@@ -43,6 +44,13 @@ run_step python -m src.reporting.run_entry_candidate_static_dashboard_v1 \
   --output-html "${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML}" \
   --output summary
 
+run_step python -m src.reporting.run_breath_fibo_strategy_static_dashboard_v1 \
+  --venue "${VENUE}" \
+  --quote "${QUOTE}" \
+  --interval "${FAST_RECOMPUTE_INTERVAL}" \
+  --output-html "${SYNTH_FIBO_MAP_DASHBOARD_HTML}" \
+  --output summary
+
 run_step python -m src.reporting.run_synth_about_page_v1 \
   --output-html "${SYNTH_ABOUT_PAGE_HTML}" \
   --cockpit-index-html "${SYNTH_COCKPIT_INDEX_HTML}" \
@@ -64,6 +72,7 @@ echo "[MVP_DASHBOARD_RENDER][OWNERSHIP] linked_profile_refresh=owned_by=synth-li
 echo
 echo "[MVP_DASHBOARD_RENDER][DONE] $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ENTRY_CANDIDATE_DASHBOARD_HTML}"
+echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_FIBO_MAP_DASHBOARD_HTML}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ABOUT_PAGE_HTML}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_ABOUT_HERO_ASSET_OUTPUT}"
 echo "[MVP_DASHBOARD_RENDER][OUTPUT] ${SYNTH_COCKPIT_INDEX_HTML}"

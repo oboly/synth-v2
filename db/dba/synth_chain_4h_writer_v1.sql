@@ -51,6 +51,15 @@ GRANT SELECT
 GRANT SELECT, INSERT, UPDATE
     ON `synth`.`asset_interval_quality`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT, INSERT
+    ON `synth`.`canonical_fib_zone_map_publication_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT, INSERT
+    ON `synth`.`canonical_fib_zone_map_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT
+    ON `synth`.`canonical_fib_zone_map_latest_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
 GRANT SELECT, INSERT, UPDATE, DELETE
     ON `synth`.`execution_zone_context`
     TO 'synth_chain_4h_writer'@'192.168.1.%';

@@ -225,6 +225,10 @@ def render_global_cockpit_index_html() -> str:
     <p><span class="pill">broker_private_calls=0</span><span class="pill">broker_writes=0</span><span class="pill">order_submission=0</span><span class="pill">executor=none</span></p>
     <div class="grid">
       <div class="card">
+        <a href="/synth/fibo-map.html">Fibonacci Map</a>
+        <p class="muted">Current persisted market-only 4h support, extension, invalidation, and freshness context.</p>
+      </div>
+      <div class="card">
         <a href="/synth/about.html">About</a>
         <p class="muted">Global SYNTH brand, subtitle, and faction-lore overview. Read-only and account-agnostic.</p>
       </div>
