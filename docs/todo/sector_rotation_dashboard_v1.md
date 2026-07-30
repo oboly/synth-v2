@@ -2,13 +2,32 @@
 
 ## Status
 
-**open / next after Phase B acceptance** — Phase A taxonomy data is accepted
-and the Phase B repository implementation is under review. This phase remains
-blocked on an applied Phase B migration and accepted persisted analytics
-snapshots. No GUI implementation has started in the Phase B PR.
+**Phase C1 implemented / ready for review** — Phase A taxonomy data and the
+Phase B migration plus persisted analytics snapshots are accepted (venue
+`bitvavo`, `model_version=sector-rotation-v1.0.0`,
+`asof_ts_utc=2026-07-16 18:00:00 UTC`, 116 rows, 29 sectors, windows
+1h/4h/1d/7d). Phase C1 delivers a bounded, read-only Sector Overview
+publisher backed exclusively by that accepted cohort:
+
+```text
+src/reporting/sector_rotation_dashboard_v1.py
+src/reporting/run_sector_rotation_dashboard_v1.py
+tests/test_sector_rotation_dashboard_v1.py
+```
+
+Phase C1 selects one internally coherent cohort (one venue, one model
+version, one as-of timestamp, all four required windows), renders static
+JSON and HTML from a single assembled view model, and fails closed on a
+missing cohort, missing sector/window evidence, or a stale cohort. It does
+not recompute scores, states, confidence, participation, or evidence.
+
+Asset cards, member/rank tables, sector drilldown, rotation history, filters,
+and account-aware overlays remain open and are not implemented by Phase C1.
+No systemd timer or production deployment was added; this phase is a
+runner-invoked publisher only.
 
 Macro, composite-regime, catalyst, and narrative views are future read-only
-extensions owned by separate TODO lanes. They do not expand the initial Phase C
+extensions owned by separate TODO lanes. They do not expand the Phase C1
 scope or unblock it.
 
 ## Purpose

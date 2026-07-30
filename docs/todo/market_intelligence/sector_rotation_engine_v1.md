@@ -2,11 +2,13 @@
 
 ## Status
 
-**implementation complete for review** — Phase A is accepted. Phase B code,
-migration, current/as-of runner, replay runner, synthetic validation, and
-production-connected no-write evidence are complete on
-`agent/sector-rotation-engine-v1`. The migration has not been applied and no
-snapshot rows have been written. Canonical implementation contract:
+**Phase B accepted** — Phase A is accepted. The Phase B migration has been
+applied and the accepted persisted cohort (venue `bitvavo`,
+`model_version=sector-rotation-v1.0.0`, `asof_ts_utc=2026-07-16 18:00:00 UTC`,
+116 rows, 29 sectors, windows 1h/4h/1d/7d) passed provenance/idempotence
+audit. Phase C1 (`../sector_rotation_dashboard_v1.md`) now reads this cohort
+through a bounded read-only Sector Overview publisher. Canonical
+implementation contract:
 
 ```text
 docs/research/sector_rotation_engine_v1.md
@@ -200,10 +202,9 @@ no predictive-quality claim.
 
 ## Remaining acceptance actions
 
-1. Review and merge this Phase B PR.
-2. Apply the reviewed migration in a separate operator action.
-3. Run first write, invariant checks, and an idempotent second write.
-4. Accept persisted snapshots before Phase C reads them.
+Phase B acceptance actions (merge, migration apply, first write, invariant
+checks, idempotent second write) are complete. Remaining work belongs to the
+Phase C dashboard lanes in `../sector_rotation_dashboard_v1.md`.
 
 ## Layer and boundaries
 
