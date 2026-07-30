@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from src.market_data.native_short_fib_context_v1 import STATUS_AVAILABLE
 from src.market_data.native_short_multi_asset_audit_v1 import (
     ASSET_DISABLED,
@@ -22,6 +24,7 @@ from src.market_data.native_short_multi_asset_audit_v1 import (
     PRIMARY_SOURCE_STALE,
     PRIMARY_CONTEXT_UNAVAILABLE,
     PROMOTION_CONTRACT_MISSING,
+    PROVENANCE_AUDIT_RUN_UUID,
     READY_EXISTING_CANARY,
     READY_FOR_SEQUENTIAL_CANARY_REVIEW,
     REMOVAL_CONTRACT_MISSING,
@@ -40,6 +43,10 @@ from src.market_data.native_short_multi_asset_audit_v1 import (
     evaluate_candidate,
     evaluate_global_blockers,
     rank_sequential_candidates,
+)
+from src.market_data.native_short_writer_provenance_v1 import (
+    NativeShortWriterProvenanceState,
+    classify_persisted_native_short_writer_provenance,
 )
 
 
@@ -349,6 +356,125 @@ def test_global_blocker_evidence_covers_every_canonical_blocker_deterministicall
     assert reasons == reasons_again
     # ordering follows canonical GLOBAL_BLOCKERS declaration order
     assert list(active) == [code for code in GLOBAL_BLOCKERS if code in active]
+
+
+def _accepted_run_row(**overrides: object) -> dict[str, object]:
+    """Shape of the reviewed accepted attributable production run (run_id=52,
+    docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md).
+    """
+    row: dict[str, object] = {
+        "run_uuid": PROVENANCE_AUDIT_RUN_UUID,
+        "runner_name": "run_native_short_scope_status_chain_v1",
+        "runner_version": "0.1",
+        "trigger_type": "REPOSITORY_4H_MARKET_CHAIN",
+        "trigger_ref": "scripts/run_native_short_scope_status_chain_once.sh",
+        "host_name": "devlap",
+        "process_id": 26030,
+        "provenance_contract_version": "native_short_writer_provenance_v1",
+        "writer_entrypoint": "scripts/run_native_short_scope_status_chain_once.sh",
+        "repository_writer_owner": "synth-chain-4h",
+        "execution_mode": "CHAIN",
+        "repository_commit_sha": "38346fc1460453469ca5bd3bc2f45159f0dc303e",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_valid_canonical_accepted_run_classifies_attributable() -> None:
+    row = _accepted_run_row()
+    assert classify_persisted_native_short_writer_provenance(row) == (
+        NativeShortWriterProvenanceState.ATTRIBUTABLE
+    )
+    active, reasons = evaluate_global_blockers(provenance_attributed=True)
+    assert WRITER_PROVENANCE_UNATTRIBUTED not in active
+    assert reasons[WRITER_PROVENANCE_UNATTRIBUTED] == BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED
+
+
+def test_legacy_pre_contract_run_is_not_mistaken_for_the_accepted_run() -> None:
+    # This is the real historical run_id=30 row (2026-07-15, predates the
+    # provenance-contract migration): must never be treated as the accepted
+    # attributable evidence, even though it shares a similarly-shaped UUID
+    # format with the real accepted run.
+    legacy_row = {
+        "run_uuid": "b5d9ca6b-ff24-46eb-8155-4e663b948ebc",
+        "runner_name": "native_short_scope_status_materializer_v1",
+        "runner_version": "0.1",
+        "trigger_type": "SCHEDULED_4H_MARKET_CHAIN",
+        "trigger_ref": None,
+        "host_name": None,
+        "process_id": None,
+        "provenance_contract_version": None,
+        "writer_entrypoint": None,
+        "repository_writer_owner": None,
+        "execution_mode": None,
+        "repository_commit_sha": None,
+    }
+    assert classify_persisted_native_short_writer_provenance(legacy_row) == (
+        NativeShortWriterProvenanceState.LEGACY_UNATTRIBUTED
+    )
+    assert PROVENANCE_AUDIT_RUN_UUID != legacy_row["run_uuid"]
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "provenance_contract_version",
+        "writer_entrypoint",
+        "repository_writer_owner",
+        "runner_name",
+        "runner_version",
+        "execution_mode",
+        "repository_commit_sha",
+        "host_name",
+        "process_id",
+        "trigger_type",
+        "trigger_ref",
+    ],
+)
+def test_each_missing_or_malformed_required_field_fails_closed(field: str) -> None:
+    row = _accepted_run_row(**{field: None})
+    assert classify_persisted_native_short_writer_provenance(row) in (
+        NativeShortWriterProvenanceState.LEGACY_UNATTRIBUTED,
+        NativeShortWriterProvenanceState.INVALID_PROVENANCE,
+    )
+    assert classify_persisted_native_short_writer_provenance(row) != (
+        NativeShortWriterProvenanceState.ATTRIBUTABLE
+    )
+
+
+def test_unrelated_writer_identity_fails_closed() -> None:
+    row = _accepted_run_row(repository_writer_owner="some-other-owner")
+    assert classify_persisted_native_short_writer_provenance(row) == (
+        NativeShortWriterProvenanceState.INVALID_PROVENANCE
+    )
+
+
+def test_stale_or_wrong_run_uuid_is_never_treated_as_the_accepted_run() -> None:
+    # A row with impeccable provenance but a different run_uuid than
+    # PROVENANCE_AUDIT_RUN_UUID must not be picked up by run_audit's
+    # accepted-run filter (str(row["run_uuid"]) == PROVENANCE_AUDIT_RUN_UUID).
+    wrong_uuid_row = _accepted_run_row(run_uuid="00000000-0000-4000-8000-000000000000")
+    assert wrong_uuid_row["run_uuid"] != PROVENANCE_AUDIT_RUN_UUID
+    assert classify_persisted_native_short_writer_provenance(wrong_uuid_row) == (
+        NativeShortWriterProvenanceState.ATTRIBUTABLE
+    )
+    # valid provenance on the wrong UUID must not be mistaken for acceptance
+    # of the canonical accepted run by identity comparison alone
+    filtered = [
+        row for row in (wrong_uuid_row,) if str(row["run_uuid"]) == PROVENANCE_AUDIT_RUN_UUID
+    ]
+    assert filtered == []
+
+
+def test_audit_clears_only_writer_provenance_blocker() -> None:
+    active, _ = evaluate_global_blockers(provenance_attributed=True)
+    assert WRITER_PROVENANCE_UNATTRIBUTED not in active
+    assert set(active) == {
+        PROMOTION_CONTRACT_MISSING,
+        REMOVAL_CONTRACT_MISSING,
+        BOOTSTRAP_ORCHESTRATION_BLOCKED,
+        MULTI_SCOPE_FAILURE_ISOLATION_MISSING,
+    }
 
 
 def test_no_account_or_execution_imports() -> None:
