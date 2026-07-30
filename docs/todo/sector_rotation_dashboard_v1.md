@@ -23,6 +23,11 @@ not recompute scores, states, confidence, participation, or evidence.
 
 Asset cards, member/rank tables, sector drilldown, rotation history, filters,
 and account-aware overlays remain open and are not implemented by Phase C1.
+
+Runtime preparation for the publisher side of the writer→publisher chain is
+tracked in `docs/ops/sector_rotation_runtime_activation_v1.md`:
+**runtime artifacts prepared — not installed — not enabled — not
+production-accepted.** No claim of live activation is made or implied.
 No systemd timer or production deployment was added; this phase is a
 runner-invoked publisher only.
 

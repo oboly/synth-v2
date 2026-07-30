@@ -1,0 +1,22 @@
+[Unit]
+Description=Synth Sector Overview publisher timer — read-only, scheduled after the gurkDB writer (UTC)
+Documentation=docs/ops/sector_rotation_runtime_activation_v1.md
+
+[Timer]
+# Runs at minute :40 of every hour, UTC — 20 minutes after the gurkDB
+# writer's nominal :20 minute. Writer worst-case start (minute 20 +
+# RandomizedDelaySec=180) is :23:00; publisher best-case start (minute 40,
+# no delay yet elapsed) is :40:00 -- a 17-minute minimum effective
+# separation (required minimum: 5 minutes). The wider-than-Rotation-Pressure
+# margin accounts for the Sector Rotation Engine computing four windows
+# (1h/4h/1d/7d) across ~29 sectors per cycle, which has not yet been timed
+# under production load. This host is scheduled independently; it does not
+# declare Requires=/After= on the writer service or host. Reconfirm this
+# cadence during controlled acceptance once real writer runtime is observed.
+OnCalendar=*-*-* *:40:00 UTC
+Persistent=true
+RandomizedDelaySec=180
+Unit=synth-sector-rotation-publisher.service
+
+[Install]
+WantedBy=timers.target
