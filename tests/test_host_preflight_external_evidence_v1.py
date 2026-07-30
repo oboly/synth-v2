@@ -107,6 +107,9 @@ def test_valid_manifest_is_accepted_and_normalized() -> None:
 def test_schema_file_parses_and_declares_stable_version() -> None:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     assert schema["properties"]["schema_version"]["const"] == SCHEMA_VERSION
+    assert set(schema["properties"]["capability"]["enum"]) == set(
+        preflight.CAPABILITY_MODULES
+    )
     allowed = schema["properties"]["checks"]["propertyNames"]["enum"]
     assert set(allowed) == set(preflight.PREFLIGHT_EXTERNAL_CHECKS)
 

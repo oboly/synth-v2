@@ -216,14 +216,85 @@ before any further step.
 
 ## Activation Order (not performed by this preparation)
 
+### Canonical external host-preflight evidence
+
+The repository-owned producer extends the canonical
+`host_preflight_external_evidence_v1` manifest and validator; it is not a
+sector-rotation-specific evidence framework. Run it only in a separately
+authorized host-preflight window on the candidate gurkDB host. This repository
+lane did not run it against production.
+
+Use a private temporary directory and an explicit, non-existing output path:
+
+```bash
+evidence_dir="$(mktemp -d /tmp/synth-sector-rotation-preflight.XXXXXX)"
+chmod 0700 "${evidence_dir}"
+evidence_file="${evidence_dir}/host-preflight-external-evidence.json"
+trap 'rm -f "${evidence_file}"; rmdir "${evidence_dir}"' EXIT
+
+python -m src.operations.produce_host_preflight_external_evidence_v1 \
+  --capability sector_rotation_snapshot \
+  --expected-host gurkdb \
+  --expected-commit "$(git rev-parse HEAD)" \
+  --checkout-path /home/gurk/projects/synth-v2 \
+  --runtime-config-file /home/gurk/projects/synth-v2/.env \
+  --output-file "${evidence_file}"
+```
+
+The capability profile fixes its outbound target to `api.coingecko.com:443`;
+the caller cannot substitute a local or weaker target. The outbound probe opens
+only a bounded TCP connection; it sends no HTTP, exchange, broker, or
+credential-bearing request. The producer refuses to overwrite an existing
+output file. It records no configuration values, command output, hostnames from
+configuration, DSNs, passwords, or tokens.
+
+Validate the manifest against the canonical runtime validator before strict
+preflight consumes it:
+
+```bash
+python -m src.operations.validate_host_preflight_external_evidence_v1 \
+  --evidence-file "${evidence_file}" \
+  --capability sector_rotation_snapshot \
+  --expected-host gurkdb \
+  --expected-commit "$(git rev-parse HEAD)" \
+  --output json
+```
+
+Then run the strict preflight against the same host, checkout, commit, and fresh
+evidence file:
+
+```bash
+python -m src.operations.run_host_preflight_v1 \
+  --capability sector_rotation_snapshot \
+  --expected-host gurkdb \
+  --expected-commit "$(git rev-parse HEAD)" \
+  --checkout-path /home/gurk/projects/synth-v2 \
+  --external-evidence-file "${evidence_file}" \
+  --output json \
+  --strict
+```
+
+Missing commands, permissions, configuration fields, connectivity, time-sync
+proof, or journald policy evidence produce stable `FAIL` reason codes and a
+nonzero producer result. Unreadable or malformed manifests fail canonical
+validation, and required `FAIL`, `WARN`, or `UNVERIFIED` evidence blocks strict
+preflight. There are no force, skip, trust, or caller-asserted status options.
+
+A strict preflight `PASS` is read-only readiness evidence only. It does not
+accept, authorize, assign, deploy, install, enable, start, or activate
+`sector_rotation_snapshot`; the capability remains
+`SELECTED_PENDING_PREFLIGHT`, `production_runtime_owner=UNASSIGNED`, and
+`acceptance_status=PENDING` until separately reviewed lifecycle steps occur.
+
 1. ~~Onboard `sector_rotation_snapshot` into the writer-capability registry
    (`EXPECTED_CAPABILITY_IDS`, `CAPABILITY_IDENTITY`,
    `deploy/ownership/writer_capability_ownership_v1.json`) as its own
    reviewed change, lifecycle `SELECTED_PENDING_PREFLIGHT`.~~ **Complete.**
    Live gurkDB and Odroid preflight remain unresolved; no acceptance or
    activation is claimed by registry onboarding.
-2. Run `python -m src.operations.run_host_preflight_v1 --capability
-   sector_rotation_snapshot --expected-host gurkdb ... --strict` on gurkDB.
+2. In a separately authorized read-only host-preflight window on gurkDB,
+   produce, validate, and consume the canonical external-evidence manifest
+   using the commands above.
 3. Complete controlled writer acceptance on gurkDB: one exact commit, one
    exact host, a real write-capable run, idempotency/reconciliation proof,
    runtime and resource usage, lock behavior, failure behavior, rollback
