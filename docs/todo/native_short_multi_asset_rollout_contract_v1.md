@@ -310,93 +310,212 @@ placeholders for the rest: no controlled production promotion has been
 executed, reviewed, or accepted yet, so `PROMOTION_CONTRACT_MISSING` remains
 active.
 
-#### GLOBAL_BLOCKERS_ACTIVE has no executable enforcement path today (traced)
+#### GLOBAL_BLOCKERS_ACTIVE enforcement (implemented in a later lane)
 
 An earlier version of this document claimed `PROMOTE_SCOPE` "already fails
-closed while required global blockers are active," citing
-`NativeShortScopeAdministrationResultCode.GLOBAL_BLOCKERS_ACTIVE`. That claim
-was traced across the complete repository and found false, and is retracted
-here.
+closed while required global blockers are active." That claim was traced
+across the complete repository and found false at the time and was retracted
+here. A subsequent lane (branch
+`fix/native-short-global-blocker-gate-v1`) then implemented the missing
+executable gate described below. This section documents that implementation;
+it does not itself perform, request, or accept any production promotion,
+adoption, or removal, and it does not change BTC's existing supported state.
 
-`GLOBAL_BLOCKERS_ACTIVE` is declared as a `NativeShortScopeAdministrationResultCode`
-enum member in `native_short_scope_administration_v1.py` and mapped to the
-`BLOCKED` result class in `_RESULT_CODE_CLASS`, but it is a declared value only:
+**Exact executable enforcement call path.** The single canonical blocker
+evaluator, `native_short_multi_asset_audit_v1.evaluate_global_blockers()`
+(unchanged), is now reachable read-only from the authoritative
+scope-administration transaction path via a new reusable entrypoint,
+`native_short_multi_asset_audit_v1.evaluate_current_global_blockers(conn)`,
+which reads the same writer-provenance and `PROMOTE_SCOPE` operation-ledger
+rows the audit already reads (via new `fetch_writer_provenance_rows(conn)` /
+`fetch_promote_operation_rows(conn)` helpers, factored out of `run_audit` so
+the SQL is defined exactly once) and calls the existing evaluator through a
+new pure `evaluate_global_blockers_from_rows(writer_rows,
+admin_operation_rows)` function. No blocker logic is duplicated; `run_audit`
+itself now calls these same functions instead of repeating the query/logic
+inline.
 
-- `classify_scope_state`, `decide_administration`, `_decide_adopt`,
-  `_decide_promote`, `_decide_remove`, and `decide_operation_replay` in
-  `native_short_scope_administration_transaction_v1.py` never reference or
-  return `GLOBAL_BLOCKERS_ACTIVE` under any classification or state;
-  `_decide_promote` (the `PROMOTE_SCOPE` decision path) only ever returns
-  `PROMOTED_NEW_SCOPE`, `PROMOTED_FROM_PRIOR_WITHDRAWAL`,
-  `SCOPE_ALREADY_SUPPORTED`, or a rejection via `_reject(...)` carrying a
-  *different* corrupt-state/legacy code -- `GLOBAL_BLOCKERS_ACTIVE` is not
-  among them;
-- `run_native_short_scope_administration_v1.py` (the CLI/runner) does not read
-  `native_short_multi_asset_audit_v1.evaluate_global_blockers()`,
-  `GLOBAL_BLOCKERS`, or any blocker state before invoking the transaction;
-- no code path anywhere in the repository queries the audit's blocker
-  evaluation before or during a `PROMOTE_SCOPE` transaction.
+`native_short_scope_administration_transaction_v1.py`'s two public
+entrypoints call `evaluate_current_global_blockers(conn)` on the *same*
+already-open connection (inside `execute_scope_administration`, this is the
+same locked, `conn.begin()`'d transaction connection -- no second database
+snapshot is opened) and pass the resulting active-blocker tuple into
+`decide_administration(operation_type, snapshot, *,
+active_global_blockers=...)`. `decide_administration` is the single pure
+decision function already used by both entrypoints; the blocker check now
+runs there, before any operation-specific dispatch (`_decide_adopt` /
+`_decide_promote` / `_decide_remove`), so a blocked operation never reaches
+its own classification-specific logic. A replayed (already-completed)
+operation is decided via the separate, pre-existing `decide_operation_replay`
+path and is untouched by this gate -- replay behavior remains deterministic
+and is not re-evaluated against current blocker state.
 
-**There is currently no executable predicate anywhere in the repository that
-makes `PROMOTE_SCOPE` fail closed on `PROMOTION_CONTRACT_MISSING`,
-`REMOVAL_CONTRACT_MISSING`, `BOOTSTRAP_ORCHESTRATION_BLOCKED`, or
-`MULTI_SCOPE_FAILURE_ISOLATION_MISSING`.** This is a missing gate, not an
-existing safety property, and this PR does not invent, bypass, or simulate
-one -- wiring the transaction to the audit's blocker evaluation (or otherwise
-giving `GLOBAL_BLOCKERS_ACTIVE` a real caller) is separate, unimplemented
-work and must land, be reviewed, and be tested before any later procedure may
-rely on it.
+`active_global_blockers` is a required keyword-only input with no default.
+Every direct caller must therefore pass explicitly evaluated state; production
+entrypoints obtain that state only from
+`evaluate_current_global_blockers(conn)`.
+
+**Authoritative enforcement layer.** The gate lives in
+`native_short_scope_administration_transaction_v1.decide_administration`,
+called from both `execute_scope_administration` (write mode, the sole
+production mutation path) and `plan_scope_administration` (read-only dry
+run, so CLI previews are truthful). Both are the only production entrypoints
+into this module; the CLI runner
+(`run_native_short_scope_administration_v1.py`) calls these same functions
+and cannot bypass them. Neither public function's signature accepts a
+blocker-state parameter of any kind, so no caller -- direct or via the CLI --
+can pass "blockers clear" through the API. The only test-injection seam is
+monkeypatching the module-level `evaluate_current_global_blockers` function
+itself, the same established pattern already used in this file's test suite
+for `read_scope_state_snapshot` / `_insert_support_event`; production code
+never does this.
+
+**Operation-specific blocker matrix: adopted v1 policy.** No authoritative
+operation-specific matrix existed anywhere in the repository before this
+lane. This lane explicitly adopts the following v1 policy, derived from each
+canonical blocker's published semantics and enforced by
+`_APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION` in
+`native_short_scope_administration_transaction_v1.py`:
+
+| Operation             | Applicable active blockers |
+|------------------------|----------------------------|
+| `ADOPT_LEGACY_SCOPE`   | `WRITER_PROVENANCE_UNATTRIBUTED` |
+| `PROMOTE_SCOPE`        | all of `GLOBAL_BLOCKERS` (`WRITER_PROVENANCE_UNATTRIBUTED`, `PROMOTION_CONTRACT_MISSING`, `REMOVAL_CONTRACT_MISSING`, `BOOTSTRAP_ORCHESTRATION_BLOCKED`, `MULTI_SCOPE_FAILURE_ISOLATION_MISSING`) |
+| `REMOVE_SCOPE`         | `WRITER_PROVENANCE_UNATTRIBUTED`, `REMOVAL_CONTRACT_MISSING` |
+
+Rationale: `WRITER_PROVENANCE_UNATTRIBUTED` gates every writer-capable
+operation (all three mutate writer-owned tables and depend on trustworthy
+writer identity). `PROMOTE_SCOPE` is rollout expansion, so it is gated by the
+complete set, including the rollout-readiness blockers
+(`BOOTSTRAP_ORCHESTRATION_BLOCKED`, `MULTI_SCOPE_FAILURE_ISOLATION_MISSING`).
+`REMOVE_SCOPE` is a safety/rollback action that reduces scope count rather
+than increasing rollout-expansion risk, so it is deliberately **not** gated
+by the promotion-specific or rollout-expansion-specific blockers -- only by
+its own `REMOVAL_CONTRACT_MISSING` operational-acceptance evidence (which,
+like the promotion evidence contract, does not yet exist as a manifest for
+removal; this lane does not add one, per its own scope boundary) plus the
+universal writer-provenance gate. This matrix is proven by dedicated,
+operation-specific tests in
+`tests/test_native_short_scope_administration_transaction_v1.py`
+(`test_decide_promote_blocked_by_*`, `test_decide_adopt_blocked_by_*`,
+`test_decide_remove_blocked_by_*`,
+`test_decide_remove_not_blocked_by_promotion_bootstrap_or_isolation_blockers`),
+including an explicit proof that removal is *not* incidentally blocked by
+unrelated rollout-expansion blockers.
+
+The matrix is settled policy for v1, not an unresolved interpretation. The
+only unresolved policy issue retained by this lane is the first
+controlled-promotion bootstrap circularity documented below; no bypass is
+implemented.
+
+**Scope-state vs. audit-ledger mutation behavior.** A `GLOBAL_BLOCKERS_ACTIVE`
+decision is a `REJECT` action, which -- like every other reject/no-op/idempotent
+outcome in this module -- is not in the ledgered-action set and therefore
+writes no operation-ledger row and performs no scope/cadence/support mutation;
+the write-mode transaction is rolled back with `commit_state=ROLLED_BACK` and
+`persisted=False`, identical in shape to every other pre-existing rejection.
+No materialization or backfill occurs on any path. The blocked decision's
+sorted, deterministic blocking blocker codes are exposed on
+`AdministrationDecision.blocking_global_blockers` and surfaced in both
+`plan_scope_administration` and `execute_scope_administration`'s
+`AdministrationTransactionOutcome.current_state["blocking_global_blockers"]`.
+
+**Missing/malformed evidence behavior.** Enforcement depends entirely on
+`evaluate_current_global_blockers` succeeding and returning the canonical
+evaluator's fail-closed result; if the underlying evaluator determines
+evidence is absent, invalid, or ambiguous, the affected blocker(s) are
+reported active (unchanged canonical behavior -- see
+`evaluate_global_blockers`'s existing fail-closed contract) and the gate
+therefore blocks. If the read path itself raises (e.g. a genuinely malformed
+database read), `execute_scope_administration`'s existing unmapped-exception
+handling rolls back and raises a typed
+`NativeShortScopeAdministrationExecutionError` rather than proceeding as if
+no blockers were active -- fail-closed either way.
+
+Integration tests exercise the complete unpatched path from
+`execute_scope_administration` through `evaluate_current_global_blockers`,
+both evidence-row fetches, `evaluate_global_blockers_from_rows`,
+`evaluate_global_blockers`, and `decide_administration`. They prove absent
+writer evidence, absent promotion evidence, malformed evidence, and unreadable
+evidence cannot authorize a mutation or persist an operation-ledger row.
+
+**Removal/rollback semantics.** Proven explicitly, not assumed: dedicated
+tests confirm a `REMOVE_SCOPE` unaffected by its narrower applicable-blocker
+set still commits successfully even while `PROMOTION_CONTRACT_MISSING`,
+`BOOTSTRAP_ORCHESTRATION_BLOCKED`, and `MULTI_SCOPE_FAILURE_ISOLATION_MISSING`
+are all active, while a `REMOVE_SCOPE` is correctly blocked when
+`REMOVAL_CONTRACT_MISSING` or `WRITER_PROVENANCE_UNATTRIBUTED` is active.
+
+**Promotion-acceptance bootstrap circularity: still unresolved by design.**
+This lane deliberately does **not** resolve the circular dependency already
+identified above: `PROMOTION_CONTRACT_MISSING` can only close after reviewed
+evidence of a completed `PROMOTE_SCOPE` exists, but with this gate now
+enforcing, `PROMOTE_SCOPE` fails closed *while* `PROMOTION_CONTRACT_MISSING`
+is active -- which it always is until that first controlled promotion is
+accepted. `PROMOTE_SCOPE` is therefore now, correctly and by explicit design,
+**permanently blocked in production** until a separate, reviewed decision
+establishes how the first controlled promotion-acceptance execution is meant
+to occur (for example, a distinct reviewed one-time exception procedure, or a
+narrower blocker subset specifically for that first controlled run). This
+lane implements only the unambiguous safe portion (uniform fail-closed
+enforcement) and does not invent an acceptance-mode bypass; the policy
+decision for how to break this bootstrap circularity remains open and must be
+made explicitly, in its own reviewed lane, before any real production
+promotion can ever execute.
+
+No operational scope change occurred in this lane: no database write, no
+migration application, no scope promotion/adoption/removal, no
+materialization/backfill, no service/timer change, no broker/private API
+call, no order submission. BTC remains the sole production-supported native
+SHORT scope, unaffected by this change. The shipped promotion manifest
+remains `"accepted": false` and `PROMOTION_CONTRACT_MISSING` remains active.
 
 #### Required later controlled operational acceptance procedure (separate lane, dependency-ordered)
 
-An earlier version of this document instructed running `PROMOTE_SCOPE` while
-`PROMOTION_CONTRACT_MISSING` (and the removal/bootstrap/isolation blockers)
-were still active -- that was circular given the actual (undocumented) state
-above, since nothing would have stopped the transaction from executing
-regardless of blocker state, and every claim that it "already fails closed"
-is retracted. The corrected, honest dependency order is:
+The corrected, honest dependency order, updated now that the gate exists:
 
-1. this lane's evidence contract and manifest schema must exist in the
-   repository first (done by this PR) so there is something to satisfy;
-2. **an executable global-blocker gate must first be implemented, reviewed,
-   and tested** so that a production `PROMOTE_SCOPE` invocation actually
-   fails closed while any of `PROMOTION_CONTRACT_MISSING`,
-   `REMOVAL_CONTRACT_MISSING`, `BOOTSTRAP_ORCHESTRATION_BLOCKED`, or
-   `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` is active -- this does not exist
-   today and is not part of this PR;
+1. this lane's evidence contract and manifest schema exist in the repository
+   (done by PR #165);
+2. **the executable global-blocker gate now exists** (done by this lane) --
+   `PROMOTE_SCOPE` genuinely fails closed while any applicable blocker is
+   active;
 3. every other implementation blocker this rollout requires before a
    production `PROMOTE_SCOPE` invocation is safe (at minimum
    `BOOTSTRAP_ORCHESTRATION_BLOCKED` and
    `MULTI_SCOPE_FAILURE_ISOLATION_MISSING`) must be closed by their own
    separate, already-reviewed lanes -- **not** as part of executing the
    promotion;
-4. only once the gate in (2) exists and the blockers in (3) are closed may an
-   operator select exactly one authorized symbol from the sequential review
-   queue (currently `SOL -> ETH -> XRP`) after re-confirming every readiness
-   gate;
-5. execute `native_short_scope_administration_transaction_v1` `PROMOTE_SCOPE`
+4. **the promotion-acceptance bootstrap circularity above must be explicitly
+   resolved by its own reviewed decision** -- this is now the primary
+   remaining blocker to any first controlled promotion, since the gate makes
+   the circularity concrete and enforced rather than theoretical;
+5. only once (2), (3), and (4) are resolved may an operator select exactly
+   one authorized symbol from the sequential review queue (currently
+   `SOL -> ETH -> XRP`) after re-confirming every readiness gate;
+6. execute `native_short_scope_administration_transaction_v1` `PROMOTE_SCOPE`
    for that exact symbol against the real production database, with full
    provenance (`HUMAN_OPERATOR` or `SERVICE_PRINCIPAL` actor, `MANUAL_CLI` or
    `AUTOMATION` trigger -- never `TEST` -- and a verified clean repository
    commit);
-6. confirm the resulting `native_short_scope_admin_operation_v1` row is
+7. confirm the resulting `native_short_scope_admin_operation_v1` row is
    terminal, `SUCCESS`, and carries the correct scope, schema version, and
    digest;
-7. write a reviewed operational-acceptance document analogous to
+8. write a reviewed operational-acceptance document analogous to
    `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`
    naming the exact `operation_uuid`, symbol, and commit;
-8. only then, in a follow-on repository change, populate
+9. only then, in a follow-on repository change, populate
    `native_short_promotion_acceptance_manifest_v1.json` with that exact
    `operation_uuid`, scope/symbol, the recorded immutable request identity
    (non-`TEST` provenance), the matching `expected_request_metadata_digest`,
    the reviewed-acceptance document reference, and `"accepted": true`;
-9. re-run the audit to confirm `PROMOTION_CONTRACT_MISSING` closes and every
-   other blocker remains unaffected.
+10. re-run the audit to confirm `PROMOTION_CONTRACT_MISSING` closes and every
+    other blocker remains unaffected.
 
 This lane changes audit correctness and adds the evidence contract plus an
-unaccepted manifest template only. It performs no promotion, no database
-write, no migration application, and does not authorize SOL, ETH, XRP, or any
-other non-BTC production scope.
+unaccepted manifest template only; the global-blocker-gate lane adds
+enforcement only. Neither performs any promotion, database write, migration
+application, materialization, or backfill, and neither authorizes SOL, ETH,
+XRP, or any other non-BTC production scope.
 
 A follow-on correction fixed a second, separate defect: `PROVENANCE_AUDIT_RUN_UUID` in `native_short_multi_asset_audit_v1.py` had been set to `b5d9ca6b-ff24-46eb-8155-4e663b948ebc` — the legacy pre-contract `run_id=30` row (started 2026-07-15, predates the provenance-contract migration) — instead of the actually reviewed and accepted run `b07d897d-6574-4380-98c3-8145c5c41b30` (`run_id=52`) named in this document and in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`. With the corrected constant, a live read-only audit run confirms `provenance_audit_run_attributed=true` and `writer_provenance_blocker_active=false`, while `PROMOTION_CONTRACT_MISSING`, `REMOVAL_CONTRACT_MISSING`, `BOOTSTRAP_ORCHESTRATION_BLOCKED`, and `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` remain active and unaffected. Every regular 4h-chain writer run since `run_id=52` (through at least `run_id=62`, 2026-07-29) independently classifies `ATTRIBUTABLE` under the unchanged classifier, confirming the writer path and classifier were already healthy and only the audit's reference constant was wrong.
 

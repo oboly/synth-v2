@@ -617,6 +617,74 @@ def _fetch_all(conn: Any, sql: str, params: Sequence[Any] = ()) -> list[dict[str
         return [dict(row) for row in cur.fetchall()]
 
 
+_WRITER_PROVENANCE_ROWS_SQL = """
+    SELECT run_uuid, runner_name, runner_version, trigger_type, trigger_ref,
+           host_name, process_id, provenance_contract_version,
+           writer_entrypoint, repository_writer_owner, execution_mode,
+           repository_commit_sha
+    FROM native_short_materializer_run_v1
+    ORDER BY run_id
+"""
+
+_PROMOTE_OPERATION_ROWS_SQL = """
+    SELECT operation_uuid, operation_type, venue, symbol, quote_currency,
+           fib_trading_horizon, primary_interval, supporting_interval,
+           schema_version, metadata_digest, completed_at_utc,
+           result_class, result_code
+    FROM native_short_scope_admin_operation_v1
+    WHERE operation_type = 'PROMOTE_SCOPE'
+    ORDER BY scope_admin_operation_id
+"""
+
+
+def fetch_writer_provenance_rows(conn: Any) -> list[dict[str, Any]]:
+    """Read-only fetch of every persisted native SHORT writer run row."""
+    return _fetch_all(conn, _WRITER_PROVENANCE_ROWS_SQL)
+
+
+def fetch_promote_operation_rows(conn: Any) -> list[dict[str, Any]]:
+    """Read-only fetch of every persisted PROMOTE_SCOPE operation-ledger row."""
+    return _fetch_all(conn, _PROMOTE_OPERATION_ROWS_SQL)
+
+
+def evaluate_global_blockers_from_rows(
+    writer_rows: Sequence[Mapping[str, Any]],
+    admin_operation_rows: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[str, ...], Mapping[str, str]]:
+    """Pure evaluation of the canonical global blockers from already-fetched
+    writer-provenance and PROMOTE_SCOPE operation-ledger rows. This is the
+    single non-duplicated blocker-evaluation path shared by ``run_audit`` and
+    ``evaluate_current_global_blockers``; no caller should re-derive
+    ``provenance_attributed`` or ``promotion_accepted`` independently.
+    """
+    provenance_rows = [
+        row for row in writer_rows if str(row["run_uuid"]) == PROVENANCE_AUDIT_RUN_UUID
+    ]
+    provenance_attributed = bool(provenance_rows) and all(
+        classify_persisted_native_short_writer_provenance(row)
+        == NativeShortWriterProvenanceState.ATTRIBUTABLE
+        for row in provenance_rows
+    )
+    promotion_evaluation = evaluate_promotion_acceptance_evidence(admin_operation_rows)
+    return evaluate_global_blockers(
+        provenance_attributed=provenance_attributed,
+        promotion_accepted=promotion_evaluation.accepted,
+        promotion_evidence_reason=promotion_evaluation.reason,
+    )
+
+
+def evaluate_current_global_blockers(conn: Any) -> tuple[tuple[str, ...], Mapping[str, str]]:
+    """Read minimal current evidence from ``conn`` and evaluate the canonical
+    global blockers. This is the single reusable, read-only entrypoint for any
+    caller (audit reporting, scope-administration transaction enforcement)
+    that needs the current blocker state; it must never be duplicated with a
+    second blocker-evaluation implementation. Performs no mutation.
+    """
+    writer_rows = fetch_writer_provenance_rows(conn)
+    admin_operation_rows = fetch_promote_operation_rows(conn)
+    return evaluate_global_blockers_from_rows(writer_rows, admin_operation_rows)
+
+
 def _phase(progress: Progress | None, name: str, rows: int, started: datetime) -> None:
     if progress:
         progress(name, rows, (datetime.now(UTC) - started).total_seconds())
@@ -734,29 +802,8 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
         ORDER BY symbol, scope_status_id
         """,
     )
-    writer_rows = _fetch_all(
-        conn,
-        """
-        SELECT run_uuid, runner_name, runner_version, trigger_type, trigger_ref,
-               host_name, process_id, provenance_contract_version,
-               writer_entrypoint, repository_writer_owner, execution_mode,
-               repository_commit_sha
-        FROM native_short_materializer_run_v1
-        ORDER BY run_id
-        """,
-    )
-    admin_operation_rows = _fetch_all(
-        conn,
-        """
-        SELECT operation_uuid, operation_type, venue, symbol, quote_currency,
-               fib_trading_horizon, primary_interval, supporting_interval,
-               schema_version, metadata_digest, completed_at_utc,
-               result_class, result_code
-        FROM native_short_scope_admin_operation_v1
-        WHERE operation_type = 'PROMOTE_SCOPE'
-        ORDER BY scope_admin_operation_id
-        """,
-    )
+    writer_rows = fetch_writer_provenance_rows(conn)
+    admin_operation_rows = fetch_promote_operation_rows(conn)
     ledger_row_count = sum(
         map(
             len,
@@ -829,12 +876,14 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
         == NativeShortWriterProvenanceState.ATTRIBUTABLE
         for row in provenance_rows
     )
-    promotion_evaluation = evaluate_promotion_acceptance_evidence(admin_operation_rows)
-    active_blockers, blocker_evidence = evaluate_global_blockers(
-        provenance_attributed=provenance_attributed,
-        promotion_accepted=promotion_evaluation.accepted,
-        promotion_evidence_reason=promotion_evaluation.reason,
+    active_blockers, blocker_evidence = evaluate_global_blockers_from_rows(
+        writer_rows, admin_operation_rows
     )
+    # Recomputed for the report's promotion-specific fields; the underlying
+    # evaluator is pure and was already invoked once inside
+    # evaluate_global_blockers_from_rows above, so this is not a second
+    # blocker-logic implementation, only a second read of its cheap result.
+    promotion_evaluation = evaluate_promotion_acceptance_evidence(admin_operation_rows)
 
     evaluated: list[CandidateResult] = []
     for symbol in sorted(markets_by_symbol):
