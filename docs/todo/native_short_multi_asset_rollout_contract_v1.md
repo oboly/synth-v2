@@ -174,7 +174,77 @@ writer_provenance_blocker_active=false
 
 The reviewed attributable run and its persisted linkage close only the writer-provenance blocker. The repository-only writer commit-time fence was implemented later and has not been production-invoked or operationally accepted. Neither change implements bootstrap semantics, failure isolation, or authorization for any non-BTC production scope.
 
-`src/market_data/native_short_multi_asset_audit_v1.py` no longer emits `global_blocker_codes`, `writer_provenance_blocker_active`, and `operational_acceptance_completed` as an unconditional hardcoded constant. `evaluate_global_blockers()` now derives each blocker from explicit evaluated evidence, fails closed on absent/invalid/ambiguous evidence, and never infers acceptance from code or tests existing, or from this narrative record alone. `WRITER_PROVENANCE_UNATTRIBUTED` is wired to the existing canonical provenance evaluation (`classify_persisted_native_short_writer_provenance` applied to the reviewed accepted run row); if that row does not currently classify `ATTRIBUTABLE`, the blocker stays active regardless of what this narrative snapshot claims. `PROMOTION_CONTRACT_MISSING` and `REMOVAL_CONTRACT_MISSING` remain unconditionally active: the promotion/removal transactions are implemented and unit-tested, but no canonical, explicitly owned, machine-readable production-operational-acceptance evidence source exists for either, so implementation and tests alone are not treated as acceptance. `BOOTSTRAP_ORCHESTRATION_BLOCKED` and `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` remain unconditionally active pending their own separate implementation lanes. The audit report also now exposes an additive `global_blocker_evidence` map giving the per-blocker reason (`EVIDENCE_CONFIRMS_CLOSED`, `EVIDENCE_ABSENT_OR_INVALID`, `NO_CANONICAL_EVIDENCE_SOURCE`, or `IMPLEMENTATION_PENDING_SEPARATE_LANE`) so a blocker that is active because evidence failed can be distinguished from one active because no canonical evidence source exists yet. This lane changes audit correctness only; it does not itself close any blocker, perform any promotion/removal, or implement bootstrap/isolation semantics.
+`src/market_data/native_short_multi_asset_audit_v1.py` no longer emits `global_blocker_codes`, `writer_provenance_blocker_active`, and `operational_acceptance_completed` as an unconditional hardcoded constant. `evaluate_global_blockers()` now derives each blocker from explicit evaluated evidence, fails closed on absent/invalid/ambiguous evidence, and never infers acceptance from code or tests existing, or from this narrative record alone. `WRITER_PROVENANCE_UNATTRIBUTED` is wired to the existing canonical provenance evaluation (`classify_persisted_native_short_writer_provenance` applied to the reviewed accepted run row); if that row does not currently classify `ATTRIBUTABLE`, the blocker stays active regardless of what this narrative snapshot claims. `REMOVAL_CONTRACT_MISSING` remains unconditionally active: the removal transaction is implemented and unit-tested, but no canonical, explicitly owned, machine-readable production-operational-acceptance evidence source exists for it, so implementation and tests alone are not treated as acceptance. `BOOTSTRAP_ORCHESTRATION_BLOCKED` and `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` remain unconditionally active pending their own separate implementation lanes. The audit report also now exposes an additive `global_blocker_evidence` map giving the per-blocker reason (`EVIDENCE_CONFIRMS_CLOSED`, `EVIDENCE_ABSENT_OR_INVALID`, `NO_CANONICAL_EVIDENCE_SOURCE`, or `IMPLEMENTATION_PENDING_SEPARATE_LANE`) so a blocker that is active because evidence failed can be distinguished from one active because no canonical evidence source exists yet. This lane changes audit correctness only; it does not itself close any blocker, perform any promotion/removal, or implement bootstrap/isolation semantics.
+
+### PROMOTION_CONTRACT_MISSING evidence contract (this lane)
+
+`PROMOTION_CONTRACT_MISSING` is now wired to a canonical, machine-readable
+PROMOTE_SCOPE operational-acceptance evidence contract defined in
+`src/market_data/native_short_promotion_acceptance_evidence_v1.py`, evaluated
+by `evaluate_promotion_acceptance_evidence` and threaded into
+`evaluate_global_blockers()` via `promotion_accepted` /
+`promotion_evidence_reason`. This lane introduces the contract and evaluator
+only; **it does not itself constitute production promotion acceptance**, and
+it does not perform, request, or wrap any promotion transaction.
+
+Concepts are kept explicit and separate:
+
+- **promotion contract definition** — the constants in
+  `native_short_promotion_acceptance_evidence_v1.py`
+  (`PROMOTION_ACCEPTANCE_CONTRACT_VERSION`,
+  `REQUIRED_ADMINISTRATION_SCHEMA_VERSION`, the accepted operation type and
+  result codes, and the fixed canonical non-symbol scope fields);
+- **controlled acceptance execution** — a separately reviewed, out-of-band
+  invocation of the existing `native_short_scope_administration_transaction_v1`
+  `PROMOTE_SCOPE` path against one authorized symbol (not part of this lane);
+- **persisted acceptance result** — the existing
+  `native_short_scope_admin_operation_v1` operation ledger row for that
+  operation. No new schema or migration is introduced: this table, added by
+  `db/migrations/20260718_native_short_scope_administration_v1.sql`, already
+  persists exactly the fields a promotion acceptance needs to prove
+  (immutable `operation_uuid`, `operation_type`, a database-CHECK-enforced
+  canonical six-part scope key, terminal `result_class`/`result_code`,
+  `schema_version`, and a SHA-256 `metadata_digest` binding the row to one
+  exact immutable request identity);
+- **audit evaluation** — `evaluate_promotion_acceptance_evidence`, a pure,
+  read-only, deterministic function with no I/O and no mutation.
+
+Evidence closes the blocker only when a pinned `ACCEPTED_PROMOTION_OPERATION_UUID`
+resolves to exactly one operation-ledger row that is `PROMOTE_SCOPE`, terminal,
+`result_class=SUCCESS` with `result_code` in
+`{PROMOTED_NEW_SCOPE, PROMOTED_FROM_PRIOR_WITHDRAWAL}`, carries the fixed
+canonical non-symbol scope fields plus a well-formed symbol, the required
+administration `schema_version`, and a well-formed 64-character hex
+`metadata_digest`. Missing, malformed, incomplete, wrong-version, wrong-scope,
+unrelated, stale, or ambiguous/duplicate evidence fails closed and leaves the
+blocker active — this mirrors the fail-closed contract already proven for
+`WRITER_PROVENANCE_UNATTRIBUTED` via `PROVENANCE_AUDIT_RUN_UUID`.
+
+`ACCEPTED_PROMOTION_OPERATION_UUID` is intentionally `None` as introduced by
+this lane: no controlled production promotion has been executed, reviewed, or
+accepted yet, so `PROMOTION_CONTRACT_MISSING` remains active. The required
+later controlled operational acceptance procedure, for a separate lane, is:
+
+1. select exactly one authorized symbol from the sequential review queue
+   (currently `SOL -> ETH -> XRP`) after re-confirming every readiness gate;
+2. execute `native_short_scope_administration_transaction_v1` `PROMOTE_SCOPE`
+   for that exact symbol against the real production database, with full
+   provenance (`HUMAN_OPERATOR` or `SERVICE_PRINCIPAL` actor, non-`TEST`
+   trigger, verified clean repository commit);
+3. confirm the resulting `native_short_scope_admin_operation_v1` row is
+   terminal, `SUCCESS`, and carries the correct scope, schema version, and
+   digest;
+4. write a reviewed operational-acceptance document analogous to
+   `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`
+   naming the exact `operation_uuid`, symbol, and commit;
+5. only then pin that `operation_uuid` as
+   `ACCEPTED_PROMOTION_OPERATION_UUID` in a follow-on repository change, and
+   re-run the audit to confirm `PROMOTION_CONTRACT_MISSING` closes and every
+   other blocker remains unaffected.
+
+This lane changes audit correctness and adds the evidence contract only. It
+performs no promotion, no database write, no migration application, and does
+not authorize SOL, ETH, XRP, or any other non-BTC production scope.
 
 A follow-on correction fixed a second, separate defect: `PROVENANCE_AUDIT_RUN_UUID` in `native_short_multi_asset_audit_v1.py` had been set to `b5d9ca6b-ff24-46eb-8155-4e663b948ebc` — the legacy pre-contract `run_id=30` row (started 2026-07-15, predates the provenance-contract migration) — instead of the actually reviewed and accepted run `b07d897d-6574-4380-98c3-8145c5c41b30` (`run_id=52`) named in this document and in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`. With the corrected constant, a live read-only audit run confirms `provenance_audit_run_attributed=true` and `writer_provenance_blocker_active=false`, while `PROMOTION_CONTRACT_MISSING`, `REMOVAL_CONTRACT_MISSING`, `BOOTSTRAP_ORCHESTRATION_BLOCKED`, and `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` remain active and unaffected. Every regular 4h-chain writer run since `run_id=52` (through at least `run_id=62`, 2026-07-29) independently classifies `ATTRIBUTABLE` under the unchanged classifier, confirming the writer path and classifier were already healthy and only the audit's reference constant was wrong.
 
