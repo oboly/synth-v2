@@ -127,9 +127,14 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from src.market_data.native_short_scope_administration_v1 import (
+    NativeShortScopeAdministrationActorType,
     NativeShortScopeAdministrationKey,
+    NativeShortScopeAdministrationOperationType,
     NativeShortScopeAdministrationProvenance,
     NativeShortScopeAdministrationRequest,
+    NativeShortScopeAdministrationResultClass,
+    NativeShortScopeAdministrationResultCode,
+    NativeShortScopeAdministrationTriggerType,
     NativeShortScopeAdministrationValidationError,
 )
 
@@ -142,18 +147,32 @@ REQUIRED_MANIFEST_SCHEMA_VERSION = "native_short_promotion_acceptance_manifest_v
 # for every administration operation (see tests/test_native_short_scope_administration_transaction_v1.py).
 REQUIRED_ADMINISTRATION_SCHEMA_VERSION = "native_short_scope_administration_v1"
 
-REQUIRED_OPERATION_TYPE = "PROMOTE_SCOPE"
-ACCEPTED_RESULT_CLASS = "SUCCESS"
-ACCEPTED_RESULT_CODES = ("PROMOTED_NEW_SCOPE", "PROMOTED_FROM_PRIOR_WITHDRAWAL")
+REQUIRED_OPERATION_TYPE = str(NativeShortScopeAdministrationOperationType.PROMOTE_SCOPE)
+ACCEPTED_RESULT_CLASS = str(NativeShortScopeAdministrationResultClass.SUCCESS)
+ACCEPTED_RESULT_CODES = (
+    str(NativeShortScopeAdministrationResultCode.PROMOTED_NEW_SCOPE),
+    str(NativeShortScopeAdministrationResultCode.PROMOTED_FROM_PRIOR_WITHDRAWAL),
+)
 
 # TEST provenance (native_short_scope_administration_v1's ``TEST`` actor/
 # trigger members) is a closed deterministic fixture mode for unit tests. It
 # must never be accepted as evidence of a reviewed production promotion, so
 # the recorded immutable request identity's actor/trigger types are validated
 # against this explicit allowlist -- not merely rejected by name -- and the
-# allowlist itself is part of the contract digest below.
-ALLOWED_PRODUCTION_ACTOR_TYPES = ("HUMAN_OPERATOR", "SERVICE_PRINCIPAL")
-ALLOWED_PRODUCTION_TRIGGER_TYPES = ("MANUAL_CLI", "AUTOMATION")
+# allowlist itself is part of the contract digest below. Derived from the
+# canonical enums (excluding their shared ``TEST`` member) rather than
+# duplicating string literals, so a future enum change cannot silently drift
+# out of sync with this contract.
+ALLOWED_PRODUCTION_ACTOR_TYPES = tuple(
+    str(member)
+    for member in NativeShortScopeAdministrationActorType
+    if member != NativeShortScopeAdministrationActorType.TEST
+)
+ALLOWED_PRODUCTION_TRIGGER_TYPES = tuple(
+    str(member)
+    for member in NativeShortScopeAdministrationTriggerType
+    if member != NativeShortScopeAdministrationTriggerType.TEST
+)
 
 CANONICAL_SCOPE_FIXED_FIELDS: Mapping[str, str] = {
     "venue": "bitvavo",
