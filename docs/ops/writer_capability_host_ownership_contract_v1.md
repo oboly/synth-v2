@@ -306,6 +306,13 @@ Runtime configuration is MariaDB host/user/password/database resolved through
 permissions; it never reads or returns secret values. "No private exchange key"
 is not the same as "no runtime configuration required".
 
+`journald_logrotation` means non-empty read-only `journalctl --disk-usage`
+evidence plus exact `active` and `enabled` state for `logrotate.timer`. This is
+the adopted host-preflight precedent; it proves journald accessibility and the
+host logrotation timer state. It does not claim a universal journal size or
+retention-duration bound. Historical host-specific values are not a canonical
+threshold.
+
 ### Capability-specific external requirements
 
 External requirements are proven from each capability's real call graph, not

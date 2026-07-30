@@ -275,10 +275,12 @@ python -m src.operations.run_host_preflight_v1 \
 ```
 
 Missing commands, permissions, configuration fields, connectivity, time-sync
-proof, or journald policy evidence produce stable `FAIL` reason codes and a
-nonzero producer result. Unreadable or malformed manifests fail canonical
-validation, and required `FAIL`, `WARN`, or `UNVERIFIED` evidence blocks strict
-preflight. There are no force, skip, trust, or caller-asserted status options.
+proof, non-empty journald usage evidence, or exact active/enabled
+`logrotate.timer` state produce stable `FAIL` reason codes and a nonzero
+producer result. No repository-wide retention threshold is asserted. Unreadable
+or malformed manifests fail canonical validation, and required `FAIL`, `WARN`,
+or `UNVERIFIED` evidence blocks strict preflight. There are no force, skip,
+trust, or caller-asserted status options.
 
 A strict preflight `PASS` is read-only readiness evidence only. It does not
 accept, authorize, assign, deploy, install, enable, start, or activate

@@ -240,19 +240,62 @@ def _probe_ntp(adapter: ProbeAdapter) -> ProbeResult:
     )
 
 
+_SYSTEMD_ACTIVE_STATES = frozenset(
+    {"active", "inactive", "failed", "activating", "deactivating", "reloading"}
+)
+_SYSTEMD_ENABLED_STATES = frozenset(
+    {
+        "enabled",
+        "enabled-runtime",
+        "linked",
+        "linked-runtime",
+        "alias",
+        "masked",
+        "masked-runtime",
+        "static",
+        "indirect",
+        "generated",
+        "transient",
+        "disabled",
+    }
+)
+
+
+def _single_state(output: str, allowed: frozenset[str]) -> str | None:
+    lines = [line.strip().lower() for line in output.splitlines()]
+    if len(lines) != 1 or not lines[0] or lines[0] not in allowed:
+        return None
+    return lines[0]
+
+
 def _probe_journald(adapter: ProbeAdapter) -> ProbeResult:
-    commands = (
-        ["journalctl", "--disk-usage", "--no-pager"],
-        ["systemd-analyze", "cat-config", "systemd/journald.conf"],
-    )
     try:
-        results = [adapter.run_command(command) for command in commands]
+        journal = adapter.run_command(["journalctl", "--disk-usage", "--no-pager"])
     except Exception:
-        return ProbeResult("FAIL", "JOURNALD_POLICY_PROBE_UNAVAILABLE")
-    return _result(
-        all(result.returncode == 0 and result.stdout.strip() for result in results),
-        "JOURNALD_USAGE_AND_POLICY_READABLE",
-        "JOURNALD_USAGE_OR_POLICY_UNREADABLE",
+        return ProbeResult("FAIL", "JOURNALD_USAGE_PROBE_UNAVAILABLE")
+    if journal.returncode != 0 or not journal.stdout.strip():
+        return ProbeResult("FAIL", "JOURNALD_USAGE_UNREADABLE")
+
+    try:
+        active = adapter.run_command(["systemctl", "is-active", "logrotate.timer"])
+        enabled = adapter.run_command(["systemctl", "is-enabled", "logrotate.timer"])
+    except Exception:
+        return ProbeResult("FAIL", "LOGROTATE_TIMER_STATE_PROBE_UNAVAILABLE")
+
+    active_state = _single_state(active.stdout, _SYSTEMD_ACTIVE_STATES)
+    enabled_state = _single_state(enabled.stdout, _SYSTEMD_ENABLED_STATES)
+    if active_state is None or enabled_state is None:
+        return ProbeResult("FAIL", "LOGROTATE_TIMER_STATE_MALFORMED_OR_AMBIGUOUS")
+    if active_state == "active" and active.returncode != 0:
+        return ProbeResult("FAIL", "LOGROTATE_TIMER_STATE_CONTRADICTORY")
+    if active_state != "active":
+        return ProbeResult("FAIL", "LOGROTATE_TIMER_NOT_ACTIVE")
+    if enabled_state == "enabled" and enabled.returncode != 0:
+        return ProbeResult("FAIL", "LOGROTATE_TIMER_STATE_CONTRADICTORY")
+    if enabled_state != "enabled":
+        return ProbeResult("FAIL", "LOGROTATE_TIMER_NOT_ENABLED")
+    return ProbeResult(
+        "PASS", "JOURNALD_READABLE_LOGROTATE_TIMER_ACTIVE_ENABLED"
     )
 
 

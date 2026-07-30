@@ -63,11 +63,13 @@ class FakeAdapter:
         *,
         dependency_failure: bool = False,
         secret_failure: bool = False,
+        command_results: dict[tuple[str, ...], producer.CommandResult] | None = None,
     ) -> None:
         self.connection = FakeConnection()
         self.calls: list[tuple[str, object]] = []
         self.dependency_failure = dependency_failure
         self.secret_failure = secret_failure
+        self.command_results = command_results or {}
 
     def resolve(self, host: str) -> None:
         self.calls.append(("resolve", host))
@@ -83,9 +85,20 @@ class FakeAdapter:
         self.calls.append(("run_command", tuple(args)))
         if self.dependency_failure:
             raise FileNotFoundError(SECRET)
+        configured = self.command_results.get(tuple(args))
+        if configured is not None:
+            return configured
         if args[0] == "timedatectl":
             return producer.CommandResult(0, "yes\n")
-        return producer.CommandResult(0, SECRET)
+        if args[0] == "journalctl":
+            return producer.CommandResult(
+                0, "Archived and active journals take up 20.0M in the file system.\n"
+            )
+        if args[1:2] == ["is-active"]:
+            return producer.CommandResult(0, "active\n")
+        if args[1:2] == ["is-enabled"]:
+            return producer.CommandResult(0, "enabled\n")
+        raise AssertionError(f"unexpected command: {args[0]}")
 
     def connect_database(self, config: dict[str, str | int]) -> FakeConnection:
         self.calls.append(("connect_database", tuple(sorted(config))))
@@ -189,6 +202,91 @@ def test_missing_dependencies_and_unreadable_configuration_fail_closed(
     assert payload["checks"]["journald_logrotation"]["status"] == "FAIL"
 
 
+def test_journald_command_success_with_empty_output_fails_closed() -> None:
+    adapter = FakeAdapter(
+        command_results={
+            ("journalctl", "--disk-usage", "--no-pager"): producer.CommandResult(
+                0, ""
+            )
+        }
+    )
+    result = producer._probe_journald(adapter)
+    assert result == producer.ProbeResult("FAIL", "JOURNALD_USAGE_UNREADABLE")
+
+
+@pytest.mark.parametrize(
+    ("command", "returncode", "output", "reason_code"),
+    (
+        (
+            ("systemctl", "is-active", "logrotate.timer"),
+            3,
+            "inactive\n",
+            "LOGROTATE_TIMER_NOT_ACTIVE",
+        ),
+        (
+            ("systemctl", "is-enabled", "logrotate.timer"),
+            1,
+            "disabled\n",
+            "LOGROTATE_TIMER_NOT_ENABLED",
+        ),
+    ),
+)
+def test_readable_noncompliant_logrotate_policy_fails_closed(
+    command: tuple[str, ...],
+    returncode: int,
+    output: str,
+    reason_code: str,
+) -> None:
+    adapter = FakeAdapter(
+        command_results={command: producer.CommandResult(returncode, output)}
+    )
+    result = producer._probe_journald(adapter)
+    assert result == producer.ProbeResult("FAIL", reason_code)
+
+
+def test_compliant_journald_and_logrotate_policy_passes() -> None:
+    result = producer._probe_journald(FakeAdapter())
+    assert result == producer.ProbeResult(
+        "PASS", "JOURNALD_READABLE_LOGROTATE_TIMER_ACTIVE_ENABLED"
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "returncode", "output", "reason_code"),
+    (
+        (
+            ("systemctl", "is-active", "logrotate.timer"),
+            0,
+            "active\ninactive\n",
+            "LOGROTATE_TIMER_STATE_MALFORMED_OR_AMBIGUOUS",
+        ),
+        (
+            ("systemctl", "is-enabled", "logrotate.timer"),
+            0,
+            "sometimes\n",
+            "LOGROTATE_TIMER_STATE_MALFORMED_OR_AMBIGUOUS",
+        ),
+        (
+            ("systemctl", "is-active", "logrotate.timer"),
+            1,
+            "active\n",
+            "LOGROTATE_TIMER_STATE_CONTRADICTORY",
+        ),
+    ),
+)
+def test_malformed_ambiguous_or_contradictory_timer_state_fails_closed(
+    command: tuple[str, ...],
+    returncode: int,
+    output: str,
+    reason_code: str,
+) -> None:
+    adapter = FakeAdapter(
+        command_results={command: producer.CommandResult(returncode, output)}
+    )
+    result = producer._probe_journald(adapter)
+    assert result == producer.ProbeResult("FAIL", reason_code)
+
+
 def test_mariadb_probe_is_transactionally_read_only_and_never_commits(
     tmp_path: Path,
 ) -> None:
@@ -243,6 +341,77 @@ def test_secret_shaped_values_never_reach_evidence_or_probe_output(
     assert rc == 3
     assert "SENTINEL_SECRET_MUST_NOT_LEAK" not in rendered
     assert "password=" not in rendered
+
+
+def test_secret_shaped_subprocess_output_is_discarded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config = _runtime_config(tmp_path)
+    output = tmp_path / "evidence.json"
+    adapter = FakeAdapter(
+        command_results={
+            ("journalctl", "--disk-usage", "--no-pager"): producer.CommandResult(
+                0, SECRET
+            )
+        }
+    )
+    monkeypatch.setattr(producer.platform, "node", lambda: HOST)
+    monkeypatch.setattr(producer, "_actual_checkout_commit", lambda _path: COMMIT)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "produce_host_preflight_external_evidence_v1",
+            "--capability",
+            CAPABILITY,
+            "--expected-host",
+            HOST,
+            "--expected-commit",
+            COMMIT,
+            "--checkout-path",
+            str(tmp_path),
+            "--runtime-config-file",
+            str(config),
+            "--output-file",
+            str(output),
+        ],
+    )
+    assert producer.main(adapter_factory=lambda: adapter, now=lambda: OBSERVED) == 0
+    captured = capsys.readouterr()
+    rendered = captured.out + captured.err + output.read_text(encoding="utf-8")
+    assert "SENTINEL_SECRET_MUST_NOT_LEAK" not in rendered
+    assert "password=" not in rendered
+
+
+def test_system_command_stdout_and_stderr_are_never_rendered(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    outputs = {
+        ("journalctl", "--disk-usage", "--no-pager"): (
+            0,
+            SECRET,
+        ),
+        ("systemctl", "is-active", "logrotate.timer"): (0, "active\n"),
+        ("systemctl", "is-enabled", "logrotate.timer"): (0, "enabled\n"),
+    }
+
+    def fake_run(args: list[str], **_kwargs) -> producer.subprocess.CompletedProcess[str]:
+        return producer.subprocess.CompletedProcess(
+            args,
+            outputs[tuple(args)][0],
+            stdout=outputs[tuple(args)][1],
+            stderr=SECRET,
+        )
+
+    monkeypatch.setattr(producer.subprocess, "run", fake_run)
+    result = producer._probe_journald(producer.SystemProbeAdapter())
+    captured = capsys.readouterr()
+    assert result == producer.ProbeResult(
+        "PASS", "JOURNALD_READABLE_LOGROTATE_TIMER_ACTIVE_ENABLED"
+    )
+    assert SECRET not in result.reason_code + captured.out + captured.err
 
 
 def test_malformed_producer_payload_fails_canonical_validation(tmp_path: Path) -> None:
@@ -325,9 +494,16 @@ def test_probe_surface_contains_no_mutation_capable_calls(tmp_path: Path) -> Non
     assert command_calls == [
         ("timedatectl", "show", "--property=NTPSynchronized", "--value"),
         ("journalctl", "--disk-usage", "--no-pager"),
-        ("systemd-analyze", "cat-config", "systemd/journald.conf"),
+        ("systemctl", "is-active", "logrotate.timer"),
+        ("systemctl", "is-enabled", "logrotate.timer"),
     ]
-    assert all(command[0] != "systemctl" for command in command_calls)
+    assert all(
+        not (
+            command[0] == "systemctl"
+            and any(action in command for action in ("start", "stop", "enable", "disable"))
+        )
+        for command in command_calls
+    )
     expected_zero_mutation = {
         "host_mutations": 0,
         "database_writes": 0,
