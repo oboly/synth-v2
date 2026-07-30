@@ -41,7 +41,11 @@ which host is selected:
   remotely transport dashboard output
 - the 4h chain may transactionally publish the canonical market-only 4h
   `FibNavigationMap` cohort to `canonical_fib_zone_map_v1`; this generic
-  dashboard context is independent of the BTC-only Native SHORT scope gate
+  dashboard context is independent of the BTC-only Native SHORT scope gate.
+  Publication runs after the existing 4h `feat_candle` refresh so the adopted
+  `structure_state_engine` v1.2 direction classifier is aligned to the same
+  latest candle; RANGE, missing, or misaligned direction input fails
+  unavailable
 - the Odroid MVP cockpit chain reads that committed DB cohort and renders
   `/synth/fibo-map.html`; it never calculates or repairs Fibonacci truth
 - rotation-pressure persistence belongs to the `market_rotation_pressure`

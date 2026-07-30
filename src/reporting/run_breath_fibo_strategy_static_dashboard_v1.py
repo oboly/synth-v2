@@ -241,6 +241,22 @@ def pct_distance(level: Decimal | None, current: Decimal | None) -> Decimal | No
     return (level - current) / current * Decimal("100")
 
 
+def select_nearest_directional_target(
+    *,
+    current_leg: str,
+    current_price: Decimal | None,
+    targets: tuple[Decimal | None, ...],
+) -> Decimal | None:
+    ordered = tuple(target for target in targets if target is not None)
+    if current_leg not in {"UP", "DOWN"} or not ordered:
+        return None
+    if current_price is None:
+        return ordered[0]
+    if current_leg == "UP":
+        return next((target for target in ordered if target > current_price), None)
+    return next((target for target in ordered if target < current_price), None)
+
+
 def now_utc() -> datetime:
     return datetime.now(UTC)
 
@@ -486,27 +502,42 @@ def build_row(
         ) or "FIB_MAP_FOUND"
 
     current_leg = first_text(source, ("fib_current_leg",), default="UNKNOWN").upper()
-    entry_low = first_decimal(source, ("fib_entry_zone_low",))
-    entry_high = first_decimal(source, ("fib_entry_zone_high",))
-    support_low = first_decimal(source, ("fib_support_reaction_zone_low",))
-    support_high = first_decimal(source, ("fib_support_reaction_zone_high",))
+    directional_map = current_leg in {"UP", "DOWN"}
+    entry_low = first_decimal(source, ("fib_entry_zone_low",)) if directional_map else None
+    entry_high = first_decimal(source, ("fib_entry_zone_high",)) if directional_map else None
+    support_low = (
+        first_decimal(source, ("fib_support_reaction_zone_low",))
+        if directional_map
+        else None
+    )
+    support_high = (
+        first_decimal(source, ("fib_support_reaction_zone_high",))
+        if directional_map
+        else None
+    )
     entry_zone_mid = first_decimal(source, ("fib_entry_zone_mid",)) or midpoint(entry_low, entry_high)
     entry_zone = zone_text(entry_low, entry_high)
-    nearest_support = zone_text(support_low or entry_low, support_high or entry_high)
+    reaction_label = "support/retracement" if current_leg == "UP" else "resistance/retracement"
+    nearest_support = (
+        f"{reaction_label}={zone_text(support_low or entry_low, support_high or entry_high)}"
+        if directional_map
+        else "UNKNOWN (non-directional map)"
+    )
 
-    target_t1 = first_decimal(source, ("fib_target_t1",))
-    target_t2 = first_decimal(source, ("fib_target_t2",))
-    target_extension = first_decimal(source, ("fib_target_extension",))
-    nearest_target = next(
-        (
-            target
-            for target in (target_t1, target_t2, target_extension)
-            if target is not None and (current_price is None or target > current_price)
-        ),
-        target_extension or target_t2 or target_t1,
+    target_t1 = first_decimal(source, ("fib_target_t1",)) if directional_map else None
+    target_t2 = first_decimal(source, ("fib_target_t2",)) if directional_map else None
+    target_extension = (
+        first_decimal(source, ("fib_target_extension",)) if directional_map else None
+    )
+    nearest_target = select_nearest_directional_target(
+        current_leg=current_leg,
+        current_price=current_price,
+        targets=(target_t1, target_t2, target_extension),
     )
     invalidation_resolution = resolve_invalidation_level(fib_row)
-    invalidation = invalidation_resolution.invalidation_level
+    invalidation = (
+        invalidation_resolution.invalidation_level if directional_map else None
+    )
 
     distance_to_target_pct = pct_distance(nearest_target, current_price)
     distance_to_entry_zone_pct = pct_distance(entry_zone_mid, current_price)
@@ -515,7 +546,8 @@ def build_row(
     manual_ladder_context = "unavailable"
     if target_t1 is not None or entry_zone_mid is not None or target_t2 is not None:
         manual_ladder_context = (
-            f"T1={fmt_price(target_t1)} · entry_zone={entry_zone} · T2={fmt_price(target_t2)}"
+            f"{current_leg}_map T1={fmt_price(target_t1)} · "
+            f"retracement_zone={entry_zone} · T2={fmt_price(target_t2)}"
         )
 
     primitive_signal_context = "unavailable"
@@ -538,9 +570,21 @@ def build_row(
     if primitive_signal_context == "unavailable":
         missing_sources.append("MISSING_PRIMITIVE_SIGNAL_CONTEXT")
 
-    target_touched = current_price is not None and nearest_target is not None and current_price >= nearest_target
+    target_touched = (
+        current_price is not None
+        and target_t1 is not None
+        and (
+            (current_leg == "UP" and current_price >= target_t1)
+            or (current_leg == "DOWN" and current_price <= target_t1)
+        )
+    )
     invalidation_near = (
-        distance_to_invalidation_pct is not None and distance_to_invalidation_pct <= 0 and abs(distance_to_invalidation_pct) <= Decimal("3.0")
+        distance_to_invalidation_pct is not None
+        and (
+            (current_leg == "UP" and distance_to_invalidation_pct <= 0)
+            or (current_leg == "DOWN" and distance_to_invalidation_pct >= 0)
+        )
+        and abs(distance_to_invalidation_pct) <= Decimal("3.0")
     )
     entry_zone_near = distance_to_entry_zone_pct is not None and abs(distance_to_entry_zone_pct) <= Decimal("3.0")
     support_candidate = (
@@ -572,6 +616,7 @@ def build_row(
         fib_row is not None
         and str(fib_row.get("map_status") or "") not in {"NO_DATA", "STALE"}
         and map_freshness in {"FRESH", "DELAYED"}
+        and directional_map
     )
     if not fib_row:
         state = "NO_STRATEGY_CONTEXT"
@@ -582,9 +627,9 @@ def build_row(
             f"Canonical map is not current: map_status={fib_row.get('map_status')} "
             f"freshness={map_freshness}."
         )
-    elif nearest_target is None or entry_zone_mid is None or invalidation is None:
+    elif entry_zone_mid is None or invalidation is None:
         state = "MAP_INCOMPLETE"
-        reason = "Canonical fib map is incomplete: target, Entry Zone, or invalidation is missing."
+        reason = "Canonical fib map is incomplete: retracement zone or invalidation is missing."
     elif invalidation_near:
         state = "INVALIDATION_NEAR"
         reason = f"Price is near invalidation {fmt_price(invalidation)}; fade/break risk is elevated."
@@ -593,7 +638,7 @@ def build_row(
         reason = "Current context shows failed reclaim / failed breakout style risk."
     elif target_touched:
         state = "TARGET_TOUCHED_TP_REVIEW"
-        reason = f"Nearest mapped target {fmt_price(nearest_target)} has been touched; review TP / runner map manually."
+        reason = f"First {current_leg} mapped target {fmt_price(target_t1)} has been touched; review the remaining map manually."
     elif entry_zone_near:
         state = "ENTRY_ZONE_NEAR"
         reason = f"Price is near Entry Zone {entry_zone}; check hold/retest behavior before acting manually."
@@ -641,7 +686,11 @@ def build_row(
         nearest_support_or_entry_zone=nearest_support,
         nearest_target_or_t1=fmt_price(nearest_target),
         entry_zone=entry_zone,
-        invalidation_zone=fmt_price(invalidation),
+        invalidation_zone=(
+            f"{'floor' if current_leg == 'UP' else 'ceiling'}={fmt_price(invalidation)}"
+            if directional_map and invalidation is not None
+            else "UNKNOWN"
+        ),
         invalidation_source=f"{invalidation_resolution.invalidation_source_module}.{invalidation_resolution.invalidation_source_field}",
         invalidation_method=invalidation_resolution.invalidation_method,
         distance_to_target_pct=distance_to_target_pct,

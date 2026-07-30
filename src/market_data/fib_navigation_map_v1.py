@@ -395,8 +395,14 @@ def _detect_trigger(
     if prior.map_state == MAP_STATE_STALE:
         return TRIGGER_MAP_STALE
 
-    # All extension targets passed
-    if current_price >= prior.top_extension_price:
+    # All extension targets passed in the map's directional travel.
+    if (
+        prior.direction == DIRECTION_BULLISH
+        and current_price >= prior.top_extension_price
+    ) or (
+        prior.direction == DIRECTION_BEARISH
+        and current_price <= prior.top_extension_price
+    ):
         return TRIGGER_ALL_TARGETS_PASSED
 
     # Price below invalidation level

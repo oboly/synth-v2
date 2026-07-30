@@ -21,6 +21,7 @@ from src.market_data.canonical_fib_zone_map_v1 import (
     SAFETY_MARKERS,
     build_publication,
     fetch_latest_production_rows,
+    fetch_latest_trend_rows,
     fetch_recent_candles,
     fetch_tracked_symbols,
     publish,
@@ -33,7 +34,8 @@ DEFAULT_LOCK_FILE = Path("/tmp/synth-canonical-fib-zone-map-v1.lock")
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Build or publish the canonical market-only Fibonacci map from persisted public candles. "
+            "Build or publish the canonical market-only Fibonacci map from persisted public "
+            "candles and aligned deterministic trend features. "
             "No account, broker, decision, planning, execution, or research inputs."
         )
     )
@@ -111,6 +113,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 symbols=symbols,
                 lookback_candles=args.lookback_candles,
             )
+            trend_rows = fetch_latest_trend_rows(
+                conn,
+                venue=args.venue,
+                interval_code=args.interval,
+                symbols=symbols,
+            )
             conn.rollback()
             _emit(
                 {
@@ -119,6 +127,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "tracked_symbols": len(symbols),
                     "candle_rows": sum(len(rows) for rows in candles.values()),
                     "prior_rows": len(prior_rows),
+                    "trend_rows": len(trend_rows),
                     "elapsed_ms": round((time.monotonic() - phase) * 1000),
                     "database_writes": 0,
                 },
@@ -130,6 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 interval_code=args.interval,
                 symbols=symbols,
                 candles_by_symbol=candles,
+                trend_rows_by_symbol=trend_rows,
                 now_utc=datetime.now(UTC),
                 prior_rows_by_symbol=prior_rows,
             )

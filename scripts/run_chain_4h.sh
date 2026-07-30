@@ -117,13 +117,6 @@ run_step python -m src.operations.run_persisted_market_candle_freshness_v1 \
     --interval 4h \
     --expected-close-ts "$CHAIN_4H_END_TS_Z"
 
-run_step python -m src.market_data.run_canonical_fib_zone_map_v1 \
-    --venue bitvavo \
-    --quote EUR \
-    --interval 4h \
-    --publish \
-    --output summary
-
 run_step env \
     SYNTH_NATIVE_SHORT_REPOSITORY_COMMIT="${NATIVE_SHORT_REPOSITORY_COMMIT}" \
     SYNTH_NATIVE_SHORT_WRITER_ENTRYPOINT="scripts/run_chain_4h.sh" \
@@ -140,6 +133,13 @@ run_step python -m src.features.run_feat_candle \
     --end "$CHAIN_4H_END_TS" \
     --lookback-hours 720 \
     --warmup-bars 300
+
+run_step python -m src.market_data.run_canonical_fib_zone_map_v1 \
+    --venue bitvavo \
+    --quote EUR \
+    --interval 4h \
+    --publish \
+    --output summary
 
 run_step python -m src.signal_engine.run_signal_state_etl --venue bitvavo --interval 4h
 run_step python -m src.advice.run_advice_engine --interval 4h

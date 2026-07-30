@@ -42,8 +42,25 @@ It should provide the dashboard with explicit, provenance-safe values for:
 - Anchor / Swing context
 - source freshness / provenance
 
-The dashboard should read this table later, but this task does not wire that
-integration yet.
+The production dashboard reads the latest complete publication cohort directly.
+It does not calculate or repair Fibonacci geometry.
+
+## Direction Authority
+
+Direction is owned by the adopted `structure_state_engine` v1.2 classifier,
+whose pure implementation is in `src/structure/trend_state_v1.py`. It consumes
+the latest persisted 4h `feat_candle` EMA measurements:
+
+- `UPTREND_STRONG` / `UPTREND_WEAK` -> bullish `FibNavigationMap`, `UP`
+- `DOWNTREND_STRONG` / `DOWNTREND_WEAK` -> bearish `FibNavigationMap`, `DOWN`
+- `RANGE` -> unavailable directional map with descriptive leg `RANGE`
+- missing or timestamp-misaligned feature input -> unavailable map with
+  descriptive leg `UNKNOWN`
+
+The feature timestamp must exactly match the latest input candle timestamp.
+The writer never substitutes the research pivot preview as direction truth.
+`provenance_payload.map_direction` must agree with `current_leg` for every
+available map.
 
 ## Why Paper Advice Is Excluded
 
@@ -153,12 +170,13 @@ Current note:
 
 Interpretation:
 
-Entry Zone is the price zone where a long / re-entry / add-back hypothesis is
-investigated.
+Entry Zone is the directional retracement band where reaction or continuation
+structure may be inspected.
 
 It may represent:
 
-- support reaction
+- support reaction for an `UP` map
+- resistance reaction for a `DOWN` map
 - fib pullback
 - retest
 - reload-after-TP
@@ -174,7 +192,8 @@ It is not a buy command.
 
 Interpretation:
 
-This is the nearest mapped support/reaction band visible to the strategy map.
+This is the nearest mapped reaction band visible to the strategy map: support
+for `UP`, resistance for `DOWN`.
 It may overlap with Entry Zone, but does not have to.
 
 ### Targets

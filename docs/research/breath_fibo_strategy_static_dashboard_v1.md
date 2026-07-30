@@ -87,6 +87,12 @@ Allowed primary strategy-map sources in V1:
 If a source is missing, the dashboard shows `MISSING_SOURCE` or `UNKNOWN`
 explicitly.
 
+Direction is descriptive and comes only from the persisted map. `UP` selects
+the next extension above current price and labels the retracement reaction as
+support. `DOWN` selects the next extension below current price and labels the
+reaction as resistance. `RANGE` and `UNKNOWN` suppress directional zones,
+targets, and invalidation rather than applying long-only semantics.
+
 ## Required Row Fields
 
 Each row shows:
@@ -183,11 +189,12 @@ label.
 
 Entry Zone:
 
-The price zone where a long / re-entry / add-back hypothesis is investigated.
+The directional retracement zone where reaction structure is inspected.
 
 The zone may represent:
 
-- support reaction
+- support reaction for an `UP` map
+- resistance reaction for a `DOWN` map
 - retest
 - reload-after-TP
 - fib pullback

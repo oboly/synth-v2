@@ -13,7 +13,8 @@ Production slice:
 
 ```text
 devlap native_short_4h_chain
--> FibNavigationMap over persisted public 4h candles
+-> persisted 4h feat_candle + structure_state_engine v1.2 direction
+-> directional FibNavigationMap over the same public 4h candle as-of
 -> canonical_fib_zone_map publication cohort in MariaDB
 -> Odroid MVP cockpit render
 -> /synth/fibo-map.html
@@ -21,6 +22,8 @@ devlap native_short_4h_chain
 
 No sector rotation, multi-horizon Fibo, Native SHORT scope promotion, account
 permission, decision, planning, execution, broker, or order path is included.
+Bullish and bearish maps are direction-consistent; RANGE/UNKNOWN remains
+explicitly unavailable rather than inheriting bullish display semantics.
 
 ## Sources
 

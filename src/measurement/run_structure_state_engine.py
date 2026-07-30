@@ -7,6 +7,7 @@ from typing import Any
 
 from src.common.db import get_db_connection
 from src.structure.range_state import compute_range_state
+from src.structure.trend_state_v1 import compute_trend_state
 
 
 ENGINE_NAME = "structure_state_engine"
@@ -194,35 +195,6 @@ def group_current_previous(
 
     out.sort(key=lambda pair: int(pair[0]["asset_id"]))
     return out
-
-
-def compute_trend_state(row: dict[str, Any]) -> tuple[str, Decimal]:
-    p20 = float(row["price_vs_ema20"]) if row["price_vs_ema20"] is not None else 0.0
-    p50 = float(row["price_vs_ema50"]) if row["price_vs_ema50"] is not None else 0.0
-    spread = float(row["ema_spread_pct"]) if row["ema_spread_pct"] is not None else 0.0
-
-    bullish_score = (
-        0.40 * _clamp((spread + 0.02) / 0.04)
-        + 0.30 * _clamp((p20 + 0.03) / 0.06)
-        + 0.30 * _clamp((p50 + 0.05) / 0.10)
-    )
-
-    if p20 > 0 and p50 > 0 and spread >= 0.01:
-        return "UPTREND_STRONG", Decimal(str(round(bullish_score, 6)))
-
-    if p50 > 0:
-        return "UPTREND_WEAK", Decimal(str(round(bullish_score, 6)))
-
-    if abs(p20) < 0.01 and abs(spread) < 0.005:
-        return "RANGE", Decimal(str(round(bullish_score, 6)))
-
-    if p20 < 0 and p50 < 0 and spread <= -0.01:
-        return "DOWNTREND_STRONG", Decimal(str(round(1.0 - bullish_score, 6)))
-
-    if p50 < 0:
-        return "DOWNTREND_WEAK", Decimal(str(round(1.0 - bullish_score, 6)))
-
-    return "RANGE", Decimal(str(round(bullish_score, 6)))
 
 
 def compute_pullback_state(
