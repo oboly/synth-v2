@@ -32,6 +32,9 @@ from src.market_data.native_short_map_level_status_materializer_v1 import (
     MapLevelStatusMaterializationOutcome,
     materialize_native_short_map_level_status_for_scope,
 )
+from src.market_data.native_short_map_level_target_event_materializer_v1 import (
+    materialize_native_short_map_level_target_events_for_scope,
+)
 from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapScopeKey
 from src.market_data.native_short_scope_status_materializer_v1 import (
     NativeShortRunBuilder,
@@ -91,6 +94,9 @@ class ScopeRunResult:
     elapsed_ms: int = 0
     phase_elapsed_ms_by_name: dict[str, int] | None = None
     query_elapsed_ms_by_name: dict[str, int] | None = None
+    target_event_coverage_eligible: bool | None = None
+    target_event_skip_reason: str | None = None
+    target_events_appended: int = 0
 
 
 @dataclass
@@ -160,6 +166,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("jsonl", "summary"),
         default="jsonl",
         help="jsonl emits one deterministic machine-readable record per event/result.",
+    )
+    parser.add_argument(
+        "--target-event-coverage-watermark-utc",
+        default=None,
+        type=_required_text,
+        help=(
+            "Optional explicit ISO-8601 UTC watermark (e.g. 2026-08-01T00:00:00+00:00). "
+            "When supplied, appends immutable REACHED/PASSED target events (in the same "
+            "transaction as the level-status rebuild) for maps published at or after this "
+            "timestamp only. Omit to leave behavior byte-for-byte unchanged (no target-event "
+            "read or write of any kind)."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -276,7 +294,20 @@ def run_scope(
     authorization: WriterMutationAuthorization,
     interruption: InterruptionController | None = None,
     monotonic_clock: Callable[[], float] = monotonic,
+    target_event_coverage_watermark_utc: datetime | None = None,
 ) -> ScopeRunResult:
+    """Rebuild level-status rows, then optionally append target events.
+
+    ``target_event_coverage_watermark_utc`` is optional and defaults to
+    ``None``. When ``None`` (the default, and every existing call site's
+    behavior), this function is byte-for-byte identical to its prior
+    behavior: no target-event table is read or written. Passing an explicit
+    watermark is an opt-in activation decision (see
+    docs/architecture/native_short_map_level_status_contract_v1.md, target
+    lifecycle-history addendum) and only ever appends events for maps
+    published at or after that watermark, in the same transaction as the
+    level-status row rebuild.
+    """
     validate_native_short_writer_provenance(provenance)
     interruption = interruption or InterruptionController()
     started_monotonic = monotonic_clock()
@@ -362,6 +393,26 @@ def run_scope(
                     elapsed_ms=_elapsed_ms(started_monotonic, clock=monotonic_clock),
                     phase_elapsed_ms_by_name=phase_elapsed_ms_by_name,
                     query_elapsed_ms_by_name=query_elapsed_ms_by_name,
+                )
+            if result.status == "materialized" and target_event_coverage_watermark_utc is not None:
+                target_event_started = monotonic_clock()
+                target_event_outcome = materialize_native_short_map_level_target_events_for_scope(
+                    conn,
+                    key=key,
+                    target_event_coverage_watermark_utc=target_event_coverage_watermark_utc,
+                    provenance=provenance,
+                    authorization=authorization,
+                )
+                _record_elapsed(
+                    phase_elapsed_ms_by_name,
+                    "MATERIALIZE_TARGET_EVENTS",
+                    _elapsed_ms(target_event_started, clock=monotonic_clock),
+                )
+                result = dataclasses.replace(
+                    result,
+                    target_event_coverage_eligible=target_event_outcome.coverage_eligible,
+                    target_event_skip_reason=target_event_outcome.skip_reason,
+                    target_events_appended=target_event_outcome.events_appended,
                 )
             commit_started = monotonic_clock()
             conn.commit()
@@ -650,6 +701,24 @@ def main(
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
+    target_event_coverage_watermark_utc: datetime | None = None
+    if args.target_event_coverage_watermark_utc is not None:
+        try:
+            parsed_watermark = datetime.fromisoformat(args.target_event_coverage_watermark_utc)
+        except ValueError as exc:
+            print(
+                f"ERROR: invalid --target-event-coverage-watermark-utc: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        if parsed_watermark.tzinfo is None:
+            print(
+                "ERROR: --target-event-coverage-watermark-utc must be timezone-aware UTC",
+                file=sys.stderr,
+            )
+            return 2
+        target_event_coverage_watermark_utc = parsed_watermark.astimezone(UTC)
+
     try:
         provenance = build_verified_process_provenance(
             writer_entrypoint="src.market_data.run_native_short_map_level_status_materializer_v1",
@@ -714,6 +783,7 @@ def main(
                 provenance=provenance,
                 authorization=writer_authorization,
                 interruption=controller,
+                target_event_coverage_watermark_utc=target_event_coverage_watermark_utc,
             )
             results.append(result)
             run_builder.record_scope_outcome(failed=result.status in {"blocked", "failed"})

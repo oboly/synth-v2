@@ -102,3 +102,19 @@ no selection_engine changes
 ## Reopen criteria
 
 Reopen only for a demonstrated defect in persistence identity, lifecycle evaluation, exact-scope rebuild, idempotency, projection linkage, or runtime invocation.
+
+## Addendum (2026-07-31): Companion append-only target-event ledger
+
+The V1 current-projection contract and status above are unchanged and remain
+`done / parked`; this is not a reopening. A separate, additive companion
+ledger, `native_short_map_level_target_event_v1`, now records append-only
+REACHED/PASSED transitions for the same V1 SELL roles, prospectively only,
+under a distinct authorization (Synth Outcome & Reliability Program). See
+`docs/architecture/native_short_map_level_status_contract_v1.md` addendum and
+`docs/todo/profit_plan_target_lifecycle_history_truth_v1.md` addendum for the
+full contract and the explicit statement that no canonical BTC/IOST
+regression evidence exists or is implied by this work.
+
+The existing `native_short_map_level_status_v1` read model, its materializer,
+and its runner are unchanged when the new optional
+`--target-event-coverage-watermark-utc` flag is omitted (the default).

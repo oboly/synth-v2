@@ -136,6 +136,13 @@ Making C the current active lane reduces ambiguity and prevents A from building 
 
 The native SHORT map-level runtime line is **done / accepted** in repository scope.
 
+A separate, additive companion ledger (append-only REACHED/PASSED target-event
+history, prospective-only, authorized under the Synth Outcome & Reliability
+Program) is documented in
+`docs/architecture/native_short_map_level_status_contract_v1.md` and does not
+change this baseline's status, priority, or reopen criteria; no canonical
+BTC/IOST regression evidence was found or is implied.
+
 Multi-asset expansion is a separate blocked lane owned by
 `native_short_multi_asset_rollout_contract_v1.md`. Its first proposed queue is
 SOL -> ETH -> XRP, strictly one symbol at a time; the queue is not production
