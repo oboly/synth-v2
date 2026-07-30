@@ -2,7 +2,7 @@
   "_comment": "Versioned, repository-owned PROMOTE_SCOPE operational-acceptance manifest. See native_short_promotion_acceptance_evidence_v1.py for the full contract. This file ships unaccepted (accepted=false): no controlled production promotion has been executed, reviewed, or accepted yet, so PROMOTION_CONTRACT_MISSING remains active. Do not set accepted=true without a reviewed operational-acceptance document naming the exact operation_uuid, symbol, and commit, per docs/todo/native_short_multi_asset_rollout_contract_v1.md.",
   "acceptance_schema_version": "native_short_promotion_acceptance_manifest_v1",
   "promotion_contract_version": "native_short_promotion_acceptance_v1",
-  "promotion_contract_digest": "877e0616c398264ec1ba3588ab8ef0d7b2def47ef1c2be52556ca0326523d730",
+  "promotion_contract_digest": "3afcd756c9601389ed3a127d4f18f792866bd4bc401fb238f5c250beb245044b",
   "accepted": false,
   "operation_uuid": null,
   "scope": null,

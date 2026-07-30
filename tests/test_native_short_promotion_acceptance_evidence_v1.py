@@ -18,6 +18,7 @@ from src.market_data.native_short_promotion_acceptance_evidence_v1 import (
     REASON_MANIFEST_CONTRACT_DIGEST_MISMATCH,
     REASON_MANIFEST_CONTRACT_VERSION_WRONG,
     REASON_MANIFEST_DIGEST_RECOMPUTE_MISMATCH,
+    REASON_MANIFEST_IDENTITY_FIELD_MISMATCH,
     REASON_MANIFEST_MALFORMED,
     REASON_MANIFEST_MISSING_OR_UNREADABLE,
     REASON_MANIFEST_MISSING_REVIEW_REFERENCE,
@@ -25,13 +26,14 @@ from src.market_data.native_short_promotion_acceptance_evidence_v1 import (
     REASON_MANIFEST_REQUEST_IDENTITY_INVALID,
     REASON_MANIFEST_SCHEMA_VERSION_WRONG,
     REASON_MANIFEST_SCOPE_INCOMPLETE,
+    REASON_MANIFEST_TEST_PROVENANCE_REJECTED,
     REASON_NOT_TERMINAL_SUCCESS,
     REASON_WRONG_OPERATION_TYPE,
     REASON_WRONG_SCHEMA_VERSION,
     REASON_WRONG_SCOPE,
     REQUIRED_ADMINISTRATION_SCHEMA_VERSION,
     REQUIRED_MANIFEST_SCHEMA_VERSION,
-    _recompute_request_digest,
+    _reconstruct_identity_request,
     compute_promotion_contract_digest,
     evaluate_promotion_acceptance_evidence,
 )
@@ -41,14 +43,17 @@ OPERATION_UUID = "11111111-1111-1111-1111-111111111111"
 TEST_COMMIT = "0" * 40
 SCOPE = {**CANONICAL_SCOPE_FIXED_FIELDS, "symbol": "SOL"}
 
+# Reviewed production acceptance provenance must never be TEST/TEST -- it uses
+# an explicit non-TEST actor/trigger pair, matching what a real reviewed
+# PROMOTE_SCOPE invocation would record.
 IMMUTABLE_REQUEST_IDENTITY: dict[str, Any] = {
     "operation_type": "PROMOTE_SCOPE",
     "scope_key": dict(SCOPE),
     "provenance": {
         "operation_uuid": OPERATION_UUID,
-        "actor_type": "TEST",
-        "actor_id": "acceptance-test",
-        "trigger_type": "TEST",
+        "actor_type": "HUMAN_OPERATOR",
+        "actor_id": "acceptance-test-operator",
+        "trigger_type": "MANUAL_CLI",
         "request_source": "tests.test_native_short_promotion_acceptance_evidence_v1",
         "reason": "synthetic reviewed acceptance fixture",
         "requested_at_utc": "2026-07-30T00:00:00Z",
@@ -59,8 +64,8 @@ IMMUTABLE_REQUEST_IDENTITY: dict[str, Any] = {
 }
 
 
-def _expected_digest() -> str:
-    return _recompute_request_digest(IMMUTABLE_REQUEST_IDENTITY)
+def _expected_digest(identity: dict[str, Any] | None = None) -> str:
+    return _reconstruct_identity_request(identity or IMMUTABLE_REQUEST_IDENTITY).request_digest
 
 
 def valid_manifest(**overrides: object) -> dict:
@@ -261,6 +266,135 @@ def test_recomputed_digest_mismatch_fails_closed(tmp_path: Path) -> None:
     )
     assert result.accepted is False
     assert result.reason == REASON_MANIFEST_DIGEST_RECOMPUTE_MISMATCH
+
+
+def test_test_actor_type_in_identity_fails_closed(tmp_path: Path) -> None:
+    bad_identity = {
+        **IMMUTABLE_REQUEST_IDENTITY,
+        "provenance": {
+            **IMMUTABLE_REQUEST_IDENTITY["provenance"],
+            "actor_type": "TEST",
+            "trigger_type": "TEST",
+        },
+    }
+    manifest_path = write_manifest(
+        tmp_path,
+        valid_manifest(
+            immutable_request_identity=bad_identity,
+            expected_request_metadata_digest=_expected_digest(bad_identity),
+        ),
+    )
+    result = evaluate_promotion_acceptance_evidence(
+        [valid_ledger_row(metadata_digest=_expected_digest(bad_identity))],
+        manifest_path=manifest_path,
+    )
+    assert result.accepted is False
+    assert result.reason == REASON_MANIFEST_TEST_PROVENANCE_REJECTED
+
+
+def test_test_trigger_type_alone_is_invalid_provenance_and_fails_closed(tmp_path: Path) -> None:
+    # actor_type=TEST xor trigger_type=TEST is rejected by the underlying
+    # contract's own construction invariant before this module's TEST-provenance
+    # check even runs -- still fail-closed, via the identity-reconstruction path.
+    bad_identity = {
+        **IMMUTABLE_REQUEST_IDENTITY,
+        "provenance": {
+            **IMMUTABLE_REQUEST_IDENTITY["provenance"],
+            "trigger_type": "TEST",
+        },
+    }
+    manifest_path = write_manifest(
+        tmp_path,
+        valid_manifest(immutable_request_identity=bad_identity),
+    )
+    result = evaluate_promotion_acceptance_evidence(
+        [valid_ledger_row()], manifest_path=manifest_path
+    )
+    assert result.accepted is False
+    assert result.reason == REASON_MANIFEST_REQUEST_IDENTITY_INVALID
+
+
+def test_remove_scope_in_identity_fails_closed(tmp_path: Path) -> None:
+    bad_identity = {**IMMUTABLE_REQUEST_IDENTITY, "operation_type": "REMOVE_SCOPE"}
+    manifest_path = write_manifest(
+        tmp_path,
+        valid_manifest(
+            immutable_request_identity=bad_identity,
+            expected_request_metadata_digest=_expected_digest(bad_identity),
+        ),
+    )
+    result = evaluate_promotion_acceptance_evidence(
+        [valid_ledger_row(metadata_digest=_expected_digest(bad_identity))],
+        manifest_path=manifest_path,
+    )
+    assert result.accepted is False
+    assert result.reason == REASON_MANIFEST_IDENTITY_FIELD_MISMATCH
+
+
+def test_identity_scope_symbol_differs_from_manifest_scope_fails_closed(tmp_path: Path) -> None:
+    other_scope = {**SCOPE, "symbol": "ETH"}
+    bad_identity = {**IMMUTABLE_REQUEST_IDENTITY, "scope_key": other_scope}
+    manifest_path = write_manifest(
+        tmp_path,
+        valid_manifest(
+            immutable_request_identity=bad_identity,
+            expected_request_metadata_digest=_expected_digest(bad_identity),
+        ),
+    )
+    result = evaluate_promotion_acceptance_evidence(
+        [valid_ledger_row(metadata_digest=_expected_digest(bad_identity))],
+        manifest_path=manifest_path,
+    )
+    assert result.accepted is False
+    assert result.reason == REASON_MANIFEST_IDENTITY_FIELD_MISMATCH
+
+
+def test_identity_operation_uuid_differs_from_manifest_operation_uuid_fails_closed(
+    tmp_path: Path,
+) -> None:
+    bad_identity = {
+        **IMMUTABLE_REQUEST_IDENTITY,
+        "provenance": {
+            **IMMUTABLE_REQUEST_IDENTITY["provenance"],
+            "operation_uuid": "44444444-4444-4444-4444-444444444444",
+        },
+    }
+    manifest_path = write_manifest(
+        tmp_path,
+        valid_manifest(
+            immutable_request_identity=bad_identity,
+            expected_request_metadata_digest=_expected_digest(bad_identity),
+        ),
+    )
+    result = evaluate_promotion_acceptance_evidence(
+        [valid_ledger_row(metadata_digest=_expected_digest(bad_identity))],
+        manifest_path=manifest_path,
+    )
+    assert result.accepted is False
+    assert result.reason == REASON_MANIFEST_IDENTITY_FIELD_MISMATCH
+
+
+def test_identity_provenance_schema_version_wrong_fails_closed(tmp_path: Path) -> None:
+    bad_identity = {
+        **IMMUTABLE_REQUEST_IDENTITY,
+        "provenance": {
+            **IMMUTABLE_REQUEST_IDENTITY["provenance"],
+            "schema_version": "stale_schema_v0",
+        },
+    }
+    manifest_path = write_manifest(
+        tmp_path,
+        valid_manifest(
+            immutable_request_identity=bad_identity,
+            expected_request_metadata_digest=_expected_digest(bad_identity),
+        ),
+    )
+    result = evaluate_promotion_acceptance_evidence(
+        [valid_ledger_row(metadata_digest=_expected_digest(bad_identity))],
+        manifest_path=manifest_path,
+    )
+    assert result.accepted is False
+    assert result.reason == REASON_MANIFEST_IDENTITY_FIELD_MISMATCH
 
 
 def test_valid_manifest_but_missing_ledger_evidence_fails_closed(tmp_path: Path) -> None:

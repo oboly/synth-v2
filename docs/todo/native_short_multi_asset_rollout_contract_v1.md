@@ -238,12 +238,44 @@ The manifest binds, at minimum: `acceptance_schema_version`,
 `promotion_contract_version`, `promotion_contract_digest`, `accepted` (must be
 the JSON literal `true`), the exact `operation_uuid`, the exact six-part
 scope including `symbol`, `operation_type`, `expected_request_metadata_digest`,
-the `immutable_request_identity` used to *recompute* that digest via the
-existing contract's own canonical digest function
+the `immutable_request_identity` used to *reconstruct* the immutable request
+object and *recompute* that digest via the existing contract's own dataclasses
+and canonical digest function
 (`NativeShortScopeAdministrationRequest.request_digest` in
-`native_short_scope_administration_v1.py` -- no duplicated hashing logic),
-and a non-empty `reviewed_acceptance_reference` pointing at a reviewed
-operational-acceptance document.
+`native_short_scope_administration_v1.py` -- no duplicated hashing or
+validation logic), and a non-empty `reviewed_acceptance_reference` pointing at
+a reviewed operational-acceptance document.
+
+`promotion_contract_digest` is a SHA-256 over the contract's fixed invariants
+-- operation type, accepted result codes, required administration schema
+version, fixed canonical scope fields, **and** the explicit
+`ALLOWED_PRODUCTION_ACTOR_TYPES` (`HUMAN_OPERATOR`, `SERVICE_PRINCIPAL`) /
+`ALLOWED_PRODUCTION_TRIGGER_TYPES` (`MANUAL_CLI`, `AUTOMATION`) allowlists --
+so a contract change to any of those invariants, including a future weakening
+of the actor/trigger allowlist, changes the digest and fails any manifest
+written against the old contract closed instead of silently reinterpreting it.
+
+Recomputing the digest alone is not sufficient, because a manifest could be
+internally self-consistent (its identity recomputes to its own declared
+digest) while still naming a different operation, scope, or provenance than
+the one it claims to review, or while recording `TEST` provenance (a closed
+deterministic unit-test fixture mode that must never stand in for a reviewed
+production promotion). The evaluator therefore reconstructs the identity as a
+real `NativeShortScopeAdministrationRequest`/`...Provenance` object and checks
+each load-bearing field explicitly, before ever comparing digests:
+
+- `identity_request.operation_type == PROMOTE_SCOPE` (rejects e.g. a
+  `REMOVE_SCOPE` identity even if it is otherwise self-consistent);
+- `identity_request.scope_key.as_dict() == manifest["scope"]` exactly
+  (including `symbol` -- rejects an identity naming a different scope/symbol
+  than the manifest declares);
+- `identity_request.provenance.operation_uuid == manifest["operation_uuid"]`
+  (rejects an identity whose own provenance names a different operation);
+- `identity_request.provenance.schema_version == REQUIRED_ADMINISTRATION_SCHEMA_VERSION`;
+- `identity_request.provenance.actor_type` in `ALLOWED_PRODUCTION_ACTOR_TYPES`
+  **and** `identity_request.provenance.trigger_type` in
+  `ALLOWED_PRODUCTION_TRIGGER_TYPES` -- `TEST`/`TEST` (or any other value) is
+  rejected outright as reviewed production evidence.
 
 Evidence closes the blocker only when **all** of the following hold:
 
@@ -253,8 +285,10 @@ Evidence closes the blocker only when **all** of the following hold:
 - it is explicitly `accepted: true` with a non-empty reviewed reference;
 - its scope is the fixed canonical non-symbol fields plus a specific,
   well-formed symbol (not merely any well-formed ticker);
-- its recorded `immutable_request_identity` recomputes, via the existing
-  contract's own digest function, to exactly its own declared
+- its recorded `immutable_request_identity` reconstructs without error, binds
+  every field above exactly (operation type, scope+symbol, operation_uuid,
+  schema version, non-`TEST` actor/trigger type), and recomputes -- via the
+  existing contract's own digest function -- to exactly its own declared
   `expected_request_metadata_digest`;
 - exactly one `native_short_scope_admin_operation_v1` row matches the
   manifest's `operation_uuid` (no ambiguity);
@@ -267,54 +301,96 @@ Evidence closes the blocker only when **all** of the following hold:
   well-formed but different digest still fails closed).
 
 Missing, malformed, incomplete, wrong-version, wrong-contract-digest,
-not-yet-accepted, wrong-scope, wrong-symbol, unrelated, stale, or
-ambiguous/duplicate evidence on either side fails closed and leaves the
-blocker active.
+not-yet-accepted, wrong-scope, wrong-symbol, `TEST` provenance, mismatched
+identity fields, unrelated, stale, or ambiguous/duplicate evidence on either
+side fails closed and leaves the blocker active.
 
 The manifest shipped by this lane has `"accepted": false` and null
 placeholders for the rest: no controlled production promotion has been
 executed, reviewed, or accepted yet, so `PROMOTION_CONTRACT_MISSING` remains
 active.
 
+#### GLOBAL_BLOCKERS_ACTIVE has no executable enforcement path today (traced)
+
+An earlier version of this document claimed `PROMOTE_SCOPE` "already fails
+closed while required global blockers are active," citing
+`NativeShortScopeAdministrationResultCode.GLOBAL_BLOCKERS_ACTIVE`. That claim
+was traced across the complete repository and found false, and is retracted
+here.
+
+`GLOBAL_BLOCKERS_ACTIVE` is declared as a `NativeShortScopeAdministrationResultCode`
+enum member in `native_short_scope_administration_v1.py` and mapped to the
+`BLOCKED` result class in `_RESULT_CODE_CLASS`, but it is a declared value only:
+
+- `classify_scope_state`, `decide_administration`, `_decide_adopt`,
+  `_decide_promote`, `_decide_remove`, and `decide_operation_replay` in
+  `native_short_scope_administration_transaction_v1.py` never reference or
+  return `GLOBAL_BLOCKERS_ACTIVE` under any classification or state;
+  `_decide_promote` (the `PROMOTE_SCOPE` decision path) only ever returns
+  `PROMOTED_NEW_SCOPE`, `PROMOTED_FROM_PRIOR_WITHDRAWAL`,
+  `SCOPE_ALREADY_SUPPORTED`, or a rejection via `_reject(...)` carrying a
+  *different* corrupt-state/legacy code -- `GLOBAL_BLOCKERS_ACTIVE` is not
+  among them;
+- `run_native_short_scope_administration_v1.py` (the CLI/runner) does not read
+  `native_short_multi_asset_audit_v1.evaluate_global_blockers()`,
+  `GLOBAL_BLOCKERS`, or any blocker state before invoking the transaction;
+- no code path anywhere in the repository queries the audit's blocker
+  evaluation before or during a `PROMOTE_SCOPE` transaction.
+
+**There is currently no executable predicate anywhere in the repository that
+makes `PROMOTE_SCOPE` fail closed on `PROMOTION_CONTRACT_MISSING`,
+`REMOVAL_CONTRACT_MISSING`, `BOOTSTRAP_ORCHESTRATION_BLOCKED`, or
+`MULTI_SCOPE_FAILURE_ISOLATION_MISSING`.** This is a missing gate, not an
+existing safety property, and this PR does not invent, bypass, or simulate
+one -- wiring the transaction to the audit's blocker evaluation (or otherwise
+giving `GLOBAL_BLOCKERS_ACTIVE` a real caller) is separate, unimplemented
+work and must land, be reviewed, and be tested before any later procedure may
+rely on it.
+
 #### Required later controlled operational acceptance procedure (separate lane, dependency-ordered)
 
 An earlier version of this document instructed running `PROMOTE_SCOPE` while
 `PROMOTION_CONTRACT_MISSING` (and the removal/bootstrap/isolation blockers)
-were still active -- that was circular and is corrected here. `PROMOTE_SCOPE`
-itself already fails closed while required global blockers are active (see
-`native_short_scope_administration_v1.NativeShortScopeAdministrationResultCode.GLOBAL_BLOCKERS_ACTIVE`),
-so no procedure may instruct executing it against a live database while any
-blocker that gates it is still active. The corrected dependency order is:
+were still active -- that was circular given the actual (undocumented) state
+above, since nothing would have stopped the transaction from executing
+regardless of blocker state, and every claim that it "already fails closed"
+is retracted. The corrected, honest dependency order is:
 
 1. this lane's evidence contract and manifest schema must exist in the
    repository first (done by this PR) so there is something to satisfy;
-2. every other implementation blocker that the promotion transaction itself
-   checks or that this rollout requires before a production `PROMOTE_SCOPE`
-   invocation is safe (at minimum `BOOTSTRAP_ORCHESTRATION_BLOCKED` and
-   `MULTI_SCOPE_FAILURE_ISOLATION_MISSING`, and any global-blocker gate the
-   transaction itself enforces) must be closed by their own separate,
-   already-reviewed lanes -- **not** as part of executing the promotion;
-3. only once those prerequisite blockers are closed may an operator select
-   exactly one authorized symbol from the sequential review queue (currently
-   `SOL -> ETH -> XRP`) after re-confirming every readiness gate;
-4. execute `native_short_scope_administration_transaction_v1` `PROMOTE_SCOPE`
+2. **an executable global-blocker gate must first be implemented, reviewed,
+   and tested** so that a production `PROMOTE_SCOPE` invocation actually
+   fails closed while any of `PROMOTION_CONTRACT_MISSING`,
+   `REMOVAL_CONTRACT_MISSING`, `BOOTSTRAP_ORCHESTRATION_BLOCKED`, or
+   `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` is active -- this does not exist
+   today and is not part of this PR;
+3. every other implementation blocker this rollout requires before a
+   production `PROMOTE_SCOPE` invocation is safe (at minimum
+   `BOOTSTRAP_ORCHESTRATION_BLOCKED` and
+   `MULTI_SCOPE_FAILURE_ISOLATION_MISSING`) must be closed by their own
+   separate, already-reviewed lanes -- **not** as part of executing the
+   promotion;
+4. only once the gate in (2) exists and the blockers in (3) are closed may an
+   operator select exactly one authorized symbol from the sequential review
+   queue (currently `SOL -> ETH -> XRP`) after re-confirming every readiness
+   gate;
+5. execute `native_short_scope_administration_transaction_v1` `PROMOTE_SCOPE`
    for that exact symbol against the real production database, with full
-   provenance (`HUMAN_OPERATOR` or `SERVICE_PRINCIPAL` actor, non-`TEST`
-   trigger, verified clean repository commit); this executes under a
-   database state where the transaction's own global-blocker gate is
-   already satisfied, not bypassed;
-5. confirm the resulting `native_short_scope_admin_operation_v1` row is
+   provenance (`HUMAN_OPERATOR` or `SERVICE_PRINCIPAL` actor, `MANUAL_CLI` or
+   `AUTOMATION` trigger -- never `TEST` -- and a verified clean repository
+   commit);
+6. confirm the resulting `native_short_scope_admin_operation_v1` row is
    terminal, `SUCCESS`, and carries the correct scope, schema version, and
    digest;
-6. write a reviewed operational-acceptance document analogous to
+7. write a reviewed operational-acceptance document analogous to
    `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`
    naming the exact `operation_uuid`, symbol, and commit;
-7. only then, in a follow-on repository change, populate
+8. only then, in a follow-on repository change, populate
    `native_short_promotion_acceptance_manifest_v1.json` with that exact
-   `operation_uuid`, scope/symbol, the recorded immutable request identity,
-   the matching `expected_request_metadata_digest`, the reviewed-acceptance
-   document reference, and `"accepted": true`;
-8. re-run the audit to confirm `PROMOTION_CONTRACT_MISSING` closes and every
+   `operation_uuid`, scope/symbol, the recorded immutable request identity
+   (non-`TEST` provenance), the matching `expected_request_metadata_digest`,
+   the reviewed-acceptance document reference, and `"accepted": true`;
+9. re-run the audit to confirm `PROMOTION_CONTRACT_MISSING` closes and every
    other blocker remains unaffected.
 
 This lane changes audit correctness and adds the evidence contract plus an

@@ -146,6 +146,15 @@ REQUIRED_OPERATION_TYPE = "PROMOTE_SCOPE"
 ACCEPTED_RESULT_CLASS = "SUCCESS"
 ACCEPTED_RESULT_CODES = ("PROMOTED_NEW_SCOPE", "PROMOTED_FROM_PRIOR_WITHDRAWAL")
 
+# TEST provenance (native_short_scope_administration_v1's ``TEST`` actor/
+# trigger members) is a closed deterministic fixture mode for unit tests. It
+# must never be accepted as evidence of a reviewed production promotion, so
+# the recorded immutable request identity's actor/trigger types are validated
+# against this explicit allowlist -- not merely rejected by name -- and the
+# allowlist itself is part of the contract digest below.
+ALLOWED_PRODUCTION_ACTOR_TYPES = ("HUMAN_OPERATOR", "SERVICE_PRINCIPAL")
+ALLOWED_PRODUCTION_TRIGGER_TYPES = ("MANUAL_CLI", "AUTOMATION")
+
 CANONICAL_SCOPE_FIXED_FIELDS: Mapping[str, str] = {
     "venue": "bitvavo",
     "quote_currency": "EUR",
@@ -169,6 +178,8 @@ REASON_MANIFEST_NOT_ACCEPTED = "MANIFEST_NOT_ACCEPTED"
 REASON_MANIFEST_SCOPE_INCOMPLETE = "MANIFEST_SCOPE_INCOMPLETE"
 REASON_MANIFEST_MISSING_REVIEW_REFERENCE = "MANIFEST_MISSING_REVIEW_REFERENCE"
 REASON_MANIFEST_REQUEST_IDENTITY_INVALID = "MANIFEST_REQUEST_IDENTITY_INVALID"
+REASON_MANIFEST_IDENTITY_FIELD_MISMATCH = "MANIFEST_IDENTITY_FIELD_MISMATCH"
+REASON_MANIFEST_TEST_PROVENANCE_REJECTED = "MANIFEST_TEST_PROVENANCE_REJECTED"
 REASON_MANIFEST_DIGEST_RECOMPUTE_MISMATCH = "MANIFEST_DIGEST_RECOMPUTE_MISMATCH"
 REASON_EVIDENCE_ABSENT = "EVIDENCE_ABSENT"
 REASON_AMBIGUOUS_EVIDENCE = "AMBIGUOUS_EVIDENCE"
@@ -206,6 +217,8 @@ def compute_promotion_contract_digest() -> str:
         "accepted_result_class": ACCEPTED_RESULT_CLASS,
         "accepted_result_codes": list(ACCEPTED_RESULT_CODES),
         "canonical_scope_fixed_fields": dict(CANONICAL_SCOPE_FIXED_FIELDS),
+        "allowed_production_actor_types": list(ALLOWED_PRODUCTION_ACTOR_TYPES),
+        "allowed_production_trigger_types": list(ALLOWED_PRODUCTION_TRIGGER_TYPES),
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -232,15 +245,17 @@ def _read_manifest(path: Path) -> Any:
         return None
 
 
-def _recompute_request_digest(identity: Mapping[str, Any]) -> str:
-    """Recompute the immutable request digest using the existing contract's
-    own canonical digest function -- never a duplicated hash implementation.
+def _reconstruct_identity_request(
+    identity: Mapping[str, Any]
+) -> NativeShortScopeAdministrationRequest:
+    """Reconstruct the immutable request object using the existing contract's
+    own dataclasses -- never a duplicated validation/hash implementation.
     Raises on any malformed input; callers must treat that as fail-closed.
     """
     scope_key_raw = identity["scope_key"]
     provenance_raw = identity["provenance"]
     requested_at_raw = str(provenance_raw["requested_at_utc"]).replace("Z", "+00:00")
-    request = NativeShortScopeAdministrationRequest(
+    return NativeShortScopeAdministrationRequest(
         operation_type=identity["operation_type"],
         scope_key=NativeShortScopeAdministrationKey(
             venue=scope_key_raw["venue"],
@@ -263,7 +278,6 @@ def _recompute_request_digest(identity: Mapping[str, Any]) -> str:
         ),
         canonical_metadata=identity.get("canonical_metadata", {}),
     )
-    return request.request_digest
 
 
 def _evaluate_manifest(
@@ -367,7 +381,7 @@ def _evaluate_manifest(
             None,
         )
     try:
-        recomputed = _recompute_request_digest(identity)
+        identity_request = _reconstruct_identity_request(identity)
     except (
         NativeShortScopeAdministrationValidationError,
         KeyError,
@@ -381,6 +395,56 @@ def _evaluate_manifest(
             None,
             None,
         )
+
+    # Digest equality alone is not sufficient: a manifest could be internally
+    # self-consistent (identity recomputes to its own declared digest) yet
+    # still name a different operation, scope, or provenance than the one it
+    # claims to review. Bind every load-bearing identity field explicitly.
+    if str(identity_request.operation_type) != REQUIRED_OPERATION_TYPE:
+        return (
+            PromotionAcceptanceEvaluation(
+                False, REASON_MANIFEST_IDENTITY_FIELD_MISMATCH, operation_uuid, symbol
+            ),
+            None,
+            None,
+        )
+    if identity_request.scope_key.as_dict() != dict(scope):
+        return (
+            PromotionAcceptanceEvaluation(
+                False, REASON_MANIFEST_IDENTITY_FIELD_MISMATCH, operation_uuid, symbol
+            ),
+            None,
+            None,
+        )
+    if identity_request.provenance.operation_uuid != operation_uuid:
+        return (
+            PromotionAcceptanceEvaluation(
+                False, REASON_MANIFEST_IDENTITY_FIELD_MISMATCH, operation_uuid, symbol
+            ),
+            None,
+            None,
+        )
+    if str(identity_request.provenance.schema_version) != REQUIRED_ADMINISTRATION_SCHEMA_VERSION:
+        return (
+            PromotionAcceptanceEvaluation(
+                False, REASON_MANIFEST_IDENTITY_FIELD_MISMATCH, operation_uuid, symbol
+            ),
+            None,
+            None,
+        )
+    if (
+        str(identity_request.provenance.actor_type) not in ALLOWED_PRODUCTION_ACTOR_TYPES
+        or str(identity_request.provenance.trigger_type) not in ALLOWED_PRODUCTION_TRIGGER_TYPES
+    ):
+        return (
+            PromotionAcceptanceEvaluation(
+                False, REASON_MANIFEST_TEST_PROVENANCE_REJECTED, operation_uuid, symbol
+            ),
+            None,
+            None,
+        )
+
+    recomputed = identity_request.request_digest
     if recomputed != expected_digest:
         return (
             PromotionAcceptanceEvaluation(
@@ -459,6 +523,8 @@ __all__ = [
     "REQUIRED_OPERATION_TYPE",
     "ACCEPTED_RESULT_CLASS",
     "ACCEPTED_RESULT_CODES",
+    "ALLOWED_PRODUCTION_ACTOR_TYPES",
+    "ALLOWED_PRODUCTION_TRIGGER_TYPES",
     "CANONICAL_SCOPE_FIXED_FIELDS",
     "DEFAULT_MANIFEST_PATH",
     "REASON_MANIFEST_MISSING_OR_UNREADABLE",
@@ -470,6 +536,8 @@ __all__ = [
     "REASON_MANIFEST_SCOPE_INCOMPLETE",
     "REASON_MANIFEST_MISSING_REVIEW_REFERENCE",
     "REASON_MANIFEST_REQUEST_IDENTITY_INVALID",
+    "REASON_MANIFEST_IDENTITY_FIELD_MISMATCH",
+    "REASON_MANIFEST_TEST_PROVENANCE_REJECTED",
     "REASON_MANIFEST_DIGEST_RECOMPUTE_MISMATCH",
     "REASON_EVIDENCE_ABSENT",
     "REASON_AMBIGUOUS_EVIDENCE",
