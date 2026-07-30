@@ -357,6 +357,51 @@
         }
       ],
       "historical_runtime_assignment": null
+    },
+    {
+      "capability_id": "sector_rotation_snapshot",
+      "kind": "public_market_data_writer",
+      "capability_identity": "sector-rotation-snapshot-writer",
+      "wrapper": "scripts/run_sector_rotation_engine_once.sh",
+      "service": "deploy/systemd/synth-sector-rotation-writer.service",
+      "timer": "deploy/systemd/synth-sector-rotation-writer.timer",
+      "systemd_unit": "synth-sector-rotation-writer.service",
+      "timer_unit": "synth-sector-rotation-writer.timer",
+      "committed_unit_binding": {
+        "host_bound_candidate_artifact": true,
+        "condition_host": "gurkdb",
+        "user": "gurk",
+        "working_directory": "/home/gurk/projects/synth-v2"
+      },
+      "authorization_guard": {
+        "module": "src.operations.verify_writer_capability_authorization_v1",
+        "authorization_file": "/etc/synth/writer-capability-runtime-authorization-v1.json",
+        "required": true
+      },
+      "lock": {
+        "path": "/tmp/synth-sector-rotation-writer-v1.lock",
+        "scope": "HOST_LOCAL"
+      },
+      "cadence": "*:20:00 UTC",
+      "database_writes": ["sector_rotation_snapshot"],
+      "artifact_publications": [],
+      "status_publications": [],
+      "downstream_state_changes": ["persisted 1h/4h/1d/7d sector-rotation snapshot cohorts"],
+      "wrappers_invoked": ["scripts/run_sector_rotation_engine_once.sh"],
+      "modules_invoked": ["src.research.run_sector_rotation_engine_v1"],
+      "account_or_reporting_coupling": false,
+      "evaluated_separately": false,
+      "candidate_host": "gurkdb",
+      "selected_host": "gurkdb",
+      "acceptance_host": "UNASSIGNED",
+      "acceptance_status": "PENDING",
+      "acceptance_evidence": null,
+      "production_runtime_owner": "UNASSIGNED",
+      "production_authorization_status": "SELECTED_PENDING_PREFLIGHT",
+      "runtime_lifecycle": "SELECTED_PENDING_PREFLIGHT",
+      "production_decision_evidence": "",
+      "observed_runtime_state": [],
+      "historical_runtime_assignment": null
     }
   ],
   "consumers_with_zero_writer_capabilities": [
@@ -378,7 +423,9 @@
     "src.market_data.run_native_short_map_materializer_v1",
     "scripts/run_market_rotation_pressure_once.sh",
     "src.research.run_market_rotation_history_v1",
-    "src.research.run_market_rotation_pressure_v1"
+    "src.research.run_market_rotation_pressure_v1",
+    "scripts/run_sector_rotation_engine_once.sh",
+    "src.research.run_sector_rotation_engine_v1"
   ],
   "forbidden_account_execution_tokens": [
     "src.decision.run_decision_engine",

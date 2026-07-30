@@ -30,6 +30,7 @@ _IDENTITY = {
     "public_candle_freshness": "public-candle-freshness-writer",
     "market_rotation_pressure": "market-rotation-pressure-writer",
     "native_short_4h_chain": "native-short-4h-chain",
+    "sector_rotation_snapshot": "sector-rotation-snapshot-writer",
 }
 
 

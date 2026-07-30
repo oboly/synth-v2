@@ -178,6 +178,7 @@ Summary:
 | `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
 | `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
 | `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | UNASSIGNED | UNASSIGNED |
+| `sector_rotation_snapshot` | public market-data writer | `scripts/run_sector_rotation_engine_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
 
 Public Price Snapshot is active on gurkDB.
 Public Candle Freshness passed strict gurkDB preflight and two controlled
@@ -188,6 +189,12 @@ reports zero mismatch. It is accepted and separately authorized to gurkDB in
 Rotation Pressure remains selected for strict preflight only and retains
 `production_runtime_owner=UNASSIGNED`.
 `native_short_4h_chain` is not selected and remains `UNASSIGNED`.
+`sector_rotation_snapshot` is registry-onboarded as `SELECTED_PENDING_PREFLIGHT`
+with `candidate_host=gurkdb` and `selected_host=gurkdb`; it retains
+`production_runtime_owner=UNASSIGNED`, `acceptance_status=PENDING`, and no
+production authorization, acceptance permit, or activation. See
+`docs/ops/sector_rotation_runtime_activation_v1.md` for the remaining
+preflight, acceptance, and cutover blockers.
 
 Native SHORT remains independently evaluated from the light DB writers because
 it owns CPU-heavy chain stages, source-identity checks, DB writes beyond public
@@ -451,6 +458,7 @@ public_price_snapshot ConditionHost=gurkdb
 public_candle_freshness ConditionHost=gurkdb
 market_rotation_pressure ConditionHost=devlap
 native_short_4h_chain ConditionHost=devlap
+sector_rotation_snapshot ConditionHost=gurkdb
 User=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
 ```

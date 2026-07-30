@@ -95,6 +95,7 @@ def test_public_price_is_active_and_candle_is_authorized_inactive() -> None:
         "public_candle_freshness",
         "market_rotation_pressure",
         "native_short_4h_chain",
+        "sector_rotation_snapshot",
     }
     price = _cap(_registry(), "public_price_snapshot")
     assert price["candidate_host"] == "gurkdb"
@@ -125,6 +126,18 @@ def test_public_price_is_active_and_candle_is_authorized_inactive() -> None:
             assert cap["selected_host"] == "gurkdb", cap["capability_id"]
             assert cap["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT", cap["capability_id"]
             assert cap["production_authorization_status"] == UNASSIGNED
+        elif cap["capability_id"] == "sector_rotation_snapshot":
+            assert cap["candidate_host"] == "gurkdb"
+            assert cap["selected_host"] == "gurkdb"
+            assert cap["acceptance_host"] == UNASSIGNED
+            assert cap["acceptance_status"] == "PENDING"
+            assert cap["acceptance_evidence"] is None
+            assert cap["production_runtime_owner"] == UNASSIGNED
+            assert cap["production_decision_evidence"] == ""
+            assert cap["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT", cap["capability_id"]
+            assert cap["production_authorization_status"] == "SELECTED_PENDING_PREFLIGHT"
+            assert cap["observed_runtime_state"] == []
+            assert cap["historical_runtime_assignment"] is None
         else:
             assert cap["production_runtime_owner"] == UNASSIGNED
             assert cap["production_decision_evidence"] == ""
@@ -622,6 +635,76 @@ def test_all_systemd_trees_are_searched_and_duplicate_capability_units_fail(tmp_
 
 def test_consumers_reporting_account_paths_invoke_zero_writer_capabilities() -> None:
     assert validate_registry_payload(_registry(), repo_root=Path.cwd()).ok
+
+
+def test_sector_rotation_snapshot_wrong_capability_identity_fails() -> None:
+    registry = copy.deepcopy(_registry())
+    _cap(registry, "sector_rotation_snapshot")["capability_identity"] = "wrong-identity"
+    assert any(
+        "capability_identity must be 'sector-rotation-snapshot-writer'" in err
+        for err in _errors(registry)
+    )
+
+
+def test_sector_rotation_snapshot_missing_capability_fails() -> None:
+    registry = copy.deepcopy(_registry())
+    registry["capabilities"] = [
+        cap for cap in registry["capabilities"] if cap["capability_id"] != "sector_rotation_snapshot"
+    ]
+    assert any("must contain exactly" in err for err in _errors(registry))
+
+
+def test_sector_rotation_snapshot_duplicate_capability_fails() -> None:
+    registry = copy.deepcopy(_registry())
+    registry["capabilities"].append(copy.deepcopy(_cap(registry, "sector_rotation_snapshot")))
+    assert any("duplicate capability_id" in err for err in _errors(registry))
+
+
+def test_sector_rotation_snapshot_unknown_capability_id_fails() -> None:
+    registry = copy.deepcopy(_registry())
+    _cap(registry, "sector_rotation_snapshot")["capability_id"] = "sector_rotation_snapshot_v2"
+    errors = _errors(registry)
+    assert any("invalid capability_id" in err for err in errors)
+    assert any("must contain exactly" in err for err in errors)
+
+
+def test_sector_rotation_snapshot_database_writes_exactly_one_table() -> None:
+    cap = _cap(_registry(), "sector_rotation_snapshot")
+    assert cap["database_writes"] == ["sector_rotation_snapshot"]
+
+
+def test_sector_rotation_snapshot_wrapper_and_module_are_forbidden_consumer_tokens() -> None:
+    registry = _registry()
+    assert "scripts/run_sector_rotation_engine_once.sh" in registry["forbidden_writer_invocation_tokens"]
+    assert "src.research.run_sector_rotation_engine_v1" in registry["forbidden_writer_invocation_tokens"]
+
+
+def test_sector_rotation_snapshot_production_verifier_denies_execution() -> None:
+    decision = verify_writer_execution_authorization(
+        capability_id="sector_rotation_snapshot",
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=Path.cwd(),
+        checkout_path=Path.cwd(),
+    )
+    assert not decision.allowed
+    assert any("production_runtime_owner is UNASSIGNED" in reason for reason in decision.reasons)
+    assert any("production_authorization_status is not AUTHORIZED" in reason for reason in decision.reasons)
+
+
+def test_existing_four_capabilities_unchanged_by_sector_rotation_onboarding() -> None:
+    registry = _registry()
+    price = _cap(registry, "public_price_snapshot")
+    assert price["runtime_lifecycle"] == "ACTIVE"
+    assert price["production_authorization_status"] == "AUTHORIZED"
+    candle = _cap(registry, "public_candle_freshness")
+    assert candle["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+    assert candle["production_authorization_status"] == "AUTHORIZED"
+    rotation_pressure = _cap(registry, "market_rotation_pressure")
+    assert rotation_pressure["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT"
+    assert rotation_pressure["production_runtime_owner"] == UNASSIGNED
+    native_short = _cap(registry, "native_short_4h_chain")
+    assert native_short["production_authorization_status"] == "AUTHORIZED"
+    assert native_short["runtime_lifecycle"] == "ACTIVE"
 
 
 def test_contract_doc_contains_state_machine_and_installed_timer_warning() -> None:
