@@ -14,7 +14,6 @@ from src.market_data.native_short_fib_context_v1 import (
     build_native_short_context_row,
 )
 from src.market_data.native_short_promotion_acceptance_evidence_v1 import (
-    ACCEPTED_PROMOTION_OPERATION_UUID,
     PROMOTION_ACCEPTANCE_CONTRACT_VERSION,
     evaluate_promotion_acceptance_evidence,
 )
@@ -830,9 +829,7 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
         == NativeShortWriterProvenanceState.ATTRIBUTABLE
         for row in provenance_rows
     )
-    promotion_evaluation = evaluate_promotion_acceptance_evidence(
-        admin_operation_rows, accepted_operation_uuid=ACCEPTED_PROMOTION_OPERATION_UUID
-    )
+    promotion_evaluation = evaluate_promotion_acceptance_evidence(admin_operation_rows)
     active_blockers, blocker_evidence = evaluate_global_blockers(
         provenance_attributed=provenance_attributed,
         promotion_accepted=promotion_evaluation.accepted,
@@ -953,7 +950,7 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
         active_blockers,
         blocker_evidence,
         PROMOTION_ACCEPTANCE_CONTRACT_VERSION,
-        ACCEPTED_PROMOTION_OPERATION_UUID,
+        promotion_evaluation.operation_uuid,
         promotion_evaluation.accepted,
         promotion_evaluation.reason,
     )
