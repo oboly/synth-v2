@@ -139,11 +139,15 @@ def test_public_price_is_active_and_candle_is_authorized_inactive() -> None:
             assert cap["observed_runtime_state"] == []
             assert cap["historical_runtime_assignment"] is None
         else:
-            assert cap["production_runtime_owner"] == UNASSIGNED
-            assert cap["production_decision_evidence"] == ""
-            assert cap["selected_host"] == UNASSIGNED, cap["capability_id"]
-            assert cap["runtime_lifecycle"] == UNASSIGNED, cap["capability_id"]
-            assert cap["production_authorization_status"] == UNASSIGNED
+            assert cap["capability_id"] == "native_short_4h_chain"
+            assert cap["candidate_host"] == "devlap"
+            assert cap["selected_host"] == "devlap"
+            assert cap["acceptance_host"] == "devlap"
+            assert cap["acceptance_status"] == "ACCEPTED"
+            assert cap["production_runtime_owner"] == "devlap"
+            assert cap["production_authorization_status"] == "AUTHORIZED"
+            assert cap["runtime_lifecycle"] == "ACTIVE"
+            assert cap["production_decision_evidence"]
 
 
 def test_public_price_observations_preserve_inactive_and_append_active() -> None:
@@ -416,21 +420,25 @@ def test_incomplete_native_short_inventory_fails() -> None:
     assert any("incomplete database write inventory" in err for err in errors)
 
 
-def test_native_short_owner_preflight_fails_closed_on_host_or_publication_ambiguity() -> None:
+def test_native_short_owner_is_active_on_devlap_with_closed_scope_boundaries() -> None:
     registry = _registry()
     native = _cap(registry, "native_short_4h_chain")
     contract = NATIVE_SHORT_PREFLIGHT_DOC.read_text(encoding="utf-8")
 
-    assert native["candidate_host"] == UNASSIGNED
-    assert native["selected_host"] == UNASSIGNED
-    assert native["acceptance_host"] == UNASSIGNED
-    assert native["production_runtime_owner"] == UNASSIGNED
-    assert native["production_authorization_status"] == UNASSIGNED
-    assert native["runtime_lifecycle"] == UNASSIGNED
-    assert "recommended_owner=UNASSIGNED" in contract
-    assert "writer_host=UNASSIGNED" in contract
-    assert "publication_host=UNASSIGNED" in contract
+    assert native["candidate_host"] == "devlap"
+    assert native["selected_host"] == "devlap"
+    assert native["acceptance_host"] == "devlap"
+    assert native["acceptance_status"] == "ACCEPTED"
+    assert native["production_runtime_owner"] == "devlap"
+    assert native["production_authorization_status"] == "AUTHORIZED"
+    assert native["runtime_lifecycle"] == "ACTIVE"
+    assert "recommended_owner=devlap" in contract
+    assert "writer_host=devlap" in contract
+    assert "publication_host=devlap" in contract
     assert "publication_host must equal writer_host" in contract
+    assert "scope=BTC_ONLY, PAPER execution mode only" in contract
+    assert "live_trading=NOT_GRANTED" in contract
+    assert "multi_asset_promotion=0" in contract
     for blocker in (
         "DB_CONNECTIVITY_PROOF_MISSING",
         "DB_WRITER_AUTHORITY_PROOF_MISSING",

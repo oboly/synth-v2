@@ -399,9 +399,11 @@ def test_ownership_registry_records_price_active_and_candle_authorized_inactive(
     assert pressure["production_runtime_owner"] == "UNASSIGNED"
     assert pressure["production_authorization_status"] == "UNASSIGNED"
     native = caps["native_short_4h_chain"]
-    assert native["runtime_lifecycle"] == "UNASSIGNED"
-    assert native["production_runtime_owner"] == "UNASSIGNED"
-    assert native["production_authorization_status"] == "UNASSIGNED"
+    assert native["candidate_host"] == "devlap"
+    assert native["selected_host"] == "devlap"
+    assert native["runtime_lifecycle"] == "ACTIVE"
+    assert native["production_runtime_owner"] == "devlap"
+    assert native["production_authorization_status"] == "AUTHORIZED"
 
 
 def test_json_output_exposes_stage_and_strict_stage_contract(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
