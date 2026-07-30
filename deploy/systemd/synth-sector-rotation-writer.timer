@@ -1,0 +1,24 @@
+[Unit]
+Description=Synth Sector Rotation Engine writer timer (gurkDB-bound candidate artifact)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/sector_rotation_runtime_activation_v1.md
+Requires=synth-sector-rotation-writer.service
+
+[Timer]
+# Runs at minute :20 of every hour, UTC. Evidence (see
+# docs/ops/sector_rotation_runtime_activation_v1.md, reusing the same
+# observed hourly-candle-availability evidence already accepted for the
+# market_rotation_pressure writer in
+# docs/ops/market_rotation_pressure_runtime_owners_v1.md): the observed
+# Odroid candle-freshness cadence ingests 1h obs_market_candle rows on a
+# ~15m30s cadence, with hourly persistence observed complete by ~HH:11:28.
+# Minute :20 gives the same safety margin beyond that observed completion
+# lag before the Sector Rotation Engine reads candles for its 1h/4h/1d/7d
+# windows. This has not been re-measured against a live sector-rotation
+# writer run and must be reconfirmed during controlled acceptance.
+OnCalendar=*-*-* *:20:00 UTC
+Persistent=true
+RandomizedDelaySec=180
+Unit=synth-sector-rotation-writer.service
+
+[Install]
+WantedBy=timers.target

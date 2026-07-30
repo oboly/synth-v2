@@ -1,0 +1,40 @@
+[Unit]
+Description=Synth Sector Rotation Engine writer (gurkDB-bound candidate artifact; capability sector_rotation_snapshot)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/sector_rotation_runtime_activation_v1.md
+ConditionHost=gurkdb
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=gurk
+WorkingDirectory=/home/gurk/projects/synth-v2
+Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
+Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
+Environment=SYNTH_WRITER_EXECUTION_MODE=PRODUCTION
+ExecStartPre=/home/gurk/projects/synth-v2/.venv/bin/python -m src.operations.verify_writer_capability_authorization_v1 --capability sector_rotation_snapshot --service synth-sector-rotation-writer.service --checkout-path /home/gurk/projects/synth-v2 --registry deploy/ownership/writer_capability_ownership_v1.json
+ExecStart=/bin/bash -lc 'bash scripts/run_sector_rotation_engine_once.sh --write-db'
+Restart=no
+Nice=5
+UMask=0077
+NoNewPrivileges=true
+# PrivateTmp intentionally disabled: the wrapper's flock lock file
+# (default /tmp/synth-sector-rotation-writer-v1.lock) must be visible in
+# the host-wide /tmp namespace so a timer-triggered run and a manual
+# invocation of the same wrapper serialize against the same lock file
+# instead of silently running concurrently in separate private /tmp views.
+PrivateTmp=false
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=synth-sector-rotation-writer
+
+# Safety boundary:
+# - writes only sector_rotation_snapshot through the existing writer
+#   wrapper (run_sector_rotation_engine_once.sh)
+# - does not invoke reporting or dashboard publication
+# - does not SSH or otherwise reach the Odroid publisher host
+# - does not invoke selection_engine, decision_gate, execution_planner, or executor
+# - no broker calls, no order submission
+
+[Install]
+WantedBy=multi-user.target

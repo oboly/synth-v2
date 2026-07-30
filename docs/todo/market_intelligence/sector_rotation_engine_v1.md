@@ -7,8 +7,14 @@ applied and the accepted persisted cohort (venue `bitvavo`,
 `model_version=sector-rotation-v1.0.0`, `asof_ts_utc=2026-07-16 18:00:00 UTC`,
 116 rows, 29 sectors, windows 1h/4h/1d/7d) passed provenance/idempotence
 audit. Phase C1 (`../sector_rotation_dashboard_v1.md`) now reads this cohort
-through a bounded read-only Sector Overview publisher. Canonical
-implementation contract:
+through a bounded read-only Sector Overview publisher. Runtime artifacts for
+the writer→publisher production chain (wrappers, systemd units, cadence
+evidence) are **prepared but not installed, not enabled, and not
+production-accepted** — see
+`docs/ops/sector_rotation_runtime_activation_v1.md`. The latest persisted
+cohort remains `2026-07-16 18:00:00 UTC` and is currently stale; no writer
+run has occurred as part of this preparation. Canonical implementation
+contract:
 
 ```text
 docs/research/sector_rotation_engine_v1.md
