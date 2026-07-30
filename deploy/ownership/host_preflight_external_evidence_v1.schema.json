@@ -24,7 +24,8 @@
         "public_price_snapshot",
         "public_candle_freshness",
         "market_rotation_pressure",
-        "native_short_4h_chain"
+        "native_short_4h_chain",
+        "sector_rotation_snapshot"
       ]
     },
     "hostname": {

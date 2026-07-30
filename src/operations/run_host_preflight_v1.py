@@ -189,7 +189,7 @@ EXTERNAL_CHECK_DESIGN = {
     "exchange_api_connectivity": "requires an exchange call; proven by a separately authorized external probe",
     "dns": "requires a network resolve; proven by a separately authorized external probe",
     "ntp_time_sync": "requires querying a time source; proven by a separately authorized external probe",
-    "journald_logrotation": "requires host retention policy evidence; proven by a separately authorized external probe",
+    "journald_logrotation": "requires non-empty journald usage evidence and exact active/enabled logrotate.timer state; no repository-wide size or duration threshold is asserted",
     "runtime_configuration": "requires safe DB/runtime configuration metadata (env names resolvable, source file present/owned/permissioned, required values non-empty); secret values are never read here",
     "private_exchange_credentials": "private exchange key presence, verified out-of-band without reading secret values",
     "firewall_outbound_connectivity": "requires an outbound probe; proven by a separately authorized external probe",
