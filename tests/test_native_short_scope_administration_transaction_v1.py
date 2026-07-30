@@ -52,6 +52,23 @@ from src.market_data.native_short_scope_administration_transaction_v1 import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _default_no_global_blockers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unless a test explicitly overrides it (see the GLOBAL_BLOCKERS_ACTIVE
+    enforcement tests below), no canonical global blocker is active. This
+    keeps every non-blocker-focused write/dry-run/CLI test in this file
+    exercising exactly its original behavior without needing the fake
+    connection to also serve writer-provenance/operation-ledger audit
+    queries. Monkeypatching this module-level function is the same
+    established test-seam pattern already used for
+    ``read_scope_state_snapshot`` / ``_insert_support_event`` elsewhere in
+    this file -- not a caller-facing bypass: ``execute_scope_administration``
+    and ``plan_scope_administration`` take no blocker-state parameter at all,
+    so no production caller can fabricate cleared blockers this way.
+    """
+    monkeypatch.setattr(txn, "evaluate_current_global_blockers", lambda conn: ((), {}))
+
+
 # --------------------------------------------------------------------------- #
 # Request builders                                                            #
 # --------------------------------------------------------------------------- #
@@ -459,6 +476,158 @@ def test_promote_legacy_requires_adoption() -> None:
 def test_remove_legacy_requires_adoption() -> None:
     decision = decide_administration(OperationType.REMOVE_SCOPE, _legacy_supported())
     assert decision.result_code == ResultCode.LEGACY_SCOPE_REQUIRES_ADOPTION
+
+
+# --------------------------------------------------------------------------- #
+# GLOBAL_BLOCKERS_ACTIVE gate: pure decide_administration enforcement          #
+# --------------------------------------------------------------------------- #
+#
+# These tests prove decide_administration -- the single decision function
+# used by both execute_scope_administration and plan_scope_administration --
+# itself enforces the gate before any operation-specific dispatch, using the
+# operation-specific applicable-blocker matrix defined in the transaction
+# module (WRITER_PROVENANCE_UNATTRIBUTED gates all three operations;
+# PROMOTE_SCOPE is additionally gated by the complete GLOBAL_BLOCKERS set;
+# REMOVE_SCOPE is additionally gated by REMOVAL_CONTRACT_MISSING only, not by
+# the rollout-expansion-specific PROMOTION_CONTRACT_MISSING /
+# BOOTSTRAP_ORCHESTRATION_BLOCKED / MULTI_SCOPE_FAILURE_ISOLATION_MISSING
+# blockers -- proving removal/rollback safety semantics explicitly).
+
+
+def test_decide_promote_blocked_by_active_promotion_contract_missing() -> None:
+    decision = decide_administration(
+        OperationType.PROMOTE_SCOPE,
+        _snapshot(scope_present=False, scope_id=None),
+        active_global_blockers=("PROMOTION_CONTRACT_MISSING",),
+    )
+    assert decision.action == OperationAction.REJECT
+    assert decision.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+    assert str(decision.result_class) == "BLOCKED"
+    assert decision.blocking_global_blockers == ("PROMOTION_CONTRACT_MISSING",)
+
+
+def test_decide_promote_blocked_by_writer_provenance_unattributed() -> None:
+    decision = decide_administration(
+        OperationType.PROMOTE_SCOPE,
+        _snapshot(scope_present=False, scope_id=None),
+        active_global_blockers=("WRITER_PROVENANCE_UNATTRIBUTED",),
+    )
+    assert decision.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+    assert decision.blocking_global_blockers == ("WRITER_PROVENANCE_UNATTRIBUTED",)
+
+
+def test_decide_promote_blocked_by_bootstrap_or_isolation_blockers() -> None:
+    for code in ("BOOTSTRAP_ORCHESTRATION_BLOCKED", "MULTI_SCOPE_FAILURE_ISOLATION_MISSING"):
+        decision = decide_administration(
+            OperationType.PROMOTE_SCOPE,
+            _snapshot(scope_present=False, scope_id=None),
+            active_global_blockers=(code,),
+        )
+        assert decision.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE, code
+        assert decision.blocking_global_blockers == (code,)
+
+
+def test_decide_adopt_blocked_by_writer_provenance_unattributed() -> None:
+    decision = decide_administration(
+        OperationType.ADOPT_LEGACY_SCOPE,
+        _legacy_supported(),
+        active_global_blockers=("WRITER_PROVENANCE_UNATTRIBUTED",),
+    )
+    assert decision.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+    assert decision.blocking_global_blockers == ("WRITER_PROVENANCE_UNATTRIBUTED",)
+
+
+def test_decide_adopt_not_blocked_by_promotion_or_removal_contract_missing() -> None:
+    # ADOPT_LEGACY_SCOPE is not a rollout expansion or a removal; the
+    # promotion/removal acceptance-evidence blockers do not apply to it.
+    decision = decide_administration(
+        OperationType.ADOPT_LEGACY_SCOPE,
+        _legacy_supported(),
+        active_global_blockers=(
+            "PROMOTION_CONTRACT_MISSING",
+            "REMOVAL_CONTRACT_MISSING",
+            "BOOTSTRAP_ORCHESTRATION_BLOCKED",
+            "MULTI_SCOPE_FAILURE_ISOLATION_MISSING",
+        ),
+    )
+    assert decision.action == OperationAction.ADOPT
+    assert decision.result_code == ResultCode.ADOPTED_LEGACY_SCOPE
+
+
+def test_decide_remove_blocked_by_removal_contract_missing() -> None:
+    decision = decide_administration(
+        OperationType.REMOVE_SCOPE,
+        _managed_supported(generation=1),
+        active_global_blockers=("REMOVAL_CONTRACT_MISSING",),
+    )
+    assert decision.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+    assert decision.blocking_global_blockers == ("REMOVAL_CONTRACT_MISSING",)
+
+
+def test_decide_remove_blocked_by_writer_provenance_unattributed() -> None:
+    decision = decide_administration(
+        OperationType.REMOVE_SCOPE,
+        _managed_supported(generation=1),
+        active_global_blockers=("WRITER_PROVENANCE_UNATTRIBUTED",),
+    )
+    assert decision.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+
+
+def test_decide_remove_not_blocked_by_promotion_bootstrap_or_isolation_blockers() -> None:
+    # Removal is a safety/rollback action: rollout-expansion-specific
+    # blockers (promotion acceptance, bootstrap orchestration, multi-scope
+    # isolation) must not prevent it from proceeding when otherwise coherent.
+    decision = decide_administration(
+        OperationType.REMOVE_SCOPE,
+        _managed_supported(generation=1),
+        active_global_blockers=(
+            "PROMOTION_CONTRACT_MISSING",
+            "BOOTSTRAP_ORCHESTRATION_BLOCKED",
+            "MULTI_SCOPE_FAILURE_ISOLATION_MISSING",
+        ),
+    )
+    assert decision.action == OperationAction.REMOVE
+    assert decision.result_code == ResultCode.REMOVED_SCOPE
+    assert decision.blocking_global_blockers == ()
+
+
+def test_decide_administration_no_active_blockers_is_unaffected() -> None:
+    decision = decide_administration(
+        OperationType.PROMOTE_SCOPE,
+        _snapshot(scope_present=False, scope_id=None),
+        active_global_blockers=(),
+    )
+    assert decision.action == OperationAction.PROMOTE_NEW
+    assert decision.blocking_global_blockers == ()
+
+
+def test_applicable_active_global_blockers_is_deterministic_and_sorted() -> None:
+    unsorted = (
+        "WRITER_PROVENANCE_UNATTRIBUTED",
+        "MULTI_SCOPE_FAILURE_ISOLATION_MISSING",
+        "BOOTSTRAP_ORCHESTRATION_BLOCKED",
+        "PROMOTION_CONTRACT_MISSING",
+        "REMOVAL_CONTRACT_MISSING",
+    )
+    result = txn.applicable_active_global_blockers(OperationType.PROMOTE_SCOPE, unsorted)
+    assert result == tuple(sorted(unsorted))
+    # Deterministic regardless of input ordering.
+    reordered = tuple(reversed(unsorted))
+    assert txn.applicable_active_global_blockers(
+        OperationType.PROMOTE_SCOPE, reordered
+    ) == tuple(sorted(unsorted))
+
+
+def test_applicable_active_global_blockers_ignores_unrelated_codes() -> None:
+    result = txn.applicable_active_global_blockers(
+        OperationType.REMOVE_SCOPE,
+        (
+            "PROMOTION_CONTRACT_MISSING",
+            "BOOTSTRAP_ORCHESTRATION_BLOCKED",
+            "MULTI_SCOPE_FAILURE_ISOLATION_MISSING",
+        ),
+    )
+    assert result == ()
 
 
 # --- Blocker 3: complete managed cadence/generation invariants -------------- #
@@ -1868,6 +2037,268 @@ def test_write_no_residue_repeat_removal_performs_no_write() -> None:
     assert len(conn.committed.operations) == ops_after_remove
 
 
+# --------------------------------------------------------------------------- #
+# GLOBAL_BLOCKERS_ACTIVE gate: authoritative transaction-path enforcement      #
+# --------------------------------------------------------------------------- #
+#
+# These tests exercise the real, authoritative execute_scope_administration /
+# plan_scope_administration entrypoints (not the pure decide_administration
+# function directly), monkeypatching only the module-level
+# evaluate_current_global_blockers read seam -- the same established
+# dependency-injection pattern already used for read_scope_state_snapshot /
+# _insert_support_event elsewhere in this file. No boolean bypass flag and no
+# caller-supplied "blockers clear" parameter exists on either public function.
+
+
+def _stub_active_global_blockers(
+    monkeypatch: pytest.MonkeyPatch, codes: tuple[str, ...]
+) -> None:
+    monkeypatch.setattr(
+        txn, "evaluate_current_global_blockers", lambda conn: (codes, {})
+    )
+
+
+def test_execute_promote_blocked_causes_zero_scope_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_active_global_blockers(monkeypatch, ("PROMOTION_CONTRACT_MISSING",))
+    conn = _FakeConn()
+    outcome = execute_scope_administration(conn, _request(), authorization=_AUTH)
+    assert outcome.result.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+    assert str(outcome.result.result_class) == "BLOCKED"
+    assert outcome.persisted is False
+    assert outcome.commit_state == CommitState.ROLLED_BACK
+    # Zero scope-state mutation and zero materialization/backfill: nothing at
+    # all was written to any table, including the operation ledger (a blocked
+    # attempt is not normally ledgered, matching every other REJECT outcome).
+    assert conn.committed.scopes == []
+    assert conn.committed.cadence == []
+    assert conn.committed.support == []
+    assert conn.committed.operations == []
+    assert conn.commit_count == 0
+    assert not conn.held_locks
+    assert not _SHARED_LOCKS
+
+
+def test_execute_promote_blocked_exposes_deterministic_sorted_blocker_codes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_active_global_blockers(
+        monkeypatch,
+        ("WRITER_PROVENANCE_UNATTRIBUTED", "PROMOTION_CONTRACT_MISSING"),
+    )
+    conn = _FakeConn()
+    outcome = execute_scope_administration(conn, _request(), authorization=_AUTH)
+    assert outcome.current_state["blocking_global_blockers"] == [
+        "PROMOTION_CONTRACT_MISSING",
+        "WRITER_PROVENANCE_UNATTRIBUTED",
+    ]
+
+
+def test_execute_adopt_blocked_by_writer_provenance_causes_zero_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_active_global_blockers(monkeypatch, ("WRITER_PROVENANCE_UNATTRIBUTED",))
+    state = _FakeState()
+    conn = _FakeConn(state)
+    base = {
+        "venue": "bitvavo", "symbol": "BTC", "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT", "primary_interval": "4h",
+        "supporting_interval": "1h",
+    }
+    state.scopes.append({
+        **base, "scope_id": 1, "scope_support_state": "SUPPORTED",
+        "scope_reason_code": None, "scope_reason_detail": None,
+        "support_generation": None,
+    })
+    state.cadence.append({
+        **base, "cadence_config_id": 10,
+        "cadence_contract_version": CANONICAL_CADENCE_CONTRACT_VERSION,
+        "target_evaluation_interval": CANONICAL_TARGET_EVALUATION_INTERVAL,
+        "primary_source_freshness_limit_seconds": CANONICAL_PRIMARY_SOURCE_FRESHNESS_LIMIT_SECONDS,
+        "supporting_source_freshness_limit_seconds": CANONICAL_SUPPORTING_SOURCE_FRESHNESS_LIMIT_SECONDS,
+        "evaluation_grace_seconds": CANONICAL_EVALUATION_GRACE_SECONDS,
+        "recent_scope_grace_seconds": CANONICAL_RECENT_SCOPE_GRACE_SECONDS,
+        "effective_from_utc": datetime(2026, 7, 1, 0, 0), "effective_to_utc": None,
+        "is_active": 1, "activation_operation_id": None,
+        "deactivation_operation_id": None, "support_generation": None,
+    })
+    outcome = execute_scope_administration(
+        conn,
+        _request(OperationType.ADOPT_LEGACY_SCOPE),
+        authorization=_AUTH,
+    )
+    assert outcome.result.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+    assert outcome.persisted is False
+    assert len(conn.committed.operations) == 0
+    assert conn.committed.scopes[0]["support_generation"] is None  # unchanged
+
+
+def test_execute_remove_blocked_by_removal_contract_missing_causes_zero_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _FakeState()
+    _seed_supported(state, generation=1)
+    conn = _FakeConn(state)
+    ops_before = len(conn.committed.operations)
+    scopes_before = copy.deepcopy(conn.committed.scopes)
+
+    _stub_active_global_blockers(monkeypatch, ("REMOVAL_CONTRACT_MISSING",))
+    outcome = execute_scope_administration(
+        conn,
+        _request(OperationType.REMOVE_SCOPE, provenance=_provenance(operation_uuid=_other_uuid("c1"))),
+        authorization=_AUTH,
+    )
+    assert outcome.result.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+    assert outcome.persisted is False
+    assert len(conn.committed.operations) == ops_before
+    assert conn.committed.scopes == scopes_before
+
+
+def test_execute_remove_not_blocked_by_unrelated_blockers_still_removes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Proves removal/rollback safety is not incidentally broken by this gate:
+    # a REMOVE_SCOPE unaffected by its applicable blocker set still commits.
+    state = _FakeState()
+    _seed_supported(state, generation=1)
+    conn = _FakeConn(state)
+    _stub_active_global_blockers(
+        monkeypatch,
+        (
+            "PROMOTION_CONTRACT_MISSING",
+            "BOOTSTRAP_ORCHESTRATION_BLOCKED",
+            "MULTI_SCOPE_FAILURE_ISOLATION_MISSING",
+        ),
+    )
+    outcome = execute_scope_administration(
+        conn,
+        _request(OperationType.REMOVE_SCOPE, provenance=_provenance(operation_uuid=_other_uuid("c2"))),
+        authorization=_AUTH,
+    )
+    assert outcome.result.result_code == ResultCode.REMOVED_SCOPE
+    assert outcome.persisted is True
+    assert outcome.commit_state == CommitState.COMMITTED
+
+
+def test_execute_replay_of_completed_operation_is_unaffected_by_active_blockers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Replay behavior remains deterministic: a previously completed operation
+    # is not re-decided against current blocker state (nothing new is being
+    # authorized -- the terminal ledger row is already the authority).
+    conn = _FakeConn()
+    request = _request()
+    first = execute_scope_administration(conn, request, authorization=_AUTH)
+    assert first.persisted is True
+
+    _stub_active_global_blockers(monkeypatch, ("PROMOTION_CONTRACT_MISSING",))
+    second = execute_scope_administration(conn, request, authorization=_AUTH)
+    assert second.result.result_code == ResultCode.OPERATION_ALREADY_COMPLETED
+    assert second.persisted is False
+    assert second.commit_state == CommitState.ROLLED_BACK
+
+
+def test_execute_direct_invocation_cannot_bypass_gate_via_signature(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # execute_scope_administration takes no blocker-state parameter; a direct
+    # caller cannot pass "blockers clear" through the public signature.
+    import inspect
+
+    signature = inspect.signature(execute_scope_administration)
+    assert "active_global_blockers" not in signature.parameters
+    assert "global_blockers_clear" not in signature.parameters
+    _stub_active_global_blockers(monkeypatch, ("PROMOTION_CONTRACT_MISSING",))
+    conn = _FakeConn()
+    outcome = execute_scope_administration(conn, _request(), authorization=_AUTH)
+    assert outcome.result.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+
+
+def test_plan_dry_run_reflects_blocked_state_without_any_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_active_global_blockers(monkeypatch, ("PROMOTION_CONTRACT_MISSING",))
+    conn = _FakeConn()
+    outcome = plan_scope_administration(conn, _request())
+    assert outcome.mode == txn.TransactionMode.DRY_RUN
+    assert outcome.write is False
+    assert outcome.result.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+    assert conn.committed.scopes == []
+    assert conn.committed.operations == []
+
+
+def test_missing_blocker_evidence_fails_closed_via_default_evaluator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Simulate the canonical evaluator's own fail-closed contract: absent
+    # writer-provenance/promotion evidence must surface as active blockers,
+    # not as a silently-cleared/empty tuple. This proves the transaction path
+    # actually calls through to (and is gated by) whatever the canonical
+    # evaluator determines, not a permissive stand-in.
+    def _fail_closed_missing_evidence(conn: Any) -> tuple[tuple[str, ...], dict[str, str]]:
+        return (
+            ("WRITER_PROVENANCE_UNATTRIBUTED", "PROMOTION_CONTRACT_MISSING"),
+            {"WRITER_PROVENANCE_UNATTRIBUTED": "EVIDENCE_ABSENT_OR_INVALID"},
+        )
+
+    monkeypatch.setattr(
+        txn, "evaluate_current_global_blockers", _fail_closed_missing_evidence
+    )
+    conn = _FakeConn()
+    outcome = execute_scope_administration(conn, _request(), authorization=_AUTH)
+    assert outcome.result.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+    assert outcome.persisted is False
+
+
+def test_malformed_blocker_evidence_read_failure_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # If the canonical evaluator's read path itself raises (malformed/
+    # unreadable evidence), the transaction must roll back and report a typed
+    # failure rather than proceed as if no blockers were active.
+    def _raise(conn: Any) -> tuple[tuple[str, ...], dict[str, str]]:
+        raise RuntimeError("simulated malformed blocker evidence")
+
+    monkeypatch.setattr(txn, "evaluate_current_global_blockers", _raise)
+    conn = _FakeConn()
+    with pytest.raises(NativeShortScopeAdministrationExecutionError):
+        execute_scope_administration(conn, _request(), authorization=_AUTH)
+    assert conn.committed.scopes == []
+    assert conn.committed.operations == []
+    assert conn.commit_count == 0
+
+
+def test_cli_write_blocked_by_active_global_blocker_persists_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_write_auth(monkeypatch)
+    conn = _FakeConn()
+    code, raw_out, _ = _run_cli_raw(
+        monkeypatch,
+        [*_BASE_CLI_ARGS, "--write"],
+        conn=conn,
+        global_blockers=("PROMOTION_CONTRACT_MISSING",),
+    )
+    doc = _assert_single_json_stdout(raw_out)
+    assert doc["result_code"] == "GLOBAL_BLOCKERS_ACTIVE"
+    assert conn.committed.scopes == []
+    assert conn.committed.operations == []
+
+
+def test_cli_dry_run_blocked_reports_without_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _FakeConn()
+    argv = list(_BASE_CLI_ARGS)
+    argv[argv.index("--operation") + 1] = "REMOVE_SCOPE"
+    code, stdout_docs, _ = _run_cli(
+        monkeypatch, argv, conn=conn, global_blockers=("REMOVAL_CONTRACT_MISSING",)
+    )
+    assert stdout_docs[0]["result_code"] == "GLOBAL_BLOCKERS_ACTIVE"
+    assert conn.committed.scopes == []
+
+
 # --- Blocker 2: commit-state contract --------------------------------------- #
 
 
@@ -2034,10 +2465,21 @@ def _clean_source() -> NativeShortRepositorySourceState:
 
 
 def _run_cli(
-    monkeypatch: pytest.MonkeyPatch, argv: list[str], *, conn: _FakeConn | None
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    *,
+    conn: _FakeConn | None,
+    global_blockers: tuple[str, ...] = (),
 ) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
     import src.common.db as dbmod
 
+    # This helper's own monkeypatch.undo() below reverts every patch applied
+    # via this monkeypatch fixture, including the module-level autouse
+    # _default_no_global_blockers patch, so re-apply it here for every call
+    # (this helper may be invoked more than once per test).
+    monkeypatch.setattr(
+        txn, "evaluate_current_global_blockers", lambda conn: (global_blockers, {})
+    )
     if conn is not None:
         monkeypatch.setattr(dbmod, "get_connection", lambda: conn)
     out, err = io.StringIO(), io.StringIO()
@@ -2093,10 +2535,18 @@ def _stub_write_auth(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _run_cli_raw(
-    monkeypatch: pytest.MonkeyPatch, argv: list[str], *, conn: _FakeConn
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    *,
+    conn: _FakeConn,
+    global_blockers: tuple[str, ...] = (),
 ) -> tuple[int, str, str]:
     import src.common.db as dbmod
 
+    # See _run_cli: re-apply the blocker-stub seam per call for the same reason.
+    monkeypatch.setattr(
+        txn, "evaluate_current_global_blockers", lambda conn: (global_blockers, {})
+    )
     monkeypatch.setattr(dbmod, "get_connection", lambda: conn)
     out, err = io.StringIO(), io.StringIO()
     monkeypatch.setattr("sys.stdout", out)

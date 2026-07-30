@@ -48,6 +48,12 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Mapping, Sequence
 
+from src.market_data.native_short_multi_asset_audit_v1 import (
+    GLOBAL_BLOCKERS,
+    REMOVAL_CONTRACT_MISSING,
+    WRITER_PROVENANCE_UNATTRIBUTED,
+    evaluate_current_global_blockers,
+)
 from src.market_data.native_short_scope_administration_v1 import (
     NativeShortScopeAdministrationOperationType as OperationType,
     NativeShortScopeAdministrationRequest,
@@ -95,6 +101,53 @@ _SUPPORT_EVENT_REASON_CODE = {
 # MariaDB error codes.
 _ER_LOCK_DEADLOCK = 1213
 _ER_LOCK_WAIT_TIMEOUT = 1205
+
+# --------------------------------------------------------------------------- #
+# Global-blocker enforcement                                                  #
+# --------------------------------------------------------------------------- #
+#
+# No authoritative operation-specific blocker matrix is defined anywhere else
+# in the repository (see docs/todo/native_short_multi_asset_rollout_contract_v1.md
+# for the full trace and rationale). This mapping is this lane's explicit,
+# documented interpretation, derived from each canonical blocker's own
+# published semantics, not a pre-existing repository fact:
+#
+# - WRITER_PROVENANCE_UNATTRIBUTED gates every writer-capable administration
+#   operation (adopt/promote/remove all mutate writer-owned tables and depend
+#   on trustworthy writer identity).
+# - PROMOTION_CONTRACT_MISSING, BOOTSTRAP_ORCHESTRATION_BLOCKED, and
+#   MULTI_SCOPE_FAILURE_ISOLATION_MISSING are specifically about expanding
+#   rollout (a new/reactivated supported scope), so they gate PROMOTE_SCOPE
+#   only, alongside REMOVAL_CONTRACT_MISSING and WRITER_PROVENANCE_UNATTRIBUTED
+#   -- i.e. PROMOTE_SCOPE is gated by the complete canonical blocker set.
+# - REMOVAL_CONTRACT_MISSING gates REMOVE_SCOPE only: its own operational-
+#   acceptance evidence is what proves removal is safe to execute.
+# - REMOVE_SCOPE is deliberately NOT gated by BOOTSTRAP_ORCHESTRATION_BLOCKED
+#   or MULTI_SCOPE_FAILURE_ISOLATION_MISSING: both describe rollout-expansion
+#   risk, and a rollback/safety action that reduces scope count does not
+#   increase that risk. Blocking a safety rollback on an unrelated
+#   expansion-readiness gate would itself be a safety defect.
+#
+# This interpretation is an unresolved policy point, not a settled contract;
+# see the canonical rollout doc's "PROMOTE_SCOPE remains permanently blocked"
+# discussion for the promotion-acceptance bootstrap circularity this creates.
+_APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION: dict[OperationType, frozenset[str]] = {
+    OperationType.ADOPT_LEGACY_SCOPE: frozenset({WRITER_PROVENANCE_UNATTRIBUTED}),
+    OperationType.PROMOTE_SCOPE: frozenset(GLOBAL_BLOCKERS),
+    OperationType.REMOVE_SCOPE: frozenset(
+        {WRITER_PROVENANCE_UNATTRIBUTED, REMOVAL_CONTRACT_MISSING}
+    ),
+}
+
+
+def applicable_active_global_blockers(
+    operation_type: OperationType, active_global_blockers: Sequence[str]
+) -> tuple[str, ...]:
+    """Deterministic, sorted subset of ``active_global_blockers`` that applies
+    to ``operation_type`` under ``_APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION``.
+    Pure function; no I/O, no mutation, no caller-supplied override."""
+    applicable = _APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION[operation_type]
+    return tuple(sorted(code for code in active_global_blockers if code in applicable))
 
 
 # --------------------------------------------------------------------------- #
@@ -368,6 +421,9 @@ class AdministrationDecision:
     target_cadence_config_id: int | None
     classification: ScopeClassification
     detail: str
+    # Deterministic, sorted, canonical blocker codes that caused a
+    # GLOBAL_BLOCKERS_ACTIVE rejection; empty for every other decision.
+    blocking_global_blockers: tuple[str, ...] = ()
 
     @property
     def writes_ledger(self) -> bool:
@@ -1303,10 +1359,41 @@ def _already_removed_or_residue(
 def decide_administration(
     operation_type: OperationType,
     snapshot: ScopeStateSnapshot,
+    *,
+    active_global_blockers: Sequence[str] = (),
 ) -> AdministrationDecision:
-    """Pure decision function: given the operation and a state snapshot, choose
-    exactly one action and typed result code. No database access."""
+    """Pure decision function: given the operation, a state snapshot, and the
+    currently active canonical global blockers, choose exactly one action and
+    typed result code. No database access -- ``active_global_blockers`` must
+    be read by the caller via the canonical
+    ``native_short_multi_asset_audit_v1.evaluate_current_global_blockers``
+    evaluator (or an equivalent already-evaluated tuple in tests); this
+    function never fetches, infers, or defaults blocker state itself, and a
+    caller cannot bypass enforcement by omitting it -- an empty default here
+    means "no blockers evaluated," never "blockers cleared."
+
+    An applicable active blocker takes priority over every other decision:
+    it returns a REJECT/BLOCKED/GLOBAL_BLOCKERS_ACTIVE result before any
+    operation-specific dispatch, so a blocked operation never reaches, and
+    therefore never depends on, its own classification-specific logic.
+    """
     classification, corrupt_code, detail = classify_scope_state(snapshot)
+    blocking = applicable_active_global_blockers(operation_type, active_global_blockers)
+    if blocking:
+        return AdministrationDecision(
+            action=OperationAction.REJECT,
+            result_code=ResultCode.GLOBAL_BLOCKERS_ACTIVE,
+            result_class=_RESULT_CODE_CLASS[ResultCode.GLOBAL_BLOCKERS_ACTIVE],
+            support_generation_before=snapshot.support_generation,
+            support_generation_after=snapshot.support_generation,
+            target_cadence_config_id=None,
+            classification=classification,
+            detail=(
+                f"blocked by active global blockers for {operation_type}: "
+                + ",".join(blocking)
+            ),
+            blocking_global_blockers=blocking,
+        )
     if operation_type == OperationType.ADOPT_LEGACY_SCOPE:
         return _decide_adopt(snapshot, classification, corrupt_code, detail)
     if operation_type == OperationType.PROMOTE_SCOPE:
@@ -2049,13 +2136,22 @@ def plan_scope_administration(
                 ScopeClassification.INCOHERENT, exc.result_code, exc.detail
             )
         else:
-            decision = decide_administration(request.operation_type, snapshot)
+            active_global_blockers, _ = evaluate_current_global_blockers(conn)
+            decision = decide_administration(
+                request.operation_type,
+                snapshot,
+                active_global_blockers=active_global_blockers,
+            )
 
     current_state = (
         snapshot.summary()
         if snapshot is not None
         else {"scope_present": None, "state_unread": True}
     )
+    current_state = {
+        **current_state,
+        "blocking_global_blockers": list(decision.blocking_global_blockers),
+    }
     return AdministrationTransactionOutcome(
         mode=TransactionMode.DRY_RUN,
         write=False,
@@ -2129,7 +2225,14 @@ def execute_scope_administration(
             )
 
         snapshot = read_scope_state_snapshot(conn, scope_key, for_update=True)
-        decision = decide_administration(request.operation_type, snapshot)
+        # Same locked transaction/connection: no second, unrelated database
+        # snapshot is opened for the blocker read.
+        active_global_blockers, _ = evaluate_current_global_blockers(conn)
+        decision = decide_administration(
+            request.operation_type,
+            snapshot,
+            active_global_blockers=active_global_blockers,
+        )
 
         if not decision.writes_ledger:
             # Idempotent no-op, conflict, blocked, or corrupt: never persist.
@@ -2272,6 +2375,10 @@ def _outcome(
         if snapshot is not None
         else {"scope_present": None, "state_unread": True}
     )
+    current_state = {
+        **current_state,
+        "blocking_global_blockers": list(decision.blocking_global_blockers),
+    }
     return AdministrationTransactionOutcome(
         mode=TransactionMode.WRITE,
         write=True,
