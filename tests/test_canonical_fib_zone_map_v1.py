@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -22,6 +22,7 @@ from src.market_data.fib_navigation_map_v1 import (
     MAP_STATE_STALE,
     FibNavCandle,
 )
+from src.reporting import run_breath_fibo_strategy_static_dashboard_v1 as dashboard
 from src.reporting.run_breath_fibo_strategy_static_dashboard_v1 import (
     PriceSnapshot,
     atomic_text_write,
@@ -223,7 +224,9 @@ def test_malformed_builder_output_is_rejected(monkeypatch: pytest.MonkeyPatch) -
 
 def test_dashboard_renders_persisted_levels_and_freshness_without_recalculation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(dashboard, "now_utc", lambda: NOW)
     map_row = build_row(
         venue="bitvavo",
         symbol="BTC",
@@ -274,6 +277,94 @@ def test_dashboard_renders_persisted_levels_and_freshness_without_recalculation(
     assert "src.market_data.fib_navigation_map_v1" not in imported
     assert "paper_advice_observation" not in dashboard_source
     assert "fibo_target_map_rows_v1.csv" not in dashboard_source
+
+
+def test_dashboard_fixture_becomes_delayed_at_explicit_10_3_hour_age(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    map_row = build_row(
+        venue="bitvavo",
+        symbol="BTC",
+        interval_code="4h",
+        candles=(source_candles := candles()),
+        now_utc=NOW,
+        trend_row=trend_row(source_candles),
+    )
+    source_ts = source_candles[-1].close_ts_utc
+    evaluation_time = source_ts + timedelta(hours=10, minutes=18)
+    monkeypatch.setattr(dashboard, "now_utc", lambda: evaluation_time)
+
+    rendered = build_dashboard_row(
+        "BTC",
+        interval="4h",
+        price_row=PriceSnapshot(
+            symbol="BTC",
+            current_price=Decimal("117"),
+            latest_candle_ts_utc=source_ts,
+            source="obs_market_candle",
+        ),
+        fib_row=map_row,
+        regime_row=None,
+    )
+
+    assert rendered.candle_freshness_state == "DELAYED"
+    assert "age=10.3h/DELAYED" in rendered.fibo_map_state
+
+
+@pytest.mark.parametrize(
+    ("age", "expected"),
+    (
+        (timedelta(hours=6), "FRESH"),
+        (timedelta(hours=6, microseconds=1), "DELAYED"),
+        (timedelta(hours=16), "DELAYED"),
+        (timedelta(hours=16, microseconds=1), "STALE"),
+    ),
+)
+def test_dashboard_freshness_boundaries_are_deterministic(
+    monkeypatch: pytest.MonkeyPatch,
+    age: timedelta,
+    expected: str,
+) -> None:
+    source_ts = NOW
+    monkeypatch.setattr(dashboard, "now_utc", lambda: source_ts + age)
+
+    assert dashboard.freshness_state("4h", source_ts) == expected
+
+
+def test_dashboard_freshness_normalizes_timezone_aware_inputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_utc = NOW
+    source_plus_two = source_utc.astimezone(timezone(timedelta(hours=2)))
+    monkeypatch.setattr(
+        dashboard,
+        "now_utc",
+        lambda: source_utc + timedelta(hours=5),
+    )
+
+    assert dashboard.freshness_state("4h", source_utc) == "FRESH"
+    assert dashboard.freshness_state("4h", source_plus_two) == "FRESH"
+
+
+@pytest.mark.parametrize("year", (2026, 2099))
+def test_recent_fixture_is_independent_of_process_calendar_date(
+    monkeypatch: pytest.MonkeyPatch,
+    year: int,
+) -> None:
+    evaluation_time = datetime(year, 7, 30, 12, 30, tzinfo=UTC)
+    source_ts = evaluation_time - timedelta(minutes=30)
+    monkeypatch.setattr(dashboard, "now_utc", lambda: evaluation_time)
+
+    assert dashboard.freshness_state("4h", source_ts) == "FRESH"
+
+
+def test_dashboard_clock_defaults_to_real_current_utc() -> None:
+    before = datetime.now(UTC)
+    observed = dashboard.now_utc()
+    after = datetime.now(UTC)
+
+    assert before <= observed <= after
+    assert observed.tzinfo is UTC
 
 
 def test_runtime_boundaries_and_atomic_lock_are_explicit() -> None:
