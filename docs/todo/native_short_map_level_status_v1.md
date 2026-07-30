@@ -118,3 +118,18 @@ regression evidence exists or is implied by this work.
 The existing `native_short_map_level_status_v1` read model, its materializer,
 and its runner are unchanged when the new optional
 `--target-event-coverage-watermark-utc` flag is omitted (the default).
+
+### Correction (2026-07-31, same day)
+
+Independent cross-provider review found the first pass's per-run watermark
+check insufficient (a candle predating publication or the watermark could
+still evidence a transition) and found the terminal (`COMPLETED`) transition
+path could lose the final target event to a race with the scope-status
+writer. Both are fixed: coverage is now durable, persisted, per-map state
+with an immutable causal cutoff
+(`native_short_map_level_target_event_coverage_v1`), and
+`native_short_scope_status_materializer_v1.evaluate_scope` now appends any
+final target events for a map before recording its terminal lifecycle event,
+in the same transaction. See the architecture doc addendum for the full
+corrected contract. This V1 current-projection contract's own status and
+reopen criteria above remain unaffected.

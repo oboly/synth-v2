@@ -389,6 +389,7 @@ class ScopeEvaluationOutcome:
     lifecycle_event_appended: bool
     failed: bool
     configuration_unavailable: bool = False
+    target_event_rows_appended: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -895,6 +896,49 @@ def rebuild_scope_projection(
     return record
 
 
+def _append_terminal_target_events(
+    conn: Any,
+    *,
+    key: NativeShortMapScopeKey,
+    map_id: int,
+    as_of_utc: datetime,
+    target_event_coverage_watermark_utc: datetime,
+    provenance: NativeShortWriterProvenance,
+    authorization: Any,
+) -> int:
+    """Append any final REACHED/PASSED target events for ``map_id`` before its
+    terminal (COMPLETED) lifecycle event is recorded, in the same transaction.
+
+    This is the single call site that lets the same causal candle that
+    completes a map also durably record that map's final target-level
+    transitions -- there is no dependency on a later, separate manual runner
+    seeing the map while it is still active, and no second, independently
+    computed target-event decision: this delegates entirely to
+    ``append_native_short_map_level_target_events_for_map``, the same shared
+    core the standalone per-symbol materializer uses.
+    """
+    from src.market_data.native_short_map_level_status_materializer_v1 import (
+        fetch_map_geometry_by_id,
+    )
+    from src.market_data.native_short_map_level_target_event_materializer_v1 import (
+        append_native_short_map_level_target_events_for_map,
+    )
+
+    map_record = fetch_map_geometry_by_id(conn, key, map_id)
+    if map_record is None:
+        return 0
+    outcome = append_native_short_map_level_target_events_for_map(
+        conn,
+        key=key,
+        map_record=map_record,
+        event_candle_window_until_utc=as_of_utc,
+        requested_watermark_utc=target_event_coverage_watermark_utc,
+        provenance=provenance,
+        authorization=authorization,
+    )
+    return outcome.events_appended
+
+
 def evaluate_scope(
     conn: Any,
     *,
@@ -908,6 +952,7 @@ def evaluate_scope(
     fetch_existing_lifecycle_events: Callable[[Any, list[int]], list[Any]],
     materialize_scope_symbol_fn: Callable[..., ScopeMaterializationResult] = materialize_scope_symbol,
     authorization: Any = None,
+    target_event_coverage_watermark_utc: datetime | None = None,
 ) -> ScopeEvaluationOutcome:
     """Evaluate exactly one canonical scope for one bounded run.
 
@@ -1033,6 +1078,7 @@ def evaluate_scope(
 
     lifecycle_event_id: int | None = None
     lifecycle_event_appended = False
+    target_event_rows_appended = 0
     if map_after is not None:
         existing_types_for_map = frozenset(
             event.event_type for event in lifecycle_facts_after if event.map_id == map_after.map_id
@@ -1043,6 +1089,28 @@ def evaluate_scope(
             existing_lifecycle_event_types_for_map=existing_types_for_map,
         )
         if transition is not None:
+            # Evaluate and append any final target-level events *before* the
+            # terminal lifecycle transition is recorded, in this same
+            # transaction: the same causal candle that completes a map must
+            # never be able to complete it without also durably recording the
+            # target-level transition that candle also caused. This must not
+            # run for INVALIDATED (target reach/pass is a SELL-side concept,
+            # unrelated to invalidation) and never runs a second time for the
+            # same map, because `decide_genuine_lifecycle_transition` itself
+            # never fires twice for an already-terminal map.
+            if (
+                transition == NativeShortMapLifecycleEventType.COMPLETED
+                and target_event_coverage_watermark_utc is not None
+            ):
+                target_event_rows_appended = _append_terminal_target_events(
+                    conn,
+                    key=key,
+                    map_id=map_after.map_id,
+                    as_of_utc=as_of_utc,
+                    target_event_coverage_watermark_utc=target_event_coverage_watermark_utc,
+                    provenance=provenance,
+                    authorization=authorization,
+                )
             lifecycle_event_id = _insert_lifecycle_event(
                 conn,
                 map_id=map_after.map_id,
@@ -1090,6 +1158,7 @@ def evaluate_scope(
         published_map=result.status == "published",
         lifecycle_event_appended=lifecycle_event_appended,
         failed=result.status == "failed",
+        target_event_rows_appended=target_event_rows_appended,
     )
 
 
@@ -1114,6 +1183,7 @@ def run_native_short_scope_status_materializer(
         ..., MapLevelStatusMaterializationOutcome
     ] | None = None,
     authorization: Any = None,
+    target_event_coverage_watermark_utc: datetime | None = None,
 ) -> NativeShortMaterializerRunRecord:
     """Bounded run over an explicit scope list at one explicit as_of_utc.
 
@@ -1167,6 +1237,7 @@ def run_native_short_scope_status_materializer(
                 fetch_existing_lifecycle_events=fetch_existing_lifecycle_events,
                 materialize_scope_symbol_fn=materialize_scope_symbol_fn,
                 authorization=authorization,
+                target_event_coverage_watermark_utc=target_event_coverage_watermark_utc,
             )
             if outcome.skipped_not_supported:
                 continue

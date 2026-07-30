@@ -8,12 +8,14 @@ import pytest
 from src.market_data.native_short_fib_context_v1 import Candle
 from src.market_data.native_short_map_level_status_v1 import NativeShortMapLevelRole
 from src.market_data.native_short_map_level_target_event_materializer_v1 import (
-    MAP_NOT_COVERED,
+    NO_WATERMARK_SUPPLIED,
     NOT_ACTIVE_EVALUATION,
+    append_native_short_map_level_target_events_for_map,
     build_new_target_events_for_role,
     materialize_native_short_map_level_target_events_for_scope,
 )
 from src.market_data.native_short_map_level_target_event_v1 import NativeShortMapLevelTargetEventType
+from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapRecord
 from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapScopeKey
 from src.market_data.native_short_writer_provenance_v1 import build_explicit_test_provenance
 from tests.writer_auth_support import make_test_authorization
@@ -175,8 +177,20 @@ class _FakeCursor:
             self._result = self._script.get("candles", [])
         elif "FROM venue_market" in sql:
             self._result = []
+        elif "FROM native_short_map_level_target_event_coverage_v1" in sql:
+            coverage = self._script.get("coverage")
+            map_id = params[0] if isinstance(params, (tuple, list)) else params
+            self._result = coverage if (coverage is not None and coverage["map_id"] == map_id) else None
         elif "FROM native_short_map_level_target_event_v1" in sql:
             self._result = self._script.get("existing_events", [])
+        elif sql.strip().startswith("INSERT INTO native_short_map_level_target_event_coverage_v1"):
+            existing = self._script.get("coverage")
+            if existing is not None and existing["map_id"] == params["map_id"]:
+                from pymysql.err import IntegrityError
+
+                raise IntegrityError(1062, "Duplicate entry")
+            self._script["coverage"] = dict(params)
+            self._script["coverage_establish_calls"] = self._script.get("coverage_establish_calls", 0) + 1
         elif sql.strip().startswith("INSERT INTO native_short_map_level_target_event_v1"):
             identity = (
                 params["map_id"],
@@ -316,7 +330,7 @@ def test_orchestrator_appends_reached_event_for_covered_map() -> None:
     assert outcome.level_state_by_role["SELL_EXT_1_618"] == "ACTIVE"
 
 
-def test_orchestrator_blocks_map_published_before_watermark() -> None:
+def test_orchestrator_no_watermark_and_no_prior_coverage_is_legacy_unavailable() -> None:
     conn = _FakeConn(
         {
             "scope_status": _scope_status_row(),
@@ -328,14 +342,221 @@ def test_orchestrator_blocks_map_published_before_watermark() -> None:
     outcome = materialize_native_short_map_level_target_events_for_scope(
         conn,
         key=_key(),
-        target_event_coverage_watermark_utc=_AS_OF + timedelta(days=1),
+        target_event_coverage_watermark_utc=None,
         provenance=_PROVENANCE,
         authorization=_NS_AUTH,
     )
     assert outcome.coverage_eligible is False
-    assert outcome.skip_reason == MAP_NOT_COVERED
+    assert outcome.skip_reason == NO_WATERMARK_SUPPLIED
     assert outcome.events_appended == 0
+    assert conn.script.get("coverage") is None
     assert all(state == "LEGACY_UNAVAILABLE" for state in outcome.level_state_by_role.values())
+
+
+# ---------------------------------------------------------------------------
+# P1: prospective causal cutoff
+# ---------------------------------------------------------------------------
+
+
+def _map_record_for(**overrides) -> NativeShortMapRecord:
+    row = _map_row(**overrides)
+    return NativeShortMapRecord(
+        map_id=row["map_id"],
+        key=_key(),
+        published_at_utc=row["published_at_utc"],
+        structure_hash=row["structure_hash"],
+        generator_name=row["generator_name"],
+        generator_version=row["generator_version"],
+        fib_model_name=row["fib_model_name"],
+        fib_model_version=row["fib_model_version"],
+        published_generation_attempt_id=row["published_generation_attempt_id"],
+        map_cycle_id=row["map_cycle_id"],
+        anchor_high_ts_utc=row["anchor_high_ts_utc"],
+        anchor_high_price=row["anchor_high_price"],
+        fib_ratios_json=row["fib_ratios_json"],
+    )
+
+
+def test_candle_before_publication_cannot_create_event() -> None:
+    # Map published at _AS_OF - 2 days; a candle before publication (from the
+    # anchor window) that already reached the level must not create an event
+    # when the watermark predates publication too (cutoff = publication).
+    map_record = _map_record_for(published_at_utc=_AS_OF - timedelta(days=2))
+    conn = _FakeConn(
+        {
+            "coverage": None,
+            "candles": [
+                _candle_row(close_ts_utc=_AS_OF - timedelta(days=3), high="10.6", close="10.0"),
+            ],
+            "existing_events": [],
+        }
+    )
+    outcome = append_native_short_map_level_target_events_for_map(
+        conn,
+        key=_key(),
+        map_record=map_record,
+        event_candle_window_until_utc=_AS_OF,
+        requested_watermark_utc=_AS_OF - timedelta(days=5),
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
+    )
+    assert outcome.persisted_coverage_cutoff_utc == _AS_OF - timedelta(days=2)
+    assert outcome.events_appended == 0
+    assert outcome.level_state_by_role["SELL_EXT_1_272"] == "ACTIVE"
+
+
+def test_candle_before_activation_watermark_cannot_create_event() -> None:
+    # Map published well before the watermark; watermark is the binding cutoff.
+    map_record = _map_record_for(published_at_utc=_AS_OF - timedelta(days=10))
+    conn = _FakeConn(
+        {
+            "coverage": None,
+            "candles": [
+                _candle_row(close_ts_utc=_AS_OF - timedelta(hours=8), high="10.6", close="10.0"),
+            ],
+            "existing_events": [],
+        }
+    )
+    outcome = append_native_short_map_level_target_events_for_map(
+        conn,
+        key=_key(),
+        map_record=map_record,
+        event_candle_window_until_utc=_AS_OF,
+        requested_watermark_utc=_AS_OF - timedelta(hours=4),
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
+    )
+    assert outcome.persisted_coverage_cutoff_utc == _AS_OF - timedelta(hours=4)
+    assert outcome.events_appended == 0
+    assert outcome.level_state_by_role["SELL_EXT_1_272"] == "ACTIVE"
+
+
+def test_first_eligible_candle_after_cutoff_can_create_event() -> None:
+    map_record = _map_record_for(published_at_utc=_AS_OF - timedelta(days=10))
+    watermark = _AS_OF - timedelta(hours=4)
+    conn = _FakeConn(
+        {
+            "coverage": None,
+            "candles": [
+                _candle_row(close_ts_utc=_AS_OF - timedelta(hours=8), high="10.6", close="10.0"),  # pre-cutoff
+                _candle_row(close_ts_utc=watermark, high="10.6", close="10.0"),  # exactly at cutoff
+            ],
+            "existing_events": [],
+        }
+    )
+    outcome = append_native_short_map_level_target_events_for_map(
+        conn,
+        key=_key(),
+        map_record=map_record,
+        event_candle_window_until_utc=_AS_OF,
+        requested_watermark_utc=watermark,
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
+    )
+    assert outcome.events_appended == 1
+    assert outcome.level_state_by_role["SELL_EXT_1_272"] == "REACHED"
+
+
+def test_rerun_with_older_watermark_cannot_expand_coverage_backward() -> None:
+    map_record = _map_record_for(published_at_utc=_AS_OF - timedelta(days=10))
+    conn = _FakeConn(
+        {
+            "coverage": None,
+            "candles": [
+                _candle_row(close_ts_utc=_AS_OF - timedelta(hours=8), high="10.6", close="10.0"),
+            ],
+            "existing_events": [],
+        }
+    )
+    first = append_native_short_map_level_target_events_for_map(
+        conn,
+        key=_key(),
+        map_record=map_record,
+        event_candle_window_until_utc=_AS_OF,
+        requested_watermark_utc=_AS_OF - timedelta(hours=4),
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
+    )
+    assert first.persisted_coverage_cutoff_utc == _AS_OF - timedelta(hours=4)
+    assert first.events_appended == 0  # only candle available is pre-cutoff
+
+    # A later run supplies an OLDER watermark that would (if honored) expand
+    # coverage backward to include the pre-cutoff candle. It must not.
+    second = append_native_short_map_level_target_events_for_map(
+        conn,
+        key=_key(),
+        map_record=map_record,
+        event_candle_window_until_utc=_AS_OF,
+        requested_watermark_utc=_AS_OF - timedelta(days=9),
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
+    )
+    assert second.persisted_coverage_cutoff_utc == _AS_OF - timedelta(hours=4)
+    assert second.events_appended == 0
+    assert conn.script.get("coverage_establish_calls", 0) == 1
+
+
+def test_rerun_with_newer_watermark_cannot_rewrite_persisted_cutoff() -> None:
+    map_record = _map_record_for(published_at_utc=_AS_OF - timedelta(days=10))
+    watermark = _AS_OF - timedelta(hours=4)
+    conn = _FakeConn(
+        {
+            "coverage": None,
+            "candles": [
+                _candle_row(close_ts_utc=watermark, high="10.7", close="10.6"),
+            ],
+            "existing_events": [],
+        }
+    )
+    first = append_native_short_map_level_target_events_for_map(
+        conn,
+        key=_key(),
+        map_record=map_record,
+        event_candle_window_until_utc=_AS_OF,
+        requested_watermark_utc=watermark,
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
+    )
+    assert first.events_appended == 1
+    assert first.persisted_coverage_cutoff_utc == watermark
+
+    # A later run supplies a NEWER watermark; the persisted cutoff must not move.
+    second = append_native_short_map_level_target_events_for_map(
+        conn,
+        key=_key(),
+        map_record=map_record,
+        event_candle_window_until_utc=_AS_OF,
+        requested_watermark_utc=_AS_OF,
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
+    )
+    assert second.persisted_coverage_cutoff_utc == watermark
+    assert second.requested_watermark_utc == _AS_OF
+    assert second.events_appended == 0  # already recorded, idempotent
+    assert conn.script.get("coverage_establish_calls", 0) == 1
+
+
+def test_uncovered_map_never_becomes_active_merely_because_no_events() -> None:
+    map_record = _map_record_for(published_at_utc=_AS_OF - timedelta(days=10))
+    conn = _FakeConn(
+        {
+            "coverage": None,
+            "candles": [],
+            "existing_events": [],
+        }
+    )
+    outcome = append_native_short_map_level_target_events_for_map(
+        conn,
+        key=_key(),
+        map_record=map_record,
+        event_candle_window_until_utc=_AS_OF,
+        requested_watermark_utc=None,  # never establish coverage
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
+    )
+    assert outcome.coverage_eligible is False
+    assert all(state == "LEGACY_UNAVAILABLE" for state in outcome.level_state_by_role.values())
+    assert not any(state == "ACTIVE" for state in outcome.level_state_by_role.values())
 
 
 def test_orchestrator_skips_non_active_evaluation_branch() -> None:

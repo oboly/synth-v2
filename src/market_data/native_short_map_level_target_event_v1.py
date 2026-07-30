@@ -78,13 +78,17 @@ __all__ = [
     "EVALUATION_REFERENCE",
     "LEGACY_UNAVAILABLE",
     "NativeShortMapLevelTargetEvent",
+    "NativeShortMapLevelTargetEventCoverage",
     "NativeShortMapLevelTargetEventPersistenceError",
     "NativeShortMapLevelTargetEventType",
     "NativeShortMapLevelTargetIdentity",
+    "compute_target_event_coverage_cutoff",
+    "establish_or_fetch_target_event_coverage_for_map",
+    "fetch_target_event_coverage_for_map",
+    "filter_candles_from_cutoff",
     "find_first_causal_reached_candle",
     "find_first_causal_passed_candle",
     "insert_native_short_map_level_target_events",
-    "is_map_target_event_coverage_eligible",
     "fetch_native_short_map_level_target_events_for_map",
     "project_level_target_state_from_event_types",
     "project_level_target_state_from_events",
@@ -306,28 +310,210 @@ def find_first_causal_passed_candle(
     return candidates[0] if candidates else None
 
 
-def is_map_target_event_coverage_eligible(
-    map_record: NativeShortMapRecord,
+def compute_target_event_coverage_cutoff(
     *,
-    coverage_watermark_utc: datetime,
-) -> bool:
-    """A map is target-event-eligible only if published at/after the watermark.
+    publication_boundary_utc: datetime,
+    requested_watermark_utc: datetime,
+) -> datetime:
+    """The immutable per-map causal cutoff: no earlier than either boundary.
 
-    This is the explicit, conservative prospective activation boundary: maps
-    published before the watermark remain LEGACY_UNAVAILABLE for target-event
-    purposes even though their existing native_short_map_level_status_v1
-    current-projection behavior is completely unchanged. The watermark must be
-    supplied explicitly by the caller; there is no implicit default that would
-    silently treat all history as covered.
+    Only closed candles whose causal close/effective timestamp is on or after
+    this cutoff may create a REACHED/PASSED target event for this map. This is
+    computed exactly once per map, at coverage establishment time, and is
+    never recomputed afterward -- see
+    ``establish_or_fetch_target_event_coverage_for_map``.
     """
-    _require_utc(coverage_watermark_utc, "coverage_watermark_utc")
-    published_at_utc = map_record.published_at_utc
-    if published_at_utc is None:
-        return False
-    published_at_utc = (
-        published_at_utc if published_at_utc.tzinfo is not None else published_at_utc
+    _require_utc(publication_boundary_utc, "publication_boundary_utc")
+    _require_utc(requested_watermark_utc, "requested_watermark_utc")
+    return max(publication_boundary_utc, requested_watermark_utc)
+
+
+def filter_candles_from_cutoff(
+    candles: Sequence[Candle],
+    *,
+    cutoff_utc: datetime,
+) -> tuple[Candle, ...]:
+    """Only candles whose close is on or after the immutable causal cutoff.
+
+    This is the sole gate standing between raw persisted candle history and
+    target-event causal-candle discovery: a candle before the cutoff can never
+    be used as evidence for a REACHED/PASSED event, regardless of what the
+    existing (unchanged) full-history classify_level_state row-projection
+    reports for the same map.
+    """
+    return tuple(c for c in candles if c.close_ts_utc >= cutoff_utc)
+
+
+@dataclass(frozen=True)
+class NativeShortMapLevelTargetEventCoverage:
+    """Immutable per-map target-event coverage activation record.
+
+    Established at most once per exact map_id. Once persisted, the cutoff is
+    never recomputed or rewritten by a later run, regardless of what
+    watermark that later run supplies.
+    """
+
+    key: NativeShortMapScopeKey
+    map_id: int
+    map_cycle_id: str
+    publication_boundary_utc: datetime
+    requested_watermark_utc_at_establishment: datetime
+    coverage_cutoff_utc: datetime
+    established_at_utc: datetime | None
+    writer_name: str
+    writer_version: str
+    writer_invocation_uuid: str
+
+    def __post_init__(self) -> None:
+        validate_native_short_scope_key(self.key)
+        if self.map_id <= 0:
+            raise NativeShortMapLevelTargetEventPersistenceError("COUNT_NOT_POSITIVE field=map_id")
+        _require_text(self.map_cycle_id, "map_cycle_id")
+        _require_utc(self.publication_boundary_utc, "publication_boundary_utc")
+        _require_utc(self.requested_watermark_utc_at_establishment, "requested_watermark_utc_at_establishment")
+        cutoff = _require_utc(self.coverage_cutoff_utc, "coverage_cutoff_utc")
+        expected_cutoff = compute_target_event_coverage_cutoff(
+            publication_boundary_utc=self.publication_boundary_utc,
+            requested_watermark_utc=self.requested_watermark_utc_at_establishment,
+        )
+        if cutoff != expected_cutoff:
+            raise NativeShortMapLevelTargetEventPersistenceError(
+                "COVERAGE_CUTOFF_MUST_EQUAL_MAX_OF_PUBLICATION_AND_WATERMARK"
+            )
+        if self.established_at_utc is not None:
+            _require_utc(self.established_at_utc, "established_at_utc")
+        _require_text(self.writer_invocation_uuid, "writer_invocation_uuid", maximum=36)
+        _require_text(self.writer_name, "writer_name", maximum=96)
+        _require_text(self.writer_version, "writer_version", maximum=32)
+
+
+def serialize_native_short_map_level_target_event_coverage(
+    coverage: NativeShortMapLevelTargetEventCoverage,
+) -> dict[str, Any]:
+    return {
+        "venue": coverage.key.venue,
+        "symbol": coverage.key.symbol,
+        "quote_currency": coverage.key.quote_currency,
+        "fib_trading_horizon": coverage.key.fib_trading_horizon,
+        "primary_interval": coverage.key.primary_interval,
+        "supporting_interval": coverage.key.supporting_interval,
+        "map_id": coverage.map_id,
+        "map_cycle_id": coverage.map_cycle_id,
+        "publication_boundary_utc": coverage.publication_boundary_utc,
+        "requested_watermark_utc_at_establishment": coverage.requested_watermark_utc_at_establishment,
+        "coverage_cutoff_utc": coverage.coverage_cutoff_utc,
+        "writer_name": coverage.writer_name,
+        "writer_version": coverage.writer_version,
+        "writer_invocation_uuid": coverage.writer_invocation_uuid,
+    }
+
+
+def fetch_target_event_coverage_for_map(
+    conn: Any,
+    *,
+    map_id: int,
+) -> NativeShortMapLevelTargetEventCoverage | None:
+    sql = """
+    SELECT venue, symbol, quote_currency, fib_trading_horizon, primary_interval, supporting_interval,
+           map_id, map_cycle_id, publication_boundary_utc, requested_watermark_utc_at_establishment,
+           coverage_cutoff_utc, established_at_utc, writer_name, writer_version, writer_invocation_uuid
+    FROM native_short_map_level_target_event_coverage_v1
+    WHERE map_id = %s
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (map_id,))
+        row = cur.fetchone()
+    if row is None:
+        return None
+    row = dict(row)
+    return NativeShortMapLevelTargetEventCoverage(
+        key=NativeShortMapScopeKey(
+            venue=row["venue"],
+            symbol=row["symbol"],
+            quote_currency=row["quote_currency"],
+            fib_trading_horizon=row["fib_trading_horizon"],
+            primary_interval=row["primary_interval"],
+            supporting_interval=row["supporting_interval"],
+        ),
+        map_id=int(row["map_id"]),
+        map_cycle_id=str(row["map_cycle_id"]),
+        publication_boundary_utc=row["publication_boundary_utc"],
+        requested_watermark_utc_at_establishment=row["requested_watermark_utc_at_establishment"],
+        coverage_cutoff_utc=row["coverage_cutoff_utc"],
+        established_at_utc=row.get("established_at_utc"),
+        writer_name=str(row["writer_name"]),
+        writer_version=str(row["writer_version"]),
+        writer_invocation_uuid=str(row["writer_invocation_uuid"]),
     )
-    return published_at_utc >= coverage_watermark_utc
+
+
+def establish_or_fetch_target_event_coverage_for_map(
+    conn: Any,
+    *,
+    key: NativeShortMapScopeKey,
+    map_record: NativeShortMapRecord,
+    requested_watermark_utc: datetime,
+    provenance: NativeShortWriterProvenance,
+    authorization: WriterMutationAuthorization,
+    writer_name: str = "native_short_map_level_target_event_materializer_v1",
+    writer_version: str = "0.1",
+) -> NativeShortMapLevelTargetEventCoverage:
+    """Get-or-create the immutable per-map coverage row.
+
+    If a coverage row already exists for this exact map_id, it is returned
+    unchanged -- the current run's ``requested_watermark_utc`` is ignored in
+    that case, by design: the persisted cutoff can never be rewritten by a
+    later, older, or newer watermark. Only the first successful establishment
+    ever sets the cutoff, and a concurrent duplicate-insert race is resolved
+    by re-reading the row the database's own unique constraint just
+    protected, never by retrying an INSERT that could contend the identity.
+    """
+    validate_native_short_writer_provenance(provenance)
+    require_writer_mutation_authorization(authorization, "native_short_4h_chain")
+
+    existing = fetch_target_event_coverage_for_map(conn, map_id=map_record.map_id)
+    if existing is not None:
+        return existing
+
+    cutoff = compute_target_event_coverage_cutoff(
+        publication_boundary_utc=map_record.published_at_utc,
+        requested_watermark_utc=requested_watermark_utc,
+    )
+    coverage = NativeShortMapLevelTargetEventCoverage(
+        key=key,
+        map_id=map_record.map_id,
+        map_cycle_id=map_record.map_cycle_id or "",
+        publication_boundary_utc=map_record.published_at_utc,
+        requested_watermark_utc_at_establishment=requested_watermark_utc,
+        coverage_cutoff_utc=cutoff,
+        established_at_utc=None,
+        writer_name=writer_name,
+        writer_version=writer_version,
+        writer_invocation_uuid=provenance.invocation_uuid,
+    )
+    sql = """
+    INSERT INTO native_short_map_level_target_event_coverage_v1 (
+        venue, symbol, quote_currency, fib_trading_horizon, primary_interval, supporting_interval,
+        map_id, map_cycle_id, publication_boundary_utc, requested_watermark_utc_at_establishment,
+        coverage_cutoff_utc, writer_name, writer_version, writer_invocation_uuid
+    ) VALUES (
+        %(venue)s, %(symbol)s, %(quote_currency)s, %(fib_trading_horizon)s,
+        %(primary_interval)s, %(supporting_interval)s,
+        %(map_id)s, %(map_cycle_id)s, %(publication_boundary_utc)s, %(requested_watermark_utc_at_establishment)s,
+        %(coverage_cutoff_utc)s, %(writer_name)s, %(writer_version)s, %(writer_invocation_uuid)s
+    )
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, serialize_native_short_map_level_target_event_coverage(coverage))
+    except Exception as exc:  # noqa: BLE001 - concurrent-establishment idempotency guard
+        if _is_duplicate_key_error(exc):
+            reread = fetch_target_event_coverage_for_map(conn, map_id=map_record.map_id)
+            if reread is not None:
+                return reread
+        raise
+    reread = fetch_target_event_coverage_for_map(conn, map_id=map_record.map_id)
+    return reread if reread is not None else coverage
 
 
 def project_level_target_state_from_event_types(

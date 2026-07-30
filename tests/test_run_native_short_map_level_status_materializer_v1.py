@@ -640,3 +640,118 @@ def test_pure_materializer_evaluator_does_not_read_wall_clock() -> None:
         }
         assert "datetime.now" not in calls
         assert "datetime.utcnow" not in calls
+
+
+# ---------------------------------------------------------------------------
+# P2: write observability (status_rows_written / target_event_rows_written /
+# rows_written_total) -- run_scope-level, target-event materializer stubbed.
+# ---------------------------------------------------------------------------
+
+
+def _target_event_outcome(key: Any, *, events_appended: int, coverage_eligible: bool = True):
+    from src.market_data.native_short_map_level_target_event_materializer_v1 import (
+        NativeShortMapLevelTargetEventMaterializationOutcome,
+    )
+
+    return NativeShortMapLevelTargetEventMaterializationOutcome(
+        key=key,
+        map_id=71,
+        map_cycle_id="btc-cycle",
+        coverage_eligible=coverage_eligible,
+        skip_reason=None,
+        events_appended=events_appended,
+        events_already_present=0,
+        level_state_by_role={"SELL_EXT_1_272": "REACHED"},
+        requested_watermark_utc=_AS_OF,
+        publication_boundary_utc=_AS_OF,
+        persisted_coverage_cutoff_utc=_AS_OF,
+    )
+
+
+def test_write_observability_status_only_when_watermark_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _FakeConn()
+    monkeypatch.setattr(runner, "get_connection", lambda: conn)
+    monkeypatch.setattr(
+        runner, "materialize_native_short_map_level_status_for_scope", lambda *a, **k: _outcome(_key())
+    )
+    result = runner.run_scope(
+        key=_key(),
+        operational_clock=lambda: _AS_OF,
+        provenance=build_explicit_test_provenance(),
+        authorization=make_test_authorization("native_short_4h_chain"),
+        target_event_coverage_watermark_utc=None,
+    )
+    assert result.status == "materialized"
+    assert result.status_rows_written == 3
+    assert result.target_event_rows_written == 0
+    assert result.rows_written_total == 3
+    assert result.rows_written == 3
+
+
+def test_write_observability_combined_status_and_zero_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _FakeConn()
+    monkeypatch.setattr(runner, "get_connection", lambda: conn)
+    monkeypatch.setattr(
+        runner, "materialize_native_short_map_level_status_for_scope", lambda *a, **k: _outcome(_key())
+    )
+    monkeypatch.setattr(
+        runner,
+        "materialize_native_short_map_level_target_events_for_scope",
+        lambda *a, **k: _target_event_outcome(_key(), events_appended=0),
+    )
+    result = runner.run_scope(
+        key=_key(),
+        operational_clock=lambda: _AS_OF,
+        provenance=build_explicit_test_provenance(),
+        authorization=make_test_authorization("native_short_4h_chain"),
+        target_event_coverage_watermark_utc=_AS_OF,
+    )
+    assert result.status_rows_written == 3
+    assert result.target_event_rows_written == 0
+    assert result.rows_written_total == 3
+    assert result.persisted_target_event_coverage_cutoff_utc == _AS_OF
+
+
+def test_write_observability_combined_status_and_appended_events(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _FakeConn()
+    monkeypatch.setattr(runner, "get_connection", lambda: conn)
+    monkeypatch.setattr(
+        runner, "materialize_native_short_map_level_status_for_scope", lambda *a, **k: _outcome(_key())
+    )
+    monkeypatch.setattr(
+        runner,
+        "materialize_native_short_map_level_target_events_for_scope",
+        lambda *a, **k: _target_event_outcome(_key(), events_appended=2),
+    )
+    result = runner.run_scope(
+        key=_key(),
+        operational_clock=lambda: _AS_OF,
+        provenance=build_explicit_test_provenance(),
+        authorization=make_test_authorization("native_short_4h_chain"),
+        target_event_coverage_watermark_utc=_AS_OF,
+    )
+    assert result.status_rows_written == 3
+    assert result.target_event_rows_written == 2
+    assert result.rows_written_total == 5
+    assert result.requested_target_event_watermark_utc == _AS_OF
+
+
+def test_write_observability_zero_status_rows_when_not_materialized(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = _FakeConn()
+    monkeypatch.setattr(runner, "get_connection", lambda: conn)
+    monkeypatch.setattr(
+        runner,
+        "materialize_native_short_map_level_status_for_scope",
+        lambda *a, **k: _outcome(_key(), branch=BLOCKED, row_count=0),
+    )
+    result = runner.run_scope(
+        key=_key(),
+        operational_clock=lambda: _AS_OF,
+        provenance=build_explicit_test_provenance(),
+        authorization=make_test_authorization("native_short_4h_chain"),
+        target_event_coverage_watermark_utc=_AS_OF,
+    )
+    assert result.status == "blocked"
+    assert result.status_rows_written == 0
+    assert result.target_event_rows_written == 0
+    assert result.rows_written_total == 0

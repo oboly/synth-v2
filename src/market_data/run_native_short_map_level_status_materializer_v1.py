@@ -90,13 +90,22 @@ class ScopeRunResult:
     map_cycle_id: str | None
     level_status_as_of_utc: datetime | None
     rows_read: int = 0
+    # `rows_written` keeps its pre-existing meaning unchanged: level-status
+    # projection rows only. `status_rows_written` is an explicit alias of the
+    # same value, added so downstream write-observability consumers never
+    # have to guess which table a bare `rows_written` refers to once a second
+    # write path (target events) exists on this same result.
     rows_written: int = 0
+    status_rows_written: int = 0
+    target_event_rows_written: int = 0
+    rows_written_total: int = 0
     elapsed_ms: int = 0
     phase_elapsed_ms_by_name: dict[str, int] | None = None
     query_elapsed_ms_by_name: dict[str, int] | None = None
     target_event_coverage_eligible: bool | None = None
     target_event_skip_reason: str | None = None
-    target_events_appended: int = 0
+    requested_target_event_watermark_utc: datetime | None = None
+    persisted_target_event_coverage_cutoff_utc: datetime | None = None
 
 
 @dataclass
@@ -412,7 +421,11 @@ def run_scope(
                     result,
                     target_event_coverage_eligible=target_event_outcome.coverage_eligible,
                     target_event_skip_reason=target_event_outcome.skip_reason,
-                    target_events_appended=target_event_outcome.events_appended,
+                    target_event_rows_written=target_event_outcome.events_appended,
+                    requested_target_event_watermark_utc=target_event_outcome.requested_watermark_utc,
+                    persisted_target_event_coverage_cutoff_utc=(
+                        target_event_outcome.persisted_coverage_cutoff_utc
+                    ),
                 )
             commit_started = monotonic_clock()
             conn.commit()
@@ -421,9 +434,12 @@ def run_scope(
                 "COMMIT_SYMBOL",
                 _elapsed_ms(commit_started, clock=monotonic_clock),
             )
+        status_rows_written = result.row_count if result.status == "materialized" else 0
         return dataclasses.replace(
             result,
-            rows_written=result.row_count if result.status == "materialized" else 0,
+            rows_written=status_rows_written,
+            status_rows_written=status_rows_written,
+            rows_written_total=status_rows_written + result.target_event_rows_written,
             elapsed_ms=_elapsed_ms(started_monotonic, clock=monotonic_clock),
             phase_elapsed_ms_by_name=phase_elapsed_ms_by_name,
             query_elapsed_ms_by_name=query_elapsed_ms_by_name,

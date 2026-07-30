@@ -229,6 +229,37 @@ This addendum does not change the Status block above, does not reopen the
 parked, evidence-gated, exactly as written), and does not assert that any
 canonical monotonic-regression hardening trigger has occurred.
 
+### Addendum correction (2026-07-31, same day): immutable per-map coverage cutoff
+
+An independent cross-provider review of the first implementation pass found
+that a per-run "published-at-or-after-watermark" check alone was
+insufficient: a currently-active map's causal candle history between its
+`anchor_high_ts_utc` and its `published_at_utc` (or an operator-chosen
+watermark) could still be used as REACHED/PASSED evidence, which is exactly
+the kind of pre-coverage historical inference this lane exists to prevent.
+
+Fixed by making coverage **durable, persisted, per-map state**
+(`native_short_map_level_target_event_coverage_v1`), with an immutable
+`coverage_cutoff_utc = GREATEST(publication_boundary_utc,
+requested_watermark_utc_at_establishment)` established at most once per
+`map_id` and never recomputed by a later run's watermark. Only candles at or
+after that persisted cutoff may ever create an event. See
+`docs/architecture/native_short_map_level_status_contract_v1.md`
+("Immutable per-map coverage activation and causal cutoff") for the full
+corrected contract.
+
+The same review also required that the final REACHED/PASSED transition on a
+map about to be marked `COMPLETED` be recorded in the same transaction as
+that terminal transition, not left to a later manual runner that might never
+see the map again once it goes terminal. This is now handled by
+`native_short_scope_status_materializer_v1.evaluate_scope`'s
+terminal-transition hook -- see the architecture doc's "Writer ownership and
+terminal-transition atomicity" section.
+
+`HISTORICAL_BACKFILL_AUTHORIZED=false` remains true throughout this
+correction: no existing map's history was backfilled or reconstructed; the
+fix only tightens which *future* candles may create an event going forward.
+
 ## Non-goals
 
 - reopening this lane on chart appearance or transient bridge geometry;

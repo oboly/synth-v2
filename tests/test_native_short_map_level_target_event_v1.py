@@ -18,11 +18,13 @@ from src.market_data.native_short_map_level_status_v1 import (
 from src.market_data.native_short_map_level_target_event_v1 import (
     LEGACY_UNAVAILABLE,
     NativeShortMapLevelTargetEvent,
+    NativeShortMapLevelTargetEventCoverage,
     NativeShortMapLevelTargetEventPersistenceError,
     NativeShortMapLevelTargetEventType,
+    compute_target_event_coverage_cutoff,
+    filter_candles_from_cutoff,
     find_first_causal_passed_candle,
     find_first_causal_reached_candle,
-    is_map_target_event_coverage_eligible,
     project_level_target_state_from_event_types,
     project_level_target_state_from_events,
     serialize_native_short_map_level_target_event,
@@ -234,20 +236,66 @@ def test_find_first_causal_candle_returns_none_when_absent() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Coverage watermark boundary
+# Immutable per-map coverage cutoff
 # ---------------------------------------------------------------------------
 
 
-def test_map_published_before_watermark_is_not_covered() -> None:
-    record = _map_record(published_at_utc=_AS_OF - timedelta(days=10))
-    assert not is_map_target_event_coverage_eligible(record, coverage_watermark_utc=_AS_OF)
+def test_cutoff_is_max_of_publication_and_watermark_when_watermark_later() -> None:
+    cutoff = compute_target_event_coverage_cutoff(
+        publication_boundary_utc=_AS_OF - timedelta(days=10),
+        requested_watermark_utc=_AS_OF,
+    )
+    assert cutoff == _AS_OF
 
 
-def test_map_published_at_or_after_watermark_is_covered() -> None:
-    record = _map_record(published_at_utc=_AS_OF)
-    assert is_map_target_event_coverage_eligible(record, coverage_watermark_utc=_AS_OF)
-    later = _map_record(published_at_utc=_AS_OF + timedelta(seconds=1))
-    assert is_map_target_event_coverage_eligible(later, coverage_watermark_utc=_AS_OF)
+def test_cutoff_is_max_of_publication_and_watermark_when_publication_later() -> None:
+    cutoff = compute_target_event_coverage_cutoff(
+        publication_boundary_utc=_AS_OF,
+        requested_watermark_utc=_AS_OF - timedelta(days=10),
+    )
+    assert cutoff == _AS_OF
+
+
+def test_coverage_rejects_cutoff_not_equal_to_max() -> None:
+    with pytest.raises(NativeShortMapLevelTargetEventPersistenceError):
+        NativeShortMapLevelTargetEventCoverage(
+            key=_key(),
+            map_id=42,
+            map_cycle_id="cycle-A",
+            publication_boundary_utc=_AS_OF - timedelta(days=10),
+            requested_watermark_utc_at_establishment=_AS_OF,
+            coverage_cutoff_utc=_AS_OF - timedelta(days=10),  # wrong: should be _AS_OF
+            established_at_utc=None,
+            writer_name="w",
+            writer_version="0.1",
+            writer_invocation_uuid="00000000-0000-4000-8000-000000000001",
+        )
+
+
+def test_coverage_accepts_correct_cutoff() -> None:
+    coverage = NativeShortMapLevelTargetEventCoverage(
+        key=_key(),
+        map_id=42,
+        map_cycle_id="cycle-A",
+        publication_boundary_utc=_AS_OF - timedelta(days=10),
+        requested_watermark_utc_at_establishment=_AS_OF,
+        coverage_cutoff_utc=_AS_OF,
+        established_at_utc=None,
+        writer_name="w",
+        writer_version="0.1",
+        writer_invocation_uuid="00000000-0000-4000-8000-000000000001",
+    )
+    assert coverage.coverage_cutoff_utc == _AS_OF
+
+
+def test_filter_candles_from_cutoff_excludes_pre_cutoff_candles() -> None:
+    candles = [
+        _candle(close_ts_utc=_AS_OF - timedelta(hours=4), high="10.6", close="10.0"),
+        _candle(close_ts_utc=_AS_OF, high="10.7", close="10.6"),
+        _candle(close_ts_utc=_AS_OF + timedelta(hours=4), high="10.8", close="10.7"),
+    ]
+    filtered = filter_candles_from_cutoff(candles, cutoff_utc=_AS_OF)
+    assert [c.close_ts_utc for c in filtered] == [_AS_OF, _AS_OF + timedelta(hours=4)]
 
 
 # ---------------------------------------------------------------------------

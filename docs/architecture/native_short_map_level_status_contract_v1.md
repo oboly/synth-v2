@@ -598,18 +598,44 @@ on the `PASSED` row rather than silently fabricating an intermediate
   candle or timestamp.
 - Reprocessing identical candle input never appends a duplicate event.
 
-### Historical coverage boundary (no backfill)
+### Immutable per-map coverage activation and causal cutoff (revised 2026-07-31)
 
-A map is target-event-*covered* only when it was published at or after an
-explicit, caller-supplied `target_event_coverage_watermark_utc`
-(`is_map_target_event_coverage_eligible`). Maps published before the
-watermark are `LEGACY_UNAVAILABLE` for target-event purposes -- never
-silently `ACTIVE` -- even though their existing
-`native_short_map_level_status_v1` current-projection behavior is completely
-unchanged. No existing REACHED/PASSED projection row is ever converted into a
-synthetic event. The exact watermark value, and whether activation should
-wait for a newly published successor map, is a separate, explicit post-merge
-operational decision; this contract only defines the mechanism.
+Coverage is **durable, persisted, per-map state**, not a runtime-only
+watermark check. `native_short_map_level_target_event_coverage_v1` holds at
+most one immutable row per exact `map_id`:
+
+```text
+coverage_cutoff_utc = GREATEST(publication_boundary_utc, requested_watermark_utc_at_establishment)
+```
+
+`compute_target_event_coverage_cutoff` computes this once, at establishment
+time only (`establish_or_fetch_target_event_coverage_for_map`). Only closed
+candles whose causal `close_ts_utc` is **on or after** the persisted
+`coverage_cutoff_utc` may create a REACHED/PASSED event
+(`filter_candles_from_cutoff`) -- a candle before the cutoff can never create
+an event, regardless of what the existing (unchanged) full-history
+`classify_level_state` row-projection independently reports for the same map.
+
+Coverage lifecycle:
+
+- **No coverage row + no watermark supplied this run** -> `NO_WATERMARK_SUPPLIED`;
+  no coverage row is created, no events are appended (byte-for-byte a no-op).
+- **No coverage row + a watermark is supplied** -> coverage is established
+  exactly once, with `coverage_cutoff_utc = GREATEST(map.published_at_utc, watermark)`.
+- **Coverage row already exists** -> the persisted `coverage_cutoff_utc` is
+  read and used; the current run's watermark parameter is *ignored* for
+  cutoff purposes. A later run supplying an older watermark can never expand
+  coverage backward, and a later run supplying a newer watermark can never
+  rewrite the already-established cutoff.
+- A map that goes terminal (COMPLETED/INVALIDATED/EXPIRED/SUPERSEDED) without
+  ever having had coverage established remains **permanently uncovered** --
+  `LEGACY_UNAVAILABLE` forever, never a silently-inferred `ACTIVE`, because
+  coverage can only ever be established while a map is in `ACTIVE_EVALUATION`.
+
+This supersedes the original, simpler "published-at-or-after-watermark"
+per-run gate described in the first version of this addendum; that gate could
+allow a causal candle from before either boundary to be used as evidence,
+which this cutoff model closes.
 
 ### Projection / reducer ownership
 
@@ -619,23 +645,65 @@ operational decision; this contract only defines the mechanism.
 deterministic reducer proving that, for a covered map-level identity, current
 state is reproducible from immutable geometry plus persisted events alone
 (`PASSED` if a `PASSED` event exists, else `REACHED` if a `REACHED` event
-exists, else `ACTIVE`). Missing source data for an uncovered identity
-resolves to `LEGACY_UNAVAILABLE`, never a silent `ACTIVE` default.
+exists, else `ACTIVE`). For an uncovered identity this always resolves to
+`LEGACY_UNAVAILABLE`, never a silent `ACTIVE` default -- ACTIVE vs
+LEGACY_UNAVAILABLE is therefore always deterministically distinguishable from
+the persisted coverage state alone, independent of whether any event exists.
 
-### Writer ownership
+### Writer ownership and terminal-transition atomicity
 
-`native_short_map_level_target_event_materializer_v1.py` appends events only
-while the projection-selected map is in `ACTIVE_EVALUATION`, in the same
-transaction the caller uses for the existing level-status row rebuild. The
-existing `run_native_short_map_level_status_materializer_v1` runner gained an
-**optional** `--target-event-coverage-watermark-utc` flag; omitting it (the
-default, and every pre-existing call site's behavior) leaves the runner
-byte-for-byte unchanged -- no target-event table read or write of any kind.
+`append_native_short_map_level_target_events_for_map`
+(`native_short_map_level_target_event_materializer_v1.py`) is the single
+shared write authority for target events, called from exactly two sites:
+
+1. The standalone per-symbol wrapper
+   (`materialize_native_short_map_level_target_events_for_scope`), gated to
+   `ACTIVE_EVALUATION` only, used by the manual
+   `run_native_short_map_level_status_materializer_v1` runner behind its
+   **optional** `--target-event-coverage-watermark-utc` flag; omitting it
+   (the default, and every pre-existing call site's behavior) leaves the
+   runner byte-for-byte unchanged.
+2. The integrated scope-status materializer's terminal-transition hook
+   (`native_short_scope_status_materializer_v1._append_terminal_target_events`),
+   called from `evaluate_scope` **before** `_insert_lifecycle_event` whenever
+   a map is about to be marked `COMPLETED`, using the same `conn` and
+   therefore the same transaction the caller uses to record that terminal
+   lifecycle event. This closes the gap where the same causal candle that
+   completes a map could otherwise complete it without ever durably recording
+   the final target-level transition that candle also caused, and removes any
+   dependency on a later, separate manual runner seeing the map while it is
+   still active. `evaluate_scope` never calls `conn.commit()`/`conn.rollback()`
+   itself, so this atomicity is inherited entirely from whichever caller owns
+   the transaction; a failure anywhere in the sequence leaves nothing
+   partially committed. `run_native_short_scope_status_materializer` also
+   gained the same optional `target_event_coverage_watermark_utc` parameter,
+   defaulting to `None` (unchanged behavior).
+
+There is no third, independently-computed target-event decision anywhere:
+both call sites delegate to the one shared function above.
+
+### Write-counter observability
+
+`run_native_short_map_level_status_materializer_v1`'s `ScopeRunResult` now
+reports writes explicitly and separately:
+
+```text
+status_rows_written        -- level-status projection rows (alias of the
+                               pre-existing rows_written; that field's meaning
+                               is unchanged)
+target_event_rows_written  -- target events appended this cycle
+rows_written_total         -- status_rows_written + target_event_rows_written
+requested_target_event_watermark_utc        -- the watermark this run supplied
+persisted_target_event_coverage_cutoff_utc  -- the durable, persisted cutoff
+                                                actually in effect for the map
+```
 
 ### Explicitly deferred
 
 - `EXPIRED` target-level detection is not implemented.
 - `PostTargetReentryProjection` is not implemented.
+- Historical backfill of pre-coverage maps/targets remains unauthorized and
+  is not performed.
 - Production activation (choosing and applying the watermark, running one
   controlled BTC/PAPER cycle) is a separate, later, explicitly reviewed step.
 

@@ -68,10 +68,32 @@ def test_migration_recorded_at_distinct_from_effective_at_and_never_updated() ->
     sql = _sql()
     table_block = sql.split(
         "CREATE TABLE IF NOT EXISTS native_short_map_level_target_event_v1", 1
-    )[1].split("CREATE OR REPLACE VIEW", 1)[0]
+    )[1].split("CREATE TABLE IF NOT EXISTS native_short_map_level_target_event_coverage_v1", 1)[0]
     assert "effective_at_utc" in table_block
     assert "recorded_at_utc" in table_block
     assert "ON UPDATE" not in table_block
+
+
+def test_migration_creates_immutable_per_map_coverage_table() -> None:
+    sql = _sql()
+    assert "CREATE TABLE IF NOT EXISTS native_short_map_level_target_event_coverage_v1" in sql
+    coverage_block = sql.split(
+        "CREATE TABLE IF NOT EXISTS native_short_map_level_target_event_coverage_v1", 1
+    )[1].split("CREATE OR REPLACE VIEW", 1)[0]
+    assert "map_id BIGINT UNSIGNED NOT NULL PRIMARY KEY" in coverage_block
+    assert "coverage_cutoff_utc" in coverage_block
+    assert "publication_boundary_utc" in coverage_block
+    assert "requested_watermark_utc_at_establishment" in coverage_block
+    assert "ON UPDATE" not in coverage_block
+
+
+def test_migration_coverage_cutoff_bounded_below_by_both_boundaries() -> None:
+    sql = _sql()
+    coverage_block = sql.split(
+        "CREATE TABLE IF NOT EXISTS native_short_map_level_target_event_coverage_v1", 1
+    )[1].split("CREATE OR REPLACE VIEW", 1)[0]
+    assert "coverage_cutoff_utc >= publication_boundary_utc" in coverage_block
+    assert "coverage_cutoff_utc >= requested_watermark_utc_at_establishment" in coverage_block
 
 
 @pytest.mark.skipif(
@@ -204,7 +226,91 @@ def test_migration_executes_and_enforces_append_only_identity_in_disposable_sche
                 (500,),
             )
             rows = cur.fetchall()
+            schema_conn.commit()
+
+            # Immutable per-map coverage: exactly one row per map_id.
+            cur.execute(
+                """
+                INSERT INTO native_short_map_level_target_event_coverage_v1 (
+                    venue, symbol, quote_currency, fib_trading_horizon, primary_interval, supporting_interval,
+                    map_id, map_cycle_id, publication_boundary_utc,
+                    requested_watermark_utc_at_establishment, coverage_cutoff_utc,
+                    writer_name, writer_version, writer_invocation_uuid
+                ) VALUES (
+                    'BITVAVO', 'BTC', 'EUR', 'SHORT', '4h', '1h',
+                    %s, 'cycle-A', %s, %s, %s,
+                    'test-writer', '0.1', '00000000-0000-4000-8000-000000000001'
+                )
+                """,
+                (500, _ts(0), _ts(0), _ts(0)),
+            )
+            schema_conn.commit()
+
+            # A second coverage row for the same map_id must be rejected (PK).
+            with pytest.raises(IntegrityError):
+                cur.execute(
+                    """
+                    INSERT INTO native_short_map_level_target_event_coverage_v1 (
+                        venue, symbol, quote_currency, fib_trading_horizon, primary_interval, supporting_interval,
+                        map_id, map_cycle_id, publication_boundary_utc,
+                        requested_watermark_utc_at_establishment, coverage_cutoff_utc,
+                        writer_name, writer_version, writer_invocation_uuid
+                    ) VALUES (
+                        'BITVAVO', 'BTC', 'EUR', 'SHORT', '4h', '1h',
+                        %s, 'cycle-A', %s, %s, %s,
+                        'test-writer', '0.1', '00000000-0000-4000-8000-000000000009'
+                    )
+                    """,
+                    (500, _ts(1), _ts(1), _ts(1)),
+                )
+            schema_conn.rollback()
+
+            # A cutoff below either boundary must be rejected (needs a second
+            # valid map row so the FK constraint alone doesn't explain it).
+            cur.execute(
+                """
+                INSERT INTO native_short_map_v1 (
+                    map_id, venue, symbol, quote_currency, fib_trading_horizon, primary_interval, supporting_interval,
+                    generator_name, generator_version, fib_model_name, fib_model_version, structure_hash,
+                    published_generation_attempt_id, market_snapshot_ts_utc, published_at_utc,
+                    map_cycle_id, anchor_high_ts_utc, anchor_high_price,
+                    fib_ratios_json, target_levels_json, map_payload_json
+                ) VALUES (
+                    %s, 'BITVAVO', 'BTC', 'EUR', 'SHORT', '4h', '1h',
+                    'native_short_map_generator', 'v1', 'fib_model', 'v1', 'target-event-hash-2',
+                    'attempt-501', %s, %s,
+                    'cycle-B', %s, 10.0,
+                    '{"ext_1_272": "10.5", "ext_1_618": "11.2", "ext_2_000": "12.0"}', '[]', '{}'
+                )
+                """,
+                (501, _ts(5), _ts(5), _ts(1)),
+            )
+            schema_conn.commit()
+            with pytest.raises(IntegrityError):
+                cur.execute(
+                    """
+                    INSERT INTO native_short_map_level_target_event_coverage_v1 (
+                        venue, symbol, quote_currency, fib_trading_horizon, primary_interval, supporting_interval,
+                        map_id, map_cycle_id, publication_boundary_utc,
+                        requested_watermark_utc_at_establishment, coverage_cutoff_utc,
+                        writer_name, writer_version, writer_invocation_uuid
+                    ) VALUES (
+                        'BITVAVO', 'BTC', 'EUR', 'SHORT', '4h', '1h',
+                        %s, 'cycle-B', %s, %s, %s,
+                        'test-writer', '0.1', '00000000-0000-4000-8000-000000000010'
+                    )
+                    """,
+                    (501, _ts(5), _ts(5), _ts(0)),
+                )
+            schema_conn.rollback()
+
+            cur.execute(
+                "SELECT map_id, coverage_cutoff_utc FROM native_short_map_level_target_event_coverage_v1 WHERE map_id = %s",
+                (500,),
+            )
+            coverage_rows = cur.fetchall()
         schema_conn.commit()
+        assert len(coverage_rows) == 1
         assert len(rows) == 1
         assert rows[0]["target_event_type"] == "REACHED"
     finally:

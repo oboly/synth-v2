@@ -114,6 +114,47 @@ CREATE TABLE IF NOT EXISTS native_short_map_level_target_event_v1 (
   COMMENT='Append-only prospective REACHED/PASSED target-event ledger for native SHORT V1 SELL levels. One row per exact map-level identity per event type; never updated after insert.';
 
 
+CREATE TABLE IF NOT EXISTS native_short_map_level_target_event_coverage_v1 (
+    map_id BIGINT UNSIGNED NOT NULL PRIMARY KEY COMMENT 'Exactly one immutable coverage row per exact map identity.',
+
+    venue               VARCHAR(32) NOT NULL,
+    symbol              VARCHAR(32) NOT NULL,
+    quote_currency      VARCHAR(16) NOT NULL,
+    fib_trading_horizon VARCHAR(32) NOT NULL,
+    primary_interval    VARCHAR(16) NOT NULL,
+    supporting_interval VARCHAR(16) NOT NULL,
+
+    map_cycle_id VARCHAR(255) NOT NULL,
+
+    publication_boundary_utc                 DATETIME(6) NOT NULL COMMENT 'native_short_map_v1.published_at_utc at establishment time.',
+    requested_watermark_utc_at_establishment DATETIME(6) NOT NULL COMMENT 'The caller-supplied watermark in effect the one time this row was established; never re-read afterward.',
+    coverage_cutoff_utc                      DATETIME(6) NOT NULL COMMENT 'Immutable per-map causal cutoff = GREATEST(publication_boundary_utc, requested_watermark_utc_at_establishment). Never rewritten by a later run.',
+
+    established_at_utc DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) COMMENT 'Writer wall-clock time this coverage row was first inserted; never updated.',
+
+    writer_name            VARCHAR(96) NOT NULL,
+    writer_version          VARCHAR(32) NOT NULL,
+    writer_invocation_uuid  CHAR(36) NOT NULL,
+
+    KEY idx_native_short_map_level_target_event_coverage_v1_scope (
+        venue, symbol, quote_currency, fib_trading_horizon, primary_interval, supporting_interval
+    ),
+    KEY idx_native_short_map_level_target_event_coverage_v1_cutoff (coverage_cutoff_utc),
+
+    CONSTRAINT fk_native_short_map_level_target_event_coverage_v1_map
+        FOREIGN KEY (map_id) REFERENCES native_short_map_v1 (map_id),
+
+    CONSTRAINT chk_native_short_map_level_target_event_coverage_v1_horizon
+        CHECK (fib_trading_horizon = 'SHORT'),
+    CONSTRAINT chk_native_short_map_level_target_event_coverage_v1_cutoff_bounds
+        CHECK (
+            coverage_cutoff_utc >= publication_boundary_utc
+            AND coverage_cutoff_utc >= requested_watermark_utc_at_establishment
+        )
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  COMMENT='Immutable per-map target-event coverage activation boundary. Established at most once per map_id; the persisted coverage_cutoff_utc is the sole durable causal-cutoff authority for that map and is never recomputed by a later watermark.';
+
+
 CREATE OR REPLACE VIEW native_short_map_level_target_event_current_state_v1 AS
 SELECT
     map_id,
