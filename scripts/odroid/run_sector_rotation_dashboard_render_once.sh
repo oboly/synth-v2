@@ -8,6 +8,15 @@ OUTPUT_ROOT="${SYNTH_SECTOR_ROTATION_OUTPUT_ROOT:-/var/www/html/synth}"
 VENUE="${SYNTH_SECTOR_ROTATION_VENUE:-bitvavo}"
 started_epoch="$(date +%s)"
 
+usage() {
+    echo "usage: $0"
+}
+
+if [[ "$#" -ne 0 ]]; then
+    usage >&2
+    exit 2
+fi
+
 echo "STARTED runner=run_sector_rotation_dashboard_render_once mode=read_only ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "venue=${VENUE} output_root=${OUTPUT_ROOT} lock_file=${LOCK_FILE}"
 echo "broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0"
@@ -35,12 +44,12 @@ if ! flock -n 9; then
     exit 0
 fi
 
+status=0
 python -m src.reporting.run_sector_rotation_dashboard_v1 \
     --venue "${VENUE}" \
     --output-root "${OUTPUT_ROOT}" \
-    --output summary
+    --output summary || status=$?
 
-status=$?
 elapsed_sec=$(( $(date +%s) - started_epoch ))
 echo "FINISHED runner=run_sector_rotation_dashboard_render_once exit_status=${status} elapsed_sec=${elapsed_sec} ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 exit "${status}"

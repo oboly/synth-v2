@@ -1,7 +1,6 @@
 [Unit]
 Description=Synth Sector Overview publisher timer — read-only, scheduled after the gurkDB writer (UTC)
 Documentation=docs/ops/sector_rotation_runtime_activation_v1.md
-Requires=synth-sector-rotation-publisher.service
 
 [Timer]
 # Runs at minute :40 of every hour, UTC — 20 minutes after the gurkDB

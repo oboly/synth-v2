@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import re
+import stat
 import subprocess
 from pathlib import Path
 
@@ -86,6 +88,19 @@ def test_writer_wrapper_rejects_unexpected_arguments():
     assert result.returncode == 2
     result_no_args = subprocess.run(["bash", str(WRITER_WRAPPER)], capture_output=True, text=True)
     assert result_no_args.returncode == 2
+
+
+def test_publisher_wrapper_accepts_zero_arguments_only():
+    # A bare unexpected argument must be rejected with usage on stderr and
+    # exit 2, without proceeding to venv activation, locking, or invoking
+    # the Python runner (bounded: never reaches the DB).
+    for bad_args in (["--bogus"], ["extra"], ["--venue", "bitvavo"]):
+        result = subprocess.run(
+            ["bash", str(PUBLISHER_WRAPPER), *bad_args], capture_output=True, text=True
+        )
+        assert result.returncode == 2, f"args={bad_args!r} stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert "usage" in result.stderr.lower()
+        assert "STARTED" not in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -252,18 +267,28 @@ def test_timers_do_not_declare_cross_host_dependency():
     for path in (WRITER_TIMER, PUBLISHER_TIMER):
         text = _directive_lines(path)
         assert "ssh" not in text.lower()
-        assert "requires=synth-sector-rotation-writer" not in text.lower() or path == WRITER_TIMER
-        assert "requires=synth-sector-rotation-publisher" not in text.lower() or path == PUBLISHER_TIMER
 
 
-def test_publisher_timer_does_not_require_writer_service():
-    sections = _parse_unit(PUBLISHER_TIMER)
-    assert _get(sections, "Unit", "Requires") == "synth-sector-rotation-publisher.service"
+def test_timers_do_not_declare_requires_or_wants_on_their_own_service():
+    # Requires=/Wants= on a timer's own service would pull the service in
+    # as a dependency the moment the timer is started/enabled, conflating
+    # scheduled activation with an acceptance run. Only the canonical
+    # Timer/Unit= directive (which service OnCalendar= triggers) may name
+    # the service.
+    for path in (WRITER_TIMER, PUBLISHER_TIMER):
+        sections = _parse_unit(path)
+        assert _get(sections, "Unit", "Requires") is None, f"{path} must not declare [Unit] Requires="
+        assert _get(sections, "Unit", "Wants") is None, f"{path} must not declare [Unit] Wants="
 
 
-def test_writer_timer_does_not_require_publisher_service():
+def test_writer_timer_still_declares_canonical_unit_directive():
     sections = _parse_unit(WRITER_TIMER)
-    assert _get(sections, "Unit", "Requires") == "synth-sector-rotation-writer.service"
+    assert _get(sections, "Timer", "Unit") == "synth-sector-rotation-writer.service"
+
+
+def test_publisher_timer_still_declares_canonical_unit_directive():
+    sections = _parse_unit(PUBLISHER_TIMER)
+    assert _get(sections, "Timer", "Unit") == "synth-sector-rotation-publisher.service"
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +325,35 @@ def test_writer_wrapper_does_not_invoke_reporting():
     text = WRITER_WRAPPER.read_text()
     assert "src.reporting" not in text
     assert "run_sector_rotation_dashboard_v1" not in text
+
+
+def test_publisher_wrapper_preserves_nonzero_exit_status_and_still_logs_finished(tmp_path):
+    # Force the Python runner step to exit 1 (the real DATA_UNAVAILABLE exit
+    # status) by putting a fake `python` ahead of PATH, and prove the
+    # wrapper does not let `set -e` short-circuit it: FINISHED must still be
+    # printed with the captured exit_status=1, and the wrapper itself must
+    # exit 1 -- not 0, and not some other status from an unrelated later
+    # failure once `set -e` unwinds past the intended capture point.
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_python = fake_bin / "python"
+    fake_python.write_text("#!/usr/bin/env bash\nexit 1\n")
+    fake_python.chmod(fake_python.stat().st_mode | stat.S_IEXEC)
+
+    lock_file = tmp_path / "publisher.lock"
+    env = dict(os.environ)
+    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
+    env["VIRTUAL_ENV"] = str(tmp_path)  # any non-empty value skips venv activation
+    env["SYNTH_SECTOR_ROTATION_DASHBOARD_LOCK"] = str(lock_file)
+    env["SYNTH_REPO_DIR"] = str(REPO_ROOT)
+
+    result = subprocess.run(
+        ["bash", str(PUBLISHER_WRAPPER)], capture_output=True, text=True, env=env
+    )
+
+    assert result.returncode == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "FINISHED runner=run_sector_rotation_dashboard_render_once exit_status=1" in result.stdout
+    assert "SKIPPED" not in result.stdout
 
 
 def test_publisher_wrapper_does_not_invoke_writer():

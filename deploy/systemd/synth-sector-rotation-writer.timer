@@ -1,7 +1,6 @@
 [Unit]
 Description=Synth Sector Rotation Engine writer timer (gurkDB-bound candidate artifact)
 Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/sector_rotation_runtime_activation_v1.md
-Requires=synth-sector-rotation-writer.service
 
 [Timer]
 # Runs at minute :20 of every hour, UTC. Evidence (see

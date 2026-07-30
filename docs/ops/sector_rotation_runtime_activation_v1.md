@@ -142,6 +142,7 @@ native-SHORT coupling in either role.
 ```text
 output_root = /var/www/html/synth
 files       = sector-overview.html, sector-overview.json
+public_url_or_path = UNVERIFIED
 ```
 
 This matches the existing `market_rotation_pressure` dashboard publisher's
@@ -149,11 +150,14 @@ output root convention (`scripts/odroid/run_market_rotation_pressure_dashboard_r
 default), which serves from the Odroid host already hosting
 `/var/www/html/synth` for that capability. This preparation does not
 introduce a new output root, a new Nginx vhost, or a new public path; it
-reuses the existing convention. Confirming the exact live Nginx
-vhost/document-root mapping on Odroid is a `PREFLIGHT_EXTERNAL` check (per
+reuses the existing convention. **The exact live Nginx vhost/document-root
+mapping on Odroid, and therefore the exact public URL this file becomes
+reachable at, is `UNVERIFIED` and remains an explicit activation blocker.**
+Confirming it is a `PREFLIGHT_EXTERNAL` check (per
 `docs/ops/writer_capability_host_ownership_contract_v1.md`) that requires a
-reachable Odroid host and is out of scope for this repository-only
-preparation.
+reachable Odroid host and separately produced external evidence; it is out
+of scope for this repository-only preparation and must be proven, not
+assumed, before the publisher timer is installed or enabled.
 
 ## Duplicate-Owner Check
 
@@ -240,6 +244,17 @@ before any further step.
    idempotency, no duplicate writers, and disk/log growth bounds.
 9. Mark lifecycle `ACTIVE` only after all of the above, with proof of at
    most one authorized active owner per capability.
+
+Neither timer unit declares `Requires=`/`Wants=` on its own service (only
+the canonical `Unit=` directive that names which service the timer
+triggers). This is deliberate: `systemctl enable --now` on a timer does not
+pull its service in as a dependency and does not execute it immediately.
+Controlled manual acceptance (steps 2-4 and the bounded manual runs in
+"Manual Pre-Activation Acceptance" above) must be performed as an explicit
+`systemctl start <service>` or direct wrapper invocation, entirely separate
+from installing or enabling the timer. Enabling a timer only arms future
+scheduled cycles at its configured `OnCalendar=`; it is never itself an
+acceptance run.
 
 ## Observation Requirements
 
