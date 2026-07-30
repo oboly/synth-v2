@@ -247,14 +247,37 @@ before any further step.
 
 Neither timer unit declares `Requires=`/`Wants=` on its own service (only
 the canonical `Unit=` directive that names which service the timer
-triggers). This is deliberate: `systemctl enable --now` on a timer does not
-pull its service in as a dependency and does not execute it immediately.
-Controlled manual acceptance (steps 2-4 and the bounded manual runs in
-"Manual Pre-Activation Acceptance" above) must be performed as an explicit
-`systemctl start <service>` or direct wrapper invocation, entirely separate
-from installing or enabling the timer. Enabling a timer only arms future
-scheduled cycles at its configured `OnCalendar=`; it is never itself an
-acceptance run.
+triggers). This is deliberate and correct as far as it goes: it prevents
+the service from being pulled in as an ordinary systemd dependency of the
+timer unit itself.
+
+**It does not mean starting the timer is harmless or execution-free.**
+`systemctl enable <timer>` alone only creates the `[Install]` symlink and
+does not start the timer. `systemctl start <timer>` or `systemctl enable
+--now <timer>` **starts** the timer, and because both timers set
+`Persistent=true`, systemd will run the service immediately on start if the
+timer's last configured `OnCalendar=` trigger was missed (for example,
+because the system was off, or because this is the timer's first-ever
+start) -- subject only to the timer's own `RandomizedDelaySec=`, not to any
+external gate. There is no `Requires=`/`Wants=`-free way to make timer
+start itself a no-op: `Persistent=true` exists specifically so a missed run
+still happens, and timer start can always be that trigger.
+
+**Consequence: timer start must be treated as potentially activating a real
+writer or publisher cycle, not as a harmless scheduling-only action.**
+Removing `Requires=`/`Wants=` only stops the *service* from being pulled in
+by ordinary dependency ordering; it does nothing to stop `Persistent=true`
+from firing a real run the moment the *timer* is started. Controlled manual
+acceptance (steps 2-4 and the bounded manual runs in "Manual
+Pre-Activation Acceptance" above) must therefore already be complete, and
+the writer capability must already carry a valid production authorization
+(see "Registry onboarding is a required, separate follow-up" above) --
+**before** either timer is started or enabled with `--now`, not merely
+before it is expected to fire on its next `OnCalendar=` boundary. Manual
+acceptance remains conceptually separate from scheduled timer activation
+(they exercise the service directly, not through the timer), but that
+separation is a procedural discipline this document requires, not a
+guarantee `Persistent=true` timer semantics provide automatically.
 
 ## Observation Requirements
 

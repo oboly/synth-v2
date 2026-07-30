@@ -541,3 +541,29 @@ def test_ops_doc_forbids_cross_role_invocation():
     text = OPS_DOC.read_text()
     assert "must never invoke the writer" in text
     assert "must never invoke the publisher" in text
+
+
+def test_ops_doc_correctly_warns_that_timer_start_can_trigger_a_real_cycle():
+    normalized = " ".join(OPS_DOC.read_text().lower().split())
+
+    # The corrected claims must be present: enable-alone does not start the
+    # timer, but starting/enable --now does, and Persistent=true means that
+    # start can immediately fire a missed run.
+    assert "systemctl enable" in normalized and "alone" in normalized
+    assert "does not start the timer" in normalized
+    assert "persistent=true" in normalized
+    assert "randomizeddelaysec" in normalized
+    assert "potentially activating a real" in normalized
+
+    # The earlier, incorrect claims must not reappear: removing
+    # Requires=/Wants= does NOT make timer start execution-free, and
+    # enabling/starting a timer is not merely "arming" a future cycle.
+    assert "does not execute it immediately" not in normalized
+    assert "only arms future" not in normalized
+    assert "harmless" not in normalized or "not mean starting the timer is harmless" in normalized
+
+
+def test_manual_acceptance_remains_conceptually_separate_from_timer_start():
+    normalized = " ".join(OPS_DOC.read_text().replace("*", "").split())
+    assert "conceptually separate from scheduled timer activation" in normalized
+    assert "before either timer is started or enabled with" in normalized
