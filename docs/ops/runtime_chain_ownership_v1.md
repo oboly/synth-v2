@@ -39,6 +39,11 @@ which host is selected:
   fail-closed validators before Native SHORT publication
 - the 4h chain does not refresh public prices or candles and does not render or
   remotely transport dashboard output
+- the 4h chain may transactionally publish the canonical market-only 4h
+  `FibNavigationMap` cohort to `canonical_fib_zone_map_v1`; this generic
+  dashboard context is independent of the BTC-only Native SHORT scope gate
+- the Odroid MVP cockpit chain reads that committed DB cohort and renders
+  `/synth/fibo-map.html`; it never calculates or repairs Fibonacci truth
 - rotation-pressure persistence belongs to the `market_rotation_pressure`
   writer capability, whose `production_runtime_owner` is `UNASSIGNED`; devlap is
   its recorded `acceptance_host` (PR #100/#101), preserved as historical audit

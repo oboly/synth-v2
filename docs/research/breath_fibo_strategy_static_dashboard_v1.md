@@ -64,20 +64,18 @@ No account-aware logic
 
 ## Data Sources Used
 
-V1 uses only existing public/reporting-safe sources:
+V1 uses only persisted public/reporting-safe sources:
 
 - `obs_market_candle`
   - latest per-symbol price
   - latest per-symbol candle timestamp
   - candle freshness state
-- `paper_advice_observation`
-  - legacy blackbox advice context only
-  - debug/display source only
-  - not a valid primary source for target, Entry Zone, invalidation, current leg, or strategy state
 - `active_regime_observation`
   - canonical regime layer by asset class
-- `data/research/fibo_target_map_v1/fibo_target_map_rows_v1.csv`
-  - fib target / support / reentry map
+- `canonical_fib_zone_map_latest_v1`
+  - atomic production cohort from the existing `FibNavigationMap` builder
+  - current leg, anchors, retracement/support, extensions, invalidation,
+    freshness, and provenance
 
 Allowed primary strategy-map sources in V1:
 
@@ -141,8 +139,10 @@ V1 fails open for display and fails closed for meaning:
 
 - if `obs_market_candle` is missing:
   - show missing price / missing freshness
-- if fib map CSV is missing for a symbol:
+- if the persisted canonical map is missing for a symbol:
   - show `FIB_MAP_UNKNOWN`
+- if the persisted map is stale or unavailable:
+  - show `MAP_UNAVAILABLE` and the exact map/freshness state
 - if canonical regime row is missing:
   - show `UNKNOWN`
 - if no reusable primitive/legacy context exists:
@@ -159,11 +159,8 @@ hypothesis is considered invalid.
 
 V1 resolves invalidation provenance explicitly with this priority:
 
-1. `fibo_target_map_v1` row fields:
-   - `invalidation_price`
-   - `fib_invalidation_price`
-   - `fib_invalidation`
-   - method=`FIBO_MAP_INVALIDATION`
+1. `canonical_fib_zone_map_latest_v1.invalidation_level`
+   - method from the persisted `invalidation_method`
 2. missing:
    - method=`MISSING_INVALIDATION`
    - source=`UNKNOWN`
@@ -200,26 +197,8 @@ It is not a buy command.
 
 ## Legacy Paper Context Rule
 
-If `paper_advice_observation` is present, V1 may display:
-
-- `selection_state`
-- `setup_filter_state`
-- `policy/action`
-- `edge_permission`
-
-only as legacy/source context.
-
-It is explicitly `LEGACY_CONTEXT_ONLY`.
-It must not supply:
-
-- target
-- Entry Zone
-- invalidation
-- current leg
-- strategy candidate state
-
-These old paper/advice labels must not actively determine
-`strategy_candidate_state`.
+The dashboard does not query `paper_advice_observation` and has no legacy CSV
+fallback. Missing canonical map truth stays missing.
 
 Forbidden as active gates:
 

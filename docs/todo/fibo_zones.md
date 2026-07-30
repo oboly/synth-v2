@@ -2,9 +2,25 @@
 
 ## Status
 
-Parked / open research and architecture lane.
+Active P0 repository-ready / activation pending.
 
-This lane covers Fibonacci target maps, zone context, exit-ladder research, and future display/inspection overlays.
+The recurring canonical 4h Fibonacci map writer and persisted dashboard
+consumer are implemented on the current branch. Merge, DB migration/grant
+application, exact-commit deployment, controlled publication/render, and timer
+observation remain.
+
+Production slice:
+
+```text
+devlap native_short_4h_chain
+-> FibNavigationMap over persisted public 4h candles
+-> canonical_fib_zone_map publication cohort in MariaDB
+-> Odroid MVP cockpit render
+-> /synth/fibo-map.html
+```
+
+No sector rotation, multi-horizon Fibo, Native SHORT scope promotion, account
+permission, decision, planning, execution, broker, or order path is included.
 
 ## Sources
 
