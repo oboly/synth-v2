@@ -206,7 +206,7 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `deploy_runtime.md` | MVP cockpit implemented / ops follow-up | General Odroid cockpit and deployment follow-ups |
 | `market_breath.md` | characterized / parked | Regime-dependent rhythm/phase research |
 | `regime_research.md` | parked | Rotation replay, discovered regimes, symbol profiles, and interaction audits |
-| `fibo_zones.md` | open research | Fib target maps, zone validation, and overlays |
+| `fibo_zones.md` | **P0 repository-ready / activation pending** | Recurring canonical 4h FibNavigationMap publication and existing cockpit visibility; merge/deploy/controlled activation remains |
 | `ui_webview.md` | open / secondary | Non-blocking UI and styling work after correctness lanes |
 | `signal_matrix_dashboard.md` | parked | Transparent primitive signal inventory |
 | `breath_curve.md` | parked / open | Breath Curve validation continuation |

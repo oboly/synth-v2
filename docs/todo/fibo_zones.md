@@ -2,9 +2,28 @@
 
 ## Status
 
-Parked / open research and architecture lane.
+Active P0 repository-ready / activation pending.
 
-This lane covers Fibonacci target maps, zone context, exit-ladder research, and future display/inspection overlays.
+The recurring canonical 4h Fibonacci map writer and persisted dashboard
+consumer are implemented on the current branch. Merge, DB migration/grant
+application, exact-commit deployment, controlled publication/render, and timer
+observation remain.
+
+Production slice:
+
+```text
+devlap native_short_4h_chain
+-> persisted 4h feat_candle + structure_state_engine v1.2 direction
+-> directional FibNavigationMap over the same public 4h candle as-of
+-> canonical_fib_zone_map publication cohort in MariaDB
+-> Odroid MVP cockpit render
+-> /synth/fibo-map.html
+```
+
+No sector rotation, multi-horizon Fibo, Native SHORT scope promotion, account
+permission, decision, planning, execution, broker, or order path is included.
+Bullish and bearish maps are direction-consistent; RANGE/UNKNOWN remains
+explicitly unavailable rather than inheriting bullish display semantics.
 
 ## Sources
 

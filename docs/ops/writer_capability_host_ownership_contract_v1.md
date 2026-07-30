@@ -194,6 +194,15 @@ Rotation Pressure remains selected for strict preflight only and retains
 Its supported Native SHORT scope remains `BTC_ONLY` in `PAPER` execution mode;
 multi-asset and map-level expansion remain `CLOSED`, and live trading remains
 `NOT_GRANTED`.
+
+The same existing chain is the repository owner for the market-only canonical
+4h Fibonacci dashboard-map publication step. That step covers the existing
+public tracked dashboard universe through `canonical_fib_zone_map_v1`; it does
+not expand `native_short_map_scope_v1`, inherit Native SHORT permission, or
+change the BTC-only execution-related scope. It uses the existing chain timer
+and requires the production migration/grant/deployment activation procedure in
+`docs/research/canonical_fib_zone_map_v1.md`; this repository change does not
+activate it.
 `sector_rotation_snapshot` is registry-onboarded as `SELECTED_PENDING_PREFLIGHT`
 with `candidate_host=gurkdb` and `selected_host=gurkdb`; it retains
 `production_runtime_owner=UNASSIGNED`, `acceptance_status=PENDING`, and no

@@ -2,8 +2,14 @@
 
 ## Purpose
 
-`canonical_fib_zone_map_v1` is the planned DB-backed canonical source for the
-Breath/Fibo strategy dashboard layer.
+`canonical_fib_zone_map_v1` is the DB-backed canonical source for the
+Breath/Fibo strategy dashboard layer. The production repository slice is
+implemented by `src.market_data.canonical_fib_zone_map_v1` and
+`src.market_data.run_canonical_fib_zone_map_v1`.
+
+Production activation is not part of this repository change. The migration,
+dedicated writer grant, merged checkout, controlled first publication, and
+dashboard render must be applied and verified after merge.
 
 It exists because the source audit showed:
 
@@ -36,8 +42,25 @@ It should provide the dashboard with explicit, provenance-safe values for:
 - Anchor / Swing context
 - source freshness / provenance
 
-The dashboard should read this table later, but this task does not wire that
-integration yet.
+The production dashboard reads the latest complete publication cohort directly.
+It does not calculate or repair Fibonacci geometry.
+
+## Direction Authority
+
+Direction is owned by the adopted `structure_state_engine` v1.2 classifier,
+whose pure implementation is in `src/structure/trend_state_v1.py`. It consumes
+the latest persisted 4h `feat_candle` EMA measurements:
+
+- `UPTREND_STRONG` / `UPTREND_WEAK` -> bullish `FibNavigationMap`, `UP`
+- `DOWNTREND_STRONG` / `DOWNTREND_WEAK` -> bearish `FibNavigationMap`, `DOWN`
+- `RANGE` -> unavailable directional map with descriptive leg `RANGE`
+- missing or timestamp-misaligned feature input -> unavailable map with
+  descriptive leg `UNKNOWN`
+
+The feature timestamp must exactly match the latest input candle timestamp.
+The writer never substitutes the research pivot preview as direction truth.
+`provenance_payload.map_direction` must agree with `current_leg` for every
+available map.
 
 ## Why Paper Advice Is Excluded
 
@@ -147,12 +170,13 @@ Current note:
 
 Interpretation:
 
-Entry Zone is the price zone where a long / re-entry / add-back hypothesis is
-investigated.
+Entry Zone is the directional retracement band where reaction or continuation
+structure may be inspected.
 
 It may represent:
 
-- support reaction
+- support reaction for an `UP` map
+- resistance reaction for a `DOWN` map
 - fib pullback
 - retest
 - reload-after-TP
@@ -168,7 +192,8 @@ It is not a buy command.
 
 Interpretation:
 
-This is the nearest mapped support/reaction band visible to the strategy map.
+This is the nearest mapped reaction band visible to the strategy map: support
+for `UP`, resistance for `DOWN`.
 It may overlap with Entry Zone, but does not have to.
 
 ### Targets
@@ -287,9 +312,9 @@ It must not change:
 - `execution_planner`
 - `executor`
 
-## Future Writer Requirements
+## Production writer contract
 
-The future writer is out of scope for this task, but it must be:
+The writer is:
 
 - deterministic
 - market-only
@@ -297,6 +322,66 @@ The future writer is out of scope for this task, but it must be:
 - explicit-provenance
 - no legacy paper blackbox fallback
 - point-in-time safe for historical replay use
+
+It uses only:
+
+```text
+venue_market + asset tracked-universe flags
+-> persisted obs_market_candle 4h rows
+-> FibNavigationMap
+-> one transactional canonical_fib_zone_map publication cohort
+```
+
+The tracked universe is the existing enabled/tradeable Bitvavo EUR
+`is_portfolio OR is_core_sensor` universe used to seed the global dashboard.
+It is not derived from balances, positions, orders, profiles, selection,
+Native SHORT scope permission, or sector rotation.
+
+`canonical_fib_zone_map_publication_v1` is the cohort commit record.
+`canonical_fib_zone_map_latest_v1` exposes only the newest committed complete
+cohort. A failed build or transaction leaves the prior cohort intact.
+Dashboard reads reclassify source timestamps against current time, so the
+prior cohort becomes visibly stale rather than silently remaining current.
+
+The active `native_short_4h_chain` on `devlap` is the sole recurring producer.
+The existing Odroid MVP cockpit render chain is the read-only consumer. DB
+authority is necessary because the canonical writer and dashboard consumer
+are on different hosts and the existing native SHORT filesystem snapshot has
+no cross-host transport contract.
+
+## Activation and rollback
+
+After merge, on the DB host:
+
+```text
+apply db/migrations/20260531_canonical_fib_zone_map_v1.sql if absent
+apply db/migrations/20260730_canonical_fib_zone_map_production_v1.sql
+apply db/dba/synth_chain_4h_writer_v1.sql with the existing secret transport
+grant the existing Odroid dashboard read identity SELECT on canonical_fib_zone_map_latest_v1
+```
+
+Then deploy the same merged commit to devlap and Odroid. Keep both timers
+stopped during preflight. Run the writer once on devlap through the authorized
+4h service, validate one complete cohort, then run the existing MVP dashboard
+render once on Odroid and verify `/var/www/html/synth/fibo-map.html`.
+
+Acceptance:
+
+```text
+tracked row_count equals deterministic tracked-universe count
+available_count > 0
+all available rows source_freshness_state=FRESH
+latest input age <= 8 hours
+dashboard canonical_fib_map_rows equals publication row_count (subject to display limit)
+paper_advice reads=0
+broker_private_calls=0 broker_writes=0 order_submission=0
+decision_gate=none execution_planner=none executor=none
+```
+
+Rollback disables only the new chain step by returning to the prior merged
+commit on devlap and Odroid. Do not delete the last valid publication. It
+remains auditable and becomes visibly stale. The migration tables may remain;
+no destructive DB rollback is required.
 
 ## Future Relationship To Backtests And Sweeps
 
@@ -315,12 +400,8 @@ But the table itself is not:
 - a permission layer
 - an execution plan
 
-## Expected Next Step
+## Next step
 
-The likely next implementation step after this schema is:
-
-1. build a deterministic market-only writer that promotes validated fib-map
-   research into `canonical_fib_zone_map_v1`
-2. validate coverage and freshness
-3. only then attach the latest-view read into
-   `breath_fibo_strategy_static_dashboard_v1`
+Merge, apply the repository-owned migration and least-privilege grants, deploy
+the exact merge commit, run one controlled writer/render cycle, then observe
+the existing 4h and cockpit timers. No new scheduler or design is required.

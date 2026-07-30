@@ -134,6 +134,13 @@ run_step python -m src.features.run_feat_candle \
     --lookback-hours 720 \
     --warmup-bars 300
 
+run_step python -m src.market_data.run_canonical_fib_zone_map_v1 \
+    --venue bitvavo \
+    --quote EUR \
+    --interval 4h \
+    --publish \
+    --output summary
+
 run_step python -m src.signal_engine.run_signal_state_etl --venue bitvavo --interval 4h
 run_step python -m src.advice.run_advice_engine --interval 4h
 run_step python -m src.ranking.run_ranking_engine --venue bitvavo --interval 4h

@@ -64,6 +64,14 @@ It must not:
 
 `--write-db` is intentionally not supported in v1 preview.
 
+This path remains research-only and is not the production writer. The
+production implementation uses `FibNavigationMap` in
+`src/market_data/canonical_fib_zone_map_v1.py`; it does not import, rename, or
+execute this preview. This preview is retained for historical comparison only.
+Its pivot-order leg classifier also remains research-only. Production direction
+comes from the adopted `structure_state_engine` v1.2 classifier over aligned
+persisted `feat_candle` inputs.
+
 ## Inputs
 
 The runner reads:
