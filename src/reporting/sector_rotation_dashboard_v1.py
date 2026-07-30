@@ -8,6 +8,11 @@ static JSON and HTML from that same view model. This module performs no
 scoring, no state derivation, and no DB writes: it selects and formats
 persisted research truth only.
 
+Cohort selection inspects only the newest ``asof_ts_utc`` for the requested
+venue/model. It never falls back to an older timestamp: if the newest
+timestamp does not carry exactly the canonical window set, or is missing a
+required sector/window cell, the whole cohort is DATA_UNAVAILABLE.
+
 Price/volume-derived rotation state is a proxy, never a measured capital
 flow. Rendered surfaces must say so.
 """
@@ -21,6 +26,7 @@ from typing import Any, Iterable
 
 MODEL_VERSION = "sector-rotation-v1.0.0"
 WINDOWS: tuple[str, ...] = ("1h", "4h", "1d", "7d")
+_CANONICAL_WINDOWS = frozenset(WINDOWS)
 DEFAULT_STALE_AFTER = timedelta(hours=3)
 ROTATION_STATES = {
     "LEADING",
@@ -35,6 +41,16 @@ ROTATION_STATES = {
     "NO_CONFIRMATION",
     "INSUFFICIENT_PARTICIPATION",
     "DATA_UNAVAILABLE",
+}
+SAFETY_MARKERS: dict[str, Any] = {
+    "db_writes": 0,
+    "broker_private_calls": 0,
+    "broker_writes": 0,
+    "order_submission": 0,
+    "live_orders": 0,
+    "decision_gate": "none",
+    "execution_planner": "none",
+    "executor": "none",
 }
 
 
@@ -135,32 +151,25 @@ def _cell_from_row(row: dict[str, Any]) -> SectorWindowCell:
     )
 
 
-def _unavailable_cell(window_code: str) -> SectorWindowCell:
-    return SectorWindowCell(
-        window_code=window_code,
-        cell_status="UNAVAILABLE",
-        rotation_score=None,
-        rotation_state=None,
-        confidence=None,
-        participation_ratio=None,
-        volume_confirmation=None,
-        generated_ts_utc=None,
-    )
-
-
 def select_coherent_cohort(
-    cohort_candidates: Iterable[dict[str, Any]],
-) -> datetime | None:
-    """Pick the latest asof_ts_utc that has all required windows present.
+    latest_asof_ts_utc: datetime | None,
+    observed_window_codes: Iterable[str],
+) -> tuple[datetime | None, str | None]:
+    """Validate only the newest asof_ts_utc; never search older timestamps.
 
-    ``cohort_candidates`` rows must contain ``asof_ts_utc`` and
-    ``window_count`` (distinct window codes observed at that timestamp),
-    pre-grouped and ordered by ``asof_ts_utc`` descending by the caller.
+    Returns ``(asof_ts_utc, reason)``. ``asof_ts_utc`` is non-None only when
+    the newest timestamp carries exactly the canonical window set
+    (``1h``, ``4h``, ``1d``, ``7d`` -- no fewer, no extra/unexpected codes).
+    When unavailable, ``reason`` explains why and ``asof_ts_utc`` is ``None``
+    (the caller retains the attempted ``latest_asof_ts_utc`` separately for
+    display).
     """
-    for candidate in cohort_candidates:
-        if int(candidate["window_count"]) >= len(WINDOWS):
-            return _utc_naive(candidate["asof_ts_utc"])
-    return None
+    if latest_asof_ts_utc is None:
+        return None, "NO_COHORT_CANDIDATES"
+    observed = frozenset(str(code) for code in observed_window_codes)
+    if observed != _CANONICAL_WINDOWS:
+        return None, "INCOMPLETE_LATEST_COHORT"
+    return _utc_naive(latest_asof_ts_utc), None
 
 
 def build_dashboard(
@@ -169,25 +178,31 @@ def build_dashboard(
     *,
     venue: str,
     model_version: str,
-    asof_ts_utc: datetime | None,
+    latest_asof_ts_utc: datetime | None,
+    observed_window_codes: Iterable[str],
     now_utc: datetime,
 ) -> SectorOverviewDashboard:
     generated = _utc_naive(now_utc)
-    sector_defs = list(sector_definition_rows)
+    attempted_asof = _utc_naive(latest_asof_ts_utc) if latest_asof_ts_utc is not None else None
+    attempted_age_seconds = (
+        (generated - attempted_asof).total_seconds() if attempted_asof is not None else None
+    )
 
-    if asof_ts_utc is None:
+    selected_asof, cohort_reason = select_coherent_cohort(latest_asof_ts_utc, observed_window_codes)
+    if selected_asof is None:
         return SectorOverviewDashboard(
             status="DATA_UNAVAILABLE",
             freshness_state="DATA_UNAVAILABLE",
             generated_at_utc=generated,
             venue=venue,
             model_version=model_version,
-            asof_ts_utc=None,
-            age_seconds=None,
+            asof_ts_utc=attempted_asof,
+            age_seconds=attempted_age_seconds,
             sectors=(),
-            reason="NO_COHERENT_COHORT",
+            reason=cohort_reason,
         )
 
+    sector_defs = list(sector_definition_rows)
     if not sector_defs:
         return SectorOverviewDashboard(
             status="DATA_UNAVAILABLE",
@@ -195,47 +210,53 @@ def build_dashboard(
             generated_at_utc=generated,
             venue=venue,
             model_version=model_version,
-            asof_ts_utc=_utc_naive(asof_ts_utc),
-            age_seconds=None,
+            asof_ts_utc=selected_asof,
+            age_seconds=attempted_age_seconds,
             sectors=(),
             reason="NO_ACTIVE_SECTORS",
         )
 
-    asof = _utc_naive(asof_ts_utc)
     by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for row in snapshot_rows:
         key = (str(row["sector_code"]), str(row["window_code"]))
         by_key[key] = row
 
+    expected_keys = {
+        (str(sector_def["sector_code"]), window_code)
+        for sector_def in sector_defs
+        for window_code in WINDOWS
+    }
+    missing_keys = expected_keys - set(by_key.keys())
+    if missing_keys:
+        return SectorOverviewDashboard(
+            status="DATA_UNAVAILABLE",
+            freshness_state="DATA_UNAVAILABLE",
+            generated_at_utc=generated,
+            venue=venue,
+            model_version=model_version,
+            asof_ts_utc=selected_asof,
+            age_seconds=attempted_age_seconds,
+            sectors=(),
+            reason="INCOMPLETE_LATEST_COHORT",
+        )
+
     sectors: list[SectorRow] = []
-    missing_cells = 0
     for sector_def in sector_defs:
         sector_code = str(sector_def["sector_code"])
-        cells: list[SectorWindowCell] = []
-        for window_code in WINDOWS:
-            row = by_key.get((sector_code, window_code))
-            if row is None:
-                cells.append(_unavailable_cell(window_code))
-                missing_cells += 1
-            else:
-                cells.append(_cell_from_row(row))
+        cells = tuple(
+            _cell_from_row(by_key[(sector_code, window_code)]) for window_code in WINDOWS
+        )
         sectors.append(
             SectorRow(
                 sector_code=sector_code,
                 display_name=str(sector_def["display_name"]),
-                cells=tuple(cells),
+                cells=cells,
             )
         )
 
-    freshness = classify_freshness(asof, generated)
-    age_seconds = (generated - asof).total_seconds()
-
-    if freshness in ("STALE", "FUTURE_TIMESTAMP"):
-        status = "DEGRADED"
-    elif missing_cells > 0:
-        status = "DEGRADED"
-    else:
-        status = "AVAILABLE"
+    freshness = classify_freshness(selected_asof, generated)
+    age_seconds = (generated - selected_asof).total_seconds()
+    status = "DEGRADED" if freshness in ("STALE", "FUTURE_TIMESTAMP") else "AVAILABLE"
 
     return SectorOverviewDashboard(
         status=status,
@@ -243,7 +264,7 @@ def build_dashboard(
         generated_at_utc=generated,
         venue=venue,
         model_version=model_version,
-        asof_ts_utc=asof,
+        asof_ts_utc=selected_asof,
         age_seconds=age_seconds,
         sectors=tuple(sectors),
     )
@@ -271,16 +292,7 @@ def dashboard_to_json_dict(dashboard: SectorOverviewDashboard) -> dict[str, Any]
             "Rotation score, state, and volume confirmation are price/volume-derived "
             "proxies, not measured capital inflow or outflow."
         ),
-        "safety": {
-            "db_writes": 0,
-            "broker_private_calls": 0,
-            "broker_writes": 0,
-            "order_submission": 0,
-            "live_orders": 0,
-            "decision_gate": "none",
-            "execution_planner": "none",
-            "executor": "none",
-        },
+        "safety": dict(SAFETY_MARKERS),
     }
     for sector in dashboard.sectors:
         cell_payload = {}
@@ -312,10 +324,24 @@ def _fmt_ratio(value: float | None) -> str:
     return f"{value:.0%}"
 
 
+def _fmt_age(age_seconds: float | None) -> str:
+    if age_seconds is None:
+        return "unknown"
+    sign = "-" if age_seconds < 0 else ""
+    total_seconds = int(abs(age_seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes = remainder // 60
+    return f"{sign}{hours}h{minutes:02d}m"
+
+
 def _state_label(state: str | None) -> str:
     if state is None:
         return "UNAVAILABLE"
     return state.replace("_", " ")
+
+
+def _safety_line() -> str:
+    return " ".join(f"{key}={value}" for key, value in SAFETY_MARKERS.items())
 
 
 def _cell_html(cell: SectorWindowCell) -> str:
@@ -336,14 +362,24 @@ def _cell_html(cell: SectorWindowCell) -> str:
     )
 
 
+def _asof_text(dashboard: SectorOverviewDashboard) -> str:
+    return _iso_z(dashboard.asof_ts_utc) if dashboard.asof_ts_utc is not None else "unknown"
+
+
 def render_dashboard_html(dashboard: SectorOverviewDashboard) -> str:
     if dashboard.status == "DATA_UNAVAILABLE":
-        main = (
-            "<section class='unavailable'>"
-            "<h1>Sector Overview</h1>"
-            f"<p>DATA UNAVAILABLE — {html.escape(dashboard.reason or 'UNKNOWN')}</p>"
-            "</section>"
-        )
+        main = f"""
+<section class='unavailable'>
+  <h1>Sector Overview</h1>
+  <p class='reason'>DATA UNAVAILABLE — {html.escape(dashboard.reason or 'UNKNOWN')}</p>
+  <div class='meta'>
+    <span>Attempted as of {html.escape(_asof_text(dashboard))}</span>
+    <span>Age {html.escape(_fmt_age(dashboard.age_seconds))}</span>
+    <span>Generated {html.escape(_iso_z(dashboard.generated_at_utc))}</span>
+  </div>
+  <div class='safety'>{html.escape(_safety_line())}</div>
+</section>
+"""
         title = "Sector Overview — unavailable"
     else:
         header_cells = "".join(f"<th>{html.escape(window)}</th>" for window in WINDOWS)
@@ -359,7 +395,8 @@ def render_dashboard_html(dashboard: SectorOverviewDashboard) -> str:
 <section class='meta'>
   <span>Venue {html.escape(dashboard.venue or '')}</span>
   <span>Model {html.escape(dashboard.model_version or '')}</span>
-  <span>As of {_iso_z(dashboard.asof_ts_utc)}</span>
+  <span>As of {html.escape(_asof_text(dashboard))}</span>
+  <span>Age {html.escape(_fmt_age(dashboard.age_seconds))}</span>
   <span class='freshness {dashboard.freshness_state.lower()}'>{html.escape(dashboard.freshness_state)}</span>
   <span>Sectors {len(dashboard.sectors)}</span>
 </section>
@@ -397,6 +434,8 @@ th {{ position:sticky; top:0; background:#102238; color:#a9bdd3; }}
 .cell .volume {{ margin-top:4px; font-size:.68rem; color:#8fa5bf; }}
 .badge.unavailable {{ display:inline-block; padding:3px 8px; border-radius:6px; background:#3a1b22; color:#ff9da4; font-size:.68rem; }}
 .unavailable {{ max-width:760px; margin:10vh auto; color:#ff9da4; border:1px solid #24364d; border-radius:14px; background:#0b1827; padding:16px; }}
+.unavailable .meta {{ margin-top:10px; background:none; border:0; padding:0; }}
+.unavailable .safety {{ margin-top:10px; font-size:.7rem; color:#8fa5bf; }}
 </style>
 </head>
 <body>

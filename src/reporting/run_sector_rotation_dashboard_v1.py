@@ -2,11 +2,14 @@ from __future__ import annotations
 
 """Runner for the Phase C1 Sector Overview publisher.
 
-Read-only: selects one internally coherent accepted
-``sector_rotation_snapshot`` cohort (one venue, one model version, one
-as-of timestamp, all required windows) plus canonical ``sector_definition``
-rows, and renders static JSON and HTML from the same view model. Performs
-no scoring, no DB writes, no broker calls, no execution-layer coupling.
+Read-only: inspects only the newest ``asof_ts_utc`` for the requested
+venue/model in ``sector_rotation_snapshot`` (never an older timestamp),
+validates it carries exactly the canonical window set and a complete
+sector/window cohort, and renders static JSON and HTML from a single view
+model. A DATA_UNAVAILABLE result is still published atomically -- it
+replaces any previously published output rather than leaving stale files in
+place. Performs no scoring, no DB writes, no broker calls, no
+execution-layer coupling.
 """
 
 import argparse
@@ -24,7 +27,6 @@ from src.reporting.sector_rotation_dashboard_v1 import (
     build_dashboard,
     dashboard_to_json_dict,
     render_dashboard_html,
-    select_coherent_cohort,
 )
 
 
@@ -88,15 +90,17 @@ def check_schema_ready(conn: Any) -> list[str]:
     return [table for table in REQUIRED_TABLES if table not in found]
 
 
-def fetch_cohort_candidates(conn: Any, *, venue: str, model_version: str) -> list[dict[str, Any]]:
+def fetch_latest_asof(conn: Any, *, venue: str, model_version: str) -> datetime | None:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT asof_ts_utc, COUNT(DISTINCT window_code) AS window_count "
-            "FROM sector_rotation_snapshot WHERE venue=%s AND model_version=%s "
-            "GROUP BY asof_ts_utc ORDER BY asof_ts_utc DESC",
+            "SELECT MAX(asof_ts_utc) AS latest_asof_ts_utc FROM sector_rotation_snapshot "
+            "WHERE venue=%s AND model_version=%s",
             (venue, model_version),
         )
-        return list(cur.fetchall())
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return row["latest_asof_ts_utc"]
 
 
 def fetch_active_sector_definitions(conn: Any) -> list[dict[str, Any]]:
@@ -108,18 +112,23 @@ def fetch_active_sector_definitions(conn: Any) -> list[dict[str, Any]]:
         return list(cur.fetchall())
 
 
-def fetch_cohort_snapshot_rows(
+def fetch_snapshot_rows_at(
     conn: Any, *, venue: str, model_version: str, asof_ts_utc: datetime
 ) -> list[dict[str, Any]]:
-    placeholders = ", ".join(["%s"] * len(WINDOWS))
+    """Fetch every row at the given as-of timestamp, unfiltered by window.
+
+    Intentionally does not restrict ``window_code`` to the canonical set so
+    the caller can detect unexpected/non-canonical window codes rather than
+    have them silently filtered out.
+    """
     with conn.cursor() as cur:
         cur.execute(
             "SELECT sector_code, window_code, rotation_score, rotation_state, confidence, "
             "participation_ratio, supporting_flags_json, generated_ts_utc "
             "FROM sector_rotation_snapshot "
-            f"WHERE venue=%s AND model_version=%s AND asof_ts_utc=%s AND window_code IN ({placeholders}) "
+            "WHERE venue=%s AND model_version=%s AND asof_ts_utc=%s "
             "ORDER BY sector_code, window_code",
-            (venue, model_version, asof_ts_utc, *WINDOWS),
+            (venue, model_version, asof_ts_utc),
         )
         return list(cur.fetchall())
 
@@ -144,35 +153,31 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FAILED TARGET_SCHEMA_MISSING missing={missing}")
             return 1
 
-        cohort_candidates = fetch_cohort_candidates(
-            conn, venue=args.venue, model_version=args.model_version
-        )
-        asof_ts_utc = select_coherent_cohort(cohort_candidates)
+        latest_asof_ts_utc = fetch_latest_asof(conn, venue=args.venue, model_version=args.model_version)
 
-        sector_definition_rows: list[dict[str, Any]] = []
+        sector_definition_rows: list[dict[str, Any]] = fetch_active_sector_definitions(conn)
         snapshot_rows: list[dict[str, Any]] = []
-        if asof_ts_utc is not None:
-            sector_definition_rows = fetch_active_sector_definitions(conn)
-            snapshot_rows = fetch_cohort_snapshot_rows(
+        if latest_asof_ts_utc is not None:
+            snapshot_rows = fetch_snapshot_rows_at(
                 conn,
                 venue=args.venue,
                 model_version=args.model_version,
-                asof_ts_utc=asof_ts_utc,
+                asof_ts_utc=latest_asof_ts_utc,
             )
     finally:
         conn.close()
+
+    observed_window_codes = {str(row["window_code"]) for row in snapshot_rows}
 
     dashboard = build_dashboard(
         sector_definition_rows,
         snapshot_rows,
         venue=args.venue,
         model_version=args.model_version,
-        asof_ts_utc=asof_ts_utc,
+        latest_asof_ts_utc=latest_asof_ts_utc,
+        observed_window_codes=observed_window_codes,
         now_utc=datetime.now(UTC),
     )
-    if dashboard.status == "DATA_UNAVAILABLE":
-        print(f"FAILED DASHBOARD_DATA_UNAVAILABLE reason={dashboard.reason}")
-        return 1
 
     html_content = render_dashboard_html(dashboard)
     json_content = json.dumps(
@@ -183,6 +188,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     atomic_text_write(html_content, output_html)
     atomic_text_write(json_content, output_json)
+
+    if dashboard.status == "DATA_UNAVAILABLE":
+        print(
+            f"PUBLISHED_UNAVAILABLE html={output_html} json={output_json} "
+            f"reason={dashboard.reason} asof={dashboard.asof_ts_utc}"
+        )
+        print(f"FAILED DASHBOARD_DATA_UNAVAILABLE reason={dashboard.reason}")
+        print(f"FINISHED runner={REPORT_NAME} exit_status=1")
+        return 1
 
     if args.output == "summary":
         available_cells = sum(

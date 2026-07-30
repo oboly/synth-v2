@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json as jsonlib
 from datetime import UTC, datetime, timedelta
 
 from src.reporting.sector_rotation_dashboard_v1 import (
@@ -10,6 +11,7 @@ from src.reporting.sector_rotation_dashboard_v1 import (
     render_dashboard_html,
     select_coherent_cohort,
 )
+from src.reporting.run_sector_rotation_dashboard_v1 import atomic_text_write
 
 
 NOW = datetime(2026, 7, 16, 19, 0, tzinfo=UTC)
@@ -38,26 +40,59 @@ def _snapshot_row(sector_code: str, window_code: str, **overrides):
     return row
 
 
-def _full_snapshot_rows():
+def _full_snapshot_rows(asof_sectors=None):
+    sectors = asof_sectors if asof_sectors is not None else _sector_defs()
     rows = []
-    for sector in _sector_defs():
+    for sector in sectors:
         for window_code in WINDOWS:
             rows.append(_snapshot_row(sector["sector_code"], window_code))
     return rows
 
 
-def test_select_coherent_cohort_picks_latest_with_all_windows():
-    candidates = [
-        {"asof_ts_utc": datetime(2026, 7, 16, 19, 0), "window_count": 2},
-        {"asof_ts_utc": datetime(2026, 7, 16, 18, 0), "window_count": 4},
-        {"asof_ts_utc": datetime(2026, 7, 16, 17, 0), "window_count": 4},
-    ]
-    assert select_coherent_cohort(candidates) == datetime(2026, 7, 16, 18, 0)
+def _window_codes(rows):
+    return {row["window_code"] for row in rows}
 
 
-def test_select_coherent_cohort_none_when_no_full_cohort():
-    candidates = [{"asof_ts_utc": datetime(2026, 7, 16, 19, 0), "window_count": 3}]
-    assert select_coherent_cohort(candidates) is None
+def _build(rows, *, latest_asof_ts_utc=ASOF, sector_defs=None):
+    return build_dashboard(
+        sector_defs if sector_defs is not None else _sector_defs(),
+        rows,
+        venue="bitvavo",
+        model_version="sector-rotation-v1.0.0",
+        latest_asof_ts_utc=latest_asof_ts_utc,
+        observed_window_codes=_window_codes(rows),
+        now_utc=NOW,
+    )
+
+
+# --- select_coherent_cohort: latest-only, no fallback -----------------------
+
+
+def test_select_coherent_cohort_accepts_canonical_windows_at_latest():
+    asof, reason = select_coherent_cohort(ASOF, {"1h", "4h", "1d", "7d"})
+    assert asof == ASOF
+    assert reason is None
+
+
+def test_select_coherent_cohort_rejects_missing_window_no_fallback():
+    asof, reason = select_coherent_cohort(ASOF, {"1h", "4h", "1d"})
+    assert asof is None
+    assert reason == "INCOMPLETE_LATEST_COHORT"
+
+
+def test_select_coherent_cohort_rejects_noncanonical_window_codes():
+    asof, reason = select_coherent_cohort(ASOF, {"1m", "5m", "15m", "30m"})
+    assert asof is None
+    assert reason == "INCOMPLETE_LATEST_COHORT"
+
+
+def test_select_coherent_cohort_none_when_no_candidates():
+    asof, reason = select_coherent_cohort(None, set())
+    assert asof is None
+    assert reason == "NO_COHORT_CANDIDATES"
+
+
+# --- freshness ---------------------------------------------------------------
 
 
 def test_classify_freshness_fresh_stale_future():
@@ -66,31 +101,63 @@ def test_classify_freshness_fresh_stale_future():
     assert classify_freshness(datetime(2026, 7, 16, 23, 0), NOW) == "FUTURE_TIMESTAMP"
 
 
-def test_build_dashboard_no_cohort_is_data_unavailable():
-    dashboard = build_dashboard(
-        [], [], venue="bitvavo", model_version="sector-rotation-v1.0.0", asof_ts_utc=None, now_utc=NOW
-    )
+# --- build_dashboard: no fallback to an older complete cohort ---------------
+
+
+def test_no_fallback_when_newest_cohort_incomplete_even_if_older_is_complete():
+    # Only the newest asof_ts_utc is ever inspected by build_dashboard; an
+    # older, complete cohort must never be substituted in.
+    newest_incomplete_rows = [
+        r for r in _full_snapshot_rows() if not (r["sector_code"] == "DEFI_YIELD" and r["window_code"] == "7d")
+    ]
+    dashboard = _build(newest_incomplete_rows, latest_asof_ts_utc=ASOF)
     assert dashboard.status == "DATA_UNAVAILABLE"
-    assert dashboard.reason == "NO_COHERENT_COHORT"
+    assert dashboard.reason == "INCOMPLETE_LATEST_COHORT"
+    assert dashboard.sectors == ()
+    # The attempted (newest) as-of timestamp is still surfaced for display.
+    assert dashboard.asof_ts_utc == ASOF
+
+
+def test_four_noncanonical_windows_is_data_unavailable():
+    rows = []
+    for sector in _sector_defs():
+        for window_code in ("1m", "5m", "15m", "30m"):
+            rows.append(_snapshot_row(sector["sector_code"], window_code))
+    dashboard = _build(rows, latest_asof_ts_utc=ASOF)
+    assert dashboard.status == "DATA_UNAVAILABLE"
+    assert dashboard.reason == "INCOMPLETE_LATEST_COHORT"
     assert dashboard.sectors == ()
 
 
-def test_build_dashboard_no_active_sectors_is_data_unavailable():
-    dashboard = build_dashboard(
-        [], _full_snapshot_rows(), venue="bitvavo", model_version="sector-rotation-v1.0.0",
-        asof_ts_utc=ASOF, now_utc=NOW,
-    )
+def test_missing_sector_window_cell_in_newest_cohort_is_data_unavailable():
+    rows = [
+        r for r in _full_snapshot_rows() if not (r["sector_code"] == "DEFI_YIELD" and r["window_code"] == "7d")
+    ]
+    dashboard = _build(rows, latest_asof_ts_utc=ASOF)
+    assert dashboard.status == "DATA_UNAVAILABLE"
+    assert dashboard.reason == "INCOMPLETE_LATEST_COHORT"
+    assert dashboard.sectors == ()
+
+
+def test_no_cohort_candidates_is_data_unavailable():
+    dashboard = _build([], latest_asof_ts_utc=None)
+    assert dashboard.status == "DATA_UNAVAILABLE"
+    assert dashboard.reason == "NO_COHORT_CANDIDATES"
+    assert dashboard.asof_ts_utc is None
+    assert dashboard.age_seconds is None
+
+
+def test_no_active_sectors_is_data_unavailable():
+    dashboard = _build(_full_snapshot_rows(), latest_asof_ts_utc=ASOF, sector_defs=[])
     assert dashboard.status == "DATA_UNAVAILABLE"
     assert dashboard.reason == "NO_ACTIVE_SECTORS"
 
 
-def test_build_dashboard_available_with_full_four_windows():
-    dashboard = build_dashboard(
-        _sector_defs(), _full_snapshot_rows(), venue="bitvavo",
-        model_version="sector-rotation-v1.0.0", asof_ts_utc=ASOF, now_utc=NOW,
-    )
+def test_exact_canonical_complete_latest_cohort_publishes_normally():
+    dashboard = _build(_full_snapshot_rows(), latest_asof_ts_utc=ASOF)
     assert dashboard.status == "AVAILABLE"
     assert dashboard.freshness_state == "FRESH"
+    assert dashboard.reason is None
     assert len(dashboard.sectors) == 2
     for sector in dashboard.sectors:
         assert len(sector.cells) == 4
@@ -99,44 +166,25 @@ def test_build_dashboard_available_with_full_four_windows():
             assert cell.cell_status == "AVAILABLE"
 
 
-def test_build_dashboard_deterministic_ordering_follows_sector_definition_order():
-    dashboard = build_dashboard(
-        _sector_defs(), _full_snapshot_rows(), venue="bitvavo",
-        model_version="sector-rotation-v1.0.0", asof_ts_utc=ASOF, now_utc=NOW,
-    )
+def test_deterministic_ordering_follows_sector_definition_order():
+    dashboard = _build(_full_snapshot_rows(), latest_asof_ts_utc=ASOF)
     assert [s.sector_code for s in dashboard.sectors] == ["AI_COMPUTE", "DEFI_YIELD"]
 
 
-def test_build_dashboard_missing_window_marks_cell_unavailable_not_zero():
-    rows = [r for r in _full_snapshot_rows() if not (r["sector_code"] == "DEFI_YIELD" and r["window_code"] == "7d")]
-    dashboard = build_dashboard(
-        _sector_defs(), rows, venue="bitvavo", model_version="sector-rotation-v1.0.0",
-        asof_ts_utc=ASOF, now_utc=NOW,
-    )
-    assert dashboard.status == "DEGRADED"
-    defi = next(s for s in dashboard.sectors if s.sector_code == "DEFI_YIELD")
-    missing_cell = next(c for c in defi.cells if c.window_code == "7d")
-    assert missing_cell.cell_status == "UNAVAILABLE"
-    assert missing_cell.rotation_score is None
-    assert missing_cell.participation_ratio is None
-
-
-def test_build_dashboard_stale_cohort_is_degraded_with_age():
-    dashboard = build_dashboard(
-        _sector_defs(), _full_snapshot_rows(), venue="bitvavo",
-        model_version="sector-rotation-v1.0.0",
-        asof_ts_utc=datetime(2026, 7, 16, 10, 0), now_utc=NOW,
-    )
+def test_stale_cohort_is_degraded_with_age():
+    stale_asof = datetime(2026, 7, 16, 10, 0)
+    rows = _full_snapshot_rows()
+    dashboard = _build(rows, latest_asof_ts_utc=stale_asof)
     assert dashboard.status == "DEGRADED"
     assert dashboard.freshness_state == "STALE"
     assert dashboard.age_seconds == timedelta(hours=9).total_seconds()
 
 
+# --- JSON/HTML share one view model ------------------------------------------
+
+
 def test_json_and_html_derive_from_same_view_model():
-    dashboard = build_dashboard(
-        _sector_defs(), _full_snapshot_rows(), venue="bitvavo",
-        model_version="sector-rotation-v1.0.0", asof_ts_utc=ASOF, now_utc=NOW,
-    )
+    dashboard = _build(_full_snapshot_rows(), latest_asof_ts_utc=ASOF)
     payload = dashboard_to_json_dict(dashboard)
     rendered = render_dashboard_html(dashboard)
     assert payload["status"] == dashboard.status
@@ -147,11 +195,18 @@ def test_json_and_html_derive_from_same_view_model():
         assert set(sector["windows"].keys()) == set(WINDOWS)
 
 
+def test_unavailable_json_and_html_share_view_model_and_reason():
+    dashboard = _build([], latest_asof_ts_utc=None)
+    payload = dashboard_to_json_dict(dashboard)
+    rendered = render_dashboard_html(dashboard)
+    assert payload["status"] == "DATA_UNAVAILABLE"
+    assert payload["reason"] == "NO_COHORT_CANDIDATES"
+    assert "NO_COHORT_CANDIDATES" in rendered
+    assert payload["reason"] in rendered
+
+
 def test_json_preserves_canonical_machine_codes():
-    dashboard = build_dashboard(
-        _sector_defs(), _full_snapshot_rows(), venue="bitvavo",
-        model_version="sector-rotation-v1.0.0", asof_ts_utc=ASOF, now_utc=NOW,
-    )
+    dashboard = _build(_full_snapshot_rows(), latest_asof_ts_utc=ASOF)
     payload = dashboard_to_json_dict(dashboard)
     first_sector = payload["sectors"][0]
     assert first_sector["sector_code"] == "AI_COMPUTE"
@@ -159,56 +214,55 @@ def test_json_preserves_canonical_machine_codes():
     assert payload["model_version"] == "sector-rotation-v1.0.0"
 
 
-def test_json_does_not_substitute_zero_for_unavailable():
-    rows = [r for r in _full_snapshot_rows() if not (r["sector_code"] == "DEFI_YIELD" and r["window_code"] == "7d")]
-    dashboard = build_dashboard(
-        _sector_defs(), rows, venue="bitvavo", model_version="sector-rotation-v1.0.0",
-        asof_ts_utc=ASOF, now_utc=NOW,
-    )
-    payload = dashboard_to_json_dict(dashboard)
-    defi = next(s for s in payload["sectors"] if s["sector_code"] == "DEFI_YIELD")
-    cell = defi["windows"]["7d"]
-    assert cell["cell_status"] == "UNAVAILABLE"
-    assert cell["rotation_score"] is None
-    assert cell["participation_ratio"] is None
-
-
 def test_render_dashboard_shows_proxy_wording_not_measured_flow():
-    dashboard = build_dashboard(
-        _sector_defs(), _full_snapshot_rows(), venue="bitvavo",
-        model_version="sector-rotation-v1.0.0", asof_ts_utc=ASOF, now_utc=NOW,
-    )
+    dashboard = _build(_full_snapshot_rows(), latest_asof_ts_utc=ASOF)
     rendered = render_dashboard_html(dashboard)
-    assert "proxy" in rendered.lower()
+    assert "proxi" in rendered.lower()
     assert "not measured capital inflow or outflow" in rendered.lower()
     payload = dashboard_to_json_dict(dashboard)
     assert "proxi" in payload["rotation_proxy_disclaimer"].lower()
 
 
-def test_render_unavailable_page_contains_reason():
-    dashboard = build_dashboard(
-        [], [], venue="bitvavo", model_version="sector-rotation-v1.0.0", asof_ts_utc=None, now_utc=NOW
+def test_render_unavailable_page_contains_reason_asof_age_generated_safety():
+    dashboard = _build(
+        [r for r in _full_snapshot_rows() if not (r["sector_code"] == "DEFI_YIELD" and r["window_code"] == "7d")],
+        latest_asof_ts_utc=ASOF,
     )
     rendered = render_dashboard_html(dashboard)
     assert "DATA UNAVAILABLE" in rendered
-    assert "NO_COHERENT_COHORT" in rendered
+    assert "INCOMPLETE_LATEST_COHORT" in rendered
+    assert "2026-07-16T18:00:00Z" in rendered  # attempted as-of
+    assert "Age" in rendered
+    assert "Generated" in rendered
+    assert "db_writes=0" in rendered
+    assert "decision_gate=none" in rendered
 
 
-def test_render_dashboard_shows_freshness_and_asof():
-    dashboard = build_dashboard(
-        _sector_defs(), _full_snapshot_rows(), venue="bitvavo",
-        model_version="sector-rotation-v1.0.0", asof_ts_utc=ASOF, now_utc=NOW,
-    )
+def test_render_unavailable_page_shows_unknown_asof_when_no_candidates():
+    dashboard = _build([], latest_asof_ts_utc=None)
+    rendered = render_dashboard_html(dashboard)
+    assert "Attempted as of unknown" in rendered
+    assert "Age unknown" in rendered
+
+
+def test_render_dashboard_shows_age_alongside_freshness_and_asof():
+    dashboard = _build(_full_snapshot_rows(), latest_asof_ts_utc=ASOF)
     rendered = render_dashboard_html(dashboard)
     assert "FRESH" in rendered
     assert "2026-07-16T18:00:00Z" in rendered
+    assert "Age 1h00m" in rendered
+
+
+def test_json_does_not_substitute_zero_for_unavailable():
+    dashboard = _build([], latest_asof_ts_utc=None)
+    payload = dashboard_to_json_dict(dashboard)
+    assert payload["sectors"] == []
+    assert payload["asof_ts_utc"] is None
+    assert payload["age_seconds"] is None
 
 
 def test_safety_markers_are_all_zero_or_none():
-    dashboard = build_dashboard(
-        _sector_defs(), _full_snapshot_rows(), venue="bitvavo",
-        model_version="sector-rotation-v1.0.0", asof_ts_utc=ASOF, now_utc=NOW,
-    )
+    dashboard = _build(_full_snapshot_rows(), latest_asof_ts_utc=ASOF)
     safety = dashboard_to_json_dict(dashboard)["safety"]
     assert safety == {
         "db_writes": 0,
@@ -220,6 +274,38 @@ def test_safety_markers_are_all_zero_or_none():
         "execution_planner": "none",
         "executor": "none",
     }
+
+
+def test_unavailable_dashboard_also_carries_safety_markers():
+    dashboard = _build([], latest_asof_ts_utc=None)
+    safety = dashboard_to_json_dict(dashboard)["safety"]
+    assert safety["db_writes"] == 0
+    assert safety["decision_gate"] == "none"
+
+
+# --- atomic publish must replace prior output --------------------------------
+
+
+def test_unavailable_run_replaces_pre_existing_output_files(tmp_path):
+    html_path = tmp_path / "sector-overview.html"
+    json_path = tmp_path / "sector-overview.json"
+
+    available_dashboard = _build(_full_snapshot_rows(), latest_asof_ts_utc=ASOF)
+    atomic_text_write(render_dashboard_html(available_dashboard), html_path)
+    atomic_text_write(jsonlib.dumps(dashboard_to_json_dict(available_dashboard)), json_path)
+    assert "AI / Compute" in html_path.read_text(encoding="utf-8")
+    assert '"status": "AVAILABLE"' in json_path.read_text(encoding="utf-8")
+
+    unavailable_dashboard = _build([], latest_asof_ts_utc=None)
+    atomic_text_write(render_dashboard_html(unavailable_dashboard), html_path)
+    atomic_text_write(jsonlib.dumps(dashboard_to_json_dict(unavailable_dashboard)), json_path)
+
+    html_content = html_path.read_text(encoding="utf-8")
+    json_content = json_path.read_text(encoding="utf-8")
+    assert "AI / Compute" not in html_content
+    assert "DATA UNAVAILABLE" in html_content
+    assert '"status": "AVAILABLE"' not in json_content
+    assert '"status": "DATA_UNAVAILABLE"' in json_content
 
 
 def test_module_has_no_write_capable_or_execution_layer_import():
