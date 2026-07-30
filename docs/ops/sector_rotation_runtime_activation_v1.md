@@ -55,36 +55,32 @@ Neither host is authorized as `production_runtime_owner` by this
 preparation. Both remain candidate selections only, consistent with
 `SELECTED_PENDING_PREFLIGHT` in the ownership contract's lifecycle model.
 
-### Registry onboarding is a required, separate follow-up
+### Registry onboarding is complete; preflight, acceptance, and authorization remain outstanding
 
 `deploy/ownership/writer_capability_ownership_v1.json` is validated by
 `src.operations.validate_writer_capability_ownership_v1`, which enforces a
 **closed** `EXPECTED_CAPABILITY_IDS` set (`registry.capabilities must
 contain exactly {...}`) and a closed `CAPABILITY_IDENTITY` mapping in the
-validator source itself. `sector_rotation_snapshot` is not yet a member of
-that closed set. Adding a new writer capability therefore requires editing
-the shared authorization validator module
-(`src/operations/validate_writer_capability_ownership_v1.py`), not only the
-JSON registry file.
-
-That module is the shared, security-critical authorization boundary used by
-every writer capability's `ExecStartPre` guard
-(`src.operations.verify_writer_capability_authorization_v1`). This
-preparation deliberately does **not** modify it: registry onboarding for a
-new capability id is a distinct, reviewable change with its own blast
-radius and deserves its own focused review, not a bundled edit inside a
-"prepare, do not activate" runtime lane.
+validator source itself. `sector_rotation_snapshot` is now a member of that
+closed set (five capabilities total), and the shared authorization module
+(`src/operations/writer_capability_authorization_v1.py`) recognizes its
+`capability_identity` as `sector-rotation-snapshot-writer`. Registry
+onboarding landed as its own reviewed, non-authorizing change: the registry
+entry carries `runtime_lifecycle=SELECTED_PENDING_PREFLIGHT`,
+`production_runtime_owner=UNASSIGNED`,
+`production_authorization_status=SELECTED_PENDING_PREFLIGHT`,
+`acceptance_status=PENDING`, and `acceptance_evidence=null`. No production
+authorization, acceptance permit, host mutation, or database write was
+performed by that change.
 
 Consequence: the `ExecStartPre` authorization guard in
-`deploy/systemd/synth-sector-rotation-writer.service` references capability
-id `sector_rotation_snapshot`, which does not yet exist in the registry.
-Run today, the guard fails closed with `WRITER_AUTHORIZATION_DENIED` --
-this is the correct, safe behavior for an unregistered capability, not a
-defect. **Registry onboarding (adding `sector_rotation_snapshot` to
-`EXPECTED_CAPABILITY_IDS`, `CAPABILITY_IDENTITY`, and the registry JSON with
-an explicit `SELECTED_PENDING_PREFLIGHT` entry) is a required prerequisite
-before the writer service can pass its own authorization guard**, and must
-land as its own reviewed change before any acceptance run described below.
+`deploy/systemd/synth-sector-rotation-writer.service` still fails closed
+with `WRITER_AUTHORIZATION_DENIED` when run today -- this remains the
+correct, safe behavior while the capability is `SELECTED_PENDING_PREFLIGHT`
+and unowned, not a defect. gurkDB host preflight (step 2 below), controlled
+writer acceptance (step 3), and a separate production authorization
+decision (step 4) remain required and unresolved before the guard can pass
+and any acceptance run described below may proceed.
 
 The publisher is read-only and writes no database table, so it carries no
 writer-capability registry entry, matching the existing
@@ -220,10 +216,12 @@ before any further step.
 
 ## Activation Order (not performed by this preparation)
 
-1. Onboard `sector_rotation_snapshot` into the writer-capability registry
+1. ~~Onboard `sector_rotation_snapshot` into the writer-capability registry
    (`EXPECTED_CAPABILITY_IDS`, `CAPABILITY_IDENTITY`,
    `deploy/ownership/writer_capability_ownership_v1.json`) as its own
-   reviewed change, lifecycle `SELECTED_PENDING_PREFLIGHT`.
+   reviewed change, lifecycle `SELECTED_PENDING_PREFLIGHT`.~~ **Complete.**
+   Live gurkDB and Odroid preflight remain unresolved; no acceptance or
+   activation is claimed by registry onboarding.
 2. Run `python -m src.operations.run_host_preflight_v1 --capability
    sector_rotation_snapshot --expected-host gurkdb ... --strict` on gurkDB.
 3. Complete controlled writer acceptance on gurkDB: one exact commit, one

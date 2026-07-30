@@ -39,7 +39,9 @@ Current correction state:
 public_price_snapshot.production_runtime_owner=gurkdb
 public_candle_freshness.production_runtime_owner=gurkdb
 market_rotation_pressure.production_runtime_owner=UNASSIGNED
-native_short_4h_chain.production_runtime_owner=UNASSIGNED
+native_short_4h_chain.production_runtime_owner=devlap
+native_short_4h_chain.runtime_lifecycle=ACTIVE
+native_short_4h_chain.production_authorization_status=AUTHORIZED
 ```
 
 Rotation Pressure preserves historical facts without granting authority:
@@ -177,7 +179,8 @@ Summary:
 | `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | gurkdb | ACTIVE |
 | `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
 | `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
-| `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | UNASSIGNED | UNASSIGNED |
+| `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | devlap | ACTIVE |
+| `sector_rotation_snapshot` | public market-data writer | `scripts/run_sector_rotation_engine_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
 
 Public Price Snapshot is active on gurkDB.
 Public Candle Freshness passed strict gurkDB preflight and two controlled
@@ -187,7 +190,16 @@ reports zero mismatch. It is accepted and separately authorized to gurkDB in
 `AUTHORIZED_INACTIVE`, pending exact merged-commit deployment and activation.
 Rotation Pressure remains selected for strict preflight only and retains
 `production_runtime_owner=UNASSIGNED`.
-`native_short_4h_chain` is not selected and remains `UNASSIGNED`.
+`native_short_4h_chain` is selected, authorized, and active on `devlap`.
+Its supported Native SHORT scope remains `BTC_ONLY` in `PAPER` execution mode;
+multi-asset and map-level expansion remain `CLOSED`, and live trading remains
+`NOT_GRANTED`.
+`sector_rotation_snapshot` is registry-onboarded as `SELECTED_PENDING_PREFLIGHT`
+with `candidate_host=gurkdb` and `selected_host=gurkdb`; it retains
+`production_runtime_owner=UNASSIGNED`, `acceptance_status=PENDING`, and no
+production authorization, acceptance permit, or activation. See
+`docs/ops/sector_rotation_runtime_activation_v1.md` for the remaining
+preflight, acceptance, and cutover blockers.
 
 Native SHORT remains independently evaluated from the light DB writers because
 it owns CPU-heavy chain stages, source-identity checks, DB writes beyond public
@@ -196,12 +208,10 @@ state.
 
 The repository-only ownership reconciliation and exact fail-closed blocker
 contract are recorded in
-`docs/ops/native_short_4h_chain_ownership_preflight_v1.md`. PR #143 is merged,
-but no one host currently has a consistent exact-commit DB-writer,
-filesystem-publication, installed-unit, single-scheduler, and rollback proof.
-Writer execution and canonical filesystem publication therefore remain
-co-located within this capability, and all Native SHORT ownership fields remain
-`UNASSIGNED`.
+`docs/ops/native_short_4h_chain_ownership_preflight_v1.md`. Its blocker,
+acceptance, production-decision, and scheduled-activation evidence establish
+`devlap` as the co-located writer and publication host for the supported
+`BTC_ONLY` `PAPER` scope.
 
 ## Owner Identity
 
@@ -451,6 +461,7 @@ public_price_snapshot ConditionHost=gurkdb
 public_candle_freshness ConditionHost=gurkdb
 market_rotation_pressure ConditionHost=devlap
 native_short_4h_chain ConditionHost=devlap
+sector_rotation_snapshot ConditionHost=gurkdb
 User=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
 ```

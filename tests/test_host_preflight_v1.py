@@ -102,6 +102,16 @@ def test_check_stage_partition_is_exhaustive_and_disjoint() -> None:
     assert preflight.CUTOVER_CHECKS == ("rollback_capability",)
 
 
+def test_sector_rotation_snapshot_capability_specific_dependency_matrix() -> None:
+    # Proven from the writer's real call graph (docs/ops/sector_rotation_runtime_activation_v1.md):
+    # it reads canonical public candles, asset_cluster_membership, sector_definition,
+    # and BTC/ETH benchmarks from MariaDB and never calls an exchange directly.
+    assert preflight._external_required("sector_rotation_snapshot", "mariadb_connectivity") is True
+    assert preflight._external_required("sector_rotation_snapshot", "runtime_configuration") is True
+    assert preflight._external_required("sector_rotation_snapshot", "exchange_api_connectivity") is False
+    assert preflight._external_required("sector_rotation_snapshot", "private_exchange_credentials") is False
+
+
 def test_market_rotation_pressure_capability_specific_dependency_matrix() -> None:
     # Proven from code: rotation history/pressure read persisted candles from
     # MariaDB and use only optional public CoinGecko context; no exchange API.
@@ -121,7 +131,12 @@ def test_market_rotation_pressure_capability_specific_dependency_matrix() -> Non
 
 @pytest.mark.parametrize(
     "capability",
-    ("public_price_snapshot", "public_candle_freshness", "market_rotation_pressure"),
+    (
+        "public_price_snapshot",
+        "public_candle_freshness",
+        "market_rotation_pressure",
+        "sector_rotation_snapshot",
+    ),
 )
 def test_selected_public_capabilities_strict_behaviour(
     capability: str, monkeypatch: pytest.MonkeyPatch
@@ -384,9 +399,11 @@ def test_ownership_registry_records_price_active_and_candle_authorized_inactive(
     assert pressure["production_runtime_owner"] == "UNASSIGNED"
     assert pressure["production_authorization_status"] == "UNASSIGNED"
     native = caps["native_short_4h_chain"]
-    assert native["runtime_lifecycle"] == "UNASSIGNED"
-    assert native["production_runtime_owner"] == "UNASSIGNED"
-    assert native["production_authorization_status"] == "UNASSIGNED"
+    assert native["candidate_host"] == "devlap"
+    assert native["selected_host"] == "devlap"
+    assert native["runtime_lifecycle"] == "ACTIVE"
+    assert native["production_runtime_owner"] == "devlap"
+    assert native["production_authorization_status"] == "AUTHORIZED"
 
 
 def test_json_output_exposes_stage_and_strict_stage_contract(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

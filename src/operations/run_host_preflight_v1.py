@@ -96,6 +96,7 @@ CAPABILITY_MODULES = {
         "src.advice.run_paper_advice_policy_v1",
         "src.strategy_runtime.run_strategy_runtime_snapshot",
     ),
+    "sector_rotation_snapshot": ("src.research.run_sector_rotation_engine_v1",),
 }
 
 CAPABILITY_UNITS = {
@@ -115,6 +116,10 @@ CAPABILITY_UNITS = {
         "deploy/systemd/synth-chain-4h.service",
         "deploy/systemd/synth-chain-4h.timer",
     ),
+    "sector_rotation_snapshot": (
+        "deploy/systemd/synth-sector-rotation-writer.service",
+        "deploy/systemd/synth-sector-rotation-writer.timer",
+    ),
 }
 
 CAPABILITY_THRESHOLDS = {
@@ -122,6 +127,7 @@ CAPABILITY_THRESHOLDS = {
     "public_candle_freshness": {"min_cpus": 1, "min_mem_mb": 1024, "min_free_gb": 2.0},
     "market_rotation_pressure": {"min_cpus": 1, "min_mem_mb": 1024, "min_free_gb": 2.0},
     "native_short_4h_chain": {"min_cpus": 2, "min_mem_mb": 4096, "min_free_gb": 10.0},
+    "sector_rotation_snapshot": {"min_cpus": 1, "min_mem_mb": 1024, "min_free_gb": 2.0},
 }
 
 # Locally measurable, read-only host facts. Always authoritative; never merged
@@ -214,6 +220,10 @@ CAPABILITY_EXTERNAL_REQUIRED_OVERRIDES = {
         "exchange_api_connectivity": False,
         "private_exchange_credentials": False,
     },
+    "sector_rotation_snapshot": {
+        "exchange_api_connectivity": False,
+        "private_exchange_credentials": False,
+    },
 }
 
 # Short, capability-specific justification recorded in the detail for a check
@@ -225,6 +235,8 @@ CAPABILITY_EXTERNAL_NOTES = {
     ("market_rotation_pressure", "private_exchange_credentials"): "no private exchange credentials (optional CoinGecko key degrades gracefully); MariaDB runtime configuration remains required",
     ("native_short_4h_chain", "exchange_api_connectivity"): "market-only chain consumes persisted market state; does not call the exchange API directly",
     ("native_short_4h_chain", "private_exchange_credentials"): "market-only chain reads persisted state; no private exchange credentials; MariaDB runtime configuration remains required",
+    ("sector_rotation_snapshot", "exchange_api_connectivity"): "reads canonical public candles, asset_cluster_membership, sector_definition, and benchmarks from MariaDB; no direct exchange API dependency",
+    ("sector_rotation_snapshot", "private_exchange_credentials"): "no private exchange credentials; MariaDB runtime configuration remains required",
 }
 
 DEFERRED_CHECK_DESIGN = {

@@ -419,29 +419,43 @@ def test_services_do_not_override_wrapper_lock_env_vars():
 
 
 # ---------------------------------------------------------------------------
-# Writer authorization registry alignment (documented gap, not silently missing)
+# Writer authorization registry alignment (onboarded, still non-authorizing)
 # ---------------------------------------------------------------------------
 
 
-def test_writer_authorization_capability_not_yet_in_closed_registry_is_documented():
-    from src.operations.validate_writer_capability_ownership_v1 import EXPECTED_CAPABILITY_IDS
-
-    assert "sector_rotation_snapshot" not in EXPECTED_CAPABILITY_IDS, (
-        "registry onboarding landed without updating this test's expectation; "
-        "update the ops doc and this test together"
+def test_writer_authorization_capability_is_registered_and_documented():
+    from src.operations.validate_writer_capability_ownership_v1 import (
+        CAPABILITY_IDENTITY,
+        EXPECTED_CAPABILITY_IDS,
     )
+
+    assert "sector_rotation_snapshot" in EXPECTED_CAPABILITY_IDS, (
+        "registry onboarding for sector_rotation_snapshot is expected to have "
+        "landed as its own reviewed change; update this test if that changed"
+    )
+    assert CAPABILITY_IDENTITY["sector_rotation_snapshot"] == "sector-rotation-snapshot-writer"
     ops_doc_text = OPS_DOC.read_text()
     assert "EXPECTED_CAPABILITY_IDS" in ops_doc_text
-    assert "required prerequisite" in ops_doc_text.lower() or "required, separate follow-up" in ops_doc_text.lower()
+    assert "registry onboarding is complete" in ops_doc_text.lower()
 
 
-def test_writer_capability_registry_is_unchanged_by_this_preparation():
+def test_writer_capability_registry_entry_is_selected_pending_preflight_only():
     import json
 
     registry_path = REPO_ROOT / "deploy/ownership/writer_capability_ownership_v1.json"
     registry = json.loads(registry_path.read_text())
-    capability_ids = {c.get("capability_id") for c in registry["capabilities"]}
-    assert "sector_rotation_snapshot" not in capability_ids
+    cap = next(
+        c for c in registry["capabilities"] if c.get("capability_id") == "sector_rotation_snapshot"
+    )
+    # Registry onboarding landed, but must remain strictly non-authorizing:
+    # no production owner, no acceptance, no activation.
+    assert cap["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT"
+    assert cap["production_runtime_owner"] == "UNASSIGNED"
+    assert cap["production_authorization_status"] == "SELECTED_PENDING_PREFLIGHT"
+    assert cap["acceptance_status"] == "PENDING"
+    assert cap["acceptance_evidence"] is None
+    assert cap["production_decision_evidence"] == ""
+    assert cap["observed_runtime_state"] == []
 
 
 # ---------------------------------------------------------------------------

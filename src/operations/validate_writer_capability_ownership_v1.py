@@ -32,12 +32,14 @@ EXPECTED_CAPABILITY_IDS = {
     "public_candle_freshness",
     "market_rotation_pressure",
     "native_short_4h_chain",
+    "sector_rotation_snapshot",
 }
 CAPABILITY_IDENTITY = {
     "public_price_snapshot": "public-price-snapshot-writer",
     "public_candle_freshness": "public-candle-freshness-writer",
     "market_rotation_pressure": "market-rotation-pressure-writer",
     "native_short_4h_chain": "native-short-4h-chain",
+    "sector_rotation_snapshot": "sector-rotation-snapshot-writer",
 }
 _RFC3339_RE = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$"
