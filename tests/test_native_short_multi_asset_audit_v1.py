@@ -308,6 +308,32 @@ def test_promotion_and_removal_evidence_remain_unresolved() -> None:
     assert reasons[REMOVAL_CONTRACT_MISSING] == BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE
 
 
+def test_promotion_accepted_evidence_clears_only_promotion_blocker() -> None:
+    active, reasons = evaluate_global_blockers(
+        provenance_attributed=True,
+        promotion_accepted=True,
+        promotion_evidence_reason="EVIDENCE_ACCEPTED",
+    )
+    assert PROMOTION_CONTRACT_MISSING not in active
+    assert reasons[PROMOTION_CONTRACT_MISSING] == BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED
+    # every other blocker remains active regardless of promotion evidence
+    assert set(active) == {
+        REMOVAL_CONTRACT_MISSING,
+        BOOTSTRAP_ORCHESTRATION_BLOCKED,
+        MULTI_SCOPE_FAILURE_ISOLATION_MISSING,
+    }
+
+
+def test_promotion_evaluated_but_rejected_evidence_keeps_blocker_active_with_detail() -> None:
+    active, reasons = evaluate_global_blockers(
+        provenance_attributed=True,
+        promotion_accepted=False,
+        promotion_evidence_reason="EVIDENCE_ABSENT",
+    )
+    assert PROMOTION_CONTRACT_MISSING in active
+    assert reasons[PROMOTION_CONTRACT_MISSING] == BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID
+
+
 def test_bootstrap_and_isolation_blockers_remain_active_pending_separate_lanes() -> None:
     active, reasons = evaluate_global_blockers(provenance_attributed=True)
     assert BOOTSTRAP_ORCHESTRATION_BLOCKED in active

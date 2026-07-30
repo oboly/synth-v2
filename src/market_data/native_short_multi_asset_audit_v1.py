@@ -13,6 +13,10 @@ from src.market_data.native_short_fib_context_v1 import (
     Candle,
     build_native_short_context_row,
 )
+from src.market_data.native_short_promotion_acceptance_evidence_v1 import (
+    PROMOTION_ACCEPTANCE_CONTRACT_VERSION,
+    evaluate_promotion_acceptance_evidence,
+)
 from src.market_data.native_short_writer_provenance_v1 import (
     NativeShortWriterExecutionMode,
     NativeShortWriterProvenanceState,
@@ -83,7 +87,10 @@ BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE = "IMPLEMENTATION_PENDING_SE
 
 
 def evaluate_global_blockers(
-    *, provenance_attributed: bool
+    *,
+    provenance_attributed: bool,
+    promotion_accepted: bool = False,
+    promotion_evidence_reason: str | None = None,
 ) -> tuple[tuple[str, ...], Mapping[str, str]]:
     """Derive active global blockers from explicit evaluated evidence only.
 
@@ -91,6 +98,12 @@ def evaluate_global_blockers(
     owned evidence source stays active. Code/tests existing for a contract
     is never treated as acceptance, and narrative documentation is never
     treated as runtime acceptance state.
+
+    ``promotion_accepted`` / ``promotion_evidence_reason`` come from
+    ``native_short_promotion_acceptance_evidence_v1.evaluate_promotion_acceptance_evidence``.
+    Leaving both at their defaults preserves prior behavior (no canonical
+    evidence source wired) for callers that do not evaluate promotion
+    evidence.
 
     Returns ``(active_blocker_codes, reason_by_code)`` where
     ``reason_by_code`` covers all of ``GLOBAL_BLOCKERS`` (active or not).
@@ -108,15 +121,30 @@ def evaluate_global_blockers(
         active.append(WRITER_PROVENANCE_UNATTRIBUTED)
         reasons[WRITER_PROVENANCE_UNATTRIBUTED] = BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID
 
-    # PROMOTION_CONTRACT_MISSING / REMOVAL_CONTRACT_MISSING: the promotion and
-    # removal transactions are implemented and unit-tested in
-    # native_short_scope_administration_transaction_v1.py, but no canonical,
-    # explicitly owned, machine-readable production-operational-acceptance
-    # evidence source exists for either transaction (unlike writer provenance,
-    # which has one). Implementation/tests are not accepted as evidence, so
-    # both blockers remain unconditionally active until such a source exists.
-    active.append(PROMOTION_CONTRACT_MISSING)
-    reasons[PROMOTION_CONTRACT_MISSING] = BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE
+    # PROMOTION_CONTRACT_MISSING: now wired to the canonical, machine-readable
+    # PROMOTE_SCOPE operational-acceptance evidence contract in
+    # native_short_promotion_acceptance_evidence_v1.py (reusing the existing
+    # native_short_scope_admin_operation_v1 ledger as the evidence store).
+    # Absent, invalid, ambiguous, wrong-version, or wrong-scope evidence fails
+    # closed. A caller that does not evaluate promotion evidence (the default)
+    # preserves the pre-existing NO_CANONICAL_EVIDENCE_SOURCE reason exactly.
+    if promotion_accepted:
+        reasons[PROMOTION_CONTRACT_MISSING] = BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED
+    else:
+        active.append(PROMOTION_CONTRACT_MISSING)
+        reasons[PROMOTION_CONTRACT_MISSING] = (
+            BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE
+            if promotion_evidence_reason is None
+            else BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID
+        )
+
+    # REMOVAL_CONTRACT_MISSING: the removal transaction is implemented and
+    # unit-tested in native_short_scope_administration_transaction_v1.py, but
+    # no canonical, explicitly owned, machine-readable production-operational-
+    # acceptance evidence source exists for it yet. Implementation/tests are
+    # not accepted as evidence, so this blocker remains unconditionally active
+    # until such a source exists (out of scope for this lane; see AGENTS.md
+    # task boundary).
     active.append(REMOVAL_CONTRACT_MISSING)
     reasons[REMOVAL_CONTRACT_MISSING] = BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE
 
@@ -285,6 +313,10 @@ class AuditReport:
     writer_provenance_blocker_active: bool
     global_blocker_codes: tuple[str, ...]
     global_blocker_evidence: Mapping[str, str] = ()  # type: ignore[assignment]
+    promotion_acceptance_contract_version: str = PROMOTION_ACCEPTANCE_CONTRACT_VERSION
+    promotion_accepted_operation_uuid: str | None = None
+    promotion_acceptance_accepted: bool = False
+    promotion_acceptance_evaluation_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -312,6 +344,10 @@ class AuditReport:
             "writer_provenance_blocker_active": self.writer_provenance_blocker_active,
             "global_blocker_codes": list(self.global_blocker_codes),
             "global_blocker_evidence": dict(self.global_blocker_evidence),
+            "promotion_acceptance_contract_version": self.promotion_acceptance_contract_version,
+            "promotion_accepted_operation_uuid": self.promotion_accepted_operation_uuid,
+            "promotion_acceptance_accepted": self.promotion_acceptance_accepted,
+            "promotion_acceptance_evaluation_reason": self.promotion_acceptance_evaluation_reason,
             "safe_max_simultaneous_cohort_size": 1,
             "proposed_sequential_queue": list(self.proposed_sequential_queue),
             "results": [item.to_dict() for item in self.results],
@@ -709,8 +745,31 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
         ORDER BY run_id
         """,
     )
+    admin_operation_rows = _fetch_all(
+        conn,
+        """
+        SELECT operation_uuid, operation_type, venue, symbol, quote_currency,
+               fib_trading_horizon, primary_interval, supporting_interval,
+               schema_version, metadata_digest, completed_at_utc,
+               result_class, result_code
+        FROM native_short_scope_admin_operation_v1
+        WHERE operation_type = 'PROMOTE_SCOPE'
+        ORDER BY scope_admin_operation_id
+        """,
+    )
     ledger_row_count = sum(
-        map(len, (scope_rows, map_rows, generation_rows, lifecycle_rows, status_rows, writer_rows))
+        map(
+            len,
+            (
+                scope_rows,
+                map_rows,
+                generation_rows,
+                lifecycle_rows,
+                status_rows,
+                writer_rows,
+                admin_operation_rows,
+            ),
+        )
     )
     _phase(progress, "native_short_ledger", ledger_row_count, started)
 
@@ -770,8 +829,11 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
         == NativeShortWriterProvenanceState.ATTRIBUTABLE
         for row in provenance_rows
     )
+    promotion_evaluation = evaluate_promotion_acceptance_evidence(admin_operation_rows)
     active_blockers, blocker_evidence = evaluate_global_blockers(
-        provenance_attributed=provenance_attributed
+        provenance_attributed=provenance_attributed,
+        promotion_accepted=promotion_evaluation.accepted,
+        promotion_evidence_reason=promotion_evaluation.reason,
     )
 
     evaluated: list[CandidateResult] = []
@@ -887,4 +949,8 @@ def run_audit(conn: Any, *, as_of_utc: datetime, progress: Progress | None = Non
         WRITER_PROVENANCE_UNATTRIBUTED in active_blockers,
         active_blockers,
         blocker_evidence,
+        PROMOTION_ACCEPTANCE_CONTRACT_VERSION,
+        promotion_evaluation.operation_uuid,
+        promotion_evaluation.accepted,
+        promotion_evaluation.reason,
     )
