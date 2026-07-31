@@ -201,7 +201,7 @@ def test_child_process_inherits_exact_nonsecret_binding_without_secret_output(
     assert result.returncode == 0
     assert (
         result.stdout.strip()
-        == f"synth_chain_4h gurkdb 3306 synth_chain_4h_writer synth {secret}"
+        == f"synth_chain_4h 192.168.1.221 3306 synth_chain_4h_writer synth {secret}"
     )
     assert "dedicated-secret" not in result.stdout + result.stderr
 
@@ -313,7 +313,7 @@ def test_host_preflight_output_reports_metadata_without_secret(
 
     output = capsys.readouterr().out
     assert "binding_profile=synth_chain_4h" in output
-    assert "endpoint=gurkdb port=3306 username=synth_chain_4h_writer" in output
+    assert "endpoint=192.168.1.221 port=3306 username=synth_chain_4h_writer" in output
     assert f"secret_path={secret}" in output
     assert "secret_file_type=regular" in output
     assert "secret_mode=0640" in output
