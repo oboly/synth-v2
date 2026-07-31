@@ -140,13 +140,13 @@ def test_public_price_is_active_and_candle_is_authorized_inactive() -> None:
             assert cap["historical_runtime_assignment"] is None
         else:
             assert cap["capability_id"] == "native_short_4h_chain"
-            assert cap["candidate_host"] == "devlap"
-            assert cap["selected_host"] == "devlap"
-            assert cap["acceptance_host"] == "devlap"
+            assert cap["candidate_host"] == "gurkdb"
+            assert cap["selected_host"] == "gurkdb"
+            assert cap["acceptance_host"] == "gurkdb"
             assert cap["acceptance_status"] == "ACCEPTED"
-            assert cap["production_runtime_owner"] == "devlap"
+            assert cap["production_runtime_owner"] == "gurkdb"
             assert cap["production_authorization_status"] == "AUTHORIZED"
-            assert cap["runtime_lifecycle"] == "ACTIVE"
+            assert cap["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
             assert cap["production_decision_evidence"]
 
 
@@ -420,21 +420,22 @@ def test_incomplete_native_short_inventory_fails() -> None:
     assert any("incomplete database write inventory" in err for err in errors)
 
 
-def test_native_short_owner_is_active_on_devlap_with_closed_scope_boundaries() -> None:
+def test_native_short_owner_is_authorized_inactive_on_gurkdb_with_closed_scope_boundaries() -> None:
     registry = _registry()
     native = _cap(registry, "native_short_4h_chain")
     contract = NATIVE_SHORT_PREFLIGHT_DOC.read_text(encoding="utf-8")
 
-    assert native["candidate_host"] == "devlap"
-    assert native["selected_host"] == "devlap"
-    assert native["acceptance_host"] == "devlap"
+    assert native["candidate_host"] == "gurkdb"
+    assert native["selected_host"] == "gurkdb"
+    assert native["acceptance_host"] == "gurkdb"
     assert native["acceptance_status"] == "ACCEPTED"
-    assert native["production_runtime_owner"] == "devlap"
+    assert native["production_runtime_owner"] == "gurkdb"
     assert native["production_authorization_status"] == "AUTHORIZED"
-    assert native["runtime_lifecycle"] == "ACTIVE"
-    assert "recommended_owner=devlap" in contract
-    assert "writer_host=devlap" in contract
-    assert "publication_host=devlap" in contract
+    assert native["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+    assert native["authorization_guard"]["authorization_file"] == (
+        "/etc/synth/writer-capability-native-short-4h-chain-authorization-v1.json"
+    )
+    assert "canonical_owner=gurkdb" in contract
     assert "publication_host must equal writer_host" in contract
     assert "scope=BTC_ONLY, PAPER execution mode only" in contract
     assert "live_trading=NOT_GRANTED" in contract
@@ -462,11 +463,11 @@ def test_native_short_preflight_names_one_repository_scheduler_and_retired_legac
         "docs/ops/systemd/synth-4h-market-chain.timer"
     ).read_text(encoding="utf-8")
 
-    assert "ConditionHost=devlap" in service
+    assert "ConditionHost=gurkdb" in service
     assert "User=gurk" in service
     assert "Group=gurk" in service
     assert "WorkingDirectory=/home/gurk/projects/synth-v2" in service
-    assert "ConditionHost=devlap" in timer
+    assert "ConditionHost=gurkdb" in timer
     assert timer.count("Unit=synth-chain-4h.service") == 1
     assert "deploy/systemd/synth-chain-4h.timer" in contract
     assert "deploy/systemd/synth-chain-4h.service" in contract
@@ -712,7 +713,7 @@ def test_existing_four_capabilities_unchanged_by_sector_rotation_onboarding() ->
     assert rotation_pressure["production_runtime_owner"] == UNASSIGNED
     native_short = _cap(registry, "native_short_4h_chain")
     assert native_short["production_authorization_status"] == "AUTHORIZED"
-    assert native_short["runtime_lifecycle"] == "ACTIVE"
+    assert native_short["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
 
 
 def test_contract_doc_contains_state_machine_and_installed_timer_warning() -> None:

@@ -1,5 +1,20 @@
 # Native SHORT 4h Chain Ownership Preflight v1
 
+## Gurkdb Canonical Owner Correction (2026-07-31)
+
+```text
+canonical_owner=gurkdb
+condition_host=gurkdb
+authorization_file=/etc/synth/writer-capability-native-short-4h-chain-authorization-v1.json
+runtime_lifecycle=AUTHORIZED_INACTIVE
+```
+
+This supersedes the prior devlap production assignment recorded below. It is a
+committed ownership and authorization-path correction only: no systemd unit was
+installed or activated, no `/etc/synth` authorization file was written, no DB
+grant changed, and the chain was not run. The prior devlap observation remains
+historical evidence only and grants no current production authority.
+
 ## Decision
 
 ```text

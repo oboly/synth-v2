@@ -86,7 +86,7 @@ def test_missing_service_and_drifted_timer_report_mismatch() -> None:
     assert old_timer is not None
     states[preflight.TIMER_UNIT] = _installed_state(
         preflight.TIMER_UNIT,
-        content=old_timer.replace(b"ConditionHost=devlap\n", b""),
+        content=old_timer.replace(b"ConditionHost=gurkdb\n", b""),
     )
 
     results = _run(states)
@@ -138,7 +138,7 @@ def test_environment_authorization_lock_cadence_and_host_drift_fail() -> None:
         .replace(b"ExecStartPre=/home/gurk/projects/synth-v2/venv/bin/python", b"ExecStartPre=/usr/bin/python")
     )
     timer = (
-        timer.replace(b"ConditionHost=devlap", b"ConditionHost=other")
+        timer.replace(b"ConditionHost=gurkdb", b"ConditionHost=other")
         .replace(b"00,04,08,12,16,20:12:00 UTC", b"*:00:00 UTC")
     )
     states[preflight.SERVICE_UNIT] = _installed_state(preflight.SERVICE_UNIT, content=service)
