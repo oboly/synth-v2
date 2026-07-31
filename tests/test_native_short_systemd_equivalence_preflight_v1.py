@@ -135,7 +135,7 @@ def test_environment_authorization_lock_cadence_and_host_drift_fail() -> None:
             b"EnvironmentFile=/tmp/unsafe.env\n# EnvironmentFile is intentionally absent.",
         )
         .replace(b"SYNTH_CHAIN_4H_LOCK_FILE=/tmp/synth_chain_4h.lock", b"SYNTH_CHAIN_4H_LOCK_FILE=/tmp/other.lock")
-        .replace(b"ExecStartPre=/home/gurk/projects/synth-v2/venv/bin/python", b"ExecStartPre=/usr/bin/python")
+        .replace(b"ExecStartPre=/home/gurk/projects/synth-v2/.venv/bin/python", b"ExecStartPre=/usr/bin/python")
     )
     timer = (
         timer.replace(b"ConditionHost=gurkdb", b"ConditionHost=other")

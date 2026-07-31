@@ -48,12 +48,12 @@ EXPECTED_SERVICE_FIELDS = {
         "/bin/bash /home/gurk/projects/synth-v2/scripts/run_chain_4h.sh",
     ),
     ("Service", "ExecStartPre"): (
-        "/home/gurk/projects/synth-v2/venv/bin/python "
+        "/home/gurk/projects/synth-v2/.venv/bin/python "
         "-m src.operations.run_synth_chain_4h_db_environment_preflight_v1 "
         "--checkout-path /home/gurk/projects/synth-v2",
-        "/home/gurk/projects/synth-v2/venv/bin/python "
+        "/home/gurk/projects/synth-v2/.venv/bin/python "
         "-m src.operations.run_synth_chain_4h_db_grant_preflight_v1",
-        "/home/gurk/projects/synth-v2/venv/bin/python "
+        "/home/gurk/projects/synth-v2/.venv/bin/python "
         "-m src.operations.verify_writer_capability_authorization_v1 "
         "--capability native_short_4h_chain "
         "--service synth-chain-4h.service "
