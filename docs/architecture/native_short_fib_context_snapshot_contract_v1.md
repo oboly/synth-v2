@@ -17,7 +17,7 @@ It is account-agnostic and reads only persisted public-market authorities. It
 does not import reporting, account, selection, decision, planning, execution,
 broker, or research packages.
 
-## Canonical publication path and unassigned owner
+## Canonical publication path and publisher owner
 
 The only repository publication path is the 4h market chain. Publication runs
 exactly once immediately after:
@@ -29,11 +29,10 @@ scripts/run_native_short_scope_status_chain_once.sh
 That predecessor completes map evaluation, scope-status projection, and
 map-level status projection. A snapshot failure exits the existing 4h chain
 non-zero through `run_step`; the producer never falls back to an older snapshot.
-No service, timer, cron entry, or second scheduler is introduced. Runtime
-ownership remains `UNASSIGNED` in
-`deploy/ownership/writer_capability_ownership_v1.json`; the committed
-`synth-chain-4h.service` is a devlap-bound candidate, not activation or
-production-owner evidence.
+No service, timer, cron entry, or second scheduler is introduced. The
+production publisher deployment is `gurkdb` under Linux user `gurk`; the
+committed `synth-chain-4h.service` remains a devlap-bound candidate and is not
+activation evidence for another host.
 
 Default runtime directory:
 
@@ -50,19 +49,22 @@ SYNTH_NATIVE_SHORT_CONTEXT_SNAPSHOT_DIR
 
 The publisher and every raw-snapshot consumer must use the same host-local
 filesystem. This version defines no cross-host transport or replication.
+`gurkdb` is the production publisher host; its runtime user is `gurk`.
+Odroid reporting runs as `theone`, but cannot consume this raw snapshot until
+an explicit transport or replication contract exists.
 
 ## Producer and consumer matrix
 
 | Script/module | Expected host | Service identity | Required access | Raw snapshot access necessary |
 |---|---|---|---|---|
-| `deploy/systemd/synth-chain-4h.service` | `devlap` candidate only; production owner `UNASSIGNED` | `gurk` | invoke the single chain; write publication root through its child | yes |
-| `scripts/run_chain_4h.sh` | selected `native_short_4h_chain` host; currently `UNASSIGNED` | inherited `gurk` candidate identity | invoke exactly one publisher; no reporting write | yes |
-| `src.market_data.run_native_short_fib_context_snapshot_v1` | same host/filesystem as the selected chain | `gurk` | read DB authorities; create/replace snapshot artifacts and manifest; acquire publication lock | yes |
-| `src.market_data.native_short_fib_context_snapshot_v1` | same host/filesystem as the selected chain | `gurk` | sole filesystem write implementation; validate immutable collisions and digests | yes |
-| `docs/ops/systemd/synth-linked-profile-runtime-refresh.service` and `scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh` | same host/filesystem as publisher before this consumer may be activated; historical template host is Odroid | `theone` | sequence reporting only; no snapshot write or lock acquisition | yes, through its Profit Plan child |
-| `scripts/odroid/run_account_profit_plan_snapshot_render_once.sh` | same host/filesystem as publisher | `theone` | read-only pass-through of the canonical root | yes |
-| `src.reporting.run_account_profit_plan_snapshot_render_owner_v1` | same host/filesystem as publisher | `theone` | read manifest, referenced CSV, and bundle; validate paths and digests | yes |
-| `src.reporting.run_manual_short_trader_profit_plan_v1` | same host/filesystem as publisher | inherited `theone` identity | read only the already-validated immutable CSV | yes, CSV only |
+| `deploy/systemd/synth-chain-4h.service` | `gurkdb` production publisher host; `devlap` candidate only | `gurk` | invoke the single chain; write publication root through its child | yes |
+| `scripts/run_chain_4h.sh` | selected `native_short_4h_chain` host; production publisher is `gurkdb` | inherited `gurk` publisher identity | invoke exactly one publisher; no reporting write | yes |
+| `src.market_data.run_native_short_fib_context_snapshot_v1` | `gurkdb` production publisher host | `gurk` | read DB authorities; create/replace snapshot artifacts and manifest; acquire publication lock | yes |
+| `src.market_data.native_short_fib_context_snapshot_v1` | `gurkdb` production publisher host | `gurk` | sole filesystem write implementation; validate immutable collisions and digests | yes |
+| `docs/ops/systemd/synth-linked-profile-runtime-refresh.service` and `scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh` | Odroid | `theone` | reporting consumption unavailable pending explicit transport or replication; no snapshot write or lock acquisition | no |
+| `scripts/odroid/run_account_profit_plan_snapshot_render_once.sh` | Odroid | `theone` | reporting consumption unavailable pending explicit transport or replication | no |
+| `src.reporting.run_account_profit_plan_snapshot_render_owner_v1` | Odroid | `theone` | reporting consumption unavailable pending explicit transport or replication | no |
+| `src.reporting.run_manual_short_trader_profit_plan_v1` | Odroid | inherited `theone` identity | reporting consumption unavailable pending explicit transport or replication | no |
 | `src.operations.run_native_short_snapshot_filesystem_preflight_v1` | candidate/selected publication host, manual audit only | invoking operator; no scheduled identity | lstat/read only; never chmod/chown/create/replace/acquire lock | yes, for digest validation |
 | nginx/static serving | web host | `www-data` | read rendered Profit Plan HTML/JSON only | no |
 
@@ -78,8 +80,8 @@ The exact runtime identities are:
 ```text
 publisher user = gurk
 reader group   = synth-native-short-readers
-group members  = gurk,theone
-raw reader     = theone
+local group members = gurk
+raw reporting reader = unavailable; `theone` is Odroid-only
 www-data       = not a raw reader
 ```
 
@@ -91,8 +93,10 @@ descendants inherit the exact reader group without a writable reader group.
 The group contains `gurk` so an unprivileged publisher can deterministically
 retain `S_ISGID` when it applies canonical modes to newly created directories.
 This membership grants `gurk` no additional authority because `gurk` already
-owns the publication tree. `theone` remains the only raw reporting consumer;
-`www-data` remains excluded.
+owns the publication tree. `theone` is not a `gurkdb` user and must not be
+created there. Odroid reporting remains unavailable as a raw consumer until
+explicit cross-host transport or replication exists; `www-data` remains
+excluded.
 
 | Path class | Mode | Mutation authority |
 |---|---:|---|
@@ -120,13 +124,11 @@ preserved.
 
 A process that shares UID `gurk` is a publisher-equivalent process regardless
 of its service name or mode bits. It is therefore forbidden as a reporting
-consumer. The canonical reporting identity is `theone`; any installed
-reporting unit running as `gurk` must remain inactive until moved to that
-distinct identity and admitted to `synth-native-short-readers`. The required
-reader-group membership is exactly `gurk,theone`; extra members fail closed.
-User/group creation, membership changes, chmod/chown/setfacl, deployment, and
-activation are separate host actions and are not authorized by this repository
-contract.
+consumer. `theone` exists only on Odroid and is not required, created, or
+admitted on `gurkdb`. The required publisher-host reader-group membership is
+exactly `gurk`; extra members fail closed. User/group creation, membership
+changes, chmod/chown/setfacl, deployment, and activation are separate host
+actions and are not authorized by this repository contract.
 
 All existing path components and publication targets must be real directories
 or regular files. Symlinked roots, parents, manifests, locks, snapshot

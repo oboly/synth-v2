@@ -33,7 +33,7 @@ def _identity_contract() -> tuple[preflight.Identity, preflight.Identity, int]:
     uid = os.getuid()
     gid = os.getgid()
     publisher = preflight.Identity("gurk", uid, frozenset({gid}))
-    consumer = preflight.Identity("theone", uid + 10_000, frozenset({gid}))
+    consumer = preflight.Identity("local-reader", uid + 10_000, frozenset({gid}))
     return publisher, consumer, gid
 
 
@@ -55,12 +55,16 @@ def _publish(root: Path) -> snapshot.PublicationResult:
     return published
 
 
-def _inspect(root: Path, *, consumer: preflight.Identity | None = None) -> preflight.PreflightResult:
-    publisher, default_consumer, gid = _identity_contract()
+def _inspect(
+    root: Path,
+    *,
+    consumers: tuple[preflight.Identity, ...] = (),
+) -> preflight.PreflightResult:
+    publisher, _, gid = _identity_contract()
     return preflight.inspect_snapshot_filesystem(
         root,
         publisher=publisher,
-        consumers=(consumer or default_consumer,),
+        consumers=consumers,
         reader_gid=gid,
         reader_group=preflight.READER_GROUP,
     )
@@ -70,7 +74,7 @@ def _failed(result: preflight.PreflightResult) -> set[str]:
     return {check.name for check in result.checks if check.status == preflight.FAIL}
 
 
-def test_valid_snapshot_proves_consumer_read_and_write_rejection(tmp_path: Path) -> None:
+def test_valid_snapshot_passes_without_a_local_reporting_consumer(tmp_path: Path) -> None:
     root = tmp_path / "native"
     _publish(root)
 
@@ -117,7 +121,7 @@ def test_same_uid_consumer_is_rejected_even_when_modes_are_read_only(tmp_path: P
     publisher, _, gid = _identity_contract()
     same_uid_consumer = preflight.Identity("reporting-as-gurk", publisher.uid, frozenset({gid}))
 
-    result = _inspect(root, consumer=same_uid_consumer)
+    result = _inspect(root, consumers=(same_uid_consumer,))
 
     assert "same_uid_conflicts" in _failed(result)
     assert "consumer_write_rejection:reporting-as-gurk" in _failed(result)
@@ -129,7 +133,7 @@ def test_consumer_without_reader_group_cannot_read(tmp_path: Path) -> None:
     _, consumer, _ = _identity_contract()
     ungrouped = preflight.Identity(consumer.name, consumer.uid, frozenset({consumer.uid}))
 
-    result = _inspect(root, consumer=ungrouped)
+    result = _inspect(root, consumers=(ungrouped,))
 
     assert "reader_group_membership" in _failed(result)
     assert f"consumer_read:{consumer.name}" in _failed(result)
@@ -183,7 +187,7 @@ def _run_main_with_group_members(
     return code, json.loads(capsys.readouterr().out)
 
 
-def test_exact_group_membership_keeps_publisher_out_of_consumers(
+def test_exact_group_membership_requires_only_gurk_on_publisher_host(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -200,15 +204,15 @@ def test_exact_group_membership_keeps_publisher_out_of_consumers(
 
     assert code == 0
     assert payload["result"] == preflight.PASS
-    assert payload["consumer_users"] == list(preflight.READER_USERS)
+    assert payload["consumer_users"] == []
     checks = {check["name"]: check["status"] for check in payload["checks"]}
     assert checks["exact_reader_group_membership"] == preflight.PASS
     assert checks["publisher_reader_group_membership"] == preflight.PASS
     assert checks["same_uid_conflicts"] == preflight.PASS
-    assert checks["consumer_read:theone"] == preflight.PASS
-    assert checks["consumer_write_rejection:theone"] == preflight.PASS
     assert "consumer_read:gurk" not in checks
     assert "consumer_write_rejection:gurk" not in checks
+    assert "consumer_read:theone" not in checks
+    assert "consumer_write_rejection:theone" not in checks
 
 
 def test_extra_reader_group_member_fails_without_becoming_consumer(
@@ -228,7 +232,7 @@ def test_extra_reader_group_member_fails_without_becoming_consumer(
 
     assert code == 1
     assert payload["result"] == preflight.FAIL
-    assert payload["consumer_users"] == list(preflight.READER_USERS)
+    assert payload["consumer_users"] == []
     checks = {check["name"]: check["status"] for check in payload["checks"]}
     assert checks["exact_reader_group_membership"] == preflight.FAIL
     assert "consumer_read:unexpected" not in checks
@@ -244,8 +248,6 @@ def test_group_or_world_write_is_rejected(tmp_path: Path, mode: int) -> None:
 
     assert "canonical_modes" in _failed(result)
     assert "group_world_write" in _failed(result)
-    if mode & 0o020:
-        assert "consumer_write_rejection:theone" in _failed(result)
 
 
 def test_symlink_artifact_is_rejected_without_following_it(tmp_path: Path) -> None:
