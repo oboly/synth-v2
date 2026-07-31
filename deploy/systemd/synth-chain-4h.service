@@ -23,7 +23,7 @@ Environment=SYNTH_REPO_DIR=/home/gurk/projects/synth-v2
 Environment=SYNTH_CHAIN_4H_LOCKED=0
 Environment=SYNTH_CHAIN_4H_LOCK_FILE=/tmp/synth_chain_4h.lock
 Environment=SYNTH_DB_BINDING_PROFILE=synth_chain_4h
-Environment=SYNTH_CHAIN_4H_DB_HOST=gurkdb
+Environment=SYNTH_CHAIN_4H_DB_HOST=192.168.1.221
 Environment=SYNTH_CHAIN_4H_DB_PORT=3306
 Environment=SYNTH_CHAIN_4H_DB_USER=synth_chain_4h_writer
 Environment=SYNTH_CHAIN_4H_DB_NAME=synth

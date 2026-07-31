@@ -40,7 +40,7 @@ GENERIC_DB_ENV_KEYS = (
 
 EXPECTED_USER = "synth_chain_4h_writer"
 EXPECTED_DATABASE = "synth"
-EXPECTED_HOST = "gurkdb"
+EXPECTED_HOST = "192.168.1.221"
 EXPECTED_PORT = 3306
 EXPECTED_PASSWORD_FILE = Path("/etc/synth/synth-chain-4h-db-password-v1")
 EXPECTED_SECRET_OWNER = "root"
