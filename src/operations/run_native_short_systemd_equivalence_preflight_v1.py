@@ -1,7 +1,7 @@
 """
 Read-only installed-systemd equivalence preflight for native_short_4h_chain.
 
-This runner compares the canonical devlap repository service/timer pair with
+This runner compares the canonical gurkdb repository service/timer pair with
 the installed system-level unit fragments and their observed inactive state.
 It never installs, reloads, enables, starts, stops, disables, or masks units.
 
@@ -40,7 +40,7 @@ STATUS_PASS = "PASS"
 STATUS_FAIL = "FAIL"
 
 EXPECTED_SERVICE_FIELDS = {
-    ("Unit", "ConditionHost"): ("devlap",),
+    ("Unit", "ConditionHost"): ("gurkdb",),
     ("Service", "User"): ("gurk",),
     ("Service", "Group"): ("gurk",),
     ("Service", "WorkingDirectory"): ("/home/gurk/projects/synth-v2",),
@@ -83,7 +83,7 @@ EXPECTED_SERVICE_FIELDS = {
 }
 
 EXPECTED_TIMER_FIELDS = {
-    ("Unit", "ConditionHost"): ("devlap",),
+    ("Unit", "ConditionHost"): ("gurkdb",),
     ("Unit", "Requires"): (),
     ("Unit", "Wants"): (),
     ("Timer", "OnCalendar"): ("*-*-* 00,04,08,12,16,20:12:00 UTC",),
@@ -443,7 +443,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Read-only exact installed-unit equivalence preflight for the "
-            "devlap native_short_4h_chain systemd pair."
+            "gurkdb native_short_4h_chain systemd pair."
         )
     )
     parser.add_argument("--checkout-path", type=Path, default=Path.cwd())

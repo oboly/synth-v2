@@ -1,7 +1,7 @@
 [Unit]
-Description=Synth 4h market-only chain timer (devlap-bound candidate artifact)
+Description=Synth 4h market-only chain timer (gurkdb-bound)
 Documentation=https://github.com/oboly/synth-v2/blob/main/docs/deployment/synth_market_only_runtime_v1.md
-ConditionHost=devlap
+ConditionHost=gurkdb
 
 [Timer]
 # The public-candle-freshness-writer capability runs first; this chain validates

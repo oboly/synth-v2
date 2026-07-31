@@ -35,10 +35,11 @@
     "gurkdb": [
       "active production owner for public_price_snapshot",
       "authorized-inactive production owner for public_candle_freshness",
+      "canonical production owner for native_short_4h_chain",
       "candidate host for other light account-agnostic public market-data writers"
     ],
     "odroid": ["candidate host for account runtimes, persisted-state consumers, dashboards, and publication"],
-    "devlap": ["development host", "active BTC_ONLY PAPER owner of native_short_4h_chain", "candidate acceptance host only for other capabilities", "historical Rotation Pressure runtime assignment SUPERSEDED"]
+    "devlap": ["development host", "historical native_short_4h_chain runtime assignment SUPERSEDED", "candidate acceptance host only for other capabilities", "historical Rotation Pressure runtime assignment SUPERSEDED"]
   },
   "capabilities": [
     {
@@ -254,13 +255,13 @@
       "timer_unit": "synth-chain-4h.timer",
       "committed_unit_binding": {
         "host_bound_candidate_artifact": true,
-        "condition_host": "devlap",
+        "condition_host": "gurkdb",
         "user": "gurk",
         "working_directory": "/home/gurk/projects/synth-v2"
       },
       "authorization_guard": {
         "module": "src.operations.verify_writer_capability_authorization_v1",
-        "authorization_file": "/etc/synth/writer-capability-runtime-authorization-v1.json",
+        "authorization_file": "/etc/synth/writer-capability-native-short-4h-chain-authorization-v1.json",
         "required": true
       },
       "lock": {
@@ -329,37 +330,29 @@
       "account_or_reporting_coupling": false,
       "evaluated_separately": true,
       "evaluated_separately_reason": "The 4h chain carries CPU, repository-source-identity, publication, artifact, and downstream market-state responsibilities distinct from the light DB writers. It must not be moved automatically with public-price or candle writers.",
-      "candidate_host": "devlap",
-      "selected_host": "devlap",
-      "acceptance_host": "devlap",
+      "candidate_host": "gurkdb",
+      "selected_host": "gurkdb",
+      "acceptance_host": "gurkdb",
       "acceptance_status": "ACCEPTED",
       "acceptance_evidence": {
-        "approval_reference": "Explicit user authorization for the devlap native_short_4h_chain PAPER-mode rollout on 2026-07-28",
+        "approval_reference": "Explicit user authorization for gurkdb canonical native_short_4h_chain ownership correction on 2026-07-31",
         "evidence_doc": "docs/ops/native_short_4h_chain_ownership_preflight_v1.md",
-        "accepted_at_utc": "2026-07-28T10:47:46Z",
-        "scope": "All eight blocker gates closed at commit 8af1cee2badee1b6e85e227f33c97d11aee98aff: exact-commit, DB connectivity, DB writer authority, publication path ownership, installed-unit equivalence, all-host scheduler inventory (devlap/odroid/gurkdb), rollback proof, writer/publication colocation."
+        "accepted_at_utc": "2026-07-31T00:00:00Z",
+        "scope": "Canonical gurkdb ownership binding and dedicated authorization-file path only. No unit activation, authorization-file write, DB-grant change, or chain execution was performed."
       },
-      "production_runtime_owner": "devlap",
+      "production_runtime_owner": "gurkdb",
       "production_authorization_status": "AUTHORIZED",
-      "runtime_lifecycle": "ACTIVE",
-      "production_decision_evidence": "docs/ops/native_short_4h_chain_ownership_preflight_v1.md#production-decision-evidence",
-      "observed_runtime_state": [
-        {
-          "host": "devlap",
-          "unit": "synth-chain-4h.timer",
-          "unit_path": "deploy/systemd/synth-chain-4h.timer",
-          "installed_at_observation": true,
-          "enabled_at_observation": true,
-          "active_at_observation": true,
-          "observed_at_utc": "2026-07-29T16:05:37Z",
-          "observed_at_precision": "exact",
-          "current_state": "ACTIVE_OBSERVED",
-          "authorization_status": "AUTHORIZED",
-          "runtime_state_classification": "AUTHORIZED_RUNTIME_OBSERVED",
-          "evidence_source": "docs/ops/native_short_4h_chain_ownership_preflight_v1.md#scheduled-production-activation-proof-2026-07-29"
-        }
-      ],
-      "historical_runtime_assignment": null
+      "runtime_lifecycle": "AUTHORIZED_INACTIVE",
+      "production_decision_evidence": "docs/ops/native_short_4h_chain_ownership_preflight_v1.md#gurkdb-canonical-owner-correction-20260731",
+      "observed_runtime_state": [],
+      "historical_runtime_assignment": {
+        "host": "devlap",
+        "status": "SUPERSEDED",
+        "source": "docs/ops/native_short_4h_chain_ownership_preflight_v1.md#scheduled-production-activation-proof-2026-07-29",
+        "reason": "The prior devlap native_short_4h_chain production assignment was superseded by the 2026-07-31 canonical gurkdb ownership correction.",
+        "preserved_evidence": "The 2026-07-29 devlap ACTIVE observation is retained as historical runtime evidence; it does not grant current production authority.",
+        "grants_current_authority": false
+      }
     },
     {
       "capability_id": "sector_rotation_snapshot",

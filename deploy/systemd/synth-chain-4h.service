@@ -1,9 +1,8 @@
 [Unit]
-Description=Synth 4h market-only chain (devlap-bound candidate artifact; capability native_short_4h_chain)
+Description=Synth 4h market-only chain (gurkdb-bound; capability native_short_4h_chain)
 Documentation=https://github.com/oboly/synth-v2/blob/main/docs/deployment/synth_market_only_runtime_v1.md
-# This committed unit is host-bound to devlap paths/users. Native SHORT host
-# ownership remains independently evaluated and currently UNASSIGNED.
-ConditionHost=devlap
+# This committed unit is host-bound to gurkdb paths/users.
+ConditionHost=gurkdb
 After=network-online.target
 Wants=network-online.target
 
