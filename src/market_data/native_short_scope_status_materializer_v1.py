@@ -902,12 +902,23 @@ def _append_terminal_target_events(
     key: NativeShortMapScopeKey,
     map_id: int,
     as_of_utc: datetime,
-    target_event_coverage_watermark_utc: datetime,
+    target_event_coverage_watermark_utc: datetime | None,
     provenance: NativeShortWriterProvenance,
     authorization: Any,
 ) -> int:
     """Append any final REACHED/PASSED target events for ``map_id`` before its
     terminal (COMPLETED) lifecycle event is recorded, in the same transaction.
+
+    This runs for *every* genuine COMPLETED transition, unconditionally --
+    ``target_event_coverage_watermark_utc`` may be ``None`` (the production
+    chain's default; it never invents or supplies a watermark).
+    ``append_native_short_map_level_target_events_for_map`` itself is the
+    single fail-closed authority for what a ``None`` watermark means: if
+    durable coverage was already established for this exact map_id (by an
+    earlier standalone run, or by an earlier terminal-hook invocation), its
+    immutable persisted cutoff is read and used to append any still-eligible
+    final events; if no coverage was ever established, nothing is appended
+    and no coverage row is created (a true no-op, not a fabricated one).
 
     This is the single call site that lets the same causal candle that
     completes a map also durably record that map's final target-level
@@ -1093,15 +1104,16 @@ def evaluate_scope(
             # terminal lifecycle transition is recorded, in this same
             # transaction: the same causal candle that completes a map must
             # never be able to complete it without also durably recording the
-            # target-level transition that candle also caused. This must not
-            # run for INVALIDATED (target reach/pass is a SELL-side concept,
-            # unrelated to invalidation) and never runs a second time for the
-            # same map, because `decide_genuine_lifecycle_transition` itself
-            # never fires twice for an already-terminal map.
-            if (
-                transition == NativeShortMapLifecycleEventType.COMPLETED
-                and target_event_coverage_watermark_utc is not None
-            ):
+            # target-level transition that candle also caused. This runs for
+            # *every* genuine COMPLETED transition, unconditionally --
+            # `target_event_coverage_watermark_utc` may be None (the
+            # production chain's default; see `_append_terminal_target_events`
+            # docstring for the fail-closed None-watermark contract). This
+            # must not run for INVALIDATED (target reach/pass is a SELL-side
+            # concept, unrelated to invalidation) and never runs a second time
+            # for the same map, because `decide_genuine_lifecycle_transition`
+            # itself never fires twice for an already-terminal map.
+            if transition == NativeShortMapLifecycleEventType.COMPLETED:
                 target_event_rows_appended = _append_terminal_target_events(
                     conn,
                     key=key,

@@ -298,10 +298,33 @@ class _FakeCursor:
             self._conn.last_id = row["lifecycle_event_id"]
             return
 
+        if "FROM native_short_map_v1" in stripped:
+            # This fake models scope/support/cadence/observation/lifecycle
+            # ledgers only; existing_maps is injected directly via the
+            # fetch_existing_maps callback, never backed by a real
+            # native_short_map_v1 row here. The terminal-transition
+            # target-event hook's own SELECT therefore always finds nothing,
+            # which is the correct, safe no-op for a fake with no map-geometry
+            # backing (see native_short_scope_status_materializer_v1.
+            # _append_terminal_target_events: map_record is None -> 0 events).
+            self._result = None
+            return
+
+        if "FROM native_short_map_level_target_event_coverage_v1" in stripped:
+            self._result = None
+            return
+
+        if "FROM obs_market_candle" in stripped:
+            self._result = []
+            return
+
         raise AssertionError(f"FakeCursor received unsupported SQL: {stripped[:120]}")
 
     def fetchall(self) -> list[dict[str, Any]]:
-        return self._result
+        return self._result if isinstance(self._result, list) else []
+
+    def fetchone(self) -> Any:
+        return self._result if not isinstance(self._result, list) else None
 
     @property
     def lastrowid(self) -> int:

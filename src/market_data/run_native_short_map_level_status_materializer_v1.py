@@ -563,6 +563,9 @@ def _emit_heartbeat(
     total_elapsed_ms: int,
     rows_read: int,
     rows_written: int,
+    status_rows_written: int | None = None,
+    target_event_rows_written: int | None = None,
+    rows_written_total: int | None = None,
 ) -> None:
     payload = {
         "event": "HEARTBEAT",
@@ -575,7 +578,15 @@ def _emit_heartbeat(
         "phase_elapsed_ms": phase_elapsed_ms,
         "total_elapsed_ms": total_elapsed_ms,
         "rows_read": rows_read,
+        # Compatibility field: status-only rows written, meaning unchanged.
         "rows_written": rows_written,
+        # Explicit aggregate counters (P2 write-observability fix): a target
+        # event write must never silently disappear from run-level output.
+        "status_rows_written": status_rows_written if status_rows_written is not None else rows_written,
+        "target_event_rows_written": target_event_rows_written or 0,
+        "rows_written_total": (
+            rows_written_total if rows_written_total is not None else rows_written
+        ),
     }
     if output == "jsonl":
         _emit_json(payload)
@@ -602,7 +613,14 @@ def _emit_terminal(
     status = "INTERRUPTED" if interrupted else ("SUCCESS" if blocked == 0 and failed == 0 else "FAILED")
     event = "INTERRUPTED" if interrupted else ("FINISHED" if status == "SUCCESS" else "FAILED")
     rows_read = sum(result.rows_read for result in results)
+    # Compatibility: `rows_written` keeps its pre-existing status-only
+    # meaning. The explicit aggregate counters below are additive and must
+    # never be inferred by a consumer from `rows_written` alone, since a
+    # target-event write must never silently disappear from run-level output.
     rows_written = sum(result.rows_written for result in results)
+    status_rows_written = sum(result.status_rows_written for result in results)
+    target_event_rows_written = sum(result.target_event_rows_written for result in results)
+    rows_written_total = sum(result.rows_written_total for result in results)
     payload = {
         "event": event,
         "status": status,
@@ -618,6 +636,9 @@ def _emit_terminal(
         "interruption_signal": interruption.interruption_signal,
         "rows_read": rows_read,
         "rows_written": rows_written,
+        "status_rows_written": status_rows_written,
+        "target_event_rows_written": target_event_rows_written,
+        "rows_written_total": rows_written_total,
         "elapsed_ms": total_elapsed_ms,
         "phase_elapsed_ms_by_name": _sum_named_timings(results, "phase_elapsed_ms_by_name"),
         "query_elapsed_ms_by_name": _sum_named_timings(results, "query_elapsed_ms_by_name"),
@@ -784,6 +805,9 @@ def main(
                 total_elapsed_ms=_elapsed_ms(started_monotonic),
                 rows_read=sum(result.rows_read for result in results),
                 rows_written=sum(result.rows_written for result in results),
+                status_rows_written=sum(result.status_rows_written for result in results),
+                target_event_rows_written=sum(result.target_event_rows_written for result in results),
+                rows_written_total=sum(result.rows_written_total for result in results),
             )
             key = NativeShortMapScopeKey(
                 venue=args.venue,
@@ -815,6 +839,9 @@ def main(
                 total_elapsed_ms=_elapsed_ms(started_monotonic),
                 rows_read=sum(item.rows_read for item in results),
                 rows_written=sum(item.rows_written for item in results),
+                status_rows_written=sum(item.status_rows_written for item in results),
+                target_event_rows_written=sum(item.target_event_rows_written for item in results),
+                rows_written_total=sum(item.rows_written_total for item in results),
             )
             if result.status != "materialized" and result.status != "interrupted":
                 print(

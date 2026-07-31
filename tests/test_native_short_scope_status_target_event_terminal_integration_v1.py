@@ -260,11 +260,12 @@ def _materialize_stub(*_args: Any, **_kwargs: Any) -> ScopeMaterializationResult
     return ScopeMaterializationResult(symbol="BTC", attempted=True, status="unchanged", dry_run=False, map_id=700)
 
 
-def _run_evaluate_scope(script: dict, *, watermark: datetime | None) -> tuple[_FakeConn, Any]:
+def _run_evaluate_scope(
+    script: dict, *, watermark: datetime | None, omit_watermark_kwarg: bool = False
+) -> tuple[_FakeConn, Any]:
     conn = _FakeConn(script)
     map_row = script["map"]
-    outcome = evaluate_scope(
-        conn,
+    kwargs: dict[str, Any] = dict(
         key=_key(),
         as_of_utc=_AS_OF,
         run_id=1,
@@ -277,9 +278,34 @@ def _run_evaluate_scope(script: dict, *, watermark: datetime | None) -> tuple[_F
         ],
         materialize_scope_symbol_fn=_materialize_stub,
         authorization=_NS_AUTH,
-        target_event_coverage_watermark_utc=watermark,
     )
+    if not omit_watermark_kwarg:
+        # Exercises the exact shape the real chain (run_native_short_scope_status_chain_v1)
+        # uses: it never passes target_event_coverage_watermark_utc at all,
+        # relying entirely on evaluate_scope's own None default.
+        kwargs["target_event_coverage_watermark_utc"] = watermark
+    outcome = evaluate_scope(conn, **kwargs)
     return conn, outcome
+
+
+def _coverage_row(*, map_id: int, cutoff_utc: datetime) -> dict:
+    return {
+        "venue": "bitvavo",
+        "symbol": "BTC",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h",
+        "map_id": map_id,
+        "map_cycle_id": "cycle-A",
+        "publication_boundary_utc": cutoff_utc,
+        "requested_watermark_utc_at_establishment": cutoff_utc,
+        "coverage_cutoff_utc": cutoff_utc,
+        "established_at_utc": cutoff_utc,
+        "writer_name": "test-writer",
+        "writer_version": "0.1",
+        "writer_invocation_uuid": "00000000-0000-4000-8000-000000000001",
+    }
 
 
 def _base_script() -> dict:
@@ -373,6 +399,80 @@ def test_idempotent_retry_creates_no_duplicate_event_or_lifecycle_transition() -
     # Simulate an identical retry of the same cycle (e.g. a crashed run
     # re-invoked with the same as_of_utc and the same observed facts).
     second_conn, second_outcome = _run_evaluate_scope(script, watermark=_AS_OF - timedelta(days=7))
+    assert second_outcome.lifecycle_event_appended is False
+    assert second_outcome.target_event_rows_appended == 0
+    assert len(script["lifecycle_events"]) == 1
+    assert len(script.get("inserted_target_events", [])) == events_after_first
+
+
+
+# ---------------------------------------------------------------------------
+# Production-chain shape: default None watermark (P1 second-review fix)
+# ---------------------------------------------------------------------------
+
+
+def test_preexisting_coverage_with_none_watermark_appends_final_event_before_completed() -> None:
+    """Case 1: durable coverage was already established (e.g. by an earlier
+    standalone run). The real chain never supplies a watermark at all, yet
+    the terminal hook must still read the persisted cutoff and append the
+    final event before COMPLETED."""
+    script = _base_script()
+    script["coverage"] = _coverage_row(map_id=700, cutoff_utc=_AS_OF - timedelta(days=7))
+    conn, outcome = _run_evaluate_scope(script, watermark=None)
+    assert outcome.lifecycle_event_appended is True
+    assert outcome.target_event_rows_appended >= 1
+    assert len(script["lifecycle_events"]) == 1
+    assert script["lifecycle_events"][0]["event_type"] == "COMPLETED"
+    call_log = script["call_log"]
+    assert call_log.index("INSERT_TARGET_EVENT") < call_log.index("INSERT_LIFECYCLE_EVENT")
+    # The pre-existing coverage row must not have been re-established/rewritten.
+    assert "INSERT_COVERAGE" not in call_log
+
+
+def test_no_coverage_with_none_watermark_establishes_nothing_and_appends_nothing() -> None:
+    """Case 2: no coverage was ever established for this map and the real
+    chain still supplies no watermark. This must be a true no-op for target
+    events -- no coverage row created, no synthetic event fabricated -- while
+    the COMPLETED transition itself still proceeds normally."""
+    script = _base_script()
+    script["coverage"] = None
+    conn, outcome = _run_evaluate_scope(script, watermark=None)
+    assert outcome.lifecycle_event_appended is True
+    assert outcome.target_event_rows_appended == 0
+    assert script.get("coverage") is None
+    assert "INSERT_COVERAGE" not in script.get("call_log", [])
+    assert "INSERT_TARGET_EVENT" not in script.get("call_log", [])
+    assert len(script["lifecycle_events"]) == 1
+    assert script["lifecycle_events"][0]["event_type"] == "COMPLETED"
+
+
+def test_production_caller_shape_omitting_the_watermark_kwarg_entirely() -> None:
+    """Case 3: exercises the exact call shape
+    run_native_short_scope_status_chain_v1.py uses -- evaluate_scope is never
+    passed target_event_coverage_watermark_utc at all, relying purely on its
+    own None default. With pre-existing coverage, the final event still gets
+    appended before COMPLETED."""
+    script = _base_script()
+    script["coverage"] = _coverage_row(map_id=700, cutoff_utc=_AS_OF - timedelta(days=7))
+    conn, outcome = _run_evaluate_scope(script, watermark=None, omit_watermark_kwarg=True)
+    assert outcome.lifecycle_event_appended is True
+    assert outcome.target_event_rows_appended >= 1
+    call_log = script["call_log"]
+    assert call_log.index("INSERT_TARGET_EVENT") < call_log.index("INSERT_LIFECYCLE_EVENT")
+
+
+def test_none_watermark_retry_with_preexisting_coverage_remains_idempotent() -> None:
+    """Case 4: retry with the default None watermark (the production shape)
+    against pre-existing coverage never duplicates the event or the terminal
+    transition."""
+    script = _base_script()
+    script["coverage"] = _coverage_row(map_id=700, cutoff_utc=_AS_OF - timedelta(days=7))
+    first_conn, first_outcome = _run_evaluate_scope(script, watermark=None)
+    assert first_outcome.target_event_rows_appended >= 1
+    events_after_first = len(script.get("inserted_target_events", []))
+    assert len(script["lifecycle_events"]) == 1
+
+    second_conn, second_outcome = _run_evaluate_scope(script, watermark=None)
     assert second_outcome.lifecycle_event_appended is False
     assert second_outcome.target_event_rows_appended == 0
     assert len(script["lifecycle_events"]) == 1
