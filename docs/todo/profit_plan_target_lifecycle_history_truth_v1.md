@@ -180,6 +180,86 @@ hardening.
 - no executor/agent change;
 - no broker calls or writes.
 
+## Addendum (2026-07-31): Separately authorized prospective target-event history
+
+This addendum records a **separate, narrower authorization** layered
+alongside this lane's conclusions. It does not reopen, reverse, or weaken
+anything above.
+
+Recorded facts, unchanged:
+
+1. The original BTC/IOST canonical evidence gate documented in this file
+   remains factually correct: IOST never had a canonical map/scope/lifecycle,
+   and BTC (the sole canonical control scope during the audit) showed no
+   REACHED/PASSED regression.
+2. No qualifying regression evidence has since been found. No BTC canonical
+   `REACHED`/`PASSED`-then-pullback case exists, and no other canonical scope
+   producing equivalent evidence has been identified.
+
+Newly authorized, separately:
+
+3. Implementation of append-only, **prospective** REACHED/PASSED target-event
+   history for native SHORT V1 SELL levels is now authorized under the
+   Synth Outcome & Reliability Program, as a required foundation for
+   reproducible attribution of *future* target outcomes -- not as a response
+   to any lifecycle defect. See
+   `docs/architecture/native_short_map_level_status_contract_v1.md`
+   ("Addendum: Prospective Target-Event Lifecycle History") for the full
+   event-identity, causality, projection, and coverage-boundary contract, and
+   `native_short_map_level_target_event_v1.py` for the explicit authorization
+   boundary recorded in code.
+
+```text
+NO_CANONICAL_REGRESSION_EVIDENCE_FOUND=true
+IMPLEMENTATION_JUSTIFICATION=PROSPECTIVE_OUTCOME_EVIDENCE
+HISTORICAL_BACKFILL_AUTHORIZED=false
+```
+
+4. Historical backfill remains unavailable. Maps published before an
+   explicit, operator-chosen coverage watermark are `LEGACY_UNAVAILABLE` for
+   target-event purposes; no existing REACHED/PASSED projection row is
+   converted into a synthetic historical event without independently proven
+   lossless causal-candle evidence, and no such proof has been attempted or
+   claimed here.
+5. `EXPIRED` target-level detection and `PostTargetReentryProjection` remain
+   explicitly deferred and out of scope for this addendum.
+
+This addendum does not change the Status block above, does not reopen the
+"Future monotonic invariant" hardening described in Section 5 (that remains
+parked, evidence-gated, exactly as written), and does not assert that any
+canonical monotonic-regression hardening trigger has occurred.
+
+### Addendum correction (2026-07-31, same day): immutable per-map coverage cutoff
+
+An independent cross-provider review of the first implementation pass found
+that a per-run "published-at-or-after-watermark" check alone was
+insufficient: a currently-active map's causal candle history between its
+`anchor_high_ts_utc` and its `published_at_utc` (or an operator-chosen
+watermark) could still be used as REACHED/PASSED evidence, which is exactly
+the kind of pre-coverage historical inference this lane exists to prevent.
+
+Fixed by making coverage **durable, persisted, per-map state**
+(`native_short_map_level_target_event_coverage_v1`), with an immutable
+`coverage_cutoff_utc = GREATEST(publication_boundary_utc,
+requested_watermark_utc_at_establishment)` established at most once per
+`map_id` and never recomputed by a later run's watermark. Only candles at or
+after that persisted cutoff may ever create an event. See
+`docs/architecture/native_short_map_level_status_contract_v1.md`
+("Immutable per-map coverage activation and causal cutoff") for the full
+corrected contract.
+
+The same review also required that the final REACHED/PASSED transition on a
+map about to be marked `COMPLETED` be recorded in the same transaction as
+that terminal transition, not left to a later manual runner that might never
+see the map again once it goes terminal. This is now handled by
+`native_short_scope_status_materializer_v1.evaluate_scope`'s
+terminal-transition hook -- see the architecture doc's "Writer ownership and
+terminal-transition atomicity" section.
+
+`HISTORICAL_BACKFILL_AUTHORIZED=false` remains true throughout this
+correction: no existing map's history was backfilled or reconstructed; the
+fix only tightens which *future* candles may create an event going forward.
+
 ## Non-goals
 
 - reopening this lane on chart appearance or transient bridge geometry;

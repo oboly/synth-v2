@@ -32,6 +32,9 @@ from src.market_data.native_short_map_level_status_materializer_v1 import (
     MapLevelStatusMaterializationOutcome,
     materialize_native_short_map_level_status_for_scope,
 )
+from src.market_data.native_short_map_level_target_event_materializer_v1 import (
+    materialize_native_short_map_level_target_events_for_scope,
+)
 from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapScopeKey
 from src.market_data.native_short_scope_status_materializer_v1 import (
     NativeShortRunBuilder,
@@ -87,10 +90,22 @@ class ScopeRunResult:
     map_cycle_id: str | None
     level_status_as_of_utc: datetime | None
     rows_read: int = 0
+    # `rows_written` keeps its pre-existing meaning unchanged: level-status
+    # projection rows only. `status_rows_written` is an explicit alias of the
+    # same value, added so downstream write-observability consumers never
+    # have to guess which table a bare `rows_written` refers to once a second
+    # write path (target events) exists on this same result.
     rows_written: int = 0
+    status_rows_written: int = 0
+    target_event_rows_written: int = 0
+    rows_written_total: int = 0
     elapsed_ms: int = 0
     phase_elapsed_ms_by_name: dict[str, int] | None = None
     query_elapsed_ms_by_name: dict[str, int] | None = None
+    target_event_coverage_eligible: bool | None = None
+    target_event_skip_reason: str | None = None
+    requested_target_event_watermark_utc: datetime | None = None
+    persisted_target_event_coverage_cutoff_utc: datetime | None = None
 
 
 @dataclass
@@ -160,6 +175,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=("jsonl", "summary"),
         default="jsonl",
         help="jsonl emits one deterministic machine-readable record per event/result.",
+    )
+    parser.add_argument(
+        "--target-event-coverage-watermark-utc",
+        default=None,
+        type=_required_text,
+        help=(
+            "Optional explicit ISO-8601 UTC watermark (e.g. 2026-08-01T00:00:00+00:00). "
+            "When supplied, appends immutable REACHED/PASSED target events (in the same "
+            "transaction as the level-status rebuild) for maps published at or after this "
+            "timestamp only. Omit to leave behavior byte-for-byte unchanged (no target-event "
+            "read or write of any kind)."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -276,7 +303,20 @@ def run_scope(
     authorization: WriterMutationAuthorization,
     interruption: InterruptionController | None = None,
     monotonic_clock: Callable[[], float] = monotonic,
+    target_event_coverage_watermark_utc: datetime | None = None,
 ) -> ScopeRunResult:
+    """Rebuild level-status rows, then optionally append target events.
+
+    ``target_event_coverage_watermark_utc`` is optional and defaults to
+    ``None``. When ``None`` (the default, and every existing call site's
+    behavior), this function is byte-for-byte identical to its prior
+    behavior: no target-event table is read or written. Passing an explicit
+    watermark is an opt-in activation decision (see
+    docs/architecture/native_short_map_level_status_contract_v1.md, target
+    lifecycle-history addendum) and only ever appends events for maps
+    published at or after that watermark, in the same transaction as the
+    level-status row rebuild.
+    """
     validate_native_short_writer_provenance(provenance)
     interruption = interruption or InterruptionController()
     started_monotonic = monotonic_clock()
@@ -363,6 +403,30 @@ def run_scope(
                     phase_elapsed_ms_by_name=phase_elapsed_ms_by_name,
                     query_elapsed_ms_by_name=query_elapsed_ms_by_name,
                 )
+            if result.status == "materialized" and target_event_coverage_watermark_utc is not None:
+                target_event_started = monotonic_clock()
+                target_event_outcome = materialize_native_short_map_level_target_events_for_scope(
+                    conn,
+                    key=key,
+                    target_event_coverage_watermark_utc=target_event_coverage_watermark_utc,
+                    provenance=provenance,
+                    authorization=authorization,
+                )
+                _record_elapsed(
+                    phase_elapsed_ms_by_name,
+                    "MATERIALIZE_TARGET_EVENTS",
+                    _elapsed_ms(target_event_started, clock=monotonic_clock),
+                )
+                result = dataclasses.replace(
+                    result,
+                    target_event_coverage_eligible=target_event_outcome.coverage_eligible,
+                    target_event_skip_reason=target_event_outcome.skip_reason,
+                    target_event_rows_written=target_event_outcome.events_appended,
+                    requested_target_event_watermark_utc=target_event_outcome.requested_watermark_utc,
+                    persisted_target_event_coverage_cutoff_utc=(
+                        target_event_outcome.persisted_coverage_cutoff_utc
+                    ),
+                )
             commit_started = monotonic_clock()
             conn.commit()
             _record_elapsed(
@@ -370,9 +434,12 @@ def run_scope(
                 "COMMIT_SYMBOL",
                 _elapsed_ms(commit_started, clock=monotonic_clock),
             )
+        status_rows_written = result.row_count if result.status == "materialized" else 0
         return dataclasses.replace(
             result,
-            rows_written=result.row_count if result.status == "materialized" else 0,
+            rows_written=status_rows_written,
+            status_rows_written=status_rows_written,
+            rows_written_total=status_rows_written + result.target_event_rows_written,
             elapsed_ms=_elapsed_ms(started_monotonic, clock=monotonic_clock),
             phase_elapsed_ms_by_name=phase_elapsed_ms_by_name,
             query_elapsed_ms_by_name=query_elapsed_ms_by_name,
@@ -496,6 +563,9 @@ def _emit_heartbeat(
     total_elapsed_ms: int,
     rows_read: int,
     rows_written: int,
+    status_rows_written: int | None = None,
+    target_event_rows_written: int | None = None,
+    rows_written_total: int | None = None,
 ) -> None:
     payload = {
         "event": "HEARTBEAT",
@@ -508,7 +578,15 @@ def _emit_heartbeat(
         "phase_elapsed_ms": phase_elapsed_ms,
         "total_elapsed_ms": total_elapsed_ms,
         "rows_read": rows_read,
+        # Compatibility field: status-only rows written, meaning unchanged.
         "rows_written": rows_written,
+        # Explicit aggregate counters (P2 write-observability fix): a target
+        # event write must never silently disappear from run-level output.
+        "status_rows_written": status_rows_written if status_rows_written is not None else rows_written,
+        "target_event_rows_written": target_event_rows_written or 0,
+        "rows_written_total": (
+            rows_written_total if rows_written_total is not None else rows_written
+        ),
     }
     if output == "jsonl":
         _emit_json(payload)
@@ -535,7 +613,14 @@ def _emit_terminal(
     status = "INTERRUPTED" if interrupted else ("SUCCESS" if blocked == 0 and failed == 0 else "FAILED")
     event = "INTERRUPTED" if interrupted else ("FINISHED" if status == "SUCCESS" else "FAILED")
     rows_read = sum(result.rows_read for result in results)
+    # Compatibility: `rows_written` keeps its pre-existing status-only
+    # meaning. The explicit aggregate counters below are additive and must
+    # never be inferred by a consumer from `rows_written` alone, since a
+    # target-event write must never silently disappear from run-level output.
     rows_written = sum(result.rows_written for result in results)
+    status_rows_written = sum(result.status_rows_written for result in results)
+    target_event_rows_written = sum(result.target_event_rows_written for result in results)
+    rows_written_total = sum(result.rows_written_total for result in results)
     payload = {
         "event": event,
         "status": status,
@@ -551,6 +636,9 @@ def _emit_terminal(
         "interruption_signal": interruption.interruption_signal,
         "rows_read": rows_read,
         "rows_written": rows_written,
+        "status_rows_written": status_rows_written,
+        "target_event_rows_written": target_event_rows_written,
+        "rows_written_total": rows_written_total,
         "elapsed_ms": total_elapsed_ms,
         "phase_elapsed_ms_by_name": _sum_named_timings(results, "phase_elapsed_ms_by_name"),
         "query_elapsed_ms_by_name": _sum_named_timings(results, "query_elapsed_ms_by_name"),
@@ -650,6 +738,24 @@ def main(
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
+    target_event_coverage_watermark_utc: datetime | None = None
+    if args.target_event_coverage_watermark_utc is not None:
+        try:
+            parsed_watermark = datetime.fromisoformat(args.target_event_coverage_watermark_utc)
+        except ValueError as exc:
+            print(
+                f"ERROR: invalid --target-event-coverage-watermark-utc: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        if parsed_watermark.tzinfo is None:
+            print(
+                "ERROR: --target-event-coverage-watermark-utc must be timezone-aware UTC",
+                file=sys.stderr,
+            )
+            return 2
+        target_event_coverage_watermark_utc = parsed_watermark.astimezone(UTC)
+
     try:
         provenance = build_verified_process_provenance(
             writer_entrypoint="src.market_data.run_native_short_map_level_status_materializer_v1",
@@ -699,6 +805,9 @@ def main(
                 total_elapsed_ms=_elapsed_ms(started_monotonic),
                 rows_read=sum(result.rows_read for result in results),
                 rows_written=sum(result.rows_written for result in results),
+                status_rows_written=sum(result.status_rows_written for result in results),
+                target_event_rows_written=sum(result.target_event_rows_written for result in results),
+                rows_written_total=sum(result.rows_written_total for result in results),
             )
             key = NativeShortMapScopeKey(
                 venue=args.venue,
@@ -714,6 +823,7 @@ def main(
                 provenance=provenance,
                 authorization=writer_authorization,
                 interruption=controller,
+                target_event_coverage_watermark_utc=target_event_coverage_watermark_utc,
             )
             results.append(result)
             run_builder.record_scope_outcome(failed=result.status in {"blocked", "failed"})
@@ -729,6 +839,9 @@ def main(
                 total_elapsed_ms=_elapsed_ms(started_monotonic),
                 rows_read=sum(item.rows_read for item in results),
                 rows_written=sum(item.rows_written for item in results),
+                status_rows_written=sum(item.status_rows_written for item in results),
+                target_event_rows_written=sum(item.target_event_rows_written for item in results),
+                rows_written_total=sum(item.rows_written_total for item in results),
             )
             if result.status != "materialized" and result.status != "interrupted":
                 print(
