@@ -49,7 +49,9 @@ from enum import StrEnum
 from typing import Any, Mapping, Sequence
 
 from src.market_data.native_short_multi_asset_audit_v1 import (
+    BOOTSTRAP_ORCHESTRATION_BLOCKED,
     GLOBAL_BLOCKERS,
+    MULTI_SCOPE_FAILURE_ISOLATION_MISSING,
     PROMOTION_CONTRACT_MISSING,
     REMOVAL_CONTRACT_MISSING,
     WRITER_PROVENANCE_UNATTRIBUTED,
@@ -1368,6 +1370,23 @@ def _already_removed_or_residue(
     )
 
 
+# The exact, fixed set of global blockers the checked-in bootstrap manifest
+# may narrow out of one PROMOTE_SCOPE decision -- and no others.
+# WRITER_PROVENANCE_UNATTRIBUTED and REMOVAL_CONTRACT_MISSING are
+# deliberately excluded: the first already has its own real, unmodified,
+# evidence-based closure path (classify_persisted_native_short_writer_provenance),
+# and the second is REMOVE_SCOPE's own evidence gap, unrelated to the first-
+# canary PROMOTE_SCOPE bootstrap story -- narrowing either here would be
+# exactly the "weaken an unrelated global blocker" this lane must not do.
+_BOOTSTRAP_NARROWED_BLOCKER_CODES = frozenset(
+    {
+        PROMOTION_CONTRACT_MISSING,
+        BOOTSTRAP_ORCHESTRATION_BLOCKED,
+        MULTI_SCOPE_FAILURE_ISOLATION_MISSING,
+    }
+)
+
+
 def _bootstrap_promotion_evidence_applies(
     *,
     operation_type: OperationType,
@@ -1377,29 +1396,36 @@ def _bootstrap_promotion_evidence_applies(
     bootstrap_promotion_evidence: BootstrapPromotionEvaluation | None,
 ) -> bool:
     """Whether the checked-in bootstrap manifest may narrow
-    ``PROMOTION_CONTRACT_MISSING`` out of this exact PROMOTE_SCOPE decision.
+    ``_BOOTSTRAP_NARROWED_BLOCKER_CODES`` out of this exact PROMOTE_SCOPE
+    decision.
 
     Every condition is a fail-closed AND, not an OR -- any single unmet
-    condition means the evidence does not apply and the existing blocker
-    stands unchanged:
+    condition means the evidence does not apply and every currently active
+    blocker stands unchanged:
 
     - only ``PROMOTE_SCOPE`` is eligible (ADOPT_LEGACY_SCOPE and REMOVE_SCOPE
       never consult bootstrap evidence at all);
-    - ``PROMOTION_CONTRACT_MISSING`` must actually be one of the blockers
-      applicable to this decision (nothing to narrow otherwise);
+    - at least one of ``_BOOTSTRAP_NARROWED_BLOCKER_CODES`` must actually be
+      one of the blockers applicable to this decision (nothing to narrow
+      otherwise);
     - the caller-supplied evaluation must itself be ``accepted`` -- i.e. the
       manifest is valid, ``accepted: true``, and its scope/commit match this
-      exact request (see ``native_short_promotion_bootstrap_evidence_v1``);
+      exact request (see ``native_short_promotion_bootstrap_evidence_v1``) --
+      the manifest names exactly one symbol, so this can never match any
+      other scope;
     - the requested scope must classify exactly ``NO_SCOPE`` -- no canonical
       scope row, no cadence row, no support event -- which by construction
-      can only be true for a scope's first-ever administration attempt;
+      can only be true for a scope's first-ever administration attempt (a
+      successful first promotion permanently creates that scope's row, so it
+      can never classify ``NO_SCOPE`` again -- no prior bootstrap promotion
+      of this exact scope can exist when this is true);
     - defensively, the scope's administration-operation ledger must also be
       completely empty for this exact scope, so a structurally impossible
       NO_SCOPE-with-history state fails closed instead of silently applying.
     """
     if operation_type != OperationType.PROMOTE_SCOPE:
         return False
-    if PROMOTION_CONTRACT_MISSING not in blocking:
+    if not any(code in blocking for code in _BOOTSTRAP_NARROWED_BLOCKER_CODES):
         return False
     if bootstrap_promotion_evidence is None or not bootstrap_promotion_evidence.accepted:
         return False
@@ -1468,14 +1494,14 @@ def decide_administration(
     which is always safe: it changes nothing about existing behavior for
     ADOPT_LEGACY_SCOPE, REMOVE_SCOPE, or any PROMOTE_SCOPE decision that does
     not meet every condition in ``_bootstrap_promotion_evidence_applies``.
-    When it does apply, it narrows -- never clears -- the blocking set: only
-    ``PROMOTION_CONTRACT_MISSING`` is removed; every other applicable active
-    blocker (``WRITER_PROVENANCE_UNATTRIBUTED``,
-    ``BOOTSTRAP_ORCHESTRATION_BLOCKED``,
-    ``MULTI_SCOPE_FAILURE_ISOLATION_MISSING``, ``REMOVAL_CONTRACT_MISSING``)
-    still rejects exactly as before. The existing gate mechanism itself
-    (``applicable_active_global_blockers`` / this ``if blocking`` check) is
-    unchanged.
+    When it does apply, it narrows -- never clears -- the blocking set:
+    only the codes in ``_BOOTSTRAP_NARROWED_BLOCKER_CODES``
+    (``PROMOTION_CONTRACT_MISSING``, ``BOOTSTRAP_ORCHESTRATION_BLOCKED``,
+    ``MULTI_SCOPE_FAILURE_ISOLATION_MISSING``) are removed; every other
+    applicable active blocker (``WRITER_PROVENANCE_UNATTRIBUTED``,
+    ``REMOVAL_CONTRACT_MISSING``) still rejects exactly as before. The
+    existing gate mechanism itself (``applicable_active_global_blockers`` /
+    this ``if blocking`` check) is unchanged.
     """
     classification, corrupt_code, detail = classify_scope_state(snapshot)
     blocking = applicable_active_global_blockers(operation_type, active_global_blockers)
@@ -1487,7 +1513,9 @@ def decide_administration(
         bootstrap_promotion_evidence=bootstrap_promotion_evidence,
     )
     if bootstrap_applied:
-        blocking = tuple(code for code in blocking if code != PROMOTION_CONTRACT_MISSING)
+        blocking = tuple(
+            code for code in blocking if code not in _BOOTSTRAP_NARROWED_BLOCKER_CODES
+        )
     if blocking:
         return AdministrationDecision(
             action=OperationAction.REJECT,

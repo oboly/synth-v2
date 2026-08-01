@@ -41,6 +41,7 @@ from tests.test_native_short_scope_administration_transaction_v1 import (
     _FakeState,
     _admin_op,
     _cadence,
+    _provenance,
     _request,
     _support_event,
 )
@@ -110,19 +111,30 @@ def test_bootstrap_evidence_promotes_new_scope_when_only_blocker() -> None:
     assert decision.blocking_global_blockers == ()
 
 
-def test_bootstrap_evidence_narrows_but_never_clears_other_blockers() -> None:
+def test_bootstrap_evidence_narrows_only_the_named_codes_never_others() -> None:
+    """PROMOTION_CONTRACT_MISSING, BOOTSTRAP_ORCHESTRATION_BLOCKED, and
+    MULTI_SCOPE_FAILURE_ISOLATION_MISSING are all narrowed for the exact
+    bootstrap-matched scope, but REMOVAL_CONTRACT_MISSING (unrelated to this
+    lane's first-canary story) is never touched."""
     decision = decide_administration(
         OperationType.PROMOTE_SCOPE,
         _no_scope_snapshot(),
-        active_global_blockers=(PROMOTION_CONTRACT_MISSING, BOOTSTRAP_ORCHESTRATION_BLOCKED),
+        active_global_blockers=(
+            PROMOTION_CONTRACT_MISSING,
+            BOOTSTRAP_ORCHESTRATION_BLOCKED,
+            MULTI_SCOPE_FAILURE_ISOLATION_MISSING,
+            REMOVAL_CONTRACT_MISSING,
+        ),
         bootstrap_promotion_evidence=_ACCEPTED_EVIDENCE,
     )
     assert decision.action == OperationAction.REJECT
     assert decision.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
-    assert decision.blocking_global_blockers == (BOOTSTRAP_ORCHESTRATION_BLOCKED,)
+    assert decision.blocking_global_blockers == (REMOVAL_CONTRACT_MISSING,)
     assert PROMOTION_CONTRACT_MISSING not in decision.blocking_global_blockers
-    # Narrowing only clears the one sub-check; it is not applied/exposed on a
-    # decision that still rejects.
+    assert BOOTSTRAP_ORCHESTRATION_BLOCKED not in decision.blocking_global_blockers
+    assert MULTI_SCOPE_FAILURE_ISOLATION_MISSING not in decision.blocking_global_blockers
+    # Narrowing only clears the named sub-checks; it is not applied/exposed on
+    # a decision that still rejects.
     assert decision.bootstrap_evidence_applied is False
 
 
@@ -237,11 +249,14 @@ def _authorize_test_writer(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _sol_request(*, write_repository_sha: str = "a" * 40):
+def _sol_request(*, repository_sha: str = "a" * 40, operation_uuid: str | None = None):
+    provenance_changes: dict[str, Any] = {"repository_sha": repository_sha}
+    if operation_uuid is not None:
+        provenance_changes["operation_uuid"] = operation_uuid
     return _request(
         OperationType.PROMOTE_SCOPE,
         symbol="SOL",
-        provenance=None,
+        provenance=_provenance(**provenance_changes),
         metadata={"ticket": "bootstrap-test"},
     )
 
@@ -273,15 +288,16 @@ def test_execute_end_to_end_promotes_bootstrap_scope_when_only_blocker(
 def test_execute_end_to_end_still_blocked_by_orthogonal_blocker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Even a fully accepted bootstrap manifest only narrows
-    PROMOTION_CONTRACT_MISSING; an unrelated active blocker (e.g. the
-    still-unimplemented BOOTSTRAP_ORCHESTRATION_BLOCKED) continues to reject
-    the promotion, proving this lane does not weaken the general gate."""
+    """Even a fully accepted bootstrap manifest only narrows the three named
+    codes; an unrelated active blocker (REMOVAL_CONTRACT_MISSING, which has
+    its own separate, unimplemented evidence gap) continues to reject the
+    promotion, proving this lane does not weaken an unrelated global
+    blocker."""
     monkeypatch.setattr(
         txn,
         "evaluate_current_global_blockers",
         lambda conn: (
-            (PROMOTION_CONTRACT_MISSING, BOOTSTRAP_ORCHESTRATION_BLOCKED),
+            (PROMOTION_CONTRACT_MISSING, REMOVAL_CONTRACT_MISSING),
             {},
         ),
     )
@@ -297,34 +313,37 @@ def test_execute_end_to_end_still_blocked_by_orthogonal_blocker(
 
     assert outcome.result.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
     assert outcome.current_state["blocking_global_blockers"] == [
-        BOOTSTRAP_ORCHESTRATION_BLOCKED
+        REMOVAL_CONTRACT_MISSING
     ]
     assert conn.commit_count == 0
     assert conn.committed.scopes == before.scopes
 
 
-def test_execute_real_evaluators_still_block_promotion_with_unaccepted_shipped_manifest() -> None:
+def _accepted_writer_evidence_row() -> dict[str, Any]:
+    return {
+        "run_uuid": PROVENANCE_AUDIT_RUN_UUID,
+        "runner_name": "run_native_short_scope_status_chain_v1",
+        "runner_version": "0.1",
+        "trigger_type": "REPOSITORY_4H_MARKET_CHAIN",
+        "trigger_ref": "scripts/run_native_short_scope_status_chain_once.sh",
+        "host_name": "devlap",
+        "process_id": 26030,
+        "provenance_contract_version": "native_short_writer_provenance_v1",
+        "writer_entrypoint": "scripts/run_native_short_scope_status_chain_once.sh",
+        "repository_writer_owner": "synth-chain-4h",
+        "execution_mode": "CHAIN",
+        "repository_commit_sha": "38346fc1460453469ca5bd3bc2f45159f0dc303e",
+    }
+
+
+def test_execute_real_evaluators_still_block_sol_before_commit_is_pinned() -> None:
     """With the real (unmodified) evaluate_current_global_blockers and the
-    real, unaccepted, checked-in bootstrap manifest, PROMOTE_SCOPE remains
-    blocked: this proves the shipped repository state authorizes nothing by
-    itself, exactly like the shipped promotion-acceptance manifest."""
+    real, checked-in, accepted-for-SOL bootstrap manifest, a SOL PROMOTE_SCOPE
+    request from any commit other than the manifest's pinned
+    repository_commit_sha remains blocked: the shipped repository state
+    cannot silently authorize production from an arbitrary checkout."""
     state = _FakeState()
-    state.writer_runs.append(
-        {
-            "run_uuid": PROVENANCE_AUDIT_RUN_UUID,
-            "runner_name": "run_native_short_scope_status_chain_v1",
-            "runner_version": "0.1",
-            "trigger_type": "REPOSITORY_4H_MARKET_CHAIN",
-            "trigger_ref": "scripts/run_native_short_scope_status_chain_once.sh",
-            "host_name": "devlap",
-            "process_id": 26030,
-            "provenance_contract_version": "native_short_writer_provenance_v1",
-            "writer_entrypoint": "scripts/run_native_short_scope_status_chain_once.sh",
-            "repository_writer_owner": "synth-chain-4h",
-            "execution_mode": "CHAIN",
-            "repository_commit_sha": "38346fc1460453469ca5bd3bc2f45159f0dc303e",
-        }
-    )
+    state.writer_runs.append(_accepted_writer_evidence_row())
     conn = _FakeConn(state)
 
     outcome = execute_scope_administration(conn, _sol_request(), authorization=_AUTH)
@@ -336,6 +355,93 @@ def test_execute_real_evaluators_still_block_promotion_with_unaccepted_shipped_m
     assert MULTI_SCOPE_FAILURE_ISOLATION_MISSING in blocking
     assert REMOVAL_CONTRACT_MISSING in blocking
     assert outcome.current_state["bootstrap_evidence"]["accepted"] is False
+
+
+@pytest.mark.parametrize("symbol", ["ETH", "XRP", "BTC", "DOGE"])
+def test_execute_real_evaluator_fails_closed_for_every_non_sol_symbol(symbol: str) -> None:
+    """The real, checked-in manifest names exactly one symbol (SOL). Every
+    other symbol -- including the two named-but-not-approved review
+    candidates ETH and XRP, and the legacy BTC scope -- fails the bootstrap
+    scope-match check regardless of blocker state or repository commit, and
+    therefore never narrows any blocker."""
+    state = _FakeState()
+    state.writer_runs.append(_accepted_writer_evidence_row())
+    conn = _FakeConn(state)
+
+    outcome = execute_scope_administration(
+        conn, _request(OperationType.PROMOTE_SCOPE, symbol=symbol), authorization=_AUTH
+    )
+
+    assert outcome.result.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+    blocking = set(outcome.current_state["blocking_global_blockers"])
+    assert PROMOTION_CONTRACT_MISSING in blocking
+    assert BOOTSTRAP_ORCHESTRATION_BLOCKED in blocking
+    assert MULTI_SCOPE_FAILURE_ISOLATION_MISSING in blocking
+    assert outcome.current_state["bootstrap_evidence"]["accepted"] is False
+    assert outcome.current_state["bootstrap_evidence"]["reason"] != REASON_EVIDENCE_ACCEPTED
+    assert conn.commit_count == 0
+
+
+def test_execute_second_promote_attempt_after_sol_bootstrap_success_is_not_reauthorized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once SOL's bootstrap promotion has committed once, a brand-new,
+    differently-uuid'd PROMOTE_SCOPE attempt against the same scope no
+    longer classifies NO_SCOPE, so the bootstrap exception structurally
+    cannot re-apply -- proving single-use without any mutable 'consumed'
+    flag."""
+    monkeypatch.setattr(
+        txn, "evaluate_current_global_blockers", lambda conn: ((PROMOTION_CONTRACT_MISSING,), {})
+    )
+    monkeypatch.setattr(
+        txn, "evaluate_promotion_bootstrap_evidence", lambda **kwargs: _ACCEPTED_EVIDENCE
+    )
+    conn = _FakeConn()
+    first = execute_scope_administration(conn, _sol_request(), authorization=_AUTH)
+    assert first.result.result_code == ResultCode.PROMOTED_NEW_SCOPE
+    assert conn.commit_count == 1
+
+    second_request = _sol_request(
+        operation_uuid="00000000-0000-4000-8000-000000000002"
+    )
+    second = execute_scope_administration(conn, second_request, authorization=_AUTH)
+
+    assert second.result.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
+    assert PROMOTION_CONTRACT_MISSING in second.current_state["blocking_global_blockers"]
+    assert conn.commit_count == 1
+    assert len(conn.committed.operations) == 1
+
+
+def test_execute_retry_of_same_operation_uuid_is_idempotent_and_creates_no_second_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Requirement: after successful promotion, retry must be idempotent and
+    must not create a second operation. A retry (same operation_uuid, same
+    immutable request identity) replays OPERATION_ALREADY_COMPLETED without
+    consulting blockers or bootstrap evidence again."""
+    monkeypatch.setattr(
+        txn, "evaluate_current_global_blockers", lambda conn: ((PROMOTION_CONTRACT_MISSING,), {})
+    )
+    monkeypatch.setattr(
+        txn, "evaluate_promotion_bootstrap_evidence", lambda **kwargs: _ACCEPTED_EVIDENCE
+    )
+    conn = _FakeConn()
+    request = _sol_request()
+
+    first = execute_scope_administration(conn, request, authorization=_AUTH)
+    assert first.result.result_code == ResultCode.PROMOTED_NEW_SCOPE
+    assert conn.commit_count == 1
+    operation_count_after_first = len(conn.committed.operations)
+
+    retry = execute_scope_administration(conn, request, authorization=_AUTH)
+
+    assert retry.result.result_code == ResultCode.OPERATION_ALREADY_COMPLETED
+    assert str(retry.result.result_class) == "IDEMPOTENT_SUCCESS"
+    assert retry.persisted is False
+    assert len(conn.committed.operations) == operation_count_after_first
+    # Commit count does not advance on replay: the replay path rolls back
+    # immediately after re-reading state, it never opens a second commit.
+    assert conn.commit_count == 1
 
 
 def test_plan_shows_full_decision_and_evidence_without_writes(

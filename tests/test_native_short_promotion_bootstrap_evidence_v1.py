@@ -56,14 +56,36 @@ def _evaluate(path: Path, *, scope: dict = SCOPE, commit: str = TEST_COMMIT):
     )
 
 
-def test_shipped_default_manifest_is_unaccepted() -> None:
+_SHIPPED_SOL_SCOPE = {**CANONICAL_SCOPE_FIXED_FIELDS, "symbol": "SOL"}
+
+
+def test_shipped_default_manifest_is_accepted_for_sol_but_not_a_mismatched_commit() -> None:
+    """The checked-in manifest names exactly SOL and is accepted:true, but its
+    repository_commit_sha is an intentional, never-real placeholder (an
+    all-zero commit) pending a required follow-up pin commit -- see
+    docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md. Evaluating
+    it against any realistic commit therefore still fails closed."""
     from src.market_data.native_short_promotion_bootstrap_evidence_v1 import (
         DEFAULT_BOOTSTRAP_MANIFEST_PATH,
     )
 
-    result = _evaluate(DEFAULT_BOOTSTRAP_MANIFEST_PATH, scope=SCOPE, commit=TEST_COMMIT)
+    result = _evaluate(
+        DEFAULT_BOOTSTRAP_MANIFEST_PATH, scope=_SHIPPED_SOL_SCOPE, commit=TEST_COMMIT
+    )
     assert result.accepted is False
-    assert result.reason == REASON_MANIFEST_NOT_ACCEPTED
+    assert result.reason == REASON_COMMIT_MISMATCH
+
+
+def test_shipped_default_manifest_fails_closed_for_every_other_symbol() -> None:
+    from src.market_data.native_short_promotion_bootstrap_evidence_v1 import (
+        DEFAULT_BOOTSTRAP_MANIFEST_PATH,
+    )
+
+    for symbol in ("ETH", "XRP", "BTC"):
+        other_scope = {**CANONICAL_SCOPE_FIXED_FIELDS, "symbol": symbol}
+        result = _evaluate(DEFAULT_BOOTSTRAP_MANIFEST_PATH, scope=other_scope, commit=TEST_COMMIT)
+        assert result.accepted is False
+        assert result.reason == REASON_SCOPE_MISMATCH
 
 
 def test_shipped_default_manifest_digest_matches_live_contract() -> None:
@@ -75,7 +97,8 @@ def test_shipped_default_manifest_digest_matches_live_contract() -> None:
     assert raw["bootstrap_contract_digest"] == compute_bootstrap_contract_digest()
     assert raw["acceptance_schema_version"] == REQUIRED_MANIFEST_SCHEMA_VERSION
     assert raw["bootstrap_contract_version"] == BOOTSTRAP_CONTRACT_VERSION
-    assert raw["accepted"] is False
+    assert raw["accepted"] is True
+    assert raw["scope"] == _SHIPPED_SOL_SCOPE
 
 
 def test_missing_manifest_fails_closed(tmp_path: Path) -> None:
