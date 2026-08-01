@@ -37,17 +37,25 @@ XRP, BTC (BTC is a separate, already-legacy scope handled by
 ## Repository commit binding
 
 ```text
-repository_commit_sha: __REPOSITORY_COMMIT_SHA__
+repository_commit_sha: a74ff33121d42a7771eef0654e1526847d5c5d12
 ```
+
+That is the exact commit, on
+`fix/native-short-production-promotion-bootstrap-v1`, that introduced this
+approval and the manifest naming it (recorded here, in a later commit, as a
+plain historical reference to an already-existing commit -- not
+self-referential, exactly like the existing
+`38346fc1460453469ca5bd3bc2f45159f0dc303e` reference in
+`docs/todo/native_short_multi_asset_rollout_contract_v1.md`).
 
 A git commit object cannot state its own hash inside its own tree (the hash
 is a function of the tree's content, so self-reference is not achievable
 without brute-force hash-grinding, which this repository does not perform
-or condone). The value above is the exact commit that introduced this
-approval and the manifest naming it. Because of the property just
-described, the manifest, as committed at that exact commit, cannot yet
-show that same value -- production execution therefore requires exactly
-one additional, mechanical, reviewed follow-up commit that updates only
+or condone). Because of that property, the *manifest itself*, as committed
+at commit `a74ff33...`, cannot show that same value -- it ships with an
+intentional, never-real, all-zero placeholder instead. Production execution
+therefore requires exactly one additional, mechanical, reviewed follow-up
+commit that updates only
 `repository_commit_sha` in the manifest to match the true final `git
 rev-parse HEAD` of this branch, performed immediately before the
 production command is run. Until that follow-up commit exists and is
