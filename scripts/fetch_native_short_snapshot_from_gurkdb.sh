@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Bounded, read-only transport step: pull gurkdb's canonical native SHORT
-# snapshot manifest + immutable artifacts into a local staging directory.
+# snapshot manifest and immutable artifacts into a local staging directory.
 #
 # This script has no ownership over validation or activation. It only moves
-# bytes into a staging directory; src/operations/run_native_short_context_snapshot_import_v1.py
+# bytes into a staging directory. src/operations/run_native_short_context_snapshot_import_v1.py
 # separately validates and atomically installs. It never writes to the
 # canonical install path and never deletes anything on the remote side.
 #
@@ -27,11 +27,11 @@ mkdir -p "${STAGING_DIR}"
 # No --delete: staging only ever grows; the importer decides what is used.
 # Read-only on the remote side; this never writes into gurkdb's tree.
 rsync \
-  --archive \
-  --checksum \
-  --protect-args \
-  --chmod=Du=rwx,Fu=rw \
-  "${SOURCE_HOST}:${SOURCE_PATH}" \
-  "${STAGING_DIR}/"
+    --archive \
+    --checksum \
+    --protect-args \
+    --chmod=Du=rwx,Fu=rw \
+    "${SOURCE_HOST}:${SOURCE_PATH}" \
+    "${STAGING_DIR}/"
 
 echo "FINISHED runner=fetch_native_short_snapshot_from_gurkdb staging_dir=${STAGING_DIR} exit_status=0"

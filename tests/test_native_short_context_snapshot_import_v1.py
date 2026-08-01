@@ -35,7 +35,7 @@ def _authorized_writer_context(monkeypatch):
     )
 
 
-def _scope(symbol="BTC", **overrides):
+def _scope(symbol="BTC", *, projection_as_of_utc, **overrides):
     row = {
         "scope_id": 1,
         "venue": "bitvavo",
@@ -46,23 +46,30 @@ def _scope(symbol="BTC", **overrides):
         "supporting_interval": "1h",
         "scope_support_state": "NOT_SUPPORTED",
         "scope_reason_code": "SCOPE_NOT_SUPPORTED",
+        "projection_as_of_utc": projection_as_of_utc,
     }
     row.update(overrides)
     return row
 
 
-def _build(*, symbol="BTC"):
+def _build(*, symbol="BTC", projection_as_of_utc):
     return snapshot.build_snapshot(
-        scopes=[_scope(symbol=symbol)],
+        scopes=[_scope(symbol=symbol, projection_as_of_utc=projection_as_of_utc)],
         maps_by_id={},
         levels_by_map_id={},
     )
 
 
-def _publish(output_dir: Path, *, symbol="BTC", publication_ts_utc: datetime) -> None:
+def _publish(
+    output_dir: Path,
+    *,
+    symbol="BTC",
+    publication_ts_utc: datetime,
+    projection_as_of_utc: datetime | None = None,
+) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     output_dir.chmod(0o2750)
-    build = _build(symbol=symbol)
+    build = _build(symbol=symbol, projection_as_of_utc=projection_as_of_utc or publication_ts_utc)
     snapshot.publish_snapshot(
         build,
         output_dir=output_dir,
@@ -214,6 +221,32 @@ def test_rollback_preserves_previous_valid_snapshot_on_late_failure(tmp_path, mo
     assert (canonical / "manifest_v1.json").read_bytes() == before_manifest
     installed_after = snapshot.validate_published_snapshot(canonical)
     assert installed_after.snapshot_id == installed_before.snapshot_id
+
+
+def test_ambiguous_ordering_signals_rejected_and_canonical_untouched(tmp_path):
+    staged = tmp_path / "staged"
+    canonical = tmp_path / "canonical"
+    _publish(
+        canonical,
+        symbol="BTC",
+        publication_ts_utc=AS_OF,
+        projection_as_of_utc=AS_OF,
+    )
+    # publication_ts_utc is newer, but the underlying market-data timestamp
+    # (projection_as_of_max_utc) is older: the two signals disagree, so the
+    # import must fail closed rather than trust publication_ts_utc alone.
+    _publish(
+        staged,
+        symbol="SOL",
+        publication_ts_utc=AS_OF + timedelta(hours=4),
+        projection_as_of_utc=AS_OF - timedelta(hours=4),
+    )
+    before = (canonical / "manifest_v1.json").read_bytes()
+
+    with pytest.raises(SnapshotImportError):
+        _import(staged, canonical)
+
+    assert (canonical / "manifest_v1.json").read_bytes() == before
 
 
 def test_wrong_host_rejected_before_any_write(tmp_path):

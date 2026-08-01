@@ -23,7 +23,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from src.market_data.native_short_fib_context_snapshot_v1 import (
     BUNDLE_NAME,
@@ -112,6 +112,26 @@ def _parse_ts(value: Any, *, label: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def _ordering_signals(manifest: Mapping[str, Any], *, label: str) -> tuple[datetime, datetime]:
+    """Two independent monotonic signals used for staleness comparison.
+
+    publication_ts_utc alone is not trusted for ordering: it only reflects
+    when the publisher happened to run, not the freshness of the underlying
+    market data. source_as_of_timestamps.projection_as_of_max_utc is derived
+    from persisted authority timestamps instead. Both must agree on
+    direction or the comparison fails closed as ambiguous.
+    """
+    publication_ts = _parse_ts(manifest.get("publication_ts_utc"), label=f"{label} publication_ts_utc")
+    source_timestamps = manifest.get("source_as_of_timestamps")
+    if not isinstance(source_timestamps, dict):
+        raise SnapshotImportError(f"{label} manifest is missing source_as_of_timestamps")
+    projection_as_of_raw = source_timestamps.get("projection_as_of_max_utc")
+    if not projection_as_of_raw:
+        raise SnapshotImportError(f"{label} source_as_of_timestamps.projection_as_of_max_utc is missing")
+    projection_as_of = _parse_ts(projection_as_of_raw, label=f"{label} projection_as_of_max_utc")
+    return publication_ts, projection_as_of
+
+
 def evaluate_staged_snapshot(
     staged_root: Path,
     *,
@@ -121,7 +141,8 @@ def evaluate_staged_snapshot(
 
     Returns (staged_manifest, installed_manifest_or_none). Raises
     SnapshotImportError (including StaleSnapshotError) without touching the
-    canonical path.
+    canonical path. Any inconsistency between snapshot_id, timestamps, or
+    digests fails closed rather than guessing a direction.
     """
     validate_published_snapshot(staged_root)
     staged_manifest = _read_manifest(staged_root / MANIFEST_NAME)
@@ -137,17 +158,36 @@ def evaluate_staged_snapshot(
     # never be silently overwritten as if it were a routine install.
     validate_published_snapshot(canonical_root)
 
-    if staged_manifest.get("snapshot_id") == installed_manifest.get("snapshot_id"):
+    staged_id = staged_manifest.get("snapshot_id")
+    installed_id = installed_manifest.get("snapshot_id")
+    if staged_id == installed_id:
         if staged_manifest.get("content_digest") != installed_manifest.get("content_digest"):
             raise SnapshotImportError("snapshot_id collision with different content_digest")
         return staged_manifest, installed_manifest
 
-    staged_ts = _parse_ts(staged_manifest.get("publication_ts_utc"), label="staged publication_ts_utc")
-    installed_ts = _parse_ts(installed_manifest.get("publication_ts_utc"), label="installed publication_ts_utc")
-    if staged_ts < installed_ts:
+    staged_pub, staged_src = _ordering_signals(staged_manifest, label="staged")
+    installed_pub, installed_src = _ordering_signals(installed_manifest, label="installed")
+
+    pub_is_older = staged_pub < installed_pub
+    pub_is_newer = staged_pub > installed_pub
+    src_is_older = staged_src < installed_src
+    src_is_newer = staged_src > installed_src
+
+    if (pub_is_older and src_is_newer) or (pub_is_newer and src_is_older):
+        raise SnapshotImportError(
+            "ambiguous ordering: publication_ts_utc and projection_as_of_max_utc "
+            "disagree on direction between staged and installed snapshots"
+        )
+    if pub_is_older or src_is_older:
         raise StaleSnapshotError(
-            f"staged snapshot is older than installed: staged={staged_ts.isoformat()} "
-            f"installed={installed_ts.isoformat()}"
+            f"staged snapshot is older than installed: "
+            f"staged_publication_ts={staged_pub.isoformat()} installed_publication_ts={installed_pub.isoformat()} "
+            f"staged_projection_as_of={staged_src.isoformat()} installed_projection_as_of={installed_src.isoformat()}"
+        )
+    if not pub_is_newer and not src_is_newer:
+        raise SnapshotImportError(
+            "staged snapshot has a different snapshot_id but identical ordering signals to the "
+            "installed snapshot; refusing to guess a direction"
         )
     return staged_manifest, installed_manifest
 
