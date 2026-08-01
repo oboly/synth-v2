@@ -43,16 +43,21 @@ executor=none
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Mapping, Sequence
 
 from src.market_data.native_short_multi_asset_audit_v1 import (
     GLOBAL_BLOCKERS,
+    PROMOTION_CONTRACT_MISSING,
     REMOVAL_CONTRACT_MISSING,
     WRITER_PROVENANCE_UNATTRIBUTED,
     evaluate_current_global_blockers,
+)
+from src.market_data.native_short_promotion_bootstrap_evidence_v1 import (
+    BootstrapPromotionEvaluation,
+    evaluate_promotion_bootstrap_evidence,
 )
 from src.market_data.native_short_scope_administration_v1 import (
     NativeShortScopeAdministrationOperationType as OperationType,
@@ -424,6 +429,13 @@ class AdministrationDecision:
     # Deterministic, sorted, canonical blocker codes that caused a
     # GLOBAL_BLOCKERS_ACTIVE rejection; empty for every other decision.
     blocking_global_blockers: tuple[str, ...] = ()
+    # True only when a valid, exact-scope-and-commit-bound bootstrap
+    # promotion manifest (native_short_promotion_bootstrap_evidence_v1) was
+    # applied to narrow PROMOTION_CONTRACT_MISSING out of this PROMOTE_SCOPE
+    # decision's blocking set. False for every other decision, including
+    # every ADOPT_LEGACY_SCOPE/REMOVE_SCOPE decision and every PROMOTE_SCOPE
+    # decision that did not need or could not use bootstrap evidence.
+    bootstrap_evidence_applied: bool = False
 
     @property
     def writes_ledger(self) -> bool:
@@ -1356,11 +1368,84 @@ def _already_removed_or_residue(
     )
 
 
+def _bootstrap_promotion_evidence_applies(
+    *,
+    operation_type: OperationType,
+    classification: ScopeClassification,
+    snapshot: ScopeStateSnapshot,
+    blocking: tuple[str, ...],
+    bootstrap_promotion_evidence: BootstrapPromotionEvaluation | None,
+) -> bool:
+    """Whether the checked-in bootstrap manifest may narrow
+    ``PROMOTION_CONTRACT_MISSING`` out of this exact PROMOTE_SCOPE decision.
+
+    Every condition is a fail-closed AND, not an OR -- any single unmet
+    condition means the evidence does not apply and the existing blocker
+    stands unchanged:
+
+    - only ``PROMOTE_SCOPE`` is eligible (ADOPT_LEGACY_SCOPE and REMOVE_SCOPE
+      never consult bootstrap evidence at all);
+    - ``PROMOTION_CONTRACT_MISSING`` must actually be one of the blockers
+      applicable to this decision (nothing to narrow otherwise);
+    - the caller-supplied evaluation must itself be ``accepted`` -- i.e. the
+      manifest is valid, ``accepted: true``, and its scope/commit match this
+      exact request (see ``native_short_promotion_bootstrap_evidence_v1``);
+    - the requested scope must classify exactly ``NO_SCOPE`` -- no canonical
+      scope row, no cadence row, no support event -- which by construction
+      can only be true for a scope's first-ever administration attempt;
+    - defensively, the scope's administration-operation ledger must also be
+      completely empty for this exact scope, so a structurally impossible
+      NO_SCOPE-with-history state fails closed instead of silently applying.
+    """
+    if operation_type != OperationType.PROMOTE_SCOPE:
+        return False
+    if PROMOTION_CONTRACT_MISSING not in blocking:
+        return False
+    if bootstrap_promotion_evidence is None or not bootstrap_promotion_evidence.accepted:
+        return False
+    if classification != ScopeClassification.NO_SCOPE:
+        return False
+    if snapshot.operations:
+        return False
+    return True
+
+
+def _evaluate_bootstrap_promotion_evidence_for_request(
+    request: NativeShortScopeAdministrationRequest,
+) -> BootstrapPromotionEvaluation | None:
+    """Evaluate the checked-in bootstrap manifest for this exact request.
+
+    Only ``PROMOTE_SCOPE`` ever consults bootstrap evidence -- for every
+    other operation type this returns ``None`` without reading the manifest
+    file at all. Pure, read-only, no database access; the manifest read is
+    the only I/O."""
+    if request.operation_type != OperationType.PROMOTE_SCOPE:
+        return None
+    return evaluate_promotion_bootstrap_evidence(
+        requested_scope=request.scope_key.as_dict(),
+        requested_repository_commit_sha=request.provenance.repository_sha,
+    )
+
+
+def _bootstrap_evidence_json(
+    evaluation: BootstrapPromotionEvaluation | None,
+) -> dict[str, Any] | None:
+    if evaluation is None:
+        return None
+    return {
+        "accepted": evaluation.accepted,
+        "reason": evaluation.reason,
+        "symbol": evaluation.symbol,
+        "repository_commit_sha": evaluation.repository_commit_sha,
+    }
+
+
 def decide_administration(
     operation_type: OperationType,
     snapshot: ScopeStateSnapshot,
     *,
     active_global_blockers: Sequence[str],
+    bootstrap_promotion_evidence: BootstrapPromotionEvaluation | None = None,
 ) -> AdministrationDecision:
     """Pure decision function: given the operation, a state snapshot, and the
     currently active canonical global blockers, choose exactly one action and
@@ -1376,9 +1461,33 @@ def decide_administration(
     it returns a REJECT/BLOCKED/GLOBAL_BLOCKERS_ACTIVE result before any
     operation-specific dispatch, so a blocked operation never reaches, and
     therefore never depends on, its own classification-specific logic.
+
+    ``bootstrap_promotion_evidence`` is the caller's already-evaluated
+    ``native_short_promotion_bootstrap_evidence_v1.evaluate_promotion_bootstrap_evidence``
+    result for this exact request (or ``None``). It defaults to ``None``,
+    which is always safe: it changes nothing about existing behavior for
+    ADOPT_LEGACY_SCOPE, REMOVE_SCOPE, or any PROMOTE_SCOPE decision that does
+    not meet every condition in ``_bootstrap_promotion_evidence_applies``.
+    When it does apply, it narrows -- never clears -- the blocking set: only
+    ``PROMOTION_CONTRACT_MISSING`` is removed; every other applicable active
+    blocker (``WRITER_PROVENANCE_UNATTRIBUTED``,
+    ``BOOTSTRAP_ORCHESTRATION_BLOCKED``,
+    ``MULTI_SCOPE_FAILURE_ISOLATION_MISSING``, ``REMOVAL_CONTRACT_MISSING``)
+    still rejects exactly as before. The existing gate mechanism itself
+    (``applicable_active_global_blockers`` / this ``if blocking`` check) is
+    unchanged.
     """
     classification, corrupt_code, detail = classify_scope_state(snapshot)
     blocking = applicable_active_global_blockers(operation_type, active_global_blockers)
+    bootstrap_applied = _bootstrap_promotion_evidence_applies(
+        operation_type=operation_type,
+        classification=classification,
+        snapshot=snapshot,
+        blocking=blocking,
+        bootstrap_promotion_evidence=bootstrap_promotion_evidence,
+    )
+    if bootstrap_applied:
+        blocking = tuple(code for code in blocking if code != PROMOTION_CONTRACT_MISSING)
     if blocking:
         return AdministrationDecision(
             action=OperationAction.REJECT,
@@ -1397,7 +1506,10 @@ def decide_administration(
     if operation_type == OperationType.ADOPT_LEGACY_SCOPE:
         return _decide_adopt(snapshot, classification, corrupt_code, detail)
     if operation_type == OperationType.PROMOTE_SCOPE:
-        return _decide_promote(snapshot, classification, corrupt_code, detail)
+        decision = _decide_promote(snapshot, classification, corrupt_code, detail)
+        if bootstrap_applied:
+            decision = replace(decision, bootstrap_evidence_applied=True)
+        return decision
     if operation_type == OperationType.REMOVE_SCOPE:
         return _decide_remove(snapshot, classification, corrupt_code, detail)
     raise NativeShortScopeAdministrationTransactionError(
@@ -2124,6 +2236,7 @@ def plan_scope_administration(
         conn, request.provenance.operation_uuid, for_update=False
     )
     snapshot: ScopeStateSnapshot | None
+    bootstrap_evaluation: BootstrapPromotionEvaluation | None = None
     if existing is not None:
         decision = decide_operation_replay(request, existing)
         snapshot = read_scope_state_snapshot(conn, scope_key, for_update=False)
@@ -2137,10 +2250,14 @@ def plan_scope_administration(
             )
         else:
             active_global_blockers, _ = evaluate_current_global_blockers(conn)
+            bootstrap_evaluation = _evaluate_bootstrap_promotion_evidence_for_request(
+                request
+            )
             decision = decide_administration(
                 request.operation_type,
                 snapshot,
                 active_global_blockers=active_global_blockers,
+                bootstrap_promotion_evidence=bootstrap_evaluation,
             )
 
     current_state = (
@@ -2151,6 +2268,8 @@ def plan_scope_administration(
     current_state = {
         **current_state,
         "blocking_global_blockers": list(decision.blocking_global_blockers),
+        "bootstrap_evidence_applied": decision.bootstrap_evidence_applied,
+        "bootstrap_evidence": _bootstrap_evidence_json(bootstrap_evaluation),
     }
     return AdministrationTransactionOutcome(
         mode=TransactionMode.DRY_RUN,
@@ -2228,10 +2347,12 @@ def execute_scope_administration(
         # Same locked transaction/connection: no second, unrelated database
         # snapshot is opened for the blocker read.
         active_global_blockers, _ = evaluate_current_global_blockers(conn)
+        bootstrap_evaluation = _evaluate_bootstrap_promotion_evidence_for_request(request)
         decision = decide_administration(
             request.operation_type,
             snapshot,
             active_global_blockers=active_global_blockers,
+            bootstrap_promotion_evidence=bootstrap_evaluation,
         )
 
         if not decision.writes_ledger:
@@ -2245,6 +2366,7 @@ def execute_scope_administration(
                 persisted=False,
                 commit_state=CommitState.ROLLED_BACK,
                 scope_admin_operation_id=None,
+                bootstrap_evaluation=bootstrap_evaluation,
             )
 
         operation_id = _apply_decision(conn, request, decision, snapshot, now_utc=now)
@@ -2295,6 +2417,7 @@ def execute_scope_administration(
             persisted=True,
             commit_state=CommitState.COMMITTED,
             scope_admin_operation_id=operation_id,
+            bootstrap_evaluation=bootstrap_evaluation,
         )
     except _RetryableResult as exc:
         conn.rollback()
@@ -2369,6 +2492,7 @@ def _outcome(
     persisted: bool | None,
     commit_state: CommitState,
     scope_admin_operation_id: int | None,
+    bootstrap_evaluation: BootstrapPromotionEvaluation | None = None,
 ) -> AdministrationTransactionOutcome:
     current_state = (
         snapshot.summary()
@@ -2378,6 +2502,8 @@ def _outcome(
     current_state = {
         **current_state,
         "blocking_global_blockers": list(decision.blocking_global_blockers),
+        "bootstrap_evidence_applied": decision.bootstrap_evidence_applied,
+        "bootstrap_evidence": _bootstrap_evidence_json(bootstrap_evaluation),
     }
     return AdministrationTransactionOutcome(
         mode=TransactionMode.WRITE,
@@ -2415,6 +2541,7 @@ __all__ = [
     "TransactionMode",
     "WRITER_CAPABILITY_ID",
     "advisory_lock_name",
+    "applicable_active_global_blockers",
     "classify_scope_state",
     "decide_administration",
     "decide_operation_replay",

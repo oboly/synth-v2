@@ -2,7 +2,7 @@
 
 ## Status
 
-`blocked` — the repository writer-provenance contract, the pure scope-administration request types, the forward-only schema, and the deterministic repository transactions for `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` (with first-creation serialization, operation-ledger idempotency, and commit-time transaction validation) are now implemented in the repository. One post-merge attributable BTC production run passed devlap host acceptance; its permanent evidence is reviewed in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`, and `WRITER_PROVENANCE_UNATTRIBUTED` is closed by that evidence. A sequential multi-symbol rollout orchestrator (see "Production rollout orchestrator" below) is now implemented in the repository, delegating unchanged to the existing administration transaction and gate; it has not been invoked against production. No production database mutation, migration application, or operational acceptance of the administration transactions has been performed. Writer commit-time fencing is implemented in the repository; `NO_CURRENT_MAP` bootstrap and per-symbol failure isolation remain unimplemented. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
+`blocked` — the repository writer-provenance contract, the pure scope-administration request types, the forward-only schema, and the deterministic repository transactions for `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` (with first-creation serialization, operation-ledger idempotency, and commit-time transaction validation) are now implemented in the repository. One post-merge attributable BTC production run passed devlap host acceptance; its permanent evidence is reviewed in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`, and `WRITER_PROVENANCE_UNATTRIBUTED` is closed by that evidence. A sequential multi-symbol rollout orchestrator (see "Production rollout orchestrator" below) is now implemented in the repository, delegating unchanged to the existing administration transaction and gate; it has not been invoked against production. The `PROMOTION_CONTRACT_MISSING` bootstrap circularity is now resolved by design (see "PROMOTE_SCOPE bootstrap-circularity resolution" below) via a narrow, scope-and-commit-bound, checked-in bootstrap manifest that ships unaccepted; no scope is repository-approved as the next canary, so the manifest names nothing, and `BOOTSTRAP_ORCHESTRATION_BLOCKED`/`MULTI_SCOPE_FAILURE_ISOLATION_MISSING` remain separately, unconditionally active regardless. No production database mutation, migration application, or operational acceptance of the administration transactions has been performed. Writer commit-time fencing is implemented in the repository; `NO_CURRENT_MAP` bootstrap and per-symbol failure isolation remain unimplemented. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
 
 ## Sources
 
@@ -604,6 +604,119 @@ Focused tests: `tests/test_native_short_scope_administration_rollout_v1.py`
 (pure orchestration logic against monkeypatched
 `plan_scope_administration` / `execute_scope_administration`; no database
 required).
+
+## PROMOTE_SCOPE bootstrap-circularity resolution (this lane)
+
+The circularity documented above ("Promotion-acceptance bootstrap
+circularity: still unresolved by design") is now resolved by design, but
+**remains unopened** as production capability: no scope is currently
+authorized, and even a fully authorized scope would still be blocked by two
+other unconditional blockers this lane does not touch.
+
+**Repository-approved next canary: none exists.** This lane searched the
+canonical sources (this document's "Current state / facts" and "Open tasks
+by priority" sections, and `native_short_multi_asset_audit_v1.py`) for an
+approved next scope before implementing anything scope-specific. The result
+is explicit and unchanged from before this lane: "SOL, ETH, and XRP ... are
+not approved for production" -- `SOL -> ETH -> XRP` is documented as "a
+review order only." No symbol has passed the sequential-canary review
+described under "Open tasks by priority" item 5. This lane therefore does
+**not** name a symbol anywhere in checked-in, accepted form; inventing one
+would itself be exactly the kind of unreviewed promotion this contract
+exists to prevent.
+
+**What was implemented.** A new, narrow, evidence-based exception to the
+`PROMOTION_CONTRACT_MISSING` sub-check only, structurally distinct from (and
+never a replacement for) the existing post-hoc
+`native_short_promotion_acceptance_evidence_v1` evidence used for the
+second and every later promotion:
+
+- `src/market_data/native_short_promotion_bootstrap_evidence_v1.py` --
+  pure, read-only, no database access. Defines the bootstrap contract
+  (`BOOTSTRAP_CONTRACT_VERSION`, `compute_bootstrap_contract_digest()`) and
+  `evaluate_promotion_bootstrap_evidence(requested_scope,
+  requested_repository_commit_sha, manifest_path=...)`, which validates the
+  checked-in manifest and requires its `scope` (including `symbol`) and
+  `repository_commit_sha` to match the exact request under evaluation.
+- `src/market_data/native_short_promotion_bootstrap_manifest_v1.json` --
+  versioned, repository-owned, ships `accepted: false` with every
+  scope/commit/approval field `null`. Authorizes nothing until a **separate**
+  reviewed repository change names one exact symbol and one exact commit.
+- `native_short_scope_administration_transaction_v1.decide_administration`
+  gained an optional keyword-only `bootstrap_promotion_evidence` parameter
+  (default `None`, always safe/inert). When, and only when, **all** of the
+  following hold, `PROMOTION_CONTRACT_MISSING` alone is narrowed out of the
+  blocking set for that one decision (see
+  `_bootstrap_promotion_evidence_applies`):
+  - the operation is `PROMOTE_SCOPE` (never `ADOPT_LEGACY_SCOPE` or
+    `REMOVE_SCOPE`);
+  - `PROMOTION_CONTRACT_MISSING` is actually one of the currently applicable
+    active blockers;
+  - the caller-supplied evaluation is `accepted` (exact scope + exact
+    commit match against a valid, `accepted: true` manifest);
+  - the requested scope classifies exactly `NO_SCOPE` (no canonical scope
+    row, no cadence row, no support event -- structurally only true for a
+    scope's first-ever administration attempt, since a successful first
+    promotion permanently creates that scope's row);
+  - defensively, the scope's own administration-operation ledger is
+    completely empty (fails closed on an otherwise-impossible
+    NO_SCOPE-with-history state instead of trusting classification alone).
+  Every other applicable active blocker (`WRITER_PROVENANCE_UNATTRIBUTED`,
+  `BOOTSTRAP_ORCHESTRATION_BLOCKED`, `MULTI_SCOPE_FAILURE_ISOLATION_MISSING`,
+  `REMOVAL_CONTRACT_MISSING`) still rejects exactly as before -- this is a
+  narrowing of one sub-check, never a second "allow promotion" flag, and the
+  existing gate mechanism (`_APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION` /
+  `applicable_active_global_blockers` / the `GLOBAL_BLOCKERS_ACTIVE` reject
+  path) is unmodified.
+- `plan_scope_administration` and `execute_scope_administration` both
+  evaluate bootstrap evidence for every fresh (non-replay) PROMOTE_SCOPE
+  decision and surface it unconditionally in
+  `AdministrationTransactionOutcome.current_state["bootstrap_evidence"]`
+  (accepted/reason/symbol/commit) and
+  `current_state["bootstrap_evidence_applied"]`, so plan mode shows the full
+  decision and evidence -- including *why* evidence did not apply -- without
+  any write. `execute_scope_administration`'s existing
+  `require_writer_mutation_authorization` call is unchanged and still runs
+  before any mutation regardless of bootstrap evidence.
+
+**Single-use by construction, not a mutable flag.** Because a successful
+first promotion permanently creates the scope's row and its ledger row, that
+exact scope can never classify `NO_SCOPE` again, so this evidence cannot
+re-apply to a second promotion of the same scope. Because the manifest names
+one exact symbol, it cannot apply to any other scope. No "consumed" flag is
+introduced or required.
+
+**What remains blocked regardless of this lane.** `BOOTSTRAP_ORCHESTRATION_BLOCKED`
+and `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` remain unconditionally active in
+`evaluate_global_blockers` (their own separate, unimplemented lanes, per
+"Open tasks by priority" items 3-4), and both are still applicable to every
+`PROMOTE_SCOPE` decision. `REMOVAL_CONTRACT_MISSING` is also still applicable
+and still unconditionally active. This lane's bootstrap exception narrows
+only `PROMOTION_CONTRACT_MISSING`; it does not, and structurally cannot,
+authorize a real production `PROMOTE_SCOPE` invocation while any of those
+three remain active. Focused test
+`test_execute_real_evaluators_still_block_promotion_with_unaccepted_shipped_manifest`
+in
+`tests/test_native_short_scope_administration_promotion_bootstrap_wiring_v1.py`
+proves the shipped (unaccepted) manifest plus the real, unmodified
+`evaluate_current_global_blockers` still reject a bootstrap-shaped PROMOTE_SCOPE
+request today, and a second focused test proves that even a hypothetically
+accepted manifest is still correctly rejected while an orthogonal blocker
+(e.g. `BOOTSTRAP_ORCHESTRATION_BLOCKED`) is active.
+
+No operational scope change occurred in this lane: no database write, no
+migration application, no scope promotion, no manifest acceptance, no
+symbol chosen. The checked-in bootstrap manifest ships unaccepted; a real
+production promotion additionally requires `BOOTSTRAP_ORCHESTRATION_BLOCKED`
+and `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` to be closed by their own
+separate reviewed lanes, exactly as documented before this lane.
+
+Focused tests:
+`tests/test_native_short_promotion_bootstrap_evidence_v1.py` (manifest
+evaluator, pure) and
+`tests/test_native_short_scope_administration_promotion_bootstrap_wiring_v1.py`
+(decision-wiring and `execute_scope_administration`/`plan_scope_administration`
+integration against the existing fake-connection harness).
 
 ## Boundary
 

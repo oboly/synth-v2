@@ -1,0 +1,10 @@
+{
+  "_comment": "Versioned, repository-owned PROMOTE_SCOPE first-promotion bootstrap-authorization manifest. See native_short_promotion_bootstrap_evidence_v1.py for the full contract. This file ships unaccepted (accepted=false): no scope has been repository-reviewed and approved as the next canary yet, so this manifest authorizes nothing and PROMOTION_CONTRACT_MISSING is unaffected by it. Do not set accepted=true, or fill in scope/repository_commit_sha/approval_reference, without a separate reviewed repository change that names the exact approved symbol (per docs/todo/native_short_multi_asset_rollout_contract_v1.md) and the exact commit this authorization is bound to. This manifest can authorize at most one PROMOTE_SCOPE, for a scope that has never before had any administration-ledger row; it cannot be reused for a second scope or a second commit.",
+  "acceptance_schema_version": "native_short_promotion_bootstrap_manifest_v1",
+  "bootstrap_contract_version": "native_short_promotion_bootstrap_v1",
+  "bootstrap_contract_digest": "4b8ff94fc5f78fd47ec55aa3245654aba2ebabab2a491b2ac76536fdef106809",
+  "accepted": false,
+  "scope": null,
+  "repository_commit_sha": null,
+  "approval_reference": null
+}
