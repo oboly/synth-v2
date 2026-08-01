@@ -1,0 +1,32 @@
+[Unit]
+Description=Synth native SHORT context snapshot import (Odroid-bound; consumer-side only, candidate/not installed)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/architecture/native_short_context_snapshot_distribution_v1.md
+# This committed unit is a candidate artifact only. It is not installed or
+# enabled by repository deployment and does not authorize Odroid as a
+# production owner of this capability.
+ConditionHost=odroid
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=theone
+Group=theone
+WorkingDirectory=/home/theone/projects/synth-v2
+ExecStart=/bin/bash /home/theone/projects/synth-v2/scripts/run_native_short_snapshot_import_chain_once.sh
+Restart=no
+Nice=5
+UMask=0077
+NoNewPrivileges=true
+
+Environment=SYNTH_REPO_DIR=/home/theone/projects/synth-v2
+Environment=SYNTH_NATIVE_SHORT_SNAPSHOT_IMPORT_EXPECTED_HOST=odroid
+Environment=SYNTH_NATIVE_SHORT_SNAPSHOT_SOURCE_HOST=gurkdb
+PrivateTmp=false
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=synth-native-short-snapshot-import
+
+[Install]
+WantedBy=multi-user.target

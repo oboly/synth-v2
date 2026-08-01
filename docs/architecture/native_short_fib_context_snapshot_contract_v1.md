@@ -47,11 +47,13 @@ SYNTH_NATIVE_SHORT_CONTEXT_SNAPSHOT_DIR
 --output-dir
 ```
 
-The publisher and every raw-snapshot consumer must use the same host-local
-filesystem. This version defines no cross-host transport or replication.
-`gurkdb` is the production publisher host; its runtime user is `gurk`.
-Odroid reporting runs as `theone`, but cannot consume this raw snapshot until
-an explicit transport or replication contract exists.
+The publisher writes to a host-local filesystem only; it performs no
+cross-host transport itself. `gurkdb` is the production publisher host; its
+runtime user is `gurk`. A separate, Odroid-owned pull-based distribution
+contract copies the published bundle to Odroid's own local copy of this same
+path — see
+`docs/architecture/native_short_context_snapshot_distribution_v1.md`. That
+contract is consumer-side only; it does not change anything in this document.
 
 ## Producer and consumer matrix
 
