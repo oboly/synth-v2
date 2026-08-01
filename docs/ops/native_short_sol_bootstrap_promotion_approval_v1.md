@@ -34,35 +34,48 @@ This approval is limited to this exact scope. It does not approve ETH,
 XRP, BTC (BTC is a separate, already-legacy scope handled by
 `ADOPT_LEGACY_SCOPE`, not this bootstrap path), or any broader rollout.
 
-## Repository commit binding
+## Approval-evidence binding (corrected)
+
+**Superseded note:** an earlier version of this section required the
+manifest's `repository_commit_sha` to exactly equal deployed `HEAD`,
+requiring "one additional, mechanical, reviewed follow-up commit" before
+any checkout could match. That design was unsound (a git commit cannot
+state its own hash inside its own tree) and is replaced by the model
+below; no follow-up pin commit exists or is needed.
 
 ```text
-repository_commit_sha: a74ff33121d42a7771eef0654e1526847d5c5d12
+approved_implementation_commit: a74ff33121d42a7771eef0654e1526847d5c5d12
 ```
 
-That is the exact commit, on
+That is the exact, already-existing, ordinary historical commit, on
 `fix/native-short-production-promotion-bootstrap-v1`, that introduced this
-approval and the manifest naming it (recorded here, in a later commit, as a
-plain historical reference to an already-existing commit -- not
-self-referential, exactly like the existing
+approval and the reviewed bootstrap mechanism it trusts -- referenced here
+as a plain historical fact, not a value the manifest's own tree must
+contain about itself (exactly like the existing
 `38346fc1460453469ca5bd3bc2f45159f0dc303e` reference in
 `docs/todo/native_short_multi_asset_rollout_contract_v1.md`).
 
-A git commit object cannot state its own hash inside its own tree (the hash
-is a function of the tree's content, so self-reference is not achievable
-without brute-force hash-grinding, which this repository does not perform
-or condone). Because of that property, the *manifest itself*, as committed
-at commit `a74ff33...`, cannot show that same value -- it ships with an
-intentional, never-real, all-zero placeholder instead. Production execution
-therefore requires exactly one additional, mechanical, reviewed follow-up
-commit that updates only
-`repository_commit_sha` in the manifest to match the true final `git
-rev-parse HEAD` of this branch, performed immediately before the
-production command is run. Until that follow-up commit exists and is
-checked out, `evaluate_promotion_bootstrap_evidence` fails closed with
-`COMMIT_MISMATCH` for every possible checkout -- this is a safety property,
-not a defect: the bootstrap exception cannot silently authorize a
-different, unreviewed commit.
+Two independent things are verified at every evaluation, neither of them a
+same-commit self-reference:
+
+- **approval-evidence digest** -- `approval_evidence_digest` in the
+  manifest is a deterministic SHA-256 over `accepted`, the exact SOL
+  scope, `approval_reference`, `approved_at_utc`,
+  `approved_implementation_commit`, and the current SHA-256 of
+  `native_short_promotion_bootstrap_evidence_v1.py`. It is recomputed
+  fresh from those same fields (and a fresh read of that file) at every
+  evaluation; any edit to a manifest field or to the evidence module
+  itself, without a matching digest update, fails closed
+  (`MANIFEST_DIGEST_MISMATCH`).
+- **ancestry, not equality** -- `approved_implementation_commit` must be an
+  *ancestor* of the current deployed `HEAD` (`git merge-base
+  --is-ancestor`), never required to equal it. Any commit created after
+  `a74ff33...`, on any branch descended from it, satisfies this by
+  construction. Deployed-checkout identity itself (clean tree, exact
+  `HEAD` known) remains entirely the unmodified job of
+  `native_short_repository_source_identity_v1.verify_repository_commit_sha`
+  and `src.operations.writer_capability_authorization_v1`, both already
+  required before any write.
 
 ## Scope of this approval
 
@@ -70,8 +83,8 @@ Approved:
 
 - exactly one `PROMOTE_SCOPE` invocation for the SOL scope above, executed
   through the existing `native_short_scope_administration_transaction_v1`
-  owner with `native_short_4h_chain` writer authorization, from the exact
-  commit named above (once pinned per the note above).
+  owner with `native_short_4h_chain` writer authorization, from any clean
+  checkout whose `HEAD` descends from `a74ff33121d42a7771eef0654e1526847d5c5d12`.
 
 Not approved by this record:
 
@@ -80,7 +93,10 @@ Not approved by this record:
   impossible via this same bootstrap path once SOL's scope row exists --
   see `native_short_promotion_bootstrap_evidence_v1.py`);
 - `REMOVE_SCOPE` for SOL or any other scope (`REMOVAL_CONTRACT_MISSING`
-  remains active and unaffected by this record);
+  remains fully, unconditionally active for `REMOVE_SCOPE` and unaffected
+  by this record -- it no longer applies to `PROMOTE_SCOPE` at all, a
+  separately corrected, unrelated defect documented in
+  `docs/todo/native_short_multi_asset_rollout_contract_v1.md`);
 - map materialization, snapshot publication, Profit Plan rendering, or any
   wallet/account-aware action;
 - any change to `run_chain_4h.sh`, systemd units, timers, or the 4h chain's

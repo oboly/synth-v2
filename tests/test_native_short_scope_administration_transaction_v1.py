@@ -513,7 +513,12 @@ def test_remove_legacy_requires_adoption() -> None:
 # itself enforces the gate before any operation-specific dispatch, using the
 # operation-specific applicable-blocker matrix defined in the transaction
 # module (WRITER_PROVENANCE_UNATTRIBUTED gates all three operations;
-# PROMOTE_SCOPE is additionally gated by the complete GLOBAL_BLOCKERS set;
+# PROMOTE_SCOPE is additionally gated by PROMOTION_CONTRACT_MISSING,
+# BOOTSTRAP_ORCHESTRATION_BLOCKED, and MULTI_SCOPE_FAILURE_ISOLATION_MISSING
+# -- the rollout-expansion-specific blockers -- but NOT by
+# REMOVAL_CONTRACT_MISSING, which has no bearing on whether a forward,
+# additive PROMOTE_SCOPE transaction is safe or reversible (see the
+# rationale comment on ``_APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION``);
 # REMOVE_SCOPE is additionally gated by REMOVAL_CONTRACT_MISSING only, not by
 # the rollout-expansion-specific PROMOTION_CONTRACT_MISSING /
 # BOOTSTRAP_ORCHESTRATION_BLOCKED / MULTI_SCOPE_FAILURE_ISOLATION_MISSING
@@ -551,6 +556,22 @@ def test_decide_promote_blocked_by_bootstrap_or_isolation_blockers() -> None:
         )
         assert decision.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE, code
         assert decision.blocking_global_blockers == (code,)
+
+
+def test_decide_promote_not_blocked_by_removal_contract_missing() -> None:
+    # REMOVAL_CONTRACT_MISSING proves REMOVE_SCOPE is safe to execute; it has
+    # no bearing on a forward, additive PROMOTE_SCOPE transaction, which
+    # never touches removal machinery (_update_scope_remove,
+    # _deactivate_cadence, ADMIN_REMOVAL_REASON_CODE) and is independently
+    # re-proven coherent by _revalidate_post_state before commit regardless.
+    decision = decide_administration(
+        OperationType.PROMOTE_SCOPE,
+        _snapshot(scope_present=False, scope_id=None),
+        active_global_blockers=("REMOVAL_CONTRACT_MISSING",),
+    )
+    assert decision.action == OperationAction.PROMOTE_NEW
+    assert decision.result_code == ResultCode.PROMOTED_NEW_SCOPE
+    assert decision.blocking_global_blockers == ()
 
 
 def test_decide_adopt_blocked_by_writer_provenance_unattributed() -> None:
@@ -643,15 +664,23 @@ def test_applicable_active_global_blockers_is_deterministic_and_sorted() -> None
         "MULTI_SCOPE_FAILURE_ISOLATION_MISSING",
         "BOOTSTRAP_ORCHESTRATION_BLOCKED",
         "PROMOTION_CONTRACT_MISSING",
-        "REMOVAL_CONTRACT_MISSING",
     )
+    expected = tuple(sorted(unsorted))
     result = txn.applicable_active_global_blockers(OperationType.PROMOTE_SCOPE, unsorted)
-    assert result == tuple(sorted(unsorted))
+    assert result == expected
     # Deterministic regardless of input ordering.
     reordered = tuple(reversed(unsorted))
-    assert txn.applicable_active_global_blockers(
-        OperationType.PROMOTE_SCOPE, reordered
-    ) == tuple(sorted(unsorted))
+    assert (
+        txn.applicable_active_global_blockers(OperationType.PROMOTE_SCOPE, reordered)
+        == expected
+    )
+    # REMOVAL_CONTRACT_MISSING is not applicable to PROMOTE_SCOPE at all, so
+    # including it in the input changes nothing about the result.
+    with_removal = unsorted + ("REMOVAL_CONTRACT_MISSING",)
+    assert (
+        txn.applicable_active_global_blockers(OperationType.PROMOTE_SCOPE, with_removal)
+        == expected
+    )
 
 
 def test_applicable_active_global_blockers_ignores_unrelated_codes() -> None:

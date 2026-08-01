@@ -2,7 +2,7 @@
 
 ## Status
 
-`blocked` — the repository writer-provenance contract, the pure scope-administration request types, the forward-only schema, and the deterministic repository transactions for `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` (with first-creation serialization, operation-ledger idempotency, and commit-time transaction validation) are now implemented in the repository. One post-merge attributable BTC production run passed devlap host acceptance; its permanent evidence is reviewed in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`, and `WRITER_PROVENANCE_UNATTRIBUTED` is closed by that evidence. A sequential multi-symbol rollout orchestrator (see "Production rollout orchestrator" below) is now implemented in the repository, delegating unchanged to the existing administration transaction and gate; it has not been invoked against production. The `PROMOTION_CONTRACT_MISSING` bootstrap circularity is resolved by design (see "PROMOTE_SCOPE bootstrap-circularity resolution" below) via a narrow, scope-and-commit-bound, checked-in bootstrap manifest. SOL (exactly `bitvavo/SOL/EUR/SHORT/4h/1h`) is now explicitly, human-approved as the first canary (see "SOL bootstrap-promotion closure" below and `docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md`); the manifest is `accepted: true` for SOL only, and this lane also narrows `BOOTSTRAP_ORCHESTRATION_BLOCKED`/`MULTI_SCOPE_FAILURE_ISOLATION_MISSING` for that exact scope only. `REMOVAL_CONTRACT_MISSING` remains unconditionally active and unaddressed, so a real production SOL promotion still fails closed today; the manifest's `repository_commit_sha` also still needs one required follow-up pin commit before any commit can match it. No production database mutation, migration application, or operational acceptance of the administration transactions has been performed. ETH, XRP, and BTC remain unapproved for this bootstrap path. Writer commit-time fencing is implemented in the repository; `NO_CURRENT_MAP` bootstrap and per-symbol failure isolation remain unimplemented. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
+`blocked` — the repository writer-provenance contract, the pure scope-administration request types, the forward-only schema, and the deterministic repository transactions for `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` (with first-creation serialization, operation-ledger idempotency, and commit-time transaction validation) are now implemented in the repository. One post-merge attributable BTC production run passed devlap host acceptance; its permanent evidence is reviewed in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`, and `WRITER_PROVENANCE_UNATTRIBUTED` is closed by that evidence. A sequential multi-symbol rollout orchestrator (see "Production rollout orchestrator" below) is now implemented in the repository, delegating unchanged to the existing administration transaction and gate; it has not been invoked against production. The `PROMOTION_CONTRACT_MISSING` bootstrap circularity is resolved by design (see "PROMOTE_SCOPE bootstrap-circularity resolution" below) via a narrow, scope-bound, checked-in bootstrap manifest. SOL (exactly `bitvavo/SOL/EUR/SHORT/4h/1h`) is explicitly, human-approved as the first canary (see "SOL bootstrap-promotion closure (corrected in a later lane)" below and `docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md`); the manifest is `accepted: true` for SOL only, and this lane also narrows `BOOTSTRAP_ORCHESTRATION_BLOCKED`/`MULTI_SCOPE_FAILURE_ISOLATION_MISSING` for that exact scope only. Two confirmed design defects from an earlier version of this lane were corrected: (1) `REMOVAL_CONTRACT_MISSING` no longer applies to `PROMOTE_SCOPE` at all (it never created a concrete unsafe/irreversible state for promotion; `REMOVE_SCOPE`'s own gate is unaffected); (2) the manifest no longer attempts an impossible commit-self-reference -- it separates a deterministic approval-evidence digest (over the normalized approval payload plus the evidence module's own file hash) from deployed-checkout authorization (still the unmodified `verify_repository_commit_sha`/writer-capability job), and verifies its `approved_implementation_commit` as an ancestor of `HEAD`, never equal to it. **SOL is genuinely unblocked at the administration-decision layer today** (no remaining `GLOBAL_BLOCKERS_ACTIVE` rejection); a real write still requires the unchanged, unweakened clean-checkout and `native_short_4h_chain` writer-capability authorization. No production database mutation, migration application, or operational acceptance of the administration transactions has been performed. ETH, XRP, and BTC remain unapproved for this bootstrap path. Writer commit-time fencing is implemented in the repository; `NO_CURRENT_MAP` bootstrap and per-symbol failure isolation remain unimplemented. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
 
 ## Sources
 
@@ -625,7 +625,9 @@ described under "Open tasks by priority" item 5. This lane therefore does
 would itself be exactly the kind of unreviewed promotion this contract
 exists to prevent.
 
-**What was implemented.** A new, narrow, evidence-based exception to the
+**What was implemented (module signature superseded -- see "SOL
+bootstrap-promotion closure (corrected in a later lane)" below for the
+current, accurate design).** A new, narrow, evidence-based exception to the
 `PROMOTION_CONTRACT_MISSING` sub-check only, structurally distinct from (and
 never a replacement for) the existing post-hoc
 `native_short_promotion_acceptance_evidence_v1` evidence used for the
@@ -634,14 +636,16 @@ second and every later promotion:
 - `src/market_data/native_short_promotion_bootstrap_evidence_v1.py` --
   pure, read-only, no database access. Defines the bootstrap contract
   (`BOOTSTRAP_CONTRACT_VERSION`, `compute_bootstrap_contract_digest()`) and
-  `evaluate_promotion_bootstrap_evidence(requested_scope,
-  requested_repository_commit_sha, manifest_path=...)`, which validates the
-  checked-in manifest and requires its `scope` (including `symbol`) and
-  `repository_commit_sha` to match the exact request under evaluation.
+  an evaluator that validates the checked-in manifest and requires its
+  `scope` (including `symbol`) to match the exact request under evaluation.
+  *(This lane's original evaluator additionally required an exact
+  `repository_commit_sha` match against deployed `HEAD` -- an unsound,
+  self-referential design corrected in the later lane below to an
+  approval-evidence digest plus ancestry check instead.)*
 - `src/market_data/native_short_promotion_bootstrap_manifest_v1.json` --
   versioned, repository-owned, ships `accepted: false` with every
-  scope/commit/approval field `null`. Authorizes nothing until a **separate**
-  reviewed repository change names one exact symbol and one exact commit.
+  scope/approval field `null`. Authorizes nothing until a **separate**
+  reviewed repository change names one exact symbol.
 - `native_short_scope_administration_transaction_v1.decide_administration`
   gained an optional keyword-only `bootstrap_promotion_evidence` parameter
   (default `None`, always safe/inert). When, and only when, **all** of the
@@ -686,23 +690,19 @@ re-apply to a second promotion of the same scope. Because the manifest names
 one exact symbol, it cannot apply to any other scope. No "consumed" flag is
 introduced or required.
 
-**What remains blocked regardless of this lane.** `BOOTSTRAP_ORCHESTRATION_BLOCKED`
-and `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` remain unconditionally active in
-`evaluate_global_blockers` (their own separate, unimplemented lanes, per
-"Open tasks by priority" items 3-4), and both are still applicable to every
-`PROMOTE_SCOPE` decision. `REMOVAL_CONTRACT_MISSING` is also still applicable
-and still unconditionally active. This lane's bootstrap exception narrows
-only `PROMOTION_CONTRACT_MISSING`; it does not, and structurally cannot,
-authorize a real production `PROMOTE_SCOPE` invocation while any of those
-three remain active. Focused test
-`test_execute_real_evaluators_still_block_promotion_with_unaccepted_shipped_manifest`
-in
-`tests/test_native_short_scope_administration_promotion_bootstrap_wiring_v1.py`
-proves the shipped (unaccepted) manifest plus the real, unmodified
-`evaluate_current_global_blockers` still reject a bootstrap-shaped PROMOTE_SCOPE
-request today, and a second focused test proves that even a hypothetically
-accepted manifest is still correctly rejected while an orthogonal blocker
-(e.g. `BOOTSTRAP_ORCHESTRATION_BLOCKED`) is active.
+**What remains blocked when this lane's manifest ships unaccepted
+(historical -- see "SOL bootstrap-promotion closure (corrected in a later
+lane)" below for the current state, where SOL is approved and this no
+longer applies to SOL).** With the manifest shipped by *this* lane
+(`accepted: false`, no symbol named), `BOOTSTRAP_ORCHESTRATION_BLOCKED` and
+`MULTI_SCOPE_FAILURE_ISOLATION_MISSING` remain unconditionally active in
+`evaluate_global_blockers` and applicable to every `PROMOTE_SCOPE`
+decision, and this lane's bootstrap exception narrows only
+`PROMOTION_CONTRACT_MISSING` (a later lane widened the narrowed set and
+approved SOL specifically -- see below). A later lane also found and
+corrected an unrelated defect: `REMOVAL_CONTRACT_MISSING` was, at this
+point in the branch's history, still (incorrectly) applicable to
+`PROMOTE_SCOPE` too; that is no longer the case.
 
 No operational scope change occurred in this lane: no database write, no
 migration application, no scope promotion, no manifest acceptance, no
@@ -723,86 +723,154 @@ evaluator, pure) and
 (decision-wiring and `execute_scope_administration`/`plan_scope_administration`
 integration against the existing fake-connection harness).
 
-## SOL bootstrap-promotion closure (this lane)
+## SOL bootstrap-promotion closure (corrected in a later lane)
 
-Given the explicit SOL approval recorded in
-`docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md`, this lane:
+The original version of this section (SOL approved, manifest updated,
+`_bootstrap_promotion_evidence_applies` narrowed to three codes) shipped
+with two confirmed design defects, both corrected here. Neither correction
+weakens `REMOVE_SCOPE`'s own gate or any check unrelated to the exact SOL
+bootstrap path.
 
-1. **Updated the checked-in bootstrap manifest**
-   (`src/market_data/native_short_promotion_bootstrap_manifest_v1.json`) to
-   `accepted: true`, the exact SOL scope (no wildcard -- every field,
-   including `symbol`, is a fixed literal), an `approval_reference`
-   pointing at the new approval doc, and a `repository_commit_sha`. A git
-   commit cannot state its own hash inside its own tree (the hash is a
-   function of the tree's content), so the value ships as an intentional,
-   never-real, all-zero placeholder pending one required, mechanical,
-   reviewed follow-up commit that pins it to this lane's true final `git
-   rev-parse HEAD` -- see the approval doc. Until that follow-up commit
-   exists and is checked out, every commit-match check fails closed
-   (`COMMIT_MISMATCH`); this is a safety property of the design, not a gap
-   this lane left open by oversight.
-2. **Extended `_bootstrap_promotion_evidence_applies` in
-   `native_short_scope_administration_transaction_v1.py`** to narrow a
-   fixed, named set of three blocker codes
-   (`_BOOTSTRAP_NARROWED_BLOCKER_CODES` =
-   `{PROMOTION_CONTRACT_MISSING, BOOTSTRAP_ORCHESTRATION_BLOCKED,
-   MULTI_SCOPE_FAILURE_ISOLATION_MISSING}`) instead of only
-   `PROMOTION_CONTRACT_MISSING` -- closing
-   `BOOTSTRAP_ORCHESTRATION_BLOCKED` and
-   `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` **for the exact bootstrap-matched
-   scope and decision only**, never globally: the codes are only removed
-   from one decision's `blocking` tuple when
-   `_bootstrap_promotion_evidence_applies` already holds (accepted
-   evidence, exact scope+commit match, `NO_SCOPE` classification, empty
-   operation ledger). `evaluate_global_blockers` itself
-   (`native_short_multi_asset_audit_v1.py`) is unmodified -- the audit
-   report continues to show these two codes unconditionally active exactly
-   as before; only the transaction-level decision for a bootstrap-matched
-   request is narrowed. `WRITER_PROVENANCE_UNATTRIBUTED` (already closed by
-   real evidence) and `REMOVAL_CONTRACT_MISSING` (its own separate,
-   unrelated, still-unimplemented evidence gap for `REMOVE_SCOPE`) are
-   deliberately **not** in the narrowed set -- narrowing either would be
-   exactly the "weaken an unrelated global blocker" this lane must not do.
-3. Because the manifest names exactly one symbol, this mechanism
-   structurally cannot apply to ETH, XRP, BTC, or any other scope: their
-   scope key never matches the manifest's `scope`, so
-   `evaluate_promotion_bootstrap_evidence` returns `SCOPE_MISMATCH` and
-   `_bootstrap_promotion_evidence_applies` returns `False`, leaving every
-   blocker (including all three narrowable codes) exactly as active as
-   before for them. Proven by
-   `test_execute_real_evaluator_fails_closed_for_every_non_sol_symbol` and
-   `test_shipped_default_manifest_fails_closed_for_every_other_symbol`.
-4. Single-use remains structural, not a mutable flag: once SOL's first
-   promotion commits, its scope row and operation-ledger row exist
-   permanently, so it can never classify `NO_SCOPE` again and the bootstrap
-   exception cannot re-apply to a second SOL promotion attempt (proven by
-   `test_execute_second_promote_attempt_after_sol_bootstrap_success_is_not_reauthorized`).
-   A retry of the *same* operation (`identical operation_uuid`) remains
-   idempotent via the pre-existing, unmodified `decide_operation_replay`
-   path and creates no second ledger row (proven by
-   `test_execute_retry_of_same_operation_uuid_is_idempotent_and_creates_no_second_operation`).
+### Defect 1: REMOVAL_CONTRACT_MISSING incorrectly gated PROMOTE_SCOPE
 
-**What still blocks SOL today.** `REMOVAL_CONTRACT_MISSING` remains
-unconditionally active (its own separate, unimplemented evidence gap,
-unrelated to this lane and deliberately untouched) and is applicable to
-`PROMOTE_SCOPE` under the existing, unmodified
-`_APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION` matrix. A production SOL
-`PROMOTE_SCOPE` therefore still fails closed with `GLOBAL_BLOCKERS_ACTIVE`
-today, even once the commit is pinned, until `REMOVAL_CONTRACT_MISSING`
-gets its own canonical evidence source in a separate lane (see "Open tasks
-by priority" above -- this was never in this lane's scope). No database
-write, migration, scope promotion, map materialization, snapshot
-publication, Profit Plan render, or account/wallet action occurred in this
-lane.
+`_APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION` applied the complete
+`GLOBAL_BLOCKERS` set (including `REMOVAL_CONTRACT_MISSING`) to
+`PROMOTE_SCOPE`, while the SAME comment block's own prose said
+"`REMOVAL_CONTRACT_MISSING` gates `REMOVE_SCOPE` only: its own
+operational-acceptance evidence is what proves removal is safe to
+execute" -- an internal contradiction between the code and its own stated
+rationale.
 
-Focused tests (this lane, in addition to the ones listed above):
-`tests/test_native_short_scope_administration_promotion_bootstrap_wiring_v1.py`
-gained SOL-specific end-to-end proofs (all-three-codes narrowing, ETH/XRP/
-BTC/arbitrary-symbol fail-closed, second-attempt non-reauthorization,
-same-uuid idempotent retry), and
-`tests/test_native_short_promotion_bootstrap_evidence_v1.py` was updated to
-reflect the shipped manifest now being `accepted: true` for SOL specifically
-(and only for SOL).
+Reviewed and corrected: absent removal-acceptance evidence creates **no**
+concrete unsafe or irreversible state for `PROMOTE_SCOPE`.
+`_apply_decision`'s `ADOPT`/`PROMOTE_NEW`/`PROMOTE_REACTIVATE` branches
+never call `_update_scope_remove`, `_deactivate_cadence`, or write
+`ADMIN_REMOVAL_REASON_CODE` -- promotion touches no removal machinery at
+all. `_revalidate_post_state` independently re-proves the post-promote
+state is coherent before commit, regardless of removal's evidence status.
+And the canonical "Promotion acceptance contract" checklist earlier in
+this document never lists removal evidence as a prerequisite. `_APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION[PROMOTE_SCOPE]`
+is now `frozenset(GLOBAL_BLOCKERS) - {REMOVAL_CONTRACT_MISSING}`.
+`REMOVE_SCOPE`'s own gate (`{WRITER_PROVENANCE_UNATTRIBUTED,
+REMOVAL_CONTRACT_MISSING}`) is untouched -- this correction removes an
+unrelated blocker from an unrelated operation only. Proven by
+`test_decide_promote_not_blocked_by_removal_contract_missing`,
+`test_removal_contract_missing_never_blocks_promote_scope`, and the
+unchanged `test_decide_remove_blocked_by_removal_contract_missing`.
+
+### Defect 2: the manifest could not contain its own commit's hash
+
+The prior revision required the manifest's `repository_commit_sha` to
+equal the exact deployed `HEAD` at invocation. A git commit cannot state
+its own hash inside its own tree (the hash is a pure function of the
+tree's content, which would need to already contain the hash -- a fixed
+point unreachable without brute-force hash-grinding). No finite sequence
+of "pin" commits resolves this: each attempt to record a commit's hash
+produces a new commit with a different hash. This is corrected by
+separating two genuinely different concerns, per
+`src/market_data/native_short_promotion_bootstrap_evidence_v1.py`:
+
+- **Approval-evidence identity** -- `approval_evidence_digest`, a
+  deterministic SHA-256 (`compute_approval_evidence_digest`) over the
+  immutable, normalized approval payload: `accepted`, the exact SOL
+  scope, `approval_reference`, `approved_at_utc`, `approved_implementation_commit`,
+  and the current SHA-256 of the evidence module's own source file. This
+  digest has no relationship to git commit hashing -- it is computed from
+  plain fields the manifest also stores, and is recomputed fresh from
+  those fields (plus a fresh read of the implementation file) at every
+  evaluation. Editing any manifest field, or the evidence module itself,
+  without recomputing this digest fails closed
+  (`MANIFEST_DIGEST_MISMATCH`) -- proven by
+  `test_tampered_scope_without_digest_update_fails_closed`,
+  `test_tampered_approval_reference_without_digest_update_fails_closed`,
+  and `test_implementation_file_hash_change_is_detected`.
+- **Deployed checkout authorization** -- unchanged, and still entirely the
+  job of `native_short_repository_source_identity_v1.verify_repository_commit_sha`
+  (clean checkout, exact `HEAD` known) and
+  `src.operations.writer_capability_authorization_v1` (production writer
+  capability), both already required, unmodified, before any write. The
+  bootstrap evidence module never re-checks `HEAD` equality.
+- **Repository ancestry** -- the manifest's `approved_implementation_commit`
+  (`a74ff33121d42a7771eef0654e1526847d5c5d12`, the exact, already-existing,
+  ordinary historical commit that introduced the reviewed bootstrap
+  mechanism -- never the commit that introduces the manifest's own
+  `accepted: true` state) is verified as an **ancestor** of the current
+  `HEAD` (`git merge-base --is-ancestor`, injectable as `ancestry_checker`
+  for tests), never required to be equal to it. Any real commit created
+  after that one, on any branch descended from it, satisfies this by
+  construction -- no further "pin" commit is ever required. An
+  unavailable or failing ancestry check fails closed
+  (`ANCESTRY_CHECK_UNAVAILABLE`), never treated as satisfied.
+
+`docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md`'s prior
+"one required follow-up pin commit" framing is superseded by this section;
+no such follow-up commit exists or is needed.
+
+### What the manifest now authorizes
+
+Given the explicit SOL approval, `native_short_promotion_bootstrap_manifest_v1.json`
+ships `accepted: true` for exactly `bitvavo/SOL/EUR/SHORT/4h/1h` (no
+wildcard -- every scope field is a fixed literal), naming
+`docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md` as
+`approval_reference`, commit `a74ff33121d42a7771eef0654e1526847d5c5d12` as
+`approved_implementation_commit`, and a matching `approval_evidence_digest`.
+`_bootstrap_promotion_evidence_applies` in
+`native_short_scope_administration_transaction_v1.py` narrows a fixed,
+named set of three blocker codes (`_BOOTSTRAP_NARROWED_BLOCKER_CODES` =
+`{PROMOTION_CONTRACT_MISSING, BOOTSTRAP_ORCHESTRATION_BLOCKED,
+MULTI_SCOPE_FAILURE_ISOLATION_MISSING}`) **for the exact bootstrap-matched
+scope and decision only**, never globally: the codes are only removed from
+one decision's `blocking` tuple when accepted evidence, exact scope match,
+`NO_SCOPE` classification, and an empty operation ledger all hold together.
+`evaluate_global_blockers` itself (`native_short_multi_asset_audit_v1.py`)
+is unmodified -- the audit report continues to show these codes
+unconditionally active exactly as before; only the transaction-level
+decision for a bootstrap-matched request is narrowed.
+`WRITER_PROVENANCE_UNATTRIBUTED` (already closed by real evidence) is
+deliberately not in the narrowed set.
+
+Because the manifest names exactly one symbol, this mechanism structurally
+cannot apply to ETH, XRP, BTC, or any other scope: their scope key never
+matches the manifest's `scope`, so `evaluate_promotion_bootstrap_evidence`
+returns `SCOPE_MISMATCH`, leaving every blocker exactly as active as
+before for them. Proven by
+`test_execute_real_evaluator_fails_closed_for_every_non_sol_symbol` and
+`test_shipped_default_manifest_fails_closed_for_every_other_symbol`.
+
+Single-use remains structural, not a mutable flag: once SOL's first
+promotion commits, its scope row and operation-ledger row exist
+permanently, so it can never classify `NO_SCOPE` again and the bootstrap
+exception cannot re-apply to a second SOL promotion attempt (proven by
+`test_execute_second_promote_attempt_after_sol_bootstrap_success_is_not_reauthorized`).
+A retry of the *same* operation (identical `operation_uuid`) remains
+idempotent via the pre-existing, unmodified `decide_operation_replay` path
+and creates no second ledger row (proven by
+`test_execute_retry_of_same_operation_uuid_is_idempotent_and_creates_no_second_operation`).
+
+**Net effect: SOL is genuinely unblocked at the administration-decision
+layer today.** `test_execute_real_evaluators_promote_sol_end_to_end_today`
+proves a SOL `PROMOTE_SCOPE` request succeeds end-to-end against the real
+(unmodified) `evaluate_current_global_blockers`, the real checked-in
+manifest, and the real ancestry check against this repository's actual git
+history -- no remaining `GLOBAL_BLOCKERS_ACTIVE` rejection. This is not the
+same as "production execution requires nothing further": a real write
+still requires, unchanged and unweakened, a clean git checkout with
+`--repository-commit` matching the actual deployed `HEAD`
+(`verify_repository_commit_sha`) and passing `native_short_4h_chain`
+production writer-capability authorization
+(`enforce_capability_write_authorization`) -- both ordinary, standing
+requirements for every writer-capable invocation, not global blockers, and
+not evaluated or weakened by this lane.
+
+No operational scope change occurred in this lane: no database write,
+migration, scope promotion, map materialization, snapshot publication,
+Profit Plan render, or account/wallet action.
+
+Focused tests: `tests/test_native_short_promotion_bootstrap_evidence_v1.py`
+(digest computation, tamper detection, ancestry-checker injection, pure)
+and `tests/test_native_short_scope_administration_promotion_bootstrap_wiring_v1.py`
+(decision-wiring, `REMOVAL_CONTRACT_MISSING` non-applicability, and the
+real end-to-end SOL success proof).
 
 ## Boundary
 

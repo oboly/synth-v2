@@ -125,10 +125,25 @@ _ER_LOCK_WAIT_TIMEOUT = 1205
 # - PROMOTION_CONTRACT_MISSING, BOOTSTRAP_ORCHESTRATION_BLOCKED, and
 #   MULTI_SCOPE_FAILURE_ISOLATION_MISSING are specifically about expanding
 #   rollout (a new/reactivated supported scope), so they gate PROMOTE_SCOPE
-#   only, alongside REMOVAL_CONTRACT_MISSING and WRITER_PROVENANCE_UNATTRIBUTED
-#   -- i.e. PROMOTE_SCOPE is gated by the complete canonical blocker set.
-# - REMOVAL_CONTRACT_MISSING gates REMOVE_SCOPE only: its own operational-
-#   acceptance evidence is what proves removal is safe to execute.
+#   only, alongside WRITER_PROVENANCE_UNATTRIBUTED.
+# - REMOVAL_CONTRACT_MISSING gates REMOVE_SCOPE only. An earlier revision of
+#   this matrix also applied it to PROMOTE_SCOPE ("the complete canonical
+#   blocker set"), directly contradicting this same paragraph's own
+#   statement that removal evidence "proves removal is safe to execute" --
+#   a REMOVE_SCOPE-specific claim. That was reviewed and corrected: absent
+#   removal-acceptance evidence creates no concrete unsafe or irreversible
+#   state for PROMOTE_SCOPE. `_apply_decision`'s ADOPT/PROMOTE_NEW/
+#   PROMOTE_REACTIVATE branches never touch removal machinery
+#   (`_update_scope_remove`, `_deactivate_cadence`, `ADMIN_REMOVAL_REASON_CODE`)
+#   at all, `_revalidate_post_state` independently re-proves the post-promote
+#   state is coherent before commit regardless of removal's evidence status,
+#   and the canonical promotion-acceptance checklist in
+#   `docs/todo/native_short_multi_asset_rollout_contract_v1.md` ("Promotion
+#   acceptance contract") never lists removal evidence as a prerequisite.
+#   REMOVE_SCOPE itself remains fully, unconditionally gated by
+#   REMOVAL_CONTRACT_MISSING below -- this correction only removes an
+#   unrelated blocker from an unrelated operation; it changes nothing about
+#   REMOVE_SCOPE's own gate.
 # - REMOVE_SCOPE is deliberately NOT gated by BOOTSTRAP_ORCHESTRATION_BLOCKED
 #   or MULTI_SCOPE_FAILURE_ISOLATION_MISSING: both describe rollout-expansion
 #   risk, and a rollback/safety action that reduces scope count does not
@@ -140,7 +155,7 @@ _ER_LOCK_WAIT_TIMEOUT = 1205
 # described in the canonical rollout doc remains unresolved.
 _APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION: dict[OperationType, frozenset[str]] = {
     OperationType.ADOPT_LEGACY_SCOPE: frozenset({WRITER_PROVENANCE_UNATTRIBUTED}),
-    OperationType.PROMOTE_SCOPE: frozenset(GLOBAL_BLOCKERS),
+    OperationType.PROMOTE_SCOPE: frozenset(GLOBAL_BLOCKERS) - {REMOVAL_CONTRACT_MISSING},
     OperationType.REMOVE_SCOPE: frozenset(
         {WRITER_PROVENANCE_UNATTRIBUTED, REMOVAL_CONTRACT_MISSING}
     ),
@@ -1443,13 +1458,17 @@ def _evaluate_bootstrap_promotion_evidence_for_request(
 
     Only ``PROMOTE_SCOPE`` ever consults bootstrap evidence -- for every
     other operation type this returns ``None`` without reading the manifest
-    file at all. Pure, read-only, no database access; the manifest read is
-    the only I/O."""
+    file at all. Pure evidence evaluation with no database access; the
+    manifest read, the implementation-file hash read, and (by default) one
+    read-only ``git merge-base --is-ancestor`` check are the only I/O. This
+    never checks deployed-checkout ``HEAD`` identity -- that remains the
+    unmodified job of ``native_short_repository_source_identity_v1`` and the
+    writer-capability authorization boundary, both already required by the
+    caller before any write."""
     if request.operation_type != OperationType.PROMOTE_SCOPE:
         return None
     return evaluate_promotion_bootstrap_evidence(
         requested_scope=request.scope_key.as_dict(),
-        requested_repository_commit_sha=request.provenance.repository_sha,
     )
 
 
@@ -1462,7 +1481,7 @@ def _bootstrap_evidence_json(
         "accepted": evaluation.accepted,
         "reason": evaluation.reason,
         "symbol": evaluation.symbol,
-        "repository_commit_sha": evaluation.repository_commit_sha,
+        "approved_implementation_commit": evaluation.approved_implementation_commit,
     }
 
 

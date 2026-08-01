@@ -1,5 +1,5 @@
 {
-  "_comment": "Versioned, repository-owned PROMOTE_SCOPE first-promotion bootstrap-authorization manifest. See native_short_promotion_bootstrap_evidence_v1.py for the full contract and docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md for the reviewed human approval this manifest records. Authorizes exactly one PROMOTE_SCOPE for the SOL scope below, and only for a scope that has never before had any administration-ledger row (structurally single-use -- see native_short_scope_administration_transaction_v1._bootstrap_promotion_evidence_applies). It cannot be reused for ETH, XRP, BTC, or any other scope, and it cannot authorize a second promotion of SOL once the first succeeds. repository_commit_sha binds this authorization to one exact commit; a commit cannot state its own hash inside its own tree, so this value is filled in by a required, mechanical, reviewed follow-up commit once that exact commit's real hash is known -- see the approval doc for why, and note that until that follow-up commit exists and is checked out, this manifest fails every commit-match check closed, authorizing nothing.",
+  "_comment": "Versioned, repository-owned PROMOTE_SCOPE first-promotion bootstrap-authorization manifest. See native_short_promotion_bootstrap_evidence_v1.py for the full contract and docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md for the reviewed human approval this manifest records. Authorizes exactly one PROMOTE_SCOPE for the SOL scope below, and only for a scope that has never before had any administration-ledger row (structurally single-use -- see native_short_scope_administration_transaction_v1._bootstrap_promotion_evidence_applies). It cannot be reused for ETH, XRP, BTC, or any other scope, and it cannot authorize a second promotion of SOL once the first succeeds. approved_implementation_commit names an already-existing, ordinary historical commit that introduced the reviewed bootstrap mechanism; it is verified as an ancestor of the current checkout (never compared for exact HEAD equality -- that remains the unmodified job of the existing repository-source-identity and writer-capability-authorization boundaries). approval_evidence_digest binds accepted+scope+approval_reference+approved_at_utc+approved_implementation_commit+the current SHA-256 of native_short_promotion_bootstrap_evidence_v1.py together; editing any of those fields, or the evidence module itself, without recomputing this digest fails every evaluation closed.",
   "acceptance_schema_version": "native_short_promotion_bootstrap_manifest_v1",
   "bootstrap_contract_version": "native_short_promotion_bootstrap_v1",
   "bootstrap_contract_digest": "4b8ff94fc5f78fd47ec55aa3245654aba2ebabab2a491b2ac76536fdef106809",
@@ -12,6 +12,8 @@
     "primary_interval": "4h",
     "supporting_interval": "1h"
   },
-  "repository_commit_sha": "0000000000000000000000000000000000000000",
-  "approval_reference": "docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md"
+  "approval_reference": "docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md",
+  "approved_at_utc": "2026-08-01T00:00:00Z",
+  "approved_implementation_commit": "a74ff33121d42a7771eef0654e1526847d5c5d12",
+  "approval_evidence_digest": "8c0929c0e34ee5a927525aa9888f251824b9a601d6205c7711ed9b7c15b7c082"
 }
