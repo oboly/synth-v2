@@ -2,7 +2,7 @@
 
 ## Status
 
-`blocked` — the repository writer-provenance contract, the pure scope-administration request types, the forward-only schema, and the deterministic repository transactions for `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` (with first-creation serialization, operation-ledger idempotency, and commit-time transaction validation) are now implemented in the repository. One post-merge attributable BTC production run passed devlap host acceptance; its permanent evidence is reviewed in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`, and `WRITER_PROVENANCE_UNATTRIBUTED` is closed by that evidence. No production database mutation, migration application, or operational acceptance of the administration transactions has been performed. Writer commit-time fencing is implemented in the repository; `NO_CURRENT_MAP` bootstrap and per-symbol failure isolation remain unimplemented. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
+`blocked` — the repository writer-provenance contract, the pure scope-administration request types, the forward-only schema, and the deterministic repository transactions for `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` (with first-creation serialization, operation-ledger idempotency, and commit-time transaction validation) are now implemented in the repository. One post-merge attributable BTC production run passed devlap host acceptance; its permanent evidence is reviewed in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`, and `WRITER_PROVENANCE_UNATTRIBUTED` is closed by that evidence. A sequential multi-symbol rollout orchestrator (see "Production rollout orchestrator" below) is now implemented in the repository, delegating unchanged to the existing administration transaction and gate; it has not been invoked against production. No production database mutation, migration application, or operational acceptance of the administration transactions has been performed. Writer commit-time fencing is implemented in the repository; `NO_CURRENT_MAP` bootstrap and per-symbol failure isolation remain unimplemented. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
 
 ## Sources
 
@@ -518,6 +518,92 @@ application, materialization, or backfill, and neither authorizes SOL, ETH,
 XRP, or any other non-BTC production scope.
 
 A follow-on correction fixed a second, separate defect: `PROVENANCE_AUDIT_RUN_UUID` in `native_short_multi_asset_audit_v1.py` had been set to `b5d9ca6b-ff24-46eb-8155-4e663b948ebc` — the legacy pre-contract `run_id=30` row (started 2026-07-15, predates the provenance-contract migration) — instead of the actually reviewed and accepted run `b07d897d-6574-4380-98c3-8145c5c41b30` (`run_id=52`) named in this document and in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`. With the corrected constant, a live read-only audit run confirms `provenance_audit_run_attributed=true` and `writer_provenance_blocker_active=false`, while `PROMOTION_CONTRACT_MISSING`, `REMOVAL_CONTRACT_MISSING`, `BOOTSTRAP_ORCHESTRATION_BLOCKED`, and `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` remain active and unaffected. Every regular 4h-chain writer run since `run_id=52` (through at least `run_id=62`, 2026-07-29) independently classifies `ATTRIBUTABLE` under the unchanged classifier, confirming the writer path and classifier were already healthy and only the audit's reference constant was wrong.
+
+## Production rollout orchestrator (this lane)
+
+A single production rollout orchestrator now exists in
+`src/market_data/native_short_scope_administration_rollout_v1.py` and
+`src/market_data/run_native_short_scope_administration_rollout_v1.py`. It
+adds explicit-universe iteration only; it creates no new writer, service,
+timer, or direct SQL mutation path, and it changes no gating, blocker,
+classification, or transaction behavior in
+`native_short_scope_administration_transaction_v1.py`.
+
+- **Checked-in approved rollout universe.** `APPROVED_ROLLOUT_UNIVERSE_V1`
+  is a reviewed, ordered tuple of `(symbol, operation_type,
+  approval_reference, note)` entries. It currently contains exactly one
+  entry: `BTC` via `ADOPT_LEGACY_SCOPE`, adopting the existing legacy
+  `MIGRATION_BACKFILL` scope (`support_generation=NULL`,
+  `scope_admin_operation_id=NULL`) into administration generation 1. No
+  `PROMOTE_SCOPE` entry is added by this lane -- adding SOL, ETH, or XRP
+  requires its own separate reviewed repository change to this constant, not
+  a CLI argument, and remains additionally gated by the unresolved
+  `PROMOTION_CONTRACT_MISSING` bootstrap circularity documented above. `--
+  only-symbol` may *select a subset* of this checked-in universe; it fails
+  closed (`INVALID_ROLLOUT_SYMBOLS`, before any database connection) if a
+  requested symbol is not already present in it. The universe is never
+  inferred from wallet holdings, Profit Plan cards, account state, or
+  `selection_engine` output.
+- **Delegation, not a new authority.** Every scope is processed by calling
+  the existing, unmodified `plan_scope_administration` /
+  `execute_scope_administration` from
+  `native_short_scope_administration_transaction_v1.py` -- the sole
+  canonical transaction owner. The orchestrator performs its own writer-
+  capability authorization exactly once per invocation
+  (`enforce_capability_write_authorization` for the `native_short_4h_chain`
+  capability) and repository-source verification once per invocation, then
+  reuses that same validated authorization object unchanged for every scope,
+  exactly like the existing single-scope CLI. It never calls
+  `evaluate_current_global_blockers` or `decide_administration` itself and
+  cannot bypass the `GLOBAL_BLOCKERS_ACTIVE` gate: a `PROMOTE_SCOPE` entry
+  is rejected by the existing gate exactly as a manual single-scope CLI
+  invocation would be.
+- **Sequential, stop-on-first-failure.** Entries are processed strictly in
+  checked-in universe order, one bounded per-scope transaction at a time on
+  one connection. The run stops immediately at the first scope whose result
+  is not `SUCCESS`/`IDEMPOTENT_SUCCESS` (including a `GLOBAL_BLOCKERS_ACTIVE`
+  rejection or any corrupt/retryable classification) or on the first
+  unexpected exception; every remaining symbol is left untouched and
+  reported under `remaining_symbols`.
+- **Idempotent and restartable without extra state.** Each entry's operation
+  UUID is derived deterministically
+  (`deterministic_operation_uuid`) from only the operation type and the
+  exact canonical scope key -- stable across every rerun. A restarted
+  invocation with identical CLI arguments therefore replays already-
+  completed entries as `OPERATION_ALREADY_COMPLETED`
+  (`IDEMPOTENT_SUCCESS`) via the existing `decide_operation_replay` path and
+  continues from the first not-yet-attempted entry; no separate
+  orchestrator-side run-state file is introduced. `--requested-at-utc` must
+  still be supplied identically across a restart, exactly as for the
+  single-scope CLI, since it is part of each entry's immutable request
+  digest.
+- **No materialization.** The orchestrator does not materialize maps,
+  snapshots, Profit Plan state, or reporting output; its safety markers
+  (`map_materialization=0`, `snapshot_materialization=0`,
+  `profit_plan_writes=0`, `reporting_writes=0`, plus the existing
+  broker/decision/execution/executor markers) are emitted on every result.
+
+No operational scope change occurred in this lane: no database write, no
+migration application, no scope promotion/adoption/removal was performed by
+adding this orchestrator. BTC remains the sole production-supported native
+SHORT scope until the orchestrator is actually invoked with `--write`
+against the real production database. Exact activation command:
+
+```text
+python -m src.market_data.run_native_short_scope_administration_rollout_v1 \
+  --actor-type HUMAN_OPERATOR --actor-id <reviewer> \
+  --trigger-type MANUAL_CLI \
+  --reason "adopt legacy BTC scope into administration generation 1" \
+  --request-source native_short_scope_administration_rollout_v1 \
+  --repository-commit <verified clean checkout HEAD sha> \
+  --requested-at-utc <fixed ISO-8601 UTC timestamp> \
+  --write
+```
+
+Focused tests: `tests/test_native_short_scope_administration_rollout_v1.py`
+(pure orchestration logic against monkeypatched
+`plan_scope_administration` / `execute_scope_administration`; no database
+required).
 
 ## Boundary
 
