@@ -1,0 +1,336 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import Any
+
+import pytest
+
+from src.market_data.native_short_scope_administration_v1 import (
+    NativeShortScopeAdministrationActorType,
+    NativeShortScopeAdministrationOperationType as OperationType,
+    NativeShortScopeAdministrationResult,
+    NativeShortScopeAdministrationResultClass as ResultClass,
+    NativeShortScopeAdministrationResultCode as ResultCode,
+    NativeShortScopeAdministrationTriggerType,
+)
+from src.market_data.native_short_scope_administration_transaction_v1 import (
+    AdministrationTransactionOutcome,
+    CommitState,
+    OperationAction,
+    TransactionMode,
+)
+from src.market_data import (
+    native_short_scope_administration_rollout_v1 as rollout,
+)
+from src.market_data.native_short_scope_administration_rollout_v1 import (
+    RolloutConfigurationError,
+    RolloutSymbolEntry,
+    build_request_for_entry,
+    deterministic_operation_uuid,
+    execute_rollout,
+    plan_rollout,
+    resolve_rollout_entries,
+)
+
+
+_BTC_ENTRY = RolloutSymbolEntry(
+    symbol="BTC",
+    operation_type=OperationType.ADOPT_LEGACY_SCOPE,
+    approval_reference="docs/todo/example.md",
+    note="adopt legacy",
+)
+_SOL_ENTRY = RolloutSymbolEntry(
+    symbol="SOL",
+    operation_type=OperationType.PROMOTE_SCOPE,
+    approval_reference="docs/todo/example.md",
+    note="promote new",
+)
+_TEST_UNIVERSE = (_BTC_ENTRY, _SOL_ENTRY)
+
+
+def _outcome(
+    *,
+    write: bool,
+    result_class: ResultClass,
+    result_code: ResultCode,
+    action: OperationAction = OperationAction.ADOPT,
+    persisted: bool | None = True,
+    scope_admin_operation_id: int | None = 1,
+) -> AdministrationTransactionOutcome:
+    result = NativeShortScopeAdministrationResult(
+        result_class=result_class,
+        result_code=result_code,
+        support_generation_before=None,
+        support_generation_after=1,
+    )
+    return AdministrationTransactionOutcome(
+        mode=TransactionMode.WRITE if write else TransactionMode.DRY_RUN,
+        write=write,
+        persisted=persisted,
+        commit_state=CommitState.COMMITTED if persisted else CommitState.ROLLED_BACK,
+        operation_type=str(OperationType.ADOPT_LEGACY_SCOPE),
+        operation_uuid="00000000-0000-0000-0000-000000000000",
+        request_digest="digest",
+        scope_key={
+            "venue": "bitvavo",
+            "symbol": "BTC",
+            "quote_currency": "EUR",
+            "fib_trading_horizon": "SHORT",
+            "primary_interval": "4h",
+            "supporting_interval": "1h",
+        },
+        action=action,
+        result=result,
+        scope_admin_operation_id=scope_admin_operation_id,
+        advisory_lock_name="nssa1:deadbeef",
+        current_state={},
+        detail="test",
+    )
+
+
+def _build_request(entry: RolloutSymbolEntry):
+    return build_request_for_entry(
+        entry,
+        actor_type=NativeShortScopeAdministrationActorType.HUMAN_OPERATOR,
+        actor_id="tester",
+        trigger_type=NativeShortScopeAdministrationTriggerType.MANUAL_CLI,
+        request_source="pytest",
+        reason="test rollout",
+        requested_at_utc=datetime(2026, 1, 1, tzinfo=UTC),
+        repository_sha="a" * 40,
+        schema_version="native_short_scope_administration_v1",
+        metadata={},
+    )
+
+
+# --------------------------------------------------------------------------- #
+# resolve_rollout_entries                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_resolve_rollout_entries_defaults_to_complete_universe() -> None:
+    assert resolve_rollout_entries(None, universe=_TEST_UNIVERSE) == _TEST_UNIVERSE
+
+
+def test_resolve_rollout_entries_filters_and_preserves_universe_order() -> None:
+    result = resolve_rollout_entries(["SOL", "BTC"], universe=_TEST_UNIVERSE)
+    assert result == (_BTC_ENTRY, _SOL_ENTRY)
+
+
+def test_resolve_rollout_entries_rejects_unapproved_symbol() -> None:
+    with pytest.raises(RolloutConfigurationError):
+        resolve_rollout_entries(["ETH"], universe=_TEST_UNIVERSE)
+
+
+def test_resolve_rollout_entries_dedupes_repeated_requests() -> None:
+    result = resolve_rollout_entries(["BTC", "BTC"], universe=_TEST_UNIVERSE)
+    assert result == (_BTC_ENTRY,)
+
+
+# --------------------------------------------------------------------------- #
+# deterministic_operation_uuid                                                #
+# --------------------------------------------------------------------------- #
+
+
+def test_deterministic_operation_uuid_is_stable_across_calls() -> None:
+    assert deterministic_operation_uuid(_BTC_ENTRY) == deterministic_operation_uuid(
+        _BTC_ENTRY
+    )
+
+
+def test_deterministic_operation_uuid_differs_by_symbol_and_operation() -> None:
+    uuids = {
+        deterministic_operation_uuid(_BTC_ENTRY),
+        deterministic_operation_uuid(_SOL_ENTRY),
+    }
+    assert len(uuids) == 2
+
+
+# --------------------------------------------------------------------------- #
+# build_request_for_entry                                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_build_request_for_entry_binds_symbol_and_operation() -> None:
+    request = _build_request(_BTC_ENTRY)
+    assert request.scope_key.symbol == "BTC"
+    assert request.operation_type == OperationType.ADOPT_LEGACY_SCOPE
+    assert request.provenance.operation_uuid == deterministic_operation_uuid(_BTC_ENTRY)
+    assert request.canonical_metadata["rollout_entry_note"] == _BTC_ENTRY.note
+
+
+def test_build_request_for_entry_is_deterministic_for_identical_inputs() -> None:
+    first = _build_request(_BTC_ENTRY)
+    second = _build_request(_BTC_ENTRY)
+    assert first.request_digest == second.request_digest
+
+
+# --------------------------------------------------------------------------- #
+# plan_rollout / execute_rollout orchestration                                #
+# --------------------------------------------------------------------------- #
+
+
+def test_execute_rollout_processes_all_entries_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fake_execute(conn: Any, request: Any, *, authorization: Any) -> AdministrationTransactionOutcome:
+        calls.append(request.scope_key.symbol)
+        return _outcome(
+            write=True,
+            result_class=ResultClass.SUCCESS,
+            result_code=ResultCode.ADOPTED_LEGACY_SCOPE,
+        )
+
+    monkeypatch.setattr(rollout, "execute_scope_administration", fake_execute)
+
+    outcome = execute_rollout(
+        object(),
+        _TEST_UNIVERSE,
+        build_request=_build_request,
+        authorization=object(),
+    )
+
+    assert calls == ["BTC", "SOL"]
+    assert outcome.stopped_early is False
+    assert outcome.remaining_symbols == ()
+    assert outcome.as_json_dict()["all_succeeded"] is True
+    assert [c.symbol for c in outcome.completed] == ["BTC", "SOL"]
+
+
+def test_execute_rollout_stops_on_first_rejected_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fake_execute(conn: Any, request: Any, *, authorization: Any) -> AdministrationTransactionOutcome:
+        calls.append(request.scope_key.symbol)
+        if request.scope_key.symbol == "BTC":
+            return _outcome(
+                write=True,
+                result_class=ResultClass.SUCCESS,
+                result_code=ResultCode.ADOPTED_LEGACY_SCOPE,
+            )
+        return _outcome(
+            write=True,
+            result_class=ResultClass.BLOCKED,
+            result_code=ResultCode.GLOBAL_BLOCKERS_ACTIVE,
+            action=OperationAction.REJECT,
+            persisted=False,
+        )
+
+    monkeypatch.setattr(rollout, "execute_scope_administration", fake_execute)
+
+    outcome = execute_rollout(
+        object(),
+        _TEST_UNIVERSE,
+        build_request=_build_request,
+        authorization=object(),
+    )
+
+    assert calls == ["BTC", "SOL"]
+    assert outcome.stopped_early is True
+    assert outcome.remaining_symbols == ()
+    assert "GLOBAL_BLOCKERS_ACTIVE" in outcome.stop_reason
+    assert outcome.as_json_dict()["all_succeeded"] is False
+
+
+def test_execute_rollout_stops_and_leaves_remaining_untouched_on_first_symbol_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    three_entries = (
+        _BTC_ENTRY,
+        RolloutSymbolEntry(
+            symbol="SOL",
+            operation_type=OperationType.PROMOTE_SCOPE,
+            approval_reference="docs/todo/example.md",
+            note="promote",
+        ),
+        RolloutSymbolEntry(
+            symbol="ETH",
+            operation_type=OperationType.PROMOTE_SCOPE,
+            approval_reference="docs/todo/example.md",
+            note="promote",
+        ),
+    )
+
+    def fake_execute(conn: Any, request: Any, *, authorization: Any) -> AdministrationTransactionOutcome:
+        return _outcome(
+            write=True,
+            result_class=ResultClass.CORRUPT_STATE,
+            result_code=ResultCode.PARTIAL_SCOPE_STATE,
+            action=OperationAction.REJECT,
+            persisted=False,
+        )
+
+    monkeypatch.setattr(rollout, "execute_scope_administration", fake_execute)
+
+    outcome = execute_rollout(
+        object(),
+        three_entries,
+        build_request=_build_request,
+        authorization=object(),
+    )
+
+    assert len(outcome.completed) == 1
+    assert outcome.completed[0].symbol == "BTC"
+    assert outcome.remaining_symbols == ("SOL", "ETH")
+    assert outcome.stopped_early is True
+
+
+def test_execute_rollout_stops_on_unexpected_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_execute(conn: Any, request: Any, *, authorization: Any) -> AdministrationTransactionOutcome:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(rollout, "execute_scope_administration", fake_execute)
+
+    outcome = execute_rollout(
+        object(),
+        _TEST_UNIVERSE,
+        build_request=_build_request,
+        authorization=object(),
+    )
+
+    assert outcome.stopped_early is True
+    assert outcome.completed[0].error is not None
+    assert "boom" in outcome.completed[0].error
+    assert outcome.remaining_symbols == ("SOL",)
+
+
+def test_execute_rollout_is_idempotent_on_replay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rerun over an already-completed entry replays as
+    OPERATION_ALREADY_COMPLETED (IDEMPOTENT_SUCCESS) and continues, proving
+    restartability without any orchestrator-side run-state."""
+
+    def fake_execute(conn: Any, request: Any, *, authorization: Any) -> AdministrationTransactionOutcome:
+        return _outcome(
+            write=True,
+            result_class=ResultClass.IDEMPOTENT_SUCCESS,
+            result_code=ResultCode.OPERATION_ALREADY_COMPLETED,
+        )
+
+    monkeypatch.setattr(rollout, "execute_scope_administration", fake_execute)
+
+    outcome = execute_rollout(
+        object(),
+        _TEST_UNIVERSE,
+        build_request=_build_request,
+        authorization=object(),
+    )
+
+    assert outcome.stopped_early is False
+    assert outcome.as_json_dict()["all_succeeded"] is True
+
+
+def test_plan_rollout_delegates_to_plan_scope_administration(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_plan(conn: Any, request: Any) -> AdministrationTransactionOutcome:
+        return _outcome(
+            write=False,
+            result_class=ResultClass.SUCCESS,
+            result_code=ResultCode.ADOPTED_LEGACY_SCOPE,
+            persisted=False,
+        )
+
+    monkeypatch.setattr(rollout, "plan_scope_administration", fake_plan)
+
+    outcome = plan_rollout(object(), _TEST_UNIVERSE, build_request=_build_request)
+
+    assert outcome.mode == "DRY_RUN"
+    assert outcome.as_json_dict()["all_succeeded"] is True
