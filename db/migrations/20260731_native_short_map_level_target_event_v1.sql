@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS native_short_map_level_target_event_v1 (
             'PRIMARY_HIGH_REACHED_WITHOUT_CLOSE_ABOVE',
             'PRIMARY_CLOSE_PASSED_LEVEL'
         )),
-    CONSTRAINT chk_native_short_map_level_target_event_v1_effective_matches_causal
+    CONSTRAINT chk_native_short_map_level_target_event_v1_eff_eq_causal
         CHECK (effective_at_utc = causal_candle_close_ts_utc),
     CONSTRAINT chk_native_short_map_level_target_event_v1_reached_evidence
         CHECK (
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS native_short_map_level_target_event_coverage_v1 (
 
     CONSTRAINT chk_native_short_map_level_target_event_coverage_v1_horizon
         CHECK (fib_trading_horizon = 'SHORT'),
-    CONSTRAINT chk_native_short_map_level_target_event_coverage_v1_cutoff_bounds
+    CONSTRAINT chk_native_short_map_level_target_event_coverage_v1_cutoff_bnd
         CHECK (
             coverage_cutoff_utc >= publication_boundary_utc
             AND coverage_cutoff_utc >= requested_watermark_utc_at_establishment
