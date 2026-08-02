@@ -340,6 +340,133 @@ def test_load_zone_contexts_prefers_native_short_rows() -> None:
         assert evidence.previous_map_cycle_id == "DATA_UNAVAILABLE"
 
 
+def test_load_zone_contexts_marks_canonical_verified_snapshot_rows_native_available() -> None:
+    """Two symbols (BTC, SOL) from a validated canonical snapshot root both
+    resolve to NATIVE_SHORT_CONTEXT_AVAILABLE — the render owner already ran
+    validate_published_snapshot() and passes --native-short-snapshot-status
+    loaded plus the validated snapshot_id; that evidence must reach the card
+    classification instead of staying stuck at transient/non-canonical."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(
+            rows=[_native_short_row(symbol="BTC"), _native_short_row(symbol="SOL")],
+            output_dir=native_dir,
+        )
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["BTC-EUR", "SOL-EUR"],
+            prices={"BTC-EUR": Decimal("0.48"), "SOL-EUR": Decimal("0.48")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            native_short_snapshot_status="loaded",
+            native_short_snapshot_id="nsctx-v1-test-snapshot",
+        )
+        for symbol in ("BTC", "SOL"):
+            assert result.input_status_by_symbol[symbol] == "NATIVE_SHORT_CONTEXT_AVAILABLE"
+            assert result.coverage_status_by_symbol[symbol] == "NATIVE_SHORT_CONTEXT_AVAILABLE"
+            assert result.display_state_by_symbol[symbol] == "HAS_NATIVE_SHORT_FIB_CONTEXT"
+            evidence = result.evidence_by_symbol[symbol]
+            assert evidence.native_map_status == "AVAILABLE"
+            assert evidence.native_map_id == f"nsctx-v1-test-snapshot:{symbol}:{symbol}|SHORT|4h|demo"
+            assert evidence.map_cycle_id == f"{symbol}|SHORT|4h|demo"
+            # Lane A (account/order evidence) stays untouched by this Lane B fix.
+            assert evidence.account_order_snapshot_status == "DATA_UNAVAILABLE"
+            assert evidence.lifecycle_state == "DATA_UNAVAILABLE"
+            assert evidence.rollover_state == "DATA_UNAVAILABLE"
+
+
+def test_load_zone_contexts_unverified_snapshot_status_stays_transient() -> None:
+    """Even a genuinely AVAILABLE/FRESH row must stay transient/non-canonical
+    when the render owner did not confirm the snapshot as validated-loaded —
+    matches test_load_zone_contexts_prefers_native_short_rows' implicit
+    default, made explicit here to guard the fail-closed contract."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[_native_short_row(symbol="SOL")], output_dir=native_dir)
+        for status, snapshot_id in (("unverified", None), ("missing", "x"), ("invalid", "x")):
+            result = profit_plan_runner.load_zone_contexts(
+                markets=["SOL-EUR"],
+                prices={"SOL-EUR": Decimal("0.48")},
+                swing_anchors={},
+                recent_lows={},
+                native_short_rows_path=native_paths["rows_csv"],
+                fib_map_rows_path=fib_rows,
+                native_short_snapshot_status=status,
+                native_short_snapshot_id=snapshot_id,
+            )
+            assert result.input_status_by_symbol["SOL"] == "TRANSIENT_NON_CANONICAL_CONTEXT_AVAILABLE"
+            assert result.coverage_status_by_symbol["SOL"] == "TRANSIENT_NON_CANONICAL_CONTEXT_AVAILABLE"
+            assert result.display_state_by_symbol["SOL"] == "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT"
+            assert result.evidence_by_symbol["SOL"].native_map_status == "DATA_UNAVAILABLE"
+
+
+def test_load_zone_contexts_verified_snapshot_partial_row_stays_non_canonical() -> None:
+    """A verified-loaded snapshot does not launder a row that fails the
+    per-row native SHORT contract (not AVAILABLE, or not FRESH)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(
+            rows=[_native_short_row(symbol="SOL", status="INSUFFICIENT_1H_HISTORY")],
+            output_dir=native_dir,
+        )
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["SOL-EUR"],
+            prices={"SOL-EUR": Decimal("0.48")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            native_short_snapshot_status="loaded",
+            native_short_snapshot_id="nsctx-v1-test-snapshot",
+        )
+        assert result.input_status_by_symbol["SOL"] == "INSUFFICIENT_1H_HISTORY"
+        assert result.coverage_status_by_symbol["SOL"] == "INSUFFICIENT_1H_HISTORY"
+        assert result.display_state_by_symbol["SOL"] == "NO_NATIVE_SHORT_FIB_CONTEXT"
+        assert result.evidence_by_symbol["SOL"].native_map_status == "DATA_UNAVAILABLE"
+
+
+def test_load_zone_contexts_missing_symbol_stays_fib_map_symbol_missing() -> None:
+    """A symbol absent from both the native snapshot and the legacy Fib map
+    source stays FIB_MAP_SYMBOL_MISSING regardless of snapshot verification —
+    a validated snapshot root does not fabricate rows for symbols it lacks."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[_native_short_row(symbol="BTC")], output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["ETH-EUR"],
+            prices={"ETH-EUR": Decimal("2000")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            native_short_snapshot_status="loaded",
+            native_short_snapshot_id="nsctx-v1-test-snapshot",
+        )
+        assert result.coverage_status_by_symbol["ETH"] == "FIB_MAP_SYMBOL_MISSING"
+        assert result.display_state_by_symbol["ETH"] == "NO_NATIVE_SHORT_FIB_CONTEXT"
+
+
 def test_load_zone_contexts_keeps_partial_native_gap_truthful_even_with_legacy_row() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
