@@ -341,3 +341,133 @@ def test_connection_failure_redacts_connection_details_and_secrets() -> None:
     assert rendered == "DATABASE_CONNECTION_FAILED error_type=RuntimeError"
     assert all(value not in rendered for value in sensitive_values)
     assert "fingerprint-123" not in rendered
+
+
+# ---------------------------------------------------------------------------
+# native_short_map_level_target_event_{v1,coverage_v1}: regression coverage
+# for the gap that caused a production MariaDB error 1142 on gurkdb
+# (SELECT denied on native_short_map_level_target_event_coverage_v1), traced
+# to the terminal-transition hook in native_short_scope_status_materializer_v1
+# that runs unconditionally on every genuine COMPLETED lifecycle transition.
+# See docs/ops/synth_chain_4h_db_grant_contract_v1.md for the full trace.
+# ---------------------------------------------------------------------------
+
+TARGET_EVENT_COVERAGE_TABLE = "native_short_map_level_target_event_coverage_v1"
+TARGET_EVENT_TABLE = "native_short_map_level_target_event_v1"
+TARGET_EVENT_VIEW = "native_short_map_level_target_event_current_state_v1"
+
+EXPECTED_REQUIRED_OBJECT_COUNT = 37
+
+
+def test_target_event_tables_are_part_of_canonical_required_object_set() -> None:
+    assert REQUIRED_OBJECT_PRIVILEGES[TARGET_EVENT_COVERAGE_TABLE] == {"SELECT"}
+    assert REQUIRED_OBJECT_PRIVILEGES[TARGET_EVENT_TABLE] == {"SELECT", "INSERT"}
+
+
+def test_required_objects_count_matches_canonical_manifest() -> None:
+    assert len(REQUIRED_OBJECT_PRIVILEGES) == EXPECTED_REQUIRED_OBJECT_COUNT
+
+
+def test_grant_preflight_fails_when_target_event_coverage_select_absent() -> None:
+    grants = [
+        grant
+        for grant in _exact_grants()
+        if f"`.`{TARGET_EVENT_COVERAGE_TABLE}`" not in grant
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{TARGET_EVENT_COVERAGE_TABLE}:SELECT" in audit.missing
+
+
+def test_grant_preflight_fails_when_target_event_table_privileges_absent() -> None:
+    grants = [
+        grant for grant in _exact_grants() if f"`.`{TARGET_EVENT_TABLE}`" not in grant
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{TARGET_EVENT_TABLE}:SELECT" in audit.missing
+    assert f"synth.{TARGET_EVENT_TABLE}:INSERT" in audit.missing
+
+
+def test_grant_preflight_passes_with_complete_minimum_grants_via_run_preflight() -> None:
+    """End-to-end via the real ``run_preflight`` entrypoint (not just
+    ``audit_grants`` directly), proving the complete canonical grant set --
+    including the two new target-event objects -- is accepted as PASS."""
+    connection = _FakeConnection(_exact_grants())
+
+    def connect(**kwargs):
+        return connection
+
+    result = runner.run_preflight(_candidate_config(), connect=connect)
+    assert result.audit.passed
+    assert result.audit.missing == ()
+    assert result.audit.unexpected == ()
+
+
+def test_target_event_coverage_insert_beyond_select_is_rejected_as_unexpected() -> None:
+    """The coverage table must stay SELECT-only: the automated chain
+    entrypoint never supplies a non-None watermark, so INSERT is not
+    reachable under this identity and must not be granted."""
+    grants = [
+        grant
+        for grant in _exact_grants()
+        if f"`.`{TARGET_EVENT_COVERAGE_TABLE}`" not in grant
+    ] + [
+        (
+            "GRANT SELECT, INSERT ON `synth`.`native_short_map_level_target_event_coverage_v1` "
+            f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+        )
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{TARGET_EVENT_COVERAGE_TABLE}:INSERT" in audit.unexpected
+
+
+def test_target_event_table_update_beyond_insert_select_is_rejected_as_unexpected() -> None:
+    """Both target-event tables are append-only by design (no code path ever
+    issues UPDATE/DELETE); a grant beyond SELECT/INSERT must be flagged."""
+    grants = [
+        grant for grant in _exact_grants() if f"`.`{TARGET_EVENT_TABLE}`" not in grant
+    ] + [
+        (
+            "GRANT SELECT, INSERT, UPDATE ON `synth`.`native_short_map_level_target_event_v1` "
+            f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+        )
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{TARGET_EVENT_TABLE}:UPDATE" in audit.unexpected
+
+
+def test_target_event_reporting_view_is_not_granted() -> None:
+    """native_short_map_level_target_event_current_state_v1 is not referenced
+    by any runtime code path today and must stay ungranted -- granting it
+    would be exactly the blind over-grant this contract exists to avoid."""
+    assert TARGET_EVENT_VIEW not in REQUIRED_OBJECT_PRIVILEGES
+    audit = _audit(
+        _exact_grants()
+        + [
+            (
+                f"GRANT SELECT ON `synth`.`{TARGET_EVENT_VIEW}` "
+                f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+            )
+        ]
+    )
+    assert not audit.passed
+    assert f"synth.{TARGET_EVENT_VIEW}:SELECT" in audit.unexpected
+
+
+def test_target_event_tables_are_not_forbidden_or_account_execution_authority() -> None:
+    """No account, broker, decision_gate, execution_planner, executor, or
+    reporting authority is introduced by this change -- the two new objects
+    must not appear in the semantic deny-list, and the exact accepted grant
+    set for this identity must still contain zero forbidden-authority
+    objects overall."""
+    from src.operations.synth_chain_4h_db_authority_v1 import FORBIDDEN_AUTHORITY_OBJECTS
+
+    assert TARGET_EVENT_COVERAGE_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
+    assert TARGET_EVENT_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
+    audit = _audit(_exact_grants())
+    assert audit.passed
+    assert not any("FORBIDDEN_OBJECT_AUTHORITY" in item for item in audit.violations)
+    assert not any("ADMINISTRATIVE_AUTHORITY_FORBIDDEN" in item for item in audit.violations)

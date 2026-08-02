@@ -88,6 +88,12 @@ deploy/systemd/synth-chain-4h.service
             -> src.market_data.native_short_map_level_status_materializer_v1
                -> src.market_data.native_short_map_level_status_v1
                -> src.market_rules.price_tick_normalization_v1
+            -> src.market_data.native_short_map_level_target_event_materializer_v1
+               (_append_terminal_target_events terminal-transition hook;
+                runs unconditionally on every genuine COMPLETED lifecycle
+                transition, before that transition is recorded, in the same
+                transaction -- see "Target-Event Coverage Gap" below)
+               -> src.market_data.native_short_map_level_target_event_v1
    -> src.market_data.run_native_short_fib_context_snapshot_v1
       -> src.market_data.native_short_fib_context_snapshot_v1
    -> src.features.run_feat_candle
@@ -208,6 +214,8 @@ the same site. `UPSERT` means `INSERT ... ON DUPLICATE KEY UPDATE`.
 | materializer run | compare-and-set `UPDATE ... WHERE run_id = ...` of `native_short_materializer_run_v1` (the `WHERE` clause requires `SELECT` in addition to `UPDATE`) | `src/market_data/native_short_scope_status_materializer_v1.py:597-634` |
 | scope observation | `INSERT` into `native_short_scope_observation_v1` | `src/market_data/native_short_scope_status_materializer_v1.py:641-714` |
 | lifecycle transition | `INSERT` into `native_short_map_lifecycle_event_v1` | `src/market_data/native_short_scope_status_materializer_v1.py:721-746` |
+| terminal target-event coverage | `SELECT` from `native_short_map_level_target_event_coverage_v1` (unconditional on every genuine COMPLETED transition; `establish_or_fetch_target_event_coverage_for_map`'s own `INSERT` branch is not reachable here because this entrypoint never supplies a non-`None` watermark) | `src/market_data/native_short_map_level_target_event_v1.py:411-447` via `src/market_data/native_short_scope_status_materializer_v1.py:899-947` |
+| terminal target events | `SELECT` from `native_short_map_level_target_event_v1`; `INSERT` into `native_short_map_level_target_event_v1` (both reached only when a coverage row already exists for the map, e.g. established by an earlier standalone run under a different identity) | `src/market_data/native_short_map_level_target_event_v1.py:560-634` via `src/market_data/native_short_map_level_target_event_materializer_v1.py:238-361` |
 | scope projection | `UPSERT` `native_short_scope_status_v1` | `src/market_data/native_short_scope_status_materializer_v1.py:753-830` |
 | map scope | `SELECT` from `native_short_map_scope_v1` | `src/market_data/native_short_map_materializer_v1.py:192-219` |
 | map scope lock | `SELECT ... FOR UPDATE` from `native_short_map_scope_v1` | `src/market_data/native_short_map_materializer_v1.py:240-261` |
@@ -268,6 +276,8 @@ sequences, DDL, or administrative statements.
 | `market_price_snapshot` | yes | no | no | no | freshness read |
 | `native_short_map_generation_event_v1` | yes | yes | no | no | Native SHORT ledger/snapshot |
 | `native_short_map_level_status_v1` | yes | yes | no | yes | projection replacement/snapshot |
+| `native_short_map_level_target_event_coverage_v1` | yes | no | no | no | terminal-transition coverage read only; establishment (`INSERT`) not reachable from this identity's entrypoint |
+| `native_short_map_level_target_event_v1` | yes | yes | no | no | terminal-transition target-event append; append-only, never `UPDATE`/`DELETE` |
 | `native_short_map_lifecycle_event_v1` | yes | yes | no | no | Native SHORT ledger/snapshot |
 | `native_short_map_scope_v1` | yes | no | no | no | scope selection and row lock |
 | `native_short_map_v1` | yes | yes | no | no | map materialization/snapshot |
@@ -428,6 +438,114 @@ future_multi_caller_hardening=DEFERRED_TRIGGERED_TODO
 The bounded claim is that the binding is demonstrably safe for the current
 architecture, caller, and operator-controlled deployment boundary. Expanding
 that boundary reopens the deferred hardening TODO.
+
+## Target-Event Coverage Gap (corrected 2026-08-02)
+
+Confirmed production failure on gurkdb, 2026-08-02, after the ETH and XRP
+scope promotions were committed:
+
+```text
+MariaDB error 1142: SELECT command denied to user
+'synth_chain_4h_writer'@'192.168.1.221' for table
+synth.native_short_map_level_target_event_coverage_v1
+```
+
+Root cause: the `native_short_map_level_target_event_v1` /
+`native_short_map_level_target_event_coverage_v1` migration
+(`db/migrations/20260731_native_short_map_level_target_event_v1.sql`) and its
+terminal-transition wiring into
+`native_short_scope_status_materializer_v1._append_terminal_target_events`
+(commit `d03adaad`) were added after the last review of
+`src/operations/synth_chain_4h_db_authority_v1.py`
+(commit `188dfac9`, 2026-07-30), so neither new table was ever added to the
+required-object manifest, the DBA grant artifact, or this contract's call
+graph and privilege matrix.
+
+`_append_terminal_target_events` runs unconditionally, in the same
+transaction, on every genuine `COMPLETED` lifecycle transition -- it is not
+behind a feature flag or CLI opt-in. It always issues one `SELECT` against
+`native_short_map_level_target_event_coverage_v1` first
+(`fetch_target_event_coverage_for_map`), regardless of anything else. This
+call did not exist as a reachable path for any scope until a scope's map
+actually reached a `COMPLETED` transition in production, which is why the
+gap was invisible until the ETH/XRP rollout produced one.
+
+Correction, this change:
+
+```text
+native_short_map_level_target_event_coverage_v1.SELECT   = granted
+native_short_map_level_target_event_coverage_v1.INSERT   = not granted (not reachable from this entrypoint; see below)
+native_short_map_level_target_event_v1.SELECT            = granted
+native_short_map_level_target_event_v1.INSERT            = granted
+native_short_map_level_target_event_current_state_v1     = not granted (no runtime reader exists)
+required_objects: 35 -> 37
+```
+
+Why coverage-table `INSERT` is deliberately not granted: establishment
+(`establish_or_fetch_target_event_coverage_for_map`'s `INSERT` branch) only
+runs when `append_native_short_map_level_target_events_for_map` receives a
+non-`None` `requested_watermark_utc`. Tracing every caller reachable from
+`scripts/run_chain_4h.sh` --
+`run_native_short_scope_status_chain_v1.py` has no
+`--target-event-coverage-watermark-utc` (or equivalent) CLI flag, and its one
+call into `run_native_short_scope_status_materializer` does not pass
+`target_event_coverage_watermark_utc`, so it is always `None` in this
+identity's committed production wiring. If a coverage row already exists
+(established by some other identity, e.g. the standalone
+`run_native_short_map_level_status_materializer_v1` runner -- not wired to
+any service/timer today, and not bound to this database identity), this
+chain identity still only ever *reads* that row and appends further target
+events; it never establishes one itself. If the automated chain's entrypoint
+is ever changed to supply a real watermark, `INSERT` on the coverage table
+must be added to the manifest, the DBA artifact, and this contract in that
+same change -- it is not implicitly covered by this correction.
+
+Why the reporting view `native_short_map_level_target_event_current_state_v1`
+(defined by the same migration) is not granted: it has no reader anywhere in
+`src/` today. Granting it now would be exactly the kind of blind, ahead-of-need
+privilege this contract exists to avoid; add it, reviewed, in the change that
+introduces its first reader.
+
+This correction does not rewrite the "Complete Runtime Call Graph", "Executed
+SQL Inventory", or "Exact Object-Level Privilege Matrix" sections above for
+any pre-existing object -- it only adds the two new rows/entries and one new
+call-graph branch. No prior acceptance observation elsewhere (Public Price
+Snapshot, Public Candle Freshness, the SOL/ETH/XRP promotion approvals, or the
+gurkDB `native_short_4h_chain` ownership preflight) is altered by this
+section.
+
+## Operator Grant Procedure (host-side, not executed by this change)
+
+This repository change performs no database mutation, credential change, or
+grant execution. After merge, on gurkdb, with a MariaDB session already
+holding `@synth_chain_4h_writer_password` set from an approved secret
+channel (exactly the existing procedure for `db/dba/synth_chain_4h_writer_v1.sql`),
+apply only the two new grants:
+
+```sql
+GRANT SELECT
+    ON `synth`.`native_short_map_level_target_event_coverage_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT, INSERT
+    ON `synth`.`native_short_map_level_target_event_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+```
+
+Equivalently, re-running the complete, idempotent
+`db/dba/synth_chain_4h_writer_v1.sql` artifact (which now includes these two
+grants alongside the unchanged complete set) achieves the same end state; it
+resets and re-grants only the dedicated `synth_chain_4h_writer` identity and
+does not touch the existing broad `synth` identity or any other user.
+
+Verify with the existing read-only preflight, unchanged:
+
+```bash
+python -m src.operations.run_synth_chain_4h_db_grant_preflight_v1
+```
+
+It must report `required_objects=37` and `status=PASS`. Neither the grant nor
+any production restart is executed by this repository change; both remain
+separate, explicit host-side operator actions.
 
 ## Safety State
 
