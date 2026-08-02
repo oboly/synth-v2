@@ -1,0 +1,17 @@
+{
+  "authorization_version": "writer_capability_runtime_authorization_v1",
+  "authorization_id": "example-native-short-4h-chain-ancestor-0001",
+  "authorized_at_utc": "2026-08-02T00:00:00Z",
+  "purpose": "PRODUCTION",
+  "capability_id": "native_short_4h_chain",
+  "capability_identity": "native-short-4h-chain",
+  "service": "synth-chain-4h.service",
+  "systemd_unit": "synth-chain-4h.service",
+  "authorized_host": "gurkdb",
+  "authorized_commit": "0000000000000000000000000000000000000000",
+  "commit_verification_mode": "ANCESTOR",
+  "required_branch": "main",
+  "production_authorization_status": "AUTHORIZED",
+  "runtime_lifecycle": "AUTHORIZED_INACTIVE",
+  "decision_evidence": "docs/ops/native_short_4h_chain_ownership_preflight_v1.md#gurkdb-canonical-owner-correction-20260731"
+}
