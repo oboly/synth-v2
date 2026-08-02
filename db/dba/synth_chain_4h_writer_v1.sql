@@ -78,6 +78,12 @@ GRANT SELECT, INSERT
 GRANT SELECT, INSERT, DELETE
     ON `synth`.`native_short_map_level_status_v1`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT
+    ON `synth`.`native_short_map_level_target_event_coverage_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT, INSERT
+    ON `synth`.`native_short_map_level_target_event_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
 GRANT SELECT, INSERT
     ON `synth`.`native_short_map_lifecycle_event_v1`
     TO 'synth_chain_4h_writer'@'192.168.1.%';

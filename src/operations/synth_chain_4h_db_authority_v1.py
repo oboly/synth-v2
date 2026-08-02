@@ -40,6 +40,33 @@ REQUIRED_OBJECT_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "market_price_snapshot": _privileges(SELECT),
     "native_short_map_generation_event_v1": _privileges(SELECT, INSERT),
     "native_short_map_level_status_v1": _privileges(SELECT, INSERT, DELETE),
+    # Append-only prospective target-event ledger, reachable from the shared
+    # terminal-transition hook in native_short_scope_status_materializer_v1
+    # (_append_terminal_target_events -> append_native_short_map_level_target_
+    # events_for_map), which runs unconditionally on every genuine COMPLETED
+    # lifecycle transition. The coverage table's SELECT is always reached
+    # this way (error 1142 confirmed in production on gurkdb, 2026-08-02,
+    # when it was still missing). Its own INSERT (establish_or_fetch_
+    # target_event_coverage_for_map) is not granted: the production chain
+    # entrypoint (run_native_short_scope_status_chain_v1 /
+    # scripts/run_native_short_scope_status_chain_once.sh) never exposes or
+    # supplies a non-None target_event_coverage_watermark_utc, so that
+    # establishment branch is not reachable under this identity today -- see
+    # docs/ops/synth_chain_4h_database_least_privilege_contract_v1.md for the
+    # exact call-graph trace and the required re-review if that ever
+    # changes. The event
+    # table's SELECT/INSERT (fetch_native_short_map_level_target_events_for_map
+    # / insert_native_short_map_level_target_events) are granted because the
+    # shared hook's own docstring explicitly anticipates reading coverage
+    # "established ... by an earlier standalone run" under a different
+    # identity, after which this identity's terminal-transition hook appends
+    # events for that already-covered map -- a real, designed reachability
+    # path, not a hypothetical one. Neither table is ever issued an UPDATE or
+    # DELETE (both modules are append-only by design); the reporting-only
+    # view native_short_map_level_target_event_current_state_v1 is not
+    # referenced by any runtime code path and is intentionally not granted.
+    "native_short_map_level_target_event_coverage_v1": _privileges(SELECT),
+    "native_short_map_level_target_event_v1": _privileges(SELECT, INSERT),
     "native_short_map_lifecycle_event_v1": _privileges(SELECT, INSERT),
     "native_short_map_scope_v1": _privileges(SELECT),
     "native_short_map_v1": _privileges(SELECT, INSERT),
