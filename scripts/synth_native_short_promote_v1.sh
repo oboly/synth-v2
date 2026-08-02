@@ -21,7 +21,18 @@ fi
 
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the physical script file first: this script is invoked through a
+# symlink at /usr/local/bin/synth-native-short-promote, and BASH_SOURCE[0]
+# for a symlinked invocation is the symlink path itself, not its target. Using
+# dirname on the unresolved symlink path would derive SCRIPT_DIR as
+# /usr/local/bin (and REPO_DIR as /usr/local) instead of the canonical
+# checkout, which cannot find the repository venv.
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+if [ -z "${SCRIPT_PATH}" ] || [ ! -f "${SCRIPT_PATH}" ]; then
+    echo "[PROMOTE][FAIL] could not resolve physical script path from ${BASH_SOURCE[0]}" >&2
+    exit 1
+fi
+SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 cd "${REPO_DIR}" || exit 1

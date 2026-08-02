@@ -13,6 +13,7 @@ mechanics, which are covered in their own test files.
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 import pytest
@@ -31,9 +32,19 @@ class _RolloutMainRecorder:
     def __init__(self, return_code: int) -> None:
         self.return_code = return_code
         self.calls: list[list[str]] = []
+        # One (execution_mode, capability_id) env snapshot per call, captured
+        # from inside the call itself -- proves what the rollout CLI actually
+        # observed, not just what the wrapper intended to set.
+        self.env_snapshots: list[tuple[str | None, str | None]] = []
 
     def __call__(self, argv: list[str]) -> int:
         self.calls.append(list(argv))
+        self.env_snapshots.append(
+            (
+                os.environ.get("SYNTH_WRITER_EXECUTION_MODE"),
+                os.environ.get("SYNTH_WRITER_CAPABILITY_ID"),
+            )
+        )
         return self.return_code
 
 
@@ -167,3 +178,146 @@ def test_actor_type_and_trigger_type_are_fixed(monkeypatch: pytest.MonkeyPatch) 
     argv = recorder.calls[0]
     assert argv[argv.index("--actor-type") + 1] == "HUMAN_OPERATOR"
     assert argv[argv.index("--trigger-type") + 1] == "MANUAL_CLI"
+
+
+# ---------------------------------------------------------------------------
+# Scoped writer runtime context (SYNTH_WRITER_EXECUTION_MODE /
+# SYNTH_WRITER_CAPABILITY_ID): the rollout CLI's authorization boundary reads
+# these from the environment and defaults to READ_ONLY (fail closed) when
+# SYNTH_WRITER_EXECUTION_MODE is absent. The wrapper must set both only for
+# the duration of the bounded rollout call and restore whatever value (or
+# absence) preceded it, on both the success and the failure/exception path.
+# ---------------------------------------------------------------------------
+
+def test_rollout_observes_production_mode_and_capability_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("SYNTH_WRITER_EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("SYNTH_WRITER_CAPABILITY_ID", raising=False)
+    recorder, _chain_calls = _patch_deterministic_seams(monkeypatch)
+    rc = promote.main(["ETH"])
+    assert rc == 0
+    assert recorder.env_snapshots == [("PRODUCTION", "native_short_4h_chain")]
+
+
+def test_env_vars_restored_to_absent_after_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SYNTH_WRITER_EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("SYNTH_WRITER_CAPABILITY_ID", raising=False)
+    _patch_deterministic_seams(monkeypatch)
+    promote.main(["ETH"])
+    assert "SYNTH_WRITER_EXECUTION_MODE" not in os.environ
+    assert "SYNTH_WRITER_CAPABILITY_ID" not in os.environ
+
+
+def test_env_vars_restored_to_prior_values_after_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SYNTH_WRITER_EXECUTION_MODE", "READ_ONLY")
+    monkeypatch.setenv("SYNTH_WRITER_CAPABILITY_ID", "public_price_snapshot")
+    _patch_deterministic_seams(monkeypatch)
+    promote.main(["ETH"])
+    assert os.environ["SYNTH_WRITER_EXECUTION_MODE"] == "READ_ONLY"
+    assert os.environ["SYNTH_WRITER_CAPABILITY_ID"] == "public_price_snapshot"
+
+
+def test_env_vars_restored_after_rollout_failure_return_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SYNTH_WRITER_EXECUTION_MODE", "READ_ONLY")
+    monkeypatch.setenv("SYNTH_WRITER_CAPABILITY_ID", "public_price_snapshot")
+    _patch_deterministic_seams(monkeypatch, rollout_rc=3)
+    rc = promote.main(["ETH"])
+    assert rc == 3
+    assert os.environ["SYNTH_WRITER_EXECUTION_MODE"] == "READ_ONLY"
+    assert os.environ["SYNTH_WRITER_CAPABILITY_ID"] == "public_price_snapshot"
+
+
+def test_env_vars_restored_after_rollout_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SYNTH_WRITER_EXECUTION_MODE", "READ_ONLY")
+    monkeypatch.setenv("SYNTH_WRITER_CAPABILITY_ID", "public_price_snapshot")
+    monkeypatch.setattr(
+        promote,
+        "inspect_running_repository_source",
+        lambda: NativeShortRepositorySourceState(head_sha=FIXED_HEAD, status_porcelain=""),
+    )
+    monkeypatch.setattr(
+        promote, "_commit_timestamp_utc", lambda repo_root, commit: FIXED_TIMESTAMP
+    )
+
+    def _boom(argv: list[str]) -> int:
+        raise RuntimeError("simulated rollout crash")
+
+    monkeypatch.setattr(promote.rollout_cli, "main", _boom)
+
+    with pytest.raises(RuntimeError):
+        promote.main(["ETH"])
+
+    assert os.environ["SYNTH_WRITER_EXECUTION_MODE"] == "READ_ONLY"
+    assert os.environ["SYNTH_WRITER_CAPABILITY_ID"] == "public_price_snapshot"
+
+
+def test_writer_runtime_context_never_touched_before_or_after_rollout_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scoped context must be active only around the rollout call itself
+    -- never before symbol/repository validation, and never left set once
+    ``main`` returns."""
+    monkeypatch.delenv("SYNTH_WRITER_EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("SYNTH_WRITER_CAPABILITY_ID", raising=False)
+
+    def _boom_inspect():
+        assert "SYNTH_WRITER_EXECUTION_MODE" not in os.environ
+        raise AssertionError("must not reach repository inspection for an unapproved symbol")
+
+    monkeypatch.setattr(promote, "inspect_running_repository_source", _boom_inspect)
+    rc = promote.main(["FOOCOIN"])
+    assert rc == 2
+    assert "SYNTH_WRITER_EXECUTION_MODE" not in os.environ
+    assert "SYNTH_WRITER_CAPABILITY_ID" not in os.environ
+
+
+# ---------------------------------------------------------------------------
+# The rollout CLI's own DB-access ordering (verify checkout -> authorize ->
+# connect) is unchanged and unweakened: when authorization is denied, no
+# database connection is attempted, regardless of the wrapper's env context.
+# ---------------------------------------------------------------------------
+
+def test_no_db_connection_attempted_when_authorization_denied(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    import src.common.db as dbmod
+    import src.market_data.run_native_short_scope_administration_rollout_v1 as rollout_mod
+    import src.operations.writer_capability_authorization_v1 as authmod
+
+    monkeypatch.setattr(
+        promote,
+        "inspect_running_repository_source",
+        lambda: NativeShortRepositorySourceState(head_sha=FIXED_HEAD, status_porcelain=""),
+    )
+    monkeypatch.setattr(
+        promote, "_commit_timestamp_utc", lambda repo_root, commit: FIXED_TIMESTAMP
+    )
+    # verify_repository_commit_sha passes trivially -- checkout identity is
+    # not what this test is proving.
+    monkeypatch.setattr(rollout_mod, "verify_repository_commit_sha", lambda *a, **k: None)
+
+    def _deny(capability_id, **kwargs):
+        raise authmod.AuthorizationDenied(
+            capability_id, authmod.ExecutionMode.PRODUCTION, ["denied for test"]
+        )
+
+    monkeypatch.setattr(authmod, "enforce_capability_write_authorization", _deny)
+
+    def _boom_get_connection(*args, **kwargs):
+        raise AssertionError("DB connection must not be attempted when authorization is denied")
+
+    monkeypatch.setattr(dbmod, "get_connection", _boom_get_connection)
+
+    chain_calls: list[Any] = []
+    monkeypatch.setattr(
+        promote, "_run_chain", lambda repository_root: chain_calls.append(repository_root) or 0
+    )
+
+    rc = promote.main(["ETH"])
+    assert rc == 3
+    assert chain_calls == []
+    doc = _last_stdout_json(capsys)
+    assert doc["chain_invoked"] is False
