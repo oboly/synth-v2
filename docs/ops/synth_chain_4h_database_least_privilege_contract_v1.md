@@ -533,13 +533,58 @@ view --
 db/migrations/20260731_native_short_map_level_target_event_v1.sql
 ```
 
--- was merged into `main` but its manual apply step on gurkdb was never
-performed. The file itself needs no correction: it is already exactly the
-narrow, idempotent artifact this task asked for --
-`CREATE TABLE IF NOT EXISTS` for both tables and `CREATE OR REPLACE VIEW` for
-the view, touching no other object, safe to re-run. The gap is purely
-operational (a merged migration whose manual apply step was skipped), not a
-schema-authoring defect.
+-- was merged into `main`, but its manual apply step on gurkdb was never
+performed successfully. The first production apply attempt, 2026-08-03,
+failed before creating any object (see "Overlong Constraint Identifier"
+below) with a real schema-authoring defect in the migration file itself,
+which has since been corrected in this repository. Until that correction is
+re-applied on gurkdb, the schema gap remains open, purely operational (a
+merged migration whose manual apply step has still not completed), on top of
+the now-fixed authoring defect.
+
+### Overlong Constraint Identifier (corrected 2026-08-03)
+
+Confirmed production apply failure on gurkdb, 2026-08-03, on the first
+attempt to run the recovery procedure below:
+
+```text
+ERROR 1059 (42000): Identifier name
+'chk_native_short_map_level_target_event_v1_effective_matches_causal'
+is too long
+```
+
+Root cause: two explicitly named `CHECK` constraints in
+`db/migrations/20260731_native_short_map_level_target_event_v1.sql` exceeded
+MariaDB's 64-character identifier limit --
+`chk_native_short_map_level_target_event_v1_effective_matches_causal` (67
+chars) and `chk_native_short_map_level_target_event_coverage_v1_cutoff_bounds`
+(65 chars). This was a genuine schema-authoring defect, not merely an unapplied
+migration; the prior claim in this document that "the file itself needs no
+correction" was wrong and has been corrected above.
+
+MariaDB reported the full intended `CREATE TABLE` statement in its error text
+before rejecting the identifier, but validates identifier length before
+committing any DDL, so **no table, constraint, index, or view was created** by
+the failed attempt -- confirmed by the read-only
+`synth-native-short-readiness-check` schema-existence check, unchanged, still
+reporting both tables absent after the failed apply. The migration remains
+`CREATE TABLE IF NOT EXISTS` / `CREATE OR REPLACE VIEW` throughout, so it stays
+idempotent and safe to re-run in full from either starting state (nothing
+created, or a future partial state), including after this fix.
+
+Fix, this change: the two overlong constraint names were shortened, preserving
+their exact `CHECK` semantics, to `chk_native_short_map_level_target_event_v1_eff_eq_causal`
+(56 chars) and `chk_native_short_map_level_target_event_coverage_v1_cutoff_bnd`
+(62 chars). No table, column, index, or other constraint changed. A focused
+regression test (`tests/test_migration_identifier_length_v1.py`) now parses
+every `db/migrations/*.sql` file for explicitly named identifiers and fails if
+any exceeds 64 characters.
+
+**No grants, readiness check, or service start followed the failed apply.**
+Steps B, C, and D of the recovery procedure below were not reached on
+2026-08-03 and remain outstanding; step A must be re-run with the corrected
+migration file before B-D can proceed. This repository change performs no
+database mutation, grant, or service action.
 
 ### Missing-schema recovery procedure (exact commands, not executed by this change)
 
