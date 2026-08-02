@@ -743,3 +743,157 @@ def test_registered_writer_path_may_not_invoke_account_execution(tmp_path: Path)
     errors: list[str] = []
     validator._validate_call_graph(registry, tmp_path, errors)
     assert any("must not invoke account/execution tokens" in e for e in errors)
+
+
+# ---------------------------------------------------------------------------
+# ANCESTOR commit-verification mode: a stable production authorization file
+# survives normal approved fast-forward deploys without a per-commit edit.
+# ---------------------------------------------------------------------------
+
+def _temp_git_main(tmp_path: Path, name: str = "checkout") -> tuple[Path, str]:
+    """Real two-commit repo on an explicit ``main`` branch. Returns
+    (repo_path, anchor_commit) -- the anchor is the first commit; a second
+    commit advances HEAD past it, simulating a later approved deploy."""
+    repo = tmp_path / name
+    repo.mkdir(parents=True)
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@e",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@e"}
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+    (repo / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "anchor"], cwd=repo, check=True, env=env)
+    anchor = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    (repo / "tracked.txt").write_text("tracked v2\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "later approved deploy"], cwd=repo, check=True, env=env)
+    return repo, anchor
+
+
+def _ancestor_authorization(anchor_commit: str) -> dict:
+    auth = _production_authorization(anchor_commit)
+    auth["commit_verification_mode"] = "ANCESTOR"
+    auth["required_branch"] = "main"
+    return auth
+
+
+def test_ancestor_mode_head_descendant_on_main_passes(tmp_path: Path) -> None:
+    repo, anchor = _temp_git_main(tmp_path)
+    auth_path = _write_json(tmp_path / "auth.json", _ancestor_authorization(anchor))
+    registry_path = _authorized_registry_file(tmp_path, auth_path)
+    decision = verify_writer_execution_authorization(
+        capability_id=PRICE_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert decision.allowed, decision.reasons
+    # validated_commit reflects the actual executing HEAD, not the fixed anchor.
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    assert decision.authorization.validated_commit == head
+    assert head != anchor
+
+
+def test_ancestor_mode_rejects_non_ancestor_commit(tmp_path: Path) -> None:
+    repo, _anchor = _temp_git_main(tmp_path)
+    unrelated = "f" * 40
+    auth_path = _write_json(tmp_path / "auth.json", _ancestor_authorization(unrelated))
+    registry_path = _authorized_registry_file(tmp_path, auth_path)
+    decision = verify_writer_execution_authorization(
+        capability_id=PRICE_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any("is not an ancestor of HEAD" in e for e in decision.reasons)
+
+
+def test_ancestor_mode_rejects_wrong_branch(tmp_path: Path) -> None:
+    repo, anchor = _temp_git_main(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "-b", "feature/x"], cwd=repo, check=True)
+    auth_path = _write_json(tmp_path / "auth.json", _ancestor_authorization(anchor))
+    registry_path = _authorized_registry_file(tmp_path, auth_path)
+    decision = verify_writer_execution_authorization(
+        capability_id=PRICE_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any("expected 'main'" in e for e in decision.reasons)
+
+
+def test_ancestor_mode_rejects_detached_head(tmp_path: Path) -> None:
+    repo, anchor = _temp_git_main(tmp_path)
+    subprocess.run(["git", "checkout", "-q", "--detach", "HEAD"], cwd=repo, check=True)
+    auth_path = _write_json(tmp_path / "auth.json", _ancestor_authorization(anchor))
+    registry_path = _authorized_registry_file(tmp_path, auth_path)
+    decision = verify_writer_execution_authorization(
+        capability_id=PRICE_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any("detached" in e for e in decision.reasons)
+
+
+def test_ancestor_mode_requires_required_branch_main(tmp_path: Path) -> None:
+    repo, anchor = _temp_git_main(tmp_path)
+    auth = _ancestor_authorization(anchor)
+    auth["required_branch"] = "develop"
+    path = tmp_path / "auth.json"
+    path.write_text(json.dumps(auth), encoding="utf-8")
+    result = load_and_validate_authorization(path, AUTH_SCHEMA)
+    assert not result.ok
+
+
+def test_ancestor_mode_missing_required_branch_field_rejected_by_schema(tmp_path: Path) -> None:
+    auth = _ancestor_authorization("a" * 40)
+    del auth["required_branch"]
+    path = tmp_path / "auth.json"
+    path.write_text(json.dumps(auth), encoding="utf-8")
+    result = load_and_validate_authorization(path, AUTH_SCHEMA)
+    assert not result.ok
+
+
+def test_unknown_commit_verification_mode_rejected(tmp_path: Path) -> None:
+    repo, anchor = _temp_git_main(tmp_path)
+    auth = _ancestor_authorization(anchor)
+    auth["commit_verification_mode"] = "WILDCARD"
+    path = tmp_path / "auth.json"
+    path.write_text(json.dumps(auth), encoding="utf-8")
+    result = load_and_validate_authorization(path, AUTH_SCHEMA)
+    assert not result.ok
+
+
+def test_exact_mode_is_unaffected_default_when_field_absent(tmp_path: Path) -> None:
+    """Backward compatibility: an authorization file with no
+    commit_verification_mode field keeps the original exact-HEAD-match
+    semantics -- a later commit on the same branch still fails."""
+    repo, anchor = _temp_git_main(tmp_path)
+    auth_path = _write_json(tmp_path / "auth.json", _production_authorization(anchor))
+    registry_path = _authorized_registry_file(tmp_path, auth_path)
+    decision = verify_writer_execution_authorization(
+        capability_id=PRICE_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any("does not match expected commit" in e for e in decision.reasons)

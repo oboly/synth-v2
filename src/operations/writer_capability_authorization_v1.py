@@ -125,6 +125,24 @@ _UTC_LITERAL_Z_RE = re.compile(
 )
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
+# Commit-verification modes for PRODUCTION authorization. EXACT (the default
+# when the field is absent from an authorization file) is the original,
+# unchanged semantics: HEAD must equal authorized_commit exactly, so every
+# approved deploy requires a host-file edit. ANCESTOR relaxes this to "HEAD
+# descends from authorized_commit, on the required branch" -- the same
+# ancestor-not-equality model already reviewed and shipped for
+# native_short_promotion_bootstrap_evidence_v1's approved_implementation_commit
+# check. A stable ANCESTOR-mode file survives every later approved
+# fast-forward deploy without being re-edited; it still fails closed on a
+# dirty tree, a detached HEAD, a non-ancestor commit, or a HEAD not on the
+# required branch.
+COMMIT_VERIFICATION_MODE_EXACT = "EXACT"
+COMMIT_VERIFICATION_MODE_ANCESTOR = "ANCESTOR"
+_COMMIT_VERIFICATION_MODES = {COMMIT_VERIFICATION_MODE_EXACT, COMMIT_VERIFICATION_MODE_ANCESTOR}
+# The only permitted required_branch value in ANCESTOR mode. Never a
+# wildcard and never operator/CLI-suppliable.
+_REQUIRED_BRANCH_ANCESTOR_MODE = "main"
+
 
 class ExecutionMode(str, Enum):
     READ_ONLY = "READ_ONLY"
@@ -404,12 +422,22 @@ def verify_checkout_identity(
     expected_commit: str,
     expected_working_directory: Path | str | None = None,
     allowed_untracked_paths: set[str] | None = None,
+    commit_match_mode: str = COMMIT_VERIFICATION_MODE_EXACT,
+    expected_branch: str | None = None,
 ) -> list[str]:
     """Prove the exact deployed checkout. Returns a deterministic list of errors.
 
-    Verifies HEAD == expected commit, no staged/unstaged tracked changes,
-    canonical realpath match, non-detached HEAD, no linked worktree, and a
-    strict untracked-file policy.
+    ``commit_match_mode`` EXACT (default) requires HEAD == expected commit,
+    unchanged legacy semantics. ANCESTOR requires expected_commit to be an
+    ancestor of (or equal to) HEAD via ``git merge-base --is-ancestor``,
+    never equality -- the same non-circular ancestor model already used by
+    ``native_short_promotion_bootstrap_evidence_v1``. ``expected_branch``,
+    when given, additionally requires HEAD's symbolic branch name to match
+    exactly.
+
+    Also verifies no staged/unstaged tracked changes, canonical realpath
+    match, non-detached HEAD, no linked worktree, and a strict
+    untracked-file policy.
     """
     errors: list[str] = []
     allowed = set(allowed_untracked_paths or set())
@@ -422,12 +450,27 @@ def verify_checkout_identity(
         errors.append("checkout HEAD could not be resolved")
         return errors
     actual_commit = head.stdout.strip()
-    if actual_commit != str(expected_commit):
-        errors.append(f"HEAD {actual_commit} does not match expected commit {expected_commit}")
+    if commit_match_mode == COMMIT_VERIFICATION_MODE_ANCESTOR:
+        ancestor_check = _git(
+            checkout_path, "merge-base", "--is-ancestor", str(expected_commit), "HEAD"
+        )
+        if ancestor_check.returncode != 0:
+            errors.append(
+                f"authorized_commit {expected_commit} is not an ancestor of HEAD {actual_commit}"
+            )
+    elif commit_match_mode == COMMIT_VERIFICATION_MODE_EXACT:
+        if actual_commit != str(expected_commit):
+            errors.append(f"HEAD {actual_commit} does not match expected commit {expected_commit}")
+    else:
+        errors.append(f"unknown commit_match_mode={commit_match_mode}")
 
-    symbolic = _git(checkout_path, "symbolic-ref", "-q", "HEAD")
+    symbolic = _git(checkout_path, "symbolic-ref", "-q", "--short", "HEAD")
     if symbolic.returncode != 0:
         errors.append("checkout HEAD is detached")
+    elif expected_branch is not None and symbolic.stdout.strip() != expected_branch:
+        errors.append(
+            f"checkout HEAD is on branch {symbolic.stdout.strip()!r}, expected {expected_branch!r}"
+        )
 
     git_dir = _git(checkout_path, "rev-parse", "--git-dir")
     if git_dir.returncode != 0:
@@ -526,6 +569,21 @@ def _verify_production(
     if _utc_literal_to_datetime(str(authorization.get("authorized_at_utc"))) is None:
         reasons.append("authorization authorized_at_utc is not a valid RFC3339 UTC timestamp")
 
+    commit_mode = authorization.get("commit_verification_mode", COMMIT_VERIFICATION_MODE_EXACT)
+    expected_branch: str | None = None
+    if commit_mode not in _COMMIT_VERIFICATION_MODES:
+        reasons.append(f"authorization commit_verification_mode is invalid: {commit_mode!r}")
+        commit_mode = COMMIT_VERIFICATION_MODE_EXACT
+    elif commit_mode == COMMIT_VERIFICATION_MODE_ANCESTOR:
+        required_branch = authorization.get("required_branch")
+        if required_branch != _REQUIRED_BRANCH_ANCESTOR_MODE:
+            reasons.append(
+                "authorization required_branch must be "
+                f"{_REQUIRED_BRANCH_ANCESTOR_MODE!r} when commit_verification_mode is ANCESTOR"
+            )
+        else:
+            expected_branch = required_branch
+
     expected_commit = str(authorization.get("authorized_commit", ""))
     reasons.extend(
         verify_checkout_identity(
@@ -533,6 +591,8 @@ def _verify_production(
             expected_commit=expected_commit,
             expected_working_directory=expected_working_directory,
             allowed_untracked_paths=allowed_untracked_paths,
+            commit_match_mode=commit_mode,
+            expected_branch=expected_branch,
         )
     )
     return reasons
@@ -698,11 +758,20 @@ def verify_writer_execution_authorization(
         )
         if reasons:
             return AuthorizationDecision(False, capability_id, resolved_mode, reasons)
+        # In ANCESTOR mode, authorized_commit is a fixed historical anchor, not
+        # the executing commit; stamp the context with the actual verified
+        # HEAD instead so provenance reflects what really ran.
+        resolved_head = _git(checkout_path, "rev-parse", "--verify", "HEAD")
+        validated_commit = (
+            resolved_head.stdout.strip()
+            if resolved_head.returncode == 0
+            else str(payload.get("authorized_commit", ""))
+        )
         context = _mint_authorization(
             capability_id=capability_id,
             execution_mode=resolved_mode,
             validated_host=host,
-            validated_commit=str(payload.get("authorized_commit", "")),
+            validated_commit=validated_commit,
             authorization_or_permit_id=str(payload.get("authorization_id", "")),
         )
         return AuthorizationDecision(True, capability_id, resolved_mode, [], context)

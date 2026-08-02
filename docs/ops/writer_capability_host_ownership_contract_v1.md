@@ -559,6 +559,18 @@ lowest practical mutation boundary:
   **not** single-use and **not** invocation-count-bounded (there is no
   `max_invocations` counter). A permit never grants production authorization.
   Containment of a running timer remains an explicit operator action.
+- The production authorization file's `authorized_commit` normally requires
+  exact `HEAD` equality (`commit_verification_mode` absent/`EXACT`, the
+  default and unchanged legacy semantics for every existing authorization
+  file). An authorization file may opt into
+  `commit_verification_mode=ANCESTOR` plus `required_branch="main"`, which
+  instead requires `authorized_commit` to be an ancestor of (never equal
+  to) `HEAD` on the `main` branch -- so one stable file survives every later
+  approved fast-forward deploy without a per-commit edit. See
+  `docs/ops/native_short_production_promotion_wrapper_v1.md` for the full
+  rationale, the `synth-native-short-promote` wrapper that consumes it, and
+  the deprecated manual per-commit edit procedure it replaces for
+  `native_short_4h_chain`.
 - All `*_utc` timestamps use canonical literal UTC (`YYYY-MM-DDTHH:MM:SSZ`).
   A numeric offset (`+01:00`, `-05:00`) or a timezone-less timestamp is rejected;
   offsets are never silently normalized. Validation is not shape-only: the

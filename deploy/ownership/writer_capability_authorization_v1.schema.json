@@ -33,6 +33,23 @@
     "authorized_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "production_authorization_status": {"const": "AUTHORIZED"},
     "runtime_lifecycle": {"enum": ["AUTHORIZED_INACTIVE", "ACTIVE"]},
-    "decision_evidence": {"type": "string", "minLength": 1}
-  }
+    "decision_evidence": {"type": "string", "minLength": 1},
+    "commit_verification_mode": {
+      "enum": ["EXACT", "ANCESTOR"],
+      "description": "EXACT (default when absent) requires HEAD to equal authorized_commit exactly, unchanged legacy semantics. ANCESTOR requires authorized_commit to be an ancestor of (or equal to) HEAD and requires required_branch to also be satisfied, so one stable authorization file survives normal approved fast-forward deploys without a per-commit edit."
+    },
+    "required_branch": {
+      "const": "main",
+      "description": "Required only when commit_verification_mode is ANCESTOR. The only permitted value is the literal branch name 'main' -- never a wildcard or arbitrary branch -- and HEAD must resolve to exactly this branch, not be detached."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"commit_verification_mode": {"const": "ANCESTOR"}},
+        "required": ["commit_verification_mode"]
+      },
+      "then": {"required": ["required_branch"]}
+    }
+  ]
 }
