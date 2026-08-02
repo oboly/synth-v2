@@ -29,17 +29,39 @@ XRP per the sequential review queue in
 ``docs/todo/native_short_multi_asset_rollout_contract_v1.md``) requires its
 own reviewed repository change to this constant, not a CLI argument.
 
-Current state: BTC is the sole existing scope and is legacy
-(``support_generation=NULL``, ``scope_admin_operation_id=NULL``, support event
-reason ``MIGRATION_BACKFILL``). The universe below adopts it via
+Current state: BTC is a legacy scope (``support_generation=NULL``,
+``scope_admin_operation_id=NULL``, support event reason
+``MIGRATION_BACKFILL``). The universe below adopts it via
 ``ADOPT_LEGACY_SCOPE`` into administration generation 1 so its lineage is no
-longer silently mixed legacy/managed. No new symbol is added here: per the
-canonical rollout contract, ``PROMOTE_SCOPE`` remains globally blocked by the
-unresolved ``PROMOTION_CONTRACT_MISSING`` bootstrap circularity until that is
-separately and explicitly resolved. This module performs no bypass of that
-gate -- a ``PROMOTE_SCOPE`` entry added here before that resolution is simply
+longer silently mixed legacy/managed.
+
+SOL was promoted directly through the single-scope CLI
+(``run_native_short_scope_administration_v1.py``), outside this
+orchestrator, under the reviewed SOL bootstrap approval -- see
+``docs/ops/native_short_sol_promotion_operational_acceptance_v1.md``. It is
+deliberately **not** added as an entry here: this module's operation UUID
+for any entry is derived only from ``(operation_type, scope_key)``
+(``deterministic_operation_uuid``), which would not match SOL's real,
+already-committed ``operation_uuid``, and SOL's scope row already exists
+(no longer ``NO_SCOPE``), so a synthesized SOL entry here would simply be
+rejected by the unchanged ``GLOBAL_BLOCKERS_ACTIVE`` gate (the bootstrap
+exception only ever applies to a scope's genuine first-ever attempt) --
+harmless, but pointless, and it would needlessly stop a sequential run
+before reaching ETH/XRP. ETH and XRP, by contrast, are genuinely
+``NO_SCOPE`` today, so their entries below reach the bootstrap-evidence
+path exactly as SOL's manual CLI invocation did.
+
+ETH and XRP are approved for exactly one ``PROMOTE_SCOPE`` each, per
+``docs/ops/native_short_eth_bootstrap_promotion_approval_v1.md`` and
+``docs/ops/native_short_xrp_bootstrap_promotion_approval_v1.md``, and their
+own entries in
+``native_short_promotion_bootstrap_manifest_v1.json``. This module performs
+no bypass of the existing gate -- a ``PROMOTE_SCOPE`` entry for any symbol
+without accepted bootstrap or post-hoc acceptance evidence is simply
 rejected with ``GLOBAL_BLOCKERS_ACTIVE``, exactly like a manually run CLI
-invocation, and the rollout stops there.
+invocation, and a sequential rollout stops there. Adding any further symbol
+requires its own reviewed repository change to this constant (plus its own
+approval document and manifest entry), never a CLI argument.
 
 Restartability without extra state: each entry's operation UUID is derived
 deterministically from only the operation type and the exact canonical scope
@@ -117,9 +139,28 @@ APPROVED_ROLLOUT_UNIVERSE_V1: tuple[RolloutSymbolEntry, ...] = (
         ),
         note=(
             "Adopt the existing legacy MIGRATION_BACKFILL BTC scope into "
-            "administration generation 1. No new PROMOTE_SCOPE entry is "
-            "added to this universe while PROMOTION_CONTRACT_MISSING is "
-            "active (see docs/todo/native_short_multi_asset_rollout_contract_v1.md)."
+            "administration generation 1."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="ETH",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_eth_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for ETH, authorized via its own "
+            "explicit bootstrap-evidence manifest entry. Processed after "
+            "BTC; SOL is not an entry in this universe (see module "
+            "docstring) but was already promoted before ETH."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="XRP",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_xrp_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for XRP, authorized via its own "
+            "explicit bootstrap-evidence manifest entry. Processed after "
+            "ETH in this universe's checked-in order."
         ),
     ),
 )

@@ -23,6 +23,7 @@ from src.market_data import (
     native_short_scope_administration_rollout_v1 as rollout,
 )
 from src.market_data.native_short_scope_administration_rollout_v1 import (
+    APPROVED_ROLLOUT_UNIVERSE_V1,
     RolloutConfigurationError,
     RolloutSymbolEntry,
     build_request_for_entry,
@@ -334,3 +335,111 @@ def test_plan_rollout_delegates_to_plan_scope_administration(monkeypatch: pytest
 
     assert outcome.mode == "DRY_RUN"
     assert outcome.as_json_dict()["all_succeeded"] is True
+
+
+# --------------------------------------------------------------------------- #
+# Checked-in APPROVED_ROLLOUT_UNIVERSE_V1                                     #
+# --------------------------------------------------------------------------- #
+
+
+def test_approved_universe_is_btc_adopt_then_eth_then_xrp_promote() -> None:
+    assert [(e.symbol, str(e.operation_type)) for e in APPROVED_ROLLOUT_UNIVERSE_V1] == [
+        ("BTC", str(OperationType.ADOPT_LEGACY_SCOPE)),
+        ("ETH", str(OperationType.PROMOTE_SCOPE)),
+        ("XRP", str(OperationType.PROMOTE_SCOPE)),
+    ]
+
+
+def test_approved_universe_does_not_include_sol() -> None:
+    """SOL was promoted directly through the single-scope CLI, outside this
+    orchestrator; re-adding it here would be rejected (its scope already
+    exists) and would needlessly stop a sequential run before ETH/XRP."""
+    assert "SOL" not in {e.symbol for e in APPROVED_ROLLOUT_UNIVERSE_V1}
+
+
+def test_approved_universe_entries_are_unique_symbols() -> None:
+    symbols = [e.symbol for e in APPROVED_ROLLOUT_UNIVERSE_V1]
+    assert len(symbols) == len(set(symbols))
+
+
+@pytest.fixture(autouse=True)
+def _authorize_test_writer(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.operations.writer_capability_authorization_v1 as authmod
+
+    monkeypatch.setattr(
+        authmod,
+        "require_writer_mutation_authorization",
+        lambda authorization, capability_id: None,
+    )
+
+
+def test_execute_rollout_real_universe_promotes_eth_then_xrp_end_to_end() -> None:
+    """The real, unmodified transaction layer, the real checked-in approved
+    universe (selected to its two PROMOTE_SCOPE entries -- BTC's
+    ADOPT_LEGACY_SCOPE path has its own separate, already-covered legacy-row
+    fixtures and is not this change's concern), and the real (accepted)
+    ETH/XRP bootstrap-manifest entries -- no evaluator is mocked. Proves the
+    generic orchestrator, unchanged since BTC-only, correctly sequences a
+    real multi-symbol PROMOTE_SCOPE rollout with each scope's own
+    independent evidence and no cross-scope leakage."""
+    from tests.test_native_short_scope_administration_promotion_bootstrap_wiring_v1 import (
+        _accepted_writer_evidence_row,
+    )
+    from tests.test_native_short_scope_administration_transaction_v1 import (
+        _AUTH,
+        _FakeConn,
+        _FakeState,
+    )
+
+    state = _FakeState()
+    state.writer_runs.append(_accepted_writer_evidence_row())
+    conn = _FakeConn(state)
+
+    outcome = execute_rollout(
+        conn,
+        resolve_rollout_entries(["ETH", "XRP"], universe=APPROVED_ROLLOUT_UNIVERSE_V1),
+        build_request=_build_request,
+        authorization=_AUTH,
+    )
+
+    assert outcome.as_json_dict()["all_succeeded"] is True
+    assert [c.symbol for c in outcome.completed] == ["ETH", "XRP"]
+    assert {op["symbol"] for op in conn.state.operations} == {"ETH", "XRP"}
+
+
+def test_execute_rollout_real_universe_is_restartable_after_partial_completion() -> None:
+    """A rerun that only re-selects the not-yet-attempted remainder (as the
+    documented restart procedure would) still succeeds, and re-selecting an
+    already-completed entry alongside it replays idempotently -- proving
+    restartability with no orchestrator-side run-state file."""
+    from tests.test_native_short_scope_administration_promotion_bootstrap_wiring_v1 import (
+        _accepted_writer_evidence_row,
+    )
+    from tests.test_native_short_scope_administration_transaction_v1 import (
+        _AUTH,
+        _FakeConn,
+        _FakeState,
+    )
+
+    state = _FakeState()
+    state.writer_runs.append(_accepted_writer_evidence_row())
+    conn = _FakeConn(state)
+    subset = resolve_rollout_entries(["ETH", "XRP"], universe=APPROVED_ROLLOUT_UNIVERSE_V1)
+
+    first_pass = execute_rollout(
+        conn,
+        resolve_rollout_entries(["ETH"], universe=APPROVED_ROLLOUT_UNIVERSE_V1),
+        build_request=_build_request,
+        authorization=_AUTH,
+    )
+    assert first_pass.as_json_dict()["all_succeeded"] is True
+
+    second_pass = execute_rollout(
+        conn,
+        subset,
+        build_request=_build_request,
+        authorization=_AUTH,
+    )
+    assert second_pass.as_json_dict()["all_succeeded"] is True
+    assert [c.symbol for c in second_pass.completed] == ["ETH", "XRP"]
+    assert {op["symbol"] for op in conn.state.operations} == {"ETH", "XRP"}

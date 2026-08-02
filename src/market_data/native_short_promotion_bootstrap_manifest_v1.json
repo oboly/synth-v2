@@ -18,6 +18,36 @@
       "approved_at_utc": "2026-08-01T00:00:00Z",
       "approved_implementation_commit": "a74ff33121d42a7771eef0654e1526847d5c5d12",
       "approval_evidence_digest": "3037abe852afe2ed41de529369987ff983912bec5c00f3bbbe5e7032f518f2d0"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "ETH",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_eth_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-02T04:15:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "c0440aa075e703cdf5958e50172a3fef7a3a775f215ed13eabd357ddc68a86f9"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "XRP",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_xrp_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-02T04:15:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "9675580969d62224941775fa6eece3c679ff6123e0480e178044a562f12dfa34"
     }
   ]
 }
