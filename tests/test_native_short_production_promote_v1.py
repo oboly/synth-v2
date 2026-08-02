@@ -48,11 +48,29 @@ class _RolloutMainRecorder:
         return self.return_code
 
 
+def _patch_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    hard_blockers: list[str] | None = None,
+    warnings: list[str] | None = None,
+) -> None:
+    """Readiness is real, read-only, and reaches the network/DB; every
+    promote test other than the readiness-integration tests below must stub
+    it to a deterministic outcome so it never depends on host/DB state."""
+    outcome = promote.readiness.ReadinessOutcome(
+        hard_blockers=list(hard_blockers or []),
+        warnings=list(warnings or []),
+    )
+    monkeypatch.setattr(promote.readiness, "evaluate_readiness", lambda: outcome)
+
+
 def _patch_deterministic_seams(
     monkeypatch: pytest.MonkeyPatch,
     *,
     rollout_rc: int = 0,
     chain_rc: int = 0,
+    readiness_hard_blockers: list[str] | None = None,
+    readiness_warnings: list[str] | None = None,
 ) -> tuple[_RolloutMainRecorder, list[tuple[Any, ...]]]:
     monkeypatch.setattr(
         promote,
@@ -61,6 +79,9 @@ def _patch_deterministic_seams(
     )
     monkeypatch.setattr(
         promote, "_commit_timestamp_utc", lambda repo_root, commit: FIXED_TIMESTAMP
+    )
+    _patch_readiness(
+        monkeypatch, hard_blockers=readiness_hard_blockers, warnings=readiness_warnings
     )
     recorder = _RolloutMainRecorder(rollout_rc)
     monkeypatch.setattr(promote.rollout_cli, "main", recorder)
@@ -241,6 +262,7 @@ def test_env_vars_restored_after_rollout_raises(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(
         promote, "_commit_timestamp_utc", lambda repo_root, commit: FIXED_TIMESTAMP
     )
+    _patch_readiness(monkeypatch)
 
     def _boom(argv: list[str]) -> int:
         raise RuntimeError("simulated rollout crash")
@@ -295,6 +317,7 @@ def test_no_db_connection_attempted_when_authorization_denied(
     monkeypatch.setattr(
         promote, "_commit_timestamp_utc", lambda repo_root, commit: FIXED_TIMESTAMP
     )
+    _patch_readiness(monkeypatch)
     # verify_repository_commit_sha passes trivially -- checkout identity is
     # not what this test is proving.
     monkeypatch.setattr(rollout_mod, "verify_repository_commit_sha", lambda *a, **k: None)
@@ -321,3 +344,172 @@ def test_no_db_connection_attempted_when_authorization_denied(
     assert chain_calls == []
     doc = _last_stdout_json(capsys)
     assert doc["chain_invoked"] is False
+
+
+# ---------------------------------------------------------------------------
+# Readiness gate and --force.
+# ---------------------------------------------------------------------------
+
+def test_readiness_hard_blockers_stop_promotion_before_rollout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    recorder, chain_calls = _patch_deterministic_seams(
+        monkeypatch, readiness_hard_blockers=["REQUIRED_OBJECT_MISSING: x"]
+    )
+    rc = promote.main(["ETH"])
+    assert rc == 1
+    assert recorder.calls == []
+    assert chain_calls == []
+    doc = _last_stdout_json(capsys)
+    assert doc["event"] == "FAILED"
+    assert doc["reason_code"] == "READINESS_HARD_BLOCKERS"
+    assert doc["force"] is False
+    assert doc["chain_invoked"] is False
+    assert "REQUIRED_OBJECT_MISSING: x" in doc["hard_blockers"]
+
+
+def test_force_continues_past_readiness_hard_blockers(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    recorder, chain_calls = _patch_deterministic_seams(
+        monkeypatch, readiness_hard_blockers=["REQUIRED_OBJECT_MISSING: x"]
+    )
+    rc = promote.main(["--force", "ETH"])
+    assert rc == 0
+    assert len(recorder.calls) == 1
+    assert len(chain_calls) == 1
+    doc = _last_stdout_json(capsys)
+    assert doc["event"] == "SUCCESS"
+    assert doc["force"] is True
+
+
+def test_force_recorded_but_not_folded_into_rollout_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """force=true must be visible in this wrapper's own result document, but
+    must never change the rollout request's --metadata: metadata is part of
+    the persisted administration request's immutable digest, and an
+    already-committed scope (e.g. ETH/XRP, already COMMITTED in production)
+    must keep replaying as OPERATION_ALREADY_COMPLETED regardless of whether
+    a later invocation happens to pass --force."""
+    recorder, _chain_calls = _patch_deterministic_seams(
+        monkeypatch, readiness_hard_blockers=["X: y"]
+    )
+    promote.main(["ETH"])  # not forced; stops before rollout, no call recorded
+    promote.main(["--force", "ETH"])
+    assert len(recorder.calls) == 1
+    argv = recorder.calls[0]
+    assert argv[argv.index("--metadata") + 1] == "{}"
+
+
+def test_warnings_never_block_promotion(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    recorder, chain_calls = _patch_deterministic_seams(
+        monkeypatch, readiness_warnings=["PUBLIC_PRICE_STALE: x"]
+    )
+    rc = promote.main(["ETH"])
+    assert rc == 0
+    assert len(recorder.calls) == 1
+    assert len(chain_calls) == 1
+    doc = _last_stdout_json(capsys)
+    assert doc["event"] == "SUCCESS"
+
+
+def test_force_does_not_bypass_unapproved_symbol(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    def _boom():
+        raise AssertionError("must not evaluate readiness for an unapproved symbol")
+
+    monkeypatch.setattr(promote.readiness, "evaluate_readiness", _boom)
+    rc = promote.main(["--force", "FOOCOIN"])
+    assert rc == 2
+    doc = _last_stdout_json(capsys)
+    assert doc["event"] == "FAILED"
+    assert doc["reason_code"] == "UNAPPROVED_SYMBOL"
+    assert doc["force"] is True
+
+
+def test_force_does_not_bypass_authorization_denial(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    import src.common.db as dbmod
+    import src.market_data.run_native_short_scope_administration_rollout_v1 as rollout_mod
+    import src.operations.writer_capability_authorization_v1 as authmod
+
+    monkeypatch.setattr(
+        promote,
+        "inspect_running_repository_source",
+        lambda: NativeShortRepositorySourceState(head_sha=FIXED_HEAD, status_porcelain=""),
+    )
+    monkeypatch.setattr(
+        promote, "_commit_timestamp_utc", lambda repo_root, commit: FIXED_TIMESTAMP
+    )
+    _patch_readiness(monkeypatch, hard_blockers=["X: y"])
+    monkeypatch.setattr(rollout_mod, "verify_repository_commit_sha", lambda *a, **k: None)
+
+    def _deny(capability_id, **kwargs):
+        raise authmod.AuthorizationDenied(
+            capability_id, authmod.ExecutionMode.PRODUCTION, ["denied for test"]
+        )
+
+    monkeypatch.setattr(authmod, "enforce_capability_write_authorization", _deny)
+
+    def _boom_get_connection(*args, **kwargs):
+        raise AssertionError("DB connection must not be attempted when authorization is denied")
+
+    monkeypatch.setattr(dbmod, "get_connection", _boom_get_connection)
+    chain_calls: list[Any] = []
+    monkeypatch.setattr(
+        promote, "_run_chain", lambda repository_root: chain_calls.append(repository_root) or 0
+    )
+
+    rc = promote.main(["--force", "ETH"])
+    assert rc == 3
+    assert chain_calls == []
+    doc = _last_stdout_json(capsys)
+    assert doc["chain_invoked"] is False
+
+
+def test_force_still_requires_real_db_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--force overrides only the readiness stop; the rollout CLI's own
+    inability to connect to the database must still surface as a failure,
+    never as a silently-bypassed SUCCESS."""
+    recorder, chain_calls = _patch_deterministic_seams(
+        monkeypatch, rollout_rc=1, readiness_hard_blockers=["DB_CONNECTION_FAILED: x"]
+    )
+    rc = promote.main(["--force", "ETH"])
+    assert rc == 1
+    assert len(recorder.calls) == 1
+    assert chain_calls == []
+
+
+def test_readiness_evaluation_exception_treated_as_blocker_not_bypassed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
+    """If the readiness runner itself cannot evaluate safely, that must never
+    be silently treated as ready=true."""
+    monkeypatch.setattr(
+        promote,
+        "inspect_running_repository_source",
+        lambda: NativeShortRepositorySourceState(head_sha=FIXED_HEAD, status_porcelain=""),
+    )
+    monkeypatch.setattr(
+        promote, "_commit_timestamp_utc", lambda repo_root, commit: FIXED_TIMESTAMP
+    )
+
+    def _boom():
+        raise RuntimeError("READINESS_EVALUATION_FAILED")
+
+    monkeypatch.setattr(promote.readiness, "evaluate_readiness", _boom)
+    recorder = _RolloutMainRecorder(0)
+    monkeypatch.setattr(promote.rollout_cli, "main", recorder)
+
+    rc = promote.main(["ETH"])
+    assert rc == 1
+    assert recorder.calls == []
+    doc = _last_stdout_json(capsys)
+    assert doc["reason_code"] == "READINESS_HARD_BLOCKERS"

@@ -59,6 +59,30 @@ Every requested symbol must already be a member of the checked-in
 (unchanged from the underlying rollout CLI). This module adds no symbol
 allow-list of its own and no wildcard.
 
+Readiness gate and ``--force``
+---------------------------------
+Before delegating to the rollout CLI, this module runs the lightweight,
+read-only ``run_native_short_production_readiness_v1.evaluate_readiness``
+check in-process. By default, any hard blocker stops the command here --
+before any repository-commit derivation, before
+``enforce_capability_write_authorization``, and before any database
+connection is opened. ``--force`` skips only this stop: it does not touch,
+weaken, or bypass symbol-approval validation, repository-identity
+derivation, ``enforce_capability_write_authorization``, or the rollout CLI's
+own database connection -- all of those still run, unconditionally, exactly
+as without ``--force``, and can still fail on their own terms (an
+unsupported symbol, a denied authorization, or an unreachable database are
+never bypassed). ``--force`` prints every hard blocker prominently to
+stderr and records ``force: true`` in this wrapper's own final JSON result
+document. It deliberately does **not** fold ``force`` into the rollout
+request's ``canonical_metadata``: that metadata is part of the persisted
+administration request's immutable digest, and an already-committed scope
+(for example the ETH/XRP promotions already committed in production) must
+keep replaying as ``OPERATION_ALREADY_COMPLETED`` regardless of whether a
+later invocation happens to pass ``--force`` -- changing the digest based on
+an operator flag would break that idempotent-replay guarantee and risk
+re-attempting an already-completed promotion.
+
 Scoped writer runtime context
 -------------------------------
 The rollout CLI's authorization boundary
@@ -121,6 +145,7 @@ from src.market_data import run_native_short_scope_administration_rollout_v1 as 
 from src.market_data.native_short_scope_administration_transaction_v1 import (
     WRITER_CAPABILITY_ID,
 )
+from src.operations import run_native_short_production_readiness_v1 as readiness
 from src.operations.writer_capability_authorization_v1 import (
     ENV_CAPABILITY,
     ENV_MODE,
@@ -246,36 +271,106 @@ def _run_chain(repository_root: Path) -> int:
     return completed.returncode
 
 
-def parse_args(argv: list[str] | None = None) -> list[str]:
+def parse_args(argv: list[str] | None = None) -> tuple[list[str], bool]:
     args = list(sys.argv[1:] if argv is None else argv)
-    if not args:
+    force = False
+    symbols: list[str] = []
+    for arg in args:
+        if arg == "--force":
+            force = True
+            continue
+        stripped = arg.strip()
+        if stripped:
+            symbols.append(stripped.upper())
+    if not symbols:
         raise PromotionAbortedError("NO_SYMBOLS_REQUESTED")
-    return [symbol.strip().upper() for symbol in args if symbol.strip()]
+    return symbols, force
 
 
 def main(argv: list[str] | None = None) -> int:
     repository_root = REPOSITORY_ROOT
 
     try:
-        symbols = parse_args(argv)
+        symbols, force = parse_args(argv)
     except PromotionAbortedError as exc:
-        _emit(_result("FAILED", reason_code=str(exc), symbols=[], **_SAFETY_MARKERS))
+        _emit(_result("FAILED", reason_code=str(exc), symbols=[], force=False, **_SAFETY_MARKERS))
         return 2
 
     # Approved-universe check first, before any repository/authorization
-    # inspection -- an unapproved symbol is rejected as cheaply as possible.
+    # inspection -- an unapproved symbol is rejected as cheaply as possible,
+    # and --force never bypasses this: it only skips the readiness stop
+    # below, never symbol-approval validation.
     try:
         resolve_rollout_entries(symbols)
     except RolloutConfigurationError as exc:
-        _emit(_result("FAILED", reason_code="UNAPPROVED_SYMBOL", detail=str(exc), symbols=symbols, **_SAFETY_MARKERS))
+        _emit(
+            _result(
+                "FAILED",
+                reason_code="UNAPPROVED_SYMBOL",
+                detail=str(exc),
+                symbols=symbols,
+                force=force,
+                **_SAFETY_MARKERS,
+            )
+        )
         return 2
+
+    print(
+        f"[PROMOTE] running readiness check{' (force=true)' if force else ''}",
+        file=sys.stderr,
+        flush=True,
+    )
+    try:
+        readiness_outcome = readiness.evaluate_readiness()
+    except Exception as exc:  # noqa: BLE001 - fail closed: an unreadable readiness state is a block.
+        readiness_outcome = None
+        readiness_error = f"{type(exc).__name__}: {exc}"
+    else:
+        readiness_error = None
+
+    if readiness_error is not None or (readiness_outcome is not None and not readiness_outcome.ready):
+        blockers = readiness_outcome.hard_blockers if readiness_outcome is not None else [readiness_error]
+        for blocker in blockers:
+            print(f"[PROMOTE][HARD_BLOCKER]{'[FORCED]' if force else ''} {blocker}", file=sys.stderr, flush=True)
+        if not force:
+            _emit(
+                _result(
+                    "FAILED",
+                    reason_code="READINESS_HARD_BLOCKERS",
+                    detail=f"{len(blockers)} hard blocker(s); rerun with --force to override",
+                    hard_blockers=list(blockers),
+                    symbols=symbols,
+                    force=force,
+                    chain_invoked=False,
+                    **_SAFETY_MARKERS,
+                )
+            )
+            return 1
+        print(
+            f"[PROMOTE][FORCE] continuing past {len(blockers)} readiness hard blocker(s); "
+            "force=true recorded",
+            file=sys.stderr,
+            flush=True,
+        )
+    elif readiness_outcome is not None and readiness_outcome.warnings:
+        for warning in readiness_outcome.warnings:
+            print(f"[PROMOTE][WARNING] {warning}", file=sys.stderr, flush=True)
 
     try:
         state = inspect_running_repository_source()
         repository_commit = state.head_sha
         requested_at_utc = _commit_timestamp_utc(repository_root, repository_commit)
     except (NativeShortRepositorySourceIdentityError, PromotionAbortedError) as exc:
-        _emit(_result("FAILED", reason_code="REPOSITORY_IDENTITY_UNAVAILABLE", detail=str(exc), symbols=symbols, **_SAFETY_MARKERS))
+        _emit(
+            _result(
+                "FAILED",
+                reason_code="REPOSITORY_IDENTITY_UNAVAILABLE",
+                detail=str(exc),
+                symbols=symbols,
+                force=force,
+                **_SAFETY_MARKERS,
+            )
+        )
         return 2
 
     rollout_argv = _build_rollout_argv(
@@ -300,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
                 reason_code="ROLLOUT_NOT_SUCCESSFUL",
                 detail=f"rollout exit code={rollout_rc}",
                 symbols=symbols,
+                force=force,
                 repository_commit=repository_commit,
                 chain_invoked=False,
                 **_SAFETY_MARKERS,
@@ -316,6 +412,7 @@ def main(argv: list[str] | None = None) -> int:
                 reason_code="CHAIN_NOT_SUCCESSFUL",
                 detail=f"chain exit code={chain_rc}",
                 symbols=symbols,
+                force=force,
                 repository_commit=repository_commit,
                 chain_invoked=True,
                 **_SAFETY_MARKERS,
@@ -327,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
         _result(
             "SUCCESS",
             symbols=symbols,
+            force=force,
             repository_commit=repository_commit,
             chain_invoked=True,
             **_SAFETY_MARKERS,
