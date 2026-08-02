@@ -1,0 +1,16 @@
+[Unit]
+Description=Synth native SHORT context snapshot import timer (Odroid-bound, candidate/not installed)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/architecture/native_short_context_snapshot_distribution_v1.md
+ConditionHost=odroid
+
+[Timer]
+# Fires after gurkdb's synth-chain-4h.timer (00,04,08,12,16,20:12 UTC) has had
+# time to publish. This offset is a candidate value only; not authorized.
+OnCalendar=*-*-* 00,04,08,12,16,20:20:00 UTC
+Persistent=true
+RandomizedDelaySec=60
+AccuracySec=1s
+Unit=synth-native-short-snapshot-import.service
+
+[Install]
+WantedBy=timers.target
