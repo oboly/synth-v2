@@ -31,7 +31,6 @@ QUOTE_CURRENCY = "EUR"
 FIB_TRADING_HORIZON = "SHORT"
 PRIMARY_INTERVAL = "4h"
 SUPPORTING_INTERVAL = "1h"
-EXISTING_CANARY_SYMBOL = "BTC"
 # The reviewed, operationally accepted attributable production run
 # (docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md,
 # run_id=52, 2026-07-17T13:56:30Z). Not the legacy pre-contract run_id=30
@@ -493,17 +492,19 @@ def evaluate_candidate(
         ledger_reasons.append(SCOPE_AMBIGUOUS)
     elif ledger.scope_states and ledger.scope_states[0] != "SUPPORTED":
         ledger_reasons.append(SCOPE_CONFLICT)
-    elif symbol != EXISTING_CANARY_SYMBOL and ledger.scope_states:
-        ledger_reasons.append(SCOPE_CONFLICT)
-    elif symbol == EXISTING_CANARY_SYMBOL and ledger.scope_states != ("SUPPORTED",):
-        ledger_reasons.append(SCOPE_CONFLICT)
+    # A single SUPPORTED scope row is a legitimate existing production scope
+    # for any symbol (not just one hardcoded canary); the checks above already
+    # reject conflicting keys, ambiguous multi-row state, and any non-SUPPORTED
+    # single state, so no further symbol-specific check is needed here.
+
+    has_existing_supported_scope = ledger.scope_states == ("SUPPORTED",)
 
     generation_valid = generation_chain_is_valid(ledger)
     if not generation_valid:
         ledger_reasons.append(GENERATION_CHAIN_INVALID)
     if ledger.map_key_conflict_count:
         ledger_reasons.append(MAP_STATE_REQUIRES_REVIEW)
-    if symbol == EXISTING_CANARY_SYMBOL:
+    if has_existing_supported_scope:
         if (
             len(ledger.active_map_ids) != 1
             or len(ledger.current_status_map_ids) != 1
@@ -528,7 +529,7 @@ def evaluate_candidate(
     if market_status == "MARKET_READY" and ledger_status == "LEDGER_READY":
         readiness_status = (
             READY_EXISTING_CANARY
-            if symbol == EXISTING_CANARY_SYMBOL
+            if has_existing_supported_scope
             else READY_FOR_SEQUENTIAL_CANARY_REVIEW
         )
     else:
@@ -586,7 +587,7 @@ def evaluate_candidate(
         source_freshness_states=ledger.source_freshness_states,
         actionability_states=ledger.actionability_states,
         materializer_validate_only_possible=(
-            symbol == EXISTING_CANARY_SYMBOL
+            has_existing_supported_scope
             and market_status == "MARKET_READY"
             and ledger_status == "LEDGER_READY"
         ),

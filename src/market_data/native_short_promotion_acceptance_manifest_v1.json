@@ -1,12 +1,41 @@
 {
-  "_comment": "Versioned, repository-owned PROMOTE_SCOPE operational-acceptance manifest. See native_short_promotion_acceptance_evidence_v1.py for the full contract. This file ships unaccepted (accepted=false): no controlled production promotion has been executed, reviewed, or accepted yet, so PROMOTION_CONTRACT_MISSING remains active. Do not set accepted=true without a reviewed operational-acceptance document naming the exact operation_uuid, symbol, and commit, per docs/todo/native_short_multi_asset_rollout_contract_v1.md.",
+  "_comment": "Versioned, repository-owned PROMOTE_SCOPE operational-acceptance manifest. See native_short_promotion_acceptance_evidence_v1.py for the full contract. accepted=true records the reviewed acceptance of the real production SOL PROMOTE_SCOPE operation named below -- see docs/ops/native_short_sol_promotion_operational_acceptance_v1.md for the reviewed evidence this manifest represents. This blocker is global (not per-scope): once a reviewed acceptance exists for any one production PROMOTE_SCOPE operation, PROMOTION_CONTRACT_MISSING closes for every later PROMOTE_SCOPE decision -- BOOTSTRAP_ORCHESTRATION_BLOCKED and MULTI_SCOPE_FAILURE_ISOLATION_MISSING remain separately, unconditionally active and are unaffected by this file.",
   "acceptance_schema_version": "native_short_promotion_acceptance_manifest_v1",
   "promotion_contract_version": "native_short_promotion_acceptance_v1",
   "promotion_contract_digest": "3afcd756c9601389ed3a127d4f18f792866bd4bc401fb238f5c250beb245044b",
-  "accepted": false,
-  "operation_uuid": null,
-  "scope": null,
-  "expected_request_metadata_digest": null,
-  "immutable_request_identity": null,
-  "reviewed_acceptance_reference": null
+  "accepted": true,
+  "operation_uuid": "7ef9c93a-4418-458f-939e-7c3caf00705f",
+  "scope": {
+    "venue": "bitvavo",
+    "symbol": "SOL",
+    "quote_currency": "EUR",
+    "fib_trading_horizon": "SHORT",
+    "primary_interval": "4h",
+    "supporting_interval": "1h"
+  },
+  "expected_request_metadata_digest": "8f0168b57ed8905154f8157643f5cddfd3e51fa41de85c6d096432801c401a5a",
+  "immutable_request_identity": {
+    "operation_type": "PROMOTE_SCOPE",
+    "scope_key": {
+      "venue": "bitvavo",
+      "symbol": "SOL",
+      "quote_currency": "EUR",
+      "fib_trading_horizon": "SHORT",
+      "primary_interval": "4h",
+      "supporting_interval": "1h"
+    },
+    "provenance": {
+      "operation_uuid": "7ef9c93a-4418-458f-939e-7c3caf00705f",
+      "actor_type": "HUMAN_OPERATOR",
+      "actor_id": "joost",
+      "trigger_type": "MANUAL_CLI",
+      "request_source": "manual-cli-gurkdb",
+      "reason": "SOL bootstrap-promotion canary per docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md, PR #178",
+      "requested_at_utc": "2026-08-01T17:30:15.188005Z",
+      "repository_sha": "00307b5fb34f06498a945bf1408b18c8cae92260",
+      "schema_version": "native_short_scope_administration_v1"
+    },
+    "canonical_metadata": {}
+  },
+  "reviewed_acceptance_reference": "docs/ops/native_short_sol_promotion_operational_acceptance_v1.md"
 }

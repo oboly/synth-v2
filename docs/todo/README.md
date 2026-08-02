@@ -143,21 +143,22 @@ Program) is documented in
 change this baseline's status, priority, or reopen criteria; no canonical
 BTC/IOST regression evidence was found or is implied.
 
-Multi-asset expansion is a separate blocked lane owned by
+Multi-asset expansion is a separate in-progress lane owned by
 `native_short_multi_asset_rollout_contract_v1.md`. Its first proposed queue is
-SOL -> ETH -> XRP, strictly one symbol at a time; the queue is not production
-approval. The repository writer-provenance contract, the pure
-scope-administration contracts, the forward-only schema, and the deterministic
-`ADOPT_LEGACY_SCOPE` / `PROMOTE_SCOPE` / `REMOVE_SCOPE` repository transactions
-are implemented; no production mutation, migration application, or operational
-acceptance of those transactions has been performed. All 51 pre-contract writer
-runs remain `LEGACY_UNATTRIBUTED`. One attributable BTC production run passed
-devlap host acceptance, and its permanent evidence is reviewed in
+SOL -> ETH -> XRP, strictly one symbol at a time. SOL is promoted in
+production (`docs/ops/native_short_sol_promotion_operational_acceptance_v1.md`)
+and `PROMOTION_CONTRACT_MISSING` is closed globally; ETH and XRP are
+explicitly, separately human-approved as the next two canaries
+(`docs/ops/native_short_{eth,xrp}_bootstrap_promotion_approval_v1.md`) but not
+yet production-promoted. `BOOTSTRAP_ORCHESTRATION_BLOCKED` and
+`MULTI_SCOPE_FAILURE_ISOLATION_MISSING` remain unconditionally active in the
+canonical audit evaluator; ETH/XRP reach the administration-decision layer
+only via their own reviewed bootstrap-manifest entries, the same one-time
+mechanism SOL used. All 51 pre-contract writer runs remain
+`LEGACY_UNATTRIBUTED`. One attributable BTC production run passed devlap host
+acceptance, and its permanent evidence is reviewed in
 `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`;
-`WRITER_PROVENANCE_UNATTRIBUTED` is closed by that evidence. Expansion remains
-blocked on operational acceptance of the single-scope adoption/promotion/removal
-transactions, writer commit-time fencing, `NO_CURRENT_MAP` bootstrap semantics,
-and per-symbol failure isolation.
+`WRITER_PROVENANCE_UNATTRIBUTED` is closed by that evidence.
 
 Merged completion chain:
 
@@ -206,7 +207,7 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `profit_plan_dashboard_action_truth_and_breathline_demote_v1.md` | done / parked | Completed Profit Plan action fail-closed, PPP, map-switch, Breathline, evidence-row, and formatting guardrails |
 | `native_short_runtime_owner_and_scope_status_v1.md` | repository unit/database contracts complete; chain-scoped DB runtime binding and filesystem publisher/reader separation implemented for review; ownership and activation UNASSIGNED | Completed Native SHORT scope/map implementation and canonical devlap unit reconciliation; external DB secret/identity acceptance plus filesystem reader-group/distinct-UID host acceptance remain blockers |
 | `native_short_map_level_status_v1.md` | done / parked | Completed native SHORT current map-level status contract and implementation evidence |
-| `native_short_multi_asset_rollout_contract_v1.md` | blocked; ADOPT/PROMOTE/REMOVE repository transactions implemented, provenance accepted, writer commit-time fencing and operational acceptance pending | Canonical multi-asset readiness audit, scope-administration ownership, sequential SOL/ETH/XRP review queue, and blocked rollout sequence |
+| `native_short_multi_asset_rollout_contract_v1.md` | in progress; SOL promoted and accepted, ETH/XRP approved (not yet promoted), bootstrap manifest generalized to a reviewed list | Canonical multi-asset readiness audit, scope-administration ownership, sequential SOL->ETH->XRP rollout, bootstrap/isolation blockers still unconditionally active |
 | `position_rotation_preview.md` | MVP implemented / parked follow-up | Account-aware read-only cockpit/rotation preview; no active v2.23 priority |
 | `profit_plan_card_evidence_delta_visibility_v1.md` | done / parked | Deterministic current-vs-previous card evidence visibility |
 | `manual_ladder_dashboard.md` | historical source / superseded | Earlier read-only ladder direction; active ladder work is tracked only in `profit_plan_live_ladder.md` |

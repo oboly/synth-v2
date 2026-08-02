@@ -2,7 +2,9 @@
 
 ## Status
 
-`blocked` — the repository writer-provenance contract, the pure scope-administration request types, the forward-only schema, and the deterministic repository transactions for `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` (with first-creation serialization, operation-ledger idempotency, and commit-time transaction validation) are now implemented in the repository. One post-merge attributable BTC production run passed devlap host acceptance; its permanent evidence is reviewed in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`, and `WRITER_PROVENANCE_UNATTRIBUTED` is closed by that evidence. A sequential multi-symbol rollout orchestrator (see "Production rollout orchestrator" below) is now implemented in the repository, delegating unchanged to the existing administration transaction and gate; it has not been invoked against production. The `PROMOTION_CONTRACT_MISSING` bootstrap circularity is resolved by design (see "PROMOTE_SCOPE bootstrap-circularity resolution" below) via a narrow, scope-bound, checked-in bootstrap manifest. SOL (exactly `bitvavo/SOL/EUR/SHORT/4h/1h`) is explicitly, human-approved as the first canary (see "SOL bootstrap-promotion closure (corrected in a later lane)" below and `docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md`); the manifest is `accepted: true` for SOL only, and this lane also narrows `BOOTSTRAP_ORCHESTRATION_BLOCKED`/`MULTI_SCOPE_FAILURE_ISOLATION_MISSING` for that exact scope only. Two confirmed design defects from an earlier version of this lane were corrected: (1) `REMOVAL_CONTRACT_MISSING` no longer applies to `PROMOTE_SCOPE` at all (it never created a concrete unsafe/irreversible state for promotion; `REMOVE_SCOPE`'s own gate is unaffected); (2) the manifest no longer attempts an impossible commit-self-reference -- it separates a deterministic approval-evidence digest (over the normalized approval payload plus the evidence module's own file hash) from deployed-checkout authorization (still the unmodified `verify_repository_commit_sha`/writer-capability job), and verifies its `approved_implementation_commit` as an ancestor of `HEAD`, never equal to it. **SOL is genuinely unblocked at the administration-decision layer today** (no remaining `GLOBAL_BLOCKERS_ACTIVE` rejection); a real write still requires the unchanged, unweakened clean-checkout and `native_short_4h_chain` writer-capability authorization. No production database mutation, migration application, or operational acceptance of the administration transactions has been performed. ETH, XRP, and BTC remain unapproved for this bootstrap path. Writer commit-time fencing is implemented in the repository; `NO_CURRENT_MAP` bootstrap and per-symbol failure isolation remain unimplemented. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
+`in progress` — see "Multi-scope bootstrap generalization, SOL promotion-acceptance closure, and ETH/XRP approval (this lane)" at the end of this document for the current, corrected state. In summary: the SOL `PROMOTE_SCOPE` production operation that the paragraph below still describes as pending post-hoc acceptance is now reviewed and accepted (`PROMOTION_CONTRACT_MISSING` closed globally); the bootstrap manifest is generalized from one hardcoded scope to a reviewed list; and ETH and XRP are now explicitly approved as the next two canaries. BTC and SOL are no longer the only approved scopes, and "ETH, XRP, and BTC remain unapproved for this bootstrap path" in the paragraph immediately below is superseded for ETH and XRP specifically. The remainder of this paragraph is retained as the frozen historical record of the prior lane, per this document's established convention of appending corrections rather than rewriting history.
+
+`blocked` (historical, as of the prior lane) — the repository writer-provenance contract, the pure scope-administration request types, the forward-only schema, and the deterministic repository transactions for `ADOPT_LEGACY_SCOPE`, `PROMOTE_SCOPE`, and `REMOVE_SCOPE` (with first-creation serialization, operation-ledger idempotency, and commit-time transaction validation) are now implemented in the repository. One post-merge attributable BTC production run passed devlap host acceptance; its permanent evidence is reviewed in `docs/ops/native_short_writer_provenance_operational_acceptance_20260717.md`, and `WRITER_PROVENANCE_UNATTRIBUTED` is closed by that evidence. A sequential multi-symbol rollout orchestrator (see "Production rollout orchestrator" below) is now implemented in the repository, delegating unchanged to the existing administration transaction and gate; it has not been invoked against production. The `PROMOTION_CONTRACT_MISSING` bootstrap circularity is resolved by design (see "PROMOTE_SCOPE bootstrap-circularity resolution" below) via a narrow, scope-bound, checked-in bootstrap manifest. SOL (exactly `bitvavo/SOL/EUR/SHORT/4h/1h`) is explicitly, human-approved as the first canary (see "SOL bootstrap-promotion closure (corrected in a later lane)" below and `docs/ops/native_short_sol_bootstrap_promotion_approval_v1.md`); the manifest is `accepted: true` for SOL only, and this lane also narrows `BOOTSTRAP_ORCHESTRATION_BLOCKED`/`MULTI_SCOPE_FAILURE_ISOLATION_MISSING` for that exact scope only. Two confirmed design defects from an earlier version of this lane were corrected: (1) `REMOVAL_CONTRACT_MISSING` no longer applies to `PROMOTE_SCOPE` at all (it never created a concrete unsafe/irreversible state for promotion; `REMOVE_SCOPE`'s own gate is unaffected); (2) the manifest no longer attempts an impossible commit-self-reference -- it separates a deterministic approval-evidence digest (over the normalized approval payload plus the evidence module's own file hash) from deployed-checkout authorization (still the unmodified `verify_repository_commit_sha`/writer-capability job), and verifies its `approved_implementation_commit` as an ancestor of `HEAD`, never equal to it. **SOL is genuinely unblocked at the administration-decision layer today** (no remaining `GLOBAL_BLOCKERS_ACTIVE` rejection); a real write still requires the unchanged, unweakened clean-checkout and `native_short_4h_chain` writer-capability authorization. No production database mutation, migration application, or operational acceptance of the administration transactions has been performed. ETH, XRP, and BTC remain unapproved for this bootstrap path. Writer commit-time fencing is implemented in the repository; `NO_CURRENT_MAP` bootstrap and per-symbol failure isolation remain unimplemented. BTC remains the sole approved and proven canonical scope. No additional scope is authorized by this document.
 
 ## Sources
 
@@ -886,3 +888,193 @@ No live trading. The scope-administration repository work itself performed no pr
 - runtime deployment or service/timer changes;
 - Profit Plan changes;
 - production approval of SOL, ETH, XRP, or any other new scope.
+
+## Multi-scope bootstrap generalization, SOL promotion-acceptance closure, and ETH/XRP approval (this lane)
+
+This lane closes the deferred SOL post-hoc acceptance step, generalizes the
+bootstrap-evidence manifest from one hardcoded scope to a reviewed list, and
+records explicit human approval for ETH and XRP as the next two canaries.
+It performs no production database write itself; the SOL evidence it
+records reviews an already-committed production operation, and the ETH/XRP
+approvals authorize -- but do not themselves execute -- a future
+`PROMOTE_SCOPE`.
+
+**Read-only production audit fix.** `native_short_multi_asset_audit_v1.py`
+hardcoded `EXISTING_CANARY_SYMBOL = "BTC"`. After SOL's real production
+promotion, this caused the audit to misclassify SOL's legitimate
+`SUPPORTED` scope as `SCOPE_CONFLICT` instead of `READY_EXISTING_CANARY`.
+Existing-canary status is now derived from ledger state (`scope_states ==
+("SUPPORTED",)`) for any symbol, not one hardcoded constant. This is an
+audit-display fix only; it never touched the administration-transaction
+gate, which reads ledger state directly and was never affected by the
+audit's own display bug.
+
+**SOL `PROMOTION_CONTRACT_MISSING` closure.** SOL's real production
+`PROMOTE_SCOPE` (`operation_uuid=7ef9c93a-4418-458f-939e-7c3caf00705f`,
+`result_code=PROMOTED_NEW_SCOPE`) had already committed, but the required
+follow-on step -- populating
+`native_short_promotion_acceptance_manifest_v1.json` with `accepted: true`
+and a reviewed operational-acceptance document, per steps 8-10 of the
+"Required later controlled operational acceptance procedure" above -- had
+not been done, so `PROMOTION_CONTRACT_MISSING` remained active globally
+despite the successful promotion. This lane completes that step:
+`docs/ops/native_short_sol_promotion_operational_acceptance_v1.md` is the
+reviewed acceptance record, and the manifest now carries that operation's
+exact `operation_uuid`, scope, immutable request identity, and recomputed
+digest (verified read-only to match the persisted ledger row exactly).
+`PROMOTION_CONTRACT_MISSING` is a global blocker, not scope-specific: this
+single reviewed acceptance closes it for every future `PROMOTE_SCOPE`
+decision, not only SOL's. `REMOVAL_CONTRACT_MISSING`,
+`BOOTSTRAP_ORCHESTRATION_BLOCKED`, and `MULTI_SCOPE_FAILURE_ISOLATION_MISSING`
+are unaffected and remain unconditionally active in the canonical audit
+evaluator.
+
+**Bootstrap manifest generalized to a reviewed list (v2 schema).**
+`native_short_promotion_bootstrap_manifest_v1.json`'s
+`acceptance_schema_version` is bumped to
+`native_short_promotion_bootstrap_manifest_v2`; its top-level shape changes
+from one hardcoded `scope`/`accepted`/... object to a shared contract-
+identity envelope (`acceptance_schema_version`, `bootstrap_contract_version`,
+`bootstrap_contract_digest`) plus an `entries` list, where each entry
+independently carries its own `accepted`, `scope`, `approval_reference`,
+`approved_at_utc`, `approved_implementation_commit`, and
+`approval_evidence_digest`. No entry is a wildcard: every scope field is a
+fixed literal, and `evaluate_promotion_bootstrap_evidence` in
+`native_short_promotion_bootstrap_evidence_v1.py` fails the *entire*
+manifest closed (`MANIFEST_DUPLICATE_SCOPE_ENTRIES`) if any two entries
+declare the same symbol, before ever matching or evaluating a request.
+Matching a request to its entry, and every other per-entry check (accepted,
+approval reference, timestamp, commit format, digest, ancestry), are
+otherwise unchanged from the prior single-scope design -- each entry is
+evaluated in full isolation from every other entry. SOL's existing entry is
+migrated unchanged in substance (same scope, reference, and approved
+implementation commit; digest recomputed against the current file bytes).
+`native_short_scope_administration_transaction_v1.py`'s wiring
+(`decide_administration`, `_bootstrap_promotion_evidence_applies`,
+`_BOOTSTRAP_NARROWED_BLOCKER_CODES`) is completely unchanged; its call
+contract to `evaluate_promotion_bootstrap_evidence(requested_scope=...)`
+did not change shape, so no caller-side code was touched.
+
+**ETH and XRP explicitly approved.** Following the exact same reviewed,
+scope-specific, out-of-band human-approval model as SOL:
+
+- `docs/ops/native_short_eth_bootstrap_promotion_approval_v1.md` approves
+  exactly `bitvavo/ETH/EUR/SHORT/4h/1h`;
+- `docs/ops/native_short_xrp_bootstrap_promotion_approval_v1.md` approves
+  exactly `bitvavo/XRP/EUR/SHORT/4h/1h`;
+- both entries' `approved_implementation_commit` is
+  `15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8`, the commit on
+  `feature/native-short-multi-scope-rollout-v1` that generalized the
+  manifest to a list -- an already-existing historical commit, verified
+  only as an *ancestor* of `HEAD`, never required to equal it, exactly like
+  SOL's `approved_implementation_commit` binding;
+- `test_execute_real_evaluators_promote_approved_symbol_end_to_end_today`
+  (`tests/test_native_short_scope_administration_promotion_bootstrap_wiring_v1.py`)
+  proves both ETH and XRP `PROMOTE_SCOPE` requests succeed end-to-end
+  against the real, unmodified evaluators and the real checked-in manifest
+  -- no `GLOBAL_BLOCKERS_ACTIVE` rejection remains for either scope at the
+  administration-decision layer.
+
+Neither approval covers SUI or any symbol beyond ETH and XRP. A read-only
+production audit at the time of approval (evaluated at an as-of timestamp
+aligned with the last ingested 4h/1h closes, to avoid a boundary-lag
+artifact from evaluating exactly at a candle-close boundary) classified 17
+symbols `READY_FOR_SEQUENTIAL_CANARY_REVIEW`; ETH and XRP are ranks 1-2 by
+trailing-30-day public 4h EUR quote volume, consistent with the documented
+`SOL -> ETH -> XRP` order. The remaining 13 market/ledger-ready-but-
+unapproved symbols (`SUI`, `PEPE`, `FET`, `HBAR`, `AAVE`, `BNB`, `LDO`,
+`VET`, `HOT`, `ALGO`, `CC`, `RLC`, `HNT`, `IOST`) are not approved by this
+lane and remain review-only; each would need its own separate reviewed
+approval document and manifest entry, following this exact same pattern,
+before it could reach the administration-decision layer.
+
+**Orchestrator: no code change, two new checked-in universe entries.**
+`native_short_scope_administration_rollout_v1.py`'s sequential, stop-on-
+first-failure, idempotent-restart design (unchanged since BTC-only) already
+supported any `operation_type` per entry, including `PROMOTE_SCOPE`; this
+is the "generic capability for sequential onboarding" the rollout requires,
+and it did not need new code. `APPROVED_ROLLOUT_UNIVERSE_V1` now reads BTC
+(`ADOPT_LEGACY_SCOPE`) then ETH (`PROMOTE_SCOPE`) then XRP
+(`PROMOTE_SCOPE`), in that checked-in order. SOL is deliberately **not**
+added as an entry: it was promoted directly through the single-scope CLI,
+outside this orchestrator, so its scope row already exists and its real
+`operation_uuid` does not match this module's `deterministic_operation_uuid`
+derivation (`(operation_type, scope_key)` only) -- a synthesized SOL entry
+here would simply be rejected (no longer `NO_SCOPE`), needlessly stopping a
+sequential run before reaching ETH/XRP.
+`test_execute_rollout_real_universe_promotes_eth_then_xrp_end_to_end` and
+`test_execute_rollout_real_universe_is_restartable_after_partial_completion`
+(`tests/test_native_short_scope_administration_rollout_v1.py`) prove a real,
+unmocked, sequential ETH-then-XRP rollout, and its restartability, against
+the real checked-in universe and evaluators.
+
+**Deterministic readiness audit of the remaining Profit Plan universe.** A
+read-only audit of every symbol the account-scoped Profit Plan currently
+reports without native SHORT context classified:
+
+```text
+READY_FOR_PROMOTION: 2 (ETH, XRP -- approved this lane)
+NEEDS_BOOTSTRAP_APPROVAL: 13 (SUI, PEPE, FET, HBAR, AAVE, LDO, VET, HOT, ALGO, CC, RLC, HNT, IOST)
+INSUFFICIENT_4H_HISTORY: 4 (APT, ICP, RENDER, XLM)
+INSUFFICIENT_1H_HISTORY: 0
+STALE_MARKET_DATA: 8 (CHIP, DEEP, FLOKI, KITE, MOG, NOT, RED, XPL)
+TICK_METADATA_MISSING_OR_AMBIGUOUS: 27 (ADA, AERO, ARB, BILL, CRV, DOT, ENA, FIL, HYPE, INJ, LIGHTER, LINK, LTC, NEAR, ONDO, PENDLE, PLUME, PYTH, QNT, RSR, SLX, SXT, TAO, TIA, UNI, WAL, WLD)
+CONTEXT_UNAVAILABLE: 1 (SOL -- already SUPPORTED at the ledger layer; the Profit Plan's own native-SHORT-context snapshot artifact has not yet republished since SOL's promotion, a separate publish-cadence gap in the existing snapshot-distribution lane, not an administration/rollout gap)
+LEDGER_CONFLICT: 0
+MARKET_INELIGIBLE: 1 (POL -- MARKET_NOT_TRADEABLE)
+OTHER_FAIL_CLOSED: 0
+```
+
+`STALE_MARKET_DATA` and `TICK_METADATA_MISSING_OR_AMBIGUOUS` are the two
+largest remaining blockers and are outside this lane's scope: the former
+needs ETL/ingestion investigation per symbol, the latter needs either
+database `venue_market.price_precision` backfill or new approved static
+tick-rule entries in `src/market_rules/price_tick_normalization_v1.py` --
+neither is an administration/rollout defect. `SOL`'s `CONTEXT_UNAVAILABLE`
+row is a snapshot-publish-cadence gap in the existing native SHORT
+snapshot-distribution lane (`docs/architecture/native_short_context_snapshot_distribution_v1.md`),
+not a promotion/administration gap; SOL's map is published and current at
+the ledger layer as verified above.
+
+**Production rollout queue after this lane.** Sequential, one scope per
+failure domain, exactly as always: `BTC (adopt) -> ETH (promote) -> XRP
+(promote)`. No production write has been performed; the exact controlled
+activation command (unchanged shape from the existing BTC-only example
+above, `--only-symbol` selecting the two new entries) is:
+
+```text
+python -m src.market_data.run_native_short_scope_administration_rollout_v1 \
+  --actor-type HUMAN_OPERATOR --actor-id <reviewer> \
+  --trigger-type MANUAL_CLI \
+  --reason "promote ETH then XRP per docs/ops/native_short_eth_bootstrap_promotion_approval_v1.md and docs/ops/native_short_xrp_bootstrap_promotion_approval_v1.md" \
+  --request-source native_short_scope_administration_rollout_v1 \
+  --repository-commit <verified clean checkout HEAD sha> \
+  --requested-at-utc <fixed ISO-8601 UTC timestamp> \
+  --only-symbol ETH XRP \
+  --write
+```
+
+This must be run only from a clean checkout whose `HEAD` matches
+`--repository-commit` exactly (enforced by the unmodified repository-
+source-identity boundary) and only with genuine `native_short_4h_chain`
+writer-capability authorization (unmodified,
+`enforce_capability_write_authorization`). It has not been run against
+production by this lane. After each accepted promotion, the canonical 4h
+chain must run at least once before that symbol's map/status is published
+for the dashboard, exactly as it did for SOL.
+
+Safety markers for this entire lane:
+
+```text
+broker_private_calls=0
+broker_writes=0
+order_submission=0
+live_orders=0
+decision_gate=none
+execution_planner=none
+executor=none
+database_writes_by_this_lane=0
+migrations_applied=0
+production_promote_scope_invocations_by_this_lane=0
+new_scope_seeds_by_this_lane=0
+```

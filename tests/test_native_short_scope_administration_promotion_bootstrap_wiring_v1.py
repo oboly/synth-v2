@@ -356,9 +356,9 @@ def _accepted_writer_evidence_row() -> dict[str, Any]:
 
 def test_execute_real_evaluators_promote_sol_end_to_end_today() -> None:
     """With the real (unmodified) evaluate_current_global_blockers, the real,
-    checked-in, accepted-for-SOL bootstrap manifest, and the real ancestry
-    checker (this repository's actual git history, where the approved
-    implementation commit genuinely is an ancestor of HEAD), a SOL
+    checked-in, accepted-for-SOL bootstrap manifest entry, and the real
+    ancestry checker (this repository's actual git history, where the
+    approved implementation commit genuinely is an ancestor of HEAD), a SOL
     PROMOTE_SCOPE request succeeds end-to-end: no HEAD-equality requirement
     remains for the bootstrap path, only ancestry -- which is satisfied by
     construction for any commit descended from the approved one."""
@@ -375,14 +375,36 @@ def test_execute_real_evaluators_promote_sol_end_to_end_today() -> None:
     assert conn.committed.operations[-1]["symbol"] == "SOL"
 
 
-@pytest.mark.parametrize("symbol", ["ETH", "XRP", "BTC", "DOGE"])
-def test_execute_real_evaluator_fails_closed_for_every_non_sol_symbol(symbol: str) -> None:
-    """The real, checked-in manifest names exactly one symbol (SOL). Every
-    other symbol -- including the two named-but-not-approved review
-    candidates ETH and XRP, and the legacy BTC scope -- fails the bootstrap
-    scope-match check regardless of blocker state, and therefore never
-    narrows any blocker. REMOVAL_CONTRACT_MISSING never even appears: it is
-    not applicable to PROMOTE_SCOPE at all."""
+@pytest.mark.parametrize("symbol", ["ETH", "XRP"])
+def test_execute_real_evaluators_promote_approved_symbol_end_to_end_today(symbol: str) -> None:
+    """The manifest now also names ETH and XRP, each with its own
+    independent entry and evidence digest -- both succeed end-to-end via the
+    exact same real, unmodified evaluators used for SOL, proving the
+    generalized multi-entry manifest actually authorizes each approved
+    scope independently."""
+    state = _FakeState()
+    state.writer_runs.append(_accepted_writer_evidence_row())
+    conn = _FakeConn(state)
+
+    outcome = execute_scope_administration(
+        conn, _request(OperationType.PROMOTE_SCOPE, symbol=symbol), authorization=_AUTH
+    )
+
+    assert outcome.result.result_code == ResultCode.PROMOTED_NEW_SCOPE
+    assert outcome.current_state["bootstrap_evidence_applied"] is True
+    assert outcome.current_state["bootstrap_evidence"]["accepted"] is True
+    assert outcome.current_state["bootstrap_evidence"]["symbol"] == symbol
+    assert conn.commit_count == 1
+    assert conn.committed.operations[-1]["symbol"] == symbol
+
+
+@pytest.mark.parametrize("symbol", ["BTC", "DOGE", "SUI"])
+def test_execute_real_evaluator_fails_closed_for_every_unapproved_symbol(symbol: str) -> None:
+    """The real, checked-in manifest names exactly three approved symbols
+    (SOL, ETH, XRP). Every other symbol -- including the legacy BTC scope --
+    fails the bootstrap scope-match check regardless of blocker state, and
+    therefore never narrows any blocker. REMOVAL_CONTRACT_MISSING never even
+    appears: it is not applicable to PROMOTE_SCOPE at all."""
     state = _FakeState()
     state.writer_runs.append(_accepted_writer_evidence_row())
     conn = _FakeConn(state)
@@ -393,13 +415,51 @@ def test_execute_real_evaluator_fails_closed_for_every_non_sol_symbol(symbol: st
 
     assert outcome.result.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
     blocking = set(outcome.current_state["blocking_global_blockers"])
-    assert PROMOTION_CONTRACT_MISSING in blocking
     assert BOOTSTRAP_ORCHESTRATION_BLOCKED in blocking
     assert MULTI_SCOPE_FAILURE_ISOLATION_MISSING in blocking
     assert REMOVAL_CONTRACT_MISSING not in blocking
     assert outcome.current_state["bootstrap_evidence"]["accepted"] is False
     assert outcome.current_state["bootstrap_evidence"]["reason"] != REASON_EVIDENCE_ACCEPTED
     assert conn.commit_count == 0
+
+
+def test_promoting_one_approved_symbol_does_not_authorize_or_block_another() -> None:
+    """Cross-scope isolation: SOL already having a successful, committed
+    bootstrap promotion on the same connection/state must not change ETH's
+    or XRP's own independent evaluation in either direction -- each entry's
+    evidence and each scope's NO_SCOPE classification are evaluated fresh."""
+    state = _FakeState()
+    state.writer_runs.append(_accepted_writer_evidence_row())
+    conn = _FakeConn(state)
+
+    sol_outcome = execute_scope_administration(conn, _sol_request(), authorization=_AUTH)
+    assert sol_outcome.result.result_code == ResultCode.PROMOTED_NEW_SCOPE
+
+    eth_outcome = execute_scope_administration(
+        conn,
+        _request(
+            OperationType.PROMOTE_SCOPE,
+            symbol="ETH",
+            provenance=_provenance(operation_uuid="00000000-0000-4000-8000-000000000002"),
+        ),
+        authorization=_AUTH,
+    )
+    assert eth_outcome.result.result_code == ResultCode.PROMOTED_NEW_SCOPE
+    assert eth_outcome.current_state["bootstrap_evidence"]["symbol"] == "ETH"
+
+    xrp_outcome = execute_scope_administration(
+        conn,
+        _request(
+            OperationType.PROMOTE_SCOPE,
+            symbol="XRP",
+            provenance=_provenance(operation_uuid="00000000-0000-4000-8000-000000000003"),
+        ),
+        authorization=_AUTH,
+    )
+    assert xrp_outcome.result.result_code == ResultCode.PROMOTED_NEW_SCOPE
+    assert xrp_outcome.current_state["bootstrap_evidence"]["symbol"] == "XRP"
+
+    assert {op["symbol"] for op in conn.state.operations} == {"SOL", "ETH", "XRP"}
 
 
 def test_execute_second_promote_attempt_after_sol_bootstrap_success_is_not_reauthorized(

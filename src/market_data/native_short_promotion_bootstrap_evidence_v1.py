@@ -9,9 +9,9 @@ never calls or wraps
 ``native_short_scope_administration_transaction_v1.execute_scope_administration``.
 Its sole caller is that module's ``decide_administration``/
 ``plan_scope_administration``/``execute_scope_administration``, which use its
-result only to narrow -- never widen beyond one exact, checked-in scope --
-the applicability of a fixed, named subset of the existing global blockers
-for a PROMOTE_SCOPE decision.
+result only to narrow -- never widen beyond one exact, checked-in, matched
+scope -- the applicability of a fixed, named subset of the existing global
+blockers for a PROMOTE_SCOPE decision.
 
 Why this module exists (the bootstrap circularity)
 ----------------------------------------------------
@@ -29,14 +29,15 @@ is active. See
 ("Promotion-acceptance bootstrap circularity") for the full trace.
 
 This module is the "distinct reviewed one-time exception procedure ...
-specifically for that first controlled run" that document anticipates. It
-does **not** touch, weaken, or duplicate the existing gate mechanism
+specifically for that first controlled run" that document anticipates,
+applied independently to each explicitly reviewed scope. It does **not**
+touch, weaken, or duplicate the existing gate mechanism
 (``_APPLICABLE_GLOBAL_BLOCKERS_BY_OPERATION`` /
 ``applicable_active_global_blockers`` / the ``GLOBAL_BLOCKERS_ACTIVE`` reject
 path in ``decide_administration`` are all unchanged). It only supplies a
 second, independent, *pre*-authorization evidentiary path evaluated fresh
 for every PROMOTE_SCOPE decision against the exact request being decided --
-never a global "promotion allowed" toggle.
+never a global "promotion allowed" toggle, and never a wildcard.
 
 Why this is NOT a repository-commit exact-match design
 ---------------------------------------------------------
@@ -69,47 +70,71 @@ This revision separates two genuinely different concerns instead:
   ``HEAD`` equality.
 
 If repository ancestry needs verifying at all, it is checked as a much
-weaker, entirely non-circular property: the manifest's
+weaker, entirely non-circular property: each entry's
 ``approved_implementation_commit`` (a fixed, already-existing, immutable
-commit -- never the commit that introduces the manifest itself) must be an
+commit -- never the commit that introduces that entry itself) must be an
 *ancestor* of the current ``HEAD`` (``git merge-base --is-ancestor``), never
 equal to it. Any real commit created after that one, on any branch that
 contains it, satisfies this by construction; no further "pin" commit is
 ever required.
 
-BOOTSTRAP MANIFEST
--------------------
+BOOTSTRAP MANIFEST (v2: a reviewed list of independently-evidenced entries)
+----------------------------------------------------------------------------
 A single, versioned, repository-owned JSON manifest,
 ``native_short_promotion_bootstrap_manifest_v1.json``, co-located with this
-module. It authorizes **at most one** exact canonical scope (including
-``symbol``). It ships ``accepted: false`` with null placeholders; setting it
-to ``accepted: true`` for a specific symbol requires its own reviewed
-repository change, naming the exact symbol, per
-``docs/todo/native_short_multi_asset_rollout_contract_v1.md``.
+module. Its top-level shape is a fixed contract-identity envelope plus an
+``entries`` list. Each entry authorizes **exactly one** exact canonical
+scope (including ``symbol``) -- there is no wildcard entry and no field that
+can match more than one scope. Adding a new approved scope means appending a
+new, independently reviewed, independently digested entry naming that exact
+symbol; it never widens or reinterprets an existing entry.
 
-Manifest fields (all required for evidence to ever accept):
+Top-level fields (shared contract identity, apply to the whole manifest):
 
-- ``acceptance_schema_version``: must equal ``REQUIRED_MANIFEST_SCHEMA_VERSION``;
-- ``bootstrap_contract_version``: must equal ``BOOTSTRAP_CONTRACT_VERSION``;
-- ``bootstrap_contract_digest``: must equal the live
-  ``compute_bootstrap_contract_digest()`` value;
-- ``accepted``: must be the JSON literal ``true``;
+- ``acceptance_schema_version``: must equal ``REQUIRED_MANIFEST_SCHEMA_VERSION``
+  (``native_short_promotion_bootstrap_manifest_v2`` -- this is a breaking
+  structural migration from the v1 single-scope object, so the version is
+  bumped rather than silently reinterpreting an old-shaped file);
+- ``bootstrap_contract_version`` / ``bootstrap_contract_digest``: must equal
+  ``BOOTSTRAP_CONTRACT_VERSION`` / the live ``compute_bootstrap_contract_digest()``
+  value (unchanged contract invariants; binds every entry to the same fixed
+  canonical scope fields);
+- ``entries``: a non-empty JSON array. Every element must be a well-formed
+  entry (see below); the manifest is malformed as a whole if any element is
+  not. No two entries may declare the same exact six-part canonical scope --
+  a duplicate/reused scope key across entries is a manifest-integrity defect
+  and fails the *entire* manifest read closed
+  (``MANIFEST_DUPLICATE_SCOPE_ENTRIES``), before any entry is matched or
+  evaluated, so a malformed or tampered manifest can never be resolved by
+  "picking" one of two conflicting entries for the same scope.
+
+Per-entry fields (independent evidence per scope; all required for that
+entry to ever accept):
+
+- ``accepted``: must be the JSON literal ``true`` for this exact entry;
 - ``scope``: the exact six-part canonical scope key, including the one
-  authorized ``symbol``;
+  symbol this entry authorizes;
 - ``approval_reference``: a non-empty pointer to the reviewed decision
-  document that approved this exact symbol as the next canary;
+  document that approved this exact symbol as a canary;
 - ``approved_at_utc``: canonical UTC ISO-8601 timestamp of the approval
   decision;
 - ``approved_implementation_commit``: the exact 40-character lowercase-hex
   commit that introduced the reviewed bootstrap implementation this
-  approval trusts -- an already-existing, ordinary historical commit, never
-  the commit that introduces the manifest's own ``accepted: true`` state,
-  and never compared against ``HEAD`` for equality (only, optionally, for
-  ancestry -- see ``require_implementation_commit_ancestry``);
-- ``approval_evidence_digest``: the value of
-  ``compute_approval_evidence_digest`` over the six fields above (excluding
-  itself) plus the current SHA-256 of this module's own source file,
-  computed once at approval time and re-verified at every evaluation.
+  specific approval trusts -- an already-existing, ordinary historical
+  commit, never the commit that introduces this entry's own ``accepted:
+  true`` state, and never compared against ``HEAD`` for equality (only,
+  optionally, for ancestry -- see ``require_implementation_commit_ancestry``);
+- ``approval_evidence_digest``: the value of ``compute_approval_evidence_digest``
+  over this entry's own five fields above (excluding itself) plus the
+  current SHA-256 of this module's own source file, computed once at
+  approval time and re-verified, per entry, at every evaluation.
+
+Evaluation matches the caller's ``requested_scope`` against exactly one
+entry's ``scope`` (exact dict equality on all six fields); every other
+entry is irrelevant to that decision. A request whose scope matches no
+entry, or whose matched entry fails any of its own independent checks,
+never accepts -- evidence for one approved scope never leaks into, weakens,
+or substitutes for any other scope's evaluation.
 
 Single-use by construction, not by a mutable flag
 ---------------------------------------------------
@@ -121,11 +146,11 @@ defensively by the caller -- no administration-operation-ledger row at all
 for that exact scope). Because a successful first promotion permanently
 creates that scope's row and its ledger row, the exact same scope can never
 classify ``NO_SCOPE`` again -- so this evidence cannot re-apply to authorize
-a second promotion of the same scope, and because it is bound to one exact
-symbol it cannot apply to any other scope either. No mutable "consumed"
-flag is introduced or required; the existing immutable ledger already
-provides consumption semantics. This module performs no such check itself
-(it has no database access) -- the caller enforces it against the
+a second promotion of the same scope, and because each entry is bound to one
+exact symbol it cannot apply to any other scope either. No mutable
+"consumed" flag is introduced or required; the existing immutable ledger
+already provides consumption semantics. This module performs no such check
+itself (it has no database access) -- the caller enforces it against the
 already-read scope snapshot.
 
 Safety markers:
@@ -144,7 +169,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from src.market_data.native_short_repository_source_identity_v1 import (
     REPOSITORY_ROOT,
@@ -156,7 +181,7 @@ from src.market_data.native_short_scope_administration_v1 import (
 
 
 BOOTSTRAP_CONTRACT_VERSION = "native_short_promotion_bootstrap_v1"
-REQUIRED_MANIFEST_SCHEMA_VERSION = "native_short_promotion_bootstrap_manifest_v1"
+REQUIRED_MANIFEST_SCHEMA_VERSION = "native_short_promotion_bootstrap_manifest_v2"
 
 CANONICAL_SCOPE_FIXED_FIELDS: Mapping[str, str] = {
     "venue": "bitvavo",
@@ -170,16 +195,17 @@ _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _UTC_ISO_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$")
 
 # The versioned, repository-owned bootstrap manifest lives next to this
-# module. It ships unaccepted; see module docstring.
+# module. It ships with a reviewed list of explicit, independently
+# evidenced entries; see module docstring.
 DEFAULT_BOOTSTRAP_MANIFEST_PATH = Path(__file__).with_name(
     "native_short_promotion_bootstrap_manifest_v1.json"
 )
-# This module's own source file: its current SHA-256 is folded into the
-# approval-evidence digest so an edit to the bootstrap gating/evidence
-# implementation made after approval, without a corresponding re-approval,
-# fails the digest check closed. Reading this fixed, already-known path is
-# not circular: the hash is stored in a *different* file (the manifest),
-# not inside this file's own content.
+# This module's own source file: its current SHA-256 is folded into each
+# entry's approval-evidence digest so an edit to the bootstrap gating/
+# evidence implementation made after approval, without a corresponding
+# re-approval of every entry, fails the digest check closed. Reading this
+# fixed, already-known path is not circular: the hash is stored in a
+# *different* file (the manifest), not inside this file's own content.
 _THIS_MODULE_PATH = Path(__file__)
 
 REASON_MANIFEST_MISSING_OR_UNREADABLE = "MANIFEST_MISSING_OR_UNREADABLE"
@@ -187,6 +213,7 @@ REASON_MANIFEST_MALFORMED = "MANIFEST_MALFORMED"
 REASON_MANIFEST_SCHEMA_VERSION_WRONG = "MANIFEST_SCHEMA_VERSION_WRONG"
 REASON_MANIFEST_CONTRACT_VERSION_WRONG = "MANIFEST_CONTRACT_VERSION_WRONG"
 REASON_MANIFEST_CONTRACT_DIGEST_MISMATCH = "MANIFEST_CONTRACT_DIGEST_MISMATCH"
+REASON_MANIFEST_DUPLICATE_SCOPE_ENTRIES = "MANIFEST_DUPLICATE_SCOPE_ENTRIES"
 REASON_MANIFEST_NOT_ACCEPTED = "MANIFEST_NOT_ACCEPTED"
 REASON_MANIFEST_SCOPE_INVALID = "MANIFEST_SCOPE_INVALID"
 REASON_MANIFEST_APPROVED_AT_INVALID = "MANIFEST_APPROVED_AT_INVALID"
@@ -240,10 +267,10 @@ def compute_approval_evidence_digest(
     approved_implementation_commit: str,
     implementation_file_sha256: str,
 ) -> str:
-    """Deterministic SHA-256 digest over the immutable, normalized approval
-    payload. Pure function of its arguments; no I/O. This is the single
-    evidence-identity anchor for one reviewed approval decision -- distinct
-    from, and never compared against, any git commit hash."""
+    """Deterministic SHA-256 digest over one entry's immutable, normalized
+    approval payload. Pure function of its arguments; no I/O. This is the
+    per-scope evidence-identity anchor for one reviewed approval decision --
+    distinct from, and never compared against, any git commit hash."""
     payload = {
         "accepted": bool(accepted),
         "scope": dict(scope),
@@ -298,6 +325,137 @@ def _read_manifest(path: Path) -> Any:
         return None
 
 
+def _raw_scope_symbol(scope: Any) -> str | None:
+    """The raw, unvalidated ``symbol`` an entry's declared ``scope`` names,
+    used only for entry *matching* and duplicate detection -- deliberately
+    not full structural validation, so a request naming the exact same
+    symbol a malformed manifest entry declares is still routed to that
+    entry for full per-entry validation (see ``_evaluate_entry``), rather
+    than being silently treated as "no matching entry" and reported as a
+    less specific ``SCOPE_MISMATCH`` instead of the real defect."""
+    if not isinstance(scope, Mapping):
+        return None
+    symbol = scope.get("symbol")
+    return symbol if isinstance(symbol, str) and symbol else None
+
+
+def _validated_scope_key(scope: Any) -> dict[str, str] | None:
+    """Return a normalized scope dict if ``scope`` is a well-formed exact
+    canonical scope (fixed fields plus a well-formed upper-case symbol),
+    else ``None``. Reuses the existing canonical key validator instead of
+    duplicating symbol/venue/quote/horizon/interval normalization rules."""
+    if not isinstance(scope, Mapping):
+        return None
+    for field, expected in CANONICAL_SCOPE_FIXED_FIELDS.items():
+        if scope.get(field) != expected:
+            return None
+    symbol = scope.get("symbol")
+    if not _valid_symbol(symbol):
+        return None
+    try:
+        NativeShortScopeAdministrationKey(
+            venue=str(scope.get("venue")),
+            symbol=str(symbol),
+            quote_currency=str(scope.get("quote_currency")),
+            fib_trading_horizon=str(scope.get("fib_trading_horizon")),
+            primary_interval=str(scope.get("primary_interval")),
+            supporting_interval=str(scope.get("supporting_interval")),
+        )
+    except NativeShortScopeAdministrationValidationError:
+        return None
+    return dict(scope)
+
+
+def _evaluate_entry(
+    entry: Mapping[str, Any],
+    *,
+    requested_scope: Mapping[str, str],
+    require_implementation_commit_ancestry: bool,
+    ancestry_checker: AncestryChecker,
+    implementation_file_path: Path,
+) -> BootstrapPromotionEvaluation:
+    """Evaluate one already scope-matched manifest entry in full isolation.
+    Every other entry in the manifest is irrelevant to this result."""
+    scope = _validated_scope_key(entry.get("scope"))
+    symbol = None if scope is None else scope["symbol"]
+
+    if scope is None:
+        return BootstrapPromotionEvaluation(False, REASON_MANIFEST_SCOPE_INVALID, None, None)
+
+    approval_reference = entry.get("approval_reference")
+    if not isinstance(approval_reference, str) or not approval_reference.strip():
+        return BootstrapPromotionEvaluation(
+            False, REASON_MANIFEST_MISSING_APPROVAL_REFERENCE, symbol, None
+        )
+
+    approved_at_utc = entry.get("approved_at_utc")
+    if not isinstance(approved_at_utc, str) or _UTC_ISO_PATTERN.match(approved_at_utc) is None:
+        return BootstrapPromotionEvaluation(
+            False, REASON_MANIFEST_APPROVED_AT_INVALID, symbol, None
+        )
+
+    approved_implementation_commit = entry.get("approved_implementation_commit")
+    if (
+        not isinstance(approved_implementation_commit, str)
+        or _SHA_PATTERN.fullmatch(approved_implementation_commit) is None
+    ):
+        return BootstrapPromotionEvaluation(
+            False, REASON_MANIFEST_IMPLEMENTATION_COMMIT_INVALID, symbol, None
+        )
+
+    if entry.get("accepted") is not True:
+        return BootstrapPromotionEvaluation(
+            False, REASON_MANIFEST_NOT_ACCEPTED, symbol, approved_implementation_commit
+        )
+
+    declared_digest = entry.get("approval_evidence_digest")
+    try:
+        implementation_file_sha256 = hash_implementation_file(implementation_file_path)
+    except OSError:
+        return BootstrapPromotionEvaluation(
+            False, REASON_MANIFEST_DIGEST_MISMATCH, symbol, approved_implementation_commit
+        )
+    recomputed_digest = compute_approval_evidence_digest(
+        accepted=True,
+        scope=scope,
+        approval_reference=approval_reference,
+        approved_at_utc=approved_at_utc,
+        approved_implementation_commit=approved_implementation_commit,
+        implementation_file_sha256=implementation_file_sha256,
+    )
+    if not isinstance(declared_digest, str) or declared_digest != recomputed_digest:
+        return BootstrapPromotionEvaluation(
+            False, REASON_MANIFEST_DIGEST_MISMATCH, symbol, approved_implementation_commit
+        )
+
+    if scope != dict(requested_scope):
+        return BootstrapPromotionEvaluation(
+            False, REASON_SCOPE_MISMATCH, symbol, approved_implementation_commit
+        )
+
+    if require_implementation_commit_ancestry:
+        try:
+            is_ancestor = ancestry_checker(approved_implementation_commit)
+        except Exception:  # noqa: BLE001 - any ancestry-check failure fails closed.
+            return BootstrapPromotionEvaluation(
+                False,
+                REASON_ANCESTRY_CHECK_UNAVAILABLE,
+                symbol,
+                approved_implementation_commit,
+            )
+        if not is_ancestor:
+            return BootstrapPromotionEvaluation(
+                False,
+                REASON_IMPLEMENTATION_COMMIT_NOT_ANCESTOR,
+                symbol,
+                approved_implementation_commit,
+            )
+
+    return BootstrapPromotionEvaluation(
+        True, REASON_EVIDENCE_ACCEPTED, symbol, approved_implementation_commit
+    )
+
+
 def evaluate_promotion_bootstrap_evidence(
     *,
     requested_scope: Mapping[str, str],
@@ -307,13 +465,14 @@ def evaluate_promotion_bootstrap_evidence(
     implementation_file_path: Path = _THIS_MODULE_PATH,
 ) -> BootstrapPromotionEvaluation:
     """Evaluate whether the checked-in bootstrap manifest authorizes exactly
-    this requested scope.
+    this requested scope, via its own independently-evidenced entry.
 
-    Fail-closed: a missing/malformed/wrong-version/wrong-digest/unaccepted
-    manifest, a naming mismatch, a tampered field or implementation file
+    Fail-closed: a missing/malformed/wrong-version/wrong-digest manifest, a
+    manifest with two entries naming the same scope, no entry matching the
+    requested scope, or a matched entry that is unaccepted, tampered
     (approval-evidence digest mismatch), or (when
-    ``require_implementation_commit_ancestry`` is true, the default) an
-    approved implementation commit that is not an ancestor of the current
+    ``require_implementation_commit_ancestry`` is true, the default) names
+    an approved implementation commit that is not an ancestor of the current
     checkout, never accepts.
 
     This function does **not** check deployed-checkout identity (``HEAD``
@@ -345,100 +504,57 @@ def evaluate_promotion_bootstrap_evidence(
         return BootstrapPromotionEvaluation(
             False, REASON_MANIFEST_CONTRACT_DIGEST_MISMATCH, None, None
         )
-    if raw.get("accepted") is not True:
-        return BootstrapPromotionEvaluation(False, REASON_MANIFEST_NOT_ACCEPTED, None, None)
 
-    scope = raw.get("scope")
-    if not isinstance(scope, Mapping):
-        return BootstrapPromotionEvaluation(False, REASON_MANIFEST_SCOPE_INVALID, None, None)
-    for field, expected in CANONICAL_SCOPE_FIXED_FIELDS.items():
-        if scope.get(field) != expected:
+    entries = raw.get("entries")
+    if not isinstance(entries, Sequence) or isinstance(entries, (str, bytes)) or not entries:
+        return BootstrapPromotionEvaluation(False, REASON_MANIFEST_MALFORMED, None, None)
+    if not all(isinstance(entry, Mapping) for entry in entries):
+        return BootstrapPromotionEvaluation(False, REASON_MANIFEST_MALFORMED, None, None)
+
+    # No two entries may declare the same raw symbol (this manifest's fixed
+    # venue/quote/horizon/interval fields are shared across every entry by
+    # contract, so the symbol is the real uniqueness dimension). Checked
+    # over every entry with an extractable raw symbol regardless of its own
+    # well-formed/accepted state, so a tampered or duplicated manifest can
+    # never be resolved by silently picking one of two conflicting entries
+    # for the same symbol.
+    seen_symbols: set[str] = set()
+    for entry in entries:
+        raw_symbol = _raw_scope_symbol(entry.get("scope"))
+        if raw_symbol is None:
+            continue
+        if raw_symbol in seen_symbols:
             return BootstrapPromotionEvaluation(
-                False, REASON_MANIFEST_SCOPE_INVALID, None, None
+                False, REASON_MANIFEST_DUPLICATE_SCOPE_ENTRIES, None, None
             )
-    symbol = scope.get("symbol")
-    if not _valid_symbol(symbol):
-        return BootstrapPromotionEvaluation(False, REASON_MANIFEST_SCOPE_INVALID, None, None)
-    try:
-        # Reuse the existing canonical key validator instead of duplicating
-        # symbol/venue/quote/horizon/interval normalization rules.
-        NativeShortScopeAdministrationKey(
-            venue=str(scope.get("venue")),
-            symbol=str(symbol),
-            quote_currency=str(scope.get("quote_currency")),
-            fib_trading_horizon=str(scope.get("fib_trading_horizon")),
-            primary_interval=str(scope.get("primary_interval")),
-            supporting_interval=str(scope.get("supporting_interval")),
-        )
-    except NativeShortScopeAdministrationValidationError:
-        return BootstrapPromotionEvaluation(False, REASON_MANIFEST_SCOPE_INVALID, None, None)
+        seen_symbols.add(raw_symbol)
 
-    approval_reference = raw.get("approval_reference")
-    if not isinstance(approval_reference, str) or not approval_reference.strip():
-        return BootstrapPromotionEvaluation(
-            False, REASON_MANIFEST_MISSING_APPROVAL_REFERENCE, symbol, None
-        )
-
-    approved_at_utc = raw.get("approved_at_utc")
-    if not isinstance(approved_at_utc, str) or _UTC_ISO_PATTERN.match(approved_at_utc) is None:
-        return BootstrapPromotionEvaluation(
-            False, REASON_MANIFEST_APPROVED_AT_INVALID, symbol, None
-        )
-
-    approved_implementation_commit = raw.get("approved_implementation_commit")
-    if (
-        not isinstance(approved_implementation_commit, str)
-        or _SHA_PATTERN.fullmatch(approved_implementation_commit) is None
-    ):
-        return BootstrapPromotionEvaluation(
-            False, REASON_MANIFEST_IMPLEMENTATION_COMMIT_INVALID, symbol, None
-        )
-
-    declared_digest = raw.get("approval_evidence_digest")
-    try:
-        implementation_file_sha256 = hash_implementation_file(implementation_file_path)
-    except OSError:
-        return BootstrapPromotionEvaluation(
-            False, REASON_MANIFEST_DIGEST_MISMATCH, symbol, approved_implementation_commit
-        )
-    recomputed_digest = compute_approval_evidence_digest(
-        accepted=True,
-        scope=scope,
-        approval_reference=approval_reference,
-        approved_at_utc=approved_at_utc,
-        approved_implementation_commit=approved_implementation_commit,
-        implementation_file_sha256=implementation_file_sha256,
+    requested_normalized = dict(requested_scope)
+    requested_symbol = _raw_scope_symbol(requested_normalized)
+    matches = (
+        []
+        if requested_symbol is None
+        else [
+            entry
+            for entry in entries
+            if _raw_scope_symbol(entry.get("scope")) == requested_symbol
+        ]
     )
-    if not isinstance(declared_digest, str) or declared_digest != recomputed_digest:
+    if not matches:
+        return BootstrapPromotionEvaluation(False, REASON_SCOPE_MISMATCH, None, None)
+    # Duplicate-scope detection above guarantees at most one match reaches
+    # here; this remains a defensive, never-relied-upon-alone second guard.
+    if len(matches) > 1:
         return BootstrapPromotionEvaluation(
-            False, REASON_MANIFEST_DIGEST_MISMATCH, symbol, approved_implementation_commit
+            False, REASON_MANIFEST_DUPLICATE_SCOPE_ENTRIES, None, None
         )
 
-    if dict(scope) != dict(requested_scope):
-        return BootstrapPromotionEvaluation(
-            False, REASON_SCOPE_MISMATCH, symbol, approved_implementation_commit
-        )
-
-    if require_implementation_commit_ancestry:
-        try:
-            is_ancestor = ancestry_checker(approved_implementation_commit)
-        except Exception:  # noqa: BLE001 - any ancestry-check failure fails closed.
-            return BootstrapPromotionEvaluation(
-                False,
-                REASON_ANCESTRY_CHECK_UNAVAILABLE,
-                symbol,
-                approved_implementation_commit,
-            )
-        if not is_ancestor:
-            return BootstrapPromotionEvaluation(
-                False,
-                REASON_IMPLEMENTATION_COMMIT_NOT_ANCESTOR,
-                symbol,
-                approved_implementation_commit,
-            )
-
-    return BootstrapPromotionEvaluation(
-        True, REASON_EVIDENCE_ACCEPTED, symbol, approved_implementation_commit
+    return _evaluate_entry(
+        matches[0],
+        requested_scope=requested_normalized,
+        require_implementation_commit_ancestry=require_implementation_commit_ancestry,
+        ancestry_checker=ancestry_checker,
+        implementation_file_path=implementation_file_path,
     )
 
 
@@ -452,6 +568,7 @@ __all__ = [
     "REASON_MANIFEST_SCHEMA_VERSION_WRONG",
     "REASON_MANIFEST_CONTRACT_VERSION_WRONG",
     "REASON_MANIFEST_CONTRACT_DIGEST_MISMATCH",
+    "REASON_MANIFEST_DUPLICATE_SCOPE_ENTRIES",
     "REASON_MANIFEST_NOT_ACCEPTED",
     "REASON_MANIFEST_SCOPE_INVALID",
     "REASON_MANIFEST_APPROVED_AT_INVALID",
