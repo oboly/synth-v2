@@ -27,6 +27,7 @@ from src.market_context.market_context_builder_v1 import (
 )
 from src.market_data.native_short_fib_context_v1 import (
     DEFAULT_ROWS_CSV as DEFAULT_NATIVE_SHORT_ROWS,
+    FRESHNESS_FRESH as NATIVE_SHORT_CONTEXT_FRESH,
     STATUS_AVAILABLE as NATIVE_SHORT_CONTEXT_AVAILABLE,
     load_native_short_context_rows,
 )
@@ -311,20 +312,57 @@ def _latest_ts(*values: datetime | None) -> datetime | None:
     return max(present) if present else None
 
 
-def _evidence_from_native_row(native_row: Any, *, now_utc: datetime) -> CardEvidence:
+def _native_row_is_canonical(native_row: Any, *, snapshot_verified: bool) -> bool:
+    """True only when the row's own contract state AND the transport-layer
+    snapshot validation both agree the context is canonical native SHORT truth.
+
+    ``snapshot_verified`` reflects the render owner's validate_published_snapshot()
+    result (--native-short-snapshot-status loaded), i.e. schema/digest/identity
+    validation of the canonical snapshot root. The row's own context_status and
+    context_freshness_status are the existing native SHORT contract fields.
+    Both signals must hold or the row stays non-canonical/transient.
+    """
+    return (
+        snapshot_verified
+        and native_row.context_status == NATIVE_SHORT_CONTEXT_AVAILABLE
+        and native_row.context_freshness_status == NATIVE_SHORT_CONTEXT_FRESH
+    )
+
+
+def _evidence_from_native_row(
+    native_row: Any,
+    *,
+    now_utc: datetime,
+    snapshot_verified: bool = False,
+    snapshot_id: str | None = None,
+) -> CardEvidence:
     latest_context_ts = _latest_ts(
         native_row.latest_primary_close_ts_utc,
         native_row.latest_support_close_ts_utc,
     )
+    is_canonical = _native_row_is_canonical(native_row, snapshot_verified=snapshot_verified)
+    if is_canonical:
+        # Backed by a validated canonical snapshot root (schema/digest/identity
+        # confirmed) plus a passing per-row native SHORT contract: map identity
+        # and cycle id are canonical, not bridge reference-only metadata.
+        native_map_id = _fmt_unavailable(f"{snapshot_id}:{native_row.symbol}:{native_row.map_cycle_id}")
+        native_map_status = "AVAILABLE"
+        selected_map_reason = _fmt_unavailable(native_row.selection_reason)
+        selected_map_tier = _fmt_unavailable(native_row.current_map_status)
+    else:
+        # Native scope-status projection is not proven canonical (snapshot not
+        # verified loaded, row not AVAILABLE, or row not FRESH); stays
+        # DATA_UNAVAILABLE so account-specific repair actions fail closed.
+        native_map_id = "DATA_UNAVAILABLE"
+        native_map_status = "DATA_UNAVAILABLE"
+        selected_map_reason = f"TRANSIENT_NON_CANONICAL_REFERENCE: {_fmt_unavailable(native_row.selection_reason)}"
+        selected_map_tier = "TRANSIENT_NON_CANONICAL_REFERENCE"
     return CardEvidence(
-        # Preserve the bridge cycle only as non-canonical reference metadata.
         map_cycle_id=_fmt_unavailable(native_row.map_cycle_id),
-        # Native scope-status projection (Lane B) is not yet wired into this runner;
-        # it remains DATA_UNAVAILABLE so account-specific repair actions fail closed.
-        native_map_id="DATA_UNAVAILABLE",
-        native_map_status="DATA_UNAVAILABLE",
-        selected_map_reason=f"TRANSIENT_NON_CANONICAL_REFERENCE: {_fmt_unavailable(native_row.selection_reason)}",
-        selected_map_tier="TRANSIENT_NON_CANONICAL_REFERENCE",
+        native_map_id=native_map_id,
+        native_map_status=native_map_status,
+        selected_map_reason=selected_map_reason,
+        selected_map_tier=selected_map_tier,
         lifecycle_state="DATA_UNAVAILABLE",
         rollover_state="DATA_UNAVAILABLE",
         previous_map_cycle_id="DATA_UNAVAILABLE",
@@ -730,8 +768,11 @@ def load_zone_contexts(
     native_short_rows_path: Path,
     fib_map_rows_path: Path,
     now_utc: datetime | None = None,
+    native_short_snapshot_status: str = "unverified",
+    native_short_snapshot_id: str | None = None,
 ) -> ZoneContextLoadResult:
     _now = now_utc or datetime.now(UTC)
+    snapshot_verified = native_short_snapshot_status == "loaded" and bool(native_short_snapshot_id)
     fib_rows_by_symbol, source_missing = load_fib_map_rows(fib_map_rows_path)
     native_rows_by_symbol, native_source_missing = load_native_short_context_rows(native_short_rows_path)
     fib_ext_by_symbol: dict[str, FibExtContext] = {}
@@ -791,18 +832,26 @@ def load_zone_contexts(
         native_row = native_rows_by_symbol.get(symbol)
         native_reference_only = native_row is not None and native_row.context_status != NATIVE_SHORT_CONTEXT_AVAILABLE
         if native_row is not None:
-            evidence_by_symbol[symbol] = _evidence_from_native_row(native_row, now_utc=_now)
-            input_status_by_symbol[symbol] = (
-                "TRANSIENT_NON_CANONICAL_CONTEXT_AVAILABLE"
-                if native_row.context_status == NATIVE_SHORT_CONTEXT_AVAILABLE
-                else native_row.context_status
+            row_is_canonical = _native_row_is_canonical(native_row, snapshot_verified=snapshot_verified)
+            evidence_by_symbol[symbol] = _evidence_from_native_row(
+                native_row,
+                now_utc=_now,
+                snapshot_verified=snapshot_verified,
+                snapshot_id=native_short_snapshot_id,
             )
+            if native_row.context_status != NATIVE_SHORT_CONTEXT_AVAILABLE:
+                input_status_by_symbol[symbol] = native_row.context_status
+            elif row_is_canonical:
+                input_status_by_symbol[symbol] = NATIVE_SHORT_CONTEXT_AVAILABLE
+            else:
+                input_status_by_symbol[symbol] = "TRANSIENT_NON_CANONICAL_CONTEXT_AVAILABLE"
             coverage_status_by_symbol[symbol] = input_status_by_symbol[symbol]
-            display_state_by_symbol[symbol] = (
-                "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT"
-                if native_row.context_status == NATIVE_SHORT_CONTEXT_AVAILABLE
-                else "NO_NATIVE_SHORT_FIB_CONTEXT"
-            )
+            if native_row.context_status != NATIVE_SHORT_CONTEXT_AVAILABLE:
+                display_state_by_symbol[symbol] = "NO_NATIVE_SHORT_FIB_CONTEXT"
+            elif row_is_canonical:
+                display_state_by_symbol[symbol] = "HAS_NATIVE_SHORT_FIB_CONTEXT"
+            else:
+                display_state_by_symbol[symbol] = "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT"
             activation_ts_by_symbol[symbol] = native_row.anchor_end_ts_utc
             if native_row.context_status == NATIVE_SHORT_CONTEXT_AVAILABLE:
                 swing_low = native_row.anchor_low_price
@@ -1390,6 +1439,8 @@ def main() -> int:
         recent_lows=_parse_kv_list(args.recent_lows, 2),
         native_short_rows_path=native_short_rows_path,
         fib_map_rows_path=Path(args.fib_map_rows),
+        native_short_snapshot_status=getattr(args, "native_short_snapshot_status", "unverified"),
+        native_short_snapshot_id=getattr(args, "native_short_snapshot_id", None),
     )
     history_by_symbol = fetch_market_target_history_by_symbol(
         venue=args.venue,
