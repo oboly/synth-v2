@@ -7,6 +7,10 @@ Synth is a layered quantitative crypto trading and research system.
 Before designing, implementing, or reviewing any lane, read:
 docs/SYSTEM_FACTS.md
 
+For the product-direction anchor — the actual end goal and why a task does
+or does not matter — read:
+docs/strategy/synth_v2_outcome_and_priorities.md
+
 The current focus is:
 
 - data correctness
@@ -44,6 +48,10 @@ No layer may bypass the next permission layer.
 ---
 
 ## 2. Main Documentation Files
+
+Product direction / outcome and priorities:
+
+    docs/strategy/synth_v2_outcome_and_priorities.md
 
 General standards:
 

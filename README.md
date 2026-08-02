@@ -2,6 +2,8 @@
 
 A structured, modular trading system focused on robustness, explainability, and strict separation of concerns.
 
+Product direction and priorities: `docs/strategy/synth_v2_outcome_and_priorities.md`.
+
 ---
 
 ## Core Philosophy
