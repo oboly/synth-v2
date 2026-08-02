@@ -59,6 +59,31 @@ Every requested symbol must already be a member of the checked-in
 (unchanged from the underlying rollout CLI). This module adds no symbol
 allow-list of its own and no wildcard.
 
+Scoped writer runtime context
+-------------------------------
+The rollout CLI's authorization boundary
+(``enforce_capability_write_authorization``) reads its execution mode from
+``SYNTH_WRITER_EXECUTION_MODE`` when the caller does not pass ``mode``
+explicitly, defaulting to ``READ_ONLY`` (fail closed) when that variable is
+absent -- exactly like every other writer wrapper script in this repository
+(``scripts/run_chain_4h.sh``, ``scripts/run_market_price_snapshot_once.sh``,
+etc.). ``_writer_runtime_context`` sets ``SYNTH_WRITER_EXECUTION_MODE=
+PRODUCTION`` and ``SYNTH_WRITER_CAPABILITY_ID=native_short_4h_chain`` (the
+same capability identity constant already used by the rollout CLI and the
+transaction owner) for the exact duration of the single, bounded
+``rollout_cli.main(...)`` call only, and restores whatever value (or
+absence) each variable had immediately beforehand -- on both the success and
+the exception/failure path. It never mutates permanent host configuration
+and never touches any other process environment. It does not authorize
+anything by itself: it only ensures the rollout CLI observes the same
+production mode a human operator would otherwise have to export by hand;
+the real authorization decision, including host/checkout/commit/capability
+verification, remains entirely inside the unmodified
+``enforce_capability_write_authorization`` call. The canonical 4h chain,
+invoked afterward via ``_run_chain``, keeps setting its own
+``SYNTH_WRITER_EXECUTION_MODE``/``SYNTH_WRITER_CAPABILITY_ID`` exactly as it
+already did (unchanged) once the scoped context above has been restored.
+
 Safety markers:
 broker_private_calls=0
 broker_writes=0
@@ -73,6 +98,7 @@ profit_plan_writes=0
 reporting_writes=0
 """
 
+import contextlib
 import getpass
 import json
 import os
@@ -80,7 +106,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from src.market_data.native_short_repository_source_identity_v1 import (
     REPOSITORY_ROOT,
@@ -92,6 +118,14 @@ from src.market_data.native_short_scope_administration_rollout_v1 import (
     resolve_rollout_entries,
 )
 from src.market_data import run_native_short_scope_administration_rollout_v1 as rollout_cli
+from src.market_data.native_short_scope_administration_transaction_v1 import (
+    WRITER_CAPABILITY_ID,
+)
+from src.operations.writer_capability_authorization_v1 import (
+    ENV_CAPABILITY,
+    ENV_MODE,
+    ExecutionMode,
+)
 
 
 RUNNER_NAME = "run_native_short_production_promote_v1"
@@ -182,6 +216,30 @@ def _build_rollout_argv(
     return argv
 
 
+@contextlib.contextmanager
+def _writer_runtime_context() -> Iterator[None]:
+    """Set the exact writer runtime context the rollout CLI's authorization
+    boundary expects (``SYNTH_WRITER_EXECUTION_MODE=PRODUCTION``,
+    ``SYNTH_WRITER_CAPABILITY_ID=native_short_4h_chain``) for the duration of
+    the wrapped block only, restoring whatever value -- or absence -- each
+    variable had immediately before, on every exit path including an
+    exception. Never mutates permanent host configuration."""
+    previous: dict[str, str | None] = {
+        ENV_MODE: os.environ.get(ENV_MODE),
+        ENV_CAPABILITY: os.environ.get(ENV_CAPABILITY),
+    }
+    os.environ[ENV_MODE] = ExecutionMode.PRODUCTION.value
+    os.environ[ENV_CAPABILITY] = WRITER_CAPABILITY_ID
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _run_chain(repository_root: Path) -> int:
     chain_script = repository_root / CHAIN_WRAPPER_RELATIVE_PATH
     completed = subprocess.run(["bash", str(chain_script)], cwd=str(repository_root), check=False)
@@ -233,7 +291,8 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
 
-    rollout_rc = rollout_cli.main(rollout_argv)
+    with _writer_runtime_context():
+        rollout_rc = rollout_cli.main(rollout_argv)
     if rollout_rc != 0:
         _emit(
             _result(

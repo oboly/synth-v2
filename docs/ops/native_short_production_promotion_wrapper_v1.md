@@ -73,6 +73,61 @@ performs automatically.
 Regression tests: `tests/test_writer_capability_authorization_v1.py`
 (`test_ancestor_mode_*`, `test_exact_mode_is_unaffected_default_when_field_absent`).
 
+## Post-implementation runtime fixes
+
+Two defects surfaced on the first real gurkDB dry-run of the installed
+symlink and are fixed in this revision; both are covered by regression
+tests.
+
+**1. Symlink resolution in the shell wrapper.** Once installed at
+`/usr/local/bin/synth-native-short-promote` (a symlink to
+`scripts/synth_native_short_promote_v1.sh`), `BASH_SOURCE[0]` for a
+symlinked invocation is the symlink path itself, not its target. The
+original script derived `SCRIPT_DIR` directly from
+`dirname "${BASH_SOURCE[0]}"`, so `SCRIPT_DIR` resolved to `/usr/local/bin`
+and `REPO_DIR` to `/usr/local` -- the wrapper could never find the
+repository venv. The script now resolves the physical target first:
+
+```bash
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+SCRIPT_DIR="$(cd "$(dirname "${SCRIPT_PATH}")" && pwd)"
+```
+
+and fails closed with an explicit message
+(`could not resolve physical script path`) if that resolution ever comes
+back empty (for example, `readlink` unavailable on a stripped-down `PATH`),
+instead of proceeding with a wrong directory. Regression tests:
+`tests/test_synth_native_short_promote_shell_wrapper_v1.py`.
+
+**2. Missing writer runtime context.** The rollout CLI's authorization
+boundary (`enforce_capability_write_authorization`) reads its execution mode
+from `SYNTH_WRITER_EXECUTION_MODE` when the caller does not pass `mode`
+explicitly, and defaults to `READ_ONLY` (fail closed) when that variable is
+absent -- exactly like every other writer wrapper script in this repository.
+The Python wrapper called the rollout CLI without ever setting
+`SYNTH_WRITER_EXECUTION_MODE` or `SYNTH_WRITER_CAPABILITY_ID`, so the
+rollout authorizer defaulted to `READ_ONLY` and rejected the write before
+any database access. `run_native_short_production_promote_v1` now sets both
+via a scoped context manager (`_writer_runtime_context`) for the exact
+duration of the bounded rollout call only:
+
+```python
+os.environ[ENV_MODE] = ExecutionMode.PRODUCTION.value
+os.environ[ENV_CAPABILITY] = WRITER_CAPABILITY_ID  # "native_short_4h_chain"
+```
+
+restoring whatever value -- or absence -- each variable had immediately
+before, on every exit path including an exception, and never mutating
+permanent host configuration. This adds no authorization logic of its own:
+the real decision, including host/checkout/commit/capability verification,
+remains entirely inside the unmodified `enforce_capability_write_authorization`
+call, and the canonical 4h chain invoked afterward keeps setting its own
+`SYNTH_WRITER_EXECUTION_MODE`/`SYNTH_WRITER_CAPABILITY_ID` exactly as it
+already did, unchanged, once the scoped context has been restored.
+Regression tests: `tests/test_native_short_production_promote_v1.py`
+(`test_rollout_observes_production_mode_and_capability_id`,
+`test_env_vars_restored_*`, `test_no_db_connection_attempted_when_authorization_denied`).
+
 An illustrative, schema-valid, not-for-use example of the ANCESTOR-mode shape
 is checked in at
 `deploy/ownership/writer_capability_native_short_4h_chain_authorization_v1.example.json`.
@@ -123,10 +178,15 @@ What it does, in order:
    (`run_native_short_scope_administration_rollout_v1.main`) with `--write`
    and one `--only-symbol` per requested symbol, in a single invocation, so
    the CLI's own stop-at-first-failure behavior covers every requested
-   symbol. This is where the real authorization decision happens
-   (`enforce_capability_write_authorization`, called before any database
-   connection) -- the wrapper adds no authorization logic of its own and no
-   bypass.
+   symbol. For the exact duration of this one call, a scoped context manager
+   sets `SYNTH_WRITER_EXECUTION_MODE=PRODUCTION` and
+   `SYNTH_WRITER_CAPABILITY_ID=native_short_4h_chain` (restoring whatever
+   value, or absence, preceded them immediately afterward, on success or
+   failure) -- without this, the rollout CLI's authorization boundary
+   defaults to `READ_ONLY` and fails closed. This is where the real
+   authorization decision happens (`enforce_capability_write_authorization`,
+   called before any database connection) -- the wrapper adds no
+   authorization logic of its own and no bypass.
 6. Only if that call fully succeeds, runs the existing, unmodified
    `scripts/run_chain_4h.sh` (which itself re-verifies DB binding, DB grant,
    and writer-capability authorization before doing anything, and publishes
