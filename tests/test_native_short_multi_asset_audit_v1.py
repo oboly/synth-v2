@@ -29,6 +29,7 @@ from src.market_data.native_short_multi_asset_audit_v1 import (
     READY_FOR_SEQUENTIAL_CANARY_REVIEW,
     REMOVAL_CONTRACT_MISSING,
     SCOPE_AMBIGUOUS,
+    SCOPE_CONFLICT,
     SUPPORTING_SOURCE_STALE,
     SUPPORTING_CONTEXT_UNAVAILABLE,
     TICK_RULE_AMBIGUOUS,
@@ -212,6 +213,17 @@ def test_btc_existing_canary_classification() -> None:
     assert result.readiness_status == READY_EXISTING_CANARY
     assert result.market_readiness_status == "MARKET_READY"
     assert result.production_promotable is False
+    assert result.materializer_validate_only_possible is True
+
+
+def test_any_symbol_with_a_single_supported_scope_is_an_existing_canary() -> None:
+    """A promoted scope is recognized generically from ledger state, not from
+    a single hardcoded symbol constant -- proves the SOL-post-promotion
+    misclassification defect (SCOPE_CONFLICT) stays fixed for every symbol."""
+    result = evaluate_candidate(candidate("SOL", ledger=existing_btc_ledger()), as_of_utc=AS_OF)
+    assert result.readiness_status == READY_EXISTING_CANARY
+    assert result.ledger_readiness_status == "LEDGER_READY"
+    assert SCOPE_CONFLICT not in result.ledger_reason_codes
     assert result.materializer_validate_only_possible is True
 
 

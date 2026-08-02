@@ -181,12 +181,42 @@ def test_unaccepted_manifest_fails_closed(tmp_path: Path) -> None:
     assert result.reason == REASON_MANIFEST_NOT_ACCEPTED
 
 
-def test_shipped_repository_manifest_is_unaccepted() -> None:
-    # The manifest actually shipped in this PR must remain unaccepted, so
-    # PROMOTION_CONTRACT_MISSING stays active without any test fixture.
+def test_shipped_repository_manifest_is_accepted_against_the_real_sol_ledger_row() -> None:
+    # The manifest shipped by this lane records the reviewed acceptance of
+    # the real, already-persisted production SOL PROMOTE_SCOPE operation
+    # (docs/ops/native_short_sol_promotion_operational_acceptance_v1.md).
+    # Cross-validated here against a reconstruction of that exact ledger row
+    # (not a live database read -- this module's evaluator takes rows as a
+    # pure argument), proving the manifest and the ledger evidence agree.
+    sol_row = {
+        "operation_uuid": "7ef9c93a-4418-458f-939e-7c3caf00705f",
+        "operation_type": "PROMOTE_SCOPE",
+        "venue": "bitvavo",
+        "symbol": "SOL",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h",
+        "schema_version": REQUIRED_ADMINISTRATION_SCHEMA_VERSION,
+        "metadata_digest": "8f0168b57ed8905154f8157643f5cddfd3e51fa41de85c6d096432801c401a5a",
+        "completed_at_utc": datetime(2026, 8, 1, 17, 30, 15, tzinfo=UTC),
+        "result_class": "SUCCESS",
+        "result_code": "PROMOTED_NEW_SCOPE",
+    }
+    result = evaluate_promotion_acceptance_evidence([sol_row])
+    assert result.accepted is True
+    assert result.reason == REASON_EVIDENCE_ACCEPTED
+    assert result.operation_uuid == "7ef9c93a-4418-458f-939e-7c3caf00705f"
+    assert result.scope_symbol == "SOL"
+
+
+def test_shipped_repository_manifest_fails_closed_without_its_matching_ledger_row() -> None:
+    # No canonical evidence source is ever inferred from the manifest alone
+    # -- absent the exact matching ledger row, the shipped accepted manifest
+    # still fails closed.
     result = evaluate_promotion_acceptance_evidence([])
     assert result.accepted is False
-    assert result.reason == REASON_MANIFEST_NOT_ACCEPTED
+    assert result.reason == REASON_EVIDENCE_ABSENT
 
 
 @pytest.mark.parametrize("accepted_value", [1, "true", None, "yes"])
