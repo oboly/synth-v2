@@ -514,6 +514,76 @@ Snapshot, Public Candle Freshness, the SOL/ETH/XRP promotion approvals, or the
 gurkDB `native_short_4h_chain` ownership preflight) is altered by this
 section.
 
+### Why the schema itself was never applied on gurkdb
+
+The grant gap above is one symptom of a second, more basic gap: as of
+2026-08-02, `native_short_map_level_target_event_coverage_v1` and
+`native_short_map_level_target_event_v1` do not exist at all in the
+production `synth` database on gurkdb (confirmed by the read-only
+`synth-native-short-readiness-check` schema-existence check -- see
+`docs/ops/native_short_production_promotion_wrapper_v1.md`). This is not a
+defect in the migration file. This repository has no automatic migration
+runner: every `db/migrations/*.sql` file is applied manually, one file at a
+time, by an operator (see `docs/ops/native_short_scope_status_schema_deployment_20260708.md`
+for the established precedent and its own evidence trail). The migration
+that creates these two tables plus the `native_short_map_level_target_event_current_state_v1`
+view --
+
+```text
+db/migrations/20260731_native_short_map_level_target_event_v1.sql
+```
+
+-- was merged into `main` but its manual apply step on gurkdb was never
+performed. The file itself needs no correction: it is already exactly the
+narrow, idempotent artifact this task asked for --
+`CREATE TABLE IF NOT EXISTS` for both tables and `CREATE OR REPLACE VIEW` for
+the view, touching no other object, safe to re-run. The gap is purely
+operational (a merged migration whose manual apply step was skipped), not a
+schema-authoring defect.
+
+### Missing-schema recovery procedure (exact commands, not executed by this change)
+
+Run on gurkdb, in order, after this change merges. None of these four steps
+is executed as part of this repository change.
+
+**A. Apply only the missing schema objects** (idempotent; touches only the
+three objects this one file defines, no unrelated migration):
+
+```bash
+mysql -h 192.168.1.221 -P 3306 -u <db_admin_user> -p synth \
+    < db/migrations/20260731_native_short_map_level_target_event_v1.sql
+```
+
+**B. Apply the two minimum grants** (see "Operator Grant Procedure" below for
+the exact statements, or re-run the complete idempotent
+`db/dba/synth_chain_4h_writer_v1.sql` artifact, which now includes them):
+
+```bash
+mysql -h 192.168.1.221 -P 3306 -u <db_admin_user> -p synth <<'SQL'
+GRANT SELECT
+    ON `synth`.`native_short_map_level_target_event_coverage_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT, INSERT
+    ON `synth`.`native_short_map_level_target_event_v1`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+SQL
+```
+
+**C. Run the readiness check** (read-only; must report `ready=true` --
+warnings, if any, do not block):
+
+```bash
+sudo synth-native-short-readiness-check
+```
+
+**D. Start the chain once** (the canonical oneshot unit; this does not enable
+or activate the timer, which remains a separate, larger production-cutover
+decision unrelated to this schema/grant fix):
+
+```bash
+sudo systemctl start synth-chain-4h.service
+```
+
 ## Operator Grant Procedure (host-side, not executed by this change)
 
 This repository change performs no database mutation, credential change, or

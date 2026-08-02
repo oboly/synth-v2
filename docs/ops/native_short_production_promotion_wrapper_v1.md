@@ -154,6 +154,9 @@ Components:
   wrapper, the intended install target for
   `/usr/local/bin/synth-native-short-promote` (a symlink; installing the
   symlink is a host action, not performed by this repository change).
+- `src/operations/run_native_short_production_readiness_v1.py` /
+  `scripts/synth_native_short_readiness_check_v1.sh` -- the readiness check
+  this wrapper runs first; see "Readiness check and `--force`" below.
 
 What it does, in order:
 
@@ -174,7 +177,14 @@ What it does, in order:
 4. Derives `actor_id` from `SUDO_USER` (or the current user) and fixes
    `actor_type=HUMAN_OPERATOR`, `trigger_type=MANUAL_CLI`,
    `request_source=synth-native-short-promote`, and a fixed `reason` string.
-5. Calls the existing, unmodified rollout CLI
+5. Runs the read-only
+   `run_native_short_production_readiness_v1.evaluate_readiness` check
+   in-process. By default, any hard blocker stops here -- before this step,
+   before any repository-commit derivation for the rollout call, before
+   `enforce_capability_write_authorization`, and before any database
+   connection. `--force` skips only this stop (see "Readiness check and
+   `--force`" below); it changes nothing else.
+6. Calls the existing, unmodified rollout CLI
    (`run_native_short_scope_administration_rollout_v1.main`) with `--write`
    and one `--only-symbol` per requested symbol, in a single invocation, so
    the CLI's own stop-at-first-failure behavior covers every requested
@@ -187,11 +197,11 @@ What it does, in order:
    authorization decision happens (`enforce_capability_write_authorization`,
    called before any database connection) -- the wrapper adds no
    authorization logic of its own and no bypass.
-6. Only if that call fully succeeds, runs the existing, unmodified
+7. Only if that call fully succeeds, runs the existing, unmodified
    `scripts/run_chain_4h.sh` (which itself re-verifies DB binding, DB grant,
    and writer-capability authorization before doing anything, and publishes
    the refreshed fib-context snapshot as one of its steps).
-7. Emits exactly one final JSON result document to stdout (machine-readable)
+8. Emits exactly one final JSON result document to stdout (machine-readable)
    plus short progress lines to stderr (human-readable).
 
 What it does **not** do:
@@ -205,15 +215,82 @@ What it does **not** do:
 - No account, wallet, broker, order, `decision_gate`, `execution_planner`,
   or `executor` coupling.
 
-Regression tests: `tests/test_native_short_production_promote_v1.py`.
+Regression tests: `tests/test_native_short_production_promote_v1.py`,
+`tests/test_synth_native_short_promote_shell_wrapper_v1.py`.
+
+## Readiness check and `--force`
+
+`sudo synth-native-short-readiness-check` is a lightweight, entirely
+read-only check: no database write, no host mutation, no systemd mutation,
+no writer invocation. It orchestrates existing contracts (DB env/grant
+preflight, the canonical `REQUIRED_OBJECT_PRIVILEGES` manifest, systemd unit
+inspection, price/candle freshness classifiers, repository source identity)
+into one verdict with exactly two severities -- no policy engine, no
+approval records, no severity levels beyond these two, matching the scale of
+a single-user personal trading system rather than an enterprise compliance
+framework.
+
+**Hard blocker** (`ready=false`, exit 1): a condition that makes an actual
+production chain run almost certain to fail immediately.
+
+- checkout does not resolve, or is not on `main`, or has uncontrolled dirt
+- the `native_short_4h_chain` production authorization file is missing,
+  unreadable, or insecurely permissioned
+- the required database binding cannot be established
+- any object in `synth_chain_4h_db_authority_v1.REQUIRED_OBJECT_PRIVILEGES`
+  does not exist in the `synth` schema
+- the actual grants do not satisfy the canonical minimum grant contract
+- `synth-chain-4h.service` is not installed, or its `User`/`WorkingDirectory`/
+  `ConditionHost` do not match the canonical gurkdb runtime
+- a script or module the chain invokes (per the registry's
+  `wrappers_invoked`/`modules_invoked` for `native_short_4h_chain`) does not
+  exist
+
+**Warning** (`ready` unaffected, never blocks): non-critical drift worth
+knowing about.
+
+- persisted public price is stale
+- the expected 4h candle close is not yet persisted
+- the timer is disabled/inactive (expected before the `ACTIVE` production
+  cutover; not fatal on its own)
+- the controlled/allowed untracked file is present
+- the service's last systemd `Result` was not `success`
+
+Exit codes: `0` ready (warnings allowed), `1` one or more hard blockers, `2`
+the readiness runner itself could not evaluate safely (never treated as
+ready).
+
+`synth-native-short-promote` runs this exact check in-process before any
+rollout call. Without `--force`, a hard blocker stops the command there --
+before repository-commit derivation, before
+`enforce_capability_write_authorization`, and before any database
+connection. `sudo synth-native-short-promote --force ETH XRP` prints every
+hard blocker prominently to stderr, records `force: true` in the wrapper's
+own final JSON result, and continues past the readiness stop only --
+everything downstream (approved-universe validation, repository-identity
+derivation, `enforce_capability_write_authorization`, the rollout CLI's own
+database connection) still runs completely unchanged and can still fail on
+its own terms. `--force` never appears in the persisted administration
+request's `--metadata`: that metadata is part of the request's immutable
+digest, and an already-committed scope (the ETH/XRP promotions already
+committed in production) must keep replaying as
+`OPERATION_ALREADY_COMPLETED` regardless of whether a later invocation
+happens to pass `--force`.
+
+Regression tests: `tests/test_native_short_production_readiness_v1.py`
+(hard-blocker/warning classification, exit codes, no-mutation safety
+markers, shell-wrapper symlink smoke test) and the `--force`-specific cases
+in `tests/test_native_short_production_promote_v1.py`.
 
 ## Operator procedure
 
 Preconditions (host action, outside this repository change):
 
-1. Install the wrapper: symlink
-   `/usr/local/bin/synth-native-short-promote` to
-   `scripts/synth_native_short_promote_v1.sh` in the canonical checkout.
+1. Install both wrappers: symlink `/usr/local/bin/synth-native-short-promote`
+   to `scripts/synth_native_short_promote_v1.sh`, and
+   `/usr/local/bin/synth-native-short-readiness-check` to
+   `scripts/synth_native_short_readiness_check_v1.sh`, in the canonical
+   checkout.
 2. Ensure the `native_short_4h_chain` production authorization file
    (`/etc/synth/writer-capability-native-short-4h-chain-authorization-v1.json`,
    per `authorization_guard.authorization_file` in
@@ -225,10 +302,18 @@ Preconditions (host action, outside this repository change):
    automatic side effect of this change.
 3. Ensure the canonical checkout on the authorized host (`gurkdb`) is clean,
    on `main`, and at the desired approved commit.
+4. If readiness reports `REQUIRED_OBJECT_MISSING` or a matching
+   `GRANT_CONTRACT_MISMATCH` for the target-event tables, apply the missing
+   schema and its two grants first -- see "Missing-schema recovery
+   procedure" in
+   `docs/ops/synth_chain_4h_database_least_privilege_contract_v1.md`.
 
-Invocation:
+The complete normal workflow is no more than two commands -- no manual
+environment exports, no hidden MariaDB session variables, no hand-edited
+authorization JSON, no direct Python module invocation:
 
 ```bash
+sudo synth-native-short-readiness-check
 sudo synth-native-short-promote ETH XRP
 ```
 
@@ -237,7 +322,10 @@ later requested symbol untouched. On full success, runs the canonical 4h
 chain and publishes the refreshed snapshot. Safe to re-run: an
 already-completed symbol at the same commit replays as
 `OPERATION_ALREADY_COMPLETED` and processing continues from the first
-not-yet-attempted symbol.
+not-yet-attempted symbol. If readiness reports hard blockers that the
+operator has independently judged safe to proceed past, use
+`sudo synth-native-short-promote --force ETH XRP` -- see "Readiness check
+and `--force`" above for exactly what `--force` does and does not bypass.
 
 ## Deprecated procedure
 
