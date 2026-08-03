@@ -89,6 +89,33 @@ def _authorized_registry_file(tmp_path: Path, auth_file: Path) -> Path:
     return registry_with_auth_file(tmp_path, PRICE_CAP, auth_file, authorize=True)
 
 
+CANDLE_CAP = "public_candle_freshness"
+CANDLE_SERVICE = "synth-market-candle-freshness-writer.service"
+
+
+def _candle_authorization(commit: str) -> dict:
+    auth = _production_authorization(commit)
+    auth["authorization_id"] = "auth-candle-0001"
+    auth["capability_id"] = CANDLE_CAP
+    auth["capability_identity"] = "public-candle-freshness-writer"
+    auth["service"] = CANDLE_SERVICE
+    auth["systemd_unit"] = CANDLE_SERVICE
+    return auth
+
+
+def _candle_ancestor_authorization(anchor_commit: str) -> dict:
+    auth = _candle_authorization(anchor_commit)
+    auth["commit_verification_mode"] = "ANCESTOR"
+    auth["required_branch"] = "main"
+    return auth
+
+
+def _candle_registry_file(tmp_path: Path, auth_file: Path) -> Path:
+    from tests.writer_auth_support import registry_with_auth_file
+
+    return registry_with_auth_file(tmp_path, CANDLE_CAP, auth_file, authorize=True)
+
+
 # ---------------------------------------------------------------------------
 # Registry / guard: schema + semantic fail-closed.
 # ---------------------------------------------------------------------------
@@ -877,6 +904,105 @@ def test_unknown_commit_verification_mode_rejected(tmp_path: Path) -> None:
     path.write_text(json.dumps(auth), encoding="utf-8")
     result = load_and_validate_authorization(path, AUTH_SCHEMA)
     assert not result.ok
+
+
+# ---------------------------------------------------------------------------
+# public_candle_freshness ANCESTOR migration: capability-specific coverage
+# for the authorization guard rotated from EXACT to ANCESTOR semantics,
+# mirroring the native_short_4h_chain model above via the same shared guard.
+# ---------------------------------------------------------------------------
+
+def test_candle_freshness_exact_authorized_commit_passes(tmp_path: Path) -> None:
+    repo, head = _temp_git(tmp_path)
+    auth_path = _write_json(tmp_path / "auth.json", _candle_authorization(head))
+    registry_path = _candle_registry_file(tmp_path, auth_path)
+    decision = verify_writer_execution_authorization(
+        capability_id=CANDLE_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert decision.allowed, decision.reasons
+
+
+def test_candle_freshness_ancestor_mode_descendant_head_accepted(tmp_path: Path) -> None:
+    repo, anchor = _temp_git_main(tmp_path)
+    auth_path = _write_json(tmp_path / "auth.json", _candle_ancestor_authorization(anchor))
+    registry_path = _candle_registry_file(tmp_path, auth_path)
+    decision = verify_writer_execution_authorization(
+        capability_id=CANDLE_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert decision.allowed, decision.reasons
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    assert decision.authorization.validated_commit == head
+    assert head != anchor
+
+
+def test_candle_freshness_ancestor_mode_rejects_unrelated_commit(tmp_path: Path) -> None:
+    repo, _anchor = _temp_git_main(tmp_path)
+    unrelated = "f" * 40
+    auth_path = _write_json(tmp_path / "auth.json", _candle_ancestor_authorization(unrelated))
+    registry_path = _candle_registry_file(tmp_path, auth_path)
+    decision = verify_writer_execution_authorization(
+        capability_id=CANDLE_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any("is not an ancestor of HEAD" in e for e in decision.reasons)
+
+
+def test_candle_freshness_ancestor_mode_rejects_dirty_checkout(tmp_path: Path) -> None:
+    repo, anchor = _temp_git_main(tmp_path)
+    (repo / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+    auth_path = _write_json(tmp_path / "auth.json", _candle_ancestor_authorization(anchor))
+    registry_path = _candle_registry_file(tmp_path, auth_path)
+    decision = verify_writer_execution_authorization(
+        capability_id=CANDLE_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any("unstaged tracked changes" in e for e in decision.reasons)
+
+
+def test_candle_freshness_malformed_authorization_rejected(tmp_path: Path) -> None:
+    auth = _candle_ancestor_authorization("a" * 40)
+    auth["authorized_commit"] = "not-a-sha"
+    path = _write_json(tmp_path / "auth.json", auth)
+    result = load_and_validate_authorization(path, AUTH_SCHEMA)
+    assert not result.ok
+
+
+def test_candle_freshness_missing_authorization_file_blocks_production(tmp_path: Path) -> None:
+    from tests.writer_auth_support import registry_with_auth_file
+
+    registry_path = registry_with_auth_file(tmp_path, CANDLE_CAP, tmp_path / "missing.json")
+    decision = verify_writer_execution_authorization(
+        capability_id=CANDLE_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=REPO,
+        registry_path=registry_path,
+    )
+    assert not decision.allowed
 
 
 def test_exact_mode_is_unaffected_default_when_field_absent(tmp_path: Path) -> None:
