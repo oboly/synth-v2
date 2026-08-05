@@ -62,10 +62,16 @@ The writer never substitutes the research pivot preview as direction truth.
 `provenance_payload.map_direction` must agree with `current_leg` for every
 available map.
 
-`scripts/run_chain_4h.sh` must run `src.measurement.run_structure_state_engine`
-(`--venue bitvavo --interval 4h`) directly after `run_feat_candle` and before
-`run_canonical_fib_zone_map_v1`. Without an aligned `structure_state` row the
-writer falls back to `MISSING_OR_MISALIGNED_TREND_FEATURE` for every asset.
+This writer reads `feat_candle` directly (`fetch_latest_trend_rows`) and never
+queries the `structure_state` table; `src.measurement.run_structure_state_engine`
+is not part of `scripts/run_chain_4h.sh` and has no consumer in this chain (its
+designed caller is the separate `src.pipelines.run_refresh_pipeline` lane). The
+`MISSING_OR_MISALIGNED_TREND_FEATURE` reason means the newest `feat_candle` row
+for a symbol does not exactly match the newest `obs_market_candle` row for that
+symbol -- most commonly because `run_feat_candle`'s `--end` argument was not
+computed as an exclusive bound one interval past the just-closed candle (see
+`scripts/run_chain_4h.sh`'s `CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS`), which
+would otherwise silently exclude the just-closed candle from every asset.
 
 ## Why Paper Advice Is Excluded
 

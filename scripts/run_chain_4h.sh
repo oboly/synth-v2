@@ -95,17 +95,43 @@ run_step python -m src.market_data.native_short_repository_source_identity_v1 \
     --repository-commit "${NATIVE_SHORT_REPOSITORY_COMMIT}" \
     --allowed-untracked-path "${CONTROLLED_UNTRACKED_PATH}"
 
-CHAIN_4H_END_TS="$(
-    python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); h=(n.hour//4)*4; print(n.replace(hour=h, minute=0, second=0, microsecond=0).isoformat())'
+# Capture one canonical UTC instant/boundary in a single Python invocation and
+# derive every representation from it. Calling datetime.now() separately per
+# variable could let a run that happens to straddle a 4h boundary between
+# calls produce inconsistent freshness-gate and feature-window timestamps.
+#
+# CHAIN_4H_CLOSED_CANDLE_TS(_Z): identity of the just-closed 4h candle. The
+# freshness gate below requires a persisted candle whose close_ts_utc equals
+# this value exactly -- it is a point-in-time identity, not a window bound,
+# and must never be reused directly as an exclusive ETL upper bound.
+#
+# CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS: the feat_candle runner's --end is
+# a half-open (exclusive) upper bound (see
+# docs/todo/replay_parameter_study_harness_v1.md's documented [start, end)
+# contract for the same underlying etl_candle_feat.load_candles/
+# filter_write_window functions). Passing the closed-candle identity directly
+# as --end would silently exclude the just-closed candle from feat_candle for
+# every asset, so this is derived as the same closed-candle boundary plus one
+# interval, from the same captured instant.
+CHAIN_4H_BOUNDARY_OUTPUT="$(
+    python -c 'from datetime import datetime, timezone, timedelta; n=datetime.now(timezone.utc); h=(n.hour//4)*4; closed=n.replace(hour=h, minute=0, second=0, microsecond=0); feature_end=closed+timedelta(hours=4); print(closed.isoformat()); print(closed.strftime("%Y-%m-%dT%H:%M:%SZ")); print(feature_end.isoformat())'
 )"
-CHAIN_4H_END_TS_Z="$(
-    python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); h=(n.hour//4)*4; print(n.replace(hour=h, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ"))'
-)"
+readarray -t CHAIN_4H_BOUNDARY_VALUES <<< "$CHAIN_4H_BOUNDARY_OUTPUT"
+CHAIN_4H_CLOSED_CANDLE_TS="${CHAIN_4H_BOUNDARY_VALUES[0]:-}"
+CHAIN_4H_CLOSED_CANDLE_TS_Z="${CHAIN_4H_BOUNDARY_VALUES[1]:-}"
+CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS="${CHAIN_4H_BOUNDARY_VALUES[2]:-}"
+if [ "${#CHAIN_4H_BOUNDARY_VALUES[@]}" -ne 3 ] \
+    || [ -z "${CHAIN_4H_CLOSED_CANDLE_TS}" ] \
+    || [ -z "${CHAIN_4H_CLOSED_CANDLE_TS_Z}" ] \
+    || [ -z "${CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS}" ]; then
+    echo "[CHAIN][4h][FAIL] rc=2 reason=BOUNDARY_DERIVATION_FAILED"
+    exit 2
+fi
 
 echo "[CHAIN][4h] START $(date -u +%F' '%T) UTC"
 echo "[CHAIN][4h] persisted public-price freshness gate venue=bitvavo quote=EUR"
-echo "[CHAIN][4h] persisted candle boundary=${CHAIN_4H_END_TS}"
-echo "[CHAIN][4h] feature window lookback_hours=720 warmup_bars=300"
+echo "[CHAIN][4h] persisted candle boundary=${CHAIN_4H_CLOSED_CANDLE_TS}"
+echo "[CHAIN][4h] feature window lookback_hours=720 warmup_bars=300 end_exclusive=${CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS}"
 
 run_step python -m src.operations.run_persisted_market_price_freshness_v1 \
     --venue bitvavo \
@@ -115,7 +141,7 @@ run_step python -m src.operations.run_persisted_market_price_freshness_v1 \
 run_step python -m src.operations.run_persisted_market_candle_freshness_v1 \
     --venue bitvavo \
     --interval 4h \
-    --expected-close-ts "$CHAIN_4H_END_TS_Z"
+    --expected-close-ts "$CHAIN_4H_CLOSED_CANDLE_TS_Z"
 
 run_step env \
     SYNTH_NATIVE_SHORT_REPOSITORY_COMMIT="${NATIVE_SHORT_REPOSITORY_COMMIT}" \
@@ -130,13 +156,9 @@ run_step python -m src.market_data.run_native_short_fib_context_snapshot_v1 \
 
 run_step python -m src.features.run_feat_candle \
     --interval 4h \
-    --end "$CHAIN_4H_END_TS" \
+    --end "$CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS" \
     --lookback-hours 720 \
     --warmup-bars 300
-
-run_step python -m src.measurement.run_structure_state_engine \
-    --venue bitvavo \
-    --interval 4h
 
 run_step python -m src.market_data.run_canonical_fib_zone_map_v1 \
     --venue bitvavo \
