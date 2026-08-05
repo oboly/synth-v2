@@ -66,6 +66,7 @@ REACHABLE_UPSERT_TARGETS = frozenset(
         "ranking_state",
         "selection_state",
         "signal_engine_state",
+        "structure_state",
         "trade_setup_filter_observation",
         "trade_setup_policy_preview_observation",
         "zone_observation_v2",
@@ -356,7 +357,9 @@ TARGET_EVENT_COVERAGE_TABLE = "native_short_map_level_target_event_coverage_v1"
 TARGET_EVENT_TABLE = "native_short_map_level_target_event_v1"
 TARGET_EVENT_VIEW = "native_short_map_level_target_event_current_state_v1"
 
-EXPECTED_REQUIRED_OBJECT_COUNT = 37
+EXPECTED_REQUIRED_OBJECT_COUNT = 38
+
+STRUCTURE_STATE_TABLE = "structure_state"
 
 
 def test_target_event_tables_are_part_of_canonical_required_object_set() -> None:
@@ -455,6 +458,68 @@ def test_target_event_reporting_view_is_not_granted() -> None:
     )
     assert not audit.passed
     assert f"synth.{TARGET_EVENT_VIEW}:SELECT" in audit.unexpected
+
+
+# ---------------------------------------------------------------------------
+# structure_state: regression coverage for the production MariaDB error 1142
+# on gurkdb (2026-08-05, INSERT/UPDATE denied to synth_chain_4h_writer for
+# `synth`.`structure_state`) exposed after PR #190 inserted
+# src.measurement.run_structure_state_engine into scripts/run_chain_4h.sh
+# without a matching grant. upsert_structure_rows writes this table with
+# `INSERT ... ON DUPLICATE KEY UPDATE`, so it is a REACHABLE_UPSERT_TARGETS
+# member and requires SELECT too.
+# ---------------------------------------------------------------------------
+
+
+def test_structure_state_is_part_of_canonical_required_object_set() -> None:
+    assert REQUIRED_OBJECT_PRIVILEGES[STRUCTURE_STATE_TABLE] == {
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+    }
+
+
+def test_grant_preflight_fails_when_structure_state_privileges_absent() -> None:
+    grants = [
+        grant for grant in _exact_grants() if f"`.`{STRUCTURE_STATE_TABLE}`" not in grant
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{STRUCTURE_STATE_TABLE}:SELECT" in audit.missing
+    assert f"synth.{STRUCTURE_STATE_TABLE}:INSERT" in audit.missing
+    assert f"synth.{STRUCTURE_STATE_TABLE}:UPDATE" in audit.missing
+
+
+def test_grant_preflight_passes_with_exact_structure_state_privileges() -> None:
+    audit = _audit(_exact_grants())
+    assert audit.passed
+    assert f"synth.{STRUCTURE_STATE_TABLE}:SELECT" not in audit.missing
+    assert f"synth.{STRUCTURE_STATE_TABLE}:INSERT" not in audit.missing
+    assert f"synth.{STRUCTURE_STATE_TABLE}:UPDATE" not in audit.missing
+
+
+def test_structure_state_excessive_privileges_are_rejected() -> None:
+    grants = [
+        grant for grant in _exact_grants() if f"`.`{STRUCTURE_STATE_TABLE}`" not in grant
+    ] + [
+        (
+            "GRANT SELECT, INSERT, UPDATE, DELETE "
+            f"ON `synth`.`{STRUCTURE_STATE_TABLE}` "
+            f"TO `{IDENTITY_NAME}`@`{IDENTITY_HOST}`"
+        )
+    ]
+    audit = _audit(grants)
+    assert not audit.passed
+    assert f"synth.{STRUCTURE_STATE_TABLE}:DELETE" in audit.unexpected
+
+
+def test_structure_state_is_not_forbidden_authority() -> None:
+    from src.operations.synth_chain_4h_db_authority_v1 import FORBIDDEN_AUTHORITY_OBJECTS
+
+    assert STRUCTURE_STATE_TABLE not in FORBIDDEN_AUTHORITY_OBJECTS
+    audit = _audit(_exact_grants())
+    assert audit.passed
+    assert not any("FORBIDDEN_OBJECT_AUTHORITY" in item for item in audit.violations)
 
 
 def test_target_event_tables_are_not_forbidden_or_account_execution_authority() -> None:

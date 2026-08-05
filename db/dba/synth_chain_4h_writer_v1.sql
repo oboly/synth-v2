@@ -130,6 +130,9 @@ GRANT INSERT
     ON `synth`.`strategy_runtime_snapshot`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
 GRANT SELECT, INSERT, UPDATE
+    ON `synth`.`structure_state`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+GRANT SELECT, INSERT, UPDATE
     ON `synth`.`trade_setup_filter_observation`
     TO 'synth_chain_4h_writer'@'192.168.1.%';
 GRANT SELECT, INSERT, UPDATE

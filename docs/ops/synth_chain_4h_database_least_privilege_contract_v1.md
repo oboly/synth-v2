@@ -98,6 +98,9 @@ deploy/systemd/synth-chain-4h.service
       -> src.market_data.native_short_fib_context_snapshot_v1
    -> src.features.run_feat_candle
       -> src.features.etl_candle_feat
+   -> src.measurement.run_structure_state_engine
+      (added directly after run_feat_candle by PR #190; see "Structure State
+       Grant Gap" below)
    -> src.signal_engine.run_signal_state_etl
       -> src.engine.write_signal_engine_state
    -> src.advice.run_advice_engine
@@ -237,6 +240,7 @@ the same site. `UPSERT` means `INSERT ... ON DUPLICATE KEY UPDATE`.
 | snapshot generation | `SELECT` from `native_short_scope_status_v1 JOIN native_short_map_generation_event_v1` | `src/market_data/native_short_fib_context_snapshot_v1.py:925-936` |
 | snapshot lifecycle | `SELECT` from `native_short_scope_status_v1 JOIN native_short_map_lifecycle_event_v1` | `src/market_data/native_short_fib_context_snapshot_v1.py:938-947` |
 | candle features | `SELECT` from `asset`; `SELECT` from `obs_market_candle`; `UPSERT` `feat_candle` | `src/features/etl_candle_feat.py:57-67,92-135,318-393` |
+| structure state | `SELECT` from `feat_candle JOIN asset`; `SELECT` from `obs_market_candle JOIN asset`; `UPSERT` `structure_state` (requires `SELECT` on the target table) | `src/measurement/run_structure_state_engine.py:46-101,104-168,297-348` |
 | signal state | two `SELECT` statements from `feat_candle JOIN asset`; `UPSERT` `signal_engine_state` | `src/signal_engine/run_signal_state_etl.py:42-143`; `src/engine/write_signal_engine_state.py:51-180` |
 | advice state | three `SELECT` statements from `signal_engine_state`/`asset`; `UPSERT` `advice_state` | `src/advice/run_advice_engine.py:152-276,295-340` |
 | ranking state | three `SELECT` statements from `signal_engine_state`/`asset`/`advice_state`; `INSERT ... ON DUPLICATE KEY UPDATE` `ranking_state` (requires `SELECT` on the target table) | `src/ranking/run_ranking_engine.py:37-198,345-401` |
@@ -293,6 +297,7 @@ sequences, DDL, or administrative statements.
 | `signal_engine_state` | yes | yes | yes | no | signal upsert; advice/ranking/selection reads |
 | `strategy_runtime_component` | no | yes | no | no | runtime metadata append |
 | `strategy_runtime_snapshot` | no | yes | no | no | runtime metadata append |
+| `structure_state` | yes | yes | yes | no | structure-state upsert; `SELECT` required for `INSERT ... ON DUPLICATE KEY UPDATE`; never read by any chain step |
 | `trade_setup_filter_observation` | yes | yes | yes | no | filter upsert; policy/advice reads |
 | `trade_setup_policy_preview_observation` | yes | yes | yes | no | policy upsert; advice read |
 | `v_asset_interval_quality_v3` | yes | no | no | no | quality view read |
@@ -438,6 +443,80 @@ future_multi_caller_hardening=DEFERRED_TRIGGERED_TODO
 The bounded claim is that the binding is demonstrably safe for the current
 architecture, caller, and operator-controlled deployment boundary. Expanding
 that boundary reopens the deferred hardening TODO.
+
+## Structure State Grant Gap (corrected 2026-08-05)
+
+Confirmed production failure on gurkdb, 2026-08-05, after PR #190 inserted
+`src.measurement.run_structure_state_engine` into `scripts/run_chain_4h.sh`
+directly after `run_feat_candle` and before `run_canonical_fib_zone_map_v1`:
+
+```text
+MariaDB error 1142: INSERT, UPDATE command denied to user
+'synth_chain_4h_writer'@'192.168.1.221' for table `synth`.`structure_state`
+```
+
+Root cause: PR #190 changed the executed step sequence in
+`scripts/run_chain_4h.sh` without updating
+`src/operations/synth_chain_4h_db_authority_v1.py`,
+`db/dba/synth_chain_4h_writer_v1.sql`, or this contract's call graph and
+privilege matrix. The read-only grant preflight (`run_synth_chain_4h_db_grant_preflight_v1`)
+still reported `PASS` with `required_objects=37`, because `structure_state`
+was simply absent from `REQUIRED_OBJECT_PRIVILEGES` -- an absent object is
+invisible to an exact-match audit until it is added, so the preflight could
+not have caught this gap. This is the same class of defect as the
+Target-Event Coverage Gap below: a chain-step change and its grant contract
+went out of sync.
+
+`run_structure_state_engine.upsert_structure_rows` writes `structure_state`
+with one `INSERT ... ON DUPLICATE KEY UPDATE` per interval
+(`src/measurement/run_structure_state_engine.py:297-348`). Per the
+`REACHABLE_UPSERT_TARGETS` convention already established in
+`tests/test_synth_chain_4h_db_authority_v1.py` (MariaDB requires `SELECT` on
+the target table for this statement form), the exact minimum grant is
+`SELECT, INSERT, UPDATE` -- not just the two privileges named in the error,
+which reflects only the first missing-privilege check MariaDB reported, not
+the complete requirement. No `DELETE` is granted: the engine never deletes
+`structure_state` rows. The table is never read back by any step in the 4h
+chain.
+
+Correction, this change:
+
+```text
+structure_state.SELECT = granted
+structure_state.INSERT = granted
+structure_state.UPDATE = granted
+required_objects: 37 -> 38
+```
+
+This correction does not rewrite any pre-existing row in the "Complete
+Runtime Call Graph", "Executed SQL Inventory", or "Exact Object-Level
+Privilege Matrix" sections above -- it only adds the `structure_state` row(s)
+and the one new call-graph branch. No prior acceptance observation elsewhere
+is altered by this section.
+
+### Structure state grant application (exact commands, not executed by this change)
+
+Run on gurkdb, after this change merges. Neither step is executed as part of
+this repository change.
+
+**A. Apply the minimum grant** (or re-run the complete idempotent
+`db/dba/synth_chain_4h_writer_v1.sql` artifact, which now includes it):
+
+```bash
+mysql -h 192.168.1.221 -P 3306 -u <db_admin_user> -p synth <<'SQL'
+GRANT SELECT, INSERT, UPDATE
+    ON `synth`.`structure_state`
+    TO 'synth_chain_4h_writer'@'192.168.1.%';
+SQL
+```
+
+**B. Verify with the existing read-only preflight, unchanged:**
+
+```bash
+python -m src.operations.run_synth_chain_4h_db_grant_preflight_v1
+```
+
+It must report `required_objects=38` and `status=PASS`.
 
 ## Target-Event Coverage Gap (corrected 2026-08-02)
 
@@ -658,9 +737,11 @@ Verify with the existing read-only preflight, unchanged:
 python -m src.operations.run_synth_chain_4h_db_grant_preflight_v1
 ```
 
-It must report `required_objects=37` and `status=PASS`. Neither the grant nor
-any production restart is executed by this repository change; both remain
-separate, explicit host-side operator actions.
+It must report `required_objects=38` (37 at the time this section's grants
+were the only outstanding gap; now 38 after the separate "Structure State
+Grant Gap" correction above added one further object) and `status=PASS`.
+Neither the grant nor any production restart is executed by this repository
+change; both remain separate, explicit host-side operator actions.
 
 ## Safety State
 

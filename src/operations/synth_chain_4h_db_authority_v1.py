@@ -82,6 +82,14 @@ REQUIRED_OBJECT_PRIVILEGES: Mapping[str, frozenset[str]] = {
     "signal_engine_state": _privileges(SELECT, INSERT, UPDATE),
     "strategy_runtime_component": _privileges(INSERT),
     "strategy_runtime_snapshot": _privileges(INSERT),
+    # Written by src.measurement.run_structure_state_engine (invoked from
+    # scripts/run_chain_4h.sh directly after run_feat_candle, PR #190) via
+    # upsert_structure_rows' `INSERT ... ON DUPLICATE KEY UPDATE`. Same
+    # REACHABLE_UPSERT_TARGETS class as feat_candle/selection_state/etc.:
+    # MariaDB requires SELECT for this statement form (error 1143 class),
+    # confirmed separately by the error 1142 INSERT/UPDATE denial on gurkdb
+    # (2026-08-05) that this change fixes. Never read back by any chain step.
+    "structure_state": _privileges(SELECT, INSERT, UPDATE),
     "trade_setup_filter_observation": _privileges(SELECT, INSERT, UPDATE),
     "trade_setup_policy_preview_observation": _privileges(SELECT, INSERT, UPDATE),
     "v_asset_interval_quality_v3": _privileges(SELECT),
