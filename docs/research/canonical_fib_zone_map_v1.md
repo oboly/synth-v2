@@ -62,6 +62,11 @@ The writer never substitutes the research pivot preview as direction truth.
 `provenance_payload.map_direction` must agree with `current_leg` for every
 available map.
 
+`scripts/run_chain_4h.sh` must run `src.measurement.run_structure_state_engine`
+(`--venue bitvavo --interval 4h`) directly after `run_feat_candle` and before
+`run_canonical_fib_zone_map_v1`. Without an aligned `structure_state` row the
+writer falls back to `MISSING_OR_MISALIGNED_TREND_FEATURE` for every asset.
+
 ## Why Paper Advice Is Excluded
 
 `paper_advice_observation` is legacy blackbox advice context.

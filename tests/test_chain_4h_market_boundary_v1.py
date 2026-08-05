@@ -21,6 +21,9 @@ DB_BINDING_PREFLIGHT = (
     "src.operations.run_synth_chain_4h_db_environment_preflight_v1"
 )
 DB_GRANT_PREFLIGHT = "src.operations.run_synth_chain_4h_db_grant_preflight_v1"
+FEAT_CANDLE_RUNNER = "src.features.run_feat_candle"
+STRUCTURE_STATE_ENGINE = "src.measurement.run_structure_state_engine"
+CANONICAL_FIB_ZONE_MAP_RUNNER = "src.market_data.run_canonical_fib_zone_map_v1"
 
 
 def _write(path: Path, source: str, *, executable: bool = False) -> None:
@@ -268,6 +271,41 @@ def test_exactly_one_canonical_native_short_owner_path() -> None:
     ):
         assert writer_unit not in service
         assert writer_unit not in timer
+
+
+def test_structure_state_engine_runs_between_feat_candle_and_canonical_fib_map() -> None:
+    chain = CHAIN.read_text(encoding="utf-8")
+    assert chain.count(FEAT_CANDLE_RUNNER) == 1
+    assert chain.count(STRUCTURE_STATE_ENGINE) == 1
+    assert chain.count(CANONICAL_FIB_ZONE_MAP_RUNNER) == 1
+    assert (
+        chain.index(FEAT_CANDLE_RUNNER)
+        < chain.index(STRUCTURE_STATE_ENGINE)
+        < chain.index(CANONICAL_FIB_ZONE_MAP_RUNNER)
+    )
+    assert "--venue bitvavo \\\n    --interval 4h" in chain.split(
+        STRUCTURE_STATE_ENGINE, 1
+    )[1][:60]
+
+
+def test_full_chain_calls_structure_state_engine_between_feat_candle_and_fib_map(
+    tmp_path: Path,
+) -> None:
+    fake_chain, fake_repo, env, call_log = _prepare_fake_chain(tmp_path)
+    result = subprocess.run(
+        ["bash", str(fake_chain)],
+        cwd=fake_repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    calls = call_log.read_text(encoding="utf-8").splitlines()
+    feat_candle_index = calls.index(FEAT_CANDLE_RUNNER)
+    structure_state_index = calls.index(STRUCTURE_STATE_ENGINE)
+    fib_map_index = calls.index(CANONICAL_FIB_ZONE_MAP_RUNNER)
+    assert feat_candle_index < structure_state_index < fib_map_index
 
 
 def test_canonical_service_pins_non_login_environment_and_outer_lock() -> None:
