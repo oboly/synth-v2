@@ -935,7 +935,13 @@ def insert_publication_cohort(cur: Any, build: PublicationBuild, publication_id:
             {
                 **row,
                 "publication_id": publication_id,
-                "asof_ts_utc": _db_ts(row["asof_ts_utc"] or build.asof_ts_utc),
+                # Child-row identity model: every row in a publication cohort
+                # carries the publication's own asof_ts_utc, never the row's
+                # source-candle timestamp. A symbol whose source candle is
+                # stale (unchanged since a prior publication) legitimately
+                # repeats across consecutive cohorts; input_latest_candle_ts_utc
+                # (below) is what records that source freshness, not this field.
+                "asof_ts_utc": _db_ts(build.asof_ts_utc),
                 "source_created_at_utc": (
                     _db_ts(row["source_created_at_utc"])
                     if row["source_created_at_utc"]
