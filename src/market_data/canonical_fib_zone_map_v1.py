@@ -678,6 +678,91 @@ def fetch_latest_production_rows(
         return {str(row["symbol"]).upper(): dict(row) for row in cur.fetchall()}
 
 
+def insert_publication_cohort(cur: Any, build: PublicationBuild, publication_id: str) -> None:
+    """Insert one publication row plus its child map rows. No SELECT, no digest
+    check, no authorization -- callers own identity verification and the
+    surrounding transaction. Shared by the normal fail-closed ``publish`` path
+    and the exact-scope operator repair path so the two never drift."""
+    cur.execute(
+        """
+        INSERT INTO canonical_fib_zone_map_publication_v1
+          (publication_id, venue, quote_currency, interval_code, asof_ts_utc,
+           map_version, content_digest, row_count, available_count, producer_name, producer_version)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """,
+        (
+            publication_id,
+            build.venue,
+            build.quote_currency,
+            build.interval_code,
+            _db_ts(build.asof_ts_utc),
+            MAP_VERSION,
+            build.content_digest,
+            len(build.rows),
+            build.available_count,
+            PRODUCER_NAME,
+            PRODUCER_VERSION,
+        ),
+    )
+    for row in build.rows:
+        cur.execute(
+            """
+            INSERT INTO canonical_fib_zone_map_v1 (
+              publication_id, venue, symbol, interval_code, asof_ts_utc, map_version,
+              map_status, map_quality, source_family, source_ref, source_created_at_utc,
+              reference_price, current_leg, leg_method, leg_confidence,
+              anchor_low_ts_utc, anchor_low_price, anchor_high_ts_utc, anchor_high_price,
+              swing_range_abs, anchor_move_pct, anchor_method, anchor_quality,
+              entry_zone_low, entry_zone_high, entry_zone_mid, entry_zone_method,
+              entry_zone_source_field, support_reaction_zone_low,
+              support_reaction_zone_high, support_reaction_method, target_t1, target_t2,
+              target_extension, target_method, target_source_field, invalidation_level,
+              invalidation_method, invalidation_source_field, input_latest_candle_ts_utc,
+              source_freshness_state, provenance_payload
+            ) VALUES (
+              %(publication_id)s,%(venue)s,%(symbol)s,%(interval_code)s,%(asof_ts_utc)s,
+              %(map_version)s,%(map_status)s,%(map_quality)s,%(source_family)s,%(source_ref)s,
+              %(source_created_at_utc)s,%(reference_price)s,%(current_leg)s,%(leg_method)s,
+              %(leg_confidence)s,%(anchor_low_ts_utc)s,%(anchor_low_price)s,
+              %(anchor_high_ts_utc)s,%(anchor_high_price)s,%(swing_range_abs)s,
+              %(anchor_move_pct)s,%(anchor_method)s,%(anchor_quality)s,%(entry_zone_low)s,
+              %(entry_zone_high)s,%(entry_zone_mid)s,%(entry_zone_method)s,
+              %(entry_zone_source_field)s,%(support_reaction_zone_low)s,
+              %(support_reaction_zone_high)s,%(support_reaction_method)s,%(target_t1)s,
+              %(target_t2)s,%(target_extension)s,%(target_method)s,%(target_source_field)s,
+              %(invalidation_level)s,%(invalidation_method)s,%(invalidation_source_field)s,
+              %(input_latest_candle_ts_utc)s,%(source_freshness_state)s,%(provenance_payload)s
+            )
+            """,
+            {
+                **row,
+                "publication_id": publication_id,
+                "asof_ts_utc": _db_ts(row["asof_ts_utc"] or build.asof_ts_utc),
+                "source_created_at_utc": (
+                    _db_ts(row["source_created_at_utc"])
+                    if row["source_created_at_utc"]
+                    else None
+                ),
+                "anchor_low_ts_utc": (
+                    _db_ts(row["anchor_low_ts_utc"]) if row["anchor_low_ts_utc"] else None
+                ),
+                "anchor_high_ts_utc": (
+                    _db_ts(row["anchor_high_ts_utc"]) if row["anchor_high_ts_utc"] else None
+                ),
+                "input_latest_candle_ts_utc": (
+                    _db_ts(row["input_latest_candle_ts_utc"])
+                    if row["input_latest_candle_ts_utc"]
+                    else None
+                ),
+                "provenance_payload": json.dumps(
+                    row["provenance_payload"],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            },
+        )
+
+
 def publish(conn: Any, build: PublicationBuild, *, authorization: Any) -> PublicationResult:
     from src.operations.writer_capability_authorization_v1 import (
         require_writer_mutation_authorization,
@@ -711,84 +796,7 @@ def publish(conn: Any, build: PublicationBuild, *, authorization: Any) -> Public
                 row_count=int(existing["row_count"]),
                 available_count=int(existing["available_count"]),
             )
-        cur.execute(
-            """
-            INSERT INTO canonical_fib_zone_map_publication_v1
-              (publication_id, venue, quote_currency, interval_code, asof_ts_utc,
-               map_version, content_digest, row_count, available_count, producer_name, producer_version)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            """,
-            (
-                publication_id,
-                build.venue,
-                build.quote_currency,
-                build.interval_code,
-                _db_ts(build.asof_ts_utc),
-                MAP_VERSION,
-                build.content_digest,
-                len(build.rows),
-                build.available_count,
-                PRODUCER_NAME,
-                PRODUCER_VERSION,
-            ),
-        )
-        for row in build.rows:
-            cur.execute(
-                """
-                INSERT INTO canonical_fib_zone_map_v1 (
-                  publication_id, venue, symbol, interval_code, asof_ts_utc, map_version,
-                  map_status, map_quality, source_family, source_ref, source_created_at_utc,
-                  reference_price, current_leg, leg_method, leg_confidence,
-                  anchor_low_ts_utc, anchor_low_price, anchor_high_ts_utc, anchor_high_price,
-                  swing_range_abs, anchor_move_pct, anchor_method, anchor_quality,
-                  entry_zone_low, entry_zone_high, entry_zone_mid, entry_zone_method,
-                  entry_zone_source_field, support_reaction_zone_low,
-                  support_reaction_zone_high, support_reaction_method, target_t1, target_t2,
-                  target_extension, target_method, target_source_field, invalidation_level,
-                  invalidation_method, invalidation_source_field, input_latest_candle_ts_utc,
-                  source_freshness_state, provenance_payload
-                ) VALUES (
-                  %(publication_id)s,%(venue)s,%(symbol)s,%(interval_code)s,%(asof_ts_utc)s,
-                  %(map_version)s,%(map_status)s,%(map_quality)s,%(source_family)s,%(source_ref)s,
-                  %(source_created_at_utc)s,%(reference_price)s,%(current_leg)s,%(leg_method)s,
-                  %(leg_confidence)s,%(anchor_low_ts_utc)s,%(anchor_low_price)s,
-                  %(anchor_high_ts_utc)s,%(anchor_high_price)s,%(swing_range_abs)s,
-                  %(anchor_move_pct)s,%(anchor_method)s,%(anchor_quality)s,%(entry_zone_low)s,
-                  %(entry_zone_high)s,%(entry_zone_mid)s,%(entry_zone_method)s,
-                  %(entry_zone_source_field)s,%(support_reaction_zone_low)s,
-                  %(support_reaction_zone_high)s,%(support_reaction_method)s,%(target_t1)s,
-                  %(target_t2)s,%(target_extension)s,%(target_method)s,%(target_source_field)s,
-                  %(invalidation_level)s,%(invalidation_method)s,%(invalidation_source_field)s,
-                  %(input_latest_candle_ts_utc)s,%(source_freshness_state)s,%(provenance_payload)s
-                )
-                """,
-                {
-                    **row,
-                    "publication_id": publication_id,
-                    "asof_ts_utc": _db_ts(row["asof_ts_utc"] or build.asof_ts_utc),
-                    "source_created_at_utc": (
-                        _db_ts(row["source_created_at_utc"])
-                        if row["source_created_at_utc"]
-                        else None
-                    ),
-                    "anchor_low_ts_utc": (
-                        _db_ts(row["anchor_low_ts_utc"]) if row["anchor_low_ts_utc"] else None
-                    ),
-                    "anchor_high_ts_utc": (
-                        _db_ts(row["anchor_high_ts_utc"]) if row["anchor_high_ts_utc"] else None
-                    ),
-                    "input_latest_candle_ts_utc": (
-                        _db_ts(row["input_latest_candle_ts_utc"])
-                        if row["input_latest_candle_ts_utc"]
-                        else None
-                    ),
-                    "provenance_payload": json.dumps(
-                        row["provenance_payload"],
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                },
-            )
+        insert_publication_cohort(cur, build, publication_id)
     return PublicationResult(
         status="PUBLISHED",
         publication_id=publication_id,
