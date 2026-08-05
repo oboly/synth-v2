@@ -142,6 +142,49 @@ def test_publication_is_deterministic_and_uses_canonical_builder() -> None:
     )
 
 
+def test_missing_or_misaligned_trend_feature_reason_when_feat_candle_is_stale() -> None:
+    """Regression for the causal-audit finding behind PR #190/#191: this
+    reason fires when feat_candle's newest row for a symbol is not exactly
+    aligned to obs_market_candle's newest row -- e.g. the off-by-one bug
+    where run_feat_candle's --end was passed the closed candle's own
+    identity timestamp (excluded by the half-open contract) instead of one
+    interval past it. It is unrelated to structure_state, which this writer
+    never queries."""
+    source_candles = candles()
+    stale_trend_row = trend_row(source_candles)
+    stale_trend_row["close_ts_utc"] = source_candles[-2].close_ts_utc
+    row = build_row(
+        venue="bitvavo",
+        symbol="BTC",
+        interval_code="4h",
+        candles=source_candles,
+        trend_row=stale_trend_row,
+        now_utc=NOW,
+    )
+    assert row["map_status"] == MAP_STATE_NO_DATA
+    assert row["provenance_payload"]["reason"] == "MISSING_OR_MISALIGNED_TREND_FEATURE"
+
+
+def test_aligned_feat_candle_and_obs_market_candle_timestamps_produce_available_map() -> None:
+    """The corrected --end contract must make feat_candle's newest row for a
+    symbol exactly equal to obs_market_candle's newest row -- proving the
+    alignment canonical_fib_zone_map_v1 actually requires, with no
+    structure_state involvement."""
+    source_candles = candles()
+    aligned_trend_row = trend_row(source_candles)
+    assert aligned_trend_row["close_ts_utc"] == source_candles[-1].close_ts_utc
+    row = build_row(
+        venue="bitvavo",
+        symbol="BTC",
+        interval_code="4h",
+        candles=source_candles,
+        trend_row=aligned_trend_row,
+        now_utc=NOW,
+    )
+    assert row["provenance_payload"].get("reason") != "MISSING_OR_MISALIGNED_TREND_FEATURE"
+    assert row["map_status"] in subject.AVAILABLE_STATES
+
+
 def test_missing_and_stale_candles_fail_honestly() -> None:
     missing = build_row(
         venue="bitvavo",
