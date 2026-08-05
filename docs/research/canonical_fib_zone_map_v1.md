@@ -388,6 +388,39 @@ Properties:
   records one row in `canonical_fib_zone_map_publication_repair_v1` for
   audit/provenance.
 - does not touch any other publication (identity, not table, scoped).
+- the recomputation is **historically bounded to the exact requested asof**,
+  via `canonical_fib_zone_map_v1.build_historical_publication`. It is not the
+  same input path as the normal live writer:
+  - candles: latest-per-symbol with `close_ts_utc <= requested_asof` only
+    (`fetch_recent_candles(..., asof_cutoff_ts_utc=...)`); a candle after the
+    requested asof can never enter the build.
+  - features: latest `feat_candle` per symbol with
+    `close_ts_utc <= requested_asof` only
+    (`fetch_latest_trend_rows(..., asof_cutoff_ts_utc=...)`). `build_row`'s
+    existing exact-timestamp candle/feature alignment check is unchanged and
+    still applies.
+  - prior continuity: latest existing publication strictly *before*
+    `requested_asof` (`fetch_production_rows_before`), never the identity
+    being repaired itself and never a later one.
+  - symbol cohort: **not** the current `asset`/`venue_market` tracked-universe
+    query. `is_enabled`, `is_tradeable`, `is_portfolio`, and `is_core_sensor`
+    are mutable current-state flags with no historical versioning in this
+    schema -- they are not historical truth for an old asof and must never be
+    treated as such. The repair instead reads the exact symbol set the
+    existing (invalid) publication actually published
+    (`fetch_publication_at_identity`), which structurally guarantees the
+    reconstructed cohort matches the original one -- for the confirmed
+    2026-08-05T16:00:00Z case, the same 43-symbol bitvavo/EUR cohort the
+    original publication contains, not whatever the live universe query
+    happens to return today.
+  - fails closed (`CanonicalFibMapError`, no write) if the bounded
+    recomputation cannot reproduce exactly the requested asof, e.g. a data gap
+    at the boundary.
+  - the normal live writer (`run_canonical_fib_zone_map_v1`) is unchanged: it
+    still calls `fetch_tracked_symbols`, `fetch_recent_candles`,
+    `fetch_latest_trend_rows`, and `fetch_latest_production_rows` with no
+    cutoff, i.e. current/live inputs, exactly as before this repair path
+    existed.
 - must run under a DBA-authorized connection distinct from the
   least-privilege `synth_chain_4h_writer` identity, which is intentionally
   granted only `SELECT, INSERT` on both `canonical_fib_zone_map_publication_v1`
