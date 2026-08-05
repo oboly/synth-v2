@@ -583,10 +583,20 @@ def fetch_recent_candles(
     interval_code: str,
     symbols: Sequence[str],
     lookback_candles: int = DEFAULT_LOOKBACK_CANDLES,
+    asof_cutoff_ts_utc: datetime | None = None,
 ) -> dict[str, list[FibNavCandle]]:
+    """Latest ``lookback_candles`` per symbol.
+
+    With ``asof_cutoff_ts_utc`` set, this is a historical read: only rows with
+    ``close_ts_utc <= asof_cutoff_ts_utc`` are ranked/returned, so a candle
+    after the requested asof can never enter the build. Without it (the
+    default, used by the normal recurring writer), the read is unbounded and
+    reflects current/live data.
+    """
     if not symbols:
         return {}
     placeholders = ",".join(["%s"] * len(symbols))
+    cutoff_clause = "AND c.close_ts_utc <= %s" if asof_cutoff_ts_utc is not None else ""
     sql = f"""
         SELECT symbol, close_ts_utc, open_price, high_price, low_price, close_price, volume
         FROM (
@@ -598,12 +608,17 @@ def fetch_recent_candles(
             WHERE c.venue = %s
               AND c.interval_code = %s
               AND a.symbol IN ({placeholders})
+              {cutoff_clause}
         ) ranked
         WHERE row_num <= %s
         ORDER BY symbol, close_ts_utc
     """
+    params: list[Any] = [venue, interval_code, *symbols]
+    if asof_cutoff_ts_utc is not None:
+        params.append(_db_ts(asof_cutoff_ts_utc))
+    params.append(lookback_candles)
     with conn.cursor() as cur:
-        cur.execute(sql, (venue, interval_code, *symbols, lookback_candles))
+        cur.execute(sql, tuple(params))
         rows = list(cur.fetchall())
     grouped = {symbol: [] for symbol in symbols}
     for row in rows:
@@ -627,10 +642,23 @@ def fetch_latest_trend_rows(
     venue: str,
     interval_code: str,
     symbols: Sequence[str],
+    asof_cutoff_ts_utc: datetime | None = None,
 ) -> dict[str, dict[str, Any]]:
+    """Latest ``feat_candle`` row per symbol.
+
+    With ``asof_cutoff_ts_utc`` set, this is a historical read: only rows
+    with ``close_ts_utc <= asof_cutoff_ts_utc`` are eligible, so a feature row
+    computed after the requested asof can never enter the build. Without it
+    (the default, used by the normal recurring writer), the read is unbounded
+    and reflects current/live data. ``build_row``'s existing exact-timestamp
+    alignment check (feature ``close_ts_utc`` must equal the latest candle's
+    ``close_ts_utc``) is unchanged and still applies to whichever candle set
+    was fetched.
+    """
     if not symbols:
         return {}
     placeholders = ",".join(["%s"] * len(symbols))
+    cutoff_clause = "AND fc.close_ts_utc <= %s" if asof_cutoff_ts_utc is not None else ""
     sql = f"""
         SELECT symbol, close_ts_utc, price_vs_ema20, price_vs_ema50, ema_spread_pct
         FROM (
@@ -644,12 +672,16 @@ def fetch_latest_trend_rows(
             WHERE fc.venue = %s
               AND fc.interval_code = %s
               AND a.symbol IN ({placeholders})
+              {cutoff_clause}
         ) ranked
         WHERE row_num = 1
         ORDER BY symbol
     """
+    params: list[Any] = [venue, interval_code, *symbols]
+    if asof_cutoff_ts_utc is not None:
+        params.append(_db_ts(asof_cutoff_ts_utc))
     with conn.cursor() as cur:
-        cur.execute(sql, (venue, interval_code, *symbols))
+        cur.execute(sql, tuple(params))
         rows = list(cur.fetchall())
     return {
         str(row["symbol"]).upper(): {
@@ -676,6 +708,172 @@ def fetch_latest_production_rows(
     with conn.cursor() as cur:
         cur.execute(sql, (venue, quote_currency, interval_code))
         return {str(row["symbol"]).upper(): dict(row) for row in cur.fetchall()}
+
+
+def fetch_production_rows_before(
+    conn: Any,
+    *,
+    venue: str,
+    quote_currency: str,
+    interval_code: str,
+    before_asof_ts_utc: datetime,
+) -> dict[str, dict[str, Any]]:
+    """Latest published row per symbol strictly before ``before_asof_ts_utc``.
+
+    Used only for historical prior-continuity (``PriorMapMeta``) reconstruction.
+    Unlike ``fetch_latest_production_rows`` (which reads the unbounded
+    "current latest" view), this is bounded with ``asof_ts_utc < %s`` so prior
+    continuity can never come from the identity being rebuilt itself or from
+    any later publication.
+    """
+    sql = """
+        SELECT m.*
+        FROM canonical_fib_zone_map_v1 m
+        JOIN (
+            SELECT p.publication_id, p.asof_ts_utc,
+                   mm.symbol,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY mm.symbol ORDER BY p.asof_ts_utc DESC
+                   ) AS row_num
+            FROM canonical_fib_zone_map_publication_v1 p
+            JOIN canonical_fib_zone_map_v1 mm ON mm.publication_id = p.publication_id
+            WHERE p.venue = %s AND p.quote_currency = %s AND p.interval_code = %s
+              AND p.asof_ts_utc < %s
+        ) latest
+          ON latest.publication_id = m.publication_id
+         AND latest.symbol = m.symbol
+         AND latest.row_num = 1
+        ORDER BY m.symbol
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (venue, quote_currency, interval_code, _db_ts(before_asof_ts_utc)))
+        return {str(row["symbol"]).upper(): dict(row) for row in cur.fetchall()}
+
+
+def fetch_publication_at_identity(
+    conn: Any,
+    *,
+    venue: str,
+    quote_currency: str,
+    interval_code: str,
+    asof_ts_utc: datetime,
+) -> dict[str, Any] | None:
+    """Exact-identity lookup of an existing publication plus the symbol set it
+    actually published. Plain read, no lock -- used for repair planning only.
+    The mutation path (``publish``/``insert_publication_cohort`` callers) does
+    its own ``FOR UPDATE`` re-check under the repair transaction.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT publication_id, content_digest
+            FROM canonical_fib_zone_map_publication_v1
+            WHERE venue=%s AND quote_currency=%s AND interval_code=%s
+              AND asof_ts_utc=%s AND map_version=%s
+            """,
+            (venue, quote_currency, interval_code, _db_ts(asof_ts_utc), MAP_VERSION),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        publication_id = str(row["publication_id"])
+        cur.execute(
+            "SELECT DISTINCT symbol FROM canonical_fib_zone_map_v1 WHERE publication_id=%s "
+            "ORDER BY symbol",
+            (publication_id,),
+        )
+        symbols = tuple(str(item["symbol"]).upper() for item in cur.fetchall())
+    return {
+        "publication_id": publication_id,
+        "content_digest": str(row["content_digest"]),
+        "symbols": symbols,
+    }
+
+
+def build_historical_publication(
+    conn: Any,
+    *,
+    venue: str,
+    quote_currency: str,
+    interval_code: str,
+    symbols: Sequence[str],
+    requested_asof_ts_utc: datetime,
+    now_utc: datetime,
+    lookback_candles: int = DEFAULT_LOOKBACK_CANDLES,
+) -> PublicationBuild:
+    """Reconstruct the exact historical publication identity as of
+    ``requested_asof_ts_utc``, for an explicit, caller-supplied symbol cohort.
+
+    This is the bounded counterpart to the normal live path used by
+    ``run_canonical_fib_zone_map_v1``. It shares the exact same row builder
+    (``build_publication`` / ``build_row``) unchanged -- only the inputs feeding
+    it are historically bounded:
+
+    - candles: latest-per-symbol with ``close_ts_utc <= requested_asof_ts_utc``
+      (``fetch_recent_candles`` with ``asof_cutoff_ts_utc``).
+    - features: latest ``feat_candle`` per symbol with
+      ``close_ts_utc <= requested_asof_ts_utc`` (``fetch_latest_trend_rows``
+      with ``asof_cutoff_ts_utc``); exact candle/feature timestamp alignment
+      is still enforced by ``build_row``, unchanged.
+    - prior continuity: latest existing publication strictly before
+      ``requested_asof_ts_utc`` (``fetch_production_rows_before``), never the
+      identity being rebuilt and never a later one.
+
+    Deliberately does not call ``fetch_tracked_symbols``: the current
+    ``asset``/``venue_market`` universe flags (``is_enabled``, ``is_tradeable``,
+    ``is_portfolio``, ``is_core_sensor``) are mutable current state with no
+    historical versioning in this schema, so they are not historical truth for
+    an old asof and must never be used to decide which symbols an old
+    publication "should" have contained. Callers must supply the exact
+    historical symbol cohort explicitly -- for a repair, that is the symbol
+    set the existing (invalid) publication actually published
+    (``fetch_publication_at_identity``), which structurally guarantees the
+    reconstructed cohort matches the original one exactly, rather than merely
+    hoping current and historical universes agree.
+
+    Fails closed (``CanonicalFibMapError``) if the bounded recomputation
+    cannot reproduce exactly the requested asof -- e.g. a data gap at the
+    boundary for every symbol.
+    """
+    normalized_symbols = sorted({str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()})
+    candles = fetch_recent_candles(
+        conn,
+        venue=venue,
+        interval_code=interval_code,
+        symbols=normalized_symbols,
+        lookback_candles=lookback_candles,
+        asof_cutoff_ts_utc=requested_asof_ts_utc,
+    )
+    trend_rows = fetch_latest_trend_rows(
+        conn,
+        venue=venue,
+        interval_code=interval_code,
+        symbols=normalized_symbols,
+        asof_cutoff_ts_utc=requested_asof_ts_utc,
+    )
+    prior_rows = fetch_production_rows_before(
+        conn,
+        venue=venue,
+        quote_currency=quote_currency,
+        interval_code=interval_code,
+        before_asof_ts_utc=requested_asof_ts_utc,
+    )
+    build = build_publication(
+        venue=venue,
+        quote_currency=quote_currency,
+        interval_code=interval_code,
+        symbols=normalized_symbols,
+        candles_by_symbol=candles,
+        trend_rows_by_symbol=trend_rows,
+        now_utc=now_utc,
+        prior_rows_by_symbol=prior_rows,
+    )
+    if _utc(build.asof_ts_utc) != _utc(requested_asof_ts_utc):
+        raise CanonicalFibMapError(
+            "historical recomputation could not reproduce exactly the requested asof: "
+            f"requested={_iso(requested_asof_ts_utc)} recomputed={_iso(build.asof_ts_utc)}"
+        )
+    return build
 
 
 def insert_publication_cohort(cur: Any, build: PublicationBuild, publication_id: str) -> None:

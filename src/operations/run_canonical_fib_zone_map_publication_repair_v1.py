@@ -10,6 +10,17 @@ UPDATE/DELETE grant on these tables by design -- see
 db/dba/synth_chain_4h_writer_v1.sql -- and this script must not be used to
 argue for widening it).
 
+The recomputation this script performs is historically bounded to the exact
+requested asof via
+``src.market_data.canonical_fib_zone_map_v1.build_historical_publication``: it
+never uses the unbounded "latest candle" / "latest feature" / "latest
+publication" reads the normal live writer uses, and it never derives the
+symbol cohort from the current asset/venue_market universe (which is mutable
+current state, not historical truth). The cohort is instead read from the
+existing publication row set being repaired
+(``fetch_publication_at_identity``), so the reconstructed identity is
+guaranteed to cover the same symbols the original publication did.
+
 Dry run by default. Mutation requires --confirm-old-digest exactly matching
 the digest currently stored for the exact (venue, quote, interval, asof)
 identity, plus --operator and --reason. Any mismatch fails closed with no
@@ -38,11 +49,8 @@ from src.market_data.canonical_fib_zone_map_v1 import (
     DEFAULT_LOOKBACK_CANDLES,
     CanonicalFibMapError,
     SAFETY_MARKERS,
-    build_publication,
-    fetch_latest_production_rows,
-    fetch_latest_trend_rows,
-    fetch_recent_candles,
-    fetch_tracked_symbols,
+    build_historical_publication,
+    fetch_publication_at_identity,
 )
 from src.operations.canonical_fib_zone_map_publication_repair_v1 import (
     repair_publication_identity,
@@ -53,9 +61,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Repair exactly one canonical_fib_zone_map_publication_v1 identity after a "
-            "confirmed upstream data defect. Recomputes the cohort from current public "
-            "candles/features, then replaces the one exact (venue, quote, interval, asof) "
-            "publication -- only if its currently stored digest matches --confirm-old-digest."
+            "confirmed upstream data defect. Recomputes the cohort from candles/features "
+            "as of the exact requested --asof (never later), for the exact symbol cohort "
+            "the existing publication actually published, then replaces the one exact "
+            "(venue, quote, interval, asof) publication -- only if its currently stored "
+            "digest matches --confirm-old-digest."
         )
     )
     parser.add_argument("--venue", default="bitvavo")
@@ -116,53 +126,60 @@ def main(argv: Sequence[str] | None = None) -> int:
     conn = None
     try:
         conn = get_connection()
-        symbols = fetch_tracked_symbols(conn, venue=args.venue, quote_currency=args.quote)
-        prior_rows = fetch_latest_production_rows(
-            conn, venue=args.venue, quote_currency=args.quote, interval_code=args.interval
-        )
-        candles = fetch_recent_candles(
+        existing = fetch_publication_at_identity(
             conn,
-            venue=args.venue,
-            interval_code=args.interval,
-            symbols=symbols,
-            lookback_candles=args.lookback_candles,
-        )
-        trend_rows = fetch_latest_trend_rows(
-            conn, venue=args.venue, interval_code=args.interval, symbols=symbols
-        )
-        conn.rollback()
-
-        build = build_publication(
             venue=args.venue,
             quote_currency=args.quote,
             interval_code=args.interval,
-            symbols=symbols,
-            candles_by_symbol=candles,
-            trend_rows_by_symbol=trend_rows,
-            now_utc=datetime.now(UTC),
-            prior_rows_by_symbol=prior_rows,
+            asof_ts_utc=asof_ts_utc,
         )
-        if build.asof_ts_utc != asof_ts_utc:
-            conn.rollback()
+        conn.rollback()
+        if existing is None or not existing["symbols"]:
             _emit(
                 {
                     "event": "FAILED",
-                    "reason": "RECOMPUTED_ASOF_DOES_NOT_MATCH_REQUESTED_ASOF",
+                    "reason": "NO_EXISTING_PUBLICATION_AT_REQUESTED_ASOF",
                     "requested_asof_ts_utc": asof_ts_utc.isoformat(),
-                    "recomputed_asof_ts_utc": build.asof_ts_utc.isoformat(),
                     "database_writes": 0,
                     **SAFETY_MARKERS,
                 },
                 args.output,
             )
             return 1
+        _emit(
+            {
+                "event": "PHASE_FINISHED",
+                "phase": "load_existing_publication_identity",
+                "old_publication_id": existing["publication_id"],
+                "old_content_digest": existing["content_digest"],
+                "historical_symbol_count": len(existing["symbols"]),
+                "symbol_universe_source": "existing_publication_row_set",
+                "database_writes": 0,
+            },
+            args.output,
+        )
+
+        build = build_historical_publication(
+            conn,
+            venue=args.venue,
+            quote_currency=args.quote,
+            interval_code=args.interval,
+            symbols=existing["symbols"],
+            requested_asof_ts_utc=asof_ts_utc,
+            now_utc=datetime.now(UTC),
+            lookback_candles=args.lookback_candles,
+        )
+        conn.rollback()
 
         if not args.repair:
-            conn.rollback()
             _emit(
                 {
                     "event": "FINISHED",
                     "result": "DRY_RUN",
+                    "requested_asof_ts_utc": asof_ts_utc.isoformat(),
+                    "recomputed_asof_ts_utc": build.asof_ts_utc.isoformat(),
+                    "old_publication_id": existing["publication_id"],
+                    "old_content_digest": existing["content_digest"],
                     "recomputed_content_digest": build.content_digest,
                     "row_count": len(build.rows),
                     "available_count": build.available_count,
