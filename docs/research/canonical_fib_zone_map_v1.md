@@ -360,6 +360,56 @@ authority is necessary because the canonical writer and dashboard consumer
 are on different hosts and the existing native SHORT filesystem snapshot has
 no cross-host transport contract.
 
+## Publication correction semantics
+
+`publish` is intentionally fail-closed: an existing `(venue, quote_currency,
+interval_code, asof_ts_utc, map_version)` identity with a different
+`content_digest` raises `CanonicalFibMapError` and never overwrites. This is
+the correct behavior for ordinary nondeterminism and must not be weakened.
+
+For the narrow case of a *confirmed* upstream data defect (for example, a
+`feat_candle` alignment bug fixed after the original publication was written,
+so a deterministic recomputation for the same `asof` now produces different,
+correct content), the recovery path is
+`src.operations.canonical_fib_zone_map_publication_repair_v1.repair_publication_identity`,
+run manually via
+`python -m src.operations.run_canonical_fib_zone_map_publication_repair_v1`.
+
+Properties:
+
+- exact-scope only: one `(venue, quote_currency, interval_code, asof_ts_utc,
+  map_version)` identity per invocation; no wildcard or range repair.
+- requires `--confirm-old-digest` to exactly match the digest currently
+  stored for that identity; any mismatch (including an already-repaired
+  identity) fails closed with no write.
+- requires `--operator` and `--reason`; both are persisted.
+- one transaction: deletes the old publication and its child rows, inserts
+  the recomputed cohort through the same insert path `publish` uses, and
+  records one row in `canonical_fib_zone_map_publication_repair_v1` for
+  audit/provenance.
+- does not touch any other publication (identity, not table, scoped).
+- must run under a DBA-authorized connection distinct from the
+  least-privilege `synth_chain_4h_writer` identity, which is intentionally
+  granted only `SELECT, INSERT` on both `canonical_fib_zone_map_publication_v1`
+  and `canonical_fib_zone_map_v1` (see `db/dba/synth_chain_4h_writer_v1.sql`).
+  This script is never wired into `scripts/run_chain_4h.sh` or any timer, and
+  repairing one identity never requires widening that grant.
+- after a repair, the normal writer's next run against the same `asof` (were
+  it ever retried) returns `UNCHANGED`, since the stored digest now matches a
+  correct recomputation.
+
+If instead the chain is only blocked by one stale identity and the defect is
+not yet confirmed, prefer waiting for the next `asof` boundary over repairing:
+`publish` only checks the exact `asof` being written, so a later boundary is
+unaffected by an unrepaired earlier one. The tradeoff is that the earlier
+`asof`'s stored map stays wrong for point-in-time reads, and the next run's
+`prior_row` continuity context (`fetch_latest_production_rows` /
+`PriorMapMeta`) is seeded from that wrong row until it is repaired or aged
+out.
+
+Apply `db/migrations/20260805_canonical_fib_zone_map_publication_repair_v1.sql`
+before running the repair script.
+
 ## Activation and rollback
 
 After merge, on the DB host:
