@@ -95,27 +95,38 @@ run_step python -m src.market_data.native_short_repository_source_identity_v1 \
     --repository-commit "${NATIVE_SHORT_REPOSITORY_COMMIT}" \
     --allowed-untracked-path "${CONTROLLED_UNTRACKED_PATH}"
 
-# Identity of the just-closed 4h candle. The freshness gate below requires a
-# persisted candle whose close_ts_utc equals this value exactly -- it is a
-# point-in-time identity, not a window bound, and must never be reused
-# directly as an exclusive ETL upper bound (see
-# CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS below for that).
-CHAIN_4H_CLOSED_CANDLE_TS="$(
-    python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); h=(n.hour//4)*4; print(n.replace(hour=h, minute=0, second=0, microsecond=0).isoformat())'
-)"
-CHAIN_4H_CLOSED_CANDLE_TS_Z="$(
-    python -c 'from datetime import datetime, timezone; n=datetime.now(timezone.utc); h=(n.hour//4)*4; print(n.replace(hour=h, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%SZ"))'
-)"
-# The feat_candle runner's --end is a half-open (exclusive) upper bound (see
+# Capture one canonical UTC instant/boundary in a single Python invocation and
+# derive every representation from it. Calling datetime.now() separately per
+# variable could let a run that happens to straddle a 4h boundary between
+# calls produce inconsistent freshness-gate and feature-window timestamps.
+#
+# CHAIN_4H_CLOSED_CANDLE_TS(_Z): identity of the just-closed 4h candle. The
+# freshness gate below requires a persisted candle whose close_ts_utc equals
+# this value exactly -- it is a point-in-time identity, not a window bound,
+# and must never be reused directly as an exclusive ETL upper bound.
+#
+# CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS: the feat_candle runner's --end is
+# a half-open (exclusive) upper bound (see
 # docs/todo/replay_parameter_study_harness_v1.md's documented [start, end)
 # contract for the same underlying etl_candle_feat.load_candles/
-# filter_write_window functions). Passing the closed-candle identity above
-# directly as --end would silently exclude the just-closed candle from
-# feat_candle for every asset. Add one interval so the just-closed candle
-# falls strictly inside the window.
-CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS="$(
-    python -c 'from datetime import datetime, timezone, timedelta; n=datetime.now(timezone.utc); h=(n.hour//4)*4; print((n.replace(hour=h, minute=0, second=0, microsecond=0)+timedelta(hours=4)).isoformat())'
+# filter_write_window functions). Passing the closed-candle identity directly
+# as --end would silently exclude the just-closed candle from feat_candle for
+# every asset, so this is derived as the same closed-candle boundary plus one
+# interval, from the same captured instant.
+CHAIN_4H_BOUNDARY_OUTPUT="$(
+    python -c 'from datetime import datetime, timezone, timedelta; n=datetime.now(timezone.utc); h=(n.hour//4)*4; closed=n.replace(hour=h, minute=0, second=0, microsecond=0); feature_end=closed+timedelta(hours=4); print(closed.isoformat()); print(closed.strftime("%Y-%m-%dT%H:%M:%SZ")); print(feature_end.isoformat())'
 )"
+readarray -t CHAIN_4H_BOUNDARY_VALUES <<< "$CHAIN_4H_BOUNDARY_OUTPUT"
+CHAIN_4H_CLOSED_CANDLE_TS="${CHAIN_4H_BOUNDARY_VALUES[0]:-}"
+CHAIN_4H_CLOSED_CANDLE_TS_Z="${CHAIN_4H_BOUNDARY_VALUES[1]:-}"
+CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS="${CHAIN_4H_BOUNDARY_VALUES[2]:-}"
+if [ "${#CHAIN_4H_BOUNDARY_VALUES[@]}" -ne 3 ] \
+    || [ -z "${CHAIN_4H_CLOSED_CANDLE_TS}" ] \
+    || [ -z "${CHAIN_4H_CLOSED_CANDLE_TS_Z}" ] \
+    || [ -z "${CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS}" ]; then
+    echo "[CHAIN][4h][FAIL] rc=2 reason=BOUNDARY_DERIVATION_FAILED"
+    exit 2
+fi
 
 echo "[CHAIN][4h] START $(date -u +%F' '%T) UTC"
 echo "[CHAIN][4h] persisted public-price freshness gate venue=bitvavo quote=EUR"

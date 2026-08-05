@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -116,7 +118,12 @@ printf '%s\n' "$*" > "$CHAIN_NATIVE_ARGS_LOG"
         """#!/usr/bin/env bash
 set -u
 if [[ "${1:-}" == "-c" ]]; then
-    if [[ "${2:-}" == *"from datetime"* ]]; then
+    if [[ "${2:-}" == *"timedelta"* ]]; then
+        printf '%s\n%s\n%s\n' \
+            "2026-07-19T08:00:00+00:00" \
+            "2026-07-19T08:00:00Z" \
+            "2026-07-19T12:00:00+00:00"
+    elif [[ "${2:-}" == *"from datetime"* ]]; then
         echo "2026-07-19T08:00:00+00:00"
     fi
     exit 0
@@ -311,6 +318,12 @@ def test_structure_state_engine_is_absent_from_chain() -> None:
     assert chain.index(FEAT_CANDLE_RUNNER) < chain.index(CANONICAL_FIB_ZONE_MAP_RUNNER)
 
 
+def _extract_boundary_python_snippet(chain: str) -> str:
+    return chain.split('CHAIN_4H_BOUNDARY_OUTPUT="$(\n    python -c \'', 1)[1].split(
+        "'\n)\"", 1
+    )[0]
+
+
 def test_feature_window_end_is_exclusive_one_interval_past_closed_candle() -> None:
     """Regression for the causal-audit finding: run_feat_candle's --end is a
     half-open (exclusive) upper bound (see
@@ -324,19 +337,57 @@ def test_feature_window_end_is_exclusive_one_interval_past_closed_candle() -> No
     chain = CHAIN.read_text(encoding="utf-8")
     assert "CHAIN_4H_CLOSED_CANDLE_TS" in chain
     assert "CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS" in chain
-    assert (
-        '--expected-close-ts "$CHAIN_4H_CLOSED_CANDLE_TS_Z"' in chain
+    assert '--expected-close-ts "$CHAIN_4H_CLOSED_CANDLE_TS_Z"' in chain
+    assert '--end "$CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS"' in chain
+    snippet = _extract_boundary_python_snippet(chain)
+    assert "timedelta" in snippet
+    assert "timedelta(hours=4)" in snippet
+    assert "h=(n.hour//4)*4" in snippet
+    assert "n.replace(hour=h, minute=0, second=0, microsecond=0)" in snippet
+
+
+def test_boundary_derivation_is_one_atomic_python_call_with_three_outputs() -> None:
+    """Regression: all three timestamp representations must be derived from
+    exactly one captured `datetime.now()` instant, not three independent
+    calls -- otherwise a run straddling a 4h boundary between calls could
+    produce a freshness-gate identity and a feature-window bound that
+    disagree on which candle just closed."""
+    chain = CHAIN.read_text(encoding="utf-8")
+    snippet = _extract_boundary_python_snippet(chain)
+    assert snippet.count("datetime.now(") == 1
+    assert snippet.count("print(") == 3
+    assert "readarray -t CHAIN_4H_BOUNDARY_VALUES" in chain
+    assert '"${#CHAIN_4H_BOUNDARY_VALUES[@]}" -ne 3' in chain
+    assert "reason=BOUNDARY_DERIVATION_FAILED" in chain
+
+
+def test_boundary_python_snippet_produces_one_consistent_base_and_exact_4h_offset() -> None:
+    """Executes the real, unmodified snippet embedded in the chain (not a
+    reimplementation) and proves, against real python: the closed-candle ISO
+    and Z representations name the same instant, and the feature-window
+    exclusive end is exactly that instant plus 4 hours -- never derived from
+    a second, independently-sampled `now()`."""
+    chain = CHAIN.read_text(encoding="utf-8")
+    snippet = _extract_boundary_python_snippet(chain)
+    result = subprocess.run(
+        [sys.executable, "-c", snippet],
+        capture_output=True,
+        text=True,
+        check=True,
     )
-    assert (
-        '--end "$CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS"' in chain
+    lines = result.stdout.splitlines()
+    assert len(lines) == 3
+    closed_iso, closed_z, feature_end_exclusive = lines
+    closed_dt = datetime.fromisoformat(closed_iso)
+    closed_from_z = datetime.strptime(closed_z, "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=timezone.utc
     )
-    exclusive_snippet = chain.split(
-        'CHAIN_4H_FEATURE_WINDOW_END_EXCLUSIVE_TS="$(', 1
-    )[1].split(")\"", 1)[0]
-    assert "timedelta" in exclusive_snippet
-    assert "timedelta(hours=4)" in exclusive_snippet
-    assert "h=(n.hour//4)*4" in exclusive_snippet
-    assert "n.replace(hour=h, minute=0, second=0, microsecond=0)" in exclusive_snippet
+    feature_end_dt = datetime.fromisoformat(feature_end_exclusive)
+    assert closed_dt == closed_from_z
+    assert feature_end_dt - closed_dt == timedelta(hours=4)
+    assert closed_dt.minute == 0
+    assert closed_dt.second == 0
+    assert closed_dt.hour % 4 == 0
 
 
 def test_full_chain_step_order_unchanged_without_structure_state_engine(
