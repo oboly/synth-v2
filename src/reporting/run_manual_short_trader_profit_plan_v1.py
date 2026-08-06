@@ -31,6 +31,11 @@ from src.market_data.native_short_fib_context_v1 import (
     STATUS_AVAILABLE as NATIVE_SHORT_CONTEXT_AVAILABLE,
     load_native_short_context_rows,
 )
+from src.market_data.canonical_fib_zone_map_v1 import (
+    AVAILABLE_STATES as CANONICAL_FIB_MAP_AVAILABLE_STATES,
+    DEFAULT_STALE_AFTER as CANONICAL_FIB_MAP_STALE_AFTER,
+    fetch_latest_production_rows as fetch_canonical_fib_map_rows,
+)
 from src.reporting.account_scoped_short_trader_dashboard_v1 import (
     AccountPlanPolicy,
     DEFAULT_OUTPUT_ROOT,
@@ -177,6 +182,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--account-profile", required=True, metavar="PROFILE")
     parser.add_argument("--venue", default=DEFAULT_VENUE)
+    parser.add_argument(
+        "--quote-currency",
+        default="EUR",
+        help="Quote currency used to read canonical_fib_zone_map_latest_v1 (read-only).",
+    )
     parser.add_argument(
         "--output-root",
         default=str(DEFAULT_OUTPUT_ROOT),
@@ -431,6 +441,113 @@ def _native_price_band(
     return "ABOVE_2000"
 
 
+def _canonical_row_ts(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return _parse_iso_ts(value)
+
+
+CANONICAL_4H_CONTEXT_AVAILABLE = "CANONICAL_4H_CONTEXT_AVAILABLE"
+
+
+def _canonical_fib_row_status(
+    row: dict[str, Any] | None,
+    *,
+    now_utc: datetime,
+    stale_after: timedelta,
+) -> str:
+    """Classify a canonical_fib_zone_map_latest_v1 row: ABSENT | AVAILABLE | STALE | UNAVAILABLE.
+
+    ABSENT means no row was published for this symbol -- callers may fall back
+    to the legacy 1d source. AVAILABLE/STALE/UNAVAILABLE are explicit terminal
+    classifications for a row that does exist; they must never be reported as
+    FIB_MAP_SYMBOL_MISSING.
+    """
+    if row is None:
+        return "ABSENT"
+    map_status = str(row.get("map_status") or "").strip().upper()
+    if map_status not in CANONICAL_FIB_MAP_AVAILABLE_STATES:
+        return "UNAVAILABLE"
+    asof_ts = _canonical_row_ts(row.get("asof_ts_utc"))
+    if asof_ts is None:
+        return "UNAVAILABLE"
+    if now_utc - asof_ts > stale_after:
+        return "STALE"
+    return "AVAILABLE"
+
+
+def _build_zone_context_from_canonical_row(
+    row: dict[str, Any],
+    *,
+    current_price: Decimal | None,
+) -> tuple[FibExtContext, ReentryContext] | None:
+    """Map a canonical_fib_zone_map_latest_v1 row onto FibExtContext/ReentryContext.
+
+    Retracement levels r382/r618/r786 are not stored as individual columns;
+    they are reconstructed from entry_zone_low/high and
+    support_reaction_zone_low/high using current_leg (UP/DOWN), the same
+    min/max convention the canonical writer used to build those bounds.
+    """
+    current_leg = str(row.get("current_leg") or "").strip().upper()
+    if current_leg not in {"UP", "DOWN"}:
+        return None
+    try:
+        anchor_low = _parse_decimal(row.get("anchor_low_price"))
+        anchor_high = _parse_decimal(row.get("anchor_high_price"))
+        target_t1 = _parse_decimal(row.get("target_t1"))
+        target_t2 = _parse_decimal(row.get("target_t2"))
+        target_extension = _parse_decimal(row.get("target_extension"))
+        entry_zone_low = _parse_decimal(row.get("entry_zone_low"))
+        entry_zone_high = _parse_decimal(row.get("entry_zone_high"))
+        entry_zone_mid = _parse_decimal(row.get("entry_zone_mid"))
+        support_low = _parse_decimal(row.get("support_reaction_zone_low"))
+        support_high = _parse_decimal(row.get("support_reaction_zone_high"))
+        reference_price = _parse_decimal(row.get("reference_price"))
+    except Exception:
+        return None
+    required = (
+        anchor_low, anchor_high, target_t1, target_t2, target_extension,
+        entry_zone_low, entry_zone_high, entry_zone_mid, support_low, support_high,
+    )
+    if any(value is None for value in required):
+        return None
+    price = current_price if current_price is not None else (reference_price or anchor_high)
+    if price is None:
+        return None
+    if current_leg == "UP":
+        breakout_gate = anchor_high
+        r382, r618, r786 = entry_zone_high, entry_zone_low, support_low
+    else:
+        breakout_gate = anchor_low
+        r382, r618, r786 = entry_zone_low, entry_zone_high, support_high
+    fib_ext = FibExtContext(
+        local_reaction_price=breakout_gate,
+        anchor_end_ts_utc=_canonical_row_ts(row.get("asof_ts_utc")),
+        ext_1_272=target_t1,
+        ext_1_618=target_t2,
+        ext_2_000=target_extension,
+        breakout_gate=breakout_gate,
+        price_band=_native_price_band(
+            current_price=price,
+            breakout_gate=breakout_gate,
+            ext_1_272=target_t1,
+            ext_1_618=target_t2,
+            ext_2_000=target_extension,
+        ),
+        ext_1_272_touched_and_rejected=False,
+        retesting_breakout_gate=False,
+    )
+    reentry = ReentryContext(
+        r382_price=r382,
+        r500_price=entry_zone_mid,
+        r618_price=r618,
+        r786_price=r786,
+        deepest_touched_label=None,
+        missed_main_rebuy_by_pct=None,
+    )
+    return fib_ext, reentry
+
+
 def _short_context_gap_from_row(row: dict[str, str] | None) -> tuple[str, str]:
     if row is None:
         return "FIB_MAP_SYMBOL_MISSING", "NO_NATIVE_SHORT_FIB_CONTEXT"
@@ -452,6 +569,7 @@ def summarize_short_context_coverage(
         "NATIVE_SHORT_CONTEXT_AVAILABLE": 0,
         "INSUFFICIENT_4H_HISTORY": 0,
         "INSUFFICIENT_1H_HISTORY": 0,
+        CANONICAL_4H_CONTEXT_AVAILABLE: 0,
         "LEGACY_1D_CONTEXT_ONLY": 0,
         "FIB_MAP_SYMBOL_MISSING": 0,
         "FIB_MAP_SOURCE_MISSING": 0,
@@ -770,9 +888,12 @@ def load_zone_contexts(
     now_utc: datetime | None = None,
     native_short_snapshot_status: str = "unverified",
     native_short_snapshot_id: str | None = None,
+    canonical_fib_rows_by_symbol: dict[str, dict[str, Any]] | None = None,
+    canonical_fib_stale_after: timedelta = CANONICAL_FIB_MAP_STALE_AFTER,
 ) -> ZoneContextLoadResult:
     _now = now_utc or datetime.now(UTC)
     snapshot_verified = native_short_snapshot_status == "loaded" and bool(native_short_snapshot_id)
+    canonical_fib_rows_by_symbol = canonical_fib_rows_by_symbol or {}
     fib_rows_by_symbol, source_missing = load_fib_map_rows(fib_map_rows_path)
     native_rows_by_symbol, native_source_missing = load_native_short_context_rows(native_short_rows_path)
     fib_ext_by_symbol: dict[str, FibExtContext] = {}
@@ -918,6 +1039,31 @@ def load_zone_contexts(
                         ext_1_272_touched_and_rejected=False,
                         retesting_breakout_gate=False,
                     )
+            continue
+
+        canonical_row = canonical_fib_rows_by_symbol.get(symbol)
+        canonical_status = _canonical_fib_row_status(
+            canonical_row, now_utc=_now, stale_after=canonical_fib_stale_after
+        )
+        if canonical_status == "AVAILABLE":
+            current_price = prices.get(market)
+            built = _build_zone_context_from_canonical_row(canonical_row, current_price=current_price)
+            if built is not None:
+                fib_ext, reentry = built
+                fib_ext_by_symbol[symbol] = fib_ext
+                reentry_by_symbol[symbol] = reentry
+                activation_ts_by_symbol[symbol] = fib_ext.anchor_end_ts_utc
+                input_status_by_symbol[symbol] = CANONICAL_4H_CONTEXT_AVAILABLE
+                coverage_status_by_symbol[symbol] = CANONICAL_4H_CONTEXT_AVAILABLE
+                display_state_by_symbol[symbol] = "NO_NATIVE_SHORT_FIB_CONTEXT"
+                continue
+            canonical_status = "UNAVAILABLE"
+        if canonical_status in {"STALE", "UNAVAILABLE"}:
+            input_status_by_symbol[symbol] = (
+                "CANONICAL_4H_CONTEXT_STALE" if canonical_status == "STALE" else "CANONICAL_4H_CONTEXT_UNAVAILABLE"
+            )
+            coverage_status_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
+            display_state_by_symbol[symbol] = "CONTEXT_INVALID_OR_STALE"
             continue
 
         if source_missing:
@@ -1335,13 +1481,17 @@ def print_summary(*, context, cards: list[ProfitPlanCard], output_html: Path, ou
         markets=list(context.markets),
         coverage_status_by_symbol={card.symbol: card.short_context_coverage_status for card in cards},
     )
-    print("short_context_bridge=native_short_context_v1+legacy_1d_reference_fallback")
+    print(
+        "short_context_bridge=native_short_context_v1"
+        "+canonical_fib_zone_map_latest_v1+legacy_1d_reference_fallback"
+    )
     print(
         "short_context_coverage="
         + " ; ".join(f"{key}:{coverage_summary.get(key, 0)}" for key in (
             "NATIVE_SHORT_CONTEXT_AVAILABLE",
             "INSUFFICIENT_4H_HISTORY",
             "INSUFFICIENT_1H_HISTORY",
+            CANONICAL_4H_CONTEXT_AVAILABLE,
             "LEGACY_1D_CONTEXT_ONLY",
             "FIB_MAP_SYMBOL_MISSING",
             "FIB_MAP_SOURCE_MISSING",
@@ -1432,6 +1582,26 @@ def main() -> int:
         for section in sections
     }
 
+    # Read-only enrichment: canonical_fib_zone_map_latest_v1 covers the full
+    # market-only universe, unlike the 4-row native-short snapshot. Any read
+    # failure degrades to an empty map (falls back to the legacy 1d path /
+    # explicit missing classification) rather than blocking the render.
+    # broker_private_calls=0 — canonical_fib_zone_map_latest_v1 is market-only.
+    try:
+        _canonical_fib_conn = get_connection()
+        try:
+            canonical_fib_rows_by_symbol = fetch_canonical_fib_map_rows(
+                _canonical_fib_conn,
+                venue=args.venue,
+                quote_currency=args.quote_currency,
+                interval_code=_MARKET_CONTEXT_INTERVAL,
+            )
+        finally:
+            _canonical_fib_conn.close()
+    except Exception as exc:
+        print(f"[warn] canonical fib zone map read failed: {exc}", file=sys.stderr)
+        canonical_fib_rows_by_symbol = {}
+
     zone_contexts = load_zone_contexts(
         markets=list(context.markets),
         prices=prices,
@@ -1441,6 +1611,7 @@ def main() -> int:
         fib_map_rows_path=Path(args.fib_map_rows),
         native_short_snapshot_status=getattr(args, "native_short_snapshot_status", "unverified"),
         native_short_snapshot_id=getattr(args, "native_short_snapshot_id", None),
+        canonical_fib_rows_by_symbol=canonical_fib_rows_by_symbol,
     )
     history_by_symbol = fetch_market_target_history_by_symbol(
         venue=args.venue,

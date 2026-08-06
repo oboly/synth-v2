@@ -12,6 +12,11 @@ from decimal import Decimal
 from pathlib import Path
 
 from src.market_data.native_short_fib_context_v1 import NativeShortContextRow, write_context_rows
+from src.market_data.fib_navigation_map_v1 import (
+    DIRECTION_BEARISH,
+    DIRECTION_BULLISH,
+    build_fib_navigation_map_from_anchor,
+)
 import src.reporting.run_manual_short_trader_profit_plan_v1 as profit_plan_runner
 import src.reporting.account_dashboard_profile_access_v1 as profile_access
 from src.market_data.market_price_snapshot_v1 import MarketPriceSnapshot
@@ -465,6 +470,256 @@ def test_load_zone_contexts_missing_symbol_stays_fib_map_symbol_missing() -> Non
         )
         assert result.coverage_status_by_symbol["ETH"] == "FIB_MAP_SYMBOL_MISSING"
         assert result.display_state_by_symbol["ETH"] == "NO_NATIVE_SHORT_FIB_CONTEXT"
+
+
+def _canonical_fib_row(
+    *,
+    symbol: str = "ONDO",
+    current_leg: str = "UP",
+    map_status: str = "FRESH",
+    asof_ts_utc: datetime | None = None,
+) -> dict[str, object]:
+    return {
+        "symbol": symbol,
+        "venue": "bitvavo",
+        "quote_currency": "EUR",
+        "interval_code": "4h",
+        "asof_ts_utc": asof_ts_utc or datetime(2026, 8, 6, 8, 0, tzinfo=UTC),
+        "map_status": map_status,
+        "current_leg": current_leg,
+        "reference_price": Decimal("1.00"),
+        "anchor_low_price": Decimal("0.80"),
+        "anchor_high_price": Decimal("1.20"),
+        "entry_zone_low": Decimal("1.00"),
+        "entry_zone_high": Decimal("1.10"),
+        "entry_zone_mid": Decimal("1.05"),
+        "support_reaction_zone_low": Decimal("0.90"),
+        "support_reaction_zone_high": Decimal("1.00"),
+        "target_t1": Decimal("1.30"),
+        "target_t2": Decimal("1.40"),
+        "target_extension": Decimal("1.60"),
+        "invalidation_level": Decimal("0.80"),
+    }
+
+
+def _canonical_row_from_navigation_map(
+    *,
+    symbol: str,
+    anchor_low: Decimal,
+    anchor_high: Decimal,
+    leg: str,
+    map_status: str = "FRESH",
+    asof_ts_utc: datetime | None = None,
+) -> tuple[dict[str, object], dict[str, Decimal]]:
+    """Build a canonical_fib_zone_map_latest_v1-shaped row using the exact
+    level formulas the canonical writer's build_row() calls (fib_navigation_map_v1
+    retracement/extension levels, entry_zone_low/high = min/max(r382, r618),
+    support_reaction_zone_low/high = min/max(r618, r786) -- see
+    src/market_data/canonical_fib_zone_map_v1.py). Ground-truth levels come
+    from build_fib_navigation_map_from_anchor, the same module the writer
+    calls, not hand-picked fixture numbers."""
+    direction = DIRECTION_BULLISH if leg == "UP" else DIRECTION_BEARISH
+    nav_map = build_fib_navigation_map_from_anchor(
+        anchor_low=anchor_low,
+        anchor_high=anchor_high,
+        current_price=(anchor_low + anchor_high) / Decimal("2"),
+        direction=direction,
+        computed_at_utc=datetime(2026, 8, 6, 8, 0, tzinfo=UTC),
+    )
+    levels = {
+        level.label: level.price
+        for level in (*nav_map.retracement_levels, *nav_map.extension_levels)
+    }
+    r382, r500, r618, r786 = levels["r_0382"], levels["r_0500"], levels["r_0618"], levels["r_0786"]
+    t1, t2, t3 = levels["ext_1272"], levels["ext_1618"], levels["ext_2618"]
+    row = {
+        "symbol": symbol,
+        "venue": "bitvavo",
+        "quote_currency": "EUR",
+        "interval_code": "4h",
+        "asof_ts_utc": asof_ts_utc or datetime(2026, 8, 6, 8, 0, tzinfo=UTC),
+        "map_status": map_status,
+        "current_leg": leg,
+        "reference_price": (anchor_low + anchor_high) / Decimal("2"),
+        "anchor_low_price": anchor_low,
+        "anchor_high_price": anchor_high,
+        "entry_zone_low": min(r382, r618),
+        "entry_zone_high": max(r382, r618),
+        "entry_zone_mid": r500,
+        "support_reaction_zone_low": min(r618, r786),
+        "support_reaction_zone_high": max(r618, r786),
+        "target_t1": t1,
+        "target_t2": t2,
+        "target_extension": t3,
+        "invalidation_level": levels["r_1000"],
+    }
+    return row, {"r382": r382, "r500": r500, "r618": r618, "r786": r786, "t1": t1, "t2": t2, "t3": t3}
+
+
+def test_canonical_row_retracement_mapping_matches_writer_formulas_for_up_and_down_legs() -> None:
+    """entry_zone_low/high -> r382/r618 and support_reaction_zone_low/high ->
+    r786 must be exact for both UP and DOWN legs. For BULLISH (UP), retrace
+    price = anchor_high - leg*level is monotonically decreasing in level, so
+    r382 > r618 > r786 and min/max(r618, r786) isolates r786 exactly (=low).
+    For BEARISH (DOWN), retrace price = anchor_low + leg*level is
+    monotonically increasing, so r382 < r618 < r786 and
+    min/max(r618, r786) isolates r786 exactly (=high). This asserts against
+    ground truth computed by the same fib_navigation_map_v1 formulas the
+    canonical writer's build_row() uses, not hand-authored fixture values."""
+    for leg in ("UP", "DOWN"):
+        row, truth = _canonical_row_from_navigation_map(
+            symbol="ONDO",
+            anchor_low=Decimal("0.80"),
+            anchor_high=Decimal("1.20"),
+            leg=leg,
+        )
+        built = profit_plan_runner._build_zone_context_from_canonical_row(
+            row, current_price=Decimal("1.00")
+        )
+        assert built is not None, f"leg={leg}"
+        fib_ext, reentry = built
+        assert reentry.r382_price == truth["r382"], f"leg={leg}"
+        assert reentry.r500_price == truth["r500"], f"leg={leg}"
+        assert reentry.r618_price == truth["r618"], f"leg={leg}"
+        assert reentry.r786_price == truth["r786"], f"leg={leg}"
+        assert fib_ext.ext_1_272 == truth["t1"], f"leg={leg}"
+        assert fib_ext.ext_1_618 == truth["t2"], f"leg={leg}"
+        assert fib_ext.ext_2_000 == truth["t3"], f"leg={leg}"
+
+
+def test_load_zone_contexts_canonical_row_covers_symbol_outside_native_scope() -> None:
+    """A symbol absent from native-short scope but present in
+    canonical_fib_zone_map_latest_v1 must resolve to canonical Fib context,
+    not FIB_MAP_SYMBOL_MISSING -- this is the Issue #207 regression."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[_native_short_row(symbol="BTC")], output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["ONDO-EUR"],
+            prices={"ONDO-EUR": Decimal("1.02")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            canonical_fib_rows_by_symbol={"ONDO": _canonical_fib_row()},
+            now_utc=datetime(2026, 8, 6, 9, 0, tzinfo=UTC),
+        )
+        assert result.coverage_status_by_symbol["ONDO"] == "CANONICAL_4H_CONTEXT_AVAILABLE"
+        assert result.input_status_by_symbol["ONDO"] == "CANONICAL_4H_CONTEXT_AVAILABLE"
+        assert result.fib_ext_by_symbol["ONDO"].ext_1_272 == Decimal("1.30")
+        assert result.fib_ext_by_symbol["ONDO"].ext_1_618 == Decimal("1.40")
+        assert result.fib_ext_by_symbol["ONDO"].ext_2_000 == Decimal("1.60")
+        assert result.reentry_by_symbol["ONDO"].r382_price == Decimal("1.10")
+        assert result.reentry_by_symbol["ONDO"].r500_price == Decimal("1.05")
+        assert result.reentry_by_symbol["ONDO"].r618_price == Decimal("1.00")
+        assert result.reentry_by_symbol["ONDO"].r786_price == Decimal("0.90")
+
+
+def test_load_zone_contexts_canonical_row_never_overwrites_native_short_symbols() -> None:
+    """BTC/ETH/SOL/XRP must retain native-short lifecycle context even when a
+    canonical_fib_zone_map_latest_v1 row also exists for the same symbol."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[_native_short_row(symbol="BTC")], output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["BTC-EUR"],
+            prices={"BTC-EUR": Decimal("0.48")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            native_short_snapshot_status="loaded",
+            native_short_snapshot_id="nsctx-v1-test-snapshot",
+            canonical_fib_rows_by_symbol={"BTC": _canonical_fib_row(symbol="BTC")},
+            now_utc=datetime(2026, 8, 6, 9, 0, tzinfo=UTC),
+        )
+        assert result.coverage_status_by_symbol["BTC"] == "NATIVE_SHORT_CONTEXT_AVAILABLE"
+        assert result.display_state_by_symbol["BTC"] == "HAS_NATIVE_SHORT_FIB_CONTEXT"
+        # native anchor values (0.30/0.38), not the canonical row's (0.80/1.20)
+        assert result.fib_ext_by_symbol["BTC"].ext_1_618 == Decimal("0.515600")
+
+
+def test_load_zone_contexts_stale_canonical_row_is_classified_explicitly() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[_native_short_row(symbol="BTC")], output_dir=native_dir)
+        stale_row = _canonical_fib_row(symbol="ONDO", asof_ts_utc=datetime(2026, 8, 1, 0, 0, tzinfo=UTC))
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["ONDO-EUR"],
+            prices={"ONDO-EUR": Decimal("1.02")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            canonical_fib_rows_by_symbol={"ONDO": stale_row},
+            now_utc=datetime(2026, 8, 6, 9, 0, tzinfo=UTC),
+        )
+        assert result.coverage_status_by_symbol["ONDO"] == "CONTEXT_INVALID_OR_STALE"
+        assert result.input_status_by_symbol["ONDO"] == "CANONICAL_4H_CONTEXT_STALE"
+        assert "ONDO" not in result.fib_ext_by_symbol
+
+
+def test_load_zone_contexts_invalid_canonical_row_is_classified_explicitly() -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[_native_short_row(symbol="BTC")], output_dir=native_dir)
+        invalid_row = _canonical_fib_row(symbol="ONDO", map_status="NO_DATA")
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["ONDO-EUR"],
+            prices={"ONDO-EUR": Decimal("1.02")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            canonical_fib_rows_by_symbol={"ONDO": invalid_row},
+            now_utc=datetime(2026, 8, 6, 9, 0, tzinfo=UTC),
+        )
+        assert result.coverage_status_by_symbol["ONDO"] == "CONTEXT_INVALID_OR_STALE"
+        assert result.input_status_by_symbol["ONDO"] == "CANONICAL_4H_CONTEXT_UNAVAILABLE"
+
+
+def test_load_zone_contexts_absent_canonical_row_falls_back_to_missing() -> None:
+    """A symbol genuinely absent from native, canonical, and legacy sources
+    stays FIB_MAP_SYMBOL_MISSING -- canonical_fib_rows_by_symbol defaulting to
+    an empty map must not change existing missing-symbol behavior."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fib_rows = Path(tmpdir) / "fibo_target_map_rows_v1.csv"
+        fib_rows.write_text(
+            "symbol,current_price,swing_low_price,swing_high_price,local_reaction_price,next_fibo_support_price\n",
+            encoding="utf-8",
+        )
+        native_dir = Path(tmpdir) / "native"
+        native_paths = write_context_rows(rows=[_native_short_row(symbol="BTC")], output_dir=native_dir)
+        result = profit_plan_runner.load_zone_contexts(
+            markets=["ETH-EUR"],
+            prices={"ETH-EUR": Decimal("2000")},
+            swing_anchors={},
+            recent_lows={},
+            native_short_rows_path=native_paths["rows_csv"],
+            fib_map_rows_path=fib_rows,
+            canonical_fib_rows_by_symbol={},
+        )
+        assert result.coverage_status_by_symbol["ETH"] == "FIB_MAP_SYMBOL_MISSING"
 
 
 def test_load_zone_contexts_keeps_partial_native_gap_truthful_even_with_legacy_row() -> None:
