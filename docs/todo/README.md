@@ -137,7 +137,9 @@ is `UNASSIGNED`.
    - consumes persisted data only, read-only;
    - must never trigger or own the writer.
 
-Keep this sequence synchronized with the implementation roadmap; do not create a duplicate Rotation Pressure TODO.
+This sequence is a frozen historical record and is no longer synchronized with
+the implementation roadmap. Any remaining Rotation Pressure work belongs to a
+GitHub Issue; do not create a duplicate Rotation Pressure TODO.
 
 ## Sequencing rationale
 
