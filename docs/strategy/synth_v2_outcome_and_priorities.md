@@ -3,7 +3,8 @@
 This is a product-direction anchor, not a new governance framework. It exists
 to keep the project aligned with its actual end goal and to stop technically
 useful work from quietly becoming the goal itself. For tactical execution
-order at any given time, see `docs/todo/README.md`. For layer contracts, see
+order at any given time, see GitHub Issues and
+`docs/development/github_issues_workflow.md`. For layer contracts, see
 `docs/architecture/module_architecture.md` and
 `docs/architecture/pipeline_contracts.md`.
 

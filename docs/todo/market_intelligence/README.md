@@ -10,7 +10,7 @@ This folder owns no account permissions, execution intent, order handling, or br
 
 ## Index rule
 
-This file is navigation only. Status, priority, and cross-lane execution order remain owned exclusively by `docs/todo/README.md`.
+This file is navigation only. This board is frozen; current status, priority, and execution order are owned by GitHub Issues (`docs/development/github_issues_workflow.md`).
 
 ## Canonical files
 

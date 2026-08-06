@@ -235,7 +235,7 @@ Canonical documentation lives in:
 docs/
 ```
 
-TODO coordination lives in:
+Work coordination lives in GitHub Issues. The frozen legacy TODO board is:
 
 ```text
 docs/todo/
@@ -553,22 +553,26 @@ Do not make `REDUCE_CANDIDATE`, `EXIT_CANDIDATE`, `PAPER_READY`, or similar labe
 
 Permanent documentation belongs under `docs/`.
 
-Active or parked TODOs belong under:
-
-```text
-docs/todo/
-```
+Executable work belongs in **GitHub Issues**, not in `docs/todo/`.
 
 Use the workflow rules in:
 
 ```text
-docs/todo/workflow_standard.md
+docs/development/github_issues_workflow.md
 ```
+
+`docs/todo/` is a frozen legacy board during controlled migration. See
+`docs/todo/MIGRATION_FREEZE.md`.
 
 Rules:
 
-- Update TODO files when a lane changes state.
-- Update `docs/todo/README.md` when lane status or file list changes.
+- Do not create new TODO lane files and do not add new work to `docs/todo/`.
+- Do not resume status, priority, or execution-order tracking in
+  `docs/todo/README.md`; GitHub Issues own current status and priority.
+- Existing TODO files may be edited only to correct unsafe or materially false
+  information, point to an owning Issue, move permanent content to canonical
+  documentation, or record a reviewed `issue` / `canonical` / `archive` /
+  `remove` disposition.
 - Keep canonical design docs in `docs/research/`, `docs/architecture/`, `docs/ops/`, or `docs/status/` as appropriate.
 - Do not create loose scratch notes in the repo root.
 - If a doc becomes obsolete, suggest removal or move to `docs/archive/`.
@@ -579,6 +583,8 @@ Rules:
 
 ```text
 AGENTS.md                                   = provider-neutral canonical operating contract
+docs/development/github_issues_workflow.md  = operational work inventory / Issue workflow
+docs/todo/MIGRATION_FREEZE.md               = legacy TODO board freeze and dispositions
 docs/ops/agent_orchestration_contract_v1.md = orchestration / handoff detail
 docs/ops/agent_search_hygiene_v1.md         = untrusted-input detail
 CLAUDE.md                                   = Claude integration only, imports AGENTS.md

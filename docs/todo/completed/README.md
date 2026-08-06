@@ -10,7 +10,7 @@ This folder is historical evidence and standing architecture constraints. It doe
 
 ## Index rule
 
-`docs/todo/README.md` remains the sole owner of cross-lane status, priority, and execution order. Files in this folder may be referenced by compact compatibility pointers from former paths while links are migrated.
+This board is frozen; current status, priority, and execution order are owned by GitHub Issues (`docs/development/github_issues_workflow.md`). Files in this folder may be referenced by compact compatibility pointers from former paths while links are migrated.
 
 ## Current files
 

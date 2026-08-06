@@ -246,7 +246,7 @@ Scope:
 - add frozen `ReplayDataset`, `ReplayPoint`, `ParameterStudyDefinition`, `TemporalSplit`, and `EvaluationResult` contracts;
 - add canonical serialization and hash tests;
 - add architecture documentation;
-- register this sublane in `docs/todo/README.md`.
+- track this sublane as a GitHub Issue (the legacy TODO board is frozen; do not register it in `docs/todo/README.md`).
 
 Non-goals:
 
@@ -377,7 +377,7 @@ This TODO is complete only when:
 - no DB schema or operational result-store dependency was introduced;
 - no runtime behavior changed;
 - no account, broker, order, decision, planning, execution, or promotion authority was introduced;
-- `docs/todo/README.md` and `docs/todo/strategy_candidates.md` are reconciled with the resulting evidence.
+- the owning GitHub Issue records the resulting evidence (the legacy TODO board is frozen and is not resynchronised).
 
 ## Blockers before implementation
 

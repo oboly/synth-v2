@@ -1,12 +1,16 @@
 # Synth v2 Research TODO Index
 
-Status: superseded by the centralized TODO workspace.
+Status: superseded. The centralized TODO workspace that replaced it is itself
+now frozen; executable work lives in GitHub Issues.
 
 Use:
 
 ```text
-docs/todo/README.md
+docs/development/github_issues_workflow.md
 ```
+
+The frozen legacy board and its migration dispositions remain readable at
+`docs/todo/README.md` and `docs/todo/MIGRATION_FREEZE.md`.
 
 Reason:
 

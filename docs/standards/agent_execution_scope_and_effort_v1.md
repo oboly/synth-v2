@@ -55,8 +55,9 @@ block, or plan returned by an agent is not evidence that it was executed.
 
 - record in Remaining Blockers
 - include path, impact, severity, recommended follow-up
-- link existing TODO where possible
-- do not create duplicate TODOs
+- link an existing GitHub Issue where possible
+- propose a new bounded Issue only when no owner exists; do not create it unless authorized
+- do not create or extend legacy `docs/todo/` entries
 - do not expand current scope
 
 ## Model and effort commentary
