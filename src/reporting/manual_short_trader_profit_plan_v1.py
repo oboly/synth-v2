@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Mapping
 
 from src.reporting.dashboard_style_v1 import synth_favicon_head_html
 from src.reporting.dashboard_time_v1 import format_ui_now
@@ -348,6 +348,13 @@ class CardEvidence:
     # Stays DATA_UNAVAILABLE until Lane A plumbs a real per-authority snapshot.
     wallet_snapshot_status: str = DATA_UNAVAILABLE
     position_snapshot_status: str = DATA_UNAVAILABLE
+    # Portfolio composition fields (Issue #238). Populated from
+    # trading_account_balance_snapshot / account_position_snapshot read-only
+    # snapshots. Stay DATA_UNAVAILABLE when the source snapshot has no row for
+    # this symbol — never fabricated.
+    held_amount: str = DATA_UNAVAILABLE
+    held_eur_value: str = DATA_UNAVAILABLE
+    cost_basis_price_eur: str = DATA_UNAVAILABLE
     map_age_min: str = DATA_UNAVAILABLE
     anchor_start_ts_utc: str = DATA_UNAVAILABLE
     anchor_end_ts_utc: str = DATA_UNAVAILABLE
@@ -1153,9 +1160,30 @@ def _entry_wait_label(card: ProfitPlanCard) -> str:
     return "WAIT FOR ENTRY"
 
 
+def _planning_ppp_unavailable_reason(card: ProfitPlanCard) -> str | None:
+    """Precise, truthful reason Planning PPP has no numeric value.
+
+    Planning PPP only needs a reference entry (reload/buy zone) and a
+    reference target (target_exit_zone / target_level_statuses); it must
+    never require native SHORT lifecycle proof.
+    """
+    if _planning_ppp(card) is not None:
+        return None
+    if card.current_price is None or card.current_price <= 0:
+        return "Current price snapshot unavailable."
+    if not (card.reload_reentry_zone or card.buy_zone):
+        return "No reference re-entry/buy zone available (no canonical 4h or native context)."
+    if not _profit_plan_target_levels(card):
+        return "No reference target level available (no canonical 4h or native context)."
+    return "Planning PPP inputs unavailable."
+
+
 def _format_planning_ppp(card: ProfitPlanCard) -> str:
     ppp = _planning_ppp(card)
-    return _pct(ppp) if ppp is not None else "—"
+    if ppp is not None:
+        return _pct(ppp)
+    reason = _planning_ppp_unavailable_reason(card)
+    return f"— · {reason}" if reason else "—"
 
 
 def _format_actionable_ppp(card: ProfitPlanCard) -> str:
@@ -1165,6 +1193,41 @@ def _format_actionable_ppp(card: ProfitPlanCard) -> str:
     if card.actionability_state == CARD_ACTIONABILITY_ACTIVE:
         return f"— · {_entry_wait_label(card)}"
     return "—"
+
+
+def apply_portfolio_account_evidence(
+    cards: list[ProfitPlanCard],
+    *,
+    held_amount_by_symbol: Mapping[str, Decimal],
+    held_eur_value_by_symbol: Mapping[str, Decimal | None],
+    cost_basis_by_symbol: Mapping[str, Decimal],
+    balance_freshness_status: str = DATA_UNAVAILABLE,
+) -> list[ProfitPlanCard]:
+    """Compose account-aware portfolio fields onto held-token cards (Issue #238).
+
+    Read-only composition: holdings, EUR value and cost basis are account-aware
+    inputs supplied by the caller from persisted DB snapshots. This function
+    never queries a broker or a database itself, and never fabricates a value
+    for a symbol absent from the supplied maps — those stay DATA_UNAVAILABLE.
+    """
+    out: list[ProfitPlanCard] = []
+    for card in cards:
+        held_amount = held_amount_by_symbol.get(card.symbol)
+        if held_amount is None:
+            out.append(card)
+            continue
+        eur_value = held_eur_value_by_symbol.get(card.symbol)
+        cost_basis = cost_basis_by_symbol.get(card.symbol)
+        new_evidence = dataclasses.replace(
+            card.evidence,
+            held_amount=_strip_decimal_zeros(held_amount),
+            held_eur_value=(_strip_decimal_zeros(eur_value) if eur_value is not None else DATA_UNAVAILABLE),
+            cost_basis_price_eur=(_strip_decimal_zeros(cost_basis) if cost_basis is not None else DATA_UNAVAILABLE),
+            wallet_snapshot_status=balance_freshness_status,
+            position_snapshot_status=(balance_freshness_status if cost_basis is not None else DATA_UNAVAILABLE),
+        )
+        out.append(dataclasses.replace(card, evidence=new_evidence))
+    return out
 
 
 def _short_context_display_label(state: str) -> str:
@@ -3652,6 +3715,11 @@ _CSS = """
     .pp-selector-symbol { font-weight: 700; font-family: ui-monospace, monospace; }
     .pp-selector-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
     .pp-selector-breath { font-size: 11px; color: var(--blue); margin-top: 3px; }
+    .pp-selector-held { border-left: 2px solid var(--ok); }
+    .pp-selector-tag {
+      font-size: 9px; font-weight: 700; color: var(--ok); border: 1px solid var(--ok);
+      border-radius: 3px; padding: 0 3px; margin-left: 4px;
+    }
     #profit-plan-main { min-width: 0; }
     #profit-plan-main .plan-card { display: none; }
     #profit-plan-main .plan-card.pp-active { display: block; }
@@ -3706,6 +3774,11 @@ _CSS = """
     .action-wait { color: var(--muted); }
     .action-dont { color: var(--bad); }
     .tf-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .portfolio-held-badge {
+      margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: .04em;
+      color: var(--ok); border: 1px solid var(--ok); border-radius: 4px; padding: 2px 6px;
+    }
+    .card[data-presentation-mode='POSITION_HELD'] { border-left: 3px solid var(--ok); }
     .state-label { margin-top: 6px; font-size: 14px; font-weight: 700; }
     .state-secondary { margin-top: 3px; font-size: 11px; color: var(--muted); }
     .field-grid {
@@ -4083,18 +4156,28 @@ def _build_client_js(storage_scope: str) -> str:
       sel.innerHTML = "<div class='pp-selector-item muted'>No matching cards</div>";
       return;
     }}
+    // Portfolio-held cards first, in DOM (default action-priority) order otherwise.
+    visible.sort(function(a, b) {{
+      var aHeld = a.dataset.presentationMode === 'POSITION_HELD' ? 0 : 1;
+      var bHeld = b.dataset.presentationMode === 'POSITION_HELD' ? 0 : 1;
+      return aHeld - bHeld;
+    }});
     visible.forEach(function(card) {{
       var item = document.createElement('div');
-      item.className = 'pp-selector-item';
+      var isHeld = card.dataset.presentationMode === 'POSITION_HELD';
+      item.className = 'pp-selector-item' + (isHeld ? ' pp-selector-held' : '');
       item.dataset.renderId = card.dataset.renderId || '';
       var symbol = (card.dataset.sortSymbol || '?').toUpperCase();
       var action = card.dataset.filterActionLabel || card.dataset.filterAction || '';
+      // Actionable PPP when eligible; otherwise fall back to Planning PPP so every
+      // held token still shows a reference number (or its unavailable reason).
       var ppp = card.dataset.sortPpp && card.dataset.sortPpp !== '-999999'
-        ? card.dataset.actionablePpp : '';
+        ? card.dataset.actionablePpp
+        : card.dataset.planningPpp || '';
       var breath = card.dataset.bcCurrentCheckpoint || 'UNAVAILABLE';
       var trajectory = card.dataset.bcNextCheckpoint || 'UNAVAILABLE';
       item.innerHTML =
-        "<div class='pp-selector-symbol'>" + symbol + "</div>" +
+        "<div class='pp-selector-symbol'>" + symbol + (isHeld ? " <span class='pp-selector-tag'>HELD</span>" : '') + "</div>" +
         "<div class='pp-selector-meta'>" + action + (ppp ? ' \xb7 ' + ppp : '') + "</div>" +
         "<div class='pp-selector-breath muted'>Breathline ctx: " + breath + " \xb7 " + trajectory + "</div>";
       item.addEventListener('click', function() {{
@@ -4716,6 +4799,12 @@ def render_plan_card(
     invalidation_line = format_invalidation_line(card.invalidation_risk_zone, card.distance_to_invalidation_pct)
     planning_ppp_text = _format_planning_ppp(card)
     actionable_ppp_text = _format_actionable_ppp(card)
+    is_portfolio_held = card.presentation_mode == CARD_MODE_POSITION_HELD
+    portfolio_badge_html = (
+        "<span class='portfolio-held-badge' title='Currently held in this account'>PORTFOLIO HOLDING</span>"
+        if is_portfolio_held
+        else ""
+    )
 
     event_label = STATE_LABELS.get(card.event_state, card.event_state.replace("_", " "))
     metrics_blocks = [
@@ -4739,6 +4828,12 @@ def render_plan_card(
         if card.actionability_state == CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE
         else "Invalidation"
     )
+    if is_portfolio_held:
+        metrics_blocks.extend((
+            _metric_block("Held amount", card.evidence.held_amount),
+            _metric_block("Held value (EUR)", card.evidence.held_eur_value),
+            _metric_block("Cost basis (EUR)", card.evidence.cost_basis_price_eur),
+        ))
     metrics_blocks.extend((
         _metric_block(reentry_label, reentry_line),
         _metric_block(target_label, target_line),
@@ -4917,6 +5012,7 @@ def render_plan_card(
         f"<span class='muted small'>{esc(card.fib_trading_horizon)}</span>"
         f"<span class='muted small'>·</span>"
         f"<span class='mono small'>{esc(price_line)}</span>"
+        f"{portfolio_badge_html}"
         f"</div>"
         f"<div class='card-row2'>{quality_html}</div>"
         "</div>"
@@ -5204,6 +5300,7 @@ def build_json_snapshot(
     now_ts = snapshot_ts or datetime.now(UTC).isoformat()
     relevant_count = sum(1 for c in cards if c.is_relevant)
     total_count = len(cards)
+    portfolio_held_count = sum(1 for c in cards if c.presentation_mode == CARD_MODE_POSITION_HELD)
     return {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
@@ -5216,6 +5313,8 @@ def build_json_snapshot(
         "market_price_snapshot_ts_utc": market_price_snapshot_ts_utc,
         "relevant_count": relevant_count,
         "total_count": total_count,
+        "card_count": total_count,
+        "portfolio_held_count": portfolio_held_count,
         "broker_mode": broker_mode,
         "broker_writes": 0,
         "order_submission": 0,
@@ -5293,6 +5392,8 @@ def build_json_snapshot(
                 "is_relevant": c.is_relevant,
                 "planning_ppp_pct": (str(_planning_ppp(c)) if _planning_ppp(c) is not None else None),
                 "planning_ppp_display": _pct_display(_planning_ppp(c)),
+                "planning_ppp_unavailable_reason": _planning_ppp_unavailable_reason(c),
+                "is_portfolio_held": c.presentation_mode == CARD_MODE_POSITION_HELD,
                 "actionable_ppp_pct": (str(_actionable_ppp(c)) if _actionable_ppp(c) is not None else None),
                 "actionable_ppp_display": _pct_display(_actionable_ppp(c)),
                 "actionable_ppp_available": _actionable_ppp(c) is not None,
