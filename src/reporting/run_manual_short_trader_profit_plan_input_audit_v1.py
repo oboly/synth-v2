@@ -16,6 +16,7 @@ from src.reporting.account_scoped_short_trader_dashboard_v1 import (
     classify_market_prices_by_market,
     load_account_scoped_short_dashboard_context,
 )
+from src.reporting.manual_short_trader_profit_plan_v1 import VISIBILITY_CANONICAL_NAVIGATION_REFERENCE
 from src.reporting.run_manual_short_trader_profit_plan_v1 import (
     _parse_kv_list,
     build_cards,
@@ -46,6 +47,7 @@ class ProfitPlanInputAuditRow:
     primary_missing_reason: str
     all_missing_reasons: tuple[str, ...]
     would_render_state: str
+    visibility_class: str
     filtered_by_profit_plan: bool
     broker_writes: int
     order_submission: int
@@ -196,7 +198,17 @@ def build_profit_plan_input_audit_rows(
                 primary_missing_reason=primary_missing_reason,
                 all_missing_reasons=tuple(missing_reasons),
                 would_render_state=card.primary_state,
-                filtered_by_profit_plan=not card.is_relevant,
+                visibility_class=card.visibility_class,
+                # Issue #212: preserve the existing not-is_relevant meaning of
+                # "filtered" for every other case, but explicitly carve out
+                # canonical navigation-only cards -- they are discoverable in
+                # the default rendered view and must never be reported as
+                # filtered, even though card.is_relevant is False for them by
+                # design (non-actionable, not non-visible).
+                filtered_by_profit_plan=(
+                    not card.is_relevant
+                    and card.visibility_class != VISIBILITY_CANONICAL_NAVIGATION_REFERENCE
+                ),
                 broker_writes=0,
                 order_submission=0,
                 executor="none",
@@ -240,6 +252,7 @@ def format_summary(rows: list[ProfitPlanInputAuditRow], *, broker_mode: str) -> 
             f"{row.symbol}: open_order_input_status={row.open_order_input_status} "
             f"zone_context_input_status={row.zone_context_input_status} "
             f"would_render_state={row.would_render_state} "
+            f"visibility_class={row.visibility_class} "
             f"primary_missing_reason={row.primary_missing_reason} "
             f"missing={reasons} [{status}]"
         )

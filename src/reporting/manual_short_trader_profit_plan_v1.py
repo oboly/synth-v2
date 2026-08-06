@@ -170,6 +170,16 @@ CARD_ACTIONABILITY_NEEDS_RECOMPUTE = "NEEDS_RECOMPUTE"
 CARD_ACTIONABILITY_INVALIDATED = "INVALIDATED"
 CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE = "CONTEXT_UNAVAILABLE"
 
+# Visibility/grouping classification (Issue #212). Distinct from is_relevant:
+# is_relevant means "actionable, counts toward attention"; visibility_class means
+# "how the default rendered view should group/label this card". A card can be
+# fully present and discoverable while still being non-relevant/non-actionable
+# (CANONICAL_NAVIGATION_REFERENCE) -- that combination must never be reported
+# as "filtered".
+VISIBILITY_ACTIONABLE = "ACTIONABLE"
+VISIBILITY_CANONICAL_NAVIGATION_REFERENCE = "CANONICAL_NAVIGATION_REFERENCE"
+VISIBILITY_CONTEXT_UNAVAILABLE = "CONTEXT_UNAVAILABLE"
+
 CARD_MODE_POSITION_HELD = "POSITION_HELD"
 CARD_MODE_ACCOUNT_ORDER_ONLY = "ACCOUNT_ORDER_ONLY"
 CARD_MODE_ACCOUNT_PLAN_ENABLED = "ACCOUNT_PLAN_ENABLED"
@@ -394,6 +404,7 @@ class ProfitPlanCard:
     relevance_reasons: tuple[str, ...]
     is_relevant: bool
     actionability_state: str = CARD_ACTIONABILITY_ACTIVE
+    visibility_class: str = VISIBILITY_ACTIONABLE
     presentation_mode: str = CARD_MODE_MARKET_SELECTED
     fib_nav_context: FibNavContext | None = None
     render_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -2683,6 +2694,7 @@ def _short_context_gap_card(
         ladder_states=("ORDER_DATA_UNAVAILABLE",),
         relevance_reasons=("MINIMAL_CONTEXT",),
         is_relevant=True,
+        visibility_class=VISIBILITY_CONTEXT_UNAVAILABLE,
         presentation_mode=presentation_mode,
         breath_curve=breath_curve,
         evidence=evidence or CardEvidence(),
@@ -3223,6 +3235,11 @@ def build_profit_plan_card(
             ladder_states=("ORDER_DATA_UNAVAILABLE",),
             relevance_reasons=(),
             is_relevant=False,
+            visibility_class=(
+                VISIBILITY_ACTIONABLE
+                if canonical_native_map_truth_available
+                else VISIBILITY_CONTEXT_UNAVAILABLE
+            ),
             presentation_mode=presentation_mode,
             breath_curve=breath_curve,
             evidence=dataclasses.replace(
@@ -3488,6 +3505,20 @@ def build_profit_plan_card(
         canonical_market_context_available=canonical_market_context_available,
     )
 
+    # Issue #212: visibility_class is a grouping/display concern, independent of
+    # is_relevant (attention/actionability). A canonical-bridge card is always
+    # CANONICAL_NAVIGATION_REFERENCE regardless of its (always-False) is_relevant
+    # value; a native lifecycle-verified card is always ACTIONABLE regardless of
+    # its moment-to-moment is_relevant value; everything else (no native truth,
+    # no canonical bridge) is CONTEXT_UNAVAILABLE. Native relevance derivation
+    # above is untouched by this classification.
+    if canonical_market_context_available:
+        visibility_class = VISIBILITY_CANONICAL_NAVIGATION_REFERENCE
+    elif canonical_native_map_truth_available:
+        visibility_class = VISIBILITY_ACTIONABLE
+    else:
+        visibility_class = VISIBILITY_CONTEXT_UNAVAILABLE
+
     return ProfitPlanCard(
         symbol=symbol,
         market=market,
@@ -3526,6 +3557,7 @@ def build_profit_plan_card(
         ladder_states=ladder_states,
         relevance_reasons=relevance_reasons,
         is_relevant=is_relevant,
+        visibility_class=visibility_class,
         fib_nav_context=fib_nav_context,
         presentation_mode=presentation_mode,
         breath_curve=breath_curve,

@@ -206,6 +206,42 @@ def test_valid_fixture_reports_ready_for_profit_plan() -> None:
     assert row.filtered_by_profit_plan is False
 
 
+def test_canonical_navigation_reference_is_not_reported_as_filtered() -> None:
+    """Issue #212: a canonical-bridge card (is_relevant False by design, not
+    lifecycle-verified) must expose visibility_class=CANONICAL_NAVIGATION_REFERENCE
+    and must never be reported as filtered_by_profit_plan=True."""
+    market = "ONDO-EUR"
+    symbol = "ONDO"
+    card = build_profit_plan_card(
+        symbol=symbol,
+        market=market,
+        current_price=Decimal("0.40"),
+        short_context_input_status="CANONICAL_4H_CONTEXT_AVAILABLE",
+        short_context_coverage_status="CANONICAL_4H_CONTEXT_AVAILABLE",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        fib_ext=_fib_ext(),
+        reentry=_reentry(),
+    )
+    assert card.is_relevant is False
+    rows = build_profit_plan_input_audit_rows(
+        markets=[market],
+        prices={market: Decimal("0.40")},
+        cards=[card],
+        fib_ext_by_symbol={symbol: _fib_ext()},
+        reentry_by_symbol={symbol: _reentry()},
+        orders_by_symbol={symbol: ((), ())},
+        raw_orders_by_symbol={symbol: ()},
+        open_order_source_missing=False,
+        zone_context_status_by_symbol={symbol: "CANONICAL_4H_CONTEXT_AVAILABLE"},
+    )
+    row = rows[0]
+    assert row.visibility_class == "CANONICAL_NAVIGATION_REFERENCE"
+    assert row.filtered_by_profit_plan is False
+    summary = format_summary(rows, broker_mode="offline")
+    assert "[visible]" in summary
+    assert "[filtered]" not in summary
+
+
 def test_json_snapshot_structure() -> None:
     row = _build_rows_for_card(
         fib_ext=_fib_ext(),

@@ -74,6 +74,9 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     CARD_MODE_MARKET_SELECTED,
     CARD_MODE_POSITION_HELD,
     CARD_MODE_WATCH_ONLY_ROTATION,
+    VISIBILITY_ACTIONABLE,
+    VISIBILITY_CANONICAL_NAVIGATION_REFERENCE,
+    VISIBILITY_CONTEXT_UNAVAILABLE,
     CardEvidence,
     FibExtContext,
     FibNavContext,
@@ -1499,16 +1502,35 @@ def print_summary(*, context, cards: list[ProfitPlanCard], output_html: Path, ou
             "CONTEXT_INVALID_OR_STALE",
         ))
     )
-    relevant = [card for card in cards if card.is_relevant]
-    print(f"relevant={len(relevant)}/{len(cards)}")
+    # Issue #212: is_relevant (attention/actionability) and visibility_class
+    # (default-view grouping) are separate concerns. A card can be fully
+    # present in the rendered view (all cards always are) while being
+    # non-actionable -- that combination must be labeled by its
+    # visibility_class, never reported as "filtered". visibility_class is a
+    # three-way, mutually-exclusive partition of every card, so the three
+    # counts below always sum to len(cards).
+    total = len(cards)
+    _SUMMARY_LABEL_BY_VISIBILITY = {
+        VISIBILITY_ACTIONABLE: "RELEVANT",
+        VISIBILITY_CANONICAL_NAVIGATION_REFERENCE: "CANONICAL_NAV",
+        VISIBILITY_CONTEXT_UNAVAILABLE: "CONTEXT_UNAVAILABLE",
+    }
+    attention_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_ACTIONABLE)
+    canonical_navigation_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_CANONICAL_NAVIGATION_REFERENCE)
+    context_unavailable_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_CONTEXT_UNAVAILABLE)
+    print(f"attention={attention_count}/{total}")
+    print(f"canonical_navigation={canonical_navigation_count}/{total}")
+    print(f"context_unavailable={context_unavailable_count}/{total}")
     for card in cards:
-        rel_flag = "RELEVANT" if card.is_relevant else "filtered"
+        summary_label = _SUMMARY_LABEL_BY_VISIBILITY.get(card.visibility_class, "CONTEXT_UNAVAILABLE")
         print(
             f"{card.symbol}: scenario={card.scenario_type}"
             f" action={card.action_label}"
             f" primary_state={card.primary_state}"
             f" short_context={card.short_context_coverage_status}"
-            f" [{rel_flag}]"
+            f" visibility={card.visibility_class}"
+            f" is_relevant={card.is_relevant}"
+            f" [{summary_label}]"
         )
 
 
