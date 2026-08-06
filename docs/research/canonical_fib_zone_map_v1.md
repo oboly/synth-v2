@@ -110,8 +110,30 @@ It must not become:
 One row represents one market-only fib/zone map snapshot for:
 
 ```text
-(venue, symbol, interval_code, asof_ts_utc, map_version)
+(publication_id, symbol)
 ```
+
+Publication scope is:
+
+```text
+(venue, quote_currency, interval_code, asof_ts_utc, map_version)
+```
+
+on `canonical_fib_zone_map_publication_v1`.
+
+Each publication is an immutable cohort containing exactly one row per
+tracked symbol. Cohort membership -- not the row timestamp -- is what
+distinguishes rows, so a symbol whose source bar is missing or stale may
+legitimately carry the same `asof_ts_utc` across consecutive publications
+without collision. On the child row:
+
+- `publication_id` identifies the owning cohort
+- `asof_ts_utc` is the source/effective map timestamp for that symbol, which
+  may lag the cohort's `asof_ts_utc` when that symbol's bar is unavailable
+- `input_latest_candle_ts_utc` remains the source freshness timestamp
+
+Read "current" through `canonical_fib_zone_map_latest_v1`, which selects by
+the publication's `asof_ts_utc`, never by the child row's.
 
 This allows:
 

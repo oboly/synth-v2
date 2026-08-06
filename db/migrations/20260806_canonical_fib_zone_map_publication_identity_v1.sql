@@ -1,0 +1,89 @@
+-- Migration: canonical_fib_zone_map_v1 child-row identity.
+-- Repository migration only. Applying it is a separately authorized DB action.
+--
+-- ---------------------------------------------------------------------------
+-- Root cause (2026-08-05T20:00Z publication failure)
+-- ---------------------------------------------------------------------------
+-- The 20:00Z build loaded tracked_symbols=43. Exactly one tracked symbol (NOT)
+-- had no 2026-08-05 20:00 4h bar in obs_market_candle at run time, while it
+-- did have the 16:00 bar. build_row therefore derived NOT's row timestamp from
+-- its own latest available candle (16:00), while build_publication derived the
+-- cohort asof from the max across symbols (20:00, present for the other 42).
+--
+-- The 16:00 cohort (publication fibnav-4e892c49bfb66a60d971cf5215f8f648,
+-- created 19:30:35Z) had already published NOT with asof_ts_utc = 16:00. The
+-- 20:00 cohort then attempted to insert NOT with asof_ts_utc = 16:00 again,
+-- producing the observed collision:
+--
+--   IntegrityError 1062: Duplicate entry
+--   'bitvavo-NOT-4h-2026-08-05 16:00:00.000000-canonical_fib_zone_...'
+--   for key 'uq_canonical_fib_zone_map_v1'
+--
+-- with database_writes=0 (the whole cohort rolled back).
+--
+-- ---------------------------------------------------------------------------
+-- Schema / model contradiction
+-- ---------------------------------------------------------------------------
+-- The publication contract (20260730_canonical_fib_zone_map_production_v1.sql)
+-- already treats each publication as an immutable cohort: publication scope is
+-- (venue, quote_currency, interval_code, asof_ts_utc, map_version) on
+-- canonical_fib_zone_map_publication_v1, and canonical_fib_zone_map_latest_v1
+-- selects "current" by the publication's asof, never by the child row's
+-- asof_ts_utc. But the child-row unique key still keyed on the child's own
+-- asof_ts_utc and omitted publication_id entirely -- so it could not express
+-- "one row per symbol per cohort", and instead forbade the legitimate case of
+-- a stale symbol repeating its source timestamp across consecutive cohorts.
+--
+-- ---------------------------------------------------------------------------
+-- Intended model after this migration
+-- ---------------------------------------------------------------------------
+-- Child-row grain is one row per (publication_id, symbol).
+--   - publication_id             = the owning immutable cohort
+--   - asof_ts_utc                = source/effective map timestamp for that
+--                                  symbol (may legitimately lag the cohort
+--                                  asof when the symbol's bar is missing)
+--   - input_latest_candle_ts_utc = source freshness, unchanged
+-- A stale/unavailable symbol may therefore legitimately repeat across
+-- consecutive publications without colliding, because cohort membership --
+-- not the timestamp -- is what distinguishes the two rows.
+--
+-- ---------------------------------------------------------------------------
+-- Pre-flight validation (run read-only BEFORE applying; both must be empty/0)
+-- ---------------------------------------------------------------------------
+--   SELECT venue, symbol, interval_code, publication_id, map_version, COUNT(*)
+--   FROM canonical_fib_zone_map_v1
+--   GROUP BY venue, symbol, interval_code, publication_id, map_version
+--   HAVING COUNT(*) > 1;
+--
+--   SELECT COUNT(*) FROM canonical_fib_zone_map_v1 WHERE publication_id IS NULL;
+--
+-- Result on GurkDB (synth @ 192.168.1.221) on 2026-08-06: 0 rows and 0
+-- respectively -- the new key is satisfied by all existing data, so this
+-- migration cannot fail on legacy rows and needs no backfill or row deletion.
+--
+-- ---------------------------------------------------------------------------
+-- Rollback reference (DOWN -- do not run as part of this migration)
+-- ---------------------------------------------------------------------------
+-- Safe only while no row has been written that relies on the new, looser
+-- timestamp semantics (i.e. two cohorts sharing a symbol+asof_ts_utc). Check
+-- first with:
+--
+--   SELECT venue, symbol, interval_code, asof_ts_utc, map_version, COUNT(*)
+--   FROM canonical_fib_zone_map_v1
+--   GROUP BY venue, symbol, interval_code, asof_ts_utc, map_version
+--   HAVING COUNT(*) > 1;
+--
+-- If that returns zero rows, the original key can be restored with:
+--
+--   ALTER TABLE canonical_fib_zone_map_v1
+--       DROP INDEX uq_canonical_fib_zone_map_v1,
+--       ADD UNIQUE KEY uq_canonical_fib_zone_map_v1 (
+--           venue, symbol, interval_code, asof_ts_utc, map_version
+--       );
+
+-- UP
+ALTER TABLE canonical_fib_zone_map_v1
+    DROP INDEX uq_canonical_fib_zone_map_v1,
+    ADD UNIQUE KEY uq_canonical_fib_zone_map_v1 (
+        venue, symbol, interval_code, publication_id, map_version
+    );

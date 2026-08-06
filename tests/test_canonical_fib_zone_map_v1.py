@@ -605,3 +605,296 @@ def test_dashboard_degrades_unknown_leg_without_reusing_directional_values() -> 
     assert rendered.nearest_support_or_entry_zone == "UNKNOWN (non-directional map)"
     assert rendered.invalidation_zone == "UNKNOWN"
     assert rendered.strategy_candidate_state == "MAP_UNAVAILABLE"
+
+
+# ---------------------------------------------------------------------------
+# Child-row identity for publication cohorts.
+#
+# Regression cover for the 2026-08-05T20:00Z publication failure: exactly one
+# tracked symbol (NOT) had no 20:00 4h bar while it did have the 16:00 bar, so
+# its child row carried asof_ts_utc=16:00 inside the 20:00 cohort and collided
+# with its own row from the already-published 16:00 cohort under the old
+# unique key (venue, symbol, interval_code, asof_ts_utc, map_version).
+#
+# Grain after db/migrations/20260806_canonical_fib_zone_map_publication_identity_v1.sql:
+# one row per (publication_id, symbol).
+# ---------------------------------------------------------------------------
+
+IDENTITY_MIGRATION = Path(
+    "db/migrations/20260806_canonical_fib_zone_map_publication_identity_v1.sql"
+)
+T_1600 = datetime(2026, 8, 5, 16, 0, tzinfo=UTC)
+T_2000 = datetime(2026, 8, 5, 20, 0, tzinfo=UTC)
+DB_1600 = T_1600.replace(tzinfo=None)
+DB_2000 = T_2000.replace(tzinfo=None)
+
+
+class _IdentityIntegrityError(Exception):
+    """Stand-in for the MariaDB 1062 duplicate-key error."""
+
+
+class _IdentityCursor:
+    """Fake cursor enforcing the migrated uq_canonical_fib_zone_map_v1."""
+
+    def __init__(self, script: dict) -> None:
+        self._script = script
+        self._result = None
+
+    def __enter__(self) -> "_IdentityCursor":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params=()) -> None:
+        stripped = sql.strip()
+        if stripped.startswith("SELECT") and "canonical_fib_zone_map_publication_v1" in sql:
+            venue, quote, interval, asof = params[0], params[1], params[2], params[3]
+            self._result = next(
+                (
+                    row
+                    for row in self._script["publications"].values()
+                    if row["venue"] == venue
+                    and row["quote_currency"] == quote
+                    and row["interval_code"] == interval
+                    and row["asof_ts_utc"] == asof
+                ),
+                None,
+            )
+        elif stripped.startswith("INSERT INTO canonical_fib_zone_map_publication_v1"):
+            self._script["publications"][params[0]] = {
+                "publication_id": params[0],
+                "venue": params[1],
+                "quote_currency": params[2],
+                "interval_code": params[3],
+                "asof_ts_utc": params[4],
+                "map_version": params[5],
+                "content_digest": params[6],
+                "row_count": params[7],
+                "available_count": params[8],
+            }
+        elif stripped.startswith("INSERT INTO canonical_fib_zone_map_v1"):
+            row = dict(params)
+            key = (
+                row["venue"],
+                row["symbol"],
+                row["interval_code"],
+                row["publication_id"],
+                row["map_version"],
+            )
+            if key in self._script["map_keys"]:
+                raise _IdentityIntegrityError(
+                    "Duplicate entry for key 'uq_canonical_fib_zone_map_v1'"
+                )
+            self._script["map_keys"].add(key)
+            self._script["map_rows"].append(row)
+        else:
+            raise AssertionError(f"unexpected SQL in fake cursor: {sql[:120]}")
+
+    def fetchone(self):
+        return self._result
+
+    def fetchall(self):
+        return self._result or []
+
+
+class _IdentityConn:
+    def __init__(self) -> None:
+        self.script: dict = {"publications": {}, "map_rows": [], "map_keys": set()}
+
+    def cursor(self):
+        return _IdentityCursor(self.script)
+
+    def rows_for(self, symbol: str) -> list[dict]:
+        return [row for row in self.script["map_rows"] if row["symbol"] == symbol]
+
+    def latest_publication_rows(self) -> list[dict]:
+        """Mirrors canonical_fib_zone_map_latest_v1: pick the cohort with the
+        greatest publication asof, then return that cohort's rows."""
+        latest = max(self.script["publications"].values(), key=lambda p: p["asof_ts_utc"])
+        return [
+            row
+            for row in self.script["map_rows"]
+            if row["publication_id"] == latest["publication_id"]
+        ]
+
+
+def _identity_authorization():
+    from src.operations.writer_capability_authorization_v1 import (
+        ExecutionMode,
+        _mint_authorization,
+    )
+
+    return _mint_authorization(
+        capability_id="native_short_4h_chain",
+        execution_mode=ExecutionMode.PRODUCTION,
+        validated_host="test-host",
+        validated_commit="0" * 40,
+        authorization_or_permit_id="test-authorization",
+    )
+
+
+def _cohort(symbol_latest: dict[str, datetime], *, now_utc: datetime):
+    """Build a publication where each symbol's latest bar is given explicitly.
+
+    NOT is given a 16:00 bar while other symbols get 20:00, reproducing the
+    production shape (one tracked symbol missing the 20:00 bar).
+    """
+    by_symbol = {sym: candles(latest=latest) for sym, latest in symbol_latest.items()}
+    return build_publication(
+        venue="bitvavo",
+        quote_currency="EUR",
+        interval_code="4h",
+        symbols=list(by_symbol),
+        candles_by_symbol=by_symbol,
+        trend_rows_by_symbol={s: trend_row(c) for s, c in by_symbol.items()},
+        now_utc=now_utc,
+    )
+
+
+def test_identity_migration_keys_child_rows_on_publication() -> None:
+    sql = IDENTITY_MIGRATION.read_text(encoding="utf-8")
+    up = sql.split("-- UP", 1)[1]
+    assert "DROP INDEX uq_canonical_fib_zone_map_v1" in up
+    assert "venue, symbol, interval_code, publication_id, map_version" in up
+    # The executable part is exactly one statement against exactly one table.
+    executable = "\n".join(
+        line for line in sql.splitlines() if not line.strip().startswith("--")
+    ).strip()
+    assert executable.count(";") == 1
+    assert executable.startswith("ALTER TABLE canonical_fib_zone_map_v1")
+    # The DOWN/rollback path must remain a commented reference, never executed:
+    # the old asof_ts_utc-based key must not appear in the executable SQL.
+    assert "asof_ts_utc" not in executable
+
+
+def test_latest_view_selects_by_publication_asof_not_child_row_asof() -> None:
+    """The shipped latest view must resolve "current" through the publication
+    table, which is what makes a lagging child asof_ts_utc safe."""
+    view_sql = Path(
+        "db/migrations/20260730_canonical_fib_zone_map_production_v1.sql"
+    ).read_text(encoding="utf-8")
+    latest_block = view_sql.split("CREATE OR REPLACE VIEW canonical_fib_zone_map_latest_v1", 1)[1]
+    assert "MAX(asof_ts_utc) AS max_asof_ts_utc" in latest_block
+    assert "FROM canonical_fib_zone_map_publication_v1" in latest_block
+    assert "latest.max_asof_ts_utc = p.asof_ts_utc" in latest_block
+
+
+def test_1600_publication_contains_not_at_source_1600() -> None:
+    build = _cohort({"NOT": T_1600}, now_utc=T_1600 + timedelta(minutes=5))
+    assert build.asof_ts_utc == T_1600
+    conn = _IdentityConn()
+    assert subject.publish(conn, build, authorization=_identity_authorization()).status == "PUBLISHED"
+    [row] = conn.rows_for("NOT")
+    assert row["asof_ts_utc"] == DB_1600
+    assert row["input_latest_candle_ts_utc"] == DB_1600
+
+
+def test_2000_publication_may_contain_not_still_sourced_from_1600() -> None:
+    build = _cohort({"NOT": T_1600, "BTC": T_2000}, now_utc=T_2000 + timedelta(minutes=5))
+    assert build.asof_ts_utc == T_2000, "cohort asof is the max across symbols"
+    conn = _IdentityConn()
+    assert subject.publish(conn, build, authorization=_identity_authorization()).status == "PUBLISHED"
+    [not_row] = conn.rows_for("NOT")
+    assert not_row["asof_ts_utc"] == DB_1600
+    assert not_row["input_latest_candle_ts_utc"] == DB_1600
+    [btc_row] = conn.rows_for("BTC")
+    assert btc_row["asof_ts_utc"] == DB_2000
+
+
+def test_1600_and_2000_cohorts_coexist_without_collision() -> None:
+    conn = _IdentityConn()
+    first = _cohort({"NOT": T_1600}, now_utc=T_1600 + timedelta(minutes=5))
+    subject.publish(conn, first, authorization=_identity_authorization())
+    second = _cohort({"NOT": T_1600, "BTC": T_2000}, now_utc=T_2000 + timedelta(minutes=5))
+    # This is the exact production case that raised IntegrityError 1062.
+    assert subject.publish(conn, second, authorization=_identity_authorization()).status == "PUBLISHED"
+
+    not_rows = conn.rows_for("NOT")
+    assert len(not_rows) == 2
+    assert {row["asof_ts_utc"] for row in not_rows} == {DB_1600}
+    assert {row["publication_id"] for row in not_rows} == {
+        f"fibnav-{first.content_digest[:32]}",
+        f"fibnav-{second.content_digest[:32]}",
+    }
+
+
+def test_each_publication_has_exactly_one_row_per_symbol() -> None:
+    conn = _IdentityConn()
+    build = _cohort({"NOT": T_1600, "BTC": T_2000}, now_utc=T_2000 + timedelta(minutes=5))
+    subject.publish(conn, build, authorization=_identity_authorization())
+    publication_id = f"fibnav-{build.content_digest[:32]}"
+    seen = [row["symbol"] for row in conn.script["map_rows"] if row["publication_id"] == publication_id]
+    assert sorted(seen) == ["BTC", "NOT"]
+    assert len(seen) == len(set(seen))
+
+
+def test_duplicate_symbol_within_same_publication_still_fails() -> None:
+    build = _cohort({"NOT": T_1600}, now_utc=T_1600 + timedelta(minutes=5))
+    doubled = subject.PublicationBuild(
+        venue=build.venue,
+        quote_currency=build.quote_currency,
+        interval_code=build.interval_code,
+        asof_ts_utc=build.asof_ts_utc,
+        rows=build.rows + build.rows,
+        content_digest=build.content_digest,
+        available_count=build.available_count,
+    )
+    conn = _IdentityConn()
+    with conn.cursor() as cur:
+        with pytest.raises(_IdentityIntegrityError, match="uq_canonical_fib_zone_map_v1"):
+            subject.insert_publication_cohort(cur, doubled, "fibnav-duplicate-symbol-test")
+
+
+def test_latest_consumers_select_the_2000_publication_and_keep_1600_freshness() -> None:
+    conn = _IdentityConn()
+    subject.publish(
+        conn,
+        _cohort({"NOT": T_1600}, now_utc=T_1600 + timedelta(minutes=5)),
+        authorization=_identity_authorization(),
+    )
+    second = _cohort({"NOT": T_1600, "BTC": T_2000}, now_utc=T_2000 + timedelta(minutes=5))
+    subject.publish(conn, second, authorization=_identity_authorization())
+
+    current = conn.latest_publication_rows()
+    assert {row["publication_id"] for row in current} == {f"fibnav-{second.content_digest[:32]}"}
+    assert sorted(row["symbol"] for row in current) == ["BTC", "NOT"]
+    # Source freshness for NOT still honestly reports 16:00 in the 20:00 cohort.
+    not_row = next(row for row in current if row["symbol"] == "NOT")
+    assert not_row["input_latest_candle_ts_utc"] == DB_1600
+    assert not_row["source_freshness_state"] in {"FRESH", "STALE", "UNAVAILABLE"}
+
+
+def test_same_publication_retry_remains_idempotent() -> None:
+    conn = _IdentityConn()
+    build = _cohort({"NOT": T_1600}, now_utc=T_1600 + timedelta(minutes=5))
+    first = subject.publish(conn, build, authorization=_identity_authorization())
+    second = subject.publish(conn, build, authorization=_identity_authorization())
+    assert (first.status, second.status) == ("PUBLISHED", "UNCHANGED")
+    assert second.publication_id == first.publication_id
+    assert len(conn.rows_for("NOT")) == 1
+
+
+def test_identity_change_touches_no_account_decision_planner_or_executor_layer() -> None:
+    forbidden = (
+        "src.account",
+        "src.decision_gate",
+        "src.execution_planner",
+        "src.executor",
+        "src.broker",
+    )
+    producer_source = Path("src/market_data/canonical_fib_zone_map_v1.py").read_text(
+        encoding="utf-8"
+    )
+    migration_sql = IDENTITY_MIGRATION.read_text(encoding="utf-8")
+    assert all(token not in producer_source for token in forbidden)
+    # The migration touches exactly one market-only table and nothing else.
+    assert migration_sql.split("-- UP", 1)[1].count("ALTER TABLE") == 1
+    assert "canonical_fib_zone_map_v1" in migration_sql.split("-- UP", 1)[1]
+    for table in ("account", "decision", "execution_plan", "order", "position", "broker"):
+        assert table not in migration_sql.split("-- UP", 1)[1]
+    assert subject.SAFETY_MARKERS["broker_writes"] == 0
+    assert subject.SAFETY_MARKERS["order_submission"] == 0
+    assert subject.SAFETY_MARKERS["decision_gate"] == "none"
+    assert subject.SAFETY_MARKERS["execution_planner"] == "none"
+    assert subject.SAFETY_MARKERS["executor"] == "none"
