@@ -12,6 +12,11 @@ from decimal import Decimal
 from pathlib import Path
 
 from src.market_data.native_short_fib_context_v1 import NativeShortContextRow, write_context_rows
+from src.market_data.fib_navigation_map_v1 import (
+    DIRECTION_BEARISH,
+    DIRECTION_BULLISH,
+    build_fib_navigation_map_from_anchor,
+)
 import src.reporting.run_manual_short_trader_profit_plan_v1 as profit_plan_runner
 import src.reporting.account_dashboard_profile_access_v1 as profile_access
 from src.market_data.market_price_snapshot_v1 import MarketPriceSnapshot
@@ -495,6 +500,91 @@ def _canonical_fib_row(
         "target_extension": Decimal("1.60"),
         "invalidation_level": Decimal("0.80"),
     }
+
+
+def _canonical_row_from_navigation_map(
+    *,
+    symbol: str,
+    anchor_low: Decimal,
+    anchor_high: Decimal,
+    leg: str,
+    map_status: str = "FRESH",
+    asof_ts_utc: datetime | None = None,
+) -> tuple[dict[str, object], dict[str, Decimal]]:
+    """Build a canonical_fib_zone_map_latest_v1-shaped row using the exact
+    level formulas the canonical writer's build_row() calls (fib_navigation_map_v1
+    retracement/extension levels, entry_zone_low/high = min/max(r382, r618),
+    support_reaction_zone_low/high = min/max(r618, r786) -- see
+    src/market_data/canonical_fib_zone_map_v1.py). Ground-truth levels come
+    from build_fib_navigation_map_from_anchor, the same module the writer
+    calls, not hand-picked fixture numbers."""
+    direction = DIRECTION_BULLISH if leg == "UP" else DIRECTION_BEARISH
+    nav_map = build_fib_navigation_map_from_anchor(
+        anchor_low=anchor_low,
+        anchor_high=anchor_high,
+        current_price=(anchor_low + anchor_high) / Decimal("2"),
+        direction=direction,
+        computed_at_utc=datetime(2026, 8, 6, 8, 0, tzinfo=UTC),
+    )
+    levels = {
+        level.label: level.price
+        for level in (*nav_map.retracement_levels, *nav_map.extension_levels)
+    }
+    r382, r500, r618, r786 = levels["r_0382"], levels["r_0500"], levels["r_0618"], levels["r_0786"]
+    t1, t2, t3 = levels["ext_1272"], levels["ext_1618"], levels["ext_2618"]
+    row = {
+        "symbol": symbol,
+        "venue": "bitvavo",
+        "quote_currency": "EUR",
+        "interval_code": "4h",
+        "asof_ts_utc": asof_ts_utc or datetime(2026, 8, 6, 8, 0, tzinfo=UTC),
+        "map_status": map_status,
+        "current_leg": leg,
+        "reference_price": (anchor_low + anchor_high) / Decimal("2"),
+        "anchor_low_price": anchor_low,
+        "anchor_high_price": anchor_high,
+        "entry_zone_low": min(r382, r618),
+        "entry_zone_high": max(r382, r618),
+        "entry_zone_mid": r500,
+        "support_reaction_zone_low": min(r618, r786),
+        "support_reaction_zone_high": max(r618, r786),
+        "target_t1": t1,
+        "target_t2": t2,
+        "target_extension": t3,
+        "invalidation_level": levels["r_1000"],
+    }
+    return row, {"r382": r382, "r500": r500, "r618": r618, "r786": r786, "t1": t1, "t2": t2, "t3": t3}
+
+
+def test_canonical_row_retracement_mapping_matches_writer_formulas_for_up_and_down_legs() -> None:
+    """entry_zone_low/high -> r382/r618 and support_reaction_zone_low/high ->
+    r786 must be exact for both UP and DOWN legs. For BULLISH (UP), retrace
+    price = anchor_high - leg*level is monotonically decreasing in level, so
+    r382 > r618 > r786 and min/max(r618, r786) isolates r786 exactly (=low).
+    For BEARISH (DOWN), retrace price = anchor_low + leg*level is
+    monotonically increasing, so r382 < r618 < r786 and
+    min/max(r618, r786) isolates r786 exactly (=high). This asserts against
+    ground truth computed by the same fib_navigation_map_v1 formulas the
+    canonical writer's build_row() uses, not hand-authored fixture values."""
+    for leg in ("UP", "DOWN"):
+        row, truth = _canonical_row_from_navigation_map(
+            symbol="ONDO",
+            anchor_low=Decimal("0.80"),
+            anchor_high=Decimal("1.20"),
+            leg=leg,
+        )
+        built = profit_plan_runner._build_zone_context_from_canonical_row(
+            row, current_price=Decimal("1.00")
+        )
+        assert built is not None, f"leg={leg}"
+        fib_ext, reentry = built
+        assert reentry.r382_price == truth["r382"], f"leg={leg}"
+        assert reentry.r500_price == truth["r500"], f"leg={leg}"
+        assert reentry.r618_price == truth["r618"], f"leg={leg}"
+        assert reentry.r786_price == truth["r786"], f"leg={leg}"
+        assert fib_ext.ext_1_272 == truth["t1"], f"leg={leg}"
+        assert fib_ext.ext_1_618 == truth["t2"], f"leg={leg}"
+        assert fib_ext.ext_2_000 == truth["t3"], f"leg={leg}"
 
 
 def test_load_zone_contexts_canonical_row_covers_symbol_outside_native_scope() -> None:
