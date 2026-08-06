@@ -1,5 +1,33 @@
 # Synth v2 — Coin Analysis / Golden Cases Bundle v1
 
+> **Migration pointer — PARTIAL migration only.** This file is **not**
+> wholly owned by an Issue.
+>
+> - GitHub Issue
+>   [#242 — Implement market-state classes and golden regression fixtures](https://github.com/oboly/synth-v2/issues/242)
+>   owns **only** priority items 1-5 from the "Priority order" section below:
+>   `MarketNavigationState` always emitted, `BreathlineState`,
+>   `ImpulseHealthState`, `TimingState`, and the golden regression fixtures
+>   for the seven named cases (SXT, CRV, HOT, ONDO, VET, NEAR, CC). Current
+>   execution status, priority, blockers, acceptance criteria, next action,
+>   and closure **for that priority-1-5 scope only** belong to Issue #242.
+> - The completed SXT emergency-rebuild / FibNavigationMap work ("Current
+>   status → Already implemented/live", §1 SXT) is already-shipped historical
+>   scope and is not migrated by #242; it is retained here as regression
+>   reference only.
+> - Priority items 7-8 (ladder preview dry-run, manual ladder submit safety)
+>   remain proposal-only and unmigrated. They have no owning Issue. Do not
+>   treat them as filed, scheduled, or in progress.
+> - This file must not become a parallel status board for the migrated
+>   scope: do not update status, priority, blockers, or next action for
+>   priority items 1-5 here — that lives in Issue #242 only. The historical
+>   SXT record and the unmigrated ladder-preview/manual-submit scope may
+>   still be edited as design/historical content, but not represented as
+>   having Issue-backed execution status.
+> - See `docs/development/github_issues_workflow.md`,
+>   `docs/todo/MIGRATION_FREEZE.md`, and
+>   `docs/development/github_issues_batch_2c_migration_v1.md`.
+
 ## Purpose
 
 Real observed coin cases to use as regression tests, backtest scenarios, and design references.
