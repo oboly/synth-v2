@@ -36,11 +36,17 @@ For the work items listed below:
 | `docs/todo/sector_rotation_dashboard_v1.md` | `issue` | #204 — Sector Rotation dashboard review and acceptance | `status:needs-design` |
 | `docs/todo/replay_parameter_study_harness_v1.md` | `issue` | #205 — replay parameter-study harness | `status:ready` |
 | `docs/todo/credential_scope_and_manual_ladder_execution_boundary_v1.md` and `docs/todo/manual_execution_ladder_future_readiness_backlog_v1.md` | `issue` | #206 — credential and executor runtime boundary | `status:needs-design` |
-| existing GitHub Issue | already migrated | #131 — ENA, ARB and PENDLE asset universe | `status:ready` |
 
 A single legacy document may map to multiple bounded Issues when it previously
 mixed separate owner layers or independent closure gates. This is intentional
 and preferable to one oversized cross-layer Issue.
+
+## Scope correction
+
+The asset-universe candidate item from the original migration proposal is
+excluded from this batch: ENA, ARB, and PENDLE were already included through
+the full Bitvavo-universe import, so that item has no remaining migration
+work and is not part of this manifest's Issue count.
 
 ## Architecture ownership
 
@@ -85,8 +91,10 @@ Until the source files receive explicit pointer headers in this migration PR:
 ## Acceptance evidence
 
 ```text
-files_classified=8 legacy source files + existing issue #131
-issues_created=9 (#198-#206)
+files_classified=8 legacy source files
+issues_created=9
+issues_verified=#198-#206
+excluded_asset_universe_item=excluded_completed_via_full_bitvavo_universe_import
 canonical_moves=0
 archived_files=0
 removed_files=0
