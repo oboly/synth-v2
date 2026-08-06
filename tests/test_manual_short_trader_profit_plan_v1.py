@@ -1069,6 +1069,96 @@ def test_legacy_1d_context_cannot_masquerade_as_native_short_action() -> None:
     assert card.target_level_statuses
 
 
+def _canonical_market_context_reentry() -> ReentryContext:
+    return ReentryContext(
+        r382_price=Decimal("1.10"),
+        r500_price=Decimal("1.05"),
+        r618_price=Decimal("1.00"),
+        r786_price=Decimal("0.90"),
+        deepest_touched_label=None,
+        missed_main_rebuy_by_pct=None,
+    )
+
+
+def test_canonical_4h_context_produces_canonical_navigation_only_scenario() -> None:
+    """Issue #210: a symbol with CANONICAL_4H_CONTEXT_AVAILABLE coverage and no
+    native-short evidence must resolve to the explicit canonical navigation-only
+    class, not the native lifecycle vocabulary and not CONTEXT_UNAVAILABLE."""
+    card = build_profit_plan_card(
+        symbol="ONDO",
+        market="ONDO-EUR",
+        current_price=Decimal("0.40"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="CANONICAL_4H_CONTEXT_AVAILABLE",
+        short_context_coverage_status="CANONICAL_4H_CONTEXT_AVAILABLE",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        fib_ext=_wld_fib_ext(),
+        reentry=_canonical_market_context_reentry(),
+        presentation_mode=CARD_MODE_MARKET_SELECTED,
+        evidence=CardEvidence(),
+    )
+    assert card.scenario_type == "CANONICAL_MARKET_CONTEXT"
+    assert card.primary_state == "CANONICAL_NAVIGATION_ONLY"
+    assert card.action_label == "CANONICAL_NAVIGATION_ONLY"
+    assert card.actionability_state == "NAVIGATION_ONLY"
+    assert card.scenario_type != "CONTEXT_UNAVAILABLE"
+    assert card.action_label != "REVIEW_CONTEXT"
+    assert card.primary_state != "CONTEXT_UNAVAILABLE"
+    assert card.actionability_state != "CONTEXT_UNAVAILABLE"
+    # native lifecycle vocabulary must never be fabricated for canonical-only context
+    assert card.scenario_type not in {"EXTENSION_RUNNER", "BREAKOUT_RETEST", "REENTRY_WAIT", "RANGE_BOUNCE"}
+    # real canonical navigation levels are exposed, not zeroed out
+    assert card.target_exit_zone
+    assert card.is_relevant is False
+
+
+def test_native_short_fixture_behavior_unchanged_by_canonical_navigation_branch() -> None:
+    """A card with native-short lifecycle truth available (the standard
+    _fix_ladder_ready_evidence fixture) must be completely unaffected by the
+    new canonical-market-context branch, regardless of coverage_status."""
+    card = _make_card(
+        current_price="0.48",
+        fib_ext=_wld_fib_ext(),
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert card.scenario_type != "CANONICAL_MARKET_CONTEXT"
+    assert card.primary_state != "CANONICAL_NAVIGATION_ONLY"
+    assert card.action_label != "CANONICAL_NAVIGATION_ONLY"
+    assert card.actionability_state == "ACTIVE_TRADE_SETUP"
+
+
+def test_legacy_and_stale_canonical_coverage_stay_fail_closed_without_native_evidence() -> None:
+    """The true production combination -- no native evidence at all
+    (CardEvidence() default) plus a non-canonical-available coverage status --
+    must keep collapsing to CONTEXT_UNAVAILABLE/REVIEW_CONTEXT exactly as
+    before; only CANONICAL_4H_CONTEXT_AVAILABLE gets the new treatment."""
+    for coverage_status in (
+        "LEGACY_1D_CONTEXT_ONLY",
+        "CONTEXT_INVALID_OR_STALE",
+        "FIB_MAP_SYMBOL_MISSING",
+        "INSUFFICIENT_4H_HISTORY",
+        "INSUFFICIENT_1H_HISTORY",
+    ):
+        card = build_profit_plan_card(
+            symbol="ONDO",
+            market="ONDO-EUR",
+            current_price=Decimal("1.02"),
+            fib_trading_horizon="SHORT",
+            short_context_input_status=coverage_status,
+            short_context_coverage_status=coverage_status,
+            short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+            fib_ext=_wld_fib_ext() if coverage_status != "FIB_MAP_SYMBOL_MISSING" else None,
+            reentry=_canonical_market_context_reentry() if coverage_status != "FIB_MAP_SYMBOL_MISSING" else None,
+            presentation_mode=CARD_MODE_MARKET_SELECTED,
+            evidence=CardEvidence(),
+        )
+        assert card.scenario_type == "CONTEXT_UNAVAILABLE", coverage_status
+        assert card.action_label == "REVIEW_CONTEXT", coverage_status
+        assert card.primary_state == "CONTEXT_UNAVAILABLE", coverage_status
+        assert card.actionability_state == "CONTEXT_UNAVAILABLE", coverage_status
+
+
 def test_all_candidates_search_matches_plu_to_plume_and_clear_restores_all() -> None:
     plume = _make_card(
         current_price="0.155000",
