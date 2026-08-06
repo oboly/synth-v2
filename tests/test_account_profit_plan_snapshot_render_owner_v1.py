@@ -283,3 +283,41 @@ def test_reporting_uses_evidence_based_native_snapshot_status(tmp_path: Path) ->
     source = Path("src/reporting/run_manual_short_trader_profit_plan_v1.py").read_text(encoding="utf-8")
     assert "check candle ETL pipeline" not in source
     assert "candle ETL may need to run" not in source
+
+
+def test_banner_separates_native_and_canonical_coverage_and_excludes_canonical_supported(
+    tmp_path: Path,
+) -> None:
+    """Issue #223: a canonical-4h-supported symbol (e.g. AAVE) must not be listed
+    as unsupported/unavailable in the top coverage banner. Native lifecycle
+    coverage and canonical navigation coverage must be reported as separate,
+    numerically correct counts, and explicit missing/stale/invalid symbols must
+    remain in the unavailable list."""
+    from src.reporting.run_manual_short_trader_profit_plan_v1 import (
+        native_short_snapshot_banner,
+        summarize_native_short_snapshot_evidence,
+    )
+
+    rows_path, _ = _write_native_snapshot(tmp_path / "native")
+    evidence = summarize_native_short_snapshot_evidence(
+        markets=["BTC-EUR", "AAVE-EUR", "MISS-EUR"],
+        rows_path=rows_path,
+        canonical_status="loaded",
+        snapshot_id="nsctx-v1-test",
+        canonical_supported_symbols={"AAVE"},
+    )
+    assert evidence["native_context_available_count"] == 1
+    assert evidence["native_context_supported_count"] == 1
+    assert evidence["native_context_total_count"] == 3
+    assert evidence["canonical_navigation_supported_count"] == 1
+    assert evidence["canonical_navigation_supported_markets"] == ["AAVE"]
+    # AAVE is canonical-supported: it must not appear in the unsupported/unavailable list.
+    assert "AAVE" not in evidence["unsupported_or_unavailable_markets"]
+    # MISS has no native and no canonical coverage: it stays explicit/fail-closed.
+    assert evidence["unsupported_or_unavailable_markets"] == ["MISS"]
+
+    banner = native_short_snapshot_banner(evidence)
+    assert "Available 1 / supported 1 / total 3" in banner
+    assert "Canonical 4h navigation coverage: 1 contexts" in banner
+    assert "Unsupported/unavailable markets: MISS" in banner
+    assert "AAVE" not in banner.split("Unsupported/unavailable markets:")[-1]
