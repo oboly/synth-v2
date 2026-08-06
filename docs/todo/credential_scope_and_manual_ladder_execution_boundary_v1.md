@@ -1,5 +1,12 @@
 # Credential scope and manual ladder execution boundary v1
 
+> **Migration pointer.** Current execution status, priority, blockers, and
+> next action for this lane are owned by GitHub Issue
+> [#206 — Complete credential scope and manual execution runtime boundary](https://github.com/oboly/synth-v2/issues/206).
+> This file is retained as frozen historical/design context; do not update
+> status, priority, or execution order here. See
+> `docs/development/github_issues_first_batch_migration_v1.md`.
+
 Status: TODO — credential binding contract migrated to canonical docs
 Owner: future execution-boundary lane
 Created: 2026-07-09

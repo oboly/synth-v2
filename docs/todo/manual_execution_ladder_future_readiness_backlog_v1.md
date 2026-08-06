@@ -1,5 +1,14 @@
 # Manual Execution Ladder — Future Readiness Backlog V1
 
+> **Migration pointer.** Current execution status, priority, blockers, and
+> next action for this lane are owned by GitHub Issues
+> [#202 — Complete manual execution request snapshot and idempotency contract](https://github.com/oboly/synth-v2/issues/202),
+> [#203 — Unify manual execution ladder construction and order-leg validation](https://github.com/oboly/synth-v2/issues/203), and
+> [#206 — Complete credential scope and manual execution runtime boundary](https://github.com/oboly/synth-v2/issues/206).
+> This file is retained as frozen historical/design context; do not update
+> status, priority, or execution order here. See
+> `docs/development/github_issues_first_batch_migration_v1.md`.
+
 Status: backlog only. No implementation performed by this document.
 
 Source audit: `docs/architecture/manual_execution_ladder_future_readiness_audit_v1.md`.

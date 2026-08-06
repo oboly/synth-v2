@@ -1,5 +1,14 @@
 # TODO — Native SHORT Multi-Asset Rollout Contract
 
+> **Migration pointer.** Current execution status, priority, blockers, and
+> next action for this lane are owned by GitHub Issues
+> [#198 — Promote native SHORT scope for ETH after SOL acceptance](https://github.com/oboly/synth-v2/issues/198),
+> [#199 — Promote native SHORT scope for XRP after ETH acceptance](https://github.com/oboly/synth-v2/issues/199), and
+> [#200 — Implement native SHORT per-scope failure isolation](https://github.com/oboly/synth-v2/issues/200).
+> This file is retained as frozen historical/design context; do not update
+> status, priority, or execution order here. See
+> `docs/development/github_issues_first_batch_migration_v1.md`.
+
 ## Status
 
 `in progress` — see "Multi-scope bootstrap generalization, SOL promotion-acceptance closure, and ETH/XRP approval (this lane)" at the end of this document for the current, corrected state. In summary: the SOL `PROMOTE_SCOPE` production operation that the paragraph below still describes as pending post-hoc acceptance is now reviewed and accepted (`PROMOTION_CONTRACT_MISSING` closed globally); the bootstrap manifest is generalized from one hardcoded scope to a reviewed list; and ETH and XRP are now explicitly approved as the next two canaries. BTC and SOL are no longer the only approved scopes, and "ETH, XRP, and BTC remain unapproved for this bootstrap path" in the paragraph immediately below is superseded for ETH and XRP specifically. The remainder of this paragraph is retained as the frozen historical record of the prior lane, per this document's established convention of appending corrections rather than rewriting history.
