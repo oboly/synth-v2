@@ -2,7 +2,7 @@
 
 ## Status
 
-`IN_PROGRESS`
+`COMPLETE`
 
 This document records the first bounded migration batch from the frozen
 `docs/todo/` board to GitHub Issues.
@@ -80,27 +80,36 @@ Until the source files receive explicit pointer headers in this migration PR:
 4. contradictions must be corrected only when unsafe or materially false;
 5. no content may be deleted merely because an Issue now exists.
 
-## Remaining work in this migration PR
+## Completed work in this migration PR
 
-- add a compact migration pointer to each listed legacy source file;
-- state that current status and priority live in the owning Issue(s);
-- preserve all historical/design content below the pointer;
-- run repository-wide checks for duplicate status ownership and new TODO intake;
-- update this document to `COMPLETE` only after those checks pass.
+- added a compact migration pointer to each of the 7 listed legacy source
+  files, stating that current status/priority live in the owning Issue(s)
+  and preserving all historical/design content below the pointer;
+- updated the 6 corresponding `docs/todo/README.md` lane-index rows to point
+  to the owning Issue(s) instead of carrying live-looking status text, while
+  preserving the original historical status snippet inline (no evidence
+  deleted); `manual_execution_ladder_profiles_v1.md` has no README lane-index
+  row and required no edit there;
+- verified no new file was added under `docs/todo/` since the
+  `MIGRATION_FREEZE.md` freeze commit (no new TODO intake);
+- verified all 9 owning Issues (#198-#206) exist and are open;
+- verified all internal doc-path references added by this batch resolve and
+  `git diff --check` is clean.
 
 ## Acceptance evidence
 
 ```text
-files_classified=8 legacy source files
+files_classified=7 legacy source files
 issues_created=9
 issues_verified=#198-#206
 excluded_asset_universe_item=excluded_completed_via_full_bitvavo_universe_import
 canonical_moves=0
 archived_files=0
 removed_files=0
-legacy_pointer_headers=pending
-duplicate_status_owners=pending
-broken_references=pending
+legacy_pointer_headers=7/7 added
+duplicate_status_owners=0 (6 docs/todo/README.md lane-index rows repointed to owning Issues)
+broken_references=0
+new_todo_intake_since_freeze=0
 runtime_changes=0
 database_changes=0
 broker_writes=0

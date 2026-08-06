@@ -1,5 +1,12 @@
 # Sector Rotation Dashboard v1
 
+> **Migration pointer.** Current execution status, priority, blockers, and
+> next action for this lane are owned by GitHub Issue
+> [#204 — Review and accept Sector Rotation dashboard against canonical contracts](https://github.com/oboly/synth-v2/issues/204).
+> This file is retained as frozen historical/design context; do not update
+> status, priority, or execution order here. See
+> `docs/development/github_issues_first_batch_migration_v1.md`.
+
 ## Status
 
 **Phase C1 implemented / ready for review** — Phase A taxonomy data and the

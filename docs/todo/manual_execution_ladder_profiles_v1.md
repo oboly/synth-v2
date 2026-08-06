@@ -1,5 +1,12 @@
 # Manual Execution Tray + Ladder Profiles v1
 
+> **Migration pointer.** Current execution status, priority, blockers, and
+> next action for this lane are owned by GitHub Issue
+> [#202 — Complete manual execution request snapshot and idempotency contract](https://github.com/oboly/synth-v2/issues/202).
+> This file is retained as frozen historical/design context; do not update
+> status, priority, or execution order here. See
+> `docs/development/github_issues_first_batch_migration_v1.md`.
+
 ## Status
 
 Priority P0 implementation bundle.

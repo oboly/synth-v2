@@ -1,5 +1,12 @@
 # TODO — Short Swing Linked-Profile Freshness and Disk Reliability
 
+> **Migration pointer.** Current execution status, priority, blockers, and
+> next action for this lane are owned by GitHub Issue
+> [#201 — Complete linked-profile freshness and multi-cycle runtime acceptance](https://github.com/oboly/synth-v2/issues/201).
+> This file is retained as frozen historical/design context; do not update
+> status, priority, or execution order here. See
+> `docs/development/github_issues_first_batch_migration_v1.md`.
+
 ## Status
 
 ```text
