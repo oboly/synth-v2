@@ -110,8 +110,55 @@ It must not become:
 One row represents one market-only fib/zone map snapshot for:
 
 ```text
-(venue, symbol, interval_code, asof_ts_utc, map_version)
+(publication_id, symbol)
 ```
+
+Publication scope is:
+
+```text
+(venue, quote_currency, interval_code, asof_ts_utc, map_version)
+```
+
+on `canonical_fib_zone_map_publication_v1`.
+
+Each publication is an immutable cohort containing exactly one row per
+tracked symbol. Cohort membership -- not the row timestamp -- is what
+distinguishes rows, so a symbol whose source bar is missing or stale may
+legitimately carry the same `asof_ts_utc` across consecutive publications
+without collision. On the child row:
+
+- `publication_id` identifies the owning cohort
+- `asof_ts_utc` is the source/effective map timestamp for that symbol, which
+  may lag the cohort's `asof_ts_utc` when that symbol's bar is unavailable
+- `input_latest_candle_ts_utc` remains the source freshness timestamp
+
+### `asof_ts_utc` vs `input_latest_candle_ts_utc`
+
+These two are equal for every row that has at least one source candle, but
+they are **not** redundant and neither may be dropped:
+
+| row kind | `asof_ts_utc` | `input_latest_candle_ts_utc` |
+| --- | --- | --- |
+| has candles (fresh or stale) | latest candle `close_ts_utc` | same value |
+| no candles at all (`map_status=NO_DATA`, `reason=MISSING_CANDLES`) | falls back to the **cohort** asof | `NULL` |
+
+The fallback lives in `insert_publication_cohort`
+(`row["asof_ts_utc"] or build.asof_ts_utc`). It keeps `asof_ts_utc` always
+populated so every row stays orderable and indexable, while a `NULL`
+`input_latest_candle_ts_utc` remains the unambiguous signal for "this symbol
+had no source data in this cohort".
+
+Consequences for consumers:
+
+- read `input_latest_candle_ts_utc` for **source freshness**, and treat `NULL`
+  as no-data rather than coercing it to the cohort asof
+- do not infer publication time from `asof_ts_utc`; resolve "current" through
+  `canonical_fib_zone_map_latest_v1`, which keys on the publication's asof
+- the secondary indexes `idx_canonical_fib_zone_map_v1_{asof,symbol,status,leg,source}`
+  all depend on `asof_ts_utc` being NOT NULL
+
+Read "current" through `canonical_fib_zone_map_latest_v1`, which selects by
+the publication's `asof_ts_utc`, never by the child row's.
 
 This allows:
 
