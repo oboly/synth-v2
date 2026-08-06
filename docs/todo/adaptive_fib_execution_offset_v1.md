@@ -1,5 +1,26 @@
 # Adaptive Fib Execution Offset v1
 
+> **Migration pointer — PARTIAL migration only.** GitHub Issue
+> [#224 — Build offline execution-offset replay dataset and policy contract](https://github.com/oboly/synth-v2/issues/224)
+> owns **only** "Follow-up Sequence" steps 1-2 below: building the offline
+> near-miss/fill replay dataset and defining the versioned execution-offset
+> policy contract. Current status, priority, blockers, acceptance criteria,
+> next action, and closure for that scope belong to Issue #224.
+>
+> Steps 3-5 (read-only proposal preview integration, paper-execution
+> validation, and any later decision-gated runtime consumption) remain
+> **unmigrated** — no Issue owns them. Do not represent that scope as
+> Issue-owned, filed, or in progress.
+>
+> This file must not become a parallel status board for the migrated scope.
+> The design/architecture sections below (selection_engine / decision_gate /
+> execution_planner / executor split, V1 scope, policies, metrics, safety
+> rules) are preserved as historical/design context.
+>
+> See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2b_migration_v1.md`.
+
 Status: TODO
 
 ## Goal

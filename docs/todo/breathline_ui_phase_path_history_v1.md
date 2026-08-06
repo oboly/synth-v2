@@ -1,5 +1,16 @@
 # Breathline UI: Phase, Path, Duration, and History v1
 
+> **Migration pointer.** Current execution status, priority, blockers,
+> acceptance criteria, next action, and closure for this lane are owned by
+> GitHub Issue
+> [#226 — Add Breathline phase and path-history card](https://github.com/oboly/synth-v2/issues/226).
+> This file is retained as frozen historical/design context; the status and
+> spec text below is preserved but superseded operationally by Issue #226.
+> Do not update status, priority, blockers, next action, or execution order
+> here. See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2b_migration_v1.md`.
+
 ## Status
 
 Todo / UI specification.

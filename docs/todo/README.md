@@ -220,7 +220,7 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `backtest_capability_contract_v1.md` | **future design P2 / cross-lane guardrail** — migrated: status/priority now owned by Issue #218 | Machine-readable replay support, data scope, as-of, side-effect, and composition-preflight contract for backtestable components |
 | `profit_plan_live_ladder.md` | **A — active P1 / later** | Safe prerequisites and ordered path from canonical ladder truth to authenticated preview, decision gate, execution plan, executor, and a tightly controlled live canary |
 | `manual_execution_ladder_future_readiness_backlog_v1.md` | **A — P0 items 1-6 remediation reviewed BLOCK/REJECT (2026-07-25); item 7 (F12) request contract + canonical service entrypoint implemented (2026-07-26), reservation/reconciliation/live wiring still open** — migrated: status/priority now owned by Issues #202, #203, #206 | Prioritized remediation backlog from the manual execution ladder future-readiness audit (`docs/architecture/manual_execution_ladder_future_readiness_audit_v1.md`); feeds into lane A, does not reorder it |
-| `decision_gate_account_protections_v1.md` | **future design P2** | Account-aware drawdown, loss, stoploss-streak, and cooldown permission blocks inside `decision_gate`; no market ranking or execution authority |
+| `decision_gate_account_protections_v1.md` | **future design P2** — migrated (partial): P1 contract-design status/priority now owned by Issue #227; P2 runtime implementation remains unmigrated | Account-aware drawdown, loss, stoploss-streak, and cooldown permission blocks inside `decision_gate`; no market ranking or execution authority |
 | `credential_scope_and_manual_ladder_execution_boundary_v1.md` | open follow-up; credential contract migrated — migrated: status/priority now owned by Issue #206 | Runtime wiring and execution-boundary tasks after canonical account-to-credential binding moved to `docs/architecture/account_credential_binding_contract_v1.md` |
 | `profit_plan_target_lifecycle_history_truth_v1.md` | **B — contained/completed (original IOST defect) by PR #105; future monotonic hardening parked, evidence-gated** | Closure record: IOST never had canonical map/lifecycle truth; the transient-bridge reporting defect is contained by fail-closed handling. Future monotonic reached/passed hardening reopens only on real canonical evidence |
 | `short_swing_linked_profile_freshness_and_disk_reliability_v1.md` | **C — open P2 / first (current active lane)** — migrated: status/priority now owned by Issue #201 | Odroid/runtime ownership, absolute freshness timestamps, disk/log containment verification, rollout, and rollback hygiene |
@@ -235,23 +235,23 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `native_short_runtime_owner_and_scope_status_v1.md` | repository unit/database contracts complete; chain-scoped DB runtime binding and filesystem publisher/reader separation implemented for review; ownership and activation UNASSIGNED | Completed Native SHORT scope/map implementation and canonical devlap unit reconciliation; external DB secret/identity acceptance plus filesystem reader-group/distinct-UID host acceptance remain blockers |
 | `native_short_map_level_status_v1.md` | done / parked | Completed native SHORT current map-level status contract and implementation evidence |
 | `native_short_multi_asset_rollout_contract_v1.md` | in progress; SOL promoted and accepted, ETH/XRP approved (not yet promoted), bootstrap manifest generalized to a reviewed list — migrated: status/priority now owned by Issues #198, #199, #200 | Canonical multi-asset readiness audit, scope-administration ownership, sequential SOL->ETH->XRP rollout, bootstrap/isolation blockers still unconditionally active |
-| `position_rotation_preview.md` | MVP implemented / parked follow-up | Account-aware read-only cockpit/rotation preview; no active v2.23 priority |
+| `position_rotation_preview.md` | MVP implemented / parked follow-up — migrated (partial): "Next Strategy Work" research follow-up status/priority now owned by Issue #230; the implemented MVP cockpit remains historical, unmigrated | Account-aware read-only cockpit/rotation preview; no active v2.23 priority |
 | `profit_plan_card_evidence_delta_visibility_v1.md` | done / parked | Deterministic current-vs-previous card evidence visibility |
 | `manual_ladder_dashboard.md` | historical source / superseded | Earlier read-only ladder direction; active ladder work is tracked only in `profit_plan_live_ladder.md` |
 | `deploy_runtime.md` | MVP cockpit implemented / ops follow-up | General Odroid cockpit and deployment follow-ups |
 | `market_breath.md` | characterized / parked | Regime-dependent rhythm/phase research |
-| `regime_research.md` | parked | Rotation replay, discovered regimes, symbol profiles, and interaction audits |
+| `regime_research.md` | parked — migrated (partial): Phase 1 (P1 reruns/reads, P1 discovered-regime pass) status/priority now owned by Issue #231; Phases 2-3 remain unmigrated | Rotation replay, discovered regimes, symbol profiles, and interaction audits |
 | `fibo_zones.md` | **P0 repository-ready / activation pending** | Recurring canonical 4h FibNavigationMap publication and existing cockpit visibility; merge/deploy/controlled activation remains |
-| `ui_webview.md` | open / secondary | Non-blocking UI and styling work after correctness lanes |
+| `ui_webview.md` | open / secondary — migrated (partial): the 4 accepted Profit Plan coin-card scanability items status/priority now owned by Issue #233; remaining webview work is unmigrated | Non-blocking UI and styling work after correctness lanes |
 | `signal_matrix_dashboard.md` | parked | Transparent primitive signal inventory |
 | `breath_curve.md` | parked / open | Breath Curve validation continuation |
-| `strategy_candidates.md` | parked / open research | Strategy audit and later classifier/policy research |
+| `strategy_candidates.md` | parked / open research — migrated (partial): "P1 — Current strategy audit follow-up" status/priority now owned by Issue #232; the other P1 section and all P2/P3 sections remain unmigrated | Strategy audit and later classifier/policy research |
 | `replay_parameter_study_harness_v1.md` | **D — planning / strategy-validation sublane** — migrated: status/priority now owned by Issue #205 | Minimal market-only replay contracts, immutable provenance, Selection v2 point-in-time adapter, versioned evaluator, and one bounded score-weight grid study |
 | `multi_horizon_fib_dashboard_backlog.md` | parked | Dashboard follow-up depending on fib research outputs |
 | `paper_candidate_contract.md` | future design | Safe adapter from validated research candidates to `decision_gate` |
 | `dev_ops_hygiene.md` | mostly parked | Development, database-access, backup, worktree hygiene |
 | `parked_backlog.md` | backlog | Archived A+ and external-narrative follow-ups |
-| `watchlist_candidates.md` | open intake | Human-thesis watchlist intake before validation |
+| `watchlist_candidates.md` | open intake — migrated (partial): the remaining KITE liquidity/spread/candle-history/min-order check now owned by Issue #234; other watchlist candidates and research remain unmigrated | Human-thesis watchlist intake before validation |
 
 ## Next-step rule
 

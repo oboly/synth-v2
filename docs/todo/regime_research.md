@@ -1,5 +1,26 @@
 # TODO — Regime Research
 
+> **Migration pointer — PARTIAL migration only.** GitHub Issue
+> [#231 — Run regime research Phase 1 replay and discovery comparison](https://github.com/oboly/synth-v2/issues/231)
+> owns **only** Phase 1 below: "P1 — Immediate reruns and reads" and
+> "P1 — Discovered regime pass". Current status, priority, blockers,
+> acceptance criteria, next action, and closure for that scope belong to
+> Issue #231.
+>
+> Phase 2 ("P2 — Symbol participation and breath profile design",
+> "P2 — BTC-to-alt shock propagation / lead-lag replay",
+> "P2 — Regime interaction audit design") and Phase 3
+> ("P3 — Later classifier work") remain **unmigrated** — no Issue owns
+> them. Do not represent that scope as Issue-owned, filed, or in progress.
+>
+> This file must not become a parallel status board for the migrated scope.
+> The completed-baseline record and Parked section are preserved as
+> historical/design context.
+>
+> See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2b_migration_v1.md`.
+
 ## Status
 
 Active next research lane.

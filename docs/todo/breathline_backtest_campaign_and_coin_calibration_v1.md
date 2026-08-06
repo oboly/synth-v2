@@ -1,5 +1,16 @@
 # Breathline Backtest Campaign and Coin Calibration v1
 
+> **Migration pointer.** Current execution status, priority, blockers,
+> acceptance criteria, next action, and closure for this lane are owned by
+> GitHub Issue
+> [#225 — Run per-coin Breathline calibration campaign](https://github.com/oboly/synth-v2/issues/225).
+> This file is retained as frozen historical/design context; the status and
+> task text below is preserved but superseded operationally by Issue #225.
+> Do not update status, priority, blockers, next action, or execution order
+> here. See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2b_migration_v1.md`.
+
 ## Status
 
 Todo / research campaign specification.

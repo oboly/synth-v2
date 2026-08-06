@@ -1,5 +1,26 @@
 # TODO — News Catalyst Monitor
 
+> **Migration pointer — PARTIAL migration only.** GitHub Issue
+> [#228 — Design external catalyst monitor schema and dry runner](https://github.com/oboly/synth-v2/issues/228)
+> owns **only** the "P0 design task" section below (DB schema/migration
+> draft proposal and a read-only/dry-run ingestion skeleton for
+> `external_catalyst_monitor_v1`). Current status, priority, blockers,
+> acceptance criteria, next action, and closure for that scope belong to
+> Issue #228.
+>
+> Production selection/dashboard consumption of catalyst context (see
+> "Dashboard integration" and "Relationship to idiosyncratic catalyst
+> override" below) remains **unmigrated** — no Issue owns it. Do not
+> represent that scope as Issue-owned, filed, or in progress.
+>
+> This file must not become a parallel status board for the migrated scope.
+> The design content above and below (core idea, schema proposals, event
+> types, impact model) is preserved as historical/design context.
+>
+> See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2b_migration_v1.md`.
+
 ## Status
 
 Research / read-only ingestion lane.
