@@ -47,6 +47,7 @@ from src.reporting.account_scoped_short_trader_dashboard_v1 import (
     validate_profile_slug,
 )
 from src.reporting.account_dashboard_profile_access_v1 import resolve_dashboard_profile_access
+from src.reporting.account_wallet_dashboard_v1 import classify_wallet_freshness
 from src.reporting.dashboard_style_v1 import cockpit_nav
 from src.reporting.manual_short_trader_dashboard_v1 import (
     BrokerOrderRow,
@@ -84,6 +85,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     ReentryContext,
     TargetHistoryCandle,
     apply_card_deltas,
+    apply_portfolio_account_evidence,
     apply_price_tick_normalization,
     build_json_snapshot,
     build_profit_plan_card,
@@ -174,6 +176,74 @@ def atomic_text_write(content: str, dest: Path) -> None:
             except OSError:
                 pass
         raise
+
+
+def held_amount_and_value_by_symbol(
+    *,
+    balances: list[Any],
+    prices: dict[str, Decimal],
+    quote_currency: str = "EUR",
+) -> tuple[dict[str, Decimal], dict[str, Decimal | None]]:
+    """Held amount and EUR value per symbol from the account balance snapshot.
+
+    Held amount = available + in_order (total on-account quantity). EUR value
+    is None (never fabricated) when no current price snapshot exists for the
+    market — the caller renders that as DATA_UNAVAILABLE, not zero.
+    """
+    amount_by_symbol: dict[str, Decimal] = {}
+    eur_value_by_symbol: dict[str, Decimal | None] = {}
+    for row in balances:
+        symbol = str(getattr(row, "symbol", "") or "").upper()
+        if not symbol or symbol == quote_currency:
+            continue
+        total = (getattr(row, "available", None) or Decimal("0")) + (getattr(row, "in_order", None) or Decimal("0"))
+        if total <= 0:
+            continue
+        amount_by_symbol[symbol] = total
+        price = prices.get(f"{symbol}-{quote_currency}")
+        eur_value_by_symbol[symbol] = (total * price) if price is not None else None
+    return amount_by_symbol, eur_value_by_symbol
+
+
+def fetch_latest_cost_basis_by_symbol(
+    conn: Any,
+    *,
+    trading_account_id: int,
+    venue: str,
+) -> dict[str, Decimal]:
+    """Read-only latest average_entry_price_eur per symbol from
+    account_position_snapshot. Symbols absent from the returned dict have no
+    persisted cost basis (currently unpopulated by the position snapshot
+    writer) — callers must render DATA_UNAVAILABLE, never fabricate zero."""
+    sql = """
+    WITH latest_position AS (
+        SELECT trading_account_id, MAX(snapshot_ts_utc) AS snapshot_ts_utc
+        FROM account_position_snapshot
+        WHERE trading_account_id = %s AND venue = %s
+        GROUP BY trading_account_id
+    )
+    SELECT p.symbol, p.average_entry_price_eur
+    FROM account_position_snapshot p
+    JOIN latest_position lp
+      ON lp.trading_account_id = p.trading_account_id
+     AND lp.snapshot_ts_utc = p.snapshot_ts_utc
+    WHERE p.venue = %s
+      AND p.trading_account_id = %s
+      AND p.average_entry_price_eur IS NOT NULL
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, (trading_account_id, venue, venue, trading_account_id))
+            rows = list(cur.fetchall())
+    except Exception:
+        return {}
+    out: dict[str, Decimal] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or "").upper()
+        value = _parse_decimal(row.get("average_entry_price_eur"))
+        if symbol and value is not None:
+            out[symbol] = value
+    return out
 
 
 def parse_args() -> argparse.Namespace:
@@ -1053,6 +1123,27 @@ def load_zone_contexts(
                         ext_1_272_touched_and_rejected=False,
                         retesting_breakout_gate=False,
                     )
+            # Planning-PPP fallback (Issue #238): a present-but-non-AVAILABLE native
+            # row is authoritative for native SHORT lifecycle display, but it must
+            # not block a read-only canonical 4h reference for portfolio planning
+            # PPP. Fill in whichever of fib_ext/reentry the native partial row did
+            # not already provide, from the market-only canonical 4h map. Native
+            # lifecycle input/coverage/display status is untouched — this only
+            # adds numeric reference levels for planning-PPP computation.
+            if symbol not in fib_ext_by_symbol or symbol not in reentry_by_symbol:
+                _fallback_row = canonical_fib_rows_by_symbol.get(symbol)
+                _fallback_status = _canonical_fib_row_status(
+                    _fallback_row, now_utc=_now, stale_after=canonical_fib_stale_after
+                )
+                if _fallback_status == "AVAILABLE":
+                    _fallback_price = prices.get(market)
+                    _fallback_built = _build_zone_context_from_canonical_row(
+                        _fallback_row, current_price=_fallback_price
+                    )
+                    if _fallback_built is not None:
+                        _fallback_fib_ext, _fallback_reentry = _fallback_built
+                        fib_ext_by_symbol.setdefault(symbol, _fallback_fib_ext)
+                        reentry_by_symbol.setdefault(symbol, _fallback_reentry)
             continue
 
         canonical_row = canonical_fib_rows_by_symbol.get(symbol)
@@ -1696,6 +1787,39 @@ def main() -> int:
         order_snapshot_ts_utc=context.latest_order_snapshot_ts_utc,
     )
 
+    # Portfolio composition (Issue #238): compose held amount / EUR value / cost
+    # basis onto held-token cards from the already-loaded account-scoped context.
+    # Read-only DB reads only — broker_private_calls=0, broker_writes=0.
+    held_amount_by_symbol, held_eur_value_by_symbol = held_amount_and_value_by_symbol(
+        balances=list(context.balances),
+        prices=prices,
+        quote_currency=getattr(args, "quote_currency", "EUR"),
+    )
+    try:
+        _cost_basis_conn = get_connection()
+        try:
+            cost_basis_by_symbol = fetch_latest_cost_basis_by_symbol(
+                _cost_basis_conn,
+                trading_account_id=context.trading_account_id,
+                venue=args.venue,
+            )
+        finally:
+            _cost_basis_conn.close()
+    except Exception as exc:
+        print(f"[warn] cost basis read failed: {exc}", file=sys.stderr)
+        cost_basis_by_symbol = {}
+    balance_freshness_status = classify_wallet_freshness(
+        context.latest_balance_snapshot_ts_utc,
+        now_utc=now_utc,
+    )
+    cards = apply_portfolio_account_evidence(
+        cards,
+        held_amount_by_symbol=held_amount_by_symbol,
+        held_eur_value_by_symbol=held_eur_value_by_symbol,
+        cost_basis_by_symbol=cost_basis_by_symbol,
+        balance_freshness_status=balance_freshness_status,
+    )
+
     # Load market tick rules from DB and apply price normalization to all cards.
     # DB is the preferred source; static fallback covers markets with no synced row.
     # broker_private_calls=0 — venue_market is public market metadata.
@@ -1793,6 +1917,8 @@ def main() -> int:
             broker_mode="db_snapshot",
             writer_instance_id=writer_instance_id,
             render_id=snapshot_render_id,
+            account_snapshot_ts_utc=_fmt_ts(context.latest_balance_snapshot_ts_utc),
+            order_snapshot_ts_utc=_fmt_ts(context.latest_order_snapshot_ts_utc),
             normalization_audit_by_symbol=normalization_audit,
             pipeline_health=pipeline_health,
             market_context_by_symbol=market_context_by_symbol,
