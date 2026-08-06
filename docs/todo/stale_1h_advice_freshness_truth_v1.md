@@ -1,5 +1,15 @@
 # Stale 1h advice freshness truth v1
 
+> **Migration pointer.** Current execution status, priority, blockers,
+> acceptance criteria, and closure for this lane are owned by GitHub Issue
+> [#221 — Fix stale 1h advice freshness truth for named assets](https://github.com/oboly/synth-v2/issues/221).
+> This file is retained as frozen historical/design context; the status and
+> observation text below is preserved but superseded operationally by Issue
+> #221. Do not update status, priority, blockers, next action, or execution
+> order here. See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2a_migration_v1.md`.
+
 ## Status
 
 Candidate improvement only. This document is not an execution queue item.

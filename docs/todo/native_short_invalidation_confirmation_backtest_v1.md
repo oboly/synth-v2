@@ -1,5 +1,15 @@
 # TODO — Native SHORT Invalidation Confirmation Backtest v1
 
+> **Migration pointer.** Current execution status, priority, blockers,
+> acceptance criteria, and closure for this lane are owned by GitHub Issue
+> [#220 — Replay native SHORT invalidation-confirmation policies](https://github.com/oboly/synth-v2/issues/220).
+> This file is retained as frozen historical/design context; the status and
+> task text below is preserved but superseded operationally by Issue #220.
+> Do not update status, priority, blockers, next action, or execution order
+> here. See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2a_migration_v1.md`.
+
 ## Status
 
 Open research / calibration lane.

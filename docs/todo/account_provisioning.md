@@ -1,5 +1,15 @@
 # Account Provisioning TODO
 
+> **Migration pointer.** Current execution status, priority, blockers,
+> acceptance criteria, and closure for this lane are owned by GitHub Issue
+> [#217 — Complete Batch 4 real Bitvavo private-read validation](https://github.com/oboly/synth-v2/issues/217).
+> This file is retained as frozen historical/design context; the status text
+> below (including Batch 4) is preserved but superseded operationally by
+> Issue #217. Do not update status, priority, blockers, next action, or
+> execution order here. See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2a_migration_v1.md`.
+
 Canonical status tracker for the account provisioning lane.
 
 Canonical design doc: `docs/ops/account_provisioning_v1.md`

@@ -1,5 +1,15 @@
 # TODO — Backtest Capability Contract v1
 
+> **Migration pointer.** Current execution status, priority, blockers,
+> acceptance criteria, and closure for this lane are owned by GitHub Issue
+> [#218 — Define machine-readable backtest capability contract](https://github.com/oboly/synth-v2/issues/218).
+> This file is retained as frozen historical/design context; the status and
+> task text below is preserved but superseded operationally by Issue #218.
+> Do not update status, priority, blockers, next action, or execution order
+> here. See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2a_migration_v1.md`.
+
 ## Status
 
 - `future design`

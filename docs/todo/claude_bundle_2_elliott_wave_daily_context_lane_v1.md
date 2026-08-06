@@ -1,5 +1,29 @@
 # Elliott Wave Daily Context Lane — Design Bundle v1
 
+> **Migration pointer — PARTIAL migration only.** This file is **not**
+> wholly owned by an Issue.
+>
+> - GitHub Issue
+>   [#219 — Remove research-layer import from native SHORT market-data context](https://github.com/oboly/synth-v2/issues/219)
+>   owns **only** the narrow architecture-hygiene item in §0 ("Layering
+>   violation to fix first"): `src/market_data/native_short_fib_context_v1.py`
+>   must not import from `src.research`. Current execution status, priority,
+>   blockers, acceptance criteria, and closure **for that one item only**
+>   belong to Issue #219.
+> - The remaining Elliott Wave Phase-1 research/labeler scope (§1-§5, §7 —
+>   the labeler spec, trade hypotheses, manual-approval path, validation
+>   protocol, and the "what the coordinating chat should produce" work
+>   order) is **still proposal-only and unmigrated**. It has no owning
+>   Issue. Do not treat it as filed, scheduled, or in progress.
+> - This file must not become a parallel status board for the migrated
+>   subtask: do not update status, priority, blockers, or next action for
+>   the layering-fix item here — that lives in Issue #219 only. The
+>   unmigrated research scope may still be edited as design content, but
+>   not represented as having Issue-backed execution status.
+> - See `docs/development/github_issues_workflow.md`,
+>   `docs/todo/MIGRATION_FREEZE.md`, and
+>   `docs/development/github_issues_batch_2a_migration_v1.md`.
+
 Handoff document for the coordinating chat. Purpose: turn the Elliott Wave discussion
 into a falsifiable, Synth-compatible research lane and a work order for an agent.
 Origin: Claude/Joost session 2026-07-06, including repo verification of oboly/synth-v2.
