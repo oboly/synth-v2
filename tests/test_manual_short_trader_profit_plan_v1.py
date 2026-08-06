@@ -33,6 +33,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     VISIBILITY_ACTIONABLE,
     VISIBILITY_CANONICAL_NAVIGATION_REFERENCE,
     VISIBILITY_CONTEXT_UNAVAILABLE,
+    VISIBILITY_NATIVE_ATTENTION,
     ActiveOrderSummary,
     CardDelta,
     CardEvidence,
@@ -1120,6 +1121,51 @@ def test_canonical_4h_context_produces_canonical_navigation_only_scenario() -> N
     assert card.visibility_class == VISIBILITY_CANONICAL_NAVIGATION_REFERENCE
 
 
+def test_aave_canonical_card_renders_truthful_read_only_navigation_semantics() -> None:
+    """Issue #223: a canonical-4h-only symbol (AAVE) must render real navigation
+    levels with explicit CANONICAL_MARKET_CONTEXT / NAVIGATION_ONLY semantics --
+    never FAIL, "No fib context", or "Review context", and the map-context wording
+    must identify the canonical 4h bridge, not the generic transient/non-canonical
+    reference label."""
+    card = build_profit_plan_card(
+        symbol="AAVE",
+        market="AAVE-EUR",
+        current_price=Decimal("0.40"),
+        fib_trading_horizon="SHORT",
+        short_context_input_status="CANONICAL_4H_CONTEXT_AVAILABLE",
+        short_context_coverage_status="CANONICAL_4H_CONTEXT_AVAILABLE",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        fib_ext=_wld_fib_ext(),
+        reentry=_canonical_market_context_reentry(),
+        presentation_mode=CARD_MODE_MARKET_SELECTED,
+        evidence=CardEvidence(),
+    )
+    assert card.scenario_type == "CANONICAL_MARKET_CONTEXT"
+    assert card.actionability_state == "NAVIGATION_ONLY"
+    # real navigation levels are present, not zeroed out
+    assert card.target_exit_zone
+
+    quality_state, quality_reason = derive_quality_state(
+        current_price=card.current_price,
+        current_price_status=card.current_price_status,
+        current_price_age_min=card.current_price_age_min,
+        short_context_display_state=card.short_context_display_state,
+    )
+    assert quality_state != "FAIL"
+    assert quality_reason != "No fib context"
+
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    assert "FAIL" not in html
+    assert "No fib context" not in html
+    assert "Review context" not in html.lower() and "REVIEW CONTEXT" not in html
+    assert "CANONICAL MARKET CONTEXT" in html
+    assert "Canonical 4h market reference" in html
+    assert "navigation only, not lifecycle-verified" in html
+    assert "Transient SHORT context (non-canonical reference)" not in html
+    assert "Native lifecycle SHORT context is unavailable" in html
+    assert "Canonical 4h navigation context is available" in html
+
+
 def test_native_short_fixture_behavior_unchanged_by_canonical_navigation_branch() -> None:
     """A card with native-short lifecycle truth available (the standard
     _fix_ladder_ready_evidence fixture) must be completely unaffected by the
@@ -1172,6 +1218,26 @@ def test_legacy_and_stale_canonical_coverage_stay_fail_closed_without_native_evi
         # CONTEXT_UNAVAILABLE visibility class -- it is the one class allowed to
         # retain filtered/unavailable framing.
         assert card.visibility_class == VISIBILITY_CONTEXT_UNAVAILABLE, coverage_status
+
+
+def test_visibility_native_attention_rename_preserves_behavior_and_compatibility() -> None:
+    """Issue #223: VISIBILITY_ACTIONABLE was semantically misleading (its bucket
+    includes native attention/navigation states such as completed maps, not just
+    a live tradeable action). VISIBILITY_NATIVE_ATTENTION is the corrected name.
+    The old symbol must keep resolving to the exact same value so existing
+    imports/tests are unaffected -- this is the intentional serialized-string
+    compatibility the rename requires."""
+    assert VISIBILITY_NATIVE_ATTENTION == "NATIVE_ATTENTION"
+    assert VISIBILITY_ACTIONABLE == VISIBILITY_NATIVE_ATTENTION
+    assert VISIBILITY_ACTIONABLE != "ACTIONABLE"
+
+    native_card = _make_card(
+        current_price="0.48",
+        fib_ext=_wld_fib_ext(),
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    assert native_card.visibility_class == VISIBILITY_NATIVE_ATTENTION
 
 
 def test_print_summary_reports_three_way_visibility_counts_not_binary_filtered(capsys) -> None:

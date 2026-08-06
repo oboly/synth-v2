@@ -54,6 +54,15 @@ SCENARIO_CANONICAL_MARKET_CONTEXT = "CANONICAL_MARKET_CONTEXT"
 PRIMARY_STATE_CANONICAL_NAVIGATION_ONLY = "CANONICAL_NAVIGATION_ONLY"
 ACTION_LABEL_CANONICAL_NAVIGATION_ONLY = "CANONICAL_NAVIGATION_ONLY"
 
+# Issue #223: canonical 4h navigation context is a distinct short_context_display_state
+# from both native fib context and the generic transient/non-canonical bridge state --
+# it must render its own truthful map-context/quality wording, never "No fib context"
+# or the transient/non-canonical bridge label.
+SHORT_CONTEXT_DISPLAY_CANONICAL_NAVIGATION_AVAILABLE = "CANONICAL_NAVIGATION_CONTEXT_AVAILABLE"
+CANONICAL_MAP_CONTEXT_LABEL = (
+    "Canonical 4h market reference — navigation only, not lifecycle-verified"
+)
+
 STATE_LABELS: dict[str, str] = {
     "CONTEXT_UNAVAILABLE": "Context unavailable",
     "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT": "Transient SHORT context (non-canonical reference)",
@@ -72,6 +81,7 @@ STATE_LABELS: dict[str, str] = {
     "DO_NOTHING": "Do nothing",
     "INSUFFICIENT_DATA": "Insufficient data",
     PRIMARY_STATE_CANONICAL_NAVIGATION_ONLY: "Canonical 4h map (navigation only, not lifecycle-verified)",
+    SHORT_CONTEXT_DISPLAY_CANONICAL_NAVIGATION_AVAILABLE: CANONICAL_MAP_CONTEXT_LABEL,
 }
 
 RELEVANT_STATES: frozenset[str] = frozenset({
@@ -176,7 +186,15 @@ CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE = "CONTEXT_UNAVAILABLE"
 # fully present and discoverable while still being non-relevant/non-actionable
 # (CANONICAL_NAVIGATION_REFERENCE) -- that combination must never be reported
 # as "filtered".
-VISIBILITY_ACTIONABLE = "ACTIONABLE"
+# Issue #223: "ACTIONABLE" was semantically misleading -- this bucket also holds
+# native cards that are attention/navigation-only (e.g. completed maps), not just
+# ones with a live tradeable action. VISIBILITY_NATIVE_ATTENTION is the correct
+# name: "any native lifecycle-verified card, regardless of moment-to-moment
+# actionability". VISIBILITY_ACTIONABLE is kept as a same-value alias so existing
+# imports/tests continue to resolve without silently reintroducing the old,
+# misleading string value.
+VISIBILITY_NATIVE_ATTENTION = "NATIVE_ATTENTION"
+VISIBILITY_ACTIONABLE = VISIBILITY_NATIVE_ATTENTION
 VISIBILITY_CANONICAL_NAVIGATION_REFERENCE = "CANONICAL_NAVIGATION_REFERENCE"
 VISIBILITY_CONTEXT_UNAVAILABLE = "CONTEXT_UNAVAILABLE"
 
@@ -213,6 +231,7 @@ SHORT_CONTEXT_DISPLAY_LABELS: dict[str, str] = {
     "NO_NATIVE_SHORT_FIB_CONTEXT": "No native SHORT fib context",
     "MARKET_DATA_MISSING": "Market data missing",
     "CONTEXT_INVALID_OR_STALE": "Context invalid or stale",
+    SHORT_CONTEXT_DISPLAY_CANONICAL_NAVIGATION_AVAILABLE: CANONICAL_MAP_CONTEXT_LABEL,
 }
 
 
@@ -404,7 +423,7 @@ class ProfitPlanCard:
     relevance_reasons: tuple[str, ...]
     is_relevant: bool
     actionability_state: str = CARD_ACTIONABILITY_ACTIVE
-    visibility_class: str = VISIBILITY_ACTIONABLE
+    visibility_class: str = VISIBILITY_NATIVE_ATTENTION
     presentation_mode: str = CARD_MODE_MARKET_SELECTED
     fib_nav_context: FibNavContext | None = None
     render_id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -1557,6 +1576,14 @@ def _effective_workflow_action(card: ProfitPlanCard) -> str:
     Action claims fail closed: FIX LADDER only appears when evidence proves it.
     """
     if not _canonical_native_map_truth_available(card.evidence):
+        if card.actionability_state == CARD_ACTIONABILITY_NAVIGATION_ONLY:
+            # Issue #223: canonical 4h navigation context (no native lifecycle truth)
+            # is a truthful read-only reference, not a "review" prompt -- it must
+            # never be collapsed into the generic REVIEW CONTEXT action label.
+            return _ACTION_DISPLAY_MAP.get(
+                card.action_label,
+                card.action_label.replace("_", " "),
+            )
         return "REVIEW CONTEXT"
 
     if card.actionability_state == CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE:
@@ -2893,12 +2920,16 @@ def derive_quality_state(
     """
     Aggregate data quality into a single display state.
     Returns (quality_state, quality_reason).
-    quality_state: PASS | WARN | FAIL
-    quality_reason: None on PASS, human-readable explanation on WARN/FAIL
+    quality_state: PASS | WARN | FAIL | NAV
+    quality_reason: None on PASS, human-readable explanation on WARN/FAIL/NAV
     """
     if current_price is None or current_price_status in _QUALITY_PRICE_STALE_STATES:
         reason = "No current price" if current_price is None else "Stale price data"
         return "FAIL", reason
+    if short_context_display_state == SHORT_CONTEXT_DISPLAY_CANONICAL_NAVIGATION_AVAILABLE:
+        # Issue #223: canonical navigation context is a real, read-only reference --
+        # it must never be reported as a fib-context failure.
+        return "NAV", "Canonical navigation reference (not lifecycle-verified)"
     if short_context_display_state != _FIB_CTX_PASS_STATE:
         return "FAIL", "No fib context"
     if current_price_age_min is not None and current_price_age_min >= _PRICE_WARN_AGE_MIN:
@@ -3236,7 +3267,7 @@ def build_profit_plan_card(
             relevance_reasons=(),
             is_relevant=False,
             visibility_class=(
-                VISIBILITY_ACTIONABLE
+                VISIBILITY_NATIVE_ATTENTION
                 if canonical_native_map_truth_available
                 else VISIBILITY_CONTEXT_UNAVAILABLE
             ),
@@ -3449,10 +3480,13 @@ def build_profit_plan_card(
         action_label = ACTION_LABEL_CANONICAL_NAVIGATION_ONLY
         primary_state = PRIMARY_STATE_CANONICAL_NAVIGATION_ONLY
         secondary_state = None
+        short_context_display_state = SHORT_CONTEXT_DISPLAY_CANONICAL_NAVIGATION_AVAILABLE
         suggested_manual_attention_label = STATE_LABELS[PRIMARY_STATE_CANONICAL_NAVIGATION_ONLY]
         reasons = (
-            "Canonical 4h Fib map context is market-only and has not been verified "
-            "through the native SHORT lifecycle bridge.",
+            "Native lifecycle SHORT context is unavailable for this symbol.",
+            "Canonical 4h navigation context is available: displayed levels come from "
+            "the market-only canonical_fib_zone_map_latest_v1 bridge, not the native "
+            "SHORT lifecycle bridge.",
             "Displayed levels are read-only navigation reference; no lifecycle, "
             "promotion, or successor state is inferred.",
         )
@@ -3515,7 +3549,7 @@ def build_profit_plan_card(
     if canonical_market_context_available:
         visibility_class = VISIBILITY_CANONICAL_NAVIGATION_REFERENCE
     elif canonical_native_map_truth_available:
-        visibility_class = VISIBILITY_ACTIONABLE
+        visibility_class = VISIBILITY_NATIVE_ATTENTION
     else:
         visibility_class = VISIBILITY_CONTEXT_UNAVAILABLE
 
@@ -3806,6 +3840,7 @@ _CSS = """
     .quality-pass { background: rgba(102,223,178,.12); color: var(--ok);  border: 1px solid rgba(102,223,178,.3); }
     .quality-warn { background: rgba(255,209,102,.12); color: var(--warn); border: 1px solid rgba(255,209,102,.3); }
     .quality-fail { background: rgba(255,113,113,.12); color: var(--bad);  border: 1px solid rgba(255,113,113,.3); }
+    .quality-nav  { background: rgba(122,171,255,.12); color: var(--accent, #7aabff); border: 1px solid rgba(122,171,255,.3); }
     .quality-reason { font-size: 11px; color: var(--muted); }
     .card-evidence {
       border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
@@ -4690,7 +4725,10 @@ def render_plan_card(
         # Breathline is research-only / disabled for actions — presented as muted context.
         _metric_block("Breathline context", BREATHLINE_DISABLED_SHORT),
     ]
-    if card.short_context_display_state == "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT":
+    if card.short_context_display_state in {
+        "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT",
+        SHORT_CONTEXT_DISPLAY_CANONICAL_NAVIGATION_AVAILABLE,
+    }:
         metrics_blocks.append(
             _metric_block("Map context", _short_context_display_label(card.short_context_display_state))
         )

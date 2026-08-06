@@ -74,7 +74,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     CARD_MODE_MARKET_SELECTED,
     CARD_MODE_POSITION_HELD,
     CARD_MODE_WATCH_ONLY_ROTATION,
-    VISIBILITY_ACTIONABLE,
+    VISIBILITY_NATIVE_ATTENTION,
     VISIBILITY_CANONICAL_NAVIGATION_REFERENCE,
     VISIBILITY_CONTEXT_UNAVAILABLE,
     CardEvidence,
@@ -592,6 +592,7 @@ def summarize_native_short_snapshot_evidence(
     rows_path: Path,
     canonical_status: str,
     snapshot_id: str | None,
+    canonical_supported_symbols: "frozenset[str] | set[str] | None" = None,
 ) -> dict[str, Any]:
     market_symbols = sorted({market.split("-", 1)[0].upper() for market in markets})
     status = canonical_status
@@ -625,10 +626,16 @@ def summarize_native_short_snapshot_evidence(
         for symbol in supported_symbols
         if rows_by_symbol[symbol].get("context_freshness_status", "").upper() == "STALE"
     ]
+    # Issue #223: a symbol covered by the read-only canonical 4h navigation bridge
+    # (CANONICAL_MARKET_CONTEXT) is a distinct, explicitly non-native coverage class.
+    # It must never be reported as native-unsupported/unavailable alongside symbols
+    # with no context of any kind.
+    canonical_symbols = sorted(set(canonical_supported_symbols or ()) & set(market_symbols))
     unavailable_symbols = [
         symbol
         for symbol in market_symbols
-        if symbol not in supported_symbols or symbol not in available_symbols
+        if (symbol not in supported_symbols or symbol not in available_symbols)
+        and symbol not in canonical_symbols
     ]
     return {
         "canonical_snapshot_status": status,
@@ -640,6 +647,8 @@ def summarize_native_short_snapshot_evidence(
         "supported_context_stale_markets": stale_supported_symbols,
         "unsupported_or_unavailable_count": len(unavailable_symbols),
         "unsupported_or_unavailable_markets": unavailable_symbols,
+        "canonical_navigation_supported_count": len(canonical_symbols),
+        "canonical_navigation_supported_markets": canonical_symbols,
     }
 
 
@@ -661,9 +670,11 @@ def native_short_snapshot_banner(evidence: Mapping[str, Any]) -> str:
     total = int(evidence["native_context_total_count"])
     stale = int(evidence["supported_context_stale_count"])
     unavailable = list(evidence["unsupported_or_unavailable_markets"])
+    canonical_count = int(evidence.get("canonical_navigation_supported_count", 0))
     details = [
         "Canonical native SHORT snapshot loaded.",
-        f"Available {available} / supported {supported} / total {total} contexts.",
+        f"Available {available} / supported {supported} / total {total} native lifecycle contexts.",
+        f"Canonical 4h navigation coverage: {canonical_count} contexts (read-only, non-native).",
     ]
     if stale:
         details.append(f"Supported context stale: {stale}.")
@@ -1511,11 +1522,11 @@ def print_summary(*, context, cards: list[ProfitPlanCard], output_html: Path, ou
     # counts below always sum to len(cards).
     total = len(cards)
     _SUMMARY_LABEL_BY_VISIBILITY = {
-        VISIBILITY_ACTIONABLE: "RELEVANT",
+        VISIBILITY_NATIVE_ATTENTION: "RELEVANT",
         VISIBILITY_CANONICAL_NAVIGATION_REFERENCE: "CANONICAL_NAV",
         VISIBILITY_CONTEXT_UNAVAILABLE: "CONTEXT_UNAVAILABLE",
     }
-    attention_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_ACTIONABLE)
+    attention_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_NATIVE_ATTENTION)
     canonical_navigation_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_CANONICAL_NAVIGATION_REFERENCE)
     context_unavailable_count = sum(1 for card in cards if card.visibility_class == VISIBILITY_CONTEXT_UNAVAILABLE)
     print(f"attention={attention_count}/{total}")
@@ -1720,11 +1731,17 @@ def main() -> int:
         1 for s in zone_contexts.coverage_status_by_symbol.values()
         if s == "NATIVE_SHORT_CONTEXT_AVAILABLE"
     )
+    canonical_navigation_symbols = {
+        symbol
+        for symbol, status in zone_contexts.coverage_status_by_symbol.items()
+        if status == CANONICAL_4H_CONTEXT_AVAILABLE
+    }
     snapshot_evidence = summarize_native_short_snapshot_evidence(
         markets=list(context.markets),
         rows_path=native_short_rows_path,
         canonical_status=getattr(args, "native_short_snapshot_status", "unverified"),
         snapshot_id=getattr(args, "native_short_snapshot_id", None),
+        canonical_supported_symbols=canonical_navigation_symbols,
     )
     pipeline_health: dict[str, object] = {
         "native_source_missing": zone_contexts.native_source_missing,
