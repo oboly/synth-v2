@@ -10,6 +10,7 @@ import tempfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 from src.market_data.native_short_fib_context_v1 import NativeShortContextRow, write_context_rows
 from src.market_data.fib_navigation_map_v1 import (
@@ -29,6 +30,9 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     CARD_MODE_MARKET_SELECTED,
     CARD_MODE_POSITION_HELD,
     CARD_MODE_WATCH_ONLY_ROTATION,
+    VISIBILITY_ACTIONABLE,
+    VISIBILITY_CANONICAL_NAVIGATION_REFERENCE,
+    VISIBILITY_CONTEXT_UNAVAILABLE,
     ActiveOrderSummary,
     CardDelta,
     CardEvidence,
@@ -1110,6 +1114,10 @@ def test_canonical_4h_context_produces_canonical_navigation_only_scenario() -> N
     # real canonical navigation levels are exposed, not zeroed out
     assert card.target_exit_zone
     assert card.is_relevant is False
+    # Issue #212: non-actionable does not mean non-visible. This card must be
+    # explicitly classified as canonical navigation reference, not silently
+    # collapsed into a generic "filtered" bucket.
+    assert card.visibility_class == VISIBILITY_CANONICAL_NAVIGATION_REFERENCE
 
 
 def test_native_short_fixture_behavior_unchanged_by_canonical_navigation_branch() -> None:
@@ -1126,6 +1134,9 @@ def test_native_short_fixture_behavior_unchanged_by_canonical_navigation_branch(
     assert card.primary_state != "CANONICAL_NAVIGATION_ONLY"
     assert card.action_label != "CANONICAL_NAVIGATION_ONLY"
     assert card.actionability_state == "ACTIVE_TRADE_SETUP"
+    # Issue #212: native lifecycle-verified cards are the ACTIONABLE
+    # visibility class, unaffected by the canonical-navigation grouping work.
+    assert card.visibility_class == VISIBILITY_ACTIONABLE
 
 
 def test_legacy_and_stale_canonical_coverage_stay_fail_closed_without_native_evidence() -> None:
@@ -1157,6 +1168,72 @@ def test_legacy_and_stale_canonical_coverage_stay_fail_closed_without_native_evi
         assert card.action_label == "REVIEW_CONTEXT", coverage_status
         assert card.primary_state == "CONTEXT_UNAVAILABLE", coverage_status
         assert card.actionability_state == "CONTEXT_UNAVAILABLE", coverage_status
+        # Issue #212: stale/missing/invalid context stays fail-closed under the
+        # CONTEXT_UNAVAILABLE visibility class -- it is the one class allowed to
+        # retain filtered/unavailable framing.
+        assert card.visibility_class == VISIBILITY_CONTEXT_UNAVAILABLE, coverage_status
+
+
+def test_print_summary_reports_three_way_visibility_counts_not_binary_filtered(capsys) -> None:
+    """Issue #212: print_summary must report attention/canonical_navigation/
+    context_unavailable as an exact three-way partition of all cards, and must
+    never print the word "filtered" for a canonical navigation-only card."""
+    native_card = _make_card(
+        current_price="0.48",
+        fib_ext=_wld_fib_ext(),
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+    )
+    canonical_card = build_profit_plan_card(
+        symbol="ONDO",
+        market="ONDO-EUR",
+        current_price=Decimal("0.40"),
+        short_context_input_status="CANONICAL_4H_CONTEXT_AVAILABLE",
+        short_context_coverage_status="CANONICAL_4H_CONTEXT_AVAILABLE",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        fib_ext=_wld_fib_ext(),
+        reentry=_canonical_market_context_reentry(),
+        evidence=CardEvidence(),
+    )
+    unavailable_card = build_profit_plan_card(
+        symbol="MISS",
+        market="MISS-EUR",
+        current_price=Decimal("1.00"),
+        short_context_input_status="ZONE_SOURCE_MISSING",
+        short_context_coverage_status="FIB_MAP_SOURCE_MISSING",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        fib_ext=None,
+        reentry=None,
+        evidence=CardEvidence(),
+    )
+    cards = [native_card, canonical_card, unavailable_card]
+    assert {card.visibility_class for card in cards} == {
+        VISIBILITY_ACTIONABLE,
+        VISIBILITY_CANONICAL_NAVIGATION_REFERENCE,
+        VISIBILITY_CONTEXT_UNAVAILABLE,
+    }
+
+    context = SimpleNamespace(
+        profile="test",
+        account_code="acct",
+        trading_account_id="acct-1",
+        venue="bitvavo",
+        markets=[card.market for card in cards],
+        orders=(),
+    )
+    profit_plan_runner.print_summary(
+        context=context,
+        cards=cards,
+        output_html=Path("/tmp/does-not-matter.html"),
+        output_json=Path("/tmp/does-not-matter.json"),
+    )
+    out = capsys.readouterr().out
+    assert "attention=1/3" in out
+    assert "canonical_navigation=1/3" in out
+    assert "context_unavailable=1/3" in out
+    assert "[CANONICAL_NAV]" in out
+    assert "[filtered]" not in out
+    assert "filtered" not in out.lower()
 
 
 def test_all_candidates_search_matches_plu_to_plume_and_clear_restores_all() -> None:
