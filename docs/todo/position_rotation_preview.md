@@ -1,5 +1,27 @@
 # TODO — Position Rotation Preview
 
+> **Migration pointer — PARTIAL migration only.** GitHub Issue
+> [#230 — Compare discovered regimes with existing rotation labels](https://github.com/oboly/synth-v2/issues/230)
+> owns **only** the "Next Strategy Work" section below (research-validation
+> and regime follow-up: rerunning `rotation_destination_historical_replay_audit_v2`,
+> running `market_regime_discovery_v1`, comparing discovered regimes with
+> existing labels, and designing `symbol_breath_profile_v1` /
+> `regime_interaction_audit_v1`). Current status, priority, blockers,
+> acceptance criteria, next action, and closure for that scope belong to
+> Issue #230.
+>
+> The already-implemented MVP cockpit (Purpose, Target output, P1 sections,
+> P2 — Better-candidate comparison, Completed research baseline) remains
+> **historical record, not active scope**, and is **not** migrated by this
+> batch — no Issue owns it as live work. Do not represent it as Issue-owned,
+> filed, or in progress.
+>
+> This file must not become a parallel status board for the migrated scope.
+>
+> See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2b_migration_v1.md`.
+
 ## Status
 
 MVP implemented / parked follow-up lane.

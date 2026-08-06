@@ -1,5 +1,24 @@
 # TODO — Watchlist Candidates
 
+> **Migration pointer — PARTIAL migration only.** GitHub Issue
+> [#234 — Complete KITE watchlist promotion checks](https://github.com/oboly/synth-v2/issues/234)
+> owns **only** the remaining unchecked KITE task in "P2 — KITE moonshot
+> asymmetry candidate" below: "Check liquidity, spread, candle history
+> length, and minimum order constraints before any research promotion."
+> Current status, priority, blockers, acceptance criteria, next action, and
+> closure for that scope belong to Issue #234.
+>
+> The rest of that section is already-completed intake logging (marked
+> "Done") and is preserved as historical record. Other watchlist candidates
+> and research not named above remain **unmigrated** — no Issue owns them.
+> Do not represent that scope as Issue-owned, filed, or in progress.
+>
+> This file must not become a parallel status board for the migrated scope.
+>
+> See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2b_migration_v1.md`.
+
 ## Status
 
 Open watchlist / research intake lane.

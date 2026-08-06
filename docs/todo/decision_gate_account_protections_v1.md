@@ -1,5 +1,24 @@
 # TODO — Decision Gate Account Protections v1
 
+> **Migration pointer — PARTIAL migration only.** GitHub Issue
+> [#227 — Design account-aware drawdown, loss, and cooldown protection contract](https://github.com/oboly/synth-v2/issues/227)
+> owns **only** the "Open tasks by priority" §P1 sections below ("P1 —
+> Research and contract design" and "P1 — Replay and validation design").
+> Current status, priority, blockers, acceptance criteria, next action, and
+> closure for that scope belong to Issue #227.
+>
+> "P2 — Minimal implementation" (runtime implementation inside
+> `decision_gate`) remains **unmigrated** — no Issue owns it. Do not
+> represent that scope as Issue-owned, filed, or in progress.
+>
+> This file must not become a parallel status board for the migrated scope.
+> The design content above (sources, current state, candidate capabilities,
+> lock contract) is preserved as historical/design context.
+>
+> See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2b_migration_v1.md`.
+
 ## Status
 
 - `future design`

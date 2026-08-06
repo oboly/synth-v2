@@ -1,5 +1,29 @@
 # TODO — UI / Webview
 
+> **Migration pointer — PARTIAL migration only.** GitHub Issue
+> [#233 — Implement accepted Profit Plan coin-card scanability improvements](https://github.com/oboly/synth-v2/issues/233)
+> owns **only** the four accepted-but-unbuilt items in
+> "### Profit Plan coin-card scanability decisions" below (PPP display
+> compaction, tooltip registry entry, removing the duplicate Current-price
+> tile, and the variable-field alignment follow-up). Current status,
+> priority, blockers, acceptance criteria, next action, and closure for
+> that scope belong to Issue #233.
+>
+> All other sections describe already-implemented UI work (`P2 — Document
+> UI/chart framework`, `P2 — Webview / paper advice overlay TODO`,
+> `P1 — Local-only UI timestamps`) and remain **historical record, not
+> active scope** — not migrated by this batch. "P2 — Stabilize UI/chart
+> framework v1" and "Later UI v2 direction" describe unrelated, still-open
+> webview work that is also **unmigrated** — no Issue owns any of this
+> remaining content. Do not represent any of it as Issue-owned, filed, or
+> in progress.
+>
+> This file must not become a parallel status board for the migrated scope.
+>
+> See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2b_migration_v1.md`.
+
 ## Status
 
 Active / read-only freshness and zone display updated.

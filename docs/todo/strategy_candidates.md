@@ -1,5 +1,27 @@
 # TODO — Strategy Candidates
 
+> **Migration pointer — PARTIAL migration only.** GitHub Issue
+> [#232 — Validate current strategy candidates against buy-and-hold baselines](https://github.com/oboly/synth-v2/issues/232)
+> owns **only** the section titled "P1 — Current strategy audit follow-up"
+> below. Current status, priority, blockers, acceptance criteria, next
+> action, and closure for that scope belong to Issue #232.
+>
+> This file has **two** sections labeled `P1`. Issue #232 does **not** own
+> "P1 — Long-term regime classifier and dual-bucket research" — that
+> section, along with "P2 — Horizon bucket design review",
+> "P2 — `MACRO_DIP_BUDGET_MODE_V1`", "P2 — Swing pullback 168h research
+> lead", and "P3 — Legacy Synth v1 regime/strategy prior review", remains
+> **unmigrated**. No Issue owns them. Do not represent that scope as
+> Issue-owned, filed, or in progress.
+>
+> This file must not become a parallel status board for the migrated scope.
+> The "Core rule" and "Boundary" content is preserved as historical/design
+> context.
+>
+> See `docs/development/github_issues_workflow.md`,
+> `docs/todo/MIGRATION_FREEZE.md`, and
+> `docs/development/github_issues_batch_2b_migration_v1.md`.
+
 ## Status
 
 Open design questions. No implementation yet.
