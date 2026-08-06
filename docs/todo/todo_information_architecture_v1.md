@@ -2,11 +2,20 @@
 
 ## Status
 
-**active / P1 docs maintenance** — introduce a bounded subfolder structure under `docs/todo/` without creating a second priority board or breaking canonical references.
+**SUPERSEDED — no remaining authority.** Retained as historical context only,
+pending an `archive` disposition under `docs/todo/MIGRATION_FREEZE.md`.
 
-## Goal
+`docs/todo/` is frozen and must not gain further structure: MIGRATION_FREEZE
+explicitly forbids extending the TODO subfolder information architecture, and
+GitHub Issues now own status, priority, and execution order. The plan below is
+**not** authorized for execution. Do not create the unbuilt folders it targets
+and do not treat its `docs/todo/README.md` ownership claims as current.
 
-Keep `docs/todo/README.md` as the sole cross-lane execution-order owner while grouping lane files by responsibility.
+Canonical workflow: `docs/development/github_issues_workflow.md`.
+
+## Goal (historical — no longer authorized)
+
+Kept `docs/todo/README.md` as the sole cross-lane execution-order owner while grouping lane files by responsibility.
 
 Target structure:
 

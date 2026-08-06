@@ -117,8 +117,10 @@ plateaus, simple rules. Fine-tuning on this sample is curve-fitting by construct
 
 ## 7. What the coordinating chat should produce
 
-1. A TODO-board entry for this file conforming to `docs/todo/workflow_standard.md`
-   (status, purpose, boundaries, exit criteria) plus an index row in the todo README.
+1. A GitHub Issue for this file conforming to
+   `docs/development/github_issues_workflow.md` (objective, scope, architecture
+   boundary, acceptance criteria, evidence, safety). The legacy TODO board is
+   frozen: do not add a new TODO entry or index row.
 2. An agent prompt whose deliverable is **Phase 1 only**: labeler module + ledger tables
    (or parquet outputs) + the two metrics on BTC-EUR first, then top-N liquid symbols.
 3. Explicit non-goals in the agent prompt: no strategy code, no execution, no UI, no

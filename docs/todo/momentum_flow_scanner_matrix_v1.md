@@ -13,4 +13,4 @@ Historical detail remains available through Git history before this compatibilit
 
 This file owns no status, priority, market classification, account permission, execution intent, broker access, or order handling.
 
-Cross-lane execution order remains owned exclusively by `docs/todo/README.md`.
+This board is frozen; current execution order is owned by GitHub Issues (`docs/development/github_issues_workflow.md`).

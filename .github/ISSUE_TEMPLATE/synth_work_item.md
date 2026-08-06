@@ -32,17 +32,37 @@ Forbidden shortcuts:
 - No strategy decisions in executor or agents.
 - No direct broker access from reporting or dashboard code.
 
+## Labels
+
+Before submitting, apply (see `docs/development/github_issues_workflow.md`):
+
+- exactly one `type:*`;
+- one or more `area:*` — use `area:execution-planning` or `area:executor`,
+  never a combined execution area;
+- at most one `status:*`;
+- exactly one `priority:*`.
+
 ## Acceptance criteria
+
+State verifiable conditions. Each must be checkable from a merged PR, a
+recorded command result, or a named artifact — not from an impression.
 
 ## Required evidence
 
+Name the exact tests, commands, safety markers, or artifacts that will prove
+the acceptance criteria. "Tests pass" alone is not sufficient.
+
 ## Runtime/deployment impact
 
-Choose and specify one:
+Choose and specify exactly one:
 
-- repository-only;
-- migration required;
-- controlled runtime action required.
+- repository-only — merge completes this issue;
+- migration required — name the migration file and its rollback;
+- controlled runtime action required — name the host, the exact command, and
+  who authorizes it.
+
+For the last two, the issue stays open after merge until runtime or deployment
+acceptance is recorded.
 
 ## Safety
 

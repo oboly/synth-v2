@@ -10,7 +10,7 @@ Reporting consumes accepted persisted or canonical state. It must not recompute 
 
 ## Index rule
 
-This file is navigation only. Status, priority, and cross-lane execution order remain owned exclusively by `docs/todo/README.md`.
+This file is navigation only. This board is frozen; current status, priority, and execution order are owned by GitHub Issues (`docs/development/github_issues_workflow.md`).
 
 ## Canonical files
 

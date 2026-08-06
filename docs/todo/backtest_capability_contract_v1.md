@@ -10,7 +10,7 @@
 ## Sources
 
 - `AGENTS.md`
-- `docs/todo/workflow_standard.md`
+- `docs/development/github_issues_workflow.md` (legacy: `docs/todo/workflow_standard.md`)
 - `docs/todo/historical_breath_regime_context_backlog.md`
 - existing runners under `src/backtest/` and `src/research/`
 - Freqtrade capability metadata as an architecture reference only; no code dependency or runtime integration

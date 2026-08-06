@@ -54,7 +54,7 @@ Use when the material is obsolete or superseded but retains historical value, un
 
 Likely candidates include:
 
-- `todo_information_architecture_v1.md`;
+- `docs/todo/todo_information_architecture_v1.md`;
 - completed defect/containment narratives;
 - completed native SHORT implementation TODOs whose contracts and evidence are canonical elsewhere;
 - superseded manual-ladder and version-specific backlog documents.
