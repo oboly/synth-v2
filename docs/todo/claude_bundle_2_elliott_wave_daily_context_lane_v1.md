@@ -1,7 +1,8 @@
 # Elliott Wave Daily Context Lane — Design Bundle v1
 
-> **Migration pointer — PARTIAL migration only.** This file is **not**
-> wholly owned by an Issue.
+> **Migration pointer — PARTIAL migration, two independent owners.** This
+> file is **not** wholly owned by either Issue, and the two owners cover
+> separate, non-overlapping scopes.
 >
 > - GitHub Issue
 >   [#219 — Remove research-layer import from native SHORT market-data context](https://github.com/oboly/synth-v2/issues/219)
@@ -9,20 +10,34 @@
 >   violation to fix first"): `src/market_data/native_short_fib_context_v1.py`
 >   must not import from `src.research`. Current execution status, priority,
 >   blockers, acceptance criteria, and closure **for that one item only**
->   belong to Issue #219.
-> - The remaining Elliott Wave Phase-1 research/labeler scope (§1-§5, §7 —
->   the labeler spec, trade hypotheses, manual-approval path, validation
->   protocol, and the "what the coordinating chat should produce" work
->   order) is **still proposal-only and unmigrated**. It has no owning
->   Issue. Do not treat it as filed, scheduled, or in progress.
-> - This file must not become a parallel status board for the migrated
+>   belong to Issue #219. This boundary is unchanged from the Batch 2A
+>   migration and is not modified, weakened, or broadened by this batch.
+> - GitHub Issue
+>   [#241 — Implement Elliott Wave daily-context labeler Phase 1](https://github.com/oboly/synth-v2/issues/241)
+>   owns the Phase 1 Elliott Wave research scope for **BTC-EUR only**: the
+>   §2 labeler specification, the append-only ledger, and the two Phase 1
+>   validation metrics in §5 ("Phase 1 — label quality only"). Current
+>   execution status, priority, blockers, acceptance criteria, next action,
+>   and closure **for that BTC-EUR Phase 1 scope only** belong to Issue
+>   #241. Issue #241 does **not** own the §0 layering fix (that remains
+>   #219's scope) and does **not** own top-N/multi-symbol rollout, §3 trade
+>   hypotheses, §4 manual approval path beyond Phase 1 event logging, or
+>   §5 Phase 2/Phase 3 strategy-coupling work — all of that remains
+>   proposal-only and unmigrated, with no owning Issue.
+> - #219 and #241 own separate, non-overlapping scopes. #241 must not be
+>   treated as owning the layering fix, and #219 must not be treated as
+>   owning any Elliott Wave labeler/ledger/metric work.
+> - This file must not become a parallel status board for either migrated
 >   subtask: do not update status, priority, blockers, or next action for
->   the layering-fix item here — that lives in Issue #219 only. The
->   unmigrated research scope may still be edited as design content, but
->   not represented as having Issue-backed execution status.
+>   the layering-fix item or the Phase 1 BTC-EUR labeler item here — those
+>   live in Issues #219 and #241 respectively. The unmigrated research scope
+>   (top-N rollout, trade hypotheses, Phase 2/3) may still be edited as
+>   design content, but not represented as having Issue-backed execution
+>   status.
 > - See `docs/development/github_issues_workflow.md`,
->   `docs/todo/MIGRATION_FREEZE.md`, and
->   `docs/development/github_issues_batch_2a_migration_v1.md`.
+>   `docs/todo/MIGRATION_FREEZE.md`,
+>   `docs/development/github_issues_batch_2a_migration_v1.md`, and
+>   `docs/development/github_issues_batch_2c_migration_v1.md`.
 
 Handoff document for the coordinating chat. Purpose: turn the Elliott Wave discussion
 into a falsifiable, Synth-compatible research lane and a work order for an agent.
