@@ -42,6 +42,18 @@ TARGET_LEVEL_NEAR_THRESHOLD_PCT = Decimal("1")
 ORDER_SNAPSHOT_FRESH_AFTER = DEFAULT_CURRENT_PRICE_FRESH_AFTER
 ORDER_SNAPSHOT_MAX_FUTURE_SKEW = timedelta(seconds=30)
 
+# Canonical 4h market-only context (Issue #210). A card reaches this class only
+# when native-short lifecycle truth is unavailable AND the short-context
+# coverage bridge reports a canonical_fib_zone_map_latest_v1 row was used
+# (short_context_coverage_status == CANONICAL_4H_CONTEXT_AVAILABLE, defined in
+# src/reporting/run_manual_short_trader_profit_plan_v1.py). This class is
+# explicitly read-only navigation reference and must never be confused with
+# a native-short lifecycle-verified scenario/state/action.
+SHORT_CONTEXT_COVERAGE_CANONICAL_4H_AVAILABLE = "CANONICAL_4H_CONTEXT_AVAILABLE"
+SCENARIO_CANONICAL_MARKET_CONTEXT = "CANONICAL_MARKET_CONTEXT"
+PRIMARY_STATE_CANONICAL_NAVIGATION_ONLY = "CANONICAL_NAVIGATION_ONLY"
+ACTION_LABEL_CANONICAL_NAVIGATION_ONLY = "CANONICAL_NAVIGATION_ONLY"
+
 STATE_LABELS: dict[str, str] = {
     "CONTEXT_UNAVAILABLE": "Context unavailable",
     "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT": "Transient SHORT context (non-canonical reference)",
@@ -59,6 +71,7 @@ STATE_LABELS: dict[str, str] = {
     "MAP_RECOMPUTE_NEEDED": "Map recompute needed",
     "DO_NOTHING": "Do nothing",
     "INSUFFICIENT_DATA": "Insufficient data",
+    PRIMARY_STATE_CANONICAL_NAVIGATION_ONLY: "Canonical 4h map (navigation only, not lifecycle-verified)",
 }
 
 RELEVANT_STATES: frozenset[str] = frozenset({
@@ -97,10 +110,12 @@ SETUP_STATE_FROM_SCENARIO: dict[str, str] = {
     "NO_CLEAR_PLAN": "MINIMAL_CONTEXT",
     "NO_SHORT_FIB_CONTEXT": "MINIMAL_CONTEXT",
     "NO_CURRENT_PRICE": "MINIMAL_CONTEXT",
+    SCENARIO_CANONICAL_MARKET_CONTEXT: "MINIMAL_CONTEXT",
 }
 
 EVENT_STATE_FROM_PRIMARY: dict[str, str] = {
     "CONTEXT_UNAVAILABLE": "CONTEXT_UNAVAILABLE",
+    PRIMARY_STATE_CANONICAL_NAVIGATION_ONLY: "BETWEEN_LEVELS",
     "RELOAD_ZONE_APPROACHING": "RELOAD_ZONE_APPROACHING",
     "TAKE_PROFIT_WAITING": "TARGET_APPROACHING",
     "MAP_RECOMPUTE_NEEDED": "MAP_EXPIRED",
@@ -141,6 +156,7 @@ _ACTION_DISPLAY_MAP: dict[str, str] = {
     "WAIT_FOR_SHORT_CONTEXT": "CONTEXT UNAVAILABLE",
     "WAIT_FOR_NEW_MAP": "MAP EXPIRED",
     "NAVIGATION_ONLY": "NAVIGATION MAP",
+    ACTION_LABEL_CANONICAL_NAVIGATION_ONLY: "CANONICAL NAVIGATION ONLY",
     "NO_CURRENT_PRICE": "PRICE UNAVAILABLE",
     "PLACE_LADDER": "SETUP LADDER",
     "REPAIR_LADDER": "REVIEW LADDER",
@@ -1134,8 +1150,15 @@ def _derive_card_actionability_state(
     current_price: Decimal | None,
     invalidation_level: Decimal | None,
     canonical_native_map_truth_available: bool,
+    canonical_market_context_available: bool = False,
 ) -> str:
     if not canonical_native_map_truth_available:
+        # Native lifecycle truth is unavailable. A canonical_fib_zone_map_latest_v1
+        # row (market-only, not lifecycle-verified) still earns a read-only
+        # navigation state instead of collapsing to CONTEXT_UNAVAILABLE -- it
+        # must never be promoted further than that (Issue #210).
+        if canonical_market_context_available:
+            return CARD_ACTIONABILITY_NAVIGATION_ONLY
         return CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE
     if primary_state == "INVALIDATED":
         return CARD_ACTIONABILITY_INVALIDATED
@@ -3387,7 +3410,44 @@ def build_profit_plan_card(
         ladder_states = _derive_ladder_states(_ladder_buy_zone, target_level_statuses, buy_orders, sell_orders, current_price)
         is_relevant, relevance_reasons = _derive_relevance_with_reasons(event_state, ladder_states, setup_state)
 
-    if not canonical_native_map_truth_available:
+    # Issue #210: a canonical_fib_zone_map_latest_v1 row (market-only, never
+    # lifecycle-verified) must not collapse to CONTEXT_UNAVAILABLE just
+    # because native-short truth is absent -- but it must also never be
+    # relabeled with a native-lifecycle scenario/state/action. This flag is
+    # derived only from the short-context coverage bridge classification
+    # (src/reporting/run_manual_short_trader_profit_plan_v1.py), never from
+    # native evidence, so it cannot fabricate promoted native-short state.
+    canonical_market_context_available = (
+        not canonical_native_map_truth_available
+        and short_context_coverage_status == SHORT_CONTEXT_COVERAGE_CANONICAL_4H_AVAILABLE
+    )
+
+    if canonical_market_context_available:
+        # Navigation levels (buy_zone/sell_zone/active_target/order_summary/
+        # distances) are left exactly as already computed above from the
+        # real canonical fib_ext/reentry context -- only the scenario/state/
+        # action labels and relevance/ladder semantics are relabeled as
+        # explicitly read-only, non-lifecycle, non-actionable reference.
+        scenario_type = SCENARIO_CANONICAL_MARKET_CONTEXT
+        action_label = ACTION_LABEL_CANONICAL_NAVIGATION_ONLY
+        primary_state = PRIMARY_STATE_CANONICAL_NAVIGATION_ONLY
+        secondary_state = None
+        suggested_manual_attention_label = STATE_LABELS[PRIMARY_STATE_CANONICAL_NAVIGATION_ONLY]
+        reasons = (
+            "Canonical 4h Fib map context is market-only and has not been verified "
+            "through the native SHORT lifecycle bridge.",
+            "Displayed levels are read-only navigation reference; no lifecycle, "
+            "promotion, or successor state is inferred.",
+        )
+        setup_state = _derive_setup_state(scenario_type)
+        event_state = _derive_event_state(primary_state)
+        ladder_states = _derive_ladder_states(
+            _ladder_buy_zone, target_level_statuses, buy_orders, sell_orders, current_price
+        )
+        is_relevant, relevance_reasons = _derive_relevance_with_reasons(
+            event_state, ladder_states, setup_state, force_not_relevant=True
+        )
+    elif not canonical_native_map_truth_available:
         all_sell_targets_completed = False
         scenario_type = "CONTEXT_UNAVAILABLE"
         action_label = "REVIEW_CONTEXT"
@@ -3425,6 +3485,7 @@ def build_profit_plan_card(
         current_price=current_price,
         invalidation_level=invalidation_level,
         canonical_native_map_truth_available=canonical_native_map_truth_available,
+        canonical_market_context_available=canonical_market_context_available,
     )
 
     return ProfitPlanCard(
