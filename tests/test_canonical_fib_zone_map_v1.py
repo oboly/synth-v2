@@ -898,3 +898,51 @@ def test_identity_change_touches_no_account_decision_planner_or_executor_layer()
     assert subject.SAFETY_MARKERS["decision_gate"] == "none"
     assert subject.SAFETY_MARKERS["execution_planner"] == "none"
     assert subject.SAFETY_MARKERS["executor"] == "none"
+
+
+def test_asof_and_input_latest_are_equal_with_candles_but_diverge_without() -> None:
+    """`asof_ts_utc` and `input_latest_candle_ts_utc` look redundant because
+    they match for every row that has candles -- but they carry different
+    signals and neither may be dropped.
+
+    A symbol with no candles at all gets `asof_ts_utc` back-filled from the
+    cohort asof (keeping it NOT NULL and indexable) while
+    `input_latest_candle_ts_utc` stays NULL, which is the only unambiguous
+    "no source data" marker.
+    """
+    have_candles = candles(latest=T_1600)
+    build = build_publication(
+        venue="bitvavo",
+        quote_currency="EUR",
+        interval_code="4h",
+        symbols=["NOT", "GHOST"],
+        candles_by_symbol={"NOT": have_candles},
+        trend_rows_by_symbol={"NOT": trend_row(have_candles)},
+        now_utc=T_1600 + timedelta(minutes=5),
+    )
+    assert build.asof_ts_utc == T_1600
+
+    # Pre-insert: the no-data row has no timestamp of its own at all.
+    ghost_built = next(row for row in build.rows if row["symbol"] == "GHOST")
+    assert ghost_built["map_status"] == MAP_STATE_NO_DATA
+    assert ghost_built["provenance_payload"]["reason"] == "MISSING_CANDLES"
+    assert ghost_built["asof_ts_utc"] is None
+    assert ghost_built["input_latest_candle_ts_utc"] is None
+
+    conn = _IdentityConn()
+    subject.publish(conn, build, authorization=_identity_authorization())
+
+    # Post-insert: asof_ts_utc is back-filled from the cohort, input_latest is not.
+    [ghost] = conn.rows_for("GHOST")
+    assert ghost["asof_ts_utc"] == DB_1600, "must stay NOT NULL for the secondary indexes"
+    assert ghost["input_latest_candle_ts_utc"] is None, "NULL is the no-source-data signal"
+
+    # A row that does have candles keeps them equal.
+    [not_row] = conn.rows_for("NOT")
+    assert not_row["asof_ts_utc"] == not_row["input_latest_candle_ts_utc"] == DB_1600
+
+    # Pin the fallback itself so it cannot be "simplified" away.
+    producer_source = Path("src/market_data/canonical_fib_zone_map_v1.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'row["asof_ts_utc"] or build.asof_ts_utc' in producer_source
