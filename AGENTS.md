@@ -59,7 +59,7 @@ Every generated agent handoff must explicitly state:
 ```text
 HOST: <exact host>
 MODEL: <exact model>
-EFFORT: <low | medium | high, or exact supported runtime value>
+EFFORT: <exact supported runtime value | default | unknown>
 ROLE: <advisor | implementer | reviewer | auditor>
 THREAD: <CLEAR | CONTINUE>
 ```
@@ -71,13 +71,28 @@ An absent permission line means not granted.
 
 Effort selection:
 
-- Use the exact effort or reasoning value supported by the selected model or
-  client where known; otherwise use `low`, `medium`, or `high`.
-- Use low for bounded mechanical work with low risk.
-- Use medium for normal implementation or focused review.
-- Use high for architecture, security, runtime, database, execution, broad
-  refactors, ambiguous failures, or final high-risk review.
-- Do not invent unsupported effort values.
+- **Effort follows task complexity, not role.** Being a subagent, advisor,
+  auditor, or reviewer is never by itself a reason to use high effort.
+- When the selected model/client exposes a real effort or reasoning control,
+  use its exact supported value. When it does not, report `default` or
+  `unknown`; do not invent an effort level based on how much work was done.
+- Default to **medium** for normal implementation, focused review, bounded
+  investigation, and subagent work when a medium setting is actually
+  supported.
+- Use **low** for simple lookup, mechanical verification, formatting, or other
+  narrowly bounded low-risk work.
+- Use **high** only when the assigned slice itself genuinely requires deep
+  reasoning: unresolved architectural ambiguity, security/safety analysis,
+  difficult runtime/database failure analysis, broad cross-cutting evidence,
+  or final high-risk review.
+- Subagents do **not** inherit high effort from the parent agent. Parallel
+  agents default to medium unless an individual subtask independently warrants
+  high effort.
+- Prefer narrowing a task and keeping medium effort over leaving the scope
+  broad and compensating with high effort.
+- Stop once enough evidence exists to answer the assigned question. Do not use
+  high effort to explore adjacent history, cleanup, edge cases, or redesigns
+  that cannot materially change the conclusion.
 - Effort does not replace role or authorize broader scope or mutations.
 
 Thread selection:
