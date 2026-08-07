@@ -1,8 +1,26 @@
 # TODO — Fibo / Zones
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- P0 production publication/cutover (canonical 4h Fib map writer, MariaDB publication, cockpit render, `/synth/fibo-map.html`) -> already implemented and deployed (merged PRs #171, #173); current live-defect follow-up owned by existing Issue #249 (existing; not duplicated)
+- P2 — Exit-profile research continuation, P2 — Leak-free Zone/Fib touch evaluation, P2 — Native map level calibration / signed price bias -> Issue #270
+- P2 — Zone context guardrails -> already canonical (duplicates `AGENTS.md` operational-table contamination rule); no Issue required
+- P3 — Fibo/zone UI overlays, P3 — Target-box normalization backlog -> Issue #271
+- Strategy-promotion design note (research fib/target maps -> asset_exit_profile -> decision_gate -> execution_planner -> executor) -> no current validated promotion scope; not actionable, future review only, no Issue filed
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
-Active P0 repository-ready / activation pending.
+Active P0 repository-ready / activation pending (superseded — the production
+cutover this line describes is already implemented and deployed; see GitHub
+Issue migration block above and Issue #249 for the current live scope).
 
 The recurring canonical 4h Fibonacci map writer and persisted dashboard
 consumer are implemented on the current branch. Merge, DB migration/grant
