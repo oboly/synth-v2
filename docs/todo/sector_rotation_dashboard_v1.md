@@ -48,7 +48,7 @@ Expose sector taxonomy, cluster membership, sector scores, participation, and ro
 
 This phase depends on:
 
-- `sector_taxonomy_database_seed_v1.md`;
+- `completed/sector_taxonomy_database_seed_v1.md`;
 - `sector_rotation_engine_v1.md`.
 
 Future extensions depend on:

@@ -93,7 +93,7 @@ The following former follow-ups are owned elsewhere and must not be duplicated h
 - IOST target lifecycle/history truth:
   `docs/todo/profit_plan_target_lifecycle_history_truth_v1.md`
 - minimum 4% target-room and RSI/MFI entry research:
-  `docs/todo/momentum_flow_scanner_matrix_v1.md`
+  `docs/todo/market_intelligence/momentum_flow_scanner_research_v1.md`
 - non-blocking evidence-container severity and visual polish:
   `docs/todo/ui_webview.md`
 

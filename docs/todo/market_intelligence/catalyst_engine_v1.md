@@ -8,7 +8,7 @@
 
 - `docs/architecture/external_research_overlay_contract_v1.md`
 - `docs/architecture/market_observer_contract_v1.md`
-- `docs/todo/sector_rotation_master_plan_v1.md`
+- `docs/todo/market_intelligence/sector_rotation_master_plan_v1.md`
 - FFG briefings supplied in chat on 2026-07-28 covering ONDO fee-switch discussion, regulatory milestones, protocol burns, governance, and tokenized-asset adoption. These are external research inputs, not canonical facts until independently sourced.
 
 ## Current state / facts

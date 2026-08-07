@@ -9,7 +9,7 @@
 - `docs/architecture/market_observer_contract_v1.md`
 - `docs/research/market_observer_measured_input_inventory_v1.md`
 - `docs/research/canonical_regime_context_source_v1.md`
-- `docs/todo/sector_rotation_master_plan_v1.md`
+- `docs/todo/market_intelligence/sector_rotation_master_plan_v1.md`
 - FFG chart and rotation briefings supplied in chat on 2026-07-28; external research only, not canonical market truth.
 
 ## Current state / facts
