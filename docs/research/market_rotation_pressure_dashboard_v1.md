@@ -179,6 +179,52 @@ installation or timer enablement.
 
 Do not silently attach the market-data writer to Profit Plan rendering. Reporting must never become the owner of market-data writes.
 
-## Deferred Follow-up
+## Profit Plan Embedding (Implemented)
 
-Embedding the strip in Profit Plan is a reporting-only follow-up after host acceptance. It should read the same published JSON or persisted pressure snapshot; it must not duplicate scoring or light logic inside `manual_short_trader_profit_plan_v1.py`.
+Issue #255 implemented the Profit Plan embedding described below as a
+read-only reporting projection. It is a reporting-only consumer; it does not
+change runtime ownership, cadence, or writer/publisher timers described
+above.
+
+New files:
+
+- `src/reporting/market_rotation_profit_plan_projection_v1.py` — pure,
+  DB-free module. Reuses `market_rotation_pressure_dashboard_v1.build_dashboard`
+  (and `header_from_mapping`/`row_from_mapping`/`classify_freshness`
+  transitively) to build a `RotationProfitPlanProjection` (aggregate) plus a
+  `RotationMarketProjection` per persisted observation row, keyed by the
+  canonical `market` string (e.g. `AERO-EUR`).
+- Wired into `src/reporting/run_manual_short_trader_profit_plan_v1.py::main()`
+  as a read-only DB fetch (`check_schema_ready`/`fetch_latest_snapshot`/
+  `fetch_snapshot_observations`, imported from
+  `run_market_rotation_pressure_dashboard_v1`) that degrades to an
+  unavailable projection on any failure rather than blocking the render.
+- Rendered by `src/reporting/manual_short_trader_profit_plan_v1.py` via
+  optional `rotation_projection` kwargs on `render_full_html()` and
+  `build_json_snapshot()` (both default `None`, preserving prior behavior
+  when omitted).
+
+Read-only consumer contract:
+
+- Profit Plan reads only already-persisted `market_rotation_pressure_snapshot_v1`
+  and `market_rotation_pressure_observation_v1` rows (via the dashboard's own
+  fetch helpers). It never recomputes and never derives any rotation score,
+  direction, evidence-light count, breadth, rank, acceleration, confirmation,
+  or concentration state -- those values are always carried through verbatim
+  from the persisted snapshot. Profit Plan reporting/UI may request, receive,
+  project, sort, filter, and display this canonical data, but it must not
+  calculate new market-state semantics -- including rank -- itself. There is
+  no locally derived top-IN / top-OUT ranking in the Profit Plan projection;
+  a top/rank field is only ever surfaced here if `market_rotation_pressure_v1`
+  itself persists one as canonical state.
+- A market with no matching persisted observation row renders an explicit
+  "no rotation row" state (`ROTATION DATA UNAVAILABLE`); a stale or
+  future/invalid snapshot renders a visibly degraded state
+  (`ROTATION DATA STALE` / `ROTATION DATA UNAVAILABLE`). Missing or invalid
+  rotation data never fails the Profit Plan render as a whole, and Profit
+  Plan continues to render using its existing canonical market/account
+  inputs when rotation context is unavailable.
+- Rotation pressure state is market-only and account-agnostic. The same
+  persisted snapshot may be projected into multiple account Profit Plans
+  without duplicating computation and without any account-scoped field
+  appearing on the projection.
