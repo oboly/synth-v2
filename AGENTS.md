@@ -71,8 +71,13 @@ An absent permission line means not granted.
 
 Effort selection:
 
-- **Effort follows task complexity, not role.** Being a subagent, advisor,
-  auditor, or reviewer is never by itself a reason to use high effort.
+- **Use effort to resolve uncertainty, not to execute scope.** Effort exists to
+  help the agent resolve material ambiguity; it is not a quality tier and must
+  not scale automatically with task importance, task size, role, or elapsed
+  work.
+- **Effort follows unresolved uncertainty, not role.** Being a subagent,
+  advisor, auditor, reviewer, or implementer is never by itself a reason to use
+  high effort.
 - When the selected model/client exposes a real effort or reasoning control,
   use its exact supported value. When it does not, report `default` or
   `unknown`; do not invent an effort level based on how much work was done.
@@ -81,15 +86,24 @@ Effort selection:
   supported.
 - Use **low** for simple lookup, mechanical verification, formatting, or other
   narrowly bounded low-risk work.
-- Use **high** only when the assigned slice itself genuinely requires deep
-  reasoning: unresolved architectural ambiguity, security/safety analysis,
-  difficult runtime/database failure analysis, broad cross-cutting evidence,
-  or final high-risk review.
+- Use **high** only when the assigned slice itself must resolve genuine material
+  uncertainty: unresolved architectural choices, contradictory requirements,
+  unknown failure causes, security/safety ambiguity, difficult runtime/database
+  diagnosis, or broad evidence synthesis where the conclusion is not already
+  specified.
+- If a prior design/review session already resolved the important architecture,
+  requirements, boundaries, and implementation choices, execution should
+  normally remain low or medium even when the implementation is substantial.
+- Before escalating to high, answer: `What material uncertainty remains for
+  this agent to resolve?` If there is no concrete answer, do not escalate.
 - Subagents do **not** inherit high effort from the parent agent. Parallel
-  agents default to medium unless an individual subtask independently warrants
-  high effort.
+  agents default to medium unless an individual subtask independently contains
+  unresolved uncertainty that warrants high effort.
 - Prefer narrowing a task and keeping medium effort over leaving the scope
   broad and compensating with high effort.
+- For pre-resolved implementation tasks, do not re-open settled design
+  decisions, search for alternative architectures, invent extra edge cases, or
+  broaden the task merely because higher effort is available.
 - Stop once enough evidence exists to answer the assigned question. Do not use
   high effort to explore adjacent history, cleanup, edge cases, or redesigns
   that cannot materially change the conclusion.
