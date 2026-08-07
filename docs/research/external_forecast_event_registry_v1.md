@@ -1,8 +1,10 @@
-# External Forecast Event Registry TODO
+# External Forecast Event Registry
 
-Status: TODO
+Status: Permanent research/ETL data contract
+Canonical location: `docs/research/external_forecast_event_registry_v1.md`
 Scope: research-only
 Runtime impact: none
+Architecture boundary: this registry grants no authority to `selection_engine`, `decision_gate`, `execution_planner`, executor/agents, or broker behavior. It is a data contract for timestamped external-forecast events and their post-window validation only.
 
 ## Core principle
 
@@ -58,9 +60,9 @@ These are useful only if stored with:
 
 ## Proposed doc/data lane
 
-Initial document:
+Canonical document:
 
-- docs/todo/external_forecast_event_registry.md
+- docs/research/external_forecast_event_registry_v1.md
 
 Later optional data files:
 

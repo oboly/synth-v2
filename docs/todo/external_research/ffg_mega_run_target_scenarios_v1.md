@@ -90,7 +90,7 @@ The `selection_engine` remains market-only and deterministic. Any later account-
 
 ## Follow-up
 
-- Align these target scenarios with `docs/todo/external_forecast_event_registry.md`.
+- Align these target scenarios with `docs/research/external_forecast_event_registry_v1.md`.
 - Decide whether scenario classes belong in the event registry itself or in a separate external target/outcome table.
 - Preserve exact FFG source date, publication date, recording date, target range, and source rationale.
 - Validate target hits, timing, maximum drawdown before hit, and whether the required market regime actually occurred.
