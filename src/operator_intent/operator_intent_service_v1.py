@@ -76,8 +76,10 @@ def _record_from_row(row: Mapping[str, Any]) -> OperatorIntentRecord:
         reason=(str(row["reason"]) if row["reason"] is not None else None),
         source=str(row["source"]),
         created_by_app_user_id=int(row["created_by_app_user_id"]),
+        created_by_app_profile_id=int(row["created_by_app_profile_id"]),
         created_ts_utc=row["created_ts_utc"],
         updated_by_app_user_id=int(row["updated_by_app_user_id"]),
+        updated_by_app_profile_id=int(row["updated_by_app_profile_id"]),
         updated_ts_utc=row["updated_ts_utc"],
         expires_ts_utc=row["expires_ts_utc"],
         version=int(row["version"]),
@@ -103,6 +105,7 @@ def _revision_from_row(row: Mapping[str, Any]) -> OperatorIntentRevisionRecord:
         reason=(str(row["reason"]) if row["reason"] is not None else None),
         source=str(row["source"]),
         actor_app_user_id=int(row["actor_app_user_id"]),
+        actor_app_profile_id=int(row["actor_app_profile_id"]),
         event_ts_utc=row["event_ts_utc"],
         expires_ts_utc=row["expires_ts_utc"],
     )
@@ -220,8 +223,10 @@ class OperatorIntentService:
                 reason=reason,
                 source=source,
                 created_by_app_user_id=identity.app_user_id,
+                created_by_app_profile_id=identity.app_profile_id,
                 created_ts_utc=now_utc,
                 updated_by_app_user_id=identity.app_user_id,
+                updated_by_app_profile_id=identity.app_profile_id,
                 updated_ts_utc=now_utc,
                 expires_ts_utc=expires_ts_utc,
                 version=1,
@@ -239,6 +244,7 @@ class OperatorIntentService:
                 reason=reason,
                 source=source,
                 actor_app_user_id=identity.app_user_id,
+                actor_app_profile_id=identity.app_profile_id,
                 event_ts_utc=now_utc,
                 expires_ts_utc=expires_ts_utc,
             )
@@ -302,6 +308,7 @@ class OperatorIntentService:
                 reason=new_reason,
                 expires_ts_utc=new_expires,
                 updated_by_app_user_id=identity.app_user_id,
+                updated_by_app_profile_id=identity.app_profile_id,
                 updated_ts_utc=now_utc,
             )
             if rowcount == 0:
@@ -324,6 +331,7 @@ class OperatorIntentService:
                 reason=new_reason,
                 source=str(row["source"]),
                 actor_app_user_id=identity.app_user_id,
+                actor_app_profile_id=identity.app_profile_id,
                 event_ts_utc=now_utc,
                 expires_ts_utc=new_expires,
             )
@@ -436,6 +444,7 @@ class OperatorIntentService:
                 "priority": int(row["priority"]),
                 "expires_ts_utc": row["expires_ts_utc"],
                 "updated_by_app_user_id": identity.app_user_id,
+                "updated_by_app_profile_id": identity.app_profile_id,
                 "updated_ts_utc": now_utc,
             }
             if extra_fields:
@@ -467,6 +476,7 @@ class OperatorIntentService:
                 reason=new_reason,
                 source=str(row["source"]),
                 actor_app_user_id=identity.app_user_id,
+                actor_app_profile_id=identity.app_profile_id,
                 event_ts_utc=now_utc,
                 expires_ts_utc=row["expires_ts_utc"],
             )
@@ -531,6 +541,7 @@ class OperatorIntentService:
                 priority=int(old_row["priority"]),
                 expires_ts_utc=old_row["expires_ts_utc"],
                 updated_by_app_user_id=identity.app_user_id,
+                updated_by_app_profile_id=identity.app_profile_id,
                 updated_ts_utc=now_utc,
             )
             if rowcount == 0:
@@ -552,6 +563,7 @@ class OperatorIntentService:
                 reason=str(old_row["reason"]) if old_row["reason"] is not None else None,
                 source=str(old_row["source"]),
                 actor_app_user_id=identity.app_user_id,
+                actor_app_profile_id=identity.app_profile_id,
                 event_ts_utc=now_utc,
                 expires_ts_utc=old_row["expires_ts_utc"],
             )
@@ -580,8 +592,10 @@ class OperatorIntentService:
                 reason=reason,
                 source=source,
                 created_by_app_user_id=identity.app_user_id,
+                created_by_app_profile_id=identity.app_profile_id,
                 created_ts_utc=now_utc,
                 updated_by_app_user_id=identity.app_user_id,
+                updated_by_app_profile_id=identity.app_profile_id,
                 updated_ts_utc=now_utc,
                 expires_ts_utc=expires_ts_utc,
                 version=1,
@@ -600,6 +614,7 @@ class OperatorIntentService:
                 reason=reason,
                 source=source,
                 actor_app_user_id=identity.app_user_id,
+                actor_app_profile_id=identity.app_profile_id,
                 event_ts_utc=now_utc,
                 expires_ts_utc=expires_ts_utc,
             )
@@ -645,6 +660,7 @@ class OperatorIntentService:
                     priority=int(row["priority"]),
                     expires_ts_utc=row["expires_ts_utc"],
                     updated_by_app_user_id=identity.app_user_id,
+                    updated_by_app_profile_id=identity.app_profile_id,
                     updated_ts_utc=now_utc,
                 )
                 if rowcount == 0:
@@ -663,6 +679,7 @@ class OperatorIntentService:
                     reason=str(row["reason"]) if row["reason"] is not None else None,
                     source=str(row["source"]),
                     actor_app_user_id=identity.app_user_id,
+                    actor_app_profile_id=identity.app_profile_id,
                     event_ts_utc=now_utc,
                     expires_ts_utc=row["expires_ts_utc"],
                 )
@@ -687,6 +704,11 @@ class OperatorIntentService:
         intent_type: str | None = None,
         conn_factory: Callable[[], Any],
     ) -> Sequence[OperatorIntentRecord]:
+        """The 'current intents' read model. Returns OPEN_STATUSES rows only
+        — CANCELLED / EXPIRED / SUPERSEDED intents never leak through here.
+        Use read_intent_by_id for an authorized single-intent lookup
+        regardless of status, or read_revision_history for full lifecycle
+        history."""
         venue = validate_venue(venue)
         normalized_market = validate_canonical_market(canonical_market) if canonical_market is not None else None
         normalized_type = IntentType(intent_type).value if intent_type is not None else None
@@ -694,7 +716,7 @@ class OperatorIntentService:
         try:
             repo = self._repo_factory(conn)
             self._authorize_account_scope(repo, identity=identity, trading_account_id=trading_account_id, venue=venue)
-            rows = repo.list_intents_for_account(
+            rows = repo.list_open_intents_for_account(
                 trading_account_id=trading_account_id,
                 venue=venue,
                 canonical_market=normalized_market,
@@ -702,6 +724,38 @@ class OperatorIntentService:
             )
             conn.commit()
             return tuple(_record_from_row(row) for row in rows)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def read_intent_by_id(
+        self,
+        *,
+        identity: AuthenticatedProfileIdentity,
+        operator_intent_id: int,
+        conn_factory: Callable[[], Any],
+    ) -> OperatorIntentRecord:
+        """Authorized single-intent lookup by ID, regardless of status
+        (including terminal CANCELLED / EXPIRED / SUPERSEDED intents). This
+        is the explicit path for terminal/historical single-intent reads —
+        read_current_intents intentionally excludes terminal rows."""
+        conn = conn_factory()
+        try:
+            repo = self._repo_factory(conn)
+            row = repo.get_intent(operator_intent_id=operator_intent_id)
+            if row is None:
+                conn.rollback()
+                raise UnresolvedCanonicalIdentity(f"INTENT_NOT_FOUND: operator_intent_id={operator_intent_id}")
+            self._authorize_account_scope(
+                repo,
+                identity=identity,
+                trading_account_id=int(row["trading_account_id"]),
+                venue=str(row["venue"]),
+            )
+            conn.commit()
+            return _record_from_row(row)
         except Exception:
             conn.rollback()
             raise

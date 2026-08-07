@@ -9,6 +9,14 @@
 -- Prerequisite: 20260605_website_registration_foundation_v1.sql (app_user, app_profile)
 --               20260607_app_profile_trading_account_link_v1.sql (trading_account link)
 --               trading_account table (pre-existing, created outside db/migrations)
+-- Concurrency note: the one-open-intent-per-scope invariant is enforced in
+-- src.operator_intent.operator_intent_service_v1 via a read-then-check-then-
+-- insert transaction (MariaDbOperatorIntentRepository.find_open_intent_for_scope
+-- uses SELECT ... FOR UPDATE). This has only been exercised against
+-- sequential SQLite test transactions. True concurrent-create behavior
+-- (two overlapping transactions racing to create the first open intent for
+-- the same scope) MUST be verified against real MariaDB locking semantics
+-- before this migration is applied to any database.
 
 -- ---------------------------------------------------------------------------
 -- 1. operator_intent
@@ -35,9 +43,13 @@ CREATE TABLE IF NOT EXISTS operator_intent (
     reason                   VARCHAR(512)              DEFAULT NULL,
     source                   VARCHAR(64)      NOT NULL DEFAULT 'OPERATOR_MANUAL',
 
-    created_by_app_user_id   BIGINT UNSIGNED  NOT NULL,
+    created_by_app_user_id    BIGINT UNSIGNED NOT NULL,
+    created_by_app_profile_id BIGINT UNSIGNED NOT NULL
+        COMMENT 'Authorized profile context (not just user) that created this row. See app_user_profile_access.',
     created_ts_utc            DATETIME(6)     NOT NULL,
-    updated_by_app_user_id   BIGINT UNSIGNED  NOT NULL,
+    updated_by_app_user_id    BIGINT UNSIGNED NOT NULL,
+    updated_by_app_profile_id BIGINT UNSIGNED NOT NULL
+        COMMENT 'Authorized profile context (not just user) that performed the most recent mutation.',
     updated_ts_utc            DATETIME(6)     NOT NULL,
     expires_ts_utc            DATETIME(6)              DEFAULT NULL,
 
@@ -69,8 +81,14 @@ CREATE TABLE IF NOT EXISTS operator_intent (
     CONSTRAINT fk_operator_intent_created_by
         FOREIGN KEY (created_by_app_user_id) REFERENCES app_user (app_user_id),
 
+    CONSTRAINT fk_operator_intent_created_by_profile
+        FOREIGN KEY (created_by_app_profile_id) REFERENCES app_profile (app_profile_id),
+
     CONSTRAINT fk_operator_intent_updated_by
         FOREIGN KEY (updated_by_app_user_id) REFERENCES app_user (app_user_id),
+
+    CONSTRAINT fk_operator_intent_updated_by_profile
+        FOREIGN KEY (updated_by_app_profile_id) REFERENCES app_profile (app_profile_id),
 
     CONSTRAINT fk_operator_intent_supersedes
         FOREIGN KEY (supersedes_intent_id) REFERENCES operator_intent (operator_intent_id),
@@ -121,6 +139,8 @@ CREATE TABLE IF NOT EXISTS operator_intent_revision (
     source                       VARCHAR(64)      NOT NULL,
 
     actor_app_user_id            BIGINT UNSIGNED  NOT NULL,
+    actor_app_profile_id         BIGINT UNSIGNED  NOT NULL
+        COMMENT 'Authorized profile context (not just user) that performed this event.',
     event_ts_utc                  DATETIME(6)     NOT NULL,
     expires_ts_utc                DATETIME(6)              DEFAULT NULL,
 
@@ -144,6 +164,9 @@ CREATE TABLE IF NOT EXISTS operator_intent_revision (
 
     CONSTRAINT fk_operator_intent_revision_actor
         FOREIGN KEY (actor_app_user_id) REFERENCES app_user (app_user_id),
+
+    CONSTRAINT fk_operator_intent_revision_actor_profile
+        FOREIGN KEY (actor_app_profile_id) REFERENCES app_profile (app_profile_id),
 
     CONSTRAINT chk_operator_intent_revision_event_type CHECK (event_type IN (
         'CREATED', 'UPDATED', 'CANCELLED', 'SUPERSEDED', 'EXPIRED'

@@ -315,6 +315,58 @@ def test_profile_slug_is_not_authoritative_persistence_key() -> None:
     assert [r.operator_intent_id for r in reads] == [intent.operator_intent_id]
 
 
+def test_same_user_different_authorized_profiles_preserve_distinct_profile_audit_context() -> None:
+    """A single app_user_id may hold access to more than one app_profile
+    (the existing account model already supports this via
+    app_user_profile_access). The effective authorized profile context —
+    not just the user — must be preserved in both current-state and
+    revision-history audit fields."""
+    db = _next_db()
+    conn = _seed_schema(db)
+    app_user_id = _seed_user(conn, "hugo@example.com")
+    profile_a_id = _seed_profile(conn, "hugo-personal")
+    profile_b_id = _seed_profile(conn, "hugo-work")
+    _seed_access(conn, app_user_id=app_user_id, app_profile_id=profile_a_id)
+    _seed_access(conn, app_user_id=app_user_id, app_profile_id=profile_b_id)
+    account_a = _seed_account(conn, account_code="hugo-personal-bitvavo")
+    account_b = _seed_account(conn, account_code="hugo-work-bitvavo")
+    _seed_link(conn, app_profile_id=profile_a_id, trading_account_id=account_a)
+    _seed_link(conn, app_profile_id=profile_b_id, trading_account_id=account_b)
+    identity_a = AuthenticatedProfileIdentity(app_user_id=app_user_id, app_profile_id=profile_a_id, profile_code="hugo-personal")
+    identity_b = AuthenticatedProfileIdentity(app_user_id=app_user_id, app_profile_id=profile_b_id, profile_code="hugo-work")
+    svc = _service()
+
+    intent_a = svc.create_intent(
+        identity=identity_a, trading_account_id=account_a, venue="bitvavo", canonical_market="WLD-EUR",
+        intent_type=IntentType.BUY_PRIORITY.value, conn_factory=lambda: _shared_conn(db), now_utc=_NOW,
+    )
+    intent_b = svc.create_intent(
+        identity=identity_b, trading_account_id=account_b, venue="bitvavo", canonical_market="WLD-EUR",
+        intent_type=IntentType.BUY_PRIORITY.value, conn_factory=lambda: _shared_conn(db), now_utc=_NOW,
+    )
+
+    assert intent_a.created_by_app_user_id == app_user_id
+    assert intent_b.created_by_app_user_id == app_user_id
+    assert intent_a.created_by_app_profile_id == profile_a_id
+    assert intent_b.created_by_app_profile_id == profile_b_id
+    assert intent_a.created_by_app_profile_id != intent_b.created_by_app_profile_id
+
+    updated_a = svc.update_intent(
+        identity=identity_a, operator_intent_id=intent_a.operator_intent_id, expected_version=1,
+        priority=7, conn_factory=lambda: _shared_conn(db), now_utc=_NOW,
+    )
+    assert updated_a.updated_by_app_profile_id == profile_a_id
+
+    history_a = svc.read_revision_history(
+        identity=identity_a, operator_intent_id=intent_a.operator_intent_id, conn_factory=lambda: _shared_conn(db),
+    )
+    assert [r.actor_app_profile_id for r in history_a] == [profile_a_id, profile_a_id]
+    history_b = svc.read_revision_history(
+        identity=identity_b, operator_intent_id=intent_b.operator_intent_id, conn_factory=lambda: _shared_conn(db),
+    )
+    assert [r.actor_app_profile_id for r in history_b] == [profile_b_id]
+
+
 # ---------------------------------------------------------------------------
 # Canonical identity validation
 # ---------------------------------------------------------------------------
@@ -522,6 +574,106 @@ def test_cancel_intent_is_explicit_and_terminal() -> None:
 
 
 # ---------------------------------------------------------------------------
+# "Current intents" read model must exclude terminal rows (dedicated,
+# isolated cases per intent-status; the cancel/expire/supersede tests above
+# also cover this inline as part of their own lifecycle assertions).
+# ---------------------------------------------------------------------------
+
+
+def test_cancelled_intent_disappears_from_read_current_intents() -> None:
+    db = _next_db()
+    fx = _make_fixture(db, email="hugo@example.com", profile_code="hugo", account_code="hugo-bitvavo")
+    svc = _service()
+    created = svc.create_intent(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        canonical_market="WLD-EUR", intent_type=IntentType.BUY_PRIORITY.value,
+        conn_factory=fx.conn_factory, now_utc=_NOW,
+    )
+    svc.cancel_intent(
+        identity=fx.identity, operator_intent_id=created.operator_intent_id, expected_version=1,
+        conn_factory=fx.conn_factory, now_utc=_NOW,
+    )
+    assert svc.read_current_intents(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        conn_factory=fx.conn_factory,
+    ) == ()
+    assert svc.read_intent_by_id(
+        identity=fx.identity, operator_intent_id=created.operator_intent_id, conn_factory=fx.conn_factory,
+    ).status == IntentStatus.CANCELLED.value
+
+
+def test_expired_intent_disappears_from_read_current_intents() -> None:
+    db = _next_db()
+    fx = _make_fixture(db, email="hugo@example.com", profile_code="hugo", account_code="hugo-bitvavo")
+    svc = _service()
+    created = svc.create_intent(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        canonical_market="WLD-EUR", intent_type=IntentType.BUY_PRIORITY.value,
+        expires_ts_utc=_NOW + timedelta(hours=1), conn_factory=fx.conn_factory, now_utc=_NOW,
+    )
+    svc.expire_due_intents(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        conn_factory=fx.conn_factory, now_utc=_NOW + timedelta(hours=2),
+    )
+    assert svc.read_current_intents(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        conn_factory=fx.conn_factory,
+    ) == ()
+    assert svc.read_intent_by_id(
+        identity=fx.identity, operator_intent_id=created.operator_intent_id, conn_factory=fx.conn_factory,
+    ).status == IntentStatus.EXPIRED.value
+
+
+def test_superseded_old_intent_disappears_from_read_current_intents_replacement_visible() -> None:
+    db = _next_db()
+    fx = _make_fixture(db, email="hugo@example.com", profile_code="hugo", account_code="hugo-bitvavo")
+    svc = _service()
+    original = svc.create_intent(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        canonical_market="WLD-EUR", intent_type=IntentType.REENTRY_WATCH.value,
+        conn_factory=fx.conn_factory, now_utc=_NOW,
+    )
+    replacement = svc.supersede_intent(
+        identity=fx.identity, operator_intent_id=original.operator_intent_id, expected_version=1,
+        new_intent_type=IntentType.BUY_LADDER_REQUESTED.value, conn_factory=fx.conn_factory, now_utc=_NOW,
+    )
+    all_current = svc.read_current_intents(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        conn_factory=fx.conn_factory,
+    )
+    assert [r.operator_intent_id for r in all_current] == [replacement.operator_intent_id]
+    assert svc.read_intent_by_id(
+        identity=fx.identity, operator_intent_id=original.operator_intent_id, conn_factory=fx.conn_factory,
+    ).status == IntentStatus.SUPERSEDED.value
+
+
+def test_revision_history_contains_full_terminal_lifecycle() -> None:
+    """History must retain terminal events even though read_current_intents
+    no longer surfaces the terminal row itself."""
+    db = _next_db()
+    fx = _make_fixture(db, email="hugo@example.com", profile_code="hugo", account_code="hugo-bitvavo")
+    svc = _service()
+    created = svc.create_intent(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        canonical_market="WLD-EUR", intent_type=IntentType.BUY_PRIORITY.value,
+        conn_factory=fx.conn_factory, now_utc=_NOW,
+    )
+    svc.update_intent(
+        identity=fx.identity, operator_intent_id=created.operator_intent_id, expected_version=1,
+        priority=2, conn_factory=fx.conn_factory, now_utc=_NOW,
+    )
+    svc.cancel_intent(
+        identity=fx.identity, operator_intent_id=created.operator_intent_id, expected_version=2,
+        conn_factory=fx.conn_factory, now_utc=_NOW,
+    )
+    history = svc.read_revision_history(
+        identity=fx.identity, operator_intent_id=created.operator_intent_id, conn_factory=fx.conn_factory,
+    )
+    assert [r.event_type for r in history] == ["CREATED", "UPDATED", "CANCELLED"]
+    assert history[-1].status == IntentStatus.CANCELLED.value
+
+
+# ---------------------------------------------------------------------------
 # Expiration
 # ---------------------------------------------------------------------------
 
@@ -550,11 +702,18 @@ def test_expired_current_intent_transitions_via_explicit_command() -> None:
     )
     assert result_due.expired_intent_ids == (created.operator_intent_id,)
 
+    # The expired intent is terminal — it must not leak through the "current
+    # intents" read model, only through the explicit by-id / history reads.
     current = svc.read_current_intents(
         identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
         conn_factory=fx.conn_factory,
-    )[0]
-    assert current.status == IntentStatus.EXPIRED.value
+    )
+    assert current == ()
+
+    by_id = svc.read_intent_by_id(
+        identity=fx.identity, operator_intent_id=created.operator_intent_id, conn_factory=fx.conn_factory,
+    )
+    assert by_id.status == IntentStatus.EXPIRED.value
 
     # A scope with an expired intent is open again for a fresh one.
     recreated = svc.create_intent(
@@ -563,6 +722,12 @@ def test_expired_current_intent_transitions_via_explicit_command() -> None:
         conn_factory=fx.conn_factory, now_utc=later,
     )
     assert recreated.operator_intent_id != created.operator_intent_id
+
+    reads_after_recreate = svc.read_current_intents(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        conn_factory=fx.conn_factory,
+    )
+    assert [r.operator_intent_id for r in reads_after_recreate] == [recreated.operator_intent_id]
 
 
 def test_set_and_clear_expiration() -> None:
@@ -624,14 +789,27 @@ def test_supersede_intent_creates_lineage_and_append_only_history() -> None:
     )
     assert [r.event_type for r in new_history] == ["CREATED"]
 
-    old_current = [
-        r for r in svc.read_current_intents(
-            identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
-            canonical_market="WLD-EUR", intent_type=IntentType.REENTRY_WATCH.value, conn_factory=fx.conn_factory,
-        )
-    ][0]
+    # The superseded old intent is terminal — it must not leak through the
+    # "current intents" read model for its old (account, venue, market,
+    # intent_type) scope.
+    old_scope_current = svc.read_current_intents(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        canonical_market="WLD-EUR", intent_type=IntentType.REENTRY_WATCH.value, conn_factory=fx.conn_factory,
+    )
+    assert old_scope_current == ()
+
+    old_current = svc.read_intent_by_id(
+        identity=fx.identity, operator_intent_id=original.operator_intent_id, conn_factory=fx.conn_factory,
+    )
     assert old_current.status == IntentStatus.SUPERSEDED.value
     assert old_current.superseded_by_intent_id == replacement.operator_intent_id
+
+    # The replacement intent, in its own (new intent_type) scope, remains visible.
+    new_scope_current = svc.read_current_intents(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        canonical_market="WLD-EUR", intent_type=IntentType.BUY_LADDER_REQUESTED.value, conn_factory=fx.conn_factory,
+    )
+    assert [r.operator_intent_id for r in new_scope_current] == [replacement.operator_intent_id]
 
 
 def test_revision_history_is_append_only_and_unauthorized_read_fails_closed() -> None:

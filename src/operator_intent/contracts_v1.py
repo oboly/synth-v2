@@ -154,8 +154,10 @@ class OperatorIntentRecord:
     reason: str | None
     source: str
     created_by_app_user_id: int
+    created_by_app_profile_id: int
     created_ts_utc: datetime
     updated_by_app_user_id: int
+    updated_by_app_profile_id: int
     updated_ts_utc: datetime
     expires_ts_utc: datetime | None
     version: int
@@ -178,5 +180,6 @@ class OperatorIntentRevisionRecord:
     reason: str | None
     source: str
     actor_app_user_id: int
+    actor_app_profile_id: int
     event_ts_utc: datetime
     expires_ts_utc: datetime | None

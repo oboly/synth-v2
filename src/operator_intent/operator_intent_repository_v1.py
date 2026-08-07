@@ -82,11 +82,13 @@ CREATE TABLE IF NOT EXISTS operator_intent (
     status                   TEXT NOT NULL,
     reason                   TEXT NULL,
     source                   TEXT NOT NULL DEFAULT 'OPERATOR_MANUAL',
-    created_by_app_user_id   INTEGER NOT NULL,
-    created_ts_utc           TEXT NOT NULL,
-    updated_by_app_user_id   INTEGER NOT NULL,
-    updated_ts_utc           TEXT NOT NULL,
-    expires_ts_utc           TEXT NULL,
+    created_by_app_user_id    INTEGER NOT NULL,
+    created_by_app_profile_id INTEGER NOT NULL,
+    created_ts_utc            TEXT NOT NULL,
+    updated_by_app_user_id    INTEGER NOT NULL,
+    updated_by_app_profile_id INTEGER NOT NULL,
+    updated_ts_utc            TEXT NOT NULL,
+    expires_ts_utc            TEXT NULL,
     version                  INTEGER NOT NULL DEFAULT 1,
     supersedes_intent_id     INTEGER NULL,
     superseded_by_intent_id  INTEGER NULL
@@ -105,6 +107,7 @@ CREATE TABLE IF NOT EXISTS operator_intent_revision (
     reason                       TEXT NULL,
     source                       TEXT NOT NULL,
     actor_app_user_id            INTEGER NOT NULL,
+    actor_app_profile_id         INTEGER NOT NULL,
     event_ts_utc                  TEXT NOT NULL,
     expires_ts_utc                TEXT NULL,
     UNIQUE (operator_intent_id, revision_version)
@@ -177,10 +180,10 @@ class SqliteOperatorIntentRepository:
             """
             INSERT INTO operator_intent (
                 trading_account_id, venue, canonical_market, intent_type, priority, status,
-                reason, source, created_by_app_user_id, created_ts_utc,
-                updated_by_app_user_id, updated_ts_utc, expires_ts_utc, version,
+                reason, source, created_by_app_user_id, created_by_app_profile_id, created_ts_utc,
+                updated_by_app_user_id, updated_by_app_profile_id, updated_ts_utc, expires_ts_utc, version,
                 supersedes_intent_id, superseded_by_intent_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 fields["trading_account_id"],
@@ -192,8 +195,10 @@ class SqliteOperatorIntentRepository:
                 fields.get("reason"),
                 fields["source"],
                 fields["created_by_app_user_id"],
+                fields["created_by_app_profile_id"],
                 _utc_text(fields["created_ts_utc"]),
                 fields["updated_by_app_user_id"],
+                fields["updated_by_app_profile_id"],
                 _utc_text(fields["updated_ts_utc"]),
                 _normalize_ts_field(fields.get("expires_ts_utc")),
                 fields.get("version", 1),
@@ -233,7 +238,7 @@ class SqliteOperatorIntentRepository:
             (superseded_by_intent_id, operator_intent_id),
         )
 
-    def list_intents_for_account(
+    def list_open_intents_for_account(
         self,
         *,
         trading_account_id: int,
@@ -241,7 +246,11 @@ class SqliteOperatorIntentRepository:
         canonical_market: str | None = None,
         intent_type: str | None = None,
     ) -> Sequence[Mapping[str, Any]]:
-        clauses = ["trading_account_id = ?"]
+        """The 'current intents' read model: OPEN_STATUSES only. Terminal
+        rows (CANCELLED / EXPIRED / SUPERSEDED) never leak through here —
+        use get_intent(operator_intent_id=...) or
+        list_revisions_for_intent(...) for terminal/historical lookups."""
+        clauses = ["trading_account_id = ?", f"status IN ({_OPEN_STATUSES_SQL})"]
         params: list[Any] = [trading_account_id]
         if venue is not None:
             clauses.append("venue = ?")
@@ -279,8 +288,8 @@ class SqliteOperatorIntentRepository:
             INSERT INTO operator_intent_revision (
                 operator_intent_id, revision_version, event_type, trading_account_id, venue,
                 canonical_market, intent_type, priority, status, reason, source,
-                actor_app_user_id, event_ts_utc, expires_ts_utc
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                actor_app_user_id, actor_app_profile_id, event_ts_utc, expires_ts_utc
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 fields["operator_intent_id"],
@@ -295,6 +304,7 @@ class SqliteOperatorIntentRepository:
                 fields.get("reason"),
                 fields["source"],
                 fields["actor_app_user_id"],
+                fields["actor_app_profile_id"],
                 _utc_text(fields["event_ts_utc"]),
                 _normalize_ts_field(fields.get("expires_ts_utc")),
             ),
@@ -381,10 +391,10 @@ class MariaDbOperatorIntentRepository:
                 """
                 INSERT INTO operator_intent (
                     trading_account_id, venue, canonical_market, intent_type, priority, status,
-                    reason, source, created_by_app_user_id, created_ts_utc,
-                    updated_by_app_user_id, updated_ts_utc, expires_ts_utc, version,
+                    reason, source, created_by_app_user_id, created_by_app_profile_id, created_ts_utc,
+                    updated_by_app_user_id, updated_by_app_profile_id, updated_ts_utc, expires_ts_utc, version,
                     supersedes_intent_id, superseded_by_intent_id
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     fields["trading_account_id"],
@@ -396,8 +406,10 @@ class MariaDbOperatorIntentRepository:
                     fields.get("reason"),
                     fields["source"],
                     fields["created_by_app_user_id"],
+                    fields["created_by_app_profile_id"],
                     _utc_text(fields["created_ts_utc"]),
                     fields["updated_by_app_user_id"],
+                    fields["updated_by_app_profile_id"],
                     _utc_text(fields["updated_ts_utc"]),
                     _normalize_ts_field(fields.get("expires_ts_utc")),
                     fields.get("version", 1),
@@ -440,7 +452,7 @@ class MariaDbOperatorIntentRepository:
                 (superseded_by_intent_id, operator_intent_id),
             )
 
-    def list_intents_for_account(
+    def list_open_intents_for_account(
         self,
         *,
         trading_account_id: int,
@@ -448,7 +460,11 @@ class MariaDbOperatorIntentRepository:
         canonical_market: str | None = None,
         intent_type: str | None = None,
     ) -> Sequence[Mapping[str, Any]]:
-        clauses = ["trading_account_id = %s"]
+        """The 'current intents' read model: OPEN_STATUSES only. Terminal
+        rows (CANCELLED / EXPIRED / SUPERSEDED) never leak through here —
+        use get_intent(operator_intent_id=...) or
+        list_revisions_for_intent(...) for terminal/historical lookups."""
+        clauses = ["trading_account_id = %s", f"status IN ({_OPEN_STATUSES_SQL})"]
         params: list[Any] = [trading_account_id]
         if venue is not None:
             clauses.append("venue = %s")
@@ -488,8 +504,8 @@ class MariaDbOperatorIntentRepository:
                 INSERT INTO operator_intent_revision (
                     operator_intent_id, revision_version, event_type, trading_account_id, venue,
                     canonical_market, intent_type, priority, status, reason, source,
-                    actor_app_user_id, event_ts_utc, expires_ts_utc
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    actor_app_user_id, actor_app_profile_id, event_ts_utc, expires_ts_utc
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     fields["operator_intent_id"],
@@ -504,6 +520,7 @@ class MariaDbOperatorIntentRepository:
                     fields.get("reason"),
                     fields["source"],
                     fields["actor_app_user_id"],
+                    fields["actor_app_profile_id"],
                     _utc_text(fields["event_ts_utc"]),
                     _normalize_ts_field(fields.get("expires_ts_utc")),
                 ),

@@ -47,7 +47,12 @@ app_profile --(app_profile_trading_account_link, ACTIVE)--> trading_account
   `app_profile_id`, `profile_code`) — the same server-derived-from-session
   type already used by
   `src.account_provisioning.account_provisioning_service_v1`. Re-exported
-  from `src.operator_intent.contracts_v1` rather than redefined.
+  from `src.operator_intent.contracts_v1` rather than redefined. Authorization
+  identity is **user + profile context**, not just the user: the same
+  `app_user_id` may hold access to more than one `app_profile_id` (the
+  existing `app_user_profile_access` model already supports this). Every
+  audit field therefore persists both IDs — see "Profile-aware audit fields"
+  below.
 - **Trading account identity**: `trading_account_id` (BIGINT FK), never a
   profile slug. `profile_code` is never used as a persistence or scope key —
   see `test_profile_slug_is_not_authoritative_persistence_key`.
@@ -80,9 +85,10 @@ the existing `execution_ladder_leg` convention of resolver-enforced
 
 Key columns: `operator_intent_id` (PK), `trading_account_id`, `venue`,
 `canonical_market`, `intent_type`, `priority`, `status`, `reason`, `source`,
-`created_by_app_user_id` / `created_ts_utc`, `updated_by_app_user_id` /
-`updated_ts_utc`, `expires_ts_utc`, `version` (optimistic concurrency),
-`supersedes_intent_id` / `superseded_by_intent_id` (supersession lineage).
+`created_by_app_user_id` / `created_by_app_profile_id` / `created_ts_utc`,
+`updated_by_app_user_id` / `updated_by_app_profile_id` / `updated_ts_utc`,
+`expires_ts_utc`, `version` (optimistic concurrency), `supersedes_intent_id`
+/ `superseded_by_intent_id` (supersession lineage).
 
 All timestamps are UTC (`DATETIME(6)`), stored and compared as naive UTC
 text/values — callers must pass timezone-aware datetimes; the service
@@ -93,8 +99,49 @@ rejects naive datetimes.
 Append-only. One row per `CREATED` / `UPDATED` / `CANCELLED` / `SUPERSEDED` /
 `EXPIRED` event, capturing the full post-mutation snapshot plus
 `revision_version` (mirrors `operator_intent.version` at that point),
-`actor_app_user_id`, and `event_ts_utc`. Never updated or deleted. Unique on
-`(operator_intent_id, revision_version)`.
+`actor_app_user_id` / `actor_app_profile_id`, and `event_ts_utc`. Never
+updated or deleted. Unique on `(operator_intent_id, revision_version)`.
+
+### Profile-aware audit fields
+
+`created_by_app_user_id` / `updated_by_app_user_id` / `actor_app_user_id`
+alone do not capture *which authorized profile context* performed a
+mutation, and a single `app_user_id` can be linked to more than one
+`app_profile_id`. Every current-state and revision-history write therefore
+persists **both** IDs from the authorizing `AuthenticatedProfileIdentity`:
+
+- `operator_intent.created_by_app_profile_id` / `updated_by_app_profile_id`
+- `operator_intent_revision.actor_app_profile_id`
+
+Both carry `FOREIGN KEY ... REFERENCES app_profile (app_profile_id)`,
+alongside the existing `app_user_id` FKs — matching the repository's
+existing pattern of referencing `app_profile` directly wherever a
+profile-scoped actor is recorded (e.g.
+`app_profile_trading_account_link`). `app_user_id` is never replaced or
+dropped; both identifiers are always written together. See
+`test_same_user_different_authorized_profiles_preserve_distinct_profile_audit_context`.
+
+### Current-state vs terminal/historical reads
+
+`read_current_intents` is a **current-state-only** read model: it returns
+`OPEN_STATUSES` rows only (`ACTIVE`, `WAITING_FOR_MARKET_CONTEXT`,
+`WAITING_FOR_PERMISSION`, `READY_FOR_PLANNING`, `PLANNED_PREVIEW_AVAILABLE`,
+`BLOCKED`). Terminal rows (`CANCELLED`, `EXPIRED`, `SUPERSEDED`) never leak
+through it — a superseded/cancelled/expired intent disappears from this read
+the moment it becomes terminal, even though the row itself is retained.
+
+Terminal/historical single-intent lookups go through two explicit,
+purpose-named paths instead of overloading the current-state read:
+
+- `read_intent_by_id` — authorized single-intent lookup by ID, regardless of
+  status (open or terminal).
+- `read_revision_history` — full append-only lifecycle history for one
+  intent, including every terminal event.
+
+See `test_cancelled_intent_disappears_from_read_current_intents`,
+`test_expired_intent_disappears_from_read_current_intents`,
+`test_superseded_old_intent_disappears_from_read_current_intents_replacement_visible`,
+and `test_revision_history_contains_full_terminal_lifecycle`.
 
 ## Intent types and lifecycle status
 
@@ -149,6 +196,29 @@ raises `OptimisticConcurrencyConflict` and rolls back rather than silently
 overwriting a concurrent change. See
 `test_optimistic_concurrency_conflict_prevents_lost_update`.
 
+### Concurrent-create verification is still required before deployment
+
+The one-open-intent-per-scope invariant on `create_intent` is enforced by a
+read-then-check-then-insert transaction:
+`MariaDbOperatorIntentRepository.find_open_intent_for_scope` issues
+`SELECT ... FOR UPDATE` before the service decides whether to insert. This
+design has intentionally not been redesigned in the Phase 1 amendment
+(#262) — no correctness defect was found in it during audit, and the issue
+scope is explicitly persistence/command-boundary only, not concurrency
+redesign.
+
+However, the test suite backing this PR runs entirely against **sequential
+SQLite transactions** (`SqliteOperatorIntentRepository`, no real row
+locking). Sequential tests prove the read-then-check-then-insert *logic* is
+correct; they do **not** prove MariaDB's actual `SELECT ... FOR UPDATE`
+locking/isolation behavior prevents two truly concurrent transactions from
+both passing the "no open intent" check and both inserting for the same
+scope. **True concurrent-create behavior against MariaDB must be verified
+(e.g. two overlapping transactions racing to create the first open intent
+for the same scope) before this migration is applied to any database or any
+later phase relies on the one-open-intent-per-scope guarantee under
+concurrent load.**
+
 ## Command / read API
 
 `src.operator_intent.operator_intent_service_v1.OperatorIntentService` is
@@ -177,11 +247,14 @@ Commands:
 
 Reads:
 
-- `read_current_intents` — authorized current-state read, optionally
-  filtered by `canonical_market` / `intent_type`, always scoped to one
-  authorized `trading_account_id`.
+- `read_current_intents` — authorized current-state read (`OPEN_STATUSES`
+  only, see above), optionally filtered by `canonical_market` /
+  `intent_type`, always scoped to one authorized `trading_account_id`.
+- `read_intent_by_id` — authorized single-intent lookup by ID, any status
+  (open or terminal).
 - `read_revision_history` — authorized append-only history read for one
-  `operator_intent_id`.
+  `operator_intent_id`, covering the full lifecycle including terminal
+  events.
 
 Every command commits on success and rolls back on any failure or
 exception; callers never commit/rollback the connection they pass in
@@ -211,11 +284,15 @@ first place. See `test_wallet_balance_reaching_zero_never_implicitly_removes_int
 `tests/test_operator_intent_phase1_v1.py` covers: multi-user isolation,
 multi-account isolation, multi-venue scope, unauthorized access (both
 missing profile access and missing account link), profile-slug-is-not-a-key,
-canonical identity validation (venue, market, intent type, unresolved
-account), duplicate active intent, contradictory intent types, optimistic
-concurrency conflict, cancellation (including double-cancel rejection and
-scope reopening), expiration (including scope reopening), set/clear
-expiration, supersession lineage and append-only history, unauthorized
-history read, wallet-zero independence, and the forbidden-import guards
-(no `decision_gate`/`execution_planner`/`executor`/`broker` import from this
-package; no `operator_intent` import from `selection_engine`).
+same-user-different-authorized-profiles preserving distinct profile audit
+context, canonical identity validation (venue, market, intent type,
+unresolved account), duplicate active intent, contradictory intent types,
+optimistic concurrency conflict, cancellation (including double-cancel
+rejection and scope reopening), expiration (including scope reopening),
+set/clear expiration, supersession lineage and append-only history,
+dedicated cancelled/expired/superseded-disappear-from-current-intents cases,
+full terminal lifecycle retained in revision history, unauthorized history
+read, wallet-zero independence, and the forbidden-import guards (no
+`decision_gate`/`execution_planner`/`executor`/`broker` import from this
+package; no `operator_intent` import from `selection_engine`, enforced both
+here and in `tests/test_manual_execution_p0_architecture_boundaries_v1.py::TestSelectionEngineNeverImportsOperatorIntent`).
