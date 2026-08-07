@@ -230,7 +230,9 @@ def test_planning_ppp_unavailable_reason_is_precise_when_zone_context_missing() 
     assert "re-entry" in reason or "buy zone" in reason or "target" in reason
 
 
-def test_build_json_snapshot_reports_portfolio_held_count_separately_from_card_count() -> None:
+def test_build_json_snapshot_reports_wallet_held_count_separately_from_card_count() -> None:
+    import dataclasses
+
     held_card = build_profit_plan_card(
         symbol="BTC",
         market="BTC-EUR",
@@ -240,6 +242,7 @@ def test_build_json_snapshot_reports_portfolio_held_count_separately_from_card_c
         short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
         presentation_mode=CARD_MODE_POSITION_HELD,
     )
+    held_card = dataclasses.replace(held_card, is_wallet_held=True)
     watch_card = build_profit_plan_card(
         symbol="ONDO",
         market="ONDO-EUR",
@@ -251,8 +254,11 @@ def test_build_json_snapshot_reports_portfolio_held_count_separately_from_card_c
     )
     snapshot = build_json_snapshot([held_card, watch_card], broker_mode="db_snapshot")
     assert snapshot["card_count"] == 2
-    assert snapshot["portfolio_held_count"] == 1
+    assert snapshot["wallet_held_count"] == 1
+    assert snapshot["portfolio_held_count"] == 1  # deprecated alias, still mirrors wallet_held_count
     by_symbol = {row["symbol"]: row for row in snapshot["symbols"]}
-    assert by_symbol["BTC"]["is_portfolio_held"] is True
-    assert by_symbol["ONDO"]["is_portfolio_held"] is False
+    assert by_symbol["BTC"]["is_wallet_held"] is True
+    assert by_symbol["ONDO"]["is_wallet_held"] is False
+    assert by_symbol["BTC"]["is_portfolio_held"] is True  # deprecated alias
+    assert by_symbol["ONDO"]["is_portfolio_held"] is False  # deprecated alias
     assert "planning_ppp_unavailable_reason" in by_symbol["BTC"]

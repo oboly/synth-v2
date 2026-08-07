@@ -1812,12 +1812,21 @@ def main() -> int:
         context.latest_balance_snapshot_ts_utc,
         now_utc=now_utc,
     )
+    # PORTFOLIO_MARKER = configured strategic portfolio/rotation membership
+    # (asset.is_portfolio), independent of current balance -- see
+    # build_account_market_scope()/market_inclusion_reasons_by_market.
+    portfolio_asset_markets = {
+        market
+        for market, reasons in context.market_inclusion_reasons_by_market.items()
+        if "PORTFOLIO_MARKER" in reasons
+    }
     cards = apply_portfolio_account_evidence(
         cards,
         held_amount_by_symbol=held_amount_by_symbol,
         held_eur_value_by_symbol=held_eur_value_by_symbol,
         cost_basis_by_symbol=cost_basis_by_symbol,
         balance_freshness_status=balance_freshness_status,
+        portfolio_asset_markets=portfolio_asset_markets,
     )
 
     # Load market tick rules from DB and apply price normalization to all cards.
