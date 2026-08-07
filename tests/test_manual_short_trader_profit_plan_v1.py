@@ -3000,6 +3000,83 @@ def test_render_full_html_embeds_total_count_in_meta_tag() -> None:
     assert "synth-total-count" in html
 
 
+# ---------------------------------------------------------------------------
+# Issue #255: market rotation pressure read-only projection wiring.
+# ---------------------------------------------------------------------------
+
+def test_rotation_projection_omitted_is_backward_compatible() -> None:
+    """Omitting rotation_projection entirely must render/serialize exactly as
+    before -- existing full Profit Plan test surface must stay green."""
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())
+    html = render_full_html([card])
+    assert "plan-card" in html
+    assert "<section class='rotation-strip" not in html  # no aggregate strip section when omitted
+    assert "ROTATION DATA UNAVAILABLE" in html  # per-card badge still degrades visibly
+
+    snapshot = build_json_snapshot([card], broker_mode="db_snapshot")
+    assert "rotation" in snapshot
+    assert snapshot["rotation"]["available"] is False
+    assert snapshot["symbols"][0]["rotation"]["available"] is False
+
+
+def test_card_with_no_matching_rotation_entry_still_renders_valid_card() -> None:
+    """A card whose market has no matching rotation projection row must still
+    render as a valid card -- rotation absence must never break rendering."""
+    from src.reporting.market_rotation_profit_plan_projection_v1 import (
+        build_rotation_projection,
+    )
+
+    header_row = {
+        "pressure_snapshot_id": 1,
+        "as_of_ts_utc": datetime(2026, 7, 12, 20, 0),
+        "venue": "bitvavo",
+        "model_version": "1.0",
+        "eligible_asset_count": 1,
+        "excluded_missing_pair_count": 0,
+        "positive_count": 1,
+        "neutral_count": 0,
+        "negative_count": 0,
+        "market_score": 20.0,
+        "positive_breadth_ratio": 1.0,
+        "negative_breadth_ratio": 0.0,
+        "acceleration_state": "ACCELERATING_IN",
+        "concentration_state": "SELECTIVE",
+        "confirmation_state": "CONFIRMED",
+        "market_direction": "ROTATION_IN",
+        "evidence_light_count": 2,
+    }
+    observation_rows = [
+        {
+            "asset_id": 1,
+            "market": "OTHER-EUR",
+            "score_total": 40.0,
+            "pressure_state": "ROTATION_IN",
+            "phase_state": "ACCELERATING_IN",
+            "raw_return_24h_pct": 4.0,
+            "raw_return_7d_pct": 10.0,
+            "raw_relative_volume_24h": 1.5,
+            "raw_relative_volume_7d": 1.2,
+            "score_acceleration": 2.0,
+            "score_persistence": 1.3,
+        }
+    ]
+    projection = build_rotation_projection(
+        header_row, observation_rows, now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC)
+    )
+
+    card = _make_card(current_price="0.440000", fib_ext=_wld_fib_ext())  # market="WLD-EUR"
+    html = render_full_html([card], rotation_projection=projection)
+    assert "plan-card" in html
+    assert "<section class='rotation-strip" in html  # aggregate strip renders when projection provided
+    assert "ROTATION DATA UNAVAILABLE" in html  # this card's market has no rotation row
+
+    snapshot = build_json_snapshot([card], broker_mode="db_snapshot", rotation_projection=projection)
+    assert snapshot["rotation"]["available"] is True
+    card_rotation = snapshot["symbols"][0]["rotation"]
+    assert card_rotation["available"] is False
+    assert card_rotation["reason"] == "NO_ROTATION_ROW"
+
+
 def test_html_and_json_render_id_match_when_same_id_passed() -> None:
     fixed_render_id = "shared-render-id-abcd-1234"
     fixed_writer_id = "shared-writer-id-efgh-5678"

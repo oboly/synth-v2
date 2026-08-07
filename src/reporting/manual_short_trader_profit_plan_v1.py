@@ -12,6 +12,13 @@ from typing import Any, Mapping
 from src.reporting.dashboard_style_v1 import synth_favicon_head_html
 from src.reporting.dashboard_time_v1 import format_ui_now
 from src.reporting.current_price_snapshot_v1 import DEFAULT_CURRENT_PRICE_FRESH_AFTER
+from src.reporting.market_rotation_profit_plan_projection_v1 import (
+    RotationProfitPlanProjection,
+    get_market_projection,
+    market_projection_to_json_dict,
+    to_json_dict as rotation_projection_to_json_dict,
+    unavailable_projection as unavailable_rotation_projection,
+)
 
 
 REPORT_NAME = "manual_short_trader_profit_plan_v1"
@@ -3817,6 +3824,41 @@ _CSS = """
     }
     .card[data-wallet-held='true'] { border-left: 3px solid var(--ok); }
     .card[data-portfolio-asset='true'][data-wallet-held='false'] { border-left: 3px solid var(--blue); }
+    /* Market rotation pressure — read-only projection (Issue #255). Kept
+       visually distinct from wallet-held/portfolio-asset badges and from
+       action/scenario metrics: its own group, its own colors. */
+    .rotation-badge {
+      display: inline-flex; align-items: center; gap: 6px; margin-top: 4px;
+      font-size: 10px; font-weight: 700; letter-spacing: .04em;
+      border-radius: 4px; padding: 2px 6px; width: fit-content;
+    }
+    .rotation-badge-in     { color: var(--ok);   border: 1px solid var(--ok); }
+    .rotation-badge-out    { color: var(--bad);  border: 1px solid var(--bad); }
+    .rotation-badge-mixed  { color: var(--warn); border: 1px solid var(--warn); }
+    .rotation-badge-unavailable { color: var(--muted); border: 1px dashed var(--line); }
+    .rotation-badge-score { font-variant-numeric: tabular-nums; }
+    .rotation-strip {
+      display: grid; grid-template-columns: minmax(200px,1fr) auto minmax(200px,1.2fr) auto auto;
+      gap: 14px; align-items: center; margin: 10px 0; padding: 10px 14px;
+      border: 1px solid var(--line); border-radius: 10px; background: rgba(0,0,0,.16);
+    }
+    .rotation-eyebrow { font-size: 10px; letter-spacing: .1em; color: var(--muted); }
+    .rotation-headline { margin-top: 2px; font-size: 15px; font-weight: 700; }
+    .rotation-score { margin-left: 6px; font-variant-numeric: tabular-nums; }
+    .rotation-lights { display: flex; gap: 5px; }
+    .rotation-light { width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--line); background: rgba(0,0,0,.2); }
+    .rotation-light.active.light-in    { background: var(--ok); }
+    .rotation-light.active.light-out   { background: var(--bad); }
+    .rotation-light.active.light-mixed { background: var(--warn); }
+    .rotation-metrics { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--muted); }
+    .rotation-freshness-badge { font-size: 10px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); }
+    .rotation-freshness-fresh { color: var(--ok); }
+    .rotation-freshness-stale, .rotation-freshness-future_timestamp { color: var(--bad); }
+    .rotation-source-ts { white-space: nowrap; }
+    .rotation-degraded-note { grid-column: 1 / -1; font-size: 10px; color: var(--bad); }
+    .rotation-unavailable { grid-template-columns: auto 1fr auto; }
+    .rotation-unavailable-label { font-weight: 700; color: var(--muted); }
+    .rotation-unavailable-reason { font-size: 10px; color: var(--muted); text-align: right; }
     .state-label { margin-top: 6px; font-size: 14px; font-weight: 700; }
     .state-secondary { margin-top: 3px; font-size: 11px; color: var(--muted); }
     .field-grid {
@@ -4529,6 +4571,130 @@ def _metric_block(label: str, value: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Market rotation pressure — read-only projection rendering (Issue #255).
+# This section never recomputes rotation score/direction/evidence-lights/
+# breadth/rank/confirmation; it only displays verbatim persisted values
+# already carried on RotationProfitPlanProjection / RotationMarketProjection.
+# ---------------------------------------------------------------------------
+
+_ROTATION_DIRECTION_LABELS: dict[str, str] = {
+    "ROTATION_IN": "ROTATION IN",
+    "ROTATION_OUT": "ROTATION OUT",
+    "MIXED": "MIXED",
+}
+
+
+def _rotation_direction_label(direction: str | None) -> str:
+    if direction is None:
+        return "ROTATION DATA UNAVAILABLE"
+    return _ROTATION_DIRECTION_LABELS.get(direction, direction.replace("_", " "))
+
+
+def _rotation_lights_html(evidence_light_count: int | None, direction: str | None) -> str:
+    # Mirrors market_rotation_pressure_dashboard_v1._lights_html rendering
+    # convention (5 dots, active count = persisted evidence_light_count).
+    # Never recomputes the count; renders it verbatim.
+    direction_class = {
+        "ROTATION_IN": "light-in",
+        "ROTATION_OUT": "light-out",
+        "MIXED": "light-mixed",
+    }.get(direction or "", "light-mixed")
+    count = evidence_light_count if evidence_light_count is not None else 0
+    lights = []
+    for index in range(5):
+        active = index < count
+        classes = f"rotation-light {'active ' + direction_class if active else ''}".strip()
+        lights.append(f"<span class='{classes}' aria-label='rotation evidence light {index + 1}'></span>")
+    return "".join(lights)
+
+
+def _rotation_strip_html(projection: RotationProfitPlanProjection | None) -> str:
+    if projection is None or not projection.available:
+        reason = (projection.reason if projection is not None else None) or "NO_ROTATION_PROJECTION"
+        state = "STALE" if projection is not None and projection.freshness == "STALE" else "UNAVAILABLE"
+        label = "ROTATION DATA STALE" if state == "STALE" else "ROTATION DATA UNAVAILABLE"
+        return (
+            "<section class='rotation-strip rotation-unavailable'>"
+            "<div class='rotation-eyebrow'>MARKET ROTATION PRESSURE</div>"
+            f"<div class='rotation-unavailable-label'>{esc(label)}</div>"
+            f"<div class='rotation-unavailable-reason'>{esc(reason)}</div>"
+            "</section>"
+        )
+    freshness_class = f"rotation-freshness-{projection.freshness.lower()}"
+    direction_class = f"rotation-direction-{(projection.aggregate_direction or 'unknown').lower()}"
+    score_text = (
+        f"{projection.aggregate_score:+.1f}" if projection.aggregate_score is not None else "—"
+    )
+    source_ts_text = (
+        projection.source_ts_utc.isoformat(timespec="seconds") + "Z"
+        if projection.source_ts_utc is not None
+        else "—"
+    )
+    metrics = []
+    if projection.positive_breadth_ratio is not None:
+        metrics.append(f"<span>IN {projection.positive_breadth_ratio:.0%}</span>")
+    if projection.negative_breadth_ratio is not None:
+        metrics.append(f"<span>OUT {projection.negative_breadth_ratio:.0%}</span>")
+    if projection.acceleration_state:
+        metrics.append(f"<span>{esc(projection.acceleration_state.replace('_', ' '))}</span>")
+    if projection.confirmation_state:
+        metrics.append(f"<span>{esc(projection.confirmation_state)}</span>")
+    if projection.concentration_state:
+        metrics.append(f"<span>{esc(projection.concentration_state)}</span>")
+    degraded_note = (
+        f"<div class='rotation-degraded-note'>{esc(projection.freshness)}: {esc(projection.reason or '')}</div>"
+        if projection.freshness != "FRESH"
+        else ""
+    )
+    return (
+        f"<section class='rotation-strip {direction_class}'>"
+        "<div class='rotation-head'>"
+        "<div class='rotation-eyebrow'>MARKET ROTATION PRESSURE — market-only, account-agnostic, not verified fund flow</div>"
+        f"<div class='rotation-headline'>{esc(_rotation_direction_label(projection.aggregate_direction))}"
+        f" <span class='rotation-score'>{esc(score_text)}</span></div>"
+        "</div>"
+        f"<div class='rotation-lights' aria-label='evidence lights'>{_rotation_lights_html(projection.evidence_light_count, projection.aggregate_direction)}</div>"
+        f"<div class='rotation-metrics'>{''.join(metrics)}</div>"
+        f"<div class='rotation-freshness-badge {esc(freshness_class)}'>{esc(projection.freshness)}</div>"
+        f"<div class='rotation-source-ts muted small'>Snapshot {esc(source_ts_text)}</div>"
+        f"{degraded_note}"
+        "</section>"
+    )
+
+
+def _rotation_card_badge_html(market_projection: Any) -> str:
+    if market_projection is None or not market_projection.available:
+        label = "ROTATION DATA STALE" if (
+            market_projection is not None and market_projection.freshness == "STALE"
+        ) else "ROTATION DATA UNAVAILABLE"
+        title = (market_projection.reason if market_projection is not None else None) or "No rotation context"
+        return (
+            f"<div class='rotation-badge rotation-badge-unavailable' title='{esc(title)}'>{esc(label)}</div>"
+        )
+    direction = market_projection.pressure_state
+    label = _rotation_direction_label(direction)
+    freshness_suffix = "" if market_projection.freshness == "FRESH" else f" · {esc(market_projection.freshness)}"
+    rank_suffix = ""
+    if market_projection.top_in:
+        rank_suffix = " · TOP IN"
+    elif market_projection.top_out:
+        rank_suffix = " · TOP OUT"
+    score_text = (
+        f"{market_projection.score_total:+.1f}" if market_projection.score_total is not None else "—"
+    )
+    direction_css = {
+        "ROTATION_IN": "rotation-badge-in",
+        "ROTATION_OUT": "rotation-badge-out",
+        "MIXED": "rotation-badge-mixed",
+    }.get(direction or "", "rotation-badge-mixed")
+    return (
+        f"<div class='rotation-badge {direction_css}' title='Persisted market rotation pressure context, read-only'>"
+        f"{esc(label)} <span class='rotation-badge-score'>{esc(score_text)}</span>{esc(rank_suffix)}{esc(freshness_suffix)}"
+        "</div>"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Order ladder rows (Commit 3)
 # ---------------------------------------------------------------------------
 
@@ -4816,9 +4982,11 @@ def render_plan_card(
     monitor_link: str | None = None,
     buy_orders: tuple[Any, ...] = (),
     sell_orders: tuple[Any, ...] = (),
+    rotation_market_projection: Any | None = None,
 ) -> str:
     quote = card.market.split("-")[-1] if "-" in card.market else ""
     search_text = build_card_search_text(card)
+    rotation_badge_html = _rotation_card_badge_html(rotation_market_projection)
     breath_curve_payload = card.breath_curve or {}
 
     # Quality aggregation (replaces separate FRESH_CURRENT_PRICE / NATIVE_SHORT display)
@@ -5065,7 +5233,7 @@ def render_plan_card(
         f"<span class='mono small'>{esc(price_line)}</span>"
         f"{portfolio_badge_html}"
         f"</div>"
-        f"<div class='card-row2'>{quality_html}</div>"
+        f"<div class='card-row2'>{quality_html}{rotation_badge_html}</div>"
         "</div>"
         f"<div style='text-align:right'>"
         f"{_scenario_badge(card.scenario_type)}"
@@ -5098,6 +5266,7 @@ def render_full_html(
     render_id: str | None = None,
     writer_instance_id: str | None = None,
     pipeline_banner_html: str | None = None,
+    rotation_projection: RotationProfitPlanProjection | None = None,
 ) -> str:
     if rendered_at is None:
         rendered_at = format_ui_now()
@@ -5107,7 +5276,18 @@ def render_full_html(
     display_cards = sort_cards_action_priority(cards) if sort else list(cards)
     attention_count = sum(1 for c in cards if c.is_relevant)
     total_count = len(cards)
-    cards_html = "\n".join(render_plan_card(c, monitor_link=monitor_link) for c in display_cards)
+    cards_html = "\n".join(
+        render_plan_card(
+            c,
+            monitor_link=monitor_link,
+            rotation_market_projection=(
+                get_market_projection(rotation_projection, c.market)
+                if rotation_projection is not None
+                else None
+            ),
+        )
+        for c in display_cards
+    )
     empty_note = "<div class='muted' style='padding:16px;grid-column:1/-1'>No symbols with a plan loaded.</div>" if not cards else ""
     filter_refs = build_profit_plan_filter_reference_lists(display_cards)
     action_filter_options_html = _canonical_action_filter_options_html(display_cards)
@@ -5116,6 +5296,7 @@ def render_full_html(
     order_filter_options_html = _filter_select_options(filter_refs["orders"])
     nav_section_html = "" if not nav_html else f"    {nav_html}\n"
     pipeline_banner_section_html = "" if not pipeline_banner_html else f"  {pipeline_banner_html}\n"
+    rotation_strip_section_html = f"  {_rotation_strip_html(rotation_projection)}\n" if rotation_projection is not None else ""
 
     return (
         "<!doctype html>\n<html lang='en'>\n<head>\n"
@@ -5138,6 +5319,7 @@ def render_full_html(
         f"{nav_section_html}"
         "  </header>\n"
         f"{pipeline_banner_section_html}"
+        f"{rotation_strip_section_html}"
         "  <div class='sticky-controls'>\n"
         "    <div class='filter-controls'>\n"
         "      <button id='btn-all' class='toggle-btn active' type='button' onclick='resetProfitPlanFilters()'>All selected assets</button>\n"
@@ -5347,12 +5529,14 @@ def build_json_snapshot(
     normalization_audit_by_symbol: dict[str, list[Any]] | None = None,
     pipeline_health: dict[str, Any] | None = None,
     market_context_by_symbol: dict[str, dict[str, Any]] | None = None,
+    rotation_projection: RotationProfitPlanProjection | None = None,
 ) -> dict[str, Any]:
     now_ts = snapshot_ts or datetime.now(UTC).isoformat()
     relevant_count = sum(1 for c in cards if c.is_relevant)
     total_count = len(cards)
     wallet_held_count = sum(1 for c in cards if c.is_wallet_held)
     portfolio_asset_count = sum(1 for c in cards if c.is_portfolio_asset)
+    _rotation_projection = rotation_projection or unavailable_rotation_projection()
     return {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
@@ -5377,6 +5561,7 @@ def build_json_snapshot(
         "order_submission": 0,
         "executor": "none",
         "pipeline_health": pipeline_health,
+        "rotation": rotation_projection_to_json_dict(_rotation_projection),
         "symbols": [
             {
                 "render_id": c.render_id,
@@ -5495,6 +5680,7 @@ def build_json_snapshot(
                 } if c.fib_nav_context is not None else None,
                 "breath_curve": c.breath_curve,
                 "market_context": (market_context_by_symbol or {}).get(c.symbol),
+                "rotation": market_projection_to_json_dict(get_market_projection(_rotation_projection, c.market)),
             }
             for c in cards
         ],

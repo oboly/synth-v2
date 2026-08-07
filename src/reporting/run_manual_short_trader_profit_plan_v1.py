@@ -91,6 +91,17 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     build_profit_plan_card,
     render_full_html,
 )
+from src.reporting.market_rotation_pressure_dashboard_v1 import (
+    MODEL_VERSION as ROTATION_MODEL_VERSION,
+)
+from src.reporting.market_rotation_profit_plan_projection_v1 import (
+    build_rotation_projection,
+)
+from src.reporting.run_market_rotation_pressure_dashboard_v1 import (
+    check_schema_ready as check_rotation_schema_ready,
+    fetch_latest_snapshot as fetch_latest_rotation_snapshot,
+    fetch_snapshot_observations as fetch_rotation_snapshot_observations,
+)
 from src.research.htf_fib_extension_confluence_v1 import (
     HtfSwingInput,
     build_htf_extension_map,
@@ -1906,6 +1917,43 @@ def main() -> int:
     }
     pipeline_banner_html = native_short_snapshot_banner(snapshot_evidence)
 
+    # Read-only enrichment (Issue #255): market_rotation_pressure_v1 is a
+    # separately-owned, market-only, account-agnostic engine. Profit Plan only
+    # reads its already-persisted latest snapshot + observation rows -- never
+    # recomputes score/direction/evidence-lights/breadth/rank/confirmation.
+    # Any DB/schema/parsing failure degrades to an unavailable projection
+    # rather than blocking the render (fail-closed, never fabricated).
+    # broker_private_calls=0 -- rotation pressure tables are market-only.
+    try:
+        _rotation_conn = get_connection()
+        try:
+            _rotation_missing = check_rotation_schema_ready(_rotation_conn)
+            if _rotation_missing:
+                raise RuntimeError(f"rotation schema not ready: missing={_rotation_missing}")
+            rotation_header_row = fetch_latest_rotation_snapshot(
+                _rotation_conn, venue=args.venue, model_version=ROTATION_MODEL_VERSION
+            )
+            rotation_observation_rows = (
+                fetch_rotation_snapshot_observations(
+                    _rotation_conn,
+                    pressure_snapshot_id=int(rotation_header_row["pressure_snapshot_id"]),
+                )
+                if rotation_header_row is not None
+                else []
+            )
+        finally:
+            _rotation_conn.close()
+    except Exception as exc:
+        print(f"[warn] rotation pressure read failed: {exc}", file=sys.stderr)
+        rotation_header_row = None
+        rotation_observation_rows = []
+
+    rotation_projection = build_rotation_projection(
+        rotation_header_row,
+        rotation_observation_rows,
+        now_utc=now_utc,
+    )
+
     output_html.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(output_html.parent, 0o755)
     output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -1919,6 +1967,7 @@ def main() -> int:
         render_id=snapshot_render_id,
         writer_instance_id=writer_instance_id,
         pipeline_banner_html=pipeline_banner_html,
+        rotation_projection=rotation_projection,
     )
     json_content = json.dumps(
         build_json_snapshot(
@@ -1931,6 +1980,7 @@ def main() -> int:
             normalization_audit_by_symbol=normalization_audit,
             pipeline_health=pipeline_health,
             market_context_by_symbol=market_context_by_symbol,
+            rotation_projection=rotation_projection,
         ),
         indent=2,
         sort_keys=True,
