@@ -146,3 +146,19 @@ Close an issue only when all applicable conditions are true:
 Do not mass-convert `docs/todo/` files into Issues.
 
 Migrate only work that is active, bounded, and has a concrete next action. Preserve permanent design in canonical documentation, archive superseded material, and remove only content proven to be duplicated elsewhere.
+
+## Worktree policy for concurrent agents
+
+- Normal branch workflow (branch, commit, push in place) is allowed in a
+  clean, idle, task-exclusive checkout.
+- Use an isolated worktree when the shared checkout is active, concurrent
+  (another agent/process is using it), branch-unstable, or contaminated
+  (unrelated uncommitted/untracked changes present).
+- Never switch branches or commit in a checkout that another agent or
+  process is actively using.
+- If concurrency appears mid-task, stop and relocate the task to an
+  isolated worktree rather than continuing in the shared checkout.
+- Do not silently delete or reuse an existing task branch or worktree
+  created by another agent or a prior run.
+- When a worktree is used, report its path, branch, and base commit in the
+  task's final report.
