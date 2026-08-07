@@ -6,8 +6,8 @@
 
 ## Sources
 
-- `docs/todo/sector_rotation_master_plan_v1.md`
-- `docs/todo/sector_taxonomy_database_seed_v1.md`
+- `docs/todo/market_intelligence/sector_rotation_master_plan_v1.md`
+- `docs/todo/completed/sector_taxonomy_database_seed_v1.md`
 - `docs/todo/sector_rotation_engine_v1.md`
 - `docs/architecture/external_research_overlay_contract_v1.md`
 - FFG briefings supplied in chat on 2026-07-28 discussing RWA, tokenized equities, settlement rails, programmable collateral, ONDO, PENDLE, and RSR. These are narrative inputs, not canonical classifications by themselves.

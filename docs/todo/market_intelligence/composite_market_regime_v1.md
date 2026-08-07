@@ -8,7 +8,7 @@
 
 - `docs/architecture/market_observer_contract_v1.md`
 - `docs/todo/market_intelligence/macro_regime_engine_v1.md`
-- `docs/todo/sector_rotation_master_plan_v1.md`
+- `docs/todo/market_intelligence/sector_rotation_master_plan_v1.md`
 - `docs/todo/sector_rotation_engine_v1.md`
 - `docs/todo/backtest_capability_contract_v1.md`
 
