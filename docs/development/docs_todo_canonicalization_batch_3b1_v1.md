@@ -85,22 +85,17 @@ pointers, not duplicated narrative).
 
 ## 8. Reference updates
 
-Live inbound reference updated:
+Live inbound references updated (2):
 
 - `docs/architecture/external_research_overlay_contract_v1.md` — "Related
   Documents" list entry `docs/todo/external_research_ingestion.md` replaced
   with both new canonical paths (`docs/research/external_research_ingestion_v1.md`,
   `docs/research/external_elliott_wave_claim_validation_v1.md`).
-
-Reference intentionally retained (protected file, explicit do-not-touch
-scope for this batch):
-
 - `docs/todo/synth_v214_signal_dashboard_strategy_bridge_backlog.md:285` —
-  lists `docs/todo/external_research_ingestion.md` under "Existing Overlap".
-  This file is on the batch's explicit do-not-touch list. The reference is
-  now stale (points to a removed path) and is recorded here as a known,
-  intentionally-unfixed broken reference pending a future batch that is
-  scoped to touch that backlog file.
+  "Existing Overlap" list entry `docs/todo/external_research_ingestion.md`
+  replaced with both new canonical paths. This was a bounded reference
+  repair only (follow-up fix on PR #251); no other content in the v2.14
+  backlog file was edited or canonicalized.
 
 References intentionally retained as dated provenance (planning/inventory
 document, not a live pointer):
@@ -132,7 +127,7 @@ source_paths_removed=1
 redirect_shells_created=0
 duplicate_sections=0
 unclassified_substantive_sections=0
-broken_references=1
+broken_references=0
 ambiguous_canonical_references=0
 active_todo_index_entries_remaining=0
 issues_created=0
@@ -146,6 +141,7 @@ order_submissions=0
 service_timer_changes=0
 ```
 
-`broken_references=1` is the intentionally retained
+`broken_references=0`. The previously stale
 `docs/todo/synth_v214_signal_dashboard_strategy_bridge_backlog.md:285`
-reference, per the batch's explicit do-not-touch scope (see Section 8).
+reference was repaired in a bounded follow-up fix (see Section 8);
+`remaining_blockers=none`; `review_result=PASS`.
