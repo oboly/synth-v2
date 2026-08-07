@@ -1,3 +1,13 @@
+Status: Archived historical record
+Active ownership: none
+Current work: see canonical documentation / GitHub Issues
+Archived by: docs/TODO cleanup Batch 4A
+
+Canonical replacement: `docs/architecture/pipeline_contracts.md`
+Guard tests: `tests/test_pipeline_contract_boundaries_v1.py`
+
+---
+
 # Claude Bundle 1 — Pipeline Contracts + Guard Tests v1
 
 You are working in Synth v2.

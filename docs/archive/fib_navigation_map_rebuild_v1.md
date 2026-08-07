@@ -1,3 +1,13 @@
+Status: Archived historical record
+Active ownership: none
+Current work: see canonical documentation / GitHub Issues
+Archived by: docs/TODO cleanup Batch 4A
+
+Implementation: `src/market_data/fib_navigation_map_v1.py`
+Tests: `tests/test_fib_navigation_map_v1.py`, `tests/test_fib_navigation_map_exhaustion_rebuild_v1.py`
+
+---
+
 # TODO: Fib navigation map rebuild v1
 
 **Status: IMPLEMENTED** — branch `feature/fib-navigation-map-rebuild-v1`. Candle-driven rebuild is the primary path; anchor-only is the fallback.
