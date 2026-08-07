@@ -108,6 +108,10 @@ def _revision_from_row(row: Mapping[str, Any]) -> OperatorIntentRevisionRecord:
         actor_app_profile_id=int(row["actor_app_profile_id"]),
         event_ts_utc=row["event_ts_utc"],
         expires_ts_utc=row["expires_ts_utc"],
+        supersedes_intent_id=(int(row["supersedes_intent_id"]) if row["supersedes_intent_id"] is not None else None),
+        superseded_by_intent_id=(
+            int(row["superseded_by_intent_id"]) if row["superseded_by_intent_id"] is not None else None
+        ),
     )
 
 
@@ -247,6 +251,8 @@ class OperatorIntentService:
                 actor_app_profile_id=identity.app_profile_id,
                 event_ts_utc=now_utc,
                 expires_ts_utc=expires_ts_utc,
+                supersedes_intent_id=None,
+                superseded_by_intent_id=None,
             )
             conn.commit()
             return _record_from_row(repo.get_intent(operator_intent_id=operator_intent_id))
@@ -334,6 +340,8 @@ class OperatorIntentService:
                 actor_app_profile_id=identity.app_profile_id,
                 event_ts_utc=now_utc,
                 expires_ts_utc=new_expires,
+                supersedes_intent_id=row["supersedes_intent_id"],
+                superseded_by_intent_id=row["superseded_by_intent_id"],
             )
             conn.commit()
             return _record_from_row(repo.get_intent(operator_intent_id=operator_intent_id))
@@ -479,6 +487,8 @@ class OperatorIntentService:
                 actor_app_profile_id=identity.app_profile_id,
                 event_ts_utc=now_utc,
                 expires_ts_utc=row["expires_ts_utc"],
+                supersedes_intent_id=row["supersedes_intent_id"],
+                superseded_by_intent_id=row["superseded_by_intent_id"],
             )
             conn.commit()
             return _record_from_row(repo.get_intent(operator_intent_id=operator_intent_id))
@@ -505,7 +515,25 @@ class OperatorIntentService:
         conn_factory: Callable[[], Any],
         now_utc: datetime,
     ) -> OperatorIntentRecord:
-        """Mark the given intent SUPERSEDED and create its explicit replacement."""
+        """Mark the given intent SUPERSEDED and create its explicit replacement.
+
+        Supersession is one atomic transaction with exactly one versioned
+        mutation of the old row (see docs/architecture/operator_intent_phase1_v1.md
+        for the full step ordering and why it matters):
+
+          1. authorize + validate the old intent is open;
+          2. validate no conflicting open replacement scope exists;
+          3. create the replacement intent (references the old id via
+             supersedes_intent_id);
+          4. versioned-update the old intent exactly once: status,
+             superseded_by_intent_id, updated_by/_ts, version+1 — all in the
+             same UPDATE, guarded by expected_version;
+          5. write the old intent's SUPERSEDED revision, including the
+             replacement lineage, after that update.
+
+        Any failure at any step rolls back the whole transaction: no
+        replacement row and no revision may survive a failed supersession.
+        """
         new_intent_type_value = IntentType(new_intent_type).value
         status_value = IntentStatus(status).value
         if IntentStatus(status_value) not in OPEN_STATUSES:
@@ -517,6 +545,8 @@ class OperatorIntentService:
         conn = conn_factory()
         try:
             repo = self._repo_factory(conn)
+
+            # 1. authorize + validate old intent is open.
             old_row = repo.get_intent(operator_intent_id=operator_intent_id)
             if old_row is None:
                 conn.rollback()
@@ -531,43 +561,7 @@ class OperatorIntentService:
                     f"ALREADY_TERMINAL: operator_intent_id={operator_intent_id} status={old_row['status']!r}"
                 )
 
-            new_version = int(old_row["version"]) + 1
-            rowcount = repo.update_intent_versioned(
-                operator_intent_id=operator_intent_id,
-                expected_version=expected_version,
-                new_version=new_version,
-                status=IntentStatus.SUPERSEDED.value,
-                reason=old_row["reason"],
-                priority=int(old_row["priority"]),
-                expires_ts_utc=old_row["expires_ts_utc"],
-                updated_by_app_user_id=identity.app_user_id,
-                updated_by_app_profile_id=identity.app_profile_id,
-                updated_ts_utc=now_utc,
-            )
-            if rowcount == 0:
-                conn.rollback()
-                raise OptimisticConcurrencyConflict(
-                    f"VERSION_CONFLICT: operator_intent_id={operator_intent_id} "
-                    f"expected_version={expected_version} current_version={old_row['version']}"
-                )
-            repo.insert_revision(
-                operator_intent_id=operator_intent_id,
-                revision_version=new_version,
-                event_type="SUPERSEDED",
-                trading_account_id=trading_account_id,
-                venue=venue,
-                canonical_market=canonical_market,
-                intent_type=str(old_row["intent_type"]),
-                priority=int(old_row["priority"]),
-                status=IntentStatus.SUPERSEDED.value,
-                reason=str(old_row["reason"]) if old_row["reason"] is not None else None,
-                source=str(old_row["source"]),
-                actor_app_user_id=identity.app_user_id,
-                actor_app_profile_id=identity.app_profile_id,
-                event_ts_utc=now_utc,
-                expires_ts_utc=old_row["expires_ts_utc"],
-            )
-
+            # 2. validate no conflicting open replacement scope exists.
             existing = repo.find_open_intent_for_scope(
                 trading_account_id=trading_account_id,
                 venue=venue,
@@ -582,6 +576,7 @@ class OperatorIntentService:
                     f"existing_operator_intent_id={existing['operator_intent_id']}"
                 )
 
+            # 3. create the replacement intent within the same transaction.
             new_operator_intent_id = repo.insert_intent(
                 trading_account_id=trading_account_id,
                 venue=venue,
@@ -617,9 +612,54 @@ class OperatorIntentService:
                 actor_app_profile_id=identity.app_profile_id,
                 event_ts_utc=now_utc,
                 expires_ts_utc=expires_ts_utc,
+                supersedes_intent_id=operator_intent_id,
+                superseded_by_intent_id=None,
             )
-            repo.link_superseded_by(
-                operator_intent_id=operator_intent_id, superseded_by_intent_id=new_operator_intent_id
+
+            # 4. versioned-update the old intent exactly once: status +
+            #    superseded_by_intent_id + updated_by/_ts + version, all in
+            #    one guarded UPDATE. No separate unversioned mutation.
+            new_version = int(old_row["version"]) + 1
+            rowcount = repo.update_intent_versioned(
+                operator_intent_id=operator_intent_id,
+                expected_version=expected_version,
+                new_version=new_version,
+                status=IntentStatus.SUPERSEDED.value,
+                reason=old_row["reason"],
+                priority=int(old_row["priority"]),
+                expires_ts_utc=old_row["expires_ts_utc"],
+                updated_by_app_user_id=identity.app_user_id,
+                updated_by_app_profile_id=identity.app_profile_id,
+                updated_ts_utc=now_utc,
+                superseded_by_intent_id=new_operator_intent_id,
+            )
+            if rowcount == 0:
+                conn.rollback()
+                raise OptimisticConcurrencyConflict(
+                    f"VERSION_CONFLICT: operator_intent_id={operator_intent_id} "
+                    f"expected_version={expected_version} current_version={old_row['version']}"
+                )
+
+            # 5. write the old intent's SUPERSEDED revision after that update,
+            #    including the replacement lineage in the snapshot.
+            repo.insert_revision(
+                operator_intent_id=operator_intent_id,
+                revision_version=new_version,
+                event_type="SUPERSEDED",
+                trading_account_id=trading_account_id,
+                venue=venue,
+                canonical_market=canonical_market,
+                intent_type=str(old_row["intent_type"]),
+                priority=int(old_row["priority"]),
+                status=IntentStatus.SUPERSEDED.value,
+                reason=str(old_row["reason"]) if old_row["reason"] is not None else None,
+                source=str(old_row["source"]),
+                actor_app_user_id=identity.app_user_id,
+                actor_app_profile_id=identity.app_profile_id,
+                event_ts_utc=now_utc,
+                expires_ts_utc=old_row["expires_ts_utc"],
+                supersedes_intent_id=old_row["supersedes_intent_id"],
+                superseded_by_intent_id=new_operator_intent_id,
             )
 
             conn.commit()
@@ -682,6 +722,8 @@ class OperatorIntentService:
                     actor_app_profile_id=identity.app_profile_id,
                     event_ts_utc=now_utc,
                     expires_ts_utc=row["expires_ts_utc"],
+                    supersedes_intent_id=row["supersedes_intent_id"],
+                    superseded_by_intent_id=row["superseded_by_intent_id"],
                 )
                 expired_ids.append(int(row["operator_intent_id"]))
             conn.commit()

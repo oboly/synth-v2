@@ -115,7 +115,9 @@ CREATE TABLE IF NOT EXISTS operator_intent (
 -- ---------------------------------------------------------------------------
 -- 2. operator_intent_revision
 -- Append-only audit/revision history. One row per create/update/cancel/
--- supersede/expire event, capturing the full post-mutation snapshot.
+-- supersede/expire event, capturing the full post-mutation snapshot —
+-- including supersession lineage (supersedes_intent_id /
+-- superseded_by_intent_id), so lineage is never left unaudited.
 -- Never updated or deleted.
 -- ---------------------------------------------------------------------------
 
@@ -144,6 +146,11 @@ CREATE TABLE IF NOT EXISTS operator_intent_revision (
     event_ts_utc                  DATETIME(6)     NOT NULL,
     expires_ts_utc                DATETIME(6)              DEFAULT NULL,
 
+    supersedes_intent_id          BIGINT UNSIGNED          DEFAULT NULL
+        COMMENT 'Snapshot of operator_intent.supersedes_intent_id at this event (constant for the life of the row).',
+    superseded_by_intent_id       BIGINT UNSIGNED          DEFAULT NULL
+        COMMENT 'Snapshot of operator_intent.superseded_by_intent_id at this event; set from the SUPERSEDED event onward.',
+
     PRIMARY KEY (operator_intent_revision_id),
 
     UNIQUE KEY uq_operator_intent_revision_version (operator_intent_id, revision_version),
@@ -167,6 +174,12 @@ CREATE TABLE IF NOT EXISTS operator_intent_revision (
 
     CONSTRAINT fk_operator_intent_revision_actor_profile
         FOREIGN KEY (actor_app_profile_id) REFERENCES app_profile (app_profile_id),
+
+    CONSTRAINT fk_operator_intent_revision_supersedes
+        FOREIGN KEY (supersedes_intent_id) REFERENCES operator_intent (operator_intent_id),
+
+    CONSTRAINT fk_operator_intent_revision_superseded_by
+        FOREIGN KEY (superseded_by_intent_id) REFERENCES operator_intent (operator_intent_id),
 
     CONSTRAINT chk_operator_intent_revision_event_type CHECK (event_type IN (
         'CREATED', 'UPDATED', 'CANCELLED', 'SUPERSEDED', 'EXPIRED'

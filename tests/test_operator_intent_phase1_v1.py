@@ -778,16 +778,29 @@ def test_supersede_intent_creates_lineage_and_append_only_history() -> None:
     assert replacement.intent_type == "BUY_LADDER_REQUESTED"
     assert replacement.supersedes_intent_id == original.operator_intent_id
 
+    # The old intent's version increments exactly once for the whole
+    # supersession — not once for a status update plus again for a separate
+    # lineage-link mutation.
     old_history = svc.read_revision_history(
         identity=fx.identity, operator_intent_id=original.operator_intent_id, conn_factory=fx.conn_factory,
     )
     assert [r.event_type for r in old_history] == ["CREATED", "SUPERSEDED"]
+    assert [r.revision_version for r in old_history] == [1, 2]
     assert old_history[-1].status == IntentStatus.SUPERSEDED.value
+    # The supersession revision snapshot itself carries the replacement lineage.
+    assert old_history[-1].superseded_by_intent_id == replacement.operator_intent_id
+    assert old_history[0].superseded_by_intent_id is None
+
+    old_after = svc.read_intent_by_id(
+        identity=fx.identity, operator_intent_id=original.operator_intent_id, conn_factory=fx.conn_factory,
+    )
+    assert old_after.version == original.version + 1 == 2
 
     new_history = svc.read_revision_history(
         identity=fx.identity, operator_intent_id=replacement.operator_intent_id, conn_factory=fx.conn_factory,
     )
     assert [r.event_type for r in new_history] == ["CREATED"]
+    assert new_history[0].supersedes_intent_id == original.operator_intent_id
 
     # The superseded old intent is terminal — it must not leak through the
     # "current intents" read model for its old (account, venue, market,
@@ -810,6 +823,98 @@ def test_supersede_intent_creates_lineage_and_append_only_history() -> None:
         canonical_market="WLD-EUR", intent_type=IntentType.BUY_LADDER_REQUESTED.value, conn_factory=fx.conn_factory,
     )
     assert [r.operator_intent_id for r in new_scope_current] == [replacement.operator_intent_id]
+
+
+def test_supersede_optimistic_concurrency_conflict_rolls_back_everything() -> None:
+    """A stale expected_version must fail the whole supersession — no
+    replacement row, no old-row mutation, no revisions beyond CREATED."""
+    db = _next_db()
+    fx = _make_fixture(db, email="hugo@example.com", profile_code="hugo", account_code="hugo-bitvavo")
+    svc = _service()
+    original = svc.create_intent(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        canonical_market="WLD-EUR", intent_type=IntentType.REENTRY_WATCH.value,
+        conn_factory=fx.conn_factory, now_utc=_NOW,
+    )
+    # Advance the real version to 2 so expected_version=1 is stale.
+    svc.update_intent(
+        identity=fx.identity, operator_intent_id=original.operator_intent_id, expected_version=1,
+        priority=3, conn_factory=fx.conn_factory, now_utc=_NOW,
+    )
+
+    with pytest.raises(OptimisticConcurrencyConflict):
+        svc.supersede_intent(
+            identity=fx.identity, operator_intent_id=original.operator_intent_id, expected_version=1,
+            new_intent_type=IntentType.BUY_LADDER_REQUESTED.value, conn_factory=fx.conn_factory, now_utc=_NOW,
+        )
+
+    # Old row: still open, version untouched by the failed supersession, no
+    # superseded_by_intent_id leaked through.
+    old_after = svc.read_intent_by_id(
+        identity=fx.identity, operator_intent_id=original.operator_intent_id, conn_factory=fx.conn_factory,
+    )
+    assert old_after.status == IntentStatus.ACTIVE.value
+    assert old_after.version == 2
+    assert old_after.superseded_by_intent_id is None
+
+    # No replacement row was left behind in the target scope.
+    new_scope_current = svc.read_current_intents(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        canonical_market="WLD-EUR", intent_type=IntentType.BUY_LADDER_REQUESTED.value, conn_factory=fx.conn_factory,
+    )
+    assert new_scope_current == ()
+
+    # No partial revision (e.g. a lone CREATED for an orphaned replacement,
+    # or a SUPERSEDED for the old row) survived the rollback.
+    old_history = svc.read_revision_history(
+        identity=fx.identity, operator_intent_id=original.operator_intent_id, conn_factory=fx.conn_factory,
+    )
+    assert [r.event_type for r in old_history] == ["CREATED", "UPDATED"]
+
+
+def test_supersede_duplicate_replacement_conflict_rolls_back_everything() -> None:
+    """If an open intent already exists in the target (new_intent_type)
+    scope, the whole supersession must fail closed before any mutation."""
+    db = _next_db()
+    fx = _make_fixture(db, email="hugo@example.com", profile_code="hugo", account_code="hugo-bitvavo")
+    svc = _service()
+    original = svc.create_intent(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        canonical_market="WLD-EUR", intent_type=IntentType.REENTRY_WATCH.value,
+        conn_factory=fx.conn_factory, now_utc=_NOW,
+    )
+    blocking = svc.create_intent(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        canonical_market="WLD-EUR", intent_type=IntentType.BUY_LADDER_REQUESTED.value,
+        conn_factory=fx.conn_factory, now_utc=_NOW,
+    )
+
+    with pytest.raises(DuplicateActiveIntent):
+        svc.supersede_intent(
+            identity=fx.identity, operator_intent_id=original.operator_intent_id, expected_version=1,
+            new_intent_type=IntentType.BUY_LADDER_REQUESTED.value, conn_factory=fx.conn_factory, now_utc=_NOW,
+        )
+
+    # Old row untouched: still open, version 1, no lineage set.
+    old_after = svc.read_intent_by_id(
+        identity=fx.identity, operator_intent_id=original.operator_intent_id, conn_factory=fx.conn_factory,
+    )
+    assert old_after.status == IntentStatus.ACTIVE.value
+    assert old_after.version == 1
+    assert old_after.superseded_by_intent_id is None
+
+    # The pre-existing blocking intent is untouched and still the sole
+    # occupant of its scope; no orphaned third row was created.
+    scope_current = svc.read_current_intents(
+        identity=fx.identity, trading_account_id=fx.trading_account_id, venue="bitvavo",
+        canonical_market="WLD-EUR", intent_type=IntentType.BUY_LADDER_REQUESTED.value, conn_factory=fx.conn_factory,
+    )
+    assert [r.operator_intent_id for r in scope_current] == [blocking.operator_intent_id]
+
+    old_history = svc.read_revision_history(
+        identity=fx.identity, operator_intent_id=original.operator_intent_id, conn_factory=fx.conn_factory,
+    )
+    assert [r.event_type for r in old_history] == ["CREATED"]
 
 
 def test_revision_history_is_append_only_and_unauthorized_read_fails_closed() -> None:

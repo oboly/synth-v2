@@ -110,6 +110,8 @@ CREATE TABLE IF NOT EXISTS operator_intent_revision (
     actor_app_profile_id         INTEGER NOT NULL,
     event_ts_utc                  TEXT NOT NULL,
     expires_ts_utc                TEXT NULL,
+    supersedes_intent_id          INTEGER NULL,
+    superseded_by_intent_id       INTEGER NULL,
     UNIQUE (operator_intent_id, revision_version)
 );
 """
@@ -232,12 +234,6 @@ class SqliteOperatorIntentRepository:
         )
         return int(cur.rowcount)
 
-    def link_superseded_by(self, *, operator_intent_id: int, superseded_by_intent_id: int) -> None:
-        self._conn.execute(
-            "UPDATE operator_intent SET superseded_by_intent_id = ? WHERE operator_intent_id = ?",
-            (superseded_by_intent_id, operator_intent_id),
-        )
-
     def list_open_intents_for_account(
         self,
         *,
@@ -288,8 +284,9 @@ class SqliteOperatorIntentRepository:
             INSERT INTO operator_intent_revision (
                 operator_intent_id, revision_version, event_type, trading_account_id, venue,
                 canonical_market, intent_type, priority, status, reason, source,
-                actor_app_user_id, actor_app_profile_id, event_ts_utc, expires_ts_utc
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                actor_app_user_id, actor_app_profile_id, event_ts_utc, expires_ts_utc,
+                supersedes_intent_id, superseded_by_intent_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 fields["operator_intent_id"],
@@ -307,6 +304,8 @@ class SqliteOperatorIntentRepository:
                 fields["actor_app_profile_id"],
                 _utc_text(fields["event_ts_utc"]),
                 _normalize_ts_field(fields.get("expires_ts_utc")),
+                fields.get("supersedes_intent_id"),
+                fields.get("superseded_by_intent_id"),
             ),
         )
         return int(cur.lastrowid)
@@ -445,13 +444,6 @@ class MariaDbOperatorIntentRepository:
             )
             return int(cur.rowcount)
 
-    def link_superseded_by(self, *, operator_intent_id: int, superseded_by_intent_id: int) -> None:
-        with self._cursor() as cur:
-            cur.execute(
-                "UPDATE operator_intent SET superseded_by_intent_id = %s WHERE operator_intent_id = %s",
-                (superseded_by_intent_id, operator_intent_id),
-            )
-
     def list_open_intents_for_account(
         self,
         *,
@@ -504,8 +496,9 @@ class MariaDbOperatorIntentRepository:
                 INSERT INTO operator_intent_revision (
                     operator_intent_id, revision_version, event_type, trading_account_id, venue,
                     canonical_market, intent_type, priority, status, reason, source,
-                    actor_app_user_id, actor_app_profile_id, event_ts_utc, expires_ts_utc
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    actor_app_user_id, actor_app_profile_id, event_ts_utc, expires_ts_utc,
+                    supersedes_intent_id, superseded_by_intent_id
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     fields["operator_intent_id"],
@@ -523,6 +516,8 @@ class MariaDbOperatorIntentRepository:
                     fields["actor_app_profile_id"],
                     _utc_text(fields["event_ts_utc"]),
                     _normalize_ts_field(fields.get("expires_ts_utc")),
+                    fields.get("supersedes_intent_id"),
+                    fields.get("superseded_by_intent_id"),
                 ),
             )
             return int(cur.lastrowid)

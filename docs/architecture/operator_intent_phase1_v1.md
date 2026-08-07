@@ -102,6 +102,14 @@ Append-only. One row per `CREATED` / `UPDATED` / `CANCELLED` / `SUPERSEDED` /
 `actor_app_user_id` / `actor_app_profile_id`, and `event_ts_utc`. Never
 updated or deleted. Unique on `(operator_intent_id, revision_version)`.
 
+The snapshot also includes `supersedes_intent_id` / `superseded_by_intent_id`
+— current-state lineage is never left unaudited. Every revision row carries
+the row's lineage values *as of that event* (both `NULL` for a normally
+created top-level intent; `supersedes_intent_id` set from the first
+`CREATED` revision onward for an intent born via `supersede_intent`;
+`superseded_by_intent_id` set starting exactly from the `SUPERSEDED` event
+that assigns it).
+
 ### Profile-aware audit fields
 
 `created_by_app_user_id` / `updated_by_app_user_id` / `actor_app_user_id`
@@ -240,7 +248,23 @@ Commands:
 - `cancel_intent` — explicit terminal transition to `CANCELLED`.
 - `supersede_intent` — explicit terminal transition to `SUPERSEDED` on the
   old intent plus creation of its replacement, linked via
-  `supersedes_intent_id` / `superseded_by_intent_id`.
+  `supersedes_intent_id` / `superseded_by_intent_id`. Supersession is one
+  atomic transaction with exactly **one** versioned mutation of the old
+  row — there is no separate unversioned "link" update. Step order:
+  (1) authorize + validate the old intent is open; (2) validate no
+  conflicting open replacement scope exists; (3) create the replacement
+  intent (`supersedes_intent_id` set at creation); (4) a single guarded
+  `UPDATE` on the old row setting `status=SUPERSEDED`,
+  `superseded_by_intent_id=<replacement id>`, `updated_by_*`,
+  `updated_ts_utc`, and `version = old_version + 1` together; (5) the old
+  intent's `SUPERSEDED` revision is written *after* that update, so the
+  revision snapshot itself already carries the replacement lineage. A
+  version conflict (`OptimisticConcurrencyConflict`) or a duplicate
+  replacement scope (`DuplicateActiveIntent`) at any step rolls back the
+  entire transaction — no replacement row and no revision row survive a
+  failed supersession. See
+  `test_supersede_optimistic_concurrency_conflict_rolls_back_everything` and
+  `test_supersede_duplicate_replacement_conflict_rolls_back_everything`.
 - `expire_due_intents` — explicit, account-scoped wall-clock maintenance
   command; transitions open intents whose `expires_ts_utc` has passed to
   `EXPIRED`. Not a background job in Phase 1 — callers invoke it explicitly.
@@ -289,10 +313,14 @@ context, canonical identity validation (venue, market, intent type,
 unresolved account), duplicate active intent, contradictory intent types,
 optimistic concurrency conflict, cancellation (including double-cancel
 rejection and scope reopening), expiration (including scope reopening),
-set/clear expiration, supersession lineage and append-only history,
-dedicated cancelled/expired/superseded-disappear-from-current-intents cases,
-full terminal lifecycle retained in revision history, unauthorized history
-read, wallet-zero independence, and the forbidden-import guards (no
+set/clear expiration, supersession lineage and append-only history
+(including the exactly-once version increment on the old row and the
+replacement lineage embedded in the revision snapshot itself), supersession
+rollback atomicity under both optimistic-concurrency conflict and duplicate
+replacement conflict, dedicated cancelled/expired/superseded-disappear-from-
+current-intents cases, full terminal lifecycle retained in revision history,
+unauthorized history read, wallet-zero independence, and the forbidden-import
+guards (no
 `decision_gate`/`execution_planner`/`executor`/`broker` import from this
 package; no `operator_intent` import from `selection_engine`, enforced both
 here and in `tests/test_manual_execution_p0_architecture_boundaries_v1.py::TestSelectionEngineNeverImportsOperatorIntent`).

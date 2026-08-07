@@ -183,3 +183,5 @@ class OperatorIntentRevisionRecord:
     actor_app_profile_id: int
     event_ts_utc: datetime
     expires_ts_utc: datetime | None
+    supersedes_intent_id: int | None
+    superseded_by_intent_id: int | None
