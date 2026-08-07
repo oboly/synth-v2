@@ -20,7 +20,6 @@ Canonical TODO files:
 
 ```text
 docs/todo/README.md
-docs/todo/market_breath.md
 docs/todo/ui_webview.md
 docs/todo/breath_curve.md
 docs/todo/strategy_candidates.md

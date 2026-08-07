@@ -239,7 +239,6 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `profit_plan_card_evidence_delta_visibility_v1.md` | done / parked | Deterministic current-vs-previous card evidence visibility |
 | `manual_ladder_dashboard.md` | historical source / superseded | Earlier read-only ladder direction; active ladder work is tracked only in `profit_plan_live_ladder.md` |
 | `deploy_runtime.md` | MVP cockpit implemented / ops follow-up | General Odroid cockpit and deployment follow-ups |
-| `market_breath.md` | characterized / parked | Regime-dependent rhythm/phase research |
 | `regime_research.md` | parked — migrated (partial): Phase 1 (P1 reruns/reads, P1 discovered-regime pass) status/priority now owned by Issue #231; Phases 2-3 remain unmigrated | Rotation replay, discovered regimes, symbol profiles, and interaction audits |
 | `fibo_zones.md` | **P0 repository-ready / activation pending** | Recurring canonical 4h FibNavigationMap publication and existing cockpit visibility; merge/deploy/controlled activation remains |
 | `ui_webview.md` | open / secondary — migrated (partial): the 4 accepted Profit Plan coin-card scanability items status/priority now owned by Issue #233; remaining webview work is unmigrated | Non-blocking UI and styling work after correctness lanes |
