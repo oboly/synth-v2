@@ -1,10 +1,24 @@
-# TODO — Idiosyncratic Catalyst Override
+# Idiosyncratic Catalyst Override
 
 ## Status
 
-Research/TODO lane.
+Permanent concept and taxonomy note.
+Canonical location: `docs/research/idiosyncratic_catalyst_override_v1.md`
 
 This document captures the XLM/DTCC/Stellar spike interpretation from the Synth v2.14 handover stream.
+
+## Architecture boundary
+
+"Override" here refers only to a research-layer interpretation exception —
+flagging that an asset-specific catalyst may explain outperformance inside a
+macro caution regime, without flipping the global regime. It does not mean
+bypassing architecture layers:
+
+- Idiosyncratic/external catalyst context may inform market-only research or
+  `selection_engine` inputs only after validation.
+- It must not bypass `decision_gate`.
+- It must not directly create execution intent.
+- It must not submit or modify orders.
 
 ## Core lesson
 
