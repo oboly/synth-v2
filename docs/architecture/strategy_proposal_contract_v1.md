@@ -291,5 +291,6 @@ UI layout details remain owned by the relevant dashboard TODO/Issue.
 - `docs/ops/market_breath_context_bridge_v1.md` — Synth-native Market Breath vs. A+ legacy context separation.
 - `docs/research/external_research_ingestion_v1.md` and `docs/research/external_elliott_wave_claim_validation_v1.md` — external research normalization; may feed market/framework context, never account-aware permission.
 - `docs/research/paper_advice_manual_trading_cockpit_v1.md` — read-only manual-review cockpit role.
-- `docs/todo/signal_matrix_dashboard.md` and `docs/todo/manual_ladder_dashboard.md` — active dashboard lanes that may eventually render proposals under this contract.
+- `docs/todo/signal_matrix_dashboard.md` — active dashboard lane that may eventually render proposals under this contract.
+- `docs/archive/manual_ladder_dashboard.md` — archived; superseded by `docs/research/breath_fibo_strategy_static_dashboard_v1.md` and `docs/todo/profit_plan_live_ladder.md`.
 - `docs/archive/synth_v214_signal_dashboard_strategy_bridge_backlog_history_v1.md` — historical-only predecessor material.
