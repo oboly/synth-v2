@@ -6629,3 +6629,197 @@ def test_json_snapshot_safety_markers_present_after_formatting_cleanup() -> None
     assert snapshot["broker_writes"] == 0
     assert snapshot["order_submission"] == 0
     assert snapshot["executor"] == "none"
+
+
+# ---------------------------------------------------------------------------
+# Issue #256: Sort-PPP ordering — browser-side sort/rail contract
+# ---------------------------------------------------------------------------
+#
+# These tests execute the actual generated <script> from render_full_html
+# under Node against a minimal DOM shim, so the real sortCardsInDom /
+# buildProfitPlanSelector logic is under test, not a re-implementation.
+
+
+def _run_profit_plan_sort_js(mode: str, cards: list[dict], sort_mode_for_rail: str | None = None) -> dict:
+    """Execute sortCardsInDom(mode) then buildProfitPlanSelector() from the
+    real generated client JS against synthetic card dataset fixtures.
+
+    Returns {"main_order": [...symbols in final main DOM order...],
+             "rail_order": [...symbols in final selector rail order...]}.
+    """
+    html = render_full_html([], rendered_at="now", broker_mode="test")
+    script_match = re.search(r"<script>(.*?)</script>", html, re.DOTALL)
+    assert script_match is not None
+    rail_mode = sort_mode_for_rail if sort_mode_for_rail is not None else mode
+
+    harness = """
+    var mainChildren = CARDS.map(function(c) {
+      return {
+        dataset: Object.assign({}, c),
+        style: { display: '' }
+      };
+    });
+    var mainEl = {
+      querySelectorAll: function() { return mainChildren.slice(); },
+      appendChild: function(c) {
+        var i = mainChildren.indexOf(c);
+        if (i !== -1) mainChildren.splice(i, 1);
+        mainChildren.push(c);
+      }
+    };
+    var selItems = [];
+    var selEl = {
+      innerHTML: '',
+      appendChild: function(item) { selItems.push(item); }
+    };
+    var sortModeEl = { value: RAIL_MODE };
+    var document = {
+      getElementById: function(id) {
+        if (id === 'profit-plan-main') return mainEl;
+        if (id === 'profit-plan-selector') return selEl;
+        if (id === 'sort-mode') return sortModeEl;
+        return null;
+      },
+      querySelectorAll: function(sel) {
+        if (sel.indexOf('profit-plan-main') !== -1) return mainChildren.slice();
+        return [];
+      },
+      addEventListener: function() {},
+      createElement: function() {
+        return { className: '', dataset: {}, innerHTML: '', addEventListener: function() {} };
+      }
+    };
+
+    SCRIPT_BODY
+
+    sortCardsInDom(SORT_MODE);
+    buildProfitPlanSelector();
+
+    console.log(JSON.stringify({
+      main_order: mainChildren.map(function(c) { return c.dataset.sortSymbol; }),
+      rail_order: selItems.map(function(i) { return i.dataset.renderId; })
+    }));
+    """
+    node_source = (
+        harness
+        .replace("SCRIPT_BODY", script_match.group(1))
+        .replace("CARDS", json.dumps(cards))
+        .replace("SORT_MODE", json.dumps(mode))
+        .replace("RAIL_MODE", json.dumps(rail_mode))
+    )
+    completed = subprocess.run(
+        ["node", "-e", node_source],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(completed.stdout)
+
+
+def _sort_ppp_fixture_card(
+    *,
+    symbol: str,
+    ppp: str | None,
+    bucket: int = 0,
+    wallet_held: bool = False,
+) -> dict:
+    return {
+        "sortSymbol": symbol.lower(),
+        "renderId": symbol.lower(),
+        "workflowBucket": str(bucket),
+        "sortPpp": "-999999" if ppp is None else ppp,
+        "walletHeld": "true" if wallet_held else "false",
+    }
+
+
+def test_sort_ppp_ascending_orders_numerically_not_lexicographically() -> None:
+    cards = [
+        _sort_ppp_fixture_card(symbol="ccc", ppp="100"),
+        _sort_ppp_fixture_card(symbol="bbb", ppp="10"),
+        _sort_ppp_fixture_card(symbol="aaa", ppp="2"),
+    ]
+    result = _run_profit_plan_sort_js("ppp_asc", cards)
+    assert result["main_order"] == ["aaa", "bbb", "ccc"]
+
+
+def test_sort_ppp_descending_orders_numerically_not_lexicographically() -> None:
+    cards = [
+        _sort_ppp_fixture_card(symbol="ccc", ppp="100"),
+        _sort_ppp_fixture_card(symbol="bbb", ppp="10"),
+        _sort_ppp_fixture_card(symbol="aaa", ppp="2"),
+    ]
+    result = _run_profit_plan_sort_js("ppp_desc", cards)
+    assert result["main_order"] == ["ccc", "bbb", "aaa"]
+
+
+def test_sort_ppp_handles_zero_and_negative_values_correctly() -> None:
+    cards = [
+        _sort_ppp_fixture_card(symbol="pos", ppp="5"),
+        _sort_ppp_fixture_card(symbol="zero", ppp="0"),
+        _sort_ppp_fixture_card(symbol="neg", ppp="-5"),
+    ]
+    asc = _run_profit_plan_sort_js("ppp_asc", cards)
+    assert asc["main_order"] == ["neg", "zero", "pos"]
+    desc = _run_profit_plan_sort_js("ppp_desc", cards)
+    assert desc["main_order"] == ["pos", "zero", "neg"]
+
+
+def test_sort_ppp_unavailable_values_stay_at_end_in_both_directions() -> None:
+    cards = [
+        _sort_ppp_fixture_card(symbol="none1", ppp=None),
+        _sort_ppp_fixture_card(symbol="valid", ppp="7"),
+        _sort_ppp_fixture_card(symbol="none2", ppp=None),
+    ]
+    asc = _run_profit_plan_sort_js("ppp_asc", cards)
+    assert asc["main_order"][0] == "valid"
+    assert set(asc["main_order"][1:]) == {"none1", "none2"}
+    desc = _run_profit_plan_sort_js("ppp_desc", cards)
+    assert desc["main_order"][0] == "valid"
+    assert set(desc["main_order"][1:]) == {"none1", "none2"}
+
+
+def test_sort_ppp_ties_break_deterministically_by_symbol() -> None:
+    cards = [
+        _sort_ppp_fixture_card(symbol="zzz", ppp="5"),
+        _sort_ppp_fixture_card(symbol="aaa", ppp="5"),
+    ]
+    result = _run_profit_plan_sort_js("ppp_asc", cards)
+    assert result["main_order"] == ["aaa", "zzz"]
+
+
+def test_sort_ppp_wallet_held_and_portfolio_badges_do_not_distort_numeric_order() -> None:
+    """WALLET HELD / PORTFOLIO ASSET are badges, not PPP values — they must
+    never change where a card lands in a numeric Sort-PPP ordering."""
+    cards = [
+        _sort_ppp_fixture_card(symbol="held_high", ppp="90", wallet_held=True),
+        _sort_ppp_fixture_card(symbol="free_low", ppp="1", wallet_held=False),
+        _sort_ppp_fixture_card(symbol="free_mid", ppp="50", wallet_held=False),
+    ]
+    result = _run_profit_plan_sort_js("ppp_asc", cards)
+    assert result["main_order"] == ["free_low", "free_mid", "held_high"]
+
+
+def test_sort_ppp_rail_and_main_grid_stay_synchronized_in_ppp_modes() -> None:
+    """Regression (#256): the selector rail used to always force wallet-held
+    cards first regardless of the active sort mode, silently disagreeing
+    with the main card grid whenever Sort-PPP was selected."""
+    cards = [
+        _sort_ppp_fixture_card(symbol="ccc", ppp="100", wallet_held=True),
+        _sort_ppp_fixture_card(symbol="bbb", ppp="10", wallet_held=False),
+        _sort_ppp_fixture_card(symbol="aaa", ppp="2", wallet_held=False),
+    ]
+    for mode in ("ppp_asc", "ppp_desc"):
+        result = _run_profit_plan_sort_js(mode, cards)
+        assert result["rail_order"] == result["main_order"], mode
+
+
+def test_sort_ppp_rail_still_prioritizes_wallet_held_in_action_priority_mode() -> None:
+    """The wallet-held-first rail convenience is preserved for the default
+    action-priority sort — only PPP/symbol/setup modes must mirror DOM order."""
+    cards = [
+        _sort_ppp_fixture_card(symbol="ccc", ppp="100", wallet_held=False, bucket=0),
+        _sort_ppp_fixture_card(symbol="bbb", ppp="10", wallet_held=True, bucket=1),
+        _sort_ppp_fixture_card(symbol="aaa", ppp="2", wallet_held=False, bucket=2),
+    ]
+    result = _run_profit_plan_sort_js("action", cards)
+    assert result["rail_order"][0] == "bbb"

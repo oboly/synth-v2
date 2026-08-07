@@ -4236,12 +4236,18 @@ def _build_client_js(storage_scope: str) -> str:
       sel.innerHTML = "<div class='pp-selector-item muted'>No matching cards</div>";
       return;
     }}
-    // Wallet-held cards first, in DOM (default action-priority) order otherwise.
-    visible.sort(function(a, b) {{
-      var aHeld = a.dataset.walletHeld === 'true' ? 0 : 1;
-      var bHeld = b.dataset.walletHeld === 'true' ? 0 : 1;
-      return aHeld - bHeld;
-    }});
+    // Wallet-held-first grouping is an action-priority-view convenience only.
+    // For every other explicit sort mode (PPP asc/desc, symbol, setup) the
+    // rail must stay in the exact DOM order sortCardsInDom already produced,
+    // otherwise the rail silently disagrees with the card grid it mirrors.
+    var sortMode = selectedValue('sort-mode') || 'action';
+    if (sortMode === 'action') {{
+      visible.sort(function(a, b) {{
+        var aHeld = a.dataset.walletHeld === 'true' ? 0 : 1;
+        var bHeld = b.dataset.walletHeld === 'true' ? 0 : 1;
+        return aHeld - bHeld;
+      }});
+    }}
     visible.forEach(function(card) {{
       var item = document.createElement('div');
       var isWalletHeld = card.dataset.walletHeld === 'true';
