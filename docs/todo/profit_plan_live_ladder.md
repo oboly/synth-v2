@@ -1,9 +1,31 @@
 # TODO — Profit Plan Live Ladder Repair
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership (corrected 2026-08-07 — see
+`docs/development/docs_todo_issue_migration_batch_6b_v1.md` §2 for the
+correction rationale):
+- P0.0-P0.2 display row key + freshness presentation only (reporting, no mutation/permission authority) -> Issue #267
+- P0.4/P0.5 untrusted client selection, ladder-request lifecycle, dashboard/API write boundary -> Issue #254 (existing; material overlap, not duplicated)
+- P0.4/P0.7 canonical request artifact, immutable snapshot identity, idempotency -> Issue #202 (existing; material overlap, not duplicated)
+- P0.6 decision_gate approval contract, consuming #254/#202 canonical request state only -> Issue #268 (depends on #254, #202, #227)
+- execution_planner allocation/rounding/leg-validation primitives -> Issue #203 (existing; material overlap, reused not duplicated)
+- P0.7 post-approval immutable CANCEL_LIMIT -> verify -> CREATE_LIMIT execution intent -> Issue #269 (depends on #254, #202, #203, #268)
+- P0.3 credential scope, executor identity/runtime boundary, account/credential boundaries (A5) -> Issue #206 (existing; not duplicated)
+- P0.8 one-account live canary acceptance -> Issue #273 (new; #206 explicitly excludes live-trading permission/order submission and is not the canary owner)
+- Multi-cycle host acceptance of the already-merged read-only renderer (PR #113) -> Issue #201 (existing; not duplicated)
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 ```text
-active P1 / Synth v2.23
+active P1 / Synth v2.23 (superseded by GitHub Issue ownership above)
 ```
 
 The internal `P0.x` labels below are mandatory sequence gates inside this lane. Globally, this lane is P1 behind TODO-board reconciliation.
