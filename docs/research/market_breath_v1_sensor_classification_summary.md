@@ -19,6 +19,41 @@ Market Breath V1.1 calibration audit
 -> sensor classification summary
 ```
 
+## Research sources
+
+Docs:
+
+- `docs/research/market_breath_v1_1_calibration_audit.md`
+- `docs/research/market_breath_v1_1_neutral_rest_bucket_review.md`
+- `docs/research/market_breath_outcome_validation_v1.md`
+- `docs/research/market_breath_outcome_validation_v1_findings.md`
+- `docs/research/market_breath_outcome_bucket_analysis_v1.md`
+- `docs/research/market_breath_regime_stability_validation_v1.md`
+
+Runners:
+
+- `src/research/run_market_breath_v1_1_calibration_audit.py`
+- `src/research/run_market_breath_outcome_validation_v1.py`
+- `src/research/run_market_breath_outcome_bucket_analysis_v1.py`
+- `src/research/run_market_breath_regime_stability_validation_v1.py`
+
+Data outputs:
+
+- `data/research/market_breath_v1_1_calibration_audit/calibration_summary_v1.json`
+- `data/research/market_breath_v1_1_calibration_audit/phase_distribution_by_asof_v1.jsonl`
+- `data/research/market_breath_outcome_validation_v1/outcome_summary_v1.json`
+- `data/research/market_breath_outcome_validation_v1/outcome_rows_v1.jsonl`
+- `data/research/market_breath_outcome_bucket_analysis_v1/bucket_summary_v1.json`
+- `data/research/market_breath_outcome_bucket_analysis_v1/bucket_rows_v1.jsonl`
+- `data/research/market_breath_regime_stability_validation_v1/stability_summary_v1.json`
+- `data/research/market_breath_regime_stability_validation_v1/window_summary_v1.jsonl`
+
+## Terminology
+
+- Use `Market Breath` spelling for breath rhythm/phase context.
+- Use `participation` where possible for cross-asset participation context.
+- Use `breadth` only where it explicitly means market breadth participation/alignment.
+
 ## Core design conclusion
 
 Market Breath V1 should be treated as a regime-dependent state / risk-timing classifier.

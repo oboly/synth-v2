@@ -56,6 +56,6 @@ It does not:
 Canonical TODO updates were made in:
 
 - `docs/todo/ui_webview.md`: sticky columns, cockpit information split, and simplified per-coin dashboard direction.
-- `docs/todo/market_breath.md`: future `/synth/regime.html` page and Market Breath spelling/breadth usage rules.
+- `docs/todo/market_breath.md` (retired in Batch 3B2): future `/synth/regime.html` page — see `docs/development/docs_todo_canonicalization_batch_3b2_v1.md` for its ownership disposition; spelling/breadth usage rules moved to `docs/research/market_breath_v1_sensor_classification_summary.md`.
 - `docs/todo/strategy_candidates.md`: long-term regime classifier, dual-bucket policy, and super-bull/god-candle research follow-ups.
 - `docs/todo/README.md`: TODO index status/purpose updates.
