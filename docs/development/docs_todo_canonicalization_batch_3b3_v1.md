@@ -20,7 +20,7 @@ this batch).
 | E. UI Design Principles | `reporting_guidance` | Durable principle ("no hidden final labels", human labels first) folded into `strategy_proposal_contract_v1.md` Section 13; layout specifics remain owned by `docs/todo/manual_ladder_dashboard.md`. |
 | F. Strategy-Linked Proposals (id format, ACTION/HORIZON/SETUP enums, synonym rules, required fields, candidate strategies) | `canonical_schema` | Canonicalized into `strategy_proposal_contract_v1.md` Sections 3-9. Candidate strategy examples moved to archive (unvalidated). |
 | Strategy Profile Ownership (unlettered, under F) | `account_aware_configuration` | Canonicalized into `strategy_proposal_contract_v1.md` Section 8. |
-| Bucket Allocation Model (unlettered, under F) | `account_aware_configuration` | Canonicalized into `strategy_proposal_contract_v1.md` Section 8; `bucket_target_pct`/`bucket_available_pct`/`bucket_current_pct` explicitly reassigned away from the proposal schema to `decision_gate`. |
+| Bucket Allocation Model (unlettered, under F) | `account_aware_configuration` | Canonicalized into `strategy_proposal_contract_v1.md` Section 8; `bucket_id` (reference) and `bucket_target_pct`/`bucket_available_pct`/`bucket_current_pct` (account state) are all excluded from the proposal schema and assigned to the `decision_gate` input envelope / `decision_gate` account state (Section 3a). |
 | Strategy Leg Lifecycle (unlettered, under F) | `canonical_schema` | Canonicalized into `strategy_proposal_contract_v1.md` Section 9 (proposal lifecycle) and Section 6 (horizon cadence examples). |
 | G. LLM / Agent Bridge | `temporary_bridge` | Durable boundary canonicalized into `strategy_proposal_contract_v1.md` Section 11; cross-referenced against existing `docs/ops/runtime_chain_ownership_v1.md` "Agent / LLM Bridge Boundary" (`existing_owner` for the runtime-ownership-side statement of the same boundary). |
 | H. Manual Fallback Path | `temporary_bridge` | Durable transport principles canonicalized into `strategy_proposal_contract_v1.md` Section 12; XLSX explicitly demoted from "canonical format" to "optional transport". Excel/dropfolder implementation itself is `future_issue_candidate` (Section 10 below). |
@@ -101,28 +101,54 @@ contract, Anti-patterns, and Related documents.
   `proposal_id` identifies one emitted instance; `strategy_id` identifies the
   stable `{ACTION}_{HORIZON}_{SETUP}` strategy identity. The backlog's
   "canonical internal `strategy_id` / proposal id format" phrasing (which
-  treated the two as interchangeable) is not preserved.
-  `strategy_profile_id` and `trade_cycle_id` are also kept distinct from
-  both.
-- `account_scope_ref` added (explicit account-agnostic marker option) per
-  task instruction, since the source never made proposal account-scope
-  explicit beyond the profile/bucket references.
-  `SCHEMA_FIELDS_NORMALIZED` count: `proposal_id` vs `strategy_id` split,
-  addition of `strategy_profile_id`, addition of `account_scope_ref`,
+  treated the two as interchangeable) is not preserved. `trade_cycle_id`
+  is also kept distinct from both.
+- `strategy_profile_id`, `account_scope_ref`, and `bucket_id` are **not**
+  proposal fields. They are decision-gate input-envelope fields (contract
+  Section 3a): attached only when a market-only proposal is paired with
+  account-aware evaluation context at the `decision_gate` boundary, never
+  emitted by the `strategy` layer as part of the proposal object.
+  `account_scope_ref` was added (explicit account-agnostic marker option)
+  per task instruction, since the source never made account-scope explicit
+  beyond the profile/bucket references — it lives at the envelope layer for
+  the same reason `strategy_profile_id` and `bucket_id` do.
+  `SCHEMA_FIELDS_NORMALIZED` count: `proposal_id` vs `strategy_id` split;
+  introduction of the `decision_gate` input envelope as the sole owner of
+  `strategy_profile_id`, `account_scope_ref`, and `bucket_id` (all three
+  excluded from the proposal object, not merely referenced by it);
   reclassification of `bucket_target_pct`/`bucket_available_pct`/
-  `bucket_current_pct` out of the proposal object — 5 normalization
-  decisions.
+  `bucket_current_pct` out of the proposal object — 3 normalization
+  decisions (the profile/scope/bucket-id exclusion and the three
+  account-state-percentage exclusions are treated as one consolidated
+  envelope-ownership decision each rather than double-counted).
 - `ambiguous_schema_fields=0` — no field could not be classified after
   inspection of `docs/research/synth_v215_advice_route_contract_v1.md` and
   `docs/ops/runtime_chain_ownership_v1.md`.
 
 ## 6. Strategy-profile and bucket ownership
 
-Handled in Section 8 of the new contract. `strategy_profile_id` and
-`bucket_id` are proposal-carried references only. Target/configured bucket
-percentage, observed/current allocation, and available allocation are all
-explicitly assigned to `decision_gate`, never to the proposal schema or to
-`selection_engine`. `account_state_fields_misowned=0`.
+Handled in Section 8 and Section 3a of the corrected contract.
+**Correction (2026-08-07, follow-up to initial batch commit):** an earlier
+version of both the canonical contract and this manifest incorrectly stated
+that `strategy_profile_id` and `bucket_id` were "proposal-carried
+references." That framing has been corrected. The current, canonical model
+is:
+
+- the proposal object is market-only and account-agnostic; it carries no
+  profile, account-scope, or bucket reference at all;
+- `strategy_profile_id`, `account_scope_ref`, and `bucket_id` exist only in
+  the `decision_gate` input envelope, constructed at the `decision_gate`
+  boundary when a proposal is submitted for evaluation — never emitted or
+  carried by the `strategy` layer as part of the proposal;
+- target/configured bucket percentage, observed/current allocation, and
+  available allocation remain explicitly assigned to `decision_gate`, never
+  to the proposal schema or to `selection_engine`.
+
+`account_state_fields_misowned=0` and `cross_layer_authority_violations=0`
+hold under this corrected model (both the contract and this manifest were
+checked and now agree); they did not hold under the prior
+"proposal-carried" wording, which implied the `strategy` layer was carrying
+account-aware reference fields on the proposal object itself.
 
 ## 7. Temporary LLM/manual bridge disposition
 
@@ -289,11 +315,14 @@ worktree-policy document was created.
 
 - No changes to `selection_engine`, `decision_gate`, `execution_planner`,
   `executor`, broker integrations, or any runtime/DB/service/timer code.
-- The new canonical contract explicitly reassigns account-state fields
-  (`bucket_target_pct`, `bucket_available_pct`, `bucket_current_pct`,
-  balance, cash, position, open orders) away from the proposal schema to
-  `decision_gate`, and explicitly forbids broker-write/order-submission
-  fields on the proposal object.
+- The new canonical contract explicitly excludes account-aware reference
+  fields (`strategy_profile_id`, `account_scope_ref`, `bucket_id`) and
+  account-state fields (`bucket_target_pct`, `bucket_available_pct`,
+  `bucket_current_pct`, balance, cash, position, open orders) from the
+  proposal object entirely, assigning all of them to the `decision_gate`
+  input envelope / `decision_gate` account state (contract Section 3a and
+  Section 8), and explicitly forbids broker-write/order-submission fields
+  on the proposal object.
 - No LLM/agent bypass authority is granted; Section 11 explicitly restates
   the boundary already present in `docs/ops/runtime_chain_ownership_v1.md`.
 - No dashboard-ownership violation: Section 13 explicitly keeps freshness

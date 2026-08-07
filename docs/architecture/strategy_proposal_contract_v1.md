@@ -16,15 +16,20 @@ see `docs/development/docs_todo_canonicalization_batch_3b3_v1.md` and
 A strategy proposal is:
 
 - a structured interpretation of market evidence;
-- scoped to a strategy, a strategy profile, and a horizon;
+- scoped to a strategy and a horizon;
+- market-only and account-agnostic in itself;
 - **not** an order;
 - **not** an account-aware permission decision;
 - **not** an execution plan;
 - expiring and fully traceable back to its inputs.
 
-A proposal is the output of the `strategy` layer only. It carries an opinion
-about what a strategy would do, under a given account profile, if permitted.
-It never carries permission, sizing, or order state itself.
+A proposal is the output of the `strategy` layer only. It carries a
+market-only opinion about what a strategy would do, given evidence and
+thesis, if it were evaluated and permitted. It never carries account/profile
+scope, permission, sizing, or order state itself. Account-aware scope (which
+strategy profile, which bucket, which account) is attached only when a
+proposal is combined into a `decision_gate` input envelope at evaluation
+time — see Section 3a.
 
 ## 2. Separation of concerns
 
@@ -34,7 +39,10 @@ market evidence
 -> strategy interpretation / proposal
     (this contract)
 -> decision_gate account permission
-    (balance, exposure, cooldown, configured profile/buckets)
+    (balance, exposure, cooldown, configured profile/buckets; evaluated
+    against a decision_gate input envelope that pairs the market-only
+    proposal with account-aware profile/bucket/account-scope context —
+    Section 3a. The envelope is not part of the proposal object.)
 -> execution_planner execution intent
     (passive/urgent, laddering, tick placement, repricing)
 -> executor order handling
@@ -63,13 +71,13 @@ v2.14 backlog is not preserved:
 - `strategy_id` — the stable canonical strategy identity in
   `{ACTION}_{HORIZON}_{SETUP}` enum form (for example `SELL_SHORT_SPIKE`).
   Many proposals over time can share the same `strategy_id`.
-- `strategy_profile_id` — the account-aware strategy profile (Joost's chosen
-  allocation configuration) that was active when the proposal was generated.
-  This is a reference only; the proposal does not own or evaluate the
-  profile.
 - `trade_cycle_id` — links a `BUY` proposal to a later `SELL` proposal (or
   vice versa) that belong to the same round-trip thesis, without merging them
   into a single proposal or a single allocation (see Section 6).
+
+`strategy_profile_id`, `account_scope_ref`, and `bucket_id` are **not**
+proposal identity concepts. They identify account-aware evaluation context
+and exist only at the `decision_gate` input envelope layer — see Section 3a.
 
 `docs/research/synth_v215_advice_route_contract_v1.md` already uses
 `proposal_id` and a `{ACTION}*{HORIZON}*{SETUP}` strategy id format for its
@@ -77,6 +85,27 @@ route-stage research design; this contract is the canonical schema authority
 for those field names and the route document's proposal-contract section
 (3.4) should treat this document as authoritative going forward. No second,
 conflicting canonical proposal contract exists.
+
+## 3a. Decision-gate input envelope
+
+A proposal is market-only and carries no account/profile/bucket reference.
+When a proposal is submitted for `decision_gate` evaluation, the caller
+constructs a **decision-gate input envelope** that pairs the unmodified
+proposal with account-aware evaluation context:
+
+| Envelope field | Meaning | Owner |
+| --- | --- | --- |
+| `proposal` | The unmodified, market-only proposal object (Section 4). | `strategy` layer (unchanged by the envelope). |
+| `strategy_profile_id` | Reference to the account-aware strategy profile (Joost's chosen allocation configuration) the proposal is being evaluated under. | `decision_gate` / account-aware configuration. |
+| `account_scope_ref` | Reference to the account scope the proposal is being evaluated against, or an explicit account-agnostic marker if evaluation has not yet been scoped to an account. | `decision_gate` / account-aware configuration. |
+| `bucket_id` | Reference to the allocation bucket the strategy leg would operate on (for example `SHORT_TACTICAL`), if evaluation proceeds. | `decision_gate` / account-aware configuration. |
+
+The envelope is constructed at the `decision_gate` boundary, not by the
+`strategy` layer and not carried inside the proposal object. This keeps the
+proposal itself reusable across profiles/accounts and keeps `selection_engine`
+and `strategy` strictly market-only and account-agnostic. `decision_gate`
+evaluates the envelope (proposal + profile/bucket/account-scope context)
+against live account state (Section 8).
 
 ## 4. Required proposal fields
 
@@ -86,9 +115,6 @@ Fields that belong to the proposal object:
 | --- | --- |
 | `proposal_id` | Unique proposal instance identifier. |
 | `strategy_id` | Canonical `{ACTION}_{HORIZON}_{SETUP}` strategy identity. |
-| `strategy_profile_id` | Reference to the account-aware profile active at generation time. |
-| `account_scope_ref` | Explicit reference to the account scope this proposal was profiled against, or an explicit account-agnostic marker if none applies. |
-| `bucket_id` | Reference to the allocation bucket the strategy leg operates on (for example `SHORT_TACTICAL`). Reference only — see Section 8. |
 | `trade_cycle_id` | Optional link between paired `BUY`/`SELL` proposals. |
 | `symbol` | Traded asset/pair. |
 | `horizon` | `SHORT` / `MID` / `LONG` (Section 6). |
@@ -111,9 +137,11 @@ Levels are action-scoped, not universally required:
 - `sell_levels` only when `action` is `SELL` or `HOLD`;
 - `buy_levels` only when `action` is `BUY`.
 
-No account values are invented here. `bucket_id` is a reference to a bucket
-that `decision_gate` owns and evaluates — the proposal never carries the
-bucket's percentage, current allocation, or available capacity (Section 8).
+No account values are invented here. The proposal object carries no
+profile, account-scope, or bucket reference at all — those are envelope-level
+fields (Section 3a), attached only at `decision_gate` evaluation time, and
+`decision_gate` alone owns evaluation of a bucket's percentage, current
+allocation, or available capacity (Section 8).
 
 ### 4.1 Fields owned elsewhere
 
@@ -122,8 +150,9 @@ where they actually belong:
 
 | Field concept | Owner |
 | --- | --- |
+| `strategy_profile_id`, `account_scope_ref`, `bucket_id` | `decision_gate` input envelope (Section 3a) — attached at evaluation time, never carried by the proposal itself |
 | Account balance, available cash, current position size, open orders | `decision_gate` (reads live account state; not carried on the proposal) |
-| `bucket_target_pct`, `bucket_available_pct`, `bucket_current_pct` | `decision_gate` (evaluates the proposal's `bucket_id` against current configured/observed allocation) |
+| `bucket_target_pct`, `bucket_available_pct`, `bucket_current_pct` | `decision_gate` (evaluates the envelope's `bucket_id` against current configured/observed allocation) |
 | Limit/market intent, laddering, tick placement, repricing | `execution_planner` |
 | Broker order id, fill state, cancel/replace requests | `executor` |
 
@@ -199,15 +228,19 @@ are **account-aware configuration**:
 
 - they must not live in `selection_engine`;
 - they must not be selected or rewritten by market signals;
-- the proposal may only *reference* the profile and bucket under which it was
-  generated (`strategy_profile_id`, `bucket_id`);
-- `decision_gate` owns evaluation of a proposal against actual account state
-  and configured limits, including bucket percentages;
+- the proposal itself carries **no** profile or bucket reference at all —
+  `strategy_profile_id` and `bucket_id` exist only in the `decision_gate`
+  input envelope (Section 3a), attached at evaluation time, never emitted by
+  the `strategy` layer as part of the proposal object;
+- `decision_gate` owns evaluation of the envelope (proposal plus
+  profile/bucket/account-scope context) against actual account state and
+  configured limits, including bucket percentages;
 - `execution_planner` and `executor` must not reinterpret bucket policy.
 
-Distinguish clearly between four different bucket-related numbers, and note
-that only the first is proposal-adjacent (as a static profile fact, not a
-proposal field) — the other three never appear on the proposal:
+Distinguish clearly between four different bucket-related numbers. None of
+them are proposal fields — all four are owned by `decision_gate` and only
+become relevant once a proposal is placed into an input envelope for
+evaluation:
 
 1. **target/configured bucket percentage** — part of the account-aware
    `strategy_profile_id` configuration, owned by `decision_gate`;
@@ -215,20 +248,24 @@ proposal field) — the other three never appear on the proposal:
    `decision_gate`;
 3. **available allocation** — derived from (1) and (2), owned by
    `decision_gate`;
-4. **proposed change** — implied by the proposal's `action` and `bucket_id`,
-   but the magnitude/sizing of that change is decided by `decision_gate` and
+4. **proposed change** — implied by the proposal's `action`, evaluated by
+   `decision_gate` against the `bucket_id` supplied in the input envelope;
+   the magnitude/sizing of that change is decided by `decision_gate` and
    `execution_planner`, not carried as a percentage on the proposal.
 
-The v2.14 backlog listed `bucket_target_pct` and
-`bucket_available_pct`/`bucket_current_pct` as proposal fields. This contract
-does not carry that forward: live or configured account-state percentages
-are not owned by the proposal schema merely because a prior draft listed
-them. The proposal carries `bucket_id` only.
+The v2.14 backlog listed `bucket_target_pct`,
+`bucket_available_pct`/`bucket_current_pct`, and a bucket/profile reference
+as proposal fields. This contract does not carry that forward in any form:
+neither the account-state percentages nor the profile/bucket reference
+itself are owned by the proposal schema. The proposal carries no bucket or
+profile field; `bucket_id` and `strategy_profile_id` are envelope-only
+(Section 3a).
 
 `BUY` and `SELL` legs inside the same bucket are not separate allocations
 (for example, a `SELL_SHORT_SPIKE` proposal and a `BUY_SHORT_PULLBACK`
-proposal both referencing `bucket_id = SHORT_TACTICAL` must not be summed by
-`decision_gate` into double the bucket's target percentage).
+proposal both evaluated by `decision_gate` under an envelope referencing
+`bucket_id = SHORT_TACTICAL` must not be summed by `decision_gate` into
+double the bucket's target percentage).
 
 ## 9. Proposal lifecycle
 
@@ -327,8 +364,12 @@ Only durable, read-only reporting principles are canonical here:
   architecture;
 - show human-readable labels with the stable internal id available
   (tooltip/detail);
-- show evidence, freshness, lifecycle state, expiry, and the
-  strategy/profile references a proposal carries;
+- show evidence, freshness, lifecycle state, expiry, and the `strategy_id`
+  a proposal carries; when a dashboard is explicitly account-aware and shows
+  a proposal alongside its `decision_gate` evaluation, it may also show the
+  `strategy_profile_id`/`bucket_id` from that evaluation's input envelope
+  (Section 3a) — those remain envelope/decision_gate-owned values being
+  displayed, not proposal fields;
 - no hidden final labels — a displayed conclusion must be traceable to a
   visible strategy, visible inputs, and visible freshness;
 - no dashboard-owned calculation or reinterpretation of a proposal's action.
