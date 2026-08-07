@@ -37,7 +37,9 @@ from src.market_data.canonical_fib_zone_map_v1 import (
 from src.market_data.held_market_coverage_v1 import (
     SAFETY_MARKERS,
     classify_held_coverage,
+    coverage_check_passes,
     resolve_held_markets,
+    summarize_coverage,
 )
 from src.market_data.run_held_market_enrollment_v1 import (
     DEFAULT_QUOTE_CURRENCY,
@@ -94,6 +96,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--interval", default="4h")
     parser.add_argument("--min-candles", type=int, default=MIN_REQUIRED_CANDLES)
     parser.add_argument("--stale-after-hours", type=float, default=DEFAULT_STALE_AFTER.total_seconds() / 3600)
+    parser.add_argument(
+        "--check",
+        choices=("enrollment", "publication", "all"),
+        default="all",
+        help=(
+            "Which invariant gates the exit code. 'enrollment' passes once every "
+            "resolvable held asset has asset.is_portfolio/is_core_sensor set, "
+            "even if its canonical 4h context is not yet published (e.g. still "
+            "waiting for the next chain-4h cycle). 'publication' (and the "
+            "default 'all') additionally requires fresh canonical 4h context to "
+            "actually exist -- a known gap such as SOL/VET map-status-"
+            "unavailable keeps failing this check and must never be treated as "
+            "acceptable just because enrollment succeeded."
+        ),
+    )
     parser.add_argument("--output", choices=("summary", "json"), default="summary")
     return parser.parse_args(argv)
 
@@ -135,27 +152,42 @@ def main(argv: list[str] | None = None) -> int:
         )
         for resolution in resolutions
     ]
-    gaps = [s for s in statuses if s.status == "GAP"]
+    def _row(s: Any) -> dict[str, Any]:
+        return {
+            "currency_code": s.currency_code,
+            "symbol": s.symbol,
+            "market": s.market,
+            "reason": s.reason,
+            "candle_count": s.candle_count,
+            "map_status": s.map_status,
+            "held_by": list(s.held_by_account_codes),
+        }
+
+    coverage = summarize_coverage(statuses)
+    publication_gaps = list(coverage.publication_gaps)
+    publication_pass = coverage.publication_pass
+    enrollment_gaps = list(coverage.enrollment_gaps)
+    enrollment_pass = coverage.enrollment_pass
 
     summary = {
         "report": RUNNER_NAME,
         "version": RUNNER_VERSION,
         "generated_ts_utc": now_utc.isoformat(),
         "held_symbol_count": len(statuses),
-        "ok_count": len(statuses) - len(gaps),
-        "gap_count": len(gaps),
-        "gaps": [
-            {
-                "currency_code": s.currency_code,
-                "symbol": s.symbol,
-                "market": s.market,
-                "reason": s.reason,
-                "candle_count": s.candle_count,
-                "map_status": s.map_status,
-                "held_by": list(s.held_by_account_codes),
-            }
-            for s in gaps
-        ],
+        "ok_count": len(statuses) - len(publication_gaps),
+        "gap_count": len(publication_gaps),
+        "gaps": [_row(s) for s in publication_gaps],
+        "enrollment": {
+            "status": "PASS" if enrollment_pass else "FAIL",
+            "gap_count": len(enrollment_gaps),
+            "gaps": [_row(s) for s in enrollment_gaps],
+        },
+        "publication": {
+            "status": "PASS" if publication_pass else "FAIL",
+            "gap_count": len(publication_gaps),
+            "gaps": [_row(s) for s in publication_gaps],
+        },
+        "check": args.check,
         **SAFETY_MARKERS,
     }
 
@@ -163,12 +195,16 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(summary, indent=2, sort_keys=True, default=str))
     else:
         emit(f"held_symbol_count={summary['held_symbol_count']} ok={summary['ok_count']} gap={summary['gap_count']}")
+        emit(f"enrollment_status={summary['enrollment']['status']} enrollment_gap_count={summary['enrollment']['gap_count']}")
+        emit(f"publication_status={summary['publication']['status']} publication_gap_count={summary['publication']['gap_count']}")
         for row in summary["gaps"]:
             emit(f"  GAP {row['currency_code']} reason={row['reason']} held_by={row['held_by']}")
 
-    status_word = "FAILED" if gaps else "FINISHED"
-    emit(f"{status_word} {RUNNER_NAME} ts={datetime.now(UTC).isoformat()}")
-    return 1 if gaps else 0
+    failed = not coverage_check_passes(coverage, check=args.check)
+
+    status_word = "FAILED" if failed else "FINISHED"
+    emit(f"{status_word} {RUNNER_NAME} check={args.check} ts={datetime.now(UTC).isoformat()}")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

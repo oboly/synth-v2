@@ -48,7 +48,10 @@ locked account/render cycle:
 3. linked-profile discovery;
 4. authenticated read-only account refresh per profile;
 5. wallet/open-order persisted-snapshot render per profile;
-6. Profit Plan persisted-snapshot render after all required account refreshes
+6. held-market enrollment (Issue #238), once, across every profile's fresh
+   balances, only after every required account refresh above succeeded --
+   see `docs/ops/held_market_enrollment_v1.md`;
+7. Profit Plan persisted-snapshot render after all required account refreshes
    succeed.
 
 The validation stage calls only:
@@ -83,6 +86,9 @@ Freshness fields are truthful validation fields, not refresh claims:
   "freshness_classification": "FRESH|STALE|MISSING|UNAVAILABLE",
   "public_price_validation_reason": "WITHIN_THRESHOLD|EXCEEDS_THRESHOLD|FUTURE_TIMESTAMP|...",
   "persisted_public_price_snapshot_row_count": 42,
+  "held_market_enrollment": {
+    "result": "not_run|skipped_account_refresh|ok|failed_continuing"
+  },
   "safety": {
     "public_market_data_writes": 0,
     "broker_writes": 0,
@@ -92,6 +98,12 @@ Freshness fields are truthful validation fields, not refresh claims:
   }
 }
 ```
+
+`held_market_enrollment.result` reflects the schema-`v3` addition from
+Issue #238. `ok` and `failed_continuing` both mean the required account
+refreshes succeeded this cycle and enrollment was attempted;
+`failed_continuing` also flips `overall_result` to `degraded` (see
+`docs/ops/held_market_enrollment_v1.md`).
 
 `overall_result=blocked_public_price_validation` means no profile, account, or
 render stage ran. `overall_result=degraded` remains reserved for later-stage
@@ -105,6 +117,9 @@ The scheduled orchestrator continues to use:
   read-only account refresh plus account-snapshot persistence;
 - `scripts/odroid/run_account_wallet_snapshot_dashboard_render_once.sh` for
   wallet/open-order persisted-snapshot rendering;
+- `scripts/odroid/run_held_market_enrollment_once.sh` for the account-agnostic
+  held-market enrollment step (Issue #238) -- see
+  `docs/ops/held_market_enrollment_v1.md`;
 - `scripts/odroid/run_account_profit_plan_snapshot_render_once.sh` for the
   persisted-snapshot-only Profit Plan owner.
 
@@ -142,8 +157,11 @@ sequencing and rollback.
 - [ ] Persisted public prices classify `FRESH` within the 900-second contract.
 - [ ] Odroid metadata records validation fields above.
 - [ ] Stale/missing/future/malformed fixtures stop before account refresh.
-- [ ] Current data permits account refresh, wallet/open-order render, and
-      persisted-snapshot Profit Plan render in order.
+- [ ] Current data permits account refresh, wallet/open-order render,
+      held-market enrollment, and persisted-snapshot Profit Plan render in
+      order.
+- [ ] `held_market_enrollment.result` is `ok` (or `skipped_account_refresh`
+      only when an account refresh legitimately failed this cycle).
 - [ ] Odroid public market-data writer count is zero.
 - [ ] No account duplicate is retired as an implicit side effect.
 - [ ] Native SHORT provenance acceptance is repeated only afterward.

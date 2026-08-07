@@ -268,3 +268,44 @@ def classify_held_coverage(
         map_status=map_status,
         asof_ts_display=str(asof_display) if asof_display is not None else None,
     )
+
+
+@dataclass(frozen=True)
+class CoverageSummary:
+    """Two separate invariants over the same statuses, deliberately not
+    conflated (Issue #238 follow-up):
+
+    - enrollment: every resolvable held asset is enrolled in the
+      account-agnostic publication cohort (asset.is_portfolio/is_core_sensor
+      set). Does not require a published canonical 4h row yet.
+    - publication: every resolvable held asset actually has fresh, published
+      canonical 4h context. A known gap (e.g. a map-status-unavailable
+      symbol) keeps this failing even after enrollment succeeds -- it must
+      never be normalized as acceptable just because enrollment passed.
+    """
+
+    enrollment_pass: bool
+    enrollment_gaps: tuple[HeldCoverageStatus, ...]
+    publication_pass: bool
+    publication_gaps: tuple[HeldCoverageStatus, ...]
+
+
+def summarize_coverage(statuses: Sequence[HeldCoverageStatus]) -> CoverageSummary:
+    publication_gaps = tuple(s for s in statuses if s.status == "GAP")
+    enrollment_gaps = tuple(s for s in statuses if s.reason == COVERAGE_NOT_ENROLLED)
+    return CoverageSummary(
+        enrollment_pass=not enrollment_gaps,
+        enrollment_gaps=enrollment_gaps,
+        publication_pass=not publication_gaps,
+        publication_gaps=publication_gaps,
+    )
+
+
+def coverage_check_passes(summary: CoverageSummary, *, check: str) -> bool:
+    """``check`` is one of 'enrollment', 'publication', 'all'. 'publication'
+    and 'all' are deliberately equivalent: publication is the strict
+    superset invariant, so gating the exit code on it is always at least as
+    strict as gating on enrollment alone."""
+    if check == "enrollment":
+        return summary.enrollment_pass
+    return summary.publication_pass

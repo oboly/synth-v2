@@ -20,6 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ACCOUNT_REFRESH_SCRIPT="${SYNTH_ACCOUNT_WALLET_REFRESH_SCRIPT:-${SCRIPT_DIR}/run_account_wallet_refresh_once.sh}"
 PROFILE_RENDER_SCRIPT="${SYNTH_LINKED_PROFILE_RENDER_SCRIPT:-${SCRIPT_DIR}/run_account_wallet_snapshot_dashboard_render_once.sh}"
 PROFIT_PLAN_RENDER_SCRIPT="${SYNTH_ACCOUNT_PROFIT_PLAN_RENDER_SCRIPT:-${SCRIPT_DIR}/run_account_profit_plan_snapshot_render_once.sh}"
+HELD_MARKET_ENROLLMENT_SCRIPT="${SYNTH_HELD_MARKET_ENROLLMENT_SCRIPT:-${SCRIPT_DIR}/run_held_market_enrollment_once.sh}"
 PUBLIC_PRICE_MAX_AGE_SECONDS="${SYNTH_PERSISTED_PUBLIC_PRICE_MAX_AGE_SECONDS:-900}"
 PUBLIC_PRICE_MAX_FUTURE_SKEW_SECONDS="${SYNTH_PERSISTED_PUBLIC_PRICE_MAX_FUTURE_SKEW_SECONDS:-30}"
 SKIP_DISK_HEALTH="${SYNTH_LINKED_PROFILE_RUNTIME_SKIP_DISK_HEALTH:-0}"
@@ -170,6 +171,7 @@ write_metadata() {
   local render_failure="${15}"
   local profit_plan_success="${16}"
   local profit_plan_failure="${17}"
+  local held_market_enrollment_result="${18}"
 
   python - "${METADATA_PATH}" "${RUN_ID}" "${run_started_ts}" "${run_finished_ts}" \
     "${overall_result}" "${VENUE}" "${QUOTE}" "${profile_csv}" "${profile_count}" \
@@ -177,7 +179,7 @@ write_metadata() {
     "${freshness_classification}" "${validation_reason}" "${snapshot_row_count}" \
     "${account_success}" "${account_failure}" \
     "${render_success}" "${render_failure}" "${profit_plan_success}" \
-    "${profit_plan_failure}" "${STAGES_TSV}" <<'PY'
+    "${profit_plan_failure}" "${held_market_enrollment_result}" "${STAGES_TSV}" <<'PY'
 from __future__ import annotations
 
 import json
@@ -208,6 +210,7 @@ from pathlib import Path
     render_failure,
     profit_plan_success,
     profit_plan_failure,
+    held_market_enrollment_result,
     stages_tsv,
 ) = sys.argv[1:]
 
@@ -228,7 +231,7 @@ with Path(stages_tsv).open(encoding="utf-8") as handle:
 
 profiles = [p for p in profile_csv.split(",") if p]
 payload = {
-    "schema": "linked_profile_runtime_orchestrator_v2",
+    "schema": "linked_profile_runtime_orchestrator_v3",
     "run_id": run_id,
     "started_ts_utc": started_ts,
     "finished_ts_utc": finished_ts,
@@ -258,6 +261,12 @@ payload = {
     "profit_plan_render": {
         "success": int(profit_plan_success),
         "failure": int(profit_plan_failure),
+    },
+    "held_market_enrollment": {
+        # One of: not_run, skipped_account_refresh, ok, failed_continuing.
+        # Issue #238: enrolls resolvable positive wallet holdings into the
+        # account-agnostic canonical Fib publication cohort every cycle.
+        "result": held_market_enrollment_result,
     },
     "stages": stages,
     "safety": {
@@ -336,6 +345,7 @@ render_success=0
 render_failure=0
 profit_plan_success=0
 profit_plan_failure=0
+held_market_enrollment_result="not_run"
 profile_csv=""
 
 if ! run_persisted_market_price_validation; then
@@ -345,7 +355,7 @@ if ! run_persisted_market_price_validation; then
     "${persisted_public_price_age_seconds}" "${freshness_classification}" \
     "${public_price_validation_reason}" "${persisted_public_price_snapshot_row_count}" \
     "${account_success}" "${account_failure}" "${render_success}" "${render_failure}" \
-    "${profit_plan_success}" "${profit_plan_failure}"
+    "${profit_plan_success}" "${profit_plan_failure}" "${held_market_enrollment_result}"
   echo "FAILED linked_profile_runtime_orchestrator_once reason=PUBLIC_PRICE_VALIDATION_BLOCKED metadata_path=${METADATA_PATH}" >&2
   exit 1
 fi
@@ -398,6 +408,31 @@ for profile_code in "${profiles[@]}"; do
   fi
 done
 
+# Held-market enrollment (Issue #238): a newly appearing positive wallet
+# holding must never depend on a human running the enrollment CLI. Runs once
+# per cycle (account-agnostic, across every linked profile's fresh balances),
+# only after every required account-refresh stage has succeeded this cycle --
+# otherwise it would enroll off stale/partial balance data. Failure here is
+# non-fatal to the render stages below: it only ever writes
+# asset.is_portfolio, so a failed run leaves the read-only render path
+# unaffected and is safe to retry next cycle (idempotent).
+phase_epoch="$(date +%s)"
+phase_ts="$(utc_now)"
+phase_start "held_market_enrollment" "ALL"
+if [[ "${account_failure}" -gt 0 || "${account_success}" -ne "${profile_count}" || "${profile_count}" -eq 0 ]]; then
+  held_market_enrollment_result="skipped_account_refresh"
+  phase_finished "held_market_enrollment" "ALL" "skipped_account_refresh" "${phase_ts}" "${phase_epoch}"
+elif SYNTH_REPO_DIR="${REPO_DIR}" \
+     SYNTH_ACCOUNT_WALLET_VENUE="${VENUE}" \
+     SYNTH_MARKET_PRICE_SNAPSHOT_QUOTE="${QUOTE}" \
+     bash "${HELD_MARKET_ENROLLMENT_SCRIPT}"; then
+  held_market_enrollment_result="ok"
+  phase_finished "held_market_enrollment" "ALL" "ok" "${phase_ts}" "${phase_epoch}"
+else
+  held_market_enrollment_result="failed_continuing"
+  phase_finished "held_market_enrollment" "ALL" "failed_continuing" "${phase_ts}" "${phase_epoch}"
+fi
+
 # Profit Plan is a separate persisted-snapshot stage. It is deliberately
 # sequenced only after every required account-refresh stage has succeeded.
 for profile_code in "${profiles[@]}"; do
@@ -427,7 +462,7 @@ if [[ "${profile_count}" -eq 0 ]]; then
 fi
 
 overall_result="ok"
-if [[ "${account_failure}" -gt 0 || "${render_failure}" -gt 0 || "${profit_plan_failure}" -gt 0 ]]; then
+if [[ "${account_failure}" -gt 0 || "${render_failure}" -gt 0 || "${profit_plan_failure}" -gt 0 || "${held_market_enrollment_result}" == "failed_continuing" ]]; then
   overall_result="degraded"
 fi
 
@@ -437,10 +472,11 @@ write_metadata "${run_started_ts}" "${run_finished_ts}" "${overall_result}" "${p
   "${persisted_public_price_age_seconds}" "${freshness_classification}" \
   "${public_price_validation_reason}" "${persisted_public_price_snapshot_row_count}" \
   "${account_success}" "${account_failure}" \
-  "${render_success}" "${render_failure}" "${profit_plan_success}" "${profit_plan_failure}"
+  "${render_success}" "${render_failure}" "${profit_plan_success}" "${profit_plan_failure}" \
+  "${held_market_enrollment_result}"
 
 echo "metadata_path=${METADATA_PATH}"
-echo "linked_profile_count=${profile_count} account_success=${account_success} account_failure=${account_failure} render_success=${render_success} render_failure=${render_failure} profit_plan_success=${profit_plan_success} profit_plan_failure=${profit_plan_failure}"
+echo "linked_profile_count=${profile_count} account_success=${account_success} account_failure=${account_failure} render_success=${render_success} render_failure=${render_failure} profit_plan_success=${profit_plan_success} profit_plan_failure=${profit_plan_failure} held_market_enrollment_result=${held_market_enrollment_result}"
 echo "linked_profile_runtime_orchestrator_once finished result=${overall_result} $(utc_now)"
 
 if [[ "${overall_result}" == "ok" ]]; then

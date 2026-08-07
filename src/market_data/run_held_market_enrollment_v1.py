@@ -40,9 +40,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Sequence
 
 from src.common.db import get_connection
 from src.market_data.held_market_coverage_v1 import (
@@ -122,7 +123,9 @@ def fetch_asset_registry(conn: Any) -> dict[str, AssetRegistryRow]:
 
 def apply_enrollment(conn: Any, *, asset_id: int) -> bool:
     """Idempotent, guarded flip 0 -> 1. Never touches an asset already
-    enrolled via is_portfolio or is_core_sensor."""
+    enrolled via is_portfolio or is_core_sensor. Returns True only when this
+    call actually flipped the row (False means it was already enrolled by a
+    concurrent run -- a no-op, not a failure)."""
     sql = """
     UPDATE asset
     SET is_portfolio = 1
@@ -133,6 +136,46 @@ def apply_enrollment(conn: Any, *, asset_id: int) -> bool:
     with conn.cursor() as cur:
         cur.execute(sql, (asset_id,))
         return cur.rowcount == 1
+
+
+@dataclass(frozen=True)
+class EnrollmentOutcome:
+    enrolled: tuple[str, ...]
+    skipped_already_enrolled: tuple[str, ...]
+    failed: tuple[dict[str, str], ...]
+
+
+def apply_pending_enrollments(conn: Any, pending: Sequence[Any]) -> EnrollmentOutcome:
+    """Apply each pending enrollment as its own committed unit.
+
+    One row-per-commit (not one all-or-nothing transaction for the whole
+    batch) is deliberate: a reconciliation job must make every successful
+    enrollment durable even if a later symbol in the same run fails, and a
+    retry of the same run must be a safe no-op for rows already applied.
+    Every outcome -- enrolled, already-enrolled (race with a concurrent run),
+    or failed -- is reported explicitly; nothing is silently dropped.
+    """
+    enrolled: list[str] = []
+    skipped: list[str] = []
+    failed: list[dict[str, str]] = []
+    for resolution in pending:
+        symbol = resolution.symbol or resolution.currency_code
+        assert resolution.asset_id is not None
+        try:
+            flipped = apply_enrollment(conn, asset_id=resolution.asset_id)
+            conn.commit()
+        except Exception as exc:  # noqa: BLE001 -- must record every failure, never abort the batch
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            failed.append({"symbol": symbol, "error": str(exc)})
+            continue
+        if flipped:
+            enrolled.append(symbol)
+        else:
+            skipped.append(symbol)
+    return EnrollmentOutcome(enrolled=tuple(enrolled), skipped_already_enrolled=tuple(skipped), failed=tuple(failed))
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -175,13 +218,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         pending = resolutions_needing_enrollment(resolutions)
 
-        enrolled: list[str] = []
+        outcome = EnrollmentOutcome(enrolled=(), skipped_already_enrolled=(), failed=())
         if args.apply:
-            for resolution in pending:
-                assert resolution.asset_id is not None
-                if apply_enrollment(conn, asset_id=resolution.asset_id):
-                    enrolled.append(resolution.symbol or resolution.currency_code)
-            conn.commit()
+            outcome = apply_pending_enrollments(conn, pending)
     finally:
         conn.close()
 
@@ -197,7 +236,9 @@ def main(argv: list[str] | None = None) -> int:
         "held_symbol_count": len(resolutions),
         "already_enrolled_count": sum(1 for r in resolutions if r.resolvable and not r.needs_enrollment),
         "needs_enrollment_count": len(pending),
-        "enrolled_this_run": enrolled,
+        "enrolled_this_run": list(outcome.enrolled),
+        "skipped_already_enrolled_this_run": list(outcome.skipped_already_enrolled),
+        "failed_this_run": list(outcome.failed),
         "non_resolvable": [
             {"currency_code": r.currency_code, "reason": r.reason, "held_by": list(r.held_by_account_codes)}
             for r in non_resolvable
@@ -220,12 +261,20 @@ def main(argv: list[str] | None = None) -> int:
             for row in summary["pending_enrollment"]:
                 emit(f"  {row['symbol']} ({row['market']}) held_by={row['held_by']}")
         if args.apply:
-            emit(f"enrolled_this_run={enrolled}")
+            emit(f"enrolled_this_run={summary['enrolled_this_run']}")
+            emit(f"skipped_already_enrolled_this_run={summary['skipped_already_enrolled_this_run']}")
+            if outcome.failed:
+                emit("[error] enrollment failures this run:")
+                for row in summary["failed_this_run"]:
+                    emit(f"  {row['symbol']} error={row['error']}")
         if non_resolvable:
             emit("[warn] non-resolvable held currency codes (need registry/venue_market attention):")
             for row in summary["non_resolvable"]:
                 emit(f"  {row['currency_code']} reason={row['reason']} held_by={row['held_by']}")
 
+    if outcome.failed:
+        emit(f"FAILED {RUNNER_NAME} ts={datetime.now(UTC).isoformat()} failed_count={len(outcome.failed)}")
+        return 1
     emit(f"FINISHED {RUNNER_NAME} ts={datetime.now(UTC).isoformat()}")
     return 0
 
