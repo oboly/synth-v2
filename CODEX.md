@@ -35,10 +35,24 @@ and obey `src/research/AGENTS.override.md`.
   exposed by the Codex client. If no real effort control is exposed, report
   `effort=default` or `effort=unknown`; do not infer an effort value from task
   depth or elapsed work.
+- **Use effort to resolve uncertainty, not to execute scope.** If the task
+  contract already resolves the important architecture, requirements, and
+  implementation choices, low or medium is normally sufficient even when the
+  implementation itself is substantial.
 - Subagents do not default to high effort. When Codex exposes an effort
   control, use medium by default for subagents, low for simple mechanical
-  slices, and high only for an individually scoped subtask that genuinely
-  requires deep reasoning.
+  slices, and high only for an individually scoped subtask that must itself
+  resolve genuine uncertainty.
+- High effort is an exception for unresolved architectural choices,
+  contradictory requirements, unknown failure causes, security/safety
+  ambiguity, or broad evidence synthesis where the conclusion is not already
+  specified. It is not a quality tier and must not be used merely because a
+  task is important, large, a review, or an audit.
+- For a pre-resolved implementation task, do not re-open settled design
+  decisions, search for alternative architectures, invent extra edge cases,
+  or broaden the task merely because high effort is available.
+- Before escalating effort, ask: `What material uncertainty remains for this
+  agent to resolve?` If there is no concrete answer, do not escalate.
 - Do not escalate a subagent to high merely because the parent task is an
   architecture audit, because the agent is a reviewer/auditor, or because
   parallel agents are available. Narrow the assigned slice first.
