@@ -63,6 +63,26 @@ class TestSelectionEngineNeverConsumesAccountAwareP0Modules:
                 )
 
 
+class TestSelectionEngineNeverImportsOperatorIntent:
+    """selection_engine must stay account-agnostic (Issue #262/#254 Phase 1):
+    it must never import the operator_intent package, which is account-scoped
+    operator-preference state, not market data."""
+
+    def test_selection_engine_does_not_import_operator_intent(self) -> None:
+        selection_dir = _REPO_ROOT / "src" / "selection"
+        if not selection_dir.exists():
+            pytest.skip("src/selection not present in this checkout")
+
+        for path in selection_dir.rglob("*.py"):
+            imported = _imported_module_names(path)
+            for module_name in imported:
+                assert not module_name.startswith("src.operator_intent"), (
+                    f"{path.relative_to(_REPO_ROOT)} imports {module_name}, "
+                    "which is account-scoped operator-intent state and must "
+                    "not be reachable from selection_engine"
+                )
+
+
 class TestResearchProvenanceCannotReachSelectionOrDecisionScoring:
     """The research-provenance module's selection_weight/decision_weight
     fields must never be consumed as scoring input by decision_gate's own
