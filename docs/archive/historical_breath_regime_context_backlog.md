@@ -1,3 +1,14 @@
+Status: Archived historical record
+Active ownership: none
+Current work: see canonical documentation / GitHub Issues
+Archived by: docs/TODO cleanup Batch 4A
+
+Canonical research owner: `docs/research/historical_breath_regime_context_backbone_v1.md`
+P0 builder implementation: `src/research/run_historical_breath_regime_context_builder_v1.py`
+Note: this file's own `Status: active` / `PARTIAL_CONTEXT_EXISTS` framing below is stale as of archiving; retained verbatim for historical record.
+
+---
+
 # TODO — Historical Breath Regime Context Backbone
 
 ## Status

@@ -1,3 +1,14 @@
+Status: Archived historical record
+Active ownership: none
+Current work: see canonical documentation / GitHub Issues
+Archived by: docs/TODO cleanup Batch 4A
+
+Implementation: `src/research/run_historical_market_breath_source_recompute_v1.py`
+Tests: `tests/test_historical_market_breath_source_recompute_v1.py`
+Note: this file's own `Status: active` framing below is stale as of archiving; retained verbatim for historical record.
+
+---
+
 # TODO — Historical Market Breath Source Recompute
 
 ## Status
