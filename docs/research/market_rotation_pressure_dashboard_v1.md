@@ -208,13 +208,15 @@ Read-only consumer contract:
 
 - Profit Plan reads only already-persisted `market_rotation_pressure_snapshot_v1`
   and `market_rotation_pressure_observation_v1` rows (via the dashboard's own
-  fetch helpers). It never recomputes rotation score, direction, evidence-light
-  count, breadth, acceleration, confirmation, or concentration state -- those
-  values are always carried through verbatim from the persisted snapshot.
-- The only value derived inside the projection is a display-only top-5
-  rotation-in / top-5 rotation-out ranking, computed the same way as this
-  dashboard's own top-lists, over already-persisted per-asset scores within
-  one snapshot. This is a ranking of existing data, not a new score.
+  fetch helpers). It never recomputes and never derives any rotation score,
+  direction, evidence-light count, breadth, rank, acceleration, confirmation,
+  or concentration state -- those values are always carried through verbatim
+  from the persisted snapshot. Profit Plan reporting/UI may request, receive,
+  project, sort, filter, and display this canonical data, but it must not
+  calculate new market-state semantics -- including rank -- itself. There is
+  no locally derived top-IN / top-OUT ranking in the Profit Plan projection;
+  a top/rank field is only ever surfaced here if `market_rotation_pressure_v1`
+  itself persists one as canonical state.
 - A market with no matching persisted observation row renders an explicit
   "no rotation row" state (`ROTATION DATA UNAVAILABLE`); a stale or
   future/invalid snapshot renders a visibly degraded state

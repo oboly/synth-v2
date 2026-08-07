@@ -218,6 +218,10 @@ def test_json_contract_top_level_keys():
     assert aero_json["market"] == "AERO-EUR"
     assert aero_json["score_total"] == 78.0
     assert aero_json["source_ts_utc"] == "2026-07-12T20:00:00Z"
+    # No locally derived rank/top-N semantics -- Profit Plan must only
+    # project persisted values, never calculate new market-state semantics.
+    assert "top_in" not in aero_json
+    assert "top_out" not in aero_json
 
 
 def test_unavailable_projection_json_stub():
@@ -234,8 +238,8 @@ def test_market_projection_to_json_dict_shape():
     payload = market_projection_to_json_dict(mp)
     assert payload["market"] == "AERO-EUR"
     assert payload["available"] is True
-    assert payload["top_in"] is True
-    assert payload["top_out"] is False
+    assert "top_in" not in payload
+    assert "top_out" not in payload
 
 
 def test_no_forbidden_imports_in_pure_module():

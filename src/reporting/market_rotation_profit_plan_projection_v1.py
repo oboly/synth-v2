@@ -1,11 +1,10 @@
 # Read-only, market-only, account-agnostic projection of the persisted
 # market_rotation_pressure_v1 state into Profit Plan display shape. This
-# module never recomputes rotation score/direction/evidence-lights/breadth/
-# rank/confirmation -- it only reads, validates, and reshapes already
-# persisted values from market_rotation_pressure_dashboard_v1. The only
-# derived value here is a display-only top-5 in/out ranking computed from
-# the already-persisted per-asset scores within one snapshot -- not a new
-# score. No DB access here; the runner owns the DB fetch.
+# module never recomputes and never derives any rotation score, direction,
+# evidence-light, breadth, rank, or confirmation semantics -- it only reads,
+# validates, and reshapes already persisted values from
+# market_rotation_pressure_dashboard_v1. No DB access here; the runner owns
+# the DB fetch.
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,17 +14,9 @@ from typing import Any, Iterable
 from src.reporting.market_rotation_pressure_dashboard_v1 import (
     MODEL_VERSION,
     RotationPressureDashboard,
-    RotationPressureRow,
     build_dashboard,
 )
 
-
-# Mirrors market_rotation_pressure_dashboard_v1._top_rows threshold/limit so
-# the "top in / top out" display ranking here is identical in meaning to the
-# rotation dashboard's own top-lists. This is a display-only ordering of
-# already-persisted per-asset scores, not a new score.
-_TOP_RANK_SCORE_THRESHOLD = 30.0
-_TOP_RANK_LIMIT = 5
 
 NO_ROTATION_ROW_REASON = "NO_ROTATION_ROW"
 PROJECTION_NOT_PROVIDED_REASON = "ROTATION_PROJECTION_NOT_PROVIDED"
@@ -39,8 +30,6 @@ class RotationMarketProjection:
     score_total: float | None
     pressure_state: str | None
     phase_state: str | None
-    top_in: bool
-    top_out: bool
     source_ts_utc: datetime | None
     reason: str | None = None
 
@@ -89,16 +78,6 @@ def unavailable_projection(*, reason: str = PROJECTION_NOT_PROVIDED_REASON) -> R
     )
 
 
-def _top_markets(rows: tuple[RotationPressureRow, ...], *, positive: bool) -> set[str]:
-    selected = [
-        row
-        for row in rows
-        if (row.score_total >= _TOP_RANK_SCORE_THRESHOLD if positive else row.score_total <= -_TOP_RANK_SCORE_THRESHOLD)
-    ]
-    ranked = sorted(selected, key=lambda row: row.score_total, reverse=positive)[:_TOP_RANK_LIMIT]
-    return {row.market for row in ranked}
-
-
 def build_rotation_projection(
     header_row: dict[str, Any] | None,
     observation_rows: Iterable[dict[str, Any]],
@@ -124,9 +103,6 @@ def build_rotation_projection(
     header = dashboard.header
     available = dashboard.status in ("AVAILABLE", "DEGRADED")
 
-    top_in_markets = _top_markets(dashboard.rows, positive=True)
-    top_out_markets = _top_markets(dashboard.rows, positive=False)
-
     per_market: dict[str, RotationMarketProjection] = {}
     for row in dashboard.rows:
         per_market[row.market] = RotationMarketProjection(
@@ -136,8 +112,6 @@ def build_rotation_projection(
             score_total=row.score_total,
             pressure_state=row.pressure_state,
             phase_state=row.phase_state,
-            top_in=row.market in top_in_markets,
-            top_out=row.market in top_out_markets,
             source_ts_utc=header.as_of_ts_utc,
             reason=None,
         )
@@ -180,8 +154,6 @@ def get_market_projection(
         score_total=None,
         pressure_state=None,
         phase_state=None,
-        top_in=False,
-        top_out=False,
         source_ts_utc=projection.source_ts_utc,
         reason=reason,
     )
@@ -202,8 +174,6 @@ def market_projection_to_json_dict(projection: RotationMarketProjection) -> dict
         "score_total": projection.score_total,
         "pressure_state": projection.pressure_state,
         "phase_state": projection.phase_state,
-        "top_in": projection.top_in,
-        "top_out": projection.top_out,
         "source_ts_utc": _iso_z(projection.source_ts_utc),
         "reason": projection.reason,
     }

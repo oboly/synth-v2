@@ -4674,11 +4674,6 @@ def _rotation_card_badge_html(market_projection: Any) -> str:
     direction = market_projection.pressure_state
     label = _rotation_direction_label(direction)
     freshness_suffix = "" if market_projection.freshness == "FRESH" else f" · {esc(market_projection.freshness)}"
-    rank_suffix = ""
-    if market_projection.top_in:
-        rank_suffix = " · TOP IN"
-    elif market_projection.top_out:
-        rank_suffix = " · TOP OUT"
     score_text = (
         f"{market_projection.score_total:+.1f}" if market_projection.score_total is not None else "—"
     )
@@ -4689,7 +4684,7 @@ def _rotation_card_badge_html(market_projection: Any) -> str:
     }.get(direction or "", "rotation-badge-mixed")
     return (
         f"<div class='rotation-badge {direction_css}' title='Persisted market rotation pressure context, read-only'>"
-        f"{esc(label)} <span class='rotation-badge-score'>{esc(score_text)}</span>{esc(rank_suffix)}{esc(freshness_suffix)}"
+        f"{esc(label)} <span class='rotation-badge-score'>{esc(score_text)}</span>{esc(freshness_suffix)}"
         "</div>"
     )
 
