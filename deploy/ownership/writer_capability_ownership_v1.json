@@ -183,13 +183,13 @@
       "timer_unit": "synth-market-rotation-pressure-writer.timer",
       "committed_unit_binding": {
         "host_bound_candidate_artifact": true,
-        "condition_host": "devlap",
+        "condition_host": "gurkdb",
         "user": "gurk",
         "working_directory": "/home/gurk/projects/synth-v2"
       },
       "authorization_guard": {
         "module": "src.operations.verify_writer_capability_authorization_v1",
-        "authorization_file": "/etc/synth/writer-capability-runtime-authorization-v1.json",
+        "authorization_file": "/etc/synth/writer-capability-market-rotation-pressure-authorization-v1.json",
         "required": true
       },
       "lock": {

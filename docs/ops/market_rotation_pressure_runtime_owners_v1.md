@@ -78,15 +78,125 @@ systemd unit is changed. Strict gurkDB preflight and a separately evidenced
 cutover, per `docs/ops/writer_capability_host_ownership_contract_v1.md`, remain
 required before any production ownership.
 
+## 2026-08-07 gurkDB writer cutover preparation (repository-only, Issue #266)
+
+### Root cause
+
+A read-only production audit (Issue #266) traced why the public rotation
+snapshot (`freshness=STALE`, `source_ts_utc=2026-07-20T04:00:00Z`) had stopped
+advancing while the Profit Plan read-only projection continued to work
+correctly:
+
+- `obs_market_candle` (1h) is fresh (gurkDB `public_candle_freshness` writer
+  active, cadence minutes `:02,17,32,47` UTC);
+- `market_rotation_history_v1`/`market_rotation_pressure_v1` last advanced at
+  `as_of_ts_utc=2026-07-20T04:00:00Z` (`created_at=2026-07-20T04:21:53Z`),
+  exactly when the devlap writer was correctly disabled as part of the
+  `production-ownership reset` above;
+- gurkDB was only ever `SELECTED_PENDING_PREFLIGHT` for this capability and
+  never taken through preflight/acceptance/authorization/activation, unlike
+  `public_price_snapshot` and `public_candle_freshness`;
+- the Odroid publisher remained enabled and active throughout, correctly
+  fail-closed reporting `STALE` from the last persisted row;
+- Profit Plan's projection performs no recomputation and correctly surfaced
+  the upstream staleness.
+
+Root cause: a production runtime-ownership gap (no active writer anywhere for
+this capability since 2026-07-20T04:21:53Z), not a repository code defect and
+not a Profit Plan/publisher defect.
+
+### Repository change in this section
+
+Per explicit user authorization, this repository is prepared for a gurkDB
+cutover for `market_rotation_pressure`, following the same pattern already
+used for `public_candle_freshness` (see
+`docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md` and the
+"Prepare gurkDB candle writer acceptance" precedent commit):
+
+```text
+market_rotation_pressure.committed_unit_binding.condition_host: devlap -> gurkdb
+market_rotation_pressure.authorization_guard.authorization_file:
+  /etc/synth/writer-capability-runtime-authorization-v1.json
+  -> /etc/synth/writer-capability-market-rotation-pressure-authorization-v1.json
+  (previously shared with public_price_snapshot's authorization file; now
+  capability-distinct, so installing one capability's authorization file can
+  never silently deauthorize the other)
+```
+
+`deploy/systemd/synth-market-rotation-pressure-writer.service` now declares
+`ConditionHost=gurkdb`, keeps `User=gurk` /
+`WorkingDirectory=/home/gurk/projects/synth-v2` (gurkDB uses the same service
+account and checkout path as the historical devlap acceptance), and its
+`ExecStartPre` authorization guard and `ExecStart` invocation of
+`scripts/run_market_rotation_pressure_once.sh --write-db` are unchanged in
+substance (the `ExecStart` venv-activation prefix, which referenced a
+non-existent `venv/` path, is removed in favor of the wrapper script's own
+existing `venv`/`.venv` auto-detection, matching the `public_candle_freshness`
+convention).
+
+This is a **repository-only preparation**. It does **not** change any registry
+lifecycle field:
+
+```text
+market_rotation_pressure.candidate_host=gurkdb            (unchanged)
+market_rotation_pressure.selected_host=gurkdb              (unchanged)
+market_rotation_pressure.acceptance_host=devlap             (unchanged, historical)
+market_rotation_pressure.production_runtime_owner=UNASSIGNED         (unchanged)
+market_rotation_pressure.production_authorization_status=UNASSIGNED  (unchanged)
+market_rotation_pressure.runtime_lifecycle=SELECTED_PENDING_PREFLIGHT (unchanged)
+```
+
+No host systemd unit is changed by this repository change. devlap's
+`synth-market-rotation-pressure-writer.timer` remains installed and
+**disabled** (contained); this change does not re-enable it and does not
+install, enable, or start anything on gurkDB. gurkDB remains
+not-preflighted, not-accepted, not-authorized, and runs no writer until a
+separate, explicitly evidenced production cutover is performed and recorded,
+following `docs/ops/writer_capability_host_ownership_contract_v1.md`.
+
+### Architecture decision (Issue #266)
+
+```text
+devlap = development only
+gurkdb = canonical production market-data writer host
+odroid = public/dashboard publisher only
+```
+
+### Expected worst-case candle-to-visibility lag (post-cutover, once activated)
+
+```text
+candle close                    HH:00:00 UTC
+candle-freshness writer (gurkdb) first tick HH:02:00, worst case HH:02:30
+  (RandomizedDelaySec=30); observed full-universe completion ~4-7 min
+  -> persisted by roughly HH:06-HH:09
+rotation-pressure writer (gurkdb, this capability) HH:20:00,
+  worst case HH:23:00 (RandomizedDelaySec=180); history+pressure runtime
+  historically ~1-2 min -> persisted by roughly HH:24-HH:25
+Odroid publisher HH:35:00, worst case HH:38:00 (RandomizedDelaySec=180);
+  publish runtime ~1 min -> published by roughly HH:39
+Profit Plan reads the published snapshot on demand (no additional lag)
+```
+
+Worst-case candle-close-to-Profit-Plan-visibility lag: **~39 minutes**.
+Typical/best-case lag is materially lower (~21-25 minutes), since the
+`RandomizedDelaySec` worst cases on all three timers rarely coincide.
+
 ## Historical Runtime Roles
 
 ```text
 devlap (host: devlap, user: gurk):
   historical acceptance host for rotation history ingestion and persisted
-  rotation pressure writes; production authorization is SUPERSEDED
+  rotation pressure writes; production authorization is SUPERSEDED.
+  Per the Issue #266 architecture decision, devlap is development only and
+  is not a production writer candidate going forward.
   scripts/run_market_rotation_pressure_once.sh --write-db
   -> src.research.run_market_rotation_history_v1 --write-db
   -> src.research.run_market_rotation_pressure_v1 --write-db
+
+gurkDB (host: gurkdb, user: gurk) -- prepared candidate, not yet authorized:
+  committed_unit_binding.condition_host=gurkdb (see "2026-08-07 gurkDB writer
+  cutover preparation" above); same writer command as devlap above, unchanged.
+  Not preflighted, not accepted, not authorized, runs no writer.
 
 Odroid (host: odroid, user: theone):
   historical read-only publication host for persisted rotation pressure
@@ -247,14 +357,22 @@ before the writer under normal `RandomizedDelaySec` bounds.
 
 ## Installation Commands
 
-These commands are historical evidence for the superseded devlap/Odroid
-activation. Do not treat them as generic rollout instructions. A future rollout
-must follow `docs/ops/writer_capability_host_ownership_contract_v1.md`.
+The Devlap installation commands below are frozen historical evidence for the
+superseded devlap activation only. Since the "2026-08-07 gurkDB writer cutover
+preparation" section above, the committed
+`deploy/systemd/synth-market-rotation-pressure-writer.service` declares
+`ConditionHost=gurkdb`, so copying it to devlap as shown below would install a
+unit that never starts (`ConditionHost` fails closed on a host mismatch) --
+it is preserved here only as a record of what was actually run during the
+superseded devlap acceptance, not as a usable rollout path. Do not treat any
+of these commands as generic rollout instructions. A future rollout must
+follow `docs/ops/writer_capability_host_ownership_contract_v1.md`.
 
-### Devlap installation
+### Devlap installation (historical, superseded)
 
 ```bash
-# on devlap, as gurk
+# on devlap, as gurk -- historical record only, no longer a valid target
+# for the current committed unit (ConditionHost=gurkdb)
 cd /home/gurk/projects/synth-v2
 git fetch origin
 git checkout <accepted-commit>
@@ -264,6 +382,28 @@ systemd-analyze verify /etc/systemd/system/synth-market-rotation-pressure-writer
 systemd-analyze verify /etc/systemd/system/synth-market-rotation-pressure-writer.timer
 sudo systemctl daemon-reload
 # timer enablement happens only during the separate approved activation step:
+# sudo systemctl enable --now synth-market-rotation-pressure-writer.timer
+```
+
+### gurkDB installation (current committed candidate, not yet authorized)
+
+```bash
+# on gurkdb, as gurk -- installation only; do NOT enable or start the timer.
+# Preflight, acceptance, and a separate production authorization decision
+# (per docs/ops/writer_capability_host_ownership_contract_v1.md) must be
+# completed and recorded before any enablement.
+cd /home/gurk/projects/synth-v2
+git fetch origin
+git checkout <accepted-commit>
+sudo cp deploy/systemd/synth-market-rotation-pressure-writer.service /etc/systemd/system/
+sudo cp deploy/systemd/synth-market-rotation-pressure-writer.timer /etc/systemd/system/
+systemd-analyze verify /etc/systemd/system/synth-market-rotation-pressure-writer.service
+systemd-analyze verify /etc/systemd/system/synth-market-rotation-pressure-writer.timer
+sudo systemctl daemon-reload
+# production authorization file (installed only after a recorded production
+# decision, never by this repository change):
+#   /etc/synth/writer-capability-market-rotation-pressure-authorization-v1.json
+# timer enablement happens only during a separate approved activation step:
 # sudo systemctl enable --now synth-market-rotation-pressure-writer.timer
 ```
 
@@ -477,6 +617,22 @@ sudo rm /etc/systemd/system/synth-market-rotation-pressure-writer.timer
 sudo systemctl daemon-reload
 sudo systemctl reset-failed
 systemctl list-timers --all | grep -i rotation-pressure-writer   # expect no match
+# do not delete persisted market data
+```
+
+### gurkDB rollback
+
+Only relevant after a future gurkDB installation/activation step; nothing on
+gurkDB is installed or enabled by this repository change.
+
+```bash
+sudo systemctl disable --now synth-market-rotation-pressure-writer.timer
+sudo rm /etc/systemd/system/synth-market-rotation-pressure-writer.service
+sudo rm /etc/systemd/system/synth-market-rotation-pressure-writer.timer
+sudo systemctl daemon-reload
+sudo systemctl reset-failed
+systemctl list-timers --all | grep -i rotation-pressure-writer   # expect no match
+sudo rm -f /etc/synth/writer-capability-market-rotation-pressure-authorization-v1.json
 # do not delete persisted market data
 ```
 

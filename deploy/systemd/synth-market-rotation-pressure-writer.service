@@ -1,10 +1,13 @@
 [Unit]
-Description=Synth Market Rotation Pressure writer (devlap-bound historical/candidate artifact; capability market_rotation_pressure)
+Description=Synth Market Rotation Pressure writer (gurkDB-bound candidate artifact; capability market_rotation_pressure)
 Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/market_rotation_pressure_runtime_owners_v1.md
-# This committed unit is host-bound to devlap paths/users. Rotation Pressure
-# devlap acceptance is historical SUPERSEDED evidence, not current production
-# authorization.
-ConditionHost=devlap
+# This committed unit is host-bound to gurkDB paths/users. It is a prepared
+# candidate artifact only: production_runtime_owner remains UNASSIGNED until
+# a separate, explicitly evidenced gurkDB preflight/acceptance/authorization
+# decision is recorded (see docs/ops/market_rotation_pressure_runtime_owners_v1.md).
+# The prior devlap assignment is historical SUPERSEDED evidence, not current
+# production authorization.
+ConditionHost=gurkdb
 After=network-online.target
 Wants=network-online.target
 
@@ -14,8 +17,9 @@ User=gurk
 WorkingDirectory=/home/gurk/projects/synth-v2
 Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
 Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
-ExecStartPre=/bin/bash -lc 'python -m src.operations.verify_writer_capability_authorization_v1 --capability market_rotation_pressure --service synth-market-rotation-pressure-writer.service --checkout-path /home/gurk/projects/synth-v2 --registry deploy/ownership/writer_capability_ownership_v1.json'
-ExecStart=/bin/bash -lc 'source venv/bin/activate && bash scripts/run_market_rotation_pressure_once.sh --write-db'
+Environment=SYNTH_WRITER_EXECUTION_MODE=PRODUCTION
+ExecStartPre=/home/gurk/projects/synth-v2/.venv/bin/python -m src.operations.verify_writer_capability_authorization_v1 --capability market_rotation_pressure --service synth-market-rotation-pressure-writer.service --checkout-path /home/gurk/projects/synth-v2 --registry deploy/ownership/writer_capability_ownership_v1.json
+ExecStart=/bin/bash -lc 'bash scripts/run_market_rotation_pressure_once.sh --write-db'
 Restart=no
 Nice=5
 UMask=0077
