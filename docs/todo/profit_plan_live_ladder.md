@@ -6,12 +6,17 @@ Status: migrated
 
 Operational status/priority is owned by GitHub Issues.
 
-Section ownership:
-- P0.0/P0.1/P0.2 canonical read-model, deterministic row identity, freshness authorities (reporting) -> Issue #267
-- P0.3 authenticated route/session/CSRF documentation (reporting) -> Issue #267
-- P0.6 decision_gate approval contract -> Issue #268 (depends on #227)
-- P0.3 decision_gate/execution_planner/executor contract inspection, P0.4 neutral request/plan contract, P0.5 server preview, P0.7 immutable confirmation -> Issue #269 (coordinates with #202, #203)
-- P0.8 one-account live canary, credential/executor boundary, account/credential boundaries (A4/A5) -> Issue #206 (existing; not duplicated)
+Section ownership (corrected 2026-08-07 — see
+`docs/development/docs_todo_issue_migration_batch_6b_v1.md` §2 for the
+correction rationale):
+- P0.0-P0.2 display row key + freshness presentation only (reporting, no mutation/permission authority) -> Issue #267
+- P0.4/P0.5 untrusted client selection, ladder-request lifecycle, dashboard/API write boundary -> Issue #254 (existing; material overlap, not duplicated)
+- P0.4/P0.7 canonical request artifact, immutable snapshot identity, idempotency -> Issue #202 (existing; material overlap, not duplicated)
+- P0.6 decision_gate approval contract, consuming #254/#202 canonical request state only -> Issue #268 (depends on #254, #202, #227)
+- execution_planner allocation/rounding/leg-validation primitives -> Issue #203 (existing; material overlap, reused not duplicated)
+- P0.7 post-approval immutable CANCEL_LIMIT -> verify -> CREATE_LIMIT execution intent -> Issue #269 (depends on #254, #202, #203, #268)
+- P0.3 credential scope, executor identity/runtime boundary, account/credential boundaries (A5) -> Issue #206 (existing; not duplicated)
+- P0.8 one-account live canary acceptance -> Issue #273 (new; #206 explicitly excludes live-trading permission/order submission and is not the canary owner)
 - Multi-cycle host acceptance of the already-merged read-only renderer (PR #113) -> Issue #201 (existing; not duplicated)
 
 Unmigrated executable scope:

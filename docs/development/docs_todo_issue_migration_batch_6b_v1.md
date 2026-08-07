@@ -12,23 +12,50 @@ open section resolved to either an existing GitHub Issue, a new bounded
 GitHub Issue, an already-implemented/superseded finding, or an
 explicitly-non-actionable design note (no promotion scope present).
 
+### Correction (2026-08-07)
+
+An independent review of #202, #203, #206, #254 and new #267-#271 found four
+Lane A ownership errors in the original pass, corrected in place below and in
+the source docs:
+
+1. #254 ("Add multi-account operator intent and ladder-request state") was
+   misclassified `no overlap`; it explicitly owns the canonical operator-
+   intent/ladder-request lifecycle, status model, and dashboard/API write
+   boundary that Lane A's mutation flow requires. Reclassified `material
+   overlap` and adopted as the upstream owner for P0.4's untrusted-selection
+   and lifecycle scope instead of building a parallel request flow.
+2. #267 was scoped to include canonical mutation-request identity and the
+   authenticated write route, coupling reporting output to `decision_gate`
+   permission input. Narrowed to display-only row key + freshness
+   presentation, with an explicit non-authority statement.
+3. #269 originally defined a second neutral request/intake module,
+   duplicating #202 ("account-aware manual execution request artifact,
+   immutable plan snapshot, and deterministic request idempotency
+   contract"). Narrowed to a post-`APPROVED`-decision execution-intent
+   extension only, consuming #202's snapshot and reusing #203's primitives.
+4. P0.8 (one-account live canary) was mapped to #206, which explicitly lists
+   granting live-trading permission and order submission as out of scope.
+   No existing Issue fully owns the canary; a new bounded Issue (#273) was
+   created with dependencies on #206, #254, #202, #268, #269, and an
+   explicit, separately granted live-trading permission.
+
+Fibo Lane B (#270, #271) was independently reviewed and found
+architecturally clean; no changes were made there.
+
 ## 2. Source classification
 
-### `docs/todo/profit_plan_live_ladder.md`
+### `docs/todo/profit_plan_live_ladder.md` (corrected)
 
 | Section/scope | Classification | Existing owner | New owner | Result |
 | --- | --- | --- | --- | --- |
-| P0.0 canonical read-model prerequisites (scope-status, map-level status, market/wallet/position/order observations) | partially implemented (PR #113 merged) | none | #267 | migrated |
-| P0.1 stable map/row identity (deterministic, non-UUID) | genuinely open (verified `row_id=str(uuid.uuid4())` in `src/reporting/manual_short_trader_profit_plan_v1.py`) | none | #267 | migrated |
-| P0.2 freshness and account authority (7 absolute observation classes) | partially implemented (current-price and order-snapshot freshness exist; full class set does not) | none | #267 | migrated |
-| P0.3 inspect canonical write infrastructure — route/session/CSRF | genuinely open | none | #267 | migrated |
-| P0.3 inspect canonical write infrastructure — decision_gate/execution_planner/executor/broker semantics | genuinely open | none | #268 (gate), #269 (planner) | migrated |
-| P0.4 neutral ladder-repair request/plan contract | genuinely open | none | #269 | migrated |
-| P0.5 server preview with explicit sizing | genuinely open | none | #269 | migrated |
-| P0.6 decision gate and dry-run plan | genuinely open | none | #268 | migrated |
-| P0.7 immutable confirmation | genuinely open | none | #269 | migrated |
-| P0.8 one-account live canary | genuinely open | none | #206 (existing, reused) | migrated |
-| Account/credential boundaries | genuinely open | #206 | #206 (existing, reused) | migrated |
+| P0.0-P0.2 display row key + freshness presentation (no mutation/permission authority) | partially implemented (PR #113 merged; row key still `uuid.uuid4()` in `src/reporting/manual_short_trader_profit_plan_v1.py`) | none | #267 | migrated |
+| P0.4/P0.5 untrusted client selection, ladder-request lifecycle, dashboard/API write boundary | genuinely open | #254 | #254 (existing, reused) | migrated |
+| P0.4/P0.7 canonical request artifact, immutable snapshot identity, idempotency | genuinely open | #202 | #202 (existing, reused) | migrated |
+| P0.6 decision gate and dry-run plan (consuming #254/#202 canonical state only) | genuinely open | none | #268 | migrated |
+| execution_planner allocation/rounding/leg-validation primitives | genuinely open | #203 | #203 (existing, reused) | migrated |
+| P0.7 post-approval immutable CANCEL_LIMIT -> verify -> CREATE_LIMIT execution intent | genuinely open | none | #269 | migrated |
+| P0.3 credential scope, executor identity/runtime boundary, account/credential boundaries (A5) | genuinely open | #206 | #206 (existing, reused) | migrated |
+| P0.8 one-account live canary | genuinely open | none | #273 | migrated |
 | Multi-cycle host acceptance of the merged renderer (PR #113) | genuinely open, distinct lane | #201 | #201 (existing, reused) | migrated |
 | Later non-blocking work (scanner filtering, visual polish, wallet styling, mobile review, 5m Trade Path) | historical-only / not currently blocking | none | none | not migrated — explicitly non-blocking per the source text; no Issue filed |
 
@@ -61,11 +88,11 @@ report `unmigrated_executable_scope=0`.
 
 | Issue | Area | Overlap found |
 | --- | --- | --- |
-| #202 | manual execution request snapshot/idempotency | partial — shared execution_planner primitives (allocation/rounding), not the cancel/create dependency contract itself; recorded as dependency of #269 |
-| #203 | manual execution ladder construction/leg validation | partial — `EXIT_LADDER` construction path is a different request domain than the ladder-repair cancel/create pairs; recorded as dependency of #269 |
-| #206 | credential scope / manual execution runtime boundary | full — already covers dry-run/paper/live mode definition, decision-gate-before-executor-intake, single-writer protection, immutable handoff identity; reused for P0.8/A4/A5 |
+| #202 | manual execution request snapshot/idempotency | **material** — owns the canonical request artifact, immutable plan-snapshot identity, and idempotency contract that Lane A's mutation flow requires; adopted as owner, not a mere dependency of a second module |
+| #203 | manual execution ladder construction/leg validation | **material** — owns the authoritative allocation/rounding/fee-haircut/minimum-quantity/minimum-notional primitives; #269 reuses these rather than reimplementing them |
+| #206 | credential scope / manual execution runtime boundary | full for credential/executor-boundary/mode-contract scope (A5); **does not** cover live-trading permission or order submission (explicitly out of scope in #206's own text) — not the P0.8 live-canary owner |
 | #227 | account-aware drawdown/loss/cooldown protection contract | partial — general protection contract, not ladder-repair-specific eligibility (ownership, freshness, duplicates, caps, expiry); recorded as dependency of #268 |
-| #254 | multi-account operator intent/ladder-request state | no overlap — different feature (operator intent marking), not the ladder-repair mutation flow |
+| #254 | multi-account operator intent/ladder-request state | **material** (corrected from "no overlap") — explicitly defines `operator intent persistence -> decision_gate permission/context -> execution_planner intent generation -> executor/agents order handling`, `BUY_LADDER_REQUESTED`/`SELL_LADDER_REQUESTED` intent types, `WAITING_FOR_MARKET_CONTEXT`/`WAITING_FOR_PERMISSION`/`READY_FOR_PLANNING` status model, dashboard/API write boundary, and duplicate/conflicting-ladder fail-closed handling — this is the same lifecycle Lane A's mutation flow needs; adopted as owner instead of building a parallel request path |
 | #218 | machine-readable backtest capability contract | no overlap |
 | #219 | research-layer import removal from native SHORT market-data context | no overlap |
 | #231 | regime research Phase 1 | no overlap — different research subject (rotation regimes, not fib/zone touch evaluation) |
@@ -85,28 +112,34 @@ Keyword searches also run (no additional overlap found): `ladder`, `fibo`,
 
 | Issue | Title | Source | Architecture owner | Scope |
 | --- | --- | --- | --- | --- |
-| #267 | Add deterministic row identity and freshness model to Profit Plan ladder-repair read model | `profit_plan_live_ladder.md` (P0.0-P0.2, part of P0.3) | reporting | Deterministic non-UUID row identity, full 7-class freshness authority model, route/session/CSRF documentation |
-| #268 | Design decision_gate approval contract for Profit Plan ladder-repair requests | `profit_plan_live_ladder.md` (P0.6, part of P0.3) | decision_gate | APPROVED/REJECTED/REVIEW_REQUIRED evaluator: ownership, permission, freshness, funds/position, duplicates, caps, expiry |
-| #269 | Define execution_planner cancel/create dependency contract for Profit Plan ladder repair | `profit_plan_live_ladder.md` (P0.4, P0.5, P0.7, part of P0.3) | execution_planner | Neutral request/plan module, server preview, immutable ordered CANCEL_LIMIT->CREATE_LIMIT plan |
+| #267 | Add display-only row key and freshness presentation to Profit Plan ladder-repair read model | `profit_plan_live_ladder.md` (P0.0-P0.2 display scope only) | reporting | Stable display row key, full 7-class freshness presentation; explicitly no mutation/permission authority |
+| #268 | Design decision_gate approval contract for Profit Plan ladder-repair requests | `profit_plan_live_ladder.md` (P0.6) | decision_gate | APPROVED/REJECTED/REVIEW_REQUIRED evaluator over #254/#202 canonical request state: ownership, permission, freshness, funds/position, duplicates, caps, expiry |
+| #269 | Define execution_planner post-approval cancel/create intent for Profit Plan ladder repair | `profit_plan_live_ladder.md` (P0.7, post-approval half of P0.4/P0.5) | execution_planner | Post-`APPROVED` immutable ordered CANCEL_LIMIT->verify->CREATE_LIMIT plan, consuming #202 snapshot and #203 primitives only |
 | #270 | Validate Fibo/zone exit-profile, leak-free touch, and native map calibration research | `fibo_zones.md` (3 P2 sections) | research | Exit-profile bucket re-validation, leak-free touch evaluator, signed level-error replay/calibration |
 | #271 | Add Fibo/zone UI overlays and external target-box display normalization | `fibo_zones.md` (2 P3 sections) | reporting | Zone/fib marker overlays with explicit source, external target-box research-label display |
+| #273 | Accept controlled one-account live canary for Profit Plan ladder repair | `profit_plan_live_ladder.md` (P0.8) | executor | One-account/one-market canary acceptance after #206/#254/#202/#268/#269 complete and live permission explicitly granted |
 
 ## 5. Existing Issues reused
 
 | Issue | Source section | Ownership |
 | --- | --- | --- |
-| #206 | `profit_plan_live_ladder.md` P0.8 live canary, account/credential boundaries | full — already covers dry-run/paper/live mode, decision-gate-before-executor-intake, immutable handoff identity |
+| #254 | `profit_plan_live_ladder.md` P0.4/P0.5 untrusted selection, ladder-request lifecycle, dashboard/API write boundary | material — already owns the operator-intent/ladder-request lifecycle and status model this lane needs |
+| #202 | `profit_plan_live_ladder.md` P0.4/P0.7 canonical request artifact/snapshot/idempotency | material — already owns the immutable request/plan-snapshot identity and idempotency contract |
+| #203 | `profit_plan_live_ladder.md` execution_planner allocation/rounding/leg-validation primitives | material — already owns the authoritative primitives #269 reuses |
+| #206 | `profit_plan_live_ladder.md` P0.3 credential scope, executor identity/runtime boundary (A5) | full for credential/executor-boundary scope; explicitly not the live-canary owner |
 | #201 | `profit_plan_live_ladder.md` multi-cycle host acceptance of merged renderer | full — already owns host-ownership/freshness/multi-cycle acceptance for this renderer family |
 | #249 | `fibo_zones.md` P0 production publication/cutover | full — production dashboard is live; #249 owns the current open defect on that live surface |
 
-## 6. profit_plan_live_ladder migration
+## 6. profit_plan_live_ladder migration (corrected)
 
-- **Reporting/read-only truth**: partially implemented (PR #113 merged, provides canonical read-model consumption); deterministic row identity and the full freshness-authority set remain open, migrated to #267.
-- **decision_gate**: no prior owner; migrated to #268, which depends on #227 for the general account-protection contract but does not duplicate it.
-- **execution_planner**: no prior owner; migrated to #269, which is scoped to the cancel/create dependency contract distinct from #202/#203's `EXIT_LADDER` construction domain, with explicit coordination requirement to avoid a second divergent planner implementation.
-- **executor/order lifecycle**: fully covered by existing #206 (dry-run/paper/live modes, single-writer protection, immutable handoff identity); not duplicated.
+- **Reporting/read-only truth**: partially implemented (PR #113 merged, provides canonical read-model consumption); narrowed to a display-only row key and freshness presentation in #267, with an explicit statement that reporting output is never authoritative `decision_gate` input.
+- **Operator-intent / ladder-request lifecycle**: fully covered by existing #254 (canonical intent persistence, status model, dashboard/API write boundary); not duplicated. This is the corrected upstream owner for the untrusted client selection that a mutation flow requires.
+- **Canonical request artifact / snapshot / idempotency**: fully covered by existing #202; not duplicated.
+- **decision_gate**: no prior owner; migrated to #268, which now depends explicitly on #254 and #202 for its input (not on #267's display row key) and on #227 for the general account-protection contract.
+- **execution_planner**: no prior owner for the post-approval intent step; migrated to #269, narrowed to consume only an `APPROVED` #202 snapshot and reuse #203's primitives — no second request/intake module.
+- **executor/order lifecycle boundary**: fully covered by existing #206 (dry-run/paper/live modes, single-writer protection, immutable handoff identity); not duplicated.
 - **credential/account boundaries**: fully covered by existing #206; not duplicated.
-- **live canary**: fully covered by existing #206's scope (mode definition without silently upgrading authority); not duplicated.
+- **live canary**: no existing Issue fully owns this — #206 explicitly excludes granting live-trading permission and order submission. New Issue #273 created, depending on #206, #254, #202, #268, #269, and a separately granted live-trading permission.
 
 ## 7. fibo_zones migration
 
@@ -118,10 +151,12 @@ Keyword searches also run (no additional overlap found): `ladder`, `fibo`,
 ## 8. Architecture safety
 
 - No new Issue grants `decision_gate` market-ranking authority, grants `execution_planner` broker-write authority, or grants `executor` selection/account-permission authority.
-- #268 (decision_gate) and #269 (execution_planner) are separate Issues with separate primary owners; #269 explicitly states `account_permission_owned_elsewhere=1`.
-- #267 (reporting) carries no decision or execution authority (`decision_permission=0`, `execution_intent=0`).
+- The reporting -> decision_gate coupling flagged in review is corrected: #267 is display-only and carries an explicit non-authority statement (`display_row_key != canonical request identity`, `reporting output is never authoritative decision_gate input`); #268 now depends on #254/#202 canonical state, not on #267.
+- #268 (decision_gate) and #269 (execution_planner) are separate Issues with separate primary owners; #269 explicitly states `account_permission_owned_elsewhere=1` and accepts input only after an `APPROVED` #268 result.
+- #269 no longer defines a second request/intake module; untrusted client input is owned exclusively by #254/#202, avoiding a parallel ladder-request lifecycle.
+- #273 (live canary) does not itself grant permission, construct plans, rank markets, bypass `decision_gate`, or provision credentials; it requires #206/#254/#202/#268/#269 to be independently complete plus a separately granted live-trading permission (`permission_must_preexist=1`, `execution_plan_must_preexist=1`).
 - #270/#271 (research/reporting) carry no account awareness, decision, or execution authority.
-- No layer bypass is introduced: the migrated Issue set preserves `selection_engine` (untouched) -> reporting (#267) -> `decision_gate` (#268) -> `execution_planner` (#269) -> executor (#206, existing) sequencing for Lane A, and research (#270) -> reporting (#271) with no direct promotion path for Lane B.
+- No layer bypass is introduced: the corrected Issue set preserves `selection_engine` (untouched) -> reporting (#267, display only) -> operator-intent/request layer (#254, #202) -> `decision_gate` (#268 + #227) -> `execution_planner` (#269, using #203 primitives) -> executor/credential boundary (#206) -> live canary (#273) -> executor order handling, matching the required flow; and research (#270) -> reporting (#271) with no direct promotion path for Lane B.
 
 ```text
 architecture_boundary_violations=0
@@ -146,8 +181,8 @@ still open.
 source_files=2
 source_files_fully_migrated=2
 source_files_partially_migrated=0
-existing_issues_reused=3
-new_issues_created=5
+existing_issues_reused=6
+new_issues_created=6
 duplicate_issues_created=0
 unmigrated_executable_scope_items=0
 architecture_boundary_violations=0
