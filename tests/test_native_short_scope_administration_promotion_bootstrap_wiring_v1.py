@@ -404,7 +404,14 @@ def test_execute_real_evaluator_fails_closed_for_every_unapproved_symbol(symbol:
     (SOL, ETH, XRP). Every other symbol -- including the legacy BTC scope --
     fails the bootstrap scope-match check regardless of blocker state, and
     therefore never narrows any blocker. REMOVAL_CONTRACT_MISSING never even
-    appears: it is not applicable to PROMOTE_SCOPE at all."""
+    appears: it is not applicable to PROMOTE_SCOPE at all.
+
+    Since Issue #276, MULTI_SCOPE_FAILURE_ISOLATION_MISSING is evidence-driven
+    and evaluates CLOSED on this checkout (#200 is in its ancestry), so it is
+    no longer among the blocking codes. BOOTSTRAP_ORCHESTRATION_BLOCKED
+    remains active and is what still fails this path closed; the property
+    under test is unchanged -- an unapproved symbol is rejected with
+    GLOBAL_BLOCKERS_ACTIVE and narrows nothing."""
     state = _FakeState()
     state.writer_runs.append(_accepted_writer_evidence_row())
     conn = _FakeConn(state)
@@ -416,7 +423,9 @@ def test_execute_real_evaluator_fails_closed_for_every_unapproved_symbol(symbol:
     assert outcome.result.result_code == ResultCode.GLOBAL_BLOCKERS_ACTIVE
     blocking = set(outcome.current_state["blocking_global_blockers"])
     assert BOOTSTRAP_ORCHESTRATION_BLOCKED in blocking
-    assert MULTI_SCOPE_FAILURE_ISOLATION_MISSING in blocking
+    # Evidence-driven since #276: closed on this checkout, so it must not
+    # appear as a blocking code any more.
+    assert MULTI_SCOPE_FAILURE_ISOLATION_MISSING not in blocking
     assert REMOVAL_CONTRACT_MISSING not in blocking
     assert outcome.current_state["bootstrap_evidence"]["accepted"] is False
     assert outcome.current_state["bootstrap_evidence"]["reason"] != REASON_EVIDENCE_ACCEPTED

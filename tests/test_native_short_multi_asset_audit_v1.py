@@ -13,6 +13,7 @@ from src.market_data.native_short_multi_asset_audit_v1 import (
     ASSET_DISABLED,
     BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID,
     BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED,
+    BLOCKER_REASON_EXACT_PROOF_REQUIRED,
     BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE,
     BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE,
     BOOTSTRAP_ORCHESTRATION_BLOCKED,
@@ -28,6 +29,10 @@ from src.market_data.native_short_multi_asset_audit_v1 import (
     READY_EXISTING_CANARY,
     READY_FOR_SEQUENTIAL_CANARY_REVIEW,
     REMOVAL_CONTRACT_MISSING,
+    ROLLOUT_STATUS_ALREADY_SUPPORTED,
+    ROLLOUT_STATUS_BLOCKED,
+    ROLLOUT_STATUS_READY,
+    ROLLOUT_STATUS_SKIPPED_NOT_READY,
     SCOPE_AMBIGUOUS,
     SCOPE_CONFLICT,
     SUPPORTING_SOURCE_STALE,
@@ -41,8 +46,10 @@ from src.market_data.native_short_multi_asset_audit_v1 import (
     CanonicalScopeKey,
     LedgerState,
     MarketMetadata,
+    classify_rollout_status,
     evaluate_candidate,
     evaluate_global_blockers,
+    evaluate_global_blockers_from_rows,
     rank_sequential_candidates,
 )
 from src.market_data.native_short_writer_provenance_v1 import (
@@ -346,18 +353,79 @@ def test_promotion_evaluated_but_rejected_evidence_keeps_blocker_active_with_det
     assert reasons[PROMOTION_CONTRACT_MISSING] == BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID
 
 
-def test_bootstrap_and_isolation_blockers_remain_active_pending_separate_lanes() -> None:
+def test_isolation_blocker_remains_active_by_default_without_evidence() -> None:
+    """Fail-closed default: a caller that does not evaluate isolation evidence
+    keeps MULTI_SCOPE_FAILURE_ISOLATION_MISSING active exactly as before."""
     active, reasons = evaluate_global_blockers(provenance_attributed=True)
-    assert BOOTSTRAP_ORCHESTRATION_BLOCKED in active
     assert MULTI_SCOPE_FAILURE_ISOLATION_MISSING in active
-    assert (
-        reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED]
-        == BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE
-    )
     assert (
         reasons[MULTI_SCOPE_FAILURE_ISOLATION_MISSING]
         == BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE
     )
+
+
+def test_bootstrap_blocker_remains_unconditionally_active_with_exact_proof_required() -> None:
+    """BOOTSTRAP_ORCHESTRATION_BLOCKED takes no evidence parameter and stays
+    active even when every other evidence source confirms."""
+    active, reasons = evaluate_global_blockers(
+        provenance_attributed=True,
+        promotion_accepted=True,
+        isolation_evidence_confirmed=True,
+    )
+    assert BOOTSTRAP_ORCHESTRATION_BLOCKED in active
+    assert reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] == BLOCKER_REASON_EXACT_PROOF_REQUIRED
+
+
+def test_isolation_evidence_confirmed_clears_only_isolation_blocker() -> None:
+    active, reasons = evaluate_global_blockers(
+        provenance_attributed=True,
+        isolation_evidence_confirmed=True,
+        isolation_evidence_reason="EVIDENCE_CONFIRMED",
+    )
+    assert MULTI_SCOPE_FAILURE_ISOLATION_MISSING not in active
+    assert (
+        reasons[MULTI_SCOPE_FAILURE_ISOLATION_MISSING]
+        == BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED
+    )
+    # every other blocker remains active regardless of isolation evidence
+    assert set(active) == {
+        PROMOTION_CONTRACT_MISSING,
+        REMOVAL_CONTRACT_MISSING,
+        BOOTSTRAP_ORCHESTRATION_BLOCKED,
+    }
+
+
+def test_isolation_evaluated_but_rejected_evidence_keeps_blocker_active_with_detail() -> None:
+    active, reasons = evaluate_global_blockers(
+        provenance_attributed=True,
+        isolation_evidence_confirmed=False,
+        isolation_evidence_reason="IMPLEMENTATION_COMMIT_NOT_ANCESTOR",
+    )
+    assert MULTI_SCOPE_FAILURE_ISOLATION_MISSING in active
+    assert (
+        reasons[MULTI_SCOPE_FAILURE_ISOLATION_MISSING]
+        == BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID
+    )
+
+
+def test_from_rows_closes_isolation_blocker_but_keeps_bootstrap_active_on_this_checkout() -> None:
+    """The central proof for Issue #276.
+
+    Against the real default evidence providers on this checkout (which has
+    #200 in its ancestry and the live runtime contract intact),
+    MULTI_SCOPE_FAILURE_ISOLATION_MISSING must evaluate CLOSED, while
+    BOOTSTRAP_ORCHESTRATION_BLOCKED must remain ACTIVE.
+    """
+    active, reasons = evaluate_global_blockers_from_rows([], [])
+
+    assert MULTI_SCOPE_FAILURE_ISOLATION_MISSING not in active
+    assert (
+        reasons[MULTI_SCOPE_FAILURE_ISOLATION_MISSING]
+        == BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED
+    )
+
+    assert BOOTSTRAP_ORCHESTRATION_BLOCKED in active
+    assert reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] == BLOCKER_REASON_EXACT_PROOF_REQUIRED
 
 
 def test_global_blocker_codes_exactly_matches_evaluated_active_blockers() -> None:
@@ -546,3 +614,44 @@ def test_db_write_prohibition() -> None:
                 if node.func.attr == "execute" and node.args and isinstance(node.args[0], ast.Constant):
                     first = str(node.args[0].value).strip().split(maxsplit=1)[0].upper()
                     assert first not in forbidden_sql
+
+
+# --------------------------------------------------------------------------- #
+# Canonical per-scope rollout status vocabulary (Issue #276)                   #
+# --------------------------------------------------------------------------- #
+
+
+def test_classify_rollout_status_ready_when_qualified_and_unblocked() -> None:
+    result = evaluate_candidate(candidate("SOL"), as_of_utc=AS_OF, global_blockers=())
+    assert result.readiness_status == READY_FOR_SEQUENTIAL_CANARY_REVIEW
+    assert classify_rollout_status(result) == ROLLOUT_STATUS_READY
+
+
+def test_classify_rollout_status_already_supported_wins_over_active_blockers() -> None:
+    """An existing SUPPORTED scope needs no promotion, so promotion blockers
+    are irrelevant to it."""
+    supported = LedgerState(scope_states=("SUPPORTED",))
+    result = evaluate_candidate(
+        candidate("BTC", ledger=supported),
+        as_of_utc=AS_OF,
+        global_blockers=GLOBAL_BLOCKERS,
+    )
+    assert classify_rollout_status(result) == ROLLOUT_STATUS_ALREADY_SUPPORTED
+
+
+def test_classify_rollout_status_blocked_when_a_global_blocker_is_active() -> None:
+    result = evaluate_candidate(
+        candidate("SOL"), as_of_utc=AS_OF, global_blockers=(BOOTSTRAP_ORCHESTRATION_BLOCKED,)
+    )
+    assert result.global_rollout_status == "GLOBAL_ROLLOUT_BLOCKED"
+    assert classify_rollout_status(result) == ROLLOUT_STATUS_BLOCKED
+
+
+def test_classify_rollout_status_skipped_not_ready_when_market_ineligible() -> None:
+    result = evaluate_candidate(
+        candidate("SOL", metadata=(market("SOL", tradeable=False),)),
+        as_of_utc=AS_OF,
+        global_blockers=(),
+    )
+    assert result.readiness_status == MARKET_NOT_TRADEABLE
+    assert classify_rollout_status(result) == ROLLOUT_STATUS_SKIPPED_NOT_READY

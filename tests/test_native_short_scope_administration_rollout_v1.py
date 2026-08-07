@@ -22,6 +22,12 @@ from src.market_data.native_short_scope_administration_transaction_v1 import (
 from src.market_data import (
     native_short_scope_administration_rollout_v1 as rollout,
 )
+from src.market_data.native_short_multi_asset_audit_v1 import (
+    ROLLOUT_STATUS_ALREADY_SUPPORTED,
+    ROLLOUT_STATUS_BLOCKED,
+    ROLLOUT_STATUS_READY,
+    ROLLOUT_STATUS_SKIPPED_NOT_READY,
+)
 from src.market_data.native_short_scope_administration_rollout_v1 import (
     APPROVED_ROLLOUT_UNIVERSE_V1,
     RolloutConfigurationError,
@@ -198,7 +204,7 @@ def test_execute_rollout_processes_all_entries_on_success(monkeypatch: pytest.Mo
     assert [c.symbol for c in outcome.completed] == ["BTC", "SOL"]
 
 
-def test_execute_rollout_stops_on_first_rejected_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_execute_rollout_continues_past_rejected_scope(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 
     def fake_execute(conn: Any, request: Any, *, authorization: Any) -> AdministrationTransactionOutcome:
@@ -227,15 +233,24 @@ def test_execute_rollout_stops_on_first_rejected_scope(monkeypatch: pytest.Monke
     )
 
     assert calls == ["BTC", "SOL"]
-    assert outcome.stopped_early is True
+    # Continue-always: nothing is ever left unattempted.
+    assert outcome.stopped_early is False
     assert outcome.remaining_symbols == ()
+    # The first failure is still reported honestly for operator triage.
     assert "GLOBAL_BLOCKERS_ACTIVE" in outcome.stop_reason
     assert outcome.as_json_dict()["all_succeeded"] is False
+    by_symbol = {c.symbol: c for c in outcome.completed}
+    assert by_symbol["BTC"].status == ROLLOUT_STATUS_READY
+    assert by_symbol["SOL"].status == ROLLOUT_STATUS_BLOCKED
 
 
-def test_execute_rollout_stops_and_leaves_remaining_untouched_on_first_symbol_failure(
+def test_execute_rollout_middle_failure_does_not_block_unrelated_scopes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The literal Issue #276 acceptance criterion: one rejected/unready scope
+    must not block unrelated qualified scopes. Three entries, the middle one
+    fails; the first and last must both still be attempted and both still
+    succeed."""
     three_entries = (
         _BTC_ENTRY,
         RolloutSymbolEntry(
@@ -252,13 +267,22 @@ def test_execute_rollout_stops_and_leaves_remaining_untouched_on_first_symbol_fa
         ),
     )
 
+    calls: list[str] = []
+
     def fake_execute(conn: Any, request: Any, *, authorization: Any) -> AdministrationTransactionOutcome:
+        calls.append(request.scope_key.symbol)
+        if request.scope_key.symbol == "SOL":
+            return _outcome(
+                write=True,
+                result_class=ResultClass.CORRUPT_STATE,
+                result_code=ResultCode.PARTIAL_SCOPE_STATE,
+                action=OperationAction.REJECT,
+                persisted=False,
+            )
         return _outcome(
             write=True,
-            result_class=ResultClass.CORRUPT_STATE,
-            result_code=ResultCode.PARTIAL_SCOPE_STATE,
-            action=OperationAction.REJECT,
-            persisted=False,
+            result_class=ResultClass.SUCCESS,
+            result_code=ResultCode.ADOPTED_LEGACY_SCOPE,
         )
 
     monkeypatch.setattr(rollout, "execute_scope_administration", fake_execute)
@@ -270,15 +294,38 @@ def test_execute_rollout_stops_and_leaves_remaining_untouched_on_first_symbol_fa
         authorization=object(),
     )
 
-    assert len(outcome.completed) == 1
-    assert outcome.completed[0].symbol == "BTC"
-    assert outcome.remaining_symbols == ("SOL", "ETH")
-    assert outcome.stopped_early is True
+    # Every entry attempted, in checked-in order, despite the middle failure.
+    assert calls == ["BTC", "SOL", "ETH"]
+    assert [c.symbol for c in outcome.completed] == ["BTC", "SOL", "ETH"]
+    assert outcome.remaining_symbols == ()
+    assert outcome.stopped_early is False
+
+    by_symbol = {c.symbol: c for c in outcome.completed}
+    # The unrelated scopes still succeeded; only the failing one did not.
+    assert by_symbol["BTC"].succeeded is True
+    assert by_symbol["ETH"].succeeded is True
+    assert by_symbol["SOL"].succeeded is False
+    assert by_symbol["SOL"].status == ROLLOUT_STATUS_SKIPPED_NOT_READY
+    assert outcome.as_json_dict()["completed_symbols"] == ["BTC", "ETH"]
+    assert outcome.as_json_dict()["all_succeeded"] is False
 
 
-def test_execute_rollout_stops_on_unexpected_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_execute_rollout_continues_past_unexpected_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected exception on one scope is recorded on that scope only and
+    never prevents a later unrelated scope from being attempted."""
+    calls: list[str] = []
+
     def fake_execute(conn: Any, request: Any, *, authorization: Any) -> AdministrationTransactionOutcome:
-        raise RuntimeError("boom")
+        calls.append(request.scope_key.symbol)
+        if request.scope_key.symbol == "BTC":
+            raise RuntimeError("boom")
+        return _outcome(
+            write=True,
+            result_class=ResultClass.SUCCESS,
+            result_code=ResultCode.PROMOTED_NEW_SCOPE,
+        )
 
     monkeypatch.setattr(rollout, "execute_scope_administration", fake_execute)
 
@@ -289,10 +336,80 @@ def test_execute_rollout_stops_on_unexpected_exception(monkeypatch: pytest.Monke
         authorization=object(),
     )
 
-    assert outcome.stopped_early is True
-    assert outcome.completed[0].error is not None
-    assert "boom" in outcome.completed[0].error
-    assert outcome.remaining_symbols == ("SOL",)
+    assert calls == ["BTC", "SOL"]
+    assert outcome.stopped_early is False
+    assert outcome.remaining_symbols == ()
+
+    by_symbol = {c.symbol: c for c in outcome.completed}
+    assert by_symbol["BTC"].error is not None
+    assert "boom" in by_symbol["BTC"].error
+    assert by_symbol["BTC"].status == ROLLOUT_STATUS_SKIPPED_NOT_READY
+    # The unrelated scope after the crash still ran and still succeeded.
+    assert by_symbol["SOL"].succeeded is True
+    assert by_symbol["SOL"].status == ROLLOUT_STATUS_READY
+
+
+def test_rollout_scope_outcome_status_vocabulary(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each administration result class maps onto exactly one canonical
+    per-scope rollout label, and the label is exported in as_json_dict()."""
+    cases = (
+        (ResultClass.SUCCESS, ResultCode.ADOPTED_LEGACY_SCOPE, True, ROLLOUT_STATUS_READY),
+        (
+            ResultClass.IDEMPOTENT_SUCCESS,
+            ResultCode.OPERATION_ALREADY_COMPLETED,
+            True,
+            ROLLOUT_STATUS_ALREADY_SUPPORTED,
+        ),
+        (
+            ResultClass.BLOCKED,
+            ResultCode.GLOBAL_BLOCKERS_ACTIVE,
+            False,
+            ROLLOUT_STATUS_BLOCKED,
+        ),
+        (
+            ResultClass.CONFLICT,
+            ResultCode.OPERATION_METADATA_MISMATCH,
+            False,
+            ROLLOUT_STATUS_SKIPPED_NOT_READY,
+        ),
+        (
+            ResultClass.CORRUPT_STATE,
+            ResultCode.PARTIAL_SCOPE_STATE,
+            False,
+            ROLLOUT_STATUS_SKIPPED_NOT_READY,
+        ),
+        (
+            ResultClass.RETRYABLE,
+            ResultCode.DEADLOCK,
+            False,
+            ROLLOUT_STATUS_SKIPPED_NOT_READY,
+        ),
+    )
+    for result_class, result_code, persisted, expected in cases:
+        scope_outcome = rollout.RolloutScopeOutcome(
+            symbol="BTC",
+            operation_type=str(OperationType.ADOPT_LEGACY_SCOPE),
+            outcome=_outcome(
+                write=True,
+                result_class=result_class,
+                result_code=result_code,
+                action=OperationAction.ADOPT if persisted else OperationAction.REJECT,
+                persisted=persisted,
+            ),
+            error=None,
+        )
+        assert scope_outcome.status == expected
+        assert scope_outcome.as_json_dict()["rollout_status"] == expected
+
+    # An unexpected exception (no outcome at all) is never reported as ready.
+    crashed = rollout.RolloutScopeOutcome(
+        symbol="BTC",
+        operation_type=str(OperationType.ADOPT_LEGACY_SCOPE),
+        outcome=None,
+        error="RuntimeError: boom",
+    )
+    assert crashed.status == ROLLOUT_STATUS_SKIPPED_NOT_READY
+    assert crashed.as_json_dict()["rollout_status"] == ROLLOUT_STATUS_SKIPPED_NOT_READY
 
 
 def test_execute_rollout_is_idempotent_on_replay(monkeypatch: pytest.MonkeyPatch) -> None:

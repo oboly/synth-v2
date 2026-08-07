@@ -59,9 +59,23 @@ own entries in
 no bypass of the existing gate -- a ``PROMOTE_SCOPE`` entry for any symbol
 without accepted bootstrap or post-hoc acceptance evidence is simply
 rejected with ``GLOBAL_BLOCKERS_ACTIVE``, exactly like a manually run CLI
-invocation, and a sequential rollout stops there. Adding any further symbol
-requires its own reviewed repository change to this constant (plus its own
-approval document and manifest entry), never a CLI argument.
+invocation. Adding any further symbol requires its own reviewed repository
+change to this constant (plus its own approval document and manifest entry),
+never a CLI argument.
+
+Per-scope failure isolation (Issue #276):
+
+Every entry is always attempted, in the checked-in order, regardless of any
+other entry's rejection or unexpected exception. A rejected or unready scope
+is recorded on its own ``RolloutScopeOutcome`` and never suppresses,
+invalidates, or rolls back an unrelated qualified scope -- each entry's
+transaction is independently owned by
+``native_short_scope_administration_transaction_v1``. This replaces the
+earlier stop-at-first-failure policy, under which one ineligible symbol left
+every later approved symbol silently unattempted. Reruns stay idempotent via
+``deterministic_operation_uuid`` (see below), so a repeated run replays
+already-completed entries as ``IDEMPOTENT_SUCCESS`` instead of duplicating
+any mutation.
 
 Restartability without extra state: each entry's operation UUID is derived
 deterministically from only the operation type and the exact canonical scope
@@ -100,6 +114,12 @@ from src.market_data.native_short_scope_administration_v1 import (
     NativeShortScopeAdministrationOperationType as OperationType,
     NativeShortScopeAdministrationProvenance,
     NativeShortScopeAdministrationRequest,
+)
+from src.market_data.native_short_multi_asset_audit_v1 import (
+    ROLLOUT_STATUS_ALREADY_SUPPORTED,
+    ROLLOUT_STATUS_BLOCKED,
+    ROLLOUT_STATUS_READY,
+    ROLLOUT_STATUS_SKIPPED_NOT_READY,
 )
 from src.market_data.native_short_scope_administration_transaction_v1 import (
     AdministrationTransactionOutcome,
@@ -276,17 +296,49 @@ class RolloutScopeOutcome:
             return False
         return str(self.outcome.result.result_class) in _SUCCESS_RESULT_CLASSES
 
+    @property
+    def status(self) -> str:
+        """This entry's outcome in the canonical per-scope rollout vocabulary
+        (Issue #276), imported from the readiness authority
+        ``native_short_multi_asset_audit_v1`` so the audit and the rollout
+        report in one shared vocabulary.
+
+        Derived purely from the administration transaction's own already-
+        returned result class -- this module still never evaluates blockers or
+        decides anything itself:
+
+        - ``SUCCESS`` (the mutation just executed) -> ``READY``
+        - ``IDEMPOTENT_SUCCESS`` (replay of an already-completed operation, or
+          an already-supported/already-adopted scope) -> ``ALREADY_SUPPORTED``
+        - ``BLOCKED`` (e.g. ``GLOBAL_BLOCKERS_ACTIVE``,
+          ``LEGACY_ADOPTION_NOT_AUTHORIZED``) -> ``BLOCKED``
+        - anything else (``CONFLICT``, ``CORRUPT_STATE``, ``RETRYABLE``, or an
+          unexpected exception recorded in ``error``) -> ``SKIPPED_NOT_READY``
+        """
+        if self.outcome is None:
+            return ROLLOUT_STATUS_SKIPPED_NOT_READY
+        result_class = str(self.outcome.result.result_class)
+        if result_class == "SUCCESS":
+            return ROLLOUT_STATUS_READY
+        if result_class == "IDEMPOTENT_SUCCESS":
+            return ROLLOUT_STATUS_ALREADY_SUPPORTED
+        if result_class == "BLOCKED":
+            return ROLLOUT_STATUS_BLOCKED
+        return ROLLOUT_STATUS_SKIPPED_NOT_READY
+
     def as_json_dict(self) -> dict[str, Any]:
         if self.outcome is not None:
             return {
                 "symbol": self.symbol,
                 "operation_type": self.operation_type,
+                "rollout_status": self.status,
                 "error": None,
                 **self.outcome.as_json_dict(),
             }
         return {
             "symbol": self.symbol,
             "operation_type": self.operation_type,
+            "rollout_status": self.status,
             "error": self.error,
         }
 
@@ -327,11 +379,21 @@ def _run_rollout(
     requested_symbols = tuple(entry.symbol for entry in entries)
     completed: list[RolloutScopeOutcome] = []
 
-    for index, entry in enumerate(entries):
+    # Per-scope isolation policy (Issue #276): every entry in the checked-in
+    # order is always attempted, regardless of any other entry's rejection or
+    # crash. One rejected or unready scope must never suppress an unrelated
+    # qualified scope. This is purely a loop policy: each entry's own decision,
+    # lock, transaction, and rollback remain wholly owned by
+    # native_short_scope_administration_transaction_v1, which already gives
+    # every entry an independent transaction, so continuing past a failure
+    # cannot widen any failure's blast radius.
+    first_failure_reason: str | None = None
+
+    for entry in entries:
         request = build_request(entry)
         try:
             outcome = run_step(request)
-        except Exception as exc:  # noqa: BLE001 - stop-and-report, never swallow.
+        except Exception as exc:  # noqa: BLE001 - record-and-continue, never swallow.
             completed.append(
                 RolloutScopeOutcome(
                     symbol=entry.symbol,
@@ -340,16 +402,11 @@ def _run_rollout(
                     error=f"{type(exc).__name__}: {exc}",
                 )
             )
-            return RolloutOutcome(
-                mode=mode,
-                requested_symbols=requested_symbols,
-                completed=tuple(completed),
-                remaining_symbols=tuple(e.symbol for e in entries[index + 1 :]),
-                stopped_early=True,
-                stop_reason=(
+            if first_failure_reason is None:
+                first_failure_reason = (
                     f"exception on symbol={entry.symbol}: {type(exc).__name__}"
-                ),
-            )
+                )
+            continue
 
         scope_outcome = RolloutScopeOutcome(
             symbol=entry.symbol,
@@ -359,27 +416,26 @@ def _run_rollout(
         )
         completed.append(scope_outcome)
 
-        if not scope_outcome.succeeded:
-            return RolloutOutcome(
-                mode=mode,
-                requested_symbols=requested_symbols,
-                completed=tuple(completed),
-                remaining_symbols=tuple(e.symbol for e in entries[index + 1 :]),
-                stopped_early=True,
-                stop_reason=(
-                    f"non-success result_class={outcome.result.result_class} "
-                    f"result_code={outcome.result.result_code} "
-                    f"on symbol={entry.symbol}"
-                ),
+        if not scope_outcome.succeeded and first_failure_reason is None:
+            first_failure_reason = (
+                f"non-success result_class={outcome.result.result_class} "
+                f"result_code={outcome.result.result_code} "
+                f"on symbol={entry.symbol}"
             )
 
+    # remaining_symbols is always empty and stopped_early always False under
+    # the continue-always policy: nothing is ever left unattempted. Both fields
+    # are retained (rather than removed or repurposed) so existing consumers
+    # keep working and keep reading them with their original meaning. They are
+    # not a success claim -- `all_succeeded` below still reports honestly, and
+    # stop_reason still surfaces the first failure for operator triage.
     return RolloutOutcome(
         mode=mode,
         requested_symbols=requested_symbols,
         completed=tuple(completed),
         remaining_symbols=(),
         stopped_early=False,
-        stop_reason=None,
+        stop_reason=first_failure_reason,
     )
 
 
@@ -390,8 +446,8 @@ def plan_rollout(
     build_request: RequestBuilder,
 ) -> RolloutOutcome:
     """Read-only dry run over every requested entry in order, delegating each
-    scope entirely to ``plan_scope_administration``. Stops at the first
-    non-success result, mirroring what write mode would do."""
+    scope entirely to ``plan_scope_administration``. Attempts every entry
+    regardless of any other entry's result, mirroring what write mode does."""
     return _run_rollout(
         entries,
         mode="DRY_RUN",
@@ -409,9 +465,15 @@ def execute_rollout(
 ) -> RolloutOutcome:
     """Write mode: process every requested entry in order, one bounded
     transaction per scope via ``execute_scope_administration`` on the same
-    connection. Stops immediately on the first scope whose result is not
-    SUCCESS/IDEMPOTENT_SUCCESS, or on the first unexpected exception, leaving
-    every remaining symbol untouched and unattempted."""
+    connection.
+
+    Every entry is always attempted. A scope rejected with a non-success
+    result, or one that raises unexpectedly, is recorded on its own
+    ``RolloutScopeOutcome`` and the run continues to the next entry -- one
+    unready scope never suppresses an unrelated qualified scope. Each entry's
+    transaction remains fully isolated inside
+    ``execute_scope_administration``, so a later entry's work is never
+    entangled with an earlier entry's rollback."""
     return _run_rollout(
         entries,
         mode="WRITE",
