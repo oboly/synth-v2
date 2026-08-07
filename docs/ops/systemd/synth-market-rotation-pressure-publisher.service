@@ -30,7 +30,8 @@ SyslogIdentifier=synth-market-rotation-pressure-publisher
 # - no --write-db, no history runner, no pressure writer
 # - no market-data mutation
 # - no broker/account calls
-# - independent of the devlap writer timer: this unit does not declare
+# - independent of the writer's host/timer (currently a prepared gurkDB
+#   candidate, historically devlap): this unit does not declare
 #   Requires=/After= on the writer and performs no remote/SSH orchestration;
 #   a failed or delayed writer cycle does not fail this service, it only
 #   causes the publisher to republish the last valid persisted snapshot

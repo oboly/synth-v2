@@ -8,6 +8,7 @@ from pathlib import Path
 ODROID_SCRIPTS = tuple(sorted(Path("scripts/odroid").glob("*.sh")))
 PRICE_WRAPPER = Path("scripts/run_market_price_snapshot_once.sh")
 CANDLE_WRAPPER = Path("scripts/run_market_candle_freshness_once.sh")
+ROTATION_PRESSURE_WRAPPER = Path("scripts/run_market_rotation_pressure_once.sh")
 CHAIN_WRAPPER = Path("scripts/run_chain_4h.sh")
 ORCHESTRATOR = Path("scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh")
 SYSTEMD_TREES = (Path("deploy/systemd"), Path("docs/ops/systemd"), Path("scripts/odroid/systemd"))
@@ -95,6 +96,21 @@ def test_candle_writer_has_immutable_identity_guard_and_lock() -> None:
     assert "verify_writer_capability_authorization_v1" in service_text
     assert "scripts/run_market_candle_freshness_once.sh" in service_text
     assert "Unit=synth-market-candle-freshness-writer.service" in timer.read_text(encoding="utf-8")
+
+
+def test_rotation_pressure_writer_is_gurkdb_bound_with_canonical_write_command() -> None:
+    wrapper = ROTATION_PRESSURE_WRAPPER.read_text(encoding="utf-8")
+    service = Path("deploy/systemd/synth-market-rotation-pressure-writer.service")
+    timer = Path("deploy/systemd/synth-market-rotation-pressure-writer.timer")
+    service_text = service.read_text(encoding="utf-8")
+    assert "src.research.run_market_rotation_history_v1" in wrapper
+    assert "src.research.run_market_rotation_pressure_v1" in wrapper
+    assert wrapper.count("--write-db") == 4
+    assert "ConditionHost=gurkdb" in service_text
+    assert "ConditionHost=devlap" not in service_text
+    assert "verify_writer_capability_authorization_v1" in service_text
+    assert "scripts/run_market_rotation_pressure_once.sh --write-db" in service_text
+    assert "Unit=synth-market-rotation-pressure-writer.service" in timer.read_text(encoding="utf-8")
 
 
 def test_4h_chain_consumes_both_persisted_public_feeds_without_writer_repair() -> None:
@@ -206,6 +222,7 @@ def test_all_deploy_services_are_explicitly_host_bound_and_guarded() -> None:
                 in {
                     "synth-market-price-snapshot-writer.service",
                     "synth-market-candle-freshness-writer.service",
+                    "synth-market-rotation-pressure-writer.service",
                 }
                 else "devlap"
             )
@@ -228,6 +245,10 @@ def test_concurrent_public_writer_capabilities_use_distinct_authorization_files(
         for cap in registry["capabilities"]
     }
     assert paths["public_price_snapshot"] != paths["public_candle_freshness"]
+    assert paths["market_rotation_pressure"] not in {
+        paths["public_price_snapshot"],
+        paths["public_candle_freshness"],
+    }
 
 
 def test_account_snapshot_persistence_remains_separate_and_present() -> None:

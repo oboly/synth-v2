@@ -80,10 +80,15 @@ def _get_all(sections: dict[str, list[tuple[str, str]]], section: str, key: str)
 # Writer service
 # ---------------------------------------------------------------------------
 
-def test_writer_service_runs_as_gurk_on_devlap():
+def test_writer_service_runs_as_gurk_with_canonical_working_directory():
     sections = _parse_unit(WRITER_SERVICE)
     assert _get(sections, "Service", "User") == "gurk"
     assert _get(sections, "Service", "WorkingDirectory") == "/home/gurk/projects/synth-v2"
+
+
+def test_writer_service_is_gurkdb_bound_not_devlap():
+    sections = _parse_unit(WRITER_SERVICE)
+    assert _get(sections, "Unit", "ConditionHost") == "gurkdb"
 
 
 def test_writer_service_invokes_only_existing_writer_wrapper_with_write_db():

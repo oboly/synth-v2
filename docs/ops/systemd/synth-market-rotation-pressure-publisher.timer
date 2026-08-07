@@ -1,12 +1,13 @@
 [Unit]
-Description=Synth Market Rotation Pressure publisher timer — read-only, scheduled after the devlap writer (UTC)
+Description=Synth Market Rotation Pressure publisher timer — read-only, scheduled after the writer (UTC)
 Documentation=docs/ops/market_rotation_pressure_runtime_owners_v1.md
 Requires=synth-market-rotation-pressure-publisher.service
 
 [Timer]
-# Runs at minute :35 of every hour, UTC — 15 minutes after the devlap writer's
-# nominal :20 minute, and its own RandomizedDelaySec=180 gives a worst-case
-# start of :35:00 versus the writer's worst-case latest start of :23:00, a
+# Runs at minute :35 of every hour, UTC — 15 minutes after the writer's
+# nominal :20 minute (currently a prepared gurkDB candidate, historically
+# devlap), and its own RandomizedDelaySec=180 gives a worst-case start of
+# :35:00 versus the writer's worst-case latest start of :23:00, a
 # 12-minute minimum effective separation (required minimum: 5 minutes). See
 # docs/ops/market_rotation_pressure_runtime_owners_v1.md for full cadence
 # evidence. This host is scheduled independently; it does not declare

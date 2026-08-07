@@ -1,16 +1,19 @@
 [Unit]
-Description=Synth Market Rotation Pressure writer timer (devlap-bound historical/candidate artifact)
+Description=Synth Market Rotation Pressure writer timer (gurkDB-bound candidate artifact)
 Documentation=https://github.com/oboly/synth-v2/blob/main/docs/ops/market_rotation_pressure_runtime_owners_v1.md
 Requires=synth-market-rotation-pressure-writer.service
 
 [Timer]
 # Runs at minute :20 of every hour, UTC. Evidence (see
-# docs/ops/market_rotation_pressure_runtime_owners_v1.md): the Odroid
-# synth-market-candle-freshness user timer ingests 1h obs_market_candle rows
-# on a ~15m30s cadence and observed journal history shows the run started
-# immediately after each hour boundary (e.g. HH:04:52) finishes persisting by
-# ~HH:11:28. Minute :20 gives a safety margin beyond that observed
-# completion lag before the writer reads the hourly rotation-history source.
+# docs/ops/market_rotation_pressure_runtime_owners_v1.md): the canonical
+# obs_market_candle 1h source is populated by the gurkDB
+# synth-market-candle-freshness-writer.timer, which fires every 15 minutes
+# (minutes :02,17,32,47 UTC, RandomizedDelaySec=30) and has observed
+# full-universe completion in ~4-7 minutes. For an hourly candle closing at
+# HH:00:00, the first candle-freshness run at HH:02:xx (worst case
+# HH:02:30) persists it by roughly HH:06-HH:09. Minute :20 keeps at least an
+# ~11 minute safety margin beyond that observed completion window before the
+# writer reads the hourly rotation-history source.
 OnCalendar=*-*-* *:20:00 UTC
 Persistent=true
 RandomizedDelaySec=180

@@ -7,7 +7,16 @@ acceptance, and inactive host preparation on 2026-07-21.
 `public_candle_freshness` passed strict gurkDB preflight and two controlled
 manual cycles after its enabled-universe blocker was corrected. It is accepted
 and separately authorized to gurkDB in `AUTHORIZED_INACTIVE`, pending exact
-merged-commit deployment and activation. The other capabilities are unchanged.
+merged-commit deployment and activation.
+`market_rotation_pressure` had its committed unit re-bound from devlap to
+gurkDB on 2026-08-07 (Issue #266 root-cause repair), following the same
+"prepare" pattern used for `public_candle_freshness`. This is repository-only
+preparation: `production_runtime_owner` remains `UNASSIGNED` and
+`runtime_lifecycle` remains `SELECTED_PENDING_PREFLIGHT` until a separate,
+explicitly evidenced gurkDB preflight/acceptance/authorization decision is
+recorded. See
+`docs/ops/market_rotation_pressure_runtime_owners_v1.md#2026-08-07-gurkdb-writer-cutover-preparation-repository-only-issue-266`.
+The other capabilities are unchanged.
 
 The authoritative machine-readable ownership source is
 `deploy/ownership/writer_capability_ownership_v1.json`.
@@ -58,6 +67,8 @@ market_rotation_pressure:
   acceptance_host=devlap
   acceptance_status=ACCEPTED
   runtime_lifecycle=SELECTED_PENDING_PREFLIGHT
+  committed_unit_binding.condition_host=gurkdb (repository-only prep, 2026-08-07;
+                         see docs/ops/market_rotation_pressure_runtime_owners_v1.md)
   historical_runtime_assignment.host=devlap
   historical_runtime_assignment.status=SUPERSEDED
   observed_runtime_state=devlap timer last observed installed/enabled/active,
@@ -95,14 +106,13 @@ public_candle_freshness timer disabled/inactive
 market_rotation_pressure production_runtime_owner=UNASSIGNED
 ```
 
-The public-price unit and the fail-closed candle candidate unit are bound to
-gurkDB. Remaining devlap-bound committed units are candidate/historical
-artifacts. The devlap
-Rotation Pressure historical assignment remains
-`SUPERSEDED`, while canonical
-`observed_runtime_state.current_state=UNVERIFIED`; this PR does not assert or
-record current host containment. Odroid remains a consumer/publisher host with
-zero writer capabilities. Public-price evidence is in
+The public-price unit, the fail-closed candle candidate unit, and (since
+2026-08-07) the prepared Rotation Pressure candidate unit are all bound to
+gurkDB. The devlap Rotation Pressure historical assignment remains `SUPERSEDED`, while
+canonical `observed_runtime_state.current_state=UNVERIFIED`; this PR does not
+assert or record current host containment or gurkDB production authorization.
+Odroid remains a consumer/publisher host with zero writer capabilities.
+Public-price evidence is in
 `docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md`; candle
 acceptance and production-decision evidence is in
 `docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md`.
@@ -158,7 +168,8 @@ local operational artifacts and are not committed by default. See
 
 ## Executable Artifacts
 
-The public-price service and fail-closed candle candidate service are explicitly
+The public-price service, the fail-closed candle candidate service, and (since
+2026-08-07) the prepared Rotation Pressure candidate service are explicitly
 gurkDB-bound:
 
 ```text
@@ -168,8 +179,11 @@ WorkingDirectory=/home/gurk/projects/synth-v2
 ExecStartPre=src.operations.verify_writer_capability_authorization_v1
 ```
 
-The remaining committed services are devlap-bound candidate or historical
-artifacts; none are authorized by the public-price decision.
+None of these gurkDB bindings are themselves a production authorization;
+only `public_price_snapshot` (`ACTIVE`) and `public_candle_freshness`
+(`AUTHORIZED_INACTIVE`) have completed a separate production decision.
+`market_rotation_pressure` remains `SELECTED_PENDING_PREFLIGHT` /
+`UNASSIGNED` despite its gurkDB-bound committed unit.
 
 The mandatory `ExecStartPre` guard fails closed while a capability is
 `UNASSIGNED`, while the authorization file is absent, on the wrong hostname, on
