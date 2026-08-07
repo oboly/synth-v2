@@ -48,10 +48,18 @@ from src.market_data.native_short_map_lifecycle_v1 import (
 )
 from src.market_data import native_short_map_materializer_v1 as map_materializer
 from src.market_data.native_short_scope_status_materializer_v1 import (
+    CONTRACT_VERSION,
     NativeShortMapLevelStatusBlockedError,
-    run_native_short_scope_status_materializer,
+    NativeShortRunBuilder,
+    ScopeChainOutcome,
+    _finalize_run,
+    _insert_run,
+    evaluate_and_project_scope,
 )
-from src.market_data.native_short_scope_status_v1 import NativeShortMaterializerRunRecord
+from src.market_data.native_short_scope_status_v1 import (
+    NativeShortMaterializerRunRecord,
+    NativeShortRunTerminalStatus,
+)
 from src.market_data.native_short_repository_source_identity_v1 import (
     NativeShortRepositorySourceInspector,
     build_verified_process_provenance,
@@ -79,6 +87,20 @@ EXPECTED_LEVEL_ROWS_PER_OBSERVED_SCOPE = 3
 PRIMARY_LOOKBACK = timedelta(days=60)
 SUPPORTING_LOOKBACK = timedelta(days=21)
 HEARTBEAT_INTERVAL_SECONDS = 15.0
+MAX_FAILURE_DETAIL_LENGTH = 2000
+
+# Per-scope terminal outcome vocabulary for one bounded chain run. These are
+# orchestration-result labels only; they are never persisted as a run
+# terminal_status (that column's CHECK constraint owns its own vocabulary).
+SCOPE_STATUS_SUCCEEDED = "SUCCEEDED"
+SCOPE_STATUS_SKIPPED_NOT_SUPPORTED = "SKIPPED_NOT_SUPPORTED"
+SCOPE_STATUS_BLOCKED = "BLOCKED"
+SCOPE_STATUS_UNEXPECTED_FAILED = "UNEXPECTED_FAILED"
+
+# Explicit reviewed orchestration policy after a per-scope terminal failure.
+FAILURE_POLICY = "continue_on_unexpected_stop_on_blocked"
+TRANSACTION_BOUNDARY = "exact_scope"
+UNEXPECTED_FAILURE_REASON_CODE = "SCOPE_ISOLATION_UNEXPECTED_FAILURE"
 
 SAFETY_MARKERS: dict[str, int | str] = {
     "broker_private_calls": 0,
@@ -106,11 +128,21 @@ class CandleBundle:
 
 
 @dataclass(frozen=True)
+class ScopeChainResult:
+    """Attributable terminal evidence for exactly one canonical scope."""
+
+    key: NativeShortMapScopeKey
+    status: str
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
 class RuntimeResult:
     run: NativeShortMaterializerRunRecord
     selected_scope_count: int
     candle_rows_read: int
     elapsed_ms: int
+    scope_results: tuple[ScopeChainResult, ...] = ()
 
     @property
     def map_level_status_row_count(self) -> int:
@@ -384,10 +416,10 @@ def _elapsed_ms(start_monotonic: float) -> int:
 class _HeartbeatEmitter:
     """Background periodic progress reporter for one long-running phase.
 
-    The orchestrator call is a single blocking call over the whole bounded
-    scope set (no cooperative per-scope checkpoint is available from this
-    caller), so heartbeat progress is emitted from a daemon thread on a
-    fixed interval instead of from loop iterations. Tests exercise the
+    A single scope evaluation is itself an uninterruptible blocking call, so
+    heartbeat progress is emitted from a daemon thread on a fixed interval
+    rather than only from loop iterations (per-scope SCOPE_RESULT events
+    already provide the loop-iteration granularity). Tests exercise the
     callback directly rather than waiting on real elapsed time.
     """
 
@@ -447,9 +479,33 @@ def execute_runtime(
 
     started = time.monotonic()
     conn = get_connection()
-    transaction_closed = False
-    try:
+
+    # Exactly one transaction is ever open at a time; this flag lets the outer
+    # BaseException handler roll back only a genuinely in-flight transaction
+    # instead of blind-rolling-back an already-closed one.
+    transaction_open = False
+
+    def _begin() -> None:
+        nonlocal transaction_open
         conn.begin()
+        transaction_open = True
+
+    def _commit() -> None:
+        nonlocal transaction_open
+        conn.commit()
+        transaction_open = False
+
+    def _rollback() -> None:
+        nonlocal transaction_open
+        conn.rollback()
+        transaction_open = False
+
+    run_id: int | None = None
+    builder: NativeShortRunBuilder | None = None
+    run_finalized = False
+    failure: BaseException | None = None
+    try:
+        _begin()
         fetch_scopes_started = time.monotonic()
         _report("PHASE_START", phase="FETCH_SUPPORTED_SCOPES")
         scopes = fetch_supported_scope_keys(
@@ -469,6 +525,10 @@ def execute_runtime(
             elapsed_ms=_elapsed_ms(started),
             selected_scope_count=len(scopes),
         )
+        # Scope selection and fence capture are the only work in the setup
+        # transaction: no scope evaluation write shares a transaction with it.
+        _commit()
+
         def _report_candle_query(
             key: NativeShortMapScopeKey,
             interval_code: str,
@@ -486,6 +546,20 @@ def execute_runtime(
             )
 
         market_data = RuntimeMarketData(conn, query_progress=_report_candle_query)
+
+        # The run row is committed up front and owned by this process alone
+        # (run_uuid == provenance.invocation_uuid is UNIQUE, so exactly one row
+        # per invocation exists no matter how many scope transactions follow).
+        builder = NativeShortRunBuilder(
+            provenance=provenance,
+            contract_version=CONTRACT_VERSION,
+            started_at_utc=utc_now(),
+            requested_scope_count=len(scopes),
+        )
+        _begin()
+        run_id = _insert_run(conn, builder.started_record(), authorization=writer_authorization)
+        _commit()
+
         orchestrator_started = time.monotonic()
         _report("PHASE_START", phase="ORCHESTRATOR_RUN", selected_scope_count=len(scopes))
         heartbeat: _HeartbeatEmitter | None = None
@@ -502,49 +576,126 @@ def execute_runtime(
                 ),
             )
             heartbeat.start()
+        scope_results: list[ScopeChainResult] = []
         try:
-            try:
-                run = run_native_short_scope_status_materializer(
-                    conn,
-                    scopes=scopes,
-                    as_of_utc=as_of_utc,
-                    provenance=provenance,
-                    operational_clock=utc_now,
-                    fetch_context_row=market_data.context_row,
-                    fetch_existing_maps=map_materializer._fetch_maps_for_scope,
-                    fetch_existing_generation_events=(
-                        map_materializer._fetch_generation_events_for_scope
-                    ),
-                    fetch_existing_lifecycle_events=(
-                        map_materializer._fetch_lifecycle_events_for_map_ids
-                    ),
-                    fetch_primary_candle_close_timestamps=market_data.primary_timestamps,
-                    fetch_supporting_candle_close_timestamps=market_data.supporting_timestamps,
-                    authorization=writer_authorization,
+            # One failure domain per exact canonical scope, evaluated in the
+            # deterministic order fetch_supported_scope_keys already returns.
+            # Each scope owns its own transaction, so an unexpected failure in
+            # scope N can never roll back the committed work of scopes 1..N-1.
+            for key in scopes:
+                scope_started = time.monotonic()
+                scope_label = f"{key.venue}:{key.symbol}"
+                _begin()
+                try:
+                    outcome: ScopeChainOutcome = evaluate_and_project_scope(
+                        conn,
+                        key=key,
+                        run_id=run_id,
+                        as_of_utc=as_of_utc,
+                        provenance=provenance,
+                        operational_clock=utc_now,
+                        fetch_context_row=market_data.context_row,
+                        fetch_existing_maps=map_materializer._fetch_maps_for_scope,
+                        fetch_existing_generation_events=(
+                            map_materializer._fetch_generation_events_for_scope
+                        ),
+                        fetch_existing_lifecycle_events=(
+                            map_materializer._fetch_lifecycle_events_for_map_ids
+                        ),
+                        fetch_primary_candle_close_timestamps=market_data.primary_timestamps,
+                        fetch_supporting_candle_close_timestamps=market_data.supporting_timestamps,
+                        authorization=writer_authorization,
+                    )
+                    revalidate_writer_commit_fences(
+                        conn,
+                        [fence for fence in writer_commit_fences if fence.key == key],
+                    )
+                    _commit()
+                except NativeShortMapLevelStatusBlockedError as exc:
+                    # Explicit, already-designed domain-blocked contract. Only
+                    # this scope's transaction is discarded; every earlier
+                    # scope is already committed and untouched. Blocked stays a
+                    # hard stop for the run: no further scope is attempted.
+                    _rollback()
+                    builder.record_scope_outcome(failed=True)
+                    scope_results.append(
+                        ScopeChainResult(
+                            key=key,
+                            status=SCOPE_STATUS_BLOCKED,
+                            detail=str(exc)[:MAX_FAILURE_DETAIL_LENGTH],
+                        )
+                    )
+                    _report(
+                        "SCOPE_RESULT",
+                        phase="ORCHESTRATOR_RUN",
+                        scope=scope_label,
+                        status=SCOPE_STATUS_BLOCKED,
+                        elapsed_ms=_elapsed_ms(scope_started),
+                    )
+                    break
+                except Exception as exc:
+                    # Unexpected (bug, DB error, chain integrity violation).
+                    # Discard exactly this scope's writes and continue: one
+                    # symbol's crash must not suppress unrelated scopes.
+                    _rollback()
+                    builder.record_scope_outcome(failed=True)
+                    scope_results.append(
+                        ScopeChainResult(
+                            key=key,
+                            status=SCOPE_STATUS_UNEXPECTED_FAILED,
+                            detail=f"{type(exc).__name__}: {exc}"[:MAX_FAILURE_DETAIL_LENGTH],
+                        )
+                    )
+                    _report(
+                        "SCOPE_RESULT",
+                        phase="ORCHESTRATOR_RUN",
+                        scope=scope_label,
+                        status=SCOPE_STATUS_UNEXPECTED_FAILED,
+                        elapsed_ms=_elapsed_ms(scope_started),
+                    )
+                    continue
+                except BaseException:
+                    # SIGINT/SIGTERM-triggered KeyboardInterrupt: discard the
+                    # in-flight scope and abort the loop entirely rather than
+                    # continuing to further scopes.
+                    _rollback()
+                    raise
+
+                if not outcome.skipped_not_supported:
+                    builder.record_scope_outcome(
+                        published_map=outcome.published_map,
+                        lifecycle_event_appended=outcome.lifecycle_event_appended,
+                        failed=outcome.failed,
+                    )
+                scope_status = (
+                    SCOPE_STATUS_SKIPPED_NOT_SUPPORTED
+                    if outcome.skipped_not_supported
+                    else SCOPE_STATUS_SUCCEEDED
                 )
-            except NativeShortMapLevelStatusBlockedError:
-                # Explicit, already-designed domain-blocked contract: the
-                # orchestrator terminalizes its run as FAILED with
-                # blocked-domain evidence before raising. That terminal run
-                # row and any completed per-scope observations/projections
-                # from this explicitly bounded scope set are the intended
-                # evidence and are safe to commit.
-                revalidate_writer_commit_fences(conn, writer_commit_fences)
-                conn.commit()
-                transaction_closed = True
-                raise
-            except Exception:
-                # Any other exception is unexpected (bug, DB error, chain
-                # integrity violation): never commit partial map/status
-                # writes. Roll back the whole bounded-scope transaction;
-                # main() emits bounded terminal failure evidence to
-                # stdout/stderr instead.
-                conn.rollback()
-                transaction_closed = True
-                raise
+                scope_results.append(ScopeChainResult(key=key, status=scope_status))
+                _report(
+                    "SCOPE_RESULT",
+                    phase="ORCHESTRATOR_RUN",
+                    scope=scope_label,
+                    status=scope_status,
+                    elapsed_ms=_elapsed_ms(scope_started),
+                )
         finally:
             if heartbeat is not None:
                 heartbeat.stop()
+
+        run = _finalize_chain_run(
+            conn,
+            run_id=run_id,
+            builder=builder,
+            scope_results=scope_results,
+            finished_at_utc=utc_now(),
+            authorization=writer_authorization,
+            begin=_begin,
+            commit=_commit,
+        )
+        run_finalized = True
+
         _report(
             "PHASE_END",
             phase="ORCHESTRATOR_RUN",
@@ -556,32 +707,102 @@ def execute_runtime(
             failed_scopes=run.failed_scope_count,
             candle_rows_read=market_data.rows_read,
         )
-        revalidate_writer_commit_fences(conn, writer_commit_fences)
-        conn.commit()
-        transaction_closed = True
         if run.failed_scope_count:
-            raise RuntimeScopeEvaluationError(
+            failure = RuntimeScopeEvaluationError(
                 f"FAILED_SCOPES count={run.failed_scope_count} run_uuid={run.run_uuid}"
             )
-        return RuntimeResult(
+        result = RuntimeResult(
             run=run,
             selected_scope_count=len(scopes),
             candle_rows_read=market_data.rows_read,
             elapsed_ms=_elapsed_ms(started),
+            scope_results=tuple(scope_results),
         )
     except BaseException:
         # BaseException (not just Exception) so a SIGINT/SIGTERM-triggered
         # KeyboardInterrupt arriving mid-transaction also rolls back instead
         # of leaving an open transaction for conn.close() to handle
         # implicitly.
-        if not transaction_closed:
+        if transaction_open:
             try:
-                conn.rollback()
+                _rollback()
             except Exception:
                 pass
+        # The run row is now committed before any scope work, so an interrupted
+        # run leaves attributable terminal evidence instead of no row at all.
+        # Strictly best effort: a failure here must never mask the original
+        # interruption/exception.
+        if run_id is not None and builder is not None and not run_finalized:
+            try:
+                interrupted_record = builder.finish(
+                    finished_at_utc=utc_now(),
+                    terminal_status=NativeShortRunTerminalStatus.INTERRUPTED,
+                )
+                _begin()
+                _finalize_run(conn, run_id, interrupted_record, authorization=writer_authorization)
+                _commit()
+            except BaseException:
+                try:
+                    if transaction_open:
+                        _rollback()
+                except Exception:
+                    pass
         raise
     finally:
         conn.close()
+
+    if failure is not None:
+        raise failure
+    return result
+
+
+def _finalize_chain_run(
+    conn: Any,
+    *,
+    run_id: int,
+    builder: NativeShortRunBuilder,
+    scope_results: Sequence[ScopeChainResult],
+    finished_at_utc: datetime,
+    authorization: Any,
+    begin: Callable[[], None],
+    commit: Callable[[], None],
+) -> NativeShortMaterializerRunRecord:
+    """Terminalize the run row in its own short transaction.
+
+    Not defensive by design: a terminalization conflict means a second
+    finalizer genuinely raced this one, which must fail loud rather than be
+    silently swallowed.
+    """
+    blocked = [item for item in scope_results if item.status == SCOPE_STATUS_BLOCKED]
+    unexpected = [
+        item for item in scope_results if item.status == SCOPE_STATUS_UNEXPECTED_FAILED
+    ]
+    if blocked:
+        # Preserve the pre-existing blocked failure shape exactly.
+        record = builder.finish(
+            finished_at_utc=finished_at_utc,
+            terminal_status=NativeShortRunTerminalStatus.FAILED,
+            failure_reason_code=NativeShortMapLevelStatusBlockedError.__name__,
+            failure_detail=(blocked[0].detail or "")[:MAX_FAILURE_DETAIL_LENGTH],
+        )
+    elif unexpected:
+        detail = "; ".join(
+            f"{item.key.venue}:{item.key.symbol} {item.detail}" for item in unexpected
+        )
+        record = builder.finish(
+            finished_at_utc=finished_at_utc,
+            terminal_status=NativeShortRunTerminalStatus.FAILED,
+            failure_reason_code=UNEXPECTED_FAILURE_REASON_CODE,
+            failure_detail=detail[:MAX_FAILURE_DETAIL_LENGTH],
+        )
+    else:
+        # Per-scope soft-degrade evidence (already persisted as observations)
+        # still terminalizes FINISHED, exactly as before.
+        record = builder.finish(finished_at_utc=finished_at_utc)
+    begin()
+    _finalize_run(conn, run_id, record, authorization=authorization)
+    commit()
+    return record
 
 
 def _emit(payload: dict[str, Any], output: str) -> None:

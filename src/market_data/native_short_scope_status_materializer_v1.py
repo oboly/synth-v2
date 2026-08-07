@@ -107,10 +107,12 @@ __all__ = [
     "NativeShortMapLevelStatusChainError",
     "NativeShortRunBuilder",
     "NativeShortRunTerminalizationConflictError",
+    "ScopeChainOutcome",
     "ScopeEvaluationOutcome",
     "build_configuration_unavailable_observation",
     "build_normal_observation",
     "decide_genuine_lifecycle_transition",
+    "evaluate_and_project_scope",
     "evaluate_scope",
     "map_geometry_action",
     "run_native_short_scope_status_materializer",
@@ -1177,6 +1179,169 @@ def evaluate_scope(
 _MAX_FAILURE_DETAIL_LENGTH = 2000
 
 
+@dataclass(frozen=True)
+class ScopeChainOutcome:
+    """Terminal per-scope outcome of one exact-scope chain step.
+
+    `failed` reflects the existing soft-degrade contract of `evaluate_scope`
+    (expected source/context failure persisted as observation evidence), not
+    an unexpected exception: unexpected failures propagate to the caller.
+    """
+
+    key: NativeShortMapScopeKey
+    skipped_not_supported: bool
+    published_map: bool
+    lifecycle_event_appended: bool
+    failed: bool
+
+
+def evaluate_and_project_scope(
+    conn: Any,
+    *,
+    key: NativeShortMapScopeKey,
+    run_id: int,
+    as_of_utc: datetime,
+    provenance: NativeShortWriterProvenance,
+    operational_clock: Callable[[], datetime],
+    fetch_context_row: Callable[[NativeShortMapScopeKey, datetime], NativeShortContextRow | None],
+    fetch_existing_maps: Callable[[Any, NativeShortMapScopeKey], list[Any]],
+    fetch_existing_generation_events: Callable[[Any, NativeShortMapScopeKey], list[Any]],
+    fetch_existing_lifecycle_events: Callable[[Any, list[int]], list[Any]],
+    fetch_primary_candle_close_timestamps: Callable[[NativeShortMapScopeKey, datetime], list[datetime]],
+    fetch_supporting_candle_close_timestamps: Callable[[NativeShortMapScopeKey, datetime], list[datetime]],
+    materialize_scope_symbol_fn: Callable[..., ScopeMaterializationResult] = materialize_scope_symbol,
+    materialize_map_level_status_fn: Callable[
+        ..., MapLevelStatusMaterializationOutcome
+    ] | None = None,
+    authorization: Any = None,
+    target_event_coverage_watermark_utc: datetime | None = None,
+    on_scope_evaluated: Callable[[ScopeChainOutcome], None] | None = None,
+) -> ScopeChainOutcome:
+    """Evaluate, project, and map-level-materialize exactly one canonical scope.
+
+    This is the single failure domain of the chain: it performs every write
+    belonging to one exact scope and touches no run row and no other scope, so
+    a caller may wrap exactly this call in one transaction per scope.
+
+    `on_scope_evaluated` is invoked exactly once, immediately after a
+    non-skipped `evaluate_scope` returns and before the projection rebuild, so
+    a caller that accounts scope outcomes at that historical point (the
+    in-process orchestrator) keeps identical accounting even when a later
+    projection/map-level step raises. Callers that account from the terminal
+    return value or from their own exception handlers omit it.
+    """
+    materialize_map_level_status_fn = (
+        materialize_map_level_status_fn
+        or materialize_native_short_map_level_status_for_scope
+    )
+    outcome = evaluate_scope(
+        conn,
+        key=key,
+        as_of_utc=as_of_utc,
+        run_id=run_id,
+        provenance=provenance,
+        fetch_context_row=fetch_context_row,
+        fetch_existing_maps=fetch_existing_maps,
+        fetch_existing_generation_events=fetch_existing_generation_events,
+        fetch_existing_lifecycle_events=fetch_existing_lifecycle_events,
+        materialize_scope_symbol_fn=materialize_scope_symbol_fn,
+        authorization=authorization,
+        target_event_coverage_watermark_utc=target_event_coverage_watermark_utc,
+    )
+    if outcome.skipped_not_supported:
+        return ScopeChainOutcome(
+            key=key,
+            skipped_not_supported=True,
+            published_map=False,
+            lifecycle_event_appended=False,
+            failed=False,
+        )
+
+    if on_scope_evaluated is not None:
+        on_scope_evaluated(
+            ScopeChainOutcome(
+                key=key,
+                skipped_not_supported=False,
+                published_map=outcome.published_map,
+                lifecycle_event_appended=outcome.lifecycle_event_appended,
+                failed=outcome.failed,
+            )
+        )
+
+    # Independently known map/lifecycle facts are always fetched:
+    # A1b requires map_lifecycle_state/current_map_id to keep
+    # reflecting them even for a CONFIGURATION_UNAVAILABLE row.
+    existing_maps = fetch_existing_maps(conn, key)
+    existing_generation_events = fetch_existing_generation_events(conn, key)
+    existing_lifecycle_events = fetch_existing_lifecycle_events(
+        conn, [item.map_id for item in existing_maps]
+    )
+
+    if outcome.configuration_unavailable:
+        # No candle fetch for a configuration-blocked scope: source
+        # freshness can never be classified without the missing
+        # cadence thresholds, so the callbacks must never even be
+        # invoked here (the pure projection engine also independently
+        # nulls these fields on this path as defense in depth).
+        primary_candle_close_timestamps: Sequence[datetime] = ()
+        supporting_candle_close_timestamps: Sequence[datetime] = ()
+    else:
+        primary_candle_close_timestamps = fetch_primary_candle_close_timestamps(key, as_of_utc)
+        supporting_candle_close_timestamps = fetch_supporting_candle_close_timestamps(key, as_of_utc)
+
+    rebuild_scope_projection(
+        conn,
+        key=key,
+        as_of_utc=as_of_utc,
+        rebuilt_at_utc=as_of_utc,
+        existing_maps=existing_maps,
+        existing_generation_events=existing_generation_events,
+        existing_lifecycle_events=existing_lifecycle_events,
+        primary_candle_close_timestamps=primary_candle_close_timestamps,
+        supporting_candle_close_timestamps=supporting_candle_close_timestamps,
+        provenance=provenance,
+        authorization=authorization,
+    )
+
+    # The level-status materializer consumes only the projection's
+    # selected current_map_id/full scope identity, so it must run
+    # strictly after the canonical projection rebuild. Its semantic
+    # cutoff remains projection_as_of_utc; the chain clock supplies
+    # only rebuilt-at operational metadata.
+    level_status_outcome = materialize_map_level_status_fn(
+        conn,
+        key=key,
+        operational_clock=operational_clock,
+        provenance=provenance,
+        authorization=authorization,
+    )
+    if level_status_outcome.branch == MAP_LEVEL_STATUS_BLOCKED:
+        raise NativeShortMapLevelStatusBlockedError(
+            "MAP_LEVEL_STATUS_BLOCKED "
+            f"venue={key.venue} symbol={key.symbol} "
+            f"quote_currency={key.quote_currency} "
+            f"fib_trading_horizon={key.fib_trading_horizon} "
+            f"primary_interval={key.primary_interval} "
+            f"supporting_interval={key.supporting_interval} "
+            f"reason_code={level_status_outcome.reason_code or 'UNKNOWN'}"
+        )
+    if level_status_outcome.row_count != EXPECTED_MAP_LEVEL_STATUS_ROW_COUNT:
+        raise NativeShortMapLevelStatusChainError(
+            "MAP_LEVEL_STATUS_UNEXPECTED_ROW_COUNT "
+            f"venue={key.venue} symbol={key.symbol} "
+            f"expected={EXPECTED_MAP_LEVEL_STATUS_ROW_COUNT} "
+            f"actual={level_status_outcome.row_count}"
+        )
+
+    return ScopeChainOutcome(
+        key=key,
+        skipped_not_supported=False,
+        published_map=outcome.published_map,
+        lifecycle_event_appended=outcome.lifecycle_event_appended,
+        failed=outcome.failed,
+    )
+
+
 def run_native_short_scope_status_materializer(
     conn: Any,
     *,
@@ -1235,95 +1400,34 @@ def run_native_short_scope_status_materializer(
     )
     run_id = _insert_run(conn, builder.started_record(), authorization=authorization)
 
+    def _record(outcome: ScopeChainOutcome) -> None:
+        builder.record_scope_outcome(
+            published_map=outcome.published_map,
+            lifecycle_event_appended=outcome.lifecycle_event_appended,
+            failed=outcome.failed,
+        )
+
     try:
         for key in scopes:
-            outcome = evaluate_scope(
+            evaluate_and_project_scope(
                 conn,
                 key=key,
-                as_of_utc=as_of_utc,
                 run_id=run_id,
+                as_of_utc=as_of_utc,
                 provenance=provenance,
+                operational_clock=operational_clock,
                 fetch_context_row=fetch_context_row,
                 fetch_existing_maps=fetch_existing_maps,
                 fetch_existing_generation_events=fetch_existing_generation_events,
                 fetch_existing_lifecycle_events=fetch_existing_lifecycle_events,
+                fetch_primary_candle_close_timestamps=fetch_primary_candle_close_timestamps,
+                fetch_supporting_candle_close_timestamps=fetch_supporting_candle_close_timestamps,
                 materialize_scope_symbol_fn=materialize_scope_symbol_fn,
+                materialize_map_level_status_fn=materialize_map_level_status_fn,
                 authorization=authorization,
                 target_event_coverage_watermark_utc=target_event_coverage_watermark_utc,
+                on_scope_evaluated=_record,
             )
-            if outcome.skipped_not_supported:
-                continue
-
-            builder.record_scope_outcome(
-                published_map=outcome.published_map,
-                lifecycle_event_appended=outcome.lifecycle_event_appended,
-                failed=outcome.failed,
-            )
-
-            # Independently known map/lifecycle facts are always fetched:
-            # A1b requires map_lifecycle_state/current_map_id to keep
-            # reflecting them even for a CONFIGURATION_UNAVAILABLE row.
-            existing_maps = fetch_existing_maps(conn, key)
-            existing_generation_events = fetch_existing_generation_events(conn, key)
-            existing_lifecycle_events = fetch_existing_lifecycle_events(
-                conn, [item.map_id for item in existing_maps]
-            )
-
-            if outcome.configuration_unavailable:
-                # No candle fetch for a configuration-blocked scope: source
-                # freshness can never be classified without the missing
-                # cadence thresholds, so the callbacks must never even be
-                # invoked here (the pure projection engine also independently
-                # nulls these fields on this path as defense in depth).
-                primary_candle_close_timestamps: Sequence[datetime] = ()
-                supporting_candle_close_timestamps: Sequence[datetime] = ()
-            else:
-                primary_candle_close_timestamps = fetch_primary_candle_close_timestamps(key, as_of_utc)
-                supporting_candle_close_timestamps = fetch_supporting_candle_close_timestamps(key, as_of_utc)
-
-            rebuild_scope_projection(
-                conn,
-                key=key,
-                as_of_utc=as_of_utc,
-                rebuilt_at_utc=as_of_utc,
-                existing_maps=existing_maps,
-                existing_generation_events=existing_generation_events,
-                existing_lifecycle_events=existing_lifecycle_events,
-                primary_candle_close_timestamps=primary_candle_close_timestamps,
-                supporting_candle_close_timestamps=supporting_candle_close_timestamps,
-                provenance=provenance,
-                authorization=authorization,
-            )
-
-            # The level-status materializer consumes only the projection's
-            # selected current_map_id/full scope identity, so it must run
-            # strictly after the canonical projection rebuild. Its semantic
-            # cutoff remains projection_as_of_utc; the chain clock supplies
-            # only rebuilt-at operational metadata.
-            level_status_outcome = materialize_map_level_status_fn(
-                conn,
-                key=key,
-                operational_clock=operational_clock,
-                provenance=provenance,
-                authorization=authorization,
-            )
-            if level_status_outcome.branch == MAP_LEVEL_STATUS_BLOCKED:
-                raise NativeShortMapLevelStatusBlockedError(
-                    "MAP_LEVEL_STATUS_BLOCKED "
-                    f"venue={key.venue} symbol={key.symbol} "
-                    f"quote_currency={key.quote_currency} "
-                    f"fib_trading_horizon={key.fib_trading_horizon} "
-                    f"primary_interval={key.primary_interval} "
-                    f"supporting_interval={key.supporting_interval} "
-                    f"reason_code={level_status_outcome.reason_code or 'UNKNOWN'}"
-                )
-            if level_status_outcome.row_count != EXPECTED_MAP_LEVEL_STATUS_ROW_COUNT:
-                raise NativeShortMapLevelStatusChainError(
-                    "MAP_LEVEL_STATUS_UNEXPECTED_ROW_COUNT "
-                    f"venue={key.venue} symbol={key.symbol} "
-                    f"expected={EXPECTED_MAP_LEVEL_STATUS_ROW_COUNT} "
-                    f"actual={level_status_outcome.row_count}"
-                )
     except Exception as exc:
         failed_record = builder.finish(
             finished_at_utc=operational_clock(),

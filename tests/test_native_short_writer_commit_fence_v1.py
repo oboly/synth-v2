@@ -7,6 +7,7 @@ import pytest
 
 from src.market_data import run_native_short_scope_status_chain_v1 as runner
 from src.market_data.native_short_map_lifecycle_v1 import NativeShortMapScopeKey
+from src.market_data.native_short_scope_status_materializer_v1 import ScopeChainOutcome
 from src.market_data.native_short_scope_status_v1 import (
     NativeShortMaterializerRunRecord,
 )
@@ -14,7 +15,6 @@ from src.market_data.native_short_writer_commit_fence_v1 import (
     REASON_ACTIVE_CADENCE_CHANGED,
     REASON_SUPPORT_GENERATION_CHANGED,
     REASON_SUPPORT_WITHDRAWN,
-    NativeShortWriterCommitFenceError,
 )
 from src.market_data.native_short_writer_provenance_v1 import (
     build_explicit_test_provenance,
@@ -146,10 +146,37 @@ def _finished_run() -> NativeShortMaterializerRunRecord:
     )
 
 
+def _scope_outcome() -> ScopeChainOutcome:
+    return ScopeChainOutcome(
+        key=_BTC,
+        skipped_not_supported=False,
+        published_map=False,
+        lifecycle_event_appended=False,
+        failed=False,
+    )
+
+
+def _install_run_row_doubles(
+    monkeypatch: pytest.MonkeyPatch,
+    finalized: list[NativeShortMaterializerRunRecord] | None = None,
+) -> None:
+    """The run row is written in its own transaction, outside every scope's
+    failure domain, so it is stubbed here: these tests are about the
+    exact-scope commit fence, not run-row SQL."""
+
+    def _finalize(connection: Any, run_id: int, record: Any, **kwargs: Any) -> None:
+        if finalized is not None:
+            finalized.append(record)
+
+    monkeypatch.setattr(runner, "_insert_run", lambda connection, record, **kwargs: 1)
+    monkeypatch.setattr(runner, "_finalize_run", _finalize)
+
+
 def _execute(
     monkeypatch: pytest.MonkeyPatch,
     conn: _FenceConn,
-    orchestrator: Callable[..., NativeShortMaterializerRunRecord],
+    scope_fn: Callable[..., ScopeChainOutcome],
+    finalized: list[NativeShortMaterializerRunRecord] | None = None,
 ) -> runner.RuntimeResult:
     monkeypatch.setattr(runner, "get_connection", lambda: conn)
     monkeypatch.setattr(
@@ -157,11 +184,8 @@ def _execute(
         "fetch_supported_scope_keys",
         lambda *args, **kwargs: [_BTC],
     )
-    monkeypatch.setattr(
-        runner,
-        "run_native_short_scope_status_materializer",
-        orchestrator,
-    )
+    _install_run_row_doubles(monkeypatch, finalized)
+    monkeypatch.setattr(runner, "evaluate_and_project_scope", scope_fn)
     return runner.execute_runtime(
         venue="bitvavo",
         symbols=["BTC"],
@@ -174,76 +198,72 @@ def _execute(
     )
 
 
-def _record_run_evidence(conn: _FenceConn) -> NativeShortMaterializerRunRecord:
+def _record_run_evidence(conn: _FenceConn) -> ScopeChainOutcome:
     conn.pending["run"].append("btc-run")
-    return _finished_run()
+    return _scope_outcome()
 
 
 def test_support_withdrawn_before_commit_rolls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The exact-scope fence still discards that scope's evidence entirely.
+    Under exact-scope transaction boundaries the fence violation is attributed
+    to its own scope and terminalizes the run as FAILED with the fence reason,
+    instead of destroying unrelated scopes' committed work."""
     conn = _FenceConn()
+    finalized: list[NativeShortMaterializerRunRecord] = []
 
-    def withdraw(connection: _FenceConn, **kwargs: Any) -> NativeShortMaterializerRunRecord:
+    def withdraw(connection: _FenceConn, **kwargs: Any) -> ScopeChainOutcome:
         connection.pending["run"].append("btc-run")
         connection.scope_row["scope_support_state"] = "NOT_APPLICABLE"
         connection.cadence_row["is_active"] = 0
-        return _finished_run()
+        return _scope_outcome()
 
-    with pytest.raises(
-        NativeShortWriterCommitFenceError,
-        match=REASON_SUPPORT_WITHDRAWN,
-    ):
-        _execute(monkeypatch, conn, withdraw)
+    with pytest.raises(runner.RuntimeScopeEvaluationError):
+        _execute(monkeypatch, conn, withdraw, finalized)
 
-    assert conn.commit_count == 0
+    assert conn.persisted["run"] == []
     assert conn.rollback_count == 1
+    assert REASON_SUPPORT_WITHDRAWN in finalized[0].failure_detail
+    assert finalized[0].terminal_status == "FAILED"
 
 
 def test_support_generation_changed_before_commit_rolls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = _FenceConn()
+    finalized: list[NativeShortMaterializerRunRecord] = []
 
-    def change_generation(
-        connection: _FenceConn,
-        **kwargs: Any,
-    ) -> NativeShortMaterializerRunRecord:
+    def change_generation(connection: _FenceConn, **kwargs: Any) -> ScopeChainOutcome:
         connection.pending["generation"].append("attempt")
         connection.scope_row["support_generation"] = 2
-        return _finished_run()
+        return _scope_outcome()
 
-    with pytest.raises(
-        NativeShortWriterCommitFenceError,
-        match=REASON_SUPPORT_GENERATION_CHANGED,
-    ):
-        _execute(monkeypatch, conn, change_generation)
+    with pytest.raises(runner.RuntimeScopeEvaluationError):
+        _execute(monkeypatch, conn, change_generation, finalized)
 
-    assert conn.commit_count == 0
+    assert conn.persisted["generation"] == []
     assert conn.rollback_count == 1
+    assert REASON_SUPPORT_GENERATION_CHANGED in finalized[0].failure_detail
 
 
 def test_active_cadence_changed_before_commit_rolls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = _FenceConn()
+    finalized: list[NativeShortMaterializerRunRecord] = []
 
-    def change_cadence(
-        connection: _FenceConn,
-        **kwargs: Any,
-    ) -> NativeShortMaterializerRunRecord:
+    def change_cadence(connection: _FenceConn, **kwargs: Any) -> ScopeChainOutcome:
         connection.pending["projection"].append("btc-status")
         connection.cadence_row["cadence_config_id"] = 2
-        return _finished_run()
+        return _scope_outcome()
 
-    with pytest.raises(
-        NativeShortWriterCommitFenceError,
-        match=REASON_ACTIVE_CADENCE_CHANGED,
-    ):
-        _execute(monkeypatch, conn, change_cadence)
+    with pytest.raises(runner.RuntimeScopeEvaluationError):
+        _execute(monkeypatch, conn, change_cadence, finalized)
 
-    assert conn.commit_count == 0
+    assert conn.persisted["projection"] == []
     assert conn.rollback_count == 1
+    assert REASON_ACTIVE_CADENCE_CHANGED in finalized[0].failure_detail
 
 
 def test_unchanged_commit_fence_commits_successfully(
@@ -258,7 +278,8 @@ def test_unchanged_commit_fence_commits_successfully(
     )
 
     assert result.selected_scope_count == 1
-    assert conn.commit_count == 1
+    # setup, run row, the single scope, finalize
+    assert conn.commit_count == 4
     assert conn.rollback_count == 0
     assert conn.persisted["run"] == ["btc-run"]
 
@@ -268,21 +289,17 @@ def test_failed_fence_leaves_no_partial_evidence(
 ) -> None:
     conn = _FenceConn()
 
-    def write_then_drift(
-        connection: _FenceConn,
-        **kwargs: Any,
-    ) -> NativeShortMaterializerRunRecord:
+    def write_then_drift(connection: _FenceConn, **kwargs: Any) -> ScopeChainOutcome:
         for name in _EVIDENCE_TYPES:
             connection.pending[name].append(f"btc-{name}")
         connection.scope_row["support_generation"] = 2
-        return _finished_run()
+        return _scope_outcome()
 
-    with pytest.raises(NativeShortWriterCommitFenceError):
+    with pytest.raises(runner.RuntimeScopeEvaluationError):
         _execute(monkeypatch, conn, write_then_drift)
 
     assert all(conn.persisted[name] == [] for name in _EVIDENCE_TYPES)
     assert all(conn.pending[name] == [] for name in _EVIDENCE_TYPES)
-    assert conn.commit_count == 0
     assert conn.rollback_count == 1
 
 
@@ -298,21 +315,15 @@ def test_btc_idempotent_rerun_remains_valid(
         "fetch_supported_scope_keys",
         lambda *args, **kwargs: [_BTC],
     )
+    _install_run_row_doubles(monkeypatch)
 
-    def idempotent_orchestrator(
-        connection: _FenceConn,
-        **kwargs: Any,
-    ) -> NativeShortMaterializerRunRecord:
+    def idempotent_scope(connection: _FenceConn, **kwargs: Any) -> ScopeChainOutcome:
         connection.pending["run"].append("btc-run")
         if "btc-map" not in connection.persisted["map"]:
             connection.pending["map"].append("btc-map")
-        return _finished_run()
+        return _scope_outcome()
 
-    monkeypatch.setattr(
-        runner,
-        "run_native_short_scope_status_materializer",
-        idempotent_orchestrator,
-    )
+    monkeypatch.setattr(runner, "evaluate_and_project_scope", idempotent_scope)
 
     for _ in range(2):
         runner.execute_runtime(
@@ -326,7 +337,7 @@ def test_btc_idempotent_rerun_remains_valid(
             provenance=_PROVENANCE,
         )
 
-    assert [conn.commit_count for conn in connections] == [1, 1]
+    assert [conn.commit_count for conn in connections] == [4, 4]
     assert [conn.rollback_count for conn in connections] == [0, 0]
     assert persisted["run"] == ["btc-run", "btc-run"]
     assert persisted["map"] == ["btc-map"]
