@@ -282,7 +282,8 @@ This backlog overlaps with, but does not replace:
 - `docs/todo/manual_ladder_dashboard.md`
 - `docs/ops/runtime_chain_ownership_v1.md`
 - `docs/ops/market_breath_context_bridge_v1.md`
-- `docs/todo/external_research_ingestion.md`
+- `docs/research/external_research_ingestion_v1.md`
+- `docs/research/external_elliott_wave_claim_validation_v1.md`
 
 This file is the v2.14 cross-cutting design backlog for the signal dashboard,
 strategy proposal layer, and temporary LLM bridge boundary.

@@ -173,6 +173,7 @@ external overlay          -> overwrite canonical regime
 ## Related Documents
 
 - `docs/architecture/market_observer_contract_v1.md`
-- `docs/todo/external_research_ingestion.md`
+- `docs/research/external_research_ingestion_v1.md`
+- `docs/research/external_elliott_wave_claim_validation_v1.md`
 - `docs/research/canonical_regime_context_source_v1.md`
 - `docs/research/shadow_heartbeat_outcome_validation_v1.md`
