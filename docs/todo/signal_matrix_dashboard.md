@@ -21,7 +21,7 @@ It must not collapse primitive signals into hidden final conclusions.
 
 ```text
 Recent chat handoff for Synth v2.14 signal-matrix direction.
-docs/todo/manual_ladder_dashboard.md
+docs/archive/manual_ladder_dashboard.md (archived; see docs/todo/profit_plan_live_ladder.md for active ladder work)
 docs/todo/ui_webview.md
 docs/research/paper_advice_manual_trading_cockpit_v1.md
 ```

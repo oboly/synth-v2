@@ -121,7 +121,7 @@ Primary research/output files to inspect when present:
 Supporting docs / priors:
 
 - `docs/todo/signal_matrix_dashboard.md`
-- `docs/todo/manual_ladder_dashboard.md`
+- `docs/archive/manual_ladder_dashboard.md` (archived; see `docs/todo/profit_plan_live_ladder.md`)
 - `docs/legacy_synth_v1_regime_strategy_priors.md`
 
 ## Primitive Signal Inventory

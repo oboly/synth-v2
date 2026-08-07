@@ -1,5 +1,22 @@
 # TODO — Manual Ladder Dashboard
 
+```text
+Status: Archived historical record
+Active ownership: none
+Current work: see canonical documentation / GitHub Issues
+Archived by: docs/TODO cleanup Batch 4B
+```
+
+Current owners for the substantive scope below:
+
+- P0 dashboard implementation: `src/reporting/run_manual_ladder_static_dashboard_v1.py`, `docs/research/manual_ladder_dashboard_v1.md`
+- Successor strategy/regime/zone dashboard: `docs/research/breath_fibo_strategy_static_dashboard_v1.md` (`src/reporting/run_breath_fibo_strategy_static_dashboard_v1.py`), built on `docs/research/canonical_fib_zone_map_v1.md`
+- Active ladder lane: `docs/todo/profit_plan_live_ladder.md`
+- Manual execution ladder request/planner/credential scope: GitHub Issues #202, #203, #206
+- `docs/todo/README.md` already carried this file's disposition as "historical source / superseded" prior to this archive move.
+
+The body below is preserved unmodified from the original TODO and reflects historical status language (e.g. "Active next dashboard lane") that is no longer current.
+
 ## Status
 
 Active next dashboard lane for Synth v2.14.
