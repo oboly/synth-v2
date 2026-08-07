@@ -432,6 +432,14 @@ class ProfitPlanCard:
     actionability_state: str = CARD_ACTIONABILITY_ACTIVE
     visibility_class: str = VISIBILITY_NATIVE_ATTENTION
     presentation_mode: str = CARD_MODE_MARKET_SELECTED
+    # Two independent, never-conflated facts (GUI terminology correction):
+    # is_portfolio_asset = configured strategic portfolio/rotation membership
+    # (asset.is_portfolio), independent of current balance. is_wallet_held =
+    # the latest persisted wallet snapshot has a positive amount for this
+    # symbol. A zero-balance portfolio asset has is_portfolio_asset=True and
+    # is_wallet_held=False; both may be True at once.
+    is_portfolio_asset: bool = False
+    is_wallet_held: bool = False
     fib_nav_context: FibNavContext | None = None
     render_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     breath_curve: dict[str, Any] | None = None
@@ -1202,6 +1210,7 @@ def apply_portfolio_account_evidence(
     held_eur_value_by_symbol: Mapping[str, Decimal | None],
     cost_basis_by_symbol: Mapping[str, Decimal],
     balance_freshness_status: str = DATA_UNAVAILABLE,
+    portfolio_asset_markets: Any = frozenset(),
 ) -> list[ProfitPlanCard]:
     """Compose account-aware portfolio fields onto held-token cards (Issue #238).
 
@@ -1209,12 +1218,25 @@ def apply_portfolio_account_evidence(
     inputs supplied by the caller from persisted DB snapshots. This function
     never queries a broker or a database itself, and never fabricates a value
     for a symbol absent from the supplied maps — those stay DATA_UNAVAILABLE.
+
+    Sets two independent, never-conflated booleans (GUI terminology
+    correction): ``is_wallet_held`` from ``held_amount_by_symbol`` (a
+    positive amount in the latest persisted wallet snapshot), and
+    ``is_portfolio_asset`` from ``portfolio_asset_markets`` (configured
+    strategic portfolio/rotation membership, e.g. ``asset.is_portfolio`` via
+    the ``PORTFOLIO_MARKER`` inclusion reason) — independent of balance. A
+    zero-balance portfolio asset keeps ``is_portfolio_asset=True`` and
+    ``is_wallet_held=False``; both may be True at once.
     """
     out: list[ProfitPlanCard] = []
     for card in cards:
+        is_portfolio_asset = card.market in portfolio_asset_markets
         held_amount = held_amount_by_symbol.get(card.symbol)
         if held_amount is None:
-            out.append(card)
+            if is_portfolio_asset != card.is_portfolio_asset:
+                out.append(dataclasses.replace(card, is_portfolio_asset=is_portfolio_asset))
+            else:
+                out.append(card)
             continue
         eur_value = held_eur_value_by_symbol.get(card.symbol)
         cost_basis = cost_basis_by_symbol.get(card.symbol)
@@ -1226,7 +1248,14 @@ def apply_portfolio_account_evidence(
             wallet_snapshot_status=balance_freshness_status,
             position_snapshot_status=(balance_freshness_status if cost_basis is not None else DATA_UNAVAILABLE),
         )
-        out.append(dataclasses.replace(card, evidence=new_evidence))
+        out.append(
+            dataclasses.replace(
+                card,
+                evidence=new_evidence,
+                is_wallet_held=True,
+                is_portfolio_asset=is_portfolio_asset,
+            )
+        )
     return out
 
 
@@ -3720,6 +3749,10 @@ _CSS = """
       font-size: 9px; font-weight: 700; color: var(--ok); border: 1px solid var(--ok);
       border-radius: 3px; padding: 0 3px; margin-left: 4px;
     }
+    .pp-selector-tag-asset {
+      font-size: 9px; font-weight: 700; color: var(--blue); border: 1px solid var(--blue);
+      border-radius: 3px; padding: 0 3px; margin-left: 4px;
+    }
     #profit-plan-main { min-width: 0; }
     #profit-plan-main .plan-card { display: none; }
     #profit-plan-main .plan-card.pp-active { display: block; }
@@ -3774,11 +3807,16 @@ _CSS = """
     .action-wait { color: var(--muted); }
     .action-dont { color: var(--bad); }
     .tf-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
-    .portfolio-held-badge {
+    .wallet-held-badge {
       margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: .04em;
       color: var(--ok); border: 1px solid var(--ok); border-radius: 4px; padding: 2px 6px;
     }
-    .card[data-presentation-mode='POSITION_HELD'] { border-left: 3px solid var(--ok); }
+    .portfolio-asset-badge {
+      font-size: 10px; font-weight: 700; letter-spacing: .04em;
+      color: var(--blue); border: 1px solid var(--blue); border-radius: 4px; padding: 2px 6px;
+    }
+    .card[data-wallet-held='true'] { border-left: 3px solid var(--ok); }
+    .card[data-portfolio-asset='true'][data-wallet-held='false'] { border-left: 3px solid var(--blue); }
     .state-label { margin-top: 6px; font-size: 14px; font-weight: 700; }
     .state-secondary { margin-top: 3px; font-size: 11px; color: var(--muted); }
     .field-grid {
@@ -4156,16 +4194,17 @@ def _build_client_js(storage_scope: str) -> str:
       sel.innerHTML = "<div class='pp-selector-item muted'>No matching cards</div>";
       return;
     }}
-    // Portfolio-held cards first, in DOM (default action-priority) order otherwise.
+    // Wallet-held cards first, in DOM (default action-priority) order otherwise.
     visible.sort(function(a, b) {{
-      var aHeld = a.dataset.presentationMode === 'POSITION_HELD' ? 0 : 1;
-      var bHeld = b.dataset.presentationMode === 'POSITION_HELD' ? 0 : 1;
+      var aHeld = a.dataset.walletHeld === 'true' ? 0 : 1;
+      var bHeld = b.dataset.walletHeld === 'true' ? 0 : 1;
       return aHeld - bHeld;
     }});
     visible.forEach(function(card) {{
       var item = document.createElement('div');
-      var isHeld = card.dataset.presentationMode === 'POSITION_HELD';
-      item.className = 'pp-selector-item' + (isHeld ? ' pp-selector-held' : '');
+      var isWalletHeld = card.dataset.walletHeld === 'true';
+      var isPortfolioAsset = card.dataset.portfolioAsset === 'true';
+      item.className = 'pp-selector-item' + (isWalletHeld ? ' pp-selector-held' : '');
       item.dataset.renderId = card.dataset.renderId || '';
       var symbol = (card.dataset.sortSymbol || '?').toUpperCase();
       var action = card.dataset.filterActionLabel || card.dataset.filterAction || '';
@@ -4176,8 +4215,10 @@ def _build_client_js(storage_scope: str) -> str:
         : card.dataset.planningPpp || '';
       var breath = card.dataset.bcCurrentCheckpoint || 'UNAVAILABLE';
       var trajectory = card.dataset.bcNextCheckpoint || 'UNAVAILABLE';
+      var tags = (isWalletHeld ? " <span class='pp-selector-tag'>WALLET HELD</span>" : '') +
+        (isPortfolioAsset ? " <span class='pp-selector-tag-asset'>PORTFOLIO ASSET</span>" : '');
       item.innerHTML =
-        "<div class='pp-selector-symbol'>" + symbol + (isHeld ? " <span class='pp-selector-tag'>HELD</span>" : '') + "</div>" +
+        "<div class='pp-selector-symbol'>" + symbol + tags + "</div>" +
         "<div class='pp-selector-meta'>" + action + (ppp ? ' \xb7 ' + ppp : '') + "</div>" +
         "<div class='pp-selector-breath muted'>Breathline ctx: " + breath + " \xb7 " + trajectory + "</div>";
       item.addEventListener('click', function() {{
@@ -4799,12 +4840,20 @@ def render_plan_card(
     invalidation_line = format_invalidation_line(card.invalidation_risk_zone, card.distance_to_invalidation_pct)
     planning_ppp_text = _format_planning_ppp(card)
     actionable_ppp_text = _format_actionable_ppp(card)
-    is_portfolio_held = card.presentation_mode == CARD_MODE_POSITION_HELD
-    portfolio_badge_html = (
-        "<span class='portfolio-held-badge' title='Currently held in this account'>PORTFOLIO HOLDING</span>"
-        if is_portfolio_held
-        else ""
-    )
+    # Two independent facts, both may render at once: is_wallet_held = a
+    # positive amount in the latest persisted wallet snapshot;
+    # is_portfolio_asset = configured strategic portfolio/rotation
+    # membership, independent of current balance.
+    badge_html_parts = []
+    if card.is_wallet_held:
+        badge_html_parts.append(
+            "<span class='wallet-held-badge' title='Positive amount in the latest persisted wallet snapshot'>WALLET HELD</span>"
+        )
+    if card.is_portfolio_asset:
+        badge_html_parts.append(
+            "<span class='portfolio-asset-badge' title='Configured strategic portfolio/rotation asset'>PORTFOLIO ASSET</span>"
+        )
+    portfolio_badge_html = "".join(badge_html_parts)
 
     event_label = STATE_LABELS.get(card.event_state, card.event_state.replace("_", " "))
     metrics_blocks = [
@@ -4828,7 +4877,7 @@ def render_plan_card(
         if card.actionability_state == CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE
         else "Invalidation"
     )
-    if is_portfolio_held:
+    if card.is_wallet_held:
         metrics_blocks.extend((
             _metric_block("Held amount", card.evidence.held_amount),
             _metric_block("Held value (EUR)", card.evidence.held_eur_value),
@@ -4972,6 +5021,8 @@ def render_plan_card(
         f" data-filter-orders='{esc(filter_order_value)}'"
         f" data-filter-orders-label='{esc(filter_order_label)}'"
         f" data-presentation-mode='{esc(card.presentation_mode)}'"
+        f" data-wallet-held='{str(card.is_wallet_held).lower()}'"
+        f" data-portfolio-asset='{str(card.is_portfolio_asset).lower()}'"
         f" data-workflow-bucket='{esc(workflow_sort_bucket)}'"
         f" data-sort-presentation='{esc(presentation_sort_value)}'"
         f" data-sort-action='{esc(action_sort_value)}'"
@@ -5300,7 +5351,8 @@ def build_json_snapshot(
     now_ts = snapshot_ts or datetime.now(UTC).isoformat()
     relevant_count = sum(1 for c in cards if c.is_relevant)
     total_count = len(cards)
-    portfolio_held_count = sum(1 for c in cards if c.presentation_mode == CARD_MODE_POSITION_HELD)
+    wallet_held_count = sum(1 for c in cards if c.is_wallet_held)
+    portfolio_asset_count = sum(1 for c in cards if c.is_portfolio_asset)
     return {
         "report": REPORT_NAME,
         "version": REPORT_VERSION,
@@ -5314,7 +5366,12 @@ def build_json_snapshot(
         "relevant_count": relevant_count,
         "total_count": total_count,
         "card_count": total_count,
-        "portfolio_held_count": portfolio_held_count,
+        "wallet_held_count": wallet_held_count,
+        "portfolio_asset_count": portfolio_asset_count,
+        # Deprecated compatibility alias only — this field always measured
+        # wallet-driven inclusion, not strategic portfolio membership,
+        # despite its old name. Canonical field is "wallet_held_count".
+        "portfolio_held_count": wallet_held_count,
         "broker_mode": broker_mode,
         "broker_writes": 0,
         "order_submission": 0,
@@ -5393,7 +5450,12 @@ def build_json_snapshot(
                 "planning_ppp_pct": (str(_planning_ppp(c)) if _planning_ppp(c) is not None else None),
                 "planning_ppp_display": _pct_display(_planning_ppp(c)),
                 "planning_ppp_unavailable_reason": _planning_ppp_unavailable_reason(c),
-                "is_portfolio_held": c.presentation_mode == CARD_MODE_POSITION_HELD,
+                "is_portfolio_asset": c.is_portfolio_asset,
+                "is_wallet_held": c.is_wallet_held,
+                # Deprecated compatibility alias only — always equal to
+                # is_wallet_held, never strategic portfolio membership.
+                # Canonical fields are is_portfolio_asset / is_wallet_held.
+                "is_portfolio_held": c.is_wallet_held,
                 "actionable_ppp_pct": (str(_actionable_ppp(c)) if _actionable_ppp(c) is not None else None),
                 "actionable_ppp_display": _pct_display(_actionable_ppp(c)),
                 "actionable_ppp_available": _actionable_ppp(c) is not None,
