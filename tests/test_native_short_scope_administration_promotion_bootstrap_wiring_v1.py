@@ -375,13 +375,22 @@ def test_execute_real_evaluators_promote_sol_end_to_end_today() -> None:
     assert conn.committed.operations[-1]["symbol"] == "SOL"
 
 
-@pytest.mark.parametrize("symbol", ["ETH", "XRP"])
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        "ETH", "XRP",
+        "SUI", "SHIB", "PEPE", "HBAR", "AAVE", "BNB", "ICP", "LDO",
+        "XPL", "VET", "ALGO", "CC", "HOT", "FLOKI", "HNT", "MOG",
+    ],
+)
 def test_execute_real_evaluators_promote_approved_symbol_end_to_end_today(symbol: str) -> None:
-    """The manifest now also names ETH and XRP, each with its own
-    independent entry and evidence digest -- both succeed end-to-end via the
-    exact same real, unmodified evaluators used for SOL, proving the
-    generalized multi-entry manifest actually authorizes each approved
-    scope independently."""
+    """The manifest now also names ETH, XRP, and the 16-symbol bounded batch
+    (SUI, SHIB, PEPE, HBAR, AAVE, BNB, ICP, LDO, XPL, VET, ALGO, CC, HOT,
+    FLOKI, HNT, MOG), each with its own independent entry and evidence
+    digest -- every one succeeds end-to-end via the exact same real,
+    unmodified evaluators used for SOL, proving the generalized multi-entry
+    manifest actually authorizes each approved scope independently and
+    exactly once."""
     state = _FakeState()
     state.writer_runs.append(_accepted_writer_evidence_row())
     conn = _FakeConn(state)
@@ -398,13 +407,14 @@ def test_execute_real_evaluators_promote_approved_symbol_end_to_end_today(symbol
     assert conn.committed.operations[-1]["symbol"] == symbol
 
 
-@pytest.mark.parametrize("symbol", ["BTC", "DOGE", "SUI"])
+@pytest.mark.parametrize("symbol", ["BTC", "DOGE", "FET"])
 def test_execute_real_evaluator_fails_closed_for_every_unapproved_symbol(symbol: str) -> None:
-    """The real, checked-in manifest names exactly three approved symbols
-    (SOL, ETH, XRP). Every other symbol -- including the legacy BTC scope --
-    fails the bootstrap scope-match check regardless of blocker state, and
-    therefore never narrows any blocker. REMOVAL_CONTRACT_MISSING never even
-    appears: it is not applicable to PROMOTE_SCOPE at all.
+    """The real, checked-in manifest names exactly 19 approved symbols (SOL,
+    ETH, XRP, and the 16-symbol bounded batch). Every other symbol --
+    including the legacy BTC scope -- fails the bootstrap scope-match check
+    regardless of blocker state, and therefore never narrows any blocker.
+    REMOVAL_CONTRACT_MISSING never even appears: it is not applicable to
+    PROMOTE_SCOPE at all.
 
     Since Issue #276, MULTI_SCOPE_FAILURE_ISOLATION_MISSING is evidence-driven
     and evaluates CLOSED on this checkout (#200 is in its ancestry); since
