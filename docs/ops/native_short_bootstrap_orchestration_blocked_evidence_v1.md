@@ -1,109 +1,161 @@
-# BOOTSTRAP_ORCHESTRATION_BLOCKED — current state and exact remaining proof
+# BOOTSTRAP_ORCHESTRATION_BLOCKED — evidence contract and accepted state
 
-Status: **ACTIVE** (fail-closed)
-Reason code: `EXACT_PROOF_REQUIRED`
-Owning issue: #276
-Supersedes reason: `IMPLEMENTATION_PENDING_SEPARATE_LANE` (no longer accurate)
+Status: **EVIDENCE-DRIVEN** — closes while the machine-readable contract confirms
+Reason code when confirmed: `EVIDENCE_CONFIRMS_CLOSED`
+Reason code when absent/invalid: `EVIDENCE_ABSENT_OR_INVALID`
+Reason code for a caller that supplies no evidence: `EXACT_PROOF_REQUIRED` (fail-closed default)
+Owning issues: #276 (previous active state), #298 (resolution)
+Evidence module: `src/market_data/native_short_bootstrap_no_current_map_evidence_v1.py`
 
 ## Summary
 
-`BOOTSTRAP_ORCHESTRATION_BLOCKED` remains an active global blocker in
+`BOOTSTRAP_ORCHESTRATION_BLOCKED` is no longer unconditionally active in
 `src/market_data/native_short_multi_asset_audit_v1.evaluate_global_blockers()`.
+Issue #298 supplied the substantive guarantee it was waiting for, and the
+blocker is now wired to a canonical, machine-readable evidence source in the
+same shape `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` uses (#276).
 
-Issue #276 made its sibling blocker
-`MULTI_SCOPE_FAILURE_ISOLATION_MISSING` evidence-driven (see
-`src/market_data/native_short_runtime_isolation_evidence_v1.py`) because #200
-supplied the substantive guarantee it was waiting for. This blocker got no
-such treatment, deliberately: no current evidence closes it.
+It closes only while that evidence confirms, and re-opens by itself the
+instant the guarantee regresses. The pure `evaluate_global_blockers()`
+default — a caller that supplies no bootstrap evidence at all — still keeps
+the blocker active with `EXACT_PROOF_REQUIRED`.
 
-Its previous reason code, `IMPLEMENTATION_PENDING_SEPARATE_LANE`, is now
-inaccurate — the "separate lane" it referred to (the generalized bootstrap
-manifest and the rollout orchestrator) has landed. What remains is not
-missing implementation but one exact, named, unproven runtime property. The
-reason code is therefore `EXACT_PROOF_REQUIRED`.
+## The defect that is now fixed
 
-This blocker takes no evidence parameter in `evaluate_global_blockers()`.
-Adding an optional parameter with no evaluator behind it would make a
-fail-closed default look negotiable; when a canonical evidence source exists,
-it can be wired in the same shape the isolation blocker now uses.
-
-## Why it stays active: the NO_CURRENT_MAP / stop-on-BLOCKED interaction
-
-`docs/todo/native_short_multi_asset_rollout_contract_v1.md` records this
-blocker's meaning as "current `NO_CURRENT_MAP` semantics are fatal for a new
-scope." That is still true after #200. Exact trace, verified against this
-checkout:
-
-1. `src/market_data/native_short_map_level_status_materializer_v1.py`,
-   `select_gate_decision()` — the first branch returns
-   `(BLOCKED, NO_CURRENT_MAP)` whenever a scope's rebuilt projection has no
-   `current_map_id` (or no `current_map_cycle_id`). A genuinely brand-new
-   scope that has never published its first map is exactly this case.
-
-2. That `BLOCKED` branch raises `NativeShortMapLevelStatusBlockedError`.
-
-3. `src/market_data/run_native_short_scope_status_chain_v1.py`,
-   `execute_runtime()` — the per-scope loop catches
-   `NativeShortMapLevelStatusBlockedError`, rolls back **only** that scope's
-   transaction, records `SCOPE_STATUS_BLOCKED`, and then **`break`s** out of
-   the loop. The in-code comment states the policy explicitly: "Blocked stays
-   a hard stop for the run: no further scope is attempted." Contrast the
-   sibling `except Exception` branch immediately below it, which records
-   `SCOPE_STATUS_UNEXPECTED_FAILED` and `continue`s.
+Previously, `select_gate_decision()` in
+`src/market_data/native_short_map_level_status_materializer_v1.py` returned
+`(BLOCKED, NO_CURRENT_MAP)` whenever a scope's rebuilt projection had no
+`current_map_id`/`current_map_cycle_id`. A genuinely brand-new scope that had
+never published its first map was exactly this case. That `BLOCKED` raised
+`NativeShortMapLevelStatusBlockedError`, and `execute_runtime()`'s per-scope
+loop in `src/market_data/run_native_short_scope_status_chain_v1.py` treated
+`BLOCKED` as a hard stop: it rolled back that scope and `break`ed out of the
+loop.
 
 Consequence: immediately after any `PROMOTE_SCOPE` — precisely the situation
-a bulk rollout creates — the newly promoted scope has no current map yet, so
-every 4h chain run halts at that scope and never evaluates any
-already-established scope ordered after it. This persists on every run until
-the new scope publishes its first map.
+a bulk rollout creates — every 4h chain run halted at the newly promoted
+scope and never evaluated any already-established scope ordered after it,
+until that scope published its first map.
 
-## What #200 did and did not fix
+#200 fixed *transaction and rollback* isolation, so a failing scope could no
+longer roll back other scopes' committed work. It deliberately did not change
+the loop-halting policy. Transaction isolation and loop continuation are
+independent properties; #298 addressed the second one, for this case only.
 
-#200 restructured *transaction and rollback* boundaries so each scope owns
-its own failure domain: a failure in scope N can no longer roll back
-committed work from scopes 1..N-1. That is real and is what the isolation
-evidence now verifies.
+## The exact predicate (ledger-only, not timing)
 
-#200 did **not** change the loop-halting policy for the domain-`BLOCKED`
-case, which it deliberately preserved. Transaction isolation and
-loop-continuation are independent properties; the first is proven, the second
-is not, for this specific case.
+`NO_CURRENT_MAP` arises from two genuinely different ledger situations, and
+only one of them is an integrity defect:
 
-## Exact remaining proof required to close this blocker
+```text
+(a) zero native_short_map_v1 rows have EVER existed for the exact canonical
+    scope key
+    -> the expected, transient first-map bootstrap state of a scope that has
+       never published any map
+    -> branch EXPECTED_BOOTSTRAP_NO_CURRENT_MAP  (exempt, non-fatal)
 
-A separate, explicitly reviewed decision on how the runtime chain should
-treat a brand-new scope's expected, transient `NO_CURRENT_MAP` state. Neither
-option below is implemented here — Issue #276 explicitly does not touch the
-runtime chain files — and both are named only as the open alternatives for
-that future decision:
+(b) map rows exist for the exact scope key but none is currently selected
+    (for example an established scope whose maps are all SUPERSEDED with no
+    successor published yet)
+    -> an UNEXPECTEDLY missing current map on an established scope; possibly
+       a stuck or broken rollover
+    -> branch BLOCKED                             (unchanged hard stop)
+```
 
-- **Option A — reclassify transient `NO_CURRENT_MAP` as a soft degrade.**
-  Distinguish "brand-new scope, no first map yet" (expected, self-resolving)
-  from a genuine integrity `BLOCKED` (unexpected, must halt), and let the
-  former record a non-fatal per-scope status and `continue`. Requires proving
-  the two cases are reliably distinguishable and that nothing downstream
-  depends on a partially-evaluated run halting.
+The distinguishing predicate is pure ledger existence:
 
-- **Option B — an explicit bounded warm-up window.** Exclude a newly promoted
-  scope from the shared chain run until it has published its first map (or
-  until a bounded deadline), so it cannot halt established scopes. Requires a
-  reviewed definition of the window, its expiry behavior, and what happens if
-  the scope never warms up.
+```text
+never_published_any_map = not existing_maps
+```
 
-Closing this blocker additionally requires a canonical, machine-readable
-evidence source for whichever option is chosen — narrative acceptance in a
-document is explicitly not evidence under this repository's contract — plus
-its own tests, in the shape
-`native_short_runtime_isolation_evidence_v1.py` now establishes.
+where `existing_maps` is the exact-scope-key map list
+(`native_short_map_materializer_v1._fetch_maps_for_scope`) that
+`evaluate_and_project_scope()` already fetches before the projection rebuild.
+It is independent of `as_of_utc`, independent of lifecycle state, and adds no
+query.
+
+It is deliberately **not** a timing, ordering, or grace-window inference. In
+particular it is not `SCOPE_RECENTLY_ADDED` (the first-SUPPORTED-timestamp
+grace window in `native_short_scope_status_projection_v1.py`), which is
+exactly the kind of heuristic Issue #298 forbids for this classification.
+
+## Runtime behavior of an exempted scope
+
+* Its transaction boundary remains `exact_scope` and fully attributable; it
+  **commits** normally rather than being rolled back.
+* It emits zero level rows and atomically clears any stale level collection,
+  exactly as `BLOCKED` does — the contract's "no dynamic level state
+  fabricated" invariant holds identically for this branch
+  (`docs/architecture/native_short_map_level_status_contract_v1.md`).
+* `ScopeChainOutcome.bootstrap_pending` is `True`, independently of `failed`,
+  which keeps reflecting only `evaluate_scope`'s own soft-degrade contract.
+  An expected bootstrap state is not a failure and does not increment
+  `failed_scope_count`, so it does not trip `RuntimeScopeEvaluationError`.
+* Its per-scope evidence is `SCOPE_STATUS_BOOTSTRAP_PENDING`
+  (`"BOOTSTRAP_PENDING"`), a status distinct from `SUCCEEDED`: the bootstrap
+  state stays visible and is never misreported as normal success.
+* The loop **continues** to the next scope. Unrelated, already-established
+  scopes ordered after it are still evaluated in the same bounded invocation,
+  and the run terminalizes `FINISHED` when the bootstrap case was the only
+  anomaly.
+* Rerunning is deterministic and idempotent: an unchanged still-bootstrapping
+  scope produces identical evidence and exactly one terminal record per
+  invocation.
+
+Genuine `BLOCKED` states — case (b) above and every other blocked reason
+(`PROJECTION_MISSING`, `PROJECTION_INVALID`, `GEOMETRY_INVALID`,
+`CONFIGURATION_UNAVAILABLE`, `SOURCE_UNAVAILABLE`, `SOURCE_STALE`,
+`OBSERVATION_OVERDUE`, …) — retain their hard-stop, fail-closed behavior
+unchanged. `BLOCKED` semantics were not globally weakened.
+
+## What counts as evidence
+
+`evaluate_bootstrap_no_current_map_evidence()` requires both, with no DB
+access (repository and import inspection only):
+
+1. **Ancestry** — the #200 per-scope isolation commit
+   `4c4d3c0e8a54250ae957364adb7af4858fe8170e` is an ancestor of `HEAD`. This
+   guarantee is only meaningful on top of per-scope transaction isolation:
+   continuing to the next scope is worth nothing if that scope's writes share
+   a rollback domain with the bootstrap scope's.
+
+2. **Structural contract of the live modules** — inspected by import, not by
+   narrative claim or test existence:
+   * `native_short_map_level_status_materializer_v1.EXPECTED_BOOTSTRAP_NO_CURRENT_MAP
+     == "EXPECTED_BOOTSTRAP_NO_CURRENT_MAP"`
+   * `select_gate_decision` is callable and its signature carries the
+     `never_published_any_map` ledger predicate
+   * `native_short_scope_status_materializer_v1.ScopeChainOutcome` is a
+     dataclass with a `bootstrap_pending` field
+   * `run_native_short_scope_status_chain_v1.SCOPE_STATUS_BOOTSTRAP_PENDING
+     == "BOOTSTRAP_PENDING"`
+
+The #298 implementation commit itself is deliberately **not** pinned: it has
+no stable SHA at authoring time, and check 2 inspects the live code directly,
+which is strictly stronger evidence that the fix is present.
+
+## Regression reactivates the blocker fail-closed
+
+Removing or renaming any element of the structural contract — most pointedly
+dropping the `never_published_any_map` parameter, which would collapse the
+bootstrap case back into a genuine `BLOCKED` hard stop — makes the evidence
+evaluate `confirmed=False` and the blocker active again, with no human
+remembering required. So does reverting #200 out of the ancestry, an
+unavailable git/ancestry check, an import failure, a wrong attribute value,
+or a wrong dataclass field set. An unavailable check is never treated as a
+passed check.
 
 ## Cross-references
 
-- Issue #276 — native SHORT evidence-driven rollout
+- Issue #298 — bootstrap classification, this document's resolution
+- Issue #276 / PR #287 — evidence-driven rollout, previous active state
 - Issue #200 / PR #274 — per-scope transaction isolation
   (commit `4c4d3c0e8a54250ae957364adb7af4858fe8170e`)
+- `src/market_data/native_short_bootstrap_no_current_map_evidence_v1.py`
 - `src/market_data/native_short_runtime_isolation_evidence_v1.py`
+- `docs/architecture/native_short_map_level_status_contract_v1.md`
 - `docs/todo/native_short_multi_asset_rollout_contract_v1.md` (frozen
-  historical context; not edited by #276)
+  historical context; not edited)
 
 Safety markers for the work that produced this document:
 

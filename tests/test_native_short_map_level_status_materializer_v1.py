@@ -21,6 +21,7 @@ from src.market_data.native_short_map_level_status_materializer_v1 import (
     build_level_status_rows,
     classify_level_state,
     extract_v1_sell_geometry,
+    EXPECTED_BOOTSTRAP_NO_CURRENT_MAP,
     materialize_native_short_map_level_status_for_scope,
     select_eligible_primary_candles,
     select_gate_decision,
@@ -177,18 +178,51 @@ def _candle(*, close_ts_utc: datetime, high: str, close: str) -> Candle:
 
 
 def test_gate_active_evaluation_requires_all_five_conditions() -> None:
-    branch, reason = select_gate_decision(_projection())
+    branch, reason = select_gate_decision(_projection(), never_published_any_map=False)
     assert branch == ACTIVE_EVALUATION
     assert reason is None
 
 
 def test_gate_no_current_map_when_current_map_id_missing() -> None:
-    branch, reason = select_gate_decision(_projection(current_map_id=None, current_map_cycle_id=None))
+    branch, reason = select_gate_decision(_projection(current_map_id=None, current_map_cycle_id=None), never_published_any_map=False)
     assert (branch, reason) == (BLOCKED, NO_CURRENT_MAP)
 
 
+def test_gate_no_current_map_stays_blocked_for_an_established_scope() -> None:
+    # Issue #298 regression guard, case (b): map rows exist historically for
+    # this exact scope key but none is currently selected (e.g. every map
+    # SUPERSEDED with no successor published). That is an *unexpectedly*
+    # missing current map on an established scope -- a possibly stuck or
+    # broken rollover -- and must keep its genuine hard-stop BLOCKED
+    # classification. The bootstrap exemption must never reach it.
+    branch, reason = select_gate_decision(
+        _projection(current_map_id=None, current_map_cycle_id=None),
+        never_published_any_map=False,
+    )
+    assert (branch, reason) == (BLOCKED, NO_CURRENT_MAP)
+
+
+def test_gate_no_current_map_is_expected_bootstrap_when_no_map_ever_published() -> None:
+    # Issue #298, case (a): zero native_short_map_v1 rows have ever existed
+    # for this exact scope key, so this is the expected, transient first-map
+    # bootstrap state of a newly promoted scope, not an integrity defect.
+    branch, reason = select_gate_decision(
+        _projection(current_map_id=None, current_map_cycle_id=None),
+        never_published_any_map=True,
+    )
+    assert (branch, reason) == (EXPECTED_BOOTSTRAP_NO_CURRENT_MAP, NO_CURRENT_MAP)
+
+
+def test_gate_empty_cycle_id_is_expected_bootstrap_when_no_map_ever_published() -> None:
+    branch, reason = select_gate_decision(
+        _projection(current_map_cycle_id=""),
+        never_published_any_map=True,
+    )
+    assert (branch, reason) == (EXPECTED_BOOTSTRAP_NO_CURRENT_MAP, NO_CURRENT_MAP)
+
+
 def test_gate_no_current_map_when_cycle_id_empty() -> None:
-    branch, reason = select_gate_decision(_projection(current_map_cycle_id=""))
+    branch, reason = select_gate_decision(_projection(current_map_cycle_id=""), never_published_any_map=False)
     assert (branch, reason) == (BLOCKED, NO_CURRENT_MAP)
 
 
@@ -201,7 +235,7 @@ def test_gate_terminal_completed_requires_full_triple() -> None:
         source_freshness_state=NativeShortScopeSourceState.SOURCE_CURRENT,
         cadence_contract_version="native_short_cadence_v1",
     )
-    assert select_gate_decision(projection) == (TERMINAL_COMPLETED, REASON_MAP_COMPLETED)
+    assert select_gate_decision(projection, never_published_any_map=False) == (TERMINAL_COMPLETED, REASON_MAP_COMPLETED)
 
 
 def test_gate_terminal_historical_invalidated_requires_full_triple() -> None:
@@ -210,7 +244,7 @@ def test_gate_terminal_historical_invalidated_requires_full_triple() -> None:
         map_lifecycle_state=NativeShortScopeMapLifecycleState.MAP_INVALIDATED,
         actionability_state=NativeShortScopeActionabilityState.TERMINAL_MAP,
     )
-    assert select_gate_decision(projection) == (TERMINAL_HISTORICAL, REASON_MAP_INVALIDATED)
+    assert select_gate_decision(projection, never_published_any_map=False) == (TERMINAL_HISTORICAL, REASON_MAP_INVALIDATED)
 
 
 def test_gate_terminal_historical_expired_has_no_matching_scope_status_code() -> None:
@@ -221,7 +255,7 @@ def test_gate_terminal_historical_expired_has_no_matching_scope_status_code() ->
         map_lifecycle_state=NativeShortScopeMapLifecycleState.MAP_EXPIRED,
         actionability_state=NativeShortScopeActionabilityState.TERMINAL_MAP,
     )
-    assert select_gate_decision(projection) == (TERMINAL_HISTORICAL, REASON_MAP_EXPIRED)
+    assert select_gate_decision(projection, never_published_any_map=False) == (TERMINAL_HISTORICAL, REASON_MAP_EXPIRED)
 
 
 def test_gate_inconsistent_completed_triple_fails_closed_not_fabricated() -> None:
@@ -231,7 +265,7 @@ def test_gate_inconsistent_completed_triple_fails_closed_not_fabricated() -> Non
         map_lifecycle_state=NativeShortScopeMapLifecycleState.MAP_COMPLETED,
         actionability_state=NativeShortScopeActionabilityState.TERMINAL_MAP,
     )
-    branch, reason = select_gate_decision(projection)
+    branch, reason = select_gate_decision(projection, never_published_any_map=False)
     assert branch == BLOCKED
     assert reason == NativeShortScopeStatusCode.OBSERVATION_OVERDUE.value
 
@@ -274,13 +308,13 @@ def test_gate_blocked_scope_status_codes_emit_no_rows(
         observation_freshness_state=observation_freshness_state,
         source_freshness_state=source_freshness_state,
     )
-    branch, reason = select_gate_decision(projection)
+    branch, reason = select_gate_decision(projection, never_published_any_map=False)
     assert branch == BLOCKED
     assert reason == scope_status_code.value
 
 
 def test_gate_configuration_unavailable_is_distinguishable_from_source_states() -> None:
-    branch, reason = select_gate_decision(_config_unavailable_projection())
+    branch, reason = select_gate_decision(_config_unavailable_projection(), never_published_any_map=False)
     assert branch == BLOCKED
     assert reason == NativeShortScopeStatusCode.CONFIGURATION_UNAVAILABLE.value
     assert reason not in {
@@ -744,9 +778,63 @@ def test_orchestrator_missing_projection_deletes_and_blocks() -> None:
         operational_clock=lambda: _REBUILT_AT,
         provenance=_PROVENANCE,
         authorization=_NS_AUTH,
+        never_published_any_map=False,
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == PROJECTION_MISSING
+    assert outcome.row_count == 0
+    assert conn.script["delete_calls"] == 1
+    assert "inserted_rows" not in conn.script
+
+
+def test_orchestrator_expected_bootstrap_clears_rows_without_blocking() -> None:
+    # Issue #298 case (a) at the materializer boundary: a scope that has never
+    # published any map reports the distinct bootstrap branch, fabricates no
+    # level rows, and still atomically clears any stale collection exactly the
+    # way BLOCKED does.
+    conn = _FakeConn(
+        {
+            "scope_status": _scope_status_row(
+                current_map_id=None,
+                current_map_cycle_id=None,
+            )
+        }
+    )
+    outcome = materialize_native_short_map_level_status_for_scope(
+        conn,
+        key=_key(),
+        operational_clock=lambda: _REBUILT_AT,
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
+        never_published_any_map=True,
+    )
+    assert outcome.branch == EXPECTED_BOOTSTRAP_NO_CURRENT_MAP
+    assert outcome.reason_code == NO_CURRENT_MAP
+    assert outcome.row_count == 0
+    assert conn.script["delete_calls"] == 1
+    assert "inserted_rows" not in conn.script
+
+
+def test_orchestrator_no_current_map_on_established_scope_still_blocks() -> None:
+    # Issue #298 case (b) regression guard at the materializer boundary.
+    conn = _FakeConn(
+        {
+            "scope_status": _scope_status_row(
+                current_map_id=None,
+                current_map_cycle_id=None,
+            )
+        }
+    )
+    outcome = materialize_native_short_map_level_status_for_scope(
+        conn,
+        key=_key(),
+        operational_clock=lambda: _REBUILT_AT,
+        provenance=_PROVENANCE,
+        authorization=_NS_AUTH,
+        never_published_any_map=False,
+    )
+    assert outcome.branch == BLOCKED
+    assert outcome.reason_code == NO_CURRENT_MAP
     assert outcome.row_count == 0
     assert conn.script["delete_calls"] == 1
     assert "inserted_rows" not in conn.script
@@ -760,6 +848,7 @@ def test_orchestrator_omitted_authorization_fails_closed() -> None:
             key=_key(),
             operational_clock=lambda: _REBUILT_AT,
             provenance=_PROVENANCE,
+            never_published_any_map=False,
         )
     assert "delete_calls" not in conn.script
     assert "inserted_rows" not in conn.script
@@ -774,6 +863,7 @@ def test_orchestrator_wrong_authorization_fails_before_mutating_helper_sql() -> 
             operational_clock=lambda: _REBUILT_AT,
             provenance=_PROVENANCE,
             authorization=_WRONG_AUTH,
+            never_published_any_map=False,
         )
     assert "delete_calls" not in conn.script
     assert "inserted_rows" not in conn.script
@@ -800,6 +890,7 @@ def test_orchestrator_configuration_unavailable_deletes_and_blocks() -> None:
         operational_clock=lambda: _REBUILT_AT,
         provenance=_PROVENANCE,
         authorization=_NS_AUTH,
+        never_published_any_map=False,
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == "CONFIGURATION_UNAVAILABLE"
@@ -820,6 +911,7 @@ def test_orchestrator_identity_mismatch_is_projection_invalid() -> None:
         operational_clock=lambda: _REBUILT_AT,
         provenance=_PROVENANCE,
         authorization=_NS_AUTH,
+        never_published_any_map=False,
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == PROJECTION_INVALID
@@ -834,6 +926,7 @@ def test_orchestrator_missing_map_row_is_projection_invalid() -> None:
         operational_clock=lambda: _REBUILT_AT,
         provenance=_PROVENANCE,
         authorization=_NS_AUTH,
+        never_published_any_map=False,
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == PROJECTION_INVALID
@@ -852,6 +945,7 @@ def test_orchestrator_malformed_geometry_is_geometry_invalid() -> None:
         operational_clock=lambda: _REBUILT_AT,
         provenance=_PROVENANCE,
         authorization=_NS_AUTH,
+        never_published_any_map=False,
     )
     assert outcome.branch == BLOCKED
     assert outcome.reason_code == GEOMETRY_INVALID
@@ -880,6 +974,7 @@ def test_orchestrator_active_evaluation_writes_three_rows() -> None:
         operational_clock=lambda: _REBUILT_AT,
         provenance=_PROVENANCE,
         authorization=_NS_AUTH,
+        never_published_any_map=False,
     )
     assert outcome.branch == ACTIVE_EVALUATION
     assert outcome.row_count == 3
@@ -911,6 +1006,7 @@ def test_orchestrator_terminal_completed_writes_three_completed_rows() -> None:
         operational_clock=lambda: _REBUILT_AT,
         provenance=_PROVENANCE,
         authorization=_NS_AUTH,
+        never_published_any_map=False,
     )
     assert outcome.branch == TERMINAL_COMPLETED
     assert outcome.row_count == 3

@@ -138,6 +138,7 @@ def _chain_outcome(
     *,
     skipped_not_supported: bool = False,
     failed: bool = False,
+    bootstrap_pending: bool = False,
 ) -> ScopeChainOutcome:
     return ScopeChainOutcome(
         key=key,
@@ -145,6 +146,7 @@ def _chain_outcome(
         published_map=False,
         lifecycle_event_appended=False,
         failed=failed,
+        bootstrap_pending=bootstrap_pending,
     )
 
 
@@ -483,6 +485,111 @@ def test_blocked_scope_stops_the_run_and_leaves_later_scopes_unattempted(
 
     assert attempted == ["BTC", "ETH"]
     assert set(conn.committed_ledger) == {"BTC"}
+
+
+def test_bootstrap_scope_commits_and_does_not_stop_later_established_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The literal Issue #298 acceptance criterion.
+
+    A newly promoted scope in its expected first-map bootstrap state (a) has
+    its own exact-scope transaction committed rather than rolled back, (b) is
+    reported under its own attributable BOOTSTRAP_PENDING status rather than
+    misreported as normal success, (c) is not counted as a failed scope, and
+    (d) does not stop evaluation of the unrelated, already-established scope
+    ordered after it, which succeeds normally. The whole invocation
+    terminalizes FINISHED and raises nothing.
+    """
+    conn = _FakeConn()
+    attempted: list[str] = []
+
+    def fake_scope(connection: Any, **kwargs: Any) -> ScopeChainOutcome:
+        key = kwargs["key"]
+        attempted.append(key.symbol)
+        connection.stage(key.symbol, {"observation": key.symbol})
+        # BTC has never published any map; ETH is an established, healthy scope.
+        return _chain_outcome(key, bootstrap_pending=key.symbol == "BTC")
+
+    finalized = _install_chain_doubles(
+        monkeypatch, conn, [_scope("BTC"), _scope("ETH")], fake_scope
+    )
+
+    result = _execute()
+
+    assert attempted == ["BTC", "ETH"]
+    assert [(item.key.symbol, item.status) for item in result.scope_results] == [
+        ("BTC", runner.SCOPE_STATUS_BOOTSTRAP_PENDING),
+        ("ETH", runner.SCOPE_STATUS_SUCCEEDED),
+    ]
+    # The bootstrap scope's own transaction committed like any other scope's.
+    assert set(conn.committed_ledger) == {"BTC", "ETH"}
+    assert conn.begin_count == 5  # setup + run row + 2 scopes + finalize
+    assert conn.commit_count == 5
+    assert conn.rollback_count == 0
+
+    (_run_id, record) = finalized[0]
+    assert record.terminal_status == "FINISHED"
+    assert record.failed_scope_count == 0
+    assert record.observed_scope_count == 2
+
+
+def test_bootstrap_pending_status_is_distinct_from_plain_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bootstrap state must stay visible in scope evidence, never collapsed
+    into SUCCEEDED."""
+    assert runner.SCOPE_STATUS_BOOTSTRAP_PENDING == "BOOTSTRAP_PENDING"
+    assert runner.SCOPE_STATUS_BOOTSTRAP_PENDING != runner.SCOPE_STATUS_SUCCEEDED
+
+    conn = _FakeConn()
+    _install_chain_doubles(
+        monkeypatch,
+        conn,
+        [_BTC],
+        lambda connection, **kwargs: _chain_outcome(kwargs["key"], bootstrap_pending=True),
+    )
+
+    result = _execute(symbols=["BTC"])
+
+    assert [item.status for item in result.scope_results] == [
+        runner.SCOPE_STATUS_BOOTSTRAP_PENDING
+    ]
+
+
+def test_rerunning_a_bootstrap_scope_is_deterministic_and_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two identical bounded invocations over the same still-bootstrapping
+    scope produce identical evidence, one terminal record each, and no
+    duplicate or cross-scope writes."""
+    records = []
+    ledgers = []
+    statuses = []
+    for _ in range(2):
+        with pytest.MonkeyPatch.context() as patch:
+            conn = _FakeConn()
+            finalized = _install_chain_doubles(
+                patch,
+                conn,
+                [_scope("BTC"), _scope("ETH")],
+                lambda connection, **kwargs: (
+                    connection.stage(kwargs["key"].symbol, {"observation": kwargs["key"].symbol}),
+                    _chain_outcome(kwargs["key"], bootstrap_pending=kwargs["key"].symbol == "BTC"),
+                )[1],
+            )
+            result = _execute()
+            assert len(finalized) == 1
+            records.append(finalized[0][1].terminal_status)
+            ledgers.append(dict(conn.committed_ledger))
+            statuses.append([item.status for item in result.scope_results])
+
+    assert records == ["FINISHED", "FINISHED"]
+    assert ledgers[0] == ledgers[1]
+    assert statuses[0] == statuses[1]
+    assert statuses[0] == [
+        runner.SCOPE_STATUS_BOOTSTRAP_PENDING,
+        runner.SCOPE_STATUS_SUCCEEDED,
+    ]
 
 
 def test_unexpected_scope_failure_is_isolated_and_run_still_finalizes(

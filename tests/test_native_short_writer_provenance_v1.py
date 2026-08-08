@@ -245,6 +245,7 @@ def test_rejected_provenance_precedes_every_shared_writer_boundary() -> None:
             operational_clock=lambda: None,  # type: ignore[return-value]
             provenance=invalid,
             authorization=_NS_AUTH,
+            never_published_any_map=False,
         )
     with pytest.raises(NativeShortWriterProvenanceError):
         run_native_short_scope_status_materializer(
