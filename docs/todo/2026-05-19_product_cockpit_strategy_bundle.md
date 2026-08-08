@@ -4,6 +4,25 @@ Status: TODO bundle
 Priority: mixed  
 Scope: dashboard semantics, strategy validation, user-ready website, multi-user cockpit, ops
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- P0/P1 Dashboard semantics for Joost (label rename/clarify) -> implemented, no Issue required (label registry and badge rendering already exist, e.g. `RECLAIM_CONFIRMED` etc. in `src/reporting/`)
+- P1 Entry candidate dashboard -> implemented, no Issue required (`src/reporting/run_entry_candidate_static_dashboard_v1.py`)
+- P1 Volume-flow classification -> Issue #277
+- P1 Strategy visual review flow ("Next improvements") + P2 Backtest dashboard integration -> Issue #278
+- P1/P2 Strategy bucket configuration -> Issue #279
+- P2 Dynamic multi-user cockpit + P2 User-ready website (Bitvavo account linking, 2FA) -> Issue #280
+- Auth UX — Already-verified token handling -> Issue #288
+- P2 Systemd service ownership cleanup + P2 Public HTTPS ops -> Issue #281
+
+Unmigrated executable scope:
+- none
+
 ## Current priority
 
 Focus first on making Synth work for Joost.

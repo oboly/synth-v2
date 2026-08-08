@@ -1,5 +1,17 @@
 ## Martee Oracle Touch Semantics TODO
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- Entire file (target/support/shoulder box touch-semantics field/state design and validation) -> Issue #293
+
+Unmigrated executable scope:
+- none
+
 Status: TODO
 Scope: research-only
 

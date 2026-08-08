@@ -1,5 +1,17 @@
 # TODO — Invalidation confirmation backtest v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- Entire file (graded invalidation-confirmation backtest) -> Issue #291
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Queued research task.

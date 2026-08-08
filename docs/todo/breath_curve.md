@@ -1,5 +1,17 @@
 # TODO — Breath Curve
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- P2 Baseline and regime validation continuation + P2 Non-overlap and regime-difference follow-up -> Issue #282
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Parked / open research continuation.
