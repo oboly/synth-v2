@@ -459,12 +459,59 @@ def test_plan_rollout_delegates_to_plan_scope_administration(monkeypatch: pytest
 # --------------------------------------------------------------------------- #
 
 
-def test_approved_universe_is_btc_adopt_then_eth_then_xrp_promote() -> None:
-    assert [(e.symbol, str(e.operation_type)) for e in APPROVED_ROLLOUT_UNIVERSE_V1] == [
+_BATCH_16_SYMBOLS = (
+    "SUI", "SHIB", "PEPE", "HBAR", "AAVE", "BNB", "ICP", "LDO",
+    "XPL", "VET", "ALGO", "CC", "HOT", "FLOKI", "HNT", "MOG",
+)
+
+
+def test_approved_universe_is_btc_adopt_then_eth_xrp_then_batch_16_promote() -> None:
+    expected = [
         ("BTC", str(OperationType.ADOPT_LEGACY_SCOPE)),
         ("ETH", str(OperationType.PROMOTE_SCOPE)),
         ("XRP", str(OperationType.PROMOTE_SCOPE)),
+        *[(sym, str(OperationType.PROMOTE_SCOPE)) for sym in _BATCH_16_SYMBOLS],
     ]
+    assert [(e.symbol, str(e.operation_type)) for e in APPROVED_ROLLOUT_UNIVERSE_V1] == expected
+
+
+def test_approved_universe_batch_16_symbols_each_have_own_approval_reference() -> None:
+    """Attributable per-scope approval: each of the 16 batch entries points
+    at its own approval document, never a shared or wildcard reference."""
+    by_symbol = {e.symbol: e for e in APPROVED_ROLLOUT_UNIVERSE_V1}
+    references = set()
+    for symbol in _BATCH_16_SYMBOLS:
+        entry = by_symbol[symbol]
+        assert entry.operation_type == OperationType.PROMOTE_SCOPE
+        expected_reference = (
+            f"docs/ops/native_short_{symbol.lower()}_bootstrap_promotion_approval_v1.md"
+        )
+        assert entry.approval_reference == expected_reference
+        references.add(entry.approval_reference)
+    assert len(references) == len(_BATCH_16_SYMBOLS)
+
+
+def test_approved_universe_promote_scope_symbols_match_manifest_accepted_symbols() -> None:
+    """Manifest/universe drift guard: every PROMOTE_SCOPE symbol in the
+    checked-in rollout universe must have a matching accepted entry in the
+    checked-in bootstrap manifest, and vice versa except SOL (which is
+    deliberately not a universe entry -- see module docstring). If either
+    file is edited without the other, this test catches the divergence."""
+    import json
+
+    from src.market_data.native_short_promotion_bootstrap_evidence_v1 import (
+        DEFAULT_BOOTSTRAP_MANIFEST_PATH,
+    )
+
+    universe_promote_symbols = {
+        e.symbol
+        for e in APPROVED_ROLLOUT_UNIVERSE_V1
+        if e.operation_type == OperationType.PROMOTE_SCOPE
+    }
+    raw = json.loads(DEFAULT_BOOTSTRAP_MANIFEST_PATH.read_text(encoding="utf-8"))
+    manifest_symbols = {entry["scope"]["symbol"] for entry in raw["entries"]}
+
+    assert universe_promote_symbols == manifest_symbols - {"SOL"}
 
 
 def test_approved_universe_does_not_include_sol() -> None:

@@ -48,6 +48,246 @@
       "approved_at_utc": "2026-08-02T04:15:00Z",
       "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
       "approval_evidence_digest": "9675580969d62224941775fa6eece3c679ff6123e0480e178044a562f12dfa34"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "SUI",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_sui_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "076781ca77e23ebc7d25072e64a364f3fbd4341d00ea64f045e020451c2b4cca"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "SHIB",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_shib_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "065cdc5684bf2aba53eeb9d91b6d5ba87788aa037661a889e93f0058ac38df7e"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "PEPE",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_pepe_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "79c5ae729df550d67e5dba45d827cda54cf250dbeb41755d57679b2d3f0c64f3"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "HBAR",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_hbar_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "1c5997be7efb20885f19cf82212d04c89e30bcdf80524cdaaa69c34b264b1241"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "AAVE",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_aave_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "6b18cdff3b6942bd518e9876fd92ddadeb3a72e75325252de00e4e5dbd8921ba"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "BNB",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_bnb_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "35f23a27d6f261345e52bc159a17e922251ad2d149a1082613db0082cf46a957"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "ICP",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_icp_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "6bbc1023c2ea535f7cc7ff7fb6893aabb199a87804b4d1281a030aedde04c9ac"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "LDO",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_ldo_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "8b49b119138cf32e130bc8fc0db38cef36690ac1dc168511abe6f3167b21d451"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "XPL",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_xpl_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "86e256107b4dd0ca1c7f5e969048b13341a3e0e53cc9aca825d309a83629d65a"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "VET",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_vet_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "bcf1c122ea612a032b259e437644a29f4104d310282bfc387ec6a9ec5f8a95f0"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "ALGO",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_algo_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "fa3e2dc6d386ffbeae51cfa88e8250d0fc9f3fc17718cf64dc9d670d541aa360"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "CC",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_cc_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "00e86858fe30c0c47719398e6f1be7d53c2d2893d5f90e90ed9dc6016b083aa2"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "HOT",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_hot_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "5396257d63fc9e78d4b7e6b55f8589ce9b5e84a71c310900631f47621760685f"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "FLOKI",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_floki_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "e3f2ce2077d67a842aa1470e5a4712bbbac589a2179a89e8dca4dbc7ee75ad2e"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "HNT",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_hnt_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "2d8de2bd145c8b8d8c4cd2c96b20d4eba2a06a67141a5f00d9aef45e55a25290"
+    },
+    {
+      "accepted": true,
+      "scope": {
+        "venue": "bitvavo",
+        "symbol": "MOG",
+        "quote_currency": "EUR",
+        "fib_trading_horizon": "SHORT",
+        "primary_interval": "4h",
+        "supporting_interval": "1h"
+      },
+      "approval_reference": "docs/ops/native_short_mog_bootstrap_promotion_approval_v1.md",
+      "approved_at_utc": "2026-08-08T00:00:00Z",
+      "approved_implementation_commit": "15fc4c030ced4ed2b5a8ba3dcbf831320fe541a8",
+      "approval_evidence_digest": "feeaf6a30a2a29e50f42ef71f1b4f1d90176f16891449c19e38e20b0b1ebf2ae"
     }
   ]
 }

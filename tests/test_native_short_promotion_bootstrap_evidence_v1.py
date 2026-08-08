@@ -125,13 +125,71 @@ def test_shipped_default_manifest_fails_closed_for_every_unapproved_symbol() -> 
         DEFAULT_BOOTSTRAP_MANIFEST_PATH,
     )
 
-    for symbol in ("BTC", "DOGE", "SUI"):
+    for symbol in ("BTC", "DOGE", "FET"):
         other_scope = {**CANONICAL_SCOPE_FIXED_FIELDS, "symbol": symbol}
         result = evaluate_promotion_bootstrap_evidence(
             requested_scope=other_scope, manifest_path=DEFAULT_BOOTSTRAP_MANIFEST_PATH
         )
         assert result.accepted is False
         assert result.reason == REASON_SCOPE_MISMATCH
+
+
+_BATCH_16_SYMBOLS = (
+    "SUI", "SHIB", "PEPE", "HBAR", "AAVE", "BNB", "ICP", "LDO",
+    "XPL", "VET", "ALGO", "CC", "HOT", "FLOKI", "HNT", "MOG",
+)
+
+
+def test_shipped_default_manifest_accepts_each_of_the_16_batch_symbols_with_real_ancestry() -> None:
+    """Each of the 16 bounded-batch symbols resolves exactly once against the
+    real, checked-in manifest, using the real default ancestry checker (no
+    injection) -- proving the batch's entries are genuinely independently
+    evidenced and accepted, not merely structurally present."""
+    from src.market_data.native_short_promotion_bootstrap_evidence_v1 import (
+        DEFAULT_BOOTSTRAP_MANIFEST_PATH,
+    )
+
+    for symbol in _BATCH_16_SYMBOLS:
+        scope = {**CANONICAL_SCOPE_FIXED_FIELDS, "symbol": symbol}
+        result = evaluate_promotion_bootstrap_evidence(
+            requested_scope=scope, manifest_path=DEFAULT_BOOTSTRAP_MANIFEST_PATH
+        )
+        assert result.accepted is True, (symbol, result.reason)
+        assert result.reason == REASON_EVIDENCE_ACCEPTED
+        assert result.symbol == symbol
+
+
+def test_shipped_default_manifest_batch_evaluation_is_deterministic_on_rerun() -> None:
+    """Evaluating the same shipped manifest twice for the same scope returns
+    an identical result -- rerun/read is deterministic, not a function of
+    evaluation order or hidden state."""
+    from src.market_data.native_short_promotion_bootstrap_evidence_v1 import (
+        DEFAULT_BOOTSTRAP_MANIFEST_PATH,
+    )
+
+    for symbol in _BATCH_16_SYMBOLS:
+        scope = {**CANONICAL_SCOPE_FIXED_FIELDS, "symbol": symbol}
+        first = evaluate_promotion_bootstrap_evidence(
+            requested_scope=scope, manifest_path=DEFAULT_BOOTSTRAP_MANIFEST_PATH
+        )
+        second = evaluate_promotion_bootstrap_evidence(
+            requested_scope=scope, manifest_path=DEFAULT_BOOTSTRAP_MANIFEST_PATH
+        )
+        assert first == second
+
+
+def test_shipped_default_manifest_has_exactly_19_unique_symbols() -> None:
+    """Guards against silent drift: the checked-in manifest must name exactly
+    SOL, ETH, XRP, and the 16 batch symbols -- no fewer, no extra, no
+    duplicate."""
+    from src.market_data.native_short_promotion_bootstrap_evidence_v1 import (
+        DEFAULT_BOOTSTRAP_MANIFEST_PATH,
+    )
+
+    raw = json.loads(DEFAULT_BOOTSTRAP_MANIFEST_PATH.read_text(encoding="utf-8"))
+    symbols = [entry["scope"]["symbol"] for entry in raw["entries"]]
+    assert len(symbols) == len(set(symbols)) == 19
+    assert set(symbols) == {"SOL", "ETH", "XRP", *_BATCH_16_SYMBOLS}
 
 
 def test_shipped_default_manifest_digest_matches_live_contract_and_content() -> None:

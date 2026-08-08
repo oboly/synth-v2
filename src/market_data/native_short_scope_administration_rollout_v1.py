@@ -63,6 +63,15 @@ invocation. Adding any further symbol requires its own reviewed repository
 change to this constant (plus its own approval document and manifest entry),
 never a CLI argument.
 
+SUI, SHIB, PEPE, HBAR, AAVE, BNB, ICP, LDO, XPL, VET, ALGO, CC, HOT, FLOKI,
+HNT, and MOG were reviewed and approved together as a single bounded batch of
+16 readiness-qualified, previously unapproved scopes. Each still has its own
+independent ``docs/ops/native_short_<symbol>_bootstrap_promotion_approval_v1.md``
+approval document and its own independently digested manifest entry -- the
+batch is a bounded, atomically-landed repository change, not a wildcard or a
+shared approval. No entry here authorizes anything beyond its own named
+symbol.
+
 Per-scope failure isolation (Issue #276):
 
 Every entry is always attempted, in the checked-in order, regardless of any
@@ -181,6 +190,183 @@ APPROVED_ROLLOUT_UNIVERSE_V1: tuple[RolloutSymbolEntry, ...] = (
             "First-ever PROMOTE_SCOPE for XRP, authorized via its own "
             "explicit bootstrap-evidence manifest entry. Processed after "
             "ETH in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="SUI",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_sui_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for SUI, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after XRP in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="SHIB",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_shib_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for SHIB, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after SUI in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="PEPE",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_pepe_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for PEPE, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after SHIB in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="HBAR",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_hbar_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for HBAR, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after PEPE in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="AAVE",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_aave_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for AAVE, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after HBAR in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="BNB",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_bnb_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for BNB, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after AAVE in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="ICP",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_icp_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for ICP, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after BNB in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="LDO",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_ldo_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for LDO, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after ICP in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="XPL",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_xpl_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for XPL, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after LDO in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="VET",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_vet_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for VET, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after XPL in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="ALGO",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_algo_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for ALGO, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after VET in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="CC",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_cc_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for CC, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after ALGO in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="HOT",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_hot_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for HOT, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after CC in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="FLOKI",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_floki_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for FLOKI, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after HOT in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="HNT",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_hnt_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for HNT, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after FLOKI in this universe's checked-in order."
+        ),
+    ),
+    RolloutSymbolEntry(
+        symbol="MOG",
+        operation_type=OperationType.PROMOTE_SCOPE,
+        approval_reference="docs/ops/native_short_mog_bootstrap_promotion_approval_v1.md",
+        note=(
+            "First-ever PROMOTE_SCOPE for MOG, one of 16 readiness-qualified "
+            "symbols approved together in a bounded batch, each with its own "
+            "independent approval document and manifest entry. Processed "
+            "after HNT in this universe's checked-in order (last of the "
+            "batch)."
         ),
     ),
 )
