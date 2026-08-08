@@ -16,17 +16,36 @@
 >   scope and is not migrated by #242; it is retained here as regression
 >   reference only.
 > - Priority items 7-8 (ladder preview dry-run, manual ladder submit safety)
->   remain proposal-only and unmigrated. They have no owning Issue. Do not
->   treat them as filed, scheduled, or in progress.
+>   are not distinct scope: they describe the same canonical manual-execution
+>   ladder capability already tracked by #203 (execution_planner ladder
+>   construction/leg validation — covers "preview dry-run") and #202/#206
+>   (request idempotency, audit, and credential/executor boundary — covers
+>   "manual submit safety"). This file must not spawn a second ladder
+>   submission pipeline; items 7-8 are superseded by, and fold into, the
+>   canonical #202/#203/#206 lane.
 > - This file must not become a parallel status board for the migrated
 >   scope: do not update status, priority, blockers, or next action for
 >   priority items 1-5 here — that lives in Issue #242 only. The historical
->   SXT record and the unmigrated ladder-preview/manual-submit scope may
->   still be edited as design/historical content, but not represented as
->   having Issue-backed execution status.
+>   SXT record may still be edited as design/historical content, but not
+>   represented as having Issue-backed execution status.
 > - See `docs/development/github_issues_workflow.md`,
 >   `docs/todo/MIGRATION_FREEZE.md`, and
 >   `docs/development/github_issues_batch_2c_migration_v1.md`.
+>
+> ## GitHub Issue migration
+>
+> Status: migrated
+>
+> Operational status/priority is owned by GitHub Issues.
+>
+> Section ownership:
+> - Priority items 1-5 (state classes, golden regression fixtures) -> Issue #242
+> - Priority item 7 (manual ladder preview dry-run) -> Issue #203 (execution_planner ladder construction/leg validation is the same canonical preview capability)
+> - Priority item 8 (manual submit with broker_writes/idempotency/audit) -> Issue #202 (request idempotency/audit) and Issue #206 (credential/executor boundary)
+> - §1 SXT record -> no Issue required; already-shipped historical/regression reference
+>
+> Unmigrated executable scope:
+> - none
 
 ## Purpose
 

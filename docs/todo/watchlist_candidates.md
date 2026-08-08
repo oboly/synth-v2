@@ -9,15 +9,38 @@
 > closure for that scope belong to Issue #234.
 >
 > The rest of that section is already-completed intake logging (marked
-> "Done") and is preserved as historical record. Other watchlist candidates
-> and research not named above remain **unmigrated** — no Issue owns them.
-> Do not represent that scope as Issue-owned, filed, or in progress.
+> "Done") and is preserved as historical record.
+>
+> **Batch 6E re-audit (current state).** "Other watchlist candidates and
+> research not named above" is not a standing bounded workflow — it is an
+> open-ended placeholder. This file names exactly one candidate (KITE).
+> Current repository practice already handles new watchlist/asset-universe
+> candidates as individual GitHub Issues when a concrete candidate arises
+> (precedent: closed Issue #131, "Add ENA, ARB and PENDLE to Synth asset
+> universe", later superseded by a full Bitvavo-universe import). No eternal
+> umbrella backlog Issue is created for hypothetical future candidates; each
+> future candidate gets its own narrow Issue, following the #131 pattern,
+> when it actually arises.
 >
 > This file must not become a parallel status board for the migrated scope.
 >
 > See `docs/development/github_issues_workflow.md`,
 > `docs/todo/MIGRATION_FREEZE.md`, and
 > `docs/development/github_issues_batch_2b_migration_v1.md`.
+>
+> ## GitHub Issue migration
+>
+> Status: migrated
+>
+> Operational status/priority is owned by GitHub Issues.
+>
+> Section ownership:
+> - Remaining KITE liquidity/spread/candle-history/min-order check -> Issue #234
+> - KITE intake logging (marked Done) -> no Issue required; historical record
+> - Future/other watchlist candidates beyond KITE -> no umbrella Issue required; each future candidate gets its own narrow Issue when it arises, per existing #131 precedent
+>
+> Unmigrated executable scope:
+> - none
 
 ## Status
 

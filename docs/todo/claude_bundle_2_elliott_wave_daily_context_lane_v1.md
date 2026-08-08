@@ -38,6 +38,43 @@
 >   `docs/todo/MIGRATION_FREEZE.md`,
 >   `docs/development/github_issues_batch_2a_migration_v1.md`, and
 >   `docs/development/github_issues_batch_2c_migration_v1.md`.
+>
+> **Batch 6E re-audit (current state).** #219 and #241 are both still OPEN
+> with unchanged scope. The remaining §3/§4/§5/top-N items are each
+> explicitly contingent on #241's Phase 1 findings and are not yet bounded,
+> executable work:
+>
+> - Top-N/multi-symbol rollout: #241's own closure note states multi-symbol
+>   rollout "requires a separate Issue" filed only after Phase 1 (BTC-EUR)
+>   findings are reviewed. No findings exist yet, so no rollout Issue can be
+>   bounded today.
+> - §3 trade hypotheses and §5 Phase 2/3: the source text itself gates these
+>   behind Phase 1 separating phases ("only if Phase 1 separates phases") and
+>   Phase 2 surviving costs. This is unresolved research, not executable
+>   scope, until #241 produces a result.
+> - §4 manual approval path: any future manual-approval/promotion flow must
+>   use the existing canonical operator-intent (#254) -> `decision_gate` ->
+>   `execution_planner` chain, not an Elliott-specific execution path. No
+>   separate Issue is filed now because there is no current concrete
+>   promotion event to gate; when Elliott context is ready to inform a
+>   decision, it enters through the existing canonical chain's Issues, not a
+>   new one invented here.
+>
+> ## GitHub Issue migration
+>
+> Status: migrated
+>
+> Operational status/priority is owned by GitHub Issues.
+>
+> Section ownership:
+> - §0 layering-hygiene fix -> Issue #219
+> - §2 Phase 1 BTC-EUR labeler/ledger/metrics -> Issue #241
+> - top-N/multi-symbol rollout -> no Issue required; contingent on #241 Phase 1 findings, to be filed only when ripe (per #241's own closure note)
+> - §3 trade hypotheses, §5 Phase 2/3 -> no Issue required; explicitly gated behind #241 Phase 1 results, not yet executable
+> - §4 manual approval path -> no Elliott-specific Issue; must route through existing canonical operator-intent/decision_gate/execution_planner Issues (#254 and successors) when ripe
+>
+> Unmigrated executable scope:
+> - none
 
 Handoff document for the coordinating chat. Purpose: turn the Elliott Wave discussion
 into a falsifiable, Synth-compatible research lane and a work order for an agent.

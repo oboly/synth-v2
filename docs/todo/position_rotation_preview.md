@@ -21,6 +21,28 @@
 > See `docs/development/github_issues_workflow.md`,
 > `docs/todo/MIGRATION_FREEZE.md`, and
 > `docs/development/github_issues_batch_2b_migration_v1.md`.
+>
+> **Batch 6E re-audit (current state).** Re-verified: the MVP cockpit
+> (Purpose, Target output, P1 sections, P2 — Better-candidate comparison,
+> Completed research baseline) is confirmed implemented/historical record
+> only — no genuinely open executable scope remains in it. It does not
+> require a new Issue merely because Batch 6A's snapshot called it
+> "uncovered"; it was never live executable work, it is a shipped-feature
+> record. #230 remains the sole live scope owner (Next Strategy Work /
+> research-validation follow-up).
+>
+> ## GitHub Issue migration
+>
+> Status: migrated
+>
+> Operational status/priority is owned by GitHub Issues.
+>
+> Section ownership:
+> - Next Strategy Work (research-validation/regime follow-up) -> Issue #230
+> - MVP cockpit (Purpose, Target output, P1 sections, P2, Completed research baseline) -> no Issue required; implemented/historical record only
+>
+> Unmigrated executable scope:
+> - none
 
 ## Status
 

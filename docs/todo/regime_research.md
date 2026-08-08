@@ -7,11 +7,17 @@
 > acceptance criteria, next action, and closure for that scope belong to
 > Issue #231.
 >
-> Phase 2 ("P2 — Symbol participation and breath profile design",
-> "P2 — BTC-to-alt shock propagation / lead-lag replay",
-> "P2 — Regime interaction audit design") and Phase 3
-> ("P3 — Later classifier work") remain **unmigrated** — no Issue owns
-> them. Do not represent that scope as Issue-owned, filed, or in progress.
+> GitHub Issue
+> [#322 — Design regime-research Phase 2: symbol breath profile, BTC-to-alt lead-lag replay, regime interaction audit](https://github.com/oboly/synth-v2/issues/322)
+> owns Phase 2 below: "P2 — Symbol participation and breath profile design",
+> "P2 — BTC-to-alt shock propagation / lead-lag replay", and "P2 — Regime
+> interaction audit design". Verified distinct from #282 (Breath Curve
+> strategy-candidate validation), #301 (composite market regime contract),
+> and #305 (macro regime engine) — no duplicate research filed.
+>
+> Phase 3 ("P3 — Later classifier work") is explicitly gated in the source
+> text behind Phase 2 completing ("only after ... complete") and is not
+> independently executable yet; no Issue is filed for it now.
 >
 > This file must not become a parallel status board for the migrated scope.
 > The completed-baseline record and Parked section are preserved as
@@ -20,6 +26,21 @@
 > See `docs/development/github_issues_workflow.md`,
 > `docs/todo/MIGRATION_FREEZE.md`, and
 > `docs/development/github_issues_batch_2b_migration_v1.md`.
+>
+> ## GitHub Issue migration
+>
+> Status: migrated
+>
+> Operational status/priority is owned by GitHub Issues.
+>
+> Section ownership:
+> - P1 — Immediate reruns and reads, P1 — Discovered regime pass -> Issue #231
+> - P2 — Symbol participation/breath profile, P2 — BTC-to-alt lead-lag replay, P2 — Regime interaction audit design -> Issue #322
+> - P3 — Later classifier work -> no Issue required; explicitly gated behind #322 completing, not yet executable
+> - Parked (astro/lunar/solar correlation) -> no Issue required; explicitly parked pending discovered-regime review and #322
+>
+> Unmigrated executable scope:
+> - none
 
 ## Status
 
