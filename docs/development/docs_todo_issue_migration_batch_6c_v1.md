@@ -257,10 +257,13 @@ migrated.
   research -> decision_gate boundary.
 - The candle-ingestion activation Issue (#284) is the only Issue in this
   batch whose acceptance criterion is a real production timer-enable
-  action; it activates only the previously human-authorized, fully
-  accepted `public_candle_freshness` cutover already recorded in
-  `docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md` and
-  the ownership registry — it does not itself authorize anything new.
+  action. Per the independent-review correction (§9), #284 tracks the
+  future controlled `public_candle_freshness` cutover on gurkDB — already
+  recorded as human-accepted in
+  `docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md` and the
+  ownership registry — but the Issue's own creation and existence grant no
+  runtime authorization; activation still requires separate explicit
+  operational authorization at the time of the run.
 - No legacy cross-layer shortcut text was found or preserved as valid
   architecture in any of the 13 files; multi-layer narration in
   `2026-05-19_product_cockpit_strategy_bundle.md`'s strategy-bucket
@@ -288,7 +291,53 @@ remaining_unowned_single_file_lanes=0
 (Batch 6D) and the 12 `ISSUE_OWNED (PARTIAL)` files (Batch 6E) are out of
 scope and not counted here.
 
-## 9. Duplicate creation correction
+## 9. Independent review correction
+
+Independent review of PR #299 found the original wording of Issue #284's
+safety-boundaries section governance-ambiguous. The original text stated
+that the Issue "explicitly authorizes" the already-approved production
+timer cutover and carried:
+
+```text
+service_activation_not_performed=0
+production_mutation_not_performed=0
+```
+
+This read as the Issue itself granting activation authorization, rather
+than merely tracking future controlled cutover work that still requires
+separate, explicit operational authorization at run time. The reviewer
+corrected Issue #284 directly on GitHub to remove that ambiguity. #284
+now carries:
+
+```text
+issue_creation_grants_runtime_authorization=0
+activation_requires_explicit_operational_authorization=1
+```
+
+and explicitly states: "This Issue owns the future controlled cutover
+work; it does not itself grant permission to mutate production runtime
+state."
+
+Summary:
+
+- Issue #284 governance wording was corrected after initial Batch 6C
+  creation.
+- Scope and architecture owner remained `ops/runtime` — unchanged.
+- No Issue ownership mapping changed; #284 remains the sole owner of the
+  `deploy_runtime.md` candle-ingestion-activation scope.
+- No runtime, service, timer, DB, or broker mutation was performed as
+  part of this correction or its recording here.
+- The correction restores the explicit boundary that Issue creation is
+  never itself runtime authorization, consistent with every other Issue
+  filed in this batch.
+
+```text
+issues_modified_during_initial_migration=0
+issues_modified_during_independent_review=1
+issues_modified_during_independent_review_numbers=284
+```
+
+## 10. Duplicate creation correction
 
 During the first work session, `gh issue create` for the Breath Curve
 scope was retried after an ambiguous/transient CLI response without first
@@ -314,7 +363,7 @@ verification of the exact returned URL before any retry was attempted,
 and no further duplicates occurred across the remaining 10 create calls
 (#288-#297).
 
-## 10. Acceptance evidence
+## 11. Acceptance evidence
 
 ```text
 source_files=13
@@ -328,6 +377,9 @@ new_issue_numbers=277,278,279,280,281,282,284,285,286,288,289,290,291,292,293,29
 duplicate_issues_created=1
 duplicate_issue_number=283
 duplicate_issues_remaining_open=0
+issues_modified_during_initial_migration=0
+issues_modified_during_independent_review=1
+issues_modified_during_independent_review_numbers=284
 unmigrated_executable_scope_items=4
 architecture_boundary_violations=0
 source_files_deleted=0
