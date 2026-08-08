@@ -1,5 +1,20 @@
 # TODO — Parked Backlog
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- Done / Parked — A+ archive and raw file handling -> done/historical, no Issue required
+- P4 External PRO narrative normalization backlog -> no Issue required; deliberately parked (normalize only when a concrete validation question exists; none currently identified)
+- Parked — Astro context interaction backlog -> no Issue required; deliberately parked, explicitly gated on `symbol_breath_profile_v1` and discovered-regime review prerequisites that do not yet exist
+- P3 `MACRO_DIP_BUDGET_MODE_V1` parked deployment-context backlog -> no Issue required; deliberately parked speculative concept with no executable near-term scope (duplicate concept also parked in `docs/todo/live_like_vertical_slice.md`)
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Parked / backlog.

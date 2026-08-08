@@ -1,5 +1,17 @@
 # TODO — Paper Candidate Contract
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- P3 Future decision_gate adapter design -> superseded, no Issue required. `docs/architecture/strategy_proposal_contract_v1.md` (PR #257, canonical/merged) already defines the proposal -> decision_gate input envelope this file was designing toward.
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Future adapter design allowed. No execution wiring.

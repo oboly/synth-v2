@@ -1,5 +1,27 @@
 # TODO — Deploy / Runtime Runners
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- P1 Odroid runtime runners deployment plan -> done, no Issue required
+- P2 Deploy Synth runtime on Odroid -> done, no Issue required
+- P2 Candle ingestion runner (production cutover pending activation) -> Issue #284
+- P2 Webview data refresh runner -> done, no Issue required
+- P2 Paper advice dashboard lifecycle refresh runner -> done (see `docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`, Issue #201, for the P0-A disk-reliability gate), no separate Issue required here
+- P2 4h market chain timer templates -> done, no Issue required
+- P2 Market trigger engine design -> Issue #286
+- P2 First paper strategy lane after Odroid runners -> Issue #285
+- P2 Trade setup rank eligibility correction -> done, no Issue required
+- P2 Paper advice setup-fail reason display -> done, no Issue required
+- P3 Runtime orchestration standard -> Issue #289
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Active runtime operations lane. Initial Odroid runtime is deployed; follow-up work remains open for market damage hysteresis, A+ DB integration, dashboard quality display, and final ops cleanup.

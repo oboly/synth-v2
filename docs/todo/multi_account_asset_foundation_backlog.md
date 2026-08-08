@@ -1,5 +1,22 @@
 # Multi-Account Asset Foundation Backlog
 
+## GitHub Issue migration
+
+Status: partially migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- Phase 1 — Skeleton (safe now) -> Issue #294
+- Phase 2 — `is_portfolio` migration -> no Issue yet; deferred until Phase 1 lands and is reviewed
+- Phase 3 — `quote_asset` migration -> no Issue yet; deferred until Phase 1 lands and is reviewed
+- Phase 4 — `is_tradeable` migration -> no Issue yet; deferred until Phase 1 lands and is reviewed
+- Phase 5 — Hugo account onboarding -> no Issue yet; deferred until Phase 1 lands and is reviewed
+- Account table FK policy -> already stated as canonical policy in this file; no separate Issue required
+
+Unmigrated executable scope:
+- Phase 2 (`is_portfolio` column drop, 3 refs), Phase 3 (`quote_asset` column drop, 12 refs), Phase 4 (`is_tradeable` column drop, 19 refs, includes adding a `venue` param to `selection_engine` candidate fetch), and Phase 5 (Hugo account onboarding) each require their own follow-up Issue once Phase 1 (Issue #294) lands and is reviewed.
+
 Design doc: `docs/research/multi_account_asset_foundation_v1.md`
 
 ---

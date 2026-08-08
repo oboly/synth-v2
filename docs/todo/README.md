@@ -227,23 +227,23 @@ Installed-host service/timer activation was not part of that closure. Any activa
 | `sector_rotation_engine_v1.md` | **D — Phase B accepted; migration applied and persisted cohort accepted** | Participation, relative-strength, persistence, and proxy-rotation analytics |
 | `sector_rotation_dashboard_v1.md` | **D — Phase C1 implemented / ready for review** — migrated: status/priority now owned by Issue #204 | Read-only Sector Overview publisher over accepted Phase B snapshots; later dashboard capabilities remain open |
 | `profit_plan_dashboard_action_truth_and_breathline_demote_v1.md` | done / parked | Completed Profit Plan action fail-closed, PPP, map-switch, Breathline, evidence-row, and formatting guardrails |
-| `native_short_runtime_owner_and_scope_status_v1.md` | repository unit/database contracts complete; chain-scoped DB runtime binding and filesystem publisher/reader separation implemented for review; ownership and activation UNASSIGNED | Completed Native SHORT scope/map implementation and canonical devlap unit reconciliation; external DB secret/identity acceptance plus filesystem reader-group/distinct-UID host acceptance remain blockers |
+| `native_short_runtime_owner_and_scope_status_v1.md` | repository unit/database contracts complete; chain-scoped DB runtime binding and filesystem publisher/reader separation implemented for review; ownership and activation UNASSIGNED — migrated: status/priority now owned by Issue #296 | Completed Native SHORT scope/map implementation and canonical devlap unit reconciliation; external DB secret/identity acceptance plus filesystem reader-group/distinct-UID host acceptance remain blockers |
 | `native_short_map_level_status_v1.md` | done / parked | Completed native SHORT current map-level status contract and implementation evidence |
 | `native_short_multi_asset_rollout_contract_v1.md` | in progress; SOL promoted and accepted, ETH/XRP approved (not yet promoted), bootstrap manifest generalized to a reviewed list — migrated: status/priority now owned by Issues #198, #199, #200 | Canonical multi-asset readiness audit, scope-administration ownership, sequential SOL->ETH->XRP rollout, bootstrap/isolation blockers still unconditionally active |
 | `position_rotation_preview.md` | MVP implemented / parked follow-up — migrated (partial): "Next Strategy Work" research follow-up status/priority now owned by Issue #230; the implemented MVP cockpit remains historical, unmigrated | Account-aware read-only cockpit/rotation preview; no active v2.23 priority |
 | `profit_plan_card_evidence_delta_visibility_v1.md` | done / parked | Deterministic current-vs-previous card evidence visibility |
-| `deploy_runtime.md` | MVP cockpit implemented / ops follow-up | General Odroid cockpit and deployment follow-ups |
+| `deploy_runtime.md` | MVP cockpit implemented / ops follow-up — migrated: status/priority now owned by Issues #284, #285, #286, #289 | General Odroid cockpit and deployment follow-ups |
 | `regime_research.md` | parked — migrated (partial): Phase 1 (P1 reruns/reads, P1 discovered-regime pass) status/priority now owned by Issue #231; Phases 2-3 remain unmigrated | Rotation replay, discovered regimes, symbol profiles, and interaction audits |
 | `fibo_zones.md` | **P0 repository-ready / activation pending** — superseded: production cutover already implemented/deployed, current live scope owned by Issue #249 (existing); remaining research/reporting status/priority now owned by Issues #270, #271 (new) | Recurring canonical 4h FibNavigationMap publication and existing cockpit visibility; merge/deploy/controlled activation remains |
 | `ui_webview.md` | open / secondary — migrated (partial): the 4 accepted Profit Plan coin-card scanability items status/priority now owned by Issue #233; remaining webview work is unmigrated | Non-blocking UI and styling work after correctness lanes |
-| `signal_matrix_dashboard.md` | parked | Transparent primitive signal inventory |
-| `breath_curve.md` | parked / open | Breath Curve validation continuation |
+| `signal_matrix_dashboard.md` | parked — migrated: status/priority now owned by Issue #297 | Transparent primitive signal inventory |
+| `breath_curve.md` | parked / open — migrated: status/priority now owned by Issue #282 | Breath Curve validation continuation |
 | `strategy_candidates.md` | parked / open research — migrated (partial): "P1 — Current strategy audit follow-up" status/priority now owned by Issue #232; the other P1 section and all P2/P3 sections remain unmigrated | Strategy audit and later classifier/policy research |
 | `replay_parameter_study_harness_v1.md` | **D — planning / strategy-validation sublane** — migrated: status/priority now owned by Issue #205 | Minimal market-only replay contracts, immutable provenance, Selection v2 point-in-time adapter, versioned evaluator, and one bounded score-weight grid study |
-| `multi_horizon_fib_dashboard_backlog.md` | parked | Dashboard follow-up depending on fib research outputs |
-| `paper_candidate_contract.md` | future design | Safe adapter from validated research candidates to `decision_gate` |
-| `dev_ops_hygiene.md` | mostly parked | Development, database-access, backup, worktree hygiene |
-| `parked_backlog.md` | backlog | Archived A+ and external-narrative follow-ups |
+| `multi_horizon_fib_dashboard_backlog.md` | parked — migrated: status/priority now owned by Issue #295 (blocked/gated on backtest foundation) | Dashboard follow-up depending on fib research outputs |
+| `paper_candidate_contract.md` | future design — superseded: canonical proposal contract now `docs/architecture/strategy_proposal_contract_v1.md` (PR #257); no Issue required | Safe adapter from validated research candidates to `decision_gate` |
+| `dev_ops_hygiene.md` | mostly parked — migrated: status/priority now owned by Issue #290 | Development, database-access, backup, worktree hygiene |
+| `parked_backlog.md` | backlog — migrated: deliberately parked items recorded, no Issue required | Archived A+ and external-narrative follow-ups |
 | `watchlist_candidates.md` | open intake — migrated (partial): the remaining KITE liquidity/spread/candle-history/min-order check now owned by Issue #234; other watchlist candidates and research remain unmigrated | Human-thesis watchlist intake before validation |
 
 ## Next-step rule

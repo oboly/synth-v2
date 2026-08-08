@@ -1,5 +1,20 @@
 # TODO — Dev / Ops Hygiene
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- Done / parked — Codex smoke lane -> done, no Issue required
+- Done / parked — DBeaver / MariaDB access recovery -> done, no Issue required
+- P3 MariaDB export / backup hygiene -> Issue #290
+- P4 Local untracked file hygiene -> already canonical (`AGENTS.md` Git and Commit Rules), no Issue required
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Mostly done / parked. Keep as operational hygiene notes.

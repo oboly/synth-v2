@@ -1,5 +1,20 @@
 # TODO — Native SHORT Runtime Owner And Scope Status V1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- Remaining operational action — P2 owner only (dedicated `synth_chain_4h_writer` DB identity provisioning, installed-host activation, owner selection, production authorization, timer activation) -> Issue #296
+- Filesystem reader-group provisioning (`gurk:synth-native-short-readers`) and native-SHORT-snapshot publication host work -> already tracked under Issue #201 (`docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md`); not duplicated here
+- Deferred runtime-binding hardening — P3 (`EXPECTED_HOST`/`EXPECTED_PORT`/`EXPECTED_PASSWORD_FILE` exact pinning) -> explicitly not required for the current single canonical caller per this file's own text; no Issue required until multi-caller support is pursued
+- Native SHORT multi-scope rollout/promotion/bulk-enrollment mechanics -> distinct scope, owned by Issue #276 / PR #287 (not this file; verified no overlap)
+
+Unmigrated executable scope:
+- none
+
 ## Authoritative ownership (current truth)
 
 The single source of truth for writer-capability host ownership is the registry:

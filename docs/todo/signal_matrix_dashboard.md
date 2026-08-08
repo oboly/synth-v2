@@ -1,5 +1,17 @@
 # TODO — Signal Matrix Dashboard
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- Entire file (`signal_matrix_static_dashboard_v1` implementation) -> Issue #297
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Active next dashboard lane for Synth v2.14.

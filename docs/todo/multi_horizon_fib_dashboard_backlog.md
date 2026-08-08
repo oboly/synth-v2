@@ -1,5 +1,17 @@
 # Multi Horizon Fib Dashboard Backlog
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- Entire file (planned read-only dashboard surfaces) -> Issue #295 (explicitly blocked/gated until the `multi_horizon_fib_backtest_v1` foundation lands)
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Parked behind research foundation maturity.
