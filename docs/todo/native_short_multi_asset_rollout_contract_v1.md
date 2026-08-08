@@ -8,6 +8,42 @@
 > This file is retained as frozen historical/design context; do not update
 > status, priority, or execution order here. See
 > `docs/development/github_issues_first_batch_migration_v1.md`.
+>
+> **Batch 6E re-audit (current state).** Batch 6A (earlier snapshot) flagged
+> "bootstrap-manifest/administration-contract architecture detail" and
+> "per-scope failure-isolation design" as exceeding #198/#199/#200's narrow
+> titles. Re-verified against current `main` and current Issue state:
+>
+> - Per-scope failure isolation is implemented and merged: Issue
+>   [#200 — Implement native SHORT per-scope failure isolation](https://github.com/oboly/synth-v2/issues/200)
+>   is now `CLOSED` (see PR #274 per #276's body).
+> - Issue [#276 — Enable evidence-driven native SHORT bulk rollout after #200](https://github.com/oboly/synth-v2/issues/276)
+>   (OPEN) now owns making `MULTI_SCOPE_FAILURE_ISOLATION_MISSING` and
+>   `BOOTSTRAP_ORCHESTRATION_BLOCKED` evidence-driven, reusing the existing
+>   rollout orchestrator, generalized bootstrap manifest, and approved
+>   rollout universe — explicitly not building a new bulk-enrollment
+>   subsystem. This is the same "bootstrap-manifest/administration-contract"
+>   scope Batch 6A found uncovered; it is now Issue-owned.
+> - The bootstrap-circularity resolution, generalized checked-in manifest
+>   (list, not single scope), and the ETH/XRP explicit approvals are
+>   implemented in the repository per this document's own "Multi-scope
+>   bootstrap generalization..." closing section, and are proven end-to-end
+>   by real (non-mocked) tests cited there.
+> - Issue [#198](https://github.com/oboly/synth-v2/issues/198) and
+>   [#199](https://github.com/oboly/synth-v2/issues/199) remain OPEN and
+>   continue to own ETH/XRP production promotion execution specifically
+>   (approved at the administration-decision layer; not yet run against
+>   production, per this document's own final section).
+> - A further batch of 16 readiness-qualified scopes was approved as a
+>   bounded batch (`docs/ops/native_short_<symbol>_bootstrap_promotion_approval_v1.md`
+>   for SUI/SHIB/PEPE/HBAR/AAVE/BNB/ICP/LDO/XPL/VET/ALGO/CC/HOT/FLOKI/HNT/MOG)
+>   via PR #316, reusing the exact same reviewed mechanism — no new Issue
+>   required; this is execution of the already-owned #276/#198/#199 pattern,
+>   not new uncovered scope.
+> - No bootstrap-manifest, failure-isolation, rollout, or promotion scope
+>   remains uncovered. What remains in this file below this pointer is
+>   canonicalization/historical architecture detail, not unowned executable
+>   work. This batch does not modify runtime or production state.
 
 ## Status
 
@@ -1087,3 +1123,19 @@ migrations_applied=0
 production_promote_scope_invocations_by_this_lane=0
 new_scope_seeds_by_this_lane=0
 ```
+
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- ETH/XRP production promotion execution -> Issues #198, #199
+- Per-scope failure isolation -> Issue #200 (CLOSED, implemented)
+- Bootstrap-manifest/administration-contract generalization, evidence-driven bulk rollout -> Issue #276
+- 16-scope bounded batch approval (SUI/SHIB/PEPE/HBAR/AAVE/BNB/ICP/LDO/XPL/VET/ALGO/CC/HOT/FLOKI/HNT/MOG) -> execution of #276/#198/#199 pattern via PR #316, no separate Issue required
+- Remaining document body -> historical/canonical architecture-detail record, no Issue required
+
+Unmigrated executable scope:
+- none

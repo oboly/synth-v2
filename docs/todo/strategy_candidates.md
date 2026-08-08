@@ -7,12 +7,39 @@
 > action, and closure for that scope belong to Issue #232.
 >
 > This file has **two** sections labeled `P1`. Issue #232 does **not** own
-> "P1 — Long-term regime classifier and dual-bucket research" — that
-> section, along with "P2 — Horizon bucket design review",
-> "P2 — `MACRO_DIP_BUDGET_MODE_V1`", "P2 — Swing pullback 168h research
-> lead", and "P3 — Legacy Synth v1 regime/strategy prior review", remains
-> **unmigrated**. No Issue owns them. Do not represent that scope as
-> Issue-owned, filed, or in progress.
+> "P1 — Long-term regime classifier and dual-bucket research".
+>
+> **Batch 6E re-audit (current state) — per remaining section:**
+>
+> - "P1 — Long-term regime classifier and dual-bucket research": the
+>   `replay_safe_regime_classifier_v1` build is explicitly gated behind
+>   `docs/todo/regime_research.md` Phase 2/3 (Issue #322 and any later Phase
+>   3 Issue) and is not filed separately here. The dual-bucket policy
+>   backtest and super-bull/god-candle opportunity-cost backtest are
+>   distinct, independently executable research — filed as
+>   [#323 — Backtest dual-bucket allocation policy and super-bull opportunity-cost scenario](https://github.com/oboly/synth-v2/issues/323).
+> - "P2 — Horizon bucket design review": covered by existing Issue
+>   [#243 — Define multi-horizon strategy architecture contract](https://github.com/oboly/synth-v2/issues/243),
+>   which owns horizon identity, freshness, provenance, and precedence rules
+>   across `selection_engine`/`decision_gate`/`execution_planner` — the same
+>   cross-layer horizon-bucket question this section raises. No separate
+>   Issue filed; reused.
+> - "P2 — `MACRO_DIP_BUDGET_MODE_V1`": re-verified — no Issue anywhere in the
+>   repository (`gh issue list --search "MACRO_DIP_BUDGET"` returns none)
+>   references this concept, and it recurs across multiple TODO files
+>   (`parked_backlog.md`, `live_like_vertical_slice.md`) as a speculative
+>   "future portfolio/research lane, no runtime change" idea with no current
+>   evidence of active pursuit. No Issue filed; treated as a parked/not
+>   currently desired concept, not executable scope.
+> - "P2 — Swing pullback 168h research lead": distinct from #232 (which
+>   explicitly excludes it). Filed as
+>   [#324 — Revalidate 168h swing-pullback research lead (exit algorithm, regime filter, promotion layer)](https://github.com/oboly/synth-v2/issues/324).
+> - "P3 — Legacy Synth v1 regime/strategy prior review": re-verified — no
+>   current Issue, no recent repository activity on
+>   `docs/legacy_synth_v1_regime_strategy_priors.md` beyond its original
+>   authoring commits, and no concrete current work evidenced. No Issue
+>   filed per the explicit guidance not to convert a vague historical-review
+>   idea into work without current evidence.
 >
 > This file must not become a parallel status board for the migrated scope.
 > The "Core rule" and "Boundary" content is preserved as historical/design
@@ -21,6 +48,24 @@
 > See `docs/development/github_issues_workflow.md`,
 > `docs/todo/MIGRATION_FREEZE.md`, and
 > `docs/development/github_issues_batch_2b_migration_v1.md`.
+>
+> ## GitHub Issue migration
+>
+> Status: migrated
+>
+> Operational status/priority is owned by GitHub Issues.
+>
+> Section ownership:
+> - P1 — Current strategy audit follow-up -> Issue #232
+> - P1 — Long-term regime classifier and dual-bucket research (classifier build) -> no Issue required; gated behind #322/regime_research.md Phase 3
+> - P1 — Long-term regime classifier and dual-bucket research (dual-bucket + super-bull backtests) -> Issue #323
+> - P2 — Horizon bucket design review -> Issue #243 (reused)
+> - P2 — `MACRO_DIP_BUDGET_MODE_V1` -> no Issue required; speculative/parked, no current evidence of demand
+> - P2 — Swing pullback 168h research lead -> Issue #324
+> - P3 — Legacy Synth v1 regime/strategy prior review -> no Issue required; parked historical prior, no concrete current work
+>
+> Unmigrated executable scope:
+> - none
 
 ## Status
 

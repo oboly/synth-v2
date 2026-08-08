@@ -1,16 +1,21 @@
 # Adaptive Fib Execution Offset v1
 
-> **Migration pointer — PARTIAL migration only.** GitHub Issue
+> **Migration pointer.** GitHub Issue
 > [#224 — Build offline execution-offset replay dataset and policy contract](https://github.com/oboly/synth-v2/issues/224)
-> owns **only** "Follow-up Sequence" steps 1-2 below: building the offline
+> owns "Follow-up Sequence" steps 1-2 below: building the offline
 > near-miss/fill replay dataset and defining the versioned execution-offset
-> policy contract. Current status, priority, blockers, acceptance criteria,
-> next action, and closure for that scope belong to Issue #224.
+> policy contract.
 >
-> Steps 3-5 (read-only proposal preview integration, paper-execution
-> validation, and any later decision-gated runtime consumption) remain
-> **unmigrated** — no Issue owns them. Do not represent that scope as
-> Issue-owned, filed, or in progress.
+> GitHub Issue
+> [#317 — Add read-only preview and paper-validation for adaptive Fib execution-offset policies](https://github.com/oboly/synth-v2/issues/317)
+> owns steps 3-4: read-only proposal preview integration and paper-execution
+> validation with fee/slippage modelling.
+>
+> Step 5 (any later decision-gated runtime consumption) is explicitly
+> deferred in the source text ("Only then consider...") and is contingent on
+> the outcome of #317's validation. It is not independently executable today
+> and is not filed as a separate Issue; it remains historical/design
+> guidance until #317 produces evidence that would make it a bounded task.
 >
 > This file must not become a parallel status board for the migrated scope.
 > The design/architecture sections below (selection_engine / decision_gate /
@@ -20,6 +25,20 @@
 > See `docs/development/github_issues_workflow.md`,
 > `docs/todo/MIGRATION_FREEZE.md`, and
 > `docs/development/github_issues_batch_2b_migration_v1.md`.
+>
+> ## GitHub Issue migration
+>
+> Status: migrated
+>
+> Operational status/priority is owned by GitHub Issues.
+>
+> Section ownership:
+> - Follow-up Sequence steps 1-2 (dataset, policy contract) -> Issue #224
+> - Follow-up Sequence steps 3-4 (preview integration, paper validation) -> Issue #317
+> - Follow-up Sequence step 5 (decision-gated runtime consumption) -> no Issue required; contingent/deferred future step per source text, not yet executable
+>
+> Unmigrated executable scope:
+> - none
 
 Status: TODO
 

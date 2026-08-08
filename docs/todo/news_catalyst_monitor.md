@@ -8,10 +8,26 @@
 > acceptance criteria, next action, and closure for that scope belong to
 > Issue #228.
 >
-> Production selection/dashboard consumption of catalyst context (see
-> "Dashboard integration" and "Relationship to idiosyncratic catalyst
-> override" below) remains **unmigrated** — no Issue owns it. Do not
-> represent that scope as Issue-owned, filed, or in progress.
+> GitHub Issue
+> [#300 — Define catalyst taxonomy and event contract beyond narrow news-catalyst schema](https://github.com/oboly/synth-v2/issues/300)
+> (filed in Batch 6D) now owns the broader versioned catalyst taxonomy,
+> canonical event contract, and calendar read model beyond #228's narrow
+> schema.
+>
+> GitHub Issue
+> [#321 — Add read-only catalyst context presentation to Manual Ladder Dashboard](https://github.com/oboly/synth-v2/issues/321)
+> owns "Dashboard integration" (reporting-only, contingent on #228/#300
+> producing data).
+>
+> "Relationship to idiosyncratic catalyst override" is not filed as a
+> separate Issue: despite the "override" name, the concept described
+> (`DO_NOT_FLIP_GLOBAL_REGIME`) is a market-only regime-classification
+> refinement, not a decision/execution override — no override authority
+> exists or is granted anywhere in this repository's architecture. Any
+> future implementation of this classification-quality concept falls under
+> #300's taxonomy/research scope, not a separate authority. This file's
+> "override" terminology must not be read as decision_gate/execution
+> authority.
 >
 > This file must not become a parallel status board for the migrated scope.
 > The design content above and below (core idea, schema proposals, event
@@ -20,6 +36,21 @@
 > See `docs/development/github_issues_workflow.md`,
 > `docs/todo/MIGRATION_FREEZE.md`, and
 > `docs/development/github_issues_batch_2b_migration_v1.md`.
+>
+> ## GitHub Issue migration
+>
+> Status: migrated
+>
+> Operational status/priority is owned by GitHub Issues.
+>
+> Section ownership:
+> - P0 design task (schema/dry-runner) -> Issue #228
+> - Broader taxonomy/event contract/calendar -> Issue #300
+> - Dashboard integration -> Issue #321
+> - Relationship to idiosyncratic catalyst override -> no Issue required; market-only classification concept folded into #300 scope, explicitly not a decision/execution override
+>
+> Unmigrated executable scope:
+> - none
 
 ## Status
 

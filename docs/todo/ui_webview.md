@@ -12,17 +12,41 @@
 > All other sections describe already-implemented UI work (`P2 — Document
 > UI/chart framework`, `P2 — Webview / paper advice overlay TODO`,
 > `P1 — Local-only UI timestamps`) and remain **historical record, not
-> active scope** — not migrated by this batch. "P2 — Stabilize UI/chart
-> framework v1" and "Later UI v2 direction" describe unrelated, still-open
-> webview work that is also **unmigrated** — no Issue owns any of this
-> remaining content. Do not represent any of it as Issue-owned, filed, or
-> in progress.
+> active scope** — not migrated by this batch.
+>
+> GitHub Issue
+> [#325 — Stabilize and verify UI/chart framework v1 debug app](https://github.com/oboly/synth-v2/issues/325)
+> owns "P2 — Stabilize UI/chart framework v1" (verification/stabilization
+> pass on the existing debug chart app, distinct from #240's cockpit/wallet
+> surface and #278's research-backtest cockpit exposure).
+>
+> "Later UI v2 direction" (TradingView-style Lightweight Charts frontend,
+> FastAPI backend) is vague roadmap prose with no bounded scope, no
+> acceptance criteria, and no current evidence it is scheduled — it is not
+> converted into an Issue per the explicit instruction not to file a generic
+> "UI v2" Issue from roadmap prose. It remains historical/design direction
+> only.
 >
 > This file must not become a parallel status board for the migrated scope.
 >
 > See `docs/development/github_issues_workflow.md`,
 > `docs/todo/MIGRATION_FREEZE.md`, and
 > `docs/development/github_issues_batch_2b_migration_v1.md`.
+>
+> ## GitHub Issue migration
+>
+> Status: migrated
+>
+> Operational status/priority is owned by GitHub Issues.
+>
+> Section ownership:
+> - Profit Plan coin-card scanability decisions -> Issue #233
+> - P2 — Stabilize UI/chart framework v1 -> Issue #325
+> - P2 — Document UI/chart framework, P2 — Webview/paper advice overlay TODO, P1 — Local-only UI timestamps -> no Issue required; already-implemented historical record
+> - Later UI v2 direction -> no Issue required; vague roadmap prose, not bounded/scheduled
+>
+> Unmigrated executable scope:
+> - none
 
 ## Status
 

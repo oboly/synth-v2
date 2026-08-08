@@ -8,6 +8,49 @@
 > This file is retained as frozen historical/design context; do not update
 > status, priority, or execution order here. See
 > `docs/development/github_issues_first_batch_migration_v1.md`.
+>
+> **Batch 6E re-audit (current state).** P0 (items 1-6) and P1 (items 7-12)
+> remain owned by #202/#203/#206 as above. For P2/P3:
+>
+> - Item 13 (account_id vs trading_account_id fragmentation, F6) was
+>   genuinely unowned by any current Issue — filed as
+>   [#319 — Resolve account_id vs trading_account_id identifier fragmentation (F6)](https://github.com/oboly/synth-v2/issues/319).
+> - Item 14 (venue-adapter interface, F10) is explicitly `NOT_REQUIRED_FOR_V1`
+>   in the source text pending a second venue actually being planned; no
+>   second venue is currently in scope. No Issue filed; remains historical
+>   design guidance until a second venue is planned.
+> - Item 15 (single-writer/duplicate-execution protection, F14) is already
+>   covered by #206's scope ("Define single-writer/duplicate-execution
+>   protection").
+> - Items 16-17 (external-research anchor type + provenance/override wiring,
+>   F7/F17) are explicitly governance-gated and sequenced: item 16 requires a
+>   deliberate `AGENTS.md` external-note governance review before it can be
+>   scoped at all, and item 17 depends on item 16 landing. Neither is
+>   currently ripe/bounded work; no Issue filed.
+> - Item 18 (base-quantity allocation basis, F8) is an unscheduled usability
+>   enhancement with no current evidence it is desired; no Issue filed.
+> - Item 19 (cancel/replace workflow, F13) is explicitly contingent on a live
+>   executor being designed, which has not happened (live-trading permission
+>   remains `NOT_GRANTED`); no Issue filed. Will get its own Issue when a live
+>   executor is actually designed.
+>
+> ## GitHub Issue migration
+>
+> Status: migrated
+>
+> Operational status/priority is owned by GitHub Issues.
+>
+> Section ownership:
+> - P0 items 1-6, P1 items 7-12 -> Issues #202, #203, #206
+> - P2 item 13 -> Issue #319
+> - P2 item 14 -> no Issue required; explicitly `NOT_REQUIRED_FOR_V1`, historical guidance only
+> - P2 item 15 -> Issue #206 (single-writer/duplicate-execution protection already in scope)
+> - P3 items 16-17 -> no Issue required; governance-gated/sequenced, not yet ripe
+> - P3 item 18 -> no Issue required; unscheduled usability enhancement, no current evidence of demand
+> - P3 item 19 -> no Issue required; contingent on a live executor being designed (not yet true)
+>
+> Unmigrated executable scope:
+> - none
 
 Status: backlog only. No implementation performed by this document.
 
