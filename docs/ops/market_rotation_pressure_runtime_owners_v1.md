@@ -209,6 +209,36 @@ historical assignment remains `SUPERSEDED`; devlap's
 `synth-market-rotation-pressure-writer.timer` remains disabled and inactive
 and is not touched by this authorization.
 
+## 2026-08-08 gurkDB timer activation
+
+Per explicit user production-cutover authorization for Issue #266, the
+gurkDB timer was enabled the same day:
+
+```bash
+sudo systemctl enable --now synth-market-rotation-pressure-writer.timer
+```
+
+```text
+market_rotation_pressure.production_runtime_owner=gurkdb
+market_rotation_pressure.production_authorization_status=AUTHORIZED
+market_rotation_pressure.runtime_lifecycle=ACTIVE
+market_rotation_pressure.production_decision_evidence=docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md#production-decision-evidence
+```
+
+The first observed run (a `Persistent=true` catch-up invocation) succeeded in
+`mode=PRODUCTION`: `market_rotation_snapshot_v1` advanced 222 -> 224 rows and
+`market_rotation_pressure_snapshot_v1` advanced 111 -> 112 rows, both to
+`as_of_ts_utc=2026-08-08T11:00:00Z`, matching the latest canonical
+`obs_market_candle` (1h) close exactly. Zero duplicate snapshot headers.
+Devlap re-verified disabled/inactive with no writer process at activation
+time. Exactly one rotation-pressure systemd unit installed anywhere
+(gurkDB). Full evidence is in
+`docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md#gurkdb-activation-evidence-20260808`,
+including confirmation that Profit Plan (which reads
+`market_rotation_pressure_snapshot_v1` directly at render time, independent
+of the Odroid-published JSON) already reported `rotation.freshness=FRESH`
+matching this timestamp.
+
 ## Historical Runtime Roles
 
 ```text
