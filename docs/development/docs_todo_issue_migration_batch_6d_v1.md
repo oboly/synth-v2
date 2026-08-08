@@ -33,7 +33,7 @@ retirement is complete (see Section 11).
 | docs/todo/market_intelligence/sector_rotation_master_plan_v1.md | market_intelligence | mixed (implemented + open Phase B2 + unscoped Phase D) | #204 (existing), #309 (new, Phase B2) | none | migrated |
 | docs/todo/reporting/README.md | reporting | navigation | none (README) | none | migrated |
 | docs/todo/reporting/ffg_rotation_radar_presentation_v1.md | reporting | active/open | #311 | none | migrated |
-| docs/todo/reporting/ma_volume_stoplight_dashboard_v1.md | reporting | active/open (research-dominant) | #310 | none | migrated |
+| docs/todo/reporting/ma_volume_stoplight_dashboard_v1.md | reporting | active/open (split: research + reporting) | #310 (research), #315 (new, reporting) | none | migrated |
 | docs/todo/reporting/profit_plan_opportunity_presentation_v1.md | reporting | active/open (delta) | #233 (existing), #256 (existing, closed), #313 (new, residual) | none | migrated |
 
 18 tracked files, 18 inventory rows, 0 duplicates, 0 unclassified.
@@ -91,6 +91,7 @@ Searched issue titles/bodies for "sector rotation", "Actionable PPP", "Opportuni
 | #310 | reporting/ma_volume_stoplight_dashboard_v1.md | research | MA/volume trend-flow feature research and classification design |
 | #311 | reporting/ffg_rotation_radar_presentation_v1.md | reporting | FFG rotation radar presentation (market classification + account overlay) |
 | #313 | reporting/profit_plan_opportunity_presentation_v1.md | reporting | Opportunity Rank, actionable-candidate counts, empty-state presentation |
+| #315 | reporting/ma_volume_stoplight_dashboard_v1.md | reporting | MA/volume stoplight dashboard presentation (consumes #310 output, read-only) |
 
 ## 5. Existing Issues reused
 
@@ -126,7 +127,7 @@ Searched issue titles/bodies for "sector rotation", "Actionable PPP", "Opportuni
 
 - `README.md` — navigation only; migrated, no Issue.
 - `ffg_rotation_radar_presentation_v1.md` — genuinely open read-only presentation lane; migrated to new #311.
-- `ma_volume_stoplight_dashboard_v1.md` — the bulk of unresolved scope is feature research/validation, not presentation (no persisted feature output exists yet to render). Migrated to new #310 as a research Issue; the presentation half is explicitly deferred as not-yet-bounded reporting work pending #310's output, per the "do not turn design sketches into runtime engines by migration alone" guidance applied to reporting.
+- `ma_volume_stoplight_dashboard_v1.md` — split by architecture owner. Feature research, classification-threshold design, and historical validation migrated to new #310 (research). The source file also contains explicit bounded reporting scope (150MA trend stoplight, volume-lifecycle stoplight, machine-readable label plus human-readable reason, compact dashboard row, expandable explanation panel, freshness/insufficient-data presentation); that scope does not vanish because #310 must land first, so it was migrated to new #315 (reporting), which depends on #310 and consumes its persisted, versioned output strictly read-only. Neither Issue crosses the other's boundary: #310 defines no rendering, #315 calculates no features or thresholds.
 - `profit_plan_opportunity_presentation_v1.md` — compact-field/tooltip/dedup/alignment scope already owned by existing #233; null-last sort/tie-break scope already delivered by existing closed #256; the residual (Opportunity Rank, actionable-candidate counts, empty-state presentation) migrated to new #313.
 
 ## 9. README/navigation disposition
@@ -157,12 +158,19 @@ directories) is a separate, later step not performed by this batch.
   #301, #303, #304, #305, #306, #307, #309, #310) carry
   `account_awareness=0` and explicitly exclude account/portfolio/permission
   fields from their contracts.
-- No runtime authorization implied by Issue creation: none of the 12 new
+- No runtime authorization implied by Issue creation: none of the 13 new
   Issues touch `decision_gate`, `execution_planner`, or `executor`; none
   authorize service/timer installation, DB migration application, or
   production deployment. Each new Issue's safety-boundary block matches its
   architecture-owner template (research / architecture-data-foundation /
-  reporting) from the task's Issue-creation rules.
+  reporting) from the task's Issue-creation rules. Architecture-owner
+  counts across the 13 new Issues: research=9 (#300, #301, #303, #304,
+  #305, #306, #307, #309, #310), architecture/data-foundation=1 (#302),
+  reporting=3 (#311, #313, #315). #315 explicitly excludes feature
+  calculation, threshold definition, predictive-value validation,
+  `selection_engine`/`decision_gate` changes, account-state reads, and
+  broker/order behavior; it is a strict read-only consumer of #310's
+  persisted output.
 - No duplicate rotation runtime path: the sector-rotation writer→publisher
   activation described in `docs/ops/sector_rotation_runtime_activation_v1.md`
   is not duplicated by any new Issue; `sector_rotation_engine_v1.md`'s
@@ -202,8 +210,8 @@ source_files_fully_migrated=18
 source_files_partially_migrated=0
 existing_issues_inspected=18
 existing_issues_reused=5
-new_issue_create_events=12
-unique_new_issues_created=12
+new_issue_create_events=13
+unique_new_issues_created=13
 duplicate_issues_created=0
 duplicate_issues_remaining_open=0
 unmigrated_executable_scope_items=0

@@ -8,7 +8,7 @@ Operational status/priority is owned by GitHub Issues.
 
 Section ownership:
 - feature research, classification design, historical validation -> Issue #310
-- dashboard/stoplight rendering -> deferred; not yet a bounded reporting Issue, pending persisted feature output from Issue #310 (see manifest)
+- dashboard/stoplight rendering -> Issue #315
 
 Unmigrated executable scope:
 - none
