@@ -217,7 +217,7 @@
       },
       "production_runtime_owner": "gurkdb",
       "production_authorization_status": "AUTHORIZED",
-      "runtime_lifecycle": "AUTHORIZED_INACTIVE",
+      "runtime_lifecycle": "ACTIVE",
       "production_decision_evidence": "docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md#production-decision-evidence",
       "observed_runtime_state": [
         {
@@ -233,6 +233,20 @@
           "authorization_status": "SUPERSEDED",
           "runtime_state_classification": "OBSERVED_LEGACY_RUNTIME_PENDING_CONTAINMENT",
           "evidence_source": "docs/ops/market_rotation_pressure_runtime_owners_v1.md#installedenabledactive-timer-evidence"
+        },
+        {
+          "host": "gurkdb",
+          "unit": "synth-market-rotation-pressure-writer.timer",
+          "unit_path": "deploy/systemd/synth-market-rotation-pressure-writer.timer",
+          "installed_at_observation": true,
+          "enabled_at_observation": true,
+          "active_at_observation": true,
+          "observed_at_utc": "2026-08-08T12:20:26Z",
+          "observed_at_precision": "exact",
+          "current_state": "ACTIVE_OBSERVED",
+          "authorization_status": "AUTHORIZED",
+          "runtime_state_classification": "AUTHORIZED_RUNTIME_OBSERVED",
+          "evidence_source": "docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md#gurkdb-activation-evidence-20260808"
         }
       ],
       "historical_runtime_assignment": {

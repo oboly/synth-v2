@@ -9,12 +9,12 @@ manual cycles after its enabled-universe blocker was corrected. It is accepted
 and separately authorized to gurkDB in `AUTHORIZED_INACTIVE`, pending exact
 merged-commit deployment and activation.
 `market_rotation_pressure` had its committed unit re-bound from devlap to
-gurkDB on 2026-08-07 (Issue #266 root-cause repair), then completed strict
-gurkDB preflight and a controlled acceptance run on 2026-08-08 (explicit user
-production-cutover authorization). It is accepted and separately authorized
-to gurkDB in `AUTHORIZED_INACTIVE`, pending timer activation. See
+gurkDB on 2026-08-07 (Issue #266 root-cause repair), completed strict gurkDB
+preflight and a controlled acceptance run on 2026-08-08 (explicit user
+production-cutover authorization), and had its gurkDB timer enabled the same
+day. It is accepted and separately authorized to gurkDB in `ACTIVE`. See
 `docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md` and
-`docs/ops/market_rotation_pressure_runtime_owners_v1.md#2026-08-08-gurkdb-controlled-acceptance-and-production-authorization`.
+`docs/ops/market_rotation_pressure_runtime_owners_v1.md#2026-08-08-gurkdb-timer-activation`.
 The other capabilities are unchanged.
 
 The authoritative machine-readable ownership source is
@@ -67,14 +67,14 @@ market_rotation_pressure:
   acceptance_status=ACCEPTED
   production_runtime_owner=gurkdb
   production_authorization_status=AUTHORIZED
-  runtime_lifecycle=AUTHORIZED_INACTIVE
+  runtime_lifecycle=ACTIVE
   committed_unit_binding.condition_host=gurkdb (since 2026-08-07;
                          see docs/ops/market_rotation_pressure_runtime_owners_v1.md)
   historical_runtime_assignment.host=devlap
   historical_runtime_assignment.status=SUPERSEDED
-  observed_runtime_state=devlap timer last observed installed/enabled/active,
-                         current_state=UNVERIFIED,
-                         authorization_status=SUPERSEDED
+  observed_runtime_state=gurkdb timer installed/enabled/active (2026-08-08),
+                         plus preserved historical devlap entry
+                         (current_state=UNVERIFIED, authorization_status=SUPERSEDED)
 
 native_short_4h_chain:
   candidate_host=UNASSIGNED
@@ -87,10 +87,10 @@ native_short_4h_chain:
 
 ## gurkDB Public-Writer Authorization and Remaining Selection
 
-`public_price_snapshot` is accepted and separately authorized to gurkDB in
-`ACTIVE`. `public_candle_freshness` and (since 2026-08-08)
-`market_rotation_pressure` passed strict preflight and controlled acceptance
-and are separately authorized to gurkDB in `AUTHORIZED_INACTIVE`.
+`public_price_snapshot` and (since 2026-08-08) `market_rotation_pressure` are
+accepted and separately authorized to gurkDB in `ACTIVE`.
+`public_candle_freshness` passed strict preflight and controlled acceptance
+and is separately authorized to gurkDB in `AUTHORIZED_INACTIVE`.
 
 Specifically:
 
@@ -105,8 +105,8 @@ public_candle_freshness production authorization file absent
 public_candle_freshness timer disabled/inactive
 market_rotation_pressure production_runtime_owner=gurkdb
 market_rotation_pressure production_authorization_status=AUTHORIZED
-market_rotation_pressure runtime_lifecycle=AUTHORIZED_INACTIVE
-market_rotation_pressure timer disabled/inactive
+market_rotation_pressure runtime_lifecycle=ACTIVE
+market_rotation_pressure timer enabled/active (since 2026-08-08)
 ```
 
 The public-price unit, the candle candidate unit, and (since 2026-08-07) the
@@ -188,8 +188,8 @@ ExecStartPre=src.operations.verify_writer_capability_authorization_v1
 A gurkDB binding alone is not itself a production authorization; each
 capability requires a separate production decision. `public_price_snapshot`
 (`ACTIVE`), `public_candle_freshness` (`AUTHORIZED_INACTIVE`), and (since
-2026-08-08) `market_rotation_pressure` (`AUTHORIZED_INACTIVE`) have all
-completed that separate production decision.
+2026-08-08) `market_rotation_pressure` (`ACTIVE`) have all completed that
+separate production decision.
 
 The mandatory `ExecStartPre` guard fails closed while a capability is
 `UNASSIGNED`, while the authorization file is absent, on the wrong hostname, on

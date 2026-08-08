@@ -2,8 +2,8 @@
 
 ## Status
 
-The contract records `public_price_snapshot` as active on gurkDB and
-`public_candle_freshness` and (since 2026-08-08) `market_rotation_pressure`
+The contract records `public_price_snapshot` and (since 2026-08-08)
+`market_rotation_pressure` as active on gurkDB, and `public_candle_freshness`
 as accepted and separately authorized to gurkDB in `AUTHORIZED_INACTIVE`.
 
 ```text
@@ -14,8 +14,8 @@ public_candle_freshness_timer_active=false
 public_candle_freshness_production_authorization_file_present=false
 market_rotation_pressure_acceptance=ACCEPTED
 market_rotation_pressure_production_runtime_owner=gurkdb
-market_rotation_pressure_runtime_lifecycle=AUTHORIZED_INACTIVE
-market_rotation_pressure_timer_active=false
+market_rotation_pressure_runtime_lifecycle=ACTIVE
+market_rotation_pressure_timer_active=true
 market_rotation_pressure_production_authorization_file_present=true
 other_capability_changes=0
 ```
@@ -87,19 +87,20 @@ production_authorization_file=absent
 
 Market Rotation Pressure also records a separate production decision after
 successful gurkDB preflight and controlled acceptance on 2026-08-08 (explicit
-user production-cutover authorization for Issue #266):
+user production-cutover authorization for Issue #266), and its gurkDB timer
+was enabled the same day:
 
 ```text
 acceptance_host=gurkdb
 acceptance_status=ACCEPTED
 production_runtime_owner=gurkdb
 production_authorization_status=AUTHORIZED
-runtime_lifecycle=AUTHORIZED_INACTIVE
-timer=disabled/inactive
+runtime_lifecycle=ACTIVE
+timer=enabled/active
 ```
 
 See `docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md` for the
-full acceptance evidence.
+full acceptance and activation evidence.
 
 An installed timer may continue running operationally even after canonical
 authorization is reset. Repository correction does not stop that timer.
@@ -198,7 +199,7 @@ Summary:
 |---|---|---|---|---|
 | `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | gurkdb | ACTIVE |
 | `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
-| `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
+| `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | gurkdb | ACTIVE |
 | `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | devlap | ACTIVE |
 | `sector_rotation_snapshot` | public market-data writer | `scripts/run_sector_rotation_engine_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
 
@@ -210,8 +211,9 @@ reports zero mismatch. It is accepted and separately authorized to gurkDB in
 `AUTHORIZED_INACTIVE`, pending exact merged-commit deployment and activation.
 Rotation Pressure passed strict gurkDB preflight and a controlled acceptance
 run on 2026-08-08 (explicit user production-cutover authorization for Issue
-#266). It is accepted and separately authorized to gurkDB in
-`AUTHORIZED_INACTIVE`, pending timer activation. See
+#266), and its gurkDB timer was enabled the same day with a successful first
+observed `PRODUCTION`-mode run. It is accepted and separately authorized to
+gurkDB in `ACTIVE`. See
 `docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md`.
 `native_short_4h_chain` is selected, authorized, and active on `devlap`.
 Its supported Native SHORT scope remains `BTC_ONLY` in `PAPER` execution mode;

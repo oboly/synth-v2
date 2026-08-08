@@ -127,7 +127,7 @@ def test_public_price_is_active_and_candle_is_authorized_inactive() -> None:
             assert cap["acceptance_evidence"]
             assert cap["production_runtime_owner"] == "gurkdb"
             assert cap["production_authorization_status"] == "AUTHORIZED"
-            assert cap["runtime_lifecycle"] == "AUTHORIZED_INACTIVE", cap["capability_id"]
+            assert cap["runtime_lifecycle"] == "ACTIVE", cap["capability_id"]
             assert cap["production_decision_evidence"]
         elif cap["capability_id"] == "sector_rotation_snapshot":
             assert cap["candidate_host"] == "gurkdb"
@@ -209,7 +209,21 @@ def test_rotation_pressure_acceptance_and_observed_legacy_runtime_are_preserved(
             "authorization_status": "SUPERSEDED",
             "runtime_state_classification": "OBSERVED_LEGACY_RUNTIME_PENDING_CONTAINMENT",
             "evidence_source": "docs/ops/market_rotation_pressure_runtime_owners_v1.md#installedenabledactive-timer-evidence",
-        }
+        },
+        {
+            "host": "gurkdb",
+            "unit": "synth-market-rotation-pressure-writer.timer",
+            "unit_path": "deploy/systemd/synth-market-rotation-pressure-writer.timer",
+            "installed_at_observation": True,
+            "enabled_at_observation": True,
+            "active_at_observation": True,
+            "observed_at_utc": "2026-08-08T12:20:26Z",
+            "observed_at_precision": "exact",
+            "current_state": "ACTIVE_OBSERVED",
+            "authorization_status": "AUTHORIZED",
+            "runtime_state_classification": "AUTHORIZED_RUNTIME_OBSERVED",
+            "evidence_source": "docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md#gurkdb-activation-evidence-20260808",
+        },
     ]
 
 
@@ -712,7 +726,7 @@ def test_existing_four_capabilities_unchanged_by_sector_rotation_onboarding() ->
     assert candle["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
     assert candle["production_authorization_status"] == "AUTHORIZED"
     rotation_pressure = _cap(registry, "market_rotation_pressure")
-    assert rotation_pressure["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+    assert rotation_pressure["runtime_lifecycle"] == "ACTIVE"
     assert rotation_pressure["production_runtime_owner"] == "gurkdb"
     native_short = _cap(registry, "native_short_4h_chain")
     assert native_short["production_authorization_status"] == "AUTHORIZED"
