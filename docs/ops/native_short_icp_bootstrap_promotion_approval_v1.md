@@ -53,19 +53,21 @@ and each is evaluated against its own independent manifest entry and digest.
 
 ## Approval basis
 
-At the time of this approval, a read-only production audit
-(`native_short_multi_asset_audit_v1`, evaluated against an as-of timestamp
-aligned with the last ingested 4h/1h closes to avoid a boundary-lag
-artifact) classified ICP `READY_FOR_SEQUENTIAL_CANARY_REVIEW`: market-ready
-(enabled, market-data-enabled, tradeable, sufficient and current 4h/1h
-history, available native SHORT context, unambiguous tick rule) and
-ledger-ready (no scope row, no map, no lifecycle/generation/status residue
--- a genuine first-ever administration attempt). ICP was one of exactly 16
-readiness-qualified, previously unapproved scopes at review time (alongside
-the 15 other symbols named above), reviewed and approved together as one
-bounded batch rather than individually re-litigated one at a time; the
-eligibility determination itself is market-only and account-agnostic and
-does not depend on portfolio holdings or Profit Plan membership.
+The operator identified ICP as one of 16 readiness-qualified, previously
+unapproved native SHORT scopes based on the operator's own review of current
+production state, and gave an explicit instruction naming exactly these 16
+symbols (SUI, SHIB, PEPE, HBAR, AAVE, BNB, ICP, LDO, XPL, VET, ALGO, CC, HOT,
+FLOKI, HNT, MOG) for this bounded batch. This repository change does not
+itself re-run or independently re-verify `native_short_multi_asset_audit_v1`
+against ICP; the eligibility determination and its "readiness-qualified"
+classification were supplied by the operator, not re-derived, re-evaluated,
+or expanded here, per the operator's explicit instruction that eligibility
+review is out of scope for this change. The eligibility determination itself
+is understood to be market-only and account-agnostic, not derived from
+portfolio holdings or Profit Plan membership. A fresh, current
+`native_short_multi_asset_audit_v1` run against ICP immediately before any
+production `PROMOTE_SCOPE` execution (itself out of scope for this record)
+remains the caller's own existing, unmodified responsibility.
 
 ## Approval-evidence binding
 
