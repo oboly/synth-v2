@@ -12,7 +12,10 @@ effort=medium
 All 8 `ARCHIVE` files and the 1 `REMOVE` file from Batch 6A
 (`docs/development/docs_todo_retirement_readiness_batch_6a_v1.md`) were
 re-verified against current `origin/main`, moved/deleted, and all live
-references repaired. No code, test, runtime, or database changes were made.
+references repaired, including one path-only test-reference repair in
+`tests/test_sector_taxonomy_import_v1.py` required by the redirect deletion
+(see §6). No source, runtime, or database changes were made; no test
+assertions were added, removed, or weakened.
 
 ## 2. Source disposition matrix
 
@@ -26,7 +29,7 @@ references repaired. No code, test, runtime, or database changes were made.
 | `docs/todo/profit_plan_target_lifecycle_history_truth_v1.md` | ARCHIVE | Confirmed: contained/completed, future hardening remains evidence-gated per its own reopen rule (preserved verbatim) | `docs/archive/profit_plan_target_lifecycle_history_truth_v1.md` | 4 (canonical doc, README row, sibling archived file, `native_short_runtime_owner_and_scope_status_v1.md`) | 0 | DONE |
 | `docs/todo/synth_v2_development_roadmap_v1.md` | ARCHIVE | Confirmed: stale snapshot tied to `d7c57af`; unique-rule audit found no still-unique rule (§5) | `docs/archive/synth_v2_development_roadmap_v1.md` | 0 | 0 | DONE |
 | `docs/todo/todo_information_architecture_v1.md` | ARCHIVE | Confirmed: self-declared `SUPERSEDED — no remaining authority` | `docs/archive/todo_information_architecture_v1.md` | 1 (migration proposal historical reference — left as-is) | 0 (live) | DONE |
-| `docs/todo/sector_rotation_engine_v1.md` (root) | REMOVE | Confirmed: pure "Moved" redirect, zero unique content | Deleted | 5 live (README row, 2 `market_intelligence/*` sources lists, 1 test file, 1 migration-inventory historical mention) | 1 (pre-existing broken test, see §6) | DONE |
+| `docs/todo/sector_rotation_engine_v1.md` (root) | REMOVE | Confirmed: pure "Moved" redirect, zero unique content | Deleted | 5 live (README row, 2 `market_intelligence/*` sources lists, 1 test file, 1 migration-inventory historical mention) | 0 | DONE |
 
 ## 3. Archive moves
 
@@ -78,17 +81,18 @@ canonical_authority_after_move=docs/development/github_issues_workflow.md
 removed_path=docs/todo/sector_rotation_engine_v1.md
 canonical_target=docs/todo/market_intelligence/sector_rotation_engine_v1.md
 live_refs_before=5
-live_refs_repaired=4
+live_refs_repaired=5
 live_refs_after=0
 ```
 
 Repaired: `docs/todo/README.md` lane-index row (path clarified to the
 substantive `market_intelligence/` file), `docs/todo/market_intelligence/narrative_engine_v1.md`
 source, `docs/todo/market_intelligence/composite_market_regime_v1.md` source,
-and the `docs/todo/README.md` D-lane row is now unambiguous.
-
-Not repaired (out of scope, see §6): `tests/test_sector_taxonomy_import_v1.py`
-(pre-existing, already-failing test with no in-scope fix available).
+and `tests/test_sector_taxonomy_import_v1.py`'s two path references in
+`test_sector_rotation_public_contract_uses_participation_terms` (repaired
+after independent review flagged the redirect deletion would otherwise turn
+this live test dependency into a `FileNotFoundError`; see §6 for the
+assertion-only, non-path-repair correction needed).
 
 ## 5. Unique-rule audit
 
@@ -135,23 +139,36 @@ Classification of all matches from the required sweep command:
   a functional break — it is prose inside a docstring, not an import or
   runtime dependency).
 - `tests/test_sector_taxonomy_import_v1.py:526,532` —
-  **live (test), pre-existing broken**: `test_sector_rotation_public_contract_uses_participation_terms`
-  reads `docs/todo/sector_rotation_engine_v1.md` and asserts on content
-  (`positive_participation_pct`, etc.) that only ever existed in the
-  substantive `market_intelligence/` file, never in the root redirect stub.
-  Verified this test **already fails on current `origin/main`, before this
-  batch's changes** (`AssertionError` on the `breadth` check). Deleting the
-  redirect changes the failure mode (`FileNotFoundError` instead of
-  `AssertionError`) but does not turn a passing test into a failing one.
-  Fixing it requires editing a test file, which is out of scope
-  (`test_changes=0`) for an archive/remove-only batch. Flagged as a
-  pre-existing defect for a separate bounded test-fix batch.
+  **live (test), path repaired in this batch**: independent review
+  correctly identified that `test_sector_rotation_public_contract_uses_participation_terms`
+  is a real live dependency on the deleted root redirect, not historical
+  evidence — leaving it unrepaired would have turned a live reference into
+  a broken one at deletion time. Both occurrences of
+  `docs/todo/sector_rotation_engine_v1.md` were repointed to the substantive
+  `docs/todo/market_intelligence/sector_rotation_engine_v1.md`. This is a
+  path-reference repair required by the redirect deletion, not a behavioral
+  test change; no assertion was added, removed, or weakened.
+
+  After the path repair the focused test still fails, but now on a genuine
+  content mismatch against the current substantive file: the "breadth" not
+  in content` assertion fails because
+  `docs/todo/market_intelligence/sector_rotation_engine_v1.md` currently
+  contains the word "breadth" ("...structure, breadth, and sector snapshots
+  exist...", in an example/presentation-only passage). This is a real,
+  pre-existing semantic mismatch between the test's assertion and the
+  current substantive file's content — unrelated to path correctness and
+  out of scope for this archive/remove-only batch to resolve (would require
+  either a content edit to a live `docs/todo/` file's wording or an
+  assertion change, both of which are test/content decisions, not part of
+  the archive/remove mandate). Flagged for a separate bounded follow-up.
 
 ```text
 broken_live_references=0
 ```
 
-No previously-passing check regressed because of this batch's changes.
+No previously-passing check regressed because of this batch's changes. The
+one test-file edit made here is a path-reference repair, not a test-scope
+change.
 
 ## 7. Retirement-gate impact
 
@@ -171,14 +188,23 @@ Do NOT read this as full `docs/todo/` retirement. Remaining blockers:
   (Batches 6B/6C/6D follow-up).
 - Batch 6G infrastructure retirement (`README.md`, `MIGRATION_FREEZE.md`,
   `workflow_standard.md`) remains blocked on Gates R5/R6/R7.
-- The pre-existing broken test noted in §6 should get its own bounded
-  test-fix batch.
+- The genuine content-vs-assertion mismatch noted in §6 (the substantive
+  `market_intelligence/sector_rotation_engine_v1.md` file currently contains
+  the word "breadth" in an example passage, which the focused test asserts
+  against) should get its own bounded follow-up; it is unrelated to path
+  correctness.
 
 ## 8. Safety
 
+`test_changes=1`: one test file received a path-only reference repair
+(`tests/test_sector_taxonomy_import_v1.py`, two occurrences of the deleted
+redirect path repointed to the substantive file) required by the redirect
+deletion in this batch. No assertion was added, removed, or weakened; no
+test semantics changed.
+
 ```text
 code_changes=0
-test_changes=0
+test_changes=1
 runtime_changes=0
 database_changes=0
 production_migrations_applied=0
@@ -196,7 +222,7 @@ archive_moves_completed=8
 remove_targets=1
 remove_completed=1
 live_refs_scanned=19
-live_refs_repaired=18
+live_refs_repaired=19
 broken_live_references=0
 historical_refs_preserved=7
 unique_current_rules_found=0
@@ -204,7 +230,7 @@ rules_lost=0
 source_files_deleted=1
 source_files_moved=8
 code_changes=0
-test_changes=0
+test_changes=1
 runtime_changes=0
 database_changes=0
 broker_writes=0
