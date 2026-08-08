@@ -1,5 +1,9 @@
 # Sector Taxonomy & Database Seed v1 — Completion Record
 
+Archived from `docs/todo/completed/sector_taxonomy_database_seed_v1.md` in
+Batch 6F (`docs/development/docs_todo_archive_remove_batch_6f_v1.md`).
+Historical record only; not current operational authority.
+
 ## Status
 
 **done / accepted** — Phase A was activated on 2026-07-16 from merged main `794a03e014c44b5f01410a07bc5f24aa763715a8` against database `synth` on `gurkdb`.

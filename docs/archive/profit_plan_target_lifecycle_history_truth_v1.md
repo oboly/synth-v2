@@ -1,4 +1,10 @@
-# TODO — Profit Plan Target Lifecycle History Truth V1
+# Profit Plan Target Lifecycle History Truth V1 — Historical Record
+
+Archived from `docs/todo/profit_plan_target_lifecycle_history_truth_v1.md`
+in Batch 6F (`docs/development/docs_todo_archive_remove_batch_6f_v1.md`).
+Historical IOST forensic/audit closure record. Future monotonic-lifecycle
+hardening remains evidence-gated per the reopen rule below and reopens only
+via a new canonical evidence record, not by editing this archived file.
 
 ## Status
 
@@ -28,7 +34,7 @@ invariant").
 - `tests/test_manual_short_trader_profit_plan_v1.py`
 - `tests/test_profit_plan_action_truth_v1.py`
 - `docs/architecture/native_short_map_level_status_contract_v1.md`
-- `docs/todo/native_short_map_level_status_v1.md`
+- `docs/archive/native_short_map_level_status_v1.md`
 
 ## 1. Historical observation (retained as historical evidence)
 

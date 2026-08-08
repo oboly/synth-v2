@@ -1,4 +1,10 @@
-# TODO — Profit Plan Dashboard Action Truth and Breathline Demotion V1
+# Profit Plan Dashboard Action Truth and Breathline Demotion V1 — Historical Record
+
+Archived from
+`docs/todo/profit_plan_dashboard_action_truth_and_breathline_demote_v1.md`
+in Batch 6F (`docs/development/docs_todo_archive_remove_batch_6f_v1.md`).
+Historical v2.22 guardrail implementation record (PR #78, #82); not current
+operational authority.
 
 ## Status
 
@@ -91,7 +97,7 @@ The following former follow-ups are owned elsewhere and must not be duplicated h
 - canonical native scope/map-level consumption and actionable row identity:
   `docs/todo/profit_plan_live_ladder.md`
 - IOST target lifecycle/history truth:
-  `docs/todo/profit_plan_target_lifecycle_history_truth_v1.md`
+  `docs/archive/profit_plan_target_lifecycle_history_truth_v1.md`
 - minimum 4% target-room and RSI/MFI entry research:
   `docs/todo/market_intelligence/momentum_flow_scanner_research_v1.md`
 - non-blocking evidence-container severity and visual polish:

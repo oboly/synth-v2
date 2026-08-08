@@ -567,8 +567,8 @@ This authorization is explicitly **not**:
   can be reconstructed losslessly.
 
 The prior evidence-gated conclusion in
-`docs/todo/profit_plan_target_lifecycle_history_truth_v1.md` and the reopen
-criteria in `docs/todo/native_short_map_level_status_v1.md` remain factually
+`docs/archive/profit_plan_target_lifecycle_history_truth_v1.md` and the reopen
+criteria in `docs/archive/native_short_map_level_status_v1.md` remain factually
 correct and unmodified; this addendum sits alongside them, not in place of
 them. See those files for the retained record.
 

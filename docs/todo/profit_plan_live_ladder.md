@@ -55,9 +55,9 @@ src/reporting/manual_short_trader_profit_plan_v1.py
 src/reporting/run_manual_short_trader_profit_plan_v1.py
 src/reporting/profit_plan_proposal_preview_v1.py
 src/reporting/account_dashboard_profile_access_v1.py
-docs/todo/profit_plan_dashboard_action_truth_and_breathline_demote_v1.md
+docs/archive/profit_plan_dashboard_action_truth_and_breathline_demote_v1.md
 docs/todo/native_short_runtime_owner_and_scope_status_v1.md
-docs/todo/native_short_map_level_status_v1.md
+docs/archive/native_short_map_level_status_v1.md
 docs/todo/short_swing_linked_profile_freshness_and_disk_reliability_v1.md
 ```
 

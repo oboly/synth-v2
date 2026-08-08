@@ -1,4 +1,8 @@
-# TODO — TODO Information Architecture v1
+# TODO Information Architecture v1 — Historical Record
+
+Archived from `docs/todo/todo_information_architecture_v1.md` in Batch 6F
+(`docs/development/docs_todo_archive_remove_batch_6f_v1.md`). Self-declared
+superseded; retained as migration-program history only.
 
 ## Status
 
