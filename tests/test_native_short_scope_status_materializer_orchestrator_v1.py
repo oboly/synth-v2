@@ -32,6 +32,7 @@ logic, not on re-verifying the existing geometry materializer's internals.
 """
 
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -63,10 +64,12 @@ from src.market_data.native_short_map_materializer_v1 import (
 from src.market_data.native_short_map_level_status_materializer_v1 import (
     ACTIVE_EVALUATION,
     BLOCKED,
+    EXPECTED_BOOTSTRAP_NO_CURRENT_MAP,
     MapLevelStatusMaterializationOutcome,
 )
 from src.market_data.native_short_scope_status_materializer_v1 import (
     NativeShortMapLevelStatusBlockedError,
+    evaluate_and_project_scope,
     NativeShortRunTerminalizationConflictError,
     _finalize_run,
     evaluate_scope,
@@ -450,6 +453,7 @@ def _successful_level_status(
     operational_clock: Any,
     provenance: Any,
     authorization: Any,
+    never_published_any_map: bool,
 ) -> MapLevelStatusMaterializationOutcome:
     return MapLevelStatusMaterializationOutcome(
         key=key,
@@ -504,6 +508,7 @@ def test_chain_materializes_level_status_after_projection_for_exact_explicit_sco
         operational_clock: Any,
         provenance: Any,
         authorization: Any,
+        never_published_any_map: bool,
     ) -> MapLevelStatusMaterializationOutcome:
         assert tuple(
             (
@@ -524,6 +529,7 @@ def test_chain_materializes_level_status_after_projection_for_exact_explicit_sco
             operational_clock=operational_clock,
             provenance=provenance,
             authorization=authorization,
+            never_published_any_map=never_published_any_map,
         )
 
     run = run_native_short_scope_status_materializer(
@@ -606,6 +612,7 @@ def test_chain_surfaces_blocked_level_status_as_failed_market_data_run() -> None
         operational_clock: Any,
         provenance: Any,
         authorization: Any,
+        never_published_any_map: bool,
     ) -> MapLevelStatusMaterializationOutcome:
         return MapLevelStatusMaterializationOutcome(
             key=key,
@@ -1442,3 +1449,138 @@ def test_failed_run_terminalizes_exactly_once_and_rejects_second_attempt() -> No
     assert run == first_snapshot
     assert run["terminal_status"] == "FAILED"  # never became FINISHED via the conflicting attempt
     assert conn.finalize_calls_after_terminal == 1
+
+
+# --- Issue #298: expected first-map bootstrap vs genuine BLOCKED -----------
+
+
+def _existing_map(map_id: int = 1) -> Any:
+    """Minimal stand-in for one persisted native_short_map_v1 row: enough for
+    the chain's lifecycle lookup and projection map facts. Its presence is
+    what makes this an *established* scope for the #298 ledger predicate."""
+    return SimpleNamespace(
+        map_id=map_id,
+        published_at_utc=_AS_OF - timedelta(days=10),
+        map_cycle_id=f"cyc{map_id}",
+        structure_hash=f"hash-{map_id}",
+    )
+
+
+def _bootstrap_scope_call(
+    conn: _FakeConn,
+    *,
+    key: NativeShortMapScopeKey,
+    existing_maps: list[Any],
+    level_branch: str,
+    row_count: int,
+    seen: dict[str, Any],
+):
+    def level_status(
+        connection: Any,
+        *,
+        key: NativeShortMapScopeKey,
+        operational_clock: Any,
+        provenance: Any,
+        authorization: Any,
+        never_published_any_map: bool,
+    ) -> MapLevelStatusMaterializationOutcome:
+        seen["never_published_any_map"] = never_published_any_map
+        return MapLevelStatusMaterializationOutcome(
+            key=key,
+            branch=level_branch,
+            reason_code="NO_CURRENT_MAP",
+            row_count=row_count,
+            current_map_id=None,
+            map_cycle_id=None,
+            level_status_as_of_utc=None,
+        )
+
+    return evaluate_and_project_scope(
+        conn,
+        key=key,
+        run_id=1,
+        as_of_utc=_AS_OF,
+        provenance=_PROVENANCE,
+        operational_clock=_fixed_clock(_AS_OF),
+        fetch_context_row=lambda k, t: _context_row(),
+        fetch_existing_maps=lambda c, k: list(existing_maps),
+        fetch_existing_generation_events=_no_generation_events,
+        fetch_existing_lifecycle_events=_no_lifecycle_events,
+        fetch_primary_candle_close_timestamps=_fresh_candles,
+        fetch_supporting_candle_close_timestamps=_fresh_candles,
+        materialize_scope_symbol_fn=lambda *a, **k: _unchanged_geometry_result(),
+        materialize_map_level_status_fn=level_status,
+        authorization=_NS_AUTH,
+    )
+
+
+def test_scope_with_no_map_ever_published_returns_bootstrap_pending_without_raising() -> None:
+    """Issue #298 case (a): zero map rows ever for this exact scope key, so
+    the ledger predicate is True, the expected bootstrap branch is returned,
+    zero level rows are accepted (no row-count error), and the call returns
+    normally instead of raising -- which is what lets the caller's loop
+    continue to unrelated scopes."""
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(key)
+    seen: dict[str, Any] = {}
+
+    outcome = _bootstrap_scope_call(
+        conn,
+        key=key,
+        existing_maps=[],
+        level_branch=EXPECTED_BOOTSTRAP_NO_CURRENT_MAP,
+        row_count=0,
+        seen=seen,
+    )
+
+    assert seen["never_published_any_map"] is True
+    assert outcome.bootstrap_pending is True
+    # Expected bootstrap is never a failure: `failed` still reflects only
+    # evaluate_scope's own soft-degrade contract.
+    assert outcome.failed is False
+    assert outcome.skipped_not_supported is False
+
+
+def test_established_scope_with_missing_current_map_still_raises_blocked() -> None:
+    """Issue #298 case (b) regression guard: map rows exist historically for
+    this exact scope key (e.g. all SUPERSEDED with no successor), so the
+    ledger predicate is False and the genuine BLOCKED hard stop is preserved
+    exactly as before."""
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(key)
+    seen: dict[str, Any] = {}
+
+    with pytest.raises(NativeShortMapLevelStatusBlockedError, match="NO_CURRENT_MAP"):
+        _bootstrap_scope_call(
+            conn,
+            key=key,
+            existing_maps=[_existing_map()],
+            level_branch=BLOCKED,
+            row_count=0,
+            seen=seen,
+        )
+
+    assert seen["never_published_any_map"] is False
+
+
+def test_non_bootstrap_branch_still_enforces_the_expected_level_row_count() -> None:
+    """The row-count integrity check is relaxed only for the bootstrap
+    branch; every other branch keeps failing closed on a wrong row count."""
+    conn = _FakeConn()
+    key = _key()
+    conn.seed_support_event(key, state="SUPPORTED", event_ts_utc=_AS_OF - timedelta(days=30))
+    conn.seed_cadence_config(key)
+
+    with pytest.raises(orchestrator.NativeShortMapLevelStatusChainError):
+        _bootstrap_scope_call(
+            conn,
+            key=key,
+            existing_maps=[_existing_map()],
+            level_branch=ACTIVE_EVALUATION,
+            row_count=1,
+            seen={},
+        )

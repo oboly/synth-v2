@@ -94,6 +94,11 @@ MAX_FAILURE_DETAIL_LENGTH = 2000
 # terminal_status (that column's CHECK constraint owns its own vocabulary).
 SCOPE_STATUS_SUCCEEDED = "SUCCEEDED"
 SCOPE_STATUS_SKIPPED_NOT_SUPPORTED = "SKIPPED_NOT_SUPPORTED"
+# A supported scope that has never published any map and is therefore in its
+# expected, transient first-map bootstrap state (Issue #298). Its own
+# transaction still commits normally, it is not a failure, and it never stops
+# evaluation of unrelated scopes ordered after it.
+SCOPE_STATUS_BOOTSTRAP_PENDING = "BOOTSTRAP_PENDING"
 SCOPE_STATUS_BLOCKED = "BLOCKED"
 SCOPE_STATUS_UNEXPECTED_FAILED = "UNEXPECTED_FAILED"
 
@@ -667,11 +672,17 @@ def execute_runtime(
                         lifecycle_event_appended=outcome.lifecycle_event_appended,
                         failed=outcome.failed,
                     )
-                scope_status = (
-                    SCOPE_STATUS_SKIPPED_NOT_SUPPORTED
-                    if outcome.skipped_not_supported
-                    else SCOPE_STATUS_SUCCEEDED
-                )
+                if outcome.skipped_not_supported:
+                    scope_status = SCOPE_STATUS_SKIPPED_NOT_SUPPORTED
+                elif outcome.bootstrap_pending:
+                    # Expected first-map bootstrap state: committed above like
+                    # any other success, recorded as its own attributable
+                    # status rather than misreported as normal success, and
+                    # deliberately not a failure -- the loop continues to the
+                    # next scope.
+                    scope_status = SCOPE_STATUS_BOOTSTRAP_PENDING
+                else:
+                    scope_status = SCOPE_STATUS_SUCCEEDED
                 scope_results.append(ScopeChainResult(key=key, status=scope_status))
                 _report(
                     "SCOPE_RESULT",

@@ -364,9 +364,10 @@ def test_isolation_blocker_remains_active_by_default_without_evidence() -> None:
     )
 
 
-def test_bootstrap_blocker_remains_unconditionally_active_with_exact_proof_required() -> None:
-    """BOOTSTRAP_ORCHESTRATION_BLOCKED takes no evidence parameter and stays
-    active even when every other evidence source confirms."""
+def test_bootstrap_blocker_stays_active_by_default_with_exact_proof_required() -> None:
+    """Fail-closed default (Issue #298): a caller that supplies no bootstrap
+    evidence keeps BOOTSTRAP_ORCHESTRATION_BLOCKED active with its
+    pre-existing reason, even when every other evidence source confirms."""
     active, reasons = evaluate_global_blockers(
         provenance_attributed=True,
         promotion_accepted=True,
@@ -374,6 +375,32 @@ def test_bootstrap_blocker_remains_unconditionally_active_with_exact_proof_requi
     )
     assert BOOTSTRAP_ORCHESTRATION_BLOCKED in active
     assert reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] == BLOCKER_REASON_EXACT_PROOF_REQUIRED
+
+
+def test_bootstrap_evidence_confirmed_clears_only_bootstrap_blocker() -> None:
+    active, reasons = evaluate_global_blockers(
+        provenance_attributed=True,
+        bootstrap_evidence_confirmed=True,
+        bootstrap_evidence_reason="EVIDENCE_CONFIRMED",
+    )
+    assert BOOTSTRAP_ORCHESTRATION_BLOCKED not in active
+    assert reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] == BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED
+    # every other blocker remains active regardless of bootstrap evidence
+    assert set(active) == {
+        PROMOTION_CONTRACT_MISSING,
+        REMOVAL_CONTRACT_MISSING,
+        MULTI_SCOPE_FAILURE_ISOLATION_MISSING,
+    }
+
+
+def test_bootstrap_evaluated_but_rejected_evidence_keeps_blocker_active_with_detail() -> None:
+    active, reasons = evaluate_global_blockers(
+        provenance_attributed=True,
+        bootstrap_evidence_confirmed=False,
+        bootstrap_evidence_reason="PREREQUISITE_COMMIT_NOT_ANCESTOR",
+    )
+    assert BOOTSTRAP_ORCHESTRATION_BLOCKED in active
+    assert reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] == BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID
 
 
 def test_isolation_evidence_confirmed_clears_only_isolation_blocker() -> None:
@@ -408,13 +435,15 @@ def test_isolation_evaluated_but_rejected_evidence_keeps_blocker_active_with_det
     )
 
 
-def test_from_rows_closes_isolation_blocker_but_keeps_bootstrap_active_on_this_checkout() -> None:
-    """The central proof for Issue #276.
+def test_from_rows_closes_isolation_and_bootstrap_blockers_on_this_checkout() -> None:
+    """The central proof for Issues #276 and #298.
 
     Against the real default evidence providers on this checkout (which has
-    #200 in its ancestry and the live runtime contract intact),
-    MULTI_SCOPE_FAILURE_ISOLATION_MISSING must evaluate CLOSED, while
-    BOOTSTRAP_ORCHESTRATION_BLOCKED must remain ACTIVE.
+    #200 in its ancestry and both live contract surfaces intact),
+    MULTI_SCOPE_FAILURE_ISOLATION_MISSING and BOOTSTRAP_ORCHESTRATION_BLOCKED
+    must both evaluate CLOSED through the DB/repo-wired entrypoint, while the
+    pure evaluate_global_blockers() default keeps them active (proved
+    separately above).
     """
     active, reasons = evaluate_global_blockers_from_rows([], [])
 
@@ -424,8 +453,8 @@ def test_from_rows_closes_isolation_blocker_but_keeps_bootstrap_active_on_this_c
         == BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED
     )
 
-    assert BOOTSTRAP_ORCHESTRATION_BLOCKED in active
-    assert reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] == BLOCKER_REASON_EXACT_PROOF_REQUIRED
+    assert BOOTSTRAP_ORCHESTRATION_BLOCKED not in active
+    assert reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] == BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED
 
 
 def test_global_blocker_codes_exactly_matches_evaluated_active_blockers() -> None:

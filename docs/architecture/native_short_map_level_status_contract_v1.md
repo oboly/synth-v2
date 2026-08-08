@@ -321,6 +321,30 @@ level row is not a substitute for, or conflation of, those scope states. A futur
 consumer must read scope status first and fail closed if the level collection is
 absent.
 
+`NO_CURRENT_MAP` is reported under two distinct gate branches, which differ only
+in classification, never in persistence (both emit zero level rows and clear any
+stale collection atomically, so the "no dynamic level state fabricated"
+invariant holds identically for both):
+
+```text
+BLOCKED                          -- map rows exist for the exact scope key but
+                                    none is currently selected (for example an
+                                    established scope whose maps are all
+                                    SUPERSEDED with no successor published).
+                                    An unexpectedly missing current map;
+                                    hard-stop, fail-closed.
+EXPECTED_BOOTSTRAP_NO_CURRENT_MAP -- zero map rows have ever existed for the
+                                    exact scope key: the expected, transient
+                                    first-map bootstrap state of a newly
+                                    promoted scope. Not an integrity defect.
+```
+
+The distinguishing predicate is ledger existence only (zero
+`native_short_map_v1` rows for the exact canonical scope key, independent of
+`as_of_utc` and of lifecycle state), supplied to `select_gate_decision` as the
+required `never_published_any_map` keyword. It is deliberately not a timing,
+ordering, or grace-window inference.
+
 In particular:
 
 ```text

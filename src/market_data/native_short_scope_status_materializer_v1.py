@@ -62,6 +62,7 @@ from src.market_data.native_short_map_lifecycle_v1 import (
 )
 from src.market_data.native_short_map_level_status_materializer_v1 import (
     BLOCKED as MAP_LEVEL_STATUS_BLOCKED,
+    EXPECTED_BOOTSTRAP_NO_CURRENT_MAP as MAP_LEVEL_STATUS_EXPECTED_BOOTSTRAP,
     MapLevelStatusMaterializationOutcome,
     materialize_native_short_map_level_status_for_scope,
 )
@@ -1193,6 +1194,11 @@ class ScopeChainOutcome:
     published_map: bool
     lifecycle_event_appended: bool
     failed: bool
+    bootstrap_pending: bool = False
+    """True only when this scope's map-level status step reported the expected
+    first-map bootstrap branch (the scope has never published any map).
+    Independent of `failed`, which keeps reflecting only `evaluate_scope`'s own
+    soft-degrade contract: an expected bootstrap state is not a failure."""
 
 
 def evaluate_and_project_scope(
@@ -1229,6 +1235,11 @@ def evaluate_and_project_scope(
     in-process orchestrator) keeps identical accounting even when a later
     projection/map-level step raises. Callers that account from the terminal
     return value or from their own exception handlers omit it.
+
+    A scope that has never published any map returns normally with
+    `bootstrap_pending=True` instead of raising: that state is expected and
+    transient, not an integrity defect (Issue #298). A genuine map-level
+    BLOCKED state still raises NativeShortMapLevelStatusBlockedError.
     """
     materialize_map_level_status_fn = (
         materialize_map_level_status_fn
@@ -1308,13 +1319,21 @@ def evaluate_and_project_scope(
     # strictly after the canonical projection rebuild. Its semantic
     # cutoff remains projection_as_of_utc; the chain clock supplies
     # only rebuilt-at operational metadata.
+    # Ledger-existence fact for exactly this scope key, reusing the maps
+    # already fetched above (no extra query): zero rows ever means this scope
+    # has never published any map, which is the only state that may classify
+    # as an expected first-map bootstrap rather than an integrity stop.
+    never_published_any_map = not existing_maps
+
     level_status_outcome = materialize_map_level_status_fn(
         conn,
         key=key,
         operational_clock=operational_clock,
         provenance=provenance,
         authorization=authorization,
+        never_published_any_map=never_published_any_map,
     )
+    bootstrap_pending = level_status_outcome.branch == MAP_LEVEL_STATUS_EXPECTED_BOOTSTRAP
     if level_status_outcome.branch == MAP_LEVEL_STATUS_BLOCKED:
         raise NativeShortMapLevelStatusBlockedError(
             "MAP_LEVEL_STATUS_BLOCKED "
@@ -1325,7 +1344,13 @@ def evaluate_and_project_scope(
             f"supporting_interval={key.supporting_interval} "
             f"reason_code={level_status_outcome.reason_code or 'UNKNOWN'}"
         )
-    if level_status_outcome.row_count != EXPECTED_MAP_LEVEL_STATUS_ROW_COUNT:
+    if (
+        not bootstrap_pending
+        and level_status_outcome.row_count != EXPECTED_MAP_LEVEL_STATUS_ROW_COUNT
+    ):
+        # An expected first-map bootstrap scope legitimately has zero level
+        # rows (nothing to fabricate yet), so the row-count integrity check
+        # does not apply to it. Every other branch keeps it unchanged.
         raise NativeShortMapLevelStatusChainError(
             "MAP_LEVEL_STATUS_UNEXPECTED_ROW_COUNT "
             f"venue={key.venue} symbol={key.symbol} "
@@ -1339,6 +1364,7 @@ def evaluate_and_project_scope(
         published_map=outcome.published_map,
         lifecycle_event_appended=outcome.lifecycle_event_appended,
         failed=outcome.failed,
+        bootstrap_pending=bootstrap_pending,
     )
 
 

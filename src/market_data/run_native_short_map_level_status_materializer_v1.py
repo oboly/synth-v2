@@ -357,6 +357,12 @@ def run_scope(
             operational_clock=operational_clock,
             provenance=provenance,
             authorization=authorization,
+            # This standalone single-scope operator lane is outside #298's
+            # chain-orchestration scope and deliberately keeps its pre-#298
+            # classification: a scope with no current map still reports
+            # branch=BLOCKED / status=blocked here. Passing False is the
+            # fail-closed choice and adds no query.
+            never_published_any_map=False,
         )
         materialize_elapsed_ms = _elapsed_ms(materialize_started, clock=monotonic_clock)
         _record_elapsed(phase_elapsed_ms_by_name, "MATERIALIZE_LEVEL_STATUS", materialize_elapsed_ms)

@@ -17,6 +17,9 @@ from src.market_data.native_short_promotion_acceptance_evidence_v1 import (
     PROMOTION_ACCEPTANCE_CONTRACT_VERSION,
     evaluate_promotion_acceptance_evidence,
 )
+from src.market_data.native_short_bootstrap_no_current_map_evidence_v1 import (
+    evaluate_bootstrap_no_current_map_evidence,
+)
 from src.market_data.native_short_runtime_isolation_evidence_v1 import (
     evaluate_multi_scope_failure_isolation_evidence,
 )
@@ -110,6 +113,8 @@ def evaluate_global_blockers(
     promotion_evidence_reason: str | None = None,
     isolation_evidence_confirmed: bool = False,
     isolation_evidence_reason: str | None = None,
+    bootstrap_evidence_confirmed: bool = False,
+    bootstrap_evidence_reason: str | None = None,
 ) -> tuple[tuple[str, ...], Mapping[str, str]]:
     """Derive active global blockers from explicit evaluated evidence only.
 
@@ -129,6 +134,12 @@ def evaluate_global_blockers(
     (Issue #276). Same fail-closed shape: leaving both at their defaults keeps
     ``MULTI_SCOPE_FAILURE_ISOLATION_MISSING`` active exactly as before for any
     caller that does not evaluate isolation evidence.
+
+    ``bootstrap_evidence_confirmed`` / ``bootstrap_evidence_reason`` come from
+    ``native_short_bootstrap_no_current_map_evidence_v1.evaluate_bootstrap_no_current_map_evidence``
+    (Issue #298). Same fail-closed shape: leaving both at their defaults keeps
+    ``BOOTSTRAP_ORCHESTRATION_BLOCKED`` active exactly as before for any caller
+    that does not evaluate bootstrap evidence.
 
     Returns ``(active_blocker_codes, reason_by_code)`` where
     ``reason_by_code`` covers all of ``GLOBAL_BLOCKERS`` (active or not).
@@ -173,27 +184,30 @@ def evaluate_global_blockers(
     active.append(REMOVAL_CONTRACT_MISSING)
     reasons[REMOVAL_CONTRACT_MISSING] = BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE
 
-    # BOOTSTRAP_ORCHESTRATION_BLOCKED: remains unconditionally active, and
-    # deliberately takes no evidence parameter -- there is no canonical
-    # evidence source that could close it yet, and inventing an optional
-    # parameter with no evaluator behind it would only make the fail-closed
-    # default look negotiable.
-    #
-    # Its separate implementation lane (generalized bootstrap manifest +
-    # rollout orchestrator) has landed, so IMPLEMENTATION_PENDING_SEPARATE_LANE
-    # is no longer the accurate reason. What remains unproven is one exact
-    # runtime property: the chain treats a domain-BLOCKED scope as a hard stop
-    # for the whole run (the `break` in
-    # run_native_short_scope_status_chain_v1.execute_runtime), and a brand-new
-    # scope's expected, transient NO_CURRENT_MAP state classifies as BLOCKED
-    # (native_short_map_level_status_materializer_v1.select_gate_decision). So
-    # a freshly promoted scope still halts evaluation of unrelated,
-    # already-established scopes ordered after it. #200 fixed transaction
-    # rollback isolation, not this loop-halting interaction. Full trace and
-    # the exact remaining proof:
+    # BOOTSTRAP_ORCHESTRATION_BLOCKED: now wired to the canonical,
+    # machine-readable bootstrap-classification evidence contract in
+    # native_short_bootstrap_no_current_map_evidence_v1.py (prerequisite #200
+    # isolation-commit ancestry plus live structural inspection of the
+    # bootstrap branch, the ledger predicate parameter, the per-scope
+    # bootstrap_pending evidence field, and the BOOTSTRAP_PENDING runtime
+    # status). The exact runtime property it previously waited on -- a newly
+    # promoted scope's expected, transient NO_CURRENT_MAP state classifying as
+    # BLOCKED and thereby halting unrelated later scopes -- was resolved in
+    # #298 by splitting that state into its own explicit branch, without
+    # weakening BLOCKED anywhere else. Absent, unavailable, or regressed
+    # evidence fails closed, and a caller that does not evaluate bootstrap
+    # evidence (the default) keeps the pre-existing EXACT_PROOF_REQUIRED
+    # reason exactly. Full trace:
     # docs/ops/native_short_bootstrap_orchestration_blocked_evidence_v1.md
-    active.append(BOOTSTRAP_ORCHESTRATION_BLOCKED)
-    reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] = BLOCKER_REASON_EXACT_PROOF_REQUIRED
+    if bootstrap_evidence_confirmed:
+        reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] = BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED
+    else:
+        active.append(BOOTSTRAP_ORCHESTRATION_BLOCKED)
+        reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] = (
+            BLOCKER_REASON_EXACT_PROOF_REQUIRED
+            if bootstrap_evidence_reason is None
+            else BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID
+        )
 
     # MULTI_SCOPE_FAILURE_ISOLATION_MISSING: now wired to the canonical,
     # machine-readable per-scope runtime isolation evidence contract in
@@ -776,12 +790,15 @@ def evaluate_global_blockers_from_rows(
     # Repository/import-only evidence: needs no rows and no connection, so it
     # is evaluated here rather than threaded through every caller's fetch.
     isolation_evaluation = evaluate_multi_scope_failure_isolation_evidence()
+    bootstrap_evaluation = evaluate_bootstrap_no_current_map_evidence()
     return evaluate_global_blockers(
         provenance_attributed=provenance_attributed,
         promotion_accepted=promotion_evaluation.accepted,
         promotion_evidence_reason=promotion_evaluation.reason,
         isolation_evidence_confirmed=isolation_evaluation.confirmed,
         isolation_evidence_reason=isolation_evaluation.reason,
+        bootstrap_evidence_confirmed=bootstrap_evaluation.confirmed,
+        bootstrap_evidence_reason=bootstrap_evaluation.reason,
     )
 
 

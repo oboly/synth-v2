@@ -85,6 +85,7 @@ from src.market_rules.price_tick_normalization_v1 import (
 
 __all__ = [
     "BLOCKED",
+    "EXPECTED_BOOTSTRAP_NO_CURRENT_MAP",
     "ACTIVE_EVALUATION",
     "TERMINAL_COMPLETED",
     "TERMINAL_HISTORICAL",
@@ -124,6 +125,11 @@ ACTIVE_EVALUATION = "ACTIVE_EVALUATION"
 TERMINAL_COMPLETED = "TERMINAL_COMPLETED"
 TERMINAL_HISTORICAL = "TERMINAL_HISTORICAL"
 BLOCKED = "BLOCKED"
+# Expected, transient first-map bootstrap state of a scope that has never
+# published any map. Distinct from BLOCKED: it is not an integrity defect, and
+# like BLOCKED it fabricates no level rows (row_count=0). See
+# select_gate_decision's docstring for the exact ledger distinction.
+EXPECTED_BOOTSTRAP_NO_CURRENT_MAP = "EXPECTED_BOOTSTRAP_NO_CURRENT_MAP"
 
 
 class NativeShortMapLevelStatusMaterializerError(RuntimeError):
@@ -156,18 +162,47 @@ def _dec(value: Any) -> Decimal | None:
 # ---------------------------------------------------------------------------
 
 
-def select_gate_decision(projection: NativeShortScopeStatusRecord) -> tuple[str, str | None]:
+def select_gate_decision(
+    projection: NativeShortScopeStatusRecord,
+    *,
+    never_published_any_map: bool,
+) -> tuple[str, str | None]:
     """Pure decision from an already-validated projection row's fields only.
 
     Returns (branch, reason_code). branch is one of ACTIVE_EVALUATION,
-    TERMINAL_COMPLETED, TERMINAL_HISTORICAL, or BLOCKED. Every terminal branch
-    requires the full triple of map_lifecycle_state / scope_status_code /
-    actionability_state to agree (where a matching scope_status_code exists);
-    any disagreement fails closed to BLOCKED rather than fabricating a
-    terminal row, since native_short_scope_status_v1's own dataclass does not
-    independently enforce that cross-field consistency for terminal states.
+    TERMINAL_COMPLETED, TERMINAL_HISTORICAL, EXPECTED_BOOTSTRAP_NO_CURRENT_MAP,
+    or BLOCKED. Every terminal branch requires the full triple of
+    map_lifecycle_state / scope_status_code / actionability_state to agree
+    (where a matching scope_status_code exists); any disagreement fails closed
+    to BLOCKED rather than fabricating a terminal row, since
+    native_short_scope_status_v1's own dataclass does not independently enforce
+    that cross-field consistency for terminal states.
+
+    NO_CURRENT_MAP is split into two distinct branches (Issue #298). A
+    projection with no selected current map arises from exactly two different
+    ledger situations, and only one of them is an integrity defect:
+
+    (a) ``native_short_map_v1`` holds zero rows ever for this exact canonical
+        scope key -- a scope that has never published any map, i.e. its
+        expected, transient first-map bootstrap state. This is
+        EXPECTED_BOOTSTRAP_NO_CURRENT_MAP: no level rows exist to be correct
+        or incorrect yet, and nothing about it indicates a broken scope.
+
+    (b) map rows do exist historically for this scope key, but none is
+        currently selected (for example every published map has been
+        SUPERSEDED with no successor published yet). This is an *established*
+        scope with an unexpectedly missing current map -- a possible stuck or
+        broken rollover -- and remains BLOCKED, fail-closed, exactly as
+        before.
+
+    ``never_published_any_map`` is that distinction and nothing else: it is a
+    pure ledger-existence fact (zero rows for the exact scope key, independent
+    of ``as_of_utc`` and independent of lifecycle state), supplied by the
+    caller. It is deliberately not a timing/grace-window/ordering heuristic.
     """
     if projection.current_map_id is None or not projection.current_map_cycle_id:
+        if never_published_any_map:
+            return (EXPECTED_BOOTSTRAP_NO_CURRENT_MAP, NO_CURRENT_MAP)
         return (BLOCKED, NO_CURRENT_MAP)
 
     scope_status = NativeShortScopeStatusCode(str(projection.scope_status_code))
@@ -533,6 +568,7 @@ def materialize_native_short_map_level_status_for_scope(
     operational_clock: Callable[[], datetime],
     provenance: NativeShortWriterProvenance,
     authorization: WriterMutationAuthorization,
+    never_published_any_map: bool,
 ) -> MapLevelStatusMaterializationOutcome:
     """Bounded, single-scope rebuild. The caller owns the transaction boundary.
 
@@ -541,6 +577,12 @@ def materialize_native_short_map_level_status_for_scope(
     read, no as_of_utc parameter). `operational_clock` supplies only the
     row-level `rebuilt_at_utc` operational metadata field, never a lifecycle
     input, mirroring the existing scope-status materializer's convention.
+
+    `never_published_any_map` is a required keyword (never defaulted): it is
+    the caller-supplied ledger-existence fact that distinguishes an expected
+    first-map bootstrap state from a genuine integrity BLOCKED state. See
+    `select_gate_decision`. Defaulting it either way would silently
+    misclassify a caller that forgot to supply real evidence.
     """
     validate_native_short_writer_provenance(provenance)
     validate_native_short_scope_key(key)
@@ -581,9 +623,15 @@ def materialize_native_short_map_level_status_for_scope(
             level_status_as_of_utc=None,
         )
 
-    branch, reason_code = select_gate_decision(projection)
+    branch, reason_code = select_gate_decision(
+        projection,
+        never_published_any_map=never_published_any_map,
+    )
 
-    if branch == BLOCKED:
+    if branch in (BLOCKED, EXPECTED_BOOTSTRAP_NO_CURRENT_MAP):
+        # Identical persistence behavior for both: clear any stale level rows
+        # and fabricate none. Only the reported branch differs, so the caller
+        # can distinguish an expected bootstrap state from an integrity stop.
         delete_native_short_map_level_status_for_scope(
             conn,
             key=key,

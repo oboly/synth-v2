@@ -394,7 +394,11 @@ def materialize_native_short_map_level_target_events_for_scope(
             level_state_by_role={},
         )
 
-    branch, _reason = select_gate_decision(projection)
+    # This lane only asks whether the gate is ACTIVE_EVALUATION; every other
+    # branch is treated identically (NOT_ACTIVE_EVALUATION, no events). The
+    # #298 bootstrap/BLOCKED split is therefore immaterial here, and passing
+    # False preserves the pre-#298 classification exactly with no extra query.
+    branch, _reason = select_gate_decision(projection, never_published_any_map=False)
     if branch != ACTIVE_EVALUATION:
         return NativeShortMapLevelTargetEventMaterializationOutcome(
             key=key,
