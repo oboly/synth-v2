@@ -17,6 +17,9 @@ from src.market_data.native_short_promotion_acceptance_evidence_v1 import (
     PROMOTION_ACCEPTANCE_CONTRACT_VERSION,
     evaluate_promotion_acceptance_evidence,
 )
+from src.market_data.native_short_runtime_isolation_evidence_v1 import (
+    evaluate_multi_scope_failure_isolation_evidence,
+)
 from src.market_data.native_short_writer_provenance_v1 import (
     NativeShortWriterExecutionMode,
     NativeShortWriterProvenanceState,
@@ -83,6 +86,21 @@ BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED = "EVIDENCE_CONFIRMS_CLOSED"
 BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID = "EVIDENCE_ABSENT_OR_INVALID"
 BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE = "NO_CANONICAL_EVIDENCE_SOURCE"
 BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE = "IMPLEMENTATION_PENDING_SEPARATE_LANE"
+# BOOTSTRAP_ORCHESTRATION_BLOCKED's separate implementation lane (the
+# generalized bootstrap manifest and the rollout orchestrator) has landed, so
+# "implementation pending" is no longer an accurate reason for it. What
+# remains is one exact, named, unproven runtime property -- see
+# docs/ops/native_short_bootstrap_orchestration_blocked_evidence_v1.md.
+BLOCKER_REASON_EXACT_PROOF_REQUIRED = "EXACT_PROOF_REQUIRED"
+
+# Canonical per-scope rollout outcome vocabulary (Issue #276). These are
+# review/reporting labels describing a scope's current rollout disposition;
+# they are never an authorization to act, and they never bypass the
+# administration transaction's own gate.
+ROLLOUT_STATUS_READY = "READY"
+ROLLOUT_STATUS_ALREADY_SUPPORTED = "ALREADY_SUPPORTED"
+ROLLOUT_STATUS_SKIPPED_NOT_READY = "SKIPPED_NOT_READY"
+ROLLOUT_STATUS_BLOCKED = "BLOCKED"
 
 
 def evaluate_global_blockers(
@@ -90,6 +108,8 @@ def evaluate_global_blockers(
     provenance_attributed: bool,
     promotion_accepted: bool = False,
     promotion_evidence_reason: str | None = None,
+    isolation_evidence_confirmed: bool = False,
+    isolation_evidence_reason: str | None = None,
 ) -> tuple[tuple[str, ...], Mapping[str, str]]:
     """Derive active global blockers from explicit evaluated evidence only.
 
@@ -103,6 +123,12 @@ def evaluate_global_blockers(
     Leaving both at their defaults preserves prior behavior (no canonical
     evidence source wired) for callers that do not evaluate promotion
     evidence.
+
+    ``isolation_evidence_confirmed`` / ``isolation_evidence_reason`` come from
+    ``native_short_runtime_isolation_evidence_v1.evaluate_multi_scope_failure_isolation_evidence``
+    (Issue #276). Same fail-closed shape: leaving both at their defaults keeps
+    ``MULTI_SCOPE_FAILURE_ISOLATION_MISSING`` active exactly as before for any
+    caller that does not evaluate isolation evidence.
 
     Returns ``(active_blocker_codes, reason_by_code)`` where
     ``reason_by_code`` covers all of ``GLOBAL_BLOCKERS`` (active or not).
@@ -147,15 +173,42 @@ def evaluate_global_blockers(
     active.append(REMOVAL_CONTRACT_MISSING)
     reasons[REMOVAL_CONTRACT_MISSING] = BLOCKER_REASON_NO_CANONICAL_EVIDENCE_SOURCE
 
-    # BOOTSTRAP_ORCHESTRATION_BLOCKED / MULTI_SCOPE_FAILURE_ISOLATION_MISSING:
-    # out of scope for this lane (audit-correctness only). Both remain active
-    # until their own separate implementation lanes land and are accepted.
+    # BOOTSTRAP_ORCHESTRATION_BLOCKED: remains unconditionally active, and
+    # deliberately takes no evidence parameter -- there is no canonical
+    # evidence source that could close it yet, and inventing an optional
+    # parameter with no evaluator behind it would only make the fail-closed
+    # default look negotiable.
+    #
+    # Its separate implementation lane (generalized bootstrap manifest +
+    # rollout orchestrator) has landed, so IMPLEMENTATION_PENDING_SEPARATE_LANE
+    # is no longer the accurate reason. What remains unproven is one exact
+    # runtime property: the chain treats a domain-BLOCKED scope as a hard stop
+    # for the whole run (the `break` in
+    # run_native_short_scope_status_chain_v1.execute_runtime), and a brand-new
+    # scope's expected, transient NO_CURRENT_MAP state classifies as BLOCKED
+    # (native_short_map_level_status_materializer_v1.select_gate_decision). So
+    # a freshly promoted scope still halts evaluation of unrelated,
+    # already-established scopes ordered after it. #200 fixed transaction
+    # rollback isolation, not this loop-halting interaction. Full trace and
+    # the exact remaining proof:
+    # docs/ops/native_short_bootstrap_orchestration_blocked_evidence_v1.md
     active.append(BOOTSTRAP_ORCHESTRATION_BLOCKED)
-    reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] = BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE
-    active.append(MULTI_SCOPE_FAILURE_ISOLATION_MISSING)
-    reasons[MULTI_SCOPE_FAILURE_ISOLATION_MISSING] = (
-        BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE
-    )
+    reasons[BOOTSTRAP_ORCHESTRATION_BLOCKED] = BLOCKER_REASON_EXACT_PROOF_REQUIRED
+
+    # MULTI_SCOPE_FAILURE_ISOLATION_MISSING: now wired to the canonical,
+    # machine-readable per-scope runtime isolation evidence contract in
+    # native_short_runtime_isolation_evidence_v1.py (reviewed implementation
+    # commit ancestry plus live runtime-contract structural inspection).
+    # Absent, unavailable, or regressed evidence fails closed.
+    if isolation_evidence_confirmed:
+        reasons[MULTI_SCOPE_FAILURE_ISOLATION_MISSING] = BLOCKER_REASON_EVIDENCE_CONFIRMS_CLOSED
+    else:
+        active.append(MULTI_SCOPE_FAILURE_ISOLATION_MISSING)
+        reasons[MULTI_SCOPE_FAILURE_ISOLATION_MISSING] = (
+            BLOCKER_REASON_IMPLEMENTATION_PENDING_SEPARATE_LANE
+            if isolation_evidence_reason is None
+            else BLOCKER_REASON_EVIDENCE_ABSENT_OR_INVALID
+        )
 
     ordered_active = tuple(code for code in GLOBAL_BLOCKERS if code in active)
     return ordered_active, reasons
@@ -612,6 +665,59 @@ def rank_sequential_candidates(results: Iterable[CandidateResult]) -> tuple[Cand
     return tuple(replace(item, sequential_review_rank=ranks.get(item.canonical_key.symbol)) for item in ordered)
 
 
+def classify_rollout_status(result: CandidateResult) -> str:
+    """Map one already-evaluated candidate onto the canonical per-scope
+    rollout vocabulary (Issue #276). Pure function of ``result``; no I/O.
+
+    This is a *reporting* classification derived from the existing market-only
+    readiness evaluation. It grants nothing: the administration transaction's
+    own unchanged gate remains the only thing that decides whether a
+    PROMOTE_SCOPE may execute.
+
+    Precedence is deliberate and fail-closed:
+
+    1. ``ALREADY_SUPPORTED`` -- the scope already has exactly one SUPPORTED
+       scope row. This is a fact about existing state, so it wins outright:
+       promotion blockers are irrelevant to a scope that needs no promotion.
+    2. ``BLOCKED`` -- an active global blocker applies. This deliberately
+       outranks per-scope readiness for anything not already supported,
+       because no promotion primitive can execute at all while a blocker is
+       active. Reporting ``READY`` for a scope the gate would refuse is the
+       dangerous direction; reporting ``BLOCKED`` for a scope that is also
+       market-ineligible is the safe one. The candidate's own
+       ``market_reason_codes`` / ``ledger_reason_codes`` retain the full
+       per-scope detail either way.
+    3. ``READY`` -- market and ledger criteria are satisfied and no global
+       blocker stands in the way.
+    4. ``SKIPPED_NOT_READY`` -- everything else: market or ledger
+       ineligibility.
+    """
+    if result.scope_states == ("SUPPORTED",) or result.readiness_status == READY_EXISTING_CANARY:
+        return ROLLOUT_STATUS_ALREADY_SUPPORTED
+    if result.global_rollout_status == "GLOBAL_ROLLOUT_BLOCKED":
+        return ROLLOUT_STATUS_BLOCKED
+    if result.readiness_status == READY_FOR_SEQUENTIAL_CANARY_REVIEW:
+        return ROLLOUT_STATUS_READY
+    return ROLLOUT_STATUS_SKIPPED_NOT_READY
+
+
+def bucket_by_rollout_status(
+    results: Iterable[CandidateResult],
+) -> Mapping[str, tuple[str, ...]]:
+    """Group candidate symbols by ``classify_rollout_status``, deterministically
+    ordered. Reporting convenience only -- it re-derives nothing and adds no
+    criteria of its own."""
+    buckets: dict[str, list[str]] = {
+        ROLLOUT_STATUS_READY: [],
+        ROLLOUT_STATUS_ALREADY_SUPPORTED: [],
+        ROLLOUT_STATUS_SKIPPED_NOT_READY: [],
+        ROLLOUT_STATUS_BLOCKED: [],
+    }
+    for item in results:
+        buckets[classify_rollout_status(item)].append(item.canonical_key.symbol)
+    return {status: tuple(sorted(symbols)) for status, symbols in buckets.items()}
+
+
 def _fetch_all(conn: Any, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute(sql, tuple(params))
@@ -667,10 +773,15 @@ def evaluate_global_blockers_from_rows(
         for row in provenance_rows
     )
     promotion_evaluation = evaluate_promotion_acceptance_evidence(admin_operation_rows)
+    # Repository/import-only evidence: needs no rows and no connection, so it
+    # is evaluated here rather than threaded through every caller's fetch.
+    isolation_evaluation = evaluate_multi_scope_failure_isolation_evidence()
     return evaluate_global_blockers(
         provenance_attributed=provenance_attributed,
         promotion_accepted=promotion_evaluation.accepted,
         promotion_evidence_reason=promotion_evaluation.reason,
+        isolation_evidence_confirmed=isolation_evaluation.confirmed,
+        isolation_evidence_reason=isolation_evaluation.reason,
     )
 
 
