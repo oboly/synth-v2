@@ -1,5 +1,14 @@
 # Market Intelligence TODOs
 
+## GitHub Issue migration
+
+Status: migrated
+
+This file is navigation only. Executable child-file scope is owned by GitHub Issues as listed below.
+
+Unmigrated executable scope:
+- none
+
 ## Scope
 
 Research-only, market-only, account-agnostic observation and classification lanes, including sector rotation, macro regime, narrative, catalyst, breadth, flow, scanner research, cross-asset rotation, and composite market context.

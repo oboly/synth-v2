@@ -1,5 +1,17 @@
 # TODO — Macro Regime Engine v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- input inventory, snapshot contract, deterministic classifiers -> Issue #305
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 **future design / P3 research** — canonical macro inputs, classifiers, persistence, replay, and dashboard consumption are not implemented. This lane must remain market-only and account-agnostic.

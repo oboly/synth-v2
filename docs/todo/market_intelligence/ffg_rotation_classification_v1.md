@@ -1,5 +1,17 @@
 # FFG Rotation Classification v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- market-only rotation classification of FFG universe assets -> Issue #304
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Open P3 research / read-only.

@@ -1,5 +1,17 @@
 # Cross-Asset Public Data and Instrument Registry v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- provider feasibility / instrument allowlist / neutral identity contract -> Issue #302
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 ```text

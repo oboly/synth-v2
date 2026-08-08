@@ -1,5 +1,17 @@
 # FFG Mega-Run Target Scenarios V1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- speculative external target-narrative tracking -> no Issue required; parked as non-executable external narrative. If this specific narrative is ever ingested as data, use the existing canonical `docs/research/external_forecast_event_registry_v1.md` contract rather than creating a bespoke scenario table.
+
+Unmigrated executable scope:
+- none
+
 Status: TODO
 Scope: research-only, market-only, account-agnostic
 Runtime impact: none

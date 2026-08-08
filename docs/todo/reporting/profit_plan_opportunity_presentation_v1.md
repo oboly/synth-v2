@@ -1,5 +1,19 @@
 # Profit Plan Opportunity Presentation v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- compact field, tooltip registry, duplicate-tile removal, alignment -> Issue #233 (pre-existing)
+- Sort-PPP null-last ordering and deterministic tie-breaks -> Issue #256 (pre-existing, closed)
+- Opportunity Rank, actionable-candidate counts, zero-actionable/stale-state presentation -> Issue #313
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Open P3 reporting follow-up. Read-only.

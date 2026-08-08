@@ -1,5 +1,18 @@
 # MA + Volume Stoplight Dashboard V1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- feature research, classification design, historical validation -> Issue #310
+- dashboard/stoplight rendering -> Issue #315
+
+Unmigrated executable scope:
+- none
+
 Status: TODO
 Scope: research + reporting only
 Priority: P3 / Lane D

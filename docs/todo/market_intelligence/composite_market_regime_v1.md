@@ -1,5 +1,17 @@
 # TODO — Composite Market Regime v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- composite contract, state vocabulary, combination rules, replay validation -> Issue #301
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 **future design / P3 research** — no composite classifier, persistence, runtime owner, dashboard authority, or downstream selection integration is implemented.

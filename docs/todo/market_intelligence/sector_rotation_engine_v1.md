@@ -1,5 +1,18 @@
 # Sector Rotation Engine v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- Phase A/B engine, migration, persisted cohort acceptance -> implemented and accepted (this document); no Issue required.
+- remaining acceptance actions (Phase C dashboard/reporting, activation gate) -> Issue #204 (pre-existing)
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 **Phase B accepted** — Phase A is accepted. The Phase B migration has been
