@@ -1,5 +1,17 @@
 # FFG Universe Metadata v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- source provenance / identity-resolved membership -> implemented and superseded by `docs/research/ffg_research_universe_v1.md` (canonical, accepted, with migration and import command); no Issue required.
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Open P3 external-research metadata lane.

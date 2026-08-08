@@ -1,5 +1,18 @@
 # Momentum Flow Scanner Research v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- market-only scanner research contract (features, read model, replay/ablation) -> Issue #306
+- display-only volume-flow candle classification (narrower, adjacent scope) -> Issue #277 (pre-existing)
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Open P3 research / read-only. Non-blocking for active runtime and execution lanes.

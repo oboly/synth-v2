@@ -1,5 +1,14 @@
 # External Research TODOs
 
+## GitHub Issue migration
+
+Status: migrated
+
+This file is navigation only. Executable child-file scope is owned by GitHub Issues as listed below.
+
+Unmigrated executable scope:
+- none
+
 ## Scope
 
 Source provenance, curated-universe membership, identity resolution, confidence, timestamps, public-data feasibility, neutral instrument mapping, and ingestion boundaries.

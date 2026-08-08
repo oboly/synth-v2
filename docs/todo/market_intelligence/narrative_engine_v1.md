@@ -1,5 +1,17 @@
 # TODO — Narrative Engine v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- narrative taxonomy, Financial Infrastructure audit, narrative analytics, lifecycle -> Issue #307
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 **future design / P3 research** — Synth has sector taxonomy and rotation analytics, but no separately owned, versioned narrative taxonomy or narrative-strength engine.

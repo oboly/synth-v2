@@ -1,5 +1,21 @@
 # Sector Rotation Initiative v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- Phase A taxonomy seed -> implemented/accepted; no Issue required.
+- Phase B engine/persisted cohort -> implemented/accepted (`market_intelligence/sector_rotation_engine_v1.md`); no Issue required.
+- Phase B2 market-filter candidate audit -> Issue #309
+- Phase C dashboard/reporting acceptance -> Issue #204 (pre-existing)
+- Phase D optional sector-context integration -> not started, no scope defined in this document; no Issue required until a bounded scope is proposed.
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Phase A is accepted and operationally activated from merged main `794a03e014c44b5f01410a07bc5f24aa763715a8`.

@@ -1,5 +1,14 @@
 # Reporting TODOs
 
+## GitHub Issue migration
+
+Status: migrated
+
+This file is navigation only. Executable child-file scope is owned by GitHub Issues as listed below.
+
+Unmigrated executable scope:
+- none
+
 ## Scope
 
 Read-only dashboards, web views, inspection surfaces, evidence presentation, sorting, filtering, labels, and account-overlay contracts.

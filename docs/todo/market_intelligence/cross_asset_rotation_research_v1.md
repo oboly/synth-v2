@@ -1,5 +1,18 @@
 # Cross-Asset Rotation Research v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- market-only rotation research (crypto -> metals/miners/food-agriculture) -> Issue #303
+- public data/instrument identity (input dependency) -> Issue #302
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 ```text

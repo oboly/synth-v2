@@ -1,5 +1,17 @@
 # FFG Rotation Radar Presentation v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- read-only presentation of market classification + account overlay -> Issue #311
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Open P3 reporting / account-overlay follow-up. Read-only.

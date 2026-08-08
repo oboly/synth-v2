@@ -1,5 +1,18 @@
 # TODO — Catalyst Engine v1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- narrow P0 news-catalyst monitor schema/dry-runner -> Issue #228 (pre-existing)
+- broader catalyst taxonomy, event contract, calendar/monitoring read model -> Issue #300
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 **future design / P3 research** — no canonical catalyst ingestion, normalization, calendar, confidence model, persistence, or downstream integration exists.
