@@ -1,4 +1,10 @@
-# TODO — Native SHORT Current Map-Level Status V1
+# Native SHORT Current Map-Level Status V1 — Historical Record
+
+Archived from `docs/todo/native_short_map_level_status_v1.md` in Batch 6F
+(`docs/development/docs_todo_archive_remove_batch_6f_v1.md`). Canonical
+contract lives at
+`docs/architecture/native_short_map_level_status_contract_v1.md`; this file
+is historical record only, not current operational authority.
 
 ## Status
 
@@ -82,7 +88,7 @@ docs/todo/profit_plan_live_ladder.md
 Target crossing/history correctness is tracked only in:
 
 ```text
-docs/todo/profit_plan_target_lifecycle_history_truth_v1.md
+docs/archive/profit_plan_target_lifecycle_history_truth_v1.md
 ```
 
 ## Boundary
@@ -111,7 +117,7 @@ ledger, `native_short_map_level_target_event_v1`, now records append-only
 REACHED/PASSED transitions for the same V1 SELL roles, prospectively only,
 under a distinct authorization (Synth Outcome & Reliability Program). See
 `docs/architecture/native_short_map_level_status_contract_v1.md` addendum and
-`docs/todo/profit_plan_target_lifecycle_history_truth_v1.md` addendum for the
+`docs/archive/profit_plan_target_lifecycle_history_truth_v1.md` addendum for the
 full contract and the explicit statement that no canonical BTC/IOST
 regression evidence exists or is implied by this work.
 

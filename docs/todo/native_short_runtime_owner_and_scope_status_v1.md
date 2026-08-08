@@ -234,7 +234,7 @@ docs/todo/profit_plan_live_ladder.md
 Target history/lifecycle correctness belongs only in:
 
 ```text
-docs/todo/profit_plan_target_lifecycle_history_truth_v1.md
+docs/archive/profit_plan_target_lifecycle_history_truth_v1.md
 ```
 
 ## Boundary

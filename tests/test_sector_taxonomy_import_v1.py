@@ -523,13 +523,13 @@ def test_migration_contains_separate_dimensions_and_active_uniqueness() -> None:
 def test_sector_rotation_public_contract_uses_participation_terms() -> None:
     root = Path(__file__).resolve().parents[1]
     for relative in (
-        "docs/todo/sector_rotation_engine_v1.md",
+        "docs/todo/market_intelligence/sector_rotation_engine_v1.md",
         "docs/todo/sector_rotation_dashboard_v1.md",
         "src/research/run_sector_taxonomy_import_v1.py",
         "db/migrations/20260716_sector_taxonomy_database_seed_v1.sql",
     ):
         assert "breadth" not in (root / relative).read_text(encoding="utf-8").lower()
-    engine = (root / "docs/todo/sector_rotation_engine_v1.md").read_text(encoding="utf-8")
+    engine = (root / "docs/todo/market_intelligence/sector_rotation_engine_v1.md").read_text(encoding="utf-8")
     assert "positive_participation_pct" in engine
     assert "negative_participation_pct" in engine
     assert "participation_ratio" in engine

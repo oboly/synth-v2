@@ -1,4 +1,8 @@
-# TODO — Profit Plan Card Evidence Delta Visibility v1
+# Profit Plan Card Evidence Delta Visibility v1 — Historical Record
+
+Archived from `docs/todo/profit_plan_card_evidence_delta_visibility_v1.md`
+in Batch 6F (`docs/development/docs_todo_archive_remove_batch_6f_v1.md`).
+Historical implementation/evidence record only.
 
 ## Status
 

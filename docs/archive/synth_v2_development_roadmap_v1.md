@@ -1,4 +1,10 @@
-# Synth v2 Development Roadmap v1
+# Synth v2 Development Roadmap v1 — Historical Snapshot
+
+Archived from `docs/todo/synth_v2_development_roadmap_v1.md` in Batch 6F
+(`docs/development/docs_todo_archive_remove_batch_6f_v1.md`). Stale
+architecture snapshot tied to commit `d7c57af`; superseded by
+`docs/architecture/pipeline_contracts.md` and `AGENTS.md`. Historical record
+only, not current operational or architectural authority.
 
 ## Current live status
 
