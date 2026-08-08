@@ -207,18 +207,18 @@
       "evaluated_separately": false,
       "candidate_host": "gurkdb",
       "selected_host": "gurkdb",
-      "acceptance_host": "devlap",
+      "acceptance_host": "gurkdb",
       "acceptance_status": "ACCEPTED",
       "acceptance_evidence": {
-        "approval_reference": "PR #100 / PR #101 implementation acceptance",
-        "evidence_doc": "docs/ops/market_rotation_pressure_runtime_owners_v1.md",
-        "accepted_at_utc": "2026-07-14T18:56:00Z",
-        "scope": "Implementation acceptance and installed-runtime observation on devlap only. This is an audit fact and does not grant production authorization or production decision evidence."
+        "approval_reference": "Explicit user production-cutover authorization for Issue #266, gurkDB controlled acceptance run on 2026-08-08",
+        "evidence_doc": "docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md",
+        "accepted_at_utc": "2026-08-08T02:01:26Z",
+        "scope": "Exact-commit strict preflight (all PREFLIGHT_LOCAL checks PASS), one controlled ACCEPTANCE-mode writer invocation advancing market_rotation_snapshot_v1 (220->222 rows) and market_rotation_pressure_snapshot_v1 (110->111 rows) from fresh canonical candles, idempotent repeat invocation (NOOP_ALREADY_COMPLETE, 0 rows), zero duplicate snapshot headers, and host-local lock behavior on gurkDB."
       },
-      "production_runtime_owner": "UNASSIGNED",
-      "production_authorization_status": "UNASSIGNED",
-      "runtime_lifecycle": "SELECTED_PENDING_PREFLIGHT",
-      "production_decision_evidence": "",
+      "production_runtime_owner": "gurkdb",
+      "production_authorization_status": "AUTHORIZED",
+      "runtime_lifecycle": "AUTHORIZED_INACTIVE",
+      "production_decision_evidence": "docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md#production-decision-evidence",
       "observed_runtime_state": [
         {
           "host": "devlap",

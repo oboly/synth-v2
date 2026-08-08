@@ -3,8 +3,8 @@
 ## Status
 
 The contract records `public_price_snapshot` as active on gurkDB and
-`public_candle_freshness` as accepted and separately authorized to gurkDB in
-`AUTHORIZED_INACTIVE`, pending exact merged-commit deployment and activation.
+`public_candle_freshness` and (since 2026-08-08) `market_rotation_pressure`
+as accepted and separately authorized to gurkDB in `AUTHORIZED_INACTIVE`.
 
 ```text
 public_candle_freshness_acceptance=ACCEPTED
@@ -12,6 +12,11 @@ public_candle_freshness_production_runtime_owner=gurkdb
 public_candle_freshness_runtime_lifecycle=AUTHORIZED_INACTIVE
 public_candle_freshness_timer_active=false
 public_candle_freshness_production_authorization_file_present=false
+market_rotation_pressure_acceptance=ACCEPTED
+market_rotation_pressure_production_runtime_owner=gurkdb
+market_rotation_pressure_runtime_lifecycle=AUTHORIZED_INACTIVE
+market_rotation_pressure_timer_active=false
+market_rotation_pressure_production_authorization_file_present=true
 other_capability_changes=0
 ```
 
@@ -38,20 +43,19 @@ Current correction state:
 ```text
 public_price_snapshot.production_runtime_owner=gurkdb
 public_candle_freshness.production_runtime_owner=gurkdb
-market_rotation_pressure.production_runtime_owner=UNASSIGNED
+market_rotation_pressure.production_runtime_owner=gurkdb
 native_short_4h_chain.production_runtime_owner=devlap
 native_short_4h_chain.runtime_lifecycle=ACTIVE
 native_short_4h_chain.production_authorization_status=AUTHORIZED
 ```
 
-Rotation Pressure preserves historical facts without granting authority:
+Rotation Pressure's prior devlap assignment preserves historical facts
+without granting authority (unchanged by the 2026-08-08 gurkDB authorization
+below):
 
 ```text
-acceptance_host=devlap
-acceptance_status=ACCEPTED
 historical_runtime_assignment.host=devlap
 historical_runtime_assignment.status=SUPERSEDED
-production_decision_evidence=""
 observed_runtime_state=last_observed_active_on_devlap_current_state_UNVERIFIED
 ```
 
@@ -80,6 +84,22 @@ runtime_lifecycle=AUTHORIZED_INACTIVE
 timer=disabled/inactive
 production_authorization_file=absent
 ```
+
+Market Rotation Pressure also records a separate production decision after
+successful gurkDB preflight and controlled acceptance on 2026-08-08 (explicit
+user production-cutover authorization for Issue #266):
+
+```text
+acceptance_host=gurkdb
+acceptance_status=ACCEPTED
+production_runtime_owner=gurkdb
+production_authorization_status=AUTHORIZED
+runtime_lifecycle=AUTHORIZED_INACTIVE
+timer=disabled/inactive
+```
+
+See `docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md` for the
+full acceptance evidence.
 
 An installed timer may continue running operationally even after canonical
 authorization is reset. Repository correction does not stop that timer.
@@ -178,7 +198,7 @@ Summary:
 |---|---|---|---|---|
 | `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | gurkdb | ACTIVE |
 | `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
-| `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
+| `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
 | `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | devlap | ACTIVE |
 | `sector_rotation_snapshot` | public market-data writer | `scripts/run_sector_rotation_engine_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
 
@@ -188,8 +208,11 @@ manual cycles after its enabled-universe mismatch was resolved by disabling
 only the eight stale historical-import asset rows. Generic live validation
 reports zero mismatch. It is accepted and separately authorized to gurkDB in
 `AUTHORIZED_INACTIVE`, pending exact merged-commit deployment and activation.
-Rotation Pressure remains selected for strict preflight only and retains
-`production_runtime_owner=UNASSIGNED`.
+Rotation Pressure passed strict gurkDB preflight and a controlled acceptance
+run on 2026-08-08 (explicit user production-cutover authorization for Issue
+#266). It is accepted and separately authorized to gurkDB in
+`AUTHORIZED_INACTIVE`, pending timer activation. See
+`docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md`.
 `native_short_4h_chain` is selected, authorized, and active on `devlap`.
 Its supported Native SHORT scope remains `BTC_ONLY` in `PAPER` execution mode;
 multi-asset and map-level expansion remain `CLOSED`, and live trading remains
@@ -468,14 +491,14 @@ state. Do not silently treat it as inactive.
 
 ## Executable Systemd Contract
 
-Committed units are explicit host-bound artifacts. Public Price Snapshot and
-Public Candle Freshness are bound to gurkDB; remaining
-candidate/historical units are bound to devlap:
+Committed units are explicit host-bound artifacts. Public Price Snapshot,
+Public Candle Freshness, and (since 2026-08-07) Market Rotation Pressure are
+bound to gurkDB; remaining candidate/historical units are bound to devlap:
 
 ```text
 public_price_snapshot ConditionHost=gurkdb
 public_candle_freshness ConditionHost=gurkdb
-market_rotation_pressure ConditionHost=devlap
+market_rotation_pressure ConditionHost=gurkdb
 native_short_4h_chain ConditionHost=devlap
 sector_rotation_snapshot ConditionHost=gurkdb
 User=gurk

@@ -9,13 +9,12 @@ manual cycles after its enabled-universe blocker was corrected. It is accepted
 and separately authorized to gurkDB in `AUTHORIZED_INACTIVE`, pending exact
 merged-commit deployment and activation.
 `market_rotation_pressure` had its committed unit re-bound from devlap to
-gurkDB on 2026-08-07 (Issue #266 root-cause repair), following the same
-"prepare" pattern used for `public_candle_freshness`. This is repository-only
-preparation: `production_runtime_owner` remains `UNASSIGNED` and
-`runtime_lifecycle` remains `SELECTED_PENDING_PREFLIGHT` until a separate,
-explicitly evidenced gurkDB preflight/acceptance/authorization decision is
-recorded. See
-`docs/ops/market_rotation_pressure_runtime_owners_v1.md#2026-08-07-gurkdb-writer-cutover-preparation-repository-only-issue-266`.
+gurkDB on 2026-08-07 (Issue #266 root-cause repair), then completed strict
+gurkDB preflight and a controlled acceptance run on 2026-08-08 (explicit user
+production-cutover authorization). It is accepted and separately authorized
+to gurkDB in `AUTHORIZED_INACTIVE`, pending timer activation. See
+`docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md` and
+`docs/ops/market_rotation_pressure_runtime_owners_v1.md#2026-08-08-gurkdb-controlled-acceptance-and-production-authorization`.
 The other capabilities are unchanged.
 
 The authoritative machine-readable ownership source is
@@ -26,7 +25,7 @@ The authoritative machine-readable ownership source is
 ```text
 public_price_snapshot.production_runtime_owner=gurkdb
 public_candle_freshness.production_runtime_owner=gurkdb
-market_rotation_pressure.production_runtime_owner=UNASSIGNED
+market_rotation_pressure.production_runtime_owner=gurkdb
 native_short_4h_chain.production_runtime_owner=UNASSIGNED
 ```
 
@@ -64,10 +63,12 @@ public_candle_freshness:
 market_rotation_pressure:
   candidate_host=gurkdb
   selected_host=gurkdb
-  acceptance_host=devlap
+  acceptance_host=gurkdb
   acceptance_status=ACCEPTED
-  runtime_lifecycle=SELECTED_PENDING_PREFLIGHT
-  committed_unit_binding.condition_host=gurkdb (repository-only prep, 2026-08-07;
+  production_runtime_owner=gurkdb
+  production_authorization_status=AUTHORIZED
+  runtime_lifecycle=AUTHORIZED_INACTIVE
+  committed_unit_binding.condition_host=gurkdb (since 2026-08-07;
                          see docs/ops/market_rotation_pressure_runtime_owners_v1.md)
   historical_runtime_assignment.host=devlap
   historical_runtime_assignment.status=SUPERSEDED
@@ -87,10 +88,9 @@ native_short_4h_chain:
 ## gurkDB Public-Writer Authorization and Remaining Selection
 
 `public_price_snapshot` is accepted and separately authorized to gurkDB in
-`ACTIVE`. `public_candle_freshness` passed strict preflight and controlled
-acceptance after its metadata blocker was resolved and is separately authorized
-to gurkDB in `AUTHORIZED_INACTIVE`; `market_rotation_pressure` remains selected
-for preflight only.
+`ACTIVE`. `public_candle_freshness` and (since 2026-08-08)
+`market_rotation_pressure` passed strict preflight and controlled acceptance
+and are separately authorized to gurkDB in `AUTHORIZED_INACTIVE`.
 
 Specifically:
 
@@ -103,14 +103,20 @@ public_candle_freshness production_authorization_status=AUTHORIZED
 public_candle_freshness runtime_lifecycle=AUTHORIZED_INACTIVE
 public_candle_freshness production authorization file absent
 public_candle_freshness timer disabled/inactive
-market_rotation_pressure production_runtime_owner=UNASSIGNED
+market_rotation_pressure production_runtime_owner=gurkdb
+market_rotation_pressure production_authorization_status=AUTHORIZED
+market_rotation_pressure runtime_lifecycle=AUTHORIZED_INACTIVE
+market_rotation_pressure timer disabled/inactive
 ```
 
-The public-price unit, the fail-closed candle candidate unit, and (since
-2026-08-07) the prepared Rotation Pressure candidate unit are all bound to
-gurkDB. The devlap Rotation Pressure historical assignment remains `SUPERSEDED`, while
-canonical `observed_runtime_state.current_state=UNVERIFIED`; this PR does not
-assert or record current host containment or gurkDB production authorization.
+The public-price unit, the candle candidate unit, and (since 2026-08-07) the
+Rotation Pressure candidate unit are all bound to gurkDB. The devlap Rotation
+Pressure historical assignment remains `SUPERSEDED`, while canonical
+`observed_runtime_state.current_state=UNVERIFIED` for that historical devlap
+entry; this document does not assert or record current devlap host
+containment. gurkDB production authorization for `market_rotation_pressure`
+is recorded above and detailed in
+`docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md`.
 Odroid remains a consumer/publisher host with zero writer capabilities.
 Public-price evidence is in
 `docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md`; candle
@@ -179,11 +185,11 @@ WorkingDirectory=/home/gurk/projects/synth-v2
 ExecStartPre=src.operations.verify_writer_capability_authorization_v1
 ```
 
-None of these gurkDB bindings are themselves a production authorization;
-only `public_price_snapshot` (`ACTIVE`) and `public_candle_freshness`
-(`AUTHORIZED_INACTIVE`) have completed a separate production decision.
-`market_rotation_pressure` remains `SELECTED_PENDING_PREFLIGHT` /
-`UNASSIGNED` despite its gurkDB-bound committed unit.
+A gurkDB binding alone is not itself a production authorization; each
+capability requires a separate production decision. `public_price_snapshot`
+(`ACTIVE`), `public_candle_freshness` (`AUTHORIZED_INACTIVE`), and (since
+2026-08-08) `market_rotation_pressure` (`AUTHORIZED_INACTIVE`) have all
+completed that separate production decision.
 
 The mandatory `ExecStartPre` guard fails closed while a capability is
 `UNASSIGNED`, while the authorization file is absent, on the wrong hostname, on
