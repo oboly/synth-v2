@@ -395,9 +395,9 @@ def test_ownership_registry_records_price_active_and_candle_authorized_inactive(
     assert candle["production_runtime_owner"] == "gurkdb"
     assert candle["production_authorization_status"] == "AUTHORIZED"
     pressure = caps["market_rotation_pressure"]
-    assert pressure["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT"
-    assert pressure["production_runtime_owner"] == "UNASSIGNED"
-    assert pressure["production_authorization_status"] == "UNASSIGNED"
+    assert pressure["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+    assert pressure["production_runtime_owner"] == "gurkdb"
+    assert pressure["production_authorization_status"] == "AUTHORIZED"
     native = caps["native_short_4h_chain"]
     assert native["candidate_host"] == "devlap"
     assert native["selected_host"] == "devlap"

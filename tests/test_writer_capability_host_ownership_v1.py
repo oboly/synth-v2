@@ -121,11 +121,14 @@ def test_public_price_is_active_and_candle_is_authorized_inactive() -> None:
             assert cap["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
             assert cap["production_decision_evidence"]
         elif cap["capability_id"] == "market_rotation_pressure":
-            assert cap["production_runtime_owner"] == UNASSIGNED
-            assert cap["production_decision_evidence"] == ""
             assert cap["selected_host"] == "gurkdb", cap["capability_id"]
-            assert cap["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT", cap["capability_id"]
-            assert cap["production_authorization_status"] == UNASSIGNED
+            assert cap["acceptance_host"] == "gurkdb"
+            assert cap["acceptance_status"] == "ACCEPTED"
+            assert cap["acceptance_evidence"]
+            assert cap["production_runtime_owner"] == "gurkdb"
+            assert cap["production_authorization_status"] == "AUTHORIZED"
+            assert cap["runtime_lifecycle"] == "AUTHORIZED_INACTIVE", cap["capability_id"]
+            assert cap["production_decision_evidence"]
         elif cap["capability_id"] == "sector_rotation_snapshot":
             assert cap["candidate_host"] == "gurkdb"
             assert cap["selected_host"] == "gurkdb"
@@ -186,7 +189,7 @@ def test_public_price_observations_preserve_inactive_and_append_active() -> None
 
 def test_rotation_pressure_acceptance_and_observed_legacy_runtime_are_preserved() -> None:
     rp = _cap(_registry(), "market_rotation_pressure")
-    assert rp["acceptance_host"] == "devlap"
+    assert rp["acceptance_host"] == "gurkdb"
     assert rp["acceptance_status"] == "ACCEPTED"
     assert rp["historical_runtime_assignment"]["host"] == "devlap"
     assert rp["historical_runtime_assignment"]["status"] == "SUPERSEDED"
@@ -709,8 +712,8 @@ def test_existing_four_capabilities_unchanged_by_sector_rotation_onboarding() ->
     assert candle["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
     assert candle["production_authorization_status"] == "AUTHORIZED"
     rotation_pressure = _cap(registry, "market_rotation_pressure")
-    assert rotation_pressure["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT"
-    assert rotation_pressure["production_runtime_owner"] == UNASSIGNED
+    assert rotation_pressure["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+    assert rotation_pressure["production_runtime_owner"] == "gurkdb"
     native_short = _cap(registry, "native_short_4h_chain")
     assert native_short["production_authorization_status"] == "AUTHORIZED"
     assert native_short["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"

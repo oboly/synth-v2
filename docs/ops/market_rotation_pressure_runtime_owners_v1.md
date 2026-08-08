@@ -181,6 +181,34 @@ Worst-case candle-close-to-Profit-Plan-visibility lag: **~39 minutes**.
 Typical/best-case lag is materially lower (~21-25 minutes), since the
 `RandomizedDelaySec` worst cases on all three timers rarely coincide.
 
+## 2026-08-08 gurkDB controlled acceptance and production authorization
+
+Per explicit user production-cutover authorization for Issue #266, gurkDB
+completed strict preflight (all `PREFLIGHT_LOCAL` checks `PASS`) and one
+controlled `ACCEPTANCE`-mode writer invocation, proven idempotent with zero
+duplicate snapshot headers. Full evidence, including before/after row counts
+and exact commands, is recorded in
+`docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md`.
+
+```text
+market_rotation_pressure.acceptance_host=gurkdb
+market_rotation_pressure.acceptance_status=ACCEPTED
+market_rotation_pressure.production_runtime_owner=gurkdb
+market_rotation_pressure.production_authorization_status=AUTHORIZED
+market_rotation_pressure.runtime_lifecycle=AUTHORIZED_INACTIVE
+market_rotation_pressure.production_decision_evidence=docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md#production-decision-evidence
+```
+
+This records production authorization only. `runtime_lifecycle` is
+`AUTHORIZED_INACTIVE`, not `ACTIVE`: the gurkDB timer remains disabled and
+inactive as of this repository state. Activation (enabling the timer,
+observing a real scheduled cycle, and marking `ACTIVE`) is a separate,
+subsequent operator action per the cutover order in
+`docs/ops/writer_capability_host_ownership_contract_v1.md`. The devlap
+historical assignment remains `SUPERSEDED`; devlap's
+`synth-market-rotation-pressure-writer.timer` remains disabled and inactive
+and is not touched by this authorization.
+
 ## Historical Runtime Roles
 
 ```text

@@ -174,6 +174,10 @@ def test_accepted_without_structured_evidence_is_rejected() -> None:
 def test_observed_authorized_while_owner_unassigned_is_rejected() -> None:
     registry = _registry()
     rp = _cap(registry, "market_rotation_pressure")
+    rp["production_runtime_owner"] = "UNASSIGNED"
+    rp["production_authorization_status"] = "UNASSIGNED"
+    rp["runtime_lifecycle"] = "SELECTED_PENDING_PREFLIGHT"
+    rp["production_decision_evidence"] = ""
     rp["observed_runtime_state"][0]["authorization_status"] = "AUTHORIZED"
     rp["observed_runtime_state"][0]["current_state"] = "ACTIVE_OBSERVED"
     errors = validator.validate_registry_payload(registry, repo_root=REPO).errors
