@@ -1,5 +1,14 @@
 # TODO — Parked Backlog
 
+Archived from `docs/todo/parked_backlog.md` in Batch 6F2
+(`docs/development/docs_todo_cleanup_batch_6f2_v1.md`). Historical record
+only; not current operational authority. All four sections (A+ archive
+handling, PRO-narrative normalization backlog, astro context interaction
+backlog, `MACRO_DIP_BUDGET_MODE_V1` concept) are explicitly parked with no
+current executable scope; none required a GitHub Issue at archive time. If
+any of these lanes is ever actively pursued, file a new Issue rather than
+reviving this file as a live board.
+
 ## GitHub Issue migration
 
 Status: migrated

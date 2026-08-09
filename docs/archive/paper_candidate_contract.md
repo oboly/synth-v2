@@ -1,5 +1,12 @@
 # TODO — Paper Candidate Contract
 
+Archived from `docs/todo/paper_candidate_contract.md` in Batch 6F2
+(`docs/development/docs_todo_cleanup_batch_6f2_v1.md`). Historical
+contract-development provenance only; not current operational authority. The
+`research -> decision_gate` proposal envelope this file was designing toward
+is superseded by the canonical, merged
+`docs/architecture/strategy_proposal_contract_v1.md` (PR #257).
+
 ## GitHub Issue migration
 
 Status: migrated

@@ -1,5 +1,12 @@
 # FFG Universe Metadata v1
 
+Archived from `docs/todo/external_research/ffg_universe_metadata_v1.md` in
+Batch 6F2 (`docs/development/docs_todo_cleanup_batch_6f2_v1.md`). Historical
+record/provenance only; not current operational authority. Source provenance
+and identity-resolved membership for the externally curated FFG research
+universe is superseded by the canonical, accepted
+`docs/research/ffg_research_universe_v1.md`.
+
 ## GitHub Issue migration
 
 Status: migrated
