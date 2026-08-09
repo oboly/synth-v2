@@ -1,5 +1,13 @@
 # FFG Mega-Run Target Scenarios V1
 
+Archived from `docs/todo/external_research/ffg_mega_run_target_scenarios_v1.md`
+in Batch 6F2 (`docs/development/docs_todo_cleanup_batch_6f2_v1.md`). Historical
+record only; not current operational authority. This is speculative external
+target-narrative tracking, deliberately unfiled, with no executable scope. If
+this narrative is ever ingested as data, use the canonical
+`docs/research/external_forecast_event_registry_v1.md` contract rather than
+reviving this table.
+
 ## GitHub Issue migration
 
 Status: migrated
