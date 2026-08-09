@@ -16,6 +16,35 @@ a coupling problem: toggling `is_portfolio` for Hugo's view would change Joost's
 
 **Hard rule: Hugo settings must never affect Joost settings.**
 
+Account identities are looked up canonically via `trading_account.account_code`
+(e.g. `bitvavo_joost_read`, `hugo-bitvavo`); numeric `trading_account_id` values
+are deployment data, not a stable contract, and must not be hard-coded by
+callers or documentation.
+
+---
+
+## Current Status (2026-08-09)
+
+Phase 1 (this skeleton: `venue_market` + `account_asset` tables, additive) is
+**implemented and production-present** — repo lineage commit `098f338a`,
+live-verified on gurkdb. A later commit `08f66335` added a per-account asset
+*settings* extension (`disabled_reason`/`first_seen_at_utc`/`last_seen_at_utc`
+on `account_asset`, plus `src/account/account_asset_settings_v1.py`); that
+extension's migration has not been applied to live gurkdb — tracked as a
+separate production drift, Issue #333, not part of this Phase 1 design.
+
+A second account (Hugo, `account_code='hugo-bitvavo'`) already exists in
+`trading_account` with real `account_asset` rows populated via
+`WALLET_DISCOVERY`. Full factual detail:
+`docs/development/multi_account_asset_foundation_phase_1_reality_audit_v1.md`.
+
+Phases 2-4 (moving `is_tradeable`/`quote_asset`/`is_portfolio` off `asset`) and
+the remainder of Phase 5 (Hugo open-order discovery, dashboard account-scope
+filter audit) require a fresh call-site/architecture review against current
+`main` before implementation — the ref counts below predate substantial repo
+evolution and are not authoritative. See
+`docs/todo/multi_account_asset_foundation_backlog.md` for the review gate.
+
 ---
 
 ## Current `asset` Flag Inventory
@@ -231,9 +260,15 @@ all callers are verified switched.
 
 ## Verdict
 
+The skeleton (table creation only) **has been implemented and applied to
+production** — see Current Status above. The original verdict below is kept
+for historical context; it is no longer a pending recommendation.
+
 **Implementation is safe to proceed** for the skeleton (table creation only).
 
-Risk areas deferred to Phase 2:
+Risk areas deferred to Phase 2-4 (require a fresh call-site review against
+current `main` before implementation — original ref counts below are not
+authoritative):
 - `is_tradeable` caller migration (selection_engine, advice — requires venue context)
 - `quote_asset` caller migration (ETL, research — lower risk, simpler join)
 - `is_portfolio` caller migration (3 refs — lowest risk, safe to do early)
