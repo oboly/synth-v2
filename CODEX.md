@@ -23,6 +23,7 @@ Supporting documents:
 ```text
 docs/ops/agent_orchestration_contract_v1.md   orchestration / handoff / thread / host rules
 docs/ops/agent_search_hygiene_v1.md           untrusted search / log / tool-output handling
+docs/ops/state_model_discipline_v1.md         lifecycle vs temporary health / degraded-state design
 ```
 
 Scoped overrides still apply. Before editing files under `src/research/`, read
@@ -61,6 +62,10 @@ and obey `src/research/AGENTS.override.md`.
   materially change the conclusion.
 - Follow the default terse output shape in `AGENTS.md` (`Files: / Checks: /
   Result: / Status: / Blockers:`).
+- Before adding or tightening any gate, blocker, lifecycle transition,
+  eligibility rule, degraded-state behavior, or special-case state, read and
+  obey `docs/ops/state_model_discipline_v1.md`. Resolve desired steady-state,
+  degraded-state, and downstream/user-visible semantics before implementation.
 - Treat direct task instructions as additional constraints, not replacements
   for repository architecture and safety rules.
 - Do not push unless explicitly requested.
