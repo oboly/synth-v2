@@ -3751,9 +3751,9 @@ _CSS = """
     .pp-selector-symbol { font-weight: 700; font-family: ui-monospace, monospace; }
     .pp-selector-meta { font-size: 11px; color: var(--muted); margin-top: 2px; }
     .pp-selector-breath { font-size: 11px; color: var(--blue); margin-top: 3px; }
-    .pp-selector-held { border-left: 2px solid var(--ok); }
+    .pp-selector-held { border-left: 2px solid var(--blue); }
     .pp-selector-tag {
-      font-size: 9px; font-weight: 700; color: var(--ok); border: 1px solid var(--ok);
+      font-size: 9px; font-weight: 700; color: var(--blue); border: 1px solid var(--blue);
       border-radius: 3px; padding: 0 3px; margin-left: 4px;
     }
     .pp-selector-tag-asset {
@@ -3816,13 +3816,13 @@ _CSS = """
     .tf-label { font-size: 11px; color: var(--muted); margin-top: 2px; }
     .wallet-held-badge {
       margin-left: auto; font-size: 10px; font-weight: 700; letter-spacing: .04em;
-      color: var(--ok); border: 1px solid var(--ok); border-radius: 4px; padding: 2px 6px;
+      color: var(--blue); border: 1px solid var(--blue); border-radius: 4px; padding: 2px 6px;
     }
     .portfolio-asset-badge {
       font-size: 10px; font-weight: 700; letter-spacing: .04em;
       color: var(--blue); border: 1px solid var(--blue); border-radius: 4px; padding: 2px 6px;
     }
-    .card[data-wallet-held='true'] { border-left: 3px solid var(--ok); }
+    .card[data-wallet-held='true'] { border-left: 3px solid var(--blue); }
     .card[data-portfolio-asset='true'][data-wallet-held='false'] { border-left: 3px solid var(--blue); }
     /* Market rotation pressure — read-only projection (Issue #255). Kept
        visually distinct from wallet-held/portfolio-asset badges and from
@@ -4263,12 +4263,11 @@ def _build_client_js(storage_scope: str) -> str:
         : card.dataset.planningPpp || '';
       var breath = card.dataset.bcCurrentCheckpoint || 'UNAVAILABLE';
       var trajectory = card.dataset.bcNextCheckpoint || 'UNAVAILABLE';
-      var tags = (isWalletHeld ? " <span class='pp-selector-tag'>WALLET HELD</span>" : '') +
-        (isPortfolioAsset ? " <span class='pp-selector-tag-asset'>PORTFOLIO ASSET</span>" : '');
+      var tags = (isWalletHeld ? " <span class='pp-selector-tag'>WALLET</span>" : '') +
+        (isPortfolioAsset ? " <span class='pp-selector-tag-asset'>PORTFOLIO</span>" : '');
       item.innerHTML =
         "<div class='pp-selector-symbol'>" + symbol + tags + "</div>" +
-        "<div class='pp-selector-meta'>" + action + (ppp ? ' \xb7 ' + ppp : '') + "</div>" +
-        "<div class='pp-selector-breath muted'>Breathline ctx: " + breath + " \xb7 " + trajectory + "</div>";
+        "<div class='pp-selector-meta'>" + action + (ppp ? ' \xb7 ' + ppp : '') + "</div>";
       item.addEventListener('click', function() {{
         selectProfitPlanCard(item.dataset.renderId);
       }});
@@ -5016,11 +5015,11 @@ def render_plan_card(
     badge_html_parts = []
     if card.is_wallet_held:
         badge_html_parts.append(
-            "<span class='wallet-held-badge' title='Positive amount in the latest persisted wallet snapshot'>WALLET HELD</span>"
+            "<span class='wallet-held-badge' title='Positive amount in the latest persisted wallet snapshot'>WALLET</span>"
         )
     if card.is_portfolio_asset:
         badge_html_parts.append(
-            "<span class='portfolio-asset-badge' title='Configured strategic portfolio/rotation asset'>PORTFOLIO ASSET</span>"
+            "<span class='portfolio-asset-badge' title='Configured strategic portfolio/rotation asset'>PORTFOLIO</span>"
         )
     portfolio_badge_html = "".join(badge_html_parts)
 
@@ -5029,8 +5028,6 @@ def render_plan_card(
         _metric_block("Current price", price_line),
         _metric_block("Setup", card.setup_state),
         _metric_block("Actionability", card.actionability_state),
-        # Breathline is research-only / disabled for actions — presented as muted context.
-        _metric_block("Breathline context", BREATHLINE_DISABLED_SHORT),
     ]
     if card.short_context_display_state in {
         "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT",
