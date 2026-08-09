@@ -1,5 +1,13 @@
 # Multi-Account Asset Foundation — Phase 2-5 Current-State Audit
 
+> **Revision note (2026-08-09):** corrected in response to PR #337 program
+> review, which found the original `R2_AFTER=PASS` /
+> `BACKLOG_UNMIGRATED_EXECUTABLE_SCOPE_COUNT=0` conclusion internally
+> inconsistent with this document's own Phase 3 and Phase 5.3 findings.
+> Sections 4, 6, 10, 11, 12 revised to count the Phase 3 tail and Phase 5.3
+> verification as executable unowned scope; `R2_AFTER` is now `FAIL`. See
+> Section 10 for the reconciled rule application.
+
 Fresh current-`main` architecture/call-site review of historical Phases 2-5,
 required by `docs/todo/multi_account_asset_foundation_backlog.md` ("Phase 2-5
 review gate") and `docs/research/multi_account_asset_foundation_v1.md`
@@ -138,10 +146,23 @@ design premise for the dominant consumers (market_data, reporting). The
 remaining `asset.quote_asset`-column reads are confined to a handful of
 research runners using the documented fallback pattern, which is safe,
 narrow, and was explicitly anticipated by the canonical design doc. No
-account coupling was found where it should not exist. **This is close to
-executable** (narrow, mechanical: switch ~4-5 research runners' fallback to
-`venue_market`-only, then drop `asset.quote_asset`), but it is not filed
-here per task scope (no Issues created in this audit).
+account coupling was found where it should not exist, and no design
+decision is outstanding — the target state (`venue_market`-only) is already
+established and in use by the dominant consumers.
+
+**Reconciliation (program review, 2026-08-09):** this is **currently
+executable, unowned scope**, not merely "close to executable." Named files
+(`run_fibo_target_map_v1.py`, `run_multi_horizon_fib_backtest_v1.py`,
+`run_fib_leg_pair_observation_preview_v1.py`,
+`run_canonical_fib_zone_map_writer_preview_v1.py`,
+`run_kite_watchlist_candidate_check_v1.py`), no dependency, no unresolved
+design question — removing the `asset.quote_asset` fallback branch in favor
+of the already-present `venue_market`/`quote_currency` path is mechanical.
+This audit itself is the "fresh review" gate the backlog required before
+filing; having performed it, the scope is no longer blocked and must be
+counted (see Section 10). It is not filed as an Issue in this audit per
+task instruction (no Issues created here), but it counts toward
+`BACKLOG_UNMIGRATED_EXECUTABLE_SCOPE_COUNT`.
 
 ## 5. Phase 4 findings — `asset.is_tradeable`, venue-aware market selection
 
@@ -256,8 +277,18 @@ executable Issue-ready gap remains for 5.1/5.2/5.4. 5.3's only remaining
 "gap" is verification, not implementation — a bounded read-only DB check
 (count `account_asset` rows with `source=OPEN_ORDER_DISCOVERY` and
 `trading_account_id=4`, compare against Hugo's live open orders), not a
-code change. That verification task is mechanical enough to be Issue-ready
-if a future Issue is filed, but is not filed here.
+code change.
+
+**Reconciliation (program review, 2026-08-09):** this verification task is
+**currently executable, unowned scope**, not merely "Issue-ready if filed
+later." It has a concrete, bounded read-only check, no dependency, and no
+outstanding design question — the only reason it was not performed here was
+that this audit's own task instruction scoped out production/DB access, not
+because the work itself is blocked. That is a real prerequisite (this
+audit was not authorized to query production), but it is not a prerequisite
+that prevents an Issue from being *filed and executed* by a future,
+DB-authorized task. It counts toward
+`BACKLOG_UNMIGRATED_EXECUTABLE_SCOPE_COUNT` (see Section 10).
 
 ## 7. Issue #319 overlap
 
@@ -354,29 +385,42 @@ that review.
 
 Findings:
 - Phase 2: superseded by an unplanned semantic split (legacy vs.
-  publication-cohort). Requires a design decision, not mechanical migration.
-  Not executable.
-- Phase 3: mostly already migrated for dominant consumers; narrow remaining
-  tail is close to mechanical but was not decomposed/filed in this audit per
-  task scope (no Issues created).
+  publication-cohort). Requires a design decision (disambiguate the two
+  semantics), not mechanical migration. **Not executable now** — genuine
+  unresolved prerequisite.
+- Phase 3: mostly already migrated for dominant consumers; the remaining
+  tail (5 named research runners, documented fallback pattern, no
+  dependency, no outstanding design question) is **currently executable,
+  unowned scope** now that this fresh review has been performed. Counted.
 - Phase 4: real gap, but the first step (selection_engine venue-context
   design) is an unresolved architecture question, not mechanical migration.
-  Not executable.
-- Phase 5.1/5.2/5.4: done. Phase 5.3: code-complete, verification-only gap
-  (a read-only DB check), not implementation. Not itself a code-change Issue.
+  **Not executable now** — genuine unresolved prerequisite.
+- Phase 5.1/5.2/5.4: done, no executable gap. Phase 5.3: a bounded
+  read-only DB verification check (no dependency, no design question) is
+  **currently executable, unowned scope**. Counted.
 
-No item in the current backlog qualifies as currently executable, unowned,
-mechanical scope under the task's rule ("future ideas, contingent
-migrations, design questions... do NOT count as unmigrated executable
-scope"). Phase 3's narrow tail is the closest to executable but requires a
-decomposition (which 4-5 research runners, confirm no other callers) not
-performed here, so it is not asserted as ready either.
+**Program-review correction (2026-08-09):** the initial version of this
+audit asserted `BACKLOG_UNMIGRATED_EXECUTABLE_SCOPE_COUNT=0` /
+`R2_AFTER=PASS` while simultaneously describing the Phase 3 tail and Phase
+5.3 verification as "close to executable" / "mechanical" / "Issue-ready" —
+internally inconsistent. Applying the audit's own rule consistently
+("future ideas, contingent migrations, design questions... do NOT count as
+unmigrated executable scope" — but bounded, dependency-free, mechanical
+work does count): Phase 3's tail and Phase 5.3's verification have no
+unresolved design prerequisite and are ready to be filed and executed by a
+future task. Phase 2 and Phase 4 do have a genuine unresolved prerequisite
+(a naming/semantics decision and a selection_engine venue-context design
+decision, respectively) and correctly remain excluded.
 
 ```text
-BACKLOG_UNMIGRATED_EXECUTABLE_SCOPE_COUNT=0
+BACKLOG_UNMIGRATED_EXECUTABLE_SCOPE_COUNT=2
+  1. Phase 3 tail: migrate remaining asset.quote_asset research-runner
+     fallbacks to venue_market-only (5 named files, no dependency)
+  2. Phase 5.3: verify Hugo open-order discovery freshness
+     (bounded read-only DB check, no dependency)
 BACKLOG_PARTIAL_ISSUE_OWNERSHIP=Issue #319 owns decision_gate/execution_planner account-identifier fragmentation (overlaps none of Phase 2-4; tangential to Phase 5.3 verification only); Issue #333 owns account_asset settings-column production drift (out of Phase 2-5 scope by design)
 R2_BEFORE=FAIL
-R2_AFTER=PASS
+R2_AFTER=FAIL
 ```
 
 ## 11. Proposed future Issue decomposition (not created)
@@ -394,7 +438,8 @@ For a later filing round, once the noted design questions are resolved:
    Does not overlap #319 or #333.
 
 2. **"Migrate remaining asset.quote_asset research-runner fallbacks to
-   venue_market"** — owning layer: research. Dependency: none. Actionable:
+   venue_market"** (counted in `BACKLOG_UNMIGRATED_EXECUTABLE_SCOPE_COUNT`,
+   item 1) — owning layer: research. Dependency: none. Actionable:
    yes, mechanical (~4-5 files:
    `run_fibo_target_map_v1.py`, `run_multi_horizon_fib_backtest_v1.py`,
    `run_fib_leg_pair_observation_preview_v1.py`,
@@ -413,7 +458,8 @@ For a later filing round, once the noted design questions are resolved:
    account-agnostic hard boundary. Does not overlap #319 (different layer)
    or #333.
 
-4. **"Verify Hugo open-order discovery freshness (Phase 5.3)"** — owning
+4. **"Verify Hugo open-order discovery freshness (Phase 5.3)"** (counted in
+   `BACKLOG_UNMIGRATED_EXECUTABLE_SCOPE_COUNT`, item 2) — owning
    layer: account (read-only verification). Dependency: none. Actionable:
    yes, bounded read-only DB check (count `account_asset` rows
    `source=OPEN_ORDER_DISCOVERY` for `trading_account_id=4` vs. live Bitvavo
@@ -431,8 +477,16 @@ FOLLOWUP_ISSUES_CREATED=0
 - No production/DB access was used in this audit; Phase 5.3's Hugo-specific
   open-order freshness and Phase 5.1/5.2's current row counts rest on the
   2026-08-09 Phase 1 reality audit's live evidence, not re-verified here.
+  Filing/executing the Phase 5.3 verification Issue (Section 10, item 2)
+  requires a DB-authorized task; that is an execution-permission
+  prerequisite, not a design/uncertainty prerequisite, and does not remove
+  it from the executable-scope count.
 - Phase 2 and Phase 4 both require a design decision before any mechanical
-  migration Issue can be filed (see Sections 3, 5, 11).
+  migration Issue can be filed (see Sections 3, 5, 11) — these remain
+  correctly excluded from the executable-scope count.
+- Phase 3's tail (Section 10, item 1) and Phase 5.3's verification
+  (Section 10, item 2) are executable, unowned scope; per task instruction
+  no Issue is filed for either in this audit.
 - Issue #333 (account_asset settings-column drift) remains open and
   unrelated to this audit's findings, as instructed.
 
