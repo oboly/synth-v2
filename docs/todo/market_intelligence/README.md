@@ -9,6 +9,17 @@ This file is navigation only. Executable child-file scope is owned by GitHub Iss
 Unmigrated executable scope:
 - none
 
+## Disposition (Batch 6F2 review)
+
+Reviewed for archival in Batch 6F2
+(`docs/development/docs_todo_cleanup_batch_6f2_v1.md`) and retained
+temporarily: 8 of the 9 canonical files below still carry
+`ISSUE_OWNED_OPEN` scope, and `docs/todo/README.md`'s frozen lane index does
+not separately enumerate them. This index remains the only current
+navigation to those active files. Retire this file once its canonical
+files are individually archived or the retiring `docs/todo/` board decision
+(Batch 6G) supersedes it.
+
 ## Scope
 
 Research-only, market-only, account-agnostic observation and classification lanes, including sector rotation, macro regime, narrative, catalyst, breadth, flow, scanner research, cross-asset rotation, and composite market context.

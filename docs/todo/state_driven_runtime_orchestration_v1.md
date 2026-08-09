@@ -1,5 +1,18 @@
 # State-Driven Runtime Orchestration V1
 
+## GitHub Issue migration
+
+Status: migrated
+
+Operational status/priority is owned by GitHub Issues.
+
+Section ownership:
+- repository/git-history mechanism audit and minimal integration-design next step -> Issue #331
+- any future schema/runtime/dispatcher/timer implementation -> not authorized by this file; requires evidence-driven follow-up Issues after #331
+
+Unmigrated executable scope:
+- none
+
 ## Status
 
 Design note only. No runtime behavior, scheduler, writer ownership, database schema,

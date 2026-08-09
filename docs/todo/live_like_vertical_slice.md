@@ -9,7 +9,7 @@ Operational status/priority is owned by GitHub Issues.
 Section ownership:
 - Immediate Next Steps (candidate emitter, decision preview adapter, execution-plan preview adapter, shadow event log/dashboard) -> implemented, no Issue required (`src/research/run_intraday_retest_reclaim_candidate_v1.py`, `run_live_like_shadow_chain_v1.py`, `run_live_like_decision_preview_v1.py`, `run_live_like_execution_plan_preview_v1.py`, `run_live_like_shadow_event_v1.py`; dashboards in `src/reporting/`)
 - Open Design Questions -> Issue #292
-- Later Research Note — `MACRO_DIP_BUDGET_MODE_V1` -> no Issue required; explicitly parked speculative concept with no executable near-term scope (duplicate concept also parked in `docs/todo/parked_backlog.md`)
+- Later Research Note — `MACRO_DIP_BUDGET_MODE_V1` -> no Issue required; explicitly parked speculative concept with no executable near-term scope (duplicate concept also parked in the archived `docs/archive/parked_backlog.md`, historical record)
 
 Unmigrated executable scope:
 - none

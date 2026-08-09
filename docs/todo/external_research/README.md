@@ -9,6 +9,19 @@ This file is navigation only. Executable child-file scope is owned by GitHub Iss
 Unmigrated executable scope:
 - none
 
+## Disposition (Batch 6F2 review)
+
+Status: `ISSUE_OWNED_OPEN_NAVIGATION` (navigation-only, temporary).
+
+Resolved in Batch 6F2 (`docs/development/docs_todo_cleanup_batch_6f2_v1.md`):
+this file remains useful because `cross_asset_public_data_and_instrument_registry_v1.md`
+is still `ISSUE_OWNED_OPEN` (#302) and this is the only current index pointing
+to it. `ffg_universe_metadata_v1.md` was archived in the same batch; see
+`docs/archive/external_research/ffg_universe_metadata_v1.md` for the
+historical record and `docs/research/ffg_research_universe_v1.md` for current
+canonical authority. Retire this file once `cross_asset_public_data_and_instrument_registry_v1.md`
+also gets a terminal disposition.
+
 ## Scope
 
 Source provenance, curated-universe membership, identity resolution, confidence, timestamps, public-data feasibility, neutral instrument mapping, and ingestion boundaries.
@@ -23,7 +36,6 @@ This file is navigation only. This board is frozen; current status, priority, an
 
 ## Canonical files
 
-- `ffg_universe_metadata_v1.md`
 - `cross_asset_public_data_and_instrument_registry_v1.md`
 
 ## Cross-asset split

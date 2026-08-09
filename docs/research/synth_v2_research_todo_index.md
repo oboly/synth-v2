@@ -23,9 +23,9 @@ docs/todo/README.md
 docs/todo/ui_webview.md
 docs/todo/breath_curve.md
 docs/todo/strategy_candidates.md
-docs/todo/paper_candidate_contract.md
 docs/todo/dev_ops_hygiene.md
-docs/todo/parked_backlog.md
+docs/archive/paper_candidate_contract.md (archived, historical record; Batch 6F2)
+docs/archive/parked_backlog.md (archived, historical record; Batch 6F2)
 ```
 
 Research docs remain canonical for detailed lane design. The TODO folder is the working board.
