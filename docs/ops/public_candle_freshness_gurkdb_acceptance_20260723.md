@@ -199,3 +199,84 @@ gurkDB checkout to the exact merge commit, install the capability-specific
 production authorization and canonical units, run the service once, verify
 fresh persisted Bitvavo candles and zero duplicate writers, and enable/start
 the timer. One post-cutover service run is sufficient; do not repeat acceptance.
+
+**Superseded by activation** (see the next section): the gurkDB timer was
+subsequently enabled and observed running successfully. The Next Gate note
+above is preserved unchanged as the truthful record of the remaining work at
+the time this document was originally written; it does not retroactively
+describe activation.
+
+## gurkDB Activation Evidence — 2026-08-10
+
+The `AUTHORIZED_INACTIVE` cutover authorization recorded above already covers
+`public_candle_freshness` production ownership by gurkDB. This section
+records a later, separate observation that the previously deferred cutover
+steps (authorization-file install, unit installation, timer enable) have in
+fact been completed and the writer is running in production, discovered
+incidentally during an unrelated read-only Sector Rotation preflight on
+gurkDB rather than as part of a dedicated cutover drill for this capability.
+
+### Observation
+
+```text
+observed_at_utc=2026-08-10T18:32:25Z
+host=gurkdb
+unit=synth-market-candle-freshness-writer.timer
+timer_enabled=true
+timer_active=true
+latest_observed_trigger=2026-08-10T18:32:25Z
+journal_evidence=active canonical obs_market_candle write phases observed
+host_mutations=0 database_writes_by_this_observation=0 systemctl_mutations=0
+```
+
+The observation was strictly read-only: no `systemctl` command, writer
+invocation, or database write was performed to produce it. It was captured as
+a side effect of Sector Rotation preflight evidence collection on gurkDB, not
+as a dedicated activation drill.
+
+### Evidence scope and limits
+
+This observation directly supports "the authorized runtime for
+`production_runtime_owner=gurkdb` is observed active" per the `ACTIVE`
+lifecycle rule in
+`docs/ops/writer_capability_host_ownership_contract_v1.md`. Because the fail-closed
+`ExecStartPre` authorization guard
+(`src.operations.verify_writer_capability_authorization_v1`) is mandatory on
+the installed service, successfully completing live scheduled cycles is
+itself evidence that a valid capability-specific production authorization
+file is present on gurkDB and binds the running commit; the guard fails
+closed otherwise.
+
+Unlike the dedicated 2026-08-08 Rotation Pressure cutover
+(`docs/ops/market_rotation_pressure_gurkdb_acceptance_20260808.md`), this
+observation does not independently re-confirm, at 2026-08-10, an
+exact-invocation journal entry, a fresh devlap/odroid legacy-fence re-check,
+or a direct DB row-count/freshness read. The devlap and odroid legacy
+containment facts recorded in "Host and Legacy Containment" above
+(`authorized_active_candle_owner_count=0`, `duplicate_candle_writer_count=0`
+as of 2026-07-23) are carried forward unchanged; they were not re-verified on
+2026-08-10. No host mutation occurred, so there is no basis to suspect a new
+duplicate writer appeared since.
+
+### Production decision evidence (unchanged)
+
+`production_decision_evidence` continues to point at
+`docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md#production-cutover-authorization`
+(this same document, the section above). Activation does not require or
+produce a separate authorization decision: the same 2026-07-24 authorization
+already covers `AUTHORIZED_INACTIVE` -> `ACTIVE` per
+`docs/ops/writer_capability_host_ownership_contract_v1.md`'s lifecycle rules
+(both lifecycles require identical `production_authorization_status`,
+`acceptance_status`, and evidence fields; `ACTIVE` additionally requires an
+authorized observed active runtime for the owner host, recorded above and in
+the registry's `observed_runtime_state`).
+
+### Non-Goals
+
+This section does not:
+
+- perform, request, or imply any host mutation, `systemctl` action, or writer
+  invocation;
+- change the writer implementation, cadence, or database schema;
+- change Sector Rotation state or introduce a new capability;
+- grant live trading, broker write, or order-submission permission.

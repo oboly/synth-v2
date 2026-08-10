@@ -2,16 +2,16 @@
 
 ## Status
 
-The contract records `public_price_snapshot` and (since 2026-08-08)
-`market_rotation_pressure` as active on gurkDB, and `public_candle_freshness`
-as accepted and separately authorized to gurkDB in `AUTHORIZED_INACTIVE`.
+The contract records `public_price_snapshot`, (since 2026-08-10)
+`public_candle_freshness`, and (since 2026-08-08) `market_rotation_pressure`
+as active on gurkDB.
 
 ```text
 public_candle_freshness_acceptance=ACCEPTED
 public_candle_freshness_production_runtime_owner=gurkdb
-public_candle_freshness_runtime_lifecycle=AUTHORIZED_INACTIVE
-public_candle_freshness_timer_active=false
-public_candle_freshness_production_authorization_file_present=false
+public_candle_freshness_runtime_lifecycle=ACTIVE
+public_candle_freshness_timer_active=true
+public_candle_freshness_production_authorization_file_present=true
 market_rotation_pressure_acceptance=ACCEPTED
 market_rotation_pressure_production_runtime_owner=gurkdb
 market_rotation_pressure_runtime_lifecycle=ACTIVE
@@ -73,17 +73,24 @@ production_authorization_file=absent
 ```
 
 Public Candle Freshness also records a separate production decision after
-successful gurkDB preflight and controlled acceptance:
+successful gurkDB preflight and controlled acceptance, and its gurkDB timer
+was subsequently observed enabled and active on 2026-08-10 (discovered
+incidentally during an unrelated Sector Rotation preflight, not a dedicated
+cutover drill):
 
 ```text
 acceptance_host=gurkdb
 acceptance_status=ACCEPTED
 production_runtime_owner=gurkdb
 production_authorization_status=AUTHORIZED
-runtime_lifecycle=AUTHORIZED_INACTIVE
-timer=disabled/inactive
-production_authorization_file=absent
+runtime_lifecycle=ACTIVE
+timer=enabled/active
+production_authorization_file=present
 ```
+
+See
+`docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md#gurkdb-activation-evidence-20260810`
+for the full activation observation and its evidence limits.
 
 Market Rotation Pressure also records a separate production decision after
 successful gurkDB preflight and controlled acceptance on 2026-08-08 (explicit
@@ -198,7 +205,7 @@ Summary:
 | capability_id | kind | wrapper | current owner | lifecycle |
 |---|---|---|---|---|
 | `public_price_snapshot` | public market-data writer | `scripts/run_market_price_snapshot_once.sh` | gurkdb | ACTIVE |
-| `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
+| `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | gurkdb | ACTIVE |
 | `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | gurkdb | ACTIVE |
 | `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | devlap | ACTIVE |
 | `sector_rotation_snapshot` | public market-data writer | `scripts/run_sector_rotation_engine_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
@@ -208,7 +215,9 @@ Public Candle Freshness passed strict gurkDB preflight and two controlled
 manual cycles after its enabled-universe mismatch was resolved by disabling
 only the eight stale historical-import asset rows. Generic live validation
 reports zero mismatch. It is accepted and separately authorized to gurkDB in
-`AUTHORIZED_INACTIVE`, pending exact merged-commit deployment and activation.
+`ACTIVE`; the gurkDB timer was observed enabled and running successfully on
+2026-08-10. See
+`docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md#gurkdb-activation-evidence-20260810`.
 Rotation Pressure passed strict gurkDB preflight and a controlled acceptance
 run on 2026-08-08 (explicit user production-cutover authorization for Issue
 #266), and its gurkDB timer was enabled the same day with a successful first

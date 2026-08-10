@@ -88,7 +88,7 @@ def test_lifecycle_aware_invariants_replace_exactly_one_before_cutover() -> None
     assert "authorized_inactive_owner_requires_acceptance_and_production_decision_evidence" not in inv
 
 
-def test_public_price_is_active_and_candle_is_authorized_inactive() -> None:
+def test_public_price_and_candle_are_active() -> None:
     ids = {cap["capability_id"] for cap in _capabilities()}
     assert ids == {
         "public_price_snapshot",
@@ -118,7 +118,7 @@ def test_public_price_is_active_and_candle_is_authorized_inactive() -> None:
             assert cap["acceptance_evidence"]
             assert cap["production_runtime_owner"] == "gurkdb"
             assert cap["production_authorization_status"] == "AUTHORIZED"
-            assert cap["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+            assert cap["runtime_lifecycle"] == "ACTIVE"
             assert cap["production_decision_evidence"]
         elif cap["capability_id"] == "market_rotation_pressure":
             assert cap["selected_host"] == "gurkdb", cap["capability_id"]
@@ -183,6 +183,26 @@ def test_public_price_observations_preserve_inactive_and_append_active() -> None
             "authorization_status": "AUTHORIZED",
             "runtime_state_classification": "AUTHORIZED_RUNTIME_OBSERVED",
             "evidence_source": "docs/ops/public_price_snapshot_gurkdb_host_acceptance_20260721.md#scheduled-production-activation-proof-20260722",
+        }
+    ]
+
+
+def test_candle_freshness_observed_active_runtime_is_recorded() -> None:
+    candle = _cap(_registry(), "public_candle_freshness")
+    assert candle["observed_runtime_state"] == [
+        {
+            "host": "gurkdb",
+            "unit": "synth-market-candle-freshness-writer.timer",
+            "unit_path": "deploy/systemd/synth-market-candle-freshness-writer.timer",
+            "installed_at_observation": True,
+            "enabled_at_observation": True,
+            "active_at_observation": True,
+            "observed_at_utc": "2026-08-10T18:32:25Z",
+            "observed_at_precision": "exact",
+            "current_state": "ACTIVE_OBSERVED",
+            "authorization_status": "AUTHORIZED",
+            "runtime_state_classification": "AUTHORIZED_RUNTIME_OBSERVED",
+            "evidence_source": "docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md#gurkdb-activation-evidence-20260810",
         }
     ]
 
@@ -723,7 +743,7 @@ def test_existing_four_capabilities_unchanged_by_sector_rotation_onboarding() ->
     assert price["runtime_lifecycle"] == "ACTIVE"
     assert price["production_authorization_status"] == "AUTHORIZED"
     candle = _cap(registry, "public_candle_freshness")
-    assert candle["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+    assert candle["runtime_lifecycle"] == "ACTIVE"
     assert candle["production_authorization_status"] == "AUTHORIZED"
     rotation_pressure = _cap(registry, "market_rotation_pressure")
     assert rotation_pressure["runtime_lifecycle"] == "ACTIVE"

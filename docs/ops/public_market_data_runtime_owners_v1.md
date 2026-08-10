@@ -6,8 +6,9 @@
 acceptance, and inactive host preparation on 2026-07-21.
 `public_candle_freshness` passed strict gurkDB preflight and two controlled
 manual cycles after its enabled-universe blocker was corrected. It is accepted
-and separately authorized to gurkDB in `AUTHORIZED_INACTIVE`, pending exact
-merged-commit deployment and activation.
+and separately authorized to gurkDB in `ACTIVE`; the gurkDB timer was
+observed enabled and running successfully on 2026-08-10. See
+`docs/ops/public_candle_freshness_gurkdb_acceptance_20260723.md#gurkdb-activation-evidence-20260810`.
 `market_rotation_pressure` had its committed unit re-bound from devlap to
 gurkDB on 2026-08-07 (Issue #266 root-cause repair), completed strict gurkDB
 preflight and a controlled acceptance run on 2026-08-08 (explicit user
@@ -57,8 +58,8 @@ public_candle_freshness:
   acceptance_status=ACCEPTED
   production_runtime_owner=gurkdb
   production_authorization_status=AUTHORIZED
-  runtime_lifecycle=AUTHORIZED_INACTIVE
-  observed_runtime_state=[]
+  runtime_lifecycle=ACTIVE
+  observed_runtime_state=gurkdb timer installed/enabled/active (2026-08-10)
 
 market_rotation_pressure:
   candidate_host=gurkdb
@@ -87,10 +88,9 @@ native_short_4h_chain:
 
 ## gurkDB Public-Writer Authorization and Remaining Selection
 
-`public_price_snapshot` and (since 2026-08-08) `market_rotation_pressure` are
-accepted and separately authorized to gurkDB in `ACTIVE`.
-`public_candle_freshness` passed strict preflight and controlled acceptance
-and is separately authorized to gurkDB in `AUTHORIZED_INACTIVE`.
+`public_price_snapshot`, (since 2026-08-10) `public_candle_freshness`, and
+(since 2026-08-08) `market_rotation_pressure` are all accepted and separately
+authorized to gurkDB in `ACTIVE`.
 
 Specifically:
 
@@ -100,9 +100,9 @@ public_price_snapshot production_authorization_status=AUTHORIZED
 public_price_snapshot runtime_lifecycle=ACTIVE
 public_candle_freshness production_runtime_owner=gurkdb
 public_candle_freshness production_authorization_status=AUTHORIZED
-public_candle_freshness runtime_lifecycle=AUTHORIZED_INACTIVE
-public_candle_freshness production authorization file absent
-public_candle_freshness timer disabled/inactive
+public_candle_freshness runtime_lifecycle=ACTIVE
+public_candle_freshness production authorization file present
+public_candle_freshness timer enabled/active (observed 2026-08-10)
 market_rotation_pressure production_runtime_owner=gurkdb
 market_rotation_pressure production_authorization_status=AUTHORIZED
 market_rotation_pressure runtime_lifecycle=ACTIVE
@@ -187,7 +187,7 @@ ExecStartPre=src.operations.verify_writer_capability_authorization_v1
 
 A gurkDB binding alone is not itself a production authorization; each
 capability requires a separate production decision. `public_price_snapshot`
-(`ACTIVE`), `public_candle_freshness` (`AUTHORIZED_INACTIVE`), and (since
+(`ACTIVE`), `public_candle_freshness` (`ACTIVE`, since 2026-08-10), and (since
 2026-08-08) `market_rotation_pressure` (`ACTIVE`) have all completed that
 separate production decision.
 
