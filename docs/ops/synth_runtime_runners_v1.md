@@ -391,6 +391,22 @@ Rules:
   prevent cross-host overlap, which is why authorization and cutover guards are
   mandatory
 - manual runs must either use the same lock or be run only after stopping timers
+- **`/tmp` and `/var/tmp` are not safe default lock roots for a service unit
+  that sets `PrivateTmp=true`.** `PrivateTmp=true` gives the service its own
+  mount namespace for `/tmp` and `/var/tmp`, so a literal `/tmp/...lock` path
+  resolves to a different inode for a scheduled run than for a manual
+  same-host invocation — both sides can acquire `LOCK_EX` concurrently and
+  the lock silently stops providing mutual exclusion. Default lock paths for
+  any runner that may also run manually must live under a root systemd does
+  not namespace for `PrivateTmp` services, such as `$HOME`, and locks are
+  mutable runtime state rather than configuration — use the XDG state root
+  (e.g. `~/.local/state/synth/runtime/locks/`), not `~/.config/`. Do not
+  place locks under a published `OUTPUT_ROOT` either, since that mixes
+  runtime coordination with published artifacts. Do not "fix" the
+  `PrivateTmp` mismatch by adding `BindPaths=/tmp` or disabling
+  `PrivateTmp`; pick a shared, non-namespaced lock root instead. See
+  `run_account_profit_plan_snapshot_render_owner_v1.py` (`default_lock_path`)
+  for the applied fix on `synth-linked-profile-runtime-refresh.service`.
 
 ## Environment
 
