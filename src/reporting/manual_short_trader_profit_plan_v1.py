@@ -70,6 +70,14 @@ CANONICAL_MAP_CONTEXT_LABEL = (
     "Canonical 4h market reference — navigation only, not lifecycle-verified"
 )
 
+# state_model_discipline_v1.md: source_health (STALE_PRIMARY_4H / STALE_SUPPORT_1H)
+# is a temporary data-health condition, orthogonal to scope/lifecycle state. A
+# SUPPORTED scope with a stale canonical source stays visible and degraded/blocked,
+# labeled truthfully instead of the generic "Context unavailable" wording. This is a
+# display-only label; it introduces no new machine status code.
+_NATIVE_SOURCE_STALE_FRESHNESS_STATES = frozenset({"STALE_PRIMARY_4H", "STALE_SUPPORT_1H"})
+MISSING_CANDLES_DISPLAY_LABEL = "MISSING CANDLES"
+
 STATE_LABELS: dict[str, str] = {
     "CONTEXT_UNAVAILABLE": "Context unavailable",
     "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT": "Transient SHORT context (non-canonical reference)",
@@ -374,6 +382,12 @@ class CardEvidence:
     context_ts_utc: str = DATA_UNAVAILABLE
     generation_ts_utc: str = DATA_UNAVAILABLE
     update_ts_utc: str = DATA_UNAVAILABLE
+    # Raw canonical native_short_fib_context_v1 context_freshness_status passthrough
+    # (FRESH / STALE_PRIMARY_4H / STALE_SUPPORT_1H). Truthful evidence only -- never
+    # inferred from timestamps here. Used solely to select a truthful degraded
+    # display label (state_model_discipline_v1.md); does not change
+    # short_context_display_state, actionability_state, or any other machine state.
+    native_context_freshness_status: str = DATA_UNAVAILABLE
 
 
 @dataclass(frozen=True)
@@ -3603,7 +3617,11 @@ def build_profit_plan_card(
         action_label = "REVIEW_CONTEXT"
         primary_state = "CONTEXT_UNAVAILABLE"
         secondary_state = None
-        suggested_manual_attention_label = STATE_LABELS["CONTEXT_UNAVAILABLE"]
+        suggested_manual_attention_label = (
+            MISSING_CANDLES_DISPLAY_LABEL
+            if card_evidence.native_context_freshness_status in _NATIVE_SOURCE_STALE_FRESHNESS_STATES
+            else STATE_LABELS["CONTEXT_UNAVAILABLE"]
+        )
         setup_state = "MINIMAL_CONTEXT"
         event_state = "CONTEXT_UNAVAILABLE"
         ladder_states = ()

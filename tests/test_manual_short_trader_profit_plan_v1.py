@@ -6823,3 +6823,123 @@ def test_sort_ppp_rail_still_prioritizes_wallet_held_in_action_priority_mode() -
     ]
     result = _run_profit_plan_sort_js("action", cards)
     assert result["rail_order"][0] == "bbb"
+
+
+# ---------------------------------------------------------------------------
+# Degraded Native SHORT source health display (state_model_discipline_v1.md):
+# a SUPPORTED scope with a stale canonical source (context_freshness_status
+# STALE_PRIMARY_4H / STALE_SUPPORT_1H) stays visible and degraded/blocked,
+# displayed as "MISSING CANDLES" instead of the generic "Context unavailable"
+# wording. Machine state (short_context_display_state, actionability_state,
+# visibility_class, is_relevant) must not change.
+# ---------------------------------------------------------------------------
+
+def _degraded_source_card(*, native_context_freshness_status: str) -> ProfitPlanCard:
+    evidence = CardEvidence(
+        map_cycle_id="WLD|SHORT|4h|bridge",
+        native_map_id="DATA_UNAVAILABLE",
+        native_map_status="DATA_UNAVAILABLE",
+        selected_map_reason="Row present but not canonical",
+        selected_map_tier="TRANSIENT_NON_CANONICAL_REFERENCE",
+        native_context_freshness_status=native_context_freshness_status,
+    )
+    return build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.4800"),
+        fib_ext=_wld_fib_ext(),
+        reentry=_fet_reentry(),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=evidence,
+    )
+
+
+def test_degraded_stale_primary_source_renders_missing_candles_and_stays_visible() -> None:
+    card = _degraded_source_card(native_context_freshness_status="STALE_PRIMARY_4H")
+    assert card.suggested_manual_attention_label == "MISSING CANDLES"
+    assert card.short_context_display_state == "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT"
+    assert card.actionability_state == "CONTEXT_UNAVAILABLE"
+    assert card.visibility_class == VISIBILITY_CONTEXT_UNAVAILABLE
+    assert card.is_relevant is True
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    assert "MISSING CANDLES" in html
+
+
+def test_degraded_stale_support_source_renders_missing_candles() -> None:
+    card = _degraded_source_card(native_context_freshness_status="STALE_SUPPORT_1H")
+    assert card.suggested_manual_attention_label == "MISSING CANDLES"
+    assert card.short_context_display_state == "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT"
+    assert card.actionability_state == "CONTEXT_UNAVAILABLE"
+
+
+def test_non_stale_non_canonical_source_keeps_generic_context_unavailable_label() -> None:
+    """Snapshot-unverified / other non-canonical causes (freshness FRESH or
+    unknown) must not be mislabeled MISSING CANDLES -- only truthful stale-
+    candle evidence selects that label."""
+    for freshness in ("FRESH", "DATA_UNAVAILABLE"):
+        card = _degraded_source_card(native_context_freshness_status=freshness)
+        assert card.suggested_manual_attention_label == "Context unavailable"
+
+
+def test_degraded_source_label_change_does_not_alter_machine_fields() -> None:
+    """Only suggested_manual_attention_label differs between the stale and
+    non-stale variants -- every other machine field is identical."""
+    stale = _degraded_source_card(native_context_freshness_status="STALE_PRIMARY_4H")
+    fresh = _degraded_source_card(native_context_freshness_status="FRESH")
+    assert stale.short_context_display_state == fresh.short_context_display_state
+    assert stale.actionability_state == fresh.actionability_state
+    assert stale.scenario_type == fresh.scenario_type
+    assert stale.action_label == fresh.action_label
+    assert stale.primary_state == fresh.primary_state
+    assert stale.visibility_class == fresh.visibility_class
+    assert stale.is_relevant == fresh.is_relevant
+
+
+def test_current_canonical_source_keeps_normal_display_unaffected() -> None:
+    """A canonical/FRESH row (native_map_status AVAILABLE) must never render
+    MISSING CANDLES -- degraded labeling only applies to the non-canonical path."""
+    evidence = CardEvidence(
+        map_cycle_id="WLD|SHORT|4h|current",
+        native_map_id="snap-1:WLD:cycle-1",
+        native_map_status="AVAILABLE",
+        selected_map_reason="Single active map selected",
+        selected_map_tier="CURRENT_ACTIVE_MAP",
+        native_context_freshness_status="FRESH",
+    )
+    card = build_profit_plan_card(
+        symbol="WLD",
+        market="WLD-EUR",
+        current_price=Decimal("0.4800"),
+        fib_ext=_wld_fib_ext(),
+        reentry=_fet_reentry(),
+        short_context_display_state="HAS_NATIVE_SHORT_FIB_CONTEXT",
+        short_context_coverage_status="NATIVE_SHORT_CONTEXT_AVAILABLE",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+        evidence=evidence,
+    )
+    assert card.suggested_manual_attention_label != "MISSING CANDLES"
+    assert card.short_context_display_state == "HAS_NATIVE_SHORT_FIB_CONTEXT"
+
+
+def test_evidence_json_exposes_native_context_freshness_status_field() -> None:
+    card = _degraded_source_card(native_context_freshness_status="STALE_PRIMARY_4H")
+    row = _json_row_for(card)
+    assert row["evidence"]["native_context_freshness_status"] == "STALE_PRIMARY_4H"
+
+
+def test_reporting_module_has_no_broker_or_execution_imports() -> None:
+    source = Path("src/reporting/manual_short_trader_profit_plan_v1.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    forbidden_substrings = ("broker", "executor", "execution_planner", "decision_gate")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [node.module or ""]
+        else:
+            continue
+        for name in names:
+            lowered = name.lower()
+            assert not any(bad in lowered for bad in forbidden_substrings), name

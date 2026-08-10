@@ -475,6 +475,9 @@ def _evidence_from_native_row(
         anchor_high_price=_fmt_dec(native_row.anchor_high_price),
         context_ts_utc=_fmt_ts(latest_context_ts),
         update_ts_utc=_fmt_ts(latest_context_ts),
+        # Truthful passthrough of the row's own canonical
+        # native_short_fib_context_v1 field; not re-derived or inferred here.
+        native_context_freshness_status=_fmt_unavailable(native_row.context_freshness_status),
     )
 
 
