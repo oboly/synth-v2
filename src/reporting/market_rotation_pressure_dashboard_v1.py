@@ -315,8 +315,11 @@ def _composition_html(header: RotationPressureHeader) -> str:
         ("IN", header.positive_count, "in"),
     )
     return "".join(
-        f"<span class='composition-part composition-{css}' style='flex:{count}' "
-        f"aria-label='{label} {count / total:.0%}'>{label} {count / total:.0%}</span>"
+        f"<span class='composition-part composition-{css}"
+        f"{' composition-zero' if count == 0 else ''}' "
+        f"style='flex:0 0 {count / total:.6%};width:{count / total:.6%}' "
+        f"aria-label='{label} {count / total:.0%}'>"
+        f"{'' if count == 0 else f'{label} {count / total:.0%}'}</span>"
         for label, count, css in parts
     )
 
@@ -437,7 +440,8 @@ body {{ margin:0; padding:18px; background:linear-gradient(180deg,#081524,#050b1
 .freshness.fresh {{ color:#74efa8; }} .freshness.stale,.freshness.future_timestamp {{ color:#ff8790; }}
 .observed-state,.pressure-history {{ margin-top:16px; border:1px solid #24364d; border-radius:14px; background:#0b1827; padding:16px; }}
 .composition-band {{ display:flex; min-height:40px; overflow:hidden; border-radius:8px; background:#172536; }}
-.composition-part {{ display:flex; justify-content:center; align-items:center; min-width:0; padding:6px; font-size:.78rem; font-weight:700; color:#06101c; }}
+.composition-part {{ display:flex; justify-content:center; align-items:center; min-width:0; box-sizing:border-box; padding:6px; font-size:.78rem; font-weight:700; color:#06101c; }}
+.composition-part.composition-zero {{ padding:0; border:0; overflow:hidden; }}
 .composition-out {{ background:#ff6471; }} .composition-mixed {{ background:#f3c95f; }} .composition-in {{ background:#3ee08f; }}
 .composition-note,.scale-note,.curve-empty {{ color:#8fa5bf; font-size:.78rem; }}
 .pressure-history > div:first-child {{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; }}

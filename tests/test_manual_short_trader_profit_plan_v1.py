@@ -3100,6 +3100,9 @@ def test_rotation_strip_leads_with_pressure_scale_and_persisted_participation() 
     assert "+20.0" in rendered
     assert "-100</span><span>0</span><span>+100" in rendered
     assert "IN 100%" in rendered
+    assert "rotation-composition-out rotation-composition-zero' style='flex:0 0 0.000000%;width:0.000000%'" in rendered
+    assert "rotation-composition-mixed rotation-composition-zero' style='flex:0 0 0.000000%;width:0.000000%'" in rendered
+    assert "rotation-composition-in' style='flex:0 0 100.000000%;width:100.000000%'" in rendered
     assert "rotation-history-line" in rendered
 
 

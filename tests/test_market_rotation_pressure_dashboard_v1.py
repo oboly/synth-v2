@@ -190,6 +190,34 @@ def test_render_dashboard_supports_negative_pressure_and_persisted_composition()
     assert "composition-band" in rendered
 
 
+def test_render_dashboard_composition_zero_counts_have_zero_width():
+    rendered = render_dashboard_html(
+        build_dashboard(
+            _header(positive_count=3, neutral_count=0, negative_count=0),
+            _rows(),
+            now_utc=NOW,
+        )
+    )
+    assert "composition-out composition-zero' style='flex:0 0 0.000000%;width:0.000000%'" in rendered
+    assert "composition-mixed composition-zero' style='flex:0 0 0.000000%;width:0.000000%'" in rendered
+    assert "composition-in' style='flex:0 0 100.000000%;width:100.000000%'" in rendered
+    assert "IN 100%" in rendered
+
+
+def test_render_dashboard_composition_asymmetric_widths_are_exact_percentages():
+    rows = _rows() + [_row(4, "DOGE-EUR", 1.0, "MIXED")]
+    rendered = render_dashboard_html(
+        build_dashboard(
+            _header(eligible_asset_count=4, positive_count=2, neutral_count=1, negative_count=1),
+            rows,
+            now_utc=NOW,
+        )
+    )
+    assert "composition-out' style='flex:0 0 25.000000%;width:25.000000%'" in rendered
+    assert "composition-mixed' style='flex:0 0 25.000000%;width:25.000000%'" in rendered
+    assert "composition-in' style='flex:0 0 50.000000%;width:50.000000%'" in rendered
+
+
 def test_render_dashboard_plots_only_persisted_history_with_fixed_zero_reference():
     history = [
         {"pressure_snapshot_id": 42, "as_of_ts_utc": datetime(2026, 7, 12, 18, 0), "market_score": -20.0},

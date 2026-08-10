@@ -3873,7 +3873,8 @@ _CSS = """
     .rotation-light.active.light-mixed { background: var(--warn); }
     .rotation-metrics { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--muted); }
     .rotation-composition { display: flex; min-height: 24px; overflow: hidden; border-radius: 4px; margin-top: 6px; }
-    .rotation-composition span { display: flex; align-items: center; justify-content: center; min-width: 0; padding: 2px 5px; color: #07111f; font-size: 9px; font-weight: 700; }
+    .rotation-composition span { display: flex; align-items: center; justify-content: center; min-width: 0; box-sizing: border-box; padding: 2px 5px; color: #07111f; font-size: 9px; font-weight: 700; }
+    .rotation-composition span.rotation-composition-zero { padding: 0; border: 0; overflow: hidden; }
     .rotation-composition-out { background: var(--bad); } .rotation-composition-mixed { background: var(--warn); } .rotation-composition-in { background: var(--ok); }
     .rotation-history { grid-column: 1 / -1; margin-top: 2px; }
     .rotation-history-label { font-size: 10px; color: var(--muted); }
@@ -4653,7 +4654,11 @@ def _rotation_composition_html(projection: RotationProfitPlanProjection) -> str:
         return ""
     labels = (("OUT", projection.negative_count, "out"), ("MIXED", projection.neutral_count, "mixed"), ("IN", projection.positive_count, "in"))
     return "<div class='rotation-composition' aria-label='Persisted OUT MIXED IN composition'>" + "".join(
-        f"<span class='rotation-composition-{css}' style='flex:{count}'>{label} {count / total:.0%}</span>"
+        f"<span class='rotation-composition-{css}"
+        f"{' rotation-composition-zero' if count == 0 else ''}' "
+        f"style='flex:0 0 {count / total:.6%};width:{count / total:.6%}' "
+        f"aria-label='{label} {count / total:.0%}'>"
+        f"{'' if count == 0 else f'{label} {count / total:.0%}'}</span>"
         for label, count, css in labels
     ) + "</div>"
 
