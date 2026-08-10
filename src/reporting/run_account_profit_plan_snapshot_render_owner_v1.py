@@ -26,6 +26,14 @@ DEFAULT_OUTPUT_ROOT = Path("/var/www/html/synth")
 DEFAULT_NATIVE_SHORT_SNAPSHOT_ROOT = Path(
     "/var/www/html/synth/_runtime/native_short_context_snapshot_v1"
 )
+# PrivateTmp=true on the canonical systemd render owner gives /tmp and
+# /var/tmp a per-service mount namespace, so a lock path under either one
+# no longer provides real mutual exclusion against a manual same-host
+# invocation (which sees the host /tmp). The default lock root lives under
+# the invoking user's home directory, which systemd does not namespace, so
+# scheduled and manual renders observe the same inode. Resolved lazily
+# (not at import time) so it always reflects the current $HOME.
+LOCK_FORBIDDEN_ROOTS = (Path("/tmp"), Path("/var/tmp"))
 DELTA_STATUSES = ("NO_PREVIOUS_SNAPSHOT", "UNCHANGED", "UPDATED_NOW")
 PROFILE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 SAFETY_MARKERS: dict[str, int | str | bool] = {
@@ -56,6 +64,26 @@ class ProfitPlanSnapshot:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def default_lock_path(profile: str) -> Path:
+    lock_root = Path.home() / ".config" / "synth" / "runtime" / "locks"
+    return lock_root / f"account-profit-plan-snapshot-render-{profile}.lock"
+
+
+def validate_lock_path(lock_path: Path) -> None:
+    """Fail closed if the lock path resolves under a PrivateTmp-namespaced root."""
+    candidate = lock_path.expanduser()
+    for forbidden in LOCK_FORBIDDEN_ROOTS:
+        try:
+            candidate.relative_to(forbidden)
+        except ValueError:
+            continue
+        raise ValueError(
+            f"lock_path={lock_path} resolves under {forbidden}, which is namespaced by "
+            "PrivateTmp=true on the canonical render-owner service and is not shared with "
+            "manual same-host invocations; pass a --lock-file outside /tmp and /var/tmp"
+        )
 
 
 def _read_json_object(path: Path, *, label: str) -> dict[str, Any]:
@@ -188,7 +216,19 @@ def run(args: argparse.Namespace) -> int:
     profile_dir = output_root / "accounts" / profile
     runtime_dir = profile_dir / "_runtime" / "profit_plan_render_owner_v1"
     metadata_path = args.metadata_path or runtime_dir / "latest_run.json"
-    lock_path = args.lock_file or Path(f"/tmp/synth-account-profit-plan-snapshot-render-{profile}.lock")
+    lock_path = args.lock_file
+    if lock_path is None:
+        # No hidden fallback to /tmp: the default lives under $HOME, which
+        # PrivateTmp=true on the canonical render-owner service does not
+        # namespace, so a scheduled run and a manual same-host run resolve
+        # the same lock inode. An explicit --lock-file override is trusted
+        # as-is and is not re-validated here.
+        lock_path = default_lock_path(profile)
+        try:
+            validate_lock_path(lock_path)
+        except ValueError as exc:
+            print(f"FAILED runner={RUNNER_NAME} detail={exc}", file=sys.stderr, flush=True)
+            return 1
     canonical_html = profile_dir / "profit-plan.html"
     canonical_json = profile_dir / "profit-plan.json"
     frozen_previous_path = runtime_dir / "previous-profit-plan.json"

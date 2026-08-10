@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import subprocess
@@ -283,6 +284,160 @@ def test_reporting_uses_evidence_based_native_snapshot_status(tmp_path: Path) ->
     source = Path("src/reporting/run_manual_short_trader_profit_plan_v1.py").read_text(encoding="utf-8")
     assert "check candle ETL pipeline" not in source
     assert "candle ETL may need to run" not in source
+
+
+def test_default_lock_path_never_resolves_under_tmp_or_var_tmp(monkeypatch: pytest.MonkeyPatch) -> None:
+    # pytest's own tmp_path fixture lives under the host /tmp, so use a
+    # fake, non-filesystem-backed home to prove the *path arithmetic* never
+    # routes through /tmp or /var/tmp regardless of the real $HOME.
+    monkeypatch.setattr(owner.Path, "home", staticmethod(lambda: Path("/home/faketestuser")))
+    lock_path = owner.default_lock_path("joost")
+    assert lock_path == Path("/home/faketestuser/.config/synth/runtime/locks/account-profit-plan-snapshot-render-joost.lock")
+    for forbidden in owner.LOCK_FORBIDDEN_ROOTS:
+        with pytest.raises(ValueError):
+            lock_path.relative_to(forbidden)
+
+
+def test_validate_lock_path_rejects_tmp_and_var_tmp() -> None:
+    with pytest.raises(ValueError, match="PrivateTmp"):
+        owner.validate_lock_path(Path("/tmp/synth-account-profit-plan-snapshot-render-joost.lock"))
+    with pytest.raises(ValueError, match="PrivateTmp"):
+        owner.validate_lock_path(Path("/var/tmp/synth-account-profit-plan-snapshot-render-joost.lock"))
+    owner.validate_lock_path(Path("/home/theone/.config/synth/runtime/locks/joost.lock"))
+
+
+def test_missing_lock_file_arg_uses_home_default_outside_tmp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # pytest's tmp_path lives under the host /tmp, so a fake $HOME under
+    # tmp_path would defeat this test's purpose. /dev/shm is a distinct,
+    # writable, non-/tmp, non-/var/tmp mount, so it stands in for a real
+    # non-namespaced home directory.
+    import shutil
+    import tempfile
+
+    fake_home = Path(tempfile.mkdtemp(prefix="synth-profit-plan-home-", dir="/dev/shm"))
+    try:
+        monkeypatch.setenv("HOME", str(fake_home))
+        _write_native_snapshot(tmp_path / "native")
+        args = owner.parse_args(
+            [
+                "--account-profile",
+                "joost",
+                "--output-root",
+                str(tmp_path / "web"),
+                "--native-short-snapshot-root",
+                str(tmp_path / "native"),
+                "--metadata-path",
+                str(tmp_path / "web" / "accounts" / "joost" / "_runtime" / "profit_plan_render_owner_v1" / "latest_run.json"),
+                "--output",
+                "none",
+            ]
+        )
+        assert args.lock_file is None
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            owner.subprocess, "run", _renderer(calls, render_id="render-1", delta_status="NO_PREVIOUS_SNAPSHOT")
+        )
+        assert owner.run(args) == 0
+        expected_lock = fake_home / ".config" / "synth" / "runtime" / "locks" / "account-profit-plan-snapshot-render-joost.lock"
+        assert expected_lock.exists()
+        for forbidden in owner.LOCK_FORBIDDEN_ROOTS:
+            with pytest.raises(ValueError):
+                expected_lock.relative_to(forbidden)
+    finally:
+        shutil.rmtree(fake_home, ignore_errors=True)
+
+
+def test_same_profile_second_run_is_skipped_while_lock_held(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_native_snapshot(tmp_path / "native")
+    args = _args(tmp_path, "joost")
+    args.lock_file.parent.mkdir(parents=True, exist_ok=True)
+    holder = args.lock_file.open("a+b")
+    fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            owner.subprocess, "run", _renderer(calls, render_id="render-1", delta_status="NO_PREVIOUS_SNAPSHOT")
+        )
+        assert owner.run(args) == 0
+        assert calls == []
+        assert not args.metadata_path.exists()
+    finally:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+        holder.close()
+
+
+def test_different_profiles_use_independent_locks_and_do_not_block(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_native_snapshot(tmp_path / "native")
+    joost_args = _args(tmp_path, "joost")
+    hugo_args = _args(tmp_path, "hugo")
+    joost_args.lock_file.parent.mkdir(parents=True, exist_ok=True)
+    holder = joost_args.lock_file.open("a+b")
+    fcntl.flock(holder.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        calls: list[list[str]] = []
+        monkeypatch.setattr(
+            owner.subprocess, "run", _renderer(calls, render_id="hugo-1", delta_status="NO_PREVIOUS_SNAPSHOT")
+        )
+        assert owner.run(hugo_args) == 0
+        assert len(calls) == 1
+    finally:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_UN)
+        holder.close()
+
+
+def test_lock_is_held_for_full_render_critical_section(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _write_native_snapshot(tmp_path / "native")
+    args = _args(tmp_path, "joost")
+    contention_observed: list[bool] = []
+
+    def fake_run(command: list[str], check: bool):
+        assert check is False
+        probe = args.lock_file.open("a+b")
+        try:
+            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            contention_observed.append(False)
+            fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+        except BlockingIOError:
+            contention_observed.append(True)
+        finally:
+            probe.close()
+        html_path = Path(command[command.index("--output-html") + 1])
+        json_path = Path(command[command.index("--output-json") + 1])
+        html_path.write_text("<html>render-1</html>", encoding="utf-8")
+        json_path.write_text(
+            json.dumps({"render_id": "render-1", "symbols": [{"symbol": "BTC", "delta": {"delta_status": "NO_PREVIOUS_SNAPSHOT"}}]}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(owner.subprocess, "run", fake_run)
+    assert owner.run(args) == 0
+    assert contention_observed == [True]
+
+
+def test_explicit_lock_file_override_is_not_rejected_even_under_tmp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """--lock-file is an explicit, trusted operator choice: the fail-closed
+    /tmp guard only applies to the unset-argument default, matching the CLI
+    contract already exercised by _args() (whose lock files live under
+    pytest's tmp_path, itself typically under the host /tmp)."""
+    _write_native_snapshot(tmp_path / "native")
+    args = _args(tmp_path, "joost")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        owner.subprocess, "run", _renderer(calls, render_id="render-1", delta_status="NO_PREVIOUS_SNAPSHOT")
+    )
+    assert owner.run(args) == 0
+    assert len(calls) == 1
 
 
 def test_banner_separates_native_and_canonical_coverage_and_excludes_canonical_supported(
