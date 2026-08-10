@@ -143,7 +143,10 @@ def main(argv: list[str] | None = None) -> int:
         f"STARTED runner={REPORT_NAME} mode=read_only venue={args.venue} "
         f"model_version={args.model_version} ts={datetime.now(UTC).isoformat()}"
     )
-    print("db_writes=0 broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0")
+    print(
+        "account_inputs=0 db_writes=0 writer_calls=0 broker_calls=0 "
+        "broker_private_calls=0 broker_writes=0 order_submission=0 live_orders=0"
+    )
     print("decision_gate=none execution_planner=none executor=none")
 
     conn = get_connection()

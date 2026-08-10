@@ -43,7 +43,10 @@ ROTATION_STATES = {
     "DATA_UNAVAILABLE",
 }
 SAFETY_MARKERS: dict[str, Any] = {
+    "account_inputs": 0,
     "db_writes": 0,
+    "writer_calls": 0,
+    "broker_calls": 0,
     "broker_private_calls": 0,
     "broker_writes": 0,
     "order_submission": 0,
