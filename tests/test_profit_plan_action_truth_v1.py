@@ -537,10 +537,11 @@ def test_breathline_data_does_not_change_any_action_state() -> None:
     assert signature(with_breath) == signature(without_breath)
 
 
-def test_breathline_renders_as_research_only_muted_context() -> None:
+def test_breathline_is_hidden_from_normal_operator_card() -> None:
+    """Breathline is research-only/disabled (weights 0). Issue #347 requires it
+    hidden from the normal operator card entirely, without deleting the
+    underlying data-bc-* attribute contract other consumers may still read."""
     html = render_plan_card(_card_with_breath(_breath_payload()))
-    assert "Breathline context" in html
-    assert pp.BREATHLINE_DISPLAY_STATE in html
-    assert "research context only — disabled for actions" in html
-    assert "breath-curve-disabled" in html
-    assert "selection_weight=0" in html
+    assert "Breathline context" not in html
+    assert "breath-curve-disabled" not in html
+    assert "data-bc-availability=" in html

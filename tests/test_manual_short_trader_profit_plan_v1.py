@@ -51,6 +51,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     build_profit_plan_card,
     compare_card_delta,
     evidence_rows_to_json,
+    evidence_rows_to_operator_json,
     derive_quality_state,
     filter_cards_for_view,
     format_current_price_line,
@@ -4698,12 +4699,12 @@ def test_cockpit_pr19_card_data_attrs_still_present() -> None:
     assert "data-sort-symbol=" in html
 
 
-def test_cockpit_detail_panel_has_placeholder_headings() -> None:
+def test_cockpit_detail_panel_has_placeholder_prompt() -> None:
+    """No fixed pseudo-headings (Issue #348 blocker 1) — the panel starts with
+    a plain prompt and is populated by the domain-grouped Evidence renderer
+    once a card is selected client-side."""
     html = render_full_html([], rendered_at="now", broker_mode="test")
-    assert "Wallet" in html
-    assert "Position" in html
-    assert "Orders" in html
-    assert "Context" in html
+    assert "Select a card to see details." in html
 
 
 def test_cockpit_no_wallet_account_value_computation() -> None:
@@ -6308,12 +6309,14 @@ def test_json_snapshot_and_html_data_attr_expose_identical_evidence_rows() -> No
     assert [row["key"] for row in json_rows] == list(_EVIDENCE_ROW_KEYS_IN_ORDER)
 
 
-def test_sidebar_evidence_html_escapes_normalized_rows_while_json_remains_raw(
+def test_detail_panel_evidence_html_escapes_normalized_rows_while_json_remains_raw(
     monkeypatch,
 ) -> None:
-    """Evidence JSON remains structured data; both HTML renderers escape at output."""
+    """Evidence JSON remains structured data; the detail-panel JS escapes at
+    output using the same domain-grouped/operator-translated data the initial
+    card uses (Issue #348 blocker 1) — no separate JS translation table."""
     raw_row = EvidenceRow(
-        key="evidence<script>alert(\"x\")</script>",
+        key="position_snapshot",
         label='<script>alert("x")</script>',
         authority="A&B",
         status='"value"',
@@ -6334,12 +6337,13 @@ def test_sidebar_evidence_html_escapes_normalized_rows_while_json_remains_raw(
     script_match = re.search(r"<script>(.*?)</script>", full_html, re.DOTALL)
     assert script_match is not None
 
+    operator_groups = evidence_rows_to_operator_json((raw_row,))
     node_source = (
         "var document = {addEventListener: function() {}};\n"
         + script_match.group(1)
-        + "\nvar row = "
-        + json.dumps(evidence_rows_to_json((raw_row,))[0])
-        + ";\nconsole.log(JSON.stringify([_ppEvidenceRowHtml(row), _ppEvidenceSectionHtml([row])]));"
+        + "\nvar groups = "
+        + json.dumps(operator_groups)
+        + ";\nconsole.log(JSON.stringify([_ppEvidenceGroupsHtml(groups)]));"
     )
     completed = subprocess.run(
         ["node", "-e", node_source],
@@ -6347,17 +6351,19 @@ def test_sidebar_evidence_html_escapes_normalized_rows_while_json_remains_raw(
         capture_output=True,
         text=True,
     )
-    sidebar_row_html, sidebar_section_html = json.loads(completed.stdout)
+    [detail_panel_html] = json.loads(completed.stdout)
 
-    # The compact card and executed sidebar JavaScript both render the same
-    # normalized values as HTML-safe text, including every reason-code value.
+    # The compact card and the executed detail-panel JavaScript both render
+    # the same normalized values as HTML-safe text, including every
+    # reason-code value (surfaced via the operator-translated reason text and
+    # the raw-code <details> block).
     compact_escaped = {
         "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;",
         "A&amp;B",
         "&quot;value&quot;",
         "&#x27;quoted&#x27;",
     }
-    sidebar_escaped = {
+    detail_escaped = {
         "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;",
         "A&amp;B",
         "&quot;value&quot;",
@@ -6365,12 +6371,16 @@ def test_sidebar_evidence_html_escapes_normalized_rows_while_json_remains_raw(
     }
     for value in compact_escaped:
         assert value in compact_html
-    for value in sidebar_escaped:
-        assert value in sidebar_row_html
-        assert value in sidebar_section_html
+    for value in detail_escaped:
+        assert value in detail_panel_html
+
+    # The detail panel uses the server-computed display label ("Cost basis"
+    # for position_snapshot), not the raw row.label, and groups it under the
+    # same domain heading as the initial card.
+    assert "Cost basis" in detail_panel_html
+    assert "Account / position / wallet / orders" in detail_panel_html
 
     raw_html_values = (
-        raw_row.key,
         raw_row.label,
         raw_row.authority,
         raw_row.status,
@@ -6378,8 +6388,7 @@ def test_sidebar_evidence_html_escapes_normalized_rows_while_json_remains_raw(
         *raw_row.reason_codes,
     )
     for value in raw_html_values:
-        assert value not in sidebar_row_html
-        assert value not in sidebar_section_html
+        assert value not in detail_panel_html
 
     # The JSON snapshot remains raw structured evidence, not HTML-entity data.
     assert snapshot["symbols"][0]["evidence_rows"] == evidence_rows_to_json((raw_row,))
@@ -6972,3 +6981,148 @@ def test_reporting_module_has_no_broker_or_execution_imports() -> None:
         for name in names:
             lowered = name.lower()
             assert not any(bad in lowered for bad in forbidden_substrings), name
+
+
+# ---------------------------------------------------------------------------
+# Issue #347 — pure presentation refactor: domain-separated card sections.
+# These tests assert HTML structure/wording only. They must never assert a
+# different underlying enum/state value than before the refactor.
+# ---------------------------------------------------------------------------
+
+
+def test_card_has_fibonacci_levels_heading() -> None:
+    card = _fresh_canonical_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    assert "Fibonacci Levels" in html
+
+
+def test_account_fields_render_in_account_section_not_under_fibonacci_levels() -> None:
+    card = _ldo_like_card()
+    card = dataclasses.replace(
+        card,
+        is_wallet_held=True,
+        evidence=dataclasses.replace(
+            card.evidence,
+            held_amount="12.5",
+            held_eur_value="500",
+            cost_basis_price_eur="40",
+        ),
+    )
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+
+    fib_start = html.index("Fibonacci Levels")
+    fib_end = html.index("Account / Position")
+    account_start = fib_end
+    fib_section = html[fib_start:fib_end]
+    account_section = html[account_start:]
+
+    assert "Held amount" in html
+    assert "Held amount" not in fib_section
+    assert "Held value" not in fib_section
+    assert "Cost basis" not in fib_section
+    assert "Held amount" in account_section
+
+
+def test_order_too_far_or_stale_renders_under_orders_not_fibonacci() -> None:
+    card = _make_card(
+        current_price="0.3000",
+        reentry=_fet_reentry(),
+        buy_orders=(_FakeOrder("0.1000"),),
+    )
+    assert card.secondary_state == "ORDER_TOO_FAR_OR_STALE"
+    html = render_plan_card(card, buy_orders=(_FakeOrder("0.1000"),), sell_orders=())
+
+    fib_start = html.index("Fibonacci Levels")
+    fib_end = html.index("order-section")
+    fib_section = html[fib_start:fib_end]
+    order_section_start = html.index("<div class='order-section'>")
+
+    assert "Order too far or stale" in html
+    assert "Order too far or stale" not in fib_section
+    assert "Order too far or stale" in html[order_section_start:]
+
+
+def test_wallet_content_does_not_render_among_fibonacci_levels() -> None:
+    card = _mixed_account_freshness_card()
+    card = dataclasses.replace(card, is_wallet_held=True)
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+
+    fib_start = html.index("Fibonacci Levels")
+    fib_end = html.index("Account / Position")
+    fib_section = html[fib_start:fib_end]
+    assert "Wallet snapshot" not in fib_section
+    assert "wallet-held-badge" not in fib_section
+
+
+def test_disabled_breathline_content_is_hidden_from_normal_card() -> None:
+    """Breathline is demoted research-only context (c02255b8). Issue #347
+    requires it be hidden from the normal operator card entirely (not merely
+    relabeled), without deleting the underlying data attributes/contract that
+    downstream/JSON consumers rely on."""
+    card = _fresh_canonical_card()
+    card = dataclasses.replace(card, breath_curve={"availability_state": "AVAILABLE", "warnings": []})
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    assert "Breathline context" not in html
+    assert "RESEARCH_ONLY_DISABLED" not in html
+    # Underlying data contract (machine-readable attrs) is preserved, not deleted.
+    assert "data-bc-availability=" in html
+
+
+def test_evidence_is_grouped_by_domain() -> None:
+    card = _mixed_account_freshness_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    evidence_start = html.index("class='card-evidence")
+    evidence_html = html[evidence_start:]
+    assert "Fibonacci / map" in evidence_html
+    assert "Market data" in evidence_html
+    assert "Account / position / wallet / orders" in evidence_html
+    assert "Action / permission" in evidence_html
+    # Domain group ordering: Fibonacci/map before market data before account.
+    assert evidence_html.index("Fibonacci / map") < evidence_html.index("Market data")
+    assert evidence_html.index("Market data") < evidence_html.index(
+        "Account / position / wallet / orders"
+    )
+
+
+def test_pr_reference_and_raw_tier_label_not_exposed_as_primary_evidence_copy() -> None:
+    """'PR #75' must not appear anywhere (was only ever an internal authority
+    comment). 'tier' wording may still exist in the muted/secondary authority
+    description and in the raw JSON evidence payload, but not as the primary
+    bold evidence-row label."""
+    card = _ldo_like_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    assert "PR #75" not in html
+    row_labels = re.findall(r"evidence-row-label'>([^<]*)<", html)
+    assert row_labels, "expected at least one evidence row label"
+    assert not any("tier" in label.lower() for label in row_labels)
+
+
+def test_action_gate_reason_translated_in_fibonacci_levels_section() -> None:
+    """MAP_TIER_NOT_CONFIRMED_CURRENT-style unconfirmed-map truth must be
+    reflected as plain operator wording in the Fibonacci Levels section."""
+    card = _ldo_like_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    fib_start = html.index("Fibonacci Levels")
+    fib_end = html.index("Account / Position") if "Account / Position" in html else html.index(
+        "class='order-section'"
+    )
+    fib_section = html[fib_start:fib_end]
+    assert "NOT CONFIRMED" in fib_section
+
+
+def test_underlying_action_gate_enum_values_unchanged_by_presentation_refactor() -> None:
+    """Issue #347 is presentation-only: the action-gate resolver's returned
+    enum/state strings must be byte-identical to their pre-refactor values."""
+    ldo = _ldo_like_card()
+    rows = build_card_evidence_rows(ldo)
+    action_gate = _row_by_key(rows, "action_gate")
+    assert action_gate.status == "REVIEW_CONTEXT"
+    assert set(action_gate.reason_codes) == {
+        "ACCOUNT_ORDER_DATA_UNAVAILABLE",
+        "STALE_OR_UNAVAILABLE_ORDER_SNAPSHOT",
+        "NATIVE_MAP_DATA_UNAVAILABLE",
+    }
+    fresh = _fresh_canonical_card()
+    fresh_rows = build_card_evidence_rows(fresh)
+    fresh_action_gate = _row_by_key(fresh_rows, "action_gate")
+    assert fresh_action_gate.status in {"FIX_LADDER", "REVIEW_CONTEXT"}
