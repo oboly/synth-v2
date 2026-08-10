@@ -112,16 +112,28 @@ def header_from_mapping(row: dict[str, Any]) -> RotationPressureHeader:
     lights = int(row["evidence_light_count"])
     if not 0 <= lights <= 5:
         raise ValueError("evidence_light_count must be within 0..5")
+    eligible_asset_count = int(row["eligible_asset_count"])
+    positive_count = int(row["positive_count"])
+    neutral_count = int(row["neutral_count"])
+    negative_count = int(row["negative_count"])
+    composition_count = positive_count + neutral_count + negative_count
+    if min(positive_count, neutral_count, negative_count) < 0:
+        raise ValueError("composition counts must be non-negative")
+    if composition_count != eligible_asset_count:
+        raise ValueError(
+            "composition count total must equal eligible_asset_count: "
+            f"expected={eligible_asset_count}:actual={composition_count}"
+        )
     return RotationPressureHeader(
         pressure_snapshot_id=int(row["pressure_snapshot_id"]),
         as_of_ts_utc=_utc_naive(row["as_of_ts_utc"]),
         venue=str(row["venue"]),
         model_version=str(row["model_version"]),
-        eligible_asset_count=int(row["eligible_asset_count"]),
+        eligible_asset_count=eligible_asset_count,
         excluded_missing_pair_count=int(row["excluded_missing_pair_count"]),
-        positive_count=int(row["positive_count"]),
-        neutral_count=int(row["neutral_count"]),
-        negative_count=int(row["negative_count"]),
+        positive_count=positive_count,
+        neutral_count=neutral_count,
+        negative_count=negative_count,
         market_score=_require_pressure(row["market_score"], "market_score"),
         positive_breadth_ratio=_require_finite_float(row["positive_breadth_ratio"], "positive_breadth_ratio"),
         negative_breadth_ratio=_require_finite_float(row["negative_breadth_ratio"], "negative_breadth_ratio"),
@@ -175,7 +187,17 @@ def build_dashboard(
             reason="NO_PRESSURE_SNAPSHOT",
         )
 
-    header = header_from_mapping(header_row)
+    try:
+        header = header_from_mapping(header_row)
+    except (KeyError, TypeError, ValueError) as exc:
+        return RotationPressureDashboard(
+            status="DATA_UNAVAILABLE",
+            freshness_state="DATA_UNAVAILABLE",
+            generated_at_utc=generated,
+            header=None,
+            rows=(),
+            reason=f"INVALID_PRESSURE_SNAPSHOT:{exc}",
+        )
     rows = tuple(row_from_mapping(row) for row in observation_rows)
     history = tuple(sorted(
         (history_point_from_mapping(row) for row in history_rows),

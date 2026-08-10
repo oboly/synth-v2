@@ -96,7 +96,9 @@ acceleration, persistence/phase context, and freshness are secondary context.
 Participation is rendered from the persisted `negative_count`,
 `neutral_count`, `positive_count`, and `eligible_asset_count` as a single
 OUT/MIXED/IN 100% band. No reporting layer owns or derives a replacement
-breadth label.
+breadth label. Each component count must be non-negative and their total must
+equal `eligible_asset_count`; otherwise the dashboard is `DATA_UNAVAILABLE`
+and renders no participation band.
 
 The five underlying evidence checks remain owned and versioned by `market_rotation_pressure_v1`:
 

@@ -101,9 +101,39 @@ def test_build_dashboard_no_snapshot_fails_closed():
 
 
 def test_build_dashboard_observation_count_mismatch_fails_closed():
-    dashboard = build_dashboard(_header(eligible_asset_count=4), _rows(), now_utc=NOW)
+    dashboard = build_dashboard(
+        _header(eligible_asset_count=4, positive_count=3, neutral_count=0, negative_count=1),
+        _rows(),
+        now_utc=NOW,
+    )
     assert dashboard.status == "DATA_UNAVAILABLE"
     assert (dashboard.reason or "").startswith("OBSERVATION_COUNT_MISMATCH")
+
+
+def test_build_dashboard_negative_composition_count_fails_closed():
+    dashboard = build_dashboard(
+        _header(positive_count=4, neutral_count=0, negative_count=-1),
+        _rows(),
+        now_utc=NOW,
+    )
+    assert dashboard.status == "DATA_UNAVAILABLE"
+    assert dashboard.header is None
+    assert (dashboard.reason or "").startswith("INVALID_PRESSURE_SNAPSHOT:composition counts")
+    assert "<div class='composition-band'" not in render_dashboard_html(dashboard)
+
+
+def test_build_dashboard_composition_count_total_mismatch_fails_closed():
+    dashboard = build_dashboard(
+        _header(positive_count=1, neutral_count=1, negative_count=0),
+        _rows(),
+        now_utc=NOW,
+    )
+    assert dashboard.status == "DATA_UNAVAILABLE"
+    assert dashboard.header is None
+    assert (dashboard.reason or "").startswith(
+        "INVALID_PRESSURE_SNAPSHOT:composition count total"
+    )
+    assert "<div class='composition-band'" not in render_dashboard_html(dashboard)
 
 
 def test_build_dashboard_stale_is_degraded_not_available():
