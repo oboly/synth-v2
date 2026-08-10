@@ -22,39 +22,71 @@ Each row below is evidenced by the file(s) shown and, where applicable, by
 the systemd unit and/or writer-capability-ownership registry entry that
 governs it. Classification legend:
 
-- **canonical** — the current, authorized, in-production mechanism for its
-  stated purpose.
+- **canonical-active** — a current mechanism with evidence of an active
+  authorized owner or an active read-only consumer path.
+- **canonical-authorized-inactive** — current and authorized, but the
+  ownership registry records it as authorized-inactive rather than active.
+- **canonical-read-only** — current reporting/classification logic that has
+  no writer authority to register.
 - **legacy** — still running/authorized, superseded in part or scheduled for
   eventual consolidation, but not obsolete.
 - **obsolete** — no longer authorized/invoked; retained only as history.
 - **research-only** — used for backtest/replay/diagnostics, not runtime truth.
+- **governance-gap / unregistered** — a committed scheduled or write-capable
+  path for which this audit found no writer-capability registration or
+  authorization/lock coverage sufficient to call it canonical-active. This
+  describes governance evidence, not a new lifecycle state.
 
 | # | Mechanism | File(s) / Module(s) | Layer | Classification | Trigger(s) | Lock / Authorization |
 |---|-----------|----------------------|-------|-----------------|------------|-----------------------|
-| 1 | `public_candle_freshness` | `scripts/run_market_candle_freshness_once.sh` → `src/etl/bitvavo/run_candles_etl.py` (writer path); `src/operations/persisted_market_candle_freshness_v1.py` + `run_persisted_market_candle_freshness_v1.py` (SELECT-only fail-closed boundary check, no write) | market_data / ETL | canonical | `synth-market-candle-freshness-writer.timer` (`OnCalendar=*-*-* *:02,17,32,47:00 UTC`) | `flock` on `/tmp/synth-market-candle-freshness-writer-v1.lock`; `src/operations/verify_writer_capability_authorization_v1.py --capability public_candle_freshness` against `deploy/ownership/writer_capability_ownership_v1.json` (host `gurkdb`, `AUTHORIZED`); `require_writer_mutation_authorization(...,"public_candle_freshness")` enforced inside `src/etl/bitvavo/etl_bitvavo_candles.py:392` |
-| 2 | Fast recompute lifecycle worklist (P0-a) | `src/reporting/run_fast_recompute_lifecycle_v1.py` | reporting | canonical | manual run / cockpit render | read-only, no lock (no DB write) |
-| 3 | Fast lifecycle classification | `src/reporting/fast_lifecycle_recompute_v1.py` | reporting | canonical | called by worklist builder (row #2) | pure function, no DB |
-| 4 | Fast recompute lifecycle refresh (P0-b) | `src/advice/run_fast_recompute_lifecycle_refresh_v1.py`, doc `docs/ops/fast_recompute_lifecycle_refresh_v1.md` | advice (market-only, account-agnostic per doc) | canonical | consumes the P0-a worklist; wired into the Odroid market-context refresh lane (P0-c) before cockpit render | dry-run by default; `--write-db` required for any write; same-advice-asof cooldown marker in `paper_advice_observation.source_ref_json` provides idempotency/fairness, not a DB lock |
-| 5 | Odroid market-context refresh wiring (P0-c) | `scripts/odroid/run_mvp_market_context_refresh_once.sh` | ops/runtime wiring | canonical | scheduled Odroid lane, runs between normal 4h baseline runs | inherits P0-b's dry-run/`--write-db` gate |
-| 6 | Native SHORT scope-status chain | `src/market_data/run_native_short_scope_status_chain_v1.py` invoked by `scripts/run_native_short_scope_status_chain_once.sh`, itself invoked from `scripts/run_chain_4h.sh` | market_data | canonical | `synth-chain-4h.timer` (`OnCalendar=*-*-* 00,04,08,12,16,20:12:00 UTC`), part of the `native_short_4h_chain` writer capability | script-level lock in `run_native_short_scope_status_chain_once.sh`; `verify_writer_capability_authorization_v1 --capability native_short_4h_chain` against the same ownership registry (host `gurkdb`); `synth-chain-4h.service` additionally runs `run_synth_chain_4h_db_environment_preflight_v1` and `run_synth_chain_4h_db_grant_preflight_v1` as `ExecStartPre` |
-| 7 | Native SHORT scope-status materializer (compute) | `src/market_data/native_short_scope_status_materializer_v1.py` | market_data | canonical | called by mechanism #6, not independently scheduled | writes `native_short_scope_status_v1` via `INSERT ... ON DUPLICATE KEY UPDATE`, no separate advisory lock beyond #6's script lock |
-| 8 | Native SHORT scope-status schema/persistence | `src/market_data/native_short_scope_status_v1.py`, `native_short_scope_status_projection_v1.py` | market_data | canonical | consumed by mechanism #7 | provenance-enforced write (`98cd9fbb Enforce native SHORT writer provenance`) |
-| 9 | Held-market enrollment | `src/market_data/run_held_market_enrollment_v1.py`, `held_market_coverage_v1.py`, `run_held_market_coverage_health_check_v1.py` | market_data | canonical | automatic/scheduled since Issue #238 (`c1f314d3 Make held-market enrollment automatic and scheduled (Issue #238)`) | not inspected as a DB-lock mechanism in this audit; enrolls positive wallet holdings into the canonical Fib publication cohort — no execution-intent or account-permission authority |
-| 10 | Stale-market/stale-price worklist (account-wallet dashboard) | `src/reporting/account_wallet_dashboard_v1.py` (`stale_market_data_count`) | reporting | canonical | computed at render time from persisted market data | read-only, no lock |
-| 11 | Stale-context worklist (Profit Plan) | `src/reporting/run_manual_short_trader_profit_plan_v1.py` (`supported_context_stale_markets`) | reporting | canonical | computed at render time | read-only, no lock |
-| 12 | Profit Plan stale/missing classification (`MISSING CANDLES`) | `src/reporting/manual_short_trader_profit_plan_v1.py` (`_NATIVE_SOURCE_STALE_FRESHNESS_STATES`, `MISSING_CANDLES_DISPLAY_LABEL`), introduced in `dd47f44e` | reporting | canonical | passthrough of the row's own `native_context_freshness_status` (`FRESH` / `STALE_PRIMARY_4H` / `STALE_SUPPORT_1H`) sourced from `native_short_fib_context_v1` | read-only display label; explicitly no new machine status code and no change to `short_context_display_state`/`actionability_state`, per `state_model_discipline_v1.md` |
-| 13 | Writer-capability ownership/authorization system | `docs/ops/writer_capability_host_ownership_contract_v1.md`, `deploy/ownership/writer_capability_ownership_v1.json`, `src/operations/verify_writer_capability_authorization_v1.py` | ops/runtime (cross-cutting) | canonical | enforced as `ExecStartPre` on every registered writer's systemd unit, and inline at each writer's mutation boundary (`require_writer_mutation_authorization`) | registry invariant: `at_most_one_authorized_active_owner_per_capability`; current registered capabilities: `public_price_snapshot`, `public_candle_freshness`, `market_rotation_pressure`, `native_short_4h_chain`, `sector_rotation_snapshot`, all host `gurkdb` |
+| 1 | `public_candle_freshness` | `scripts/run_market_candle_freshness_once.sh` → `src/etl/bitvavo/run_candles_etl.py` (writer path); `src/operations/persisted_market_candle_freshness_v1.py` + `run_persisted_market_candle_freshness_v1.py` (SELECT-only fail-closed boundary check, no write) | market_data / ETL | canonical-authorized-inactive | directly scheduled by `deploy/systemd/synth-market-candle-freshness-writer.timer` (`OnCalendar=*-*-* *:02,17,32,47:00 UTC`) | `flock` on `/tmp/synth-market-candle-freshness-writer-v1.lock`; registry records `production_runtime_owner=gurkdb`, `runtime_lifecycle=AUTHORIZED_INACTIVE`; service and inline mutation guard enforce `public_candle_freshness` |
+| 2 | Fast recompute lifecycle worklist (P0-a) | `src/reporting/run_fast_recompute_lifecycle_v1.py` | reporting | canonical-read-only | manual invocation or invoked as the P0-b input worklist; no direct scheduler evidence found | read-only, no lock (no DB write) |
+| 3 | Fast lifecycle classification | `src/reporting/fast_lifecycle_recompute_v1.py` | reporting | canonical-read-only | invoked by mechanism #2, not independently scheduled | pure function, no DB |
+| 4 | Fast recompute lifecycle refresh (P0-b) | `src/advice/run_fast_recompute_lifecycle_refresh_v1.py`, `docs/ops/fast_recompute_lifecycle_refresh_v1.md` | advice, market-only by documented input boundary | governance-gap / unregistered | invoked by P0-c; dry-run by default, but P0-c passes `--write-db` | `--write-db` reaches zone/advice mutation (`upsert_zone_observation`, `delete_execution_zone_context_scope`, `upsert_execution_zone_context`); no `flock`, writer-capability registration, or host authorization was found for this runner |
+| 5 | Odroid market-context refresh wiring (P0-c) | `scripts/odroid/run_mvp_market_context_refresh_once.sh`; `scripts/odroid/systemd/synth-mvp-market-context-refresh.service` and `.timer` | ops/runtime wiring | governance-gap / unregistered | directly scheduled every five minutes by `scripts/odroid/systemd/synth-mvp-market-context-refresh.timer` | invokes P0-b with `--write-db`; registry explicitly lists this script under `consumers_with_zero_writer_capabilities`; no explicit `flock` or registered writer authorization found |
+| 6 | Native SHORT scope-status chain | `src/market_data/run_native_short_scope_status_chain_v1.py` invoked by `scripts/run_native_short_scope_status_chain_once.sh`, itself invoked from `scripts/run_chain_4h.sh` | market_data | canonical-active | directly scheduled by `deploy/systemd/synth-chain-4h.timer` (`OnCalendar=*-*-* 00,04,08,12,16,20:12:00 UTC`) | script-level lock in `run_native_short_scope_status_chain_once.sh`; `native_short_4h_chain` registry/service authorization and preflights |
+| 7 | Native SHORT scope-status materializer (compute) | `src/market_data/native_short_scope_status_materializer_v1.py` | market_data | canonical-active (via #6 owner) | invoked by #6, not independently scheduled | writes `native_short_scope_status_v1`; inherits #6 lock and `native_short_4h_chain` mutation authorization |
+| 8 | Native SHORT scope-status schema/persistence | `src/market_data/native_short_scope_status_v1.py`, `native_short_scope_status_projection_v1.py` | market_data | canonical-active (via #6 owner) | consumed by #7, not independently scheduled | provenance-enforced write through the #6 chain (`98cd9fbb`) |
+| 9 | Held-market enrollment | `src/market_data/run_held_market_enrollment_v1.py`, `held_market_coverage_v1.py`, `run_held_market_coverage_health_check_v1.py`, `scripts/odroid/run_held_market_enrollment_once.sh` | account-informed orchestration/coverage | governance-gap / unregistered | invoked by `scripts/odroid/run_linked_profile_runtime_orchestrator_once.sh`, directly scheduled every five minutes by `docs/ops/systemd/synth-linked-profile-runtime-refresh.service` and `.timer` | phase wrapper `flock` on `/tmp/synth-held-market-enrollment.lock`; parent orchestrator `flock` on `/tmp/synth-linked-profile-runtime-orchestrator.lock`; reads `trading_account_balance_snapshot` and writes `asset.is_portfolio`; no registered capability/host authorization found |
+| 10 | Stale-market/stale-price worklist (account-wallet dashboard) | `src/reporting/account_wallet_dashboard_v1.py` (`stale_market_data_count`) | reporting | canonical-read-only | computed at render time from persisted market data | read-only, no lock |
+| 11 | Stale-context worklist (Profit Plan) | `src/reporting/run_manual_short_trader_profit_plan_v1.py` (`supported_context_stale_markets`) | reporting | canonical-read-only | computed at render time | read-only, no lock |
+| 12 | Profit Plan stale/missing classification (`MISSING CANDLES`) | `src/reporting/manual_short_trader_profit_plan_v1.py` (`_NATIVE_SOURCE_STALE_FRESHNESS_STATES`, `MISSING_CANDLES_DISPLAY_LABEL`) | reporting | canonical-read-only | invoked by the Profit Plan rendering path | read-only display label; no new machine status code and no change to `short_context_display_state`/`actionability_state`, per `state_model_discipline_v1.md` |
+| 13 | Writer-capability ownership/authorization system | `docs/ops/writer_capability_host_ownership_contract_v1.md`, `deploy/ownership/writer_capability_ownership_v1.json`, `src/operations/verify_writer_capability_authorization_v1.py` | ops/runtime (cross-cutting) | canonical-active governance system | invoked as `ExecStartPre` only for registered writers and inline at their mutation boundaries | registry invariant is `at_most_one_authorized_active_owner_per_capability`; it does not authorize mechanisms #4, #5, or #9 |
 
 Not found in the repository under the literal name "older freshness
 lifecycle updater": no separate/earlier freshness updater predates mechanism
 #2. What Issue #331 anticipates under that label is mechanism #4
-(`run_fast_recompute_lifecycle_refresh_v1.py`, "P0-b"), which is an *older,
-still-canonical companion* to the P0-a worklist (#2), not a deprecated
-predecessor — see `docs/ops/fast_recompute_lifecycle_refresh_v1.md` for the
-explicit P0-a/P0-b/P0-c relationship.
+(`run_fast_recompute_lifecycle_refresh_v1.py`, "P0-b"), which is an older
+companion to the P0-a worklist (#2), not a deprecated predecessor — see
+`docs/ops/fast_recompute_lifecycle_refresh_v1.md` for the explicit
+P0-a/P0-b/P0-c relationship. Its governance-gap classification remains
+separate from that functional relationship.
 
-No mechanism in this inventory is legacy, obsolete, or research-only as of
-this audit; all thirteen are currently authorized/invoked canonical paths.
+No inventoried mechanism has repository evidence that it is obsolete or
+research-only. The audit does not call every committed path canonical-active:
+row #1 is authorized-inactive, rows #4/#5/#9 are unregistered governance
+gaps, and the reporting/classification rows are read-only.
+
+### 2.1 Mechanism-Specific Git History
+
+All SHAs below were verified with `git cat-file -e <sha>^{commit}`. They are
+evidence of the listed mechanism's history, not proof of currently installed
+host state.
+
+| Mechanism(s) | Verified history evidence |
+|---|---|
+| #1 | `12bba7e5af56dc59b091bf0ac7741e85534b4a38` — enforce writer-capability authorization at every mutation boundary. |
+| #2 | `1eabc9efc4ff2fb8f3a1bbfd65f3ace945b52185` — add fast recompute lifecycle runner; `66b78fe9701d2f953710466a6329a62e25a675a5` — later cross-profile correction. |
+| #3 | `e11a1e27a2e215f1289726073045de38e342cc15` — add fast lifecycle recompute request preview; `ad3de4f4ae5b51a7380209e3ae9509f497bcd8b1` — clarify reclaim/stale-map semantics. |
+| #4 | `cd434b9bd62d9f1abc9adfdfb578fe9295854034` — add fast recompute refresh consumer; `bbcd0b627099cefe483dd9466cf1c365bddfc10b` — clarify backlog states. |
+| #5 | `043b16202396e6d96a4a58bd1398dfc85e688e88` — split dashboard rendering from runtime refresh; `7d025c22648ccb8556a3773c116bd1a95f38ba65` — later writer-assignment change touching the runner. |
+| #6/#7 | `a119389bf449f5fc75d1de9696001f5bdd8a1e3e` — wire native SHORT runtime chain; `e2279f7360de9dae3c004c981af9a1eb404ea6b3` — bootstrap lifecycle correction. |
+| #8 | `05ed9397996460aa97310edf2333de0c2c8c7277` — add native SHORT scope-status persistence; `98cd9fbbbb4473301b7a9d1fb1e1facdb51f777d` — enforce writer provenance. |
+| #9 | `6883400b7d8b873ebdc632ce37039b9f88e277f2` — add held-market enrollment; `c1f314d32c05e459af04770f1a0985c050235ae2` — make enrollment automatic and scheduled. |
+| #10 | `7bdd0c18e70bd6834e089f41f9226b7a755baaf1` — add account-wallet dashboard and timer templates; `2816d105e024618264ac8a82aaa8f13e157c1bff` — later dashboard repair. |
+| #11 | `037288e03e0e520b51dee3467a35fe72f3c35fbc` — add manual short trader Profit Plan dashboard v1; `dd47f44e59eb106c156dfa3a0f6e7ee9cdf14fc1` — stale-source display change in its runner. |
+| #12 | `dd47f44e59eb106c156dfa3a0f6e7ee9cdf14fc1` — display `MISSING CANDLES` for stale-source Native SHORT scopes; `c02255b808bfe63566ac5abfab671ea5bacfbbc6` — later Profit Plan display adjustment. |
+| #13 | `023b1d28a7240012e00d0a0bce6eeaac54455575` — add Native SHORT ownership preflight; `73dae43ca57a5c398b2b8ff05636d08d6045b037` — record active registry observation. |
 
 ## 3. Ownership & Data Flow (observed current state)
 
@@ -65,11 +97,14 @@ this audit; all thirteen are currently authorized/invoked canonical paths.
    validation helper (fail-closed boundary check), not a second writer.
 2. **Paper advice → recompute worklist → refresh** — `run_fast_recompute_lifecycle_v1.py`
    (P0-a, read-only) computes a market-only worklist of stale/finished/
-   reclaimed/invalidated advice maps; `run_fast_recompute_lifecycle_refresh_v1.py`
-   (P0-b) consumes that worklist and can write market-only zone/advice
-   refreshes (`--write-db`); `run_mvp_market_context_refresh_once.sh` (P0-c)
-   wires P0-b into the Odroid cockpit-render lane. This is one existing
-   chain, not two competing mechanisms.
+   reclaimed/invalidated advice maps. P0-b can mutate zone/advice state only
+   with `--write-db`: it calls `upsert_zone_observation`,
+   `delete_execution_zone_context_scope`, and
+   `upsert_execution_zone_context`. P0-c invokes that write mode from the
+   five-minute `synth-mvp-market-context-refresh` timer/service pair. This is
+   one existing chain, not two competing mechanisms, but repository evidence
+   does not register a writer capability, host authorization, or explicit lock
+   for its write path.
 3. **Native SHORT 4h chain → scope status** — `run_chain_4h.sh`, under the
    `native_short_4h_chain` writer capability, invokes
    `run_native_short_scope_status_chain_once.sh` →
@@ -82,9 +117,16 @@ this audit; all thirteen are currently authorized/invoked canonical paths.
    passes it through to a truthful degraded-state label
    (`MISSING CANDLES`) without introducing a new machine state, per
    `state_model_discipline_v1.md`.
-5. **Held-market enrollment** feeds the canonical Fib publication cohort
-   (Issue #238) independently of the freshness chains above; it determines
-   which symbols are in scope for materialization, not their freshness.
+5. **Held-market enrollment** is account-informed coverage orchestration: it
+   reads `trading_account_balance_snapshot`, then conditionally writes the
+   market-wide `asset.is_portfolio` flag. The locked phase wrapper
+   (`scripts/odroid/run_held_market_enrollment_once.sh`) runs inside the
+   separately locked linked-profile orchestrator, scheduled by
+   `docs/ops/systemd/synth-linked-profile-runtime-refresh.timer` and `.service`.
+   It determines the next canonical Fib publication cohort, not freshness.
+   It grants no trade permission, execution intent, or order-handling
+   authority, and does not move responsibility into `selection_engine`,
+   `decision_gate`, `execution_planner`, or `executor`.
 
 Execution Planner, decision_gate, and executor do not read any of the
 mechanisms above. `native_short_4h_chain` runs in `SYNTH_EXECUTION_MODE=paper`
@@ -121,18 +163,23 @@ one shared system, not per-mechanism ad hoc locks:
 - Native SHORT scope-status writes are covered by the same registry entry as
   `native_short_4h_chain` (they are invoked from within that chain, see §3
   item 3), not a separate capability.
-- Mechanisms #2–#5, #9–#12 (reporting/advice worklists, held-market
-  enrollment, Profit Plan display) are not registered writer capabilities:
-  #2, #10, #11, #12 are read-only; #4/#5 gate writes behind an explicit
-  `--write-db` flag rather than the capability-authorization registry; #9
-  was not traced to a registry entry in this audit (flagged as a gap in
-  §5).
+- Mechanisms #2/#3/#10–#12 are read-only and need no writer capability.
+  Mechanisms #4/#5 are write-capable when P0-c supplies `--write-db`, but
+  neither has a writer-capability entry, host authorization, or explicit
+  `flock`; the registry explicitly calls P0-c a consumer with zero writer
+  capabilities. This is an evidenced governance gap, not authorization by
+  implication. Mechanism #9 has two host-local `flock` boundaries (the
+  enrollment wrapper and its parent orchestrator), but no
+  writer-capability-registration or host authorization. Its account-informed
+  input must not be relabeled market-only merely because its output is a
+  market-wide flag.
 
 ## 5. Evidenced Gaps
 
 | Gap | Evidence | Impact |
 |-----|----------|--------|
-| Held-market enrollment writer ownership not registered | `run_held_market_enrollment_v1.py` was not found as a `capability_id` in `deploy/ownership/writer_capability_ownership_v1.json` | Cannot confirm at-most-one-owner invariant applies to this writer the same way it does to the five registered capabilities; needs explicit confirmation, not assumed absence. |
+| P0-b/P0-c write ownership is unregistered | P0-c supplies `--write-db` to P0-b, which mutates zone/advice state; `deploy/ownership/writer_capability_ownership_v1.json` lists P0-c as a zero-writer-capability consumer and no matching capability was found. | Cannot establish authorized host ownership or an at-most-one-writer invariant for this scheduled write path. |
+| Held-market enrollment writer ownership is unregistered | `run_held_market_enrollment_v1.py` reads account balances and writes `asset.is_portfolio`; its wrapper and parent orchestrator use host-local `flock`, but no `capability_id` was found in `deploy/ownership/writer_capability_ownership_v1.json`. | The locks prevent overlapping local invocations but do not establish registry-based host ownership; account-informed coverage logic must remain outside trade/execution authority. |
 | No single freshness source-of-truth across domains | Candle freshness (`public_candle_freshness`), advice-map freshness (P0-a/P0-b), and native-short context freshness (`native_context_freshness_status`) are three independently computed and independently consumed signals with no shared schema or cross-reference. | Increases design surface for any future orchestration; a dispatcher would need three distinct read paths, not one. |
 | P0-a worklist has no automatic downstream consumer outside the Odroid P0-c lane | `run_fast_recompute_lifecycle_v1.py` output is read by cockpit dashboards and by P0-b/P0-c; no evidence of a third consumer. | Any additional automation should reuse P0-b's existing dry-run/`--write-db` gate rather than add a new consumer path. |
 | Issue #331's named item "older freshness lifecycle updater(s)" does not map to a distinct legacy mechanism | See §2 note. | Nothing to deprecate or replace under this label; it already names the canonical P0-b file. |
@@ -158,11 +205,10 @@ withdrawn.
   guidance to keep temporary health state as a read field rather than
   inventing a state-machine transition, and is not, by itself, a defect.
 - P0-a (worklist) → P0-b (refresh) → P0-c (Odroid wiring) is currently a
-  scheduled/cron-adjacent chain, not a state-triggered one; Issue #331 §7
-  asks which fixed timers could eventually be replaced by state-driven
-  dispatch — P0-c's Odroid cadence is the most direct candidate, since it
-  already exists solely to poll P0-a's worklist between fixed 4h baseline
-  runs.
+  scheduled chain, not a state-triggered one; Issue #331 §7 asks which fixed
+  timers could eventually be replaced by state-driven dispatch. P0-c's
+  five-minute timer is the most direct candidate, but its writer-governance
+  gap must be resolved before any such change is considered.
 
 ## 8. Proposed Architecture (future design — not authorized by this issue)
 
@@ -191,10 +237,11 @@ own persisted state, `native_short_scope_status_v1.observation_freshness_state`/
 `source_freshness_state`, and the P0-a worklist's `RecomputeLifecycleRow`
 output — on the existing writer cadences, and invoke the **existing**
 refresh entrypoints (P0-b's `run_fast_recompute_lifecycle_refresh_v1.py` for
-advice/zone refresh; the existing `native_short_4h_chain` re-run path for
-scope-status refresh) rather than any new runner. The dispatcher's own
-read/schedule role would sit in `ops/runtime` per Issue #331's declared
-architecture owner, and would not become a cross-layer authority.
+advice/zone refresh only after its existing-owner governance gap is resolved;
+the existing `native_short_4h_chain` re-run path for scope-status refresh)
+rather than any new runner. The dispatcher's own read/schedule role would sit
+in `ops/runtime` per Issue #331's declared architecture owner, and would not
+become a cross-layer authority.
 
 No implementation, schema, or dispatcher code is authorized by this
 document.
@@ -206,13 +253,14 @@ state-driven dispatcher implementation; none is claimed here. The following
 are proposed *scopes* only, to be filed as new Issues after this audit is
 reviewed and accepted — filing itself is out of scope for this document:
 
-1. Register `run_held_market_enrollment_v1.py`'s writer ownership in
-   `deploy/ownership/writer_capability_ownership_v1.json` (or document why it
-   is intentionally unregistered), closing the gap in §5.
+1. Resolve the evidenced writer-governance gaps for P0-b/P0-c and held-market
+   enrollment: register each owner in
+   `deploy/ownership/writer_capability_ownership_v1.json`, or document the
+   deliberate exception and its host/lock invariant.
 2. Scope a minimal dispatcher (per §8) that polls the existing persisted
    freshness fields and calls existing refresh entrypoints — no new schema.
-3. Evaluate whether the Odroid P0-c cadence (§7) is the first practical
-   fixed-timer candidate for state-driven replacement.
+3. After scope 1, evaluate whether the Odroid P0-c cadence (§7) is the first
+   practical fixed-timer candidate for state-driven replacement.
 
 ## 10. State Model Cross-Reference
 
