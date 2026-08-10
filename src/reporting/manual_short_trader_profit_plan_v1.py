@@ -1267,7 +1267,12 @@ def apply_portfolio_account_evidence(
             held_eur_value=(_strip_decimal_zeros(eur_value) if eur_value is not None else DATA_UNAVAILABLE),
             cost_basis_price_eur=(_strip_decimal_zeros(cost_basis) if cost_basis is not None else DATA_UNAVAILABLE),
             wallet_snapshot_status=balance_freshness_status,
-            position_snapshot_status=(balance_freshness_status if cost_basis is not None else DATA_UNAVAILABLE),
+            # Truthful fact, not a borrowed freshness claim: account_position_snapshot
+            # has no independently-read freshness signal wired here (Issue #348
+            # blocker 2) — this reports whether a persisted cost basis exists, using
+            # the wallet's own freshness status would misrepresent a different
+            # upstream authority as if it were position-tracking freshness.
+            position_snapshot_status=("AVAILABLE" if cost_basis is not None else DATA_UNAVAILABLE),
         )
         out.append(
             dataclasses.replace(
@@ -1929,14 +1934,16 @@ def _wallet_snapshot_row(card: ProfitPlanCard) -> EvidenceRow:
 
 
 def _position_snapshot_row(card: ProfitPlanCard) -> EvidenceRow:
+    # "Cost basis", not "Position snapshot": account_position_snapshot has no
+    # independently-read freshness fact wired here, only whether a persisted
+    # average_entry_price_eur exists (Issue #348 blocker 2). Do not relabel
+    # this AVAILABLE/DATA_UNAVAILABLE fact as position-snapshot freshness.
     status = str(card.evidence.position_snapshot_status or "").strip().upper() or DATA_UNAVAILABLE
-    reason_codes = () if status == "FRESH" else (
-        ("POSITION_DATA_UNAVAILABLE",) if status == DATA_UNAVAILABLE else ("STALE_POSITION_DATA",)
-    )
+    reason_codes = () if status == "AVAILABLE" else ("POSITION_DATA_UNAVAILABLE",)
     return EvidenceRow(
         key="position_snapshot",
-        label="Position snapshot",
-        authority="Position snapshot (Lane A)",
+        label="Cost basis",
+        authority="Position cost basis (account_position_snapshot, read-only)",
         status=status,
         reason_codes=reason_codes,
     )
@@ -3254,7 +3261,7 @@ _EVIDENCE_ROW_DISPLAY_LABELS: dict[str, str] = {
     "per_level_status": "Fibonacci level status",
     "price_snapshot": "Market price snapshot",
     "wallet_snapshot": "Wallet snapshot",
-    "position_snapshot": "Position-tracking snapshot",
+    "position_snapshot": "Cost basis",
     "open_order_snapshot": "Open-order snapshot",
     "dashboard_render": "Dashboard render",
     "action_gate": "Action / permission gate",
@@ -3296,8 +3303,7 @@ _REASON_CODE_OPERATOR_LABELS: dict[str, str] = {
     "STALE_CURRENT_PRICE": "Current price is stale",
     "WALLET_DATA_UNAVAILABLE": "Wallet data unavailable",
     "STALE_WALLET_DATA": "Wallet data is stale",
-    "POSITION_DATA_UNAVAILABLE": "Position-tracking data unavailable",
-    "STALE_POSITION_DATA": "Position-tracking data is stale",
+    "POSITION_DATA_UNAVAILABLE": "Cost basis data unavailable",
     "OPEN_ORDER_DATA_UNAVAILABLE": "Open-order data unavailable",
     "STALE_OPEN_ORDER_SNAPSHOT": "Open-order snapshot is stale",
     "ACCOUNT_ORDER_DATA_UNAVAILABLE": "Account order data unavailable",
@@ -3396,6 +3402,38 @@ def _grouped_evidence_html(rows: tuple[EvidenceRow, ...]) -> str:
             "</div>"
         )
     return "".join(parts)
+
+
+def evidence_rows_to_operator_json(rows: tuple[EvidenceRow, ...]) -> list[dict[str, Any]]:
+    """Domain-grouped, operator-translated evidence for the click-to-select
+    detail panel (Issue #348 blocker 1).
+
+    Reuses the exact same domain-group headings, display labels and reason-
+    code translations as the initial card's grouped HTML
+    (_EVIDENCE_ROW_DOMAIN_GROUPS / _EVIDENCE_ROW_DISPLAY_LABELS /
+    _reason_code_operator_label) so the detail panel cannot drift out of sync
+    with the card. This is presentation-only: it never alters row status,
+    authority or reason_codes, and evidence_rows_to_json (the raw JSON-schema
+    values used by the snapshot API and data-evidence-rows) is untouched.
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    order: dict[str, int] = {}
+    for row in rows:
+        heading, sort_order = _EVIDENCE_ROW_DOMAIN_GROUPS.get(row.key, ("Other", 99))
+        order[heading] = sort_order
+        groups.setdefault(heading, []).append({
+            "key": row.key,
+            "display_label": _EVIDENCE_ROW_DISPLAY_LABELS.get(row.key, row.label),
+            "authority": row.authority,
+            "status": row.status,
+            "observed_ts": row.observed_ts,
+            "reason_text": ", ".join(_reason_code_operator_label(code) for code in row.reason_codes),
+            "reason_codes": list(row.reason_codes),
+        })
+    return [
+        {"heading": heading, "rows": groups[heading]}
+        for heading in sorted(groups, key=lambda h: order[h])
+    ]
 
 
 def _card_evidence_html(rows: tuple[EvidenceRow, ...], card: ProfitPlanCard) -> str:
@@ -4470,16 +4508,9 @@ def _build_client_js(storage_scope: str) -> str:
     }});
   }}
 
-  function _ppParseEvidenceRows(card) {{
-    var raw = card.dataset.evidenceRows || '[]';
+  function _ppParseEvidenceGroups(card) {{
+    var raw = card.dataset.evidenceGroups || '[]';
     try {{ return JSON.parse(raw) || []; }} catch(e) {{ return []; }}
-  }}
-
-  function _ppEvidenceRowByKey(rows, key) {{
-    for (var i = 0; i < rows.length; i++) {{
-      if (rows[i].key === key) return rows[i];
-    }}
-    return null;
   }}
 
   function _ppEscapeHtml(value) {{
@@ -4491,30 +4522,57 @@ def _build_client_js(storage_scope: str) -> str:
       .replace(/'/g, '&#39;');
   }}
 
-  // Renders one normalized evidence-authority row in full: label, canonical
-  // status, authority owner, observed timestamp (if any) and the COMPLETE
-  // reason-code list — never truncated, per the P1 evidence-normalization rule.
-  function _ppEvidenceRowHtml(row) {{
-    if (!row) {{
-      return "<div class='muted small' style='margin-bottom:10px'>DATA_UNAVAILABLE</div>";
+  // Statuses that read as "needs attention" for styling only — mirrors the
+  // Python _EVIDENCE_ROW_WARN_STATUSES set used by the initial card's grouped
+  // Evidence section, so the two render paths agree on which rows are flagged.
+  var PP_EVIDENCE_WARN_STATUSES = {{
+    'DATA_UNAVAILABLE': true, 'UNKNOWN': true, 'MISSING': true,
+    'STALE': true, 'REPORTING_FALLBACK': true
+  }};
+
+  // Renders one domain-grouped, operator-translated evidence row: the
+  // server-computed display label, canonical status, authority + observed
+  // timestamp, and the operator-language reason text as primary copy — raw
+  // reason codes stay available in a collapsible detail, never as primary
+  // copy (Issue #348 blocker 1). All translation happens server-side in
+  // evidence_rows_to_operator_json(); this only renders the given fields.
+  function _ppEvidenceGroupRowHtml(row) {{
+    var warn = (row.reason_codes && row.reason_codes.length) || PP_EVIDENCE_WARN_STATUSES[row.status];
+    var cls = warn ? 'evidence-authority-row-warn' : 'evidence-authority-row-ok';
+    var observed = row.observed_ts ? (' \xb7 ' + _ppEscapeHtml(row.observed_ts)) : '';
+    var reasonsHtml = '';
+    if (row.reason_codes && row.reason_codes.length) {{
+      reasonsHtml =
+        "<div class='evidence-row-reasons muted small'>" + _ppEscapeHtml(row.reason_text) + "</div>" +
+        "<details class='evidence-row-raw-codes'>" +
+        "<summary class='muted small'>Technical codes</summary>" +
+        "<code class='muted small'>" + _ppEscapeHtml(row.reason_codes.join(', ')) + "</code>" +
+        "</details>";
     }}
-    var observed = row.observed_ts ? (" \xb7 " + _ppEscapeHtml(row.observed_ts)) : "";
-    var reasons = (row.reason_codes && row.reason_codes.length)
-      ? "<div class='muted small'>Reasons: " + row.reason_codes.map(_ppEscapeHtml).join(', ') + "</div>"
-      : "";
     return (
-      "<div style='margin-bottom:2px'><strong>" + _ppEscapeHtml(row.status) + "</strong>" +
-      "<span class='muted small'> \xb7 " + _ppEscapeHtml(row.authority) + observed + "</span></div>" +
-      reasons
+      "<div class='evidence-authority-row " + cls + "'>" +
+      "<div class='evidence-row-head'>" +
+      "<span class='evidence-row-label'>" + _ppEscapeHtml(row.display_label) + "</span>" +
+      "<code class='evidence-row-status'>" + _ppEscapeHtml(row.status) + "</code>" +
+      "</div>" +
+      "<div class='evidence-row-authority muted small'>" + _ppEscapeHtml(row.authority) + observed + "</div>" +
+      reasonsHtml +
+      "</div>"
     );
   }}
 
-  function _ppEvidenceSectionHtml(rows) {{
-    return rows.map(function(row) {{
+  // Renders the full domain-grouped Evidence section (Fibonacci / map, market
+  // data, account / position / wallet / orders, reporting / render, action /
+  // permission) — same grouping and headings as the initial card's Evidence
+  // block, per Issue #348 blocker 1. No group or row is invented here; the
+  // grouped/ordered/translated data all comes from the server.
+  function _ppEvidenceGroupsHtml(groups) {{
+    return groups.map(function(group) {{
+      var rowsHtml = (group.rows || []).map(_ppEvidenceGroupRowHtml).join('');
       return (
-        "<div style='margin-bottom:10px'>" +
-        "<div class='muted small'>" + _ppEscapeHtml(row.label) + "</div>" +
-        _ppEvidenceRowHtml(row) +
+        "<div class='evidence-domain-group'>" +
+        "<div class='evidence-domain-heading'>" + _ppEscapeHtml(group.heading) + "</div>" +
+        rowsHtml +
         "</div>"
       );
     }}).join('');
@@ -4530,7 +4588,7 @@ def _build_client_js(storage_scope: str) -> str:
     var actionablePpp = card.dataset.actionablePpp || '—';
     var marketEl = card.querySelector('.card-row1 .muted.small');
     var market = marketEl ? marketEl.textContent.trim() : '';
-    var evidenceRows = _ppParseEvidenceRows(card);
+    var evidenceGroups = _ppParseEvidenceGroups(card);
     panel.innerHTML =
       "<h3>" + symbol + "</h3>" +
       "<div class='small muted' style='margin-bottom:10px'>" + market + "</div>" +
@@ -4539,11 +4597,7 @@ def _build_client_js(storage_scope: str) -> str:
       "<div style='margin-bottom:6px'><span class='muted small'>Planning PPP: </span>" + planningPpp + "</div>" +
       "<div style='margin-bottom:14px'><span class='muted small'>Actionable PPP: </span>" + actionablePpp + "</div>" +
       "<h3>Evidence</h3>" +
-      "<div style='margin-bottom:6px'>" + _ppEvidenceSectionHtml(evidenceRows) + "</div>" +
-      "<h3>Wallet</h3>" + _ppEvidenceRowHtml(_ppEvidenceRowByKey(evidenceRows, 'wallet_snapshot')) +
-      "<h3>Position</h3>" + _ppEvidenceRowHtml(_ppEvidenceRowByKey(evidenceRows, 'position_snapshot')) +
-      "<h3>Orders</h3>" + _ppEvidenceRowHtml(_ppEvidenceRowByKey(evidenceRows, 'open_order_snapshot')) +
-      "<h3>Context</h3>" + _ppEvidenceRowHtml(_ppEvidenceRowByKey(evidenceRows, 'map_lifecycle'));
+      "<div style='margin-bottom:6px'>" + _ppEvidenceGroupsHtml(evidenceGroups) + "</div>";
   }}
 
   function selectProfitPlanCard(renderId) {{
@@ -4584,11 +4638,7 @@ def _build_client_js(storage_scope: str) -> str:
     }} else {{
       var panel = document.getElementById('profit-plan-detail-panel');
       if (panel) panel.innerHTML =
-        "<div class='muted small'>No cards match the current filter.</div>" +
-        "<h3>Wallet</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
-        "<h3>Position</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
-        "<h3>Orders</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>" +
-        "<h3>Context</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>";
+        "<div class='muted small'>No cards match the current filter.</div>";
     }}
   }}
 
@@ -5272,27 +5322,28 @@ def render_plan_card(
     if _wallet_row is not None:
         account_blocks.append(_metric_block("Wallet snapshot", _wallet_row.status))
     if _position_row is not None:
-        account_blocks.append(_metric_block("Position snapshot", _position_row.status))
+        account_blocks.append(_metric_block("Cost basis", _position_row.status))
     account_section_html = ""
     if account_blocks:
         # Held amount/value/cost basis are sourced from the wallet balance
         # snapshot (trading_account_balance_snapshot / held_amount_by_symbol).
-        # "Position snapshot" is a separate position-tracking authority
-        # (account_position_snapshot) that can independently be unavailable —
-        # the two facts are not in conflict, they come from different
-        # upstream sources. Make that distinction explicit rather than
-        # implying a contradiction.
+        # "Cost basis" is a separate, independent authority
+        # (account_position_snapshot.average_entry_price_eur) that can be
+        # unavailable while the wallet snapshot is fine — the two facts are
+        # not in conflict, they come from different upstream sources. Make
+        # that distinction explicit rather than implying a contradiction.
         position_note_html = ""
         if (
             card.is_wallet_held
             and _position_row is not None
-            and _position_row.status != "FRESH"
+            and _position_row.status != "AVAILABLE"
         ):
             position_note_html = (
                 "<div class='section-note section-note-warn'>"
-                "Held amount is from the wallet balance snapshot. Position-tracking "
-                "snapshot (separate source) is unavailable — this is a known gap in "
-                "the upstream position-tracking data, not a contradiction."
+                "Held amount is from the wallet balance snapshot. Cost basis "
+                "(separate source: account_position_snapshot) is unavailable — "
+                "this is a known gap in the upstream position-tracking writer, "
+                "not a contradiction."
                 "</div>"
             )
         account_section_html = (
@@ -5410,6 +5461,11 @@ def render_plan_card(
     # Fibonacci/Account summary lines and the grouped Evidence section).
     evidence_html = _card_evidence_html(evidence_rows, card)
     evidence_rows_json_attr = json.dumps(evidence_rows_to_json(evidence_rows), separators=(",", ":"))
+    # Domain-grouped, operator-translated evidence for the detail panel only
+    # (Issue #348 blocker 1) — data-evidence-rows above stays the raw
+    # JSON-schema-facing values; this is a separate presentation-only view of
+    # the exact same rows, built with the same helpers as the card HTML.
+    evidence_groups_json_attr = json.dumps(evidence_rows_to_operator_json(evidence_rows), separators=(",", ":"))
 
     # Primary-action consistency: a card has exactly one primary action. When a
     # stronger workflow override is shown, do not also render a weak no-op market
@@ -5473,6 +5529,7 @@ def render_plan_card(
         f" data-delta-status='{esc(card.delta.delta_status)}'"
         f" data-delta-types='{esc(','.join(card.delta.material_delta_types))}'"
         f" data-evidence-rows='{esc(evidence_rows_json_attr)}'"
+        f" data-evidence-groups='{esc(evidence_groups_json_attr)}'"
         f" data-render-id='{esc(card.render_id)}'>"
         "<div class='card-head'>"
         "<div class='card-head-left'>"
@@ -5619,10 +5676,6 @@ def render_full_html(
         "      </div>\n"
         "      <div id='profit-plan-detail-panel'>\n"
         "        <div class='muted small'>Select a card to see details.</div>\n"
-        "        <h3>Wallet</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>\n"
-        "        <h3>Position</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>\n"
-        "        <h3>Orders</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>\n"
-        "        <h3>Context</h3><div class='muted small' style='margin-bottom:10px'>— placeholder —</div>\n"
         "      </div>\n"
         "    </div>\n"
         "  </main>\n"

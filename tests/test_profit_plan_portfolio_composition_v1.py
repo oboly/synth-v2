@@ -74,7 +74,35 @@ def test_apply_portfolio_account_evidence_renders_held_balance_cost_basis_and_fr
     assert composed.evidence.held_eur_value == "30000"
     assert composed.evidence.cost_basis_price_eur == "28000"
     assert composed.evidence.wallet_snapshot_status == "FRESH"
-    assert composed.evidence.position_snapshot_status == "FRESH"
+    # position_snapshot_status must reflect cost-basis availability from its own
+    # authority (account_position_snapshot), never the wallet's freshness status
+    # (Issue #348 blocker 2) — it stays "AVAILABLE" even if wallet were stale.
+    assert composed.evidence.position_snapshot_status == "AVAILABLE"
+
+
+def test_apply_portfolio_account_evidence_position_status_independent_of_wallet_freshness() -> None:
+    """Regression for Issue #348 blocker 2: position_snapshot_status must not
+    be a copy of balance_freshness_status. A STALE wallet snapshot with a
+    persisted cost basis must still report the cost basis as AVAILABLE."""
+    card = build_profit_plan_card(
+        symbol="BTC",
+        market="BTC-EUR",
+        current_price=Decimal("50000"),
+        short_context_input_status="MISSING_ZONE_CONTEXT",
+        short_context_coverage_status="CONTEXT_INVALID_OR_STALE",
+        short_context_display_state="NO_NATIVE_SHORT_FIB_CONTEXT",
+        presentation_mode=CARD_MODE_POSITION_HELD,
+    )
+    [composed] = apply_portfolio_account_evidence(
+        [card],
+        held_amount_by_symbol={"BTC": Decimal("0.6")},
+        held_eur_value_by_symbol={"BTC": Decimal("30000")},
+        cost_basis_by_symbol={"BTC": Decimal("28000")},
+        balance_freshness_status="STALE",
+    )
+    assert composed.evidence.wallet_snapshot_status == "STALE"
+    assert composed.evidence.position_snapshot_status == "AVAILABLE"
+    assert composed.evidence.position_snapshot_status != composed.evidence.wallet_snapshot_status
 
 
 def test_apply_portfolio_account_evidence_missing_cost_basis_stays_truthfully_unavailable() -> None:

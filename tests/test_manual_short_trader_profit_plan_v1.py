@@ -51,6 +51,7 @@ from src.reporting.manual_short_trader_profit_plan_v1 import (
     build_profit_plan_card,
     compare_card_delta,
     evidence_rows_to_json,
+    evidence_rows_to_operator_json,
     derive_quality_state,
     filter_cards_for_view,
     format_current_price_line,
@@ -4669,12 +4670,12 @@ def test_cockpit_pr19_card_data_attrs_still_present() -> None:
     assert "data-sort-symbol=" in html
 
 
-def test_cockpit_detail_panel_has_placeholder_headings() -> None:
+def test_cockpit_detail_panel_has_placeholder_prompt() -> None:
+    """No fixed pseudo-headings (Issue #348 blocker 1) — the panel starts with
+    a plain prompt and is populated by the domain-grouped Evidence renderer
+    once a card is selected client-side."""
     html = render_full_html([], rendered_at="now", broker_mode="test")
-    assert "Wallet" in html
-    assert "Position" in html
-    assert "Orders" in html
-    assert "Context" in html
+    assert "Select a card to see details." in html
 
 
 def test_cockpit_no_wallet_account_value_computation() -> None:
@@ -6279,12 +6280,14 @@ def test_json_snapshot_and_html_data_attr_expose_identical_evidence_rows() -> No
     assert [row["key"] for row in json_rows] == list(_EVIDENCE_ROW_KEYS_IN_ORDER)
 
 
-def test_sidebar_evidence_html_escapes_normalized_rows_while_json_remains_raw(
+def test_detail_panel_evidence_html_escapes_normalized_rows_while_json_remains_raw(
     monkeypatch,
 ) -> None:
-    """Evidence JSON remains structured data; both HTML renderers escape at output."""
+    """Evidence JSON remains structured data; the detail-panel JS escapes at
+    output using the same domain-grouped/operator-translated data the initial
+    card uses (Issue #348 blocker 1) — no separate JS translation table."""
     raw_row = EvidenceRow(
-        key="evidence<script>alert(\"x\")</script>",
+        key="position_snapshot",
         label='<script>alert("x")</script>',
         authority="A&B",
         status='"value"',
@@ -6305,12 +6308,13 @@ def test_sidebar_evidence_html_escapes_normalized_rows_while_json_remains_raw(
     script_match = re.search(r"<script>(.*?)</script>", full_html, re.DOTALL)
     assert script_match is not None
 
+    operator_groups = evidence_rows_to_operator_json((raw_row,))
     node_source = (
         "var document = {addEventListener: function() {}};\n"
         + script_match.group(1)
-        + "\nvar row = "
-        + json.dumps(evidence_rows_to_json((raw_row,))[0])
-        + ";\nconsole.log(JSON.stringify([_ppEvidenceRowHtml(row), _ppEvidenceSectionHtml([row])]));"
+        + "\nvar groups = "
+        + json.dumps(operator_groups)
+        + ";\nconsole.log(JSON.stringify([_ppEvidenceGroupsHtml(groups)]));"
     )
     completed = subprocess.run(
         ["node", "-e", node_source],
@@ -6318,17 +6322,19 @@ def test_sidebar_evidence_html_escapes_normalized_rows_while_json_remains_raw(
         capture_output=True,
         text=True,
     )
-    sidebar_row_html, sidebar_section_html = json.loads(completed.stdout)
+    [detail_panel_html] = json.loads(completed.stdout)
 
-    # The compact card and executed sidebar JavaScript both render the same
-    # normalized values as HTML-safe text, including every reason-code value.
+    # The compact card and the executed detail-panel JavaScript both render
+    # the same normalized values as HTML-safe text, including every
+    # reason-code value (surfaced via the operator-translated reason text and
+    # the raw-code <details> block).
     compact_escaped = {
         "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;",
         "A&amp;B",
         "&quot;value&quot;",
         "&#x27;quoted&#x27;",
     }
-    sidebar_escaped = {
+    detail_escaped = {
         "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;",
         "A&amp;B",
         "&quot;value&quot;",
@@ -6336,12 +6342,16 @@ def test_sidebar_evidence_html_escapes_normalized_rows_while_json_remains_raw(
     }
     for value in compact_escaped:
         assert value in compact_html
-    for value in sidebar_escaped:
-        assert value in sidebar_row_html
-        assert value in sidebar_section_html
+    for value in detail_escaped:
+        assert value in detail_panel_html
+
+    # The detail panel uses the server-computed display label ("Cost basis"
+    # for position_snapshot), not the raw row.label, and groups it under the
+    # same domain heading as the initial card.
+    assert "Cost basis" in detail_panel_html
+    assert "Account / position / wallet / orders" in detail_panel_html
 
     raw_html_values = (
-        raw_row.key,
         raw_row.label,
         raw_row.authority,
         raw_row.status,
@@ -6349,8 +6359,7 @@ def test_sidebar_evidence_html_escapes_normalized_rows_while_json_remains_raw(
         *raw_row.reason_codes,
     )
     for value in raw_html_values:
-        assert value not in sidebar_row_html
-        assert value not in sidebar_section_html
+        assert value not in detail_panel_html
 
     # The JSON snapshot remains raw structured evidence, not HTML-entity data.
     assert snapshot["symbols"][0]["evidence_rows"] == evidence_rows_to_json((raw_row,))
