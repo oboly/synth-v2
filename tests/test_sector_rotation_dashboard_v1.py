@@ -171,6 +171,18 @@ def test_deterministic_ordering_follows_sector_definition_order():
     assert [s.sector_code for s in dashboard.sectors] == ["AI_COMPUTE", "DEFI_YIELD"]
 
 
+def test_persisted_sector_order_is_not_recomputed_from_rotation_scores():
+    rows = _full_snapshot_rows()
+    for row in rows:
+        row["rotation_score"] = -99.0 if row["sector_code"] == "AI_COMPUTE" else 99.0
+
+    dashboard = _build(rows, latest_asof_ts_utc=ASOF)
+
+    assert [sector.sector_code for sector in dashboard.sectors] == ["AI_COMPUTE", "DEFI_YIELD"]
+    assert dashboard.sectors[0].cells[0].rotation_score == -99.0
+    assert dashboard.sectors[1].cells[0].rotation_score == 99.0
+
+
 def test_stale_cohort_is_degraded_with_age():
     stale_asof = datetime(2026, 7, 16, 10, 0)
     rows = _full_snapshot_rows()
@@ -178,6 +190,28 @@ def test_stale_cohort_is_degraded_with_age():
     assert dashboard.status == "DEGRADED"
     assert dashboard.freshness_state == "STALE"
     assert dashboard.age_seconds == timedelta(hours=9).total_seconds()
+
+
+def test_stale_missing_and_unavailable_are_distinct_rendered_states():
+    stale = _build(_full_snapshot_rows(), latest_asof_ts_utc=datetime(2026, 7, 16, 10, 0))
+    missing = _build(
+        [
+            row for row in _full_snapshot_rows()
+            if not (row["sector_code"] == "DEFI_YIELD" and row["window_code"] == "7d")
+        ],
+        latest_asof_ts_utc=ASOF,
+    )
+    unavailable = _build([], latest_asof_ts_utc=None)
+
+    assert stale.status == "DEGRADED"
+    assert stale.freshness_state == "STALE"
+    assert "STALE" in render_dashboard_html(stale)
+    assert missing.status == "DATA_UNAVAILABLE"
+    assert missing.reason == "INCOMPLETE_LATEST_COHORT"
+    assert "INCOMPLETE_LATEST_COHORT" in render_dashboard_html(missing)
+    assert unavailable.status == "DATA_UNAVAILABLE"
+    assert unavailable.reason == "NO_COHORT_CANDIDATES"
+    assert "NO_COHORT_CANDIDATES" in render_dashboard_html(unavailable)
 
 
 # --- JSON/HTML share one view model ------------------------------------------
@@ -265,7 +299,10 @@ def test_safety_markers_are_all_zero_or_none():
     dashboard = _build(_full_snapshot_rows(), latest_asof_ts_utc=ASOF)
     safety = dashboard_to_json_dict(dashboard)["safety"]
     assert safety == {
+        "account_inputs": 0,
         "db_writes": 0,
+        "writer_calls": 0,
+        "broker_calls": 0,
         "broker_private_calls": 0,
         "broker_writes": 0,
         "order_submission": 0,
@@ -323,6 +360,34 @@ def test_module_has_no_write_capable_or_execution_layer_import():
             imported_modules.add(node.module)
 
     forbidden_substrings = ("executor", "decision_gate", "execution_planner", "broker", "db")
+    for name in imported_modules:
+        for forbidden in forbidden_substrings:
+            assert forbidden not in name.lower(), f"unexpected import: {name}"
+
+
+def test_runner_has_no_writer_broker_or_account_layer_import():
+    import ast
+    import inspect
+
+    from src.reporting import run_sector_rotation_dashboard_v1 as module
+
+    tree = ast.parse(inspect.getsource(module))
+    imported_modules = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported_modules.add(node.module)
+
+    forbidden_substrings = (
+        "sector_rotation_engine",
+        "decision_gate",
+        "execution_planner",
+        "executor",
+        "broker",
+        "selection_engine",
+        "account",
+    )
     for name in imported_modules:
         for forbidden in forbidden_substrings:
             assert forbidden not in name.lower(), f"unexpected import: {name}"
