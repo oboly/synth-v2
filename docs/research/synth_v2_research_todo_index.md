@@ -9,8 +9,9 @@ Use:
 docs/development/github_issues_workflow.md
 ```
 
-The frozen legacy board and its migration dispositions remain readable at
-`docs/todo/README.md` and `docs/todo/MIGRATION_FREEZE.md`.
+The surviving frozen legacy/reference files remain readable under
+`docs/todo/`; retired infrastructure history is preserved in
+`docs/archive/`.
 
 Reason:
 
@@ -19,7 +20,6 @@ The TODO list now spans multiple lanes, including Market Breath, UI/Webview, Bre
 Canonical TODO files:
 
 ```text
-docs/todo/README.md
 docs/todo/ui_webview.md
 docs/todo/breath_curve.md
 docs/todo/strategy_candidates.md
@@ -28,4 +28,6 @@ docs/archive/paper_candidate_contract.md (archived, historical record; Batch 6F2
 docs/archive/parked_backlog.md (archived, historical record; Batch 6F2)
 ```
 
-Research docs remain canonical for detailed lane design. The TODO folder is the working board.
+Research docs remain canonical for detailed lane design. The surviving
+`docs/todo/` files are frozen legacy/reference material, not a working board;
+GitHub Issues are the sole active execution tracker.

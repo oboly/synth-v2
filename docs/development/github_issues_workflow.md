@@ -19,7 +19,7 @@ Permanent system truth remains in canonical documentation. Pull requests own imp
 | `docs/ops/` and `docs/deployment/` | Permanent operational contracts and procedures |
 | `docs/status/` and `docs/incidents/` | Dated audits, accepted snapshots, and incidents |
 | `docs/archive/` | Obsolete or superseded documentation |
-| `docs/todo/` | Frozen legacy board during controlled migration only |
+| `docs/todo/` | Frozen legacy/reference files retained for navigation and history; never an active tracker |
 
 An issue may link to canonical documentation but must not duplicate its full contract. Canonical documentation may link to an issue for open execution but must not maintain a competing task status or priority list.
 
@@ -143,9 +143,18 @@ Close an issue only when all applicable conditions are true:
 
 ## Migration rule
 
+GitHub Issues are the sole active execution tracker. The remaining
+`docs/todo/` files are frozen legacy/reference material, not a parallel
+backlog or workflow. Do not add executable scope to them or use them as a
+source of current status, priority, or execution order.
+
 Do not mass-convert `docs/todo/` files into Issues.
 
-Migrate only work that is active, bounded, and has a concrete next action. Preserve permanent design in canonical documentation, archive superseded material, and remove only content proven to be duplicated elsewhere.
+Migrate only work that is active, bounded, and has a concrete next action.
+Preserve permanent design in canonical documentation, archive superseded
+material, and remove only content proven to be duplicated elsewhere. Any
+future maintenance of a surviving `docs/todo/` file is limited to factual
+corrections, Issue pointers, and dependency-safe reference maintenance.
 
 ## Worktree policy for concurrent agents
 
