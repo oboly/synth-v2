@@ -61,7 +61,9 @@ The advisor defines, before implementation starts:
 - completion evidence
 
 The advisor reviews deviations and difficult decisions. The advisor does not
-duplicate all implementation work.
+duplicate all implementation work. Substantial implementation tasks should normally
+be delegated from a long-lived project-management or advisor session to a bounded worker
+agent rather than executed directly inside the primary session context.
 
 Do not use the most expensive model for routine mechanical work unless there
 is a stated reason.
@@ -70,14 +72,20 @@ Select effort proportionally:
 
 ```text
 low     = bounded mechanical work with low risk
-medium  = normal implementation or focused review
+medium  = normal implementation, focused review, triage, or worker execution (default)
 high    = architecture, security, runtime, database, execution, broad
           refactors, ambiguous failures, or final high-risk review
 ```
 
 Use the exact effort or reasoning value supported by the selected model or
-client where known. Otherwise use `low`, `medium`, or `high`. Do not invent
-unsupported effort values.
+client where known. Otherwise use `low`, `medium`, or `high`. Default to `medium`
+for normal project-management, architecture triage, and worker implementation tasks.
+
+Operational provider routing preference (revisable guidance, non-architectural):
+
+- Claude Code Sonnet Medium is the preferred primary implementation route for sustained bounded work while quota-efficient.
+- OpenAI Codex remains preferred for targeted implementation, independent review, difficult debugging, or a bounded second pass.
+- Model/provider preferences reflect operational cost awareness; architecture and safety contracts remain provider-neutral. Do not encode temporary quota metrics or account balances in canonical documents.
 
 Effort does not replace ROLE. It does not authorize broader scope, additional
 mutations, or any permission not stated in the task.

@@ -45,6 +45,9 @@ Summary:
   required audits, and completion evidence.
 - The advisor reviews deviations and difficult decisions rather than
   duplicating all implementation work.
+- Substantial execution in long-lived project-management or advisor sessions
+  should normally be delegated to a bounded worker agent rather than executing
+  large implementations directly in the main session.
 - Do not use the most expensive model for routine mechanical work unless
   justified.
 - Important changes should, where practical, get an independent review from a
