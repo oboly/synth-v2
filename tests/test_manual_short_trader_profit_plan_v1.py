@@ -6943,3 +6943,148 @@ def test_reporting_module_has_no_broker_or_execution_imports() -> None:
         for name in names:
             lowered = name.lower()
             assert not any(bad in lowered for bad in forbidden_substrings), name
+
+
+# ---------------------------------------------------------------------------
+# Issue #347 — pure presentation refactor: domain-separated card sections.
+# These tests assert HTML structure/wording only. They must never assert a
+# different underlying enum/state value than before the refactor.
+# ---------------------------------------------------------------------------
+
+
+def test_card_has_fibonacci_levels_heading() -> None:
+    card = _fresh_canonical_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    assert "Fibonacci Levels" in html
+
+
+def test_account_fields_render_in_account_section_not_under_fibonacci_levels() -> None:
+    card = _ldo_like_card()
+    card = dataclasses.replace(
+        card,
+        is_wallet_held=True,
+        evidence=dataclasses.replace(
+            card.evidence,
+            held_amount="12.5",
+            held_eur_value="500",
+            cost_basis_price_eur="40",
+        ),
+    )
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+
+    fib_start = html.index("Fibonacci Levels")
+    fib_end = html.index("Account / Position")
+    account_start = fib_end
+    fib_section = html[fib_start:fib_end]
+    account_section = html[account_start:]
+
+    assert "Held amount" in html
+    assert "Held amount" not in fib_section
+    assert "Held value" not in fib_section
+    assert "Cost basis" not in fib_section
+    assert "Held amount" in account_section
+
+
+def test_order_too_far_or_stale_renders_under_orders_not_fibonacci() -> None:
+    card = _make_card(
+        current_price="0.3000",
+        reentry=_fet_reentry(),
+        buy_orders=(_FakeOrder("0.1000"),),
+    )
+    assert card.secondary_state == "ORDER_TOO_FAR_OR_STALE"
+    html = render_plan_card(card, buy_orders=(_FakeOrder("0.1000"),), sell_orders=())
+
+    fib_start = html.index("Fibonacci Levels")
+    fib_end = html.index("order-section")
+    fib_section = html[fib_start:fib_end]
+    order_section_start = html.index("<div class='order-section'>")
+
+    assert "Order too far or stale" in html
+    assert "Order too far or stale" not in fib_section
+    assert "Order too far or stale" in html[order_section_start:]
+
+
+def test_wallet_content_does_not_render_among_fibonacci_levels() -> None:
+    card = _mixed_account_freshness_card()
+    card = dataclasses.replace(card, is_wallet_held=True)
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+
+    fib_start = html.index("Fibonacci Levels")
+    fib_end = html.index("Account / Position")
+    fib_section = html[fib_start:fib_end]
+    assert "Wallet snapshot" not in fib_section
+    assert "wallet-held-badge" not in fib_section
+
+
+def test_disabled_breathline_content_is_hidden_from_normal_card() -> None:
+    """Breathline is demoted research-only context (c02255b8). Issue #347
+    requires it be hidden from the normal operator card entirely (not merely
+    relabeled), without deleting the underlying data attributes/contract that
+    downstream/JSON consumers rely on."""
+    card = _fresh_canonical_card()
+    card = dataclasses.replace(card, breath_curve={"availability_state": "AVAILABLE", "warnings": []})
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    assert "Breathline context" not in html
+    assert "RESEARCH_ONLY_DISABLED" not in html
+    # Underlying data contract (machine-readable attrs) is preserved, not deleted.
+    assert "data-bc-availability=" in html
+
+
+def test_evidence_is_grouped_by_domain() -> None:
+    card = _mixed_account_freshness_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    evidence_start = html.index("class='card-evidence")
+    evidence_html = html[evidence_start:]
+    assert "Fibonacci / map" in evidence_html
+    assert "Market data" in evidence_html
+    assert "Account / position / wallet / orders" in evidence_html
+    assert "Action / permission" in evidence_html
+    # Domain group ordering: Fibonacci/map before market data before account.
+    assert evidence_html.index("Fibonacci / map") < evidence_html.index("Market data")
+    assert evidence_html.index("Market data") < evidence_html.index(
+        "Account / position / wallet / orders"
+    )
+
+
+def test_pr_reference_and_raw_tier_label_not_exposed_as_primary_evidence_copy() -> None:
+    """'PR #75' must not appear anywhere (was only ever an internal authority
+    comment). 'tier' wording may still exist in the muted/secondary authority
+    description and in the raw JSON evidence payload, but not as the primary
+    bold evidence-row label."""
+    card = _ldo_like_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    assert "PR #75" not in html
+    row_labels = re.findall(r"evidence-row-label'>([^<]*)<", html)
+    assert row_labels, "expected at least one evidence row label"
+    assert not any("tier" in label.lower() for label in row_labels)
+
+
+def test_action_gate_reason_translated_in_fibonacci_levels_section() -> None:
+    """MAP_TIER_NOT_CONFIRMED_CURRENT-style unconfirmed-map truth must be
+    reflected as plain operator wording in the Fibonacci Levels section."""
+    card = _ldo_like_card()
+    html = render_plan_card(card, buy_orders=(), sell_orders=())
+    fib_start = html.index("Fibonacci Levels")
+    fib_end = html.index("Account / Position") if "Account / Position" in html else html.index(
+        "class='order-section'"
+    )
+    fib_section = html[fib_start:fib_end]
+    assert "NOT CONFIRMED" in fib_section
+
+
+def test_underlying_action_gate_enum_values_unchanged_by_presentation_refactor() -> None:
+    """Issue #347 is presentation-only: the action-gate resolver's returned
+    enum/state strings must be byte-identical to their pre-refactor values."""
+    ldo = _ldo_like_card()
+    rows = build_card_evidence_rows(ldo)
+    action_gate = _row_by_key(rows, "action_gate")
+    assert action_gate.status == "REVIEW_CONTEXT"
+    assert set(action_gate.reason_codes) == {
+        "ACCOUNT_ORDER_DATA_UNAVAILABLE",
+        "STALE_OR_UNAVAILABLE_ORDER_SNAPSHOT",
+        "NATIVE_MAP_DATA_UNAVAILABLE",
+    }
+    fresh = _fresh_canonical_card()
+    fresh_rows = build_card_evidence_rows(fresh)
+    fresh_action_gate = _row_by_key(fresh_rows, "action_gate")
+    assert fresh_action_gate.status in {"FIX_LADDER", "REVIEW_CONTEXT"}

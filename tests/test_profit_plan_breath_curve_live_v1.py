@@ -319,10 +319,11 @@ def test_profit_plan_json_and_html_include_breath_curve_payload() -> None:
     assert "data-bc-next-checkpoint='MAIN_PULSE_TP_HIGH'" in html
     assert "data-mb-phase" not in html
     assert "data-mb-trajectory" not in html
-    # Breathline is demoted to research-only muted context (label + disabled state).
-    assert "Breathline context" in html
-    assert "RESEARCH_ONLY_DISABLED" in html
-    assert "MAIN_PULSE_TP_HIGH" in html
+    # Breathline is research-only/disabled and hidden from the normal operator
+    # card (Issue #347); the data-bc-* attribute contract above is preserved
+    # for downstream/JSON consumers, but no visible Breathline block renders.
+    assert "Breathline context" not in html
+    assert "RESEARCH_ONLY_DISABLED" not in html
 
 
 def test_live_provider_imports_no_research_runner_or_aplus_module() -> None:

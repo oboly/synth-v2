@@ -1969,7 +1969,10 @@ def _dashboard_render_row(card: ProfitPlanCard) -> EvidenceRow:
 
 
 def _action_gate_row(card: ProfitPlanCard) -> EvidenceRow:
-    authority = "Action-gate resolver (fail-closed precedence, PR #75)"
+    # Authority description is operator-facing text; internal implementation
+    # references (e.g. PR numbers) must not appear here. See PR #75 in git
+    # history for the fail-closed precedence rule this row displays.
+    authority = "Action-gate resolver (fail-closed precedence)"
     if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
         return EvidenceRow(
             key="action_gate",
@@ -3233,12 +3236,174 @@ def _evidence_authority_row_html(row: EvidenceRow) -> str:
     )
 
 
+# ---------------------------------------------------------------------------
+# Operator-facing evidence presentation (Issue #347 — pure display reorg).
+#
+# These maps translate internal row/reason-code identifiers into plain
+# operator language and group the fixed evidence-row tuple from
+# build_card_evidence_rows() by domain for HTML display only. They never
+# alter EvidenceRow.key/label/status/reason_codes themselves (those remain
+# the JSON-schema-facing values returned by evidence_rows_to_json) — only the
+# HTML rendering path substitutes a friendlier display label/heading.
+# ---------------------------------------------------------------------------
+
+_EVIDENCE_ROW_DISPLAY_LABELS: dict[str, str] = {
+    "projection_status": "Fibonacci map projection",
+    "current_map_selection": "Selected Fibonacci map",
+    "map_lifecycle": "Fibonacci map lifecycle",
+    "per_level_status": "Fibonacci level status",
+    "price_snapshot": "Market price snapshot",
+    "wallet_snapshot": "Wallet snapshot",
+    "position_snapshot": "Position-tracking snapshot",
+    "open_order_snapshot": "Open-order snapshot",
+    "dashboard_render": "Dashboard render",
+    "action_gate": "Action / permission gate",
+}
+
+# Evidence-row key -> (domain group heading, group sort order). Any row key
+# absent from this map falls into a trailing "Other" group rather than being
+# dropped, so a future new evidence row is never silently hidden.
+_EVIDENCE_ROW_DOMAIN_GROUPS: dict[str, tuple[str, int]] = {
+    "projection_status": ("Fibonacci / map", 0),
+    "current_map_selection": ("Fibonacci / map", 0),
+    "map_lifecycle": ("Fibonacci / map", 0),
+    "per_level_status": ("Fibonacci / map", 0),
+    "price_snapshot": ("Market data", 1),
+    "wallet_snapshot": ("Account / position / wallet / orders", 2),
+    "position_snapshot": ("Account / position / wallet / orders", 2),
+    "open_order_snapshot": ("Account / position / wallet / orders", 2),
+    "dashboard_render": ("Reporting / render", 3),
+    "action_gate": ("Action / permission", 4),
+}
+
+# Raw reason codes / status tokens -> plain operator language. Used only for
+# the human-readable secondary line; the raw code stays available in a
+# <details> block so nothing is deleted, only made secondary.
+_REASON_CODE_OPERATOR_LABELS: dict[str, str] = {
+    "NATIVE_MAP_DATA_UNAVAILABLE": "Native Fibonacci map data unavailable",
+    "MAP_TIER_NOT_CONFIRMED_CURRENT": "Selected Fibonacci map — NOT CONFIRMED",
+    "MAP_SELECTION_UNAVAILABLE": "Fibonacci map selection unavailable",
+    "MAP_LIFECYCLE_UNAVAILABLE": "Fibonacci map lifecycle unavailable",
+    "MAP_LIFECYCLE_BLOCKS_ACTION": "Fibonacci map lifecycle blocks action",
+    "MAP_CYCLE_UNAVAILABLE": "Fibonacci map cycle unavailable",
+    "MAP_SWITCH_UNVERIFIED": "Fibonacci map switch not yet verified",
+    "TRANSIENT_LIFECYCLE_NOT_CANONICAL": "Map lifecycle is a non-canonical reference only",
+    "TRANSIENT_LEVELS_REFERENCE_ONLY": "Levels shown are a non-canonical reference only",
+    "NATIVE_LEVEL_STATUS_UNAVAILABLE": "Native level status unavailable",
+    "LEVEL_STATUS_UNAVAILABLE": "Level status unavailable",
+    "REPORTING_DERIVED_NOT_NATIVE_CANONICAL": "Derived by reporting, not native canonical truth",
+    "STALE_OR_MISSING_CURRENT_PRICE": "Current price stale or missing",
+    "STALE_CURRENT_PRICE": "Current price is stale",
+    "WALLET_DATA_UNAVAILABLE": "Wallet data unavailable",
+    "STALE_WALLET_DATA": "Wallet data is stale",
+    "POSITION_DATA_UNAVAILABLE": "Position-tracking data unavailable",
+    "STALE_POSITION_DATA": "Position-tracking data is stale",
+    "OPEN_ORDER_DATA_UNAVAILABLE": "Open-order data unavailable",
+    "STALE_OPEN_ORDER_SNAPSHOT": "Open-order snapshot is stale",
+    "ACCOUNT_ORDER_DATA_UNAVAILABLE": "Account order data unavailable",
+    "STALE_OR_UNAVAILABLE_ORDER_SNAPSHOT": "Order snapshot stale or unavailable",
+    "NON_CANONICAL_REFERENCE_ONLY": "Only a non-canonical reference is available",
+    "CONTEXT_INVALIDATED": "Fibonacci context invalidated",
+    "ENTRY_LEVELS_UNAVAILABLE": "Entry levels unavailable",
+    "ENTRY_ACTIVATION_UNPROVEN": "Entry activation not yet proven",
+}
+
+
+_MAP_SELECTION_STATUS_OPERATOR_TEXT: dict[str, str] = {
+    "CURRENT_ACTIVE_MAP": "CONFIRMED CURRENT",
+    "REPORTING_FALLBACK": "NOT CONFIRMED",
+    "UNKNOWN": "UNKNOWN",
+}
+
+
+def _operator_map_selection_text(row: EvidenceRow) -> str:
+    """Translate the current_map_selection evidence row into the operator
+    wording required by Issue #347, e.g. REPORTING_FALLBACK ->
+    'NOT CONFIRMED'. Reads the already-computed row status only; does not
+    recompute map-selection truth."""
+    return _MAP_SELECTION_STATUS_OPERATOR_TEXT.get(row.status, row.status)
+
+
+def _operator_map_lifecycle_text(row: EvidenceRow) -> str:
+    """Plain-language lifecycle status for the Fibonacci Levels section.
+    Reads the already-computed map_lifecycle evidence row status only."""
+    if row.status == DATA_UNAVAILABLE:
+        return "UNAVAILABLE"
+    return row.status
+
+
+def _reason_code_operator_label(code: str) -> str:
+    if code in _REASON_CODE_OPERATOR_LABELS:
+        return _REASON_CODE_OPERATOR_LABELS[code]
+    if code.startswith("REPORTED_TIER_"):
+        return f"Reported (unconfirmed) map selection: {code[len('REPORTED_TIER_'):]}"
+    return code.replace("_", " ").title()
+
+
+def _evidence_row_operator_reasons_html(row: EvidenceRow) -> str:
+    """Operator-readable reason summary with the raw codes preserved in a
+    collapsible <details> block, per Issue #347 (technical codes may remain
+    in expandable/secondary detail, not as primary copy)."""
+    if not row.reason_codes:
+        return ""
+    plain = ", ".join(_reason_code_operator_label(code) for code in row.reason_codes)
+    raw = ", ".join(row.reason_codes)
+    return (
+        f"<div class='evidence-row-reasons muted small'>{esc(plain)}</div>"
+        "<details class='evidence-row-raw-codes'>"
+        "<summary class='muted small'>Technical codes</summary>"
+        f"<code class='muted small'>{esc(raw)}</code>"
+        "</details>"
+    )
+
+
+def _evidence_authority_row_html_grouped(row: EvidenceRow) -> str:
+    """Same visual row as _evidence_authority_row_html, but with an
+    operator-facing display label and reason codes demoted to secondary/
+    expandable detail. Row.key/status/authority/observed_ts are unchanged."""
+    observed_html = f" · {esc(row.observed_ts)}" if row.observed_ts else ""
+    display_label = _EVIDENCE_ROW_DISPLAY_LABELS.get(row.key, row.label)
+    return (
+        f"<div class='evidence-authority-row {_evidence_authority_row_class(row)}'>"
+        "<div class='evidence-row-head'>"
+        f"<span class='evidence-row-label'>{esc(display_label)}</span>"
+        f"<code class='evidence-row-status'>{esc(row.status)}</code>"
+        "</div>"
+        f"<div class='evidence-row-authority muted small'>{esc(row.authority)}{observed_html}</div>"
+        f"{_evidence_row_operator_reasons_html(row)}"
+        "</div>"
+    )
+
+
+def _grouped_evidence_html(rows: tuple[EvidenceRow, ...]) -> str:
+    """Group the fixed evidence-row tuple by domain for card display only.
+    Grouping is presentation-only: it does not reorder, drop, invent, or
+    recompute any evidence row. Rows retain their original relative order
+    within each group."""
+    groups: dict[str, list[EvidenceRow]] = {}
+    order: dict[str, int] = {}
+    for row in rows:
+        heading, sort_order = _EVIDENCE_ROW_DOMAIN_GROUPS.get(row.key, ("Other", 99))
+        groups.setdefault(heading, []).append(row)
+        order[heading] = sort_order
+    parts: list[str] = []
+    for heading in sorted(groups, key=lambda h: order[h]):
+        rows_html = "".join(_evidence_authority_row_html_grouped(r) for r in groups[heading])
+        parts.append(
+            "<div class='evidence-domain-group'>"
+            f"<div class='evidence-domain-heading'>{esc(heading)}</div>"
+            f"{rows_html}"
+            "</div>"
+        )
+    return "".join(parts)
+
+
 def _card_evidence_html(rows: tuple[EvidenceRow, ...], card: ProfitPlanCard) -> str:
     """Render the normalized evidence-authority rows (P1). Each row has exactly
     one authority owner and one canonical status — no row is inferred from, or
     visually compressed with, an unrelated row (e.g. a DATA_UNAVAILABLE
     projection is never paired with a confirmed CURRENT_ACTIVE_MAP claim)."""
-    rows_html = "".join(_evidence_authority_row_html(row) for row in rows)
+    rows_html = _grouped_evidence_html(rows)
     delta_types = ", ".join(card.delta.material_delta_types) or "none"
     changed = ", ".join(card.delta.changed_fields) or "none"
     return (
@@ -3892,6 +4057,18 @@ _CSS = """
       margin-bottom: 3px;
     }
     .field-value { font-size: 13px; color: var(--text); }
+    .plan-section { margin: 10px 0; }
+    .section-heading {
+      font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--blue);
+      font-weight: 700; margin-bottom: 6px;
+    }
+    .section-note { font-size: 11px; color: var(--muted); margin: 2px 0 6px; }
+    .section-note.section-note-warn { color: var(--warn); }
+    .evidence-domain-group { margin-bottom: 8px; }
+    .evidence-domain-heading {
+      font-size: 9px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted);
+      margin: 6px 0 3px;
+    }
     .market-breath-section {
       margin: 12px 0 10px;
       border: 1px solid var(--line);
@@ -4351,15 +4528,6 @@ def _build_client_js(storage_scope: str) -> str:
     var setup = card.dataset.filterSetup || '—';
     var planningPpp = card.dataset.planningPpp || '—';
     var actionablePpp = card.dataset.actionablePpp || '—';
-    var bcAvailability = card.dataset.bcAvailability || 'UNAVAILABLE';
-    var bcCurrent = card.dataset.bcCurrentCheckpoint || 'UNAVAILABLE';
-    var bcBand = card.dataset.bcOffsetBand || '—';
-    var bcNext = card.dataset.bcNextCheckpoint || '—';
-    var bcTiming = card.dataset.bcNextTiming || '—';
-    var bcRelation = card.dataset.bcBtcRelation || 'UNAVAILABLE';
-    var bcMatch = card.dataset.bcMatchQuality || '—';
-    var bcSourceTs = card.dataset.bcSourceTs || '—';
-    var bcFreshness = card.dataset.bcFreshness || 'UNAVAILABLE';
     var marketEl = card.querySelector('.card-row1 .muted.small');
     var market = marketEl ? marketEl.textContent.trim() : '';
     var evidenceRows = _ppParseEvidenceRows(card);
@@ -4370,16 +4538,6 @@ def _build_client_js(storage_scope: str) -> str:
       "<div style='margin-bottom:6px'><span class='muted small'>Setup: </span>" + setup + "</div>" +
       "<div style='margin-bottom:6px'><span class='muted small'>Planning PPP: </span>" + planningPpp + "</div>" +
       "<div style='margin-bottom:14px'><span class='muted small'>Actionable PPP: </span>" + actionablePpp + "</div>" +
-      "<h3 class='muted'>Breathline context — research only</h3>" +
-      "<div class='muted small' style='margin-bottom:6px'>Research context only — disabled for actions (weights 0).</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Availability: </span>" + bcAvailability + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Current checkpoint: </span>" + bcCurrent + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Offset band: </span>" + bcBand + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Next checkpoint: </span>" + bcNext + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Expected timing: </span>" + bcTiming + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>BTC relation: </span>" + bcRelation + "</div>" +
-      "<div style='margin-bottom:6px'><span class='muted small'>Match quality: </span>" + bcMatch + "</div>" +
-      "<div style='margin-bottom:12px'><span class='muted small'>Source / freshness: </span>" + bcSourceTs + " \xb7 " + bcFreshness + "</div>" +
       "<h3>Evidence</h3>" +
       "<div style='margin-bottom:6px'>" + _ppEvidenceSectionHtml(evidenceRows) + "</div>" +
       "<h3>Wallet</h3>" + _ppEvidenceRowHtml(_ppEvidenceRowByKey(evidenceRows, 'wallet_snapshot')) +
@@ -5019,7 +5177,6 @@ def render_plan_card(
 
     # Merged value + distance fields
     price_line = format_current_price_line(card.current_price, card.current_price_age_min, quote)
-    breath_curve_section_html = _breath_curve_detail_html(breath_curve_payload)
     reentry_label, target_label, order_ladder_label, open_orders_label, reentry_line, target_line = (
         _actionability_display_bundle(card)
     )
@@ -5042,7 +5199,21 @@ def render_plan_card(
     portfolio_badge_html = "".join(badge_html_parts)
 
     event_label = STATE_LABELS.get(card.event_state, card.event_state.replace("_", " "))
-    metrics_blocks = [
+
+    # Single source of truth for map/account/order evidence status text used
+    # both by the grouped Evidence section below and by the domain-labeled
+    # summary lines in Fibonacci Levels / Account & Position (Issue #347).
+    # This is a pure display reorganization — no status is recomputed here,
+    # only read from the already-built evidence rows.
+    evidence_rows = build_card_evidence_rows(card)
+    _evidence_by_key = {row.key: row for row in evidence_rows}
+    _map_selection_row = _evidence_by_key.get("current_map_selection")
+    _map_lifecycle_row = _evidence_by_key.get("map_lifecycle")
+    _position_row = _evidence_by_key.get("position_snapshot")
+    _wallet_row = _evidence_by_key.get("wallet_snapshot")
+
+    # --- Summary (compact, top-level) ---------------------------------
+    summary_blocks = [
         _metric_block("Current price", price_line),
         _metric_block("Setup", card.setup_state),
         _metric_block("Actionability", card.actionability_state),
@@ -5051,30 +5222,86 @@ def render_plan_card(
         "TRANSIENT_NON_CANONICAL_SHORT_CONTEXT",
         SHORT_CONTEXT_DISPLAY_CANONICAL_NAVIGATION_AVAILABLE,
     }:
-        metrics_blocks.append(
+        summary_blocks.append(
             _metric_block("Map context", _short_context_display_label(card.short_context_display_state))
         )
     if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
-        metrics_blocks.append(_metric_block("Market event", event_label))
+        summary_blocks.append(_metric_block("Market event", event_label))
+    summary_html = "".join(summary_blocks)
+
+    # --- Fibonacci Levels (market/map fields only) ---------------------
     invalidation_label = (
         "Non-canonical reference invalidation"
         if card.actionability_state == CARD_ACTIONABILITY_CONTEXT_UNAVAILABLE
         else "Invalidation"
     )
-    if card.is_wallet_held:
-        metrics_blocks.extend((
-            _metric_block("Held amount", card.evidence.held_amount),
-            _metric_block("Held value (EUR)", card.evidence.held_eur_value),
-            _metric_block("Cost basis (EUR)", card.evidence.cost_basis_price_eur),
-        ))
-    metrics_blocks.extend((
+    fib_blocks = [
         _metric_block(reentry_label, reentry_line),
         _metric_block(target_label, target_line),
         _metric_block(invalidation_label, invalidation_line),
         _metric_block("Planning PPP", planning_ppp_text),
         _metric_block("Actionable PPP", actionable_ppp_text),
-    ))
-    metrics_html = "".join(metrics_blocks)
+    ]
+    if _map_selection_row is not None:
+        fib_blocks.append(
+            _metric_block("Selected Fibonacci map", _operator_map_selection_text(_map_selection_row))
+        )
+    if _map_lifecycle_row is not None:
+        fib_blocks.append(
+            _metric_block("Fibonacci map lifecycle", _operator_map_lifecycle_text(_map_lifecycle_row))
+        )
+    fib_section_html = (
+        "<div class='plan-section fib-levels-section'>"
+        "<div class='section-heading'>Fibonacci Levels</div>"
+        f"<div class='field-grid'>{''.join(fib_blocks)}</div>"
+        "</div>"
+    )
+
+    # --- Account / Position (held amount/value/cost basis, wallet, ------
+    # position-tracking freshness). Rendered whenever the card has an
+    # account context at all (not for pure watch-only/market-selected
+    # no-account cards), so the position-tracking-vs-wallet distinction is
+    # visible even when nothing is held yet.
+    account_blocks: list[str] = []
+    if card.is_wallet_held:
+        account_blocks.extend((
+            _metric_block("Held amount", card.evidence.held_amount),
+            _metric_block("Held value (EUR)", card.evidence.held_eur_value),
+            _metric_block("Cost basis (EUR)", card.evidence.cost_basis_price_eur),
+        ))
+    if _wallet_row is not None:
+        account_blocks.append(_metric_block("Wallet snapshot", _wallet_row.status))
+    if _position_row is not None:
+        account_blocks.append(_metric_block("Position snapshot", _position_row.status))
+    account_section_html = ""
+    if account_blocks:
+        # Held amount/value/cost basis are sourced from the wallet balance
+        # snapshot (trading_account_balance_snapshot / held_amount_by_symbol).
+        # "Position snapshot" is a separate position-tracking authority
+        # (account_position_snapshot) that can independently be unavailable —
+        # the two facts are not in conflict, they come from different
+        # upstream sources. Make that distinction explicit rather than
+        # implying a contradiction.
+        position_note_html = ""
+        if (
+            card.is_wallet_held
+            and _position_row is not None
+            and _position_row.status != "FRESH"
+        ):
+            position_note_html = (
+                "<div class='section-note section-note-warn'>"
+                "Held amount is from the wallet balance snapshot. Position-tracking "
+                "snapshot (separate source) is unavailable — this is a known gap in "
+                "the upstream position-tracking data, not a contradiction."
+                "</div>"
+            )
+        account_section_html = (
+            "<div class='plan-section account-section'>"
+            "<div class='section-heading'>Account / Position</div>"
+            f"{position_note_html}"
+            f"<div class='field-grid'>{''.join(account_blocks)}</div>"
+            "</div>"
+        )
 
     # Build order rows (needed for FIX LADDER override).
     # Watch-only cards have no account orders; skip to avoid MISSING states on zone levels.
@@ -5125,6 +5352,19 @@ def render_plan_card(
         filter_order_label = _filter_display_label(order_ladder_status)
         filter_order_value = _filter_value_from_label(filter_order_label)
 
+    # Order-domain secondary state ("Order too far or stale") belongs in the
+    # Orders section, not in the top-level card summary (Issue #347). All
+    # other secondary states are market/map-domain and stay in the compact
+    # top summary as a concise high-level alert.
+    secondary_state_html = ""
+    order_secondary_state_html = ""
+    if card.secondary_state is not None:
+        secondary_state_label = esc(STATE_LABELS.get(card.secondary_state, card.secondary_state))
+        if card.secondary_state == "ORDER_TOO_FAR_OR_STALE":
+            order_secondary_state_html = f"<div class='state-secondary'>{secondary_state_label}</div>"
+        else:
+            secondary_state_html = f"<div class='state-secondary'>Secondary: {secondary_state_label}</div>"
+
     # Order section and open-orders summary: suppressed for no-account-state cards.
     if card.presentation_mode in _NO_ACCOUNT_STATE_MODES:
         if card.presentation_mode == CARD_MODE_WATCH_ONLY_ROTATION:
@@ -5154,6 +5394,7 @@ def render_plan_card(
         order_section_html = (
             f"<div class='order-section'>"
             f"{order_section_header}"
+            f"{order_secondary_state_html}"
             f"{order_rows_html}"
             f"</div>"
         )
@@ -5164,14 +5405,9 @@ def render_plan_card(
             actionability_state=card.actionability_state,
         )
 
-    secondary_state_html = ""
-    if card.secondary_state is not None:
-        secondary_state_html = (
-            f"<div class='state-secondary'>Secondary: {esc(STATE_LABELS.get(card.secondary_state, card.secondary_state))}</div>"
-        )
-
     reasons_html = "".join(f"<li>{esc(r)}</li>" for r in card.reasons)
-    evidence_rows = build_card_evidence_rows(card)
+    # evidence_rows already built above (single source of truth for both the
+    # Fibonacci/Account summary lines and the grouped Evidence section).
     evidence_html = _card_evidence_html(evidence_rows, card)
     evidence_rows_json_attr = json.dumps(evidence_rows_to_json(evidence_rows), separators=(",", ":"))
 
@@ -5259,12 +5495,13 @@ def render_plan_card(
         f"<div class='tf-label'>{esc(card.timeframe_label)}</div>"
         f"</div>"
         "</div>"
-        f"<div class='field-grid'>{metrics_html}</div>"
-        f"{evidence_html}"
-        f"{breath_curve_section_html}"
+        f"<div class='field-grid'>{summary_html}</div>"
+        f"{fib_section_html}"
+        f"{account_section_html}"
         f"{order_section_html}"
-        f"<ul class='reasons'>{reasons_html}</ul>"
         f"{open_orders_html}"
+        f"{evidence_html}"
+        f"<ul class='reasons'>{reasons_html}</ul>"
         "<div class='manual-only muted'>MANUAL_ONLY — read-only snapshot, no automatic placement</div>"
         "</section>"
     )
