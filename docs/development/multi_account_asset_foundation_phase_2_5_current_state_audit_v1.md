@@ -337,8 +337,11 @@ the fragmentation #319 describes: two identifier conventions coexist in
   "does not depend on #319" or "must land after #319" note per Issue,
   since #319's mapping fix, if implemented, could change how future
   account-aware call sites (e.g. a hypothetical Phase 2 rename/split) pass
-  account context. None of the Phase 2-5 findings in this audit are
-  currently executable regardless, so this is a forward note only.
+  account context. Phase 2 and Phase 4 remain design-blocked regardless (see
+  Sections 3, 5), so this note applies to any future Issue arising from
+  those two phases; the Phase 3 tail and Phase 5.3 verification (Section 10)
+  are currently executable and do not depend on #319, so this note does not
+  apply to them.
 
 ## 8. Current consumer matrix
 
