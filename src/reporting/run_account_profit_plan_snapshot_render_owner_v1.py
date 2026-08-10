@@ -67,7 +67,7 @@ def _utc_now() -> str:
 
 
 def default_lock_path(profile: str) -> Path:
-    lock_root = Path.home() / ".config" / "synth" / "runtime" / "locks"
+    lock_root = Path.home() / ".local" / "state" / "synth" / "runtime" / "locks"
     return lock_root / f"account-profit-plan-snapshot-render-{profile}.lock"
 
 

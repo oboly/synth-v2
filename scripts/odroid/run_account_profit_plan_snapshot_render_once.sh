@@ -19,7 +19,7 @@ NATIVE_SHORT_SNAPSHOT_ROOT="${SYNTH_NATIVE_SHORT_CONTEXT_SNAPSHOT_DIR:-/var/www/
 # that a manual same-host invocation does not share. $HOME is not
 # namespaced by PrivateTmp, so this path resolves to the same inode for
 # both. See docs/ops/synth_runtime_runners_v1.md.
-LOCK_FILE="${SYNTH_ACCOUNT_PROFIT_PLAN_RENDER_LOCK:-${HOME}/.config/synth/runtime/locks/account-profit-plan-snapshot-render-${PROFILE}.lock}"
+LOCK_FILE="${SYNTH_ACCOUNT_PROFIT_PLAN_RENDER_LOCK:-${HOME}/.local/state/synth/runtime/locks/account-profit-plan-snapshot-render-${PROFILE}.lock}"
 METADATA_PATH="${SYNTH_ACCOUNT_PROFIT_PLAN_RENDER_METADATA_PATH:-${OUTPUT_ROOT}/accounts/${PROFILE}/_runtime/profit_plan_render_owner_v1/latest_run.json}"
 
 cd "${REPO_DIR}"

@@ -292,7 +292,7 @@ def test_default_lock_path_never_resolves_under_tmp_or_var_tmp(monkeypatch: pyte
     # routes through /tmp or /var/tmp regardless of the real $HOME.
     monkeypatch.setattr(owner.Path, "home", staticmethod(lambda: Path("/home/faketestuser")))
     lock_path = owner.default_lock_path("joost")
-    assert lock_path == Path("/home/faketestuser/.config/synth/runtime/locks/account-profit-plan-snapshot-render-joost.lock")
+    assert lock_path == Path("/home/faketestuser/.local/state/synth/runtime/locks/account-profit-plan-snapshot-render-joost.lock")
     for forbidden in owner.LOCK_FORBIDDEN_ROOTS:
         with pytest.raises(ValueError):
             lock_path.relative_to(forbidden)
@@ -303,7 +303,7 @@ def test_validate_lock_path_rejects_tmp_and_var_tmp() -> None:
         owner.validate_lock_path(Path("/tmp/synth-account-profit-plan-snapshot-render-joost.lock"))
     with pytest.raises(ValueError, match="PrivateTmp"):
         owner.validate_lock_path(Path("/var/tmp/synth-account-profit-plan-snapshot-render-joost.lock"))
-    owner.validate_lock_path(Path("/home/theone/.config/synth/runtime/locks/joost.lock"))
+    owner.validate_lock_path(Path("/home/theone/.local/state/synth/runtime/locks/joost.lock"))
 
 
 def test_missing_lock_file_arg_uses_home_default_outside_tmp(
@@ -340,7 +340,7 @@ def test_missing_lock_file_arg_uses_home_default_outside_tmp(
             owner.subprocess, "run", _renderer(calls, render_id="render-1", delta_status="NO_PREVIOUS_SNAPSHOT")
         )
         assert owner.run(args) == 0
-        expected_lock = fake_home / ".config" / "synth" / "runtime" / "locks" / "account-profit-plan-snapshot-render-joost.lock"
+        expected_lock = fake_home / ".local" / "state" / "synth" / "runtime" / "locks" / "account-profit-plan-snapshot-render-joost.lock"
         assert expected_lock.exists()
         for forbidden in owner.LOCK_FORBIDDEN_ROOTS:
             with pytest.raises(ValueError):
