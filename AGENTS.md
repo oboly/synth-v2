@@ -267,11 +267,9 @@ Canonical documentation lives in:
 docs/
 ```
 
-Work coordination lives in GitHub Issues. The frozen legacy TODO board is:
-
-```text
-docs/todo/
-```
+Work coordination lives exclusively in GitHub Issues. The remaining
+`docs/todo/` files are frozen legacy/reference material retained for
+navigation and historical context; they are not an active task system.
 
 Database assets live in:
 
@@ -593,14 +591,15 @@ Use the workflow rules in:
 docs/development/github_issues_workflow.md
 ```
 
-`docs/todo/` is a frozen legacy board during controlled migration. See
-`docs/todo/MIGRATION_FREEZE.md`.
+`docs/todo/` is a frozen legacy/reference namespace. GitHub Issues are the
+sole active execution tracker; no new executable scope may be added to the
+remaining files.
 
 Rules:
 
 - Do not create new TODO lane files and do not add new work to `docs/todo/`.
-- Do not resume status, priority, or execution-order tracking in
-  `docs/todo/README.md`; GitHub Issues own current status and priority.
+- Do not resume status, priority, or execution-order tracking in the
+  remaining `docs/todo/` files; GitHub Issues own current status and priority.
 - Existing TODO files may be edited only to correct unsafe or materially false
   information, point to an owning Issue, move permanent content to canonical
   documentation, or record a reviewed `issue` / `canonical` / `archive` /
@@ -616,7 +615,7 @@ Rules:
 ```text
 AGENTS.md                                   = provider-neutral canonical operating contract
 docs/development/github_issues_workflow.md  = operational work inventory / Issue workflow
-docs/todo/MIGRATION_FREEZE.md               = legacy TODO board freeze and dispositions
+docs/archive/                                = archived/superseded documentation, including retired TODO infrastructure
 docs/ops/agent_orchestration_contract_v1.md = orchestration / handoff detail
 docs/ops/agent_search_hygiene_v1.md         = untrusted-input detail
 CLAUDE.md                                   = Claude integration only, imports AGENTS.md
