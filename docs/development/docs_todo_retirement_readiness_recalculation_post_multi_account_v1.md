@@ -13,6 +13,24 @@ This is an **audit-only** document. No `docs/todo/` file was moved,
 archived, deleted, or edited. No GitHub Issue was created or modified. No
 code, test, runtime, database, broker, or timer changes were made.
 
+> **Revision note (program review, PR #344):** the original version of this
+> document reported `R2_AFTER=PASS` while simultaneously reporting
+> `PARTIAL_OWNERSHIP=1` for `multi_account_asset_foundation_backlog.md` and
+> stating the canonical R2 requirement as `partially_issue_owned_files=0` —
+> an internal contradiction, and a silent redefinition of R2 rather than an
+> application of the canonical gate. §4 and §5 are corrected below: canonical
+> R2 is evaluated strictly as `partially_issue_owned_files=0` with no
+> substitute criterion. The backlog file remains genuinely partially owned
+> (Phase 2 and Phase 4 have no owning Issue), so `R2_AFTER=FAIL`. The
+> narrower "no executable scope is unowned" finding from the original version
+> is preserved in §5 as a distinct, non-gate observation — it does not
+> satisfy or substitute for the canonical R2 requirement. §6/§7's R6/6G
+> sequencing conflict (R6 described as both "6G's own scope" and a
+> "prerequisite batch before 6G") is also corrected: the governance repoint
+> is 6G's own scope, not a separate prerequisite batch; the only genuine
+> pre-6G blocker is the reviewed disposition decision for the remaining
+> `ISSUE_OWNED_OPEN`/R7 board state.
+
 ## 1. Scope / non-goals
 
 In scope: recalculate the `docs/todo/` retirement gates (R1-R7) against
@@ -121,19 +139,28 @@ NON_INFRASTRUCTURE_FILES=53
 | Gate | Requirement | Result | Exact blockers |
 |---|---|---|---|
 | R1 | `unowned_executable_scope_files=0` | **PASS** | None. `state_driven_runtime_orchestration_v1.md` now carries a `## GitHub Issue migration` section owning it to Issue #331 (confirmed OPEN via `gh issue view 331`). Resolved by Batch 6F2 (PR #332); independently re-verified here, not reused blindly. |
-| R2 | `partially_issue_owned_files=0` (recalculated per this task's ownership-not-completion criterion — see §5) | **PASS** | `multi_account_asset_foundation_backlog.md` remains disposition-category `PARTIAL_OWNERSHIP` (mixed CLOSED/owned/non-executable phases within one file), but zero **executable** scope inside it is unowned: Phase 1 done (#294 CLOSED), Phase 3 tail owned by #342 (OPEN), Phase 5.3 owned by #343 (OPEN), Phase 2/Phase 4 remain genuinely design-blocked (non-executable, correctly unowned per the canonical rule). See §5 for full proof. |
+| R2 | `partially_issue_owned_files=0` (canonical, unchanged — see §5) | **FAIL** | `multi_account_asset_foundation_backlog.md` (1 file). Phase 2 and Phase 4 have no owning Issue and are not disposed of as archive-ready/remove/historical — the file remains disposition-category `PARTIAL_OWNERSHIP`, so the canonical count is `partially_issue_owned_files=1`, not `0`. §5 separately documents that no *executable* scope within the file is unowned (Phase 2/Phase 4 are design-blocked, not executable), but that is a narrower finding and does not zero out the canonical R2 count — a file with any unowned scope, executable or contingent, is still partially owned under the gate as literally defined. |
 | R3 | `files_needing_canonicalization=0` | **FAIL** (forward-looking, non-blocking, unchanged) | Same 7 files as post-6F (§7 of that audit): none archived/reclassified since, all remain `ISSUE_OWNED_OPEN` with open owning Issues, so none are due for canonicalization yet. |
 | R4 | `files_needing_archive=0`, `files_needing_remove=0` | **PASS** | Resolved by Batch 6F2 (PR #332): 4 of 5 archive-ready files archived; `market_intelligence/README.md` re-verified and reclassified (retained — still live navigation to 8 open child files, not archive-ready); `reporting/README.md`'s stale REMOVE-triggering section corrected in place. Re-scan of current 56-file set found no newly archive-ready or REMOVE-flagged file. |
 | R5 | `live_operational_dependencies_on_todo_infrastructure=0` (for the 3 infra files specifically) | **PASS** | Unchanged: no code/test reads `README.md`, `MIGRATION_FREEZE.md`, or `workflow_standard.md` directly (grep-confirmed). Live code/test dependencies on 3 *non-infra* files (`replay_parameter_study_harness_v1.md`; `market_intelligence/sector_rotation_engine_v1.md`; `sector_rotation_dashboard_v1.md`) remain, unchanged since post-6F — out of scope for this specific gate, relevant only to eventual full-directory removal. |
 | R6 | `live_governance_dependencies_on_todo_infrastructure=0` | **FAIL** | `AGENTS.md` (lines 273, 588, 596-603, 619), `docs/development/github_issues_workflow.md` (lines 22, 146), `docs/research/synth_v2_research_todo_index.md` all still name the infra trio (grep-confirmed on current `main`). Unchanged — this is Batch 6G's own scope. |
-| R7 | Only retirement infrastructure remains | **FAIL** | 53 non-infrastructure files remain: 49 `ISSUE_OWNED_OPEN` (legitimate — normal open backlog), 1 `PARTIAL_OWNERSHIP` (backlog file, R2-clean per above), 3 navigation-resolved (legitimately retained, no independent executable scope). None of these need a disposition *action* before 6G; R7 fails only because the board is not yet empty of non-infrastructure content, which is expected given ~47 distinct Issues are still open. |
+| R7 | Only retirement infrastructure remains | **FAIL** | 53 non-infrastructure files remain: 49 `ISSUE_OWNED_OPEN` (legitimate — normal open backlog), 1 `PARTIAL_OWNERSHIP` (backlog file — same file causing R2 to fail, see above), 3 navigation-resolved (legitimately retained, no independent executable scope). None of these need a disposition *action* before 6G; R7 fails only because the board is not yet empty of non-infrastructure content, which is expected given ~47 distinct Issues are still open. |
 
 ## 5. Detailed R2 ownership proof
 
-Per task instruction: *"Do not require Issues to be completed for R2;
-ownership is the criterion."* Applying that criterion to
-`docs/todo/multi_account_asset_foundation_backlog.md`'s five phases plus
-the related unowned-scope item from the post-6F audit:
+Canonical R2, as defined by the post-6F audit and unchanged here, is
+`partially_issue_owned_files=0`. `multi_account_asset_foundation_backlog.md`
+still has scope (Phase 2, Phase 4) with no owning Issue, so it is still
+`PARTIAL_OWNERSHIP` and canonical **R2=FAIL**, `partially_issue_owned_files=1`.
+
+Separately from the canonical gate, this section documents a narrower,
+non-gate finding — whether any *executable* scope within the file is
+unowned — because that is the specific condition PR #337's audit flagged as
+newly relevant (Phase 3 tail and Phase 5.3 becoming executable, unowned
+scope). This finding does not change the canonical R2 result above; it is
+reported because it is decision-relevant evidence for whoever makes the
+pre-6G disposition call in §6/§7, not because it redefines R2. Per-phase
+breakdown, plus the related unowned-scope item from the post-6F audit:
 
 ```text
 Phase 1 (skeleton)          -> #294, CLOSED. Implemented, production-applied. No executable tail. OWNED (complete).
@@ -170,12 +197,20 @@ duplicate #319's scope. Cross-check against Issue #333 (`account_asset`
 settings-column drift, OPEN): explicitly out of Phase 1-5 scope by the
 backlog file's own text; #342/#343 do not touch it.
 
-**R2_AFTER=PASS.** No executable multi-account scope is unowned. The
-backlog file itself is still recorded as `PARTIAL_OWNERSHIP` in the
-disposition inventory (§3) because it is a single file spanning
-done/owned/non-executable phases — that is a bookkeeping fact about the
-file, not a gate failure, per the task's explicit "ownership is the
-criterion" instruction.
+**Canonical R2_AFTER=FAIL** (`partially_issue_owned_files=1`, the backlog
+file). **Non-gate finding: `UNOWNED_EXECUTABLE_SCOPE_IN_BACKLOG=0`** — no
+*executable* multi-account scope is unowned (Phase 2/Phase 4 are
+design-blocked, not executable). Both statements are true simultaneously and
+are not in tension: the canonical gate counts any unowned scope in the file
+(including contingent/non-executable scope), while the non-gate finding
+counts only unowned scope that is currently actionable. Reclassifying the
+file out of `PARTIAL_OWNERSHIP` would require Phase 2 and Phase 4 to either
+gain an owning Issue or receive an explicit non-executable/parked
+disposition of their own (e.g. split into a separate, permanently-parked
+sub-file) — neither has happened, and this audit does not perform either
+(that would be scope creep for an audit-only task, and Phase 2/Phase 4
+disposition is exactly the kind of design decision this task is not
+authorized to make).
 
 Note: `docs/todo/multi_account_asset_foundation_backlog.md` itself was
 **not** edited to reference #342/#343 (PR #337 landed after the file's last
@@ -192,13 +227,17 @@ bodies.
 RETIREMENT_READY_FOR_6G=0
 ```
 
-R2 and R4 flip to `PASS` since the post-6F baseline (R1 was already resolved
-by Batch 6F2 before this task). `RETIREMENT_READY_FOR_6G` remains `0`
-because R6 and R7 still fail, and R3 remains an open forward-looking item:
+R1 and R4 are `PASS` (resolved by Batch 6F2 before this task). R2, R3, R6,
+and R7 all still `FAIL`:
 
+- **R2 (FAIL):** `multi_account_asset_foundation_backlog.md` remains
+  `PARTIAL_OWNERSHIP` — Phase 2 and Phase 4 have no owning Issue (§5). This
+  is a genuine, currently-unresolved gate failure, not merely bookkeeping.
 - **R6 (FAIL):** `AGENTS.md`, `github_issues_workflow.md`, and the research
-  index still govern by naming the infra trio. This is Batch 6G's own job to
-  resolve, not a precondition Batch 6G is waiting on elsewhere.
+  index still govern by naming the infra trio. This is Batch 6G's **own**
+  job to resolve as part of running 6G — it is not a separate prerequisite
+  batch that must complete before 6G starts (see §7 for the corrected
+  sequencing boundary).
 - **R7 (FAIL):** 53 non-infrastructure files remain, the large majority
   (49) legitimately `ISSUE_OWNED_OPEN` against ~47 distinct open Issues.
   This is the normal, healthy state of an active backlog, not a process
@@ -207,11 +246,11 @@ because R6 and R7 still fail, and R3 remains an open forward-looking item:
   design content; none are due for canonicalization since their owning
   Issues remain open.
 
-Do not interpret R2/R4 `PASS` as 6G readiness by itself — R6/R7 are the
-actual remaining gates, and they were always going to require either full
-Issue-closure of the backlog (impractical to wait for) or an explicit
-reviewed decision about `docs/todo/`'s fate while `ISSUE_OWNED_OPEN` files
-remain, exactly as the post-6F audit's own §12 preconditions state.
+R2's failure does not by itself require a separate remediation batch before
+6G either: Phase 2/Phase 4 are non-executable/design-blocked, so the same
+reviewed disposition decision that resolves R7 (what happens to `docs/todo/`
+while `ISSUE_OWNED_OPEN`/partially-owned content remains) is the single
+decision point that also resolves R2 — see §7.
 
 ## 7. Minimum bounded path to 6G
 
@@ -225,28 +264,44 @@ Ordinary Issue lifecycle closure (not a docs batch, no action needed here):
   scope for this audit-only task).
 ```
 
-Actual docs-cleanup batches remaining before 6G can run:
+Sequencing boundary (corrected — see revision note): exactly one item is a
+genuine **pre-6G blocker**. Everything else, including the governance
+repoint, is **inside 6G itself**, not a separate batch that must finish
+first. There is no evidence in this audit that the repoint needs to be split
+into its own prerequisite batch (it is a single small, mechanical
+docs-reference edit with no dependency on anything except the disposition
+decision below), so it is not treated as one.
 
 ```text
-1. A reviewed decision on docs/todo/'s fate while ISSUE_OWNED_OPEN files
-   remain (delete infra trio only vs. wait for full board closure vs. some
-   other disposition) — this is the one genuine open design question
-   blocking 6G, unchanged since the post-6F audit's §12. Not resolved by
-   this recalculation (out of scope: this is audit-only, not a design
-   decision task).
-2. Once that decision is made: a bounded repoint batch — retire AGENTS.md,
+PRE-6G BLOCKER (must be resolved before 6G is dispatched):
+1. A reviewed decision on docs/todo/'s fate while ISSUE_OWNED_OPEN and
+   PARTIAL_OWNERSHIP content remain (delete infra trio only vs. wait for
+   full board closure vs. some other disposition) — this single decision
+   resolves both R7 (the ISSUE_OWNED_OPEN board) and R2 (Phase 2/Phase 4 are
+   non-executable and would be explicitly parked/dispositioned, not filed,
+   by such a decision). This is the one genuine open design question
+   blocking 6G, unchanged in substance since the post-6F audit's §12. Not
+   resolved by this recalculation (out of scope: this is audit-only, not a
+   design decision task).
+
+INSIDE 6G ITSELF (not a separate prerequisite batch):
+2. The governance repoint — retire AGENTS.md,
    docs/development/github_issues_workflow.md, and
    docs/research/synth_v2_research_todo_index.md references to the infra
-   trio (resolves R6), consistent with whatever the decision in (1)
-   determines for the trio's replacement/successor governance location.
-3. (Optional, not blocking 6G) 6F3 remediation: repoint
-   CONTROLLED_CHAIN_4H_UNTRACKED_PATH and the two
+   trio (resolves R6) — executes as part of Batch 6G, once dispatched per
+   the decision in (1). Section 6 of the post-6F audit (its own §10 gate
+   table, "R6... exactly what Batch 6G itself must retire") already framed
+   it this way; §6 of this document restates it, and this section previously
+   conflicted with that by listing it as a numbered prerequisite step before
+   6G — that conflict is what this revision corrects.
+
+OPTIONAL, NOT BLOCKING 6G:
+3. 6F3 remediation: repoint CONTROLLED_CHAIN_4H_UNTRACKED_PATH and the two
    test_sector_taxonomy_import_v1.py assertions away from their exact
    docs/todo/ file dependencies, only required before those 3 specific
    files could ever be deleted.
-4. (Optional, not blocking 6G) Canonicalize the 7 R3 files once their
-   owning Issues close, so unique design content is not lost at eventual
-   archive time.
+4. Canonicalize the 7 R3 files once their owning Issues close, so unique
+   design content is not lost at eventual archive time.
 ```
 
 No redundant migration is proposed: Phase 1 (done), the Batch 6F2 archive
