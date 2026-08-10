@@ -41,12 +41,17 @@ Canonical docs read: `docs/development/docs_todo_retirement_state_post_6f_v1.md`
 
 GitHub Issues confirmed via `gh issue view --json number,title,state,body`:
 `#319` (OPEN, `account_id`/`trading_account_id` fragmentation, F6 — confirmed
-no Phase 2-5 overlap), `#331` (OPEN, owns `state_driven_runtime_orchestration_v1.md`),
-`#333` (OPEN, `account_asset` settings-column drift, unrelated to Phase 1-5),
-`#342` (OPEN, owns Phase 3 tail — 5 named research-runner files, scope text
-matches the backlog file exactly, no dependency), `#343` (OPEN, owns Phase
-5.3 verification — bounded read-only check, no dependency, explicit
-no-mutation authorization note in the Issue body itself).
+no Phase 2-5 overlap), `#331` (**CLOSED**, `closed_at=2026-08-10T04:04:13Z`,
+closed via PR #341 / commit `0a343269994b9c5d2b552d137b82e66d56fdb991`, which
+produced `docs/ops/state_driven_runtime_orchestration_audit_331.md`; owned
+`state_driven_runtime_orchestration_v1.md` — closed before this branch's own
+`BASE_SHA` above, so this document's inventory below treats that file as
+closed-Issue-owned, not open-Issue-owned), `#333` (OPEN, `account_asset`
+settings-column drift, unrelated to Phase 1-5), `#342` (OPEN, owns Phase 3
+tail — 5 named research-runner files, scope text matches the backlog file
+exactly, no dependency), `#343` (OPEN, owns Phase 5.3 verification — bounded
+read-only check, no dependency, explicit no-mutation authorization note in
+the Issue body itself).
 
 ## 1. Decision summary
 
@@ -160,8 +165,13 @@ low-urgency batch — not forced by this decision.
 
 ```text
 INFRASTRUCTURE            README.md, MIGRATION_FREEZE.md, workflow_standard.md
-FROZEN_LEGACY_REFERENCE   the 49 ISSUE_OWNED_OPEN files + the reclassified
-                           multi_account_asset_foundation_backlog.md (50 files)
+FROZEN_LEGACY_REFERENCE   48 open-Issue-owned files
+                           + 1 closed-Issue-owned file:
+                             state_driven_runtime_orchestration_v1.md
+                             (#331 CLOSED, closed_at=2026-08-10T04:04:13Z,
+                             via PR #341)
+                           + 1 reclassified multi_account_asset_foundation_backlog.md
+                           = 50 files
 NAVIGATION_RETAINED       market_intelligence/README.md,
                            external_research/README.md, reporting/README.md
                            (3 files; live index pages to FROZEN_LEGACY_REFERENCE
@@ -170,14 +180,28 @@ LIVE_DEPENDENCY_RETAINED  the subset of FROZEN_LEGACY_REFERENCE with a live
                            code/test path dependency: replay_parameter_study_harness_v1.md,
                            market_intelligence/sector_rotation_engine_v1.md,
                            sector_rotation_dashboard_v1.md (3 files, already
-                           counted within the 49 above — this is a cross-cutting
+                           counted within the 50 above — this is a cross-cutting
                            tag, not a disjoint category)
 ```
 
-Reconciliation against PR #344's inventory: `3 (infra) + 49 (issue_owned_open,
-which becomes FROZEN_LEGACY_REFERENCE) + 1 (partial_ownership, which becomes
-FROZEN_LEGACY_REFERENCE) + 3 (navigation-resolved, which becomes
-NAVIGATION_RETAINED) = 56 = TOTAL_TODO_FILES`. ✓
+`state_driven_runtime_orchestration_v1.md`'s owning Issue (`#331`) closed on
+2026-08-10T04:04:13Z via PR #341 (commit `0a343269994b9c5d2b552d137b82e66d56fdb991`,
+which produced `docs/ops/state_driven_runtime_orchestration_audit_331.md`) —
+before this branch's own `BASE_SHA` (§0). That file is therefore
+closed-Issue-owned, not open-Issue-owned, at the time of this decision. Per
+§3's own "Future closed-Issue-owned files" rule below, it remains
+`FROZEN_LEGACY_REFERENCE` for now: this document does not perform its
+`canonical`/`archive`/`remove` disposition review here, and it is eligible
+for that normal review in a future, separately scoped docs batch like any
+other closed-Issue-owned file.
+
+Reconciliation against PR #344's inventory: `3 (infra) + 48 (still-open
+issue_owned_open, which becomes FROZEN_LEGACY_REFERENCE) + 1 (closed-Issue-
+owned, #331, which becomes FROZEN_LEGACY_REFERENCE) + 1 (partial_ownership,
+which becomes FROZEN_LEGACY_REFERENCE) + 3 (navigation-resolved, which
+becomes NAVIGATION_RETAINED) = 56 = TOTAL_TODO_FILES`. ✓ (48 + 1 + 1 = 50
+FROZEN_LEGACY_REFERENCE; 50 + 3 NAVIGATION_RETAINED + 3 INFRASTRUCTURE = 56
+total.)
 
 ### Class definitions
 
@@ -188,8 +212,9 @@ NAVIGATION_RETAINED) = 56 = TOTAL_TODO_FILES`. ✓
 - Edits: none needed post-retirement.
 - New scope: N/A.
 
-**`FROZEN_LEGACY_REFERENCE`** (the 50 files: 49 formerly `ISSUE_OWNED_OPEN`
-+ `multi_account_asset_foundation_backlog.md`)
+**`FROZEN_LEGACY_REFERENCE`** (the 50 files: 48 still-`ISSUE_OWNED_OPEN`
++ 1 now closed-Issue-owned (`state_driven_runtime_orchestration_v1.md`, #331
+CLOSED) + `multi_account_asset_foundation_backlog.md`)
 - Physical location: **unchanged now.** Remains in `docs/todo/` (or its
   existing subfolder) exactly where it is. No file is moved by this
   decision.
