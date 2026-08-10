@@ -8,15 +8,22 @@ Repository implementation complete for review. Host migration, production-connec
 
 Expose `market_rotation_pressure_v1` as a read-only operational research page with:
 
-- aggregate rotation direction;
-- market score;
+- aggregate market pressure led by its persisted numeric value on a visibly
+  fixed `-100 ... 0 ... +100` scale; direction is secondary interpretation;
+- a fixed-scale curve of prior persisted aggregate snapshots with a zero reference;
 - zero to five evidence lights;
-- positive and negative breadth;
+- persisted OUT/MIXED/IN composition as one 100% stacked participation band;
 - acceleration, 24h/7d confirmation, and concentration;
-- top rotation-in and rotation-out markets;
 - a complete per-market pressure table.
 
 The page uses `ROTATION_IN` and `ROTATION_OUT`. It must not claim verified fund flow or capital flow.
+
+The scale marker, history coordinates, and composition percentages are display
+geometry/arithmetic only. They do not replace or recompute pressure scoring,
+breadth, confirmation, evidence, concentration, acceleration, persistence,
+phase, or direction semantics, which remain owned by Pressure V1.
+The complete observation table preserves the persisted observation order; the
+dashboard does not create a local top/rank presentation.
 
 ## Architecture
 
@@ -34,6 +41,8 @@ Ownership is strict:
 - rotation pressure owns score and state computation;
 - dashboard reporting only reads and renders persisted pressure state;
 - the dashboard does not recompute scores;
+- the dashboard reads a bounded set of prior persisted aggregate snapshots for
+  the curve; it does not reconstruct history from observations;
 - the market-data writer and dashboard publisher are separate runtime owners.
 
 No component touches:
@@ -76,6 +85,18 @@ Direction controls active-light color:
 - `MIXED`: warning/mixed.
 
 Inactive lights remain neutral.
+
+## Signal-First Display Contract
+
+The raw persisted aggregate pressure is the visual headline. The dashboard
+always shows the `-100`, `0`, and `+100` endpoints/reference, including for
+negative pressure. Direction, evidence count, confirmation, concentration,
+acceleration, persistence/phase context, and freshness are secondary context.
+
+Participation is rendered from the persisted `negative_count`,
+`neutral_count`, `positive_count`, and `eligible_asset_count` as a single
+OUT/MIXED/IN 100% band. No reporting layer owns or derives a replacement
+breadth label.
 
 The five underlying evidence checks remain owned and versioned by `market_rotation_pressure_v1`:
 

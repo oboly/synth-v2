@@ -9,6 +9,8 @@ from typing import Any, Iterable
 MODEL_VERSION = "1.0"
 DEFAULT_STALE_AFTER = timedelta(hours=2, minutes=30)
 DIRECTIONS = {"ROTATION_IN", "ROTATION_OUT", "MIXED"}
+PRESSURE_SCALE_MIN = -100.0
+PRESSURE_SCALE_MAX = 100.0
 
 
 @dataclass(frozen=True)
@@ -48,12 +50,20 @@ class RotationPressureRow:
 
 
 @dataclass(frozen=True)
+class RotationPressureHistoryPoint:
+    pressure_snapshot_id: int
+    as_of_ts_utc: datetime
+    market_score: float
+
+
+@dataclass(frozen=True)
 class RotationPressureDashboard:
     status: str
     freshness_state: str
     generated_at_utc: datetime
     header: RotationPressureHeader | None
     rows: tuple[RotationPressureRow, ...]
+    history: tuple[RotationPressureHistoryPoint, ...] = ()
     reason: str | None = None
 
 
@@ -88,6 +98,13 @@ def _require_finite_float(value: Any, field: str) -> float:
     return result
 
 
+def _require_pressure(value: Any, field: str) -> float:
+    result = _require_finite_float(value, field)
+    if not PRESSURE_SCALE_MIN <= result <= PRESSURE_SCALE_MAX:
+        raise ValueError(f"{field} must be within -100..100")
+    return result
+
+
 def header_from_mapping(row: dict[str, Any]) -> RotationPressureHeader:
     direction = str(row["market_direction"])
     if direction not in DIRECTIONS:
@@ -105,7 +122,7 @@ def header_from_mapping(row: dict[str, Any]) -> RotationPressureHeader:
         positive_count=int(row["positive_count"]),
         neutral_count=int(row["neutral_count"]),
         negative_count=int(row["negative_count"]),
-        market_score=_require_finite_float(row["market_score"], "market_score"),
+        market_score=_require_pressure(row["market_score"], "market_score"),
         positive_breadth_ratio=_require_finite_float(row["positive_breadth_ratio"], "positive_breadth_ratio"),
         negative_breadth_ratio=_require_finite_float(row["negative_breadth_ratio"], "negative_breadth_ratio"),
         acceleration_state=str(row["acceleration_state"]),
@@ -132,11 +149,20 @@ def row_from_mapping(row: dict[str, Any]) -> RotationPressureRow:
     )
 
 
+def history_point_from_mapping(row: dict[str, Any]) -> RotationPressureHistoryPoint:
+    return RotationPressureHistoryPoint(
+        pressure_snapshot_id=int(row["pressure_snapshot_id"]),
+        as_of_ts_utc=_utc_naive(row["as_of_ts_utc"]),
+        market_score=_require_pressure(row["market_score"], "history.market_score"),
+    )
+
+
 def build_dashboard(
     header_row: dict[str, Any] | None,
     observation_rows: Iterable[dict[str, Any]],
     *,
     now_utc: datetime,
+    history_rows: Iterable[dict[str, Any]] = (),
 ) -> RotationPressureDashboard:
     generated = _utc_naive(now_utc)
     if header_row is None:
@@ -151,6 +177,10 @@ def build_dashboard(
 
     header = header_from_mapping(header_row)
     rows = tuple(row_from_mapping(row) for row in observation_rows)
+    history = tuple(sorted(
+        (history_point_from_mapping(row) for row in history_rows),
+        key=lambda point: (point.as_of_ts_utc, point.pressure_snapshot_id),
+    ))
     if len(rows) != header.eligible_asset_count:
         return RotationPressureDashboard(
             status="DATA_UNAVAILABLE",
@@ -158,6 +188,7 @@ def build_dashboard(
             generated_at_utc=generated,
             header=header,
             rows=rows,
+            history=history,
             reason=(
                 "OBSERVATION_COUNT_MISMATCH:"
                 f"expected={header.eligible_asset_count}:actual={len(rows)}"
@@ -172,6 +203,7 @@ def build_dashboard(
         generated_at_utc=generated,
         header=header,
         rows=rows,
+        history=history,
     )
 
 
@@ -205,6 +237,14 @@ def dashboard_to_json_dict(dashboard: RotationPressureDashboard) -> dict[str, An
         header_payload["as_of_ts_utc"] = _iso_z(dashboard.header.as_of_ts_utc)
         payload["header"] = header_payload
     payload["rows"] = [asdict(row) for row in dashboard.rows]
+    payload["history"] = [
+        {
+            "pressure_snapshot_id": point.pressure_snapshot_id,
+            "as_of_ts_utc": _iso_z(point.as_of_ts_utc),
+            "market_score": point.market_score,
+        }
+        for point in dashboard.history
+    ]
     return payload
 
 
@@ -238,21 +278,44 @@ def _lights_html(header: RotationPressureHeader) -> str:
     return "".join(lights)
 
 
-def _top_rows(rows: tuple[RotationPressureRow, ...], *, positive: bool, limit: int = 5) -> list[RotationPressureRow]:
-    selected = [row for row in rows if row.score_total >= 30] if positive else [row for row in rows if row.score_total <= -30]
-    return sorted(selected, key=lambda row: row.score_total, reverse=positive)[:limit]
+def _pressure_position_pct(score: float) -> float:
+    """Presentation-only coordinate on the fixed persisted-score scale."""
+    return (score - PRESSURE_SCALE_MIN) / (PRESSURE_SCALE_MAX - PRESSURE_SCALE_MIN) * 100
 
 
-def _top_cards_html(rows: list[RotationPressureRow], *, empty_label: str) -> str:
-    if not rows:
-        return f"<div class='empty'>{html.escape(empty_label)}</div>"
+def _composition_html(header: RotationPressureHeader) -> str:
+    total = header.eligible_asset_count
+    if total <= 0:
+        return "<div class='composition-unavailable'>COMPOSITION UNAVAILABLE</div>"
+    parts = (
+        ("OUT", header.negative_count, "out"),
+        ("MIXED", header.neutral_count, "mixed"),
+        ("IN", header.positive_count, "in"),
+    )
     return "".join(
-        "<div class='top-coin'>"
-        f"<strong>{html.escape(row.market)}</strong>"
-        f"<span class='score'>{_fmt_score(row.score_total)}</span>"
-        f"<span>{html.escape(row.phase_state.replace('_', ' '))}</span>"
-        "</div>"
-        for row in rows
+        f"<span class='composition-part composition-{css}' style='flex:{count}' "
+        f"aria-label='{label} {count / total:.0%}'>{label} {count / total:.0%}</span>"
+        for label, count, css in parts
+    )
+
+
+def _pressure_curve_svg(history: tuple[RotationPressureHistoryPoint, ...]) -> str:
+    if not history:
+        return "<div class='curve-empty'>No prior persisted pressure snapshots</div>"
+    width, height, padding = 600, 140, 20
+    plot_height = height - (padding * 2)
+    count = len(history)
+    points = " ".join(
+        f"{padding + (index * (width - 2 * padding) / max(count - 1, 1)):.1f},"
+        f"{padding + ((PRESSURE_SCALE_MAX - point.market_score) / 200 * plot_height):.1f}"
+        for index, point in enumerate(history)
+    )
+    return (
+        "<svg class='pressure-curve' viewBox='0 0 600 140' role='img' "
+        "aria-label='Persisted aggregate pressure history on a fixed minus 100 to plus 100 scale'>"
+        "<line class='curve-zero' x1='20' y1='70' x2='580' y2='70'></line>"
+        f"<polyline class='curve-line' points='{points}'></polyline>"
+        "</svg>"
     )
 
 
@@ -267,8 +330,6 @@ def render_dashboard_html(dashboard: RotationPressureDashboard) -> str:
         title = "Rotation Pressure — unavailable"
     else:
         header = dashboard.header
-        top_in = _top_rows(dashboard.rows, positive=True)
-        top_out = _top_rows(dashboard.rows, positive=False)
         table_rows = "".join(
             "<tr>"
             f"<td>{html.escape(row.market)}</td>"
@@ -282,27 +343,36 @@ def render_dashboard_html(dashboard: RotationPressureDashboard) -> str:
             f"<td class='num'>{_fmt_score(row.score_acceleration)}</td>"
             f"<td class='num'>{_fmt_score(row.score_persistence)}</td>"
             "</tr>"
-            for row in sorted(dashboard.rows, key=lambda row: row.score_total, reverse=True)
+            for row in dashboard.rows
         )
         main = f"""
 <section class='pressure-strip direction-{header.market_direction.lower()}'>
   <div>
     <div class='eyebrow'>MARKET ROTATION PRESSURE</div>
-    <div class='headline'>{_direction_label(header.market_direction)} <span>{_fmt_score(header.market_score)}</span></div>
+    <div class='headline'><span>{_fmt_score(header.market_score)}</span></div>
+    <div class='pressure-scale' aria-label='Fixed pressure scale minus 100 to plus 100'>
+      <span>-100</span><span>0</span><span>+100</span>
+      <i style='left:{_pressure_position_pct(header.market_score):.1f}%'></i>
+    </div>
+    <div class='direction-secondary'>{html.escape(_direction_label(header.market_direction))}</div>
   </div>
-  <div class='lights' aria-label='{header.evidence_light_count} of 5 evidence lights'>{_lights_html(header)}</div>
   <div class='metrics'>
-    <span>IN {header.positive_breadth_ratio:.0%}</span>
-    <span>OUT {header.negative_breadth_ratio:.0%}</span>
-    <span>{html.escape(header.acceleration_state.replace('_', ' '))}</span>
+    <span>Evidence {header.evidence_light_count}/5</span>
     <span>{html.escape(header.confirmation_state)}</span>
     <span>{html.escape(header.concentration_state)}</span>
+    <span>{html.escape(header.acceleration_state.replace('_', ' '))}</span>
+    <div class='lights' aria-label='{header.evidence_light_count} of 5 evidence lights'>{_lights_html(header)}</div>
   </div>
   <div class='freshness {dashboard.freshness_state.lower()}'>{html.escape(dashboard.freshness_state)}</div>
 </section>
-<section class='top-grid'>
-  <article><h2>Top rotation in</h2>{_top_cards_html(top_in, empty_label='No confirmed rotation-in assets')}</article>
-  <article><h2>Top rotation out</h2>{_top_cards_html(top_out, empty_label='No confirmed rotation-out assets')}</article>
+<section class='observed-state'>
+  <h2>Participation</h2>
+  <div class='composition-band' aria-label='Persisted OUT MIXED IN market composition'>{_composition_html(header)}</div>
+  <p class='composition-note'>Persisted composition from {header.eligible_asset_count} eligible markets.</p>
+</section>
+<section class='pressure-history'>
+  <div><h2>Aggregate pressure history</h2><span class='scale-note'>Fixed scale −100 · 0 · +100</span></div>
+  {_pressure_curve_svg(dashboard.history)}
 </section>
 <section class='meta'>
   <span>Snapshot {_iso_z(header.as_of_ts_utc)}</span>
@@ -330,11 +400,12 @@ def render_dashboard_html(dashboard: RotationPressureDashboard) -> str:
 :root {{ color-scheme: dark; font-family: Inter, system-ui, sans-serif; background:#07111f; color:#e7eef8; }}
 * {{ box-sizing:border-box; }}
 body {{ margin:0; padding:18px; background:linear-gradient(180deg,#081524,#050b13); min-height:100vh; }}
-.pressure-strip {{ display:grid; grid-template-columns:minmax(210px,1fr) auto minmax(260px,1.4fr) auto; gap:18px; align-items:center; padding:18px 20px; border:1px solid #24364d; border-radius:16px; background:#0d1b2b; box-shadow:0 10px 30px #0007; }}
+.pressure-strip {{ display:grid; grid-template-columns:minmax(240px,1fr) minmax(260px,1.4fr) auto; gap:18px; align-items:center; padding:18px 20px; border:1px solid #24364d; border-radius:16px; background:#0d1b2b; box-shadow:0 10px 30px #0007; }}
 .eyebrow {{ font-size:.75rem; letter-spacing:.14em; color:#8fa5bf; }}
-.headline {{ margin-top:4px; font-size:1.35rem; font-weight:800; }}
-.headline span {{ margin-left:8px; font-variant-numeric:tabular-nums; }}
-.lights {{ display:flex; gap:8px; }}
+.headline {{ margin-top:4px; font-size:2rem; font-weight:800; font-variant-numeric:tabular-nums; }}
+.pressure-scale {{ position:relative; display:flex; justify-content:space-between; margin-top:7px; padding-top:8px; border-top:2px solid #52657c; color:#8fa5bf; font-size:.7rem; }}
+.pressure-scale i {{ position:absolute; top:-6px; width:3px; height:13px; background:#f3c95f; transform:translateX(-50%); }}
+.direction-secondary {{ margin-top:7px; color:#b9c8da; font-size:.78rem; letter-spacing:.06em; }}
 .light {{ width:17px; height:17px; border-radius:50%; border:1px solid #53657a; background:#172536; box-shadow:inset 0 0 7px #000; }}
 .light.active.light-in {{ background:#3ee08f; box-shadow:0 0 13px #3ee08f99; }}
 .light.active.light-out {{ background:#ff6471; box-shadow:0 0 13px #ff647199; }}
@@ -342,6 +413,14 @@ body {{ margin:0; padding:18px; background:linear-gradient(180deg,#081524,#050b1
 .metrics {{ display:flex; flex-wrap:wrap; gap:8px; }}
 .metrics span,.freshness,.meta span {{ padding:6px 9px; border-radius:999px; background:#15263a; color:#c8d6e8; font-size:.78rem; }}
 .freshness.fresh {{ color:#74efa8; }} .freshness.stale,.freshness.future_timestamp {{ color:#ff8790; }}
+.observed-state,.pressure-history {{ margin-top:16px; border:1px solid #24364d; border-radius:14px; background:#0b1827; padding:16px; }}
+.composition-band {{ display:flex; min-height:40px; overflow:hidden; border-radius:8px; background:#172536; }}
+.composition-part {{ display:flex; justify-content:center; align-items:center; min-width:0; padding:6px; font-size:.78rem; font-weight:700; color:#06101c; }}
+.composition-out {{ background:#ff6471; }} .composition-mixed {{ background:#f3c95f; }} .composition-in {{ background:#3ee08f; }}
+.composition-note,.scale-note,.curve-empty {{ color:#8fa5bf; font-size:.78rem; }}
+.pressure-history > div:first-child {{ display:flex; justify-content:space-between; align-items:baseline; gap:12px; }}
+.pressure-curve {{ width:100%; height:auto; margin-top:8px; background:#091524; border-radius:8px; }}
+.curve-zero {{ stroke:#8fa5bf; stroke-width:1; stroke-dasharray:4 4; }} .curve-line {{ fill:none; stroke:#62b6ff; stroke-width:3; stroke-linejoin:round; stroke-linecap:round; }}
 .top-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:16px; }}
 article,.table-wrap,.meta,.unavailable {{ border:1px solid #24364d; border-radius:14px; background:#0b1827; padding:16px; }}
 h2 {{ margin:0 0 12px; font-size:1rem; color:#b9c8da; }}

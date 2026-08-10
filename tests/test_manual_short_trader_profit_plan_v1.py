@@ -3077,6 +3077,32 @@ def test_card_with_no_matching_rotation_entry_still_renders_valid_card() -> None
     assert card_rotation["reason"] == "NO_ROTATION_ROW"
 
 
+def test_rotation_strip_leads_with_pressure_scale_and_persisted_participation() -> None:
+    from src.reporting.market_rotation_profit_plan_projection_v1 import build_rotation_projection
+
+    header = {
+        "pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0),
+        "venue": "bitvavo", "model_version": "1.0", "eligible_asset_count": 1,
+        "excluded_missing_pair_count": 0, "positive_count": 1, "neutral_count": 0,
+        "negative_count": 0, "market_score": 20.0, "positive_breadth_ratio": 1.0,
+        "negative_breadth_ratio": 0.0, "acceleration_state": "ACCELERATING_IN",
+        "concentration_state": "SELECTIVE", "confirmation_state": "CONFIRMED",
+        "market_direction": "ROTATION_IN", "evidence_light_count": 2,
+    }
+    rows = [{"asset_id": 1, "market": "OTHER-EUR", "score_total": 40.0,
+        "pressure_state": "ROTATION_IN", "phase_state": "ACCELERATING_IN",
+        "raw_return_24h_pct": 4.0, "raw_return_7d_pct": 10.0,
+        "raw_relative_volume_24h": 1.5, "raw_relative_volume_7d": 1.2,
+        "score_acceleration": 2.0, "score_persistence": 1.3}]
+    history = [{"pressure_snapshot_id": 1, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 20.0}]
+    projection = build_rotation_projection(header, rows, now_utc=datetime(2026, 7, 12, 20, 30, tzinfo=UTC), history_rows=history)
+    rendered = render_full_html([_make_card(current_price="0.440000", fib_ext=_wld_fib_ext())], rotation_projection=projection)
+    assert "+20.0" in rendered
+    assert "-100</span><span>0</span><span>+100" in rendered
+    assert "IN 100%" in rendered
+    assert "rotation-history-line" in rendered
+
+
 def test_html_and_json_render_id_match_when_same_id_passed() -> None:
     fixed_render_id = "shared-render-id-abcd-1234"
     fixed_writer_id = "shared-writer-id-efgh-5678"
