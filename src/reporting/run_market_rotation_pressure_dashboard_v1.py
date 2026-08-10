@@ -23,6 +23,7 @@ REQUIRED_TABLES = (
     "market_rotation_pressure_snapshot_v1",
     "market_rotation_pressure_observation_v1",
 )
+HISTORY_LIMIT = 168
 _OUTPUT_MODE = 0o644
 
 
@@ -101,8 +102,23 @@ def fetch_snapshot_observations(conn: Any, *, pressure_snapshot_id: int) -> list
             "raw_return_24h_pct,raw_return_7d_pct,raw_relative_volume_24h,raw_relative_volume_7d,"
             "score_acceleration,score_persistence "
             "FROM market_rotation_pressure_observation_v1 "
-            "WHERE pressure_snapshot_id=%s ORDER BY score_total DESC,asset_id",
+            "WHERE pressure_snapshot_id=%s ORDER BY asset_id",
             (pressure_snapshot_id,),
+        )
+        return list(cur.fetchall())
+
+
+def fetch_pressure_history(
+    conn: Any, *, venue: str, model_version: str, limit: int = HISTORY_LIMIT
+) -> list[dict[str, Any]]:
+    """Read persisted aggregate snapshots only; this runner never recomputes pressure."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT pressure_snapshot_id,as_of_ts_utc,market_score "
+            "FROM market_rotation_pressure_snapshot_v1 "
+            "WHERE venue=%s AND model_version=%s "
+            "ORDER BY as_of_ts_utc DESC LIMIT %s",
+            (venue, model_version, limit),
         )
         return list(cur.fetchall())
 
@@ -127,6 +143,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"FAILED TARGET_SCHEMA_MISSING missing={missing}")
             return 1
         header_row = fetch_latest_snapshot(conn, venue=args.venue, model_version=args.model_version)
+        history_rows = fetch_pressure_history(conn, venue=args.venue, model_version=args.model_version)
         observation_rows: list[dict[str, Any]] = []
         if header_row is not None:
             observation_rows = fetch_snapshot_observations(
@@ -140,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         header_row,
         observation_rows,
         now_utc=datetime.now(UTC),
+        history_rows=history_rows,
     )
     if dashboard.status == "DATA_UNAVAILABLE":
         print(f"FAILED DASHBOARD_DATA_UNAVAILABLE reason={dashboard.reason}")

@@ -80,6 +80,19 @@ def test_fresh_aggregate_snapshot_available_and_verbatim():
     assert projection.venue == "bitvavo"
 
 
+def test_projection_carries_persisted_history_and_composition_without_recomputing():
+    history = [
+        {"pressure_snapshot_id": 42, "as_of_ts_utc": datetime(2026, 7, 12, 18, 0), "market_score": -20.0},
+        {"pressure_snapshot_id": 44, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 38.5},
+    ]
+    projection = build_rotation_projection(_header(), _rows(), now_utc=NOW, history_rows=history)
+    assert projection.negative_count == 1
+    assert projection.neutral_count == 0
+    assert projection.positive_count == 2
+    assert [point.market_score for point in projection.history] == [-20.0, 38.5]
+    assert to_json_dict(projection)["history"][0]["pressure_snapshot_id"] == 42
+
+
 def test_per_market_matching_by_canonical_market_identity():
     projection = build_rotation_projection(_header(), _rows(), now_utc=NOW)
     aero = get_market_projection(projection, "AERO-EUR")

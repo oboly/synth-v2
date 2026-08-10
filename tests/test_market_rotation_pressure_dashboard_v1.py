@@ -4,6 +4,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from src.reporting.market_rotation_pressure_dashboard_v1 import (
+    PRESSURE_SCALE_MAX,
+    PRESSURE_SCALE_MIN,
     build_dashboard,
     classify_freshness,
     dashboard_to_json_dict,
@@ -99,9 +101,39 @@ def test_build_dashboard_no_snapshot_fails_closed():
 
 
 def test_build_dashboard_observation_count_mismatch_fails_closed():
-    dashboard = build_dashboard(_header(eligible_asset_count=4), _rows(), now_utc=NOW)
+    dashboard = build_dashboard(
+        _header(eligible_asset_count=4, positive_count=3, neutral_count=0, negative_count=1),
+        _rows(),
+        now_utc=NOW,
+    )
     assert dashboard.status == "DATA_UNAVAILABLE"
     assert (dashboard.reason or "").startswith("OBSERVATION_COUNT_MISMATCH")
+
+
+def test_build_dashboard_negative_composition_count_fails_closed():
+    dashboard = build_dashboard(
+        _header(positive_count=4, neutral_count=0, negative_count=-1),
+        _rows(),
+        now_utc=NOW,
+    )
+    assert dashboard.status == "DATA_UNAVAILABLE"
+    assert dashboard.header is None
+    assert (dashboard.reason or "").startswith("INVALID_PRESSURE_SNAPSHOT:composition counts")
+    assert "<div class='composition-band'" not in render_dashboard_html(dashboard)
+
+
+def test_build_dashboard_composition_count_total_mismatch_fails_closed():
+    dashboard = build_dashboard(
+        _header(positive_count=1, neutral_count=1, negative_count=0),
+        _rows(),
+        now_utc=NOW,
+    )
+    assert dashboard.status == "DATA_UNAVAILABLE"
+    assert dashboard.header is None
+    assert (dashboard.reason or "").startswith(
+        "INVALID_PRESSURE_SNAPSHOT:composition count total"
+    )
+    assert "<div class='composition-band'" not in render_dashboard_html(dashboard)
 
 
 def test_build_dashboard_stale_is_degraded_not_available():
@@ -121,13 +153,83 @@ def test_render_dashboard_has_exact_active_light_count():
     assert "4 of 5 evidence lights" in rendered
 
 
-def test_render_dashboard_shows_top_in_and_out():
+def test_render_dashboard_shows_persisted_observation_rows_without_local_ranking():
     rendered = render_dashboard_html(build_dashboard(_header(), _rows(), now_utc=NOW))
-    assert "Top rotation in" in rendered
     assert "AERO-EUR" in rendered
     assert "XLM-EUR" in rendered
-    assert "Top rotation out" in rendered
     assert "APT-EUR" in rendered
+    assert "Top rotation in" not in rendered
+
+
+def test_render_dashboard_leads_with_fixed_pressure_scale_and_secondary_direction():
+    rendered = render_dashboard_html(build_dashboard(_header(market_score=38.5), _rows(), now_utc=NOW))
+    assert PRESSURE_SCALE_MIN == -100.0
+    assert PRESSURE_SCALE_MAX == 100.0
+    assert "-100</span><span>0</span><span>+100" in rendered
+    assert "+38.5" in rendered
+    assert rendered.index("+38.5") < rendered.index("ROTATION IN")
+
+
+def test_render_dashboard_supports_negative_pressure_and_persisted_composition():
+    dashboard = build_dashboard(
+        _header(
+            market_score=-42.0,
+            positive_count=1,
+            neutral_count=1,
+            negative_count=1,
+            market_direction="ROTATION_OUT",
+        ),
+        _rows(),
+        now_utc=NOW,
+    )
+    rendered = render_dashboard_html(dashboard)
+    assert "-42.0" in rendered
+    assert "OUT 33%" in rendered
+    assert "MIXED 33%" in rendered
+    assert "IN 33%" in rendered
+    assert "composition-band" in rendered
+
+
+def test_render_dashboard_composition_zero_counts_have_zero_width():
+    rendered = render_dashboard_html(
+        build_dashboard(
+            _header(positive_count=3, neutral_count=0, negative_count=0),
+            _rows(),
+            now_utc=NOW,
+        )
+    )
+    assert "composition-out composition-zero' style='flex:0 0 0.000000%;width:0.000000%'" in rendered
+    assert "composition-mixed composition-zero' style='flex:0 0 0.000000%;width:0.000000%'" in rendered
+    assert "composition-in' style='flex:0 0 100.000000%;width:100.000000%'" in rendered
+    assert "IN 100%" in rendered
+
+
+def test_render_dashboard_composition_asymmetric_widths_are_exact_percentages():
+    rows = _rows() + [_row(4, "DOGE-EUR", 1.0, "MIXED")]
+    rendered = render_dashboard_html(
+        build_dashboard(
+            _header(eligible_asset_count=4, positive_count=2, neutral_count=1, negative_count=1),
+            rows,
+            now_utc=NOW,
+        )
+    )
+    assert "composition-out' style='flex:0 0 25.000000%;width:25.000000%'" in rendered
+    assert "composition-mixed' style='flex:0 0 25.000000%;width:25.000000%'" in rendered
+    assert "composition-in' style='flex:0 0 50.000000%;width:50.000000%'" in rendered
+
+
+def test_render_dashboard_plots_only_persisted_history_with_fixed_zero_reference():
+    history = [
+        {"pressure_snapshot_id": 42, "as_of_ts_utc": datetime(2026, 7, 12, 18, 0), "market_score": -20.0},
+        {"pressure_snapshot_id": 43, "as_of_ts_utc": datetime(2026, 7, 12, 19, 0), "market_score": 10.0},
+        {"pressure_snapshot_id": 44, "as_of_ts_utc": datetime(2026, 7, 12, 20, 0), "market_score": 38.5},
+    ]
+    dashboard = build_dashboard(_header(), _rows(), now_utc=NOW, history_rows=history)
+    rendered = render_dashboard_html(dashboard)
+    assert len(dashboard.history) == 3
+    assert "curve-zero" in rendered
+    assert "pressure-curve" in rendered
+    assert dashboard_to_json_dict(dashboard)["history"][0]["market_score"] == -20.0
 
 
 def test_render_dashboard_escapes_market_and_phase_strings():
@@ -169,3 +271,12 @@ def test_odroid_dashboard_wrapper_is_read_only():
     assert "run_market_rotation_pressure_dashboard_v1" in text
     assert "--write-db" not in text
     assert "market_data_writes=0 pressure_writes=0" in text
+
+
+def test_dashboard_runner_history_is_read_only_and_bounded():
+    text = Path("src/reporting/run_market_rotation_pressure_dashboard_v1.py").read_text(encoding="utf-8")
+    assert "def fetch_pressure_history" in text
+    assert "FROM market_rotation_pressure_snapshot_v1" in text
+    assert "HISTORY_LIMIT = 168" in text
+    assert "INSERT " not in text
+    assert "UPDATE " not in text

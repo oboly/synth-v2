@@ -14,6 +14,7 @@ from typing import Any, Iterable
 from src.reporting.market_rotation_pressure_dashboard_v1 import (
     MODEL_VERSION,
     RotationPressureDashboard,
+    RotationPressureHistoryPoint,
     build_dashboard,
 )
 
@@ -42,6 +43,9 @@ class RotationProfitPlanProjection:
     aggregate_direction: str | None
     aggregate_score: float | None
     evidence_light_count: int | None
+    positive_count: int | None
+    neutral_count: int | None
+    negative_count: int | None
     positive_breadth_ratio: float | None
     negative_breadth_ratio: float | None
     acceleration_state: str | None
@@ -50,6 +54,7 @@ class RotationProfitPlanProjection:
     eligible_asset_count: int | None
     venue: str | None
     model_version: str | None
+    history: tuple[RotationPressureHistoryPoint, ...]
     reason: str | None
     per_market: dict[str, RotationMarketProjection]
 
@@ -65,6 +70,9 @@ def unavailable_projection(*, reason: str = PROJECTION_NOT_PROVIDED_REASON) -> R
         aggregate_direction=None,
         aggregate_score=None,
         evidence_light_count=None,
+        positive_count=None,
+        neutral_count=None,
+        negative_count=None,
         positive_breadth_ratio=None,
         negative_breadth_ratio=None,
         acceleration_state=None,
@@ -73,6 +81,7 @@ def unavailable_projection(*, reason: str = PROJECTION_NOT_PROVIDED_REASON) -> R
         eligible_asset_count=None,
         venue=None,
         model_version=None,
+        history=(),
         reason=reason,
         per_market={},
     )
@@ -83,6 +92,7 @@ def build_rotation_projection(
     observation_rows: Iterable[dict[str, Any]],
     *,
     now_utc: datetime,
+    history_rows: Iterable[dict[str, Any]] = (),
 ) -> RotationProfitPlanProjection:
     """Build a Profit Plan projection from raw persisted rotation rows.
 
@@ -92,7 +102,7 @@ def build_rotation_projection(
     """
     try:
         dashboard: RotationPressureDashboard = build_dashboard(
-            header_row, observation_rows, now_utc=now_utc
+            header_row, observation_rows, now_utc=now_utc, history_rows=history_rows
         )
     except Exception as exc:  # defensive: invalid raw rows must never raise past this builder
         return unavailable_projection(reason=f"ROTATION_ROW_PARSE_FAILED:{exc}")
@@ -123,6 +133,9 @@ def build_rotation_projection(
         aggregate_direction=header.market_direction,
         aggregate_score=header.market_score,
         evidence_light_count=header.evidence_light_count,
+        positive_count=header.positive_count,
+        neutral_count=header.neutral_count,
+        negative_count=header.negative_count,
         positive_breadth_ratio=header.positive_breadth_ratio,
         negative_breadth_ratio=header.negative_breadth_ratio,
         acceleration_state=header.acceleration_state,
@@ -131,6 +144,7 @@ def build_rotation_projection(
         eligible_asset_count=header.eligible_asset_count,
         venue=header.venue,
         model_version=header.model_version,
+        history=dashboard.history,
         reason=dashboard.reason,
         per_market=per_market,
     )
@@ -191,6 +205,9 @@ def to_json_dict(projection: RotationProfitPlanProjection) -> dict[str, Any]:
         "aggregate_direction": projection.aggregate_direction,
         "aggregate_score": projection.aggregate_score,
         "evidence_light_count": projection.evidence_light_count,
+        "positive_count": projection.positive_count,
+        "neutral_count": projection.neutral_count,
+        "negative_count": projection.negative_count,
         "positive_breadth_ratio": projection.positive_breadth_ratio,
         "negative_breadth_ratio": projection.negative_breadth_ratio,
         "acceleration_state": projection.acceleration_state,
@@ -199,6 +216,14 @@ def to_json_dict(projection: RotationProfitPlanProjection) -> dict[str, Any]:
         "eligible_asset_count": projection.eligible_asset_count,
         "venue": projection.venue,
         "model_version": projection.model_version,
+        "history": [
+            {
+                "pressure_snapshot_id": point.pressure_snapshot_id,
+                "as_of_ts_utc": _iso_z(point.as_of_ts_utc),
+                "market_score": point.market_score,
+            }
+            for point in projection.history
+        ],
         "reason": projection.reason,
         "per_market": {
             market: market_projection_to_json_dict(mp)

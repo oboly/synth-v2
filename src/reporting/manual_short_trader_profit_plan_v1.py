@@ -3856,19 +3856,30 @@ _CSS = """
     .rotation-badge-unavailable { color: var(--muted); border: 1px dashed var(--line); }
     .rotation-badge-score { font-variant-numeric: tabular-nums; }
     .rotation-strip {
-      display: grid; grid-template-columns: minmax(200px,1fr) auto minmax(200px,1.2fr) auto auto;
+      display: grid; grid-template-columns: minmax(200px,1fr) minmax(200px,1.2fr) auto auto;
       gap: 14px; align-items: center; margin: 10px 0; padding: 10px 14px;
       border: 1px solid var(--line); border-radius: 10px; background: rgba(0,0,0,.16);
     }
     .rotation-eyebrow { font-size: 10px; letter-spacing: .1em; color: var(--muted); }
-    .rotation-headline { margin-top: 2px; font-size: 15px; font-weight: 700; }
+    .rotation-headline { margin-top: 2px; font-size: 20px; font-weight: 700; }
     .rotation-score { margin-left: 6px; font-variant-numeric: tabular-nums; }
+    .rotation-direction-secondary { margin-top: 3px; font-size: 10px; color: var(--muted); letter-spacing: .06em; }
+    .rotation-scale { position: relative; display: flex; justify-content: space-between; margin-top: 5px; padding-top: 6px; border-top: 2px solid var(--line); font-size: 9px; color: var(--muted); }
+    .rotation-scale i { position: absolute; top: -5px; width: 3px; height: 11px; background: var(--warn); transform: translateX(-50%); }
     .rotation-lights { display: flex; gap: 5px; }
     .rotation-light { width: 11px; height: 11px; border-radius: 50%; border: 1px solid var(--line); background: rgba(0,0,0,.2); }
     .rotation-light.active.light-in    { background: var(--ok); }
     .rotation-light.active.light-out   { background: var(--bad); }
     .rotation-light.active.light-mixed { background: var(--warn); }
     .rotation-metrics { display: flex; flex-wrap: wrap; gap: 6px; font-size: 11px; color: var(--muted); }
+    .rotation-composition { display: flex; min-height: 24px; overflow: hidden; border-radius: 4px; margin-top: 6px; }
+    .rotation-composition span { display: flex; align-items: center; justify-content: center; min-width: 0; box-sizing: border-box; padding: 2px 5px; color: #07111f; font-size: 9px; font-weight: 700; }
+    .rotation-composition span.rotation-composition-zero { padding: 0; border: 0; overflow: hidden; }
+    .rotation-composition-out { background: var(--bad); } .rotation-composition-mixed { background: var(--warn); } .rotation-composition-in { background: var(--ok); }
+    .rotation-history { grid-column: 1 / -1; margin-top: 2px; }
+    .rotation-history-label { font-size: 10px; color: var(--muted); }
+    .rotation-history svg { display: block; width: 100%; max-height: 80px; margin-top: 3px; background: rgba(0,0,0,.16); border-radius: 4px; }
+    .rotation-history-zero { stroke: var(--muted); stroke-dasharray: 4 4; } .rotation-history-line { fill: none; stroke: var(--blue); stroke-width: 3; stroke-linejoin: round; stroke-linecap: round; }
     .rotation-freshness-badge { font-size: 10px; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line); }
     .rotation-freshness-fresh { color: var(--ok); }
     .rotation-freshness-stale, .rotation-freshness-future_timestamp { color: var(--bad); }
@@ -4631,6 +4642,46 @@ def _rotation_lights_html(evidence_light_count: int | None, direction: str | Non
     return "".join(lights)
 
 
+def _rotation_scale_position(score: float | None) -> float:
+    """Presentation-only mapping for the persisted fixed -100..+100 scale."""
+    return ((score or 0.0) + 100.0) / 200.0 * 100.0
+
+
+def _rotation_composition_html(projection: RotationProfitPlanProjection) -> str:
+    total = projection.eligible_asset_count
+    counts = (projection.negative_count, projection.neutral_count, projection.positive_count)
+    if total is None or total <= 0 or any(count is None for count in counts):
+        return ""
+    labels = (("OUT", projection.negative_count, "out"), ("MIXED", projection.neutral_count, "mixed"), ("IN", projection.positive_count, "in"))
+    return "<div class='rotation-composition' aria-label='Persisted OUT MIXED IN composition'>" + "".join(
+        f"<span class='rotation-composition-{css}"
+        f"{' rotation-composition-zero' if count == 0 else ''}' "
+        f"style='flex:0 0 {count / total:.6%};width:{count / total:.6%}' "
+        f"aria-label='{label} {count / total:.0%}'>"
+        f"{'' if count == 0 else f'{label} {count / total:.0%}'}</span>"
+        for label, count, css in labels
+    ) + "</div>"
+
+
+def _rotation_history_html(projection: RotationProfitPlanProjection) -> str:
+    if not projection.history:
+        return "<div class='rotation-history'><span class='rotation-history-label'>No prior persisted pressure snapshots</span></div>"
+    width, height, padding = 600, 100, 15
+    plot_height = height - padding * 2
+    points = " ".join(
+        f"{padding + index * (width - padding * 2) / max(len(projection.history) - 1, 1):.1f},"
+        f"{padding + (100.0 - point.market_score) / 200.0 * plot_height:.1f}"
+        for index, point in enumerate(projection.history)
+    )
+    return (
+        "<div class='rotation-history'><span class='rotation-history-label'>"
+        "Persisted aggregate pressure history · fixed −100 · 0 · +100</span>"
+        "<svg viewBox='0 0 600 100' role='img' aria-label='Persisted aggregate pressure history'>"
+        "<line class='rotation-history-zero' x1='15' y1='50' x2='585' y2='50'></line>"
+        f"<polyline class='rotation-history-line' points='{points}'></polyline></svg></div>"
+    )
+
+
 def _rotation_strip_html(projection: RotationProfitPlanProjection | None) -> str:
     if projection is None or not projection.available:
         reason = (projection.reason if projection is not None else None) or "NO_ROTATION_PROJECTION"
@@ -4645,19 +4696,15 @@ def _rotation_strip_html(projection: RotationProfitPlanProjection | None) -> str
         )
     freshness_class = f"rotation-freshness-{projection.freshness.lower()}"
     direction_class = f"rotation-direction-{(projection.aggregate_direction or 'unknown').lower()}"
-    score_text = (
-        f"{projection.aggregate_score:+.1f}" if projection.aggregate_score is not None else "—"
-    )
+    score_text = f"{projection.aggregate_score:+.1f}" if projection.aggregate_score is not None else "—"
     source_ts_text = (
         projection.source_ts_utc.isoformat(timespec="seconds") + "Z"
         if projection.source_ts_utc is not None
         else "—"
     )
     metrics = []
-    if projection.positive_breadth_ratio is not None:
-        metrics.append(f"<span>IN {projection.positive_breadth_ratio:.0%}</span>")
-    if projection.negative_breadth_ratio is not None:
-        metrics.append(f"<span>OUT {projection.negative_breadth_ratio:.0%}</span>")
+    if projection.evidence_light_count is not None:
+        metrics.append(f"<span>Evidence {projection.evidence_light_count}/5</span>")
     if projection.acceleration_state:
         metrics.append(f"<span>{esc(projection.acceleration_state.replace('_', ' '))}</span>")
     if projection.confirmation_state:
@@ -4673,13 +4720,14 @@ def _rotation_strip_html(projection: RotationProfitPlanProjection | None) -> str
         f"<section class='rotation-strip {direction_class}'>"
         "<div class='rotation-head'>"
         "<div class='rotation-eyebrow'>MARKET ROTATION PRESSURE — market-only, account-agnostic, not verified fund flow</div>"
-        f"<div class='rotation-headline'>{esc(_rotation_direction_label(projection.aggregate_direction))}"
-        f" <span class='rotation-score'>{esc(score_text)}</span></div>"
+        f"<div class='rotation-headline'><span class='rotation-score'>{esc(score_text)}</span></div>"
+        f"<div class='rotation-scale' aria-label='Fixed pressure scale minus 100 to plus 100'><span>-100</span><span>0</span><span>+100</span><i style='left:{_rotation_scale_position(projection.aggregate_score):.1f}%'></i></div>"
+        f"<div class='rotation-direction-secondary'>{esc(_rotation_direction_label(projection.aggregate_direction))}</div>"
         "</div>"
-        f"<div class='rotation-lights' aria-label='evidence lights'>{_rotation_lights_html(projection.evidence_light_count, projection.aggregate_direction)}</div>"
-        f"<div class='rotation-metrics'>{''.join(metrics)}</div>"
+        f"<div><div class='rotation-metrics'>{''.join(metrics)}</div>{_rotation_composition_html(projection)}</div>"
         f"<div class='rotation-freshness-badge {esc(freshness_class)}'>{esc(projection.freshness)}</div>"
         f"<div class='rotation-source-ts muted small'>Snapshot {esc(source_ts_text)}</div>"
+        f"{_rotation_history_html(projection)}"
         f"{degraded_note}"
         "</section>"
     )

@@ -99,6 +99,7 @@ from src.reporting.market_rotation_profit_plan_projection_v1 import (
 )
 from src.reporting.run_market_rotation_pressure_dashboard_v1 import (
     check_schema_ready as check_rotation_schema_ready,
+    fetch_pressure_history as fetch_rotation_pressure_history,
     fetch_latest_snapshot as fetch_latest_rotation_snapshot,
     fetch_snapshot_observations as fetch_rotation_snapshot_observations,
 )
@@ -1936,6 +1937,9 @@ def main() -> int:
             rotation_header_row = fetch_latest_rotation_snapshot(
                 _rotation_conn, venue=args.venue, model_version=ROTATION_MODEL_VERSION
             )
+            rotation_history_rows = fetch_rotation_pressure_history(
+                _rotation_conn, venue=args.venue, model_version=ROTATION_MODEL_VERSION
+            )
             rotation_observation_rows = (
                 fetch_rotation_snapshot_observations(
                     _rotation_conn,
@@ -1950,11 +1954,13 @@ def main() -> int:
         print(f"[warn] rotation pressure read failed: {exc}", file=sys.stderr)
         rotation_header_row = None
         rotation_observation_rows = []
+        rotation_history_rows = []
 
     rotation_projection = build_rotation_projection(
         rotation_header_row,
         rotation_observation_rows,
         now_utc=now_utc,
+        history_rows=rotation_history_rows,
     )
 
     output_html.parent.mkdir(parents=True, exist_ok=True)
