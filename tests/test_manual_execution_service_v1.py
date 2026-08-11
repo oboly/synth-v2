@@ -72,6 +72,15 @@ def _request(**overrides):
         "side": "SELL",
         "quantity_policy": QUANTITY_POLICY_FULL_AVAILABLE_BASE,
         "provenance_id": 77,
+        "operator_request_nonce": "process-1",
+        "ladder_profile_id": 9,
+        "ladder_profile_version": 2,
+        "anchor_type": "NATIVE_SHORT_ANCHOR_HIGH",
+        "anchor_price": Decimal("51000"),
+        "anchor_source": "native_short_context_v1",
+        "source_map_cycle_id": "cycle-1",
+        "source_native_map_id": "map-1",
+        "source_map_version": "native_short_v1",
     }
     values.update(overrides)
     return build_manual_execution_request(**values)
@@ -220,6 +229,18 @@ class GateRepository:
         return ManualExecutionApprovalOutcome(result, 501)
 
 
+class SnapshotRepository:
+    def __init__(self):
+        self.snapshot = None
+
+    def create_idempotent(self, snapshot):
+        self.snapshot = dataclasses.replace(snapshot, plan_snapshot_id=701)
+        return self.snapshot
+
+    def find_by_request_id(self, _request_id):
+        return self.snapshot
+
+
 def _install_service_components(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -227,6 +248,7 @@ def _install_service_components(
 ) -> tuple[RequestRepository, GateRepository]:
     request_repository = RequestRepository()
     gate_repository = GateRepository(blocked=blocked)
+    snapshot_repository = SnapshotRepository()
     monkeypatch.setattr(
         service,
         "ManualExecutionRequestRepository",
@@ -236,6 +258,11 @@ def _install_service_components(
         service,
         "ManualExecutionGateRepository",
         lambda: gate_repository,
+    )
+    monkeypatch.setattr(
+        service,
+        "ManualExecutionPlanSnapshotRepository",
+        lambda: snapshot_repository,
     )
     return request_repository, gate_repository
 

@@ -39,6 +39,8 @@ order_submission=0
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -127,6 +129,19 @@ class ManualExecutionRequest:
 
     provenance_id: int | None
 
+    # Immutable binding to the profile and public map context selected by the
+    # operator.  These are intent/provenance, never a permission result.
+    operator_request_nonce: str | None
+    dedupe_key: str | None
+    ladder_profile_id: int | None
+    ladder_profile_version: int | None
+    anchor_type: str | None
+    anchor_price: Decimal | None
+    anchor_source: str | None
+    source_map_cycle_id: str | None
+    source_native_map_id: str | None
+    source_map_version: str | None
+
     request_state: str
     rejection_code: str | None
     rejection_detail: str | None
@@ -212,6 +227,15 @@ def build_manual_execution_request(
     requested_quote_notional: Decimal | None = None,
     ladder_levels: tuple[tuple[Decimal, Decimal], ...] = (),
     provenance_id: int | None = None,
+    operator_request_nonce: str | None = None,
+    ladder_profile_id: int | None = None,
+    ladder_profile_version: int | None = None,
+    anchor_type: str | None = None,
+    anchor_price: Decimal | None = None,
+    anchor_source: str | None = None,
+    source_map_cycle_id: str | None = None,
+    source_native_map_id: str | None = None,
+    source_map_version: str | None = None,
 ) -> ManualExecutionRequest:
     """Construct a validated, not-yet-persisted, DRAFT manual execution request.
 
@@ -253,6 +277,50 @@ def build_manual_execution_request(
         ladder_levels=ladder_levels,
     )
 
+    binding_values = (
+        ladder_profile_id, ladder_profile_version, anchor_type, anchor_price,
+        anchor_source, source_map_cycle_id, source_native_map_id, source_map_version,
+    )
+    if any(value is not None for value in binding_values):
+        if not all(value is not None for value in binding_values):
+            raise ManualExecutionRequestValidationError(
+                "profile/anchor/source-map binding must be complete when supplied"
+            )
+        if ladder_profile_id <= 0 or ladder_profile_version <= 0:  # type: ignore[operator]
+            raise ManualExecutionRequestValidationError("ladder profile identity must be positive")
+        _require_positive_decimal(anchor_price, "anchor_price")  # type: ignore[arg-type]
+        if not all(str(value).strip() for value in binding_values[2::]):
+            raise ManualExecutionRequestValidationError("profile/anchor/source-map binding values are required")
+    if operator_request_nonce is not None and not operator_request_nonce.strip():
+        raise ManualExecutionRequestValidationError("operator_request_nonce must not be blank")
+
+    canonical_dedupe_key = _derive_dedupe_key(
+        idempotency_key=idempotency_key,
+        operator_request_nonce=operator_request_nonce,
+        trading_account_id=trading_account_id,
+        asset_id=asset_id,
+        venue=venue,
+        base_asset=base_asset,
+        quote_asset=quote_asset,
+        source=source,
+        requested_by=requested_by,
+        mode=mode,
+        side=side,
+        quantity_policy=quantity_policy,
+        requested_base_quantity=requested_base_quantity,
+        requested_quote_notional=requested_quote_notional,
+        ladder_profile_id=ladder_profile_id,
+        ladder_profile_version=ladder_profile_version,
+        ladder_levels=ladder_levels,
+        provenance_id=provenance_id,
+        anchor_type=anchor_type,
+        anchor_price=anchor_price,
+        anchor_source=anchor_source,
+        source_map_cycle_id=source_map_cycle_id,
+        source_native_map_id=source_native_map_id,
+        source_map_version=source_map_version,
+    )
+
     return ManualExecutionRequest(
         request_id=None,
         schema_version=CURRENT_SCHEMA_VERSION,
@@ -273,11 +341,76 @@ def build_manual_execution_request(
         requested_quote_notional=requested_quote_notional,
         ladder_levels=tuple(ladder_levels),
         provenance_id=provenance_id,
+        operator_request_nonce=(operator_request_nonce.strip() if operator_request_nonce else None),
+        dedupe_key=canonical_dedupe_key,
+        ladder_profile_id=ladder_profile_id,
+        ladder_profile_version=ladder_profile_version,
+        anchor_type=(anchor_type.strip() if anchor_type else None),
+        anchor_price=anchor_price,
+        anchor_source=(anchor_source.strip() if anchor_source else None),
+        source_map_cycle_id=(source_map_cycle_id.strip() if source_map_cycle_id else None),
+        source_native_map_id=(source_native_map_id.strip() if source_native_map_id else None),
+        source_map_version=(source_map_version.strip() if source_map_version else None),
         request_state=REQUEST_STATE_DRAFT,
         rejection_code=None,
         rejection_detail=None,
         processed_ts_utc=None,
     )
+
+
+def _derive_dedupe_key(
+    *,
+    idempotency_key: str,
+    operator_request_nonce: str | None,
+    trading_account_id: int,
+    asset_id: int,
+    venue: str,
+    base_asset: str,
+    quote_asset: str,
+    source: str,
+    requested_by: str,
+    mode: str,
+    side: str,
+    quantity_policy: str,
+    requested_base_quantity: Decimal | None,
+    requested_quote_notional: Decimal | None,
+    ladder_profile_id: int | None,
+    ladder_profile_version: int | None,
+    ladder_levels: tuple[tuple[Decimal, Decimal], ...],
+    provenance_id: int | None,
+    anchor_type: str | None,
+    anchor_price: Decimal | None,
+    anchor_source: str | None,
+    source_map_cycle_id: str | None,
+    source_native_map_id: str | None,
+    source_map_version: str | None,
+) -> str:
+    """Stable DB-enforced retry identity.
+
+    A caller nonce distinguishes a genuinely new Process action.  The legacy
+    idempotency key remains part of the digest for compatible callers that do
+    not yet supply a nonce.
+    """
+    payload = {
+        "account": trading_account_id,
+        "asset": asset_id,
+        "nonce": operator_request_nonce.strip() if operator_request_nonce else None,
+        "profile": [ladder_profile_id, ladder_profile_version],
+        "provenance": provenance_id,
+        "quantity": [str(requested_base_quantity) if requested_base_quantity else None,
+                     str(requested_quote_notional) if requested_quote_notional else None,
+        ],
+        "quantity_policy": quantity_policy,
+        "side": side,
+        "operator": [source, requested_by.strip()],
+        "market": [venue.strip().lower(), base_asset.strip().upper(), quote_asset.strip().upper()],
+        "mode": mode,
+        "levels": [[str(price), str(fraction)] for price, fraction in ladder_levels],
+        "anchor": [anchor_type, str(anchor_price) if anchor_price else None, anchor_source],
+        "source_map": [source_map_cycle_id, source_native_map_id, source_map_version],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def advance_manual_execution_request_state(
@@ -362,6 +495,16 @@ def _row_to_request(row: Any) -> ManualExecutionRequest:
         ),
         ladder_levels=_ladder_levels_from_json(row.get("ladder_levels_json")),
         provenance_id=row.get("provenance_id"),
+        operator_request_nonce=row.get("operator_request_nonce"),
+        dedupe_key=row.get("dedupe_key"),
+        ladder_profile_id=row.get("ladder_profile_id"),
+        ladder_profile_version=row.get("ladder_profile_version"),
+        anchor_type=row.get("anchor_type"),
+        anchor_price=(Decimal(str(row["anchor_price"])) if row.get("anchor_price") is not None else None),
+        anchor_source=row.get("anchor_source"),
+        source_map_cycle_id=row.get("source_map_cycle_id"),
+        source_native_map_id=row.get("source_native_map_id"),
+        source_map_version=row.get("source_map_version"),
         request_state=str(row["request_state"]),
         rejection_code=row.get("rejection_code"),
         rejection_detail=row.get("rejection_detail"),
@@ -395,26 +538,24 @@ class ManualExecutionRequestRepository:
         with self.cursor_factory(commit=True) as db_obj:
             cursor = _unwrap_cursor(db_obj)
             cursor.execute(
-                "SELECT * FROM manual_execution_request WHERE idempotency_key = %s",
-                [request.idempotency_key],
-            )
-            existing = cursor.fetchone()
-            if existing:
-                return _row_to_request(existing)
-
-            cursor.execute(
                 """
                 INSERT INTO manual_execution_request (
-                    schema_version, idempotency_key, created_ts_utc, source,
+                    schema_version, idempotency_key, dedupe_key, operator_request_nonce, created_ts_utc, source,
                     requested_by, mode, trading_account_id, account_code, venue,
                     asset_id, base_asset, quote_asset, side, quantity_policy,
                     requested_base_quantity, requested_quote_notional,
-                    ladder_levels_json, provenance_id, request_state
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ladder_levels_json, provenance_id, ladder_profile_id, ladder_profile_version,
+                    anchor_type, anchor_price, anchor_source, source_map_cycle_id,
+                    source_native_map_id, source_map_version, request_state
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                    manual_execution_request_id = LAST_INSERT_ID(manual_execution_request_id)
                 """,
                 [
                     request.schema_version,
                     request.idempotency_key,
+                    request.dedupe_key,
+                    request.operator_request_nonce,
                     request.created_ts_utc,
                     request.source,
                     request.requested_by,
@@ -431,9 +572,20 @@ class ManualExecutionRequestRepository:
                     request.requested_quote_notional,
                     _ladder_levels_to_json(request.ladder_levels),
                     request.provenance_id,
+                    request.ladder_profile_id,
+                    request.ladder_profile_version,
+                    request.anchor_type,
+                    request.anchor_price,
+                    request.anchor_source,
+                    request.source_map_cycle_id,
+                    request.source_native_map_id,
+                    request.source_map_version,
                     request.request_state,
                 ],
             )
+            # ``LAST_INSERT_ID`` makes both the inserted and duplicate-key
+            # paths return the one canonical row identity without an
+            # application-level read/insert race.
             request_id = int(cursor.lastrowid)
             cursor.execute(
                 "SELECT * FROM manual_execution_request WHERE manual_execution_request_id = %s",
