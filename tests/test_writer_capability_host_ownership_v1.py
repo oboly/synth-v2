@@ -132,13 +132,13 @@ def test_public_price_and_candle_are_active() -> None:
         elif cap["capability_id"] == "sector_rotation_snapshot":
             assert cap["candidate_host"] == "gurkdb"
             assert cap["selected_host"] == "gurkdb"
-            assert cap["acceptance_host"] == UNASSIGNED
-            assert cap["acceptance_status"] == "PENDING"
-            assert cap["acceptance_evidence"] is None
+            assert cap["acceptance_host"] == "gurkdb"
+            assert cap["acceptance_status"] == "ACCEPTED"
+            assert cap["acceptance_evidence"]
             assert cap["production_runtime_owner"] == UNASSIGNED
             assert cap["production_decision_evidence"] == ""
-            assert cap["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT", cap["capability_id"]
-            assert cap["production_authorization_status"] == "SELECTED_PENDING_PREFLIGHT"
+            assert cap["runtime_lifecycle"] == "ACCEPTED_PENDING_CUTOVER", cap["capability_id"]
+            assert cap["production_authorization_status"] == UNASSIGNED
             assert cap["observed_runtime_state"] == []
             assert cap["historical_runtime_assignment"] is None
         else:

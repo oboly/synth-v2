@@ -418,12 +418,17 @@
       "evaluated_separately": false,
       "candidate_host": "gurkdb",
       "selected_host": "gurkdb",
-      "acceptance_host": "UNASSIGNED",
-      "acceptance_status": "PENDING",
-      "acceptance_evidence": null,
+      "acceptance_host": "gurkdb",
+      "acceptance_status": "ACCEPTED",
+      "acceptance_evidence": {
+        "approval_reference": "User explicit CONTROLLED WRITER ACCEPTANCE instruction for sector_rotation_snapshot, gurkdb session 2026-08-11, bounded ACCEPTANCE-mode permit only, no production authorization or timer activation",
+        "evidence_doc": "docs/ops/sector_rotation_snapshot_gurkdb_acceptance_20260811.md",
+        "accepted_at_utc": "2026-08-11T02:58:34Z",
+        "scope": "ACCEPTANCE-mode controlled writer run, gurkDB, commit 40ef0f838db0e0d0b4d47ebeca7d599bd8bed74a"
+      },
       "production_runtime_owner": "UNASSIGNED",
-      "production_authorization_status": "SELECTED_PENDING_PREFLIGHT",
-      "runtime_lifecycle": "SELECTED_PENDING_PREFLIGHT",
+      "production_authorization_status": "UNASSIGNED",
+      "runtime_lifecycle": "ACCEPTED_PENDING_CUTOVER",
       "production_decision_evidence": "",
       "observed_runtime_state": [],
       "historical_runtime_assignment": null

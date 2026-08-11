@@ -447,13 +447,13 @@ def test_writer_capability_registry_entry_is_selected_pending_preflight_only():
     cap = next(
         c for c in registry["capabilities"] if c.get("capability_id") == "sector_rotation_snapshot"
     )
-    # Registry onboarding landed, but must remain strictly non-authorizing:
-    # no production owner, no acceptance, no activation.
-    assert cap["runtime_lifecycle"] == "SELECTED_PENDING_PREFLIGHT"
+    # gurkDB controlled acceptance landed (2026-08-11), but must remain
+    # strictly non-authorizing: no production owner, no activation.
+    assert cap["runtime_lifecycle"] == "ACCEPTED_PENDING_CUTOVER"
     assert cap["production_runtime_owner"] == "UNASSIGNED"
-    assert cap["production_authorization_status"] == "SELECTED_PENDING_PREFLIGHT"
-    assert cap["acceptance_status"] == "PENDING"
-    assert cap["acceptance_evidence"] is None
+    assert cap["production_authorization_status"] == "UNASSIGNED"
+    assert cap["acceptance_status"] == "ACCEPTED"
+    assert cap["acceptance_evidence"]
     assert cap["production_decision_evidence"] == ""
     assert cap["observed_runtime_state"] == []
 
