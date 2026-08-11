@@ -73,6 +73,15 @@ entry carries `runtime_lifecycle=SELECTED_PENDING_PREFLIGHT`,
 authorization, acceptance permit, host mutation, or database write was
 performed by that change.
 
+`deploy/ownership/writer_capability_acceptance_permit_v1.schema.json` is a
+separate closed contract for the acceptance permit itself (not the
+registry) and has been extended in a later, equally non-authorizing change
+to recognize the `sector_rotation_snapshot` / `sector-rotation-snapshot-writer`
+pair with an exact identity binding. This only allows a structurally valid
+ACCEPTANCE-mode permit to be *created and validated*; it grants no
+production authorization, assigns no production owner, runs no writer, and
+installs or activates no timer.
+
 Consequence: the `ExecStartPre` authorization guard in
 `deploy/systemd/synth-sector-rotation-writer.service` still fails closed
 with `WRITER_AUTHORIZATION_DENIED` when run today -- this remains the
@@ -198,7 +207,10 @@ python -m src.research.run_sector_rotation_engine_v1 --validate-only
 ```
 
 Writer bounded manual write run (requires separate explicit authorization
-and, once onboarded, a valid writer-capability acceptance permit):
+and a valid writer-capability acceptance permit; the shared acceptance-permit
+contract now recognizes `sector_rotation_snapshot` /
+`sector-rotation-snapshot-writer`, but no permit has been issued and no
+acceptance run has occurred):
 
 ```bash
 bash scripts/run_sector_rotation_engine_once.sh --write-db
