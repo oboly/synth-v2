@@ -11,7 +11,10 @@ from src.decision_gate.manual_execution_approval_v1 import (
     APPROVAL_TTL_SECONDS,
     ManualExecutionApprovalRecord,
 )
-from src.execution_planner.canonical_rounding_v1 import round_price_for_side
+from src.execution_planner.canonical_rounding_v1 import (
+    round_leg_for_side,
+    round_price_for_side,
+)
 from src.execution_planner.sell_authority_guard_v1 import (
     UnauthorizedManualExecutionCallError,
 )
@@ -329,7 +332,17 @@ def _build_ladder_legs(
     quantity_base: Decimal | None,
     tick_size: Decimal,
     profile: dict[str, Any],
+    constraints: VenueExecutionConstraints | None = None,
 ) -> list[ExecutionPlanLegPreview]:
+    """Canonical ladder allocation path.
+
+    Manual callers pass fresh venue constraints, so each leg is rounded and
+    validated after allocation. Invalid legs reject the entire ladder rather
+    than silently changing the operator-approved fractions. Fee haircut is
+    explicitly absent in the current manual SELL contract; ``quantity_base``
+    is the decision_gate-approved quantity and rounded residual dust remains
+    unallocated (never redistributed above a target fraction).
+    """
     _validate_ladder_levels(side=side, levels=levels)
 
     legs: list[ExecutionPlanLegPreview] = []
@@ -351,6 +364,21 @@ def _build_ladder_legs(
                 fraction=fraction,
             )
             target_notional_eur = target_quantity_base * target_price
+
+        if constraints is not None:
+            rounded = round_leg_for_side(
+                side=side,
+                raw_price=price,
+                raw_quantity_base=target_quantity_base or Decimal("0"),
+                constraints=constraints,
+            )
+            if not rounded.is_valid:
+                raise ValueError(
+                    f"LADDER_LEG_{idx}_INVALID:" + ",".join(rounded.rejection_reasons)
+                )
+            target_price = rounded.rounded_price
+            target_quantity_base = rounded.rounded_quantity_base
+            target_notional_eur = rounded.rounded_notional_quote
 
         legs.append(
             ExecutionPlanLegPreview(
@@ -543,6 +571,7 @@ def _build_buy_execution_plan_preview(
             quantity_base=intent.quantity_base,
             tick_size=context.tick_size,
             profile=profile,
+            constraints=None,
         )
     else:
         legs = [
@@ -687,6 +716,7 @@ def build_manual_sell_execution_plan_preview(
             quantity_base=approved_quantity,
             tick_size=context.tick_size,
             profile=profile,
+            constraints=constraints,
         )
     else:
         legs = [
@@ -728,6 +758,8 @@ def build_manual_sell_execution_plan_preview(
             f"execution_style={profile['execution_style']}; "
             f"intent_type={intent_type}; "
             f"persisted_approval_id={approval.approval_id}; "
+            f"fee_model=NONE; "
+            f"residual_policy=UNALLOCATED_DUST; "
             f"asset_exit_profile_hint_is_metadata_only=1; "
             f"no_db_writes=1; no_executor=1"
         ),
