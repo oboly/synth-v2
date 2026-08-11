@@ -28,6 +28,7 @@ from src.execution_planner.contract_preview_v1 import (
     UnauthorizedManualExecutionCallError,
     build_execution_plan_preview,
     build_manual_sell_execution_plan_preview,
+    preview_to_dict,
 )
 from src.execution_planner.manual_execution_plan_snapshot_v1 import (
     ManualExecutionPlanSnapshotError,
@@ -38,6 +39,7 @@ from src.manual_execution.manual_execution_request_v1 import (
     MODE_LIVE,
     MODE_PAPER,
     QUANTITY_POLICY_FULL_AVAILABLE_BASE,
+    QUANTITY_POLICY_LADDER_LEVELS,
     REQUEST_STATE_FAILED,
     REQUEST_STATE_GATE_BLOCKED,
     REQUEST_STATE_PLAN_REJECTED,
@@ -842,3 +844,57 @@ def test_buy_contract_preview_still_works() -> None:
         "OK",
     )
     assert build_execution_plan_preview(intent=intent, context=_context()).side == "BUY"
+
+
+def test_stale_constraints_rejection_detail_carries_canonical_reason_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GitHub Issue #203 corrective delta: the service-level pre-gate stale/
+    missing venue-constraints rejection must carry the same deterministic
+    VENUE_CONSTRAINTS_STALE_OR_MISSING reason canonical_rounding_v1 uses,
+    not just the raw status string."""
+    _install_authority(monkeypatch)
+    _install_service_components(monkeypatch)
+
+    outcome = service.process(
+        _request(idempotency_key="stale-detail"),
+        market_context=_context(),
+        venue_constraints=_constraints(status=STATUS_STALE),
+        sleeve_code="CORE_STRUCTURAL",
+    )
+
+    assert outcome.request.request_state == REQUEST_STATE_PLAN_REJECTED
+    assert outcome.request.rejection_code == "VENUE_CONSTRAINTS_NOT_FRESH"
+    assert "VENUE_CONSTRAINTS_STALE_OR_MISSING" in outcome.request.rejection_detail
+
+
+def test_representative_sell_ladder_service_serialization_is_venue_normalized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Representative two-leg SELL ladder through the full service.process
+    pipeline: legs are venue-step normalized (8dp here matches the qty_step
+    fixture value), never truncated ahead of canonical rounding."""
+    ladder_request = _request(
+        quantity_policy=QUANTITY_POLICY_LADDER_LEVELS,
+        ladder_levels=((Decimal("50000"), Decimal("0.5")), (Decimal("51000"), Decimal("0.5"))),
+    )
+    _install_authority(monkeypatch, request=dataclasses.replace(ladder_request, request_id=1))
+    _install_service_components(monkeypatch)
+
+    outcome = service.process(
+        ladder_request,
+        market_context=_context(),
+        venue_constraints=_constraints(),
+        sleeve_code="CORE_STRUCTURAL",
+    )
+
+    assert outcome.request.request_state == REQUEST_STATE_PLANNED
+    assert outcome.plan_preview is not None
+    serialized_legs = preview_to_dict(outcome.plan_preview)["legs"]
+    assert [
+        (leg["target_price_eur"], leg["quantity_base"], leg["target_notional_eur"])
+        for leg in serialized_legs
+    ] == [
+        ("50000", "1.00000000", "50000.00000000"),
+        ("51000", "1.00000000", "51000.00000000"),
+    ]

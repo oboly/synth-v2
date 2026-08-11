@@ -246,6 +246,29 @@ def _scaled_quantity(
     return (quantity_base * fraction).quantize(Decimal("0.00000001"), rounding=ROUND_DOWN)
 
 
+def _raw_quantity_from_notional(
+    *,
+    notional_eur: Decimal,
+    price_eur: Decimal,
+) -> Decimal:
+    """Unquantized notional-to-quantity conversion for the venue-constrained
+    path. Quantity normalization is owned by canonical_rounding_v1's
+    qty_step_size rounding; pre-quantizing to a hardcoded 8dp here would
+    silently truncate a venue step finer than 1e-8 before that canonical
+    rounding runs."""
+    if price_eur <= Decimal("0"):
+        raise ValueError("price_eur must be > 0 for notional-to-quantity conversion")
+    return notional_eur / price_eur
+
+
+def _raw_scaled_quantity(
+    *,
+    quantity_base: Decimal,
+    fraction: Decimal,
+) -> Decimal:
+    return quantity_base * fraction
+
+
 def _build_single_leg(
     *,
     side: str,
@@ -255,6 +278,7 @@ def _build_single_leg(
     quantity_base: Decimal | None,
     context: ExecutionMarketContextPreview,
     profile: dict[str, Any],
+    constraints: VenueExecutionConstraints | None = None,
 ) -> ExecutionPlanLegPreview:
     passive_price = None if intent_type == "PREPARE_PLAN" else _passive_price_for_side(side, context)
 
@@ -264,16 +288,37 @@ def _build_single_leg(
     if passive_price is not None:
         if side == "BUY" and max_notional_eur is not None:
             target_notional_eur = max_notional_eur * target_fraction
-            target_quantity_base = _quantity_from_notional(
+            quantity_from_notional = (
+                _raw_quantity_from_notional if constraints is not None else _quantity_from_notional
+            )
+            target_quantity_base = quantity_from_notional(
                 notional_eur=target_notional_eur,
                 price_eur=passive_price,
             )
         elif quantity_base is not None:
-            target_quantity_base = _scaled_quantity(
+            scaled_quantity = (
+                _raw_scaled_quantity if constraints is not None else _scaled_quantity
+            )
+            target_quantity_base = scaled_quantity(
                 quantity_base=quantity_base,
                 fraction=target_fraction,
             )
             target_notional_eur = target_quantity_base * passive_price
+
+        if constraints is not None and target_quantity_base is not None:
+            rounded = round_leg_for_side(
+                side=side,
+                raw_price=passive_price,
+                raw_quantity_base=target_quantity_base,
+                constraints=constraints,
+            )
+            if not rounded.is_valid:
+                raise ValueError(
+                    "LEG_1_INVALID:" + ",".join(rounded.rejection_reasons)
+                )
+            passive_price = rounded.rounded_price
+            target_quantity_base = rounded.rounded_quantity_base
+            target_notional_eur = rounded.rounded_notional_quote
 
     return ExecutionPlanLegPreview(
         leg_index=1,
@@ -354,12 +399,18 @@ def _build_ladder_legs(
 
         if side == "BUY" and max_notional_eur is not None:
             target_notional_eur = max_notional_eur * fraction
-            target_quantity_base = _quantity_from_notional(
+            quantity_from_notional = (
+                _raw_quantity_from_notional if constraints is not None else _quantity_from_notional
+            )
+            target_quantity_base = quantity_from_notional(
                 notional_eur=target_notional_eur,
                 price_eur=target_price,
             )
         elif quantity_base is not None:
-            target_quantity_base = _scaled_quantity(
+            scaled_quantity = (
+                _raw_scaled_quantity if constraints is not None else _scaled_quantity
+            )
+            target_quantity_base = scaled_quantity(
                 quantity_base=quantity_base,
                 fraction=fraction,
             )
@@ -728,6 +779,7 @@ def build_manual_sell_execution_plan_preview(
                 quantity_base=approved_quantity,
                 context=context,
                 profile=profile,
+                constraints=constraints,
             )
         ]
 

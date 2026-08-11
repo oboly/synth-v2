@@ -346,15 +346,18 @@ Tested in `tests/test_free_base_quantity_v1.py` and end to end in
 
 **Issue #203 implementation update (2026-08-11):** the active manual SELL
 path is `manual_execution_service_v1 ->
-contract_preview_v1.build_manual_sell_execution_plan_preview -> EXIT_LADDER`.
-`_build_ladder_legs` is its single allocation/rounding/validation pipeline:
-it uses fresh `VenueExecutionConstraints`, side-aware price rounding,
-post-rounding minimum checks, and rejects the complete ladder on any invalid
-leg. The legacy CSV SELL builder remains hard-blocked and the profile resolver
-continues to reject direct SELL use; neither is an active manual caller.
-Fee haircut remains explicitly `NONE` because the current manual SELL
-approval quantity is already the authority. Quantity-step residual dust is
-left unallocated conservatively; it is never redistributed.
+contract_preview_v1.build_manual_sell_execution_plan_preview -> EXIT_LADDER`
+or `EXIT_PASSIVE_LIMIT` depending on `request.quantity_policy`.
+`_build_ladder_legs` (ladder) and `_build_single_leg` (single-leg) are its
+allocation/rounding/validation pipelines: both pass raw, unquantized
+intended price and quantity into `canonical_rounding_v1.round_leg_for_side`
+using fresh `VenueExecutionConstraints`, so venue `qty_step_size` normalizes
+quantity precision rather than a hardcoded 8dp pre-round; both reject on any
+invalid leg. The legacy CSV SELL builder remains hard-blocked and the
+profile resolver continues to reject direct SELL use; neither is an active
+manual caller. Fee haircut remains explicitly `NONE` because the current
+manual SELL approval quantity is already the authority. Quantity-step
+residual dust is left unallocated conservatively; it is never redistributed.
 
 - Files: `src/execution_planner/contract_preview_v1.py`
   (`_build_ladder_legs`, fractions sum to exactly `1`);
