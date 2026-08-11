@@ -1,0 +1,202 @@
+# Sector Rotation Snapshot gurkDB Acceptance — 2026-08-11
+
+## Outcome
+
+Controlled gurkDB acceptance passed for `sector_rotation_snapshot`. One
+`ACCEPTANCE`-mode writer invocation persisted a fresh 116-row cohort
+(29 sectors x 4 windows); an immediate repeat invocation proved
+idempotency; a concurrent invocation under a held host-local lock proved
+fail-closed lock behavior. No production authorization was granted, no
+timer was installed or started, and no trading/execution layer was touched.
+
+```text
+capability=sector_rotation_snapshot
+host=gurkdb
+commit=40ef0f838db0e0d0b4d47ebeca7d599bd8bed74a
+preflight_local_required_pass=12
+preflight_local_required_fail=0
+preflight_external=UNVERIFIED by this read-only runner (no separately
+  produced external-evidence manifest was supplied); DB connectivity,
+  source candle freshness, required tables, and lock writability were
+  independently verified read-only, see "Preflight Evidence" below
+acceptance_status=ACCEPTED
+production_runtime_owner=UNASSIGNED (unchanged)
+production_authorization_status=UNASSIGNED (unchanged)
+runtime_lifecycle=ACCEPTED_PENDING_CUTOVER
+timer_installed=false
+timer_enabled=false
+timer_active=false
+```
+
+## Preflight Evidence
+
+Fresh read-only evidence collected on gurkDB at commit
+`40ef0f838db0e0d0b4d47ebeca7d599bd8bed74a` (`git status --short` clean):
+
+`python -m src.operations.run_host_preflight_v1 --capability
+sector_rotation_snapshot --expected-host gurkdb --expected-commit
+40ef0f838db0e0d0b4d47ebeca7d599bd8bed74a --checkout-path
+/home/gurk/projects/synth-v2 --output json` reported every required
+`PREFLIGHT_LOCAL` check `PASS` (12/12, 0 FAIL): `capability_identity`,
+`host_identity`, `checkout_commit`, `os_and_architecture`, `cpu_and_load`,
+`ram_and_swap`, `disk_space_and_inodes`, `python_and_virtualenv`
+(`.venv/bin/python`), `capability_module_imports`, `flock`,
+`systemd_availability`, `systemd_unit_validation`.
+
+Independently verified read-only (no mutation):
+
+```text
+DB connectivity: SELECT 1 -> ok
+obs_market_candle (1h) MAX(close_ts_utc) = 2026-08-11T02:00:00Z (fresh)
+sector_rotation_snapshot: exists, 116 rows before acceptance
+asset_cluster_membership: exists, 473 rows
+sector_definition: exists, 29 rows
+lock path /tmp/synth-sector-rotation-writer-v1.lock: writable (touch ok)
+no competing writer process
+no sector-rotation systemd unit previously installed on gurkDB
+(systemctl list-unit-files clean before this lane)
+no production authorization file present for this capability
+```
+
+Authorization guard independently confirmed `PASS` in `ACCEPTANCE` mode
+with a valid permit before any writer invocation:
+
+```text
+PASS capability=sector_rotation_snapshot service=synth-sector-rotation-writer.service
+  mode=ACCEPTANCE authorization_guard=pass host_mutations=0 database_writes=0
+  writer_invocations=0 systemctl_mutations=0
+```
+
+## Controlled Acceptance Run
+
+An `ACCEPTANCE`-mode permit was issued under the canonical time-bounded
+acceptance-permit mechanism
+(`deploy/ownership/writer_capability_acceptance_permit_v1.schema.json`,
+`src.operations.writer_capability_authorization_v1`), placed at
+`/run/synth/writer-acceptance/sector-rotation-snapshot-acceptance-20260811T025025Z.json`
+(tmpfs, capability-bound, host-bound, exact-commit-bound,
+issued `2026-08-11T02:50:25Z`, expiry `2026-08-11T03:20:25Z`,
+`approval_reference="User explicit CONTROLLED WRITER ACCEPTANCE
+instruction for sector_rotation_snapshot, gurkdb session 2026-08-11,
+bounded ACCEPTANCE-mode permit only, no production authorization or timer
+activation"`). Removed after evidence capture (see "Permit Cleanup" below).
+
+```bash
+export SYNTH_WRITER_EXECUTION_MODE=ACCEPTANCE
+export SYNTH_WRITER_ACCEPTANCE_PERMIT=/run/synth/writer-acceptance/sector-rotation-snapshot-acceptance-20260811T025025Z.json
+bash scripts/run_sector_rotation_engine_once.sh --write-db
+```
+
+### Cycle 1 (real write)
+
+```text
+asof_ts_utc=2026-08-11T02:00:00Z venue=bitvavo windows=1h,4h,1d,7d
+RECONCILIATION inserts=116 updates=0 unchanged=0 stale=0
+sector_rotation_snapshot: 116 -> 232 rows
+exit_status=0 elapsed_sec=4
+```
+
+### Cycle 2 (idempotency proof, same permit window)
+
+```text
+RECONCILIATION inserts=0 updates=0 unchanged=116 stale=0
+row count unchanged: 232
+exit_status=0 elapsed_sec=3
+```
+
+### Integrity checks
+
+```text
+duplicate_headers (sector_code, venue, window_code, asof_ts_utc) = 0
+latest cohort row count (asof_ts_utc=2026-08-11T02:00:00Z, venue=bitvavo) = 116
+  (29 sectors x 4 windows, matches expected shape)
+```
+
+### Runtime / resource usage (ACCEPTANCE stage evidence)
+
+```text
+run1_elapsed_sec=4 run2_elapsed_sec=3
+compute_phase_elapsed_sec=~2.6 (both cycles)
+source_counts: sectors=29 memberships=473 universe_assets=428 candles=109533
+```
+
+This is real measured writer runtime, superseding the "not yet observed"
+caveat in `docs/ops/sector_rotation_runtime_activation_v1.md`'s cadence
+section. At ~3-5s total wrapper runtime, the existing documented
+17-minute writer-to-publisher separation margin is unaffected and remains
+generously conservative; it is not being changed by this acceptance run.
+
+### Lock behavior
+
+```text
+held external flock on /tmp/synth-sector-rotation-writer-v1.lock
+concurrent wrapper invocation -> FAILED reason=LOCK_HELD exit_status=75
+no database mutation attempted while lock held
+lock released cleanly; row counts unchanged before/after (232)
+```
+
+### Safety boundary
+
+Every invocation logged `broker_private_calls=0 broker_writes=0
+order_submission=0 live_orders=0` and `selection_engine=none
+decision_gate=none execution_planner=none executor=none
+reporting=none dashboard_publish=none`. No dashboard/publisher file
+touched. No SSH or cross-host orchestration performed by the writer.
+
+### Rollback readiness
+
+No systemd unit, service, or timer was installed on gurkDB by this
+acceptance lane (`systemctl list-unit-files` clean before and after). No
+production authorization file exists for this capability. Rollback
+therefore requires no host action: nothing was activated to roll back.
+Persisted `sector_rotation_snapshot` rows from this acceptance run are
+left in place per the standing rule against deleting persisted market data
+as part of rollback; they are ordinary accepted cohort rows, not test
+artifacts requiring cleanup.
+
+## Permit Cleanup
+
+The acceptance permit file was removed from
+`/run/synth/writer-acceptance/` after evidence capture completed. The
+canonical permit root directory (`/run/synth/writer-acceptance`, `gurk:gurk
+0700`) remains provisioned by
+`deploy/tmpfiles.d/synth-writer-acceptance.conf` for future bounded
+acceptance runs.
+
+## Registry Update
+
+`deploy/ownership/writer_capability_ownership_v1.json` updated for
+`sector_rotation_snapshot`:
+
+```text
+acceptance_host: UNASSIGNED -> gurkdb
+acceptance_status: PENDING -> ACCEPTED
+acceptance_evidence: null -> {approval_reference, evidence_doc=this file,
+  accepted_at_utc=2026-08-11T02:58:34Z, scope="ACCEPTANCE-mode controlled
+  writer run, gurkDB, commit 40ef0f8"}
+runtime_lifecycle: SELECTED_PENDING_PREFLIGHT -> ACCEPTED_PENDING_CUTOVER
+production_authorization_status: SELECTED_PENDING_PREFLIGHT -> UNASSIGNED
+production_runtime_owner: UNASSIGNED (unchanged)
+```
+
+`ACCEPTED_PENDING_CUTOVER` is a `NO_AUTHORIZATION_LIFECYCLES` member per
+`src/operations/validate_writer_capability_ownership_v1.py`: it requires
+`production_runtime_owner=UNASSIGNED` and forbids
+`production_authorization_status=AUTHORIZED`. This registry change grants
+no production authorization, assigns no production owner, and does not
+change lifecycle to `AUTHORIZED_INACTIVE` or `ACTIVE`.
+
+## Explicitly Not Done
+
+- No production authorization file created or installed.
+- No `production_runtime_owner` assignment.
+- No systemd unit, service, or timer installed, enabled, or started on
+  gurkDB or any host.
+- No lifecycle change to `AUTHORIZED_INACTIVE` or `ACTIVE`.
+- No dashboard/publisher activation.
+- No trading, decision_gate, execution_planner, or executor path touched.
+
+Remaining steps before production cutover per
+`docs/ops/sector_rotation_runtime_activation_v1.md`: a separate explicit
+production-authorization decision, systemd unit installation, and observed
+real timer cycles -- none of which are performed by this acceptance run.
