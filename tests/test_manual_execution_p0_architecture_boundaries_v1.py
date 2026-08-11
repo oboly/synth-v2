@@ -151,3 +151,73 @@ class TestExecutionPlannerDoesNotFetchPrivateBrokerState:
         assert offenders == [], (
             f"execution_planner must not call private broker methods: {offenders}"
         )
+
+
+class TestExecutorHandoffBoundary:
+    """Issue #206: the executor handoff/credential-scope boundary must stay
+    reachable only from the executor lane, and the executor lane itself must
+    never call a broker directly."""
+
+    _FORBIDDEN_HANDOFF_MODULES = (
+        "src.executor.manual_execution_handoff_v1",
+        "src.executor.manual_execution_credential_scope_v1",
+    )
+
+    _NON_EXECUTOR_DIRS = (
+        "src/selection",
+        "src/execution_planner",
+        "src/decision_gate",
+        "src/reporting",
+        "src/advice",
+        "src/trade_setup_filter",
+    )
+
+    def test_no_non_executor_layer_imports_the_handoff_boundary(self) -> None:
+        offenders = []
+        for rel_dir in self._NON_EXECUTOR_DIRS:
+            directory = _REPO_ROOT / rel_dir
+            if not directory.exists():
+                continue
+            for path in directory.rglob("*.py"):
+                imported = _imported_module_names(path)
+                for forbidden in self._FORBIDDEN_HANDOFF_MODULES:
+                    if forbidden in imported:
+                        offenders.append(f"{path.relative_to(_REPO_ROOT)} imports {forbidden}")
+        assert offenders == [], (
+            f"only src/executor may reach the executor handoff boundary: {offenders}"
+        )
+
+    def test_handoff_and_credential_scope_modules_never_import_a_broker_client(self) -> None:
+        forbidden_modules = (
+            "src.execution.bitvavo_client",
+            "src.market_data.bitvavo_public_client_v1",
+            "src.market_rules.bitvavo_venue_adapter_v1",
+        )
+        for filename in ("manual_execution_handoff_v1.py", "manual_execution_credential_scope_v1.py"):
+            path = _REPO_ROOT / "src" / "executor" / filename
+            imported = _imported_module_names(path)
+            for forbidden in forbidden_modules:
+                assert forbidden not in imported, f"{filename} must not import {forbidden}"
+
+    def test_credential_scope_resolver_never_selects_secret_columns(self) -> None:
+        path = _REPO_ROOT / "src" / "executor" / "manual_execution_credential_scope_v1.py"
+        text = path.read_text()
+        sql_block = text.split('_SCOPE_SELECT: Final[str] = """', 1)[1].split('"""', 1)[0]
+        forbidden_columns = ("encrypted_envelope", "credential_fingerprint", "api_key", "api_secret", "key_version")
+        for column in forbidden_columns:
+            assert column not in sql_block, f"credential scope SELECT must never read {column}"
+
+    def test_migration_denies_live_and_enforces_single_writer(self) -> None:
+        migration = (
+            _REPO_ROOT / "db/migrations/20260812_manual_execution_executor_handoff_v1.sql"
+        ).read_text()
+        assert "chk_meeh_executor_mode" in migration
+        assert "'DRY_RUN', 'PAPER', 'LIVE_DISABLED'" in migration
+        assert "UNIQUE KEY uq_meeh_plan_snapshot" in migration
+        assert "MANUAL_EXECUTION_EXECUTOR_HANDOFF_ALREADY_TERMINAL" in migration
+        assert "MANUAL_EXECUTION_EXECUTOR_HANDOFF_IDENTITY_IS_IMMUTABLE" in migration
+        assert "MANUAL_EXECUTION_EXECUTOR_HANDOFF_INVALID_CLAIM_TRANSITION" in migration
+        assert "chk_ecb_binding_status" in migration
+        assert "chk_ecb_permission_scope" in migration
+        assert "fk_ecb_credential_identity" in migration
+        assert "uq_tac_credential_identity_v1" in migration

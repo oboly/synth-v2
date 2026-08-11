@@ -120,6 +120,16 @@ class ManualExecutionPlanSnapshotRepository:
             row = cursor.fetchone()
             return _row_to_snapshot(row) if row else None
 
+    def find_by_id(self, plan_snapshot_id: int) -> ManualExecutionPlanSnapshot | None:
+        with self.cursor_factory() as db_obj:
+            cursor = _unwrap_cursor(db_obj)
+            cursor.execute(
+                "SELECT * FROM manual_execution_plan_snapshot WHERE manual_execution_plan_snapshot_id = %s",
+                [plan_snapshot_id],
+            )
+            row = cursor.fetchone()
+            return _row_to_snapshot(row) if row else None
+
     def create_idempotent(self, snapshot: ManualExecutionPlanSnapshot) -> ManualExecutionPlanSnapshot:
         with self.cursor_factory(commit=True) as db_obj:
             cursor = _unwrap_cursor(db_obj)
