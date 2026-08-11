@@ -219,3 +219,5 @@ class TestExecutorHandoffBoundary:
         assert "MANUAL_EXECUTION_EXECUTOR_HANDOFF_INVALID_CLAIM_TRANSITION" in migration
         assert "chk_ecb_binding_status" in migration
         assert "chk_ecb_permission_scope" in migration
+        assert "fk_ecb_credential_identity" in migration
+        assert "uq_tac_credential_identity_v1" in migration

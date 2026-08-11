@@ -14,6 +14,24 @@ material (encrypted_envelope, key_version, credential_fingerprint are never
 selected here). It resolves identity/permission metadata only, and fails
 closed on any missing, ambiguous, revoked, or scope-mismatched binding.
 
+Credential identity match: the referenced trading_account_credential row
+must itself agree with the binding on trading_account_id, venue, and
+permission_scope. A binding pointing at a credential for a different
+account/venue/scope must never resolve — this is enforced twice: primarily
+in the SELECT/JOIN predicate below (so a mismatched row is never even
+fetched), and again as Python defense-in-depth on the fetched row. The DB
+schema additionally enforces this with a composite foreign key from
+executor_credential_binding to trading_account_credential covering
+(trading_account_credential_id, trading_account_id, venue, permission_scope)
+— see db/migrations/20260812_manual_execution_executor_handoff_v1.sql.
+
+Order-write authority: a TRADE_EXECUTION-scoped credential is not
+sufficient on its own — trading_account_credential.allowed_order_write must
+also be 1. The existing capability CHECK constraint
+(chk_tac_capability_flags_v1) only forbids order-write under
+READ_ONLY_PRIVATE; it does not require order-write under TRADE_EXECUTION,
+so this module enforces it explicitly.
+
 broker_private_calls=0
 broker_writes=0
 order_submission=0
@@ -70,6 +88,9 @@ _SCOPE_SELECT: Final[str] = """
         binding.permission_scope,
         binding.executor_identity,
         binding.runtime_owner,
+        credential.trading_account_id AS credential_trading_account_id,
+        credential.venue AS credential_venue,
+        credential.permission_scope AS credential_permission_scope,
         credential.credential_status,
         credential.credential_source,
         credential.allowed_order_write,
@@ -77,6 +98,9 @@ _SCOPE_SELECT: Final[str] = """
     FROM executor_credential_binding AS binding
     INNER JOIN trading_account_credential AS credential
         ON credential.trading_account_credential_id = binding.trading_account_credential_id
+        AND credential.trading_account_id = binding.trading_account_id
+        AND credential.venue = binding.venue
+        AND credential.permission_scope = binding.permission_scope
     WHERE binding.trading_account_id = %s
       AND binding.venue = %s
       AND binding.executor_identity = %s
@@ -99,6 +123,29 @@ def _row_to_binding(row: Any) -> CredentialScopeBinding:
         allowed_order_write=bool(row["allowed_order_write"]),
         allowed_withdrawal=bool(row["allowed_withdrawal"]),
     )
+
+
+def _assert_credential_identity_match(row: Any, *, binding: CredentialScopeBinding) -> None:
+    """Defense-in-depth: the SELECT/JOIN predicate is the primary control,
+    but a fetched row must still agree with the credential's own identity
+    columns before it is trusted."""
+    credential_trading_account_id = int(row["credential_trading_account_id"])
+    credential_venue = str(row["credential_venue"])
+    credential_permission_scope = str(row["credential_permission_scope"])
+    if credential_trading_account_id != binding.trading_account_id:
+        raise CredentialScopeDeniedError(
+            "CREDENTIAL_SCOPE_ACCOUNT_MISMATCH: binding trading_account_id="
+            f"{binding.trading_account_id} credential trading_account_id={credential_trading_account_id}"
+        )
+    if credential_venue != binding.venue:
+        raise CredentialScopeDeniedError(
+            f"CREDENTIAL_SCOPE_VENUE_MISMATCH: binding venue={binding.venue} credential venue={credential_venue}"
+        )
+    if credential_permission_scope != binding.permission_scope:
+        raise CredentialScopeDeniedError(
+            "CREDENTIAL_SCOPE_PERMISSION_SCOPE_MISMATCH: binding permission_scope="
+            f"{binding.permission_scope} credential permission_scope={credential_permission_scope}"
+        )
 
 
 @dataclass
@@ -160,7 +207,9 @@ class ExecutorCredentialScopeRepository:
                 f"for trading_account_id={trading_account_id} venue={venue} "
                 f"executor_identity={executor_identity} runtime_owner={runtime_owner}"
             )
-        binding = _row_to_binding(rows[0])
+        row = rows[0]
+        binding = _row_to_binding(row)
+        _assert_credential_identity_match(row, binding=binding)
         if binding.permission_scope != TRADE_EXECUTION_SCOPE:
             raise CredentialScopeDeniedError(
                 f"CREDENTIAL_SCOPE_NOT_TRADE_EXECUTION: permission_scope={binding.permission_scope}"
@@ -169,6 +218,8 @@ class ExecutorCredentialScopeRepository:
             raise CredentialScopeDeniedError(
                 f"CREDENTIAL_SCOPE_CREDENTIAL_NOT_ACTIVE: credential_status={binding.credential_status}"
             )
+        if not binding.allowed_order_write:
+            raise CredentialScopeDeniedError("CREDENTIAL_SCOPE_ORDER_WRITE_NOT_PERMITTED")
         if binding.allowed_withdrawal:
             raise CredentialScopeDeniedError("CREDENTIAL_SCOPE_WITHDRAWAL_CAPABLE_CREDENTIAL_DENIED")
         return binding

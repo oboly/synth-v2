@@ -8,7 +8,11 @@
 --      TRADE_EXECUTION credential scope to one explicit
 --      (trading_account_id, venue, executor_identity, runtime_owner). No
 --      plaintext credential material is added here; this table only points
---      at an existing trading_account_credential row.
+--      at an existing trading_account_credential row, and a composite
+--      foreign key ties the binding's own trading_account_id/venue/
+--      permission_scope to that referenced credential's identity, so a
+--      binding can never silently point at a credential for a different
+--      account, venue, or scope.
 --   2. manual_execution_executor_handoff — the single immutable identity
 --      that authorizes handing one decision_gate-approved, execution_planner
 --      -snapshotted manual execution plan to exactly one executor
@@ -23,6 +27,18 @@
 --
 -- Rollback limitations: MariaDB DDL implicitly commits. Drop triggers before
 -- dropping tables, and only before any handoff row has been claimed/consumed.
+--
+-- Credential identity match: trading_account_credential_id alone is not
+-- sufficient to trust a binding's trading_account_id/venue/permission_scope
+-- — those are enforced to agree with the referenced credential row itself
+-- via the composite foreign key fk_ecb_credential_identity below, backed by
+-- this trivially-satisfiable additive unique key (trading_account_credential_id
+-- is already the table's primary key, so no existing row can violate it).
+
+ALTER TABLE trading_account_credential
+    ADD UNIQUE KEY uq_tac_credential_identity_v1 (
+        trading_account_credential_id, trading_account_id, venue, permission_scope
+    );
 
 CREATE TABLE executor_credential_binding (
     executor_credential_binding_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -54,9 +70,11 @@ CREATE TABLE executor_credential_binding (
     ),
     KEY idx_ecb_account_venue (trading_account_id, venue),
 
-    CONSTRAINT fk_ecb_credential
-        FOREIGN KEY (trading_account_credential_id)
-        REFERENCES trading_account_credential (trading_account_credential_id)
+    CONSTRAINT fk_ecb_credential_identity
+        FOREIGN KEY (trading_account_credential_id, trading_account_id, venue, permission_scope)
+        REFERENCES trading_account_credential (
+            trading_account_credential_id, trading_account_id, venue, permission_scope
+        )
         ON UPDATE RESTRICT ON DELETE RESTRICT,
     CONSTRAINT fk_ecb_trading_account
         FOREIGN KEY (trading_account_id)
@@ -172,3 +190,4 @@ DELIMITER ;
 -- DROP TRIGGER trg_meeh_no_identity_mutation;
 -- DROP TABLE manual_execution_executor_handoff;
 -- DROP TABLE executor_credential_binding;
+-- ALTER TABLE trading_account_credential DROP INDEX uq_tac_credential_identity_v1;
