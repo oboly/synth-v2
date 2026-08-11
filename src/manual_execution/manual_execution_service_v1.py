@@ -265,6 +265,11 @@ def process(
     assert approval_id is not None
     assert persisted_request.request_id is not None
 
+    # plan_preview is captured as soon as the planner succeeds, independent
+    # of whether the later snapshot build/persistence step also succeeds, so
+    # a snapshot-stage rejection below can still return the already-built
+    # preview as diagnostic evidence instead of discarding it.
+    plan_preview = None
     try:
         plan_preview = build_manual_sell_execution_plan_preview(
             request_id=persisted_request.request_id,
@@ -283,6 +288,16 @@ def process(
             )
         )
     except (ValueError, PermissionError) as exc:
+        # Deterministic failure modes only: build_manual_sell_execution_plan_preview
+        # raises ValueError/MissingOrInvalidApprovalError(PermissionError) for a
+        # rejected planning intent; build_manual_execution_plan_snapshot and
+        # snapshot_repository.create_idempotent raise ManualExecutionPlanSnapshotError
+        # (a ValueError) for a binding/content mismatch. A non-deterministic
+        # failure (e.g. a DB connectivity error) is not one of these types and
+        # propagates unhandled rather than being recorded as a rejected request.
+        # The decision_gate approval/reservation already created above is left
+        # untouched either way — compensation is decision_gate's concern, not
+        # this service's.
         rejected_request = advance_manual_execution_request_state(
             persisted_request,
             new_state=REQUEST_STATE_PLAN_REJECTED,
@@ -295,7 +310,7 @@ def process(
             request=rejected_request,
             gate_result=gate_result,
             approval_id=approval_id,
-            plan_preview=None,
+            plan_preview=plan_preview,
             plan_snapshot=None,
             notes=f"execution_planner rejected the gate-approved intent: {exc}",
         )

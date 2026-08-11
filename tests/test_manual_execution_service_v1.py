@@ -29,6 +29,9 @@ from src.execution_planner.contract_preview_v1 import (
     build_execution_plan_preview,
     build_manual_sell_execution_plan_preview,
 )
+from src.execution_planner.manual_execution_plan_snapshot_v1 import (
+    ManualExecutionPlanSnapshotError,
+)
 from src.manual_execution import _trusted_clock_v1 as trusted_clock
 from src.manual_execution import manual_execution_service_v1 as service
 from src.manual_execution.manual_execution_request_v1 import (
@@ -315,6 +318,143 @@ def test_gate_block_and_stale_constraints_never_plan(
     )
     assert stale.request.request_state == REQUEST_STATE_PLAN_REJECTED
     assert gate.calls == 0
+
+
+def test_planner_rejection_after_approval_discards_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression pin: when build_manual_sell_execution_plan_preview itself
+    is the rejecting step, there is no preview to preserve, so plan_preview
+    stays None. Contrast with the snapshot-stage failures below, where the
+    preview was already built and must be preserved as evidence."""
+    _install_authority(monkeypatch)
+    request_repository, gate_repository = _install_service_components(monkeypatch)
+
+    def _raise_planner(**_kwargs):
+        raise MissingOrInvalidApprovalError("expired")
+
+    monkeypatch.setattr(service, "build_manual_sell_execution_plan_preview", _raise_planner)
+
+    outcome = service.process(
+        _request(),
+        market_context=_context(),
+        venue_constraints=_constraints(),
+        sleeve_code="CORE_STRUCTURAL",
+    )
+
+    assert outcome.request.request_state == REQUEST_STATE_PLAN_REJECTED
+    assert outcome.request.rejection_code == "PLAN_CONSTRUCTION_REJECTED"
+    assert outcome.approval_id == 501
+    assert outcome.plan_preview is None
+    assert outcome.plan_snapshot is None
+    assert gate_repository.calls == 1
+    assert request_repository.updated[-1].request_state == REQUEST_STATE_PLAN_REJECTED
+
+
+def test_snapshot_build_failure_after_approval_fails_closed_and_preserves_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deterministic build_manual_execution_plan_snapshot failure (e.g. a
+    request/approval/plan binding mismatch) after decision_gate approval and
+    a successful planner preview must not propagate unhandled: the request
+    must fail closed to PLAN_REJECTED, with the approval attributable and
+    the already-built preview preserved as evidence, and plan_snapshot=None.
+    No second approval/reservation/request is created."""
+    _install_authority(monkeypatch)
+    request_repository, gate_repository = _install_service_components(monkeypatch)
+
+    def _raise_builder(**_kwargs):
+        raise ManualExecutionPlanSnapshotError("approved plan/request binding mismatch")
+
+    monkeypatch.setattr(service, "build_manual_execution_plan_snapshot", _raise_builder)
+
+    outcome = service.process(
+        _request(),
+        market_context=_context(),
+        venue_constraints=_constraints(),
+        sleeve_code="CORE_STRUCTURAL",
+    )
+
+    assert outcome.request.request_state == REQUEST_STATE_PLAN_REJECTED
+    assert outcome.request.rejection_code == "PLAN_CONSTRUCTION_REJECTED"
+    assert outcome.approval_id == 501
+    assert outcome.plan_preview is not None
+    assert outcome.plan_snapshot is None
+    assert gate_repository.calls == 1
+    assert request_repository.updated[-1].request_state == REQUEST_STATE_PLAN_REJECTED
+
+
+def test_snapshot_persistence_content_mismatch_after_approval_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same fail-closed contract applies when the deterministic failure
+    is raised by snapshot persistence itself (create_idempotent's own
+    canonical-payload comparison on an idempotency collision), not by the
+    builder."""
+    _install_authority(monkeypatch)
+    request_repository, gate_repository = _install_service_components(monkeypatch)
+
+    class ContentMismatchSnapshotRepository:
+        def find_by_request_id(self, _request_id):
+            return None
+
+        def create_idempotent(self, _snapshot):
+            raise ManualExecutionPlanSnapshotError(
+                "canonical plan snapshot conflicts with retry payload"
+            )
+
+    monkeypatch.setattr(
+        service,
+        "ManualExecutionPlanSnapshotRepository",
+        lambda: ContentMismatchSnapshotRepository(),
+    )
+
+    outcome = service.process(
+        _request(),
+        market_context=_context(),
+        venue_constraints=_constraints(),
+        sleeve_code="CORE_STRUCTURAL",
+    )
+
+    assert outcome.request.request_state == REQUEST_STATE_PLAN_REJECTED
+    assert outcome.request.rejection_code == "PLAN_CONSTRUCTION_REJECTED"
+    assert outcome.approval_id == 501
+    assert outcome.plan_preview is not None
+    assert outcome.plan_snapshot is None
+    assert gate_repository.calls == 1
+    assert request_repository.updated[-1].request_state == REQUEST_STATE_PLAN_REJECTED
+
+
+def test_non_deterministic_snapshot_persistence_failure_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected error (e.g. a DB connectivity failure) from snapshot
+    persistence must not be silently recorded as a rejected request — only
+    the deterministic ValueError/PermissionError failure modes are caught,
+    matching the existing planner-stage contract."""
+    _install_authority(monkeypatch)
+    _install_service_components(monkeypatch)
+
+    class ExplodingSnapshotRepository:
+        def find_by_request_id(self, _request_id):
+            return None
+
+        def create_idempotent(self, _snapshot):
+            raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(
+        service,
+        "ManualExecutionPlanSnapshotRepository",
+        lambda: ExplodingSnapshotRepository(),
+    )
+
+    with pytest.raises(RuntimeError, match="connection reset"):
+        service.process(
+            _request(),
+            market_context=_context(),
+            venue_constraints=_constraints(),
+            sleeve_code="CORE_STRUCTURAL",
+        )
 
 
 def test_missing_snapshot_binding_is_rejected_before_gate(
