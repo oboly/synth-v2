@@ -41,7 +41,12 @@ successful approval can still leave an approved-but-unused reservation
 (execution_planner's own leg/ladder-shape validation runs after the
 reservation already exists) — releasing that reservation is a
 reconciliation-layer concern and is explicitly out of scope here; see the
-remediation doc's remaining-blockers section.
+remediation doc's remaining-blockers section. The same applies to a
+deterministic plan-snapshot construction/persistence failure (identity
+resolution, builder validation, or a content-mismatch on the idempotency
+key) after a successful preview: the request is advanced to
+REQUEST_STATE_PLAN_REJECTED and the approval/reservation is left untouched —
+decision_gate owns that state, not this service.
 
 broker_private_calls=0
 broker_writes=0
@@ -67,6 +72,7 @@ from src.execution_planner.contract_preview_v1 import (
 from src.execution_planner.manual_execution_plan_snapshot_v1 import (
     ManualExecutionPlanSnapshot,
     ManualExecutionPlanSnapshotRepository,
+    ManualExecutionPlanSnapshotValidationError,
     build_plan_snapshot,
 )
 from src.manual_execution.manual_execution_request_v1 import (
@@ -90,6 +96,7 @@ SERVICE_NAME: Final[str] = "manual_execution_service_v1"
 
 REASON_LIVE_TRADING_NOT_GRANTED: Final[str] = "LIVE_TRADING_NOT_GRANTED"
 REASON_VENUE_CONSTRAINTS_NOT_FRESH: Final[str] = "VENUE_CONSTRAINTS_NOT_FRESH"
+REASON_PLAN_SNAPSHOT_REJECTED: Final[str] = "PLAN_SNAPSHOT_REJECTED"
 
 
 @dataclass(frozen=True)
@@ -223,18 +230,53 @@ def process(
     # contract_preview_v1's return type) keeps contract_preview_v1 itself
     # free of DB writes, matching the "Current Planner Lane" read-only
     # contract in AGENTS.md.
-    persisted_authority = approval_authority.resolve_persisted_manual_execution_authority(
-        request_id=persisted_request.request_id,
-        approval_id=approval_id,
-    )
-    plan_snapshot = build_plan_snapshot(
-        request=persisted_request,
-        approval=persisted_authority.approval,
-        plan_preview=plan_preview,
-    )
-    persisted_snapshot = ManualExecutionPlanSnapshotRepository().create_snapshot_idempotent(
-        plan_snapshot
-    )
+    #
+    # LookupError (unknown/mismatched persisted request or approval identity
+    # from resolve_persisted_manual_execution_authority) and
+    # ManualExecutionPlanSnapshotValidationError (builder binding mismatch,
+    # or a content mismatch on an idempotency-key collision from
+    # create_snapshot_idempotent) are the deterministic, expected failure
+    # modes of this step. Anything else (e.g. a DB connectivity error) is a
+    # non-deterministic infrastructure failure and must propagate rather
+    # than be recorded as a rejected request.
+    try:
+        persisted_authority = approval_authority.resolve_persisted_manual_execution_authority(
+            request_id=persisted_request.request_id,
+            approval_id=approval_id,
+        )
+        plan_snapshot = build_plan_snapshot(
+            request=persisted_request,
+            approval=persisted_authority.approval,
+            plan_preview=plan_preview,
+        )
+        persisted_snapshot = ManualExecutionPlanSnapshotRepository().create_snapshot_idempotent(
+            plan_snapshot
+        )
+    except (LookupError, ManualExecutionPlanSnapshotValidationError) as exc:
+        # Deterministic failure after a successful approval/reservation and
+        # a successful plan preview. The approval/reservation is decision_gate
+        # state and is left untouched here (see the module docstring); only
+        # the request advances to a terminal rejected state so it never
+        # remains ambiguously stuck at DRAFT.
+        rejected_request = advance_manual_execution_request_state(
+            persisted_request,
+            new_state=REQUEST_STATE_PLAN_REJECTED,
+            processed_ts_utc=resolved_now,
+            rejection_code=REASON_PLAN_SNAPSHOT_REJECTED,
+            rejection_detail=str(exc),
+        )
+        request_repository.update_request_state(rejected_request)
+        return ManualExecutionOutcome(
+            request=rejected_request,
+            gate_result=gate_result,
+            approval_id=approval_id,
+            plan_preview=plan_preview,
+            plan_snapshot=None,
+            notes=(
+                "plan snapshot construction/persistence failed after a "
+                f"decision_gate-approved, planner-previewed request: {exc}"
+            ),
+        )
 
     planned_request = advance_manual_execution_request_state(
         persisted_request,

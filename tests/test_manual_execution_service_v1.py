@@ -28,6 +28,10 @@ from src.execution_planner.contract_preview_v1 import (
     build_execution_plan_preview,
     build_manual_sell_execution_plan_preview,
 )
+from src.execution_planner.manual_execution_plan_snapshot_v1 import (
+    ManualExecutionPlanSnapshotValidationError,
+    PlanSnapshotContentMismatchError,
+)
 from src.manual_execution import _trusted_clock_v1 as trusted_clock
 from src.manual_execution import manual_execution_service_v1 as service
 from src.manual_execution.manual_execution_request_v1 import (
@@ -502,6 +506,152 @@ def test_service_caller_cannot_select_authority_or_time(keyword: str) -> None:
             venue_constraints=_constraints(),
             sleeve_code="CORE_STRUCTURAL",
             **{keyword: object()},  # type: ignore[arg-type]
+        )
+
+
+def test_snapshot_builder_deterministic_rejection_after_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """build_plan_snapshot raising its deterministic validation error after a
+    successful decision_gate approval + execution_planner preview must not
+    propagate as an unhandled exception; the request must fail closed."""
+    _install_authority(monkeypatch)
+    request_repository, gate_repository = _install_service_components(monkeypatch)
+
+    def _raise_builder(*, request, approval, plan_preview):
+        raise ManualExecutionPlanSnapshotValidationError("plan preview asset mismatch")
+
+    monkeypatch.setattr(service, "build_plan_snapshot", _raise_builder)
+
+    outcome = service.process(
+        _request(),
+        market_context=_context(),
+        venue_constraints=_constraints(),
+        sleeve_code="CORE_STRUCTURAL",
+    )
+
+    assert outcome.request.request_state == REQUEST_STATE_PLAN_REJECTED
+    assert outcome.request.rejection_code == service.REASON_PLAN_SNAPSHOT_REJECTED
+    assert outcome.approval_id == 501
+    assert outcome.plan_preview is not None
+    assert outcome.plan_snapshot is None
+    assert gate_repository.calls == 1
+    assert request_repository.updated[-1].request_state == REQUEST_STATE_PLAN_REJECTED
+
+
+def test_snapshot_repository_persistence_failure_after_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A deterministic persistence failure (e.g. an idempotency-key content
+    mismatch surfaced by create_snapshot_idempotent) must also fail closed
+    rather than leaving the request stuck mid-lifecycle."""
+    _install_authority(monkeypatch)
+    request_repository, gate_repository = _install_service_components(monkeypatch)
+
+    class RaisingPlanSnapshotRepository:
+        def create_snapshot_idempotent(self, snapshot):
+            raise PlanSnapshotContentMismatchError(
+                "idempotency_key already bound to a different plan_snapshot_id"
+            )
+
+    monkeypatch.setattr(
+        service,
+        "ManualExecutionPlanSnapshotRepository",
+        lambda: RaisingPlanSnapshotRepository(),
+    )
+
+    outcome = service.process(
+        _request(),
+        market_context=_context(),
+        venue_constraints=_constraints(),
+        sleeve_code="CORE_STRUCTURAL",
+    )
+
+    assert outcome.request.request_state == REQUEST_STATE_PLAN_REJECTED
+    assert outcome.request.rejection_code == service.REASON_PLAN_SNAPSHOT_REJECTED
+    assert outcome.approval_id == 501
+    assert outcome.plan_preview is not None
+    assert outcome.plan_snapshot is None
+    assert gate_repository.calls == 1
+    assert request_repository.updated[-1].request_state == REQUEST_STATE_PLAN_REJECTED
+
+
+def test_persisted_authority_lookup_failure_after_approval_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """resolve_persisted_manual_execution_authority raising LookupError (an
+    unknown/mismatched persisted identity) is a deterministic failure of
+    this step too, not a programmer/system error to swallow blindly.
+
+    contract_preview_v1.build_manual_sell_execution_plan_preview already
+    resolves the same persisted authority once (and converts LookupError to
+    MissingOrInvalidApprovalError, handled by process()'s earlier
+    PLAN_CONSTRUCTION_REJECTED branch) before this service resolves it again
+    to build the plan snapshot. To isolate *this* module's handling of the
+    second, post-preview resolution, only the second call is made to fail.
+    """
+    request_repository, gate_repository = _install_service_components(monkeypatch)
+    persisted_request = dataclasses.replace(_request(), request_id=1)
+    persisted_approval = _approval()
+    calls = {"count": 0}
+
+    def _resolve(*, request_id: int, approval_id: int):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return PersistedManualExecutionAuthority(
+                request=persisted_request,
+                approval=persisted_approval,
+            )
+        raise LookupError("unknown manual execution approval_id")
+
+    monkeypatch.setattr(
+        approval_authority,
+        "resolve_persisted_manual_execution_authority",
+        _resolve,
+    )
+
+    outcome = service.process(
+        _request(),
+        market_context=_context(),
+        venue_constraints=_constraints(),
+        sleeve_code="CORE_STRUCTURAL",
+    )
+
+    assert outcome.request.request_state == REQUEST_STATE_PLAN_REJECTED
+    assert outcome.request.rejection_code == service.REASON_PLAN_SNAPSHOT_REJECTED
+    assert outcome.approval_id == 501
+    assert outcome.plan_preview is not None
+    assert outcome.plan_snapshot is None
+    assert gate_repository.calls == 1
+    assert request_repository.updated[-1].request_state == REQUEST_STATE_PLAN_REJECTED
+
+
+def test_non_deterministic_snapshot_failure_still_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected error (e.g. a DB connectivity failure) from the plan
+    snapshot step must not be silently recorded as a rejected request — only
+    the deterministic LookupError / ManualExecutionPlanSnapshotValidationError
+    failure modes are caught."""
+    _install_authority(monkeypatch)
+    _install_service_components(monkeypatch)
+
+    class ExplodingPlanSnapshotRepository:
+        def create_snapshot_idempotent(self, snapshot):
+            raise RuntimeError("connection reset")
+
+    monkeypatch.setattr(
+        service,
+        "ManualExecutionPlanSnapshotRepository",
+        lambda: ExplodingPlanSnapshotRepository(),
+    )
+
+    with pytest.raises(RuntimeError, match="connection reset"):
+        service.process(
+            _request(),
+            market_context=_context(),
+            venue_constraints=_constraints(),
+            sleeve_code="CORE_STRUCTURAL",
         )
 
 
