@@ -499,6 +499,121 @@ def test_expired_acceptance_permit_rejected(tmp_path: Path) -> None:
     assert any("expired" in r for r in decision.reasons)
 
 
+SECTOR_CAP = "sector_rotation_snapshot"
+SECTOR_IDENTITY = "sector-rotation-snapshot-writer"
+
+
+def _sector_permit(head: str, **overrides: object) -> dict:
+    permit = {
+        "permit_version": "writer_capability_acceptance_permit_v1",
+        "permit_id": "permit-sector-0001",
+        "issued_at_utc": "2026-08-11T00:00:00Z",
+        "expiry_utc": "2099-01-01T00:00:00Z",
+        "purpose": "ACCEPTANCE",
+        "capability_id": SECTOR_CAP,
+        "capability_identity": SECTOR_IDENTITY,
+        "acceptance_host": "devlap",
+        "authorized_commit": head,
+        "approval_reference": "ref",
+    }
+    permit.update(overrides)
+    return permit
+
+
+def test_sector_rotation_acceptance_permit_is_accepted(tmp_path: Path) -> None:
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(tmp_path / "permit.json", _sector_permit(head))
+    decision = verify_writer_execution_authorization(
+        capability_id=SECTOR_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert decision.allowed, decision.reasons
+    assert decision.authorization is not None
+    assert decision.authorization.capability_id == SECTOR_CAP
+
+
+def test_sector_rotation_acceptance_permit_wrong_identity_rejected(tmp_path: Path) -> None:
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(
+        tmp_path / "permit.json",
+        _sector_permit(head, capability_identity="market-rotation-pressure-writer"),
+    )
+    decision = verify_writer_execution_authorization(
+        capability_id=SECTOR_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any("capability_identity mismatch" in r for r in decision.reasons)
+
+
+def test_unknown_capability_id_rejected_by_acceptance_permit_schema(tmp_path: Path) -> None:
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(
+        tmp_path / "permit.json",
+        _sector_permit(
+            head,
+            capability_id="not_a_real_capability",
+            capability_identity="not-a-real-capability-writer",
+        ),
+    )
+    decision = verify_writer_execution_authorization(
+        capability_id="not_a_real_capability",
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any("unknown capability_id" in r for r in decision.reasons)
+
+
+def test_sector_rotation_acceptance_permit_cannot_authorize_production(tmp_path: Path) -> None:
+    # A valid ACCEPTANCE-mode sector-rotation permit must never satisfy
+    # PRODUCTION authorization, and the registry entry for sector_rotation_snapshot
+    # remains UNASSIGNED/pending, so PRODUCTION stays denied regardless.
+    repo, head = _temp_git(tmp_path)
+    permit_path = _write_json(tmp_path / "permit.json", _sector_permit(head))
+    accept = verify_writer_execution_authorization(
+        capability_id=SECTOR_CAP,
+        mode=ExecutionMode.ACCEPTANCE,
+        repo_root=REPO,
+        checkout_path=repo,
+        acceptance_permit_path=permit_path,
+        acceptance_permit_root=tmp_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert accept.allowed, accept.reasons
+
+    from tests.writer_auth_support import registry_with_auth_file
+
+    prod_registry = registry_with_auth_file(tmp_path, SECTOR_CAP, permit_path)
+    prod = verify_writer_execution_authorization(
+        capability_id=SECTOR_CAP,
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=prod_registry,
+        actual_host="devlap",
+    )
+    assert not prod.allowed
+
+
 def test_guard_cli_production_fails_closed_while_unassigned() -> None:
     result = subprocess.run(
         [
