@@ -476,6 +476,78 @@ rollback readiness
 Acceptance may support a later production authorization decision. It must not
 self-authorize production ownership.
 
+## Acceptance Permit Root Provisioning
+
+`verify_writer_execution_authorization`'s `DEFAULT_ACCEPTANCE_PERMIT_ROOT`
+(`src/operations/writer_capability_authorization_v1.py`) fixes the ACCEPTANCE-mode
+permit root at exactly:
+
+```text
+/run/synth/writer-acceptance
+```
+
+This path is never environment- or CLI-overridable. `/run` is `tmpfs`, so an
+ad hoc `install -d` is lost on reboot. The repository owns a
+systemd-tmpfiles config that recreates the canonical root deterministically on
+every boot, on any authorized writer host:
+
+```text
+deploy/tmpfiles.d/synth-writer-acceptance.conf
+```
+
+Contract:
+
+```text
+d /run/synth                   0755 root root -
+d /run/synth/writer-acceptance 0700 gurk gurk -
+```
+
+`/run/synth` stays root-owned, `0755`, and not group/world-writable -- only
+the leaf `writer-acceptance` directory is owned by the `gurk` service user
+with `0700`, matching the ownership/mode `_validate_writer_file_security`
+already requires of every permit file placed under it. This repository
+change performs no host installation, no acceptance permit creation, no
+writer invocation, and no production authorization.
+
+### Installation (privileged host step, not run by this repository change)
+
+On an authorized writer host (for example `gurkdb`), as an operator with
+sudo:
+
+```bash
+sudo install -m 0644 deploy/tmpfiles.d/synth-writer-acceptance.conf \
+  /etc/tmpfiles.d/synth-writer-acceptance.conf
+sudo systemd-tmpfiles --create /etc/tmpfiles.d/synth-writer-acceptance.conf
+```
+
+`systemd-tmpfiles --create` only creates/repairs the declared directories and
+fixes their ownership/mode if they already exist with the wrong ones. It does
+not start a service or timer, does not create an acceptance permit, and does
+not grant any authorization.
+
+### Verification (read-only)
+
+```bash
+stat -c '%a %U %G %n' /run/synth /run/synth/writer-acceptance
+```
+
+Expected output:
+
+```text
+755 root root /run/synth
+700 gurk gurk /run/synth/writer-acceptance
+```
+
+Because the config is installed under `/etc/tmpfiles.d/`, systemd recreates
+both directories with the same ownership and mode on every boot without
+further operator action, and `systemd-tmpfiles --create` is safely
+re-runnable (idempotent) at any time.
+
+Installation and verification above must not be combined with starting a
+writer, issuing an acceptance permit, enabling a timer, or recording any
+production authorization -- those remain separate, explicitly authorized
+steps under "Acceptance Procedure" and "Cutover Procedure".
+
 ## Cutover Procedure
 
 Use this order:
