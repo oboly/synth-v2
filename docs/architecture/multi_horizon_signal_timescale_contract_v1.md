@@ -133,9 +133,12 @@ follow-up implementation, not performed here.
 
 #### LEVEL-LEVEL / ANCHOR→TARGET
 
-- **Exact anchor timestamp source**: the map's own `published_at_utc` for the
-  anchor→first-target interval; there is no separate persisted "anchor event"
-  distinct from map publication in the current model.
+- **Exact metric-start source**: the publication→target metric starts at the
+  map's own `published_at_utc`. There is no separate persisted target-metric
+  "anchor event" in the current model. A separately defined anchor→target
+  metric must name its exact persisted anchor timestamp source; it must never
+  substitute `published_at_utc` for an anchor timestamp merely because both
+  belong to the same map.
 - **Exact map/cycle identity used to join anchor and target events**: the
   exact `map_id` only. `native_short_map_level_target_event_v1`'s canonical
   identity is `map_id + canonical_map_level_role + side +
@@ -148,13 +151,18 @@ follow-up implementation, not performed here.
   — `ACTIVE` is defined as the absence of a terminal event for a covered
   level identity, not a row to join against.
 - **Ordering semantics for first target / later targets**: order target
-  events for the map by `effective_at_utc` (sourced only from the causal
-  closed primary-interval candle's `close_ts_utc`; a DB CHECK constraint
-  enforces `effective_at_utc = causal_candle_close_ts_utc`, and
-  `recorded_at_utc` — the writer's wall-clock insert time — is never
-  substituted). "First target" is the earliest `REACHED`/`PASSED` event
-  across all level roles for that `map_id`; "later targets" are subsequent
-  events in that same `effective_at_utc` order.
+  events for the map by `(effective_at_utc ASC, target_event_id ASC)`.
+  `effective_at_utc` is sourced only from the causal closed primary-interval
+  candle's `close_ts_utc`; a DB CHECK constraint enforces
+  `effective_at_utc = causal_candle_close_ts_utc`, and `recorded_at_utc` —
+  the writer's wall-clock insert time — is never substituted. The persisted
+  reader `fetch_native_short_map_level_target_events_for_map` returns the
+  stable `target_event_id`; it is the required deterministic tie-breaker when
+  multiple map-level events share an effective timestamp. "First target
+  event" is the first `REACHED`/`PASSED` event across all level roles for the
+  exact `map_id` in that total order; "later target events" are the remaining
+  events in the same total order. Equal-timestamp events are distinct events,
+  not duplicates, and retain that `target_event_id` order.
 - **Repeated/duplicate target events**: events are insert-only, and the
   database unique-identity constraint on `map_id + canonical_map_level_role +
   side + canonical_unrounded_price + target_event_type` is the sole
@@ -171,10 +179,9 @@ follow-up implementation, not performed here.
   independently computed target-event decision anywhere in the codebase.
 - **No cross-map/cross-cycle joining**: anchor and target must always be read
   from the same `map_id`.
-- Level-level statistics are restricted to maps whose target-event coverage
-  was actually established (see COVERAGE below), and report `n`, `p25`,
-  `p50`, `p75`, `p90` per level role and combined, per asset where sample
-  size permits.
+- Full publication/anchor→target statistics include only `FULLY_OBSERVED`
+  intervals (see COVERAGE below), and report `n`, `p25`, `p50`, `p75`, `p90`
+  per level role and combined, per asset where sample size permits.
 
 #### COVERAGE
 
@@ -191,17 +198,30 @@ follow-up implementation, not performed here.
   establish per-map coverage rows going forward — it is not a universal
   per-map cutoff. Each map's actual `coverage_cutoff_utc` must be read from
   that map's own coverage row, never assumed from the authorization date.
-- **Required rule**: if a map's `published_at_utc` predates the point at
-  which target-event coverage was ever established for that specific map (no
-  coverage row exists for its `map_id` — `LEGACY_UNAVAILABLE`), the
-  anchor→target interval cannot be observed end-to-end and must **not** be
-  inferred or backfilled. Report the interval as `LEGACY_UNAVAILABLE`
-  (unavailable / left-truncated), never as zero and never as
-  missing-therefore-target-not-reached.
-- This is explicitly distinct from ordinary right-censoring of an active,
-  covered map: `LEGACY_UNAVAILABLE` means coverage never started for that
-  map's `map_id`; right-censored means a coverage row exists and evaluation
-  is simply still ongoing.
+- **Required full-observation rule**: for every requested publication→target
+  or anchor→target metric, define `metric_start_ts` from that metric's exact
+  stated start source. Only when a coverage row exists and
+  `coverage_cutoff_utc <= metric_start_ts` may the interval be eligible for
+  `FULLY_OBSERVED` classification. For publication→target,
+  `metric_start_ts = published_at_utc`; an anchor-based metric uses its own
+  exact `anchor_ts`, never an interchangeable publication timestamp.
+- **Left-truncated case**: when `coverage_cutoff_utc > metric_start_ts`, the
+  requested start→target interval is `LEFT_TRUNCATED` / `UNAVAILABLE`. Do not
+  infer the unobserved pre-cutoff interval, reconstruct it from current state,
+  or treat it as ordinary right-censoring. A map with no coverage row is
+  `LEGACY_UNAVAILABLE`, a distinct unavailable class because coverage never
+  started for that `map_id`.
+- **Right-censored case**: `RIGHT_CENSORED` applies only when coverage exists
+  from or before `metric_start_ts`, no target event has occurred, and target
+  evaluation remains ongoing. It is distinct from both `LEFT_TRUNCATED` and
+  `LEGACY_UNAVAILABLE`; neither unavailable class may enter the fully
+  observed or right-censored population.
+- **Optional partial metric**: where a coverage row exists and
+  `coverage_cutoff_utc > metric_start_ts`, a separately labelled
+  `coverage_cutoff_utc→target_event_ts` metric may be reported from the
+  persisted event timestamp. It is a **PARTIAL_OBSERVED_INTERVAL**, not an
+  anchor→target or publication→target duration, and must be grouped
+  separately from `FULLY_OBSERVED` start→target statistics.
 - A map that goes terminal without ever having had coverage established
   remains `LEGACY_UNAVAILABLE` permanently — never silently inferred `ACTIVE`
   and never reconstructed from the current full-history

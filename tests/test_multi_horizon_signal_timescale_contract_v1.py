@@ -252,6 +252,29 @@ def test_signal_timescale_contract_defines_required_semantic_sections() -> None:
         )
 
 
+def test_signal_timescale_contract_defines_native_short_coverage_and_ordering() -> None:
+    """Keep the two measurement safety rules explicit without parsing prose."""
+
+    text = CONTRACT_DOC.read_text()
+
+    required_rules = (
+        "coverage_cutoff_utc <= metric_start_ts",
+        "coverage_cutoff_utc > metric_start_ts",
+        "requested start→target interval is `LEFT_TRUNCATED` / `UNAVAILABLE`",
+        "LEFT_TRUNCATED",
+        "RIGHT_CENSORED",
+        "LEGACY_UNAVAILABLE",
+        "FULLY_OBSERVED",
+        "coverage_cutoff_utc→target_event_ts",
+        "PARTIAL_OBSERVED_INTERVAL",
+        "separately from `FULLY_OBSERVED` start→target statistics",
+        "(effective_at_utc ASC, target_event_id ASC)",
+    )
+
+    for rule in required_rules:
+        assert rule in text, f"Signal timescale contract is missing Native SHORT rule: {rule}"
+
+
 def test_signal_timescale_contract_lane_inventory_is_structurally_consistent() -> None:
     """Validate the inventory as a structured table (consistent column count,
     required lanes present) rather than only checking for isolated strings."""
