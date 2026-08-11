@@ -344,6 +344,18 @@ Tested in `tests/test_free_base_quantity_v1.py` and end to end in
 
 ### F2 — Three parallel ladder-building implementations with inconsistent invariants
 
+**Issue #203 implementation update (2026-08-11):** the active manual SELL
+path is `manual_execution_service_v1 ->
+contract_preview_v1.build_manual_sell_execution_plan_preview -> EXIT_LADDER`.
+`_build_ladder_legs` is its single allocation/rounding/validation pipeline:
+it uses fresh `VenueExecutionConstraints`, side-aware price rounding,
+post-rounding minimum checks, and rejects the complete ladder on any invalid
+leg. The legacy CSV SELL builder remains hard-blocked and the profile resolver
+continues to reject direct SELL use; neither is an active manual caller.
+Fee haircut remains explicitly `NONE` because the current manual SELL
+approval quantity is already the authority. Quantity-step residual dust is
+left unallocated conservatively; it is never redistributed.
+
 - Files: `src/execution_planner/contract_preview_v1.py`
   (`_build_ladder_legs`, fractions sum to exactly `1`);
   `src/execution_ladder/resolver.py` (`resolve_ladder_preview`,
@@ -441,6 +453,13 @@ Not yet wired into `contract_preview_v1`'s dataclass pipeline directly
 `ExecutionMarketContextPreview`, deferred — see the backlog's note); today
 it is available as a composable post-processing step any caller can apply
 to a preview's legs.
+
+**Issue #203 implementation update (2026-08-11):** manual `EXIT_LADDER`
+now invokes this canonical rounding/validation service directly using the
+fresh constraints already required by its planner boundary. One invalid
+post-rounding leg rejects the entire ladder with a deterministic
+`LADDER_LEG_<index>_INVALID:<reason>` error; no caller-specific bypass or
+silent leg removal remains in the active manual path.
 
 - Files: `db/migrations/20260603_multi_account_asset_foundation_v1.sql`
   (`venue_market.min_order_qty` column exists, `DECIMAL(20,10)`, nullable, no
