@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -425,6 +426,70 @@ def test_nonce_identity_is_end_to_end_and_retry_does_not_reevaluate_gate(
     assert retry.approval_id == first.approval_id
     assert retry.plan_snapshot.plan_snapshot_id == first.plan_snapshot.plan_snapshot_id
     assert gate.calls == [first.request.request_id, second.request.request_id]
+
+
+def test_committed_snapshot_recovers_draft_request_without_gate_or_planner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Requests:
+        def __init__(self):
+            self.request = dataclasses.replace(_request(), request_id=1)
+            self.state_updates = []
+
+        def create_request_idempotent(self, _request):
+            return self.request
+
+        def update_request_state(self, request):
+            self.request = request
+            self.state_updates.append(request)
+
+    class Snapshots:
+        def __init__(self):
+            self.snapshot = SimpleNamespace(
+                plan_snapshot_id=701,
+                approval_id=501,
+                payload_json='{"canonical":"unchanged"}',
+            )
+            self.create_calls = 0
+
+        def find_by_request_id(self, request_id):
+            assert request_id == 1
+            return self.snapshot
+
+        def create_idempotent(self, _snapshot):
+            self.create_calls += 1
+            raise AssertionError("existing snapshot must not be replaced")
+
+    requests, snapshots = Requests(), Snapshots()
+    monkeypatch.setattr(service, "ManualExecutionRequestRepository", lambda: requests)
+    monkeypatch.setattr(
+        service,
+        "ManualExecutionPlanSnapshotRepository",
+        lambda: snapshots,
+    )
+    monkeypatch.setattr(
+        service,
+        "ManualExecutionGateRepository",
+        lambda: (_ for _ in ()).throw(AssertionError("gate must not run")),
+    )
+    monkeypatch.setattr(
+        service,
+        "build_manual_sell_execution_plan_preview",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("planner must not run")),
+    )
+
+    outcome = service.process(
+        _request(),
+        market_context=dataclasses.replace(_context(), reference_price_eur=Decimal("99999")),
+        venue_constraints=_constraints(),
+        sleeve_code="CORE_STRUCTURAL",
+    )
+
+    assert outcome.plan_snapshot.plan_snapshot_id == 701
+    assert outcome.plan_snapshot.payload_json == '{"canonical":"unchanged"}'
+    assert outcome.request.request_state == REQUEST_STATE_PLANNED
+    assert len(requests.state_updates) == 1
+    assert snapshots.create_calls == 0
 
 
 def test_live_request_fails_before_gate(

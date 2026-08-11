@@ -124,7 +124,6 @@ def process(
     """
     resolved_now = trusted_clock.utc_now()
     request_repository = ManualExecutionRequestRepository()
-    gate_repository = ManualExecutionGateRepository()
 
     if request.mode != MODE_PAPER:
         failed_request = advance_manual_execution_request_state(
@@ -144,24 +143,45 @@ def process(
         )
 
     persisted_request = request_repository.create_request_idempotent(request)
+    snapshot_repository = ManualExecutionPlanSnapshotRepository()
+
+    # The immutable snapshot is authoritative even if a prior process died
+    # between its committed insert and the later request-state update. Never
+    # re-run account permission or rebuild from newer market context once it
+    # exists.
+    existing_snapshot = snapshot_repository.find_by_request_id(
+        persisted_request.request_id or 0
+    )
+    if existing_snapshot is not None:
+        recovered_request = persisted_request
+        if persisted_request.request_state != REQUEST_STATE_PLANNED:
+            try:
+                recovered_request = advance_manual_execution_request_state(
+                    persisted_request,
+                    new_state=REQUEST_STATE_PLANNED,
+                    processed_ts_utc=resolved_now,
+                )
+            except ValueError:
+                # A non-DRAFT terminal state cannot be repaired through the
+                # fixed lifecycle table, but it still cannot supersede the
+                # immutable snapshot or cause gate/planner re-entry.
+                pass
+            else:
+                request_repository.update_request_state(recovered_request)
+        return ManualExecutionOutcome(
+            request=recovered_request,
+            gate_result=None,
+            approval_id=existing_snapshot.approval_id,
+            plan_preview=None,
+            plan_snapshot=existing_snapshot,
+            notes="idempotent_snapshot_recovery=1; decision_gate_re_evaluated=0; planner_rebuilt=0",
+        )
 
     # A retry never re-evaluates permission against later account state and
     # never rebuilds/mutates a canonical plan.  The DB uniqueness constraint
     # selected the canonical request; this read returns its terminal result.
     if persisted_request.request_state == REQUEST_STATE_PLANNED:
-        snapshot = ManualExecutionPlanSnapshotRepository().find_by_request_id(
-            persisted_request.request_id or 0
-        )
-        if snapshot is None:
-            raise RuntimeError("planned manual request is missing immutable plan snapshot")
-        return ManualExecutionOutcome(
-            request=persisted_request,
-            gate_result=None,
-            approval_id=snapshot.approval_id,
-            plan_preview=None,
-            plan_snapshot=snapshot,
-            notes="idempotent_retry=1; decision_gate_re_evaluated=0; planner_rebuilt=0",
-        )
+        raise RuntimeError("planned manual request is missing immutable plan snapshot")
     if persisted_request.request_state == REQUEST_STATE_GATE_BLOCKED:
         return ManualExecutionOutcome(
             request=persisted_request,
@@ -219,6 +239,7 @@ def process(
             notes="rejected before decision_gate: venue execution constraints not fresh",
         )
 
+    gate_repository = ManualExecutionGateRepository()
     approval_outcome = gate_repository.approve_and_reserve(persisted_request)
     gate_result = approval_outcome.gate_result
 
@@ -254,7 +275,6 @@ def process(
                 sleeve_code=sleeve_code,
             ),
         )
-        snapshot_repository = ManualExecutionPlanSnapshotRepository()
         plan_snapshot = snapshot_repository.create_idempotent(
             build_manual_execution_plan_snapshot(
                 request=persisted_request,
