@@ -227,23 +227,27 @@ class _FakeCursor:
     def execute(self, sql: str, params: list) -> None:
         sql_norm = " ".join(sql.split())
 
-        if sql_norm.startswith("SELECT * FROM manual_execution_request WHERE idempotency_key"):
-            (idempotency_key,) = params
-            self._result = [dict(r) for r in self._table if r["idempotency_key"] == idempotency_key]
-            return
-
         if sql_norm.startswith("INSERT INTO manual_execution_request"):
             (
-                schema_version, idempotency_key, created_ts_utc, source, requested_by,
+                schema_version, idempotency_key, dedupe_key, operator_request_nonce, created_ts_utc, source, requested_by,
                 mode, trading_account_id, account_code, venue, asset_id, base_asset,
                 quote_asset, side, quantity_policy, requested_base_quantity,
-                requested_quote_notional, ladder_levels_json, provenance_id, request_state,
+                requested_quote_notional, ladder_levels_json, provenance_id, ladder_profile_id,
+                ladder_profile_version, anchor_type, anchor_price, anchor_source,
+                source_map_cycle_id, source_native_map_id, source_map_version, request_state,
             ) = params
+            existing = next((r for r in self._table if r.get("dedupe_key") == dedupe_key), None)
+            if existing is not None:
+                self.lastrowid = existing["manual_execution_request_id"]
+                self._result = []
+                return
             new_id = len(self._table) + 1
             row = {
                 "manual_execution_request_id": new_id,
                 "schema_version": schema_version,
                 "idempotency_key": idempotency_key,
+                "dedupe_key": dedupe_key,
+                "operator_request_nonce": operator_request_nonce,
                 "created_ts_utc": created_ts_utc,
                 "source": source,
                 "requested_by": requested_by,
@@ -260,6 +264,14 @@ class _FakeCursor:
                 "requested_quote_notional": requested_quote_notional,
                 "ladder_levels_json": ladder_levels_json,
                 "provenance_id": provenance_id,
+                "ladder_profile_id": ladder_profile_id,
+                "ladder_profile_version": ladder_profile_version,
+                "anchor_type": anchor_type,
+                "anchor_price": anchor_price,
+                "anchor_source": anchor_source,
+                "source_map_cycle_id": source_map_cycle_id,
+                "source_native_map_id": source_native_map_id,
+                "source_map_version": source_map_version,
                 "request_state": request_state,
                 "rejection_code": None,
                 "rejection_detail": None,
@@ -324,6 +336,20 @@ class TestRepositoryFakeDb:
         second = repo.create_request_idempotent(request)
         assert second.request_id == first.request_id
         assert len(factory.table) == 1
+
+    def test_duplicate_key_race_model_returns_one_canonical_request(self) -> None:
+        factory = _FakeCursorFactory()
+        repo = ManualExecutionRequestRepository(cursor_factory=factory)
+        identities = {repo.create_request_idempotent(_build()).request_id for _ in range(16)}
+        assert identities == {1}
+        assert len(factory.table) == 1
+
+    def test_different_nonce_creates_a_new_canonical_request(self) -> None:
+        factory = _FakeCursorFactory()
+        repo = ManualExecutionRequestRepository(cursor_factory=factory)
+        first = repo.create_request_idempotent(_build(operator_request_nonce="nonce-1"))
+        second = repo.create_request_idempotent(_build(operator_request_nonce="nonce-2"))
+        assert {first.request_id, second.request_id} == {1, 2}
 
     def test_update_request_state_persists(self) -> None:
         factory = _FakeCursorFactory()

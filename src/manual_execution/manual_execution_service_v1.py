@@ -63,6 +63,11 @@ from src.execution_planner.contract_preview_v1 import (
     ManualSellPlanningInputs,
     build_manual_sell_execution_plan_preview,
 )
+from src.execution_planner.manual_execution_plan_snapshot_v1 import (
+    ManualExecutionPlanSnapshot,
+    ManualExecutionPlanSnapshotRepository,
+    build_manual_execution_plan_snapshot,
+)
 from src.manual_execution.manual_execution_request_v1 import (
     MODE_PAPER,
     REQUEST_STATE_FAILED,
@@ -72,6 +77,7 @@ from src.manual_execution.manual_execution_request_v1 import (
     ManualExecutionRequest,
     ManualExecutionRequestRepository,
     advance_manual_execution_request_state,
+    validate_required_snapshot_binding,
 )
 from src.market_rules.venue_execution_constraints_v1 import (
     STATUS_FRESH,
@@ -92,6 +98,7 @@ class ManualExecutionOutcome:
     gate_result: ManualExecutionGateResult | None
     approval_id: int | None
     plan_preview: ExecutionPlanPreview | None
+    plan_snapshot: ManualExecutionPlanSnapshot | None
     notes: str
 
 
@@ -117,7 +124,6 @@ def process(
     """
     resolved_now = trusted_clock.utc_now()
     request_repository = ManualExecutionRequestRepository()
-    gate_repository = ManualExecutionGateRepository()
 
     if request.mode != MODE_PAPER:
         failed_request = advance_manual_execution_request_state(
@@ -132,10 +138,88 @@ def process(
             gate_result=None,
             approval_id=None,
             plan_preview=None,
+            plan_snapshot=None,
             notes="rejected before decision_gate: mode != PAPER",
         )
 
     persisted_request = request_repository.create_request_idempotent(request)
+    snapshot_repository = ManualExecutionPlanSnapshotRepository()
+
+    # The immutable snapshot is authoritative even if a prior process died
+    # between its committed insert and the later request-state update. Never
+    # re-run account permission or rebuild from newer market context once it
+    # exists.
+    existing_snapshot = snapshot_repository.find_by_request_id(
+        persisted_request.request_id or 0
+    )
+    if existing_snapshot is not None:
+        recovered_request = persisted_request
+        if persisted_request.request_state != REQUEST_STATE_PLANNED:
+            try:
+                recovered_request = advance_manual_execution_request_state(
+                    persisted_request,
+                    new_state=REQUEST_STATE_PLANNED,
+                    processed_ts_utc=resolved_now,
+                )
+            except ValueError:
+                # A non-DRAFT terminal state cannot be repaired through the
+                # fixed lifecycle table, but it still cannot supersede the
+                # immutable snapshot or cause gate/planner re-entry.
+                pass
+            else:
+                request_repository.update_request_state(recovered_request)
+        return ManualExecutionOutcome(
+            request=recovered_request,
+            gate_result=None,
+            approval_id=existing_snapshot.approval_id,
+            plan_preview=None,
+            plan_snapshot=existing_snapshot,
+            notes="idempotent_snapshot_recovery=1; decision_gate_re_evaluated=0; planner_rebuilt=0",
+        )
+
+    # A retry never re-evaluates permission against later account state and
+    # never rebuilds/mutates a canonical plan.  The DB uniqueness constraint
+    # selected the canonical request; this read returns its terminal result.
+    if persisted_request.request_state == REQUEST_STATE_PLANNED:
+        raise RuntimeError("planned manual request is missing immutable plan snapshot")
+    if persisted_request.request_state == REQUEST_STATE_GATE_BLOCKED:
+        return ManualExecutionOutcome(
+            request=persisted_request,
+            gate_result=None,
+            approval_id=None,
+            plan_preview=None,
+            plan_snapshot=None,
+            notes="idempotent_retry=1; previously blocked at decision_gate",
+        )
+    if persisted_request.request_state == REQUEST_STATE_PLAN_REJECTED:
+        return ManualExecutionOutcome(
+            request=persisted_request,
+            gate_result=None,
+            approval_id=None,
+            plan_preview=None,
+            plan_snapshot=None,
+            notes="idempotent_retry=1; previously rejected before executable plan creation",
+        )
+
+    try:
+        validate_required_snapshot_binding(persisted_request)
+    except ValueError as exc:
+        rejected_request = advance_manual_execution_request_state(
+            persisted_request,
+            new_state=REQUEST_STATE_PLAN_REJECTED,
+            processed_ts_utc=resolved_now,
+            rejection_code="SNAPSHOT_BINDING_REQUIRED",
+            rejection_detail=str(exc),
+        )
+        request_repository.update_request_state(rejected_request)
+        return ManualExecutionOutcome(
+            request=rejected_request,
+            gate_result=None,
+            approval_id=None,
+            plan_preview=None,
+            plan_snapshot=None,
+            notes="rejected before decision_gate: required snapshot binding missing",
+        )
 
     if venue_constraints.status != STATUS_FRESH:
         rejected_request = advance_manual_execution_request_state(
@@ -151,9 +235,11 @@ def process(
             gate_result=None,
             approval_id=None,
             plan_preview=None,
+            plan_snapshot=None,
             notes="rejected before decision_gate: venue execution constraints not fresh",
         )
 
+    gate_repository = ManualExecutionGateRepository()
     approval_outcome = gate_repository.approve_and_reserve(persisted_request)
     gate_result = approval_outcome.gate_result
 
@@ -171,6 +257,7 @@ def process(
             gate_result=gate_result,
             approval_id=None,
             plan_preview=None,
+            plan_snapshot=None,
             notes="blocked at decision_gate; no reservation was created; execution_planner was not called",
         )
 
@@ -188,6 +275,13 @@ def process(
                 sleeve_code=sleeve_code,
             ),
         )
+        plan_snapshot = snapshot_repository.create_idempotent(
+            build_manual_execution_plan_snapshot(
+                request=persisted_request,
+                approval_id=approval_id,
+                plan=plan_preview,
+            )
+        )
     except (ValueError, PermissionError) as exc:
         rejected_request = advance_manual_execution_request_state(
             persisted_request,
@@ -202,6 +296,7 @@ def process(
             gate_result=gate_result,
             approval_id=approval_id,
             plan_preview=None,
+            plan_snapshot=None,
             notes=f"execution_planner rejected the gate-approved intent: {exc}",
         )
 
@@ -217,5 +312,6 @@ def process(
         gate_result=gate_result,
         approval_id=approval_id,
         plan_preview=plan_preview,
-        notes="preview_only=1; no_db_writes_beyond_request_state_and_reservation=1; no_executor=1",
+        plan_snapshot=plan_snapshot,
+        notes="immutable_plan_snapshot=1; no_executor=1; broker_writes=0; order_submission=0",
     )

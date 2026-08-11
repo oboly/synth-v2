@@ -733,6 +733,17 @@ statically confirms no other module writes this table's `reservation_state`.
 
 ### F12 — `manual_execution_request` (the tray's core artifact) does not exist yet
 
+**Issue #202 implementation update (2026-08-11): repository-complete; deployment pending.**
+`db/migrations/20260811_manual_execution_plan_snapshot_idempotency_v1.sql`
+adds the DB-enforced request dedupe key and immutable per-request plan
+snapshot. The snapshot binds profile/version, anchor/source, source
+cycle/native-map/version, approved sizing, decision approval, and research
+provenance. `manual_execution_service_v1.process()` persists it only after
+the decision gate returns `APPROVED`; retry paths return the canonical
+snapshot without re-evaluating permission or rebuilding the plan. The
+migration is intentionally not applied by this repository change; Issue
+#202 remains open until separately authorized deployment acceptance.
+
 **P0 status (2026-07-26): PARTIALLY REMEDIATED.** The P0 safety remediation
 commit reviewed on 2026-07-25
 (`docs/reviews/manual_execution_ladder_p0_implementation_review_20260725.md`)
@@ -747,11 +758,9 @@ call graph from a persisted request through
 producer B2 found missing) to a decision_gate-approved
 `contract_preview_v1.build_execution_plan_preview()` call — see
 `docs/reviews/manual_execution_ladder_p0_remediation_implementation_20260726.md`
-for the exact call graph, tests, and remaining gaps. Still open: atomic
-SELL reservation creation, reconciliation, provenance binding, the
-plan-snapshot table, and the ladder-profile/anchor fields from
-`docs/todo/manual_execution_ladder_profiles_v1.md`'s full design spec —
-none of those are implemented by this change.
+for the exact call graph, tests, and then-remaining gaps. The Issue #202
+update above supersedes the former plan-snapshot/profile/anchor/provenance
+gaps; reconciliation and any broker submission remain out of scope.
 
 - Reference: `docs/todo/manual_execution_ladder_profiles_v1.md` — a complete,
   already-reviewed P0 design spec for exactly this table, its lifecycle
