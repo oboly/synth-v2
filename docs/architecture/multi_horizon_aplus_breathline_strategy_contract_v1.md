@@ -177,6 +177,10 @@ Existing/future guards must preserve:
 
 ## Related Documents
 
+- `docs/architecture/multi_horizon_signal_timescale_contract_v1.md` — signal
+  timescale (input interval / lookback / effective horizon / observed
+  lifecycle duration) and horizon-composition semantics, orthogonal to the
+  SHORT/MEDIUM/LONG strategy-horizon vocabulary defined here.
 - `docs/architecture/breath_fibo_synth_framework_contract_v1.md`
 - `docs/architecture/pipeline_contracts.md`
 - `docs/architecture/market_observer_contract_v1.md`
