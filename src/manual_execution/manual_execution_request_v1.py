@@ -101,6 +101,65 @@ class InvalidManualExecutionRequestTransitionError(ValueError):
     pass
 
 
+class IdempotencyKeyContentMismatchError(ManualExecutionRequestValidationError):
+    """Raised when idempotency_key already resolves to a persisted request
+    whose content differs from the incoming request — most importantly a
+    different trading_account_id. Returning the pre-existing row in that
+    case would silently hand one account's/operator's request identity to
+    another; this must fail closed instead so a colliding key is always a
+    caller bug, never a cross-account leak."""
+
+
+# Content fields compared when an idempotency_key collides with an existing
+# persisted request. Excludes request_id/schema_version/created_ts_utc
+# (generated) and request_state/rejection_*/processed_ts_utc (lifecycle,
+# not identity).
+_CONTENT_FIELDS: Final[tuple[str, ...]] = (
+    "source",
+    "requested_by",
+    "mode",
+    "trading_account_id",
+    "account_code",
+    "venue",
+    "asset_id",
+    "base_asset",
+    "quote_asset",
+    "side",
+    "quantity_policy",
+    "requested_base_quantity",
+    "requested_quote_notional",
+    "ladder_levels",
+    "provenance_id",
+    "ladder_profile_id",
+    "ladder_profile_version",
+    "anchor_reference_price",
+    "anchor_ts_utc",
+)
+
+
+def _assert_same_content(
+    incoming: "ManualExecutionRequest", existing: "ManualExecutionRequest"
+) -> None:
+    for field_name in _CONTENT_FIELDS:
+        if getattr(incoming, field_name) != getattr(existing, field_name):
+            raise IdempotencyKeyContentMismatchError(
+                f"idempotency_key={incoming.idempotency_key!r} is already bound to "
+                f"request_id={existing.request_id} with a different {field_name}; "
+                "a materially changed request must use a new idempotency_key"
+            )
+
+
+def _is_duplicate_key_error(exc: Exception) -> bool:
+    try:
+        from pymysql.err import IntegrityError
+    except ImportError:
+        return False
+    if not isinstance(exc, IntegrityError):
+        return False
+    args = exc.args
+    return bool(args) and args[0] in (1062,)
+
+
 @dataclass(frozen=True)
 class ManualExecutionRequest:
     request_id: int | None
@@ -127,6 +186,11 @@ class ManualExecutionRequest:
 
     provenance_id: int | None
 
+    ladder_profile_id: int | None
+    ladder_profile_version: int | None
+    anchor_reference_price: Decimal | None
+    anchor_ts_utc: datetime | None
+
     request_state: str
     rejection_code: str | None
     rejection_detail: str | None
@@ -136,6 +200,49 @@ class ManualExecutionRequest:
 def _require_positive_decimal(value: Decimal, field_name: str) -> None:
     if value <= 0:
         raise ManualExecutionRequestValidationError(f"{field_name} must be > 0")
+
+
+def _validate_ladder_profile_binding(
+    *,
+    quantity_policy: str,
+    ladder_profile_id: int | None,
+    ladder_profile_version: int | None,
+    anchor_reference_price: Decimal | None,
+    anchor_ts_utc: datetime | None,
+) -> None:
+    """LADDER_LEVELS requests must bind to a specific ladder profile version
+    and the anchor reference the operator was looking at when forming
+    intent; every other quantity policy must not carry these fields, so a
+    non-ladder request can never silently inherit stale ladder-profile
+    metadata."""
+    if quantity_policy == QUANTITY_POLICY_LADDER_LEVELS:
+        if ladder_profile_id is None or ladder_profile_id <= 0:
+            raise ManualExecutionRequestValidationError(
+                "LADDER_LEVELS requires a positive ladder_profile_id"
+            )
+        if ladder_profile_version is None or ladder_profile_version <= 0:
+            raise ManualExecutionRequestValidationError(
+                "LADDER_LEVELS requires a positive ladder_profile_version"
+            )
+        if anchor_reference_price is None or anchor_reference_price <= 0:
+            raise ManualExecutionRequestValidationError(
+                "LADDER_LEVELS requires a positive anchor_reference_price"
+            )
+        if anchor_ts_utc is None:
+            raise ManualExecutionRequestValidationError(
+                "LADDER_LEVELS requires anchor_ts_utc"
+            )
+        return
+
+    if (
+        ladder_profile_id is not None
+        or ladder_profile_version is not None
+        or anchor_reference_price is not None
+        or anchor_ts_utc is not None
+    ):
+        raise ManualExecutionRequestValidationError(
+            f"{quantity_policy} must not carry a ladder profile or anchor binding"
+        )
 
 
 def _validate_quantity_policy_payload(
@@ -212,6 +319,10 @@ def build_manual_execution_request(
     requested_quote_notional: Decimal | None = None,
     ladder_levels: tuple[tuple[Decimal, Decimal], ...] = (),
     provenance_id: int | None = None,
+    ladder_profile_id: int | None = None,
+    ladder_profile_version: int | None = None,
+    anchor_reference_price: Decimal | None = None,
+    anchor_ts_utc: datetime | None = None,
 ) -> ManualExecutionRequest:
     """Construct a validated, not-yet-persisted, DRAFT manual execution request.
 
@@ -252,6 +363,13 @@ def build_manual_execution_request(
         requested_quote_notional=requested_quote_notional,
         ladder_levels=ladder_levels,
     )
+    _validate_ladder_profile_binding(
+        quantity_policy=quantity_policy,
+        ladder_profile_id=ladder_profile_id,
+        ladder_profile_version=ladder_profile_version,
+        anchor_reference_price=anchor_reference_price,
+        anchor_ts_utc=anchor_ts_utc,
+    )
 
     return ManualExecutionRequest(
         request_id=None,
@@ -273,6 +391,10 @@ def build_manual_execution_request(
         requested_quote_notional=requested_quote_notional,
         ladder_levels=tuple(ladder_levels),
         provenance_id=provenance_id,
+        ladder_profile_id=ladder_profile_id,
+        ladder_profile_version=ladder_profile_version,
+        anchor_reference_price=anchor_reference_price,
+        anchor_ts_utc=anchor_ts_utc,
         request_state=REQUEST_STATE_DRAFT,
         rejection_code=None,
         rejection_detail=None,
@@ -362,6 +484,14 @@ def _row_to_request(row: Any) -> ManualExecutionRequest:
         ),
         ladder_levels=_ladder_levels_from_json(row.get("ladder_levels_json")),
         provenance_id=row.get("provenance_id"),
+        ladder_profile_id=row.get("ladder_profile_id"),
+        ladder_profile_version=row.get("ladder_profile_version"),
+        anchor_reference_price=(
+            Decimal(str(row["anchor_reference_price"]))
+            if row.get("anchor_reference_price") is not None
+            else None
+        ),
+        anchor_ts_utc=row.get("anchor_ts_utc"),
         request_state=str(row["request_state"]),
         rejection_code=row.get("rejection_code"),
         rejection_detail=row.get("rejection_detail"),
@@ -391,49 +521,87 @@ class ManualExecutionRequestRepository:
             row = cursor.fetchone()
             return _row_to_request(row) if row else None
 
+    @staticmethod
+    def _select_by_idempotency_key(cursor: Any, idempotency_key: str) -> ManualExecutionRequest | None:
+        cursor.execute(
+            "SELECT * FROM manual_execution_request WHERE idempotency_key = %s",
+            [idempotency_key],
+        )
+        row = cursor.fetchone()
+        return _row_to_request(row) if row else None
+
     def create_request_idempotent(self, request: ManualExecutionRequest) -> ManualExecutionRequest:
+        """Idempotent-insert with a DB-enforced, process-memory-independent
+        dedupe authority: the UNIQUE KEY on idempotency_key. A fast-path
+        SELECT handles the common sequential-retry case; a caught duplicate-
+        key error on INSERT handles the case where a concurrent transaction
+        won the race between this call's SELECT and INSERT, so two
+        concurrent identical requests can never create two persisted
+        request rows. Either way, whatever row is found is content-checked
+        against the incoming request (`_assert_same_content`) before being
+        returned, so a colliding key bound to a *different* request (e.g. a
+        different trading_account_id) fails closed instead of silently
+        handing back the wrong account's request."""
         with self.cursor_factory(commit=True) as db_obj:
             cursor = _unwrap_cursor(db_obj)
-            cursor.execute(
-                "SELECT * FROM manual_execution_request WHERE idempotency_key = %s",
-                [request.idempotency_key],
-            )
-            existing = cursor.fetchone()
-            if existing:
-                return _row_to_request(existing)
 
-            cursor.execute(
-                """
-                INSERT INTO manual_execution_request (
-                    schema_version, idempotency_key, created_ts_utc, source,
-                    requested_by, mode, trading_account_id, account_code, venue,
-                    asset_id, base_asset, quote_asset, side, quantity_policy,
-                    requested_base_quantity, requested_quote_notional,
-                    ladder_levels_json, provenance_id, request_state
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """,
-                [
-                    request.schema_version,
-                    request.idempotency_key,
-                    request.created_ts_utc,
-                    request.source,
-                    request.requested_by,
-                    request.mode,
-                    request.trading_account_id,
-                    request.account_code,
-                    request.venue,
-                    request.asset_id,
-                    request.base_asset,
-                    request.quote_asset,
-                    request.side,
-                    request.quantity_policy,
-                    request.requested_base_quantity,
-                    request.requested_quote_notional,
-                    _ladder_levels_to_json(request.ladder_levels),
-                    request.provenance_id,
-                    request.request_state,
-                ],
-            )
+            existing = self._select_by_idempotency_key(cursor, request.idempotency_key)
+            if existing is not None:
+                _assert_same_content(request, existing)
+                return existing
+
+            insert_params = [
+                request.schema_version,
+                request.idempotency_key,
+                request.created_ts_utc,
+                request.source,
+                request.requested_by,
+                request.mode,
+                request.trading_account_id,
+                request.account_code,
+                request.venue,
+                request.asset_id,
+                request.base_asset,
+                request.quote_asset,
+                request.side,
+                request.quantity_policy,
+                request.requested_base_quantity,
+                request.requested_quote_notional,
+                _ladder_levels_to_json(request.ladder_levels),
+                request.provenance_id,
+                request.ladder_profile_id,
+                request.ladder_profile_version,
+                request.anchor_reference_price,
+                request.anchor_ts_utc,
+                request.request_state,
+            ]
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO manual_execution_request (
+                        schema_version, idempotency_key, created_ts_utc, source,
+                        requested_by, mode, trading_account_id, account_code, venue,
+                        asset_id, base_asset, quote_asset, side, quantity_policy,
+                        requested_base_quantity, requested_quote_notional,
+                        ladder_levels_json, provenance_id, ladder_profile_id,
+                        ladder_profile_version, anchor_reference_price, anchor_ts_utc,
+                        request_state
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s, %s
+                    )
+                    """,
+                    insert_params,
+                )
+            except Exception as exc:  # noqa: BLE001 - duplicate-key idempotency guard
+                if not _is_duplicate_key_error(exc):
+                    raise
+                existing = self._select_by_idempotency_key(cursor, request.idempotency_key)
+                if existing is None:
+                    raise
+                _assert_same_content(request, existing)
+                return existing
+
             request_id = int(cursor.lastrowid)
             cursor.execute(
                 "SELECT * FROM manual_execution_request WHERE manual_execution_request_id = %s",

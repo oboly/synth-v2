@@ -19,9 +19,15 @@
 --            not-yet-implemented step — see review §13 items 4/9) · no
 --            provenance_id FK to execution_research_provenance yet (binding
 --            provenance to a request is a separate, not-yet-implemented step
---            — see review §13 item 12) · no ladder-profile/anchor columns
---            (A+ ladder quantity calculation is out of scope here) · no live
---            execution enablement.
+--            — see review §13 item 12) · no live execution enablement.
+-- Update (issue #202): added ladder_profile_id/ladder_profile_version/
+--            anchor_reference_price/anchor_ts_utc, required together when
+--            quantity_policy=LADDER_LEVELS and forbidden otherwise (see
+--            src.manual_execution.manual_execution_request_v1._validate_ladder_profile_binding).
+--            This table has never been applied to any database, so this is
+--            an in-place edit of an unapplied CREATE TABLE, not an ALTER.
+--            Deployment order now requires 20260628_execution_ladder_profiles_v1.sql
+--            (creates execution_ladder_profile) to run before this migration.
 
 CREATE TABLE IF NOT EXISTS manual_execution_request (
     manual_execution_request_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -51,6 +57,12 @@ CREATE TABLE IF NOT EXISTS manual_execution_request (
     provenance_id              BIGINT UNSIGNED DEFAULT NULL
         COMMENT 'forward-compatible reference to execution_research_provenance; no FK yet, matching the existing execution_sell_reservation.manual_execution_request_id forward-compat convention — binding provenance is a separate, not-yet-implemented step',
 
+    ladder_profile_id          BIGINT UNSIGNED DEFAULT NULL
+        COMMENT 'required with ladder_profile_version/anchor_reference_price/anchor_ts_utc when quantity_policy=LADDER_LEVELS; forbidden otherwise',
+    ladder_profile_version     INT            DEFAULT NULL COMMENT 'execution_ladder_leg.profile_version this request was built against',
+    anchor_reference_price     DECIMAL(20,10) DEFAULT NULL COMMENT 'operator-visible reference price (e.g. Profit Plan level) at request time, not a live market read',
+    anchor_ts_utc              DATETIME(6)    DEFAULT NULL,
+
     request_state              VARCHAR(24)    NOT NULL DEFAULT 'DRAFT',
     rejection_code             VARCHAR(64)    DEFAULT NULL,
     rejection_detail           VARCHAR(512)   DEFAULT NULL,
@@ -68,6 +80,9 @@ CREATE TABLE IF NOT EXISTS manual_execution_request (
     CONSTRAINT fk_manual_execution_request_asset
         FOREIGN KEY (asset_id) REFERENCES asset (asset_id),
 
+    CONSTRAINT fk_manual_execution_request_ladder_profile
+        FOREIGN KEY (ladder_profile_id) REFERENCES execution_ladder_profile (ladder_profile_id),
+
     CONSTRAINT chk_manual_execution_request_mode
         CHECK (mode IN ('PAPER', 'LIVE')),
 
@@ -79,6 +94,21 @@ CREATE TABLE IF NOT EXISTS manual_execution_request (
             'FULL_AVAILABLE_BASE', 'FIXED_BASE_QUANTITY',
             'FIXED_QUOTE_NOTIONAL', 'LADDER_LEVELS'
         )),
+
+    CONSTRAINT chk_manual_execution_request_ladder_binding
+        CHECK (
+            (quantity_policy = 'LADDER_LEVELS'
+                AND ladder_profile_id IS NOT NULL
+                AND ladder_profile_version IS NOT NULL
+                AND anchor_reference_price IS NOT NULL
+                AND anchor_ts_utc IS NOT NULL)
+            OR
+            (quantity_policy <> 'LADDER_LEVELS'
+                AND ladder_profile_id IS NULL
+                AND ladder_profile_version IS NULL
+                AND anchor_reference_price IS NULL
+                AND anchor_ts_utc IS NULL)
+        ),
 
     CONSTRAINT chk_manual_execution_request_state
         CHECK (request_state IN (

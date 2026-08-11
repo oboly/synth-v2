@@ -52,6 +52,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final
 
+from src.decision_gate import manual_execution_approval_v1 as approval_authority
 from src.decision_gate.manual_execution_gate_v1 import (
     GATE_DECISION_EXECUTION_ALLOWED,
     ManualExecutionGateRepository,
@@ -62,6 +63,11 @@ from src.execution_planner.contract_preview_v1 import (
     ExecutionPlanPreview,
     ManualSellPlanningInputs,
     build_manual_sell_execution_plan_preview,
+)
+from src.execution_planner.manual_execution_plan_snapshot_v1 import (
+    ManualExecutionPlanSnapshot,
+    ManualExecutionPlanSnapshotRepository,
+    build_plan_snapshot,
 )
 from src.manual_execution.manual_execution_request_v1 import (
     MODE_PAPER,
@@ -92,6 +98,7 @@ class ManualExecutionOutcome:
     gate_result: ManualExecutionGateResult | None
     approval_id: int | None
     plan_preview: ExecutionPlanPreview | None
+    plan_snapshot: ManualExecutionPlanSnapshot | None
     notes: str
 
 
@@ -132,6 +139,7 @@ def process(
             gate_result=None,
             approval_id=None,
             plan_preview=None,
+            plan_snapshot=None,
             notes="rejected before decision_gate: mode != PAPER",
         )
 
@@ -151,6 +159,7 @@ def process(
             gate_result=None,
             approval_id=None,
             plan_preview=None,
+            plan_snapshot=None,
             notes="rejected before decision_gate: venue execution constraints not fresh",
         )
 
@@ -171,6 +180,7 @@ def process(
             gate_result=gate_result,
             approval_id=None,
             plan_preview=None,
+            plan_snapshot=None,
             notes="blocked at decision_gate; no reservation was created; execution_planner was not called",
         )
 
@@ -202,8 +212,29 @@ def process(
             gate_result=gate_result,
             approval_id=approval_id,
             plan_preview=None,
+            plan_snapshot=None,
             notes=f"execution_planner rejected the gate-approved intent: {exc}",
         )
+
+    # The plan preview was built successfully from a decision_gate-approved
+    # request, so the exact planning inputs are now persisted as an
+    # immutable snapshot before the request advances to PLANNED. Resolving
+    # the approval record a second time (rather than threading it through
+    # contract_preview_v1's return type) keeps contract_preview_v1 itself
+    # free of DB writes, matching the "Current Planner Lane" read-only
+    # contract in AGENTS.md.
+    persisted_authority = approval_authority.resolve_persisted_manual_execution_authority(
+        request_id=persisted_request.request_id,
+        approval_id=approval_id,
+    )
+    plan_snapshot = build_plan_snapshot(
+        request=persisted_request,
+        approval=persisted_authority.approval,
+        plan_preview=plan_preview,
+    )
+    persisted_snapshot = ManualExecutionPlanSnapshotRepository().create_snapshot_idempotent(
+        plan_snapshot
+    )
 
     planned_request = advance_manual_execution_request_state(
         persisted_request,
@@ -217,5 +248,6 @@ def process(
         gate_result=gate_result,
         approval_id=approval_id,
         plan_preview=plan_preview,
-        notes="preview_only=1; no_db_writes_beyond_request_state_and_reservation=1; no_executor=1",
+        plan_snapshot=persisted_snapshot,
+        notes="preview_only=1; no_db_writes_beyond_request_state_reservation_and_plan_snapshot=1; no_executor=1",
     )

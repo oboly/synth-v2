@@ -220,6 +220,18 @@ class GateRepository:
         return ManualExecutionApprovalOutcome(result, 501)
 
 
+class PlanSnapshotRepository:
+    def __init__(self):
+        self.snapshots = []
+
+    def create_snapshot_idempotent(self, snapshot):
+        persisted = dataclasses.replace(
+            snapshot, plan_snapshot_id=len(self.snapshots) + 1, created_ts_utc=NOW
+        )
+        self.snapshots.append(persisted)
+        return persisted
+
+
 def _install_service_components(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -227,6 +239,7 @@ def _install_service_components(
 ) -> tuple[RequestRepository, GateRepository]:
     request_repository = RequestRepository()
     gate_repository = GateRepository(blocked=blocked)
+    plan_snapshot_repository = PlanSnapshotRepository()
     monkeypatch.setattr(
         service,
         "ManualExecutionRequestRepository",
@@ -236,6 +249,11 @@ def _install_service_components(
         service,
         "ManualExecutionGateRepository",
         lambda: gate_repository,
+    )
+    monkeypatch.setattr(
+        service,
+        "ManualExecutionPlanSnapshotRepository",
+        lambda: plan_snapshot_repository,
     )
     return request_repository, gate_repository
 
@@ -258,6 +276,11 @@ def test_paper_sell_service_uses_non_substitutable_persisted_authority(
     assert outcome.plan_preview is not None
     assert outcome.plan_preview.quantity_base == Decimal("2")
     assert outcome.plan_preview.execution_mode == MODE_PAPER
+    assert outcome.plan_snapshot is not None
+    assert outcome.plan_snapshot.request_id == 1
+    assert outcome.plan_snapshot.approval_id == 501
+    assert outcome.plan_snapshot.approved_quantity_base == Decimal("2")
+    assert outcome.plan_snapshot.plan_state == "PREVIEW_ONLY"
 
 
 def test_gate_block_and_stale_constraints_never_plan(
@@ -273,6 +296,7 @@ def test_gate_block_and_stale_constraints_never_plan(
     )
     assert blocked.request.request_state == REQUEST_STATE_GATE_BLOCKED
     assert blocked.plan_preview is None
+    assert blocked.plan_snapshot is None
 
     _, gate = _install_service_components(monkeypatch)
     stale = service.process(
@@ -283,6 +307,7 @@ def test_gate_block_and_stale_constraints_never_plan(
     )
     assert stale.request.request_state == REQUEST_STATE_PLAN_REJECTED
     assert gate.calls == 0
+    assert stale.plan_snapshot is None
 
 
 def test_live_request_fails_before_gate(

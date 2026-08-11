@@ -73,8 +73,25 @@ class TestConstructionGuardsIntent:
         request = _build(
             quantity_policy=QUANTITY_POLICY_LADDER_LEVELS,
             ladder_levels=((Decimal("50000"), Decimal("0.5")), (Decimal("52000"), Decimal("0.5"))),
+            ladder_profile_id=7,
+            ladder_profile_version=1,
+            anchor_reference_price=Decimal("51000"),
+            anchor_ts_utc=NOW,
         )
         assert len(request.ladder_levels) == 2
+        assert request.ladder_profile_id == 7
+        assert request.ladder_profile_version == 1
+
+    def test_ladder_levels_without_profile_binding_rejected(self) -> None:
+        with pytest.raises(ManualExecutionRequestValidationError):
+            _build(
+                quantity_policy=QUANTITY_POLICY_LADDER_LEVELS,
+                ladder_levels=((Decimal("50000"), Decimal("1")),),
+            )
+
+    def test_non_ladder_policy_with_profile_binding_rejected(self) -> None:
+        with pytest.raises(ManualExecutionRequestValidationError):
+            _build(ladder_profile_id=7, ladder_profile_version=1)
 
     def test_unknown_source_rejected(self) -> None:
         with pytest.raises(ManualExecutionRequestValidationError):
@@ -237,7 +254,9 @@ class _FakeCursor:
                 schema_version, idempotency_key, created_ts_utc, source, requested_by,
                 mode, trading_account_id, account_code, venue, asset_id, base_asset,
                 quote_asset, side, quantity_policy, requested_base_quantity,
-                requested_quote_notional, ladder_levels_json, provenance_id, request_state,
+                requested_quote_notional, ladder_levels_json, provenance_id,
+                ladder_profile_id, ladder_profile_version, anchor_reference_price,
+                anchor_ts_utc, request_state,
             ) = params
             new_id = len(self._table) + 1
             row = {
@@ -260,6 +279,10 @@ class _FakeCursor:
                 "requested_quote_notional": requested_quote_notional,
                 "ladder_levels_json": ladder_levels_json,
                 "provenance_id": provenance_id,
+                "ladder_profile_id": ladder_profile_id,
+                "ladder_profile_version": ladder_profile_version,
+                "anchor_reference_price": anchor_reference_price,
+                "anchor_ts_utc": anchor_ts_utc,
                 "request_state": request_state,
                 "rejection_code": None,
                 "rejection_detail": None,
