@@ -13,7 +13,10 @@ from decimal import Decimal
 from typing import Any, Callable
 
 from src.execution_planner.contract_preview_v1 import ExecutionPlanPreview, preview_to_dict
-from src.manual_execution.manual_execution_request_v1 import ManualExecutionRequest
+from src.manual_execution.manual_execution_request_v1 import (
+    ManualExecutionRequest,
+    validate_required_snapshot_binding,
+)
 
 
 class ManualExecutionPlanSnapshotError(ValueError):
@@ -57,16 +60,12 @@ def build_manual_execution_plan_snapshot(
     *, request: ManualExecutionRequest, approval_id: int, plan: ExecutionPlanPreview
 ) -> ManualExecutionPlanSnapshot:
     """Convert a gate-approved planner result into reproducible immutable intent."""
-    required = (
-        request.request_id, request.ladder_profile_id, request.ladder_profile_version,
-        request.anchor_type, request.anchor_price, request.anchor_source,
-        request.source_map_cycle_id, request.source_native_map_id,
-        request.source_map_version, request.provenance_id,
-    )
-    if any(value is None for value in required):
-        raise ManualExecutionPlanSnapshotError(
-            "manual execution plan snapshot requires complete profile/anchor/source-map/provenance binding"
-        )
+    if request.request_id is None:
+        raise ManualExecutionPlanSnapshotError("manual execution plan snapshot requires a persisted request")
+    try:
+        validate_required_snapshot_binding(request)
+    except ValueError as exc:
+        raise ManualExecutionPlanSnapshotError(str(exc)) from exc
     if approval_id <= 0 or plan.source_decision_state != "APPROVED":
         raise ManualExecutionPlanSnapshotError("only a decision_gate-approved plan may be snapshotted")
     if plan.account_id != request.trading_account_id or plan.side != request.side:

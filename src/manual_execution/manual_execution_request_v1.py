@@ -387,13 +387,14 @@ def _derive_dedupe_key(
 ) -> str:
     """Stable DB-enforced retry identity.
 
-    A caller nonce distinguishes a genuinely new Process action.  The legacy
-    idempotency key remains part of the digest for compatible callers that do
-    not yet supply a nonce.
+    A caller nonce distinguishes a genuinely new Process action. The legacy
+    idempotency key remains part of the digest for compatible callers; it is
+    no longer the database's sole uniqueness authority.
     """
     payload = {
         "account": trading_account_id,
         "asset": asset_id,
+        "idempotency_key": idempotency_key.strip(),
         "nonce": operator_request_nonce.strip() if operator_request_nonce else None,
         "profile": [ladder_profile_id, ladder_profile_version],
         "provenance": provenance_id,
@@ -411,6 +412,30 @@ def _derive_dedupe_key(
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def validate_required_snapshot_binding(request: ManualExecutionRequest) -> None:
+    """Fail before decision_gate for a request that cannot be snapshotted.
+
+    Profile/anchor/source-map binding is operator intent and provenance, not
+    account permission; keeping this check here prevents a gate-owned
+    approval/reservation from being created for an unsnapshottable request.
+    """
+    required = (
+        request.ladder_profile_id,
+        request.ladder_profile_version,
+        request.anchor_type,
+        request.anchor_price,
+        request.anchor_source,
+        request.source_map_cycle_id,
+        request.source_native_map_id,
+        request.source_map_version,
+        request.provenance_id,
+    )
+    if any(value is None for value in required):
+        raise ManualExecutionRequestValidationError(
+            "manual execution request requires complete profile/anchor/source-map/provenance binding"
+        )
 
 
 def advance_manual_execution_request_state(

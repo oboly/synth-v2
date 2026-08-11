@@ -77,6 +77,7 @@ from src.manual_execution.manual_execution_request_v1 import (
     ManualExecutionRequest,
     ManualExecutionRequestRepository,
     advance_manual_execution_request_state,
+    validate_required_snapshot_binding,
 )
 from src.market_rules.venue_execution_constraints_v1 import (
     STATUS_FRESH,
@@ -169,6 +170,35 @@ def process(
             plan_preview=None,
             plan_snapshot=None,
             notes="idempotent_retry=1; previously blocked at decision_gate",
+        )
+    if persisted_request.request_state == REQUEST_STATE_PLAN_REJECTED:
+        return ManualExecutionOutcome(
+            request=persisted_request,
+            gate_result=None,
+            approval_id=None,
+            plan_preview=None,
+            plan_snapshot=None,
+            notes="idempotent_retry=1; previously rejected before executable plan creation",
+        )
+
+    try:
+        validate_required_snapshot_binding(persisted_request)
+    except ValueError as exc:
+        rejected_request = advance_manual_execution_request_state(
+            persisted_request,
+            new_state=REQUEST_STATE_PLAN_REJECTED,
+            processed_ts_utc=resolved_now,
+            rejection_code="SNAPSHOT_BINDING_REQUIRED",
+            rejection_detail=str(exc),
+        )
+        request_repository.update_request_state(rejected_request)
+        return ManualExecutionOutcome(
+            request=rejected_request,
+            gate_result=None,
+            approval_id=None,
+            plan_preview=None,
+            plan_snapshot=None,
+            notes="rejected before decision_gate: required snapshot binding missing",
         )
 
     if venue_constraints.status != STATUS_FRESH:

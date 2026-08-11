@@ -89,7 +89,7 @@ def _request(**overrides):
 def _approval(**overrides) -> ManualExecutionApprovalRecord:
     values = {
         "approval_id": 501,
-        "idempotency_key": "manual_execution_approval:request-1",
+        "idempotency_key": "manual_execution_approval:1",
         "request_id": 1,
         "trading_account_id": 1,
         "account_code": "paper",
@@ -207,6 +207,7 @@ class GateRepository:
     def __init__(self, *, blocked: bool = False):
         self.blocked = blocked
         self.calls = 0
+        self.reservation_creations = 0
 
     def approve_and_reserve(self, request):
         self.calls += 1
@@ -226,14 +227,17 @@ class GateRepository:
             approved_quantity_base=Decimal("2"),
             free_base_quantity_result=None,
         )
+        self.reservation_creations += 1
         return ManualExecutionApprovalOutcome(result, 501)
 
 
 class SnapshotRepository:
     def __init__(self):
         self.snapshot = None
+        self.create_calls = 0
 
     def create_idempotent(self, snapshot):
+        self.create_calls += 1
         self.snapshot = dataclasses.replace(snapshot, plan_snapshot_id=701)
         return self.snapshot
 
@@ -310,6 +314,117 @@ def test_gate_block_and_stale_constraints_never_plan(
     )
     assert stale.request.request_state == REQUEST_STATE_PLAN_REJECTED
     assert gate.calls == 0
+
+
+def test_missing_snapshot_binding_is_rejected_before_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, gate = _install_service_components(monkeypatch)
+    snapshots = SnapshotRepository()
+    monkeypatch.setattr(service, "ManualExecutionPlanSnapshotRepository", lambda: snapshots)
+    request = dataclasses.replace(
+        _request(),
+        ladder_profile_id=None,
+        ladder_profile_version=None,
+        anchor_type=None,
+        anchor_price=None,
+        anchor_source=None,
+        source_map_cycle_id=None,
+        source_native_map_id=None,
+        source_map_version=None,
+    )
+    outcome = service.process(
+        request,
+        market_context=_context(),
+        venue_constraints=_constraints(),
+        sleeve_code="CORE_STRUCTURAL",
+    )
+    assert outcome.request.request_state == REQUEST_STATE_PLAN_REJECTED
+    assert outcome.approval_id is None
+    assert outcome.plan_snapshot is None
+    assert gate.calls == 0
+    assert gate.reservation_creations == 0
+    assert snapshots.create_calls == 0
+
+
+def test_nonce_identity_is_end_to_end_and_retry_does_not_reevaluate_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Requests:
+        def __init__(self):
+            self.rows = {}
+
+        def create_request_idempotent(self, request):
+            existing = self.rows.get(request.dedupe_key)
+            if existing is not None:
+                return existing
+            persisted = dataclasses.replace(request, request_id=len(self.rows) + 1)
+            self.rows[persisted.dedupe_key] = persisted
+            return persisted
+
+        def update_request_state(self, request):
+            self.rows[request.dedupe_key] = request
+
+    class Gate:
+        def __init__(self):
+            self.calls = []
+
+        def approve_and_reserve(self, request):
+            self.calls.append(request.request_id)
+            return ManualExecutionApprovalOutcome(
+                ManualExecutionGateResult(
+                    decision_state=GATE_DECISION_EXECUTION_ALLOWED,
+                    decision_reason="OK",
+                    blocking_reasons=(),
+                    approved_quantity_base=Decimal("2"),
+                    free_base_quantity_result=None,
+                ),
+                500 + request.request_id,
+            )
+
+    class Snapshots:
+        def __init__(self):
+            self.rows = {}
+
+        def create_idempotent(self, snapshot):
+            persisted = dataclasses.replace(
+                snapshot, plan_snapshot_id=700 + snapshot.request_id
+            )
+            self.rows[snapshot.request_id] = persisted
+            return persisted
+
+        def find_by_request_id(self, request_id):
+            return self.rows.get(request_id)
+
+    requests, gate, snapshots = Requests(), Gate(), Snapshots()
+    monkeypatch.setattr(service, "ManualExecutionRequestRepository", lambda: requests)
+    monkeypatch.setattr(service, "ManualExecutionGateRepository", lambda: gate)
+    monkeypatch.setattr(service, "ManualExecutionPlanSnapshotRepository", lambda: snapshots)
+
+    def resolve(*, request_id: int, approval_id: int):
+        request = next(row for row in requests.rows.values() if row.request_id == request_id)
+        assert approval_id == 500 + request_id
+        return PersistedManualExecutionAuthority(
+            request=request,
+            approval=_approval(
+                approval_id=approval_id,
+                request_id=request_id,
+                idempotency_key=f"manual_execution_approval:{request_id}",
+                reservation_request_id=request_id,
+            ),
+        )
+
+    monkeypatch.setattr(approval_authority, "resolve_persisted_manual_execution_authority", resolve)
+    first = service.process(_request(operator_request_nonce="nonce-a"), market_context=_context(), venue_constraints=_constraints(), sleeve_code="CORE_STRUCTURAL")
+    second = service.process(_request(operator_request_nonce="nonce-b"), market_context=_context(), venue_constraints=_constraints(), sleeve_code="CORE_STRUCTURAL")
+    retry = service.process(_request(operator_request_nonce="nonce-a"), market_context=_context(), venue_constraints=_constraints(), sleeve_code="CORE_STRUCTURAL")
+
+    assert first.request.request_id != second.request.request_id
+    assert first.approval_id != second.approval_id
+    assert first.plan_snapshot.plan_snapshot_id != second.plan_snapshot.plan_snapshot_id
+    assert retry.approval_id == first.approval_id
+    assert retry.plan_snapshot.plan_snapshot_id == first.plan_snapshot.plan_snapshot_id
+    assert gate.calls == [first.request.request_id, second.request.request_id]
 
 
 def test_live_request_fails_before_gate(

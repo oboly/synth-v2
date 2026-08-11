@@ -395,7 +395,7 @@ def _validate_persisted_manual_execution_approval(
     _reject_mismatch(approval.request_id != request.request_id, "approval request mismatch")
     _reject_mismatch(
         approval.idempotency_key
-        != f"manual_execution_approval:{request.idempotency_key}",
+        != f"manual_execution_approval:{request.request_id}",
         "approval idempotency binding mismatch",
     )
     _reject_mismatch(

@@ -121,6 +121,18 @@ class ManualExecutionApprovalOutcome:
     approval_id: int | None
 
 
+def manual_execution_request_idempotency_keys(
+    request: ManualExecutionRequest,
+) -> tuple[str, str]:
+    """Return gate-owned idempotency keys from the canonical request row."""
+    if request.request_id is None or request.request_id <= 0:
+        raise ValueError("manual execution gate requires a persisted request_id")
+    return (
+        f"manual_execution_request:{request.request_id}",
+        f"manual_execution_approval:{request.request_id}",
+    )
+
+
 def _blocked(
     reason: str,
     *,
@@ -368,7 +380,7 @@ class ManualExecutionGateRepository:
         None) — src.manual_execution.manual_execution_service_v1.process()
         always persists via ManualExecutionRequestRepository first.
 
-        Idempotent: retrying with the same request.idempotency_key returns
+        Idempotent: retrying with the same persisted canonical request ID returns
         the approval bound to the existing reservation without re-deriving
         the decision from (possibly since-changed) account/wallet state —
         this matters because a naive retry that re-ran the gate could
@@ -380,7 +392,9 @@ class ManualExecutionGateRepository:
 
         resolved_now = trusted_clock.utc_now()
         assert self.reservation_repository is not None
-        reservation_idempotency_key = f"manual_execution_request:{request.idempotency_key}"
+        reservation_idempotency_key, approval_idempotency_key = (
+            manual_execution_request_idempotency_keys(request)
+        )
 
         with self.cursor_factory(commit=True) as db_obj:
             cursor = _unwrap_cursor(db_obj)
@@ -496,7 +510,7 @@ class ManualExecutionGateRepository:
                 )
                 """,
                 [
-                    f"manual_execution_approval:{request.idempotency_key}",
+                    approval_idempotency_key,
                     request.request_id,
                     request.trading_account_id,
                     request.account_code,
@@ -601,7 +615,7 @@ class ManualExecutionGateRepository:
 
         expected = {
             "approval_id": approval_id,
-            "idempotency_key": f"manual_execution_approval:{request.idempotency_key}",
+            "idempotency_key": f"manual_execution_approval:{request.request_id}",
             "request_id": request.request_id,
             "trading_account_id": request.trading_account_id,
             "account_code": request.account_code,

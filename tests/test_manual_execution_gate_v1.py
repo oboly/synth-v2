@@ -7,6 +7,7 @@ pattern as tests/test_sell_reservation_v1.py.
 """
 from __future__ import annotations
 
+import dataclasses
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -27,6 +28,7 @@ from src.decision_gate.manual_execution_gate_v1 import (
     ManualExecutionGateInput,
     ManualExecutionGateRepository,
     evaluate_manual_execution_request,
+    manual_execution_request_idempotency_keys,
 )
 from src.manual_execution.manual_execution_request_v1 import (
     MODE_LIVE,
@@ -70,6 +72,19 @@ def _request(**overrides):
     )
     defaults.update(overrides)
     return build_manual_execution_request(**defaults)
+
+
+def test_gate_idempotency_keys_use_persisted_canonical_request_identity() -> None:
+    first = dataclasses.replace(_request(idempotency_key="legacy", operator_request_nonce="a"), request_id=10)
+    second = dataclasses.replace(_request(idempotency_key="legacy", operator_request_nonce="b"), request_id=11)
+    assert manual_execution_request_idempotency_keys(first) == (
+        "manual_execution_request:10",
+        "manual_execution_approval:10",
+    )
+    assert manual_execution_request_idempotency_keys(second) == (
+        "manual_execution_request:11",
+        "manual_execution_approval:11",
+    )
 
 
 def _wallet_snapshot(**overrides) -> WalletAvailableSnapshot:
