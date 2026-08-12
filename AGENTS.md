@@ -152,6 +152,30 @@ Token and context discipline:
 - Token discipline never justifies skipping a required safety check or
   reporting an unrun check as run.
 
+### Branch/worktree hygiene
+
+- Before starting an implementation branch, fetch `origin` and verify the
+  exact intended base SHA against `origin/main`.
+- Never create a feature branch from an unrelated feature/docs branch, a
+  detached historical checkout, or a worktree containing unrelated commits.
+- For a new bounded task, branch from current `origin/main` unless the task
+  explicitly specifies another reviewed base.
+- Before opening or updating a PR, compare `HEAD` against `origin/main` and
+  verify that every commit and changed file belongs only to the assigned task.
+- If unrelated historical work appears in the diff or commit ancestry, stop
+  and reconstruct the branch from `origin/main`.
+- A clean working tree alone is insufficient; branch ancestry must also be
+  clean.
+
+For implementation tasks, record this pre-edit evidence:
+
+```text
+BASE_BRANCH=origin/main
+BASE_SHA=<verified sha>
+WORKTREE_CLEAN=yes
+BRANCH_ANCESTRY_CLEAN=yes
+```
+
 ## Agent Output Style
 
 Default response style for Codex / coding agents is terse.
