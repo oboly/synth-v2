@@ -44,6 +44,7 @@ from __future__ import annotations
 import argparse
 import sys
 from decimal import Decimal
+from typing import Final
 
 from src.account_provisioning.credential_crypto_v1 import load_master_key_from_env
 from src.account_provisioning.credential_repository_v1 import CredentialRepository
@@ -77,6 +78,10 @@ from src.executor.manual_live_authorization_v1 import ManualLiveAuthorizationDen
 
 LIVE_CONFIRMATION_PROMPT_TEMPLATE = "CONFIRM LIVE SELL handoff_id={handoff_id}"
 GRANT_CONFIRMATION_PROMPT_TEMPLATE = "GRANT LIVE AUTHORITY handoff_id={handoff_id}"
+# This value is valid only for the in-process dry-run adapter and repository.
+# LIVE resolution is positive-only and can therefore never accept it as Bitvavo
+# operator authority.
+DRY_RUN_NON_LIVE_OPERATOR_ID: Final[int] = -1
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -168,14 +173,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.grant_live_authority:
         return _grant_live_authority(handoff=handoff, authorized_by=args.authorized_by)
 
+    if args.mode == "dry-run":
+        return _run_dry_run(
+            handoff=handoff,
+            plan_snapshot=plan_snapshot,
+            operator_id=DRY_RUN_NON_LIVE_OPERATOR_ID,
+            args=args,
+        )
+
     try:
         operator_id = resolve_operator_id()
     except OperatorIdentityNotConfiguredError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-
-    if args.mode == "dry-run":
-        return _run_dry_run(handoff=handoff, plan_snapshot=plan_snapshot, operator_id=operator_id, args=args)
 
     return _run_live(handoff=handoff, plan_snapshot=plan_snapshot, operator_id=operator_id)
 
