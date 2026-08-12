@@ -726,15 +726,18 @@ def test_sector_rotation_snapshot_wrapper_and_module_are_forbidden_consumer_toke
 
 
 def test_sector_rotation_snapshot_production_verifier_denies_execution() -> None:
-    # Registry ownership is now AUTHORIZED_INACTIVE, but no production
-    # authorization artifact has been installed for sector_rotation_snapshot
-    # itself: its authorization_guard.authorization_file is the same
-    # host-local path already installed for public_price_snapshot, so the
-    # content-mismatch checks in _verify_production fail closed regardless of
-    # that file's presence. These capability-identity/content-mismatch
-    # reasons are stable across checkout/branch state; a
-    # commit/branch-specific reason may also appear and is intentionally not
-    # asserted here.
+    # Registry ownership is now AUTHORIZED_INACTIVE, and sector_rotation_snapshot
+    # has its own dedicated authorization_guard.authorization_file (distinct
+    # from public_price_snapshot's), but no production authorization artifact
+    # has been installed at that dedicated path. The guard therefore fails
+    # closed on file absence, not on cross-capability content mismatch.
+    registry = _registry()
+    cap = _cap(registry, "sector_rotation_snapshot")
+    dedicated_path = Path(cap["authorization_guard"]["authorization_file"])
+    assert not dedicated_path.exists(), (
+        "this test requires no production authorization artifact to be "
+        "installed yet for sector_rotation_snapshot"
+    )
     decision = verify_writer_execution_authorization(
         capability_id="sector_rotation_snapshot",
         mode=ExecutionMode.PRODUCTION,
@@ -742,12 +745,51 @@ def test_sector_rotation_snapshot_production_verifier_denies_execution() -> None
         checkout_path=Path.cwd(),
     )
     assert not decision.allowed
-    assert "authorization capability_id mismatch" in decision.reasons
-    assert "authorization capability_identity mismatch" in decision.reasons
-    assert (
-        "authorization decision_evidence must match registry production_decision_evidence"
-        in decision.reasons
+    assert any(
+        "is not a regular file" in reason and str(dedicated_path) in reason
+        for reason in decision.reasons
     )
+
+
+def test_sector_rotation_snapshot_authorization_path_does_not_collide() -> None:
+    # Regression guard: sector_rotation_snapshot must never share its
+    # authorization_guard.authorization_file with any other capability,
+    # in particular the already-ACTIVE public_price_snapshot writer. A shared
+    # file would let one capability's authorization content deny or -- if the
+    # module ever grew a write path -- corrupt another capability's artifact.
+    registry = _registry()
+    paths_by_capability = {
+        cap["capability_id"]: cap["authorization_guard"]["authorization_file"]
+        for cap in registry["capabilities"]
+    }
+    sector_path = paths_by_capability["sector_rotation_snapshot"]
+    for capability_id, path in paths_by_capability.items():
+        if capability_id == "sector_rotation_snapshot":
+            continue
+        assert path != sector_path, (
+            f"sector_rotation_snapshot authorization_file collides with {capability_id}: {path}"
+        )
+    assert paths_by_capability["public_price_snapshot"] == (
+        "/etc/synth/writer-capability-runtime-authorization-v1.json"
+    )
+    assert sector_path == (
+        "/etc/synth/writer-capability-sector-rotation-snapshot-authorization-v1.json"
+    )
+
+
+def test_sector_rotation_snapshot_authorization_path_is_registry_fixed_not_environment_overridable() -> None:
+    # The production authorization path is derived solely from the registry's
+    # authorization_guard.authorization_file; there is no public/CLI/environment
+    # override for it (see verify_writer_execution_authorization, PRODUCTION
+    # branch: resolved_authorization_path comes only from `guard`).
+    import inspect
+
+    from src.operations import writer_capability_authorization_v1 as auth_module
+
+    source = inspect.getsource(auth_module.verify_writer_execution_authorization)
+    assert "authorization_file" in source
+    assert "os.environ" not in source
+    assert not hasattr(auth_module, "authorization_path")
 
 
 def test_existing_four_capabilities_unchanged_by_sector_rotation_onboarding() -> None:
