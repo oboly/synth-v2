@@ -42,6 +42,30 @@ class BitvavoOrderRequest:
     price: str | None = None
     post_only: bool = True
     time_in_force: str = "GTC"
+    operator_id: int | None = None
+    client_order_id: str | None = None
+
+
+class BitvavoOrderRequestError(RuntimeError):
+    """Bitvavo returned a definitive HTTP error response (a real response
+    was received; the request was not lost in flight). Carries the
+    normalized status_code so callers can distinguish a definitive
+    rejection from network-level ambiguity without parsing message text.
+    Never includes credential material."""
+
+    def __init__(self, *, action: str, status_code: int, response_text: str) -> None:
+        self.action = action
+        self.status_code = status_code
+        self.response_text = response_text
+        super().__init__(
+            f"Bitvavo {action} failed. status_code={status_code} response_text={response_text}"
+        )
+
+
+class BitvavoOrderNotFoundError(LookupError):
+    """The broker definitively confirmed no such order exists (e.g. HTTP
+    404). Distinct from network-level ambiguity, where the exception
+    propagates unchanged instead of being translated to this type."""
 
 
 class BitvavoClient:
@@ -91,6 +115,25 @@ class BitvavoClient:
             rest_url=rest_url,
             timeout_seconds=timeout_seconds,
             auth_context="private_read",
+        )
+
+    @classmethod
+    def for_private_write(
+        cls,
+        *,
+        api_key: str,
+        api_secret: str,
+        rest_url: str | None = None,
+        timeout_seconds: int = 15,
+    ) -> "BitvavoClient":
+        if not (api_key or "").strip() or not (api_secret or "").strip():
+            raise ValueError("BITVAVO_PRIVATE_WRITE_EXPLICIT_CREDENTIALS_REQUIRED")
+        return cls(
+            api_key=api_key,
+            api_secret=api_secret,
+            rest_url=rest_url,
+            timeout_seconds=timeout_seconds,
+            auth_context="private_write",
         )
 
     def _has_auth(self) -> bool:
@@ -279,6 +322,9 @@ class BitvavoClient:
     def place_order(self, order: BitvavoOrderRequest) -> dict[str, Any]:
         self._require_private_write_permission("place_order")
 
+        if order.operator_id is None:
+            raise ValueError("BitvavoOrderRequest.operator_id is required for place_order")
+
         path = "/order"
         url = f"{self.rest_url}{path}"
 
@@ -287,8 +333,11 @@ class BitvavoClient:
             "side": order.side,
             "orderType": order.order_type,
             "amount": order.amount,
-            "operatorId": 1,
+            "operatorId": order.operator_id,
         }
+
+        if order.client_order_id is not None:
+            payload["clientOrderId"] = order.client_order_id
 
         if order.price is not None:
             payload["price"] = order.price
@@ -300,6 +349,13 @@ class BitvavoClient:
         body = json.dumps(payload, separators=(",", ":"))
         headers = self._headers("POST", path, body)
 
+        # No retry loop here: any network-level exception (timeout,
+        # connection drop) propagates to the caller unchanged, since only a
+        # caller that knows about crash-safe per-leg reconciliation
+        # (src.executor.manual_execution_submission_orchestrator_v1) may
+        # decide it is safe to query-before-resubmit. A caught
+        # requests.HTTPError below means a real HTTP response was received,
+        # which is a definitive (non-ambiguous) broker outcome.
         response = requests.post(
             url,
             headers=headers,
@@ -309,31 +365,58 @@ class BitvavoClient:
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:
-            raise RuntimeError(
-                "Bitvavo place_order failed. "
-                f"status_code={response.status_code} response_text={response.text}"
+            raise BitvavoOrderRequestError(
+                action="place_order",
+                status_code=response.status_code,
+                response_text=response.text,
             ) from exc
         return response.json()
 
-    def get_order(self, market: str, order_id: str) -> dict[str, Any]:
+    def get_order(
+        self,
+        market: str,
+        order_id: str | None = None,
+        *,
+        client_order_id: str | None = None,
+    ) -> dict[str, Any]:
         self._require_private_read_permission("get_order")
+
+        if bool(order_id) == bool(client_order_id):
+            raise ValueError("get_order requires exactly one of order_id or client_order_id")
 
         path = f"/{market}/order"
         url = f"{self.rest_url}{path}"
 
-        params = {"orderId": order_id}
+        params = {"orderId": order_id} if order_id else {"clientOrderId": client_order_id}
         query_string = urlencode(params)
         signed_path = f"{path}?{query_string}"
         headers = self._headers("GET", signed_path, "")
 
+        # As in place_order, network-level exceptions propagate unchanged
+        # (ambiguous). A 404 here is a definitive "no such order" answer and
+        # is translated to BitvavoOrderNotFoundError; any other HTTP error
+        # status is left as requests.HTTPError, since it is not a confident
+        # "does not exist" answer.
         response = requests.get(
             url,
             headers=headers,
             params=params,
             timeout=self.timeout_seconds,
         )
+        if response.status_code == 404:
+            raise BitvavoOrderNotFoundError(
+                f"order not found: market={market} order_id={order_id} client_order_id={client_order_id}"
+            )
         response.raise_for_status()
         return response.json()
+
+    def get_order_by_client_order_id(self, market: str, client_order_id: str) -> dict[str, Any]:
+        """Reconciliation-only lookup used by the manual submission
+        orchestrator to resolve SUBMISSION_UNCERTAIN legs before ever
+        resubmitting. Raises BitvavoOrderNotFoundError if the broker
+        definitively confirms no such order exists; propagates
+        network-level exceptions unchanged (ambiguous)."""
+        return self.get_order(market, client_order_id=client_order_id)
 
     def cancel_order(self, market: str, order_id: str) -> dict[str, Any]:
         self._require_private_write_permission("cancel_order")
