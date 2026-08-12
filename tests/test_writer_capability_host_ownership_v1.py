@@ -135,10 +135,10 @@ def test_public_price_and_candle_are_active() -> None:
             assert cap["acceptance_host"] == "gurkdb"
             assert cap["acceptance_status"] == "ACCEPTED"
             assert cap["acceptance_evidence"]
-            assert cap["production_runtime_owner"] == UNASSIGNED
-            assert cap["production_decision_evidence"] == ""
-            assert cap["runtime_lifecycle"] == "ACCEPTED_PENDING_CUTOVER", cap["capability_id"]
-            assert cap["production_authorization_status"] == UNASSIGNED
+            assert cap["production_runtime_owner"] == "gurkdb"
+            assert cap["production_decision_evidence"]
+            assert cap["runtime_lifecycle"] == "AUTHORIZED_INACTIVE", cap["capability_id"]
+            assert cap["production_authorization_status"] == "AUTHORIZED"
             assert cap["observed_runtime_state"] == []
             assert cap["historical_runtime_assignment"] is None
         else:
@@ -726,6 +726,9 @@ def test_sector_rotation_snapshot_wrapper_and_module_are_forbidden_consumer_toke
 
 
 def test_sector_rotation_snapshot_production_verifier_denies_execution() -> None:
+    # Registry ownership is now AUTHORIZED_INACTIVE, but the host-local
+    # production authorization file is deliberately absent until a separate,
+    # explicitly authorized cutover step installs it.
     decision = verify_writer_execution_authorization(
         capability_id="sector_rotation_snapshot",
         mode=ExecutionMode.PRODUCTION,
@@ -733,8 +736,6 @@ def test_sector_rotation_snapshot_production_verifier_denies_execution() -> None
         checkout_path=Path.cwd(),
     )
     assert not decision.allowed
-    assert any("production_runtime_owner is UNASSIGNED" in reason for reason in decision.reasons)
-    assert any("production_authorization_status is not AUTHORIZED" in reason for reason in decision.reasons)
 
 
 def test_existing_four_capabilities_unchanged_by_sector_rotation_onboarding() -> None:

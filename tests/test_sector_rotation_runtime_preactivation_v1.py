@@ -439,7 +439,7 @@ def test_writer_authorization_capability_is_registered_and_documented():
     assert "registry onboarding is complete" in ops_doc_text.lower()
 
 
-def test_writer_capability_registry_entry_is_selected_pending_preflight_only():
+def test_writer_capability_registry_entry_is_authorized_inactive_only():
     import json
 
     registry_path = REPO_ROOT / "deploy/ownership/writer_capability_ownership_v1.json"
@@ -447,14 +447,15 @@ def test_writer_capability_registry_entry_is_selected_pending_preflight_only():
     cap = next(
         c for c in registry["capabilities"] if c.get("capability_id") == "sector_rotation_snapshot"
     )
-    # gurkDB controlled acceptance landed (2026-08-11), but must remain
-    # strictly non-authorizing: no production owner, no activation.
-    assert cap["runtime_lifecycle"] == "ACCEPTED_PENDING_CUTOVER"
-    assert cap["production_runtime_owner"] == "UNASSIGNED"
-    assert cap["production_authorization_status"] == "UNASSIGNED"
+    # gurkDB controlled acceptance (2026-08-11) and a separate explicit
+    # production-authorization decision (2026-08-12) landed, but activation
+    # must remain strictly outstanding: no timer, no observed runtime.
+    assert cap["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+    assert cap["production_runtime_owner"] == "gurkdb"
+    assert cap["production_authorization_status"] == "AUTHORIZED"
     assert cap["acceptance_status"] == "ACCEPTED"
     assert cap["acceptance_evidence"]
-    assert cap["production_decision_evidence"] == ""
+    assert cap["production_decision_evidence"]
     assert cap["observed_runtime_state"] == []
 
 
