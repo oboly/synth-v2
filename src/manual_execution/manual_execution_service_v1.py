@@ -57,6 +57,7 @@ from src.decision_gate.manual_execution_gate_v1 import (
     ManualExecutionGateRepository,
     ManualExecutionGateResult,
 )
+from src.execution_planner.canonical_rounding_v1 import REJECTION_VENUE_CONSTRAINTS_NOT_USABLE
 from src.execution_planner.contract_preview_v1 import (
     ExecutionMarketContextPreview,
     ExecutionPlanPreview,
@@ -227,7 +228,10 @@ def process(
             new_state=REQUEST_STATE_PLAN_REJECTED,
             processed_ts_utc=resolved_now,
             rejection_code=REASON_VENUE_CONSTRAINTS_NOT_FRESH,
-            rejection_detail=f"venue_constraints.status={venue_constraints.status}",
+            rejection_detail=(
+                f"{REJECTION_VENUE_CONSTRAINTS_NOT_USABLE}: "
+                f"venue_constraints.status={venue_constraints.status}"
+            ),
         )
         request_repository.update_request_state(rejected_request)
         return ManualExecutionOutcome(
