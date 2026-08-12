@@ -200,3 +200,69 @@ Remaining steps before production cutover per
 `docs/ops/sector_rotation_runtime_activation_v1.md`: a separate explicit
 production-authorization decision, systemd unit installation, and observed
 real timer cycles -- none of which are performed by this acceptance run.
+
+<a id="production-decision-evidence-20260812"></a>
+
+## Production Decision Evidence — 2026-08-12
+
+The user explicitly authorized the `sector_rotation_snapshot`
+production-owner assignment to gurkDB on 2026-08-12, separately from the
+2026-08-11 controlled acceptance run recorded above. This decision covers
+repository ownership-state changes only: it assigns `production_runtime_owner`
+and grants `production_authorization_status`. It does not create or install a
+production authorization file, does not install/enable/start the writer
+systemd timer, does not activate the publisher, and does not mark the
+capability `ACTIVE`.
+
+Basis for this decision:
+
+```text
+acceptance_evidence=this document, PR #365, merge commit
+  de1187cb4c44f33fc1fca55ba4289bc9fcd7c8c3
+acceptance_status=ACCEPTED (unchanged)
+acceptance_host=gurkdb (unchanged)
+12/12 required PREFLIGHT_LOCAL checks PASS
+RUN 1: 116 inserts; RUN 2: 0 inserts / 116 unchanged (idempotent)
+29 sectors x 4 windows, duplicate logical rows = 0
+lock contention fails closed
+measured runtime ~3-4 seconds
+no trading/execution path touched
+no systemd writer timer installed
+```
+
+Based on that separate decision and the acceptance evidence above, this PR
+records:
+
+```text
+candidate_host=gurkdb
+selected_host=gurkdb
+acceptance_host=gurkdb
+acceptance_status=ACCEPTED
+production_runtime_owner=gurkdb
+production_authorization_status=AUTHORIZED
+runtime_lifecycle=AUTHORIZED_INACTIVE
+```
+
+`AUTHORIZED_INACTIVE` does not permit execution by itself. The runtime still
+fails closed until a schema-valid production authorization file binds the
+exact commit, host, capability, service, and this decision evidence, and
+that authorization file has not been created by this change. Timer
+installation, activation, and lifecycle `ACTIVE` remain separate, explicitly
+authorized steps.
+
+### Safety Counters
+
+```text
+writer_invocations=0
+database_writes=0
+systemctl_mutations=0
+timer_changes=0
+publisher_changes=0
+account_inputs=0
+selection_engine=none
+decision_gate=none
+execution_planner=none
+executor=none
+broker_writes=0
+order_submission=0
+```

@@ -208,7 +208,7 @@ Summary:
 | `public_candle_freshness` | public market-data writer | `scripts/run_market_candle_freshness_once.sh` | gurkdb | ACTIVE |
 | `market_rotation_pressure` | public market-data writer | `scripts/run_market_rotation_pressure_once.sh` | gurkdb | ACTIVE |
 | `native_short_4h_chain` | market-only chain | `scripts/run_chain_4h.sh` | devlap | ACTIVE |
-| `sector_rotation_snapshot` | public market-data writer | `scripts/run_sector_rotation_engine_once.sh` | UNASSIGNED | SELECTED_PENDING_PREFLIGHT |
+| `sector_rotation_snapshot` | public market-data writer | `scripts/run_sector_rotation_engine_once.sh` | gurkdb | AUTHORIZED_INACTIVE |
 
 Public Price Snapshot is active on gurkDB.
 Public Candle Freshness passed strict gurkDB preflight and two controlled
@@ -237,12 +237,19 @@ change the BTC-only execution-related scope. It uses the existing chain timer
 and requires the production migration/grant/deployment activation procedure in
 `docs/research/canonical_fib_zone_map_v1.md`; this repository change does not
 activate it.
-`sector_rotation_snapshot` is registry-onboarded as `SELECTED_PENDING_PREFLIGHT`
-with `candidate_host=gurkdb` and `selected_host=gurkdb`; it retains
-`production_runtime_owner=UNASSIGNED`, `acceptance_status=PENDING`, and no
-production authorization, acceptance permit, or activation. See
+`sector_rotation_snapshot` passed strict gurkDB preflight (12/12 required
+`PREFLIGHT_LOCAL` PASS) and a controlled acceptance run on 2026-08-11 (116
+inserts, idempotent repeat, fail-closed lock behavior; see
+`docs/ops/sector_rotation_snapshot_gurkdb_acceptance_20260811.md`). It is
+`acceptance_status=ACCEPTED` with `acceptance_host=gurkdb`. A separate
+explicit production-authorization decision on 2026-08-12 (see that same
+document's Production Decision Evidence section) sets
+`production_runtime_owner=gurkdb`, `production_authorization_status=AUTHORIZED`,
+and `runtime_lifecycle=AUTHORIZED_INACTIVE`. No production authorization
+file has been installed, no systemd unit/timer has been installed, enabled,
+or started, and the capability is not `ACTIVE`. See
 `docs/ops/sector_rotation_runtime_activation_v1.md` for the remaining
-preflight, acceptance, and cutover blockers.
+cutover steps.
 
 Native SHORT remains independently evaluated from the light DB writers because
 it owns CPU-heavy chain stages, source-identity checks, DB writes beyond public
