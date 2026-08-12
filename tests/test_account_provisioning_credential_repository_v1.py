@@ -534,10 +534,25 @@ def test_reporting_does_not_import_credential_crypto() -> None:
 
 
 def test_executor_does_not_import_provisioning() -> None:
+    """No executor/execution module may reach account_provisioning, with one
+    narrow, explicit exception: manual_execution_bitvavo_order_adapter_v1.py
+    is the single documented LIVE credential boundary (Issue #369) that
+    chains the #206 credential binding through the canonical decrypt path to
+    build a BitvavoClient — see that module's docstring. Its CLI trigger
+    (run_manual_execution_submission_v1.py) only wires the master key and
+    repository factory through to that adapter and never touches secret
+    material itself. Every other executor/execution module remains covered
+    by this invariant."""
+    allowed_credential_boundary_files = {
+        "manual_execution_bitvavo_order_adapter_v1.py",
+        "run_manual_execution_submission_v1.py",
+    }
     for src_path in [Path("src/executor"), Path("src/execution")]:
         if not src_path.exists():
             continue
         for py_file in src_path.glob("*.py"):
+            if py_file.name in allowed_credential_boundary_files:
+                continue
             source = py_file.read_text()
             assert "account_provisioning" not in source, \
                 f"{py_file.name} must not import account_provisioning"
