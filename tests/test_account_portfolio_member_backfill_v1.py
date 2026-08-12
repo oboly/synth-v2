@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
+import sqlite3
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from src.account.account_portfolio_member_backfill_v1 import (
+    MySqlPortfolioMemberBackfillRepo,
     ROW_ACTION_ALREADY_MEMBER,
     ROW_ACTION_SEED,
     ROW_ACTION_SKIP_NO_ACCOUNT_ASSET,
@@ -44,6 +46,33 @@ class FakeBackfillRepo:
         self.account_assets[(trading_account_id, venue_market_id)]["is_portfolio_member"] = 1
 
 
+class SqliteMySqlCompatCursor:
+    """Run the repository's DB-API query contract against SQLite in tests."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._cursor = conn.cursor()
+
+    def __enter__(self) -> "SqliteMySqlCompatCursor":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self._cursor.close()
+
+    def execute(self, sql: str, params: tuple[object, ...]) -> None:
+        self._cursor.execute(sql.replace("%s", "?"), params)
+
+    def fetchall(self) -> list[sqlite3.Row]:
+        return self._cursor.fetchall()
+
+
+class SqliteMySqlCompatConnection:
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def cursor(self) -> SqliteMySqlCompatCursor:
+        return SqliteMySqlCompatCursor(self._conn)
+
+
 VENUE = "bitvavo"
 
 
@@ -53,6 +82,58 @@ def make_repo() -> FakeBackfillRepo:
     repo.venue_markets[(VENUE, "WLD-EUR")] = 11
     # NOTREAL-EUR intentionally has no venue_market row (unresolved identity case)
     return repo
+
+
+def test_repository_reads_positive_balances_from_one_latest_account_venue_snapshot_only():
+    raw = sqlite3.connect(":memory:")
+    raw.row_factory = sqlite3.Row
+    raw.execute(
+        """
+        CREATE TABLE trading_account_balance_snapshot (
+            snapshot_ts_utc TEXT NOT NULL,
+            trading_account_id INTEGER NOT NULL,
+            venue TEXT NOT NULL,
+            currency_code TEXT NOT NULL,
+            total_amount TEXT NOT NULL
+        )
+        """
+    )
+    raw.executemany(
+        """
+        INSERT INTO trading_account_balance_snapshot (
+            snapshot_ts_utc, trading_account_id, venue, currency_code, total_amount
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        [
+            ("2026-08-10T10:00:00", 1, VENUE, "BTC", "2"),
+            ("2026-08-10T10:00:00", 1, VENUE, "ETH", "3"),
+            ("2026-08-11T10:00:00", 1, VENUE, "FET", "5"),
+            ("2026-08-11T10:00:00", 1, VENUE, "WLD", "7"),
+            ("2026-08-11T10:00:00", 1, VENUE, "ETH", "0"),
+            ("2026-08-12T10:00:00", 2, VENUE, "BTC", "9"),
+            ("2026-08-12T10:00:00", 1, "other_venue", "BTC", "8"),
+        ],
+    )
+    repo = MySqlPortfolioMemberBackfillRepo(SqliteMySqlCompatConnection(raw))
+
+    balances = repo.fetch_latest_positive_balances(trading_account_id=1, venue=VENUE)
+
+    assert {(row["currency_code"], row["total_amount"]) for row in balances} == {
+        ("FET", "5"),
+        ("WLD", "7"),
+    }
+
+    backfill_repo = make_repo()
+    backfill_repo.account_assets[(1, 10)] = {"is_portfolio_member": 0}
+    backfill_repo.account_assets[(1, 11)] = {"is_portfolio_member": 0}
+    backfill_repo.balances[(1, VENUE)] = balances
+    result = compute_and_apply_portfolio_member_backfill(
+        backfill_repo, trading_account_id=1, venue=VENUE, dry_run=False
+    )
+
+    assert result.seeded == 2
+    assert backfill_repo.account_assets[(1, 10)]["is_portfolio_member"] == 1
+    assert backfill_repo.account_assets[(1, 11)]["is_portfolio_member"] == 1
 
 
 def test_backfill_seeds_only_positive_holdings_for_requested_account():
@@ -216,6 +297,7 @@ def test_backfill_source_file_no_broker_or_execution_layer_coupling():
 
 
 def main():
+    test_repository_reads_positive_balances_from_one_latest_account_venue_snapshot_only()
     test_backfill_seeds_only_positive_holdings_for_requested_account()
     test_backfill_does_not_leak_account_b_holdings_into_account_a()
     test_backfill_never_touches_other_account_when_backfilling_one()

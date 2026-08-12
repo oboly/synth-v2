@@ -15,8 +15,9 @@ cohort/membership conflation permanently into per-account data.
 
 Scope and safety:
   - Exactly one trading_account_id per call. No cross-account writes.
-  - Reads only trading_account_balance_snapshot (latest snapshot per
-    currency_code) and venue_market/account_asset identity tables.
+  - Reads only trading_account_balance_snapshot (one latest snapshot per
+    trading_account_id and venue) and venue_market/account_asset identity
+    tables.
   - Never inserts new account_asset rows. A positive holding with no existing
     account_asset row for that (trading_account_id, venue_market_id) is
     logged and skipped, not silently dropped and not force-created.
@@ -230,14 +231,13 @@ class MySqlPortfolioMemberBackfillRepo:
           AND s1.snapshot_ts_utc = (
               SELECT MAX(s2.snapshot_ts_utc)
               FROM trading_account_balance_snapshot s2
-              WHERE s2.trading_account_id = s1.trading_account_id
-                AND s2.venue = s1.venue
-                AND s2.currency_code = s1.currency_code
+              WHERE s2.trading_account_id = %s
+                AND s2.venue = %s
           )
           AND s1.total_amount > 0
         """
         with self.conn.cursor() as cur:
-            cur.execute(sql, (trading_account_id, venue))
+            cur.execute(sql, (trading_account_id, venue, trading_account_id, venue))
             rows = cur.fetchall()
         return [dict(row) for row in rows]
 
