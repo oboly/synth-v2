@@ -2,8 +2,51 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import src.reporting.account_scoped_short_trader_dashboard_v1 as dashboard
 from src.reporting.account_scoped_short_trader_dashboard_v1 import build_account_market_scope
 from src.reporting.manual_short_trader_dashboard_v1 import BrokerBalanceRow
+
+
+class _NoopConnection:
+    def close(self) -> None:
+        pass
+
+
+def test_publication_cohort_emits_cohort_published_reason(monkeypatch) -> None:
+    monkeypatch.setattr(dashboard, "get_connection", lambda: _NoopConnection())
+    monkeypatch.setattr(
+        dashboard,
+        "_resolve_trading_account",
+        lambda *args, **kwargs: {"trading_account_id": 7},
+    )
+    monkeypatch.setattr(dashboard, "_fetch_latest_balance_snapshot_ts", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dashboard, "_fetch_latest_order_snapshot_ts", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dashboard, "_fetch_latest_broker_order_snapshot_ts", lambda *args, **kwargs: None)
+    monkeypatch.setattr(dashboard, "_fetch_balance_rows", lambda *args, **kwargs: [])
+    monkeypatch.setattr(dashboard, "_fetch_open_order_rows", lambda *args, **kwargs: [])
+    monkeypatch.setattr(dashboard, "_fetch_account_asset_rows", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        dashboard,
+        "_fetch_selected_asset_market_rows",
+        lambda *args, **kwargs: [
+            {
+                "market": "XLM-EUR",
+                "quote_currency": "EUR",
+                "asset_is_portfolio": 1,
+                "asset_is_core_sensor": 0,
+            }
+        ],
+    )
+    monkeypatch.setattr(dashboard, "fetch_latest_prices_by_symbol", lambda *args, **kwargs: {})
+
+    context = dashboard.load_account_scoped_short_dashboard_context(
+        profile="demo",
+        account_code="bitvavo_demo",
+    )
+
+    assert context.market_inclusion_reasons_by_market == {
+        "XLM-EUR": frozenset({"COHORT_PUBLISHED"})
+    }
 
 
 def test_market_scope_includes_asset_selected_market_without_account_overlay() -> None:

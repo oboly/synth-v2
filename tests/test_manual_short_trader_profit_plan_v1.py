@@ -5205,7 +5205,7 @@ def test_mixed_above_and_below_current_buy_levels() -> None:
 class TestPresentationModeDerivation:
     def test_position_held_wins(self) -> None:
         from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
-        reasons = frozenset({"POSITION_HELD", "CORE_SENSOR", "PORTFOLIO_MARKER"})
+        reasons = frozenset({"POSITION_HELD", "CORE_SENSOR", "COHORT_PUBLISHED"})
         assert _derive_presentation_mode("XPL-EUR", reasons) == CARD_MODE_POSITION_HELD
 
     def test_open_order_wins_over_core_sensor(self) -> None:
@@ -5254,14 +5254,14 @@ class TestPresentationModeDerivation:
         policy = AccountPlanPolicy(source="MANUAL_ADD", is_hidden=True)
         assert _derive_presentation_mode("WLD-EUR", frozenset(), account_plan_policy=policy) == CARD_MODE_MARKET_SELECTED
 
-    def test_portfolio_marker_gives_market_selected(self) -> None:
+    def test_cohort_published_gives_market_selected(self) -> None:
         from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
-        reasons = frozenset({"PORTFOLIO_MARKER"})
+        reasons = frozenset({"COHORT_PUBLISHED"})
         assert _derive_presentation_mode("WLD-EUR", reasons) == CARD_MODE_MARKET_SELECTED
 
-    def test_portfolio_marker_plus_core_sensor_gives_watch_only_rotation(self) -> None:
+    def test_cohort_published_plus_core_sensor_gives_watch_only_rotation(self) -> None:
         from src.reporting.run_manual_short_trader_profit_plan_v1 import _derive_presentation_mode
-        reasons = frozenset({"PORTFOLIO_MARKER", "CORE_SENSOR"})
+        reasons = frozenset({"COHORT_PUBLISHED", "CORE_SENSOR"})
         assert _derive_presentation_mode("WLD-EUR", reasons) == CARD_MODE_WATCH_ONLY_ROTATION
 
     def test_empty_reasons_gives_market_selected(self) -> None:
@@ -5793,7 +5793,7 @@ class TestBuildCardsPipelineIntegration:
     def test_position_held_card_not_degraded_when_mixed(self) -> None:
         """When a mix of markets is included, portfolio cards keep POSITION_HELD mode."""
         reasons: dict[str, frozenset[str]] = {
-            "WLD-EUR": frozenset({"POSITION_HELD", "PORTFOLIO_MARKER"}),
+            "WLD-EUR": frozenset({"POSITION_HELD", "COHORT_PUBLISHED"}),
             "XPL-EUR": frozenset({"CORE_SENSOR"}),
         }
         cards = profit_plan_runner.build_cards(
@@ -5931,7 +5931,7 @@ class TestBuildCardsPipelineIntegration:
         )
         assert cards[0].presentation_mode == CARD_MODE_MARKET_SELECTED
 
-    def test_portfolio_marker_only_without_account_plan_stays_market_selected(self) -> None:
+    def test_cohort_published_only_without_account_plan_stays_market_selected(self) -> None:
         cards = profit_plan_runner.build_cards(
             markets=["WLD-EUR"],
             prices={"WLD-EUR": Decimal("1.00")},
@@ -5944,12 +5944,12 @@ class TestBuildCardsPipelineIntegration:
             reentry_by_symbol={},
             history_by_symbol={},
             orders_by_symbol={},
-            inclusion_reasons_by_market={"WLD-EUR": frozenset({"PORTFOLIO_MARKER"})},
+            inclusion_reasons_by_market={"WLD-EUR": frozenset({"COHORT_PUBLISHED"})},
             account_plan_policy_by_market={},
         )
         assert cards[0].presentation_mode == CARD_MODE_MARKET_SELECTED
 
-    def test_portfolio_marker_plus_core_sensor_stays_watch_only(self) -> None:
+    def test_cohort_published_plus_core_sensor_stays_watch_only(self) -> None:
         cards = profit_plan_runner.build_cards(
             markets=["WLD-EUR"],
             prices={"WLD-EUR": Decimal("1.00")},
@@ -5962,7 +5962,7 @@ class TestBuildCardsPipelineIntegration:
             reentry_by_symbol={},
             history_by_symbol={},
             orders_by_symbol={},
-            inclusion_reasons_by_market={"WLD-EUR": frozenset({"PORTFOLIO_MARKER", "CORE_SENSOR"})},
+            inclusion_reasons_by_market={"WLD-EUR": frozenset({"COHORT_PUBLISHED", "CORE_SENSOR"})},
             account_plan_policy_by_market={},
         )
         assert cards[0].presentation_mode == CARD_MODE_WATCH_ONLY_ROTATION
