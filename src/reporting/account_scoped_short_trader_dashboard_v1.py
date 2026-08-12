@@ -318,6 +318,7 @@ def _fetch_account_asset_rows(
 ) -> list[dict[str, Any]]:
     sql = """
     SELECT
+        aa.trading_account_id,
         vm.market,
         vm.quote_currency,
         a.symbol AS asset_symbol,
@@ -327,6 +328,7 @@ def _fetch_account_asset_rows(
         aa.is_candidate_enabled,
         aa.is_order_proposal_enabled,
         aa.is_hidden,
+        aa.is_portfolio_member,
         aa.disabled_until_utc
     FROM account_asset aa
     JOIN venue_market vm
@@ -428,10 +430,17 @@ def build_account_market_scope(
         if has_open_order or has_positive_balance:
             included_markets.add(market)
             continue
-        if is_hidden:
+        is_portfolio_member = bool(raw.get("is_portfolio_member"))
+        if is_hidden and not is_portfolio_member:
             included_markets.discard(market)
             continue
-        if is_visible or is_candidate_enabled or is_order_proposal_enabled or source == "MANUAL_ADD":
+        if (
+            is_visible
+            or is_candidate_enabled
+            or is_order_proposal_enabled
+            or is_portfolio_member
+            or source == "MANUAL_ADD"
+        ):
             included_markets.add(market)
 
     return sorted(included_markets)
