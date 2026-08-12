@@ -300,43 +300,56 @@ rotation_state distributions per cycle are consistent in shape across all 3
   asof 11:00Z, 12:00Z, 13:00Z, 14:00Z UTC, all 116 rows / 29x4 / 0 duplicates
 ```
 
-### Explicitly NOT verified by this evidence
+### Journalctl-side evidence (supplied by user from a gurkdb shell session, 2026-08-12)
 
-This session had DB read access (via `.env` credentials, host `gurkdb`/
-`192.168.1.221:3306`) but **no SSH/shell access to gurkdb**. The canonical
-"Observation Requirements" in `docs/ops/sector_rotation_runtime_activation_v1.md`
-require, per cycle, independent `journalctl` per-invocation correlation
-(`InvocationID`/`LastTriggerUSec`) confirming: writer timer window, writer
-exit status, freshness state, `LOCK_HELD` absence, and no unexpected extra
-invocations. **None of that was obtained** — it requires a shell session on
-gurkdb, which this agent does not have. The DB-side cohort evidence above is
-consistent with three (in fact seven) clean cycles but does not substitute
-for the required systemd-level confirmation.
+`sudo journalctl -u synth-sector-rotation-writer.service --since "2026-08-12
+08:15:00 UTC" --until "2026-08-12 14:30:00 UTC"` was run directly on gurkdb
+and covers all 7 cycles above. Per-cycle correlation via the
+Starting/Finished systemd bracket and per-invocation PID grouping (this
+agent had no SSH access to gurkdb itself; the log was captured and pasted by
+the user from their own gurkdb shell):
+
+```text
+cycle    fired(UTC)  wrapper_exit  engine_exit          rows  LOCK_HELD
+08:00Z   08:21:45    0             transaction=committed 116  none
+09:00Z   09:22:27    0             transaction=committed 116  none
+10:00Z   10:21:04    0             transaction=committed 116  none
+11:00Z   11:21:27    0             transaction=committed 116  none
+12:00Z   12:21:09    0             transaction=committed 116  none
+13:00Z   13:20:43    0             transaction=committed 116  none
+14:00Z   14:22:37    0             transaction=committed 116  none
+```
+
+Every cycle shows exactly one `Starting synth-sector-rotation-writer.service`
+/ `Finished synth-sector-rotation-writer.service` systemd bracket (no
+unexpected extra invocations), an `authorization_guard=pass` line in
+`mode=PRODUCTION` before compute, and `Deactivated successfully` on exit.
+`grep -c LOCK_HELD` over the full window = 0. `systemctl status
+synth-sector-rotation-writer.timer` confirms `enabled`/`active (waiting)`,
+consistent hourly triggering, no unit-file drift.
+
+This satisfies the Observation Requirements' writer-leg items (writer timer
+window, writer exit status, `LOCK_HELD` absence, no unexpected extra
+invocations) for far more than the required 3 consecutive cycles.
 
 ### ACTIVE readiness assessment
 
-**`ACTIVE` is not justified now**, for two independent reasons:
+**`ACTIVE` is still not justified**, for one remaining reason:
 
-1. Journalctl-level confirmation of writer exit status / lock behavior /
-   invocation count is outstanding (see above) — required by the
-   Observation Requirements for even the writer-only leg.
-2. Steps 6-8 of the canonical activation order have not been performed at
-   all: the Sector Overview publisher lane is not installed, the
-   Nginx/public-route verification has not been done, and no writer+publisher
-   joint cycles have been observed. `ACTIVE` per step 9 requires all prior
-   steps, not writer cycles alone.
+Steps 6-8 of the canonical activation order have not been performed at all:
+the Sector Overview publisher lane is not installed, the Nginx/public-route
+verification has not been done, and no writer+publisher joint cycles have
+been observed. `ACTIVE` per step 9 requires all prior steps, not writer
+cycles alone. (The writer-only journalctl gap noted in an earlier draft of
+this section is now closed — see above.)
 
 No lifecycle field, registry, or authorization file was changed by this
 observation. `runtime_lifecycle=AUTHORIZED_INACTIVE` and
 `production_authorization_status=AUTHORIZED` remain unchanged.
 
-Next step to close reason (1): obtain gurkdb shell/SSH access (or have
-someone with access run and paste the three
-`journalctl -u synth-sector-rotation-writer.service` per-invocation
-excerpts) so the Observation Requirements can be independently confirmed.
-Next step to close reason (2): a separate explicit decision to proceed with
-step 6 (publisher install) is required before joint-cycle observation can
-even begin.
+Next step: a separate explicit decision to proceed with step 6 (publisher
+install) is required before joint-cycle observation, Nginx verification, and
+eventual `ACTIVE` consideration can begin.
 
 ### Safety Counters
 
