@@ -23,8 +23,7 @@ Section ownership:
   materially wrong.** `asset.is_portfolio` is the global, account-agnostic
   publication cohort selector consumed by the canonical Fib cohort query,
   Bitvavo sync, two reporting dashboards, and the held-market enrollment
-  chain. The Phase 2 steps below (2.1/2.2) are corrected accordingly; no
-  execution Issue has been filed yet.
+  chain. The corrected Phase 2 sequence is now tracked by Issues #371–#375.
 - Phase 3 — `quote_asset` migration -> no Issue yet; same fresh-review
   requirement as Phase 2. Do not reuse the original 12-ref count without
   re-auditing.
