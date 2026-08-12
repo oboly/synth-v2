@@ -40,16 +40,34 @@ two universe-gating flags below.
 
 ### `is_tradeable`
 
-- **Table:** `asset` (also read alongside the venue-level
-  `venue_market.is_tradeable`/`is_market_data_enabled` columns, which gate
-  venue-specific execution eligibility separately).
+- **Table:** `asset`.
 - **Scope:** global, account-agnostic.
-- **Meaning:** whether the asset is currently eligible for trading
-  consideration on its venue, independent of whether it is currently
-  published in the cohort. Used alongside `is_enabled` as a universe-gating
-  precondition (e.g. `src/market_data/held_market_coverage_v1.py` requires
-  both `is_enabled` and `is_tradeable` before resolving a held symbol).
-- **Owning layer:** `market_data` (market-only).
+- **Current implementation state:** a legacy, pre-multi-account global
+  compatibility field. It is still actively read as the tradability gate by
+  several current consumers — including `selection_engine`
+  (`src/selection/run_selection_engine_v2.py`), advice, regime, zone, and
+  research code, and as a universe-gating precondition alongside
+  `is_enabled` (e.g. `src/market_data/held_market_coverage_v1.py`). It is
+  **not yet fully migrated** to the venue-specific model: per the current-state
+  audit
+  (`docs/development/multi_account_asset_foundation_phase_2_5_current_state_audit_v1.md`,
+  §5), `selection_engine` reads `asset.is_tradeable` directly with no
+  `venue_market` join and remains venue-unaware for tradability today.
+- **Target ownership:** venue-specific trading eligibility belongs to
+  `venue_market.is_tradeable`, which is already authoritative for market-sync
+  writes and for venue-aware account/reporting reads (e.g.
+  `account_wallet_dashboard_v1.py`). Migrating the remaining `asset.is_tradeable`
+  readers onto `venue_market.is_tradeable` is tracked as future **Phase 4**
+  work and is **not implemented by this document or by #371** — it requires a
+  prior `selection_engine` venue-context design decision (how venue-awareness
+  is threaded through candidate fetch) before any call site can migrate.
+- **Boundary:** that future venue-awareness work must make `selection_engine`
+  venue-aware, not account-aware — `selection_engine` must remain
+  account-agnostic (no `account_asset` or account-scoped reads) even after
+  Phase 4 migration.
+- **Owning layer:** `market_data` (market-only) for the current `asset`-table
+  field; `market_data` also owns `venue_market.is_tradeable` as the
+  venue-specific target.
 
 ### `is_portfolio` (publication cohort — legacy field name)
 
