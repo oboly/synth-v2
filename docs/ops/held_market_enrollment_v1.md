@@ -1,5 +1,12 @@
 # Held-Market Enrollment v1 (Issue #238)
 
+Canonical terminology, ownership, and the union/monotonic load-bearing
+invariant for this mechanism are defined in
+`docs/architecture/publication_cohort_membership_terminology_contract_v1.md`
+§3 — read that first. This doc covers held-market-enrollment-specific
+operational detail only (files, cycle sequencing, idempotency, rollback,
+activation commands) and does not restate the contract.
+
 ## Purpose
 
 Close the gap between "a token is a positive wallet holding" and "the
@@ -66,10 +73,11 @@ dependency, which the orchestrator's hard boundaries explicitly forbid (see
    outcome).
 
 Enrollment resolves every distinct positive held currency code (across every
-linked account, since `asset.is_portfolio` is a market-wide, not
-per-account, flag) to canonical `asset`/`venue_market` identity by an exact
-`asset.symbol` match only. Display aliases (e.g. "LIT" for "LIGHTER") are
-never used as machine identity -- see
+linked account — the union/monotonic invariant that makes this safe is
+defined in the canonical contract linked above, not restated here) to
+canonical `asset`/`venue_market` identity by an exact `asset.symbol` match
+only. Display aliases (e.g. "LIT" for "LIGHTER") are never used as machine
+identity -- see
 `docs/research/sector_taxonomy_database_seed_v1.md` for the display-alias
 note and Issue #245 for display-alias work, which is out of scope here.
 
