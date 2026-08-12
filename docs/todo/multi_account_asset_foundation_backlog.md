@@ -101,24 +101,28 @@ see the correction notice in `docs/research/multi_account_asset_foundation_v1.md
 and the full inventory in
 `docs/architecture/portfolio_cohort_vs_membership_boundary_audit_v1.md`.
 
-The corrected, sequenced plan (owner: that audit, §4 and §7 Issues B-F) is:
+The corrected, sequenced plan (owner: that audit, §4 and §7 Issues B-F) is
+tracked by the following filed GitHub Issues, in dependency order
+#371 → #372 → #373 → #374 → #375:
 
-- Give `account_asset.is_portfolio_member` a writer and operator action,
-  backfilled from **each account's own positive holdings**, never from
-  `asset.is_portfolio` (audit Issue C).
-- Repoint reporting's `PORTFOLIO ASSET` badge to the per-account column and
-  split out the cohort signal as its own display state (audit Issue D).
-- Rename the internal `PORTFOLIO_MARKER` inclusion reason (audit Issue E).
-- Only then, as a separate sequenced migration with its own production
-  authorization: **rename** `asset.is_portfolio` to
+- #371 — Publish the canonical cohort-vs-membership terminology contract.
+- #372 — Give `account_asset.is_portfolio_member` a writer and operator
+  action, backfilled from **each account's own positive holdings**, never
+  from `asset.is_portfolio`.
+- #373 — Repoint reporting's `PORTFOLIO ASSET` badge to the per-account
+  column and split out the cohort signal as its own display state.
+- #374 — Rename the internal `PORTFOLIO_MARKER` inclusion reason to
+  `COHORT_PUBLISHED`.
+- #375 — Only then, as a separate sequenced migration with its own
+  production authorization: **rename** `asset.is_portfolio` to
   `asset.is_publication_cohort` via additive column + dual-read + backfill +
-  cutover + drop-of-the-old-name (audit Issue F). `asset.is_portfolio` is
+  cutover + drop-of-the-old-name. `asset.is_portfolio` is
   **never dropped outright** — the concept it holds (the publication cohort)
   is still needed; only the name was wrong.
 
-No Issue has been filed yet for this corrected Phase 2. Do not execute
+Issues #371–#375 have been filed for this corrected Phase 2. Do not execute
 `ALTER TABLE asset DROP COLUMN is_portfolio` under any circumstance without
-first completing the rename sequence above; a drop without a working
+first completing the rename sequence above (#375); a drop without a working
 replacement collapses the canonical Fib publication cohort.
 
 ---
