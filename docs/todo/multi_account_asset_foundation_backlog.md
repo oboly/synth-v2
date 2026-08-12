@@ -15,10 +15,16 @@ Section ownership:
   `trading_account_id=1` as Joost's account. Live verification shows Joost is
   `trading_account_id=3` (`bitvavo_joost_read`); `trading_account_id=1` is
   `paper_sell_only_preview`. No remaining executable Phase 1 scope.
-- Phase 2 — `is_portfolio` migration -> no Issue yet; requires a fresh
-  architecture/call-site review against current `main` before filing (see
-  Phase 2-5 review gate below). Do not reuse the original 3-ref count without
-  re-auditing.
+- Phase 2 — `is_portfolio` migration -> the fresh architecture/call-site
+  review required below has been done; see
+  `docs/architecture/portfolio_cohort_vs_membership_boundary_audit_v1.md`
+  (canonical). **Do not reuse the original "3 refs, watchlist-only" claim from
+  `docs/research/multi_account_asset_foundation_v1.md` — it is stale and
+  materially wrong.** `asset.is_portfolio` is the global, account-agnostic
+  publication cohort selector consumed by the canonical Fib cohort query,
+  Bitvavo sync, two reporting dashboards, and the held-market enrollment
+  chain. The Phase 2 steps below (2.1/2.2) are corrected accordingly; no
+  execution Issue has been filed yet.
 - Phase 3 — `quote_asset` migration -> no Issue yet; same fresh-review
   requirement as Phase 2. Do not reuse the original 12-ref count without
   re-auditing.
@@ -43,16 +49,23 @@ Section ownership:
 
 Unmigrated executable scope:
 - none for Phase 1 (already implemented and production-applied).
-- Phases 2-4 (`is_portfolio`/`quote_asset`/`is_tradeable` column drops) and the
-  remainder of Phase 5 (items 5.3-5.4) remain contingent future work. They are
-  not currently executable: each requires a fresh call-site/architecture
-  review against current `main` (old ref counts predate substantial repo
-  evolution and are not authoritative) before a follow-up Issue is filed. See
-  the Phase 2-5 review gate below.
+- Phase 2 (`is_portfolio`, rename-only — never a drop; see corrected Phase 2
+  section below and the canonical audit), Phases 3-4 (`quote_asset` /
+  `is_tradeable` column drops), and the remainder of Phase 5 (items 5.3-5.4)
+  remain contingent future work. Phase 2's fresh review is done (see the
+  canonical audit); Phases 3-4 and Phase 5 items 5.3-5.4 still require one
+  (old ref counts predate substantial repo evolution and are not
+  authoritative) before a follow-up Issue is filed. See the Phase 2-5 review
+  gate below.
 
-Design doc: `docs/research/multi_account_asset_foundation_v1.md`
+Design doc: `docs/research/multi_account_asset_foundation_v1.md` (its
+`is_portfolio` sections are superseded — see that doc's correction notice)
 
 Reality audit: `docs/development/multi_account_asset_foundation_phase_1_reality_audit_v1.md`
+
+Canonical `is_portfolio` boundary audit (supersedes the design doc's
+`is_portfolio` claims; source of truth for Phase 2):
+`docs/architecture/portfolio_cohort_vs_membership_boundary_audit_v1.md`
 
 ---
 
@@ -75,13 +88,38 @@ Reality audit: `docs/development/multi_account_asset_foundation_phase_1_reality_
 
 ---
 
-## Phase 2 — `is_portfolio` migration (low risk, 3 refs)
+## Phase 2 — `is_portfolio` migration (superseded plan — see below)
 
-- [ ] **2.1** Update 3 `is_portfolio` refs in `src/research/` to join through
-      `account_asset.is_portfolio_member` filtered by `trading_account_id`.
-      Requires passing account context into the 3 call sites.
+**The original "low risk, 3 refs" framing and the steps that were here are
+withdrawn.** They instructed switching a handful of `src/research/` refs to
+`account_asset.is_portfolio_member` and then dropping `asset.is_portfolio`.
+Executing that as written would silently empty the canonical Fib publication
+cohort, because `asset.is_portfolio` is the global publication cohort
+selector, not per-account watchlist membership, and has real consumers in
+`market_data`, `market`, `reporting`, and the held-market enrollment chain —
+see the correction notice in `docs/research/multi_account_asset_foundation_v1.md`
+and the full inventory in
+`docs/architecture/portfolio_cohort_vs_membership_boundary_audit_v1.md`.
 
-- [ ] **2.2** Once all 3 refs are switched: `ALTER TABLE asset DROP COLUMN is_portfolio`.
+The corrected, sequenced plan (owner: that audit, §4 and §7 Issues B-F) is:
+
+- Give `account_asset.is_portfolio_member` a writer and operator action,
+  backfilled from **each account's own positive holdings**, never from
+  `asset.is_portfolio` (audit Issue C).
+- Repoint reporting's `PORTFOLIO ASSET` badge to the per-account column and
+  split out the cohort signal as its own display state (audit Issue D).
+- Rename the internal `PORTFOLIO_MARKER` inclusion reason (audit Issue E).
+- Only then, as a separate sequenced migration with its own production
+  authorization: **rename** `asset.is_portfolio` to
+  `asset.is_publication_cohort` via additive column + dual-read + backfill +
+  cutover + drop-of-the-old-name (audit Issue F). `asset.is_portfolio` is
+  **never dropped outright** — the concept it holds (the publication cohort)
+  is still needed; only the name was wrong.
+
+No Issue has been filed yet for this corrected Phase 2. Do not execute
+`ALTER TABLE asset DROP COLUMN is_portfolio` under any circumstance without
+first completing the rename sequence above; a drop without a working
+replacement collapses the canonical Fib publication cohort.
 
 ---
 
@@ -139,8 +177,14 @@ Reality audit: `docs/development/multi_account_asset_foundation_phase_1_reality_
 
 ## Phase 2-5 review gate
 
-Before filing any Phase 2, 3, 4, or remaining Phase 5 follow-up Issue, a fresh
+Before filing any Phase 3, 4, or remaining Phase 5 follow-up Issue, a fresh
 architecture/call-site review against current `main` is required, covering:
+
+Phase 2's fresh review has already been done — see
+`docs/architecture/portfolio_cohort_vs_membership_boundary_audit_v1.md`. This
+satisfies the review requirement below for `is_portfolio` specifically, but
+`PHASE_2_AUTHORIZED` stays `0` here: a passed review is not execution
+authorization.
 
 - remaining uses of `asset.is_portfolio`, `asset.quote_asset`, `asset.is_tradeable`
   (original ref counts in this file predate substantial repo evolution and are

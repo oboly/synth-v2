@@ -1,5 +1,34 @@
 # Multi-Account Asset Foundation V1
 
+## Correction notice (2026-08-12)
+
+Every claim in this document about `asset.is_portfolio` ref counts, risk
+level, and consumer set is **superseded and wrong**. It was written from a
+stale watchlist-only view and predates substantial repo evolution. The
+canonical, verified account is
+`docs/architecture/portfolio_cohort_vs_membership_boundary_audit_v1.md`.
+
+Verified current semantics (see that audit for full detail):
+
+- `asset.is_portfolio` is **not** portfolio membership. On `main` it is the
+  **global, account-agnostic market publication cohort selector** consumed by
+  the canonical Fib/held-market coverage path (`market_data` cohort query,
+  `market` Bitvavo sync, two `reporting` dashboards, the held-market
+  enrollment writer chain, and an Odroid orchestrator phase) — not "3 refs,
+  all in watchlist candidate research code."
+- `account_asset.is_portfolio_member` is the intended **per-account**
+  Portfolio membership concept. It exists in schema but is not yet
+  authoritative (no writer, no reader).
+- These two concepts are **separate and must stay separate**. Do not backfill
+  `account_asset.is_portfolio_member` from `asset.is_portfolio` — that would
+  permanently bake a global flag into per-account data. Do not drop
+  `asset.is_portfolio` — the canonical Fib publication cohort query depends on
+  it; see the audit's migration sequence (rename, never drop).
+
+The sections below are kept for historical context on the `venue_market` /
+`account_asset` skeleton (Phase 1, implemented) but their `is_portfolio`
+content specifically must not be used as instruction.
+
 ## Purpose
 
 Separate global asset/market data from per-account asset settings before building
@@ -45,6 +74,12 @@ filter audit) require a fresh call-site/architecture review against current
 evolution and are not authoritative. See
 `docs/todo/multi_account_asset_foundation_backlog.md` for the review gate.
 
+For `is_portfolio` specifically, that fresh review has been done — see the
+correction notice above and
+`docs/architecture/portfolio_cohort_vs_membership_boundary_audit_v1.md`, the
+canonical source for its true consumer inventory, risk level, and migration
+sequence.
+
 ---
 
 ## Current `asset` Flag Inventory
@@ -58,7 +93,7 @@ evolution and are not authoritative. See
 | `name` | — | **Keep in `asset`** | Human-readable asset name. |
 | `is_tradeable` | 19 | **Move to `venue_market`** | Tradability is per-venue, not per-asset. On Bitvavo, WLD-EUR may be tradeable; on another venue it may not be listed. Also used in selection_engine which should become venue-aware. |
 | `quote_asset` | 12 | **Move to `venue_market`** | EUR quote is a venue/market property, not a global identity field. |
-| `is_portfolio` | 3 | **Move to `account_asset`** | Portfolio membership is per-account. Used only in watchlist candidate check (3 refs). |
+| `is_portfolio` | superseded ref count — see notice above | **Do not move; rename in place** | Not portfolio membership. It is the global, account-agnostic publication cohort selector consumed by the canonical Fib cohort query, Bitvavo sync, two reporting dashboards, and the held-market enrollment chain. Target is `account_asset.is_portfolio_member`, but it must be seeded from each account's own holdings, never backfilled from this column. See `docs/architecture/portfolio_cohort_vs_membership_boundary_audit_v1.md`. |
 
 ---
 
@@ -74,10 +109,16 @@ Global identity only. No venue/account specifics.
 --   is_enabled, is_core_sensor,
 --   created_ts, updated_ts
 --
--- Remove (migrate to venue_market / account_asset):
+-- Remove (migrate to venue_market):
 --   quote_asset    → venue_market.quote_currency
 --   is_tradeable   → venue_market.is_tradeable
---   is_portfolio   → account_asset.is_portfolio_member
+--
+-- Rename in place, never drop (see correction notice above):
+--   is_portfolio   → is_publication_cohort (stays on asset; global cohort
+--                    consumers keep reading it under the new name).
+--                    account_asset.is_portfolio_member is a separate,
+--                    per-account concept and is not a replacement for this
+--                    column.
 ```
 
 `is_enabled` stays on `asset` because it gates system-wide ETL, not account view.
@@ -209,11 +250,16 @@ Same two-phase approach. Callers use it as a market filter (`WHERE quote_asset =
 Once `venue_market.quote_currency` is backfilled, callers can switch to a join. Until
 then, `asset.quote_asset` is read in compatibility mode.
 
-### `is_portfolio` (3 refs)
+### `is_portfolio` (superseded — see correction notice above)
 
-Low-impact: 3 refs, all in watchlist candidate research code. Safe to migrate once
-`account_asset` is created and backfilled. Existing refs can be switched to a join
-without any callers requiring venue context.
+**Do not use the "3 refs, watchlist-only, safe to migrate early" claim
+formerly here.** It is factually wrong on current `main`. `asset.is_portfolio`
+is the global publication cohort selector with consumers in `market_data`,
+`market`, `reporting`, and the held-market enrollment chain. It is not a
+simple per-account join target and is not low-impact. See
+`docs/architecture/portfolio_cohort_vs_membership_boundary_audit_v1.md` §2–§4
+for the verified consumer inventory and the sequenced rename-only migration
+path.
 
 ---
 
@@ -232,9 +278,13 @@ without any callers requiring venue context.
 - `src/advice/` — advice filter
 - DB-backed zone backfills and policy routers
 
-### Files referencing `is_portfolio` (future account_asset migration)
+### Files referencing `is_portfolio` (superseded — see correction notice above)
 
-- `src/research/` — watchlist candidate check (3 refs only)
+The "watchlist candidate check (3 refs only)" claim formerly here is wrong.
+Verified current consumers (see the canonical audit for exact call sites):
+`market_data` (canonical Fib cohort query), `market` (Bitvavo sync),
+`reporting` (two dashboards), the held-market enrollment writer chain, and an
+Odroid orchestrator phase.
 
 ### Files referencing `quote_asset` (future venue_market migration)
 
@@ -271,7 +321,9 @@ current `main` before implementation — original ref counts below are not
 authoritative):
 - `is_tradeable` caller migration (selection_engine, advice — requires venue context)
 - `quote_asset` caller migration (ETL, research — lower risk, simpler join)
-- `is_portfolio` caller migration (3 refs — lowest risk, safe to do early)
+- `is_portfolio` — **not** lowest-risk or safe to do early; see correction
+  notice above and `docs/architecture/portfolio_cohort_vs_membership_boundary_audit_v1.md`
+  for the verified risk level and sequenced migration path
 
 ---
 
