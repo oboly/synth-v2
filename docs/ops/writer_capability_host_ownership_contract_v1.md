@@ -251,6 +251,20 @@ or started, and the capability is not `ACTIVE`. See
 `docs/ops/sector_rotation_runtime_activation_v1.md` for the remaining
 cutover steps.
 
+During review of that authorization decision, `sector_rotation_snapshot`'s
+`authorization_guard.authorization_file` was found to collide with the
+already-`ACTIVE` `public_price_snapshot` writer's installed host-local
+authorization artifact
+(`/etc/synth/writer-capability-runtime-authorization-v1.json`, the legacy
+generic filename `public_price_snapshot` still uses). Sector Rotation now has
+its own dedicated, registry-fixed path,
+`/etc/synth/writer-capability-sector-rotation-snapshot-authorization-v1.json`,
+matching the naming convention already used by `public_candle_freshness`,
+`market_rotation_pressure`, and `native_short_4h_chain`. This corrects the
+registry only; no authorization file was installed at either path by this
+correction, and `public_price_snapshot`'s existing artifact and `ACTIVE`
+authorization were not touched.
+
 Native SHORT remains independently evaluated from the light DB writers because
 it owns CPU-heavy chain stages, source-identity checks, DB writes beyond public
 price/candle tables, artifact publication, manifests, and downstream market

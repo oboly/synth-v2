@@ -400,7 +400,7 @@
       },
       "authorization_guard": {
         "module": "src.operations.verify_writer_capability_authorization_v1",
-        "authorization_file": "/etc/synth/writer-capability-runtime-authorization-v1.json",
+        "authorization_file": "/etc/synth/writer-capability-sector-rotation-snapshot-authorization-v1.json",
         "required": true
       },
       "lock": {
