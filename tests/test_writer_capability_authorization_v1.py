@@ -214,6 +214,164 @@ def test_malformed_authorization_timestamp_is_rejected(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Authorization file: Sector Rotation production-schema onboarding.
+#
+# sector_rotation_snapshot / sector-rotation-snapshot-writer were already
+# closed-set members of the ownership registry validator, the acceptance
+# permit schema, and the Python CAPABILITY_IDENTITY mapping, but the
+# production authorization schema's capability_id/capability_identity enums
+# had not been extended, so every schema-valid Sector Rotation PRODUCTION
+# authorization artifact was structurally impossible. These tests prove the
+# closed-enum addition and nothing broader.
+# ---------------------------------------------------------------------------
+
+SECTOR_PROD_SERVICE = "synth-sector-rotation-writer.service"
+
+
+def _sector_authorization(commit: str, **overrides: object) -> dict:
+    auth = _production_authorization(commit)
+    auth["authorization_id"] = "auth-sector-0001"
+    auth["capability_id"] = "sector_rotation_snapshot"
+    auth["capability_identity"] = "sector-rotation-snapshot-writer"
+    auth["service"] = SECTOR_PROD_SERVICE
+    auth["systemd_unit"] = SECTOR_PROD_SERVICE
+    auth.update(overrides)
+    return auth
+
+
+def test_sector_rotation_production_authorization_schema_accepts_valid_payload(tmp_path: Path) -> None:
+    _, head = _temp_git(tmp_path)
+    auth_path = _write_json(tmp_path / "auth.json", _sector_authorization(head))
+    result = load_and_validate_authorization(auth_path, AUTH_SCHEMA)
+    assert result.ok, result.errors
+    assert result.payload["capability_id"] == "sector_rotation_snapshot"
+    assert result.payload["capability_identity"] == "sector-rotation-snapshot-writer"
+
+
+def test_sector_rotation_production_authorization_wrong_identity_rejected_semantically(
+    tmp_path: Path,
+) -> None:
+    # "market-rotation-pressure-writer" is independently a valid member of
+    # the capability_identity enum, so a capability_id/capability_identity
+    # cross-mismatch is not a schema violation on its own -- it is caught by
+    # the semantic PRODUCTION verification step (_verify_production), which
+    # compares the authorization's capability_identity against the identity
+    # canonically owned by capability_id=sector_rotation_snapshot.
+    from tests.writer_auth_support import registry_with_auth_file
+
+    repo, head = _temp_git(tmp_path)
+    auth_path = _write_json(
+        tmp_path / "auth.json",
+        _sector_authorization(head, capability_identity="market-rotation-pressure-writer"),
+    )
+    # Independent of umask: the file-security check (owner/group-writable)
+    # runs before content validation and is not what this test targets.
+    auth_path.chmod(0o644)
+    schema_result = load_and_validate_authorization(auth_path, AUTH_SCHEMA)
+    assert schema_result.ok, schema_result.errors
+
+    registry_path = registry_with_auth_file(
+        tmp_path, "sector_rotation_snapshot", auth_path, authorize=True, host="devlap"
+    )
+    decision = verify_writer_execution_authorization(
+        capability_id="sector_rotation_snapshot",
+        mode=ExecutionMode.PRODUCTION,
+        repo_root=REPO,
+        checkout_path=repo,
+        registry_path=registry_path,
+        actual_host="devlap",
+        expected_working_directory=os.path.realpath(str(repo)),
+    )
+    assert not decision.allowed
+    assert any("capability_identity mismatch" in r for r in decision.reasons)
+
+
+def test_unknown_capability_id_rejected_by_production_authorization_schema(tmp_path: Path) -> None:
+    auth = _sector_authorization(
+        "a" * 40,
+        capability_id="not_a_real_capability",
+        capability_identity="not-a-real-capability-writer",
+    )
+    path = _write_json(tmp_path / "auth.json", auth)
+    result = load_and_validate_authorization(path, AUTH_SCHEMA)
+    assert not result.ok
+    assert any("capability_id" in e for e in result.errors)
+
+
+def test_existing_four_production_capabilities_still_accepted_by_schema(tmp_path: Path) -> None:
+    _, head = _temp_git(tmp_path)
+    existing = [
+        (PRICE_CAP, "public-price-snapshot-writer", PRICE_SERVICE),
+        (CANDLE_CAP, "public-candle-freshness-writer", CANDLE_SERVICE),
+        (
+            "market_rotation_pressure",
+            "market-rotation-pressure-writer",
+            "synth-market-rotation-pressure-writer.service",
+        ),
+        ("native_short_4h_chain", "native-short-4h-chain", "synth-chain-4h.service"),
+    ]
+    for capability_id, identity, service in existing:
+        auth = _production_authorization(head)
+        auth["capability_id"] = capability_id
+        auth["capability_identity"] = identity
+        auth["service"] = service
+        auth["systemd_unit"] = service
+        auth_path = _write_json(tmp_path / f"auth-{capability_id}.json", auth)
+        result = load_and_validate_authorization(auth_path, AUTH_SCHEMA)
+        assert result.ok, (capability_id, result.errors)
+
+
+def test_production_and_acceptance_schemas_remain_separate_for_sector_rotation(tmp_path: Path) -> None:
+    _, head = _temp_git(tmp_path)
+    # A PRODUCTION-shaped Sector Rotation payload must not validate against
+    # the ACCEPTANCE permit schema (different required fields/purpose const).
+    production_path = _write_json(tmp_path / "prod.json", _sector_authorization(head))
+    against_acceptance_schema = load_and_validate_authorization(production_path, ACCEPT_SCHEMA)
+    assert not against_acceptance_schema.ok
+
+    # An ACCEPTANCE-shaped Sector Rotation permit must not validate against
+    # the PRODUCTION authorization schema.
+    acceptance_payload = {
+        "permit_version": "writer_capability_acceptance_permit_v1",
+        "permit_id": "permit-sector-0002",
+        "issued_at_utc": "2026-08-11T00:00:00Z",
+        "expiry_utc": "2099-01-01T00:00:00Z",
+        "purpose": "ACCEPTANCE",
+        "capability_id": "sector_rotation_snapshot",
+        "capability_identity": "sector-rotation-snapshot-writer",
+        "acceptance_host": "gurkdb",
+        "authorized_commit": head,
+        "approval_reference": "ref",
+    }
+    acceptance_path = _write_json(tmp_path / "accept.json", acceptance_payload)
+    against_production_schema = load_and_validate_authorization(acceptance_path, AUTH_SCHEMA)
+    assert not against_production_schema.ok
+
+
+def test_production_authorization_schema_has_no_wildcard_capability() -> None:
+    schema = json.loads(AUTH_SCHEMA.read_text(encoding="utf-8"))
+    cap_id_enum = schema["properties"]["capability_id"]["enum"]
+    cap_identity_enum = schema["properties"]["capability_identity"]["enum"]
+    assert cap_id_enum == [
+        "public_price_snapshot",
+        "public_candle_freshness",
+        "market_rotation_pressure",
+        "native_short_4h_chain",
+        "sector_rotation_snapshot",
+    ]
+    assert cap_identity_enum == [
+        "public-price-snapshot-writer",
+        "public-candle-freshness-writer",
+        "market-rotation-pressure-writer",
+        "native-short-4h-chain",
+        "sector-rotation-snapshot-writer",
+    ]
+    assert "*" not in cap_id_enum
+    assert "*" not in cap_identity_enum
+    assert schema["additionalProperties"] is False
+
+
+# ---------------------------------------------------------------------------
 # Checkout identity.
 # ---------------------------------------------------------------------------
 
