@@ -7,18 +7,22 @@ from typing import Any
 
 from src.account.account_asset_settings_v1 import (
     ACTION_ADD_ASSET,
+    ACTION_CLEAR_PORTFOLIO_MEMBER,
     ACTION_DISABLE_CANDIDATE,
     ACTION_HIDE_ASSET,
     ACTION_PAUSE_CANDIDATE_24H,
     ACTION_REENABLE_ASSET,
+    ACTION_SET_PORTFOLIO_MEMBER,
     DEFAULT_VENUE,
     SOURCE_MANUAL_ADD,
     add_asset_for_account,
+    clear_portfolio_member_for_account,
     disable_candidate_for_account,
     dispatch_account_asset_action,
     hide_asset_for_account,
     pause_candidate_for_account,
     reenable_asset_for_account,
+    set_portfolio_member_for_account,
 )
 
 
@@ -88,6 +92,7 @@ class FakeRepo:
             "is_visible": 1,
             "is_candidate_enabled": 1,
             "is_order_proposal_enabled": 0,
+            "is_portfolio_member": 0,
             "is_hidden": 0,
             "disabled_until_utc": None,
             "disabled_reason": None,
@@ -248,6 +253,101 @@ def test_non_eur_market_excluded_by_default_filter():
         assert "requires EUR market by default" in str(exc)
 
 
+def test_set_portfolio_member_sets_one_row():
+    repo = FakeRepo()
+    add_asset_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    result = set_portfolio_member_for_account(
+        repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR"
+    )
+    row = repo.fetch_account_asset(trading_account_id=1, venue_market_id=10)
+    assert row["is_portfolio_member"] == 1
+    assert result.action == ACTION_SET_PORTFOLIO_MEMBER
+    assert result.status == "UPDATED"
+
+
+def test_clear_portfolio_member_clears_one_row():
+    repo = FakeRepo()
+    add_asset_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    set_portfolio_member_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    result = clear_portfolio_member_for_account(
+        repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR"
+    )
+    row = repo.fetch_account_asset(trading_account_id=1, venue_market_id=10)
+    assert row["is_portfolio_member"] == 0
+    assert result.action == ACTION_CLEAR_PORTFOLIO_MEMBER
+
+
+def test_set_portfolio_member_does_not_affect_other_account():
+    repo = FakeRepo()
+    add_asset_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    add_asset_for_account(repo, account_code="bitvavo_joost_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    joost_before = repo.fetch_account_asset(trading_account_id=2, venue_market_id=10)
+
+    set_portfolio_member_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+
+    joost_after = repo.fetch_account_asset(trading_account_id=2, venue_market_id=10)
+    assert joost_before == joost_after
+    assert joost_after["is_portfolio_member"] == 0
+    hugo_row = repo.fetch_account_asset(trading_account_id=1, venue_market_id=10)
+    assert hugo_row["is_portfolio_member"] == 1
+
+
+def test_clear_portfolio_member_does_not_affect_other_account():
+    repo = FakeRepo()
+    add_asset_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    add_asset_for_account(repo, account_code="bitvavo_joost_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    set_portfolio_member_for_account(repo, account_code="bitvavo_joost_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    hugo_before = repo.fetch_account_asset(trading_account_id=1, venue_market_id=10)
+
+    clear_portfolio_member_for_account(repo, account_code="bitvavo_joost_read", venue=DEFAULT_VENUE, market="FET-EUR")
+
+    hugo_after = repo.fetch_account_asset(trading_account_id=1, venue_market_id=10)
+    assert hugo_before == hugo_after
+    joost_row = repo.fetch_account_asset(trading_account_id=2, venue_market_id=10)
+    assert joost_row["is_portfolio_member"] == 0
+
+
+def test_set_then_clear_portfolio_member_is_idempotent():
+    repo = FakeRepo()
+    add_asset_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+
+    set_portfolio_member_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    set_portfolio_member_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    row = repo.fetch_account_asset(trading_account_id=1, venue_market_id=10)
+    assert row["is_portfolio_member"] == 1
+
+    clear_portfolio_member_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    clear_portfolio_member_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    row = repo.fetch_account_asset(trading_account_id=1, venue_market_id=10)
+    assert row["is_portfolio_member"] == 0
+
+
+def test_set_portfolio_member_missing_account_asset_fails_closed():
+    repo = FakeRepo()
+    try:
+        set_portfolio_member_for_account(
+            repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR"
+        )
+        raise AssertionError("Expected RuntimeError for missing account_asset row")
+    except RuntimeError as exc:
+        assert "account_asset not found" in str(exc)
+
+
+def test_set_portfolio_member_preserves_unrelated_fields():
+    repo = FakeRepo()
+    add_asset_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+    before = repo.fetch_account_asset(trading_account_id=1, venue_market_id=10)
+
+    set_portfolio_member_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="FET-EUR")
+
+    after = repo.fetch_account_asset(trading_account_id=1, venue_market_id=10)
+    for key in before:
+        if key == "is_portfolio_member":
+            continue
+        assert after[key] == before[key], f"unexpected drift in field {key}"
+    assert after["is_portfolio_member"] == 1
+
+
 def test_dispatch_supports_all_actions():
     repo = FakeRepo()
     add_asset_for_account(repo, account_code="bitvavo_hugo_read", venue=DEFAULT_VENUE, market="WLD-EUR")
@@ -257,6 +357,8 @@ def test_dispatch_supports_all_actions():
         ACTION_DISABLE_CANDIDATE,
         ACTION_PAUSE_CANDIDATE_24H,
         ACTION_REENABLE_ASSET,
+        ACTION_SET_PORTFOLIO_MEMBER,
+        ACTION_CLEAR_PORTFOLIO_MEMBER,
     ]:
         dispatch_account_asset_action(
             repo,
@@ -313,6 +415,13 @@ def main():
     test_missing_venue_market_fails_closed()
     test_default_manual_add_sets_is_order_proposal_enabled_false()
     test_non_eur_market_excluded_by_default_filter()
+    test_set_portfolio_member_sets_one_row()
+    test_clear_portfolio_member_clears_one_row()
+    test_set_portfolio_member_does_not_affect_other_account()
+    test_clear_portfolio_member_does_not_affect_other_account()
+    test_set_then_clear_portfolio_member_is_idempotent()
+    test_set_portfolio_member_missing_account_asset_fails_closed()
+    test_set_portfolio_member_preserves_unrelated_fields()
     test_dispatch_supports_all_actions()
     test_source_checks_forbid_broker_writes_order_submission()
     test_no_decision_gate_execution_planner_executor_imports()
