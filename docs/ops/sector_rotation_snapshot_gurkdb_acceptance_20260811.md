@@ -351,11 +351,20 @@ Next step: a separate explicit decision to proceed with step 6 (publisher
 install) is required before joint-cycle observation, Nginx verification, and
 eventual `ACTIVE` consideration can begin.
 
-### Safety Counters
+### Observation Lane Safety Counters
+
+These counters describe only the read-only documentation/observation
+activity performed while producing this section (DB read queries, this
+edit, git commit) -- they do not describe the writer capability itself.
+The 7 real production timer cycles reported above each ran independently
+under the writer's own systemd timer, executed one writer invocation, and
+committed a 116-row database write; see "DB-side evidence" and the
+"Journalctl-side evidence" table above for that record.
 
 ```text
-writer_invocations=0
-database_writes=0
+OBSERVATION_LANE_MUTATIONS
+writer_invocations_in_this_lane=0
+database_writes_in_this_lane=0
 systemctl_mutations=0
 timer_changes=0
 publisher_changes=0
