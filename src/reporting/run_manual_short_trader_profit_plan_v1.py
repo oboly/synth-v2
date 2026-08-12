@@ -190,6 +190,20 @@ def atomic_text_write(content: str, dest: Path) -> None:
         raise
 
 
+def portfolio_member_markets_for_rendered_account(
+    *,
+    account_asset_rows: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    trading_account_id: int,
+) -> set[str]:
+    """Return portfolio-member markets for exactly one rendered account."""
+    return {
+        str(row.get("market") or "").upper()
+        for row in account_asset_rows
+        if int(row.get("trading_account_id") or 0) == trading_account_id
+        and bool(row.get("is_portfolio_member"))
+    }
+
+
 def held_amount_and_value_by_symbol(
     *,
     balances: list[Any],
@@ -1827,13 +1841,24 @@ def main() -> int:
         context.latest_balance_snapshot_ts_utc,
         now_utc=now_utc,
     )
-    # PORTFOLIO_MARKER = configured strategic portfolio/rotation membership
-    # (asset.is_portfolio), independent of current balance -- see
-    # build_account_market_scope()/market_inclusion_reasons_by_market.
-    portfolio_asset_markets = {
+    # Account portfolio membership is scoped to the rendered account by the
+    # account_asset query in load_account_scoped_short_dashboard_context().
+    # Keep the defensive row-account check here so another account's row can
+    # never become a badge if context construction changes.
+    portfolio_asset_markets = portfolio_member_markets_for_rendered_account(
+        account_asset_rows=context.account_asset_rows,
+        trading_account_id=context.trading_account_id,
+    )
+    # PORTFOLIO_MARKER remains the legacy internal cohort reason until #374.
+    market_selected_markets = {
         market
         for market, reasons in context.market_inclusion_reasons_by_market.items()
         if "PORTFOLIO_MARKER" in reasons
+    }
+    core_sensor_markets = {
+        market
+        for market, reasons in context.market_inclusion_reasons_by_market.items()
+        if "CORE_SENSOR" in reasons
     }
     cards = apply_portfolio_account_evidence(
         cards,
@@ -1842,6 +1867,8 @@ def main() -> int:
         cost_basis_by_symbol=cost_basis_by_symbol,
         balance_freshness_status=balance_freshness_status,
         portfolio_asset_markets=portfolio_asset_markets,
+        market_selected_markets=market_selected_markets,
+        core_sensor_markets=core_sensor_markets,
     )
 
     # Load market tick rules from DB and apply price normalization to all cards.

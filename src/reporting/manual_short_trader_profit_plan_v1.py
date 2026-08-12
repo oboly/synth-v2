@@ -453,14 +453,12 @@ class ProfitPlanCard:
     actionability_state: str = CARD_ACTIONABILITY_ACTIVE
     visibility_class: str = VISIBILITY_NATIVE_ATTENTION
     presentation_mode: str = CARD_MODE_MARKET_SELECTED
-    # Two independent, never-conflated facts (GUI terminology correction):
-    # is_portfolio_asset = configured strategic portfolio/rotation membership
-    # (asset.is_portfolio), independent of current balance. is_wallet_held =
-    # the latest persisted wallet snapshot has a positive amount for this
-    # symbol. A zero-balance portfolio asset has is_portfolio_asset=True and
-    # is_wallet_held=False; both may be True at once.
+    # Four independent overlays: wallet balance, per-account portfolio
+    # membership, global publication cohort, and global core-sensor state.
     is_portfolio_asset: bool = False
     is_wallet_held: bool = False
+    is_market_selected: bool = False
+    is_core_sensor: bool = False
     fib_nav_context: FibNavContext | None = None
     render_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     breath_curve: dict[str, Any] | None = None
@@ -1232,6 +1230,8 @@ def apply_portfolio_account_evidence(
     cost_basis_by_symbol: Mapping[str, Decimal],
     balance_freshness_status: str = DATA_UNAVAILABLE,
     portfolio_asset_markets: Any = frozenset(),
+    market_selected_markets: Any = frozenset(),
+    core_sensor_markets: Any = frozenset(),
 ) -> list[ProfitPlanCard]:
     """Compose account-aware portfolio fields onto held-token cards (Issue #238).
 
@@ -1240,22 +1240,32 @@ def apply_portfolio_account_evidence(
     never queries a broker or a database itself, and never fabricates a value
     for a symbol absent from the supplied maps — those stay DATA_UNAVAILABLE.
 
-    Sets two independent, never-conflated booleans (GUI terminology
-    correction): ``is_wallet_held`` from ``held_amount_by_symbol`` (a
-    positive amount in the latest persisted wallet snapshot), and
-    ``is_portfolio_asset`` from ``portfolio_asset_markets`` (configured
-    strategic portfolio/rotation membership, e.g. ``asset.is_portfolio`` via
-    the ``PORTFOLIO_MARKER`` inclusion reason) — independent of balance. A
-    zero-balance portfolio asset keeps ``is_portfolio_asset=True`` and
-    ``is_wallet_held=False``; both may be True at once.
+    Sets independent display facts: ``is_wallet_held`` from a positive amount
+    in the latest persisted wallet snapshot; ``is_portfolio_asset`` from the
+    rendered account's ``account_asset.is_portfolio_member`` rows; and the
+    global ``is_market_selected`` / ``is_core_sensor`` overlays from market
+    publication context. None is derived from another.
     """
     out: list[ProfitPlanCard] = []
     for card in cards:
         is_portfolio_asset = card.market in portfolio_asset_markets
+        is_market_selected = card.market in market_selected_markets
+        is_core_sensor = card.market in core_sensor_markets
         held_amount = held_amount_by_symbol.get(card.symbol)
         if held_amount is None:
-            if is_portfolio_asset != card.is_portfolio_asset:
-                out.append(dataclasses.replace(card, is_portfolio_asset=is_portfolio_asset))
+            if (
+                is_portfolio_asset != card.is_portfolio_asset
+                or is_market_selected != card.is_market_selected
+                or is_core_sensor != card.is_core_sensor
+            ):
+                out.append(
+                    dataclasses.replace(
+                        card,
+                        is_portfolio_asset=is_portfolio_asset,
+                        is_market_selected=is_market_selected,
+                        is_core_sensor=is_core_sensor,
+                    )
+                )
             else:
                 out.append(card)
             continue
@@ -1280,6 +1290,8 @@ def apply_portfolio_account_evidence(
                 evidence=new_evidence,
                 is_wallet_held=True,
                 is_portfolio_asset=is_portfolio_asset,
+                is_market_selected=is_market_selected,
+                is_core_sensor=is_core_sensor,
             )
         )
     return out
@@ -4043,6 +4055,10 @@ _CSS = """
       font-size: 10px; font-weight: 700; letter-spacing: .04em;
       color: var(--blue); border: 1px solid var(--blue); border-radius: 4px; padding: 2px 6px;
     }
+    .market-selected-badge, .core-sensor-badge {
+      font-size: 10px; font-weight: 700; letter-spacing: .04em;
+      color: var(--blue); border: 1px solid var(--blue); border-radius: 4px; padding: 2px 6px;
+    }
     .card[data-wallet-held='true'] { border-left: 3px solid var(--blue); }
     .card[data-portfolio-asset='true'][data-wallet-held='false'] { border-left: 3px solid var(--blue); }
     /* Market rotation pressure — read-only projection (Issue #255). Kept
@@ -5281,18 +5297,23 @@ def render_plan_card(
     invalidation_line = format_invalidation_line(card.invalidation_risk_zone, card.distance_to_invalidation_pct)
     planning_ppp_text = _format_planning_ppp(card)
     actionable_ppp_text = _format_actionable_ppp(card)
-    # Two independent facts, both may render at once: is_wallet_held = a
-    # positive amount in the latest persisted wallet snapshot;
-    # is_portfolio_asset = configured strategic portfolio/rotation
-    # membership, independent of current balance.
+    # Four independent overlays may render together.
     badge_html_parts = []
     if card.is_wallet_held:
         badge_html_parts.append(
-            "<span class='wallet-held-badge' title='Positive amount in the latest persisted wallet snapshot'>WALLET</span>"
+            "<span class='wallet-held-badge' title='Positive amount in the latest persisted wallet snapshot'>WALLET HELD</span>"
         )
     if card.is_portfolio_asset:
         badge_html_parts.append(
-            "<span class='portfolio-asset-badge' title='Configured strategic portfolio/rotation asset'>PORTFOLIO</span>"
+            "<span class='portfolio-asset-badge' title='Configured per-account strategic portfolio/rotation membership'>PORTFOLIO ASSET</span>"
+        )
+    if card.is_market_selected:
+        badge_html_parts.append(
+            "<span class='market-selected-badge' title='Global market publication cohort'>MARKET SELECTED</span>"
+        )
+    if card.is_core_sensor:
+        badge_html_parts.append(
+            "<span class='core-sensor-badge' title='Global market-structure reference symbol'>CORE SENSOR</span>"
         )
     portfolio_badge_html = "".join(badge_html_parts)
 
@@ -5991,6 +6012,8 @@ def build_json_snapshot(
                 "planning_ppp_unavailable_reason": _planning_ppp_unavailable_reason(c),
                 "is_portfolio_asset": c.is_portfolio_asset,
                 "is_wallet_held": c.is_wallet_held,
+                "is_market_selected": c.is_market_selected,
+                "is_core_sensor": c.is_core_sensor,
                 # Deprecated compatibility alias only — always equal to
                 # is_wallet_held, never strategic portfolio membership.
                 # Canonical fields are is_portfolio_asset / is_wallet_held.
