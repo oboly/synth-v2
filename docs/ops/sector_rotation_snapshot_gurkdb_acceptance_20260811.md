@@ -266,3 +266,91 @@ executor=none
 broker_writes=0
 order_submission=0
 ```
+
+<a id="writer-natural-cycle-observation-20260812"></a>
+
+## Writer Natural Cycle Observation — 2026-08-12
+
+Per `docs/ops/sector_rotation_runtime_activation_v1.md` step 5 ("Install and
+enable the writer timer on gurkDB. Observe at least three real cycles before
+considering it settled"), the writer timer
+(`synth-sector-rotation-writer.timer`, `OnCalendar=*-*-* *:20:00 UTC`,
+`RandomizedDelaySec=180`) was observed across its first three natural
+production-authorized firings.
+
+```text
+cycle 1: fired 2026-08-12T08:21:45Z, asof=2026-08-12T08:00:00Z
+cycle 2: fired ~2026-08-12T09:22:30Z, asof=2026-08-12T09:00:00Z
+cycle 3: fired ~2026-08-12T10:21:07Z, asof=2026-08-12T10:00:00Z
+```
+
+### DB-side evidence (read-only query, this session, no writes)
+
+```text
+asof=2026-08-12T08:00:00Z  116 rows  29 sectors x 4 windows  1 model_version=sector-rotation-v1.0.0
+asof=2026-08-12T09:00:00Z  116 rows  29 sectors x 4 windows  1 model_version=sector-rotation-v1.0.0
+asof=2026-08-12T10:00:00Z  116 rows  29 sectors x 4 windows  1 model_version=sector-rotation-v1.0.0
+duplicate_headers (sector_code, venue, window_code, asof_ts_utc), all 3 cycles = 0
+venue consistent = bitvavo (all 3 cycles)
+rotation_state distributions per cycle are consistent in shape across all 3
+  cycles (no cohort-level DATA_UNAVAILABLE/INCOMPLETE_LATEST_COHORT failure;
+  per-cell DATA_UNAVAILABLE/INSUFFICIENT_PARTICIPATION states present at a
+  stable rate each cycle, matching cycle 1's already-accepted pattern)
+4 additional natural cycles observed beyond the required 3, same shape:
+  asof 11:00Z, 12:00Z, 13:00Z, 14:00Z UTC, all 116 rows / 29x4 / 0 duplicates
+```
+
+### Explicitly NOT verified by this evidence
+
+This session had DB read access (via `.env` credentials, host `gurkdb`/
+`192.168.1.221:3306`) but **no SSH/shell access to gurkdb**. The canonical
+"Observation Requirements" in `docs/ops/sector_rotation_runtime_activation_v1.md`
+require, per cycle, independent `journalctl` per-invocation correlation
+(`InvocationID`/`LastTriggerUSec`) confirming: writer timer window, writer
+exit status, freshness state, `LOCK_HELD` absence, and no unexpected extra
+invocations. **None of that was obtained** — it requires a shell session on
+gurkdb, which this agent does not have. The DB-side cohort evidence above is
+consistent with three (in fact seven) clean cycles but does not substitute
+for the required systemd-level confirmation.
+
+### ACTIVE readiness assessment
+
+**`ACTIVE` is not justified now**, for two independent reasons:
+
+1. Journalctl-level confirmation of writer exit status / lock behavior /
+   invocation count is outstanding (see above) — required by the
+   Observation Requirements for even the writer-only leg.
+2. Steps 6-8 of the canonical activation order have not been performed at
+   all: the Sector Overview publisher lane is not installed, the
+   Nginx/public-route verification has not been done, and no writer+publisher
+   joint cycles have been observed. `ACTIVE` per step 9 requires all prior
+   steps, not writer cycles alone.
+
+No lifecycle field, registry, or authorization file was changed by this
+observation. `runtime_lifecycle=AUTHORIZED_INACTIVE` and
+`production_authorization_status=AUTHORIZED` remain unchanged.
+
+Next step to close reason (1): obtain gurkdb shell/SSH access (or have
+someone with access run and paste the three
+`journalctl -u synth-sector-rotation-writer.service` per-invocation
+excerpts) so the Observation Requirements can be independently confirmed.
+Next step to close reason (2): a separate explicit decision to proceed with
+step 6 (publisher install) is required before joint-cycle observation can
+even begin.
+
+### Safety Counters
+
+```text
+writer_invocations=0
+database_writes=0
+systemctl_mutations=0
+timer_changes=0
+publisher_changes=0
+account_inputs=0
+selection_engine=none
+decision_gate=none
+execution_planner=none
+executor=none
+broker_writes=0
+order_submission=0
+```
