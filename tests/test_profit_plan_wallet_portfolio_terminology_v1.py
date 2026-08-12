@@ -230,3 +230,13 @@ def test_source_file_uses_canonical_badge_text_without_retired_label() -> None:
     assert "portfolio-held-badge" not in source
     for badge in ("WALLET HELD", "PORTFOLIO ASSET", "MARKET SELECTED", "CORE SENSOR"):
         assert badge in source
+
+
+def test_reporting_uses_cohort_published_without_legacy_cohort_reason() -> None:
+    dashboard_source = Path("src/reporting/account_scoped_short_trader_dashboard_v1.py").read_text(encoding="utf-8")
+    runner_source = Path("src/reporting/run_manual_short_trader_profit_plan_v1.py").read_text(encoding="utf-8")
+    reporting_source = f"{dashboard_source}\n{runner_source}"
+    legacy_reason = "PORTFOLIO" + "_MARKER"
+
+    assert "COHORT_PUBLISHED" in reporting_source
+    assert legacy_reason not in reporting_source

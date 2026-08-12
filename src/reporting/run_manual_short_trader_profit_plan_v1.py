@@ -1849,11 +1849,11 @@ def main() -> int:
         account_asset_rows=context.account_asset_rows,
         trading_account_id=context.trading_account_id,
     )
-    # PORTFOLIO_MARKER remains the legacy internal cohort reason until #374.
+    # COHORT_PUBLISHED is the internal publication-cohort reason.
     market_selected_markets = {
         market
         for market, reasons in context.market_inclusion_reasons_by_market.items()
-        if "PORTFOLIO_MARKER" in reasons
+        if "COHORT_PUBLISHED" in reasons
     }
     core_sensor_markets = {
         market

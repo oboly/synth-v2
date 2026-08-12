@@ -513,7 +513,7 @@ def load_account_scoped_short_dashboard_context(
             selected_asset_market_rows=selected_asset_market_rows,
         )
         # Build per-market inclusion provenance while source rows are still available.
-        # Reason values: POSITION_HELD, OPEN_ORDER, PORTFOLIO_MARKER, CORE_SENSOR
+        # Reason values: POSITION_HELD, OPEN_ORDER, COHORT_PUBLISHED, CORE_SENSOR
         _reasons: dict[str, set[str]] = {}
         for b in balances:
             sym = str(b.symbol or "").upper()
@@ -530,7 +530,7 @@ def load_account_scoped_short_dashboard_context(
             if not mkt:
                 continue
             if row.get("asset_is_portfolio"):
-                _reasons.setdefault(mkt, set()).add("PORTFOLIO_MARKER")
+                _reasons.setdefault(mkt, set()).add("COHORT_PUBLISHED")
             if row.get("asset_is_core_sensor"):
                 _reasons.setdefault(mkt, set()).add("CORE_SENSOR")
         market_inclusion_reasons_by_market: Mapping[str, frozenset[str]] = {
