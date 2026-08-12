@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from src.common.db import get_connection
 from src.market_data.market_price_snapshot_v1 import MarketPriceSnapshot, fetch_latest_prices_by_symbol
+from src.market_data.publication_cohort_compat_v1 import assert_no_publication_cohort_drift
 from src.reporting.account_wallet_dashboard_v1 import QUOTE_CURRENCY, to_decimal
 from src.reporting.current_price_snapshot_v1 import (
     DEFAULT_CURRENT_PRICE_FRESH_AFTER,
@@ -355,14 +356,15 @@ def _fetch_selected_asset_market_rows(
     Asset data is the global selection layer. Account rows, balances, and open
     orders are overlays; they must not be the only way a symbol becomes visible.
     """
-    sql = """
+    cohort_column = assert_no_publication_cohort_drift(conn)
+    sql = f"""
     SELECT
         vm.market,
         vm.quote_currency,
         a.symbol AS asset_symbol,
         a.is_enabled AS asset_is_enabled,
         a.is_tradeable AS asset_is_tradeable,
-        a.is_portfolio AS asset_is_portfolio,
+        a.{cohort_column} AS asset_is_publication_cohort,
         a.is_core_sensor AS asset_is_core_sensor
     FROM venue_market vm
     JOIN asset a
@@ -372,7 +374,7 @@ def _fetch_selected_asset_market_rows(
       AND a.is_enabled = 1
       AND COALESCE(a.is_tradeable, 0) = 1
       AND (
-        COALESCE(a.is_portfolio, 0) = 1
+        COALESCE(a.{cohort_column}, 0) = 1
         OR COALESCE(a.is_core_sensor, 0) = 1
       )
     ORDER BY vm.market
@@ -529,7 +531,7 @@ def load_account_scoped_short_dashboard_context(
             mkt = str(row.get("market") or "").upper()
             if not mkt:
                 continue
-            if row.get("asset_is_portfolio"):
+            if row.get("asset_is_publication_cohort"):
                 _reasons.setdefault(mkt, set()).add("COHORT_PUBLISHED")
             if row.get("asset_is_core_sensor"):
                 _reasons.setdefault(mkt, set()).add("CORE_SENSOR")

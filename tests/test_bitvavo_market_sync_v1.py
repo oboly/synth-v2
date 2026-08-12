@@ -365,6 +365,17 @@ def test_asset_insert_payload_sets_legacy_required_booleans():
     assert payload["asset_class"] == "CRYPTO"
 
 
+def test_asset_insert_payload_sets_canonical_publication_cohort_when_present():
+    columns = _asset_schema_rows() + [{
+        "COLUMN_NAME": "is_publication_cohort", "DATA_TYPE": "tinyint",
+        "COLUMN_TYPE": "tinyint(1)", "IS_NULLABLE": "NO", "COLUMN_DEFAULT": None, "EXTRA": "",
+    }]
+    insert_columns, values = _build_asset_insert_payload(columns, symbol="TON")
+    payload = dict(zip(insert_columns, values))
+    assert payload["is_portfolio"] == 0
+    assert payload["is_publication_cohort"] == 0
+
+
 def test_upsert_asset_existing_row_does_not_overwrite_is_portfolio():
     conn = _AssetSchemaConn(insert_rowcount=2)
     action = upsert_asset(conn, symbol="LINK", asset_columns=conn.asset_schema)

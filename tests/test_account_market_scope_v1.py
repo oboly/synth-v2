@@ -32,7 +32,7 @@ def test_publication_cohort_emits_cohort_published_reason(monkeypatch) -> None:
             {
                 "market": "XLM-EUR",
                 "quote_currency": "EUR",
-                "asset_is_portfolio": 1,
+                "asset_is_publication_cohort": 1,
                 "asset_is_core_sensor": 0,
             }
         ],
@@ -61,7 +61,7 @@ def test_market_scope_includes_asset_selected_market_without_account_overlay() -
                 "asset_symbol": "XLM",
                 "asset_is_enabled": 1,
                 "asset_is_tradeable": 1,
-                "asset_is_portfolio": 1,
+                "asset_is_publication_cohort": 1,
                 "asset_is_core_sensor": 0,
             },
         ],
@@ -128,7 +128,7 @@ def test_market_scope_respects_hidden_account_overlay_for_passive_asset_selectio
                 "asset_symbol": "XLM",
                 "asset_is_enabled": 1,
                 "asset_is_tradeable": 1,
-                "asset_is_portfolio": 1,
+                "asset_is_publication_cohort": 1,
                 "asset_is_core_sensor": 0,
             },
         ],

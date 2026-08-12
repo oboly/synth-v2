@@ -19,6 +19,7 @@ from src.market_data.fib_navigation_map_v1 import (
     PriorMapMeta,
     build_fib_navigation_map,
 )
+from src.market_data.publication_cohort_compat_v1 import assert_no_publication_cohort_drift
 from src.structure.trend_state_v1 import (
     ENGINE_NAME as TREND_ENGINE_NAME,
     ENGINE_VERSION as TREND_ENGINE_VERSION,
@@ -560,7 +561,8 @@ def build_publication(
 
 
 def fetch_tracked_symbols(conn: Any, *, venue: str, quote_currency: str) -> list[str]:
-    sql = """
+    cohort_column = assert_no_publication_cohort_drift(conn)
+    sql = f"""
         SELECT DISTINCT a.symbol
         FROM venue_market vm
         JOIN asset a ON a.asset_id = vm.base_asset_id
@@ -568,7 +570,7 @@ def fetch_tracked_symbols(conn: Any, *, venue: str, quote_currency: str) -> list
           AND vm.quote_currency = %s
           AND a.is_enabled = 1
           AND COALESCE(a.is_tradeable, 0) = 1
-          AND (COALESCE(a.is_portfolio, 0) = 1 OR COALESCE(a.is_core_sensor, 0) = 1)
+          AND (COALESCE(a.{cohort_column}, 0) = 1 OR COALESCE(a.is_core_sensor, 0) = 1)
         ORDER BY a.symbol
     """
     with conn.cursor() as cur:

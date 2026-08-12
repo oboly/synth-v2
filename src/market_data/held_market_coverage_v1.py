@@ -60,7 +60,7 @@ class AssetRegistryRow:
     symbol: str
     is_enabled: bool
     is_tradeable: bool
-    is_portfolio: bool
+    is_publication_cohort: bool
     is_core_sensor: bool
 
 
@@ -139,7 +139,7 @@ def resolve_held_markets(
                 )
             )
             continue
-        already_enrolled = bool(asset_row.is_portfolio or asset_row.is_core_sensor)
+        already_enrolled = bool(asset_row.is_publication_cohort or asset_row.is_core_sensor)
         out.append(
             HeldMarketResolution(
                 currency_code=code,

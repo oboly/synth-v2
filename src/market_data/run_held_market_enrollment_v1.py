@@ -3,16 +3,16 @@ run_held_market_enrollment_v1 -- Enroll resolvable positive wallet holdings
 (across every linked trading account) into the account-agnostic market/Fib
 publication cohort (Issue #238 follow-up).
 
-Root cause fixed by this enrollment step: ``asset.is_portfolio`` /
+Root cause fixed by this enrollment step: legacy ``asset.is_portfolio`` /
 ``asset.is_core_sensor`` gate both the canonical 4h Fib writer's tracked-
 symbol cohort (``canonical_fib_zone_map_v1.fetch_tracked_symbols``) and the
 Profit Plan's account-plan selection layer. A wallet-discovered held asset
 (e.g. LIGHTER) can be flagged in the per-account ``account_asset`` table
-without ever setting the market-wide ``asset.is_portfolio`` flag, leaving it
+without ever setting the market-wide publication-cohort flag, leaving it
 permanently excluded from the canonical Fib publication cohort even though it
 has ample public candle history.
 
-This script only ever flips ``asset.is_portfolio`` from 0 to 1 for an asset
+This script only ever flips the market-wide publication-cohort flag from 0 to 1 for an asset
 that is resolvable (exact ``asset.symbol`` match, never a display alias),
 enabled, and tradeable, and that is currently held with a positive balance in
 at least one trading account. It never creates/edits venue_market or asset
@@ -52,6 +52,12 @@ from src.market_data.held_market_coverage_v1 import (
     HeldBalance,
     resolutions_needing_enrollment,
     resolve_held_markets,
+)
+from src.market_data.publication_cohort_compat_v1 import (
+    CANONICAL_COLUMN,
+    LEGACY_COLUMN,
+    assert_no_publication_cohort_drift,
+    asset_publication_cohort_columns,
 )
 
 RUNNER_NAME = "held_market_enrollment_v1"
@@ -100,8 +106,9 @@ def fetch_latest_positive_balances(conn: Any, *, venue: str) -> list[HeldBalance
 
 
 def fetch_asset_registry(conn: Any) -> dict[str, AssetRegistryRow]:
-    sql = """
-    SELECT asset_id, symbol, is_enabled, is_tradeable, is_portfolio, is_core_sensor
+    cohort_column = assert_no_publication_cohort_drift(conn)
+    sql = f"""
+    SELECT asset_id, symbol, is_enabled, is_tradeable, {cohort_column}, is_core_sensor
     FROM asset
     """
     with conn.cursor() as cur:
@@ -115,7 +122,7 @@ def fetch_asset_registry(conn: Any) -> dict[str, AssetRegistryRow]:
             symbol=symbol,
             is_enabled=bool(row.get("is_enabled")),
             is_tradeable=bool(row.get("is_tradeable")),
-            is_portfolio=bool(row.get("is_portfolio")),
+            is_publication_cohort=bool(row.get(cohort_column)),
             is_core_sensor=bool(row.get("is_core_sensor")),
         )
     return out
@@ -126,13 +133,25 @@ def apply_enrollment(conn: Any, *, asset_id: int) -> bool:
     enrolled via is_portfolio or is_core_sensor. Returns True only when this
     call actually flipped the row (False means it was already enrolled by a
     concurrent run -- a no-op, not a failure)."""
-    sql = """
-    UPDATE asset
-    SET is_portfolio = 1
-    WHERE asset_id = %s
-      AND is_portfolio = 0
-      AND is_core_sensor = 0
-    """
+    columns = asset_publication_cohort_columns(conn)
+    cohort_column = assert_no_publication_cohort_drift(conn, columns)
+    if {LEGACY_COLUMN, CANONICAL_COLUMN}.issubset(columns):
+        sql = """
+        UPDATE asset
+        SET is_portfolio = 1, is_publication_cohort = 1
+        WHERE asset_id = %s
+          AND is_portfolio = 0
+          AND is_publication_cohort = 0
+          AND is_core_sensor = 0
+        """
+    else:
+        sql = f"""
+        UPDATE asset
+        SET {cohort_column} = 1
+        WHERE asset_id = %s
+          AND {cohort_column} = 0
+          AND is_core_sensor = 0
+        """
     with conn.cursor() as cur:
         cur.execute(sql, (asset_id,))
         return cur.rowcount == 1
@@ -182,7 +201,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Enroll resolvable positive wallet holdings into the canonical "
-            "market/Fib publication cohort by flipping asset.is_portfolio. "
+            "market/Fib publication cohort by flipping its compatibility field. "
             "Dry run by default."
         )
     )

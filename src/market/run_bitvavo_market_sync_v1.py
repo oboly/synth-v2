@@ -115,7 +115,7 @@ def _build_asset_insert_payload(
             values_by_column[name] = 1
         elif name == "is_tradeable":
             values_by_column[name] = 1
-        elif name == "is_portfolio":
+        elif name in {"is_portfolio", "is_publication_cohort"}:
             values_by_column[name] = 0
         elif _is_required_booleanish(column):
             values_by_column[name] = 0

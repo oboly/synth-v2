@@ -27,12 +27,10 @@ executor_changes=0
 
 ## 0. Current implementation state (read this before anything else)
 
-- `asset.is_portfolio` is the **live, in-use column name today**. It has
-  **not** been renamed. Any reference below to `asset.is_publication_cohort`
-  is the **target** name, to be introduced only by the future rename issue
-  (#375) — additive column, dual-read, backfill, cutover, as its own
-  separately authorized migration. Nothing in this document implements that
-  rename.
+- `asset.is_portfolio` is the legacy compatibility field. #375 introduces
+  `asset.is_publication_cohort` through separately sequenced additive and
+  backfill migrations; repository readers dual-read only during the migration
+  window. Production application remains separately authorized.
 - `account_asset.is_portfolio_member` **exists in schema today** but has
   **no writer** (every insert path sets it to the literal `0`) and **no
   reader** in current code. It is not authoritative at runtime. Giving it a

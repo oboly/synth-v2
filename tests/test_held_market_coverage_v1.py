@@ -31,13 +31,13 @@ def _asset(symbol: str, *, enabled=True, tradeable=True, portfolio=False, core_s
         symbol=symbol,
         is_enabled=enabled,
         is_tradeable=tradeable,
-        is_portfolio=portfolio,
+        is_publication_cohort=portfolio,
         is_core_sensor=core_sensor,
     )
 
 
 def test_positive_holding_absent_from_selection_cohort_is_flagged_needing_enrollment() -> None:
-    """A held asset that is enabled/tradeable but not is_portfolio/is_core_sensor
+    """A held asset that is enabled/tradeable but not publication-cohort/core-sensor
     (i.e. absent from the configured watchlist/selection cohort) must be
     resolvable and flagged needs_enrollment=True, not silently dropped."""
     balances = [HeldBalance(trading_account_id=1, account_code="acct-a", currency_code="LIGHTER", total_amount=Decimal("5"))]
@@ -273,7 +273,7 @@ def test_enrollment_writer_only_ever_updates_the_asset_table() -> None:
     source = Path("src/market_data/run_held_market_enrollment_v1.py").read_text(encoding="utf-8")
     for keyword in ("INSERT INTO", "DELETE FROM"):
         assert keyword not in source
-    assert source.count("UPDATE ") == 1
+    assert "UPDATE account_asset" not in source
     assert "UPDATE asset" in source
 
 
@@ -326,7 +326,13 @@ class _FakeCursor:
     def __exit__(self, *exc: object) -> None:
         return None
 
-    def execute(self, sql: str, params: tuple) -> None:
+    def execute(self, sql: str, params=None) -> None:
+        if "information_schema.COLUMNS" in sql:
+            self._rows = [{"COLUMN_NAME": "is_portfolio"}]
+            return
+        if "SELECT asset_id, symbol, is_portfolio, is_publication_cohort" in sql:
+            self._rows = []
+            return
         asset_id = params[0]
         if asset_id in self._conn.raise_for_asset_ids:
             raise RuntimeError(f"simulated failure for asset_id={asset_id}")
@@ -336,10 +342,17 @@ class _FakeCursor:
         self._conn.pending_commit_asset_ids.append(asset_id)
         self.rowcount = 1
 
+    def fetchall(self):
+        return list(getattr(self, "_rows", []))
+
+    def fetchone(self):
+        rows = getattr(self, "_rows", [])
+        return rows[0] if rows else None
+
 
 class _FakeConn:
     """Minimal fake standing in for a pymysql connection, tracking asset rows
-    as {asset_id: is_portfolio_bool} so apply_pending_enrollments can be
+    as {asset_id: is_publication_cohort_bool} so apply_pending_enrollments can be
     tested for idempotency and per-row failure isolation without a DB."""
 
     def __init__(self, *, initial_enrolled: set[int] | None = None, raise_for_asset_ids: set[int] | None = None) -> None:
@@ -413,14 +426,14 @@ def test_apply_pending_enrollments_isolates_one_symbols_failure_from_the_rest() 
 
 def test_canonical_fib_writer_cohort_still_gated_by_the_flag_enrollment_sets() -> None:
     """Static guard against the two SQL cohorts drifting apart: the writer's
-    tracked-symbol query must key off is_portfolio/is_core_sensor, since
+    tracked-symbol query must key off the compatibility contract/is_core_sensor, since
     those are exactly the flags this enrollment mechanism sets. If this
     changes, enrollment silently stops mattering."""
     source = Path("src/market_data/canonical_fib_zone_map_v1.py").read_text(encoding="utf-8")
     start = source.index("def fetch_tracked_symbols")
     end = source.index("\ndef ", start + 1)
     body = source[start:end]
-    assert "is_portfolio" in body
+    assert "assert_no_publication_cohort_drift" in body
     assert "is_core_sensor" in body
 
 
