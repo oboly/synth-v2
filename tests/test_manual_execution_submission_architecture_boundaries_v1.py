@@ -20,6 +20,9 @@ _SUBMISSION_MODULES = (
     "manual_execution_stub_order_adapter_v1.py",
     "manual_live_authorization_v1.py",
     "manual_execution_submission_leg_reconciliation_v1.py",
+    "manual_execution_live_authority_v1.py",
+    "manual_execution_submission_leg_inmemory_v1.py",
+    "manual_execution_live_submission_v1.py",
 )
 
 
