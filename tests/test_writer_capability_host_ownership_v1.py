@@ -726,9 +726,15 @@ def test_sector_rotation_snapshot_wrapper_and_module_are_forbidden_consumer_toke
 
 
 def test_sector_rotation_snapshot_production_verifier_denies_execution() -> None:
-    # Registry ownership is now AUTHORIZED_INACTIVE, but the host-local
-    # production authorization file is deliberately absent until a separate,
-    # explicitly authorized cutover step installs it.
+    # Registry ownership is now AUTHORIZED_INACTIVE, but no production
+    # authorization artifact has been installed for sector_rotation_snapshot
+    # itself: its authorization_guard.authorization_file is the same
+    # host-local path already installed for public_price_snapshot, so the
+    # content-mismatch checks in _verify_production fail closed regardless of
+    # that file's presence. These capability-identity/content-mismatch
+    # reasons are stable across checkout/branch state; a
+    # commit/branch-specific reason may also appear and is intentionally not
+    # asserted here.
     decision = verify_writer_execution_authorization(
         capability_id="sector_rotation_snapshot",
         mode=ExecutionMode.PRODUCTION,
@@ -736,6 +742,12 @@ def test_sector_rotation_snapshot_production_verifier_denies_execution() -> None
         checkout_path=Path.cwd(),
     )
     assert not decision.allowed
+    assert "authorization capability_id mismatch" in decision.reasons
+    assert "authorization capability_identity mismatch" in decision.reasons
+    assert (
+        "authorization decision_evidence must match registry production_decision_evidence"
+        in decision.reasons
+    )
 
 
 def test_existing_four_capabilities_unchanged_by_sector_rotation_onboarding() -> None:
