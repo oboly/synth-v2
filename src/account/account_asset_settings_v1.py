@@ -21,12 +21,16 @@ ACTION_HIDE_ASSET = "hide_asset"
 ACTION_DISABLE_CANDIDATE = "disable_candidate"
 ACTION_PAUSE_CANDIDATE_24H = "pause_candidate_24h"
 ACTION_REENABLE_ASSET = "reenable_asset"
+ACTION_SET_PORTFOLIO_MEMBER = "set_portfolio_member"
+ACTION_CLEAR_PORTFOLIO_MEMBER = "clear_portfolio_member"
 ALLOWED_ACTIONS = {
     ACTION_ADD_ASSET,
     ACTION_HIDE_ASSET,
     ACTION_DISABLE_CANDIDATE,
     ACTION_PAUSE_CANDIDATE_24H,
     ACTION_REENABLE_ASSET,
+    ACTION_SET_PORTFOLIO_MEMBER,
+    ACTION_CLEAR_PORTFOLIO_MEMBER,
 }
 
 DISABLED_REASON_MANUAL = "MANUAL_DISABLE"
@@ -332,6 +336,90 @@ def reenable_asset_for_account(
     )
 
 
+def set_portfolio_member_for_account(
+    repo: AccountAssetSettingsRepo,
+    *,
+    account_code: str,
+    venue: str,
+    market: str,
+) -> AccountAssetActionResult:
+    """Set account_asset.is_portfolio_member = 1 for exactly one (trading_account_id, venue_market_id).
+
+    This is an independently managed per-account property. It must not read or
+    gate on balance, asset.is_portfolio (global publication cohort), visibility,
+    candidate enablement, or order-proposal enablement.
+    """
+    account = _require_account(repo, account_code=account_code, venue=venue)
+    venue_market = _require_venue_market(repo, venue=venue, market=market, require_eur_quote=False)
+    trading_account_id = int(account["trading_account_id"])
+    venue_market_id = int(venue_market["venue_market_id"])
+    existing = _require_account_asset(
+        repo,
+        trading_account_id=trading_account_id,
+        venue_market_id=venue_market_id,
+        venue=venue,
+        market=market,
+    )
+    repo.update_account_asset(
+        trading_account_id=trading_account_id,
+        venue_market_id=venue_market_id,
+        updates={
+            "is_portfolio_member": 1,
+        },
+    )
+    return AccountAssetActionResult(
+        action=ACTION_SET_PORTFOLIO_MEMBER,
+        status="UPDATED",
+        account_code=account_code,
+        trading_account_id=trading_account_id,
+        venue=venue,
+        market=normalize_market(market),
+        source=str(existing.get("source") or ""),
+        message="portfolio membership set for this account only",
+    )
+
+
+def clear_portfolio_member_for_account(
+    repo: AccountAssetSettingsRepo,
+    *,
+    account_code: str,
+    venue: str,
+    market: str,
+) -> AccountAssetActionResult:
+    """Set account_asset.is_portfolio_member = 0 for exactly one (trading_account_id, venue_market_id).
+
+    Same independence constraints as set_portfolio_member_for_account.
+    """
+    account = _require_account(repo, account_code=account_code, venue=venue)
+    venue_market = _require_venue_market(repo, venue=venue, market=market, require_eur_quote=False)
+    trading_account_id = int(account["trading_account_id"])
+    venue_market_id = int(venue_market["venue_market_id"])
+    existing = _require_account_asset(
+        repo,
+        trading_account_id=trading_account_id,
+        venue_market_id=venue_market_id,
+        venue=venue,
+        market=market,
+    )
+    repo.update_account_asset(
+        trading_account_id=trading_account_id,
+        venue_market_id=venue_market_id,
+        updates={
+            "is_portfolio_member": 0,
+        },
+    )
+    return AccountAssetActionResult(
+        action=ACTION_CLEAR_PORTFOLIO_MEMBER,
+        status="UPDATED",
+        account_code=account_code,
+        trading_account_id=trading_account_id,
+        venue=venue,
+        market=normalize_market(market),
+        source=str(existing.get("source") or ""),
+        message="portfolio membership cleared for this account only",
+    )
+
+
 def dispatch_account_asset_action(
     repo: AccountAssetSettingsRepo,
     *,
@@ -351,7 +439,11 @@ def dispatch_account_asset_action(
         return disable_candidate_for_account(repo, account_code=account_code, venue=venue, market=market)
     if action == ACTION_PAUSE_CANDIDATE_24H:
         return pause_candidate_for_account(repo, account_code=account_code, venue=venue, market=market, now_utc=now_utc)
-    return reenable_asset_for_account(repo, account_code=account_code, venue=venue, market=market)
+    if action == ACTION_REENABLE_ASSET:
+        return reenable_asset_for_account(repo, account_code=account_code, venue=venue, market=market)
+    if action == ACTION_SET_PORTFOLIO_MEMBER:
+        return set_portfolio_member_for_account(repo, account_code=account_code, venue=venue, market=market)
+    return clear_portfolio_member_for_account(repo, account_code=account_code, venue=venue, market=market)
 
 
 class MySqlAccountAssetSettingsRepo:
@@ -395,6 +487,7 @@ class MySqlAccountAssetSettingsRepo:
             is_visible,
             is_candidate_enabled,
             is_order_proposal_enabled,
+            is_portfolio_member,
             is_hidden,
             disabled_until_utc,
             disabled_reason,
