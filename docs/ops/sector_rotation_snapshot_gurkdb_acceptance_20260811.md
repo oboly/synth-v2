@@ -266,3 +266,113 @@ executor=none
 broker_writes=0
 order_submission=0
 ```
+
+<a id="writer-natural-cycle-observation-20260812"></a>
+
+## Writer Natural Cycle Observation — 2026-08-12
+
+Per `docs/ops/sector_rotation_runtime_activation_v1.md` step 5 ("Install and
+enable the writer timer on gurkDB. Observe at least three real cycles before
+considering it settled"), the writer timer
+(`synth-sector-rotation-writer.timer`, `OnCalendar=*-*-* *:20:00 UTC`,
+`RandomizedDelaySec=180`) was observed across its first three natural
+production-authorized firings.
+
+```text
+cycle 1: fired 2026-08-12T08:21:45Z, asof=2026-08-12T08:00:00Z
+cycle 2: fired ~2026-08-12T09:22:30Z, asof=2026-08-12T09:00:00Z
+cycle 3: fired ~2026-08-12T10:21:07Z, asof=2026-08-12T10:00:00Z
+```
+
+### DB-side evidence (read-only query, this session, no writes)
+
+```text
+asof=2026-08-12T08:00:00Z  116 rows  29 sectors x 4 windows  1 model_version=sector-rotation-v1.0.0
+asof=2026-08-12T09:00:00Z  116 rows  29 sectors x 4 windows  1 model_version=sector-rotation-v1.0.0
+asof=2026-08-12T10:00:00Z  116 rows  29 sectors x 4 windows  1 model_version=sector-rotation-v1.0.0
+duplicate_headers (sector_code, venue, window_code, asof_ts_utc), all 3 cycles = 0
+venue consistent = bitvavo (all 3 cycles)
+rotation_state distributions per cycle are consistent in shape across all 3
+  cycles (no cohort-level DATA_UNAVAILABLE/INCOMPLETE_LATEST_COHORT failure;
+  per-cell DATA_UNAVAILABLE/INSUFFICIENT_PARTICIPATION states present at a
+  stable rate each cycle, matching cycle 1's already-accepted pattern)
+4 additional natural cycles observed beyond the required 3, same shape:
+  asof 11:00Z, 12:00Z, 13:00Z, 14:00Z UTC, all 116 rows / 29x4 / 0 duplicates
+```
+
+### Journalctl-side evidence (supplied by user from a gurkdb shell session, 2026-08-12)
+
+`sudo journalctl -u synth-sector-rotation-writer.service --since "2026-08-12
+08:15:00 UTC" --until "2026-08-12 14:30:00 UTC"` was run directly on gurkdb
+and covers all 7 cycles above. Per-cycle correlation via the
+Starting/Finished systemd bracket and per-invocation PID grouping (this
+agent had no SSH access to gurkdb itself; the log was captured and pasted by
+the user from their own gurkdb shell):
+
+```text
+cycle    fired(UTC)  wrapper_exit  engine_exit          rows  LOCK_HELD
+08:00Z   08:21:45    0             transaction=committed 116  none
+09:00Z   09:22:27    0             transaction=committed 116  none
+10:00Z   10:21:04    0             transaction=committed 116  none
+11:00Z   11:21:27    0             transaction=committed 116  none
+12:00Z   12:21:09    0             transaction=committed 116  none
+13:00Z   13:20:43    0             transaction=committed 116  none
+14:00Z   14:22:37    0             transaction=committed 116  none
+```
+
+Every cycle shows exactly one `Starting synth-sector-rotation-writer.service`
+/ `Finished synth-sector-rotation-writer.service` systemd bracket (no
+unexpected extra invocations), an `authorization_guard=pass` line in
+`mode=PRODUCTION` before compute, and `Deactivated successfully` on exit.
+`grep -c LOCK_HELD` over the full window = 0. `systemctl status
+synth-sector-rotation-writer.timer` confirms `enabled`/`active (waiting)`,
+consistent hourly triggering, no unit-file drift.
+
+This satisfies the Observation Requirements' writer-leg items (writer timer
+window, writer exit status, `LOCK_HELD` absence, no unexpected extra
+invocations) for far more than the required 3 consecutive cycles.
+
+### ACTIVE readiness assessment
+
+**`ACTIVE` is still not justified**, for one remaining reason:
+
+Steps 6-8 of the canonical activation order have not been performed at all:
+the Sector Overview publisher lane is not installed, the Nginx/public-route
+verification has not been done, and no writer+publisher joint cycles have
+been observed. `ACTIVE` per step 9 requires all prior steps, not writer
+cycles alone. (The writer-only journalctl gap noted in an earlier draft of
+this section is now closed — see above.)
+
+No lifecycle field, registry, or authorization file was changed by this
+observation. `runtime_lifecycle=AUTHORIZED_INACTIVE` and
+`production_authorization_status=AUTHORIZED` remain unchanged.
+
+Next step: a separate explicit decision to proceed with step 6 (publisher
+install) is required before joint-cycle observation, Nginx verification, and
+eventual `ACTIVE` consideration can begin.
+
+### Observation Lane Safety Counters
+
+These counters describe only the read-only documentation/observation
+activity performed while producing this section (DB read queries, this
+edit, git commit) -- they do not describe the writer capability itself.
+The 7 real production timer cycles reported above each ran independently
+under the writer's own systemd timer, executed one writer invocation, and
+committed a 116-row database write; see "DB-side evidence" and the
+"Journalctl-side evidence" table above for that record.
+
+```text
+OBSERVATION_LANE_MUTATIONS
+writer_invocations_in_this_lane=0
+database_writes_in_this_lane=0
+systemctl_mutations=0
+timer_changes=0
+publisher_changes=0
+account_inputs=0
+selection_engine=none
+decision_gate=none
+execution_planner=none
+executor=none
+broker_writes=0
+order_submission=0
+```

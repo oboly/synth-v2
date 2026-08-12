@@ -338,28 +338,41 @@ timer unit itself.
 `systemctl enable <timer>` alone only creates the `[Install]` symlink and
 does not start the timer. `systemctl start <timer>` or `systemctl enable
 --now <timer>` **starts** the timer, and because both timers set
-`Persistent=true`, systemd will run the service immediately on start if the
-timer's last configured `OnCalendar=` trigger was missed (for example,
-because the system was off, or because this is the timer's first-ever
-start) -- subject only to the timer's own `RandomizedDelaySec=`, not to any
-external gate. There is no `Requires=`/`Wants=`-free way to make timer
-start itself a no-op: `Persistent=true` exists specifically so a missed run
-still happens, and timer start can always be that trigger.
+`Persistent=true`, an *already-established* timer -- one with genuine
+persisted trigger history (a stamp file under
+`/var/lib/systemd/timers/stamp-<unit>` from a prior run) -- will run the
+service immediately on start if its last configured `OnCalendar=` trigger
+was missed while the timer was stopped (for example, because the system was
+off) -- subject only to the timer's own `RandomizedDelaySec=`, not to any
+external gate.
 
-**Consequence: timer start must be treated as potentially activating a real
-writer or publisher cycle, not as a harmless scheduling-only action.**
-Removing `Requires=`/`Wants=` only stops the *service* from being pulled in
-by ordinary dependency ordering; it does nothing to stop `Persistent=true`
-from firing a real run the moment the *timer* is started. Controlled manual
-acceptance (steps 2-4 and the bounded manual runs in "Manual
-Pre-Activation Acceptance" above) must therefore already be complete, and
-the writer capability must already carry a valid production authorization
-(see "Registry onboarding is a required, separate follow-up" above) --
-**before** either timer is started or enabled with `--now`, not merely
-before it is expected to fire on its next `OnCalendar=` boundary. Manual
-acceptance remains conceptually separate from scheduled timer activation
-(they exercise the service directly, not through the timer), but that
-separation is a procedural discipline this document requires, not a
+This does **not** extend to a timer's first-ever start. With no persisted
+stamp file, systemd has no missed trigger to catch up on merely because
+earlier `OnCalendar=` boundaries existed in the abstract; it schedules the
+next `OnCalendar=` boundary normally, the same as any other future trigger.
+This is what was observed on gurkDB's first writer-timer activation: the
+timer was started at 2026-08-12T08:02:22Z and did not fire immediately --
+the first service run occurred at the next natural `*:20:00 UTC` boundary
+(~08:21:45Z), not at timer-start time.
+
+**Consequence: starting an *already-established* timer (one with persisted
+trigger history) must be treated as potentially activating a real writer or
+publisher cycle immediately, not as a harmless scheduling-only action --**
+even though a timer's genuine first-ever start does not carry that same
+immediate-catch-up risk. Removing `Requires=`/`Wants=` only stops the
+*service* from being pulled in by ordinary dependency ordering; it does
+nothing to stop `Persistent=true` from firing a real run the moment an
+established *timer* is restarted. Controlled manual acceptance (steps 2-4
+and the bounded manual runs in "Manual Pre-Activation Acceptance" above)
+must therefore already be complete, and the writer capability must already
+carry a valid production authorization (see "Registry onboarding is a
+required, separate follow-up" above) -- **before** either timer is started
+or enabled with `--now`, not merely before it is expected to fire on its
+next `OnCalendar=` boundary, since a later restart of an established timer
+can trigger an immediate run even when the original first-ever start did
+not. Manual acceptance remains conceptually separate from scheduled timer
+activation (they exercise the service directly, not through the timer), but
+that separation is a procedural discipline this document requires, not a
 guarantee `Persistent=true` timer semantics provide automatically.
 
 ## Observation Requirements
