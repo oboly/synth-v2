@@ -428,9 +428,24 @@
       },
       "production_runtime_owner": "gurkdb",
       "production_authorization_status": "AUTHORIZED",
-      "runtime_lifecycle": "AUTHORIZED_INACTIVE",
+      "runtime_lifecycle": "ACTIVE",
       "production_decision_evidence": "docs/ops/sector_rotation_snapshot_gurkdb_acceptance_20260811.md#production-decision-evidence-20260812",
-      "observed_runtime_state": [],
+      "observed_runtime_state": [
+        {
+          "host": "gurkdb",
+          "unit": "synth-sector-rotation-writer.timer",
+          "unit_path": "deploy/systemd/synth-sector-rotation-writer.timer",
+          "installed_at_observation": true,
+          "enabled_at_observation": true,
+          "active_at_observation": true,
+          "observed_at_utc": "2026-08-12T14:30:00Z",
+          "observed_at_precision": "approximate_minute",
+          "current_state": "ACTIVE_OBSERVED",
+          "authorization_status": "AUTHORIZED",
+          "runtime_state_classification": "AUTHORIZED_RUNTIME_OBSERVED",
+          "evidence_source": "docs/ops/sector_rotation_snapshot_gurkdb_acceptance_20260811.md#writer-natural-cycle-observation-20260812"
+        }
+      ],
       "historical_runtime_assignment": null
     }
   ],
