@@ -376,3 +376,178 @@ executor=none
 broker_writes=0
 order_submission=0
 ```
+
+<a id="step-8-9-active-cutover-20260813"></a>
+
+## Step 8 Joint-Cycle Observation and Step 9 ACTIVE Decision — 2026-08-13
+
+Per `docs/ops/sector_rotation_runtime_activation_v1.md` steps 6-9. The Odroid
+publisher lane (`synth-sector-rotation-publisher.service`/`.timer`) was
+installed pre-existing this session, confirmed `disabled`/`inactive` with no
+persisted stamp file and no running process, then activated by explicit user
+instruction:
+
+```text
+sudo systemctl enable --now synth-sector-rotation-publisher.timer
+```
+
+run manually by the user on Odroid (this agent has no passwordless sudo on
+Odroid; `sudo -n true` required a password). Timer started
+`2026-08-12T19:30:57Z`. Consistent with the first-ever-activation semantics
+documented above (no persisted stamp before start), the timer did **not**
+fire immediately; its first trigger occurred at the next natural
+`*:40:00 UTC` boundary (`19:40:57Z`), matching the `synth-sector-rotation-writer.timer`
+precedent recorded earlier in this document.
+
+### Step 7 — public route
+
+External authenticated `curl` from devlap against the live Nginx vhost
+(`synth.aismid.nl`, HTTP basic auth) returned `200` for
+`rotation-pressure.html`, `sector-overview.html`, and `sector-overview.json`
+before publisher activation, and after activation reflects
+`asof_ts_utc=2026-08-13T05:00:00Z` (user-supplied proof; this agent has no
+basic-auth credentials for the vhost in this session). This is corroborated
+independently below by direct Odroid filesystem inspection of the same
+`sector-overview.json`, which nginx serves unmodified from
+`/var/www/html/synth`.
+
+### Step 8 — joint writer→publisher cycles
+
+Read-only `journalctl -u synth-sector-rotation-publisher.service` inspection
+and direct read of `/var/www/html/synth/sector-overview.json` on Odroid, this
+session, no mutation:
+
+```text
+cycle              trigger(UTC)  wrapper_exit  publisher_exit  asof(UTC)             shape        LOCK_HELD  overlap
+1 (live-monitored) 19:40:58      0             0               2026-08-12T19:00:00Z  29x4=116/116 none       none
+2 (live-monitored) 20:41:03      0             0               2026-08-12T20:00:00Z  29x4=116/116 none       none
+3 (live-monitored) 21:42:03      0             0               2026-08-12T21:00:00Z  29x4=116/116 none       none
+4                  22:41:53      0             0               2026-08-12T22:00:00Z  29x4=116/116 none       none
+5                  23:41:25      0             0               2026-08-12T23:00:00Z  29x4=116/116 none       none
+6                  00:43:04      0             0               2026-08-13T00:00:00Z  29x4=116/116 none       none
+7                  01:41:16      0             0               2026-08-13T01:00:00Z  29x4=116/116 none       none
+8                  02:41:04      0             0               2026-08-13T02:00:00Z  29x4=116/116 none       none
+9                  03:41:04      0             0               2026-08-13T03:00:00Z  29x4=116/116 none       none
+10                 04:41:27      0             0               2026-08-13T04:00:00Z  29x4=116/116 none       none
+11                 05:42:26      0             0               2026-08-13T05:00:00Z  29x4=116/116 none       none
+```
+
+Cycles 1-3 were watched live via a persistent `journalctl -f` monitor with
+per-invocation correlation (systemd `Starting`/`Finished` bracket + app
+`STARTED`/`PUBLISHED`/`FINISHED` lines); cycles 4-11 were confirmed
+retroactively from the same unit's journal in a single bounded
+`--since '2026-08-12 19:30:00 UTC'` query, cross-checked against
+`sector-overview.json`'s current `asof_ts_utc=2026-08-13T05:00:00Z`, which
+matches cycle 11 and independently corroborates the user's external route
+proof for the same timestamp. Across all 11 cycles: `status=AVAILABLE
+freshness=FRESH` every time (no `DATA_UNAVAILABLE`/`INCOMPLETE_LATEST_COHORT`
+observed), zero `LOCK_HELD`, exactly one wrapper PID and one python PID per
+cycle (no overlapping/duplicate invocation), and `db_writes=0
+broker_writes=0 order_submission=0 live_orders=0 decision_gate=none
+execution_planner=none executor=none` on every publisher invocation. Output
+directory size stable at `27M` (in-place atomic overwrite of the same two
+files each cycle, no unbounded growth). `systemctl status
+synth-sector-rotation-publisher.timer` at time of writing:
+`enabled`/`active (waiting)`, next trigger scheduled normally at
+`2026-08-13T06:42:13Z`, no unit-file drift.
+
+`systemctl list-unit-files 'synth-*'` on Odroid shows exactly one
+sector-rotation-publisher service/timer pair installed
+(`synth-sector-rotation-publisher.service`/`.timer`, both `disabled` before
+this session's activation, `enabled` after); no second publisher instance on
+this or any other reachable host.
+
+### gurkDB writer health
+
+This agent has no SSH access to gurkdb in this or the prior session (see
+"Journalctl-side evidence" above). Direct confirmation remains the
+2026-08-12 evidence already recorded in this document: `systemctl status
+synth-sector-rotation-writer.timer` returned `enabled`/`active (waiting)`,
+and 7 consecutive real production cycles (08:00Z-14:00Z) each showed
+`wrapper_exit=0`, `engine_exit=transaction=committed`, 116 rows, zero
+`LOCK_HELD`, exactly one systemd bracket per cycle.
+
+That evidence is now extended, not superseded, by the 11 unbroken
+publisher-side cycles above: since the publisher fails the whole cohort
+closed (`DATA_UNAVAILABLE`) whenever the newest persisted cohort is missing,
+incomplete, or stale, 11 consecutive `AVAILABLE`/`FRESH`/`116-of-116` publisher
+cycles spanning `2026-08-12T19:00Z` through `2026-08-13T05:00Z` are only
+possible if the gurkdb writer itself committed a fresh, complete 116-row
+cohort every one of those 11 hours. This is treated here as strong indirect
+corroboration of continued writer health across the full observation window,
+not as a substitute for a direct gurkdb `systemctl`/`journalctl` check. No
+fresh direct gurkdb evidence was collected in this session.
+
+### No account/selection/decision/execution/broker coupling
+
+Confirmed by the safety-counter lines quoted above on every one of the 11
+observed publisher invocations, and by the writer-side safety counters
+already recorded in the "Safety boundary" and "Production Decision Evidence"
+sections of this document. No selection_engine, decision_gate,
+execution_planner, executor, or broker reference in either lane; publisher
+writes only `sector-overview.html`/`sector-overview.json` static files.
+
+### Step 9 — ACTIVE decision
+
+Steps 1-8 of `docs/ops/sector_rotation_runtime_activation_v1.md` are now
+evidenced complete for this lane: registry onboarding, gurkdb preflight and
+controlled writer acceptance, production-authorization decision
+(`AUTHORIZED_INACTIVE`), writer timer install and >=3 observed natural
+cycles, Odroid publisher install and Nginx public-route verification, and
+now >=3 (in fact 11) observed joint writer->publisher cycles with freshness,
+idempotency (stable 116-row shape every cycle, no duplicate headers reported
+by either writer or publisher), no duplicate writer/publisher runtime, and
+bounded disk growth.
+
+Exactly one authorized production writer owner exists for
+`sector_rotation_snapshot`: `production_runtime_owner=gurkdb`,
+`production_authorization_status=AUTHORIZED` (unchanged by this section).
+This registry change:
+
+```text
+capability=sector_rotation_snapshot
+runtime_lifecycle: AUTHORIZED_INACTIVE -> ACTIVE
+observed_runtime_state: [] -> [one entry: host=gurkdb,
+  unit=synth-sector-rotation-writer.timer, current_state=ACTIVE_OBSERVED,
+  authorization_status=AUTHORIZED,
+  runtime_state_classification=AUTHORIZED_RUNTIME_OBSERVED,
+  evidence_source=this document's "Writer Natural Cycle Observation" section]
+production_runtime_owner: gurkdb (unchanged)
+production_authorization_status: AUTHORIZED (unchanged)
+production_decision_evidence: unchanged
+acceptance_status / acceptance_host / acceptance_evidence: unchanged
+authorization_guard.authorization_file: unchanged
+service / timer / wrapper / cadence: unchanged
+```
+
+No other capability in `deploy/ownership/writer_capability_ownership_v1.json`
+is touched by this change.
+
+### Step 9 Safety Counters
+
+```text
+writer_invocations_in_this_lane=0
+database_writes_in_this_lane=0
+systemctl_mutations_by_this_agent=0
+timer_changes_by_this_agent=0
+publisher_changes_by_this_agent=0
+registry_lifecycle_field_changes=1 (sector_rotation_snapshot only)
+account_inputs=0
+selection_engine=none
+decision_gate=none
+execution_planner=none
+executor=none
+broker_writes=0
+order_submission=0
+```
+
+### Explicitly Not Done
+
+- No change to `production_runtime_owner`, `production_authorization_status`,
+  the authorization artifact path, service/timer/wrapper identities, or
+  cadence for `sector_rotation_snapshot`.
+- No other capability's registry entry touched.
+- No fresh direct gurkdb SSH evidence collected (see "gurkDB writer health"
+  above); ACTIVE readiness for the writer leg relies on the 2026-08-12 direct
+  evidence plus this session's indirect freshness-chain corroboration.
+- This PR is not merged by this agent.

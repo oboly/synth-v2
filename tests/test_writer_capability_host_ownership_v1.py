@@ -137,9 +137,11 @@ def test_public_price_and_candle_are_active() -> None:
             assert cap["acceptance_evidence"]
             assert cap["production_runtime_owner"] == "gurkdb"
             assert cap["production_decision_evidence"]
-            assert cap["runtime_lifecycle"] == "AUTHORIZED_INACTIVE", cap["capability_id"]
+            assert cap["runtime_lifecycle"] == "ACTIVE", cap["capability_id"]
             assert cap["production_authorization_status"] == "AUTHORIZED"
-            assert cap["observed_runtime_state"] == []
+            assert len(cap["observed_runtime_state"]) == 1
+            assert cap["observed_runtime_state"][0]["host"] == "gurkdb"
+            assert cap["observed_runtime_state"][0]["current_state"] == "ACTIVE_OBSERVED"
             assert cap["historical_runtime_assignment"] is None
         else:
             assert cap["capability_id"] == "native_short_4h_chain"

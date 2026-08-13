@@ -439,7 +439,7 @@ def test_writer_authorization_capability_is_registered_and_documented():
     assert "registry onboarding is complete" in ops_doc_text.lower()
 
 
-def test_writer_capability_registry_entry_is_authorized_inactive_only():
+def test_writer_capability_registry_entry_is_active_with_authorized_observation():
     import json
 
     registry_path = REPO_ROOT / "deploy/ownership/writer_capability_ownership_v1.json"
@@ -447,16 +447,23 @@ def test_writer_capability_registry_entry_is_authorized_inactive_only():
     cap = next(
         c for c in registry["capabilities"] if c.get("capability_id") == "sector_rotation_snapshot"
     )
-    # gurkDB controlled acceptance (2026-08-11) and a separate explicit
-    # production-authorization decision (2026-08-12) landed, but activation
-    # must remain strictly outstanding: no timer, no observed runtime.
-    assert cap["runtime_lifecycle"] == "AUTHORIZED_INACTIVE"
+    # gurkDB controlled acceptance (2026-08-11), a separate explicit
+    # production-authorization decision (2026-08-12), and >=3 observed real
+    # writer->publisher joint cycles plus public-route verification
+    # (2026-08-13, step 8/9) landed: ACTIVE is now evidenced.
+    assert cap["runtime_lifecycle"] == "ACTIVE"
     assert cap["production_runtime_owner"] == "gurkdb"
     assert cap["production_authorization_status"] == "AUTHORIZED"
     assert cap["acceptance_status"] == "ACCEPTED"
     assert cap["acceptance_evidence"]
     assert cap["production_decision_evidence"]
-    assert cap["observed_runtime_state"] == []
+    assert len(cap["observed_runtime_state"]) == 1
+    observation = cap["observed_runtime_state"][0]
+    assert observation["host"] == "gurkdb"
+    assert observation["unit"] == "synth-sector-rotation-writer.timer"
+    assert observation["current_state"] == "ACTIVE_OBSERVED"
+    assert observation["authorization_status"] == "AUTHORIZED"
+    assert observation["runtime_state_classification"] == "AUTHORIZED_RUNTIME_OBSERVED"
 
 
 # ---------------------------------------------------------------------------
