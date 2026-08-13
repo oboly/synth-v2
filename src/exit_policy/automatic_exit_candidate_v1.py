@@ -1,15 +1,14 @@
-"""Pure automatic SELL exit-candidate evaluation.
+"""Pure automatic SELL exit-policy candidate evaluation.
 
-This is an account-aware *input evaluator* owned by ``decision_gate``.  It
-does not grant permission, resolve a base quantity, construct a ladder, write
-state, or import execution/broker code.  A later decision-gate integration
-must validate its fraction against current account state before an execution
-planner can receive any concrete intent.
+This module selects non-authoritative exit-policy intent from explicit held
+position and market exit-profile context. It does not grant permission,
+resolve a base quantity, construct a ladder, write state, or import
+execution/broker code.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Final
 
@@ -32,12 +31,13 @@ REASON_POSITION_STALE: Final[str] = "POSITION_CONTEXT_STALE"
 REASON_EXIT_CONTEXT_STALE: Final[str] = "EXIT_CONTEXT_STALE"
 REASON_CONTEXT_MISMATCH: Final[str] = "POSITION_EXIT_CONTEXT_MISMATCH"
 REASON_INVALID_CONTEXT: Final[str] = "INVALID_EXIT_CONTEXT"
+REASON_INVALID_TIMESTAMP: Final[str] = "NAIVE_TIMESTAMP"
 REASON_INVALID_POLICY_CONFIG: Final[str] = "INVALID_POLICY_CONFIG"
 
 
 @dataclass(frozen=True)
 class AutomaticExitPositionContextV1:
-    """Account-held position fact supplied by the decision-gate input loader."""
+    """Account-held position fact supplied to the policy evaluator."""
 
     trading_account_id: int
     position_reference: str
@@ -66,6 +66,8 @@ class AutomaticExitMarketContextV1:
 
 @dataclass(frozen=True)
 class AutomaticExitPolicyConfigV1:
+    """V1 policy defaults, not account-permission defaults."""
+
     harvest_reduction_fraction: Decimal = Decimal("0.25")
     invalidation_exit_fraction: Decimal = Decimal("1")
     max_position_age_seconds: int = 15 * 60
@@ -100,12 +102,12 @@ class AutomaticExitEvaluationV1:
     candidate: AutomaticExitCandidateV1 | None
 
 
-def _aware(value: datetime) -> datetime:
-    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+def _is_aware(value: datetime) -> bool:
+    return value.tzinfo is not None and value.utcoffset() is not None
 
 
 def _is_stale(observed_ts_utc: datetime, evaluation_ts_utc: datetime, max_age_seconds: int) -> bool:
-    age = _aware(evaluation_ts_utc) - _aware(observed_ts_utc)
+    age = evaluation_ts_utc - observed_ts_utc
     return age < timedelta(0) or age > timedelta(seconds=max_age_seconds)
 
 
@@ -122,15 +124,19 @@ def evaluate_automatic_exit_candidate_v1(
 ) -> AutomaticExitEvaluationV1:
     """Return a non-authoritative candidate or fail closed.
 
+    All timestamps must be timezone-aware UTC instants; naïve timestamps are
+    rejected as ``NON_ACTIONABLE`` rather than silently being assumed UTC.
     ``evaluation_ts_utc`` is explicit so equal inputs always produce equal
-    output.  This function intentionally has no account-balance, reservation,
-    planner, executor, or broker dependency.
+    output.
     """
     if position.held_quantity_base == 0:
         return AutomaticExitEvaluationV1(STATE_NO_ACTION, REASON_NO_HELD_POSITION, None)
 
     if position.held_quantity_base < 0 or position.trading_account_id <= 0 or not position.position_reference.strip():
         return AutomaticExitEvaluationV1(STATE_NON_ACTIONABLE, REASON_INVALID_CONTEXT, None)
+
+    if not all((_is_aware(position.observed_ts_utc), _is_aware(market_context.observed_ts_utc), _is_aware(evaluation_ts_utc))):
+        return AutomaticExitEvaluationV1(STATE_NON_ACTIONABLE, REASON_INVALID_TIMESTAMP, None)
 
     if not _valid_fraction(config.harvest_reduction_fraction) or not _valid_fraction(config.invalidation_exit_fraction):
         return AutomaticExitEvaluationV1(STATE_NON_ACTIONABLE, REASON_INVALID_POLICY_CONFIG, None)
@@ -157,26 +163,10 @@ def evaluate_automatic_exit_candidate_v1(
     ):
         return AutomaticExitEvaluationV1(STATE_NON_ACTIONABLE, REASON_INVALID_CONTEXT, None)
 
-    if (
-        market_context.invalidation_price is not None
-        and market_context.current_price <= market_context.invalidation_price
-    ):
-        action, fraction, urgency, reason = (
-            ACTION_EXIT,
-            config.invalidation_exit_fraction,
-            "HIGH",
-            REASON_INVALIDATION_BREACHED,
-        )
-    elif (
-        market_context.active_target_price is not None
-        and market_context.current_price >= market_context.active_target_price
-    ):
-        action, fraction, urgency, reason = (
-            ACTION_REDUCE,
-            config.harvest_reduction_fraction,
-            "NORMAL",
-            REASON_TARGET_REACHED,
-        )
+    if market_context.invalidation_price is not None and market_context.current_price <= market_context.invalidation_price:
+        action, fraction, urgency, reason = ACTION_EXIT, config.invalidation_exit_fraction, "HIGH", REASON_INVALIDATION_BREACHED
+    elif market_context.active_target_price is not None and market_context.current_price >= market_context.active_target_price:
+        action, fraction, urgency, reason = ACTION_REDUCE, config.harvest_reduction_fraction, "NORMAL", REASON_TARGET_REACHED
     else:
         return AutomaticExitEvaluationV1(STATE_NO_ACTION, REASON_NO_EXIT_CONDITION, None)
 
@@ -198,6 +188,6 @@ def evaluate_automatic_exit_candidate_v1(
             exit_profile_version=market_context.exit_profile_version,
             target_price=market_context.active_target_price,
             invalidation_price=market_context.invalidation_price,
-            observed_ts_utc=_aware(evaluation_ts_utc),
+            observed_ts_utc=evaluation_ts_utc,
         ),
     )

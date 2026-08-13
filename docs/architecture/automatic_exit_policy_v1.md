@@ -2,24 +2,25 @@
 
 ## Boundary
 
-The automatic exit-policy candidate evaluator belongs inside `decision_gate`
-as a pure account-aware input evaluator. It needs a held-position identity,
-which market-only layers cannot receive, but it does not make permission or
-execution decisions. Keeping it in `decision_gate` avoids a second
-account-aware runtime layer while preserving the canonical flow:
+The automatic exit-policy candidate evaluator belongs in the narrow,
+account-aware `exit_policy` package. It needs a held-position identity, which
+market-only layers cannot receive, and it determines exit-policy intent:
+target/invalidation trigger semantics, `REDUCE` versus `EXIT`, fraction
+candidate, and urgency. Those are not account permission decisions.
 
 ```text
 position + market exit context
--> automatic_exit_candidate_v1
+-> exit_policy.automatic_exit_candidate_v1
 -> decision_gate permission/risk/conflict validation
 -> execution_planner immutable SELL ladder
 -> executor
 ```
 
-`selection_engine` remains market-only and account-agnostic. Reporting stays
-read-only. The evaluator never writes state, builds broker payloads, resolves
-base quantity, creates a manual request, calls the planner/executor, or grants
-permission.
+`selection_engine` remains market-only and account-agnostic. `decision_gate`
+answers only whether the proposed candidate may proceed for the account.
+Reporting stays read-only. The evaluator never writes state, builds broker
+payloads, resolves base quantity, creates a manual request, calls the
+planner/executor, or grants permission.
 
 ## V1 contract
 
@@ -43,7 +44,8 @@ contract.
 Freshness is explicit and defaults to fifteen minutes for both input classes.
 The passed evaluation timestamp makes same-input/same-output deterministic.
 Missing required profile provenance or an invalid price fails closed to
-`NON_ACTIONABLE`.
+`NON_ACTIONABLE`. All timestamps must be timezone-aware UTC instants; naïve
+timestamps fail closed to `NON_ACTIONABLE` rather than being assumed UTC.
 
 ## Deferred work
 

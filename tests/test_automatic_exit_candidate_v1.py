@@ -3,10 +3,13 @@ from decimal import Decimal
 import ast
 import inspect
 
-from src.decision_gate.automatic_exit_candidate_v1 import (
+from src.exit_policy.automatic_exit_candidate_v1 import (
     ACTION_EXIT,
     ACTION_REDUCE,
     REASON_EXIT_CONTEXT_STALE,
+    REASON_CONTEXT_MISMATCH,
+    REASON_INVALID_CONTEXT,
+    REASON_INVALID_TIMESTAMP,
     REASON_NO_EXIT_CONDITION,
     REASON_NO_HELD_POSITION,
     REASON_POSITION_STALE,
@@ -91,6 +94,26 @@ def test_stale_position_context_is_non_actionable() -> None:
     assert (result.state, result.reason_code, result.candidate) == (STATE_NON_ACTIONABLE, REASON_POSITION_STALE, None)
 
 
+def test_mismatched_position_and_market_context_is_non_actionable() -> None:
+    result = _evaluate(market=_market(market="ETH-EUR"))
+    assert (result.state, result.reason_code, result.candidate) == (STATE_NON_ACTIONABLE, REASON_CONTEXT_MISMATCH, None)
+
+
+def test_missing_profile_provenance_is_non_actionable() -> None:
+    for changes in (
+        {"exit_profile_id": ""},
+        {"exit_profile_version": ""},
+        {"evidence_id": ""},
+    ):
+        result = _evaluate(market=_market(**changes))
+        assert (result.state, result.reason_code, result.candidate) == (STATE_NON_ACTIONABLE, REASON_INVALID_CONTEXT, None)
+
+
+def test_naive_timestamps_are_rejected_as_non_actionable() -> None:
+    result = _evaluate(position=_position(observed_ts_utc=NOW.replace(tzinfo=None)))
+    assert (result.state, result.reason_code, result.candidate) == (STATE_NON_ACTIONABLE, REASON_INVALID_TIMESTAMP, None)
+
+
 def test_invalid_reduction_fraction_fails_closed_and_never_exceeds_safe_bounds() -> None:
     result = _evaluate(
         market=_market(current_price=Decimal("160")),
@@ -101,7 +124,7 @@ def test_invalid_reduction_fraction_fails_closed_and_never_exceeds_safe_bounds()
 
 
 def test_module_has_no_decision_gate_bypass_or_execution_dependencies() -> None:
-    import src.decision_gate.automatic_exit_candidate_v1 as module
+    import src.exit_policy.automatic_exit_candidate_v1 as module
 
     tree = ast.parse(inspect.getsource(module))
     imports = {
@@ -110,7 +133,7 @@ def test_module_has_no_decision_gate_bypass_or_execution_dependencies() -> None:
         if isinstance(node, (ast.Import, ast.ImportFrom))
         for alias in node.names
     }
-    forbidden = ("execution_planner", "executor", "bitvavo", "broker", "manual_execution")
+    forbidden = ("decision_gate", "execution_planner", "executor", "bitvavo", "broker", "manual_execution")
     assert not any(term in imported for imported in imports for term in forbidden)
     result = _evaluate(market=_market(current_price=Decimal("160")))
     assert result.candidate is not None
