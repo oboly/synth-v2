@@ -1,0 +1,15 @@
+[Unit]
+Description=Run Synth Odroid live-like runtime retention every 6 hours
+Documentation=docs/ops/live_like_runtime_retention_v1.md
+Requires=synth-live-like-runtime-retention.service
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+AccuracySec=5min
+Persistent=true
+RandomizedDelaySec=5min
+Unit=synth-live-like-runtime-retention.service
+
+[Install]
+WantedBy=timers.target
