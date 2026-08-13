@@ -7,12 +7,25 @@ After=local-fs.target
 Type=oneshot
 User=theone
 WorkingDirectory=/home/theone/projects/synth-v2
-ExecStart=/home/theone/projects/synth-v2/venv/bin/python -m src.ops.live_like_runtime_retention_v1 --repo-root /home/theone/projects/synth-v2 --retention-days 7 --min-recent-runs 288 --apply
+Environment=SYNTH_REPO_DIR=/home/theone/projects/synth-v2
+Environment=SYNTH_LIVE_LIKE_RETENTION_DAYS=7
+Environment=SYNTH_LIVE_LIKE_RETENTION_MIN_RECENT_RUNS=288
+# Destructive deletion stays opt-in at the unit level. This must remain 0
+# until the pre-activation dry-run acceptance in
+# docs/ops/live_like_runtime_retention_v1.md has been completed manually on
+# Odroid; only then flip to 1 to let the timer actually delete candidates.
+Environment=SYNTH_LIVE_LIKE_RETENTION_APPLY=0
+ExecStart=/bin/bash -lc 'source venv/bin/activate && bash scripts/odroid/run_live_like_runtime_retention_once.sh'
 Restart=no
 Nice=10
 UMask=0077
 NoNewPrivileges=true
-PrivateTmp=true
+# PrivateTmp intentionally disabled: the wrapper's flock lock file
+# (default /tmp/synth-live-like-runtime-retention-v1.lock) must be visible
+# in the host-wide /tmp namespace so a timer-triggered run and a manual
+# invocation of the same wrapper serialize against the same lock file
+# instead of silently running concurrently in separate private /tmp views.
+PrivateTmp=false
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=synth-live-like-runtime-retention
@@ -23,6 +36,8 @@ SyslogIdentifier=synth-live-like-runtime-retention
 # - symlinks fail closed and are never followed
 # - malformed run_* entries block deletion
 # - research producers/consumers remain unchanged
+# - destructive --apply requires SYNTH_LIVE_LIKE_RETENTION_APPLY=1, default 0
+#   (dry-run only) until pre-activation acceptance has passed
 
 [Install]
 WantedBy=multi-user.target

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -7,8 +8,13 @@ import pytest
 
 from src.ops.live_like_runtime_retention_v1 import (
     ALLOWED_RELATIVE_ROOTS,
+    RootPlan,
+    RunDir,
+    apply_plan,
     build_root_plan,
     main,
+    resolve_managed_root,
+    validate_delete_candidate,
 )
 
 
@@ -121,6 +127,104 @@ def test_symlink_run_entry_fails_closed(tmp_path: Path) -> None:
             retention_days=7,
             min_recent_runs=1,
         )
+
+
+def test_root_symlink_fails_closed(tmp_path: Path) -> None:
+    real_root = tmp_path / "real_root"
+    real_root.mkdir()
+    relative_root = ALLOWED_RELATIVE_ROOTS[0]
+    (tmp_path / relative_root).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / relative_root).symlink_to(real_root, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="managed root must not be a symlink"):
+        resolve_managed_root(tmp_path, relative_root)
+
+
+def test_canonical_non_directory_entry_fails_closed(tmp_path: Path) -> None:
+    root = tmp_path / ALLOWED_RELATIVE_ROOTS[0]
+    root.mkdir(parents=True)
+    (root / "run_20200101T000000Z").write_bytes(b"not a directory")
+
+    with pytest.raises(RuntimeError, match="run entry is not a directory"):
+        build_root_plan(
+            root=root,
+            now_utc=datetime(2026, 8, 13, tzinfo=UTC),
+            retention_days=7,
+            min_recent_runs=1,
+        )
+
+
+def test_missing_root_returns_empty_plan(tmp_path: Path) -> None:
+    root = tmp_path / ALLOWED_RELATIVE_ROOTS[0]
+
+    plan = build_root_plan(
+        root=root,
+        now_utc=datetime(2026, 8, 13, tzinfo=UTC),
+        retention_days=7,
+        min_recent_runs=1,
+    )
+
+    assert plan.total_runs == 0
+    assert plan.delete_runs == ()
+    assert plan.malformed_entries == ()
+
+
+def test_revalidation_fails_closed_when_candidate_replaced_with_symlink_before_delete(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ALLOWED_RELATIVE_ROOTS[0]
+    root.mkdir(parents=True)
+    candidate_path = make_run(root, "20200101T000000Z")
+    candidate = RunDir(path=candidate_path, timestamp_utc=datetime(2020, 1, 1, tzinfo=UTC), bytes_used=1)
+
+    shutil.rmtree(candidate_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    candidate_path.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="refusing to delete symlink"):
+        validate_delete_candidate(root, candidate)
+
+
+def test_revalidation_fails_closed_when_candidate_removed_before_delete(tmp_path: Path) -> None:
+    root = tmp_path / ALLOWED_RELATIVE_ROOTS[0]
+    root.mkdir(parents=True)
+    candidate_path = make_run(root, "20200101T000000Z")
+    candidate = RunDir(path=candidate_path, timestamp_utc=datetime(2020, 1, 1, tzinfo=UTC), bytes_used=1)
+
+    shutil.rmtree(candidate_path)
+
+    with pytest.raises(RuntimeError, match="delete candidate is no longer a directory"):
+        validate_delete_candidate(root, candidate)
+
+
+def test_apply_plan_revalidates_each_candidate_before_deleting(tmp_path: Path) -> None:
+    root = tmp_path / ALLOWED_RELATIVE_ROOTS[0]
+    root.mkdir(parents=True)
+    safe_path = make_run(root, "20200101T000000Z")
+    swapped_path = make_run(root, "20200102T000000Z")
+    safe_candidate = RunDir(path=safe_path, timestamp_utc=datetime(2020, 1, 1, tzinfo=UTC), bytes_used=1)
+    swapped_candidate = RunDir(path=swapped_path, timestamp_utc=datetime(2020, 1, 2, tzinfo=UTC), bytes_used=1)
+
+    shutil.rmtree(swapped_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    swapped_path.symlink_to(outside, target_is_directory=True)
+
+    plan = RootPlan(
+        root=root,
+        total_runs=2,
+        retained_runs=0,
+        delete_runs=(safe_candidate, swapped_candidate),
+        malformed_entries=(),
+    )
+
+    with pytest.raises(RuntimeError, match="refusing to delete symlink"):
+        apply_plan(plan)
+
+    assert not safe_path.exists()
+    assert swapped_path.is_symlink()
+    assert outside.exists()
 
 
 class _FixedDateTime(datetime):

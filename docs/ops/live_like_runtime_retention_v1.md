@@ -49,7 +49,14 @@ Canonical implementation:
 
 `python -m src.ops.live_like_runtime_retention_v1`
 
-Dry-run example:
+Canonical Odroid entry point (wraps the implementation with the standard
+`scripts/odroid/run_*_once.sh` pattern: `flock` serialization, venv
+activation with a fail-closed fallback, and `STARTED`/`FINISHED`
+observability markers):
+
+`scripts/odroid/run_live_like_runtime_retention_once.sh`
+
+Dry-run example (direct module invocation):
 
 ```text
 python -m src.ops.live_like_runtime_retention_v1 \
@@ -58,7 +65,7 @@ python -m src.ops.live_like_runtime_retention_v1 \
   --min-recent-runs 288
 ```
 
-Apply example:
+Apply example (direct module invocation):
 
 ```text
 python -m src.ops.live_like_runtime_retention_v1 \
@@ -68,7 +75,30 @@ python -m src.ops.live_like_runtime_retention_v1 \
   --apply
 ```
 
+Wrapper dry-run example (mirrors the systemd default):
+
+```text
+SYNTH_REPO_DIR=/home/theone/projects/synth-v2 \
+SYNTH_LIVE_LIKE_RETENTION_APPLY=0 \
+bash scripts/odroid/run_live_like_runtime_retention_once.sh
+```
+
+Wrapper apply example (only after pre-activation acceptance below has
+passed):
+
+```text
+SYNTH_REPO_DIR=/home/theone/projects/synth-v2 \
+SYNTH_LIVE_LIKE_RETENTION_APPLY=1 \
+bash scripts/odroid/run_live_like_runtime_retention_once.sh
+```
+
 Every run reports per-root run counts, planned deletion counts, and planned reclaim bytes. Dry-run lists exact candidates before any destructive mode is used.
+
+The wrapper's destructive `--apply` pass-through is gated by the
+`SYNTH_LIVE_LIKE_RETENTION_APPLY` environment variable, default `0`
+(dry-run only). It is not baked into the systemd unit as a hardcoded flag; the
+unit sets the same variable explicitly so the default stays visible and
+auditable in one place.
 
 ## systemd ownership
 
@@ -77,7 +107,12 @@ Reference units:
 - `docs/ops/systemd/synth-live-like-runtime-retention.service`
 - `docs/ops/systemd/synth-live-like-runtime-retention.timer`
 
-The timer runs the retention owner every six hours with a small randomized delay. The service is a separate oneshot and does not run inside `synth-linked-profile-runtime-refresh.service`.
+The service runs `scripts/odroid/run_live_like_runtime_retention_once.sh`,
+not the Python module directly, so it gets the same lock serialization, venv
+fallback, and observability markers as every other Odroid `run_*_once.sh`
+job. The timer runs the retention owner every six hours with a small
+randomized delay. The service is a separate oneshot and does not run inside
+`synth-linked-profile-runtime-refresh.service`.
 
 This separation is intentional: a retention failure must not alter or block the research producer chain.
 
@@ -91,10 +126,10 @@ Before enabling the timer:
 4. Confirm there are no malformed entries or symlink failures.
 5. Spot-check oldest retained and newest deletion candidates against the 7-day/288-run boundary.
 6. Run focused tests for the retention module.
-7. Only then run one manual `--apply` invocation.
+7. Only then run one manual apply invocation with `SYNTH_LIVE_LIKE_RETENTION_APPLY=1` (either the wrapper or the module's `--apply` flag).
 8. Re-run dry-run and confirm there are no immediately eligible candidates left.
 9. Verify linked-profile runtime refresh and dashboard behavior remain healthy.
-10. Enable the timer only after the manual apply acceptance passes.
+10. Only after the manual apply acceptance passes: set `SYNTH_LIVE_LIKE_RETENTION_APPLY=1` in the deployed systemd unit and enable the timer.
 
 ## Rollback
 
