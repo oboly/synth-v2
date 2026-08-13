@@ -232,3 +232,11 @@ class _FixedDateTime(datetime):
     def now(cls, tz=None):  # type: ignore[override]
         value = cls(2026, 8, 13, 7, 0, 0, tzinfo=UTC)
         return value if tz is None else value.astimezone(tz)
+
+
+def test_systemd_service_delegates_venv_activation_to_wrapper() -> None:
+    service = Path("docs/ops/systemd/synth-live-like-runtime-retention.service").read_text()
+
+    assert "ExecStart=/bin/bash scripts/odroid/run_live_like_runtime_retention_once.sh" in service
+    assert "source venv/bin/activate" not in service
+    assert "SYNTH_LIVE_LIKE_RETENTION_APPLY=0" in service

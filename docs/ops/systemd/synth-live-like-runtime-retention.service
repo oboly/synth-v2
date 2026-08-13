@@ -15,7 +15,7 @@ Environment=SYNTH_LIVE_LIKE_RETENTION_MIN_RECENT_RUNS=288
 # docs/ops/live_like_runtime_retention_v1.md has been completed manually on
 # Odroid; only then flip to 1 to let the timer actually delete candidates.
 Environment=SYNTH_LIVE_LIKE_RETENTION_APPLY=0
-ExecStart=/bin/bash -lc 'source venv/bin/activate && bash scripts/odroid/run_live_like_runtime_retention_once.sh'
+ExecStart=/bin/bash scripts/odroid/run_live_like_runtime_retention_once.sh
 Restart=no
 Nice=10
 UMask=0077
