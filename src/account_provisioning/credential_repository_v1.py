@@ -216,6 +216,22 @@ class CredentialRepository:
             )
         return _row_to_stored(rows[0])
 
+    def load_active_encrypted_credential_by_id(
+        self, *, trading_account_credential_id: int, trading_account_id: int, venue: str
+    ) -> StoredAccountCredential | None:
+        """Load one exact ACTIVE encrypted row; never widen to account/venue."""
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT trading_account_credential_id, trading_account_id, venue, credential_kind, "
+                "encrypted_envelope, encryption_algorithm, key_version, credential_fingerprint, "
+                "credential_status, validation_state, created_ts_utc, validated_ts_utc, rotated_ts_utc, revoked_ts_utc "
+                "FROM trading_account_credential WHERE trading_account_credential_id=%s "
+                "AND trading_account_id=%s AND venue=%s AND credential_status='ACTIVE'",
+                (trading_account_credential_id, trading_account_id, venue),
+            )
+            row = cur.fetchone()
+        return None if row is None else _row_to_stored(row)
+
     def update_existing_active_credential_validation(
         self,
         *,
@@ -484,6 +500,19 @@ class SqliteCredentialRepository:
                 f"MULTIPLE_ACTIVE_CREDENTIALS: trading_account_id={trading_account_id} venue={venue!r}"
             )
         return _row_to_stored(rows[0])
+
+    def load_active_encrypted_credential_by_id(
+        self, *, trading_account_credential_id: int, trading_account_id: int, venue: str
+    ) -> StoredAccountCredential | None:
+        row = self._fetchone(
+            "SELECT trading_account_credential_id, trading_account_id, venue, credential_kind, "
+            "encrypted_envelope, encryption_algorithm, key_version, credential_fingerprint, "
+            "credential_status, validation_state, created_ts_utc, validated_ts_utc, rotated_ts_utc, revoked_ts_utc "
+            "FROM trading_account_credential WHERE trading_account_credential_id=%s "
+            "AND trading_account_id=%s AND venue=%s AND credential_status='ACTIVE'",
+            (trading_account_credential_id, trading_account_id, venue),
+        )
+        return None if row is None else _row_to_stored(row)
 
     def update_existing_active_credential_validation(
         self,

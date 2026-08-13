@@ -53,3 +53,18 @@ def load_account_credential(
 
     envelope = EncryptedCredentialEnvelope.from_json(stored.encrypted_envelope)
     return decrypt_credential(envelope, master_key_bytes)
+
+
+def load_account_credential_by_id(
+    conn: Any, *, trading_account_credential_id: int, trading_account_id: int, venue: str,
+    master_key_bytes: bytes, cred_repo_factory: Any,
+) -> PlainBitvavoCredential:
+    """Decrypt only the credential identity already authorized by an executor binding."""
+    stored = cred_repo_factory(conn).load_active_encrypted_credential_by_id(
+        trading_account_credential_id=trading_account_credential_id,
+        trading_account_id=trading_account_id,
+        venue=venue,
+    )
+    if stored is None:
+        raise ValueError("NO_EXACT_ACTIVE_CREDENTIAL")
+    return decrypt_credential(EncryptedCredentialEnvelope.from_json(stored.encrypted_envelope), master_key_bytes)

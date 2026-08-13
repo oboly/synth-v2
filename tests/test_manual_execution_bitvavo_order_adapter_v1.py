@@ -90,7 +90,7 @@ class TestCredentialChain:
         from src.account_provisioning.contracts_v1 import PlainBitvavoCredential
 
         monkeypatch.setattr(
-            "src.executor.manual_execution_bitvavo_order_adapter_v1.load_account_credential",
+            "src.executor.manual_execution_bitvavo_order_adapter_v1.load_account_credential_by_id",
             lambda conn, **kwargs: PlainBitvavoCredential(venue=VENUE, api_key="k", api_secret="s"),
         )
 
