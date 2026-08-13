@@ -259,6 +259,23 @@ never raw browser-supplied profile or user IDs.
 
 ## Provisioning flow
 
+## Manual execution TRADE_EXECUTION provisioning
+
+The canonical operator-only command is:
+
+```bash
+python -m src.account_provisioning.run_provision_trade_execution_credential_v1 --trading-account-id 1 --venue bitvavo
+```
+
+It reads the API key and secret via two non-echoing `getpass` prompts (never
+argv), encrypts them using `SYNTH_ACCOUNT_CREDENTIAL_MASTER_KEY`, and creates
+or exactly reuses the non-live `TRADE_EXECUTION` credential plus its fixed
+binding: `manual_execution_bitvavo_v1` / `odroid`. It rejects non-Bitvavo,
+missing account/venue, withdrawal-capable, non-active, read-only, or
+conflicting bindings. It makes no broker call and does not enable a broker
+write gate or LIVE authority. Metadata-only readiness is available with
+`--readiness`; it never decrypts or reads secret material.
+
 ```
 POST /synth/web-auth/connect-bitvavo
   → resolve_session_identity → AuthenticatedProfileIdentity

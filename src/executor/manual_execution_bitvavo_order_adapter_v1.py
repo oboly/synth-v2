@@ -50,7 +50,7 @@ from typing import Any
 
 import requests
 
-from src.account_provisioning.account_credential_loader_v1 import load_account_credential
+from src.account_provisioning.account_credential_loader_v1 import load_account_credential_by_id
 from src.execution.bitvavo_client import (
     BitvavoClient,
     BitvavoOrderNotFoundError,
@@ -109,8 +109,9 @@ def build_live_bitvavo_client(
             "LIVE_CREDENTIAL_BINDING_IDENTITY_MISMATCH"
         )
 
-    credential = load_account_credential(
+    credential = load_account_credential_by_id(
         conn,
+        trading_account_credential_id=binding.trading_account_credential_id,
         trading_account_id=trading_account_id,
         venue=venue,
         master_key_bytes=master_key_bytes,
