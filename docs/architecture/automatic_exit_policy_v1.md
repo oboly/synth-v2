@@ -47,8 +47,28 @@ Missing required profile provenance or an invalid price fails closed to
 `NON_ACTIONABLE`. All timestamps must be timezone-aware UTC instants; naïve
 timestamps fail closed to `NON_ACTIONABLE` rather than being assumed UTC.
 
-## Deferred work
+## Phase 2: account permission boundary
 
-This V1 module is not scheduled or wired to persistence, `decision_gate`
-permission, `execution_planner`, manual-execution artifacts, executor, or
-LIVE authority. Those changes require separately reviewed phases.
+`decision_gate.automatic_exit_gate_v1` now provides a pure, caller-assembled
+permission contract from `AutomaticExitCandidateV1` to
+`AutomaticExitGateDecisionV1`. It has no persistence, runtime wiring,
+manual-execution request/approval dependency, planner, executor, or broker
+dependency.
+
+The context binds the exact account, position reference, venue, asset, and
+market; identifies the position snapshot; supplies held/free quantity,
+reservation-or-open-order conflict state, account mode and explicit lane
+permission; and gives explicit timestamps and freshness limits. Ambiguous,
+missing, mismatched, naïve, future, or stale evidence is `NON_ACTIONABLE`.
+Explicit policy prohibitions (disabled account/lane, non-paper or LIVE fact,
+blocking conflict, zero free quantity) are `DENIED`. Only healthy matching
+facts yield `APPROVED`.
+
+An approved result preserves the candidate object and its fraction/provenance
+unchanged. Its `approved_quantity_ceiling_base` is not a strategy rewrite: it
+is `min(candidate fraction × fresh held quantity, fresh free quantity,
+optional account risk cap)`. It exists so a later planner cannot bypass
+account safety; it contains no ladder, prices, broker payload, or order.
+
+Later phases may add controlled persistence, planner consumption, and runtime
+wiring only with separately reviewed authority boundaries.

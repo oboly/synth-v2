@@ -139,3 +139,16 @@ def test_module_has_no_decision_gate_bypass_or_execution_dependencies() -> None:
     assert result.candidate is not None
     assert not hasattr(result.candidate, "quantity_base")
     assert not hasattr(result.candidate, "broker_payload")
+
+
+def test_exit_policy_package_has_no_decision_gate_dependency() -> None:
+    import src.exit_policy as package
+
+    tree = ast.parse(inspect.getsource(package))
+    imports = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    assert not any("decision_gate" in imported for imported in imports)
