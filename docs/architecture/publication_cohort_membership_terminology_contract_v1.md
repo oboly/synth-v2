@@ -32,18 +32,14 @@ executor_changes=0
   `asset.is_publication_cohort` field through separately sequenced additive
   and backfill migrations; production application remains separately
   authorized.
-- `account_asset.is_portfolio_member` **exists in schema today** but has
-  **no writer** (every insert path sets it to the literal `0`) and **no
-  reader** in current code. It is not authoritative at runtime. Giving it a
-  real writer/backfill and an operator action is future work (#372); nothing
-  in this document implements that writer.
-- The reporting badge `PORTFOLIO ASSET` is, **as of today**, still driven by
-  the global `asset.is_portfolio` cohort flag, not by
-  `account_asset.is_portfolio_member`. Repointing it is future work (#373);
-  nothing in this document implements that repoint.
-- The reporting inclusion-reason code `PORTFOLIO_MARKER` is, **as of today**,
-  still the live code name. Renaming it to `COHORT_PUBLISHED` is future work
-  (#374); nothing in this document implements that rename.
+- `account_asset.is_portfolio_member` has the account-scoped writer and
+  reader delivered by #372. It remains independent from the publication
+  cohort and is never backfilled from either cohort column.
+- The `PORTFOLIO ASSET` reporting badge is account-scoped and driven by
+  `account_asset.is_portfolio_member` after #373, not by either global cohort
+  field.
+- `COHORT_PUBLISHED` is the live market-layer inclusion reason after #374;
+  `PORTFOLIO_MARKER` is retired.
 
 Treat every statement in this document as **target contract**, not as a
 description of already-shipped behavior, except where explicitly marked
@@ -80,17 +76,22 @@ The column rename is a sequenced compatibility migration, never a direct
 destructive rename:
 
 1. Phase A adds `asset.is_publication_cohort` with default `0` only.
-2. Phase B backfills exactly
+2. Phase B deploys compatibility code in explicit `legacy_compatible`
+   dual-read mode before any backfill. It retains legacy reads and, whenever
+   both columns exist, atomically sets both fields for every monotonic
+   held-market enrollment; this prevents the old writer from creating new
+   drift during the migration window.
+3. Phase C backfills exactly
    `is_publication_cohort = is_portfolio`; it never reads or writes
    `account_asset.is_portfolio_member`.
-3. During the dual-read window, old-only schemas read `is_portfolio`,
-   new-only schemas read `is_publication_cohort`, and schemas with both
-   columns require row-level equality before reading the canonical new field.
-   A mismatch fails closed with deterministic asset evidence; consumers must
-   never OR the two flags.
-4. Cutover makes `is_publication_cohort` canonical while retaining the
+4. Phase D verifies zero row-level drift. During verified dual-read,
+   old-only schemas read `is_portfolio`, new-only schemas read
+   `is_publication_cohort`, and schemas with both columns read the canonical
+   new field only after equality verification. A mismatch fails closed with
+   deterministic asset evidence; consumers must never OR the two flags.
+5. Phase E makes `is_publication_cohort` canonical while retaining the
    explicit removable compatibility path.
-5. The legacy column may be removed only after a verified drift-free
+6. The legacy column may be removed only after a verified drift-free
    dual-read/cutover window and a separate, explicit production authorization.
 
 No production migration, backfill, or old-column removal is authorized by
@@ -105,10 +106,8 @@ this repository change.
   Answers: *does this account's operator consider this a portfolio position
   rather than incidental dust?* Independent of current balance.
 - **Owning layer:** `account`.
-- **Current status:** exists in schema; **not authoritative at runtime today**
-  — no code path writes anything but `0`, and no code path reads its value.
-  Do not treat any dashboard state as reflecting this field until #372 ships
-  a real writer and #373 repoints reporting to read it.
+- **Current status:** authoritative account-scoped membership state after
+  #372, rendered independently by reporting after #373.
 
 ---
 
@@ -118,7 +117,7 @@ this repository change.
 |---|---|---|---|
 | `asset.is_portfolio` (target: `is_publication_cohort`) | `market_data` | Held-market enrollment (0→1 only, guarded; see §3); market sync seeds new rows to `0` and never mutates existing rows | `market_data` cohort query, `market_data` health checks, `reporting` (market-layer display only) |
 | `asset.is_core_sensor` | `market_data` | Manual / migration only | Same cohort consumers as above |
-| `account_asset.is_portfolio_member` | `account` | Account-layer operator action / account-scoped discovery only (target contract for #372; no writer exists today) | Account-scoped `reporting` only, always predicated by `trading_account_id` (see §4) |
+| `account_asset.is_portfolio_member` | `account` | Account-layer operator action / account-scoped discovery only | Account-scoped `reporting` only, always predicated by `trading_account_id` (see §4) |
 
 Rules, stated explicitly:
 
@@ -199,19 +198,17 @@ given symbol/account pair.
 | Display term | Backed by | Not backed by |
 |---|---|---|
 | `WALLET HELD` | Positive balance in `trading_account_balance_snapshot` | Any flag |
-| `PORTFOLIO ASSET` | `account_asset.is_portfolio_member` (target; **as of today still wrongly driven by the global `asset.is_portfolio` cohort flag** — see §0 and §6) | Publication-cohort membership |
+| `PORTFOLIO ASSET` | `account_asset.is_portfolio_member` | Publication-cohort membership |
 | `MARKET SELECTED` | Publication-cohort state (`asset.is_portfolio`, target name `asset.is_publication_cohort`) | Account state |
 | `CORE SENSOR` | `asset.is_core_sensor` | Account state |
 
-Cohort inclusion-reason codes (reporting-internal; target contract, current
-code still uses the legacy name — see §6):
+Cohort inclusion-reason codes (reporting-internal):
 
 ```text
 POSITION_HELD      account overlay  (balance > 0)
 OPEN_ORDER         account overlay  (open order exists)
 PORTFOLIO_MEMBER   account overlay  (account_asset.is_portfolio_member)
-COHORT_PUBLISHED   market layer     (publication cohort — target name;
-                                     current code name is PORTFOLIO_MARKER)
+COHORT_PUBLISHED   market layer     (publication cohort)
 CORE_SENSOR        market layer     (asset.is_core_sensor)
 ```
 
@@ -224,15 +221,12 @@ disambiguates.
 
 ## 6. What this document does not do
 
-This document publishes terminology and ownership rules only. It does not:
+This document publishes terminology, ownership, and #375 migration rules. It
+does not:
 
-- rename `asset.is_portfolio` to `asset.is_publication_cohort` (future: #375);
-- give `account_asset.is_portfolio_member` a writer, operator action, or
-  backfill (future: #372);
-- repoint the `PORTFOLIO ASSET` badge to read account membership instead of
-  the global cohort flag (future: #373);
-- rename the `PORTFOLIO_MARKER` inclusion-reason code to `COHORT_PUBLISHED`
-  (future: #374);
+- apply #375 schema or backfill migrations to production;
+- change the already-shipped #372 account-membership writer, #373 badge
+  semantics, or #374 `COHORT_PUBLISHED` reason;
 - change held-market enrollment behavior, the chain-4h publication timer, or
   the Odroid orchestrator cadence;
 - touch `selection_engine`, `decision_gate`, `execution_planner`, `executor`,
@@ -251,6 +245,6 @@ risk analysis behind each ordering constraint.
 |---|---|
 | `docs/architecture/portfolio_cohort_vs_membership_boundary_audit_v1.md` | Evidence source: verified consumer inventory, target architecture diagram, migration sequence, risk analysis. Historical/audit record — do not duplicate its content here. |
 | `docs/ops/held_market_enrollment_v1.md` | Operational detail for the held-market enrollment mechanism (§3 above summarizes its load-bearing invariant only). |
-| `docs/asset_flag_policy.md` | Full asset-flag inventory (`is_enabled`, `is_tradeable`, `is_portfolio`, `is_core_sensor`); points here for the cohort/membership distinction rather than re-deriving it. |
+| `docs/asset_flag_policy.md` | Full asset-flag inventory (`is_enabled`, `is_tradeable`, `is_publication_cohort`, `is_core_sensor`); points here for the cohort/membership distinction rather than re-deriving it. |
 | `docs/research/multi_account_asset_foundation_v1.md` | Corrected multi-account foundation design doc (Issue #370). |
 | `docs/todo/multi_account_asset_foundation_backlog.md` | Corrected backlog, points at Issues #371–#375. |

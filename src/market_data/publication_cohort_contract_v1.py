@@ -7,7 +7,7 @@ closed rather than widening the cohort with an OR predicate.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal
 
 
 LEGACY_COLUMN = "is_portfolio"
@@ -28,10 +28,13 @@ class PublicationCohortContract:
 
     has_legacy_column: bool
     has_canonical_column: bool
+    dual_read_mode: Literal["canonical_verified", "legacy_compatible"] = "canonical_verified"
 
     @property
     def read_column(self) -> str:
-        if self.has_canonical_column:
+        if self.has_canonical_column and not (
+            self.has_legacy_column and self.dual_read_mode == "legacy_compatible"
+        ):
             return CANONICAL_COLUMN
         return LEGACY_COLUMN
 
@@ -45,11 +48,16 @@ class PublicationCohortContract:
         return f"COALESCE({table_alias}.{self.read_column}, 0) = 1"
 
 
-def contract_from_column_names(column_names: Iterable[str]) -> PublicationCohortContract:
+def contract_from_column_names(
+    column_names: Iterable[str],
+    *,
+    dual_read_mode: Literal["canonical_verified", "legacy_compatible"] = "canonical_verified",
+) -> PublicationCohortContract:
     names = {str(name) for name in column_names}
     contract = PublicationCohortContract(
         has_legacy_column=LEGACY_COLUMN in names,
         has_canonical_column=CANONICAL_COLUMN in names,
+        dual_read_mode=dual_read_mode,
     )
     if not (contract.has_legacy_column or contract.has_canonical_column):
         raise PublicationCohortCompatibilityError(
@@ -58,7 +66,11 @@ def contract_from_column_names(column_names: Iterable[str]) -> PublicationCohort
     return contract
 
 
-def fetch_publication_cohort_contract(conn: Any) -> PublicationCohortContract:
+def fetch_publication_cohort_contract(
+    conn: Any,
+    *,
+    dual_read_mode: Literal["canonical_verified", "legacy_compatible"] = "canonical_verified",
+) -> PublicationCohortContract:
     sql = """
     SELECT COLUMN_NAME
     FROM information_schema.COLUMNS
@@ -70,8 +82,14 @@ def fetch_publication_cohort_contract(conn: Any) -> PublicationCohortContract:
     with conn.cursor() as cur:
         cur.execute(sql)
         rows = list(cur.fetchall())
-    contract = contract_from_column_names(row["COLUMN_NAME"] for row in rows)
-    if contract.has_legacy_column and contract.has_canonical_column:
+    contract = contract_from_column_names(
+        (row["COLUMN_NAME"] for row in rows), dual_read_mode=dual_read_mode
+    )
+    if (
+        contract.has_legacy_column
+        and contract.has_canonical_column
+        and contract.dual_read_mode == "canonical_verified"
+    ):
         _assert_dual_read_no_drift(conn)
     return contract
 

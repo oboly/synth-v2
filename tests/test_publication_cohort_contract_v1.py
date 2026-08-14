@@ -11,14 +11,17 @@ from src.market_data.publication_cohort_contract_v1 import (
     CANONICAL_COLUMN,
     LEGACY_COLUMN,
     PublicationCohortDriftError,
+    contract_from_column_names,
     fetch_publication_cohort_contract,
 )
+from src.market_data.run_held_market_enrollment_v1 import apply_enrollment
 
 
 class _Cursor:
     def __init__(self, conn: "_Conn") -> None:
         self.conn = conn
         self.rows: list[dict[str, Any]] = []
+        self.rowcount = 0
 
     def execute(self, sql: str, params: Any = None) -> None:
         self.conn.sql.append(" ".join(sql.split()))
@@ -28,6 +31,8 @@ class _Cursor:
             self.rows = [self.conn.drift] if self.conn.drift else []
         elif "SELECT DISTINCT a.symbol" in sql:
             self.rows = [{"symbol": symbol} for symbol in self.conn.symbols]
+        elif "UPDATE asset" in sql:
+            self.rowcount = 1
         else:
             raise AssertionError(sql)
 
@@ -86,6 +91,15 @@ def test_dual_schema_uses_canonical_after_drift_check() -> None:
     assert any("COALESCE(is_portfolio, 0) <>" in sql for sql in conn.sql)
 
 
+def test_pre_backfill_compatibility_mode_reads_legacy_without_drift_query() -> None:
+    conn = _Conn((LEGACY_COLUMN, CANONICAL_COLUMN))
+    contract = fetch_publication_cohort_contract(conn, dual_read_mode="legacy_compatible")
+
+    assert contract.read_column == LEGACY_COLUMN
+    assert contract.write_columns == (LEGACY_COLUMN, CANONICAL_COLUMN)
+    assert not any("COALESCE(is_portfolio, 0) <>" in sql for sql in conn.sql)
+
+
 def test_dual_schema_disagreement_fails_closed() -> None:
     conn = _Conn(
         (LEGACY_COLUMN, CANONICAL_COLUMN),
@@ -93,6 +107,17 @@ def test_dual_schema_disagreement_fails_closed() -> None:
     )
     with pytest.raises(PublicationCohortDriftError, match="asset_id=7 symbol=ARB"):
         fetch_publication_cohort_contract(conn)
+
+
+def test_dual_column_pre_backfill_enrollment_sets_both_fields_atomically() -> None:
+    conn = _Conn((LEGACY_COLUMN, CANONICAL_COLUMN))
+    contract = contract_from_column_names(conn.columns, dual_read_mode="legacy_compatible")
+
+    assert apply_enrollment(conn, asset_id=7, cohort_contract=contract) is True
+
+    update_sql = next(sql for sql in conn.sql if "UPDATE asset" in sql)
+    assert "SET is_portfolio = 1, is_publication_cohort = 1" in update_sql
+    assert "is_portfolio = 0 AND is_publication_cohort = 0" in update_sql
 
 
 def test_bitvavo_sync_explicitly_seeds_every_present_cohort_column() -> None:
