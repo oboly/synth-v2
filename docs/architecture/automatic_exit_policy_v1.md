@@ -70,5 +70,29 @@ is `min(candidate fraction × fresh held quantity, fresh free quantity,
 optional account risk cap)`. It exists so a later planner cannot bypass
 account safety; it contains no ladder, prices, broker payload, or order.
 
-Later phases may add controlled persistence, planner consumption, and runtime
-wiring only with separately reviewed authority boundaries.
+## Phase 3: approved gate to immutable planner seam
+
+`execution_planner.automatic_exit_planner_v1` accepts only an
+`AutomaticExitGateDecisionV1` in `APPROVED` state plus explicit current public
+market/venue facts. Raw candidates cannot enter this planner. The planner
+rechecks exact account/position/venue/asset/market identity and preserves the
+candidate action (`REDUCE` or `EXIT`), evidence/profile provenance, gate reason,
+approved fraction, and approved quantity ceiling in its immutable plan.
+
+The gate remains the account-risk quantity-bound owner. The planner owns the
+final executable quantity: it rounds that ceiling down once through
+`execution_planner.canonical_rounding_v1.round_quantity_down`, then validates
+the final result and allocates it deterministically. The same canonical module
+is the only price/leg rounding and post-round minimum-validation owner. No leg
+may redefine exposure; the immutable leg sum must equal the final quantity and
+must not exceed the gate ceiling.
+
+V1 has an explicitly fixed execution-only two-leg passive SELL profile: equal
+base quantity at reference price and reference plus 25 bps. It does not choose
+an exit action, alter the policy fraction, inspect target or invalidation
+conditions, or adapt strategy. Any invalid/stale venue fact, rounding-to-zero,
+minimum violation, identity mismatch, or impossible allocation fails closed.
+
+This phase is pure and read-only: no persistence, scheduler, reservations,
+executor wiring, broker calls, credentials, LIVE authority, or order submission
+exists. Those runtime phases remain separately reviewed work.
