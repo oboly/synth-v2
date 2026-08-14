@@ -7,7 +7,7 @@ approval, reservation, executor, broker, DB, or runtime dependency.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_DOWN
 from typing import Final
 
@@ -20,6 +20,7 @@ from src.execution_planner.canonical_rounding_v1 import (
     round_quantity_down,
 )
 from src.market_rules.venue_execution_constraints_v1 import (
+    DEFAULT_MAX_METADATA_AGE_SECONDS,
     STATUS_FRESH,
     VenueExecutionConstraints,
 )
@@ -105,6 +106,10 @@ def _aware(value: datetime) -> bool:
     return value.tzinfo is not None and value.utcoffset() is not None
 
 
+def _normalized_lower(values: tuple[str, ...]) -> frozenset[str]:
+    return frozenset(value.strip().lower() for value in values)
+
+
 def _reject(condition: bool, reason_code: str) -> None:
     if condition:
         raise AutomaticExitPlanningError(reason_code)
@@ -148,9 +153,27 @@ def _validate_gate_and_context(
     constraints = context.venue_constraints
     _reject(constraints.status != STATUS_FRESH, "VENUE_CONSTRAINTS_NOT_FRESH")
     _reject(
+        not _aware(constraints.metadata_synced_ts_utc),
+        "VENUE_CONSTRAINTS_TIMESTAMP_INVALID",
+    )
+    metadata_age = context.planning_ts_utc - constraints.metadata_synced_ts_utc
+    _reject(
+        metadata_age < timedelta(0)
+        or metadata_age > timedelta(seconds=DEFAULT_MAX_METADATA_AGE_SECONDS),
+        "VENUE_CONSTRAINTS_TIMESTAMP_STALE_OR_FUTURE",
+    )
+    _reject(
         constraints.venue.strip().lower() != context.venue.strip().lower()
         or constraints.market.strip().upper().replace("/", "-") != context.market.strip().upper().replace("/", "-"),
         "VENUE_CONSTRAINTS_IDENTITY_MISMATCH",
+    )
+    _reject(
+        "limit" not in _normalized_lower(constraints.supported_order_types),
+        "VENUE_LIMIT_ORDER_UNSUPPORTED",
+    )
+    _reject(
+        "gtc" not in _normalized_lower(constraints.supported_time_in_force),
+        "VENUE_GTC_UNSUPPORTED",
     )
     _reject(
         constraints.tick_size <= 0

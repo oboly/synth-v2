@@ -92,6 +92,11 @@ base quantity at reference price and reference plus 25 bps. It does not choose
 an exit action, alter the policy fraction, inspect target or invalidation
 conditions, or adapt strategy. Any invalid/stale venue fact, rounding-to-zero,
 minimum violation, identity mismatch, or impossible allocation fails closed.
+The planner requires canonical venue metadata to support `limit` and `GTC`
+case-insensitively, and independently checks the metadata timestamp against
+the canonical metadata-age bound at planning time. Post-only capability is not
+represented by the canonical venue constraints contract, so it is explicitly
+deferred rather than inferred or modeled by a planner-local field.
 
 This phase is pure and read-only: no persistence, scheduler, reservations,
 executor wiring, broker calls, credentials, LIVE authority, or order submission

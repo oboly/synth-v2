@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -15,7 +14,12 @@ from src.execution_planner.automatic_exit_planner_v1 import (
     AutomaticExitPlanningContextV1, AutomaticExitPlanningError, build_automatic_exit_plan_v1,
 )
 from src.exit_policy.automatic_exit_candidate_v1 import AutomaticExitCandidateV1
-from src.market_rules.venue_execution_constraints_v1 import STATUS_FRESH, VenueExecutionConstraints
+from src.market_rules.venue_execution_constraints_v1 import (
+    DEFAULT_MAX_METADATA_AGE_SECONDS,
+    STATUS_FRESH,
+    VenueExecutionConstraints,
+    resolve_venue_execution_constraints,
+)
 
 
 NOW = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
@@ -74,6 +78,44 @@ def test_non_eight_decimal_venue_step_is_respected() -> None:
     plan = build_automatic_exit_plan_v1(decision=_decision(approved_quantity_ceiling_base=Decimal("2.38")), context=_context(venue_constraints=_constraints(qty_step_size=Decimal("0.25"))))
     assert plan.final_quantity_base == Decimal("2.25")
     assert all(leg.quantity_base % Decimal("0.25") == 0 for leg in plan.legs)
+
+
+def test_limit_and_gtc_capabilities_are_required_case_insensitively() -> None:
+    valid = _constraints(supported_order_types=(" LIMIT ",), supported_time_in_force=("gtc",))
+    assert build_automatic_exit_plan_v1(decision=_decision(), context=_context(venue_constraints=valid)).side == "SELL"
+    with pytest.raises(AutomaticExitPlanningError, match="VENUE_LIMIT_ORDER_UNSUPPORTED"):
+        build_automatic_exit_plan_v1(
+            decision=_decision(), context=_context(venue_constraints=_constraints(supported_order_types=("market",)))
+        )
+    with pytest.raises(AutomaticExitPlanningError, match="VENUE_GTC_UNSUPPORTED"):
+        build_automatic_exit_plan_v1(
+            decision=_decision(), context=_context(venue_constraints=_constraints(supported_time_in_force=("IOC",)))
+        )
+
+
+def test_raw_fresh_metadata_timestamps_are_validated_against_planning_time() -> None:
+    with pytest.raises(AutomaticExitPlanningError, match="VENUE_CONSTRAINTS_TIMESTAMP_STALE_OR_FUTURE"):
+        build_automatic_exit_plan_v1(
+            decision=_decision(),
+            context=_context(venue_constraints=_constraints(metadata_synced_ts_utc=NOW - timedelta(seconds=DEFAULT_MAX_METADATA_AGE_SECONDS + 1))),
+        )
+    with pytest.raises(AutomaticExitPlanningError, match="VENUE_CONSTRAINTS_TIMESTAMP_STALE_OR_FUTURE"):
+        build_automatic_exit_plan_v1(
+            decision=_decision(), context=_context(venue_constraints=_constraints(metadata_synced_ts_utc=NOW + timedelta(seconds=1)))
+        )
+    with pytest.raises(AutomaticExitPlanningError, match="VENUE_CONSTRAINTS_TIMESTAMP_INVALID"):
+        build_automatic_exit_plan_v1(
+            decision=_decision(), context=_context(venue_constraints=_constraints(metadata_synced_ts_utc=NOW.replace(tzinfo=None)))
+        )
+
+
+def test_current_resolved_fresh_constraints_pass() -> None:
+    constraints = _constraints()
+    resolved = resolve_venue_execution_constraints(
+        venue="bitvavo", market="SOL-EUR", db_rows={"SOL-EUR": constraints}, now=NOW,
+    )
+    assert resolved.status == STATUS_FRESH
+    assert build_automatic_exit_plan_v1(decision=_decision(), context=_context(venue_constraints=resolved)).side == "SELL"
 
 
 @pytest.mark.parametrize("ceiling,constraints,reason", [
