@@ -118,7 +118,8 @@ records append-only candidate/gate/planner evidence and an immutable plan JSON
 when planning succeeds; it is not executor input and has no mutable order state.
 Its unique idempotency hash is SHA-256 over canonical sorted JSON of account and
 position identity plus the exact position, balance, open-order, price,
-permission, profile, venue-constraint, and runtime-version identities. Those
+permission, profile, and venue-constraint identities. Runtime version is audit
+provenance only and never changes a logical evidence identity. Those
 captured identifiers make a later replay independent of mutable latest state.
 
 Phase 4B may read persisted `trading_account_balance_snapshot` and

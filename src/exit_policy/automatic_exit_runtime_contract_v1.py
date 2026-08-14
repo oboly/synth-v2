@@ -14,6 +14,7 @@ from typing import Any, Final, Iterable
 
 
 PROFILE_CONTRACT_VERSION: Final[str] = "1"
+PERMISSION_CONTRACT_VERSION: Final[str] = "1"
 DEFAULT_MAX_PROFILE_AGE_SECONDS: Final[int] = 15 * 60
 
 
@@ -56,19 +57,32 @@ def _active_at(*, effective_from: datetime, effective_until: datetime | None, at
     return effective_from <= at and (effective_until is None or at < effective_until)
 
 
+def _validate_permission(row: AutomaticExitPlanningPermissionV1) -> None:
+    if (
+        row.permission_id <= 0
+        or row.trading_account_id <= 0
+        or row.permission_version != PERMISSION_CONTRACT_VERSION
+        or not row.source_provenance.strip()
+        or type(row.planning_enabled) is not bool
+        or not _aware(row.effective_from_ts_utc)
+        or (row.effective_until_ts_utc is not None and not _aware(row.effective_until_ts_utc))
+        or (row.effective_until_ts_utc is not None and row.effective_until_ts_utc <= row.effective_from_ts_utc)
+    ):
+        raise AutomaticExitRuntimeContractError("INVALID_OR_UNSUPPORTED_AUTOMATIC_EXIT_PERMISSION")
+
+
 def resolve_automatic_exit_planning_enabled(
     permissions: Iterable[AutomaticExitPlanningPermissionV1], *, trading_account_id: int, at: datetime,
 ) -> bool:
     """Default-disabled account permission resolver; overlap is fail-closed."""
     if trading_account_id <= 0 or not _aware(at):
         raise AutomaticExitRuntimeContractError("INVALID_PERMISSION_LOOKUP")
-    matches = [
-        row for row in permissions
-        if row.trading_account_id == trading_account_id
-        and _aware(row.effective_from_ts_utc)
-        and (row.effective_until_ts_utc is None or _aware(row.effective_until_ts_utc))
-        and _active_at(effective_from=row.effective_from_ts_utc, effective_until=row.effective_until_ts_utc, at=at)
-    ]
+    account_rows = [row for row in permissions if row.trading_account_id == trading_account_id]
+    for row in account_rows:
+        _validate_permission(row)
+    matches = [row for row in account_rows if _active_at(
+        effective_from=row.effective_from_ts_utc, effective_until=row.effective_until_ts_utc, at=at,
+    )]
     if not matches:
         return False
     if len(matches) != 1:
@@ -118,9 +132,10 @@ def automatic_exit_idempotency_key_v1(evidence: dict[str, Any]) -> str:
         "position_snapshot_id", "balance_snapshot_id", "open_order_snapshot_run_id",
         "market_price_snapshot_id", "automatic_exit_permission_id", "exit_profile_id",
         "exit_profile_version", "exit_profile_observed_ts_utc", "venue_constraint_id",
-        "venue_metadata_synced_ts_utc", "runtime_version",
+        "venue_metadata_synced_ts_utc",
     }
-    if set(evidence) != required or any(evidence[key] in (None, "") for key in required):
+    logical_evidence = {key: value for key, value in evidence.items() if key != "runtime_version"}
+    if set(logical_evidence) != required or any(logical_evidence[key] in (None, "") for key in required):
         raise AutomaticExitRuntimeContractError("INCOMPLETE_IDEMPOTENCY_EVIDENCE")
-    serialized = json.dumps(evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+    serialized = json.dumps(logical_evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
