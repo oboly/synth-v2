@@ -10,11 +10,14 @@ from src.market_data.canonical_fib_zone_map_v1 import fetch_tracked_symbols
 from src.market_data.publication_cohort_contract_v1 import (
     CANONICAL_COLUMN,
     LEGACY_COLUMN,
+    PublicationCohortCompatibilityError,
     PublicationCohortDriftError,
+    RUNTIME_DUAL_READ_MODE_ENV,
     contract_from_column_names,
     fetch_publication_cohort_contract,
 )
 from src.market_data.run_held_market_enrollment_v1 import apply_enrollment
+from src.market_data.run_held_market_enrollment_v1 import fetch_asset_registry
 
 
 class _Cursor:
@@ -31,6 +34,17 @@ class _Cursor:
             self.rows = [self.conn.drift] if self.conn.drift else []
         elif "SELECT DISTINCT a.symbol" in sql:
             self.rows = [{"symbol": symbol} for symbol in self.conn.symbols]
+        elif "AS is_publication_cohort" in sql and "FROM asset" in sql:
+            self.rows = [
+                {
+                    "asset_id": 7,
+                    "symbol": "ARB",
+                    "is_enabled": 1,
+                    "is_tradeable": 1,
+                    "is_publication_cohort": 1,
+                    "is_core_sensor": 0,
+                }
+            ]
         elif "UPDATE asset" in sql:
             self.rowcount = 1
         else:
@@ -98,6 +112,36 @@ def test_pre_backfill_compatibility_mode_reads_legacy_without_drift_query() -> N
     assert contract.read_column == LEGACY_COLUMN
     assert contract.write_columns == (LEGACY_COLUMN, CANONICAL_COLUMN)
     assert not any("COALESCE(is_portfolio, 0) <>" in sql for sql in conn.sql)
+
+
+def test_runtime_enrollment_registry_uses_explicit_legacy_compatibility_mode(monkeypatch) -> None:
+    monkeypatch.setenv(RUNTIME_DUAL_READ_MODE_ENV, "legacy_compatible")
+    conn = _Conn((LEGACY_COLUMN, CANONICAL_COLUMN))
+
+    registry = fetch_asset_registry(conn)
+
+    assert registry["ARB"].is_publication_cohort is True
+    registry_sql = next(sql for sql in conn.sql if "AS is_publication_cohort" in sql)
+    assert "is_portfolio AS is_publication_cohort" in registry_sql
+    assert not any("COALESCE(is_portfolio, 0) <>" in sql for sql in conn.sql)
+
+
+def test_runtime_fib_reader_uses_explicit_legacy_compatibility_mode(monkeypatch) -> None:
+    monkeypatch.setenv(RUNTIME_DUAL_READ_MODE_ENV, "legacy_compatible")
+    conn = _Conn((LEGACY_COLUMN, CANONICAL_COLUMN), symbols=("ARB",))
+
+    assert fetch_tracked_symbols(conn, venue="bitvavo", quote_currency="EUR") == ["ARB"]
+
+    tracked_sql = next(sql for sql in conn.sql if "SELECT DISTINCT a.symbol" in sql)
+    assert "COALESCE(a.is_portfolio, 0) = 1" in tracked_sql
+    assert not any("COALESCE(is_portfolio, 0) <>" in sql for sql in conn.sql)
+
+
+def test_invalid_runtime_compatibility_mode_fails_closed(monkeypatch) -> None:
+    monkeypatch.setenv(RUNTIME_DUAL_READ_MODE_ENV, "unexpected")
+
+    with pytest.raises(PublicationCohortCompatibilityError, match=RUNTIME_DUAL_READ_MODE_ENV):
+        fetch_publication_cohort_contract(_Conn((LEGACY_COLUMN,)))
 
 
 def test_dual_schema_disagreement_fails_closed() -> None:

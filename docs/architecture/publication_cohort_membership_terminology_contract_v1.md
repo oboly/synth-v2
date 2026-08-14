@@ -80,7 +80,10 @@ destructive rename:
    dual-read mode before any backfill. It retains legacy reads and, whenever
    both columns exist, atomically sets both fields for every monotonic
    held-market enrollment; this prevents the old writer from creating new
-   drift during the migration window.
+   drift during the migration window. Activate it for **every** process that
+   reads the publication cohort (Fib publication, held-market enrollment and
+   health, reporting) with
+   `SYNTH_PUBLICATION_COHORT_DUAL_READ_MODE=legacy_compatible`.
 3. Phase C backfills exactly
    `is_publication_cohort = is_portfolio`; it never reads or writes
    `account_asset.is_portfolio_member`.
@@ -90,7 +93,8 @@ destructive rename:
    new field only after equality verification. A mismatch fails closed with
    deterministic asset evidence; consumers must never OR the two flags.
 5. Phase E makes `is_publication_cohort` canonical while retaining the
-   explicit removable compatibility path.
+   explicit removable compatibility path by switching every consumer to
+   `SYNTH_PUBLICATION_COHORT_DUAL_READ_MODE=canonical_verified`.
 6. The legacy column may be removed only after a verified drift-free
    dual-read/cutover window and a separate, explicit production authorization.
 

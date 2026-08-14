@@ -6,12 +6,15 @@ closed rather than widening the cohort with an OR predicate.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-from typing import Any, Iterable, Literal
+from typing import Any, Iterable, Literal, cast
 
 
 LEGACY_COLUMN = "is_portfolio"
 CANONICAL_COLUMN = "is_publication_cohort"
+RUNTIME_DUAL_READ_MODE_ENV = "SYNTH_PUBLICATION_COHORT_DUAL_READ_MODE"
+DualReadMode = Literal["canonical_verified", "legacy_compatible"]
 
 
 class PublicationCohortCompatibilityError(RuntimeError):
@@ -28,7 +31,7 @@ class PublicationCohortContract:
 
     has_legacy_column: bool
     has_canonical_column: bool
-    dual_read_mode: Literal["canonical_verified", "legacy_compatible"] = "canonical_verified"
+    dual_read_mode: DualReadMode = "canonical_verified"
 
     @property
     def read_column(self) -> str:
@@ -51,7 +54,7 @@ class PublicationCohortContract:
 def contract_from_column_names(
     column_names: Iterable[str],
     *,
-    dual_read_mode: Literal["canonical_verified", "legacy_compatible"] = "canonical_verified",
+    dual_read_mode: DualReadMode = "canonical_verified",
 ) -> PublicationCohortContract:
     names = {str(name) for name in column_names}
     contract = PublicationCohortContract(
@@ -66,11 +69,27 @@ def contract_from_column_names(
     return contract
 
 
+def runtime_dual_read_mode() -> DualReadMode:
+    """Return the explicit process-wide rollout mode for runtime consumers.
+
+    The default is the post-backfill safe state. Phase B must explicitly set
+    ``SYNTH_PUBLICATION_COHORT_DUAL_READ_MODE=legacy_compatible`` on every
+    publication-cohort consumer before the backfill is applied.
+    """
+    mode = os.environ.get(RUNTIME_DUAL_READ_MODE_ENV, "canonical_verified")
+    if mode not in {"canonical_verified", "legacy_compatible"}:
+        raise PublicationCohortCompatibilityError(
+            f"{RUNTIME_DUAL_READ_MODE_ENV} must be canonical_verified or legacy_compatible"
+        )
+    return cast(DualReadMode, mode)
+
+
 def fetch_publication_cohort_contract(
     conn: Any,
     *,
-    dual_read_mode: Literal["canonical_verified", "legacy_compatible"] = "canonical_verified",
+    dual_read_mode: DualReadMode | None = None,
 ) -> PublicationCohortContract:
+    dual_read_mode = dual_read_mode or runtime_dual_read_mode()
     sql = """
     SELECT COLUMN_NAME
     FROM information_schema.COLUMNS
