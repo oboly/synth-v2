@@ -60,7 +60,7 @@ class AssetRegistryRow:
     symbol: str
     is_enabled: bool
     is_tradeable: bool
-    is_portfolio: bool
+    is_publication_cohort: bool
     is_core_sensor: bool
 
 
@@ -139,7 +139,7 @@ def resolve_held_markets(
                 )
             )
             continue
-        already_enrolled = bool(asset_row.is_portfolio or asset_row.is_core_sensor)
+        already_enrolled = bool(asset_row.is_publication_cohort or asset_row.is_core_sensor)
         out.append(
             HeldMarketResolution(
                 currency_code=code,
@@ -276,7 +276,8 @@ class CoverageSummary:
     conflated (Issue #238 follow-up):
 
     - enrollment: every resolvable held asset is enrolled in the
-      account-agnostic publication cohort (asset.is_portfolio/is_core_sensor
+      account-agnostic publication cohort (asset.is_publication_cohort
+      / is_core_sensor
       set). Does not require a published canonical 4h row yet.
     - publication: every resolvable held asset actually has fresh, published
       canonical 4h context. A known gap (e.g. a map-status-unavailable

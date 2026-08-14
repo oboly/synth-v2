@@ -560,7 +560,10 @@ def build_publication(
 
 
 def fetch_tracked_symbols(conn: Any, *, venue: str, quote_currency: str) -> list[str]:
-    sql = """
+    from src.market_data.publication_cohort_contract_v1 import fetch_publication_cohort_contract
+
+    cohort_contract = fetch_publication_cohort_contract(conn)
+    sql = f"""
         SELECT DISTINCT a.symbol
         FROM venue_market vm
         JOIN asset a ON a.asset_id = vm.base_asset_id
@@ -568,7 +571,7 @@ def fetch_tracked_symbols(conn: Any, *, venue: str, quote_currency: str) -> list
           AND vm.quote_currency = %s
           AND a.is_enabled = 1
           AND COALESCE(a.is_tradeable, 0) = 1
-          AND (COALESCE(a.is_portfolio, 0) = 1 OR COALESCE(a.is_core_sensor, 0) = 1)
+          AND ({cohort_contract.predicate('a')} OR COALESCE(a.is_core_sensor, 0) = 1)
         ORDER BY a.symbol
     """
     with conn.cursor() as cur:

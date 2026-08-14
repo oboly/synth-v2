@@ -102,7 +102,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="all",
         help=(
             "Which invariant gates the exit code. 'enrollment' passes once every "
-            "resolvable held asset has asset.is_portfolio/is_core_sensor set, "
+            "resolvable held asset has asset.is_publication_cohort "
+            "(legacy: is_portfolio)/is_core_sensor set, "
             "even if its canonical 4h context is not yet published (e.g. still "
             "waiting for the next chain-4h cycle). 'publication' (and the "
             "default 'all') additionally requires fresh canonical 4h context to "

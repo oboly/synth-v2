@@ -9,6 +9,7 @@ import requests
 
 from src.account.account_snapshot_models_v1 import MarketSyncRow, MarketSyncResult
 from src.common.db import get_db_connection
+from src.market_data.publication_cohort_contract_v1 import contract_from_column_names
 
 
 RUNNER_NAME = "bitvavo_market_sync_v1"
@@ -102,6 +103,7 @@ def _build_asset_insert_payload(
     *,
     symbol: str,
 ) -> tuple[list[str], list[Any]]:
+    cohort_contract = contract_from_column_names(column["COLUMN_NAME"] for column in asset_columns)
     values_by_column: dict[str, Any] = {}
     for column in asset_columns:
         name = str(column["COLUMN_NAME"])
@@ -115,7 +117,7 @@ def _build_asset_insert_payload(
             values_by_column[name] = 1
         elif name == "is_tradeable":
             values_by_column[name] = 1
-        elif name == "is_portfolio":
+        elif name in cohort_contract.write_columns:
             values_by_column[name] = 0
         elif _is_required_booleanish(column):
             values_by_column[name] = 0

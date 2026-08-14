@@ -27,12 +27,11 @@ executor_changes=0
 
 ## 0. Current implementation state (read this before anything else)
 
-- `asset.is_portfolio` is the **live, in-use column name today**. It has
-  **not** been renamed. Any reference below to `asset.is_publication_cohort`
-  is the **target** name, to be introduced only by the future rename issue
-  (#375) — additive column, dual-read, backfill, cutover, as its own
-  separately authorized migration. Nothing in this document implements that
-  rename.
+- `asset.is_portfolio` is the **legacy compatibility field name** for the
+  global publication cohort. Issue #375 introduces the canonical
+  `asset.is_publication_cohort` field through separately sequenced additive
+  and backfill migrations; production application remains separately
+  authorized.
 - `account_asset.is_portfolio_member` **exists in schema today** but has
   **no writer** (every insert path sets it to the literal `0`) and **no
   reader** in current code. It is not authoritative at runtime. Giving it a
@@ -74,6 +73,28 @@ Three distinct, non-overlapping concepts. None of them is "portfolio" alone.
 - **Meaning:** global market-structure reference symbols (e.g. BTC, ETH)
   always in the publication cohort regardless of any account holding.
 - **Owning layer:** `market_data` (market-only).
+
+### #375 compatibility and removal sequence
+
+The column rename is a sequenced compatibility migration, never a direct
+destructive rename:
+
+1. Phase A adds `asset.is_publication_cohort` with default `0` only.
+2. Phase B backfills exactly
+   `is_publication_cohort = is_portfolio`; it never reads or writes
+   `account_asset.is_portfolio_member`.
+3. During the dual-read window, old-only schemas read `is_portfolio`,
+   new-only schemas read `is_publication_cohort`, and schemas with both
+   columns require row-level equality before reading the canonical new field.
+   A mismatch fails closed with deterministic asset evidence; consumers must
+   never OR the two flags.
+4. Cutover makes `is_publication_cohort` canonical while retaining the
+   explicit removable compatibility path.
+5. The legacy column may be removed only after a verified drift-free
+   dual-read/cutover window and a separate, explicit production authorization.
+
+No production migration, backfill, or old-column removal is authorized by
+this repository change.
 
 ### Account portfolio membership
 

@@ -31,7 +31,7 @@ def _asset(symbol: str, *, enabled=True, tradeable=True, portfolio=False, core_s
         symbol=symbol,
         is_enabled=enabled,
         is_tradeable=tradeable,
-        is_portfolio=portfolio,
+        is_publication_cohort=portfolio,
         is_core_sensor=core_sensor,
     )
 
@@ -271,6 +271,7 @@ def test_enrollment_writer_only_ever_updates_the_asset_table() -> None:
     table other than `asset` -- it is a market-wide flag flip, not a general
     write path."""
     source = Path("src/market_data/run_held_market_enrollment_v1.py").read_text(encoding="utf-8")
+    assert "account_asset.is_portfolio_member" not in source
     for keyword in ("INSERT INTO", "DELETE FROM"):
         assert keyword not in source
     assert source.count("UPDATE ") == 1
@@ -326,7 +327,13 @@ class _FakeCursor:
     def __exit__(self, *exc: object) -> None:
         return None
 
-    def execute(self, sql: str, params: tuple) -> None:
+    def execute(self, sql: str, params: tuple | None = None) -> None:
+        if "information_schema.COLUMNS" in sql:
+            self._rows = [{"COLUMN_NAME": "is_portfolio"}]
+            return
+        if "COALESCE(is_portfolio, 0) <>" in sql:
+            self._rows = []
+            return
         asset_id = params[0]
         if asset_id in self._conn.raise_for_asset_ids:
             raise RuntimeError(f"simulated failure for asset_id={asset_id}")
@@ -335,6 +342,12 @@ class _FakeCursor:
             return
         self._conn.pending_commit_asset_ids.append(asset_id)
         self.rowcount = 1
+
+    def fetchall(self) -> list[dict[str, str]]:
+        return list(getattr(self, "_rows", []))
+
+    def fetchone(self) -> dict[str, str] | None:
+        return self._rows[0] if getattr(self, "_rows", []) else None
 
 
 class _FakeConn:
@@ -413,14 +426,16 @@ def test_apply_pending_enrollments_isolates_one_symbols_failure_from_the_rest() 
 
 def test_canonical_fib_writer_cohort_still_gated_by_the_flag_enrollment_sets() -> None:
     """Static guard against the two SQL cohorts drifting apart: the writer's
-    tracked-symbol query must key off is_portfolio/is_core_sensor, since
-    those are exactly the flags this enrollment mechanism sets. If this
+    tracked-symbol query must key off the explicit publication-cohort contract
+    and is_core_sensor, since those are exactly the flags this enrollment
+    mechanism sets. If this
     changes, enrollment silently stops mattering."""
     source = Path("src/market_data/canonical_fib_zone_map_v1.py").read_text(encoding="utf-8")
     start = source.index("def fetch_tracked_symbols")
     end = source.index("\ndef ", start + 1)
     body = source[start:end]
-    assert "is_portfolio" in body
+    assert "fetch_publication_cohort_contract" in body
+    assert "cohort_contract.predicate" in body
     assert "is_core_sensor" in body
 
 
