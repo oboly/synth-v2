@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Final
 
+from src.exit_policy import POLICY_NAME, POLICY_VERSION
 from src.exit_policy.automatic_exit_candidate_v1 import AutomaticExitCandidateV1
 
 
@@ -22,6 +23,7 @@ STATE_NON_ACTIONABLE: Final[str] = "NON_ACTIONABLE"
 
 REASON_OK: Final[str] = "OK"
 REASON_INVALID_CANDIDATE: Final[str] = "INVALID_AUTOMATIC_EXIT_CANDIDATE"
+REASON_UNSUPPORTED_POLICY_CONTRACT: Final[str] = "UNSUPPORTED_AUTOMATIC_EXIT_POLICY_CONTRACT"
 REASON_IDENTITY_MISMATCH: Final[str] = "CANDIDATE_ACCOUNT_POSITION_IDENTITY_MISMATCH"
 REASON_ACCOUNT_EVIDENCE_STALE: Final[str] = "ACCOUNT_EVIDENCE_STALE"
 REASON_CANDIDATE_EVIDENCE_STALE: Final[str] = "CANDIDATE_EVIDENCE_STALE"
@@ -89,6 +91,10 @@ def _is_aware(value: datetime) -> bool:
     return value.tzinfo is not None and value.utcoffset() is not None
 
 
+def _is_nonempty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
 def _stale(observed: datetime, evaluation: datetime, max_age_seconds: int) -> bool:
     age = evaluation - observed
     return age < timedelta(0) or age > timedelta(seconds=max_age_seconds)
@@ -116,18 +122,20 @@ def evaluate_automatic_exit_candidate_permission_v1(
     """
     if (
         candidate.trading_account_id <= 0
-        or not candidate.position_reference.strip()
-        or not candidate.venue.strip()
+        or not _is_nonempty_string(candidate.position_reference)
+        or not _is_nonempty_string(candidate.venue)
         or candidate.asset_id <= 0
-        or not candidate.market.strip()
+        or not _is_nonempty_string(candidate.market)
         or candidate.reduction_fraction_candidate <= 0
         or candidate.reduction_fraction_candidate > 1
         or candidate.candidate_action not in {"REDUCE", "EXIT"}
-        or not candidate.evidence_id.strip()
-        or not candidate.exit_profile_id.strip()
-        or not candidate.exit_profile_version.strip()
+        or not _is_nonempty_string(candidate.evidence_id)
+        or not _is_nonempty_string(candidate.exit_profile_id)
+        or not _is_nonempty_string(candidate.exit_profile_version)
     ):
         return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_CANDIDATE, candidate)
+    if candidate.policy_name != POLICY_NAME or candidate.policy_version != POLICY_VERSION:
+        return _decision(STATE_NON_ACTIONABLE, REASON_UNSUPPORTED_POLICY_CONTRACT, candidate)
 
     if not all(_is_aware(value) for value in (
         candidate.observed_ts_utc, context.account_observed_ts_utc,
@@ -137,9 +145,9 @@ def evaluate_automatic_exit_candidate_permission_v1(
         return _decision(STATE_NON_ACTIONABLE, REASON_INVALID_TIMESTAMP, candidate)
 
     if (
-        context.trading_account_id <= 0 or not context.position_reference.strip()
-        or not context.venue.strip() or context.asset_id <= 0 or not context.market.strip()
-        or not context.position_snapshot_id.strip()
+        context.trading_account_id <= 0 or not _is_nonempty_string(context.position_reference)
+        or not _is_nonempty_string(context.venue) or context.asset_id <= 0 or not _is_nonempty_string(context.market)
+        or not _is_nonempty_string(context.position_snapshot_id)
         or context.max_account_age_seconds < 0 or context.max_position_age_seconds < 0
         or context.max_free_quantity_age_seconds < 0 or context.max_candidate_age_seconds < 0
     ):
