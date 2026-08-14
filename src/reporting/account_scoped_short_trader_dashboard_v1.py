@@ -355,14 +355,17 @@ def _fetch_selected_asset_market_rows(
     Asset data is the global selection layer. Account rows, balances, and open
     orders are overlays; they must not be the only way a symbol becomes visible.
     """
-    sql = """
+    from src.market_data.publication_cohort_contract_v1 import fetch_publication_cohort_contract
+
+    cohort_contract = fetch_publication_cohort_contract(conn)
+    sql = f"""
     SELECT
         vm.market,
         vm.quote_currency,
         a.symbol AS asset_symbol,
         a.is_enabled AS asset_is_enabled,
         a.is_tradeable AS asset_is_tradeable,
-        a.is_portfolio AS asset_is_portfolio,
+        {cohort_contract.read_column} AS asset_is_publication_cohort,
         a.is_core_sensor AS asset_is_core_sensor
     FROM venue_market vm
     JOIN asset a
@@ -372,7 +375,7 @@ def _fetch_selected_asset_market_rows(
       AND a.is_enabled = 1
       AND COALESCE(a.is_tradeable, 0) = 1
       AND (
-        COALESCE(a.is_portfolio, 0) = 1
+        {cohort_contract.predicate('a')}
         OR COALESCE(a.is_core_sensor, 0) = 1
       )
     ORDER BY vm.market
@@ -529,7 +532,7 @@ def load_account_scoped_short_dashboard_context(
             mkt = str(row.get("market") or "").upper()
             if not mkt:
                 continue
-            if row.get("asset_is_portfolio"):
+            if row.get("asset_is_publication_cohort"):
                 _reasons.setdefault(mkt, set()).add("COHORT_PUBLISHED")
             if row.get("asset_is_core_sensor"):
                 _reasons.setdefault(mkt, set()).add("CORE_SENSOR")

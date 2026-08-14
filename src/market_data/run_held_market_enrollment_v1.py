@@ -3,16 +3,17 @@ run_held_market_enrollment_v1 -- Enroll resolvable positive wallet holdings
 (across every linked trading account) into the account-agnostic market/Fib
 publication cohort (Issue #238 follow-up).
 
-Root cause fixed by this enrollment step: ``asset.is_portfolio`` /
-``asset.is_core_sensor`` gate both the canonical 4h Fib writer's tracked-
+Root cause fixed by this enrollment step: ``asset.is_publication_cohort``
+(legacy compatibility name: ``is_portfolio``) / ``asset.is_core_sensor``
+gate both the canonical 4h Fib writer's tracked-
 symbol cohort (``canonical_fib_zone_map_v1.fetch_tracked_symbols``) and the
 Profit Plan's account-plan selection layer. A wallet-discovered held asset
 (e.g. LIGHTER) can be flagged in the per-account ``account_asset`` table
-without ever setting the market-wide ``asset.is_portfolio`` flag, leaving it
+without ever setting the market-wide publication-cohort flag, leaving it
 permanently excluded from the canonical Fib publication cohort even though it
 has ample public candle history.
 
-This script only ever flips ``asset.is_portfolio`` from 0 to 1 for an asset
+This script only ever flips the publication-cohort flag from 0 to 1 for an asset
 that is resolvable (exact ``asset.symbol`` match, never a display alias),
 enabled, and tradeable, and that is currently held with a positive balance in
 at least one trading account. It never creates/edits venue_market or asset
@@ -52,6 +53,10 @@ from src.market_data.held_market_coverage_v1 import (
     HeldBalance,
     resolutions_needing_enrollment,
     resolve_held_markets,
+)
+from src.market_data.publication_cohort_contract_v1 import (
+    PublicationCohortContract,
+    fetch_publication_cohort_contract,
 )
 
 RUNNER_NAME = "held_market_enrollment_v1"
@@ -100,8 +105,10 @@ def fetch_latest_positive_balances(conn: Any, *, venue: str) -> list[HeldBalance
 
 
 def fetch_asset_registry(conn: Any) -> dict[str, AssetRegistryRow]:
-    sql = """
-    SELECT asset_id, symbol, is_enabled, is_tradeable, is_portfolio, is_core_sensor
+    cohort_contract = fetch_publication_cohort_contract(conn)
+    sql = f"""
+    SELECT asset_id, symbol, is_enabled, is_tradeable,
+           {cohort_contract.read_column} AS is_publication_cohort, is_core_sensor
     FROM asset
     """
     with conn.cursor() as cur:
@@ -115,22 +122,27 @@ def fetch_asset_registry(conn: Any) -> dict[str, AssetRegistryRow]:
             symbol=symbol,
             is_enabled=bool(row.get("is_enabled")),
             is_tradeable=bool(row.get("is_tradeable")),
-            is_portfolio=bool(row.get("is_portfolio")),
+            is_publication_cohort=bool(row.get("is_publication_cohort")),
             is_core_sensor=bool(row.get("is_core_sensor")),
         )
     return out
 
 
-def apply_enrollment(conn: Any, *, asset_id: int) -> bool:
+def apply_enrollment(
+    conn: Any, *, asset_id: int, cohort_contract: PublicationCohortContract | None = None
+) -> bool:
     """Idempotent, guarded flip 0 -> 1. Never touches an asset already
-    enrolled via is_portfolio or is_core_sensor. Returns True only when this
+    enrolled via the publication cohort or is_core_sensor. Returns True only when this
     call actually flipped the row (False means it was already enrolled by a
     concurrent run -- a no-op, not a failure)."""
-    sql = """
+    cohort_contract = cohort_contract or fetch_publication_cohort_contract(conn)
+    assignments = ", ".join(f"{column} = 1" for column in cohort_contract.write_columns)
+    guards = " AND ".join(f"{column} = 0" for column in cohort_contract.write_columns)
+    sql = f"""
     UPDATE asset
-    SET is_portfolio = 1
+    SET {assignments}
     WHERE asset_id = %s
-      AND is_portfolio = 0
+      AND {guards}
       AND is_core_sensor = 0
     """
     with conn.cursor() as cur:
@@ -155,6 +167,7 @@ def apply_pending_enrollments(conn: Any, pending: Sequence[Any]) -> EnrollmentOu
     Every outcome -- enrolled, already-enrolled (race with a concurrent run),
     or failed -- is reported explicitly; nothing is silently dropped.
     """
+    cohort_contract = fetch_publication_cohort_contract(conn)
     enrolled: list[str] = []
     skipped: list[str] = []
     failed: list[dict[str, str]] = []
@@ -162,7 +175,7 @@ def apply_pending_enrollments(conn: Any, pending: Sequence[Any]) -> EnrollmentOu
         symbol = resolution.symbol or resolution.currency_code
         assert resolution.asset_id is not None
         try:
-            flipped = apply_enrollment(conn, asset_id=resolution.asset_id)
+            flipped = apply_enrollment(conn, asset_id=resolution.asset_id, cohort_contract=cohort_contract)
             conn.commit()
         except Exception as exc:  # noqa: BLE001 -- must record every failure, never abort the batch
             try:
@@ -182,7 +195,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Enroll resolvable positive wallet holdings into the canonical "
-            "market/Fib publication cohort by flipping asset.is_portfolio. "
+            "market/Fib publication cohort by setting its compatibility field. "
             "Dry run by default."
         )
     )

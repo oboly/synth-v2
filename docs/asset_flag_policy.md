@@ -11,7 +11,7 @@ Synth v2 uses four flags to define asset/market participation:
 ```text
 is_enabled
 is_tradeable
-is_portfolio
+is_publication_cohort (legacy: is_portfolio)
 is_core_sensor
 ```
 
@@ -69,16 +69,17 @@ two universe-gating flags below.
   field; `market_data` also owns `venue_market.is_tradeable` as the
   venue-specific target.
 
-### `is_portfolio` (publication cohort — legacy field name)
+### `is_publication_cohort` (publication cohort — canonical field name)
 
 - **Table:** `asset`.
 - **Scope:** global, account-agnostic, venue-scoped.
+- **Legacy compatibility name:** `asset.is_portfolio` during the verified
+  dual-read window only.
 - **Meaning:** the **publication cohort** selector — the flag that decides
   which symbols the canonical 4h Fib writer publishes market context for.
   This is **not** a per-account watchlist or portfolio membership flag,
   despite the name. See the canonical contract doc (§1, "Publication
-  cohort") for the full definition, target rename
-  (`asset.is_publication_cohort`, not yet applied), and writer rules.
+  cohort") for the full definition, migration sequence, and writer rules.
 - **Owning layer:** `market_data` (market-only).
 - **Sole writer (target contract):** held-market enrollment (0→1 only,
   guarded) and market sync (seeds new rows to `0` only). See
@@ -111,6 +112,6 @@ treat it as an asset participation gate until that changes.
 
 | Doc | Role |
 |---|---|
-| `docs/architecture/publication_cohort_membership_terminology_contract_v1.md` | Canonical terminology, ownership, and writer rules for `is_portfolio`/`is_core_sensor` vs. `account_asset.is_portfolio_member`. |
+| `docs/architecture/publication_cohort_membership_terminology_contract_v1.md` | Canonical terminology, migration contract, ownership, and writer rules for `is_publication_cohort`/`is_core_sensor` vs. `account_asset.is_portfolio_member`. |
 | `docs/architecture/portfolio_cohort_vs_membership_boundary_audit_v1.md` | Evidence source and migration sequence. |
 | `docs/ops/held_market_enrollment_v1.md` | Operational detail for the mechanism that writes `is_portfolio`. |
