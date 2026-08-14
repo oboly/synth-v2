@@ -61,6 +61,25 @@ def test_one_valid_disabled_permission_returns_false() -> None:
     assert not resolve_automatic_exit_planning_enabled([_permission(planning_enabled=False)], trading_account_id=7, at=NOW)
 
 
+@pytest.mark.parametrize("historical", [
+    _permission(permission_id=2, permission_version="0", effective_until_ts_utc=NOW - timedelta(hours=1)),
+    _permission(permission_id=2, permission_version="2", effective_from_ts_utc=NOW + timedelta(days=1)),
+    _permission(permission_id=2, source_provenance="", effective_until_ts_utc=NOW - timedelta(hours=1)),
+])
+def test_non_effective_history_does_not_poison_current_permission(historical: AutomaticExitPlanningPermissionV1) -> None:
+    assert resolve_automatic_exit_planning_enabled([historical, _permission()], trading_account_id=7, at=NOW)
+
+
+def test_malformed_timestamp_history_fails_closed_and_malformed_current_row_fails_closed() -> None:
+    with pytest.raises(AutomaticExitRuntimeContractError, match="INVALID_OR_UNSUPPORTED"):
+        resolve_automatic_exit_planning_enabled(
+            [_permission(permission_id=2, effective_from_ts_utc=NOW.replace(tzinfo=None)), _permission()],
+            trading_account_id=7, at=NOW,
+        )
+    with pytest.raises(AutomaticExitRuntimeContractError, match="INVALID_OR_UNSUPPORTED"):
+        resolve_automatic_exit_planning_enabled([_permission(source_provenance="")], trading_account_id=7, at=NOW)
+
+
 def test_profile_requires_exactly_one_valid_v1_market_profile_and_preserves_provenance() -> None:
     profile = resolve_automatic_exit_profile([_profile()], venue="BITVAVO", asset_id=42, market="SOL/EUR", at=NOW)
     assert profile.evidence_id == "evidence-1"

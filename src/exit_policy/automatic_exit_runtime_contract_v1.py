@@ -71,6 +71,16 @@ def _validate_permission(row: AutomaticExitPlanningPermissionV1) -> None:
         raise AutomaticExitRuntimeContractError("INVALID_OR_UNSUPPORTED_AUTOMATIC_EXIT_PERMISSION")
 
 
+def _validate_permission_window_membership(row: AutomaticExitPlanningPermissionV1) -> None:
+    """Validate only facts required to determine whether history is current."""
+    if (
+        not _aware(row.effective_from_ts_utc)
+        or (row.effective_until_ts_utc is not None and not _aware(row.effective_until_ts_utc))
+        or (row.effective_until_ts_utc is not None and row.effective_until_ts_utc <= row.effective_from_ts_utc)
+    ):
+        raise AutomaticExitRuntimeContractError("INVALID_OR_UNSUPPORTED_AUTOMATIC_EXIT_PERMISSION")
+
+
 def resolve_automatic_exit_planning_enabled(
     permissions: Iterable[AutomaticExitPlanningPermissionV1], *, trading_account_id: int, at: datetime,
 ) -> bool:
@@ -79,7 +89,7 @@ def resolve_automatic_exit_planning_enabled(
         raise AutomaticExitRuntimeContractError("INVALID_PERMISSION_LOOKUP")
     account_rows = [row for row in permissions if row.trading_account_id == trading_account_id]
     for row in account_rows:
-        _validate_permission(row)
+        _validate_permission_window_membership(row)
     matches = [row for row in account_rows if _active_at(
         effective_from=row.effective_from_ts_utc, effective_until=row.effective_until_ts_utc, at=at,
     )]
@@ -87,6 +97,7 @@ def resolve_automatic_exit_planning_enabled(
         return False
     if len(matches) != 1:
         raise AutomaticExitRuntimeContractError("CONFLICTING_AUTOMATIC_EXIT_PERMISSION")
+    _validate_permission(matches[0])
     return matches[0].planning_enabled
 
 
