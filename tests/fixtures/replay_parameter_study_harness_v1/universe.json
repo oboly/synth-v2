@@ -1,0 +1,5 @@
+{
+  "universe_id": "toy_universe_fixture_v1",
+  "version": "v1",
+  "symbols": ["BTC", "ETH", "XRP"]
+}

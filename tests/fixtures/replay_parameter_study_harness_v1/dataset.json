@@ -1,0 +1,13 @@
+{
+  "dataset_id": "toy_market_only_fixture_v1",
+  "schema_version": "v1",
+  "source_refs": ["tests/fixtures/replay_parameter_study_harness_v1/dataset.json"],
+  "start_ts_utc": "2026-01-01T00:00:00+00:00",
+  "end_ts_utc": "2026-01-10T00:00:00+00:00",
+  "records": [
+    {"symbol": "BTC", "as_of_ts_utc": "2026-01-02T00:00:00+00:00", "quality": "AVAILABLE", "payload": {"value": 10.0}},
+    {"symbol": "BTC", "as_of_ts_utc": "2026-01-05T00:00:00+00:00", "quality": "AVAILABLE", "payload": {"value": 30.0}},
+    {"symbol": "ETH", "as_of_ts_utc": "2026-01-02T00:00:00+00:00", "quality": "AVAILABLE", "payload": {"value": 5.0}},
+    {"symbol": "XRP", "as_of_ts_utc": "2026-01-02T00:00:00+00:00", "quality": "AVAILABLE", "payload": {"value": 1.0}}
+  ]
+}
