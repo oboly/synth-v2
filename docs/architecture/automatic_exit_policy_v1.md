@@ -101,3 +101,34 @@ deferred rather than inferred or modeled by a planner-local field.
 This phase is pure and read-only: no persistence, scheduler, reservations,
 executor wiring, broker calls, credentials, LIVE authority, or order submission
 exists. Those runtime phases remain separately reviewed work.
+
+## Phase 4A: persisted input and evidence contracts
+
+Phase 4A adds only contracts required to make a later runtime mechanical.
+`automatic_exit_account_permission_v1` is an append-only, account-scoped
+`planning_enabled` opt-in; no row is disabled, overlapping effective rows fail
+closed, and it is neither LIVE nor order authority. `automatic_exit_profile_v1`
+is an append-only market-level V1 policy input shared across accounts. Exactly
+one effective profile must provide a profile ID/version, target and/or
+invalidation, evidence provenance, and observed timestamp; absent, conflicting,
+stale, or unsupported profiles are non-actionable.
+
+`automatic_exit_evaluation_audit_v1` is the sole Phase-4 staging boundary. It
+records append-only candidate/gate/planner evidence and an immutable plan JSON
+when planning succeeds; it is not executor input and has no mutable order state.
+Its unique idempotency hash is SHA-256 over canonical sorted JSON of account and
+position identity plus the exact position, balance, open-order, price,
+permission, profile, and venue-constraint identities. Runtime version is audit
+provenance only and never changes a logical evidence identity. Those
+captured identifiers make a later replay independent of mutable latest state.
+
+Phase 4B may read persisted `trading_account_balance_snapshot` and
+`account_open_order_snapshot` plus a matching
+`account_open_order_snapshot_run_v1` COMPLETE header only when all are fresh
+and mutually resolvable; the header is required to prove an authoritative zero
+open-order result. Missing, stale, or ambiguous snapshots fail closed. Their
+separately owned producers may perform authenticated private reads, but Phase
+4B never resolves credentials or calls a broker. Runtime host ownership remains unassigned in
+Phase 4A: the current ownership registry covers public/market-only writer
+capabilities and does not authorize an account-runtime capability. No service,
+timer, deployment, or execution authority is introduced here.
