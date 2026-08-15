@@ -37,20 +37,6 @@ COMPLETE_STATE: Final[str] = "COMPLETE"
 DEFAULT_MAX_ACCOUNT_STATE_AGE_SECONDS: Final[int] = 15 * 60
 DEFAULT_MAX_MARKET_PRICE_AGE_SECONDS: Final[int] = 15 * 60
 
-# A permission history with zero rows means planning is disabled by absence
-# (see automatic_exit_runtime_contract_v1: "no row means disabled"). The
-# idempotency contract still requires a non-null automatic_exit_permission_id
-# for every audit row, including this one, so a stable sentinel identity is
-# used instead of a real row id. If a permission row is later added, the
-# evidence (and therefore the idempotency key) changes correctly.
-NO_PERMISSION_ROW_IDENTITY: Final[str] = "NO_PERMISSION_ROW"
-
-# Same rationale as NO_PERMISSION_ROW_IDENTITY: venue_execution_constraint has
-# no row for MISSING status, but idempotency evidence still requires a stable
-# non-null identity.
-NO_VENUE_CONSTRAINT_ROW_IDENTITY: Final[str] = "NO_VENUE_CONSTRAINT_ROW"
-
-
 class AutomaticExitRuntimeRepositoryError(RuntimeError):
     """Fail-closed evidence-loading error. ``args[0]`` is the reason code."""
 
@@ -494,8 +480,8 @@ def load_permission_history(conn: Any, *, trading_account_id: int) -> list[Autom
 
 def _active_permission_id(
     permissions: list[AutomaticExitPlanningPermissionV1], *, trading_account_id: int, at: datetime,
-) -> int | str:
-    """Identity of the single active permission row, or the no-row sentinel.
+) -> int:
+    """Identity of the single active permission row; absence fails closed.
 
     Only called after resolve_automatic_exit_planning_enabled() has already
     proven at most one active row exists; this does not re-decide enablement.
@@ -507,12 +493,12 @@ def _active_permission_id(
         and (row.effective_until_ts_utc is None or at < row.effective_until_ts_utc)
     ]
     if not matches:
-        return NO_PERMISSION_ROW_IDENTITY
+        raise AutomaticExitRuntimeRepositoryError("MISSING_AUTOMATIC_EXIT_PERMISSION")
     return matches[0].permission_id
 
 
-def load_venue_constraint_id(conn: Any, *, venue: str, market: str) -> int | str:
-    """Row id for venue_execution_constraint, or the no-row sentinel.
+def load_venue_constraint_id(conn: Any, *, venue: str, market: str) -> int:
+    """Row id for venue_execution_constraint; absence fails closed.
 
     load_constraints_from_db() does not select the row id (it is not part of
     the shared VenueExecutionConstraints contract), so it is fetched here
@@ -523,7 +509,7 @@ def load_venue_constraint_id(conn: Any, *, venue: str, market: str) -> int | str
         cur.execute(sql, (venue, market))
         row = _fetch_one(cur)
     if row is None:
-        return NO_VENUE_CONSTRAINT_ROW_IDENTITY
+        raise AutomaticExitRuntimeRepositoryError("MISSING_VENUE_CONSTRAINT")
     return int(row["venue_execution_constraint_id"])
 
 

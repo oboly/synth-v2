@@ -51,7 +51,7 @@ from src.decision_gate.automatic_exit_gate_v1 import (
     AutomaticExitGateDecisionV1,
     evaluate_automatic_exit_candidate_permission_v1,
 )
-from src.decision_gate.free_base_quantity_v1 import WalletAvailableSnapshot
+from src.decision_gate.free_base_quantity_v1 import WalletAvailableSnapshot, resolve_free_base_quantity_core_v1
 from src.execution_planner.automatic_exit_planner_v1 import (
     AutomaticExitPlanningContextV1,
     AutomaticExitPlanningError,
@@ -303,27 +303,24 @@ def run_automatic_exit_runtime_cycle_v1(
     if _stale(bundle.snapshot_ts_utc, at, evidence.max_account_state_age_seconds):
         return _non_actionable(evaluation_ts_utc=at, reason=REASON_ACCOUNT_STATE_SNAPSHOT_STALE)
 
-    # 2. Wallet/position fact identity sanity (candidate/gate re-validate
-    #    identity again; this only guards the arithmetic below).
+    # 2. Canonical decision_gate free-quantity resolution.
     wallet = evidence.wallet_snapshot
-    if wallet.total_base_quantity is None or wallet.available_base_quantity is None:
-        return _non_actionable(evaluation_ts_utc=at, reason=REASON_INCOMPLETE_WALLET_SNAPSHOT)
-    if (
-        wallet.available_base_quantity < 0
-        or wallet.total_base_quantity < 0
-        or wallet.available_base_quantity > wallet.total_base_quantity
-    ):
-        return _non_actionable(evaluation_ts_utc=at, reason=REASON_CONTRADICTORY_WALLET_SNAPSHOT)
-
-    # 3. Deterministic free-quantity resolution (see module docstring for why
-    #    resolve_free_base_quantity is not reused here).
-    if evidence.reconciliation_pending_reservation_count > 0:
-        return _non_actionable(evaluation_ts_utc=at, reason=REASON_RESERVATION_RECONCILIATION_PENDING)
-    if evidence.approved_not_submitted_reservation_base < 0:
-        return _non_actionable(evaluation_ts_utc=at, reason=REASON_CONTRADICTORY_WALLET_SNAPSHOT)
-    free_quantity_base = wallet.available_base_quantity - evidence.approved_not_submitted_reservation_base
-    if free_quantity_base < 0:
-        return _non_actionable(evaluation_ts_utc=at, reason=REASON_NEGATIVE_FREE_BASE_QUANTITY)
+    free_result = resolve_free_base_quantity_core_v1(
+        wallet_snapshot=wallet,
+        approved_not_submitted_reservation_base=evidence.approved_not_submitted_reservation_base,
+        reconciliation_pending_reservation_count=evidence.reconciliation_pending_reservation_count,
+        expected_trading_account_id=evidence.trading_account_id,
+        expected_venue=evidence.venue,
+        expected_asset_id=evidence.asset_id,
+        evaluation_ts_utc=at,
+    )
+    if free_result.status != "OK":
+        reason = free_result.blocking_reasons[0]
+        if reason == "RECONCILIATION_PENDING":
+            reason = REASON_RESERVATION_RECONCILIATION_PENDING
+        return _non_actionable(evaluation_ts_utc=at, reason=reason)
+    free_quantity_base = free_result.free_base_quantity
+    assert free_quantity_base is not None
 
     # 4. Market price freshness.
     if not _aware(evidence.price_observed_ts_utc):

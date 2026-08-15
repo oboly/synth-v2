@@ -8,8 +8,6 @@ import pytest
 from src.exit_policy.automatic_exit_runtime_contract_v1 import AutomaticExitRuntimeContractError
 from src.exit_policy.automatic_exit_runtime_repository_v1 import (
     AutomaticExitRuntimeRepositoryError,
-    NO_PERMISSION_ROW_IDENTITY,
-    NO_VENUE_CONSTRAINT_ROW_IDENTITY,
     build_runtime_item_v1,
     load_blocking_conflict,
     load_eligible_trading_accounts,
@@ -294,9 +292,8 @@ def test_wrong_quote_venue_constraints_are_not_consumed() -> None:
     insert_venue_constraint(conn, market="BTC-USDC")
     account = load_eligible_trading_accounts(conn, venue="bitvavo")[0]
     bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
-    item = build_runtime_item_v1(conn, account=account, bundle=bundle, position=load_positive_positions(conn, bundle=bundle)[0], now=NOW)
-    assert item.venue_constraints.status == "MISSING"
-    assert item.venue_constraint_id == NO_VENUE_CONSTRAINT_ROW_IDENTITY
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="MISSING_VENUE_CONSTRAINT"):
+        build_runtime_item_v1(conn, account=account, bundle=bundle, position=load_positive_positions(conn, bundle=bundle)[0], now=NOW)
 
 
 def test_conflicting_exit_profiles_fail_closed_via_build_runtime_item() -> None:
@@ -326,9 +323,8 @@ def test_permission_no_row_defaults_disabled() -> None:
     accounts = load_eligible_trading_accounts(conn, venue="bitvavo")
     bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
     positions = load_positive_positions(conn, bundle=bundle)
-    item = build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
-    assert item.automatic_exit_execution_enabled is False
-    assert item.automatic_exit_permission_id == NO_PERMISSION_ROW_IDENTITY
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="MISSING_AUTOMATIC_EXIT_PERMISSION"):
+        build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
 
 
 def test_valid_enabled_permission_resolves() -> None:
@@ -355,9 +351,8 @@ def test_missing_venue_constraints_use_sentinel_and_stay_not_fresh() -> None:
     accounts = load_eligible_trading_accounts(conn, venue="bitvavo")
     bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
     positions = load_positive_positions(conn, bundle=bundle)
-    item = build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
-    assert item.venue_constraints.status == "MISSING"
-    assert item.venue_constraint_id == NO_VENUE_CONSTRAINT_ROW_IDENTITY
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="MISSING_VENUE_CONSTRAINT"):
+        build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
 
 
 def test_stale_venue_constraints_marked_stale() -> None:
