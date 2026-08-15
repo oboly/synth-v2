@@ -23,7 +23,8 @@ from src.decision_gate.account_protection_contract_v1 import (
     SCOPE_ASSET,
     STATE_BLOCKED,
     STATE_PERMITTED,
-    account_protection_lock_idempotency_key_v1,
+    account_protection_lock_event_id_v1,
+    account_protection_lock_lifecycle_id_v1,
     resolve_account_protection_state_v1,
 )
 
@@ -34,6 +35,8 @@ ACCOUNT_ID = 7
 
 def _lock(**changes: object) -> ProtectionLockFactV1:
     values: dict[str, object] = dict(
+        lifecycle_id="",
+        event_id="",
         protection_code=PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK,
         protection_version=LOCK_FACT_CONTRACT_VERSION,
         trading_account_id=ACCOUNT_ID,
@@ -49,6 +52,10 @@ def _lock(**changes: object) -> ProtectionLockFactV1:
         lock_state=LOCK_STATE_ACTIVE,
     )
     values.update(changes)
+    if not values["lifecycle_id"]:
+        values["lifecycle_id"] = f"lifecycle-{values['protection_code']}-{values['scope_type']}-{values['scope_id']}"
+    if not values["event_id"]:
+        values["event_id"] = f"event-{values['lifecycle_id']}-{values['lock_state']}-{values['triggered_ts_utc'].isoformat()}"
     return ProtectionLockFactV1(**values)
 
 
@@ -180,7 +187,7 @@ def test_restart_determinism_latest_triggered_fact_wins():
     original = _lock(triggered_ts_utc=NOW - timedelta(minutes=30), expires_ts_utc=NOW + timedelta(hours=1))
     recovery = _lock(
         triggered_ts_utc=NOW - timedelta(minutes=1), lock_state=LOCK_STATE_RECOVERED,
-        expires_ts_utc=NOW + timedelta(hours=1),
+        expires_ts_utc=NOW + timedelta(hours=1), event_id="event-recovered",
     )
     # Order in the input iterable must not affect the outcome.
     result_a = _resolve((original, recovery))
@@ -189,7 +196,7 @@ def test_restart_determinism_latest_triggered_fact_wins():
     assert result_b.decision_state == STATE_PERMITTED
 
 
-def test_idempotency_key_stable_across_reordering():
+def test_lifecycle_identity_stable_across_reordering():
     evidence = dict(
         protection_code=PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK,
         protection_version=LOCK_FACT_CONTRACT_VERSION,
@@ -200,12 +207,12 @@ def test_idempotency_key_stable_across_reordering():
         observed_to_ts_utc=NOW,
         configuration_version="cfg-1",
     )
-    key_a = account_protection_lock_idempotency_key_v1(evidence)
-    key_b = account_protection_lock_idempotency_key_v1(dict(reversed(list(evidence.items()))))
+    key_a = account_protection_lock_lifecycle_id_v1(evidence)
+    key_b = account_protection_lock_lifecycle_id_v1(dict(reversed(list(evidence.items()))))
     assert key_a == key_b
 
 
-def test_idempotency_key_ignores_triggered_and_expiry_but_changes_with_window():
+def test_lifecycle_identity_ignores_event_fields_but_changes_with_window():
     base = dict(
         protection_code=PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK,
         protection_version=LOCK_FACT_CONTRACT_VERSION,
@@ -217,16 +224,51 @@ def test_idempotency_key_ignores_triggered_and_expiry_but_changes_with_window():
         configuration_version="cfg-1",
     )
     with_extra = dict(base, triggered_ts_utc=NOW, reason_code="X")
-    key_ignoring_extra = account_protection_lock_idempotency_key_v1(with_extra)
-    key_base = account_protection_lock_idempotency_key_v1(base)
+    key_ignoring_extra = account_protection_lock_lifecycle_id_v1(with_extra)
+    key_base = account_protection_lock_lifecycle_id_v1(base)
     assert key_ignoring_extra == key_base
 
     changed_window = dict(base, observed_to_ts_utc=NOW + timedelta(minutes=1))
-    key_changed = account_protection_lock_idempotency_key_v1(changed_window)
+    key_changed = account_protection_lock_lifecycle_id_v1(changed_window)
     assert key_changed != key_base
 
 
-def test_idempotency_key_requires_all_fields():
+def test_lifecycle_identity_requires_all_fields():
     incomplete = dict(protection_code=PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK)
     with pytest.raises(AccountProtectionContractError):
-        account_protection_lock_idempotency_key_v1(incomplete)
+        account_protection_lock_lifecycle_id_v1(incomplete)
+
+
+def test_lifecycle_transitions_are_distinct_append_only_events():
+    lifecycle_id = account_protection_lock_lifecycle_id_v1(dict(
+        protection_code=PROTECTION_MAX_ACCOUNT_DRAWDOWN_BLOCK,
+        protection_version=LOCK_FACT_CONTRACT_VERSION,
+        trading_account_id=ACCOUNT_ID,
+        scope_type=SCOPE_ACCOUNT,
+        scope_id=str(ACCOUNT_ID),
+        observed_from_ts_utc=NOW - timedelta(days=1),
+        observed_to_ts_utc=NOW,
+        configuration_version="cfg-1",
+    ))
+    active_event_id = account_protection_lock_event_id_v1(dict(
+        lifecycle_id=lifecycle_id, lock_state=LOCK_STATE_ACTIVE, triggered_ts_utc=NOW - timedelta(minutes=30),
+    ))
+    recovered_event_id = account_protection_lock_event_id_v1(dict(
+        lifecycle_id=lifecycle_id, lock_state=LOCK_STATE_RECOVERED, triggered_ts_utc=NOW - timedelta(minutes=1),
+    ))
+    assert active_event_id != recovered_event_id
+    active = _lock(
+        lifecycle_id=lifecycle_id, event_id=active_event_id,
+        triggered_ts_utc=NOW - timedelta(minutes=30), expires_ts_utc=NOW + timedelta(hours=1),
+    )
+    recovered = _lock(
+        lifecycle_id=lifecycle_id, event_id=recovered_event_id,
+        triggered_ts_utc=NOW - timedelta(minutes=1), expires_ts_utc=NOW + timedelta(hours=1),
+        lock_state=LOCK_STATE_RECOVERED,
+    )
+    assert _resolve((active, recovered)).decision_state == STATE_PERMITTED
+
+
+def test_duplicate_event_identity_is_rejected():
+    with pytest.raises(AccountProtectionContractError, match="DUPLICATE_PROTECTION_LOCK_EVENT_ID"):
+        _resolve((_lock(), _lock()))

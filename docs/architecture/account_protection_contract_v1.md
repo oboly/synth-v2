@@ -62,7 +62,8 @@ schema/contract-only module:
 - typed, versioned dataclasses for the lock fact and the evaluation outcome;
 - a pure resolver, `resolve_account_protection_state_v1`, that composes
   caller-assembled `ProtectionLockFactV1` rows into one permission signal;
-- an idempotency-key helper for deterministic restart/audit semantics.
+- lifecycle and immutable event-identity helpers for deterministic
+  restart/audit semantics.
 
 It has no database, broker, credential, scheduler, execution_planner, or
 executor import, and it does not compute drawdown, daily realized loss, or a
@@ -102,6 +103,10 @@ needs a protection code to participate in precedence like any other lock.
 `ProtectionLockFactV1` is the immutable, append-only fact:
 
 ```text
+lifecycle_id               stable lifecycle/correlation identity; shared by
+                           every event in one protection lifecycle
+event_id                   immutable event/row identity; unique for every
+                           append-only lifecycle transition
 protection_code            one of the six codes above
 protection_version         "1" (LOCK_FACT_CONTRACT_VERSION)
 trading_account_id         int, > 0
@@ -209,24 +214,27 @@ caller's `sleeve_code` matches.
 
 ## Deterministic restart semantics
 
-Lock facts are append-only. Recovery or expiry before a lock's natural
-`expires_ts_utc` is recorded by appending a *new* fact that shares the same
-idempotency identity (protection code, scope, observation window,
-configuration version — see `account_protection_lock_idempotency_key_v1`)
-with a later `triggered_ts_utc` and a non-`ACTIVE` `lock_state`
-(`RECOVERED` or `MANUALLY_CLEARED`). The resolver always collapses the full
-fact history to the single latest-triggered fact per idempotency identity
-before evaluating; a process restart that reloads the same persisted fact
-history reconstructs identical state regardless of restart timing or the
-order facts are read in. Nothing is held in memory between evaluations — the
-resolver is pure and stateless.
+Lock history is strictly append-only. `ACTIVE`, `RECOVERED`, `EXPIRED`, and
+`MANUALLY_CLEARED` are separate immutable facts/events. A recovery, expiry,
+or clear must append a new fact with the stable `lifecycle_id` of the prior
+active lifecycle and a distinct `event_id`; it must never update, upsert, or
+otherwise mutate the historical `ACTIVE` fact.
 
-`account_protection_lock_idempotency_key_v1` hashes only the immutable
-identity fields (protection code, version, account, scope, observation
-window, configuration version) — deliberately excluding `triggered_ts_utc`,
-`expires_ts_utc`, `reason_code`, and `evidence_refs` — so a future P2 writer
-can re-derive the same key for the same underlying observation window and
-upsert rather than duplicate a row after a restart or re-run.
+`account_protection_lock_lifecycle_id_v1` hashes stable correlation fields
+(protection code/version, account, scope, observation window, configuration
+version). It deliberately is not a row key. For each transition,
+`account_protection_lock_event_id_v1` derives a separate immutable event key
+from that lifecycle identity, `lock_state`, and `triggered_ts_utc`. A future
+P2 persistence writer must insert each event exactly once and must reject a
+duplicate event identity rather than treating it as permission to mutate a
+prior event.
+
+The resolver deterministically collapses complete immutable event history to
+the latest authoritative event per `lifecycle_id` (timestamp, then event id
+as deterministic tie-breaker) before evaluating. A process restart that
+reloads the same history reconstructs identical state regardless of input
+order. Nothing is held in memory between evaluations — the resolver is pure
+and stateless.
 
 ## Composition with existing `decision_gate` permission evaluation
 

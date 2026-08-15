@@ -14,8 +14,8 @@ signal. It does not compute drawdown, realized loss, or streaks from raw
 fills/equity data; deriving those lock facts from canonical account truth is
 the separately gated P2 runtime (Issue #318). This mirrors the Phase 4A shape
 of ``src/exit_policy/automatic_exit_runtime_contract_v1.py``: pure
-resolution over caller-supplied facts, plus an idempotency-key helper for
-deterministic restart semantics.
+resolution over caller-supplied facts, plus separate lifecycle and immutable
+event identity helpers for deterministic restart semantics.
 """
 from __future__ import annotations
 
@@ -147,14 +147,15 @@ class ProtectionLockFactV1:
     ``docs/todo/decision_gate_account_protections_v1.md``. This is a pure
     value object: nothing here persists, reads, or writes a database row.
 
-    Recovery/expiry is represented by appending a *new* fact sharing the same
-    idempotency identity (see :func:`account_protection_lock_idempotency_key_v1`)
-    with a later ``triggered_ts_utc`` and a non-``ACTIVE`` ``lock_state``; the
-    resolver below always treats the latest-triggered fact per idempotency
-    identity as authoritative, so state is fully reconstructible from the
-    append-only fact history on every restart.
+    ``lifecycle_id`` is the stable correlation identity for one protection
+    lifecycle. ``event_id`` identifies this one immutable event/row. Recovery,
+    expiry, and manual clear append a new event with the same ``lifecycle_id``
+    and a distinct ``event_id``; they never update the prior ``ACTIVE`` event.
+    The resolver collapses the event history by ``lifecycle_id``.
     """
 
+    lifecycle_id: str
+    event_id: str
     protection_code: str
     protection_version: str
     trading_account_id: int
@@ -205,7 +206,9 @@ def _is_nonempty_string(value: object) -> bool:
 
 def _validate_fact_shape(fact: ProtectionLockFactV1) -> None:
     if (
-        fact.protection_code not in SUPPORTED_PROTECTION_CODES
+        not _is_nonempty_string(fact.lifecycle_id)
+        or not _is_nonempty_string(fact.event_id)
+        or fact.protection_code not in SUPPORTED_PROTECTION_CODES
         or fact.protection_version != LOCK_FACT_CONTRACT_VERSION
         or fact.trading_account_id <= 0
         or fact.scope_type not in SUPPORTED_SCOPE_TYPES
@@ -249,7 +252,7 @@ def _in_force(fact: ProtectionLockFactV1, *, at: datetime) -> bool:
 def _authoritative_facts_by_identity(
     facts: Iterable[ProtectionLockFactV1],
 ) -> tuple[ProtectionLockFactV1, ...]:
-    """Collapse append-only history to the latest-triggered fact per identity.
+    """Collapse append-only history to the latest event per lifecycle.
 
     This is the deterministic-restart rule: a fresh reader that loads the
     complete fact history and applies this reduction reconstructs identical
@@ -257,20 +260,12 @@ def _authoritative_facts_by_identity(
     """
     latest_by_key: dict[str, ProtectionLockFactV1] = {}
     for fact in facts:
-        key = _identity_key(fact)
+        key = fact.lifecycle_id
         current = latest_by_key.get(key)
-        if current is None or fact.triggered_ts_utc > current.triggered_ts_utc:
+        if current is None or (fact.triggered_ts_utc, fact.event_id) > (current.triggered_ts_utc, current.event_id):
             latest_by_key[key] = fact
     # Deterministic ordering for reproducible test/audit output.
     return tuple(sorted(latest_by_key.values(), key=lambda f: (f.protection_code, f.scope_type, f.scope_id)))
-
-
-def _identity_key(fact: ProtectionLockFactV1) -> str:
-    return "|".join((
-        fact.protection_code, fact.scope_type, fact.scope_id,
-        fact.observed_from_ts_utc.isoformat(), fact.observed_to_ts_utc.isoformat(),
-        fact.configuration_version,
-    ))
 
 
 def _stale(observed: datetime, at: datetime, max_age_seconds: int) -> bool:
@@ -320,10 +315,14 @@ def resolve_account_protection_state_v1(
         raise AccountProtectionContractError("INVALID_EVALUATION_INPUT")
 
     materialized = tuple(facts)
+    event_ids: set[str] = set()
     for fact in materialized:
         if fact.trading_account_id != trading_account_id:
             raise AccountProtectionContractError("CROSS_ACCOUNT_EVIDENCE_LEAKAGE")
         _validate_fact_shape(fact)
+        if fact.event_id in event_ids:
+            raise AccountProtectionContractError("DUPLICATE_PROTECTION_LOCK_EVENT_ID")
+        event_ids.add(fact.event_id)
 
     if not account_state_fresh:
         return _blocked(
@@ -385,17 +384,14 @@ def _blocked(*, trading_account_id: int, reason: str, at: datetime) -> AccountPr
 
 
 # ---------------------------------------------------------------------------
-# Idempotency key (restart/audit determinism)
+# Lifecycle and event identities (restart/audit determinism)
 # ---------------------------------------------------------------------------
 
-def account_protection_lock_idempotency_key_v1(evidence: dict[str, Any]) -> str:
-    """SHA-256 over canonical JSON of immutable source identifiers only.
+def account_protection_lock_lifecycle_id_v1(evidence: dict[str, Any]) -> str:
+    """Return the stable correlation identity for one protection lifecycle.
 
-    Deliberately excludes ``triggered_ts_utc``, ``expires_ts_utc``,
-    ``reason_code``, and ``evidence_refs`` so re-evaluating the same
-    underlying observation window after a restart reproduces the same key
-    (upsert semantics), while a genuinely new observation window or
-    configuration version produces a new key.
+    This is not a row key and does not authorize upsert. Every immutable
+    lifecycle transition needs a separate event id.
     """
     required = {
         "protection_code", "protection_version", "trading_account_id",
@@ -406,4 +402,19 @@ def account_protection_lock_idempotency_key_v1(evidence: dict[str, Any]) -> str:
     if set(logical_evidence) != required or any(logical_evidence[key] in (None, "") for key in required):
         raise AccountProtectionContractError("INCOMPLETE_IDEMPOTENCY_EVIDENCE")
     serialized = json.dumps(logical_evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def account_protection_lock_event_id_v1(event: dict[str, Any]) -> str:
+    """Return the immutable row/event identity for one lifecycle transition.
+
+    It includes the stable lifecycle identity plus the event state and
+    authoritative timestamp. A future persistence writer must insert this
+    event exactly once; it must never update a previous ``ACTIVE`` event.
+    """
+    required = {"lifecycle_id", "lock_state", "triggered_ts_utc"}
+    logical_event = {key: value for key, value in event.items() if key in required}
+    if set(logical_event) != required or any(logical_event[key] in (None, "") for key in required):
+        raise AccountProtectionContractError("INCOMPLETE_EVENT_IDENTITY_EVIDENCE")
+    serialized = json.dumps(logical_event, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
