@@ -1,0 +1,25 @@
+[Unit]
+Description=Synth automatic-exit policy runtime (capability AUTOMATIC_EXIT_POLICY_RUNTIME)
+Documentation=https://github.com/oboly/synth-v2/blob/main/docs/architecture/automatic_exit_policy_v1.md
+ConditionHost=gurkdb
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=gurk
+WorkingDirectory=/home/gurk/projects/synth-v2
+Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
+Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
+ExecStart=/home/gurk/projects/synth-v2/.venv/bin/python -m src.exit_policy.run_automatic_exit_policy_once_v1 --venue bitvavo --expect-owner-host gurkdb
+Restart=no
+Nice=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=false
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=synth-automatic-exit-policy-runtime
+
+[Install]
+WantedBy=multi-user.target
