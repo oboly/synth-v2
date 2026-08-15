@@ -16,14 +16,14 @@
     },
     {
       "capability_id": "AUTOMATIC_EXIT_POLICY_RUNTIME",
-      "owner_host": "UNASSIGNED",
-      "runtime_entrypoint": "not implemented in Phase 4B prerequisite",
-      "lock_scope": "not assigned",
-      "private_read_authority": "none; a future runtime consumes persisted COMPLETE account-state evidence only",
+      "owner_host": "gurkdb",
+      "runtime_entrypoint": "python -m src.exit_policy.run_automatic_exit_policy_once_v1",
+      "lock_scope": "host-local flock at ~/.local/state/synth/runtime/locks/automatic-exit-policy-runtime.lock",
+      "private_read_authority": "none; consumes only persisted COMPLETE account-state evidence and canonical market/profile/permission/venue facts",
       "broker_writes": 0,
       "order_submission": 0,
       "live_orders": 0,
-      "activation_status": "UNASSIGNED"
+      "activation_status": "PLANNED"
     }
   ]
 }

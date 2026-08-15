@@ -419,7 +419,7 @@ def test_alignment_contract_has_no_broker_or_executor_dependency() -> None:
         assert forbidden not in source
 
 
-def test_account_snapshot_owner_is_odroid_and_policy_runtime_remains_unassigned() -> None:
+def test_account_snapshot_owner_is_odroid_and_policy_runtime_owned_by_gurkdb() -> None:
     registry = json.loads(
         Path("deploy/ownership/account_runtime_capability_ownership_v1.json").read_text(
             encoding="utf-8"
@@ -427,5 +427,12 @@ def test_account_snapshot_owner_is_odroid_and_policy_runtime_remains_unassigned(
     )
     capabilities = {item["capability_id"]: item for item in registry["capabilities"]}
     assert capabilities["ACCOUNT_STATE_SNAPSHOT_REFRESH"]["owner_host"] == "odroid"
-    assert capabilities["AUTOMATIC_EXIT_POLICY_RUNTIME"]["owner_host"] == "UNASSIGNED"
+    # Phase 4B (issue #392) assigns AUTOMATIC_EXIT_POLICY_RUNTIME to gurkdb: DB-local
+    # policy orchestration, deliberately separate from Odroid's private snapshot
+    # acquisition authority. It still has no private_read_authority or broker/order/
+    # live authority -- only DB-local reads of persisted evidence.
+    assert capabilities["AUTOMATIC_EXIT_POLICY_RUNTIME"]["owner_host"] == "gurkdb"
+    assert capabilities["AUTOMATIC_EXIT_POLICY_RUNTIME"]["broker_writes"] == 0
+    assert capabilities["AUTOMATIC_EXIT_POLICY_RUNTIME"]["order_submission"] == 0
+    assert capabilities["AUTOMATIC_EXIT_POLICY_RUNTIME"]["live_orders"] == 0
     assert capabilities["ACCOUNT_STATE_SNAPSHOT_REFRESH"]["broker_writes"] == 0
