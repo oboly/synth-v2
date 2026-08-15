@@ -84,8 +84,8 @@ class AuditWriteResultV1:
 # Fields that must match for a duplicate idempotency_key to be considered the
 # same recorded outcome. Deliberately excludes evaluation_ts_utc/
 # planning_ts_utc (wall-clock capture time legitimately differs between
-# reruns of identical persisted evidence) and runtime_version alone (already
-# implied by source_evidence_json; what matters is whether the *decision*
+# reruns of identical persisted evidence) and runtime_version (audit
+# provenance, not logical source evidence; what matters is whether the *decision*
 # changed). A mismatch here means the same evidence identity now produces a
 # different decision -- almost always a runtime logic change -- which must
 # fail closed rather than silently coexist with the earlier row.

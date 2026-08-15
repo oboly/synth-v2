@@ -25,6 +25,33 @@ CREATE TABLE trading_account (
     created_ts_utc TEXT NOT NULL
 );
 
+CREATE TABLE asset (
+    asset_id INTEGER PRIMARY KEY,
+    symbol TEXT NOT NULL
+);
+
+CREATE TABLE venue_market (
+    venue_market_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    venue TEXT NOT NULL,
+    market TEXT NOT NULL,
+    base_asset_id INTEGER NOT NULL,
+    quote_currency TEXT NOT NULL,
+    is_tradeable INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(venue, market)
+);
+
+CREATE TABLE account_asset (
+    account_asset_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trading_account_id INTEGER NOT NULL,
+    venue_market_id INTEGER NOT NULL,
+    is_visible INTEGER NOT NULL DEFAULT 1,
+    is_candidate_enabled INTEGER NOT NULL DEFAULT 0,
+    is_order_proposal_enabled INTEGER NOT NULL DEFAULT 0,
+    is_portfolio_member INTEGER NOT NULL DEFAULT 0,
+    is_hidden INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(trading_account_id, venue_market_id)
+);
+
 CREATE TABLE account_open_order_snapshot_run_v1 (
     account_open_order_snapshot_run_id INTEGER PRIMARY KEY AUTOINCREMENT,
     trading_account_id INTEGER NOT NULL,
@@ -284,6 +311,30 @@ def insert_position(
         return cur.lastrowid
 
 
+def insert_venue_market(
+    conn: FakeConnection, *, venue: str = "bitvavo", market: str = "BTC-EUR",
+    asset_id: int = 101, symbol: str = "BTC", quote_currency: str = "EUR", is_tradeable: bool = True,
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute("INSERT OR IGNORE INTO asset (asset_id, symbol) VALUES (%s,%s)", (asset_id, symbol))
+        cur.execute(
+            "INSERT INTO venue_market (venue, market, base_asset_id, quote_currency, is_tradeable) VALUES (%s,%s,%s,%s,%s)",
+            (venue, market, asset_id, quote_currency, is_tradeable),
+        )
+        return cur.lastrowid
+
+
+def bind_account_market(
+    conn: FakeConnection, *, account_id: int = 7, venue_market_id: int,
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO account_asset (trading_account_id, venue_market_id) VALUES (%s,%s)",
+            (account_id, venue_market_id),
+        )
+        return cur.lastrowid
+
+
 def insert_balance(
     conn: FakeConnection, *, account_id: int = 7, venue: str = "bitvavo", snapshot_ts_utc: datetime = TS,
     source_name: str = "account_wallet_refresh_v1", currency_code: str = "BTC", available_amount: Decimal = Decimal("1.5"),
@@ -366,9 +417,11 @@ def seed_happy_path(conn: FakeConnection, *, account_id: int = 7, venue: str = "
     insert_trading_account(conn, account_id=account_id, venue=venue)
     bundle_ids = insert_complete_bundle(conn, account_id=account_id, venue=venue)
     position_id = insert_position(conn, account_id=account_id, venue=venue)
+    venue_market_id = insert_venue_market(conn, venue=venue)
+    bind_account_market(conn, account_id=account_id, venue_market_id=venue_market_id)
     insert_balance(conn, account_id=account_id, venue=venue)
     insert_market_price(conn, venue=venue)
     insert_exit_profile(conn, venue=venue)
     insert_permission(conn, account_id=account_id)
     insert_venue_constraint(conn, venue=venue)
-    return {"account_id": account_id, "venue": venue, "position_id": position_id, **bundle_ids}
+    return {"account_id": account_id, "venue": venue, "position_id": position_id, "venue_market_id": venue_market_id, **bundle_ids}

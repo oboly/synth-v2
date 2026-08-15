@@ -98,3 +98,11 @@ def test_orchestrator_does_not_compare_target_or_invalidation_itself() -> None:
 def test_repository_does_not_choose_reduce_or_exit_action() -> None:
     text = (REPO_ROOT / "src/exit_policy/automatic_exit_runtime_repository_v1.py").read_text()
     assert '"REDUCE"' not in text and '"EXIT"' not in text
+
+
+def test_repository_uses_no_hardcoded_quote_or_selection_dependency() -> None:
+    text = (REPO_ROOT / "src/exit_policy/automatic_exit_runtime_repository_v1.py").read_text()
+    assert "-EUR" not in text
+    assert "selection_engine" not in text
+    for strategy_flag in ("is_candidate_enabled", "is_portfolio_member", "is_order_proposal_enabled"):
+        assert strategy_flag not in text

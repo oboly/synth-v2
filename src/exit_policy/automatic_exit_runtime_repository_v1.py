@@ -135,6 +135,17 @@ class MarketPriceEvidenceV1:
 
 
 @dataclass(frozen=True)
+class PositionMarketIdentityV1:
+    """Canonical account-bound executable market for one held position."""
+
+    venue_market_id: int
+    venue: str
+    market: str
+    base_asset_id: int
+    asset_symbol: str
+
+
+@dataclass(frozen=True)
 class RuntimeItemV1:
     """One independent evaluable unit: one positive held position."""
 
@@ -335,15 +346,62 @@ def load_blocking_conflict(conn: Any, *, bundle: AccountStateBundleV1, market: s
     return int(market_row["rows_total"]) > 0
 
 
+def resolve_position_market_v1(
+    conn: Any,
+    *,
+    trading_account_id: int,
+    venue: str,
+    asset_id: int,
+    symbol: str,
+) -> PositionMarketIdentityV1:
+    """Resolve one held position through its account-bound ``venue_market`` identity.
+
+    ``account_asset`` is read only as an account-aware market-identity binding.
+    Its strategy and presentation flags never participate in this query.
+    """
+    sql = """
+    SELECT vm.venue_market_id, vm.venue, vm.market, vm.base_asset_id, a.symbol AS asset_symbol
+    FROM account_asset aa
+    JOIN venue_market vm ON vm.venue_market_id = aa.venue_market_id
+    JOIN asset a ON a.asset_id = vm.base_asset_id
+    WHERE aa.trading_account_id = %s
+      AND vm.venue = %s
+      AND vm.base_asset_id = %s
+      AND vm.is_tradeable = %s
+    ORDER BY vm.venue_market_id
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (trading_account_id, venue, asset_id, 1))
+        rows = _fetch_all(cur)
+    _reject(len(rows) == 0, "POSITION_MARKET_IDENTITY_MISSING")
+    _reject(len(rows) > 1, "POSITION_MARKET_IDENTITY_AMBIGUOUS")
+    row = rows[0]
+    canonical_venue = str(row["venue"] or "")
+    market = str(row["market"] or "").strip().upper()
+    canonical_symbol = str(row["asset_symbol"] or "").strip().upper()
+    expected_symbol = str(symbol or "").strip().upper()
+    _reject(not market, "POSITION_MARKET_IDENTITY_INVALID")
+    _reject(canonical_venue != venue, "POSITION_MARKET_VENUE_MISMATCH")
+    _reject(int(row["base_asset_id"]) != asset_id, "POSITION_MARKET_ASSET_MISMATCH")
+    _reject(not canonical_symbol or canonical_symbol != expected_symbol, "POSITION_MARKET_SYMBOL_MISMATCH")
+    return PositionMarketIdentityV1(
+        venue_market_id=int(row["venue_market_id"]),
+        venue=canonical_venue,
+        market=market,
+        base_asset_id=int(row["base_asset_id"]),
+        asset_symbol=canonical_symbol,
+    )
+
+
 def load_latest_market_price(
     conn: Any,
     *,
     venue: str,
-    symbol: str,
+    market: str,
     now: datetime,
     max_age_seconds: int = DEFAULT_MAX_MARKET_PRICE_AGE_SECONDS,
 ) -> MarketPriceEvidenceV1:
-    """Freshest market_price_snapshot row for one symbol, including its row id.
+    """Freshest market_price_snapshot row for one canonical market, including its row id.
 
     Not routed through market_price_snapshot_v1.fetch_latest_prices_by_symbol:
     that helper does not select market_price_snapshot_id, which idempotency
@@ -353,15 +411,16 @@ def load_latest_market_price(
     sql = """
     SELECT market_price_snapshot_id, venue, symbol, market, price, observed_ts_utc
     FROM market_price_snapshot
-    WHERE venue = %s AND symbol = %s
+    WHERE venue = %s AND market = %s
     ORDER BY observed_ts_utc DESC, market_price_snapshot_id DESC
     LIMIT 1
     """
     with conn.cursor() as cur:
-        cur.execute(sql, (venue, symbol))
+        cur.execute(sql, (venue, market))
         row = _fetch_one(cur)
     _reject(row is None, "MARKET_PRICE_SNAPSHOT_MISSING")
     assert row is not None
+    _reject(str(row["venue"]) != venue or str(row["market"]).upper() != market.upper(), "MARKET_PRICE_IDENTITY_MISMATCH")
     observed_ts_utc = _ensure_aware(row["observed_ts_utc"])
     _reject(_stale(observed_ts_utc, now, max_age_seconds), "MARKET_PRICE_SNAPSHOT_STALE")
     price = Decimal(str(row["price"]))
@@ -487,10 +546,17 @@ def build_runtime_item_v1(
     identical idempotency key regardless of the eventual outcome.
     """
     balance = load_balance_evidence(conn, bundle=bundle, currency_code=position.symbol)
-    market = f"{position.symbol}-EUR"
+    market_identity = resolve_position_market_v1(
+        conn,
+        trading_account_id=account.trading_account_id,
+        venue=bundle.venue,
+        asset_id=position.asset_id,
+        symbol=position.symbol,
+    )
+    market = market_identity.market
     blocking_conflict = load_blocking_conflict(conn, bundle=bundle, market=market)
     price_evidence = load_latest_market_price(
-        conn, venue=bundle.venue, symbol=position.symbol, now=now, max_age_seconds=max_market_price_age_seconds,
+        conn, venue=bundle.venue, market=market, now=now, max_age_seconds=max_market_price_age_seconds,
     )
     profiles = load_exit_profiles(conn, venue=bundle.venue, asset_id=position.asset_id, market=market)
     profile_kwargs: dict[str, Any] = {}

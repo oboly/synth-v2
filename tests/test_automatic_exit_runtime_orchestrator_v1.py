@@ -6,6 +6,8 @@ from decimal import Decimal
 
 import pytest
 
+import src.exit_policy.automatic_exit_runtime_orchestrator_v1 as orchestrator_module
+from src.exit_policy.automatic_exit_runtime_audit_writer_v1 import IdempotencyPayloadConflictError
 from src.exit_policy.automatic_exit_runtime_orchestrator_v1 import evaluate_automatic_exit_runtime_item_v1
 from src.exit_policy.automatic_exit_runtime_repository_v1 import (
     build_runtime_item_v1,
@@ -164,6 +166,35 @@ def test_replay_source_evidence_is_complete_in_audit_row() -> None:
         "position_snapshot_id", "balance_snapshot_id", "open_order_snapshot_run_id",
         "market_price_snapshot_id", "automatic_exit_permission_id", "exit_profile_id",
         "exit_profile_version", "exit_profile_observed_ts_utc", "venue_constraint_id",
-        "venue_metadata_synced_ts_utc", "runtime_version",
+        "venue_metadata_synced_ts_utc",
     ):
         assert key in evidence and evidence[key] not in (None, "")
+    assert "runtime_version" not in evidence
+    assert row["runtime_version"] == orchestrator_module.RUNTIME_VERSION
+
+
+def test_runtime_version_change_keeps_same_evidence_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    item = _build_item(conn)
+    monkeypatch.setattr(orchestrator_module, "RUNTIME_VERSION", "runtime-v1")
+    first = evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=NOW)
+    monkeypatch.setattr(orchestrator_module, "RUNTIME_VERSION", "runtime-v2")
+    second = evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=NOW + timedelta(minutes=1))
+    assert first.audit_outcome == "inserted"
+    assert second.audit_outcome == "idempotent_existing"
+    row = _audit_rows(conn)[0]
+    assert row["runtime_version"] == "runtime-v1"
+
+
+def test_same_evidence_with_changed_decision_fails_closed() -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    item = _build_item(conn)
+    evaluate_automatic_exit_runtime_item_v1(conn, item=item, evaluation_ts_utc=NOW)
+    with pytest.raises(IdempotencyPayloadConflictError):
+        evaluate_automatic_exit_runtime_item_v1(
+            conn,
+            item=replace(item, current_price=Decimal("65000")),
+            evaluation_ts_utc=NOW + timedelta(minutes=1),
+        )

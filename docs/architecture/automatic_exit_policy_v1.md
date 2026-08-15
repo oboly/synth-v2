@@ -212,18 +212,29 @@ with a different recorded candidate/gate/planner decision is treated as
 coexisting -- this is the signal that a runtime logic change produced a
 different outcome for the same immutable evidence.
 
+**Market identity**: the runtime resolves every held position through exactly
+one account-bound `account_asset -> venue_market` row scoped to the runtime
+account, venue, and base asset. This binding supplies only the canonical market
+identity; it never reads account-asset strategy flags and does not grant
+permission. Zero or multiple usable bindings fail closed. The exact canonical
+market is used for price, profile, constraint, conflict, candidate, gate,
+planner, idempotency, and audit inputs; the runtime never constructs a market
+from a symbol or assumes an EUR quote.
+
 **Append-only staging**: `automatic_exit_evaluation_audit_v1` rows are only
-ever inserted, never updated. `source_evidence_json` and `immutable_plan_json`
+ever inserted, never updated. `source_evidence_json` contains immutable
+source/replay evidence only; `runtime_version` remains audit-row provenance.
+`source_evidence_json` and `immutable_plan_json`
 use one deterministic canonical serializer (`sort_keys=True`, compact
 separators, ASCII-safe, `Decimal` as plain string, UTC datetimes as
 `...Z`-suffixed ISO strings, no floats).
 
 **Locking**: a host-local nonblocking `fcntl.flock` at
-`~/.local/state/synth/runtime/locks/automatic-exit-policy-runtime.lock`
-(outside any `PrivateTmp`-namespaced root, matching the existing
-`run_account_profit_plan_snapshot_render_owner_v1` convention). A second
-concurrent invocation observes the held lock and exits cleanly
-(`result=skipped_locked`, exit 0) without evaluating anything.
+`~/.local/state/synth/runtime/locks/automatic-exit-policy-runtime.lock`.
+`/tmp` and `/var/tmp` are forbidden regardless of the unit's `PrivateTmp`
+setting because they are not canonical runtime lock locations. A second
+concurrent invocation observes the held lock, performs no evaluation, and
+fails the cycle (`result=lock_unavailable`, nonzero exit).
 
 **Item vs cycle failures**: one cycle enumerates every enabled, venue-matching
 `trading_account` and, per account, its latest fresh `COMPLETE` bundle and

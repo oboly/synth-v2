@@ -13,6 +13,7 @@ Environment=SYNTH_LIVE_EXECUTION_PERMISSION=NOT_GRANTED
 Environment=SYNTH_BROKER_WRITE_PERMISSION=NOT_GRANTED
 ExecStart=/home/gurk/projects/synth-v2/.venv/bin/python -m src.exit_policy.run_automatic_exit_policy_once_v1 --venue bitvavo --expect-owner-host gurkdb
 Restart=no
+TimeoutStartSec=10min
 Nice=5
 UMask=0077
 NoNewPrivileges=true

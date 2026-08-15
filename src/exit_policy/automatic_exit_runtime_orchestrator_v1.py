@@ -90,7 +90,10 @@ def evaluate_automatic_exit_runtime_item_v1(
     """Evaluate one held position and append exactly one audit row."""
     evidence = _source_evidence(item)
     idempotency_key = automatic_exit_idempotency_key_v1(evidence)
-    source_evidence_json = {**evidence, "runtime_version": RUNTIME_VERSION}
+    # Logical evidence is immutable source/replay identity only. Runtime
+    # provenance belongs in the audit column, so runtime upgrades do not make
+    # an otherwise identical decision look like an idempotency conflict.
+    source_evidence_json = evidence
 
     audit_identity = dict(
         idempotency_key=idempotency_key,

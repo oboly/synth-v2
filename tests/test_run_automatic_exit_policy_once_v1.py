@@ -22,12 +22,14 @@ from tests.automatic_exit_runtime_fixtures_v1 import (
     FakeConnection,
     TS,
     insert_balance,
+    bind_account_market,
     insert_complete_bundle,
     insert_exit_profile,
     insert_market_price,
     insert_permission,
     insert_position,
     insert_trading_account,
+    insert_venue_market,
     insert_venue_constraint,
     seed_happy_path,
 )
@@ -42,6 +44,7 @@ def test_multi_account_cycle_isolation() -> None:
     insert_trading_account(conn, account_id=9)
     insert_complete_bundle(conn, account_id=9)
     insert_position(conn, account_id=9, asset_id=102, symbol="ETH")
+    bind_account_market(conn, account_id=9, venue_market_id=insert_venue_market(conn, asset_id=102, symbol="ETH", market="ETH-EUR"))
     insert_balance(conn, account_id=9, currency_code="ETH")
     insert_market_price(conn, symbol="ETH", market="ETH-EUR")
     insert_exit_profile(conn, profile_id="eth-profile", asset_id=102, market="ETH-EUR")
@@ -132,7 +135,7 @@ def test_verify_runtime_ownership_fails_closed_on_missing_registry(tmp_path: Pat
 
 
 def test_lock_path_under_tmp_is_rejected() -> None:
-    with pytest.raises(ValueError, match="PrivateTmp"):
+    with pytest.raises(ValueError, match="canonical runtime lock"):
         validate_lock_path(Path("/tmp/automatic-exit-policy-runtime.lock"))
 
 
@@ -159,9 +162,30 @@ def test_concurrent_lock_prevents_second_cycle(tmp_path: Path, monkeypatch: pyte
         fcntl.flock(held_handle.fileno(), fcntl.LOCK_UN)
         held_handle.close()
 
-    assert exit_code == 0
+    assert exit_code != 0
     captured = capsys.readouterr()
-    assert "result=skipped_locked" in captured.out
+    assert "result=lock_unavailable" in captured.err
     with conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) AS c FROM automatic_exit_evaluation_audit_v1")
         assert cur.fetchone()["c"] == 0
+
+
+def test_lock_is_released_after_normal_cycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    connections = [FakeConnection(), FakeConnection()]
+    for conn in connections:
+        seed_happy_path(conn)
+    monkeypatch.setattr(runner_module, "get_db_connection", lambda: connections.pop(0))
+    args = parse_args(["--lock-file", str(tmp_path / "runtime.lock"), "--skip-ownership-check"])
+    assert run(args) == 0
+    assert run(args) == 0
+
+
+def test_runtime_service_is_bounded_oneshot_without_executor_or_credentials() -> None:
+    unit = (Path(__file__).resolve().parents[1] / "deploy/systemd/synth-automatic-exit-policy-runtime.service").read_text()
+    assert "Type=oneshot" in unit
+    assert "Restart=no" in unit
+    assert "TimeoutStartSec=10min" in unit
+    assert "ConditionHost=gurkdb" in unit
+    assert unit.count("ExecStart=") == 1
+    assert "executor" not in unit.lower()
+    assert "CREDENTIAL" not in unit

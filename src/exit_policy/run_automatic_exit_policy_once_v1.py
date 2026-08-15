@@ -70,9 +70,8 @@ def validate_lock_path(lock_path: Path) -> None:
         except ValueError:
             continue
         raise ValueError(
-            f"lock_path={lock_path} resolves under {forbidden}, which is namespaced by "
-            "PrivateTmp=true on the canonical service and is not shared with manual "
-            "same-host invocations; pass --lock-file outside /tmp and /var/tmp"
+            f"lock_path={lock_path} resolves under {forbidden}; /tmp and /var/tmp are not "
+            "canonical runtime lock locations. Pass --lock-file under the shared home-state lock root"
         )
 
 
@@ -214,8 +213,8 @@ def run(args: argparse.Namespace) -> int:
         try:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            print(f"FINISHED runner={RUNNER_NAME} result=skipped_locked", flush=True)
-            return 0
+            print(f"FAILED runner={RUNNER_NAME} result=lock_unavailable", file=sys.stderr, flush=True)
+            return 1
         try:
             try:
                 conn = get_db_connection()

@@ -16,11 +16,13 @@ from src.exit_policy.automatic_exit_runtime_repository_v1 import (
     load_latest_complete_account_state_bundle,
     load_latest_market_price,
     load_positive_positions,
+    resolve_position_market_v1,
 )
 from tests.automatic_exit_runtime_fixtures_v1 import (
     FakeConnection,
     TS,
     insert_balance,
+    bind_account_market,
     insert_complete_bundle,
     insert_exit_profile,
     insert_market_price,
@@ -28,6 +30,7 @@ from tests.automatic_exit_runtime_fixtures_v1 import (
     insert_permission,
     insert_position,
     insert_trading_account,
+    insert_venue_market,
     insert_venue_constraint,
     seed_happy_path,
 )
@@ -97,6 +100,47 @@ def test_two_accounts_same_asset_isolated() -> None:
     assert positions_b[0].quantity_base == Decimal("2")
 
 
+def test_position_market_uses_single_exact_account_binding() -> None:
+    conn = FakeConnection()
+    seeded = seed_happy_path(conn)
+    identity = resolve_position_market_v1(
+        conn, trading_account_id=7, venue="bitvavo", asset_id=101, symbol="BTC",
+    )
+    assert identity.venue_market_id == seeded["venue_market_id"]
+    assert identity.market == "BTC-EUR"
+
+
+def test_position_market_does_not_guess_quote_when_other_quote_exists() -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    insert_venue_market(conn, market="BTC-USDC", quote_currency="USDC")
+    identity = resolve_position_market_v1(
+        conn, trading_account_id=7, venue="bitvavo", asset_id=101, symbol="BTC",
+    )
+    assert identity.market == "BTC-EUR"
+
+
+def test_position_market_multiple_account_bindings_fail_closed() -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    bind_account_market(conn, venue_market_id=insert_venue_market(conn, market="BTC-USDC", quote_currency="USDC"))
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="POSITION_MARKET_IDENTITY_AMBIGUOUS"):
+        resolve_position_market_v1(conn, trading_account_id=7, venue="bitvavo", asset_id=101, symbol="BTC")
+
+
+def test_position_market_missing_or_wrong_venue_or_asset_fails_closed() -> None:
+    conn = FakeConnection()
+    insert_trading_account(conn)
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="POSITION_MARKET_IDENTITY_MISSING"):
+        resolve_position_market_v1(conn, trading_account_id=7, venue="bitvavo", asset_id=101, symbol="BTC")
+    bind_account_market(conn, venue_market_id=insert_venue_market(conn, venue="other", market="BTC-EUR"))
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="POSITION_MARKET_IDENTITY_MISSING"):
+        resolve_position_market_v1(conn, trading_account_id=7, venue="bitvavo", asset_id=101, symbol="BTC")
+    bind_account_market(conn, venue_market_id=insert_venue_market(conn, asset_id=102, symbol="ETH", market="ETH-EUR"))
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="POSITION_MARKET_IDENTITY_MISSING"):
+        resolve_position_market_v1(conn, trading_account_id=7, venue="bitvavo", asset_id=101, symbol="BTC")
+
+
 def test_zero_order_header_is_authoritative_no_conflict() -> None:
     conn = FakeConnection()
     insert_trading_account(conn)
@@ -113,6 +157,15 @@ def test_nonzero_open_order_evidence_loads_and_flags_matching_market() -> None:
     bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
     assert load_blocking_conflict(conn, bundle=bundle, market="BTC-EUR") is True
     assert load_blocking_conflict(conn, bundle=bundle, market="ETH-EUR") is False
+
+
+def test_open_order_on_other_quote_does_not_block_canonical_market() -> None:
+    conn = FakeConnection()
+    insert_trading_account(conn)
+    insert_complete_bundle(conn, order_count=1)
+    insert_open_order(conn, market="BTC-USDC")
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    assert load_blocking_conflict(conn, bundle=bundle, market="BTC-EUR") is False
 
 
 def test_open_order_count_mismatch_fails_closed() -> None:
@@ -153,13 +206,13 @@ def test_stale_market_price_fails_closed() -> None:
     conn = FakeConnection()
     insert_market_price(conn, observed_ts_utc=TS)
     with pytest.raises(AutomaticExitRuntimeRepositoryError, match="MARKET_PRICE_SNAPSHOT_STALE"):
-        load_latest_market_price(conn, venue="bitvavo", symbol="BTC", now=TS + timedelta(minutes=16))
+        load_latest_market_price(conn, venue="bitvavo", market="BTC-EUR", now=TS + timedelta(minutes=16))
 
 
 def test_missing_market_price_fails_closed() -> None:
     conn = FakeConnection()
     with pytest.raises(AutomaticExitRuntimeRepositoryError, match="MARKET_PRICE_SNAPSHOT_MISSING"):
-        load_latest_market_price(conn, venue="bitvavo", symbol="BTC", now=NOW)
+        load_latest_market_price(conn, venue="bitvavo", market="BTC-EUR", now=NOW)
 
 
 def test_missing_exit_profile_fails_closed_via_build_runtime_item() -> None:
@@ -167,6 +220,7 @@ def test_missing_exit_profile_fails_closed_via_build_runtime_item() -> None:
     insert_trading_account(conn)
     insert_complete_bundle(conn)
     insert_position(conn)
+    bind_account_market(conn, venue_market_id=insert_venue_market(conn))
     insert_balance(conn)
     insert_market_price(conn)
     insert_permission(conn)
@@ -178,11 +232,65 @@ def test_missing_exit_profile_fails_closed_via_build_runtime_item() -> None:
         build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
 
 
+def test_wrong_quote_price_and_profile_are_not_consumed() -> None:
+    conn = FakeConnection()
+    insert_trading_account(conn)
+    insert_complete_bundle(conn)
+    insert_position(conn)
+    bind_account_market(conn, venue_market_id=insert_venue_market(conn))
+    insert_balance(conn)
+    insert_market_price(conn, market="BTC-USDC")
+    insert_exit_profile(conn, market="BTC-USDC")
+    insert_permission(conn)
+    insert_venue_constraint(conn, market="BTC-USDC")
+    accounts = load_eligible_trading_accounts(conn, venue="bitvavo")
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    position = load_positive_positions(conn, bundle=bundle)[0]
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="MARKET_PRICE_SNAPSHOT_MISSING"):
+        build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=position, now=NOW)
+
+
+def test_wrong_quote_exit_profile_is_not_consumed() -> None:
+    conn = FakeConnection()
+    insert_trading_account(conn)
+    insert_complete_bundle(conn)
+    insert_position(conn)
+    bind_account_market(conn, venue_market_id=insert_venue_market(conn))
+    insert_balance(conn)
+    insert_market_price(conn)
+    insert_exit_profile(conn, market="BTC-USDC")
+    insert_permission(conn)
+    insert_venue_constraint(conn)
+    account = load_eligible_trading_accounts(conn, venue="bitvavo")[0]
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    with pytest.raises(AutomaticExitRuntimeContractError, match="MISSING_OR_CONFLICTING_AUTOMATIC_EXIT_PROFILE"):
+        build_runtime_item_v1(conn, account=account, bundle=bundle, position=load_positive_positions(conn, bundle=bundle)[0], now=NOW)
+
+
+def test_wrong_quote_venue_constraints_are_not_consumed() -> None:
+    conn = FakeConnection()
+    insert_trading_account(conn)
+    insert_complete_bundle(conn)
+    insert_position(conn)
+    bind_account_market(conn, venue_market_id=insert_venue_market(conn))
+    insert_balance(conn)
+    insert_market_price(conn)
+    insert_exit_profile(conn)
+    insert_permission(conn)
+    insert_venue_constraint(conn, market="BTC-USDC")
+    account = load_eligible_trading_accounts(conn, venue="bitvavo")[0]
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    item = build_runtime_item_v1(conn, account=account, bundle=bundle, position=load_positive_positions(conn, bundle=bundle)[0], now=NOW)
+    assert item.venue_constraints.status == "MISSING"
+    assert item.venue_constraint_id == NO_VENUE_CONSTRAINT_ROW_IDENTITY
+
+
 def test_conflicting_exit_profiles_fail_closed_via_build_runtime_item() -> None:
     conn = FakeConnection()
     insert_trading_account(conn)
     insert_complete_bundle(conn)
     insert_position(conn)
+    bind_account_market(conn, venue_market_id=insert_venue_market(conn))
     insert_balance(conn)
     insert_market_price(conn)
     insert_exit_profile(conn, profile_id="a")
@@ -225,6 +333,7 @@ def test_missing_venue_constraints_use_sentinel_and_stay_not_fresh() -> None:
     insert_trading_account(conn)
     insert_complete_bundle(conn)
     insert_position(conn)
+    bind_account_market(conn, venue_market_id=insert_venue_market(conn))
     insert_balance(conn)
     insert_market_price(conn)
     insert_exit_profile(conn)
