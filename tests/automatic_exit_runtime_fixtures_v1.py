@@ -158,6 +158,25 @@ CREATE TABLE venue_execution_constraint (
     UNIQUE(venue, market)
 );
 
+CREATE TABLE execution_sell_reservation (
+    reservation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    trading_account_id INTEGER NOT NULL,
+    venue TEXT NOT NULL,
+    asset_id INTEGER NOT NULL,
+    symbol TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    quantity_base TEXT NOT NULL,
+    reservation_state TEXT NOT NULL,
+    manual_execution_request_id INTEGER,
+    execution_plan_id INTEGER,
+    leg_number INTEGER,
+    broker_order_id TEXT,
+    created_ts_utc TEXT,
+    updated_ts_utc TEXT,
+    terminal_ts_utc TEXT,
+    notes TEXT
+);
+
 CREATE TABLE automatic_exit_evaluation_audit_v1 (
     automatic_exit_evaluation_audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
     idempotency_key TEXT NOT NULL UNIQUE,
@@ -408,6 +427,19 @@ def insert_venue_constraint(
         cur.execute(
             "INSERT INTO venue_execution_constraint (venue, market, tick_size, qty_step_size, min_base_quantity, min_quote_notional, supported_order_types, supported_time_in_force, source_provenance, metadata_synced_ts_utc) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (venue, market, tick_size, qty_step_size, min_base_quantity, min_quote_notional, supported_order_types, supported_time_in_force, source_provenance, metadata_synced_ts_utc),
+        )
+        return cur.lastrowid
+
+
+def insert_sell_reservation(
+    conn: FakeConnection, *, account_id: int = 7, venue: str = "bitvavo",
+    asset_id: int = 101, symbol: str = "BTC", quantity_base: Decimal = Decimal("1"),
+    reservation_state: str = "APPROVED_NOT_SUBMITTED", idempotency_key: str = "reservation-1",
+) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO execution_sell_reservation (trading_account_id, venue, asset_id, symbol, idempotency_key, quantity_base, reservation_state) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (account_id, venue, asset_id, symbol, idempotency_key, quantity_base, reservation_state),
         )
         return cur.lastrowid
 

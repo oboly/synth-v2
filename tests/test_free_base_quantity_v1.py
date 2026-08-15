@@ -22,6 +22,7 @@ from src.decision_gate.free_base_quantity_v1 import (
     STATUS_OK,
     WalletAvailableSnapshot,
     resolve_free_base_quantity,
+    resolve_free_base_quantity_core_v1,
 )
 
 
@@ -49,6 +50,33 @@ def _snapshot(**overrides) -> WalletAvailableSnapshot:
 
 
 class TestHappyPath:
+    def test_explicit_time_core_is_deterministic(self) -> None:
+        snapshot = _snapshot(snapshot_ts_utc=NOW - timedelta(minutes=1))
+        first = resolve_free_base_quantity_core_v1(
+            wallet_snapshot=snapshot,
+            approved_not_submitted_reservation_base=Decimal("0.4"),
+            reconciliation_pending_reservation_count=0,
+            evaluation_ts_utc=NOW,
+        )
+        second = resolve_free_base_quantity_core_v1(
+            wallet_snapshot=snapshot,
+            approved_not_submitted_reservation_base=Decimal("0.4"),
+            reconciliation_pending_reservation_count=0,
+            evaluation_ts_utc=NOW,
+        )
+        assert first == second
+        assert first.resolved_ts_utc == NOW
+
+    def test_explicit_time_core_controls_freshness(self) -> None:
+        result = resolve_free_base_quantity_core_v1(
+            wallet_snapshot=_snapshot(snapshot_ts_utc=NOW),
+            approved_not_submitted_reservation_base=Decimal("0"),
+            reconciliation_pending_reservation_count=0,
+            evaluation_ts_utc=NOW + timedelta(minutes=16),
+        )
+        assert result.status == STATUS_BLOCKED
+        assert REASON_STALE_WALLET_SNAPSHOT in result.blocking_reasons
+
     def test_resolves_ok_with_no_local_reservations(self) -> None:
         result = resolve_free_base_quantity(
             wallet_snapshot=_snapshot(),

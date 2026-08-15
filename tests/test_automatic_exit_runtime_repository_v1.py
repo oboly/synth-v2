@@ -5,11 +5,10 @@ from decimal import Decimal
 
 import pytest
 
+import src.exit_policy.automatic_exit_runtime_repository_v1 as repository_module
 from src.exit_policy.automatic_exit_runtime_contract_v1 import AutomaticExitRuntimeContractError
 from src.exit_policy.automatic_exit_runtime_repository_v1 import (
     AutomaticExitRuntimeRepositoryError,
-    NO_PERMISSION_ROW_IDENTITY,
-    NO_VENUE_CONSTRAINT_ROW_IDENTITY,
     build_runtime_item_v1,
     load_blocking_conflict,
     load_eligible_trading_accounts,
@@ -29,6 +28,7 @@ from tests.automatic_exit_runtime_fixtures_v1 import (
     insert_open_order,
     insert_permission,
     insert_position,
+    insert_sell_reservation,
     insert_trading_account,
     insert_venue_market,
     insert_venue_constraint,
@@ -294,9 +294,8 @@ def test_wrong_quote_venue_constraints_are_not_consumed() -> None:
     insert_venue_constraint(conn, market="BTC-USDC")
     account = load_eligible_trading_accounts(conn, venue="bitvavo")[0]
     bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
-    item = build_runtime_item_v1(conn, account=account, bundle=bundle, position=load_positive_positions(conn, bundle=bundle)[0], now=NOW)
-    assert item.venue_constraints.status == "MISSING"
-    assert item.venue_constraint_id == NO_VENUE_CONSTRAINT_ROW_IDENTITY
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="MISSING_VENUE_CONSTRAINT"):
+        build_runtime_item_v1(conn, account=account, bundle=bundle, position=load_positive_positions(conn, bundle=bundle)[0], now=NOW)
 
 
 def test_conflicting_exit_profiles_fail_closed_via_build_runtime_item() -> None:
@@ -318,7 +317,7 @@ def test_conflicting_exit_profiles_fail_closed_via_build_runtime_item() -> None:
         build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
 
 
-def test_permission_no_row_defaults_disabled() -> None:
+def test_permission_no_row_fails_closed_without_synthetic_identity() -> None:
     conn = FakeConnection()
     seed_happy_path(conn)
     with conn.cursor() as cur:
@@ -326,9 +325,8 @@ def test_permission_no_row_defaults_disabled() -> None:
     accounts = load_eligible_trading_accounts(conn, venue="bitvavo")
     bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
     positions = load_positive_positions(conn, bundle=bundle)
-    item = build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
-    assert item.automatic_exit_execution_enabled is False
-    assert item.automatic_exit_permission_id == NO_PERMISSION_ROW_IDENTITY
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="MISSING_AUTOMATIC_EXIT_PERMISSION"):
+        build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
 
 
 def test_valid_enabled_permission_resolves() -> None:
@@ -342,7 +340,7 @@ def test_valid_enabled_permission_resolves() -> None:
     assert isinstance(item.automatic_exit_permission_id, int)
 
 
-def test_missing_venue_constraints_use_sentinel_and_stay_not_fresh() -> None:
+def test_missing_venue_constraints_fail_closed_without_synthetic_identity() -> None:
     conn = FakeConnection()
     insert_trading_account(conn)
     insert_complete_bundle(conn)
@@ -355,9 +353,71 @@ def test_missing_venue_constraints_use_sentinel_and_stay_not_fresh() -> None:
     accounts = load_eligible_trading_accounts(conn, venue="bitvavo")
     bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
     positions = load_positive_positions(conn, bundle=bundle)
-    item = build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
-    assert item.venue_constraints.status == "MISSING"
-    assert item.venue_constraint_id == NO_VENUE_CONSTRAINT_ROW_IDENTITY
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="MISSING_VENUE_CONSTRAINT"):
+        build_runtime_item_v1(conn, account=accounts[0], bundle=bundle, position=positions[0], now=NOW)
+
+
+def test_runtime_free_quantity_uses_position_available_minus_reservations() -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE account_position_snapshot SET quantity_base = %s, available_quantity_base = %s", (Decimal("10"), Decimal("10")))
+        cur.execute("UPDATE trading_account_balance_snapshot SET available_amount = %s", (Decimal("99"),))
+    insert_sell_reservation(conn, quantity_base=Decimal("3"))
+    account = load_eligible_trading_accounts(conn, venue="bitvavo")[0]
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    position = load_positive_positions(conn, bundle=bundle)[0]
+    item = build_runtime_item_v1(conn, account=account, bundle=bundle, position=position, now=NOW)
+    assert item.free_quantity_base == Decimal("7")
+
+
+def test_runtime_wallet_snapshot_uses_aligned_position_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    captured: dict[str, object] = {}
+    canonical_resolver = repository_module.resolve_free_base_quantity_core_v1
+
+    def capture_resolver(**kwargs: object):
+        captured.update(kwargs)
+        return canonical_resolver(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(repository_module, "resolve_free_base_quantity_core_v1", capture_resolver)
+    account = load_eligible_trading_accounts(conn, venue="bitvavo")[0]
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    position = load_positive_positions(conn, bundle=bundle)[0]
+    build_runtime_item_v1(conn, account=account, bundle=bundle, position=position, now=NOW)
+    wallet = captured["wallet_snapshot"]
+    assert wallet.available_base_quantity == position.available_quantity_base  # type: ignore[union-attr]
+    assert wallet.total_base_quantity == position.quantity_base  # type: ignore[union-attr]
+    assert wallet.source_name == bundle.position_source_name  # type: ignore[union-attr]
+    assert wallet.snapshot_ts_utc == bundle.snapshot_ts_utc  # type: ignore[union-attr]
+    assert wallet.snapshot_id == position.account_position_snapshot_id  # type: ignore[union-attr]
+    assert captured["evaluation_ts_utc"] == NOW
+
+
+def test_reconciliation_pending_reservation_fails_closed_before_runtime_item() -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    insert_sell_reservation(conn, reservation_state="SUBMITTED_AWAITING_RECONCILIATION")
+    account = load_eligible_trading_accounts(conn, venue="bitvavo")[0]
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    position = load_positive_positions(conn, bundle=bundle)[0]
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="RECONCILIATION_PENDING"):
+        build_runtime_item_v1(conn, account=account, bundle=bundle, position=position, now=NOW)
+
+
+def test_contradictory_position_quantity_fails_closed_via_canonical_resolver() -> None:
+    conn = FakeConnection()
+    seed_happy_path(conn)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE account_position_snapshot SET quantity_base = %s, available_quantity_base = %s", (Decimal("1"), Decimal("2")))
+    account = load_eligible_trading_accounts(conn, venue="bitvavo")[0]
+    bundle = load_latest_complete_account_state_bundle(conn, trading_account_id=7, venue="bitvavo", now=NOW)
+    position = load_positive_positions(conn, bundle=bundle)[0]
+    with pytest.raises(AutomaticExitRuntimeRepositoryError, match="CONTRADICTORY_WALLET_SNAPSHOT"):
+        build_runtime_item_v1(conn, account=account, bundle=bundle, position=position, now=NOW)
 
 
 def test_stale_venue_constraints_marked_stale() -> None:

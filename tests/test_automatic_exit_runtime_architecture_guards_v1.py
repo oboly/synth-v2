@@ -100,6 +100,16 @@ def test_repository_does_not_choose_reduce_or_exit_action() -> None:
     assert '"REDUCE"' not in text and '"EXIT"' not in text
 
 
+def test_repository_delegates_free_quantity_to_decision_gate() -> None:
+    text = (REPO_ROOT / "src/exit_policy/automatic_exit_runtime_repository_v1.py").read_text()
+    start = text.index("def build_runtime_item_v1(")
+    body = text[start:]
+    assert "resolve_free_base_quantity_core_v1(" in body
+    assert "free_quantity_base=free_quantity_result.free_base_quantity" in body
+    assert "free_quantity_base=balance.available_amount" not in body
+    assert "available_quantity_base -" not in body
+
+
 def test_repository_uses_no_hardcoded_quote_or_selection_dependency() -> None:
     text = (REPO_ROOT / "src/exit_policy/automatic_exit_runtime_repository_v1.py").read_text()
     assert "-EUR" not in text
