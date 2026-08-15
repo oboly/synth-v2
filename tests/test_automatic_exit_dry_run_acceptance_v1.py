@@ -94,3 +94,30 @@ def test_replay_input_survives_canonical_json_round_trip() -> None:
     )
     result = acceptance.run_automatic_exit_acceptance_v1(conn, mode=acceptance.ACCEPTANCE_MODE_REPLAY, replay_input=restored)
     assert result.planner_state == "STAGED"
+
+
+@pytest.mark.parametrize(("constraints", "reason"), [
+    ({"min_base_quantity": Decimal("2")}, "FINAL_QUANTITY_BELOW_MIN_BASE_QUANTITY"),
+    ({"min_quote_notional": Decimal("20000")}, "LADDER_LEG_1_INVALID:BELOW_MIN_QUOTE_NOTIONAL"),
+    ({"qty_step_size": Decimal("0.125")}, None),
+])
+def test_venue_constraints_drive_minimums_and_non_8dp_rounding(constraints: dict, reason: str | None) -> None:
+    conn = FakeConnection()
+    item = _actionable(conn)
+    item = replace(item, venue_constraints=replace(item.venue_constraints, **constraints))
+    result = acceptance.run_automatic_exit_acceptance_v1(conn, mode=acceptance.ACCEPTANCE_MODE_REPLAY, replay_input=acceptance.build_replay_input_v1(item=item, evaluation_ts_utc=NOW))
+    if reason:
+        assert (result.planner_state, result.planner_reason_code, result.immutable_plan_hash) == ("REJECTED", reason, None)
+    else:
+        assert result.planner_state == "STAGED"
+
+
+def test_stale_venue_metadata_and_changed_evidence_change_acceptance_identity() -> None:
+    conn = FakeConnection()
+    item = _actionable(conn)
+    first = acceptance.run_automatic_exit_acceptance_v1(conn, mode=acceptance.ACCEPTANCE_MODE_REPLAY, replay_input=acceptance.build_replay_input_v1(item=item, evaluation_ts_utc=NOW))
+    changed = replace(item, venue_constraint_id=999, venue_constraints=replace(item.venue_constraints, metadata_synced_ts_utc=TS - timedelta(days=8)))
+    second = acceptance.run_automatic_exit_acceptance_v1(conn, mode=acceptance.ACCEPTANCE_MODE_REPLAY, replay_input=acceptance.build_replay_input_v1(item=changed, evaluation_ts_utc=NOW))
+    assert second.planner_state == "REJECTED"
+    assert second.immutable_plan_hash is None
+    assert first.source_evidence_hash != second.source_evidence_hash
