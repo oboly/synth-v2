@@ -176,6 +176,16 @@ alongside an existing market-data writer is not itself a boundary violation.
   same canonical market/policy/permission/venue facts Phases 1-3 already
   depend on, resolved through their existing `resolve_*` functions only.
 
+`decision_gate.free_base_quantity_v1` is the sole FREE_BASE_QUANTITY owner.
+The runtime builds its `WalletAvailableSnapshot` from the aligned
+`account_position_snapshot`: `available_quantity_base` is wallet available,
+`quantity_base` is wallet total, the COMPLETE bundle provides source and
+timestamp, and `account_position_snapshot_id` is the snapshot identity. It
+reads APPROVED_NOT_SUBMITTED and reconciliation-pending reservation truth for
+the exact account/venue/asset through `SellReservationRepository`, then calls
+the explicit-time decision_gate resolver. The aligned balance row remains
+idempotency evidence only; `available_amount` is not quantity permission.
+
 **Orchestration sequence** (`evaluate_automatic_exit_runtime_item_v1`, one
 independent unit per positive held position):
 
@@ -200,12 +210,10 @@ calls, no credential resolution, and no broker writes.
 **Idempotency and replay**: every audit row's `idempotency_key` is computed by
 the existing `automatic_exit_idempotency_key_v1()` over the same 14 identity
 fields defined in Phase 4A, resolved by the repository before any
-candidate/gate/planner call. Two permission/venue-constraint edge cases have no
-underlying DB row when absent (permission disabled by absence; venue
-constraints `MISSING`); the repository substitutes a stable sentinel identity
-(`NO_PERMISSION_ROW`, `NO_VENUE_CONSTRAINT_ROW`) so the idempotency contract's
-required non-null fields still hold, and the sentinel itself changes if a real
-row is later added. Re-running identical evidence returns the existing audit
+candidate/gate/planner call. A missing current permission row or missing venue
+constraint row fails closed as typed repository absence; no synthetic DB-row
+identity is fabricated to satisfy the hash schema. Re-running identical
+evidence returns the existing audit
 row (`idempotent_existing`) rather than inserting a duplicate. A duplicate key
 with a different recorded candidate/gate/planner decision is treated as
 `IdempotencyPayloadConflictError` and fails closed rather than silently

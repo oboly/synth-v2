@@ -103,11 +103,12 @@ def _ensure_aware(value: datetime) -> datetime:
     return value
 
 
-def resolve_free_base_quantity(
+def resolve_free_base_quantity_core_v1(
     *,
     wallet_snapshot: WalletAvailableSnapshot,
     approved_not_submitted_reservation_base: Decimal,
     reconciliation_pending_reservation_count: int,
+    evaluation_ts_utc: datetime,
     max_wallet_snapshot_age_seconds: int = DEFAULT_MAX_WALLET_SNAPSHOT_AGE_SECONDS,
     expected_trading_account_id: int | None = None,
     expected_venue: str | None = None,
@@ -121,7 +122,7 @@ def resolve_free_base_quantity(
     reservation still pending broker reconciliation, or a negative result.
     """
     reasons: list[str] = []
-    resolved_now = trusted_clock.utc_now()
+    resolved_now = evaluation_ts_utc
 
     if (
         expected_trading_account_id is not None
@@ -179,4 +180,27 @@ def resolve_free_base_quantity(
         snapshot_ts_utc=wallet_snapshot.snapshot_ts_utc,
         resolved_ts_utc=resolved_now,
         blocking_reasons=tuple(reasons),
+    )
+
+
+def resolve_free_base_quantity(
+    *,
+    wallet_snapshot: WalletAvailableSnapshot,
+    approved_not_submitted_reservation_base: Decimal,
+    reconciliation_pending_reservation_count: int,
+    max_wallet_snapshot_age_seconds: int = DEFAULT_MAX_WALLET_SNAPSHOT_AGE_SECONDS,
+    expected_trading_account_id: int | None = None,
+    expected_venue: str | None = None,
+    expected_asset_id: int | None = None,
+) -> FreeBaseQuantityResult:
+    """Real-time compatibility wrapper around the explicit-time pure core."""
+    return resolve_free_base_quantity_core_v1(
+        wallet_snapshot=wallet_snapshot,
+        approved_not_submitted_reservation_base=approved_not_submitted_reservation_base,
+        reconciliation_pending_reservation_count=reconciliation_pending_reservation_count,
+        evaluation_ts_utc=trusted_clock.utc_now(),
+        max_wallet_snapshot_age_seconds=max_wallet_snapshot_age_seconds,
+        expected_trading_account_id=expected_trading_account_id,
+        expected_venue=expected_venue,
+        expected_asset_id=expected_asset_id,
     )

@@ -19,6 +19,12 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Final
 
+from src.decision_gate.free_base_quantity_v1 import (
+    STATUS_OK,
+    WalletAvailableSnapshot,
+    resolve_free_base_quantity_core_v1,
+)
+from src.decision_gate.sell_reservation_v1 import SellReservationRepository
 from src.exit_policy.automatic_exit_runtime_contract_v1 import (
     AutomaticExitPlanningPermissionV1,
     AutomaticExitProfileV1,
@@ -37,19 +43,9 @@ COMPLETE_STATE: Final[str] = "COMPLETE"
 DEFAULT_MAX_ACCOUNT_STATE_AGE_SECONDS: Final[int] = 15 * 60
 DEFAULT_MAX_MARKET_PRICE_AGE_SECONDS: Final[int] = 15 * 60
 
-# A permission history with zero rows means planning is disabled by absence
-# (see automatic_exit_runtime_contract_v1: "no row means disabled"). The
-# idempotency contract still requires a non-null automatic_exit_permission_id
-# for every audit row, including this one, so a stable sentinel identity is
-# used instead of a real row id. If a permission row is later added, the
-# evidence (and therefore the idempotency key) changes correctly.
-NO_PERMISSION_ROW_IDENTITY: Final[str] = "NO_PERMISSION_ROW"
-
-# Same rationale as NO_PERMISSION_ROW_IDENTITY: venue_execution_constraint has
-# no row for MISSING status, but idempotency evidence still requires a stable
-# non-null identity.
-NO_VENUE_CONSTRAINT_ROW_IDENTITY: Final[str] = "NO_VENUE_CONSTRAINT_ROW"
-
+REASON_MISSING_AUTOMATIC_EXIT_PERMISSION: Final[str] = "MISSING_AUTOMATIC_EXIT_PERMISSION"
+REASON_MISSING_VENUE_CONSTRAINT: Final[str] = "MISSING_VENUE_CONSTRAINT"
+REASON_FREE_BASE_QUANTITY_BLOCKED: Final[str] = "FREE_BASE_QUANTITY_BLOCKED"
 
 class AutomaticExitRuntimeRepositoryError(RuntimeError):
     """Fail-closed evidence-loading error. ``args[0]`` is the reason code."""
@@ -173,8 +169,8 @@ class RuntimeItemV1:
     balance_snapshot_id: int
     open_order_snapshot_run_id: int
     market_price_snapshot_id: int
-    automatic_exit_permission_id: int | str
-    venue_constraint_id: int | str
+    automatic_exit_permission_id: int
+    venue_constraint_id: int
 
 
 def load_eligible_trading_accounts(conn: Any, *, venue: str) -> list[EligibleAccountV1]:
@@ -494,8 +490,8 @@ def load_permission_history(conn: Any, *, trading_account_id: int) -> list[Autom
 
 def _active_permission_id(
     permissions: list[AutomaticExitPlanningPermissionV1], *, trading_account_id: int, at: datetime,
-) -> int | str:
-    """Identity of the single active permission row, or the no-row sentinel.
+) -> int:
+    """Identity of the single active permission row; absence fails closed.
 
     Only called after resolve_automatic_exit_planning_enabled() has already
     proven at most one active row exists; this does not re-decide enablement.
@@ -507,12 +503,12 @@ def _active_permission_id(
         and (row.effective_until_ts_utc is None or at < row.effective_until_ts_utc)
     ]
     if not matches:
-        return NO_PERMISSION_ROW_IDENTITY
+        raise AutomaticExitRuntimeRepositoryError(REASON_MISSING_AUTOMATIC_EXIT_PERMISSION)
     return matches[0].permission_id
 
 
-def load_venue_constraint_id(conn: Any, *, venue: str, market: str) -> int | str:
-    """Row id for venue_execution_constraint, or the no-row sentinel.
+def load_venue_constraint_id(conn: Any, *, venue: str, market: str) -> int:
+    """Row id for venue_execution_constraint; absence fails closed.
 
     load_constraints_from_db() does not select the row id (it is not part of
     the shared VenueExecutionConstraints contract), so it is fetched here
@@ -523,7 +519,7 @@ def load_venue_constraint_id(conn: Any, *, venue: str, market: str) -> int | str
         cur.execute(sql, (venue, market))
         row = _fetch_one(cur)
     if row is None:
-        return NO_VENUE_CONSTRAINT_ROW_IDENTITY
+        raise AutomaticExitRuntimeRepositoryError(REASON_MISSING_VENUE_CONSTRAINT)
     return int(row["venue_execution_constraint_id"])
 
 
@@ -545,6 +541,44 @@ def build_runtime_item_v1(
     identical idempotency key regardless of the eventual outcome.
     """
     balance = load_balance_evidence(conn, bundle=bundle, currency_code=position.symbol)
+    reservation_repository = SellReservationRepository()
+    with conn.cursor() as cur:
+        approved_not_submitted = reservation_repository.sum_approved_not_submitted(
+            trading_account_id=account.trading_account_id,
+            venue=bundle.venue,
+            asset_id=position.asset_id,
+            cursor=cur,
+        )
+        reconciliation_pending = reservation_repository.count_reconciliation_pending(
+            trading_account_id=account.trading_account_id,
+            venue=bundle.venue,
+            asset_id=position.asset_id,
+            cursor=cur,
+        )
+    free_quantity_result = resolve_free_base_quantity_core_v1(
+        wallet_snapshot=WalletAvailableSnapshot(
+            trading_account_id=account.trading_account_id,
+            venue=bundle.venue,
+            asset_id=position.asset_id,
+            symbol=position.symbol,
+            available_base_quantity=position.available_quantity_base,
+            total_base_quantity=position.quantity_base,
+            source_name=bundle.position_source_name,
+            snapshot_ts_utc=bundle.snapshot_ts_utc,
+            snapshot_id=position.account_position_snapshot_id,
+        ),
+        approved_not_submitted_reservation_base=approved_not_submitted,
+        reconciliation_pending_reservation_count=reconciliation_pending,
+        evaluation_ts_utc=now,
+        expected_trading_account_id=account.trading_account_id,
+        expected_venue=bundle.venue,
+        expected_asset_id=position.asset_id,
+    )
+    if free_quantity_result.status != STATUS_OK:
+        raise AutomaticExitRuntimeRepositoryError(
+            REASON_FREE_BASE_QUANTITY_BLOCKED + ":" + ",".join(free_quantity_result.blocking_reasons)
+        )
+    assert free_quantity_result.free_base_quantity is not None
     market_identity = resolve_position_market_v1(
         conn,
         trading_account_id=account.trading_account_id,
@@ -586,10 +620,7 @@ def build_runtime_item_v1(
         market=market,
         symbol=position.symbol,
         held_quantity_base=position.quantity_base,
-        # Free quantity is sourced from persisted balance evidence only (not
-        # the position table's own available_quantity_base), per the runtime
-        # input contract: no broker read backs this value.
-        free_quantity_base=balance.available_amount,
+        free_quantity_base=free_quantity_result.free_base_quantity,
         current_price=price_evidence.price,
         account_enabled=account.enabled,
         account_mode=account.account_mode,
