@@ -141,3 +141,25 @@ def test_replay_matches_invalidation_denial_and_planner_rejection() -> None:
         first = acceptance.run_automatic_exit_acceptance_v1(conn, mode=acceptance.ACCEPTANCE_MODE_REPLAY, replay_input=packet)
         second = acceptance.run_automatic_exit_acceptance_v1(conn, mode=acceptance.ACCEPTANCE_MODE_REPLAY, replay_input=packet)
         assert (first.candidate_state, first.candidate_action, first.candidate_reason_code, first.gate_state, first.gate_reason_code, first.planner_state, first.planner_reason_code, first.immutable_plan_hash, first.source_evidence_hash) == (second.candidate_state, second.candidate_action, second.candidate_reason_code, second.gate_state, second.gate_reason_code, second.planner_state, second.planner_reason_code, second.immutable_plan_hash, second.source_evidence_hash)
+
+
+def test_identity_evidence_is_account_market_profile_price_and_snapshot_scoped() -> None:
+    conn = FakeConnection(); item = _actionable(conn)
+    def run(value):
+        return acceptance.run_automatic_exit_acceptance_v1(conn, mode=acceptance.ACCEPTANCE_MODE_REPLAY, replay_input=acceptance.build_replay_input_v1(item=value, evaluation_ts_utc=NOW))
+    base = run(item)
+    account = run(replace(item, trading_account_id=8, position_reference="account_position_snapshot:8", position_snapshot_id=8, balance_snapshot_id=8))
+    market = run(replace(item, market="BTC-USDC", market_price_snapshot_id=8, exit_profile=replace(item.exit_profile, market="BTC-USDC"), venue_constraints=replace(item.venue_constraints, market="BTC-USDC")))
+    price = run(replace(item, market_price_snapshot_id=9, current_price=Decimal("70000")))
+    profile = run(replace(item, exit_profile=replace(item.exit_profile, profile_id="profile-2", profile_version="2")))
+    assert len({base.source_evidence_hash, account.source_evidence_hash, market.source_evidence_hash, price.source_evidence_hash, profile.source_evidence_hash}) == 5
+    assert base.market == "BTC-EUR" and market.market == "BTC-USDC"
+    assert base.idempotency_key != account.idempotency_key
+
+
+def test_runtime_provenance_is_excluded_from_replay_hashes() -> None:
+    conn = FakeConnection(); item = _actionable(conn)
+    packet = acceptance.build_replay_input_v1(item=item, evaluation_ts_utc=NOW)
+    first = acceptance.run_automatic_exit_acceptance_v1(conn, mode=acceptance.ACCEPTANCE_MODE_REPLAY, replay_input=packet)
+    second = acceptance.run_automatic_exit_acceptance_v1(conn, mode=acceptance.ACCEPTANCE_MODE_REPLAY, replay_input=packet)
+    assert (first.source_evidence_hash, first.immutable_plan_hash, first.candidate_state, first.planner_state) == (second.source_evidence_hash, second.immutable_plan_hash, second.candidate_state, second.planner_state)
