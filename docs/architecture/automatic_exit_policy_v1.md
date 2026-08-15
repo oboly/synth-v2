@@ -127,7 +127,9 @@ bundle. The bundle binds exact same-refresh position and balance evidence to a
 matching `account_open_order_snapshot_run_v1` COMPLETE header; the latter is
 required to prove an authoritative zero open-order result. Missing, stale,
 ambiguous, cross-account, cross-venue, or component-mismatched evidence fails
-closed. The canonical producer is the Odroid
+closed. The producer independently validates the referenced header's account,
+normalized venue, timestamp, canonical source, `COMPLETE` state, and exact
+count before emitting the account-state header. The canonical producer is the Odroid
 `ACCOUNT_STATE_SNAPSHOT_REFRESH` wallet path; it performs the existing two
 private reads and commits the complete persisted bundle atomically. Phase 4B
 itself never resolves credentials or calls a broker.

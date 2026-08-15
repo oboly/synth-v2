@@ -36,6 +36,7 @@ from src.account.account_snapshot_models_v1 import (
 )
 from src.account.account_state_snapshot_alignment_v1 import (
     ACCOUNT_STATE_SNAPSHOT_RUN_SOURCE,
+    ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE,
     AccountStateSnapshotRunV1,
     verify_persisted_component_counts,
     write_complete_account_state_snapshot_run,
@@ -319,7 +320,7 @@ def write_aligned_account_state_snapshot(
         venue=venue,
         balances=balances,
         snapshot_ts_utc=snapshot_ts_utc,
-        source_name=RUNNER_NAME,
+        source_name=ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE,
     )
     position_results, skipped_symbols = write_positions_from_balance_snapshot(
         conn,
@@ -373,6 +374,7 @@ def write_aligned_account_state_snapshot(
         balance_source_name=RUNNER_NAME,
         balance_snapshot_count=balance_writes,
         account_open_order_snapshot_run_id=open_order_run_id,
+        expected_open_order_count=order_writes,
     )
 
 

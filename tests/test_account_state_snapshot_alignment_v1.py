@@ -10,6 +10,7 @@ from typing import Any
 import pytest
 
 from src.account.account_state_snapshot_alignment_v1 import (
+    ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE,
     ACCOUNT_STATE_SNAPSHOT_RUN_SOURCE,
     AccountStateSnapshotContractError,
     verify_persisted_component_counts,
@@ -123,7 +124,7 @@ def _complete_bundle(
         conn,
         trading_account_id=account_id,
         venue=venue,
-        source_name="account_wallet_refresh_v1",
+        source_name=ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE,
         snapshot_ts_utc=_TS,
         open_order_count=order_count,
     )
@@ -140,6 +141,7 @@ def _complete_bundle(
         balance_source_name="account_wallet_refresh_v1",
         balance_snapshot_count=balance_count,
         account_open_order_snapshot_run_id=order_run_id,
+        expected_open_order_count=order_count,
     ).account_state_snapshot_run_id
 
 
@@ -176,12 +178,12 @@ def test_positive_position_balance_and_n_orders_reference_exact_complete_header(
 def test_complete_header_count_conflict_fails_closed() -> None:
     conn = _Connection()
     write_complete_open_order_snapshot_run(
-        conn, trading_account_id=7, venue="bitvavo", source_name="account_wallet_refresh_v1",
+        conn, trading_account_id=7, venue="bitvavo", source_name=ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE,
         snapshot_ts_utc=_TS, open_order_count=0,
     )
     with pytest.raises(AccountStateSnapshotContractError, match="OPEN_ORDER_COMPLETE_HEADER_CONFLICT"):
         write_complete_open_order_snapshot_run(
-            conn, trading_account_id=7, venue="bitvavo", source_name="account_wallet_refresh_v1",
+            conn, trading_account_id=7, venue="bitvavo", source_name=ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE,
             snapshot_ts_utc=_TS, open_order_count=1,
         )
 
@@ -211,14 +213,89 @@ def test_component_count_mismatch_fails_closed_before_complete_headers() -> None
 
 def test_missing_open_order_component_cannot_be_referenced() -> None:
     conn = _Connection()
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(AccountStateSnapshotContractError, match="REFERENCED_OPEN_ORDER_HEADER_MISSING"):
         write_complete_account_state_snapshot_run(
             conn, trading_account_id=7, venue="bitvavo", source_name=ACCOUNT_STATE_SNAPSHOT_RUN_SOURCE,
             refresh_started_ts_utc=_TS, snapshot_ts_utc=_TS, completed_ts_utc=_TS,
             position_source_name="positions", position_snapshot_count=0,
             balance_source_name="balances", balance_snapshot_count=1,
             account_open_order_snapshot_run_id=999,
+            expected_open_order_count=0,
         )
+
+
+def test_referenced_open_order_header_must_match_account_and_venue() -> None:
+    conn = _Connection()
+    other_account_header = write_complete_open_order_snapshot_run(
+        conn, trading_account_id=8, venue="bitvavo",
+        source_name=ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE,
+        snapshot_ts_utc=_TS, open_order_count=0,
+    )
+    with pytest.raises(AccountStateSnapshotContractError, match="REFERENCED_OPEN_ORDER_HEADER_MISMATCH"):
+        write_complete_account_state_snapshot_run(
+            conn, trading_account_id=7, venue="bitvavo", source_name=ACCOUNT_STATE_SNAPSHOT_RUN_SOURCE,
+            refresh_started_ts_utc=_TS, snapshot_ts_utc=_TS, completed_ts_utc=_TS,
+            position_source_name="positions", position_snapshot_count=0,
+            balance_source_name="balances", balance_snapshot_count=1,
+            account_open_order_snapshot_run_id=other_account_header, expected_open_order_count=0,
+        )
+    wrong_venue_header = write_complete_open_order_snapshot_run(
+        conn, trading_account_id=7, venue="kraken",
+        source_name=ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE,
+        snapshot_ts_utc=_TS, open_order_count=0,
+    )
+    with pytest.raises(AccountStateSnapshotContractError, match="REFERENCED_OPEN_ORDER_HEADER_MISMATCH"):
+        write_complete_account_state_snapshot_run(
+            conn, trading_account_id=7, venue="bitvavo", source_name=ACCOUNT_STATE_SNAPSHOT_RUN_SOURCE,
+            refresh_started_ts_utc=_TS, snapshot_ts_utc=_TS, completed_ts_utc=_TS,
+            position_source_name="positions", position_snapshot_count=0,
+            balance_source_name="balances", balance_snapshot_count=1,
+            account_open_order_snapshot_run_id=wrong_venue_header, expected_open_order_count=0,
+        )
+
+
+def test_referenced_open_order_header_must_match_timestamp_source_state_and_count() -> None:
+    conn = _Connection()
+    other_ts = datetime(2026, 8, 15, 12, 1, tzinfo=UTC)
+    other_ts_header = write_complete_open_order_snapshot_run(
+        conn, trading_account_id=7, venue="bitvavo",
+        source_name=ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE,
+        snapshot_ts_utc=other_ts, open_order_count=0,
+    )
+    def assert_mismatch(header_id: int, *, count: int = 0) -> None:
+        with pytest.raises(AccountStateSnapshotContractError, match="REFERENCED_OPEN_ORDER_HEADER_MISMATCH"):
+            write_complete_account_state_snapshot_run(
+                conn, trading_account_id=7, venue="bitvavo", source_name=ACCOUNT_STATE_SNAPSHOT_RUN_SOURCE,
+                refresh_started_ts_utc=_TS, snapshot_ts_utc=_TS, completed_ts_utc=_TS,
+                position_source_name="positions", position_snapshot_count=0,
+                balance_source_name="balances", balance_snapshot_count=1,
+                account_open_order_snapshot_run_id=header_id, expected_open_order_count=count,
+            )
+    assert_mismatch(other_ts_header)
+    conn.raw.execute(
+        "INSERT INTO account_open_order_snapshot_run_v1 (trading_account_id, venue, source_name, snapshot_ts_utc, snapshot_state, open_order_count) VALUES (7, 'bitvavo', ?, ?, 'INCOMPLETE', 0)",
+        (ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE, _TS.isoformat(sep=" ")),
+    )
+    assert_mismatch(conn.raw.execute("SELECT last_insert_rowid()").fetchone()[0])
+    conn.raw.execute(
+        "INSERT INTO account_open_order_snapshot_run_v1 (trading_account_id, venue, source_name, snapshot_ts_utc, snapshot_state, open_order_count) VALUES (7, 'bitvavo', 'wrong_source', ?, 'COMPLETE', 0)",
+        (_TS.isoformat(sep=" "),),
+    )
+    assert_mismatch(conn.raw.execute("SELECT last_insert_rowid()").fetchone()[0])
+    count_header = write_complete_open_order_snapshot_run(
+        conn, trading_account_id=7, venue="BITVAVO",
+        source_name=ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE,
+        snapshot_ts_utc=_TS, open_order_count=2,
+    )
+    assert_mismatch(count_header, count=1)
+    accepted = write_complete_account_state_snapshot_run(
+        conn, trading_account_id=7, venue="bitvavo", source_name=ACCOUNT_STATE_SNAPSHOT_RUN_SOURCE,
+        refresh_started_ts_utc=_TS, snapshot_ts_utc=_TS, completed_ts_utc=_TS,
+        position_source_name="positions", position_snapshot_count=0,
+        balance_source_name="balances", balance_snapshot_count=1,
+        account_open_order_snapshot_run_id=count_header, expected_open_order_count=2,
+    )
+    assert accepted.account_open_order_snapshot_run_id == count_header
 
 
 def test_same_refresh_is_idempotent_but_accounts_and_venues_are_isolated() -> None:

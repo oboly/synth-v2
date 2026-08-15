@@ -134,6 +134,12 @@ and creates no `COMPLETE` account-state run. The legacy standalone position
 writer may still support diagnostics, but it never creates this aligned header
 and is not authoritative input for a later automatic-exit runtime.
 
+Before inserting or reusing the account-state header, the writer independently
+loads the referenced open-order header and requires its ID, account, normalized
+venue, snapshot timestamp, canonical source, `COMPLETE` state, and count to
+match the bundle. A foreign key alone is not treated as sufficient identity
+proof.
+
 Position identity remains the immutable persisted row identity
 `account_position_snapshot:<account_position_snapshot_id>`; it is not a random
 per-refresh value.

@@ -7,11 +7,12 @@ external-order authority from this contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
 ACCOUNT_STATE_SNAPSHOT_RUN_SOURCE = "account_wallet_refresh_v1"
+ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE = ACCOUNT_STATE_SNAPSHOT_RUN_SOURCE
 COMPLETE_SNAPSHOT_STATE = "COMPLETE"
 
 
@@ -41,6 +42,69 @@ def _require_nonnegative_count(name: str, value: int) -> None:
 def _fetch_one(cur: Any) -> dict[str, Any] | None:
     row = cur.fetchone()
     return None if row is None else dict(row)
+
+
+def _normalized_venue(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        raise AccountStateSnapshotContractError("INVALID_VENUE")
+    return normalized
+
+
+def _snapshot_timestamp_key(value: Any) -> str:
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(timezone.utc).replace(tzinfo=None)
+        return value.isoformat(sep=" ")
+    raw = str(value).strip()
+    if not raw:
+        raise AccountStateSnapshotContractError("INVALID_SNAPSHOT_TIMESTAMP")
+    normalized = raw.replace("T", " ")
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise AccountStateSnapshotContractError("INVALID_SNAPSHOT_TIMESTAMP") from exc
+    return _snapshot_timestamp_key(parsed)
+
+
+def _validate_referenced_open_order_header(
+    conn: Any,
+    *,
+    account_open_order_snapshot_run_id: int,
+    trading_account_id: int,
+    venue: str,
+    snapshot_ts_utc: datetime,
+    expected_open_order_count: int,
+) -> None:
+    """Require the referenced COMPLETE open-order evidence to bind exactly."""
+    _require_nonnegative_count("open_order_count", expected_open_order_count)
+    sql = """
+    SELECT
+        account_open_order_snapshot_run_id, trading_account_id, venue,
+        source_name, snapshot_ts_utc, snapshot_state, open_order_count
+    FROM account_open_order_snapshot_run_v1
+    WHERE account_open_order_snapshot_run_id = %s
+    LIMIT 1
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (account_open_order_snapshot_run_id,))
+        row = _fetch_one(cur)
+    if row is None:
+        raise AccountStateSnapshotContractError("REFERENCED_OPEN_ORDER_HEADER_MISSING")
+    if (
+        int(row["account_open_order_snapshot_run_id"])
+        != account_open_order_snapshot_run_id
+        or int(row["trading_account_id"]) != trading_account_id
+        or _normalized_venue(row["venue"]) != _normalized_venue(venue)
+        or _snapshot_timestamp_key(row["snapshot_ts_utc"])
+        != _snapshot_timestamp_key(snapshot_ts_utc)
+        or row["snapshot_state"] != COMPLETE_SNAPSHOT_STATE
+        or row["source_name"] != ACCOUNT_OPEN_ORDER_SNAPSHOT_RUN_SOURCE
+        or int(row["open_order_count"]) != expected_open_order_count
+    ):
+        raise AccountStateSnapshotContractError("REFERENCED_OPEN_ORDER_HEADER_MISMATCH")
 
 
 def write_complete_open_order_snapshot_run(
@@ -168,6 +232,7 @@ def write_complete_account_state_snapshot_run(
     balance_source_name: str,
     balance_snapshot_count: int,
     account_open_order_snapshot_run_id: int,
+    expected_open_order_count: int,
 ) -> AccountStateSnapshotRunV1:
     """Append/reuse a COMPLETE aligned evidence bundle in the open transaction."""
     _require_nonnegative_count("position_snapshot_count", position_snapshot_count)
@@ -176,6 +241,14 @@ def write_complete_account_state_snapshot_run(
         raise AccountStateSnapshotContractError("INVALID_OPEN_ORDER_SNAPSHOT_RUN_ID")
     if not position_source_name or not balance_source_name or not source_name:
         raise AccountStateSnapshotContractError("MISSING_COMPONENT_PROVENANCE")
+    _validate_referenced_open_order_header(
+        conn,
+        account_open_order_snapshot_run_id=account_open_order_snapshot_run_id,
+        trading_account_id=trading_account_id,
+        venue=venue,
+        snapshot_ts_utc=snapshot_ts_utc,
+        expected_open_order_count=expected_open_order_count,
+    )
 
     lookup_sql = """
     SELECT
