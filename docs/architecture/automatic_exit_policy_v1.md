@@ -279,3 +279,14 @@ decision_gate=automatic_exit_gate_v1 (called, not bypassed)
 execution_planner=automatic_exit_planner_v1 (called, not bypassed)
 executor=none
 ```
+
+## Phase 5: acceptance DRY_RUN
+
+`automatic_exit_acceptance_dry_run_v1` is verification-only and invokes the
+canonical Phase 4B `evaluate_automatic_exit_runtime_item_v1` path. It adds no
+orchestration, market selection, executor, broker, credential, LIVE, timer,
+or service authority. It hashes the Phase 4B canonical source evidence JSON
+and immutable staged plan JSON using the audit writer serializer. Runtime
+version is audit provenance only and is excluded from logical evidence and
+both hashes. Replay is intentionally limited to immutable captured runtime
+items/audit evidence; no mutable latest-state replay or migration is implied.
