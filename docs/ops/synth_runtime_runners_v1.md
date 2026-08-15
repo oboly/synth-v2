@@ -703,9 +703,11 @@ Strict ownership, in order:
    `src.operations.run_persisted_market_price_freshness_v1` boundary and
    stops before account/render stages unless the persisted batch is fresh.
 3. **Read-only account snapshot ingestion** — `src/account/run_account_wallet_refresh_v1.py`
-   (wrapped by `scripts/odroid/run_account_wallet_refresh_once.sh`).
-   Authenticated private read-only balances/open-orders only. No broker
-   writes, no order submission. See `docs/ops/multi_account_wallet_refresh_v1.md`.
+   (wrapped by `scripts/odroid/run_account_wallet_refresh_once.sh`). It is the
+   one canonical Odroid `ACCOUNT_STATE_SNAPSHOT_REFRESH` producer: authenticated
+   private read-only balances/open-orders, locally derived positions, then one
+   aligned COMPLETE account-state evidence header. No broker writes or order
+   submission. See `docs/ops/multi_account_wallet_refresh_v1.md`.
 4. **Linked-profile dashboard render** — the safe persisted-snapshot renderer
    (called per profile by `scripts/odroid/run_linked_profile_dashboard_refresh_once.sh`).
    **Presentation-only.** Reads persisted public-price and account snapshot

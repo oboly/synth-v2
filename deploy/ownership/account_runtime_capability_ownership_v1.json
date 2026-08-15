@@ -1,0 +1,29 @@
+{
+  "schema_version": "account_runtime_capability_ownership_schema_v1",
+  "contract_version": "v1",
+  "authoritative_doc": "docs/ops/multi_account_wallet_refresh_v1.md",
+  "capabilities": [
+    {
+      "capability_id": "ACCOUNT_STATE_SNAPSHOT_REFRESH",
+      "owner_host": "odroid",
+      "runtime_entrypoint": "scripts/odroid/run_account_wallet_refresh_once.sh",
+      "lock_scope": "host-local, profile-scoped flock",
+      "private_read_authority": "existing READ_ONLY_PRIVATE account credential resolver; balances plus open orders only",
+      "broker_writes": 0,
+      "order_submission": 0,
+      "live_orders": 0,
+      "activation_status": "EXISTING_RUNTIME"
+    },
+    {
+      "capability_id": "AUTOMATIC_EXIT_POLICY_RUNTIME",
+      "owner_host": "UNASSIGNED",
+      "runtime_entrypoint": "not implemented in Phase 4B prerequisite",
+      "lock_scope": "not assigned",
+      "private_read_authority": "none; a future runtime consumes persisted COMPLETE account-state evidence only",
+      "broker_writes": 0,
+      "order_submission": 0,
+      "live_orders": 0,
+      "activation_status": "UNASSIGNED"
+    }
+  ]
+}

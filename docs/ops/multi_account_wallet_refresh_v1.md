@@ -2,8 +2,11 @@
 
 ## Purpose
 
-`account_wallet_refresh_v1` reads per-account wallet state (balances + open
-orders) from Bitvavo and writes it to the DB. It is a private read-only runner.
+`account_wallet_refresh_v1` is the canonical `ACCOUNT_STATE_SNAPSHOT_REFRESH`
+producer on **Odroid**. It reads per-account wallet state (balances + open
+orders) from Bitvavo, derives the matching persisted position snapshot, and
+writes one aligned account-state evidence bundle to the DB. It is a private
+read-only runner.
 
 It does not:
 
@@ -111,6 +114,36 @@ One row per currency per snapshot timestamp. Existing table, FK → `trading_acc
 
 One row per order per snapshot timestamp. No side restriction (both BUY and SELL).
 
+### Aligned account-state evidence
+
+Migration `20260815_account_state_snapshot_alignment_v1.sql` adds the
+append-only `account_state_snapshot_run_v1` header. A `COMPLETE` run is emitted
+only in the wallet producer's single DB transaction after all of these exact
+same-refresh components have persisted successfully:
+
+- balance rows (`trading_account_balance_snapshot`),
+- derived position rows (`account_position_snapshot`), and
+- a `COMPLETE` `account_open_order_snapshot_run_v1` header whose count equals
+  the normalized/persisted open-order result.
+
+The header retains component source names, common snapshot timestamp, counts,
+and the exact open-order run ID. It is therefore authoritative even when an
+account has no positive positions or zero open orders. Any private-read,
+position derivation, persistence, or count failure rolls back the transaction
+and creates no `COMPLETE` account-state run. The legacy standalone position
+writer may still support diagnostics, but it never creates this aligned header
+and is not authoritative input for a later automatic-exit runtime.
+
+Before inserting or reusing the account-state header, the writer independently
+loads the referenced open-order header and requires its ID, account, normalized
+venue, snapshot timestamp, canonical source, `COMPLETE` state, and count to
+match the bundle. A foreign key alone is not treated as sufficient identity
+proof.
+
+Position identity remains the immutable persisted row identity
+`account_position_snapshot:<account_position_snapshot_id>`; it is not a random
+per-refresh value.
+
 ### `account_asset`
 
 One row per (trading_account, venue_market). Created on discovery:
@@ -187,6 +220,10 @@ executor=none
 Refresh writes are always scoped to exactly one `trading_account_id`. One account's
 `account_asset`, balance snapshot, and order snapshot rows must never touch another
 account's rows.
+
+The aligned header is additionally scoped by `trading_account_id + venue +
+source_name + snapshot_ts_utc`. Retry of the same persisted evidence reuses the
+same header; a different account or venue creates independent evidence.
 
 ## Safety markers
 

@@ -122,13 +122,20 @@ permission, profile, and venue-constraint identities. Runtime version is audit
 provenance only and never changes a logical evidence identity. Those
 captured identifiers make a later replay independent of mutable latest state.
 
-Phase 4B may read persisted `trading_account_balance_snapshot` and
-`account_open_order_snapshot` plus a matching
-`account_open_order_snapshot_run_v1` COMPLETE header only when all are fresh
-and mutually resolvable; the header is required to prove an authoritative zero
-open-order result. Missing, stale, or ambiguous snapshots fail closed. Their
-separately owned producers may perform authenticated private reads, but Phase
-4B never resolves credentials or calls a broker. Runtime host ownership remains unassigned in
-Phase 4A: the current ownership registry covers public/market-only writer
-capabilities and does not authorize an account-runtime capability. No service,
-timer, deployment, or execution authority is introduced here.
+Phase 4B must consume only a fresh `COMPLETE` `account_state_snapshot_run_v1`
+bundle. The bundle binds exact same-refresh position and balance evidence to a
+matching `account_open_order_snapshot_run_v1` COMPLETE header; the latter is
+required to prove an authoritative zero open-order result. Missing, stale,
+ambiguous, cross-account, cross-venue, or component-mismatched evidence fails
+closed. The producer independently validates the referenced header's account,
+normalized venue, timestamp, canonical source, `COMPLETE` state, and exact
+count before emitting the account-state header. The canonical producer is the Odroid
+`ACCOUNT_STATE_SNAPSHOT_REFRESH` wallet path; it performs the existing two
+private reads and commits the complete persisted bundle atomically. Phase 4B
+itself never resolves credentials or calls a broker.
+
+The later `AUTOMATIC_EXIT_POLICY_RUNTIME` owner remains `UNASSIGNED`: the
+repository has no reviewed account-policy runtime host decision yet, and the
+new account-runtime ownership registry deliberately grants it neither private
+read nor execution authority. No automatic-exit service, timer, deployment, or
+execution authority is introduced by this prerequisite.
